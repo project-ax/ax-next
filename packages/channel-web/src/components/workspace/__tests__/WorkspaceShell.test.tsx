@@ -59,6 +59,11 @@ function renderShell() {
 }
 
 beforeEach(() => {
+  // The shell reads its route from the URL now (TASK-327), and jsdom keeps
+  // ONE location for the whole file — so a test that drills into an agent
+  // would otherwise leave the next one mounting on that agent's URL instead
+  // of Today. Routing itself is covered in WorkspaceShellRouting.test.tsx.
+  window.history.replaceState(null, '', '/workspace');
   boardMock.mockReset();
   agentMock.mockReset();
   activityMock.mockReset();

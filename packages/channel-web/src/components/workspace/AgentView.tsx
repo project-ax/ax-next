@@ -40,8 +40,11 @@ import type {
   ThreadMessage,
   WorkspaceAgent,
 } from '@/lib/workspace-api';
+import type { AgentTab } from '@/lib/workspace-route';
 
-export type AgentTab = 'chat' | 'did' | 'files' | 'memory';
+// The tab vocabulary lives with the URL grammar that has to name it — one
+// list, so a tab cannot exist that no link can reach.
+export type { AgentTab } from '@/lib/workspace-route';
 
 interface Props {
   agentId: string;

@@ -84,12 +84,12 @@ function isSetupPath(): boolean {
  * workspace branch instead of falling through to chat. No URL rewrite and no
  * flash, so this adds no phantom history entry.
  *
- * That is the whole of the history claim, and it is worth being narrow about:
- * `WorkspaceShell` keeps its own route in component state, so the back button
- * does NOT unwind navigation INSIDE the workspace (drill into an agent, and
- * Back won't return you to Today). `/` and `/workspace` are also two URLs for
- * the same stateless surface with nothing to distinguish them. Both are
- * acceptable for a preview and neither is what this predicate decides.
+ * Since TASK-327 the shell syncs its route to the URL, so the two caveats
+ * that used to sit here are gone: Back DOES unwind navigation inside the
+ * workspace, and `/` is no longer a second address for the same view — the
+ * shell replaces it with `/workspace` on mount (a replace, so the no-phantom-
+ * entry claim above still holds). This predicate still has to accept `/`,
+ * because that is what the visitor arrives on.
  *
  * Chat keeps an address either way, which is the fact that makes this safe
  * rather than a one-way door: chat is App's FALL-THROUGH branch, and
