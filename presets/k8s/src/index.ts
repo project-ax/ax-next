@@ -289,7 +289,7 @@ export interface K8sPresetConfig {
    * filestore-user-files (design §4) — the durable per-agent user-files mount
    * backed by a Google Cloud Filestore (managed NFS) export. When set, the
    * preset loads `@ax/workspace-filestore` (registers `sandbox:resolve-mounts`),
-   * which hands each agent an `nfs` mount at `mountPath` (default `/workspace`)
+   * which hands each agent an `nfs` mount at `mountPath` (default `/files`)
    * confined to its own `subPath=<agentId>` subtree. When OMITTED, no resolver
    * loads — sessions get only the default emptyDir tiers (graceful degradation;
    * AX_USERFILES_ROOT stays unset). The chart drives this via
@@ -338,6 +338,15 @@ export interface K8sPresetConfig {
      * `proxySocketHostPath`. See sandbox-k8s/config.ts.
      */
     proxyEndpoint?: string;
+    /**
+     * Path where the WHOLE durable user-files export is mounted READ-ONLY into
+     * the HOST pod. Set → `sandbox:read-user-files` reads an agent's subtree
+     * directly (`<root>/<agentId>`); unset → the provider falls back to a
+     * short-lived reader pod per call. See sandbox-k8s/config.ts for the
+     * security note — this is the knob that turns cross-tenant isolation on
+     * this path from structural into code.
+     */
+    userFilesHostReadRoot?: string;
   };
   /**
    * IPC listener config — the host pod's @ax/ipc-http TCP listener that
@@ -912,6 +921,9 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
       : {}),
     ...(config.sandbox?.proxyEndpoint !== undefined
       ? { proxyEndpoint: config.sandbox.proxyEndpoint }
+      : {}),
+    ...(config.sandbox?.userFilesHostReadRoot !== undefined
+      ? { userFilesHostReadRoot: config.sandbox.userFilesHostReadRoot }
       : {}),
   };
   plugins.push(createSandboxK8sPlugin(sandboxOpts));
@@ -1676,7 +1688,7 @@ export function loadK8sConfigFromEnv(
   // filestore-user-files (design §4) — the durable per-agent user-files mount.
   // Configured ONLY when a Filestore server is set; `server` + `exportPath` are
   // both required together (a server with no export, or vice versa, is a wiring
-  // bug we fail loud on). `mountPath` defaults in the plugin (`/workspace`).
+  // bug we fail loud on). `mountPath` defaults in the plugin (`/files`).
   // Omitted entirely when no server is set → the preset loads no mount resolver
   // and sessions degrade to emptyDir-only.
   let filestore: K8sPresetConfig['filestore'];
@@ -1691,6 +1703,20 @@ export function loadK8sConfigFromEnv(
     filestore = { server: filestoreServer, exportPath };
     if (env.AX_FILESTORE_MOUNT_PATH !== undefined && env.AX_FILESTORE_MOUNT_PATH !== '') {
       filestore.mountPath = env.AX_FILESTORE_MOUNT_PATH;
+    }
+    // Host-mounted host-read (the chart's `sandbox.filestore.hostReadPath`).
+    // It lives on `sandbox`, not on `filestore`, because it configures the
+    // SANDBOX PROVIDER's realization of `sandbox:read-user-files` — the
+    // filestore plugin (the mount RESOLVER) has no opinion about it. Only read
+    // when a Filestore server is set: a host-read root with no export behind it
+    // would point the reader at an empty directory and every browse would
+    // answer "nothing here", which is the exact lie the Files surface refuses
+    // to tell.
+    if (
+      env.AX_FILESTORE_HOST_READ_PATH !== undefined &&
+      env.AX_FILESTORE_HOST_READ_PATH !== ''
+    ) {
+      sandbox.userFilesHostReadRoot = env.AX_FILESTORE_HOST_READ_PATH;
     }
   }
 

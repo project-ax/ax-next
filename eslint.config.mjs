@@ -69,6 +69,18 @@
 //                           shared shape a future connector references without
 //                           a cross-plugin import. No manifest, no hooks, no
 //                           runtime behavior beyond parsing.
+//   @ax/user-files-read   — the ONE realpath-confined reader for an agent's
+//                           durable user-files subtree. Shared by BOTH
+//                           realizations of `sandbox:read-user-files`
+//                           (@ax/sandbox-subprocess's shared-FS read and
+//                           @ax/sandbox-k8s's host-mounted read). No manifest,
+//                           no hooks, no @ax/core dep — it takes a root the
+//                           caller has already ACL'd and a relative path, and
+//                           answers with the hook's output shape. It is a
+//                           library rather than a copy because path
+//                           confinement is the load-bearing cross-tenant
+//                           property here, and a third copy of it would mean a
+//                           third place a fix has to land.
 //
 // These shared-import expansions of the kernel-only allowlist form the
 // documented one-way boundary between host-side plugins and sandbox-side
@@ -175,10 +187,11 @@ export default tseslint.config(
                 '!@ax/validator-routine',
                 '!@ax/skills-parser',
                 '!@ax/agent-identity-templates',
+                '!@ax/user-files-read',
               ],
               allowTypeImports: true,
               message:
-                'Cross-plugin runtime imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. Type-only imports (`import type {...}` / `export type {...}`) are allowed — boundary types are how plugins agree on a shared contract without runtime coupling. The only @ax/* runtime imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol + @ax/sandbox-protocol + @ax/workspace-bundle-protocol (wire / hook-bus contracts), @ax/ipc-core (transport-agnostic IPC library), @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser), @ax/validator-routine (pure-function routine frontmatter parser shared between the validator and the routines plugin), @ax/skills-parser (pure-function SKILL.md parser + capability types shared between @ax/skills and @ax/agents), and @ax/agent-identity-templates (pure-data bootstrap/identity template strings shared between @ax/agent-claude-sdk-runner and @ax/channel-web)',
+                'Cross-plugin runtime imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. Type-only imports (`import type {...}` / `export type {...}`) are allowed — boundary types are how plugins agree on a shared contract without runtime coupling. The only @ax/* runtime imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol + @ax/sandbox-protocol + @ax/workspace-bundle-protocol (wire / hook-bus contracts), @ax/ipc-core (transport-agnostic IPC library), @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser), @ax/validator-routine (pure-function routine frontmatter parser shared between the validator and the routines plugin), @ax/skills-parser (pure-function SKILL.md parser + capability types shared between @ax/skills and @ax/agents), @ax/agent-identity-templates (pure-data bootstrap/identity template strings shared between @ax/agent-claude-sdk-runner and @ax/channel-web), and @ax/user-files-read (the one realpath-confined reader for an agent durable user-files subtree, shared by both sandbox providers)',
             },
           ],
         },

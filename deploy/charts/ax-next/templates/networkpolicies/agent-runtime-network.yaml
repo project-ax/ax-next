@@ -8,6 +8,10 @@ Allows the host pod to do its job:
       - k8s API (443/6443, scoped via the host SA's Role to runner CRUD)
       - DNS (53)
       - HTTPS (443) — Anthropic API + future channel integrations
+      - the user-files NFS export (only when sandbox.filestore.server +
+        sandbox.filestore.hostReadPath are both set — the host mounts the
+        export read-only to serve the Files browser). Scoped to the Filestore
+        /32 on the NFS ports only.
       - git-server StatefulSet (only when gitServer.enabled +
         workspace.backend=git-protocol — same-namespace, port from
         .Values.gitServer.port). Without this rule the host's
@@ -97,6 +101,32 @@ spec:
           protocol: UDP
         - port: 53
           protocol: TCP
+    {{- if and .Values.sandbox.filestore.server .Values.sandbox.filestore.hostReadPath }}
+    # The host pod mounts the user-files export READ-ONLY (see
+    # host/deployment.yaml) so the web UI can browse an agent's durable files
+    # without spending a pod per click. Mounting NFS needs egress, and the host
+    # policy above is otherwise egress-restricted — without this rule the mount
+    # hangs at the CNI layer and the pod never becomes Ready, which looks
+    # nothing like a NetworkPolicy problem when you are staring at it.
+    #
+    # Scoped exactly like the runner's rule in sandbox-restrict.yaml: the single
+    # Filestore IP as a /32 ipBlock — not a CIDR, not the internet — on just
+    # 2049 (nfsd) and 111 (rpcbind), both protocols. Rendered ONLY when the
+    # host-read mount is actually enabled (invariant I5: capabilities
+    # minimized — an unused grant is still a grant).
+    - to:
+        - ipBlock:
+            cidr: {{ printf "%s/32" .Values.sandbox.filestore.server | quote }}
+      ports:
+        - port: 2049
+          protocol: TCP
+        - port: 2049
+          protocol: UDP
+        - port: 111
+          protocol: TCP
+        - port: 111
+          protocol: UDP
+    {{- end }}
     {{- if and (eq .Values.workspace.backend "git-protocol") .Values.gitServer.enabled }}
     # Sharded git-server StatefulSet (workspace.backend == git-protocol).
     # Same-namespace, pinned by the git-server-experimental component

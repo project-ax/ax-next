@@ -16,6 +16,7 @@
     { "path": "../../packages/workspace-git" },
     { "path": "../../packages/workspace-git-server" },
     { "path": "../../packages/workspace-filestore" },
+    { "path": "../../packages/workspace-localdir" },
     { "path": "../../packages/sandbox-k8s" },
     { "path": "../../packages/agent-aisdk-runner" },
     { "path": "../../packages/agent-claude-sdk-runner" },

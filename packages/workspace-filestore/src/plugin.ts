@@ -7,7 +7,7 @@ import type {
 import { isValidAgentId } from './agent-id.js';
 
 const PLUGIN_NAME = '@ax/workspace-filestore';
-const DEFAULT_MOUNT_PATH = '/workspace';
+const DEFAULT_MOUNT_PATH = '/files';
 
 export interface WorkspaceFilestoreConfig {
   /**
@@ -23,7 +23,7 @@ export interface WorkspaceFilestoreConfig {
   };
   /**
    * Where the durable mount appears inside the sandbox. Defaults to
-   * `/workspace`. The provider exports this path as `AX_USERFILES_ROOT`.
+   * `/files`. The provider exports this path as `AX_USERFILES_ROOT`.
    */
   mountPath?: string;
 }

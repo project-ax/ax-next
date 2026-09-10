@@ -260,7 +260,7 @@ sandbox:
   # filestore-user-files (design §4). Gives each agent a durable, shared,
   # real filesystem for the user's working files (datasets, build trees,
   # media, cloned repos) — backed by a Google Cloud Filestore (managed NFS)
-  # export, mounted into the sandbox at `mountPath` (default /workspace),
+  # export, mounted into the sandbox at `mountPath` (default /files),
   # OUTSIDE the git-tracked agent-state tier. These files are live: written
   # straight to NFS, durable across sessions, with no git round-trip.
   #
@@ -278,8 +278,45 @@ sandbox:
     server: ""
     # Export path on the Filestore instance, e.g. /vol1 (the share name).
     exportPath: "/vol1"
-    # Where the durable mount appears inside the sandbox.
-    mountPath: "/workspace"
+    # Where the durable mount appears inside the sandbox. This is also the
+    # agent's cwd and HOME.
+    #
+    # UPGRADING from a chart that defaulted this to `/workspace`: an agent's
+    # files are keyed by `subPath=<agentId>`, not by mountPath, so they follow
+    # the mount and nothing needs copying. What does NOT follow is an absolute
+    # `/workspace/...` path an agent wrote into its own `.ax/AGENTS.md`, a
+    # proposed skill, or its memory. Pin this to "/workspace" if you would
+    # rather not find out.
+    mountPath: "/files"
+    # Where the SAME export is mounted, READ-ONLY, into the HOST pod, so the
+    # web UI can browse an agent's durable files. Empty (the default) = not
+    # mounted.
+    #
+    # Why you want it: without it, reading one directory or one file costs a
+    # whole short-lived Kubernetes pod — create, poll, read the log, delete.
+    # A file browser on that spends seconds per click, and on a cluster that
+    # cold-starts nodes it spends longer than that. With it, the host reads the
+    # files directly and a click costs nothing.
+    #
+    # Why you might not: this is a real widening, and we would rather say so
+    # than bury it. Today the host has NO access to any agent's files, and that
+    # isolation is structural — there is no path from the host process to the
+    # export at all. Turn this on and the host can read every agent's subtree,
+    # and the isolation becomes code: an `agents:resolve` check on the route
+    # plus realpath confinement in the reader (both tested, both required). The
+    # mount itself is read-only end to end, and nothing on the read path ever
+    # opens a writable handle.
+    #
+    # In blast-radius terms it is not a step up — the host already holds the
+    # database, the blob store and every credential, so a compromised host was
+    # already a bad day. But "not a step up" is not "free", and if you do not
+    # need the browser, leave it empty and the browser will say it cannot
+    # reach the files rather than pretending the agent wrote nothing.
+    #
+    # Requires `server` to be set as well (an empty server means no export to
+    # mount). Opening this also opens the HOST pod's egress to the Filestore IP
+    # on the NFS ports — see networkpolicies/agent-runtime-network.yaml.
+    hostReadPath: ""
 
   # ─── Dev-services in the sandbox (REQUIRES Kubernetes 1.29+) ───
   # Agents can declare "dev-dependency services" (a database, a broker, …)

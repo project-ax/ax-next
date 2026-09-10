@@ -84,8 +84,8 @@ path to a chat-capable state on a fresh cluster.
 
 ### Functional
 - [ ] Chat returns a response. The response references a bash tool execution
-      whose output is the actual file listing of the runner pod's workspace
-      (which is empty by default — `ls /workspace` returns no entries, the
+      whose output is the actual file listing of the agent's working directory
+      (which is empty by default — `ls /files` returns no entries, the
       assistant should say so coherently).
 - [ ] `kubectl get pods -n ax-next-runners -l app.kubernetes.io/component=ax-next-runner`
       shows a runner pod was created and (after the chat ends) terminated
@@ -216,7 +216,7 @@ Default Agent. After completion, every `/setup/*` path returns 410 Gone (I11)
 
 5. **Send the first chat.** From `http://localhost:9090/`, the chat UI
    should be reachable as the freshly-minted admin. Type any prompt that
-   triggers a tool call — `list the files in /workspace` is the canonical
+   triggers a tool call — `list the files in /files` is the canonical
    probe.
 
 ### Acceptance criteria

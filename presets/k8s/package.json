@@ -83,6 +83,7 @@
     "@ax/ipc-core": "workspace:*",
     "@ax/ipc-server": "workspace:*",
     "@ax/sandbox-subprocess": "workspace:*",
+    "@ax/workspace-localdir": "workspace:*",
     "@ax/session-inmemory": "workspace:*",
     "@ax/storage-sqlite": "workspace:*",
     "@ax/test-harness": "workspace:*",

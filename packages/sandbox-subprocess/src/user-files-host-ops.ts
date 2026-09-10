@@ -1,11 +1,11 @@
-import { promises as fs, constants as fsConstants } from 'node:fs';
-import * as path from 'node:path';
+import { promises as fs } from 'node:fs';
 import {
   PluginError,
   type AgentContext,
   type HookBus,
   type Logger,
 } from '@ax/core';
+import { readConfinedUserFiles } from '@ax/user-files-read';
 import type {
   MountSpec,
   ReadUserFilesInput,
@@ -35,10 +35,15 @@ import type {
 // SECURITY (design §9 + §11):
 //   - host-read NEVER opens a writable handle — it only `readFile`/`readdir`s,
 //     so write access is never granted (design §11: "without granting write").
-//   - The caller-supplied `relPath` is confined to the resolved mount subtree:
-//     `..` segments + absolute paths are rejected, and the post-join path is
-//     re-checked to be inside the mount root (defense in depth vs. a symlink
-//     race). A path escape is an error, not a silent fallthrough.
+//     Structurally, not by discipline: `@ax/user-files-read` has no write
+//     entry point to reach for by mistake.
+//   - The caller-supplied `relPath` is confined to the resolved mount subtree
+//     by `@ax/user-files-read` — the ONE confined reader, shared with the k8s
+//     provider's host-mounted realization. Read its header for the full walk:
+//     lexical `..`/absolute rejection, realpath confinement of every
+//     component (this is what catches an INTERMEDIATE symlink the agent
+//     planted), `O_NOFOLLOW` on the final open, symlink children dropped from
+//     listings, and caps on bytes + entries.
 //   - cleanup deletes ONLY the resolved `hostPath` (a single per-agent subtree
 //     keyed off the validated agentId) — never a sibling agent's subtree
 //     (cross-tenant safety, design §9). Resolving via the SAME validated
@@ -100,72 +105,23 @@ function unrealizable(kind: string, pluginName: string): PluginError {
 }
 
 /**
- * Resolve `relPath` against `root`, REJECTING anything that escapes it.
- * `relPath` is caller-supplied (the web UI), so an absolute path, a `..`
- * segment, or a post-join path outside `root` all throw. An empty/`'.'`
- * `relPath` resolves to `root` itself.
- */
-function safeJoin(root: string, relPath: string | undefined): string {
-  const rel = relPath === undefined || relPath === '' ? '.' : relPath;
-  if (path.isAbsolute(rel)) {
-    throw new Error(`user-files relPath must be relative, got: ${rel}`);
-  }
-  if (rel.split(/[/\\]/).some((seg) => seg === '..')) {
-    throw new Error(`user-files relPath must not contain '..': ${rel}`);
-  }
-  const resolvedRoot = path.resolve(root);
-  const full = path.resolve(resolvedRoot, rel);
-  if (full !== resolvedRoot && !full.startsWith(resolvedRoot + path.sep)) {
-    throw new Error(`user-files relPath escapes the mount root: ${rel}`);
-  }
-  return full;
-}
-
-/**
- * Confine `target` to `root` by realpath — resolving EVERY component, so an
- * INTERMEDIATE symlink the (untrusted) agent planted inside its own subtree
- * (e.g. `subdir -> /export/<other-agentId>` or `-> /`) cannot point the read at
- * another tenant's files. Lexical `safeJoin` only catches `..`/absolute in the
- * caller's relPath — it does NOT resolve symlinks on disk, so it's necessary
- * but NOT sufficient (the cross-tenant disclosure the security review caught).
- *
- * Returns the realpath'd target when it stays under the realpath'd root, else
- * `undefined` (→ caller serves `absent`). ENOENT / a dangling link → undefined.
- */
-async function confineByRealpath(
-  root: string,
-  target: string,
-): Promise<string | undefined> {
-  let realRoot: string;
-  let realTarget: string;
-  try {
-    realRoot = await fs.realpath(root);
-    // realpath resolves ALL intermediate + final symlinks on disk.
-    realTarget = await fs.realpath(target);
-  } catch {
-    return undefined;
-  }
-  if (realTarget !== realRoot && !realTarget.startsWith(realRoot + path.sep)) {
-    return undefined;
-  }
-  return realTarget;
-}
-
-/**
  * Realize `sandbox:read-user-files` for the subprocess provider: resolve the
  * agent's `localDir` user-files mount READ-ONLY and read one path under it.
  * Returns `{ kind: 'absent' }` when there's no mount or the path doesn't exist;
  * a regular file's bytes for a file; the immediate children for a directory.
- * Only files + dirs are listed (symlinks/specials are skipped). Never opens a
- * writable handle.
  *
- * SECURITY (cross-tenant isolation, the load-bearing property): the read path
- * is confined to the mount root by REALPATH — resolving every intermediate
- * component — so an agent-planted symlink ANYWHERE on the path (not just the
- * final component) cannot escape into a sibling agent's subtree or the host FS.
- * The final open uses `O_NOFOLLOW` (reject a final-component symlink) and reads
- * via the fd to shrink the realpath→open TOCTOU window; the realpath confinement
- * is the primary defense.
+ * The read itself — the LEXICAL guard on the caller's relPath, the realpath
+ * confinement that catches an intermediate agent-planted symlink, the
+ * `O_NOFOLLOW` final open, the dropped symlink children, and the size/listing
+ * caps — lives in `@ax/user-files-read` and is shared with the k8s provider's
+ * host-mounted realization. It is a library rather than a copy on purpose:
+ * path confinement is the load-bearing cross-tenant property on this surface,
+ * and a second copy is a second place a fix has to land.
+ *
+ * What stays HERE is the part that is this provider's own: deciding which root
+ * this request is entitled to, by resolving the mount through the same
+ * owner-keyed `sandbox:resolve-mounts` the session path uses. That is where the
+ * identity is, so that is where the ACL belongs.
  */
 export async function readUserFiles(
   ctx: AgentContext,
@@ -181,52 +137,7 @@ export async function readUserFiles(
     /* readOnly */ true,
   );
   if (root === undefined) return { kind: 'absent' };
-
-  // 1. Lexical guard on the caller-supplied relPath (absolute / `..`).
-  const lexicalTarget = safeJoin(root, input.relPath);
-  // 2. On-disk guard: realpath-confine to the mount root so an intermediate
-  //    symlink can't escape. A path that resolves outside → absent.
-  const target = await confineByRealpath(root, lexicalTarget);
-  if (target === undefined) return { kind: 'absent' };
-
-  // `target` is now the realpath'd, confirmed-in-root path. Stat it (no symlink
-  // can remain — realpath resolved them and we re-confined).
-  let stat;
-  try {
-    stat = await fs.lstat(target);
-  } catch {
-    return { kind: 'absent' };
-  }
-  if (stat.isSymbolicLink()) return { kind: 'absent' }; // belt: shouldn't happen post-realpath
-  if (stat.isDirectory()) {
-    const dirents = await fs.readdir(target, { withFileTypes: true });
-    // `withFileTypes` uses lstat semantics, so a symlink dirent reports neither
-    // isFile() nor isDirectory() — symlinks are dropped here, never listed.
-    const entries = dirents
-      .filter((d) => d.isFile() || d.isDirectory())
-      .map((d) => ({
-        name: d.name,
-        kind: (d.isDirectory() ? 'dir' : 'file') as 'file' | 'dir',
-      }));
-    return { kind: 'dir', entries };
-  }
-  if (stat.isFile()) {
-    // O_NOFOLLOW shrinks the realpath→open TOCTOU window: if the final component
-    // was swapped for a symlink between realpath and open, the open fails (ELOOP)
-    // → absent, rather than following the swapped link.
-    let fh: fs.FileHandle | undefined;
-    try {
-      fh = await fs.open(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-      const contents = await fh.readFile();
-      return { kind: 'file', contents: new Uint8Array(contents) };
-    } catch {
-      return { kind: 'absent' };
-    } finally {
-      await fh?.close().catch(() => undefined);
-    }
-  }
-  // A socket/fifo/device — nothing a file browser should serve.
-  return { kind: 'absent' };
+  return readConfinedUserFiles(root, input.relPath);
 }
 
 /**

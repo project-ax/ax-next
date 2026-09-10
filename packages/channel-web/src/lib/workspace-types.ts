@@ -544,6 +544,47 @@ export interface WorkspaceFileSummary {
   name: string;
 }
 
+/**
+ * One child of a directory in the agent's DURABLE user-files tier.
+ *
+ * A different tier from `WorkspaceFileSummary` above, and the difference
+ * matters: that one is the git-backed tier AX manages, this one is the agent's
+ * cwd and HOME — where a deliverable lands when nobody said where.
+ *
+ * Same `path` / `name` split, same reason. `path` is the raw key, already
+ * joined onto its parent by the server, and it is what goes back on the wire.
+ * `name` is the fenced label and is the only one of the two ever drawn.
+ */
+export interface UserFileEntry {
+  path: string;
+  name: string;
+  kind: 'file' | 'dir';
+}
+
+/**
+ * One answer from the durable tier: a directory's children, or a file's text.
+ *
+ * Discriminated because a tree navigator does not know which it clicked until
+ * the server says so — the backing hook answers per PATH, not per kind.
+ */
+export type UserFilesAnswer =
+  | {
+      kind: 'dir';
+      /** The raw key this answers for. `''` is the tier root. */
+      path: string;
+      name: string;
+      entries: UserFileEntry[];
+      /** `true` when the directory holds more children than one response carries. */
+      truncated: boolean;
+    }
+  | {
+      kind: 'file';
+      path: string;
+      name: string;
+      body: string | null;
+      clipped: 'binary' | 'too-large' | null;
+    };
+
 /** One file's text, as the server is willing to show it. */
 export interface WorkspaceFileBody {
   path: string;

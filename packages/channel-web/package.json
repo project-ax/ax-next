@@ -29,6 +29,7 @@
     "@ax/http-server": "workspace:*",
     "@ax/ipc-protocol": "workspace:*",
     "@ax/routines": "workspace:*",
+    "@ax/sandbox-mount-protocol": "workspace:*",
     "@ax/skills": "workspace:*",
     "@ax/skills-parser": "workspace:*",
     "@ax/validator-routine": "workspace:*",

@@ -37,6 +37,7 @@ import { createChannelWebServerPlugin } from '@ax/channel-web/server';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createHttpServerPlugin } from '@ax/http-server';
 import { createWorkspaceGitPlugin } from '@ax/workspace-git';
+import { createWorkspaceLocaldirPlugin } from '@ax/workspace-localdir';
 import { createConversationsPlugin } from '@ax/conversations';
 import type {
   CreateInput as ConversationsCreateInput,
@@ -2662,41 +2663,27 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         const chatJson = (await chatResp.json()) as { conversationId: string };
         const conversationId = chatJson.conversationId;
 
-        // 2. Pre-commit the artifact file at workspace/summary.md. The
-        // workspace was fresh before the chat-messages POST; but that POST
-        // can have written nothing to the workspace (no attachment_ref).
-        // We still use parent: null on the very first apply — if the route
-        // committed anything we'd see parent-mismatch and re-probe.
+        // 2. Stage the deliverable in the agent's DURABLE user-files tier —
+        // the tier artifacts are published from, and the same one the agent's
+        // cwd points at in production. It is deliberately outside git: the
+        // artifact's durability comes from the blob store at publish time
+        // (TASK-68), not from a commit, so there is nothing to seed into the
+        // workspace tier here. `ARTIFACT_PATH` is the row key the executor
+        // returns — relative to the tier root, which is what the download
+        // ACL and the ArtifactChip match on.
         const seedCtx = makeAgentContext({
           sessionId: 'phase-3-artifact-canary',
           agentId: AGENT,
           userId: USER,
           workspace: { rootPath: workspaceRoot },
         });
-        const ARTIFACT_PATH = 'workspace/summary.md';
-        await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
-          'workspace:apply',
-          seedCtx,
-          {
-            changes: [
-              { path: ARTIFACT_PATH, kind: 'put', content: ARTIFACT_BYTES },
-            ],
-            parent: null,
-            reason: 'phase-3 artifact canary: seed artifact file',
-          },
-        );
-
-        // In production, materializeWorkspace clones the storage tier into
-        // /agent so the executor sees the file; the canary skips
-        // materialize, so we stage the bytes by hand.
-        await fs.mkdir(path.dirname(path.join(runnerCheckoutRoot, ARTIFACT_PATH)), {
+        const ARTIFACT_PATH = 'reports/summary.md';
+        const artifactAbsPath = path.join(runnerCheckoutRoot, ARTIFACT_PATH);
+        await fs.mkdir(path.dirname(artifactAbsPath), {
           recursive: true,
           mode: 0o755,
         });
-        await fs.writeFile(
-          path.join(runnerCheckoutRoot, ARTIFACT_PATH),
-          ARTIFACT_BYTES,
-        );
+        await fs.writeFile(artifactAbsPath, ARTIFACT_BYTES);
 
         // 3 + 4. Publish the artifact and seed the transcript. The
         // download path-scope ACL scans conversations:get, which now reads the
@@ -2706,15 +2693,14 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         // tool_result whose JSON `content.path` matches ARTIFACT_PATH (the
         // artifact-block branch of checkPathScope) + the closing text.
         const executor = createArtifactPublishExecutor({
-          workspaceRoot: runnerCheckoutRoot,
+          userFilesRoot: runnerCheckoutRoot,
         });
         const artifactResult = await executor({
           id: 'toolu_1',
           name: 'artifact_publish',
-          input: {
-            path: `/agent/${ARTIFACT_PATH}`,
-            displayName: 'summary.md',
-          },
+          // The REAL absolute path — what the operating notes hand the model
+          // and what it actually wrote to, in every sandbox shape.
+          input: { path: artifactAbsPath, displayName: 'summary.md' },
         });
 
         // Lock-down: ArtifactChip + checkPathScope's artifact-block branch
@@ -3124,6 +3110,369 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         expect(listFinal.credentials).toEqual([]);
       } finally {
         if (handle !== null) await handle.shutdown();
+      }
+    },
+  );
+  // ---------------------------------------------------------------------------
+  // Durable user-files browser canary (F4).
+  //
+  // WHY IT EXISTS, in one sentence: `sandbox:read-user-files` shipped with both
+  // sandbox providers registering it, a canary exercising it, and NOT ONE
+  // consumer — so the tier that is the agent's cwd, and therefore where a
+  // deliverable lands by default, was invisible in the UI. Registering a hook
+  // nobody calls is a half-wired plugin (invariant #3), and this canary is what
+  // stops it becoming one again: it drives the REAL route over a real socket,
+  // through the real hook, to real bytes on disk.
+  //
+  // The provider here is @ax/sandbox-subprocess with @ax/workspace-localdir as
+  // the mount resolver — the dev/CLI pairing. That is deliberate and it is not
+  // a cheat: the k8s provider's HOST-MOUNTED realization is structurally the
+  // same case (a per-agent directory on this process's own filesystem), reads
+  // through the same @ax/user-files-read, and is unit-tested against a real
+  // temp dir in @ax/sandbox-k8s. What only an end-to-end run can prove is the
+  // part in between — that the route is mounted, the splat is captured, the ACL
+  // fires, and the bytes survive the trip.
+  // ---------------------------------------------------------------------------
+  it(
+    'F4 canary: the durable user-files tier is browsable over GET /api/workspace/agents/:id/user-files',
+    { timeout: 180_000 },
+    async () => {
+      const connectionString = await ensurePostgresStarted();
+      const workspaceRoot = await fs.realpath(
+        await fs.mkdtemp(path.join(os.tmpdir(), 'ax-f4-userfiles-ws-')),
+      );
+      // The durable tier's backing root. @ax/workspace-localdir gives each
+      // agent `<root>/<agentId>`, which is exactly the shape the chart's
+      // read-only host mount produces (`<hostReadPath>/<agentId>`).
+      const userFilesRoot = await fs.realpath(
+        await fs.mkdtemp(path.join(os.tmpdir(), 'ax-f4-userfiles-tier-')),
+      );
+
+      const originalAllowNoOrigins = process.env.AX_HTTP_ALLOW_NO_ORIGINS;
+      process.env.AX_HTTP_ALLOW_NO_ORIGINS = '1';
+
+      const http = createHttpServerPlugin({
+        host: '127.0.0.1',
+        port: 0,
+        cookieKey: randomBytes(32),
+        allowedOrigins: [],
+      });
+
+      const USER = 'f4-user';
+      const OTHER_USER = 'f4-other-user';
+      const AGENT = 'f4-agent';
+
+      const AUTH_STUB = '@ax/preset-k8s/test/f4-auth-stub';
+      const authStubPlugin: Plugin = {
+        manifest: {
+          name: AUTH_STUB,
+          version: '0.0.0',
+          registers: ['auth:require-user'],
+          calls: [],
+          subscribes: [],
+        },
+        init({ bus }) {
+          bus.registerService(
+            'auth:require-user',
+            AUTH_STUB,
+            async (_ctx: AgentContext, input) => {
+              const i = input as { req?: { headers?: Record<string, string> } };
+              const userId = i.req?.headers?.['x-test-user'];
+              if (typeof userId !== 'string' || userId.length === 0) {
+                throw new PluginError({
+                  code: 'unauthenticated',
+                  plugin: AUTH_STUB,
+                  message: 'no x-test-user header',
+                });
+              }
+              return { user: { id: userId, isAdmin: false } };
+            },
+          );
+        },
+      };
+
+      const AGENTS_STUB = '@ax/preset-k8s/test/f4-agents-stub';
+      const agentsStubPlugin: Plugin = {
+        manifest: {
+          name: AGENTS_STUB,
+          version: '0.0.0',
+          registers: [
+            'agents:resolve',
+            'agents:list-for-user',
+            'agents:create',
+            'skills:list',
+            'skills:list-user-attachments',
+            'skills:detach-for-user',
+          ],
+          calls: [],
+          subscribes: [],
+        },
+        init({ bus }) {
+          // THE ACL under test. The agent belongs to USER; anyone else asking
+          // for it gets a not-found, which the route must turn into a 404
+          // BEFORE it looks at any path.
+          bus.registerService(
+            'agents:resolve',
+            AGENTS_STUB,
+            async (_ctx: AgentContext, input) => {
+              const i = input as { agentId?: string; userId?: string };
+              if (i.agentId !== AGENT || i.userId !== USER) {
+                throw new PluginError({
+                  code: 'not-found',
+                  plugin: AGENTS_STUB,
+                  message: 'not this user’s agent',
+                });
+              }
+              return {
+                agent: {
+                  id: AGENT,
+                  ownerId: USER,
+                  ownerType: 'user' as const,
+                  visibility: 'personal' as const,
+                  displayName: 'F4 canary agent',
+                  systemPrompt: 'You are a helpful assistant.',
+                  allowedTools: [] as string[],
+                  mcpConfigIds: [] as string[],
+                  runner: 'claude-sdk',
+                  model: 'claude-sonnet-4-7',
+                  workspaceRef: null,
+                  allowedHosts: [] as string[],
+                  requiredCredentials: {} as Record<
+                    string,
+                    { ref: string; kind: string }
+                  >,
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+                },
+              };
+            },
+          );
+          bus.registerService('agents:list-for-user', AGENTS_STUB, async () => ({
+            agents: [] as Array<unknown>,
+          }));
+          bus.registerService('agents:create', AGENTS_STUB, async () => ({
+            agent: { id: 'f4-new', displayName: 'New', visibility: 'personal' as const },
+          }));
+          bus.registerService('skills:list', AGENTS_STUB, async () => ({
+            skills: [] as Array<unknown>,
+          }));
+          bus.registerService(
+            'skills:list-user-attachments',
+            AGENTS_STUB,
+            async () => ({ attachments: [] as Array<unknown> }),
+          );
+          bus.registerService('skills:detach-for-user', AGENTS_STUB, async () => ({
+            removed: false,
+          }));
+        },
+      };
+
+      const AGENT_STUB = '@ax/preset-k8s/test/f4-agent-invoke-stub';
+      const agentInvokeStubPlugin: Plugin = {
+        manifest: {
+          name: AGENT_STUB,
+          version: '0.0.0',
+          registers: [
+            'agent:invoke',
+            'agent:apply-capability-grant',
+            'agent:apply-authored-capability-grant',
+            'proxy:add-host',
+          ],
+          calls: [],
+          subscribes: [],
+        },
+        init({ bus }) {
+          bus.registerService('agent:invoke', AGENT_STUB, async () => ({
+            kind: 'complete',
+            messages: [],
+          }));
+          bus.registerService(
+            'agent:apply-capability-grant',
+            AGENT_STUB,
+            async () => ({ attached: true }),
+          );
+          bus.registerService(
+            'agent:apply-authored-capability-grant',
+            AGENT_STUB,
+            async () => ({ applied: false, reason: 'not-authored' }),
+          );
+          bus.registerService('proxy:add-host', AGENT_STUB, async () => ({
+            added: true,
+          }));
+        },
+      };
+
+      // @ax/sandbox-subprocess hard-calls ipc:start/ipc:stop for the LIVE
+      // session path. Nothing here opens a session — host-read is the whole
+      // point of the hook, it never enters a sandbox — but bootstrap's
+      // verifyCalls walk is static, so the producers have to be present.
+      // Stubbed rather than satisfied with @ax/ipc-server, which would drag in
+      // tool:list and the whole tool-dispatcher chain for a canary that reads
+      // one file off a disk.
+      const IPC_STUB = '@ax/preset-k8s/test/f4-ipc-stub';
+      const ipcStubPlugin: Plugin = {
+        manifest: {
+          name: IPC_STUB,
+          version: '0.0.0',
+          registers: ['ipc:start', 'ipc:stop'],
+          calls: [],
+          subscribes: [],
+        },
+        init({ bus }) {
+          bus.registerService('ipc:start', IPC_STUB, async () => ({
+            socketPath: '/dev/null',
+          }));
+          bus.registerService('ipc:stop', IPC_STUB, async () => undefined);
+        },
+      };
+
+      const plugins: Plugin[] = [
+        http,
+        createDatabasePostgresPlugin({ connectionString }),
+        createWorkspaceGitPlugin({ repoRoot: workspaceRoot }),
+        createConversationsPlugin(),
+        // channel-web hard-calls the attachments chain (uploads live on the
+        // same surface). Not exercised here; present so bootstrap's static
+        // verifyCalls walk passes.
+        createBlobStoreFsPlugin({ root: path.join(workspaceRoot, 'blobs') }),
+        createAttachmentsPlugin(),
+        // The two halves of the durable tier: the RESOLVER (which per-agent
+        // directory) and the PROVIDER (which registers the read hook).
+        createWorkspaceLocaldirPlugin({ root: userFilesRoot }),
+        // The provider hard-calls session:create/terminate for the LIVE
+        // session path. Nothing here opens a session — host-read is the whole
+        // point of the hook, it never enters a sandbox — but bootstrap's
+        // verifyCalls walk is static, so the producer has to be present.
+        createSessionInmemoryPlugin(),
+        ipcStubPlugin,
+        createSandboxSubprocessPlugin(),
+        createChannelWebServerPlugin({ agentWorkspacePreview: true }),
+        authStubPlugin,
+        agentsStubPlugin,
+        agentInvokeStubPlugin,
+      ];
+
+      const bus = new HookBus();
+      let handle: Awaited<ReturnType<typeof bootstrap>> | null = null;
+      try {
+        handle = await bootstrap({ bus, plugins, config: {} });
+        const port = http.boundPort();
+        const base = `http://127.0.0.1:${port}/api/workspace/agents`;
+        const asUser = (u: string) => ({ headers: { 'x-test-user': u } });
+
+        // 0. Seed the agent's durable subtree the way the runner would: a file
+        // at the root, a nested one under a directory, and a sibling AGENT's
+        // secret next door on the same backing root.
+        const agentDir = path.join(userFilesRoot, AGENT);
+        await fs.mkdir(path.join(agentDir, 'reports'), { recursive: true });
+        await fs.writeFile(path.join(agentDir, 'hello.txt'), 'hi');
+        const DELIVERABLE = '# Summary\n\nLooks good.\n';
+        await fs.writeFile(path.join(agentDir, 'reports', 'summary.md'), DELIVERABLE);
+        const otherDir = path.join(userFilesRoot, 'f4-other-agent');
+        await fs.mkdir(otherDir, { recursive: true });
+        await fs.writeFile(path.join(otherDir, 'secret.txt'), 'OTHER-AGENT-SECRET');
+
+        // 1. The tier root lists what the agent has. THE ASSERTION THAT WOULD
+        //    HAVE CAUGHT F4: before this change, this route did not exist.
+        const rootResp = await fetch(`${base}/${AGENT}/user-files`, asUser(USER));
+        expect(rootResp.status).toBe(200);
+        const rootBody = (await rootResp.json()) as {
+          kind: string;
+          path: string;
+          entries: Array<{ path: string; name: string; kind: string }>;
+        };
+        expect(rootBody.kind).toBe('dir');
+        expect(rootBody.path).toBe('');
+        const byName = new Map(rootBody.entries.map((e) => [e.name, e.kind]));
+        expect(byName.get('hello.txt')).toBe('file');
+        expect(byName.get('reports')).toBe('dir');
+
+        // 2. A subdirectory lists, and its entry keys are joined onto it — the
+        //    client puts these straight back on the wire.
+        const dirResp = await fetch(
+          `${base}/${AGENT}/user-files/reports`,
+          asUser(USER),
+        );
+        expect(dirResp.status).toBe(200);
+        const dirBody = (await dirResp.json()) as {
+          kind: string;
+          entries: Array<{ path: string }>;
+        };
+        expect(dirBody.kind).toBe('dir');
+        expect(dirBody.entries.map((e) => e.path)).toEqual(['reports/summary.md']);
+
+        // 3. The file's bytes survive the whole trip, encoded whole the way the
+        //    SPA sends it (`encodeURIComponent`, slashes included).
+        const fileResp = await fetch(
+          `${base}/${AGENT}/user-files/${encodeURIComponent('reports/summary.md')}`,
+          asUser(USER),
+        );
+        expect(fileResp.status).toBe(200);
+        const fileBody = (await fileResp.json()) as {
+          kind: string;
+          path: string;
+          body: string;
+          clipped: string | null;
+        };
+        expect(fileBody.kind).toBe('file');
+        expect(fileBody.path).toBe('reports/summary.md');
+        expect(fileBody.body).toBe(DELIVERABLE);
+        expect(fileBody.clipped).toBeNull();
+
+        // 4. CROSS-TENANT: a different signed-in user gets 404 on the same
+        //    agent, and gets the SAME 404 for a malformed path — no oracle.
+        for (const suffix of ['', '/reports', '/%2e%2e%2fsecret']) {
+          const foreign = await fetch(
+            `${base}/${AGENT}/user-files${suffix}`,
+            asUser(OTHER_USER),
+          );
+          expect(foreign.status).toBe(404);
+        }
+
+        // 5. SYMLINK ESCAPE: the agent plants a link to the sibling agent's
+        //    subtree inside its OWN directory, then we read through it. The
+        //    lexical path guard cannot see this — only the realpath
+        //    confinement in @ax/user-files-read can — and it must disclose
+        //    nothing, over the route, end to end.
+        await fs.symlink(otherDir, path.join(agentDir, 'escape'));
+        const throughLink = await fetch(
+          `${base}/${AGENT}/user-files/${encodeURIComponent('escape/secret.txt')}`,
+          asUser(USER),
+        );
+        expect(throughLink.status).toBe(404);
+        // And the link is not even NAMED in a listing.
+        const relisted = await fetch(`${base}/${AGENT}/user-files`, asUser(USER));
+        const relistedBody = (await relisted.json()) as {
+          entries: Array<{ name: string }>;
+        };
+        expect(relistedBody.entries.map((e) => e.name)).not.toContain('escape');
+
+        // 6. READ-ONLY, empirically: the browse left every byte alone.
+        expect(
+          (await fs.readFile(path.join(otherDir, 'secret.txt'))).toString('utf-8'),
+        ).toBe('OTHER-AGENT-SECRET');
+        expect(
+          (await fs.readFile(path.join(agentDir, 'reports', 'summary.md'))).toString(
+            'utf-8',
+          ),
+        ).toBe(DELIVERABLE);
+
+        // 7. An unauthenticated request never reaches the tier at all.
+        const anon = await fetch(`${base}/${AGENT}/user-files`);
+        expect(anon.status).toBe(401);
+      } finally {
+        if (handle !== null) await handle.shutdown();
+        if (originalAllowNoOrigins === undefined) {
+          delete process.env.AX_HTTP_ALLOW_NO_ORIGINS;
+        } else {
+          process.env.AX_HTTP_ALLOW_NO_ORIGINS = originalAllowNoOrigins;
+        }
+        await fs.rm(workspaceRoot, { recursive: true, force: true }).catch(
+          () => undefined,
+        );
+        await fs.rm(userFilesRoot, { recursive: true, force: true }).catch(
+          () => undefined,
+        );
       }
     },
   );

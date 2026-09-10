@@ -8,7 +8,7 @@ import type {
 import { isValidAgentId } from './agent-id.js';
 
 const PLUGIN_NAME = '@ax/workspace-localdir';
-const DEFAULT_MOUNT_PATH = '/workspace';
+const DEFAULT_MOUNT_PATH = '/files';
 
 export interface WorkspaceLocaldirConfig {
   /**
@@ -20,7 +20,7 @@ export interface WorkspaceLocaldirConfig {
   root: string;
   /**
    * Where the durable mount appears inside the sandbox. Defaults to
-   * `/workspace`. (For the subprocess provider — which shares the host FS —
+   * `/files`. (For the subprocess provider — which shares the host FS —
    * the realized path IS `<root>/<agentId>`; this `mountPath` is the logical
    * label the runner advertises.)
    */
@@ -33,7 +33,7 @@ export interface WorkspaceLocaldirConfig {
  * deployment, mirroring the `@ax/workspace-git` ↔ `@ax/workspace-git-server`
  * preset-swap. Registers the host-internal `sandbox:resolve-mounts` hook and
  * emits ONE per-agent `localDir` mount so the canary + local dev loop get a
- * durable per-agent `/workspace` WITHOUT a real NFS server.
+ * durable per-agent `/files` WITHOUT a real NFS server.
  *
  * Returns `[]` (a graceful no-mount, never an error) when the session owner has
  * no usable `agentId` — an anonymous CLI session simply gets no durable mount.

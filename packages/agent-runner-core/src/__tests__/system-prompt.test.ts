@@ -34,9 +34,9 @@ describe('workspaceNote', () => {
   });
 
   it('states BOTH the cwd and the governed root when they differ (Plan 2)', () => {
-    // TASK-164: cwd moved to /workspace; attachments still live under /agent.
-    const note = workspaceNote('/agent', '/workspace');
-    expect(note).toContain('`/workspace`'); // the working directory
+    // TASK-164: cwd moved to /files; attachments still live under /agent.
+    const note = workspaceNote('/agent', '/files');
+    expect(note).toContain('`/files`'); // the working directory
     expect(note).toContain('`/agent`'); // the governed root attachments live under
     expect(note).toContain('.ax/uploads');
     // It must resolve a shared file under the GOVERNED root, not the cwd.
@@ -72,8 +72,8 @@ describe('skill-authoring note (TASK-74 §D6; TASK-165 dynamic prefix)', () => {
   });
 
   it('interpolates the durable draft root into the draft-dir path (TASK-165)', () => {
-    const note = skillAuthoringNote('/workspace');
-    expect(note).toContain('/workspace/.skill-draft/<id>/');
+    const note = skillAuthoringNote('/files');
+    expect(note).toContain('/files/.skill-draft/<id>/');
     // Must NOT bake in the ephemeral root when a durable mount is the active root.
     expect(note).not.toContain('/ephemeral/.skill-draft');
   });
@@ -114,11 +114,11 @@ describe('ephemeral scratch note', () => {
 
 describe('user-files note (filestore-user-files Phase 1)', () => {
   it('interpolates the durable root and frames it as persistent, unversioned storage', () => {
-    const note = userFilesNote('/workspace');
-    expect(note).toContain('/workspace');
+    const note = userFilesNote('/files');
+    expect(note).toContain('/files');
     expect(note).toMatch(/persist|durable/i);
     // Phase 1 steers the agent to use it BY PATH (cwd/HOME aren't re-rooted yet).
-    expect(note).toContain('/workspace/…');
+    expect(note).toContain('/files/…');
   });
 });
 
@@ -141,31 +141,31 @@ describe('operationalNotes — the single assembly point', () => {
   });
 
   it('includes the user-files note when a durable mount is provided (filestore Phase 1)', () => {
-    const notes = operationalNotes(WS, undefined, false, '/workspace');
-    expect(notes).toContain(userFilesNote('/workspace'));
+    const notes = operationalNotes(WS, undefined, false, '/files');
+    expect(notes).toContain(userFilesNote('/files'));
     expect(notes).toContain(workspaceNote(WS));
   });
 
   it('omits the user-files note when no durable mount is wired', () => {
     const notes = operationalNotes(WS, '/ephemeral', false, undefined);
-    expect(notes).not.toContain(userFilesNote('/workspace'));
+    expect(notes).not.toContain(userFilesNote('/files'));
   });
 
   it('routes the skill-authoring draft prefix to userFilesRoot ?? ephemeralRoot (TASK-165)', () => {
-    // Durable mount wired: drafts advertised under /workspace.
-    const durable = operationalNotes(WS, '/ephemeral', false, '/workspace');
-    expect(durable).toContain(skillAuthoringNote('/workspace'));
+    // Durable mount wired: drafts advertised under /files.
+    const durable = operationalNotes(WS, '/ephemeral', false, '/files');
+    expect(durable).toContain(skillAuthoringNote('/files'));
     expect(durable).not.toContain(skillAuthoringNote('/ephemeral'));
     // No durable mount: drafts advertised under the ephemeral scratch tier.
     const fallback = operationalNotes(WS, '/ephemeral', false, undefined);
     expect(fallback).toContain(skillAuthoringNote('/ephemeral'));
   });
 
-  it('threads cwd into the workspace note (Plan 2 — cwd=/workspace)', () => {
+  it('threads cwd into the workspace note (Plan 2 — cwd=/files)', () => {
     // TASK-164: when cwd differs from the governed root, the assembled notes use
     // the dual-root workspace prose (working dir + governed root).
-    const notes = operationalNotes('/agent', '/ephemeral', false, '/workspace', '/workspace');
-    expect(notes).toContain(workspaceNote('/agent', '/workspace'));
+    const notes = operationalNotes('/agent', '/ephemeral', false, '/files', '/files');
+    expect(notes).toContain(workspaceNote('/agent', '/files'));
     // The single-root form is NOT present (cwd != workspaceRoot).
     expect(notes).not.toContain(workspaceNote('/agent', '/agent'));
   });
@@ -286,5 +286,63 @@ describe('communicationNote (default reply style)', () => {
 
   it('stays bounded', () => {
     expect(communicationNote().length).toBeLessThan(2000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// One word, one referent (the vocabulary rule).
+//
+// "workspace" names five unrelated things in this repo: the governed `/agent`
+// tier (AX_WORKSPACE_ROOT, the `workspace:*` hooks, `@ax/workspace-git*`), the
+// durable `/files` mount (`@ax/workspace-filestore`/`-localdir`), the
+// `/api/workspace` UI surface, the host PVC at `workspace.mountPath`, and a
+// credential scope on `connector_propose`. Maintainers can hold those apart
+// from context. A model doing path arithmetic from prose cannot — and picking
+// the wrong referent fails silently, which is how `/agent/workspace/**` (a
+// directory nothing creates) survived in the artifact allowlist.
+//
+// So the agent-facing notes are held to three terms, each bound to exactly one
+// root, and the ambiguous word is banned outright. This test is the enforcement:
+// the code-side identifiers stay as they are, but nothing the MODEL reads may
+// reintroduce the overload.
+// ---------------------------------------------------------------------------
+describe('agent-facing vocabulary', () => {
+  const AMBIGUOUS = /workspace/i;
+
+  it('no operational note the model reads contains the word "workspace"', () => {
+    const notes = [
+      workspaceNote(WS),
+      workspaceNote('/agent', '/files'),
+      ephemeralScratchNote('/ephemeral'),
+      userFilesNote('/files'),
+      skillAuthoringNote('/files'),
+      pythonVenvNote(),
+      capabilityHandoffNote(),
+      clarifyingQuestionsNote(),
+      workPolicyNote(),
+      communicationNote(),
+    ];
+    for (const note of notes) {
+      expect(flat(note)).not.toMatch(AMBIGUOUS);
+    }
+  });
+
+  it('the fully-composed operational block never says "workspace"', () => {
+    // Both shapes: the single-root deployment (no durable mount wired) and the
+    // Plan 2 shape where cwd is the durable mount and /agent holds agent state.
+    const singleRoot = operationalNotes(WS, '/ephemeral', true);
+    const planTwo = operationalNotes(WS, '/ephemeral', true, '/files', '/files');
+    expect(flat(singleRoot)).not.toMatch(AMBIGUOUS);
+    expect(flat(planTwo)).not.toMatch(AMBIGUOUS);
+  });
+
+  it('binds each of the three terms to exactly one root', () => {
+    const note = flat(operationalNotes(WS, '/ephemeral', false, '/files', '/files'));
+    // "your files" = the working directory; "agent state" = the governed tier;
+    // "scratch space" = the throwaway tier. Each phrase appears, and each is
+    // introduced next to its own root.
+    expect(note).toContain('Your files: `/files`');
+    expect(note).toContain('Your agent state lives under `/agent`');
+    expect(note).toContain('Scratch space: `/ephemeral`');
   });
 });

@@ -120,3 +120,21 @@ describe('sandbox-k8s proxy transport config (TASK-149)', () => {
     ).toThrow(/exactly one|mutually exclusive/i);
   });
 });
+
+describe('userFilesHostReadRoot (host-mounted host-read)', () => {
+  const base = { hostIpcUrl: 'http://host:8080' };
+
+  it('defaults to empty — the pod-per-call realization stays in charge', () => {
+    // Empty is the safe default and not just a convention: with no host mount
+    // the host process has NO access to any agent subtree at all, and
+    // cross-tenant isolation is structural rather than code.
+    expect(resolveConfig({ ...base }).userFilesHostReadRoot).toBe('');
+  });
+
+  it('carries the mount path through when the chart set one', () => {
+    expect(
+      resolveConfig({ ...base, userFilesHostReadRoot: '/user-files' })
+        .userFilesHostReadRoot,
+    ).toBe('/user-files');
+  });
+});

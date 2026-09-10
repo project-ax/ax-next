@@ -27,7 +27,7 @@ describe('MountSpec — nfs member', () => {
   it('carries the Filestore/NFS backend fields per design §4', () => {
     const nfs: NfsMountSpec = {
       kind: 'nfs',
-      mountPath: '/workspace',
+      mountPath: '/files',
       server: '10.0.0.2',
       exportPath: '/vol1/agents',
       subPath: 'agent-abc',
@@ -35,7 +35,7 @@ describe('MountSpec — nfs member', () => {
       role: 'user-files',
     };
     expect(nfs.kind).toBe('nfs');
-    expect(nfs.mountPath).toBe('/workspace');
+    expect(nfs.mountPath).toBe('/files');
     expect(nfs.server).toBe('10.0.0.2');
     expect(nfs.exportPath).toBe('/vol1/agents');
     expect(nfs.subPath).toBe('agent-abc');
@@ -46,7 +46,7 @@ describe('MountSpec — nfs member', () => {
   it('makes role optional (host-read realization may omit it)', () => {
     const nfs: NfsMountSpec = {
       kind: 'nfs',
-      mountPath: '/workspace',
+      mountPath: '/files',
       server: '10.0.0.2',
       exportPath: '/vol1/agents',
       subPath: 'agent-abc',
@@ -59,7 +59,7 @@ describe('MountSpec — nfs member', () => {
   it('is assignable to the MountSpec union', () => {
     const spec: MountSpec = {
       kind: 'nfs',
-      mountPath: '/workspace',
+      mountPath: '/files',
       server: '10.0.0.2',
       exportPath: '/vol1/agents',
       subPath: 'agent-abc',
@@ -74,13 +74,13 @@ describe('MountSpec — localDir member', () => {
   it('carries the dev-host backend fields per design §4', () => {
     const local: LocalDirMountSpec = {
       kind: 'localDir',
-      mountPath: '/workspace',
+      mountPath: '/files',
       hostPath: '/var/lib/ax/userfiles/agent-abc',
       readOnly: false,
       role: 'user-files',
     };
     expect(local.kind).toBe('localDir');
-    expect(local.mountPath).toBe('/workspace');
+    expect(local.mountPath).toBe('/files');
     expect(local.hostPath).toBe('/var/lib/ax/userfiles/agent-abc');
     expect(local.readOnly).toBe(false);
     expect(local.role).toBe('user-files');
@@ -89,7 +89,7 @@ describe('MountSpec — localDir member', () => {
   it('is assignable to the MountSpec union', () => {
     const spec: MountSpec = {
       kind: 'localDir',
-      mountPath: '/workspace',
+      mountPath: '/files',
       hostPath: '/tmp/ax/agent-abc',
       readOnly: false,
     };
@@ -121,22 +121,22 @@ describe('MountSpec — opaque discriminated union', () => {
     expect(
       describeMount({
         kind: 'nfs',
-        mountPath: '/workspace',
+        mountPath: '/files',
         server: '10.0.0.2',
         exportPath: '/vol1/agents',
         subPath: 'agent-abc',
         readOnly: false,
       }),
-    ).toBe('10.0.0.2:/vol1/agents/agent-abc -> /workspace');
+    ).toBe('10.0.0.2:/vol1/agents/agent-abc -> /files');
 
     expect(
       describeMount({
         kind: 'localDir',
-        mountPath: '/workspace',
+        mountPath: '/files',
         hostPath: '/tmp/ax/agent-abc',
         readOnly: false,
       }),
-    ).toBe('/tmp/ax/agent-abc -> /workspace');
+    ).toBe('/tmp/ax/agent-abc -> /files');
   });
 });
 
@@ -189,7 +189,7 @@ describe('sandbox:resolve-mounts signature', () => {
       mounts: [
         {
           kind: 'nfs',
-          mountPath: '/workspace',
+          mountPath: '/files',
           server: '10.0.0.2',
           exportPath: '/vol1/agents',
           subPath: 'agent-abc',

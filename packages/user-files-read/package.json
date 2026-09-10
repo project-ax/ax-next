@@ -1,5 +1,5 @@
 {
-  "name": "@ax/sandbox-k8s",
+  "name": "@ax/user-files-read",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -18,16 +18,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@ax/core": "workspace:*",
-    "@ax/sandbox-mount-protocol": "workspace:*",
-    "@ax/user-files-read": "workspace:*",
-    "@ax/sandbox-protocol": "workspace:*",
-    "@kubernetes/client-node": "1.4.0",
-    "zod": "^3.23.8"
+    "@ax/sandbox-mount-protocol": "workspace:*"
   },
   "devDependencies": {
-    "@ax/session-inmemory": "workspace:*",
-    "@ax/test-harness": "workspace:*",
     "@types/node": "^25.6.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.11"

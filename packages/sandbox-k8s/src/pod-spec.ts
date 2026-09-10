@@ -5,7 +5,9 @@
 // model output (I5): no service-account token, gVisor as the container
 // runtime, root filesystem read-only, all linux capabilities dropped,
 // runs as a non-root UID. Anything a session legitimately writes lives
-// under emptyDir mounts at /tmp and /workspace.
+// under the emptyDir mounts at /tmp, /agent and /ephemeral, the tmpfs at
+// /home/runner, or — when an operator configured one — the durable per-agent
+// /files NFS mount the `sandbox:resolve-mounts` resolver contributes.
 //
 // The runner is purely an IPC client. The URL it reaches (the host pod's
 // IPC listener — @ax/ipc-http) is fixed at preset-config time and stamped

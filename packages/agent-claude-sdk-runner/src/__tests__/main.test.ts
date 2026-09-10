@@ -841,15 +841,15 @@ describe('main()', () => {
   }
 
   // HR1 (filestore-user-files design §7.1 / TASK-165): a durable user-files mount
-  // (AX_USERFILES_ROOT, e.g. /workspace) must NEVER become an SDK setting/skill-
+  // (AX_USERFILES_ROOT, e.g. /files) must NEVER become an SDK setting/skill-
   // discovery source. It's granted to the file TOOLS via `additionalDirectories`
   // (so the agent can read/write it), but `settingSources` stays `['user']` — the
   // sole skill-discovery path is the host's read-only `$CLAUDE_CONFIG_DIR/skills`
-  // projection. A draft on /workspace/.skill-draft/ stays inert until skill.propose
-  // promotes it. If a regression added /workspace as a skill source, a draft on
+  // projection. A draft on /files/.skill-draft/ stays inert until skill.propose
+  // promotes it. If a regression added /files as a skill source, a draft on
   // durable SHARED NFS would be discovered + executed un-gated — this guards it.
-  it('with AX_USERFILES_ROOT set, /workspace reaches the file tools but is NEVER a skill/setting source (HR1)', async () => {
-    setEnv({ ...COMPLETE_ENV, AX_USERFILES_ROOT: '/workspace' });
+  it('with AX_USERFILES_ROOT set, /files reaches the file tools but is NEVER a skill/setting source (HR1)', async () => {
+    setEnv({ ...COMPLETE_ENV, AX_USERFILES_ROOT: '/files' });
     fakeClient = buildFakeClient();
     fakeClient.call.mockImplementation(async (action: string) => {
       if (action === 'session.get-config') {
@@ -903,23 +903,23 @@ describe('main()', () => {
         systemPrompt: string;
       };
     };
-    // The sole skill/setting source stays 'user' — /workspace is NOT added.
+    // The sole skill/setting source stays 'user' — /files is NOT added.
     expect(queryArg.options.settingSources).toEqual(['user']);
     expect(queryArg.options.settingSources).not.toContain('project');
-    expect(queryArg.options.settingSources).not.toContain('/workspace');
+    expect(queryArg.options.settingSources).not.toContain('/files');
     // It IS reachable by the file tools (durable read/write). filestore-user-files
-    // Phase 2 (TASK-164) made /workspace the SDK cwd/HOME, so the file tools reach
+    // Phase 2 (TASK-164) made /files the SDK cwd/HOME, so the file tools reach
     // it implicitly (the SDK always grants cwd) — it's therefore no longer listed
     // in additionalDirectories (the governed AX_WORKSPACE_ROOT tier is, since it is
     // no longer the cwd). Either way HR1 holds: reachable by tools, never a source.
-    expect(queryArg.options.cwd).toBe('/workspace');
-    expect(queryArg.options.additionalDirectories).not.toContain('/workspace');
+    expect(queryArg.options.cwd).toBe('/files');
+    expect(queryArg.options.additionalDirectories).not.toContain('/files');
     expect(queryArg.options.additionalDirectories).toContain(
       COMPLETE_ENV.AX_WORKSPACE_ROOT,
     );
     // The skill-draft prefix advertised to the model is rooted at the DURABLE
     // mount (drafts persist), not the ephemeral tier.
-    expect(queryArg.options.systemPrompt).toContain('/workspace/.skill-draft/<id>/');
+    expect(queryArg.options.systemPrompt).toContain('/files/.skill-draft/<id>/');
   });
 
   it('per-turn commit waits for the turn FINAL assistant line (not the intermediate tool_use line) before committing (TASK-11 / keepalive durability)', async () => {
@@ -3514,9 +3514,9 @@ describe('main()', () => {
     });
   });
 
-  describe('filestore-user-files Phase 2 (TASK-164): cwd=HOME=/workspace + re-root', () => {
+  describe('filestore-user-files Phase 2 (TASK-164): cwd=HOME=/files + re-root', () => {
     // When AX_USERFILES_ROOT is wired, the SDK subprocess's cwd + HOME move to
-    // the durable /workspace NFS mount; the governed /agent tier (here
+    // the durable /files NFS mount; the governed /agent tier (here
     // /tmp/workspace) plus /ephemeral are granted via additionalDirectories; and
     // the PreToolUse re-rooter broadens to the full .ax/**+.claude/** policy. The
     // UNSET path (today's behavior) is covered by the Phase C tests above.
@@ -3561,7 +3561,7 @@ describe('main()', () => {
       setEnv({
         ...COMPLETE_ENV,
         AX_EPHEMERAL_ROOT: '/ephemeral',
-        AX_USERFILES_ROOT: '/workspace',
+        AX_USERFILES_ROOT: '/files',
       });
       wirePlan2Client();
 
@@ -3576,17 +3576,17 @@ describe('main()', () => {
         };
       };
       // cwd + HOME are the durable user-files mount.
-      expect(queryArg.options.cwd).toBe('/workspace');
-      expect(queryArg.options.env.HOME).toBe('/workspace');
+      expect(queryArg.options.cwd).toBe('/files');
+      expect(queryArg.options.env.HOME).toBe('/files');
       // The governed tier (/tmp/workspace = AX_WORKSPACE_ROOT) is no longer the
       // cwd, so it MUST be granted explicitly — it holds .ax/uploads, the
       // transcript symlink, and every re-rooted .ax/**+.claude/** write.
       expect(queryArg.options.additionalDirectories).toContain('/tmp/workspace');
       expect(queryArg.options.additionalDirectories).toContain('/ephemeral');
-      // /workspace is the cwd, so it is NOT duplicated in the list.
-      expect(queryArg.options.additionalDirectories).not.toContain('/workspace');
-      // ~/bin follows HOME → /workspace/bin (durable NFS), appended to PATH.
-      expect(queryArg.options.env.PATH?.endsWith(':/workspace/bin')).toBe(true);
+      // /files is the cwd, so it is NOT duplicated in the list.
+      expect(queryArg.options.additionalDirectories).not.toContain('/files');
+      // ~/bin follows HOME → /files/bin (durable NFS), appended to PATH.
+      expect(queryArg.options.env.PATH?.endsWith(':/files/bin')).toBe(true);
     });
 
     it('UNSET (no AX_USERFILES_ROOT): cwd=HOME=/agent and /agent is the cwd (today)', async () => {

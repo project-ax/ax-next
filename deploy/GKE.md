@@ -487,7 +487,7 @@ Open `https://$DOMAIN/setup?token=ax_bs_<...>` (or the port-forward URL), then:
 2. **Connect Anthropic** — paste a real API key. The backend validates it live
    against `api.anthropic.com` and, on success, atomically creates the credential
    + the Default Agent.
-3. **Send the first chat** — `list the files in /workspace` is the canonical
+3. **Send the first chat** — `list the files in /files` is the canonical
    probe (it forces a runner pod to spawn and run a bash tool).
 
 ---
@@ -1002,7 +1002,7 @@ kubectl get nodes -l sandbox.gke.io/runtime=gvisor
 # expect: at least one node, STATUS Ready
 
 # Cold probe: with NO active session (give it a few minutes idle so no runner is
-# warm), send the first chat — `list the files in /workspace` — and confirm the
+# warm), send the first chat — `list the files in /files` — and confirm the
 # runner pod goes Ready and the answer returns WELL under 60 s. No
 # "agent stopped unexpectedly", no sandbox-open-failed in the host logs.
 kubectl get pods -n ax-next-runners -w

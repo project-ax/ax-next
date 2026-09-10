@@ -49,8 +49,8 @@ describe('readRunnerEnv', () => {
   it('reads userFilesRoot when AX_USERFILES_ROOT is set, omits it otherwise', () => {
     // Present → carried through verbatim (the durable per-agent user-files mount).
     expect(
-      readRunnerEnv({ ...PROXY_TCP, AX_USERFILES_ROOT: '/workspace' }).userFilesRoot,
-    ).toBe('/workspace');
+      readRunnerEnv({ ...PROXY_TCP, AX_USERFILES_ROOT: '/files' }).userFilesRoot,
+    ).toBe('/files');
     // Absent → omitted entirely (no default; "no durable mount wired").
     expect('userFilesRoot' in readRunnerEnv(PROXY_TCP)).toBe(false);
     // Empty string is treated as unset (consistent with opt()).

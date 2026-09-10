@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { promises as fs } from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { DEFAULT_CONFINED_READ_LIMITS } from '@ax/user-files-read';
 import { HookBus, makeAgentContext, PluginError, type Logger } from '@ax/core';
 import type {
   ResolveMountsInput,
@@ -315,9 +319,174 @@ describe('readUserFiles (k8s one-shot read pod)', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// The HOST-MOUNTED realization: `userFilesHostReadRoot` set, so host-read is a
+// direct confined filesystem read and NO pod is created. Same signature, same
+// registration — the provider picks the realization, which is why there is no
+// second plugin racing to register the hook.
+// ---------------------------------------------------------------------------
+describe('readUserFiles (host-mounted realization)', () => {
+  let hostRoot: string;
+  beforeEach(async () => {
+    hostRoot = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), 'ax-k8s-hostread-')),
+    );
+  });
+  afterEach(async () => {
+    await fs.rm(hostRoot, { recursive: true, force: true }).catch(() => undefined);
+  });
+
+  function hostReadConfig() {
+    return resolveConfig({
+      hostIpcUrl: 'http://h:80',
+      namespace: 'ax-test',
+      userFilesHostReadRoot: hostRoot,
+    });
+  }
+
+  async function seed(agentId: string): Promise<string> {
+    const dir = path.join(hostRoot, agentId);
+    await fs.mkdir(path.join(dir, 'docs'), { recursive: true });
+    await fs.writeFile(path.join(dir, 'hello.txt'), 'hi from ' + agentId);
+    await fs.writeFile(path.join(dir, 'docs', 'note.md'), '# note');
+    return dir;
+  }
+
+  it('lists the agent subtree WITHOUT creating a pod', async () => {
+    await seed('agent-abc');
+    const api = makeMockK8sApi();
+    const { bus, seen } = busWithNfs();
+    const out = await readUserFiles(ctx(), bus, api, hostReadConfig(), log, {
+      owner: ownerFromAgentId('agent-abc', 'u1'),
+    });
+    // The whole point: no pod per directory click.
+    expect(api.creates).toHaveLength(0);
+    expect(api.deletes).toHaveLength(0);
+    // Still asks the resolver for a READ-ONLY realization.
+    expect(seen.readOnly).toBe(true);
+    if (out.kind !== 'dir') throw new Error('expected dir');
+    const byName = new Map(out.entries.map((e) => [e.name, e.kind]));
+    expect(byName.get('hello.txt')).toBe('file');
+    expect(byName.get('docs')).toBe('dir');
+  });
+
+  it('reads a nested file, exact bytes, no pod', async () => {
+    await seed('agent-abc');
+    const api = makeMockK8sApi();
+    const { bus } = busWithNfs();
+    const out = await readUserFiles(ctx(), bus, api, hostReadConfig(), log, {
+      owner: ownerFromAgentId('agent-abc', 'u1'),
+      relPath: 'docs/note.md',
+    });
+    expect(api.creates).toHaveLength(0);
+    if (out.kind !== 'file') throw new Error('expected file');
+    expect(Buffer.from(out.contents).toString('utf-8')).toBe('# note');
+  });
+
+  it('returns absent for a missing path', async () => {
+    await seed('agent-abc');
+    const api = makeMockK8sApi();
+    const { bus } = busWithNfs();
+    expect(
+      await readUserFiles(ctx(), bus, api, hostReadConfig(), log, {
+        owner: ownerFromAgentId('agent-abc', 'u1'),
+        relPath: 'nope.txt',
+      }),
+    ).toEqual({ kind: 'absent' });
+  });
+
+  it('returns absent when the resolver has no mount (no pod either)', async () => {
+    const api = makeMockK8sApi();
+    expect(
+      await readUserFiles(ctx(), new HookBus(), api, hostReadConfig(), log, {
+        owner: ownerFromAgentId('agent-abc', 'u1'),
+      }),
+    ).toEqual({ kind: 'absent' });
+    expect(api.creates).toHaveLength(0);
+  });
+
+  it('CROSS-TENANT: the read is confined to THIS agent subPath', async () => {
+    await seed('agent-abc');
+    const other = await seed('agent-xyz');
+    await fs.writeFile(path.join(other, 'secret.txt'), 'XYZ-SECRET');
+    const api = makeMockK8sApi();
+    const { bus } = busWithNfs();
+    // A traversal is refused outright (our own caller would be malformed)…
+    await expect(
+      readUserFiles(ctx(), bus, api, hostReadConfig(), log, {
+        owner: ownerFromAgentId('agent-abc', 'u1'),
+        relPath: '../agent-xyz/secret.txt',
+      }),
+    ).rejects.toBeInstanceOf(PluginError);
+    // …and an INTERMEDIATE symlink planted in agent-abc's own subtree, which no
+    // lexical guard catches, discloses nothing.
+    await fs.symlink(other, path.join(hostRoot, 'agent-abc', 'escape'));
+    expect(
+      await readUserFiles(ctx(), bus, api, hostReadConfig(), log, {
+        owner: ownerFromAgentId('agent-abc', 'u1'),
+        relPath: 'escape/secret.txt',
+      }),
+    ).toEqual({ kind: 'absent' });
+    expect(api.creates).toHaveLength(0);
+  });
+
+  it('SECURITY: never opens a writable handle — a read-only root still reads', async () => {
+    // In production the host volumeMount is `readOnly: true`. A writable temp
+    // dir would hide a reader that opened for write, so take write away.
+    const dir = await seed('agent-abc');
+    await fs.chmod(dir, 0o555);
+    try {
+      const api = makeMockK8sApi();
+      const { bus } = busWithNfs();
+      const out = await readUserFiles(ctx(), bus, api, hostReadConfig(), log, {
+        owner: ownerFromAgentId('agent-abc', 'u1'),
+        relPath: 'hello.txt',
+      });
+      if (out.kind !== 'file') throw new Error('expected file');
+      expect(Buffer.from(out.contents).toString('utf-8')).toBe('hi from agent-abc');
+    } finally {
+      await fs.chmod(dir, 0o755);
+    }
+  });
+
+  it('falls back to the one-shot pod when the root is unset', async () => {
+    const api = makeMockK8sApi();
+    primeTerminal(api, 'ABSENT');
+    const { bus } = busWithNfs();
+    await readUserFiles(ctx(), bus, api, CONFIG, log, {
+      owner: ownerFromAgentId('agent-abc', 'u1'),
+    });
+    // The default config has no host-read root, so the pod path is still live.
+    expect(api.creates).toHaveLength(1);
+  });
+});
+
+describe('the two realizations agree on their bounds', () => {
+  it('the reader pod script caps bytes + entries at the shared reader defaults', async () => {
+    const api = makeMockK8sApi();
+    primeTerminal(api, 'ABSENT');
+    const { bus } = busWithNfs();
+    await readUserFiles(ctx(), bus, api, CONFIG, log, {
+      owner: ownerFromAgentId('agent-abc', 'u1'),
+    });
+    const pod = api.creates[0]!.body as InspectablePod;
+    const script = pod.spec.containers[0].command.join('\n');
+    // One hook returning a different amount of the same file depending on
+    // which realization the deployment loaded is a browser nobody can reason
+    // about — so the numbers are pinned to each other here.
+    expect(script).toContain(
+      `head -c ${String(DEFAULT_CONFINED_READ_LIMITS.maxFileBytes)}`,
+    );
+    expect(script).toContain(
+      `-lt ${String(DEFAULT_CONFINED_READ_LIMITS.maxDirEntries)}`,
+    );
+  });
+});
+
 describe('parseReadOutput (one-shot pod log → ReadUserFilesOutput)', () => {
-  it('parses a DIR line (base64 of name<TAB>kind rows)', () => {
-    const rows = 'hello.txt\tfile\ndocs\tdir\n';
+  it('parses a DIR line (base64 rows of base64-name<TAB>kind)', () => {
+    const b64 = (n: string) => Buffer.from(n).toString('base64');
+    const rows = `${b64('hello.txt')}\tfile\n${b64('docs')}\tdir\n`;
     const out = parseReadOutput('DIR ' + Buffer.from(rows).toString('base64'));
     expect(out.kind).toBe('dir');
     if (out.kind !== 'dir') throw new Error('expected dir');
@@ -335,11 +504,46 @@ describe('parseReadOutput (one-shot pod log → ReadUserFilesOutput)', () => {
     expect(Array.from(out.contents)).toEqual([0, 1, 2, 255, 254]);
   });
 
-  it('maps ABSENT, BIG, and empty/garbage to absent', () => {
+  it('maps ABSENT, empty, and any unrecognized token to absent', () => {
     expect(parseReadOutput('ABSENT')).toEqual({ kind: 'absent' });
+    // `BIG` was the retired over-cap marker: the script now emits the file's
+    // first READ_MAX_FILE_BYTES bytes as a normal FILE line, matching what
+    // @ax/user-files-read does. Kept here because an unknown token from an
+    // older image must still land on absent rather than on a crash.
     expect(parseReadOutput('BIG')).toEqual({ kind: 'absent' });
     expect(parseReadOutput('')).toEqual({ kind: 'absent' });
     expect(parseReadOutput('unexpected noise')).toEqual({ kind: 'absent' });
+  });
+
+  it('REGRESSION: a bare DIR is an EMPTY directory, not an absence', () => {
+    /*
+      base64 of no bytes is the empty string, so an empty directory's line is
+      `DIR ` and arrives here trimmed to `DIR`. That did not match the
+      `startsWith('DIR ')` branch and fell through to `absent` — so the file
+      browser said "not found" about a folder the agent had definitely created.
+      The TypeScript realization has always answered an empty listing here, so
+      this is the two realizations agreeing as well as the honest answer.
+    */
+    expect(parseReadOutput('DIR')).toEqual({ kind: 'dir', entries: [] });
+    expect(parseReadOutput('DIR ')).toEqual({ kind: 'dir', entries: [] });
+  });
+
+  it('REGRESSION: a bare FILE is an EMPTY file, not an absence', () => {
+    const out = parseReadOutput('FILE');
+    expect(out.kind).toBe('file');
+    if (out.kind !== 'file') throw new Error('expected file');
+    expect(out.contents.byteLength).toBe(0);
+  });
+
+  it('base64-decodes each entry NAME, so a delimiter in a filename is data', () => {
+    // The script encodes names individually — see buildReadCommand. A row is
+    // `<base64 name><TAB><kind>`, and a filename carrying a tab or a newline
+    // therefore cannot invent a second row.
+    const hostile = 'x\tdir\nphantom';
+    const rows = `${Buffer.from(hostile).toString('base64')}\tfile\n`;
+    const out = parseReadOutput('DIR ' + Buffer.from(rows).toString('base64'));
+    if (out.kind !== 'dir') throw new Error('expected dir');
+    expect(out.entries).toEqual([{ name: hostile, kind: 'file' }]);
   });
 
   it('takes the LAST meaningful line (tolerates leading container noise)', () => {

@@ -901,3 +901,50 @@ Related walk techniques that paid off:
 - `2026-09-03` (agent-workspace follow-ups, orchestration) — **A builder handoff that arrives truncated is not a handoff — verify merge-readiness from `gh` ground truth, never from the summary.** Six builds in one run, and the runtime-context summaries repeatedly stopped mid-handoff (learnings cut mid-word, review fields missing). The merge queue ran on re-derived evidence every time: PR head sha re-matched to the handoff, `ci.yml` run existence asserted per head sha, `git merge-tree` as authority over `gh mergeable` (right 2/2, including one real CONFLICT `gh` called UNKNOWN), and the PR body read for boundary-review/security/review notes. Related: **a "pre-existing failure" claim is itself unverified until proven** — the audit red was proven by zero dep-diff on the branch (lockfile-identical ⇒ lockfile-determined), and main's full-suite red was proven transient by step-level comparison (docker-pull `exit 1` on main's run, clean pre-pull on both PR runs two hours later).
 - `2026-09-03` (agent-workspace follow-ups, orchestration) — **The `ax-code-reviewer` agent definition does not exist in the Muse Code runtime; substitute general-purpose peer passes and label them honestly.** Dispatch with `subagent_type: ax-code-reviewer` rejects (`agent_definition_not_found`), which is presumably why builder-spawned reviews came back vague all run. The substitute that worked: two read-only general-purpose passes (one full-branch, one focused throw-paths/races/vacuity re-pass), no worktree isolation, verdict + numbered findings + an explicit did-NOT-verify line — recorded in every PR body as substitute, never `reviewer: clean`. It earned its keep 3/6 cards (a per-thread scoping bug, test dupe-keys, and an independent confirmation of a brief-refuting premise). Do not silently lower the bar to compensate: the one card whose builder could only self-review got an orchestrator-ordered independent pass before merging anyway.
 - `2026-08-24` (TASK-319) — **An argv-shaped array inside a digest must stay order-PRESERVING, and a "none declared" must normalise to `null` rather than to an empty container.** `ServiceDescriptor.healthcheck`'s exec `command` is a command line (`sandbox-k8s` turns it into the pod's `startupProbe`), so it gets `[...cmd]` exactly like an MCP server's `args` — set-normalising it would collapse `['sh','-c','x']` and `['x','-c','sh']` into one digest, a hole inside the fix for a hole. And `undefined → null` (never `→ {}` or `→ []`) is what makes a probe ARRIVING register as a change; the loose `{kind?, port?, command?}` mirror of a `kind`-discriminated union then degrades on an unknown probe kind instead of throwing inside a guard. Same two rules apply to any future union folded into this digest.
+
+- `2026-09-09` (path-tier review) — **A renamed tier leaves a fossil at the OLD name inside the NEW one, and an allowlist is where it hides.** `artifact_publish`'s allowlist is `/ephemeral/artifacts/**` + `/agent/workspace/**`. That second entry is the 2026-05-15 design's `/permanent/workspace/**` = *"user project content"*, from when there was ONE tier: the `/permanent`→`/agent` rename kept the string, then the filestore split moved user files to a separate mount and **nothing updated the allowlist**. Net today: the agent's cwd/HOME (the durable mount, the tier the system prompt tells it to use for durable files) is **not publishable**, while the allowlist points at a directory nothing in the repo creates, whose name was one slash from the live mount. Verified against the real executor — `/workspace/report.pdf` → `REJECT`, `/agent/workspace/src.md` → `OK`. Two transferable checks: (1) after renaming a tier, grep for the old name as a *subdirectory* of the new one, not just as a prefix; (2) an allowlist entry that no code path creates is dead — `grep` for a `mkdir`/`ensure` of it before believing the comment above it.
+- `2026-09-09` (path-tier review) — **Sibling sandbox tools disagreed on whether paths are VIRTUAL or REAL, and only one of them works outside k8s.** `tool-skill-propose`'s `draftPrefix(root)` is root-parameterised: the real runtime root is interpolated into both the prompt and the enforcement, so it works in every sandbox. `tool-artifact-publish`'s `checkPublishablePath` hardcodes the literal prefixes `/ephemeral/` + `/agent/` and the executor re-maps them through the env roots — which is fine on k8s (mount paths ARE those literals) and broken on subprocess/CLI, where the roots are `mkdtemp` paths. Measured: the model passes the real path it was told → `REJECT`; it passes the advertised `/ephemeral/artifacts/…` → `OK`, but that path doesn't exist for it to have written the file to. When adding a path-bearing sandbox tool, parameterise on the runtime root; a hardcoded sandbox-absolute prefix is a k8s-only assumption wearing a security-check costume.
+- `2026-09-09` (path-tier review) — **`sandbox:read-user-files` is registered by both providers, canary-tested, and has ZERO callers** — `packages/channel-web/src/` contains no reference to it, and the workspace Files route reads `workspace:read` (the git tier). So the durable mount is invisible in the UI. Combined with the allowlist gap above: **files an agent writes by default land in the one tier the user can neither download nor browse.** Worth remembering as the shape — a hook shipped as "designed for §11" can pass its own canary forever while nothing consumes it; grep for callers outside the owning package before counting a capability as delivered.
+- `2026-09-09` (tooling) — **A stale `dist/` makes a package's suite fail in a way that reads like a real regression: 56 failures in `@ax/agent-claude-sdk-runner`, message `(0 , __vite_ssr_import_5__.buildActivityPhraseMap) is not a function`.** Identical failures on clean `main` (verified by `git stash`), cleared by `pnpm build`. Vitest resolves workspace deps through built output, so a new export in `@ax/agent-runner-core/src` is invisible until `tsc --build` runs. Before attributing a package-suite failure to your diff, `git stash` and re-run; if it reproduces on main, try `pnpm build` before opening an investigation.
+
+## Run generated shell through a real shell (2026-09-10)
+
+`@ax/sandbox-k8s` generates a POSIX `sh` script for its one-shot pods
+(`buildReadCommand`). Every existing test either builds the pod and parses a
+canned log, or **greps the generated text** for the clauses it expects. Neither
+runs a line of it, so quoting, globbing and delimiter bugs live exactly in that
+gap — and there the cost is a broken browser or a listing the agent can forge.
+
+`packages/sandbox-k8s/src/__tests__/read-command-shell.test.ts` runs the REAL
+generated script through `/bin/sh` against a real temp dir and feeds its stdout
+to the REAL `parseReadOutput`. The one edit is textual: `/export` is
+`split`/`join`ed to the temp root, because we cannot create `/export` on a dev
+box. Everything else — every quote, glob, `realpath`, `case`, `printf` — ships.
+
+**It paid for itself on the first run**, finding two bugs no amount of grepping
+would have shown: base64 of no bytes is the empty string, so an **empty
+directory** and a **zero-byte file** both emitted a bare `DIR`/`FILE` marker,
+missed the `startsWith('DIR ')` branch, and fell through to `absent` — the
+browser said "not found" about a folder the agent had definitely created.
+
+Reach for this shape whenever a package emits shell it never executes. `realpath`
+and `base64` exist on macOS, so no Docker is needed; Docker in this suite is the
+single most reliable source of red builds we have.
+
+## Encode agent-authored names, do not delimit them (2026-09-10)
+
+A filename is written by the untrusted agent, and POSIX allows a tab or a
+newline in it. The reader pod's listing used to accumulate `name<TAB>kind` rows
+into one variable and emit them with `printf %b` — which interprets backslash
+escapes **in the data** and passes real newlines straight through. So a file
+named `x\tdir\nphantom` forged extra rows in the listing the host parsed back,
+and the browser showed a directory that does not exist.
+
+Fix: base64 **each name individually** (`printf "%s"`, never `%b`), so there is
+no delimiter left in the payload for a name to contain. The host decodes per
+row. A forged row was never a disclosure — a read through it still hits the
+realpath confinement and answers `absent` — but a file browser an agent can make
+show phantom entries is lying, and the agent picks the lie.
+
+Same rule anywhere agent-authored strings are packed into a delimited wire
+format. Delimiting trusts the producer; encoding does not.

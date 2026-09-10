@@ -644,14 +644,21 @@ async function runRunnerInner(
   // uses this path; future sandbox tools register here too.
   const localDispatcher = createLocalDispatcher();
   if (tools.some((t) => t.name === ARTIFACT_PUBLISH_TOOL_NAME && t.executesIn === 'sandbox')) {
-    // TASK-68: the executor now streams artifact bytes to the host blob store
+    // TASK-68: the executor streams artifact bytes to the host blob store
     // (blob.put) + records the metadata row (artifact.publish), so it needs the
-    // IPC client + the bound conversationId. Artifacts default to
-    // /ephemeral/artifacts/**, so it also needs ephemeralRoot to map the path.
+    // IPC client + the bound conversationId.
+    //
+    // It also needs the session's REAL roots, because the allowlist validates
+    // against them rather than against hardcoded sandbox-absolute literals: the
+    // durable tier is publishable in full (it is the agent's cwd — the usual
+    // home of a deliverable) and the scratch tier only under `artifacts/`. Both
+    // spread-when-present, same as the skill_propose executor below; the
+    // governed root is deliberately NOT passed, because no path under it is
+    // publishable any more.
     localDispatcher.register(
       ARTIFACT_PUBLISH_TOOL_NAME,
       createArtifactPublishExecutor({
-        workspaceRoot: env.workspaceRoot,
+        ...(env.userFilesRoot !== undefined ? { userFilesRoot: env.userFilesRoot } : {}),
         ...(env.ephemeralRoot !== undefined ? { ephemeralRoot: env.ephemeralRoot } : {}),
         client,
         conversationId,
@@ -1010,7 +1017,7 @@ async function runRunnerInner(
   // filestore-user-files Phase 2 (TASK-164) — the agent's WORKING FRAME.
   //
   // When the sandbox wired a durable per-agent user-files mount
-  // (AX_USERFILES_ROOT, e.g. `/workspace`), the loop's subprocess cwd + HOME
+  // (AX_USERFILES_ROOT, e.g. `/files`), the loop's subprocess cwd + HOME
   // move there, so relative-path file work, builds, `git clone .`, `~/bin`, and
   // tool caches all default to durable NFS instead of the ephemeral `/agent`
   // emptyDir. When unset, this is `env.workspaceRoot` (=/agent) — today's

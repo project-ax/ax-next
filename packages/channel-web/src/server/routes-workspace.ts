@@ -110,6 +110,14 @@ import { isOpenDecision } from '../lib/workspace-types.js';
 import { byVerdict } from '../lib/permission-frames.js';
 import { listTeamIdsForUser, type RouteRequest, type RouteResponse } from './routes-chat.js';
 import { workspaceFilePath } from './safe-path.js';
+// Type-only: the `sandbox:read-user-files` hook-bus contract. The DURABLE
+// user-files tier is read through this hook rather than through `workspace:*`,
+// which is the git-backed governed tier. Types only, so no runtime coupling
+// (invariant I2) — the bus is still the API.
+import type {
+  ReadUserFilesInput,
+  ReadUserFilesOutput,
+} from '@ax/sandbox-mount-protocol';
 
 // --- duck-typed hook payloads (I2 — no cross-plugin imports) --------------
 
@@ -819,6 +827,59 @@ export interface AgentFileResponse {
 }
 
 /**
+ * `GET /api/workspace/agents/:agentId/user-files[/*]` — the DURABLE tier.
+ *
+ * A different tier from `/files` above, and the distinction is the whole
+ * reason this exists. `/files` reads `workspace:*`, which is the git-backed
+ * `/agent` tier — AX's own machinery plus whatever the agent committed. THIS
+ * reads the agent's durable user-files tier, which since TASK-164 is the
+ * agent's cwd and HOME: it is where a deliverable lands when nobody said
+ * otherwise, and until now it was invisible in the UI.
+ *
+ * It is a TREE, not a list, because that is what the backing hook answers:
+ * `sandbox:read-user-files` returns one directory's immediate children, not a
+ * recursive walk. So one shape covers both answers and the client navigates.
+ *
+ * `path` / `name` keep the same split as `WorkspaceFileSummary`, for the same
+ * reason: `path` is the raw key the client puts back on the wire and is never
+ * rendered; `name` is the fenced label. On this tier the filenames are, if
+ * anything, MORE agent-authored than on the other one — nothing here has been
+ * through a git commit — so the Trojan-source fence (CVE-2021-42574) is not
+ * optional.
+ */
+export interface UserFileEntry {
+  /** RAW key, relative to the tier root. `docs/note.md`. Never rendered. */
+  path: string;
+  /** The fenced label — one path segment. */
+  name: string;
+  kind: 'file' | 'dir';
+}
+
+export type AgentUserFilesResponse =
+  | {
+      kind: 'dir';
+      /** The raw key this answers for. `''` is the tier root. */
+      path: string;
+      /** The fenced label — the last segment, or `''` at the root. */
+      name: string;
+      entries: UserFileEntry[];
+      /**
+       * `true` when the directory holds more children than one response
+       * carries. Said out loud for the same reason the other listing says it:
+       * a list that silently stops is a list that claims the agent has that
+       * many files and no more.
+       */
+      truncated: boolean;
+    }
+  | {
+      kind: 'file';
+      path: string;
+      name: string;
+      body: string | null;
+      clipped: 'binary' | 'too-large' | null;
+    };
+
+/**
  * The one human-owned doc's display name. Lives here rather than in the
  * component because the server decides what a row IS; the component decides
  * how it looks.
@@ -1404,6 +1465,34 @@ export function decodeFileBody(bytes: Uint8Array): {
   return { body: fenceBody(FILE_DECODER.decode(bytes)), clipped: null };
 }
 
+/**
+ * How many children of one durable-tier directory a response will carry.
+ *
+ * Smaller than the reader's own cap on purpose: the reader bounds what this
+ * PROCESS reads off an NFS mount, this bounds what one HTTP response carries.
+ * Two different resources, two different numbers, and the response says when
+ * this one bites.
+ */
+export const USER_FILES_ENTRIES_MAX = 500;
+
+/** The last segment of a raw key — the label the viewer heads a file with. */
+export function basenameOf(rawPath: string): string {
+  const cut = rawPath.lastIndexOf('/');
+  return cut === -1 ? rawPath : rawPath.slice(cut + 1);
+}
+
+/** One durable-tier child → one row. The key raw and joined, the label fenced. */
+export function toUserFileEntry(
+  parentPath: string,
+  entry: { name: string; kind: 'file' | 'dir' },
+): UserFileEntry {
+  return {
+    path: parentPath === '' ? entry.name : `${parentPath}/${entry.name}`,
+    name: fenceLine(entry.name, FILE_LABEL_MAX_CHARS) ?? UNREADABLE_FILE_NAME,
+    kind: entry.kind,
+  };
+}
+
 /** One workspace path → one row. The key raw, the label fenced. */
 export function toFileSummary(path: string): WorkspaceFileSummary {
   return {
@@ -1864,6 +1953,125 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       userId: ownerUserId,
       workspace: initCtx.workspace,
     });
+  }
+
+  /**
+   * The `owner` triple `sandbox:read-user-files` keys the per-agent mount off.
+   *
+   * The mount resolvers read ONLY `agentId`; the rest of the triple is
+   * required by the shared `OpenSessionInput['owner']` type and unused on this
+   * path, so it is filled from the resolved agent where a field exists and left
+   * empty where it does not. It is NOT a synthetic session: this is called
+   * only AFTER `agents:resolve` said this user may see this agent, and the
+   * agentId that goes in is the one that came back.
+   */
+  function userFilesOwner(
+    agent: ResolvedAgent,
+    userId: string,
+  ): ReadUserFilesInput['owner'] {
+    return {
+      userId,
+      agentId: agent.id,
+      agentConfig: {
+        displayName: agent.displayName,
+        systemPromptAugment: '',
+        allowedTools: agent.allowedTools ?? [],
+        mcpConfigIds: agent.mcpConfigIds ?? [],
+        model: '',
+        runner: '',
+      },
+    };
+  }
+
+  /**
+   * The body behind both durable-tier routes: authenticate, ACL, validate the
+   * path, read, answer.
+   *
+   * ONE function for the root and the splat because they are one answer with
+   * one security order, and the surest way to get a second copy of an ordering
+   * wrong is to write it twice.
+   *
+   * `rawSplat` arrives from `@ax/http-server` VERBATIM — undecoded, slashes
+   * intact — so `workspaceFilePath` owns the single decode. `''` means the tier
+   * root and skips the decode entirely: there is nothing to decode, and running
+   * a validator over the empty string to get `null` back would turn the root
+   * listing into a 400.
+   */
+  async function readUserFilesPath(
+    req: RouteRequest,
+    res: RouteResponse,
+    rawSplat: string,
+  ): Promise<void> {
+    const userId = await authOr401(bus, initCtx, req, res);
+    if (userId === null) return;
+    const agentId = req.params.agentId ?? '';
+    if (agentId.length === 0) {
+      res.status(400).json({ error: 'missing-agent-id' });
+      return;
+    }
+    // ACL FIRST — see the note on `agentUserFile`. A 400-vs-404 split below
+    // this line would be an oracle over an export that holds every tenant.
+    const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+    if (agent === null) return;
+
+    let relPath = '';
+    if (rawSplat.length > 0) {
+      const decoded = workspaceFilePath(rawSplat);
+      if (decoded === null) {
+        res.status(400).json({ error: 'invalid-path' });
+        return;
+      }
+      relPath = decoded;
+    }
+
+    if (!bus.hasService('sandbox:read-user-files')) {
+      // No sandbox provider that can read the tier. An empty listing here
+      // would say "this agent has written nothing", which is a claim about the
+      // agent when the truth is a fact about the deployment (H7).
+      res.status(503).json({ error: 'user-files-unavailable' });
+      return;
+    }
+
+    const out = await bus.call<ReadUserFilesInput, ReadUserFilesOutput>(
+      'sandbox:read-user-files',
+      agentWorkspaceCtx(agentId, userId),
+      { owner: userFilesOwner(agent, userId), ...(relPath === '' ? {} : { relPath }) },
+    );
+
+    if (out.kind === 'absent') {
+      // `absent` covers both "no durable mount in this deployment" and "that
+      // path is not there". They are the same answer to a reader asking for a
+      // file, and keeping them the same answer is also what stops the response
+      // code from reporting on paths in someone else's subtree.
+      res.status(404).json({ error: 'file-not-found' });
+      return;
+    }
+
+    const name =
+      relPath === ''
+        ? ''
+        : (fenceLine(basenameOf(relPath), FILE_LABEL_MAX_CHARS) ??
+          UNREADABLE_FILE_NAME);
+
+    if (out.kind === 'dir') {
+      res.status(200).json({
+        kind: 'dir',
+        path: relPath,
+        name,
+        entries: out.entries
+          .slice(0, USER_FILES_ENTRIES_MAX)
+          .map((e) => toUserFileEntry(relPath, e)),
+        truncated: out.entries.length > USER_FILES_ENTRIES_MAX,
+      } satisfies AgentUserFilesResponse);
+      return;
+    }
+
+    res.status(200).json({
+      kind: 'file',
+      path: relPath,
+      name,
+      ...decodeFileBody(out.contents),
+    } satisfies AgentUserFilesResponse);
   }
 
   /**
@@ -3395,6 +3603,62 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     },
 
     /**
+     * GET /api/workspace/agents/:agentId/user-files — the DURABLE tier root.
+     *
+     * The other half of the Files tab, and the half that holds the agent's
+     * actual deliverables: this tier is the agent's cwd and HOME, so a file it
+     * writes without saying where lands here, not in the git-backed tier the
+     * `/files` routes above read.
+     *
+     * A thin wrapper over the splat handler with an empty path — the tier root
+     * is just the directory whose key is `''`, and giving it its own body would
+     * be two code paths for one answer.
+     */
+    async agentUserFiles(req: RouteRequest, res: RouteResponse): Promise<void> {
+      await readUserFilesPath(req, res, '');
+    },
+
+    /**
+     * GET /api/workspace/agents/:agentId/user-files/* — one path in the tier.
+     *
+     * Answers a DIRECTORY listing or a FILE body depending on what the path
+     * turns out to be, because the caller navigating a tree does not know
+     * which it clicked until we tell it.
+     *
+     * The step order is the security property, copied deliberately from
+     * `agentFile` above:
+     *
+     *   1. authenticate    — identity is the session's, never the request's.
+     *   2. ACL             — `agents:resolve`, and a failure is 404.
+     *   3. validate path   — `workspaceFilePath`, which decodes exactly once.
+     *   4. only now, read.
+     *
+     * 2 before 3 matters more here than anywhere else on this surface. The
+     * backing mount is ONE export holding EVERY agent's subtree, so a caller
+     * poking at another tenant's agent must not be able to tell a malformed
+     * path (400) from a well-formed one (404) — that difference is a free
+     * oracle for mapping someone else's files, and this is the route where
+     * there is something on the other side of it worth mapping.
+     *
+     * Below the ACL, the confinement is the sandbox provider's: it joins the
+     * validated agentId itself and realpath-confines every component under it
+     * (@ax/user-files-read), so an agent-planted symlink cannot walk out of its
+     * own subtree. This route does not get to decide which subtree it reads —
+     * it hands over an `owner` and the provider resolves the mount. That is
+     * deliberate: one place decides, and it is the place that already owns the
+     * per-agent mount for the live session.
+     *
+     * Note what is NOT filtered here: `isServableWorkspaceFile`'s `.ax/`,
+     * `.claude/`, `memory/` exclusions are about the OTHER tier's machinery,
+     * which the runner's PreToolUse re-rooter keeps off this one anyway.
+     * Applying them here would hide a directory the user themselves named
+     * `memory/`, which on their own file area is just a lie about their files.
+     */
+    async agentUserFile(req: RouteRequest, res: RouteResponse): Promise<void> {
+      await readUserFilesPath(req, res, req.params['*'] ?? '');
+    },
+
+    /**
      * GET /api/workspace/agents/:agentId/rail — the right-hand rail.
      *
      * THE ACL FOR `agent-activity:get` LIVES HERE. That hook has none of its
@@ -3775,6 +4039,28 @@ export async function registerWorkspaceRoutes(
         method: 'GET',
         path: '/api/workspace/agents/:agentId/files/*',
         handler: handlers.agentFile as unknown as RouteHandler,
+      },
+      {
+        /*
+          The DURABLE tier's root. Sibling of `/files` above and a different
+          backend: `/files` reads `workspace:*` (the git-backed governed tier),
+          this reads `sandbox:read-user-files` (the agent's cwd and HOME).
+        */
+        method: 'GET',
+        path: '/api/workspace/agents/:agentId/user-files',
+        handler: handlers.agentUserFiles as unknown as RouteHandler,
+      },
+      {
+        /*
+          Same splat rules as `/files/*`: a bare `*` as the FINAL segment is
+          the only spelling `@ax/http-server`'s router recognises, and the
+          captured remainder lands under `req.params['*']` undecoded. The
+          router tries every non-splat pattern before any splat, so the exact
+          `/user-files` route above can never be swallowed by this one.
+        */
+        method: 'GET',
+        path: '/api/workspace/agents/:agentId/user-files/*',
+        handler: handlers.agentUserFile as unknown as RouteHandler,
       },
       {
         method: 'GET',

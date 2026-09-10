@@ -37,7 +37,7 @@ export interface RunnerEnv {
   /**
    * Durable, per-agent user-files root (filestore-user-files Phase 1). The
    * sandbox provider sets `AX_USERFILES_ROOT` from the `role:'user-files'`
-   * mount it resolved (k8s: the `/workspace` NFS subPath mount; subprocess: the
+   * mount it resolved (k8s: the `/files` NFS subPath mount; subprocess: the
    * per-agent localDir). Optional with NO default (like `ephemeralRoot`): absent
    * means "no durable mount wired", and the runner then neither widens the
    * agent's filesystem reach nor advertises a user-files location. Phase 1 ONLY

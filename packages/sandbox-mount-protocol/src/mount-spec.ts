@@ -70,7 +70,7 @@ import type { OpenSessionInput } from '@ax/sandbox-protocol';
 export interface NfsMountSpec {
   /** Discriminator — consumers switch on this and NOTHING else. */
   kind: 'nfs';
-  /** Where the mount appears inside the sandbox, e.g. `/workspace`. */
+  /** Where the mount appears inside the sandbox, e.g. `/files`. */
   mountPath: string;
   /** NFS server address — Filestore IP or DNS name. */
   server: string;
@@ -94,7 +94,7 @@ export interface NfsMountSpec {
 export interface LocalDirMountSpec {
   /** Discriminator — consumers switch on this and NOTHING else. */
   kind: 'localDir';
-  /** Where the mount appears inside the sandbox, e.g. `/workspace`. */
+  /** Where the mount appears inside the sandbox, e.g. `/files`. */
   mountPath: string;
   /** Real persistent directory on the dev host, e.g. `<root>/<agentId>`. */
   hostPath: string;
