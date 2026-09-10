@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
-    "vitest": "^4.1.4"
+    "vitest": "^4.1.11"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
