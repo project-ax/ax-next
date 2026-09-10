@@ -126,6 +126,29 @@ export interface SandboxK8sConfig {
    */
   proxyEndpoint?: string;
   /**
+   * Node/pod-filesystem path where the WHOLE user-files export is mounted
+   * READ-ONLY into the HOST pod, so `sandbox:read-user-files` can read an
+   * agent's durable subtree directly instead of running a pod per call.
+   *
+   * When set, the host-read realization is a plain filesystem read under
+   * `<userFilesHostReadRoot>/<agentId>`. When unset (the default), it falls
+   * back to the one-shot reader pod — correct, but a pod create + poll + log
+   * read + delete for every directory click and every file open, which on a
+   * cold-start-prone cluster is seconds per interaction. The chart sets this
+   * whenever the Filestore export is also mounted into the host Deployment.
+   *
+   * WHAT THIS COSTS, stated plainly: without it the host has NO access to any
+   * agent subtree and cross-tenant isolation is STRUCTURAL. With it the host
+   * can read every agent's files and that isolation becomes CODE — the route's
+   * `agents:resolve` ACL plus the realpath confinement in
+   * `@ax/user-files-read`. The mount must be `readOnly: true`; nothing on this
+   * path ever opens a writable handle. See SECURITY.md and the host-read note
+   * in user-files-ops.ts.
+   *
+   * Empty = unset.
+   */
+  userFilesHostReadRoot?: string;
+  /**
    * TASK-170 — how often (ms) the orphan-sweep runs. The sweep reclaims
    * terminated runner pods (Succeeded/Failed) that a transient-failed delete
    * left behind — runner pods have no ownerReference, so nothing else GCs them.
@@ -164,6 +187,8 @@ export interface ResolvedSandboxK8sConfig {
   proxySocketHostPath: string;
   /** See SandboxK8sConfig.proxyEndpoint. Empty = unset. */
   proxyEndpoint: string;
+  /** See SandboxK8sConfig.userFilesHostReadRoot. Empty = unset (pod-per-call). */
+  userFilesHostReadRoot: string;
   /** See SandboxK8sConfig.orphanSweepIntervalMs. <= 0 disables the sweeper. */
   orphanSweepIntervalMs: number;
   /** See SandboxK8sConfig.orphanSweepTerminalAgeMs. */
@@ -216,6 +241,7 @@ export function resolveConfig(
     perServiceColdStartMs: raw.perServiceColdStartMs ?? 120_000,
     proxySocketHostPath: raw.proxySocketHostPath ?? '',
     proxyEndpoint: raw.proxyEndpoint ?? '',
+    userFilesHostReadRoot: raw.userFilesHostReadRoot ?? '',
     orphanSweepIntervalMs: raw.orphanSweepIntervalMs ?? 300_000,
     orphanSweepTerminalAgeMs: raw.orphanSweepTerminalAgeMs ?? 600_000,
   };

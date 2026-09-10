@@ -64,7 +64,10 @@ export function createSandboxK8sPlugin(
       // `sandbox:read-user-files` (filestore-user-files §11 host-read): the
       // host's READ-ONLY view of an agent's durable NFS user-files subtree, so
       // the web UI can serve those files without entering a live sandbox.
-      // Realized by a short-lived pod that mounts the export read-only.
+      // Realized either by a direct read of the export mounted read-only into
+      // the host pod (`userFilesHostReadRoot`) or, when that is unset, by a
+      // short-lived pod that mounts the export read-only. Single-homed
+      // registration either way — see user-files-ops.ts.
       registers: ['sandbox:open-session', 'sandbox:read-user-files'],
       // Mirrors sandbox-subprocess. We DON'T list ipc:start / ipc:stop /
       // llm-proxy:start because the k8s pod runs its own listeners — those
@@ -143,9 +146,10 @@ export function createSandboxK8sPlugin(
       // §11 host-read. Read-only end to end (the one-shot reader pod mounts the
       // export `readOnly: true` and the resolver realization is read-only); a
       // caller-supplied path is confined to the agent's own subtree. No durable
-      // resolver loaded → `{ kind: 'absent' }`. The reader pod can take seconds
-      // (pull + mount + read), so give the call a generous timeout like
-      // open-session.
+      // resolver loaded → `{ kind: 'absent' }`. The timeout is sized for the
+      // POD realization, which can take seconds (pull + mount + read); the
+      // host-mounted realization returns in milliseconds and never approaches
+      // it.
       bus.registerService<ReadUserFilesInput, ReadUserFilesOutput>(
         'sandbox:read-user-files',
         PLUGIN_NAME,

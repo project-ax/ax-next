@@ -9,6 +9,7 @@
   "references": [
     { "path": "../core" },
     { "path": "../sandbox-mount-protocol" },
+    { "path": "../user-files-read" },
     { "path": "../sandbox-protocol" }
   ]
 }

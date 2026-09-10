@@ -14,6 +14,8 @@ import type {
   ResolveMountsOutput,
   UserFileDirEntry,
 } from '@ax/sandbox-mount-protocol';
+import { readConfinedUserFiles } from '@ax/user-files-read';
+import * as path from 'node:path';
 import type { ResolvedSandboxK8sConfig } from './config.js';
 import type { K8sCoreApi } from './k8s-api.js';
 import { killPod } from './kill.js';
@@ -29,7 +31,17 @@ import { watchPodExit } from './lifecycle.js';
 //                 mount-and-rm pod (design §11 "a short-lived job that mounts
 //                 the export").
 //   2. host-read — `sandbox:read-user-files` reads an agent's subtree READ-ONLY
-//                 (for the web UI) via a short-lived mount-and-read pod.
+//                 (for the web UI). TWO realizations, chosen by config:
+//                   - `userFilesHostReadRoot` SET → a direct filesystem read
+//                     under `<root>/<subPath>`, because the chart has mounted
+//                     the export read-only into the host pod. Free.
+//                   - UNSET → a short-lived mount-and-read pod. One pod per
+//                     call: correct, but a create + poll + log-read + delete
+//                     for every directory click and every file open.
+//                 The registration is single-homed either way — two plugins
+//                 racing to register one service hook would be load-order
+//                 dependent, and picking pod-vs-host-mount is a k8s deployment
+//                 detail this provider already owns.
 //
 // Both reuse the EXISTING `sandbox:resolve-mounts` hook to learn the agent's
 // `server`/`exportPath`/`subPath` (keyed off `owner.agentId`) — the design's
@@ -66,8 +78,15 @@ const EXPORT_MOUNT = '/export';
 const ONESHOT_POLL_MS = 500;
 const ONESHOT_DEADLINE_SECONDS = 120;
 // Bound a host-read: never stream an unbounded file over `pods/log` (the
-// apiserver buffers it). A larger file is reported but its bytes are omitted.
+// apiserver buffers it). A larger file is served as its first
+// READ_MAX_FILE_BYTES bytes — a PREFIX, which is what
+// `@ax/user-files-read` (the host-mounted realization, and the subprocess
+// provider) also does. The two realizations of one hook returning different
+// amounts of the same file would be a browser nobody can reason about, so the
+// number is duplicated here deliberately and pinned by a test.
 const READ_MAX_FILE_BYTES = 1024 * 1024; // 1 MiB
+// Same listing cap, same reason. Pinned against @ax/user-files-read by a test.
+const READ_MAX_DIR_ENTRIES = 5000;
 // A single safe path segment — the per-tenant subtree key. Mirrors the
 // resolver's agentId gate (its OWN copy per I2). No `/`, `.`, `..`, whitespace.
 const SAFE_SEGMENT_RE = /^[A-Za-z0-9_-]+$/;
@@ -313,8 +332,7 @@ export async function cleanupUserFiles(
 // stdout that the host parses from `pods/log`:
 //
 //   DIR <base64-json-of-entries>            (relPath is a directory)
-//   FILE <base64-of-file-bytes>             (regular file ≤ READ_MAX_FILE_BYTES)
-//   BIG                                     (regular file over the cap)
+//   FILE <base64-of-first-READ_MAX_FILE_BYTES-bytes>   (regular file)
 //   ABSENT                                  (path missing / not file-or-dir)
 //
 // base64 keeps binary file bytes intact over the text log channel; the cap
@@ -331,11 +349,13 @@ export async function cleanupUserFiles(
 // path's contents on a follow-up read.
 // ---------------------------------------------------------------------------
 
-/** Build the read script. `SUBPATH` (the agent's own subtree) and `RELPATH`
+/** Build the read script. Exported for a test that runs it through a real
+ *  POSIX shell — the quoting and the listing format are the parts of this file
+ *  a type checker cannot see. `SUBPATH` (the agent's own subtree) and `RELPATH`
  *  (a host-validated relative path under it) are passed via env (never spliced
  *  into a shell word). The script confines the realpath'd target under
  *  `$EXPORT/$SUBPATH` before reading/listing. */
-function buildReadCommand(): string {
+export function buildReadCommand(): string {
   // POSIX sh. `base` is this agent's subtree root; `target` the requested path.
   // realpath resolves all symlinks; we then require the result to be `base` or
   // strictly under `base/`. A missing path / dangling link → realpath fails →
@@ -360,25 +380,50 @@ function buildReadCommand(): string {
     'target="$real"',
     'if [ -d "$target" ]; then',
     // List immediate children with a type marker. Skip ANY symlink child
-    // (`[ -L ]`) so a foreign-pointing link is never even named. Emit
-    // name<TAB>kind lines; the host base64-decodes + builds the JSON.
-    '  out=""',
+    // (`[ -L ]`) so a foreign-pointing link is never even named.
+    //
+    // EACH NAME IS BASE64'd INDIVIDUALLY, and that is the security-relevant
+    // part of this format rather than a convenience. A filename is written by
+    // the untrusted agent, and POSIX lets it contain a newline or a tab. An
+    // earlier shape accumulated `name<TAB>kind` rows into one variable and
+    // emitted them with `printf %b` — which both interprets backslash escapes
+    // in the DATA and passes real newlines straight through, so a file named
+    // `x<TAB>dir<NEWLINE>y` (or literally `x\tdir\ny`) forged extra rows in
+    // the listing the host parsed back. Encoding the name removes every
+    // delimiter from the payload, so no filename can invent an entry.
+    //
+    // A forged row was never a disclosure — a read through it still goes
+    // through the realpath confinement and answers ABSENT — but a file browser
+    // that can be made to show entries the directory does not contain is
+    // lying, and it is the agent choosing the lie.
+    '  n=0',
+    '  {',
     '  for entry in "$target"/* "$target"/.*; do',
+    // Same listing cap as @ax/user-files-read, for the same reason: one hook
+    // must not return a different number of children depending on which
+    // realization is loaded.
+    `    [ "$n" -lt ${READ_MAX_DIR_ENTRIES} ] || break`,
     '    [ -e "$entry" ] || continue',
-    '    base2=$(basename "$entry")',
+    '    base2=$(basename -- "$entry")',
     '    [ "$base2" = "." ] && continue',
     '    [ "$base2" = ".." ] && continue',
     '    if [ -L "$entry" ]; then continue; fi',
-    '    if [ -d "$entry" ]; then out="$out$base2\tdir\n";',
-    '    elif [ -f "$entry" ]; then out="$out$base2\tfile\n"; fi',
+    '    if [ -d "$entry" ]; then kind=dir; elif [ -f "$entry" ]; then kind=file; else continue; fi',
+    // `printf %s` (never %b) on the name, piped through base64 — so a
+    // backslash in a filename stays a backslash and a newline cannot end a row.
+    // The format string carries BACKSLASH escapes (`\\t`, `\\n`) for printf to
+    // interpret, rather than literal control characters embedded in this
+    // source — same output, but a tab you can see when you read the line.
+    '    printf "%s\\t%s\\n" "$(printf "%s" "$base2" | base64 | tr -d "\\n")" "$kind"',
+    '    n=$((n+1))',
     '  done',
-    '  printf "%b" "$out" | base64 | tr -d "\\n" | (printf "DIR "; cat); echo',
+    '  } | base64 | tr -d "\\n" | (printf "DIR "; cat); echo',
     '  exit 0',
     'fi',
     'if [ -f "$target" ]; then',
-    `  size=$(wc -c < "$target")`,
-    `  if [ "$size" -gt ${READ_MAX_FILE_BYTES} ]; then echo BIG; exit 0; fi`,
-    '  printf "FILE "; base64 < "$target" | tr -d "\\n"; echo',
+    // Redirect rather than pass the filename: no `--`/BusyBox-`head` argument
+    // portability question, and no filename ever reaching argv.
+    `  printf "FILE "; head -c ${READ_MAX_FILE_BYTES} < "$target" | base64 | tr -d "\\n"; echo`,
     '  exit 0',
     'fi',
     'echo ABSENT',
@@ -407,11 +452,19 @@ function safeRelPath(relPath: string | undefined): string {
 }
 
 /**
- * Realize `sandbox:read-user-files` for the k8s provider: run a one-shot pod
- * that mounts the export READ-ONLY and emits one bounded line for `relPath`,
- * read back from `pods/log`. Returns `{ kind: 'absent' }` when there's no mount
- * or the path is missing/over-cap/non-file-or-dir. NEVER grants write (the
- * volumeMount is `readOnly: true` AND the resolver realization is read-only).
+ * Realize `sandbox:read-user-files` for the k8s provider. Two realizations
+ * behind one signature, chosen by `userFilesHostReadRoot`:
+ *
+ *   - SET   → a direct, confined filesystem read under `<root>/<subPath>`,
+ *             because the chart mounted the export read-only into the host pod.
+ *             No pod, no apiserver round-trip.
+ *   - UNSET → a one-shot pod that mounts the export READ-ONLY and emits one
+ *             bounded line for `relPath`, read back from `pods/log`.
+ *
+ * Returns `{ kind: 'absent' }` when there's no mount or the path is
+ * missing/non-file-or-dir. NEVER grants write, on either path: the volumeMount
+ * is `readOnly: true`, the resolver realization is read-only, and
+ * `@ax/user-files-read` has no write entry point.
  */
 export async function readUserFiles(
   ctx: AgentContext,
@@ -425,6 +478,23 @@ export async function readUserFiles(
   if (mount === undefined) return { kind: 'absent' };
   assertSafeSubPath(mount.subPath);
   const rel = safeRelPath(input.relPath);
+
+  // The host-mounted realization, when the chart mounted the export read-only
+  // into the host pod. Same subtree, same confinement, no pod: the export's
+  // `<subPath>` directory is at `<hostReadRoot>/<subPath>` in this process's
+  // own filesystem, which is structurally the same case @ax/workspace-localdir
+  // already serves in dev.
+  //
+  // `subPath` has been validated as ONE safe segment above, so the join cannot
+  // widen past this agent's subtree; the reader then realpath-confines
+  // everything under it, which is what stops an agent-planted symlink from
+  // crossing into a sibling's subtree on the same export.
+  if (config.userFilesHostReadRoot.length > 0) {
+    return readConfinedUserFiles(
+      path.join(config.userFilesHostReadRoot, mount.subPath),
+      rel,
+    );
+  }
 
   const podName = `ax-userfiles-read-${randomUUID().slice(0, 8)}`;
   const readLog = log.child({ podName });
@@ -477,12 +547,23 @@ export function parseReadOutput(raw: string): ReadUserFilesOutput {
       .map((l) => l.trim())
       .filter((l) => l.length > 0)
       .pop() ?? '';
-  if (line === 'ABSENT' || line === 'BIG' || line === '') {
-    // BIG → the file exists but is over the cap; we report absent bytes rather
-    // than streaming a huge payload. A consumer that needs large files uses a
-    // streaming path (follow-up); the browser preview treats it as absent.
+  if (line === 'ABSENT' || line === '') {
     return { kind: 'absent' };
   }
+  // A bare `DIR` / `FILE` with nothing after it is an EMPTY directory or an
+  // EMPTY file: base64 of no bytes is the empty string, the trailing space is
+  // trimmed off with the rest of the line, and the marker arrives alone.
+  //
+  // These two lines are a bug fix, not defensiveness. Without them an empty
+  // folder and a zero-byte file both fell through to `absent` — so the browser
+  // said "not found" about a directory the agent had definitely created, which
+  // is precisely the H7 lie this surface exists to avoid. The TypeScript
+  // realization has always answered `{ kind: 'dir', entries: [] }` here, so
+  // this is also the two realizations agreeing. Caught by running the script
+  // through a real shell (`read-command-shell.test.ts`) — no amount of
+  // grepping the generated text would have shown it.
+  if (line === 'DIR') return { kind: 'dir', entries: [] };
+  if (line === 'FILE') return { kind: 'file', contents: new Uint8Array() };
   if (line.startsWith('DIR ')) {
     const b64 = line.slice('DIR '.length);
     const decoded = Buffer.from(b64, 'base64').toString('utf-8');
@@ -491,7 +572,11 @@ export function parseReadOutput(raw: string): ReadUserFilesOutput {
       if (row.length === 0) continue;
       const tab = row.indexOf('\t');
       if (tab < 0) continue;
-      const name = row.slice(0, tab);
+      // The NAME is base64 — see the note on `buildReadCommand`. A filename is
+      // agent-authored and may contain a tab or a newline, so it is encoded
+      // rather than delimited; decoding here is what keeps a crafted name from
+      // forging extra rows in this loop.
+      const name = Buffer.from(row.slice(0, tab), 'base64').toString('utf-8');
       const kind = row.slice(tab + 1);
       if ((kind === 'dir' || kind === 'file') && name.length > 0) {
         entries.push({ name, kind });
