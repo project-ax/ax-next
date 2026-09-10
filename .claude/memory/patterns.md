@@ -948,3 +948,49 @@ show phantom entries is lying, and the agent picks the lie.
 
 Same rule anywhere agent-authored strings are packed into a delimited wire
 format. Delimiting trusts the producer; encoding does not.
+
+## Repo-wide dependency version bumps: never `pnpm update` (2026-09-10)
+
+Learned clearing the advisories in #505, which unblocked #504.
+
+**`pnpm update` does the job and wrecks the diff.** It bumps the versions, but
+it also rewrites every manifest it touches: `"files": ["dist"]` expands to
+multi-line, and every `dependencies` / `devDependencies` block is
+alphabetically re-sorted. On this repo that buried **86 real lines under ~500
+of reformatting** across 80 packages — unreviewable, and it makes the actual
+security change invisible in review.
+
+Do it with a targeted edit instead, one version string per file:
+
+```bash
+grep -rl '"vitest": "\^4\.1\.4"' --include=package.json packages presets deploy . \
+  | grep -v node_modules | sort -u \
+  | while read -r f; do perl -pi -e 's/"vitest": "\^4\.1\.4"/"vitest": "^4.1.11"/' "$f"; done
+pnpm install     # reconcile the lockfile
+```
+
+Result: 86 changed lines, 86 files, one string each. `git diff --stat` should
+show `2 +-` per manifest — anything larger means a reformat crept in.
+
+**Direct deps get a range bump; transitive ones get a `pnpm.overrides` entry**
+in the ROOT `package.json`, styled `"pkg@>=vuln <patched": ">=patched <next-major"`.
+Check the overrides block first — a package that drifted before is usually
+already in there (both `hono` and `js-yaml` were), and then the fix is a floor
+bump in place rather than a new entry.
+
+### Three traps around the audit gate specifically
+
+- **Merging the fix to `main` does NOT turn an open PR green.**
+  `pnpm audit` reads the BRANCH's own lockfile, so every open PR needs `main`
+  merged in before its `test` check can pass. Costs a confusing cycle if you
+  merge the dep PR and then just re-run CI on the feature PR.
+- **A package created mid-sweep silently reintroduces the old floor.**
+  `@ax/user-files-read` was added on a branch cut before the bump, so it still
+  carried `^4.1.4` and would have put back the exact range the sweep had just
+  removed everywhere else. After merging `main` into a feature branch that adds
+  packages, re-grep for the old range.
+- **A red `test` check is not necessarily a test failure.** Read the STEP list,
+  not the job status: `gh run view <id> --json jobs -q '.jobs[] | select(.name=="test") | .steps[] | "\(.conclusion)\t\(.name)"'`.
+  In #504 `typecheck`, `lint` and the test step all succeeded and only
+  `Run pnpm audit --audit-level moderate` failed. Reproduce against clean
+  `main` before assuming your change caused it.
