@@ -25,6 +25,7 @@
     { "path": "../skills" },
     { "path": "../skills-parser" },
     { "path": "../routines" },
+    { "path": "../sandbox-mount-protocol" },
     { "path": "../validator-routine" }
   ]
 }

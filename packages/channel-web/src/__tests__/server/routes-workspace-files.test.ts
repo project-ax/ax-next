@@ -31,8 +31,10 @@ import {
   isServableWorkspaceFile,
   makeWorkspaceHandlers,
   registerWorkspaceRoutes,
+  USER_FILES_ENTRIES_MAX,
   type AgentFileResponse,
   type AgentFilesResponse,
+  type AgentUserFilesResponse,
 } from '../../server/routes-workspace.js';
 import { workspaceFilePath } from '../../server/safe-path.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
@@ -587,6 +589,28 @@ describe('the Files routes over a real socket', () => {
             ? { found: true, bytes: enc.encode('# Plan') }
             : { found: false };
         },
+        // The DURABLE tier, stood up the way a sandbox provider would: the
+        // root is a directory, `reports/summary.md` is a file, everything else
+        // is absent.
+        'sandbox:read-user-files': async (_ctx: unknown, input: unknown) => {
+          const { relPath } = input as { relPath?: string };
+          if (relPath === undefined) {
+            return {
+              kind: 'dir',
+              entries: [{ name: 'reports', kind: 'dir' }],
+            };
+          }
+          if (relPath === 'reports') {
+            return {
+              kind: 'dir',
+              entries: [{ name: 'summary.md', kind: 'file' }],
+            };
+          }
+          if (relPath === 'reports/summary.md') {
+            return { kind: 'file', contents: enc.encode('# Summary') };
+          }
+          return { kind: 'absent' };
+        },
       },
       plugins: [http],
     });
@@ -635,6 +659,73 @@ describe('the Files routes over a real socket', () => {
     expect(((await r.json()) as AgentFileResponse).path).toBe('notes/plan.md');
   });
 
+  /*
+    The durable tier over the same real router. The splat is the thing most
+    likely to be silently wrong here — `req.params['*']` is only populated for
+    a route declared with a BARE trailing `*` (a `/user-files/*path` segment
+    compiles to a literal and matches nothing anyone would request), and every
+    direct-handler test above keeps passing regardless because it writes
+    `params` itself. So: one honest round trip per shape.
+  */
+  it('serves the durable tier root at /user-files — the exact route wins over the splat', async () => {
+    const b = await boot();
+    harness = b.harness;
+    const r = await fetch(
+      `http://127.0.0.1:${b.port}/api/workspace/agents/a1/user-files`,
+    );
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as AgentUserFilesResponse;
+    if (body.kind !== 'dir') throw new Error('expected dir');
+    expect(body.path).toBe('');
+    expect(body.entries).toEqual([
+      { path: 'reports', name: 'reports', kind: 'dir' },
+    ]);
+  });
+
+  it('serves a durable-tier file through the splat, path encoded whole', async () => {
+    const b = await boot();
+    harness = b.harness;
+    // `encodeURIComponent('reports/summary.md')` — exactly what the client sends.
+    const r = await fetch(
+      `http://127.0.0.1:${b.port}/api/workspace/agents/a1/user-files/reports%2Fsummary.md`,
+    );
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as AgentUserFilesResponse;
+    if (body.kind !== 'file') throw new Error('expected file');
+    expect(body.path).toBe('reports/summary.md');
+    expect(body.body).toBe('# Summary');
+  });
+
+  it('serves a durable-tier directory that arrives as real slashes too', async () => {
+    const b = await boot();
+    harness = b.harness;
+    const r = await fetch(
+      `http://127.0.0.1:${b.port}/api/workspace/agents/a1/user-files/reports`,
+    );
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as AgentUserFilesResponse;
+    if (body.kind !== 'dir') throw new Error('expected dir');
+    expect(body.entries[0]?.path).toBe('reports/summary.md');
+  });
+
+  it('400s an encoded traversal on the durable splat over the wire', async () => {
+    const b = await boot();
+    harness = b.harness;
+    const r = await fetch(
+      `http://127.0.0.1:${b.port}/api/workspace/agents/a1/user-files/%2e%2e%2fsecret`,
+    );
+    expect(r.status).toBe(400);
+  });
+
+  it('404s a foreign agent’s durable tier over the wire', async () => {
+    const b = await boot();
+    harness = b.harness;
+    const r = await fetch(
+      `http://127.0.0.1:${b.port}/api/workspace/agents/nope/user-files`,
+    );
+    expect(r.status).toBe(404);
+  });
+
   it('400s an encoded traversal over the wire', async () => {
     const b = await boot();
     harness = b.harness;
@@ -660,5 +751,403 @@ describe('the Files routes over a real socket', () => {
       `http://127.0.0.1:${b.port}/api/workspace/agents/a2/files`,
     );
     expect(r.status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The DURABLE tier's routes — `/user-files` and `/user-files/*`.
+//
+// The tier that had no consumer at all until now: `sandbox:read-user-files` was
+// registered by both sandbox providers and read by nothing, so the agent's cwd
+// — where a deliverable lands by default — was invisible in the UI.
+//
+// A different backend from the routes above (`sandbox:read-user-files`, not
+// `workspace:*`) and therefore a different set of things worth pinning:
+//
+//   - the ACL still runs BEFORE path validation, and for a sharper reason: the
+//     backing mount is ONE export holding EVERY tenant's subtree, so a
+//     400-vs-404 split under a foreign agent would map somebody else's files.
+//   - `absent` is 404, and covers "no durable tier" and "no such path"
+//     identically. That is deliberate; see the oracle note above.
+//   - the raw key comes back joined onto its parent, and the label is fenced.
+//   - the governed tier's `.ax`/`.claude`/`memory` exclusions do NOT apply
+//     here: they are the OTHER tier's machinery, and hiding a folder the user
+//     named `memory/` on their own file area would be a lie about their files.
+// ---------------------------------------------------------------------------
+describe('the durable user-files routes (direct handlers)', () => {
+  let bus: HookBus;
+  /** Calls seen by `sandbox:read-user-files`, in order. */
+  let reads: Array<{ agentId: string; ownerAgentId: string; relPath: string | undefined }>;
+  /** The tier's contents, keyed by relPath (`''` = the root). */
+  let tier: Map<string, { kind: 'dir'; entries: Array<{ name: string; kind: 'file' | 'dir' }> } | { kind: 'file'; contents: Uint8Array }>;
+
+  function registerAuth(user: { id: string; isAdmin: boolean } | null): void {
+    bus.registerService('auth:require-user', 'auth', async () => {
+      if (user === null) {
+        throw new PluginError({
+          code: 'unauthenticated',
+          plugin: 'auth',
+          message: 'no session',
+        });
+      }
+      return { user };
+    });
+  }
+
+  function registerAgents(): void {
+    bus.registerService('agents:resolve', 'agents', async (_c, i: unknown) => {
+      const { agentId } = i as { agentId: string };
+      if (agentId !== 'a1') {
+        throw new PluginError({ code: 'not-found', plugin: 'agents', message: 'nope' });
+      }
+      return { agent: { id: 'a1', displayName: 'Inbox' } };
+    });
+  }
+
+  /** A stand-in for whichever sandbox provider is loaded. */
+  function registerReader(): void {
+    bus.registerService(
+      'sandbox:read-user-files',
+      'sandbox',
+      async (ctx, i: unknown) => {
+        const input = i as {
+          owner: { agentId: string };
+          relPath?: string;
+        };
+        reads.push({
+          agentId: ctx.agentId,
+          ownerAgentId: input.owner.agentId,
+          relPath: input.relPath,
+        });
+        return tier.get(input.relPath ?? '') ?? { kind: 'absent' };
+      },
+    );
+  }
+
+  beforeEach(() => {
+    bus = new HookBus();
+    reads = [];
+    tier = new Map();
+  });
+
+  // --- auth + ACL ---------------------------------------------------------
+
+  it('401s without a session', async () => {
+    registerAuth(null);
+    const { res, captured } = mkRes();
+    await makeWorkspaceHandlers({ bus, initCtx }).agentUserFiles(
+      mkReq({ agentId: 'a1' }),
+      res,
+    );
+    expect(captured.statusCode).toBe(401);
+  });
+
+  it('400s a missing agent id', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    const { res, captured } = mkRes();
+    await makeWorkspaceHandlers({ bus, initCtx }).agentUserFiles(mkReq({}), res);
+    expect(captured.statusCode).toBe(400);
+  });
+
+  it('404s a foreign agent without touching the tier', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerAgents();
+    registerReader();
+    const { res, captured } = mkRes();
+    await makeWorkspaceHandlers({ bus, initCtx }).agentUserFiles(
+      mkReq({ agentId: 'someone-elses' }),
+      res,
+    );
+    expect(captured.statusCode).toBe(404);
+    expect(reads).toEqual([]);
+  });
+
+  it('SECURITY: runs the ACL BEFORE path validation, so both answers are 404', async () => {
+    /*
+      Sharper here than on the governed routes. The durable tier is one NFS
+      export holding every tenant's subtree, so a caller who could tell 400
+      (malformed) from 404 (well-formed but absent) under someone else's agent
+      would have a free way to map that agent's paths. Both must be 404, and
+      neither may reach the reader.
+    */
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerAgents();
+    registerReader();
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+
+    const bad = mkRes();
+    await h.agentUserFile(
+      mkReq({ agentId: 'someone-elses', '*': '../../etc/passwd' }),
+      bad.res,
+    );
+    expect(bad.captured.statusCode).toBe(404);
+
+    const good = mkRes();
+    await h.agentUserFile(mkReq({ agentId: 'someone-elses', '*': 'x.md' }), good.res);
+    expect(good.captured.statusCode).toBe(404);
+
+    expect(reads).toEqual([]);
+  });
+
+  // --- path safety --------------------------------------------------------
+
+  it.each([
+    ['a traversal', '../../etc/passwd'],
+    ['an absolute path', '/etc/passwd'],
+    ['an encoded traversal', '%2e%2e%2fsecret'],
+    ['a NUL byte', `x${NUL}.md`],
+    ['an encoded NUL byte', 'x%00.md'],
+    ['a malformed escape', 'x%2'],
+  ])('400s %s, and never reaches the reader', async (_label, splat) => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerAgents();
+    registerReader();
+    const { res, captured } = mkRes();
+    await makeWorkspaceHandlers({ bus, initCtx }).agentUserFile(
+      mkReq({ agentId: 'a1', '*': splat }),
+      res,
+    );
+    expect(captured.statusCode).toBe(400);
+    expect(reads).toEqual([]);
+  });
+
+  // --- availability -------------------------------------------------------
+
+  it('503s when no sandbox provider can read the tier', async () => {
+    // NOT an empty listing. "This agent has written nothing" is a claim about
+    // the agent; the truth here is a fact about the deployment (H7).
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerAgents();
+    const { res, captured } = mkRes();
+    await makeWorkspaceHandlers({ bus, initCtx }).agentUserFiles(
+      mkReq({ agentId: 'a1' }),
+      res,
+    );
+    expect(captured.statusCode).toBe(503);
+    expect(captured.body).toEqual({ error: 'user-files-unavailable' });
+  });
+
+  // --- listing ------------------------------------------------------------
+
+  it('lists the tier root, keying entries off the empty parent', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerAgents();
+    registerReader();
+    tier.set('', {
+      kind: 'dir',
+      entries: [
+        { name: 'reports', kind: 'dir' },
+        { name: 'q3.csv', kind: 'file' },
+      ],
+    });
+    const { res, captured } = mkRes();
+    await makeWorkspaceHandlers({ bus, initCtx }).agentUserFiles(
+      mkReq({ agentId: 'a1' }),
+      res,
+    );
+    expect(captured.statusCode).toBe(200);
+    const body = captured.body as AgentUserFilesResponse;
+    if (body.kind !== 'dir') throw new Error('expected dir');
+    expect(body.path).toBe('');
+    expect(body.entries).toEqual([
+      { path: 'reports', name: 'reports', kind: 'dir' },
+      { path: 'q3.csv', name: 'q3.csv', kind: 'file' },
+    ]);
+    expect(body.truncated).toBe(false);
+    // The root asks for NO relPath rather than for `''` — the hook's own
+    // default is "the mount root", and sending an empty string instead would
+    // rely on every realization normalizing it the same way.
+    expect(reads).toEqual([
+      { agentId: 'a1', ownerAgentId: 'a1', relPath: undefined },
+    ]);
+  });
+
+  it('joins a nested listing’s entries onto their parent key', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerAgents();
+    registerReader();
+    tier.set('reports/2026', {
+      kind: 'dir',
+      entries: [{ name: 'summary.md', kind: 'file' }],
+    });
+    const { res, captured } = mkRes();
+    await makeWorkspaceHandlers({ bus, initCtx }).agentUserFile(
+      mkReq({ agentId: 'a1', '*': 'reports%2F2026' }),
+      res,
+    );
+    expect(captured.statusCode).toBe(200);
+    const body = captured.body as AgentUserFilesResponse;
+    if (body.kind !== 'dir') throw new Error('expected dir');
+    // The client puts this key straight back on the wire, so it has to be the
+    // whole path and not just the leaf.
+    expect(body.entries[0]?.path).toBe('reports/2026/summary.md');
+    expect(body.name).toBe('2026');
+  });
+
+  it('says out loud when a listing was cut short', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerAgents();
+    registerReader();
+    tier.set('', {
+      kind: 'dir',
+      entries: Array.from({ length: USER_FILES_ENTRIES_MAX + 3 }, (_v, i) => ({
+        name: `f${String(i)}.txt`,
+        kind: 'file' as const,
+      })),
+    });
+    const { res, captured } = mkRes();
+    await makeWorkspaceHandlers({ bus, initCtx }).agentUserFiles(
+      mkReq({ agentId: 'a1' }),
+      res,
+    );
+    const body = captured.body as AgentUserFilesResponse;
+    if (body.kind !== 'dir') throw new Error('expected dir');
+    expect(body.entries).toHaveLength(USER_FILES_ENTRIES_MAX);
+    expect(body.truncated).toBe(true);
+  });
+
+  it('FENCES an entry name and keeps the raw key intact', async () => {
+    // Nothing on this tier has been through a git commit, so a filename here
+    // is as agent-authored as it gets — the Trojan-source surface
+    // (CVE-2021-42574) with no intermediate review at all.
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerAgents();
+    registerReader();
+    const raw = 'inv‮oice.md';
+    tier.set('', { kind: 'dir', entries: [{ name: raw, kind: 'file' }] });
+    const { res, captured } = mkRes();
+    await makeWorkspaceHandlers({ bus, initCtx }).agentUserFiles(
+      mkReq({ agentId: 'a1' }),
+      res,
+    );
+    const body = captured.body as AgentUserFilesResponse;
+    if (body.kind !== 'dir') throw new Error('expected dir');
+    // The KEY keeps the override — it is what the read is addressed by, and
+    // fencing a key collapses two distinct paths onto one row.
+    expect(body.entries[0]?.path).toBe(raw);
+    // The LABEL does not — that is the string that reaches a screen.
+    expect(body.entries[0]?.name).not.toContain('‮');
+  });
+
+  it('does NOT apply the governed tier’s exclusions', async () => {
+    /*
+      `.ax/`, `.claude/` and `memory/` are hidden on the OTHER tier because
+      they are AX's machinery there. On the durable tier they are just names,
+      and `memory/` in particular is a perfectly ordinary thing for a person to
+      call a folder. Hiding it would be a lie about their own files.
+    */
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerAgents();
+    registerReader();
+    tier.set('memory/notes.md', { kind: 'file', contents: enc.encode('mine') });
+    const { res, captured } = mkRes();
+    await makeWorkspaceHandlers({ bus, initCtx }).agentUserFile(
+      mkReq({ agentId: 'a1', '*': 'memory%2Fnotes.md' }),
+      res,
+    );
+    expect(captured.statusCode).toBe(200);
+    expect((captured.body as AgentUserFilesResponse & { body?: string }).body).toBe(
+      'mine',
+    );
+  });
+
+  // --- reading ------------------------------------------------------------
+
+  it('serves a file body, decoded the same way the other tier is', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerAgents();
+    registerReader();
+    tier.set('reports/summary.md', {
+      kind: 'file',
+      contents: enc.encode('# Plan\n\nShip it.'),
+    });
+    const { res, captured } = mkRes();
+    await makeWorkspaceHandlers({ bus, initCtx }).agentUserFile(
+      mkReq({ agentId: 'a1', '*': 'reports%2Fsummary.md' }),
+      res,
+    );
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toEqual({
+      kind: 'file',
+      path: 'reports/summary.md',
+      name: 'summary.md',
+      body: '# Plan\n\nShip it.',
+      clipped: null,
+    } satisfies AgentUserFilesResponse);
+  });
+
+  it('says a binary body is binary rather than shipping mojibake', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerAgents();
+    registerReader();
+    tier.set('chart.png', {
+      kind: 'file',
+      contents: Uint8Array.from([0x89, 0x50, 0x00, 0x01]),
+    });
+    const { res, captured } = mkRes();
+    await makeWorkspaceHandlers({ bus, initCtx }).agentUserFile(
+      mkReq({ agentId: 'a1', '*': 'chart.png' }),
+      res,
+    );
+    const body = captured.body as AgentUserFilesResponse;
+    if (body.kind !== 'file') throw new Error('expected file');
+    expect(body.body).toBeNull();
+    expect(body.clipped).toBe('binary');
+  });
+
+  it('clips a long body and SAYS it clipped it', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerAgents();
+    registerReader();
+    tier.set('log.txt', {
+      kind: 'file',
+      contents: enc.encode('x'.repeat(FILE_BODY_MAX_BYTES + 10)),
+    });
+    const { res, captured } = mkRes();
+    await makeWorkspaceHandlers({ bus, initCtx }).agentUserFile(
+      mkReq({ agentId: 'a1', '*': 'log.txt' }),
+      res,
+    );
+    const body = captured.body as AgentUserFilesResponse;
+    if (body.kind !== 'file') throw new Error('expected file');
+    expect(body.body).toHaveLength(FILE_BODY_MAX_BYTES);
+    expect(body.clipped).toBe('too-large');
+  });
+
+  it('404s an absent path — the same answer as an absent tier', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerAgents();
+    registerReader();
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+
+    // Nothing seeded: the reader answers `absent` for the root AND for a path.
+    const root = mkRes();
+    await h.agentUserFiles(mkReq({ agentId: 'a1' }), root.res);
+    expect(root.captured.statusCode).toBe(404);
+
+    const missing = mkRes();
+    await h.agentUserFile(mkReq({ agentId: 'a1', '*': 'gone.md' }), missing.res);
+    expect(missing.captured.statusCode).toBe(404);
+
+    // Identical bodies too. A different error code for "no tier here" would
+    // be readable from outside, and the tier is one export for every tenant.
+    expect(root.captured.body).toEqual(missing.captured.body);
+  });
+
+  it('routes the read on the AGENT’s own context and owner, never the plugin’s', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerAgents();
+    registerReader();
+    tier.set('', { kind: 'dir', entries: [] });
+    const { res } = mkRes();
+    await makeWorkspaceHandlers({ bus, initCtx }).agentUserFiles(
+      mkReq({ agentId: 'a1' }),
+      res,
+    );
+    // The owner's agentId is what the provider joins onto the export root, so
+    // if this were ever the plugin's own id the read would land in the wrong
+    // subtree — or in none at all.
+    expect(reads[0]?.ownerAgentId).toBe('a1');
+    expect(reads[0]?.agentId).toBe('a1');
   });
 });

@@ -63,6 +63,8 @@ import type {
   PermissionRow,
   RailActivity,
   ThreadMessage,
+  UserFileEntry,
+  UserFilesAnswer,
   WorkspaceAgent,
   WorkspaceFileBody,
   WorkspaceFileSummary,
@@ -81,6 +83,8 @@ export type {
   PermissionRow,
   RailActivity,
   ThreadMessage,
+  UserFileEntry,
+  UserFilesAnswer,
   WorkspaceAgent,
   WorkspaceFileBody,
   WorkspaceFileSummary,
@@ -487,6 +491,25 @@ export const workspaceApi = {
   file: (agentId: string, path: string) =>
     req<WorkspaceFileBody>(
       `/agents/${encodeURIComponent(agentId)}/files/${encodeURIComponent(path)}`,
+    ),
+
+  /**
+   * One path in the agent's DURABLE user-files tier — its cwd and HOME.
+   *
+   * A different backend from `files`/`file` above, not a different view of the
+   * same one: those read the git-backed tier AX manages, this reads the tier
+   * the agent actually works in. One call for both a directory listing and a
+   * file body, because the server is the one that knows which a path is.
+   *
+   * `relPath` is encoded WHOLE — slashes included — for the same reason `file`
+   * does it: the server receives one splat and decodes it exactly once.
+   * Encoding per-segment would leave real slashes on the wire and let
+   * `a/../b` and `a%2F..%2Fb` reach the same read down two different paths.
+   */
+  userFiles: (agentId: string, relPath: string) =>
+    req<UserFilesAnswer>(
+      `/agents/${encodeURIComponent(agentId)}/user-files` +
+        (relPath === '' ? '' : `/${encodeURIComponent(relPath)}`),
     ),
 
   /**
