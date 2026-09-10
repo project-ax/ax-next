@@ -24,7 +24,7 @@
   "dependencies": {
     "@ax/core": "workspace:*",
     "@ax/skills-parser": "workspace:*",
-    "js-yaml": "^4.3.1",
+    "js-yaml": "^4.3.2",
     "kysely": "0.28.17",
     "zod": "^3.23.8"
   },
@@ -42,6 +42,6 @@
     "@types/pg": "8.20.0",
     "pg": "8.20.0",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.4"
+    "vitest": "^4.1.11"
   }
 }
