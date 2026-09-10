@@ -141,43 +141,53 @@ export function communicationNote(): string {
 }
 
 /**
- * Operational note telling the agent where its workspace is and how to resolve
- * workspace-relative paths — fixed runner-authored prose for the LLM.
+ * Operational note telling the agent which directory it is standing in and where
+ * shared + self-owned files live — fixed runner-authored prose for the LLM.
  *
  * Without this the model treats an attachment path like `.ax/uploads/…` as a
- * home dotfile and reads it under `~`/`/home/<user>/…` instead of the workspace
+ * home dotfile and reads it under `~`/`/home/<user>/…` instead of the governed
  * root, so the read fails (the runner's PreToolUse hook re-roots it as a
  * safety net — see `resolveGovernedPaths` — but stating the root up front
  * makes the model emit the right path directly).
  *
+ * VOCABULARY (deliberate): this prose never says "workspace". That word names
+ * five unrelated things in this system — the governed `/agent` tier, the durable
+ * `/files` mount, the `/api/workspace` UI surface, the host PVC, and a scope on
+ * `connector_propose` — and the agent-facing surface is the one place the
+ * ambiguity actually costs something: the model has to do path arithmetic with
+ * it, and the wrong referent fails silently. So the notes use exactly three
+ * terms, each bound to one root: "your files" (`cwd`), "your agent state"
+ * (`workspaceRoot`), and "scratch space" (`ephemeralRoot`). Keep it that way.
+ *
  * filestore-user-files Phase 2 (TASK-164): `cwd` is the agent's working
- * directory (`AX_USERFILES_ROOT`=/workspace when a durable mount is wired, else
+ * directory (`AX_USERFILES_ROOT`=/files when a durable mount is wired, else
  * `workspaceRoot`). When the two DIFFER the note states both — the working dir
  * the agent operates in, and the governed `workspaceRoot` that shared files
  * (`.ax/uploads/…`) actually live under — so the model resolves attachments
  * against the governed root, not the new cwd (where they don't exist). When they
- * match (today / no durable mount) the prose is the original single-root form.
+ * match (no durable mount) the prose collapses to the single-root form.
  * Both `workspaceRoot` and `cwd` are host-controlled (AX_WORKSPACE_ROOT /
  * AX_USERFILES_ROOT), never model/user/tool input.
  */
 export function workspaceNote(workspaceRoot: string, cwd: string = workspaceRoot): string {
   if (cwd === workspaceRoot) {
     return [
-      `Workspace: \`${workspaceRoot}\` is your current working directory and the`,
-      `root of your workspace — everything you create, and every file shared with`,
-      `you, lives under it. Workspace-relative paths shown to you (for example a`,
-      `user-attached file at \`.ax/uploads/…\`) are relative to \`${workspaceRoot}\`:`,
-      `open them as \`${workspaceRoot}/.ax/uploads/…\` (or as a path relative to your`,
-      `working directory) — NEVER under a home directory like \`~\` or \`/home/…\`.`,
+      `Your files: \`${workspaceRoot}\` is your current working directory —`,
+      `everything you create, and every file shared with you, lives under it.`,
+      `A file the user shared, shown to you as \`.ax/uploads/…\`, is at`,
+      `\`${workspaceRoot}/.ax/uploads/…\`: open it by that full path (or by a path`,
+      `relative to your working directory) — NEVER under a home directory like`,
+      `\`~\` or \`/home/…\`.`,
     ].join(' ');
   }
   return [
-    `Workspace: \`${cwd}\` is your current working directory — relative paths and`,
-    `new files you create land there. Your governed workspace state lives under`,
-    `\`${workspaceRoot}\` instead: files shared with you (for example a user-attached`,
-    `file at \`.ax/uploads/…\`) and your own \`.ax/…\` and \`.claude/…\` files are`,
-    `under \`${workspaceRoot}\` — open a shared file as \`${workspaceRoot}/.ax/uploads/…\`,`,
-    `NEVER relative to \`${cwd}\` and NEVER under a home directory like \`~\` or \`/home/…\`.`,
+    `Your files: \`${cwd}\` is your current working directory — relative paths and`,
+    `new files you create land there.`,
+    `Your agent state lives under \`${workspaceRoot}\` instead: that is where files`,
+    `the user shared with you (shown to you as \`.ax/uploads/…\`) sit, alongside your`,
+    `own \`.ax/…\` and \`.claude/…\` files. Open a shared file as`,
+    `\`${workspaceRoot}/.ax/uploads/…\` — NEVER relative to \`${cwd}\`, and NEVER under`,
+    `a home directory like \`~\` or \`/home/…\`.`,
   ].join(' ');
 }
 
@@ -188,36 +198,36 @@ export function workspaceNote(workspaceRoot: string, cwd: string = workspaceRoot
 export function ephemeralScratchNote(ephemeralRoot: string): string {
   return [
     `Scratch space: \`${ephemeralRoot}\` is a writable, session-scoped scratch directory.`,
-    `Use it for throwaway files — temporary git clones, build caches, intermediate artifacts —`,
-    `that should NOT become part of the workspace.`,
-    `Anything you write under \`${ephemeralRoot}\` is discarded when the session ends and is`,
-    `never committed or saved. Your current working directory persists and is saved at the`,
-    `end of each turn; \`${ephemeralRoot}\` does not. Prefer \`${ephemeralRoot}\` for any file`,
-    `you don't need to keep.`,
+    `Use it for throwaway files — temporary git clones, build caches, intermediate build`,
+    `output — that you do not need to keep.`,
+    `Anything you write under \`${ephemeralRoot}\` is discarded when the session ends.`,
+    `Your working directory persists; \`${ephemeralRoot}\` does not. Prefer`,
+    `\`${ephemeralRoot}\` for any file that only matters until you are done with it.`,
   ].join(' ');
 }
 
 /**
- * Operational note telling the agent that `userFilesRoot` is durable, shared
- * storage for the user's working files — fixed runner-authored prose for the
- * LLM (filestore-user-files Phase 1, design §6). Phase 1 only ADDS this mount to
- * the agent's reachable directories; the agent's working directory is still the
- * governed `/agent` tier (cwd/HOME re-root is Phase 2 / TASK-164), so the note
- * tells the agent to use the durable root EXPLICITLY by path for files that
- * should persist live across sessions (large/binary data, datasets, cloned
- * repos) and outlive the per-turn git round-trip. `userFilesRoot` is
- * host-controlled (AX_USERFILES_ROOT), never model/user/tool input.
+ * Operational note telling the agent what belongs in `userFilesRoot` — the
+ * durable mount that persists across sessions without being versioned. Fixed
+ * runner-authored prose for the LLM (filestore-user-files Phase 1, design §6).
+ *
+ * Since Phase 2 (TASK-164) this root is normally also the agent's cwd, and
+ * `workspaceNote` has already introduced it as "your files". This note adds only
+ * the durability contract and what to put there — it does not re-introduce the
+ * directory, so the two notes read as one paragraph rather than two overlapping
+ * ones. (When Phase 1 semantics apply — mount wired but cwd still on the
+ * governed tier — it still stands alone correctly, because it names the root by
+ * its full path.) `userFilesRoot` is host-controlled (AX_USERFILES_ROOT), never
+ * model/user/tool input.
  */
 export function userFilesNote(userFilesRoot: string): string {
   return [
-    `Durable files: \`${userFilesRoot}\` is a writable directory that persists`,
-    `across sessions and is NOT versioned by the per-turn workspace snapshot.`,
-    `Write files there (by their full \`${userFilesRoot}/…\` path) when you want`,
-    `them to live across sessions without being committed — large or binary data,`,
-    `datasets, downloaded or cloned repositories, build trees. Files you write`,
-    `under \`${userFilesRoot}\` stay exactly as you left them next time; they are`,
-    `the right home for anything big or long-lived that does not belong in your`,
-    `versioned workspace.`,
+    `Keeping files: \`${userFilesRoot}\` persists across sessions and is not`,
+    `versioned — nothing there is committed, and nothing there is deleted for you.`,
+    `Write a file there, by its full \`${userFilesRoot}/…\` path, whenever you want`,
+    `it to survive: documents you produce for the user, datasets, large or binary`,
+    `data, downloaded or cloned repositories, build trees. Files you write under`,
+    `\`${userFilesRoot}\` stay exactly as you left them next time.`,
   ].join(' ');
 }
 
@@ -329,12 +339,16 @@ export function clarifyingQuestionsNote(): string {
 
 /**
  * Assemble the runner-authored operational notes block, in order:
- *   workspace → (ephemeral-scratch?) → (python-venv?) → capability-handoff →
- *   skill-authoring → clarifying-questions.
+ *   roots → (keeping-files?) → (ephemeral-scratch?) → (python-venv?) →
+ *   capability-handoff → skill-authoring → clarifying-questions.
  *
- * Always includes the workspace note (the root is always known); the
- * ephemeral-scratch and python-venv notes are conditional on the sandbox
- * having wired a scratch tier / venv. The capability-handoff and
+ * The roots note comes first and is always present (the root is always known).
+ * The keeping-files note follows it IMMEDIATELY rather than after the scratch
+ * note: both describe the same directory, and separating them made the block
+ * introduce `${userFilesRoot}` twice with an unrelated paragraph in between.
+ * The keeping-files, ephemeral-scratch and python-venv notes are conditional on
+ * the sandbox having wired a durable mount / scratch tier / venv. The
+ * capability-handoff and
  * skill-authoring notes are always present (harmless when the corresponding
  * tools aren't wired). Returns a single string joined by blank lines —
  * always non-empty.
@@ -349,16 +363,18 @@ export function operationalNotes(
   userFilesRoot: string | undefined = undefined,
   // filestore-user-files Phase 2 (TASK-164): the agent's effective working
   // directory. Defaults to workspaceRoot (today's behavior); when a durable
-  // user-files mount moved cwd to /workspace, the workspace note states both the
+  // user-files mount moved cwd to /files, the workspace note states both the
   // working dir and the governed root so attachments still resolve correctly.
   cwd: string = workspaceRoot,
 ): string {
   const notes: string[] = [workspaceNote(workspaceRoot, cwd)];
-  if (ephemeralRoot !== undefined) notes.push(ephemeralScratchNote(ephemeralRoot));
   // filestore-user-files Phase 1: advertise the durable per-agent mount when
   // the sandbox wired one (AX_USERFILES_ROOT). Conditional like the scratch
-  // note — absent means no durable mount, so we say nothing about it.
+  // note — absent means no durable mount, so we say nothing about it. Kept
+  // adjacent to the roots note above: under Plan 2 they describe the same
+  // directory, so they have to read as one thought.
   if (userFilesRoot !== undefined) notes.push(userFilesNote(userFilesRoot));
+  if (ephemeralRoot !== undefined) notes.push(ephemeralScratchNote(ephemeralRoot));
   if (pythonVenvActive) notes.push(pythonVenvNote());
   // Always-present tail: the JIT capability-handoff note (design §7) so the
   // agent doesn't narrate a mid-conversation connect/approval handoff, the
