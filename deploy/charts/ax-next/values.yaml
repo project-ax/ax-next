@@ -481,6 +481,26 @@ channelWeb:
   # doesn't depend on pnpm's internal node_modules layout. Operators who
   # repackage the image with a different layout can override.
   bundleDir: /opt/ax-next/host/web
+  # The agent-centric workspace surface (`/workspace`) — the roster, the
+  # activity feed, the Files tab and the per-agent rail.
+  #
+  # OFF BY DEFAULT, and that is a real capability boundary rather than a
+  # cosmetic toggle: with it off the preset never registers the
+  # `/api/workspace/*` routes at all, so the surface is not merely hidden,
+  # it does not exist on the wire. Leaving it off is the cheapest
+  # capability minimization there is (invariant #5).
+  #
+  # It renders `AX_AGENT_WORKSPACE_PREVIEW`, which the k8s preset reads. That
+  # env var was readable by the code and settable by nobody until now: the
+  # chart had no value for it, so `helm show values` did not mention it and
+  # turning it on took a hand-written `host.env` block. The whole UI shipped
+  # in the image on 2026-08-24 and no operator could discover how to see it.
+  #
+  # UPGRADING: if you turned this on with a `host.env` entry for
+  # `AX_AGENT_WORKSPACE_PREVIEW`, replace it with `agentWorkspace: true` here.
+  # Setting BOTH renders the env var twice in the container spec — legal, but
+  # the last one wins and which that is depends on template order, so do not.
+  agentWorkspace: false
 
 # ─── HTTP-server config (public surface — issue #39) ─────────────
 # `cookieKey` signs auth-better's session cookie. 32 bytes; provide

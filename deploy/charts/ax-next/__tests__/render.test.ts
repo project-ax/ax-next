@@ -1003,6 +1003,66 @@ describeIfHelm('ax-next chart: auth.secret value (TASK-169)', () => {
   });
 });
 
+// The agent-centric workspace surface (TASK-325). The whole UI shipped in the
+// image on 2026-08-24 and no operator could turn it on: the preset gates route
+// registration on AX_AGENT_WORKSPACE_PREVIEW, and the chart had no value for
+// it, so `helm show values` never mentioned it and enabling it took a
+// hand-written `host.env` block in a gitignored overlay.
+//
+// Nothing caught that, and the reason is worth keeping: the env-shape guard's
+// two gates are "every REQUIRED var is stamped" and "every stamped var is
+// read". This var is read as a bare `process.env` lookup and is OPTIONAL, so
+// it fell between both. These assertions are the replacement — and the OFF
+// case is the load-bearing one, because a flag that silently defaults ON is a
+// capability nobody granted.
+describeIfHelm('ax-next chart: channelWeb.agentWorkspace', () => {
+  function hostEnvEntries(docs: K8sDoc[]): Array<{ name: string; value?: string }> {
+    const dep = docs.find(
+      (d) => d.kind === 'Deployment' && /-host$/.test(String(d.metadata?.name ?? '')),
+    );
+    const containers =
+      ((dep?.spec as { template?: { spec?: { containers?: Array<{ env?: Array<{ name: string; value?: string }> }> } } })
+        ?.template?.spec?.containers) ?? [];
+    return containers[0]?.env ?? [];
+  }
+
+  it('does NOT stamp AX_AGENT_WORKSPACE_PREVIEW by default', () => {
+    // `/api/workspace/*` is never registered without this, so an absent var is
+    // a real capability boundary and not a cosmetic default (invariant #5).
+    expect(
+      hostEnvEntries(helmTemplate([])).filter(
+        (e) => e.name === 'AX_AGENT_WORKSPACE_PREVIEW',
+      ),
+    ).toEqual([]);
+  });
+
+  it('stamps it exactly once, as "1", when opted in', () => {
+    const entries = hostEnvEntries(
+      helmTemplate(['--set', 'channelWeb.agentWorkspace=true']),
+    ).filter((e) => e.name === 'AX_AGENT_WORKSPACE_PREVIEW');
+    // Exactly once: an operator mid-migration may still carry the legacy
+    // `host.env` entry, and two entries with the same name is legal YAML whose
+    // winner depends on template ordering. If this ever reads 2, the values
+    // comment telling operators to remove the old block is being ignored.
+    expect(entries).toEqual([{ name: 'AX_AGENT_WORKSPACE_PREVIEW', value: '1' }]);
+  });
+
+  it('is independent of channelWeb.enabled — the SPA and the surface are separate', () => {
+    // The bundle being served and the workspace ROUTES existing are two
+    // different grants; a headless deploy could want the API surface without
+    // the SPA, and serving the SPA must not silently mount the routes.
+    const entries = hostEnvEntries(
+      helmTemplate([
+        '--set',
+        'channelWeb.enabled=false',
+        '--set',
+        'channelWeb.agentWorkspace=true',
+      ]),
+    ).filter((e) => e.name === 'AX_AGENT_WORKSPACE_PREVIEW');
+    expect(entries).toHaveLength(1);
+  });
+});
+
 // filestore-user-files (design §4/§9) — Filestore config env stamping + the
 // scoped NetworkPolicy egress widening.
 describeIfHelm('ax-next chart: sandbox.filestore wiring', () => {
