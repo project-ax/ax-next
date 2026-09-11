@@ -20,6 +20,6 @@ describe('boot', () => {
   it('mounts the App without throwing', () => {
     const { container } = render(<App />);
     // First paint while auth fetch is in flight is the loading state.
-    expect(container.textContent).toMatch(/connecting/i);
+    expect(container.textContent).toMatch(/getting things ready/i);
   });
 });

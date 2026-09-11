@@ -44,6 +44,7 @@ import { useTitleEvents } from './lib/use-title-events';
 import { useHydrateAgents } from './components/AgentChip';
 import { FirstRunAutoCreate } from './components/onboard/FirstRunAutoCreate';
 import { NewAgentDialog } from './components/onboard/NewAgentDialog';
+import { BootScreen } from './components/BootScreen';
 import { LoginPage } from './components/LoginPage';
 import { WorkspaceShell } from './components/workspace/WorkspaceShell';
 import { fetchFeatures, DEFAULT_FEATURES, type Features } from './lib/features';
@@ -218,11 +219,11 @@ export const App = () => {
   }, []);
 
   if (mode.kind === 'loading') {
-    return (
-      <div className="flex items-center justify-center min-h-screen text-muted-foreground font-mono text-xs tracking-[0.04em]">
-        connecting…
-      </div>
-    );
+    // (TASK-339 / audit B6) The boot fetch has no timeout, so this used to be a
+    // terminal state: a host that accepted the connection and never answered
+    // left `connecting…` on screen forever with nothing suggesting a reload.
+    // BootScreen says so after ten seconds.
+    return <BootScreen message="Getting things ready…" />;
   }
   if (mode.kind === 'wizard') {
     return <SetupWizard />;
@@ -233,7 +234,8 @@ export const App = () => {
   // Checked AFTER the loading/wizard branches on purpose — see the note where
   // `sessionExpired` is read. A session can only end once it existed.
   if (sessionExpired) {
-    return <LoginPage />;
+    // (B1) Say why they are suddenly looking at a sign-in page.
+    return <LoginPage sessionExpired />;
   }
   return <AppContent user={mode.user} features={mode.features} />;
 };
@@ -307,11 +309,7 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
   }, [agents, selectedAgentId, pendingAgentId, runtime]);
 
   if (agentsStatus === 'loading') {
-    return (
-      <div className="flex items-center justify-center min-h-screen text-muted-foreground font-mono text-xs tracking-[0.04em]">
-        loading your agents…
-      </div>
-    );
+    return <BootScreen message="Loading your agents…" />;
   }
 
   // First-run (no personal agent yet) OR the explicit "+ New agent…" entry.
