@@ -179,3 +179,35 @@ than a release. Take model ids from a live `GET /api/v1/models`; two of the
 three tried here were dead, and a dead id fails closed into a silent BM25
 fallback.
 
+### Follow-up probe — `z-ai/glm-5.3-flash`, same day
+
+Asked for on the strength of its price (~$0.15/M in, $0.50/M out — roughly 7×
+cheaper in and 10× cheaper out than haiku 4.5).
+
+| config | n | min | p50 | mean | p95 | max |
+|---|---|---|---|---|---|---|
+| openrouter / `z-ai/glm-5.3-flash:nitro` | 19 | 476 | 2498 | 2027 | 4330 | 4381 |
+| openrouter / `z-ai/glm-5.3-flash` (plain) | 19 | 4206 | **5146** | 5350 | 6604 | 6703 |
+| openrouter / `anthropic/claude-haiku-4.5` | 19 | 902 | 1018 | 1071 | 1371 | 1997 |
+| xai-direct (reference) | 19 | 587 | 750 | 761 | 1022 | 1151 |
+
+- **`:nitro` is load-bearing, not a tweak.** Plain `glm-5.3-flash` has a p50 of
+  5146ms — *above* the 5000ms budget — so it would fall back to BM25 on more
+  than half of all calls. The `:nitro` suffix (OpenRouter sorts the provider
+  pool by throughput) roughly halves that. Note `:nitro` is a routing suffix,
+  not a catalogue entry: it does not appear in `GET /api/v1/models`, so it can
+  only be validated by calling it.
+- **`:nitro` is BIMODAL, which the p50 hides.** Raw samples: 715, 654, 476, 587,
+  592, 2515, 3283, 3052, 538, 726, 3644, 4381, 4324, 650, 3784, 687, 2741,
+  2498, 2661. About half the calls beat haiku outright (~500–730ms); the rest
+  land at 2.5–4.4s. That is a heterogeneous provider pool, re-sorted per call.
+- **Haiku 4.5 stays the default.** Its WORST call (1997ms) is better than
+  `:nitro`'s median, and a hard timeout with a silent fallback rewards a tight
+  distribution over a good average. `:nitro`'s p95 leaves ~670ms of headroom,
+  measured on one LongMemEval-S subset map — a larger map spends that.
+- **When to switch anyway:** if orchestrator spend ever dominates, the ~7–10×
+  price difference is real and the failure mode is graceful (BM25, not a wrong
+  answer). Set `memory.orchestratorModel: z-ai/glm-5.3-flash:nitro` and
+  consider raising `orchestrator.timeoutMs` above 5s first, since the slow mode
+  is where most of the risk sits.
+

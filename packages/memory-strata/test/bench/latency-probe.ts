@@ -22,7 +22,6 @@ import { BenchCache } from './cache.js';
 import { loadLongMemEvalS } from './corpora/longmemeval-s.js';
 import { generateMap } from './map.js';
 import {
-  makeAnthropicOrchestratorClient,
   makeOpenRouterOrchestratorClient,
   makeXaiOrchestratorClient,
   runOrchestrator,
@@ -158,20 +157,20 @@ async function main(): Promise<number> {
     // to pick the production default on evidence rather than on a name that
     // sounds current.
     const orCandidates: Array<[string, string]> = [
-      ['grok-4.3', 'x-ai/grok-4.3'],
-      ['haiku-4.5', 'anthropic/claude-haiku-4.5'],
-      ['gemini-3.8-flash', 'google/gemini-3.8-flash'],
+      ['haiku-4.5 (DEFAULT)', 'anthropic/claude-haiku-4.5'],
+      // Cheapest arm that fits the budget, but only WITH `:nitro` — plain
+      // `z-ai/glm-5.3-flash` measured a 5146ms p50, above the 5000ms timeout.
+      // `:nitro` is a routing suffix, not a catalogue id, so it never appears
+      // in `GET /api/v1/models`; calling it is the only way to check it.
+      ['glm-5.3-flash:nitro', 'z-ai/glm-5.3-flash:nitro'],
       ['deepseek-v4.1-flash', 'deepseek/deepseek-v4.1-flash'],
+      ['gemini-3.8-flash', 'google/gemini-3.8-flash'],
     ];
     const configs: ProbeConfig[] = orCandidates.map(([label, model]) => ({
       name: `openrouter/${label}`,
       client: makeOpenRouterOrchestratorClient(env.OPENROUTER_API_KEY, model),
     }));
-    // Reference point: the same model family, not through OpenRouter.
-    configs.push({
-      name: 'haiku-anthropic-direct (reference)',
-      client: makeAnthropicOrchestratorClient(env.ANTHROPIC_API_KEY),
-    });
+
     if (xaiKey) {
       configs.push({
         name: 'grok-xai-direct',
