@@ -374,7 +374,7 @@ describe('orchestrator path', () => {
     }));
     bus.registerService('llm:call:openrouter', 'test-provider', llmCall);
     await registerMemorySearch(bus, {
-      orchestrator: { hook: 'llm:call:openrouter', model: 'x-ai/grok-4-fast' },
+      orchestrator: { hook: 'llm:call:openrouter', model: 'z-ai/glm-5.3-flash:nitro' },
     });
 
     const out = await bus.call(
@@ -398,7 +398,7 @@ describe('orchestrator path', () => {
       throw new Error('no-openrouter-credential');
     });
     await registerMemorySearch(bus, {
-      orchestrator: { hook: 'llm:call:openrouter', model: 'x-ai/grok-4-fast' },
+      orchestrator: { hook: 'llm:call:openrouter', model: 'z-ai/glm-5.3-flash:nitro' },
     });
 
     const out = await bus.call(
@@ -415,7 +415,7 @@ describe('orchestrator path', () => {
     await writeMapFile(workspaceRoot, MAP_BODY);
     const { bus, capturedSearchInputs } = makeOrchestratorBus();
     await registerMemorySearch(bus, {
-      orchestrator: { hook: 'llm:call:openrouter', model: 'x-ai/grok-4-fast' },
+      orchestrator: { hook: 'llm:call:openrouter', model: 'z-ai/glm-5.3-flash:nitro' },
     });
 
     await bus.call(

@@ -45,7 +45,7 @@ describe('rewriteMapSummaries', () => {
     ]);
     const { client, calls } = makeStubClient((u) => `REWRITE: ${u.slice(0, 40)}`);
 
-    const result = await rewriteMapSummaries({ corpus, grokClient: client, cachePath });
+    const result = await rewriteMapSummaries({ corpus, rewriteClient: client, cachePath });
 
     expect(calls.count()).toBe(2);
     expect(result.size).toBe(2);
@@ -73,7 +73,7 @@ describe('rewriteMapSummaries', () => {
     writeMapRewriteCache(cachePath, seeded);
 
     const { client, calls } = makeStubClient(() => 'FRESH');
-    const result = await rewriteMapSummaries({ corpus, grokClient: client, cachePath });
+    const result = await rewriteMapSummaries({ corpus, rewriteClient: client, cachePath });
 
     expect(calls.count()).toBe(1); // only s-2 hit the model
     expect(result.get('episodes/s-1')).toBe('cached-s-1');
@@ -92,7 +92,7 @@ describe('rewriteMapSummaries', () => {
     writeMapRewriteCache(cachePath, stale);
 
     const { client, calls } = makeStubClient(() => 'FRESH-REWRITE');
-    const result = await rewriteMapSummaries({ corpus, grokClient: client, cachePath });
+    const result = await rewriteMapSummaries({ corpus, rewriteClient: client, cachePath });
 
     expect(calls.count()).toBe(1);
     expect(result.get('episodes/s-1')).toBe('FRESH-REWRITE');
@@ -122,7 +122,7 @@ describe('rewriteMapSummaries', () => {
       },
     };
 
-    await rewriteMapSummaries({ corpus, grokClient: client, cachePath, concurrency: 4 });
+    await rewriteMapSummaries({ corpus, rewriteClient: client, cachePath, concurrency: 4 });
 
     expect(peak).toBeLessThanOrEqual(4);
     expect(peak).toBeGreaterThan(1); // sanity: workers did run in parallel
@@ -140,7 +140,7 @@ describe('rewriteMapSummaries', () => {
     });
     const onProgress = vi.fn();
     const { client } = makeStubClient(() => 'FRESH');
-    await rewriteMapSummaries({ corpus, grokClient: client, cachePath, onProgress });
+    await rewriteMapSummaries({ corpus, rewriteClient: client, cachePath, onProgress });
     // First call must reflect the pre-cached entry (done=1, total=2).
     expect(onProgress).toHaveBeenCalledWith(1, 2);
     expect(onProgress).toHaveBeenLastCalledWith(2, 2);
@@ -155,7 +155,7 @@ describe('rewriteMapSummaries', () => {
     );
     const corpus = corpusOf(docs);
     const { client } = makeStubClient(() => 'OK');
-    await rewriteMapSummaries({ corpus, grokClient: client, cachePath, concurrency: 1 });
+    await rewriteMapSummaries({ corpus, rewriteClient: client, cachePath, concurrency: 1 });
     expect(existsSync(cachePath)).toBe(true);
     const onDisk = JSON.parse(readFileSync(cachePath, 'utf8')) as MapRewriteCache;
     expect(Object.keys(onDisk).length).toBe(60);

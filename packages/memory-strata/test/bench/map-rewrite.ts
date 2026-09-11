@@ -13,7 +13,12 @@ export type MapRewriteCache = Record<string, MapRewriteCacheEntry>;
 
 export interface MapRewriteOptions {
   corpus: BenchCorpus;
-  grokClient: OrchestratorClient;
+  /**
+   * Client that rewrites each doc's summary. Named for a model until
+   * 2026-09-11 — the name outlived `x-ai/grok-4.1-fast` by months, which is
+   * how a dead id stayed invisible in the call site.
+   */
+  rewriteClient: OrchestratorClient;
   cachePath: string;
   concurrency?: number;
   onProgress?: (done: number, total: number) => void;
@@ -142,7 +147,7 @@ export async function rewriteMapSummaries(
   const FLUSH_EVERY = 50;
 
   await withConcurrency(todo, concurrency, async (task) => {
-    const summary = await rewriteOne(opts.grokClient, task.doc);
+    const summary = await rewriteOne(opts.rewriteClient, task.doc);
     cache[task.doc.path] = { hash: task.hash, summary };
     done++;
     sinceFlush++;
