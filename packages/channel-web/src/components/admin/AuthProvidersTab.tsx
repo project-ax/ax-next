@@ -9,6 +9,7 @@
 import { useEffect, useState } from 'react';
 import { Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
 import {
   Dialog,
   DialogContent,
@@ -37,8 +38,12 @@ export function AuthProvidersTab() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  // The provider awaiting delete confirmation (null = no dialog). Styled-confirm
-  // pattern (TASK-117: project-wide styled Dialog) — no OS `window.confirm`.
+  // Providers awaiting confirmation (null = no dialog). Styled-confirm pattern
+  // (TASK-117: project-wide styled Dialog) — no OS `window.confirm`.
+  // `pendingDisable` is the last-enabled-provider lockout guard (TASK-342/D5).
+  const [pendingDisable, setPendingDisable] = useState<AuthProviderEntry | null>(
+    null,
+  );
   const [pendingDelete, setPendingDelete] = useState<AuthProviderEntry | null>(
     null,
   );
@@ -50,6 +55,9 @@ export function AuthProvidersTab() {
       setProviders(list);
       setLoadError(null);
     } catch (err) {
+      // The detail belongs in the console, not in a banner an admin has to
+      // read past to find the Try again button.
+      console.warn('[auth-providers] could not load sign-in methods', err);
       setLoadError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
@@ -60,14 +68,43 @@ export function AuthProvidersTab() {
     void fetchProviders();
   }, []);
 
-  const handleToggle = async (p: AuthProviderEntry) => {
+  /**
+   * (TASK-342 / audit D5) Disabling the last enabled provider locks EVERY user
+   * out of this deployment, including the admin doing it — there is no other
+   * way in, and no way back through the UI once you are out. It used to be one
+   * unremarkable click on a toggle that looked exactly like the other toggles.
+   *
+   * So the last one asks first. Any other toggle still flips immediately: a
+   * confirmation on every switch would train people to click through this one.
+   */
+  const enabledCount = providers.filter((p) => p.enabled).length;
+  const isLastEnabled = (p: AuthProviderEntry): boolean =>
+    p.enabled && enabledCount === 1;
+
+  const applyToggle = async (p: AuthProviderEntry) => {
     setActionError(null);
     try {
       await setAuthProviderEnabled(p.kind, !p.enabled);
       await fetchProviders();
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
+      console.warn('[auth-providers] could not change that sign-in method', err);
+      setActionError('We couldn’t change that sign-in method. Give it another try in a moment.');
     }
+  };
+
+  const handleToggle = async (p: AuthProviderEntry) => {
+    if (isLastEnabled(p)) {
+      setPendingDisable(p);
+      return;
+    }
+    await applyToggle(p);
+  };
+
+  const confirmDisable = async () => {
+    if (!pendingDisable) return;
+    const p = pendingDisable;
+    setPendingDisable(null);
+    await applyToggle(p);
   };
 
   const confirmDelete = async () => {
@@ -99,14 +136,19 @@ export function AuthProvidersTab() {
 
       {loadError && (
         <PaneStatus variant="error" className="mb-3 flex items-center justify-between gap-3">
-          <span>Couldn't load providers: {loadError}</span>
+          {/* The raw message went to the console with TASK-342; and the button
+              says "Try again" now, which is the label the audit and the track's
+              copy spec settle on. TASK-341 introduced the same pair in
+              ModelConfigTab and flagged that this one still read "Retry" —
+              this is that alignment. */}
+          <span>We couldn’t load your sign-in methods.</span>
           <Button
             type="button"
             variant="outline"
             size="sm"
             onClick={() => void fetchProviders()}
           >
-            Retry
+            Try again
           </Button>
         </PaneStatus>
       )}
@@ -136,24 +178,13 @@ export function AuthProvidersTab() {
                 {p.clientId}
               </span>
             </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={p.enabled}
+            {/* (D5) Was a hand-rolled switch — two divs and a translate. The
+                primitive is installed and brings its own keyboard handling. */}
+            <Switch
+              checked={p.enabled}
               aria-label={`${p.enabled ? 'Disable' : 'Enable'} ${KIND_LABEL[p.kind]}`}
-              onClick={() => void handleToggle(p)}
-              className={
-                'inline-flex items-center h-6 w-11 px-0.5 rounded-full transition-colors ' +
-                (p.enabled ? 'bg-primary' : 'bg-input')
-              }
-            >
-              <span
-                className={
-                  'block h-5 w-5 bg-background rounded-full shadow transition-transform ' +
-                  (p.enabled ? 'translate-x-5' : 'translate-x-0')
-                }
-              />
-            </button>
+              onCheckedChange={() => void handleToggle(p)}
+            />
             <Button
               type="button"
               variant="ghost"
@@ -183,6 +214,39 @@ export function AuthProvidersTab() {
             </Button>
           </div>
         )
+      )}
+
+      {/* (D5) The last sign-in method asks before it goes. Nothing else on this
+          page can lock every user, including this admin, out of the product. */}
+      {pendingDisable !== null && (
+        <Dialog
+          open={true}
+          onOpenChange={(v) => {
+            if (!v) setPendingDisable(null);
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Turn off the only way to sign in?</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">
+              <span className="font-medium text-foreground">
+                {KIND_LABEL[pendingDisable.kind]}
+              </span>{' '}
+              is the only sign-in method still switched on. Turning it off will
+              lock everyone out — including you, and including this page. Add
+              another method first if you can.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setPendingDisable(null)}>
+                Keep it on
+              </Button>
+              <Button variant="destructive" onClick={() => void confirmDisable()}>
+                Turn it off anyway
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
       )}
 
       {/* Delete confirmation dialog (styled — no OS confirm). */}
