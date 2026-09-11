@@ -15,7 +15,7 @@ describe('CredentialSlotRow', () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it('renders the slot label and "Set credential" when not set', async () => {
+  it('renders a humanized slot label and an Add key button when not set', async () => {
     render(
       <CredentialSlotRow
         destination={{ kind: 'skill-slot', skillId: 'linear-tracker', slot: 'LINEAR_TOKEN' }}
@@ -23,8 +23,8 @@ describe('CredentialSlotRow', () => {
         scope={{ scope: 'agent', ownerId: 'agt-1' }}
       />,
     );
-    expect(await screen.findByText('LINEAR_TOKEN')).toBeInTheDocument();
-    expect(await screen.findByRole('button', { name: /set credential/i })).toBeInTheDocument();
+    expect(await screen.findByText('Linear token')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /add key/i })).toBeInTheDocument();
   });
 
   it('opens the sheet on click', async () => {
@@ -35,11 +35,11 @@ describe('CredentialSlotRow', () => {
         scope={{ scope: 'agent', ownerId: 'agt-1' }}
       />,
     );
-    fireEvent.click(await screen.findByRole('button', { name: /set credential/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /add key/i }));
     await waitFor(() =>
       expect(screen.getByRole('dialog')).toBeInTheDocument(),
     );
-    // The dialog title contains "LINEAR_TOKEN"; multiple elements may match due to the row label
-    expect(screen.getAllByText(/LINEAR_TOKEN/).length).toBeGreaterThan(0);
+    // The dialog title carries the humanized label; multiple elements may match due to the row label
+    expect(screen.getAllByText(/Linear token/i).length).toBeGreaterThan(0);
   });
 });

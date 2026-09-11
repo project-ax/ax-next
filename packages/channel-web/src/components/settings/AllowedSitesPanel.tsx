@@ -80,10 +80,15 @@ export function AllowedSitesPanel() {
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="text-sm font-medium text-foreground">Allowed sites</h3>
+          {/* (TASK-344 / audit E6) Matches the lead-in A12 put on the permission
+              card: say what the list IS before showing it, in the same words.
+              This opened on "Not connectors" — a negation about our own
+              taxonomy, leading with what the thing is not. */}
           <p className="text-xs text-muted-foreground">
-            Not connectors — individual hosts your agents are allowed to reach.
-            Each site lists which agents it applies to; add one ahead of time, or
-            grant it “always allow” when an agent asks mid-task.
+            Sites your agents may reach. These are plain web addresses rather
+            than connected services, and each one lists which agents it applies
+            to — add a site ahead of time, or allow it when an agent asks
+            mid-task.
           </p>
         </div>
         <Button size="sm" disabled={agents.length === 0} onClick={() => setAdding(true)}>

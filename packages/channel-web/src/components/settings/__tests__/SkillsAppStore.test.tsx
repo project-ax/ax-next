@@ -142,7 +142,7 @@ describe('SkillsAppStore', () => {
     await screen.findByTestId('catalog-pdf-tools');
     fireEvent.click(screen.getByRole('button', { name: /^Install$/i }));
     // The consent dialog titles itself "Install <skillId>".
-    expect(await screen.findByText('Install pdf-tools')).toBeInTheDocument();
+    expect(await screen.findByText('Install PDF tools')).toBeInTheDocument();
   });
 
   it('a non-admin does NOT see admin curation affordances', async () => {

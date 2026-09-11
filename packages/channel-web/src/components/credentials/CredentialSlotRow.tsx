@@ -1,10 +1,17 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet';
 import type { Destination } from '@ax/credentials';
 import { CredentialSlotForm } from './CredentialSlotForm';
 import { adminCredentials, myCredentials, refForDestination } from '@/lib/credentials';
+import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
 
 export interface CredentialSlotRowProps {
   destination: Destination;
@@ -16,6 +23,10 @@ export function CredentialSlotRow({ destination, slot, scope }: CredentialSlotRo
   const ref = refForDestination(destination);
   const [open, setOpen] = useState(false);
   const [isSet, setIsSet] = useState(false);
+  // Display only. `ref` above is what actually decides where the key is stored,
+  // and nothing here feeds it — reusing TASK-334's shared helper (invariant 4:
+  // one humanizer, not one per surface).
+  const humanLabel = humanizeSlotLabel(slot.label, destinationService(destination));
 
   const refresh = useCallback(async () => {
     try {
@@ -43,21 +54,31 @@ export function CredentialSlotRow({ destination, slot, scope }: CredentialSlotRo
     <>
       <div className="flex items-center justify-between gap-3 py-2">
         <div className="flex items-center gap-2">
-          <span className="font-mono text-xs">{slot.label}</span>
+          {/* (E1) The row led with the raw slot id in mono — `ANTHROPIC_API_KEY`
+              as the name of the thing you are being asked for. */}
+          <span className="text-sm">{humanLabel}</span>
           <Badge variant={isSet ? 'default' : 'outline'}>
-            {isSet ? 'Set' : 'Not set'}
+            {isSet ? 'Saved' : 'Not set'}
           </Badge>
         </div>
+        {/* (E1) "Set credential" is our noun, not the reader's. */}
         <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
-          {isSet ? 'Replace' : 'Set credential'}
+          {isSet ? 'Replace key' : 'Add key'}
         </Button>
       </div>
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetContent>
           <SheetHeader>
-            <SheetTitle>
-              Set credential for {humanDestination(destination)}, slot {slot.label}
-            </SheetTitle>
+            {/* (E1) Was "Set credential for provider anthropic, slot
+                ANTHROPIC_API_KEY" — three machine identifiers in one sentence,
+                at the moment a person is deciding whether to trust us with a
+                secret. */}
+            <SheetTitle>{isSet ? `Replace your ${humanLabel}` : `Add your ${humanLabel}`}</SheetTitle>
+            {/* Which thing this key is actually for. The row it was opened from
+                may be one of several, and "API key" alone does not say whose. */}
+            <SheetDescription>
+              Used by {humanDestination(destination)}.
+            </SheetDescription>
           </SheetHeader>
           <div className="mt-4">
             <CredentialSlotForm
@@ -77,19 +98,48 @@ export function CredentialSlotRow({ destination, slot, scope }: CredentialSlotRo
   );
 }
 
-function humanDestination(d: Destination): string {
+/**
+ * (TASK-344 / audit E1) The service a credential belongs to, for LABELLING
+ * only — never for routing. `refForDestination` remains the only thing that
+ * decides where a key is stored.
+ */
+function destinationService(d: Destination): string | undefined {
   switch (d.kind) {
     case 'provider':
-      return `provider ${d.provider}`;
-    case 'skill-slot':
-      return `skill ${d.skillId}`;
-    case 'mcp-env':
-      return `MCP server ${d.serverId}`;
-    case 'mcp-header':
-      return `MCP server ${d.serverId}`;
-    case 'routine-hmac':
-      return `routine ${d.routinePath}`;
+      return d.provider;
     case 'account':
-      return `account ${d.service}`;
+      return d.service;
+    case 'skill-slot':
+      return d.skillId;
+    case 'mcp-env':
+    case 'mcp-header':
+      return d.serverId;
+    case 'routine-hmac':
+      // A routine path is a file path, not a name; `humanizeId` on
+      // `.ax/routines/daily-digest.md` would produce "Ax routines daily digest
+      // md". Take the stem.
+      return d.routinePath.split('/').pop()?.replace(/\.md$/, '');
+  }
+}
+
+/**
+ * (E1) Was "provider anthropic" / "skill linear" / "account anthropic" — the
+ * wire's own vocabulary, lowercase, in a sentence shown to a person about to
+ * hand over a secret.
+ */
+function humanDestination(d: Destination): string {
+  const name = destinationService(d);
+  const label = name === undefined ? '' : humanizeId(name);
+  switch (d.kind) {
+    case 'provider':
+    case 'account':
+      return label;
+    case 'skill-slot':
+      return `the ${label} skill`;
+    case 'mcp-env':
+    case 'mcp-header':
+      return `the ${label} server`;
+    case 'routine-hmac':
+      return `the ${label} routine`;
   }
 }

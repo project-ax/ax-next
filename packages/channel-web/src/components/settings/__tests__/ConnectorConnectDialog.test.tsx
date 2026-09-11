@@ -106,7 +106,7 @@ describe('ConnectorConnectDialog', () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it('titles itself "Connect <name>" in connect mode and "Update credentials for <name>" in manage mode', async () => {
+  it('titles itself "Connect <name>" in connect mode and "Update your <name> key" in manage mode', async () => {
     vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(PERSONAL);
     const { rerender } = render(
       <ConnectorConnectDialog
@@ -134,7 +134,7 @@ describe('ConnectorConnectDialog', () => {
       />,
     );
     expect(
-      await screen.findByRole('heading', { name: 'Update credentials for My Notion' }),
+      await screen.findByRole('heading', { name: 'Update your My Notion key' }),
     ).toBeInTheDocument();
   });
 

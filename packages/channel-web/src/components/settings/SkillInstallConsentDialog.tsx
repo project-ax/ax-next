@@ -18,6 +18,7 @@
  *
  * shadcn primitives + semantic tokens only (invariant #6).
  */
+import { humanizeId } from '@/lib/humanize';
 import { useEffect, useState } from 'react';
 import {
   Dialog,
@@ -79,7 +80,10 @@ export function SkillInstallConsentDialog({
     <Dialog open={open} onOpenChange={(o) => { if (!installing) onOpenChange(o); }}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Install {skill.skillId}</DialogTitle>
+          {/* (TASK-344 / audit E4) The title embedded the raw slug. The consent
+              copy below it is exemplary and is deliberately untouched — this is
+              only the heading above it. */}
+          <DialogTitle>Install {humanizeId(skill.skillId)}</DialogTitle>
           <DialogDescription>{skill.description}</DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-4">
@@ -91,9 +95,12 @@ export function SkillInstallConsentDialog({
             <div className="flex flex-col gap-1.5">
               <p className="text-xs text-muted-foreground">Uses these services</p>
               <div className="flex flex-wrap gap-1.5">
+                {/* (E4) These were raw connector ids in a row labelled "Uses
+                    these services" — so the label promised a service name and
+                    the badge delivered a slug. */}
                 {skill.connectors.map((c) => (
                   <Badge key={c} variant="secondary">
-                    {c}
+                    {humanizeId(c)}
                   </Badge>
                 ))}
               </div>

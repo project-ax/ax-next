@@ -1,3 +1,4 @@
+import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
 import { useEffect, useState } from 'react';
 import {
   Dialog,
@@ -141,9 +142,19 @@ export function ProposedConnectorApproveDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-4">
+          {/*
+            (TASK-344) THE AUDIT MISSED THIS FILE. It is a near-copy of
+            `PermissionCard`'s reach renderer and carried the same three defects
+            TASK-334 fixed there — a bare "Will access" host list (A12), raw slot
+            ids as field labels (A1), and the npm/pypi registry line (A5). Fixing
+            one and not the other would leave the product saying two different
+            things about the same decision, so the copy is now identical.
+          */}
           {hosts.length > 0 && (
             <div className="flex flex-col gap-1.5">
-              <p className="text-xs text-muted-foreground">Will access</p>
+              <p className="text-xs text-muted-foreground">
+                To do this, it needs to reach:
+              </p>
               <div className="flex flex-wrap gap-1.5">
                 {hosts.map((h) => (
                   <Badge key={h} variant="secondary">
@@ -156,12 +167,18 @@ export function ProposedConnectorApproveDialog({
           {slots.map((s) =>
             haveExisting[s.slot] === true ? (
               <div key={s.slot} className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Badge variant="secondary">{s.slot}</Badge>
-                <span>Using your existing key</span>
+                <Badge variant="secondary">{humanizeId(s.slot)}</Badge>
+                <span>Using the {humanizeSlotLabel(s.slot)} you already saved.</span>
               </div>
             ) : (
               <div key={s.slot} className="grid gap-1.5">
-                <Label htmlFor={`approve-cred-${s.slot}`}>{s.slot}</Label>
+                <Label htmlFor={`approve-cred-${s.slot}`}>
+                  {humanizeSlotLabel(s.slot)}
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  We store this key on the server. The agent never sees it, and it
+                  never appears in your conversation.
+                </p>
                 <Input
                   id={`approve-cred-${s.slot}`}
                   type="password"
@@ -174,12 +191,8 @@ export function ProposedConnectorApproveDialog({
           )}
           {(npm.length > 0 || pypi.length > 0) && (
             <p className="text-sm text-muted-foreground" data-testid="proposed-packages">
-              {npm.length > 0 && (
-                <>Installs npm packages → reaches <code>registry.npmjs.org</code>. </>
-              )}
-              {pypi.length > 0 && (
-                <>Installs Python packages → reaches <code>pypi.org</code>, <code>files.pythonhosted.org</code>.</>
-              )}
+              It will download some extra software it needs from the internet to
+              do this.
             </p>
           )}
           {error !== null && (

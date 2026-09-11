@@ -14,6 +14,13 @@ describe('humanizeId', () => {
     expect(humanizeId('client_id')).toBe('Client ID');
   });
 
+  it('uppercases the formats that turn up in skill ids', () => {
+    // (TASK-344) `pdf-tools` reading "Pdf tools" looks like a typo rather than
+    // a name, on a consent dialog where the name is what is being vouched for.
+    expect(humanizeId('pdf-tools')).toBe('PDF tools');
+    expect(humanizeId('csv-export')).toBe('CSV export');
+  });
+
   it('cases brands the way they case themselves', () => {
     expect(humanizeId('anthropic')).toBe('Anthropic');
     expect(humanizeId('openai')).toBe('OpenAI');
@@ -65,6 +72,14 @@ describe('humanizeSlotLabel', () => {
 
   it('does not say the service twice when the slot id already carries it', () => {
     expect(humanizeSlotLabel('ANTHROPIC_API_KEY', 'anthropic')).toBe('Anthropic API key');
+  });
+
+  it('does not double up when a multi-word service only partly overlaps', () => {
+    // (TASK-344) This asked whether the service was a strict PREFIX of the slot,
+    // which is true for anthropic/ANTHROPIC_API_KEY and false here — so a skill
+    // called `linear-tracker` holding a `LINEAR_TOKEN` rendered as
+    // "Linear tracker Linear token".
+    expect(humanizeSlotLabel('LINEAR_TOKEN', 'linear-tracker')).toBe('Linear token');
   });
 
   it('falls back to the bare slot label with no service', () => {
