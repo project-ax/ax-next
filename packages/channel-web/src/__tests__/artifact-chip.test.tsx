@@ -20,7 +20,7 @@ describe('ArtifactChip', () => {
     expect(screen.getByLabelText(/Download Q4 Report/)).toBeTruthy();
   });
 
-  it('renders a disabled "unknown artifact" pill when no match is provided', () => {
+  it('renders a disabled "File unavailable" pill when no match is provided', () => {
     render(
       <ArtifactChip
         variant="link"
@@ -29,7 +29,7 @@ describe('ArtifactChip', () => {
         // No path / displayName given → unknown.
       />,
     );
-    expect(screen.getByText(/unknown artifact/i)).toBeTruthy();
+    expect(screen.getByText(/File unavailable/i)).toBeTruthy();
   });
 
   it('link variant renders inline with the display name as link text', () => {

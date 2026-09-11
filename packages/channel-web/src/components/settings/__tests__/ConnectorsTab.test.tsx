@@ -222,11 +222,11 @@ describe('ConnectorsTab', () => {
       expect(screen.getByText('Connected (1)')).toBeInTheDocument();
       expect(screen.getByText('Available (1)')).toBeInTheDocument();
     });
-    // The connected tile offers "Update credentials" (the credential enter/replace
+    // The connected tile offers "Update key" (the credential enter/replace
     // dialog); the available tile offers Connect.
     const notionTile = screen.getByTestId('connector-tile-my-notion');
     expect(
-      within(notionTile).getByRole('button', { name: /update credentials/i }),
+      within(notionTile).getByRole('button', { name: /update key/i }),
     ).toBeInTheDocument();
     const sfTile = screen.getByTestId('connector-tile-company-salesforce');
     expect(within(sfTile).getByRole('button', { name: /^connect$/i })).toBeInTheDocument();

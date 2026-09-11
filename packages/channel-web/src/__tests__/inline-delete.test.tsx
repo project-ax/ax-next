@@ -1,7 +1,7 @@
 /**
  * Inline delete confirm — clicking "delete" in the row-menu replaces the
  * row's contents (in place, same 34px height) with a confirm UI: a
- * `delete this session?` label, a cancel button, and a delete button.
+ * `Delete this chat?` label, a cancel button, and a delete button.
  *
  * Three behaviors under test (Task 14):
  *
@@ -105,7 +105,7 @@ describe('Inline delete confirm', () => {
     expect(row.dataset.sessionId).toBe('s-1');
     expect(
       row.querySelector('.session-row-confirm-text')?.textContent,
-    ).toMatch(/delete this session\?/);
+    ).toMatch(/Delete this chat\?/);
     expect(row.querySelector('.session-row-confirm-cancel')).toBeTruthy();
     expect(row.querySelector('.session-row-confirm-delete')).toBeTruthy();
   });

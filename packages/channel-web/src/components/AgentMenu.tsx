@@ -97,11 +97,14 @@ export function AgentMenu({ agents, activeId, onPick, onCreateNew }: AgentMenuPr
           </button>
         )}
         <div className="px-2.5 pt-2 pb-1 text-[10.5px] tracking-[0.04em] text-ink-ghost text-center">
-          a new session starts on your next message
+          Your next message starts a fresh chat with this agent.
         </div>
       </div>
-      {/* The footnote above keeps its lower-case sentence-style copy and
-         tighter tracking; it isn't a section label. */}
+      {/* The footnote above keeps its sentence-style copy and tighter tracking;
+         it isn't a section label. (TASK-336 — it used to say "a new session
+         starts on your next message": the same thing the product elsewhere
+         calls a chat, and a sentence that never said WHICH agent it meant,
+         on the menu whose whole job is picking one.) */}
     </div>
   );
 }

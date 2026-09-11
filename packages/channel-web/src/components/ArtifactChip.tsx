@@ -49,10 +49,13 @@ export const ArtifactChip: FC<ArtifactChipProps> = (props) => {
           'border border-dashed border-border bg-muted/50 px-2 py-0.5',
           'text-[12px] text-muted-foreground',
         )}
-        aria-label={`Unknown artifact ${props.artifactId}`}
+        // (TASK-336) The visible pill and this label have to say the same
+        // thing. Fixing only the one you can see leaves a screen-reader user
+        // with the copy everyone else just stopped seeing.
+        aria-label={`File unavailable: ${props.artifactId}`}
       >
         <FileSymlink className="size-3" strokeWidth={1.5} aria-hidden="true" />
-        unknown artifact
+        File unavailable
       </span>
     );
   }

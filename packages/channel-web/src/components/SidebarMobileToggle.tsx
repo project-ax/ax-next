@@ -22,7 +22,7 @@ export function SidebarMobileToggle() {
         focus-visible:text-foreground focus-visible:bg-muted focus-visible:outline-none
         transition-colors
       "
-      aria-label={open ? 'Close sessions' : 'Open sessions'}
+      aria-label={open ? 'Close chats' : 'Open chats'}
       aria-expanded={open}
       onClick={() => setSidebarOpen(!open)}
     >

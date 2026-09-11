@@ -142,7 +142,7 @@ export const useAxChatRuntime = (
     // GET /api/files URLs without prop-drilling.
     setActiveConversationId(id);
     // The server just minted a fresh conversation row (typical first
-    // message after a "+ new session" click or an agent switch).
+    // message after a "New chat" click or an agent switch).
     // Promote it to the sidebar's active session immediately so the
     // row that's about to appear in the list lights up its accent
     // bar, and bump the list version so SessionList re-fetches and
