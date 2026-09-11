@@ -49,7 +49,7 @@ describe('PermissionCard', () => {
     permissionCardActions.show(linear); // re-renders the subscribed component
 
     expect(await screen.findByText('api.linear.app')).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('api_key'), {
+    fireEvent.change(screen.getByLabelText('API key'), {
       target: { value: 'lin_test_123' },
     });
     fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
@@ -81,7 +81,7 @@ describe('PermissionCard', () => {
 
     render(<PermissionCard />);
     permissionCardActions.show(linear); // one slot: api_key
-    fireEvent.change(await screen.findByLabelText('api_key'), {
+    fireEvent.change(await screen.findByLabelText('API key'), {
       target: { value: 'lin_test_123' },
     });
     fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
@@ -105,7 +105,7 @@ describe('PermissionCard', () => {
     expect(
       await screen.findByRole('button', { name: /^connect$/i }),
     ).toBeDisabled();
-    fireEvent.change(screen.getByLabelText('api_key'), { target: { value: 'k' } });
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'k' } });
     expect(screen.getByRole('button', { name: /^connect$/i })).not.toBeDisabled();
   });
 
@@ -113,7 +113,7 @@ describe('PermissionCard', () => {
     mockConversationId = null;
     render(<PermissionCard />);
     permissionCardActions.show(linear);
-    fireEvent.change(await screen.findByLabelText('api_key'), {
+    fireEvent.change(await screen.findByLabelText('API key'), {
       target: { value: 'k' },
     });
     expect(
@@ -146,7 +146,7 @@ describe('PermissionCard', () => {
       authored: true,
     });
     expect(
-      await screen.findByText(/new skill your assistant just wrote/i),
+      await screen.findByText(/wrote this skill itself/i),
     ).toBeInTheDocument();
   });
 
@@ -156,14 +156,16 @@ describe('PermissionCard', () => {
     // Wait for the card to render (its hosts badge), then assert no banner.
     expect(await screen.findByText('api.linear.app')).toBeInTheDocument();
     expect(
-      screen.queryByText(/new skill your assistant just wrote/i),
+      screen.queryByText(/wrote this skill itself/i),
     ).toBeNull();
   });
 
-  // TASK packages — authored skills declare npm/pypi packages; the card shows
-  // an informational registry line so the user knows which public registries
-  // the skill will reach.
-  it('shows an npm registry line for a package-using authored skill', async () => {
+  // TASK packages — authored skills declare npm/pypi packages. The card used to
+  // name the registries ("reaches registry.npmjs.org"), which is true and means
+  // nothing to most people; TASK-334 (audit A5) says the plain fact instead.
+  // Both package kinds get the same sentence — which registry it came from is
+  // the grant's business, not the reader's.
+  it('shows the extra-software line for a package-using authored skill', async () => {
     render(<PermissionCard />);
     permissionCardActions.show({
       kind: 'skill',
@@ -175,11 +177,11 @@ describe('PermissionCard', () => {
       authored: true,
     });
     expect(
-      await screen.findByText(/registry\.npmjs\.org/),
+      await screen.findByText(/download some extra software/i),
     ).toBeInTheDocument();
   });
 
-  it('shows a pypi registry line for a python authored skill', async () => {
+  it('shows the same line for a Python-package authored skill', async () => {
     render(<PermissionCard />);
     permissionCardActions.show({
       kind: 'skill',
@@ -191,7 +193,7 @@ describe('PermissionCard', () => {
       authored: true,
     });
     expect(
-      await screen.findByText(/pypi\.org/),
+      await screen.findByText(/download some extra software/i),
     ).toBeInTheDocument();
   });
 
@@ -206,7 +208,7 @@ describe('PermissionCard', () => {
       packages: { npm: [], pypi: [] },
     });
     // Wait for the card to render (title should be visible)
-    expect(await screen.findByText('Connect demo')).toBeInTheDocument();
+    expect(await screen.findByText('Connect Demo')).toBeInTheDocument();
     expect(screen.queryByTestId('permission-packages')).toBeNull();
   });
 
@@ -224,7 +226,7 @@ describe('PermissionCard', () => {
       slots: [],
       // packages omitted entirely (undefined)
     });
-    expect(await screen.findByText('Connect demo')).toBeInTheDocument();
+    expect(await screen.findByText('Connect Demo')).toBeInTheDocument();
     expect(screen.queryByTestId('permission-packages')).toBeNull();
   });
 
@@ -252,10 +254,10 @@ describe('PermissionCard', () => {
       await screen.findByText(
         (_content, el) =>
           el?.tagName === 'SPAN' &&
-          el.textContent?.toLowerCase().includes('using your existing') === true,
+          el.textContent?.toLowerCase().includes('you already saved') === true,
       ),
     ).toBeInTheDocument();
-    expect(screen.queryByLabelText('LINEAR_TOKEN')).toBeNull();
+    expect(screen.queryByLabelText('Linear token')).toBeNull();
 
     // Connect is enabled with no typing (the slot counts as filled).
     fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
@@ -281,7 +283,7 @@ describe('PermissionCard', () => {
       slots: [{ slot: 'LINEAR_TOKEN', kind: 'api-key', account: 'linear', haveExisting: false }],
     });
 
-    fireEvent.change(await screen.findByLabelText('LINEAR_TOKEN'), {
+    fireEvent.change(await screen.findByLabelText('Linear token'), {
       target: { value: 'lin-secret' },
     });
     fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
@@ -328,14 +330,14 @@ describe('PermissionCard — connector approval (TASK-112)', () => {
     // crash (the skill default branch reads request.description.length).
     expect(await screen.findByText('Connect Linear')).toBeInTheDocument();
     expect(screen.getByText('api.linear.app')).toBeInTheDocument();
-    expect(screen.getByLabelText('LINEAR_API_KEY')).toBeInTheDocument();
+    expect(screen.getByLabelText('Linear API key')).toBeInTheDocument();
   });
 
   it('shows the "new connector" authored banner', async () => {
     render(<PermissionCard />);
     permissionCardActions.show(linearConnector);
     expect(
-      await screen.findByText(/new connector your assistant just wrote/i),
+      await screen.findByText(/wrote this connector itself/i),
     ).toBeInTheDocument();
   });
 
@@ -349,7 +351,7 @@ describe('PermissionCard — connector approval (TASK-112)', () => {
     render(<PermissionCard />);
     permissionCardActions.show(linearConnector);
 
-    fireEvent.change(await screen.findByLabelText('LINEAR_API_KEY'), {
+    fireEvent.change(await screen.findByLabelText('Linear API key'), {
       target: { value: 'lin_secret' },
     });
     fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
@@ -389,7 +391,7 @@ describe('PermissionCard — connector approval (TASK-112)', () => {
       slots: [{ slot: 'GDRIVE', kind: 'api-key', account: 'google', haveExisting: false }],
       packages: { npm: [], pypi: [] },
     });
-    fireEvent.change(await screen.findByLabelText('GDRIVE'), {
+    fireEvent.change(await screen.findByLabelText('Google Gdrive'), {
       target: { value: 'g-secret' },
     });
     fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
@@ -420,8 +422,8 @@ describe('PermissionCard — connector approval (TASK-112)', () => {
       ],
       packages: { npm: [], pypi: [] },
     });
-    fireEvent.change(await screen.findByLabelText('CLIENT_ID'), { target: { value: 'the-id' } });
-    fireEvent.change(screen.getByLabelText('CLIENT_SECRET'), { target: { value: 'the-secret' } });
+    fireEvent.change(await screen.findByLabelText('Client ID'), { target: { value: 'the-id' } });
+    fireEvent.change(screen.getByLabelText('Client secret'), { target: { value: 'the-secret' } });
     fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
     await waitFor(() => expect(getPermissionCardSnapshot().request).toBeNull());
 
@@ -457,7 +459,7 @@ describe('PermissionCard — connector approval (TASK-112)', () => {
     expect(
       await screen.findByRole('button', { name: /^connect$/i }),
     ).toBeDisabled();
-    fireEvent.change(screen.getByLabelText('LINEAR_API_KEY'), { target: { value: 'k' } });
+    fireEvent.change(screen.getByLabelText('Linear API key'), { target: { value: 'k' } });
     expect(screen.getByRole('button', { name: /^connect$/i })).not.toBeDisabled();
   });
 });
@@ -537,5 +539,104 @@ describe('PermissionCard — host grant (TASK-37)', () => {
     expect(await screen.findByText(HTTP_SERVER_ERROR)).toBeInTheDocument();
     // Still pending — the user can retry.
     expect(getPermissionCardSnapshot().request).not.toBeNull();
+  });
+});
+
+/**
+ * TASK-334 — the trust-moment copy (audit A1, A2, A5, A6, A11, A12).
+ *
+ * These assert the *words*, because on this card the words are the feature.
+ * It is the one surface where we ask a non-technical person to paste a secret,
+ * and the audit found it doing so behind a label reading `api_key`, under a
+ * title naming a slug, beside a greyed-out button that explained none of it.
+ */
+describe('PermissionCard — trust copy (TASK-334)', () => {
+  const withSlot = {
+    kind: 'skill' as const,
+    skillId: 'linear',
+    description: 'Read your Linear issues',
+    hosts: ['api.linear.app'],
+    slots: [{ slot: 'api_key', kind: 'api-key' as const }],
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    permissionCardActions.reset();
+  });
+
+  it('labels the credential field in English rather than as its slot id', async () => {
+    render(<PermissionCard />);
+    permissionCardActions.show(withSlot);
+    expect(await screen.findByLabelText('API key')).toBeInTheDocument();
+    expect(screen.queryByText('api_key')).toBeNull();
+  });
+
+  it('says where the key goes, so handing one over is not a leap of faith', async () => {
+    render(<PermissionCard />);
+    permissionCardActions.show(withSlot);
+    expect(await screen.findByText(/the agent never sees it/i)).toBeInTheDocument();
+  });
+
+  it('says what the host list is for before showing it', async () => {
+    render(<PermissionCard />);
+    permissionCardActions.show(withSlot);
+    expect(await screen.findByText(/it needs to reach:/i)).toBeInTheDocument();
+  });
+
+  it('explains the disabled Connect button instead of leaving it inert', async () => {
+    render(<PermissionCard />);
+    permissionCardActions.show(withSlot);
+    expect(await screen.findByRole('button', { name: /^connect$/i })).toBeDisabled();
+    expect(screen.getByText(/add the key above to continue/i)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'k' } });
+    expect(screen.getByRole('button', { name: /^connect$/i })).not.toBeDisabled();
+    expect(screen.queryByText(/add the key above to continue/i)).toBeNull();
+  });
+
+  it('says the grant is durable, not yet applied, and reversible', async () => {
+    render(<PermissionCard />);
+    permissionCardActions.show(withSlot);
+    expect(
+      await screen.findByText(/nothing happens until you choose/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/change it later in settings/i)).toBeInTheDocument();
+  });
+
+  it('titles the card by a readable name, not the raw skill id', async () => {
+    render(<PermissionCard />);
+    permissionCardActions.show({ ...withSlot, skillId: 'linear-issues' });
+    expect(await screen.findByText('Connect Linear issues')).toBeInTheDocument();
+  });
+
+  it('falls back to the raw id when there is nothing readable in it', async () => {
+    render(<PermissionCard />);
+    permissionCardActions.show({ ...withSlot, skillId: '___' });
+    expect(await screen.findByText('Connect ___')).toBeInTheDocument();
+  });
+
+  it('renders the authored warning as an Alert with an icon, not a bare glyph', async () => {
+    render(<PermissionCard />);
+    permissionCardActions.show({ ...withSlot, authored: true });
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/wrote this skill itself/i);
+    expect(alert.querySelector('svg')).not.toBeNull();
+    expect(alert.textContent).not.toContain('⚠');
+  });
+
+  it('gives the connector card the same reassurance and the same blank-slot hint', async () => {
+    render(<PermissionCard />);
+    permissionCardActions.show({
+      kind: 'connector',
+      connectorId: 'linear',
+      name: 'Linear',
+      hosts: ['api.linear.app'],
+      slots: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' as const }],
+    });
+    expect(
+      await screen.findByText(/nothing happens until you choose/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/add the key above to continue/i)).toBeInTheDocument();
+    expect(screen.getByLabelText('Linear API key')).toBeInTheDocument();
   });
 });
