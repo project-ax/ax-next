@@ -17,10 +17,23 @@
  * sentence is true and has to stay, while a quoted id is something we might
  * actually send.
  *
+ * Two honest limits, so nobody reads this as more than it is:
+ *
+ *  - The test is "quote char vs backtick", not "code vs prose". A backticked
+ *    template literal with no interpolation is a perfectly good model string
+ *    and would slip through; a comment written with straight quotes would trip
+ *    it. Neither happens today, and the trade buys the ability to keep history
+ *    readable, but the guarantee is narrower than "no dead id can reach a wire".
+ *  - The scan is PACKAGE-LOCAL and `.ts`-only: `src/` and `test/` under
+ *    @ax/memory-strata. A dead id in a chart value, a preset, or another
+ *    package is invisible to it. A repo-wide ESLint rule under
+ *    `test:eslint-rules` would be the stronger home if this ever needs to cover
+ *    more than the bench.
+ *
  * To retire another id: add it here, then run the suite and fix what it names.
  */
 import { describe, expect, it } from 'vitest';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -44,7 +57,11 @@ function* walkTsFiles(dir: string): Generator<string> {
   for (const entry of readdirSync(dir)) {
     if (entry === 'node_modules' || entry === 'dist') continue;
     const full = join(dir, entry);
-    if (statSync(full).isDirectory()) {
+    // lstat, not stat: a symlinked directory would otherwise be recursed into
+    // (double-reporting, or looping) and a broken one would throw mid-walk.
+    const st = lstatSync(full);
+    if (st.isSymbolicLink()) continue;
+    if (st.isDirectory()) {
       yield* walkTsFiles(full);
     } else if (entry.endsWith('.ts') && entry !== THIS_FILE) {
       yield full;
@@ -75,8 +92,10 @@ describe('deprecated model ids', () => {
   );
 
   it('scans a non-trivial number of files, so a broken walk cannot pass vacuously', () => {
-    // Without this, a typo'd SCAN_ROOTS would make every assertion above pass
-    // by finding nothing anywhere.
+    // A typo'd SCAN_ROOTS actually throws ENOENT, so that is not the hole this
+    // plugs. What it plugs is a walk that yields NOTHING without throwing — a
+    // bad extension filter, an over-eager skip, a generator that returns early
+    // — any of which would make every assertion above pass by scanning air.
     const count = SCAN_ROOTS.reduce(
       (n, root) => n + [...walkTsFiles(join(PACKAGE_ROOT, root))].length,
       0,

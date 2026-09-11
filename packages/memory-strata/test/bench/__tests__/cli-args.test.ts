@@ -58,9 +58,18 @@ describe('parseCliArgs — --orchestrator-model (TASK-349)', () => {
     expect(parseCliArgs(['--orchestrator-model', 'glm']).orchestratorModel).toBe('glm');
   });
 
-  it('falls back to haiku for the retired `grok` spelling and any other value', () => {
-    expect(parseCliArgs(['--orchestrator-model', 'grok']).orchestratorModel).toBe('haiku');
-    expect(parseCliArgs(['--orchestrator-model', 'wat']).orchestratorModel).toBe('haiku');
+  it('REJECTS the retired `grok` spelling, naming why', () => {
+    // Not a fallback. Quietly remapping it onto haiku would run a full paid
+    // bench against a model nobody asked for and report success — the same
+    // silent degradation that let the dead id survive four months.
+    expect(() => parseCliArgs(['--orchestrator-model', 'grok'])).toThrow(/unknown arm "grok"/);
+    expect(() => parseCliArgs(['--orchestrator-model', 'grok'])).toThrow(/404s on every call/);
+  });
+
+  it('REJECTS any other unknown arm rather than defaulting', () => {
+    expect(() => parseCliArgs(['--orchestrator-model', 'wat'])).toThrow(
+      /unknown arm "wat". Expected one of haiku, glm/,
+    );
   });
 });
 

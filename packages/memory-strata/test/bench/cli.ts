@@ -60,6 +60,11 @@ export const PRICING: Pricing = {
   'claude-sonnet-4-6': { in: 3 / 1_000_000, out: 15 / 1_000_000 },
   'claude-haiku-4-5-20251001': { in: 1 / 1_000_000, out: 5 / 1_000_000 },
   'x-ai/grok-4.3': { in: 1.25 / 1_000_000, out: 2.5 / 1_000_000 },
+  // Base glm-5.3-flash rates from a live GET /api/v1/models. `:nitro` re-sorts
+  // the provider pool by throughput and can route to a pricier one, so treat
+  // this row as a floor on real spend rather than an exact figure. The KEY
+  // must keep the `:nitro` spelling: CostMeter.record looks up by exact key
+  // and that is the string the run records.
   'z-ai/glm-5.3-flash:nitro': { in: 0.15 / 1_000_000, out: 0.5 / 1_000_000 },
   'zembed-1': { in: 0.05 / 1_000_000, out: 0 },
   'zerank-2': { in: 0.1 / 1_000_000, out: 0 },
@@ -96,6 +101,34 @@ export interface CliArgs {
   ids?: string[];
 }
 
+/** Arms `--orchestrator-model` accepts. See {@link CliArgs.orchestratorModel}. */
+const ORCHESTRATOR_ARMS = ['haiku', 'glm'] as const;
+
+/**
+ * REJECTS an unknown arm rather than defaulting to one.
+ *
+ * `--mode` next door defaults on a bad value, and that is fine — it picks
+ * between two things you can see in the output. This flag picks which model
+ * spends the money, and a wrong pick is only visible if you go looking at the
+ * cost table afterwards. Quietly remapping `--orchestrator-model grok` (the arm
+ * retired when its model id turned out to be 404ing) onto haiku would produce a
+ * full paid run measuring a model nobody asked for, and report success — which
+ * is the exact silent-degradation this card exists to remove.
+ */
+function parseOrchestratorModel(raw: unknown): CliArgs['orchestratorModel'] {
+  if (raw === undefined) return 'haiku';
+  if ((ORCHESTRATOR_ARMS as readonly string[]).includes(raw as string)) {
+    return raw as CliArgs['orchestratorModel'];
+  }
+  const retired =
+    raw === 'grok'
+      ? " The `grok` arm was retired on 2026-09-11: its model id (x-ai/grok-4.1-fast) is deprecated and 404s on every call."
+      : '';
+  throw new Error(
+    `--orchestrator-model: unknown arm ${JSON.stringify(raw)}. Expected one of ${ORCHESTRATOR_ARMS.join(', ')}.${retired}`,
+  );
+}
+
 export function parseCliArgs(argv: string[]): CliArgs {
   const { values } = parseArgs({
     args: argv,
@@ -127,7 +160,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
     regenInternal: values['regen-internal'] === true,
     rewriteMap: values['rewrite-map'] === true,
     topK: Number(values['top-k']),
-    orchestratorModel: (values['orchestrator-model'] === 'glm' ? 'glm' : 'haiku') as 'haiku' | 'glm',
+    orchestratorModel: parseOrchestratorModel(values['orchestrator-model']),
     full: values.full === true,
     fixture: values.fixture === true,
   };

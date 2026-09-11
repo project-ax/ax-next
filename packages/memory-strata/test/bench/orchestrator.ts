@@ -245,7 +245,9 @@ export function makeOpenRouterOrchestratorClient(
             .completion_tokens_details;
           const reasoning = details?.reasoning_tokens ?? 0;
           if (reasoning > 0) {
-            console.warn(`    [${model}] reasoning_tokens=${reasoning} (flag not honored?)`);
+            console.warn(
+              `    [${model}] reasoning_tokens=${reasoning} — either MINIMAL_REASONING was not passed to this client, or the provider ignored it`,
+            );
           }
           return { text, usage: { in: usage.prompt_tokens, out: usage.completion_tokens } };
         },
