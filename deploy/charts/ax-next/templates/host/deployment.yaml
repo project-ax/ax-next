@@ -426,17 +426,13 @@ spec:
               value: {{ .Values.titles.model | quote }}
             {{- end }}
 
-            # xAI key — optional, and the only switch for the memory_search
-            # retrieval orchestrator (TASK-191). Unset, @ax/memory-strata
-            # falls back to pure BM25. Until TASK-347 the chart could not set
-            # this at all, so every deployment ran the fallback.
-            {{- $existingXaiSecret := lookup "v1" "Secret" (include "ax-next.hostNamespace" .) (printf "%s-secrets" (include "ax-next.fullname" .)) }}
-            {{- if or .Values.xai.apiKey (and $existingXaiSecret $existingXaiSecret.data (index $existingXaiSecret.data "xai-api-key")) }}
-            - name: XAI_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "ax-next.fullname" . }}-secrets
-                  key: xai-api-key
+            # Which model memory_search's retrieval orchestrator runs on.
+            # Unset, the preset picks its own default. The orchestrator routes
+            # through @ax/llm-openrouter and resolves its credential the same
+            # way every other LLM call does, so there is no key to stamp here.
+            {{- with .Values.memory.orchestratorModel }}
+            - name: AX_MEMORY_ORCHESTRATOR_MODEL
+              value: {{ . | quote }}
             {{- end }}
 
             # Session lifetime. Unset, @ax/auth-better keeps its 7-day default.

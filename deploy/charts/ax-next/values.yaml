@@ -450,20 +450,6 @@ credentials:
 anthropic:
   apiKey: ""
 
-# ─── xAI ──────────────────────────────────────────────────────────
-# Optional, and the ONLY switch for the memory_search retrieval
-# orchestrator (TASK-191). Leave it empty and @ax/memory-strata falls back
-# to plain BM25 — which works, and is what every deployment has been
-# running, because until TASK-347 the chart had no way to set this.
-#
-# This buys the host outbound calls to xAI on the memory_search path. It is
-# the same capability class as the host's existing Anthropic calls; the host
-# already has unrestricted port-443 egress, so no NetworkPolicy changes.
-#
-# Lookup-stable like anthropic.apiKey: an upgrade that doesn't re-pass it
-# keeps the existing value.
-xai:
-  apiKey: ""
 
 # ─── Auto-titling ─────────────────────────────────────────────────
 # When `anthropic.apiKey` is set, the host pod loads
@@ -689,6 +675,24 @@ ingress:
 # skills — is always on and unaffected by this flag.)
 skills:
   allowUserInstalled: true
+
+# ─── Memory ───────────────────────────────────────────────────────
+# The model `memory_search`'s retrieval orchestrator runs on, as a BARE
+# OpenRouter model id (`x-ai/grok-4-fast`, not `openrouter/x-ai/...` — the
+# provider is already decided by the hook it routes through). Empty keeps the
+# preset's default.
+#
+# The orchestrator needs NO key of its own: it goes through the same
+# @ax/llm-openrouter plugin as everything else, which resolves a credential per
+# call (the user's key, then the global one). Store an OpenRouter key in the
+# credentials UI and the orchestrator starts working with no deploy. Store
+# none and memory_search runs plain BM25, which is what it has always done.
+#
+# Worth changing without waiting for a release: the orchestrator only earns its
+# keep if it answers inside ~5s, and which model is both fast and cheap moves
+# faster than this chart does.
+memory:
+  orchestratorModel: ""
 
 # ─── Chat ─────────────────────────────────────────────────────────
 # How long ONE chat turn may run before the orchestrator gives up, in

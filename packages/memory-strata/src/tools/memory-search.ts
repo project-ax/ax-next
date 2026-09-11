@@ -9,6 +9,7 @@ import {
   runOrchestratedRetrieve,
   type OrchestratorClient,
 } from '../orchestrator.js';
+import { makeBusOrchestratorClient } from '../orchestrator-client.js';
 import { retrieve } from '../retriever.js';
 
 const PLUGIN_NAME = '@ax/memory-strata';
@@ -22,7 +23,21 @@ const PLUGIN_NAME = '@ax/memory-strata';
  */
 export interface RegisterMemorySearchOptions {
   retrievalMode?: 'orchestrator' | 'bm25';
-  orchestrator?: { client: OrchestratorClient; timeoutMs?: number };
+  /**
+   * Two ways to reach the orchestrator's model, and they are not equals.
+   *
+   * `hook` + `model` is the PRODUCTION wiring: route the completion through a
+   * registered `llm:call:<provider>` hook, so the credential comes from the
+   * same store as every other LLM call and the orchestrator needs no key of
+   * its own. `client` is the bench/eval escape hatch — a direct fetch client
+   * holding its own key — and wins when both are given.
+   */
+  orchestrator?: {
+    client?: OrchestratorClient;
+    hook?: string;
+    model?: string;
+    timeoutMs?: number;
+  };
 }
 
 export const MEMORY_SEARCH_DESCRIPTOR: ToolDescriptor = {
@@ -112,9 +127,16 @@ export async function registerMemorySearch(
       // A `categoryFilter` means the caller already knows the scoped BM25
       // intent (e.g. "list all preferences") — orchestrating over the map
       // would be pure overhead, so we skip straight to BM25 in that case.
+      // Resolved per call, not at registration: the routed client closes over
+      // THIS call's ctx, which is what lets the provider resolve the right
+      // user's credential. `undefined` here simply means BM25.
+      const orchestratorClient =
+        opts?.orchestrator?.client ??
+        makeBusOrchestratorClient(bus, ctx, opts?.orchestrator);
+
       if (
-        opts?.orchestrator?.client !== undefined &&
-        (opts.retrievalMode ?? 'orchestrator') !== 'bm25' &&
+        orchestratorClient !== undefined &&
+        (opts?.retrievalMode ?? 'orchestrator') !== 'bm25' &&
         query.length > 0 &&
         categoryFilter === undefined
       ) {
@@ -133,11 +155,11 @@ export async function registerMemorySearch(
         try {
           const mapBody = await readInjectedMapBody(bus, ctx, ctx.workspace.rootPath);
           const orchestrated = await runOrchestratedRetrieve({
-            client: opts.orchestrator.client,
+            client: orchestratorClient,
             mapBody,
             query,
             topK,
-            timeoutMs: opts.orchestrator.timeoutMs ?? DEFAULT_ORCHESTRATOR_TIMEOUT_MS,
+            timeoutMs: opts?.orchestrator?.timeoutMs ?? DEFAULT_ORCHESTRATOR_TIMEOUT_MS,
             ftsSearch: (q, k) => retrieve(bus, ctx, { query: q, topK: k }),
             logger: ctx.logger,
           });

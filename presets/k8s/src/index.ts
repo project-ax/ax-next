@@ -49,7 +49,10 @@ import {
   createConversationTitlesPlugin,
   DEFAULT_TITLE_MODEL,
 } from '@ax/conversation-titles';
-import { createMemoryStrataPlugin, makeXaiOrchestratorClient } from '@ax/memory-strata';
+import {
+  createMemoryStrataPlugin,
+  DEFAULT_ORCHESTRATOR_MODEL,
+} from '@ax/memory-strata';
 import { createMemoryStrataIndexPostgresPlugin } from '@ax/memory-strata-index-postgres';
 import { createWebToolsPlugin } from '@ax/web-tools';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
@@ -408,6 +411,19 @@ export interface K8sPresetConfig {
    * credential) but not these host tools.
    */
   hostLlmTools?: boolean;
+  /**
+   * Model the memory_search retrieval orchestrator runs on, as a BARE
+   * OpenRouter model id (`x-ai/grok-4-fast`, not `openrouter/x-ai/...` — the
+   * hook name already carries the provider). Defaults to
+   * `DEFAULT_ORCHESTRATOR_MODEL` (@ax/memory-strata).
+   *
+   * Worth being able to change without a release: the orchestrator's value
+   * depends on it answering inside the 5s budget, and which model is both fast
+   * and cheap moves faster than this repo does. The n=500 spike's own
+   * conclusion was "direct xAI OR another equivalently-fast provider" — this is
+   * the knob that lets an operator go find one.
+   */
+  memoryOrchestratorModel?: string;
   /**
    * @ax/http-server config. The host listener that serves /admin/*, /auth/*,
    * /admin/me, /admin/sign-out, and (Week 10-12) the admin UI. Distinct from
@@ -1347,21 +1363,29 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // is a follow-up if host tools should also work off the DB credential.)
   if (config.hostLlmTools === true) {
     plugins.push(createWebToolsPlugin());
-    // TASK-191: default the memory_search retrieval path to the direct-xAI
-    // retrieval orchestrator (config E from the n=500 spike — orchestrator over
-    // system/map.md + BM25 fallback). Host-side egress gated by XAI_API_KEY, the
-    // same capability class as the Observer's llm:call:anthropic; absent ⇒ the
-    // plugin degrades to pure BM25. OpenRouter is intentionally NOT auto-wired
-    // (its default routing was ~11s in the spike; direct xAI is ~400ms p50).
-    // `timeoutMs: 5000` caps each fetch attempt's socket (AbortSignal) so a slow
-    // xAI response is actually torn down — the plugin's own raceTimeout(5s) only
-    // stops the caller WAITING, it doesn't abort the underlying request.
-    const xaiKey = process.env.XAI_API_KEY;
-    const orchestrator =
-      xaiKey !== undefined && xaiKey.length > 0
-        ? { orchestrator: { client: makeXaiOrchestratorClient(xaiKey, undefined, { timeoutMs: 5000 }) } }
-        : {};
-    plugins.push(createMemoryStrataPlugin(orchestrator));
+    // TASK-191: memory_search's retrieval path is the orchestrator (config E
+    // from the n=500 spike — orchestrator over system/map.md, BM25 fallback).
+    //
+    // It routes through `llm:call:openrouter`, which is registered just above
+    // with `credentialResolution: true`. That is the whole configuration: the
+    // provider resolves the key per call (user → global → env), so the
+    // orchestrator needs no key, no env var and no chart value of its own, and
+    // an operator who stores an OpenRouter key in the credentials UI gets the
+    // orchestrator with no deploy. It degrades to plain BM25 when no credential
+    // resolves, which is what every deployment gets until one is stored.
+    //
+    // It used to build a direct-xAI fetch client from `XAI_API_KEY` instead.
+    // That key had no chart value, so it was never set anywhere and the
+    // orchestrator has been dark in production since it shipped — the defect
+    // TASK-347's third gate found.
+    plugins.push(
+      createMemoryStrataPlugin({
+        orchestrator: {
+          hook: 'llm:call:openrouter',
+          model: config.memoryOrchestratorModel ?? DEFAULT_ORCHESTRATOR_MODEL,
+        },
+      }),
+    );
     plugins.push(createMemoryStrataIndexPostgresPlugin());
   }
 
@@ -2014,6 +2038,12 @@ export function loadK8sConfigFromEnv(
   // not the host tools, unchanged from today's behavior for these two.
   if (env.ANTHROPIC_API_KEY !== undefined && env.ANTHROPIC_API_KEY !== '') {
     config.hostLlmTools = true;
+  }
+  if (
+    env.AX_MEMORY_ORCHESTRATOR_MODEL !== undefined &&
+    env.AX_MEMORY_ORCHESTRATOR_MODEL !== ''
+  ) {
+    config.memoryOrchestratorModel = env.AX_MEMORY_ORCHESTRATOR_MODEL;
   }
 
   // ---- onboarding (first-run wizard) ------------------------------------

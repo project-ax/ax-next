@@ -1325,49 +1325,36 @@ describeIfHelm('ax-next chart: config.models.default → AX_AGENT_MODELS_ALLOWED
 });
 
 
-// ── TASK-347: the three knobs the chart could not reach ──
+
+// ── TASK-347: knobs the chart could not reach ──
 //
-// Found by the new third gate in env-shape.test.ts: the preset read all three
-// and no template stamped any of them, so no operator could set them. XAI_API_KEY
-// is the consequential one — it is the only switch for the memory_search
-// retrieval orchestrator, so every deployment silently ran the BM25 fallback.
+// Found by the new third gate in env-shape.test.ts: the preset read these and
+// no template stamped them, so no operator could set them.
+//
+// XAI_API_KEY was the third, and it is NOT here — the fix for that one was to
+// stop reading it. memory_search's orchestrator now routes through
+// @ax/llm-openrouter and resolves its credential like every other LLM call, so
+// there is no orchestrator key for the chart to carry at all. What replaced it
+// is a model knob, which is not a secret.
 describeIfHelm('ax-next chart: previously unstampable env (TASK-347)', () => {
   const hostEnv = (extraArgs: readonly string[]) =>
     findHostEnv(helmTemplate(extraArgs));
 
-  const secretData = (docs: K8sDoc[]): Record<string, string> => {
-    const secret = docs.find(
-      (d) => d.kind === 'Secret' && (d.metadata?.name ?? '').endsWith('-secrets'),
-    );
-    return (secret?.data as Record<string, string>) ?? {};
-  };
-
   it('stamps none of them by default', () => {
     const names = hostEnv([]).map((e) => e.name);
-    expect(names).not.toContain('XAI_API_KEY');
     expect(names).not.toContain('AX_AUTH_SESSION_LIFETIME_SECONDS');
     expect(names).not.toContain('AX_CHAT_TIMEOUT_MS');
+    expect(names).not.toContain('AX_MEMORY_ORCHESTRATOR_MODEL');
   });
 
-  it('xai.apiKey reaches the host through the Secret, never as a literal', () => {
-    const args = ['--set', 'xai.apiKey=xai-test-key'];
-    const found = hostEnv(args).find((e) => e.name === 'XAI_API_KEY');
-    expect(found, 'XAI_API_KEY present').toBeDefined();
-    // An API key stamped as a plain `value:` would sit in the Deployment spec
-    // for anyone with pod-read. It goes through secretKeyRef like its sibling.
-    expect(found?.value).toBeUndefined();
-    const ref = found?.valueFrom?.['secretKeyRef'] as
-      | { key?: string }
-      | undefined;
-    expect(ref?.key).toBe('xai-api-key');
-
-    expect(secretData(helmTemplate(args))['xai-api-key']).toBe(
-      Buffer.from('xai-test-key').toString('base64'),
-    );
-  });
-
-  it('does not put an xai-api-key in the Secret when none was given', () => {
-    expect(secretData(helmTemplate([]))['xai-api-key']).toBeUndefined();
+  it('never stamps an orchestrator API key, because there is no longer one', () => {
+    // Regression guard on the direction of the TASK-347 fix. Re-introducing a
+    // dedicated orchestrator key would mean a second credential path for the
+    // same provider, which is what this removed.
+    const names = hostEnv([
+      '--set', 'memory.orchestratorModel=x-ai/grok-4-fast',
+    ]).map((e) => e.name);
+    expect(names).not.toContain('XAI_API_KEY');
   });
 
   it('auth.sessionLifetimeSeconds is stamped as the loader expects it', () => {
@@ -1384,5 +1371,14 @@ describeIfHelm('ax-next chart: previously unstampable env (TASK-347)', () => {
       '--set', 'chat.timeoutMs=900000',
     ]).find((e) => e.name === 'AX_CHAT_TIMEOUT_MS');
     expect(found?.value).toBe('900000');
+  });
+
+  it('memory.orchestratorModel is stamped as a bare provider-native id', () => {
+    const found = hostEnv([
+      '--set', 'memory.orchestratorModel=x-ai/grok-4-fast',
+    ]).find((e) => e.name === 'AX_MEMORY_ORCHESTRATOR_MODEL');
+    // Bare, not `openrouter/x-ai/...`: the hook name already carries the
+    // provider, and a prefixed id would be routed twice.
+    expect(found?.value).toBe('x-ai/grok-4-fast');
   });
 });
