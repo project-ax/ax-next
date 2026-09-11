@@ -2,7 +2,7 @@
   "name": "ax-next",
   "version": "0.0.0",
   "private": true,
-  "description": "AX v2 \u2014 plugin-based personal AI agent (greenfield rewrite)",
+  "description": "AX v2 — plugin-based personal AI agent (greenfield rewrite)",
   "license": "MIT",
   "type": "module",
   "engines": {

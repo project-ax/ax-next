@@ -23,6 +23,14 @@
 // simply by having the script. Two do today (@ax/memory-strata,
 // @ax/agent-aisdk-runner), both `tsc --noEmit -p tsconfig.bench.json`.
 //
+// Opt-in alone would be a weaker promise than "the directories tsc --build
+// never reaches", so the last test closes the gap: EVERY tsconfig that the
+// reference graph cannot see must be named by its package's typecheck script.
+// That rule is not hypothetical -- it caught `onboarding/tsconfig.spa.json`,
+// which covered a `src/spa` directory that no longer exists and which nothing
+// in the repo referenced. (That config is now deleted; had the SPA still been
+// live, the fix would have been a typecheck script instead.)
+//
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally
 // -- no network, no build.
 
@@ -76,20 +84,42 @@ describe('root typecheck gate covers per-package typecheck scripts', () => {
 
   it('at least one package still opts in, so the recursive pass is not a no-op', () => {
     // If every package dropped its typecheck script, the flag above would keep
-    // passing while checking nothing. Named packages rather than a bare count
-    // so the failure says which one went missing.
+    // passing while checking nothing. Named rather than counted, so the failure
+    // says which one went missing.
     const names = packagesWithTypecheckScript().map((p) => p.name);
     expect(names).toContain('@ax/memory-strata');
-    expect(names.length).toBeGreaterThan(0);
   });
 
-  it('every opted-in package type-checks a config the reference build misses', () => {
-    // The whole point is covering tsconfigs OUTSIDE the reference graph. A
-    // `typecheck` script that just re-ran the root build would be decoration.
-    for (const { name, script } of packagesWithTypecheckScript()) {
-      expect(script, `${name}'s typecheck script must name its own tsconfig`).toMatch(
-        /-p\s+\S+\.json/,
-      );
+  it('every tsconfig outside the reference graph is named by a typecheck script', () => {
+    // The systematic half of the guarantee. `tsc --build` only ever sees a
+    // package's `tsconfig.json` (and whatever that file references), so any
+    // OTHER tsconfig in the package is invisible to it. Each one therefore has
+    // to be claimed by that package's `typecheck` script, or it is checked by
+    // nothing -- which is the entire bug this file exists to prevent.
+    const orphans = [];
+    for (const workspaceDir of ['packages', 'presets']) {
+      const root = join(REPO_ROOT, workspaceDir);
+      if (!existsSync(root)) continue;
+      for (const entry of readdirSync(root)) {
+        const pkgDir = join(root, entry);
+        const manifest = join(pkgDir, 'package.json');
+        const baseConfig = join(pkgDir, 'tsconfig.json');
+        if (!existsSync(manifest) || !existsSync(baseConfig)) continue;
+        const baseText = readFileSync(baseConfig, 'utf8');
+        const script = readJson(manifest).scripts?.typecheck ?? '';
+        for (const file of readdirSync(pkgDir)) {
+          if (!/^tsconfig\..+\.json$/.test(file)) continue;
+          // Reachable if the package's own tsconfig.json pulls it in.
+          if (baseText.includes(file)) continue;
+          if (!script.includes(file)) orphans.push(`${workspaceDir}/${entry}/${file}`);
+        }
+      }
     }
+    expect(
+      orphans,
+      `these tsconfigs are outside the reference graph and no typecheck script runs them,\n` +
+        `so the code they cover is type-checked by nothing. Add a "typecheck" script\n` +
+        `naming each one (or delete the config if it is vestigial):\n  ${orphans.join('\n  ')}`,
+    ).toEqual([]);
   });
 });
