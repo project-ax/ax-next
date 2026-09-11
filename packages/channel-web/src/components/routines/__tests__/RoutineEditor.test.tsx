@@ -286,4 +286,62 @@ describe('RoutineEditor (form-first)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create' }));
     await waitFor(() => expect(screen.getByText(/minimum is 60s/)).toBeTruthy());
   });
+
+  /**
+   * TASK-345 / audit E5 — the cron field is exact and opaque at the same time.
+   * Someone unsure whether they just asked for 2am or 2pm had no way to find
+   * out from this form; they found out when the routine ran.
+   */
+  describe('cron preview (TASK-345)', () => {
+    const openCron = async () => {
+      render(
+        <RoutineEditor
+          constraints={{ allowedTriggers: ALL_TRIGGERS, showAgentPicker: false }}
+          onSave={vi.fn()}
+          onSaved={vi.fn()}
+          onCancel={vi.fn()}
+        />,
+      );
+      await fillBasics();
+      fireEvent.click(screen.getByText('Schedule'));
+    };
+
+    it('teaches the format before anything is typed', async () => {
+      await openCron();
+      fillField('Cron expression', '');
+      expect(screen.getByText(/for 2am daily/i)).toBeTruthy();
+      expect(screen.getByText(/America\/New_York/)).toBeTruthy();
+    });
+
+    it('says what the schedule means, as you type it', async () => {
+      await openCron();
+      fillField('Timezone', 'America/New_York');
+      fillField('Cron expression', '0 2 * * *');
+      expect(
+        screen.getByText('Runs at 2:00 AM, every day (America/New_York)'),
+      ).toBeTruthy();
+
+      // Live: the preview tracks the field rather than a save.
+      fillField('Cron expression', '30 14 * * 1-5');
+      expect(
+        screen.getByText('Runs at 2:30 PM, every weekday (America/New_York)'),
+      ).toBeTruthy();
+    });
+
+    it('corrects gently instead of throwing a parser error', async () => {
+      await openCron();
+      fillField('Cron expression', 'every tuesday');
+      expect(screen.getByText(/doesn't look like a cron schedule yet/i)).toBeTruthy();
+      expect(screen.getByText(/minute, hour, day of month/i)).toBeTruthy();
+    });
+
+    it('shows the raw expression rather than guessing at an exotic one', async () => {
+      // The load-bearing case. A confident wrong description would be believed;
+      // "here is what you typed" is the honest thing to say when we do not know.
+      await openCron();
+      fillField('Cron expression', '15,45 2-4 * * *');
+      expect(screen.getByText(/Runs on the schedule/i)).toBeTruthy();
+      expect(screen.queryByText(/Runs at .* every day/)).toBeNull();
+    });
+  });
 });
