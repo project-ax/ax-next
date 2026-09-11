@@ -211,3 +211,63 @@ cheaper in and 10× cheaper out than haiku 4.5).
   consider raising `orchestrator.timeoutMs` above 5s first, since the slow mode
   is where most of the risk sits.
 
+### Follow-up probe — `:nitro` + reasoning disabled, same day
+
+Three cheap models re-run with OpenRouter's `:nitro` throughput routing AND its
+unified `reasoning` control. The client now surfaces `reasoning_tokens` from the
+response so "reasoning off" is verified rather than assumed.
+
+**Not every model will let you turn it off.** `reasoning: { enabled: false }`
+returns `400 Reasoning is mandatory for this endpoint and cannot be disabled`
+for both `google/gemini-3.8-flash` and `z-ai/glm-5.3-flash`. Only
+`deepseek/deepseek-v4.1-flash` accepted it (and reported 0 reasoning tokens).
+`reasoning: { effort: 'minimal' }` is accepted by all three.
+
+| config | n | min | p50 | mean | p95 | max |
+|---|---|---|---|---|---|---|
+| `z-ai/glm-5.3-flash:nitro` + minimal | 19 | 610 | 954 | 958 | 1256 | 1443 |
+| `deepseek/deepseek-v4.1-flash:nitro` + off | 19 | 642 | 932 | 954 | 1238 | 1632 |
+| `google/gemini-3.8-flash:nitro` + minimal | 19 | 753 | 946 | 1417 | 2883 | 7088 |
+| `anthropic/claude-haiku-4.5` (default, no flag) | 19 | 887 | 989 | 1007 | 1181 | 1412 |
+
+**Reasoning was the whole story for GLM.** Measured in the same run, with the
+flag off vs absent: p50 **3489 → 954ms**, p95 **16195 → 1256ms**, max
+**16929 → 1443ms**. A 13x p95 improvement from one request parameter, and the
+control arm confirms why — it emitted 257–339 reasoning tokens per call, spent
+on tokens the op parser discards.
+
+All four p50s now sit within 6% of each other, i.e. indistinguishable at n=19.
+Ordered by price, the cheap ones win outright: GLM is ~7x cheaper input / 10x
+cheaper output than haiku at the same latency.
+
+### The catch: the winning configurations are NOT reachable from production
+
+`LlmCallInput` is `{model, maxTokens, system, messages, temperature}`, and
+`@ax/llm-openrouter`'s `toChatCompletionsRequest` sends exactly those fields
+with no passthrough. `:nitro` rides along fine — it is part of the model id —
+but **`reasoning` cannot be expressed at all.**
+
+So, today:
+
+- Setting `memory.orchestratorModel: z-ai/glm-5.3-flash:nitro` would deploy the
+  REASONING-ON version — p50 3489ms, p95 16195ms against a 5000ms budget. That
+  is strictly worse than the current default, and it fails silently into BM25.
+- `deepseek-v4.1-flash:nitro` needs `enabled:false`; its reasoning-ON latency
+  was never measured, so it is an unknown, not a win.
+- `anthropic/claude-haiku-4.5` is the only one of the four that performs as
+  measured without a flag, because it does not reason by default.
+
+**Haiku therefore stays the default** — not because it is the best model here,
+but because it is the only one whose measured numbers survive contact with the
+deployment.
+
+To unlock the cheap arms, `reasoning` would have to reach the provider. A
+plugin-level default is wrong (the same hook serves agent chat turns, which may
+legitimately want reasoning), so it belongs on `LlmCallInput` as a per-call
+field — a hook-surface change needing boundary review. Worth noting that unlike
+`provider.order` (OpenRouter-only routing, the leak invariant 1 exists to stop),
+reasoning effort is now a cross-provider concept with an analogue in Anthropic,
+OpenAI and Google APIs, so a normalized field is defensible rather than a leak.
+
+Accuracy remains unmeasured for every model in this table.
+

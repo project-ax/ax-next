@@ -174,6 +174,15 @@ export function makeOpenRouterOrchestratorClient(
   apiKey: string,
   model = 'x-ai/grok-4.1-fast',
   forceProvider?: string,
+  /**
+   * Extra top-level body fields, merged verbatim into the request. Same
+   * escape hatch as `forceProvider`: OpenRouter accepts parameters the openai
+   * SDK's types don't model. The one this exists for is `reasoning`
+   * (https://openrouter.ai/docs/use-cases/reasoning-tokens) — the orchestrator
+   * emits a short op list under a 5s budget, so a model that silently thinks
+   * first is spending the budget on tokens that get parsed away.
+   */
+  extraBody?: Record<string, unknown>,
 ): OrchestratorClient {
   const o = new OpenAI({ apiKey, baseURL: 'https://openrouter.ai/api/v1', timeout: 60_000 });
   return {
@@ -196,9 +205,19 @@ export function makeOpenRouterOrchestratorClient(
               { role: 'user', content: user },
             ],
             ...providerExt,
+            ...((extraBody ?? {}) as Record<string, never>),
           });
           const text = resp.choices?.[0]?.message?.content ?? '';
           const usage = resp.usage ?? { prompt_tokens: 0, completion_tokens: 0 };
+          // `reasoning_tokens` lands under completion_tokens_details when a
+          // model thinks. Surfaced so "reasoning off" can be VERIFIED rather
+          // than assumed — a provider that ignores the flag shows up here.
+          const details = (usage as { completion_tokens_details?: { reasoning_tokens?: number } })
+            .completion_tokens_details;
+          const reasoning = details?.reasoning_tokens ?? 0;
+          if (reasoning > 0) {
+            console.warn(`    [${model}] reasoning_tokens=${reasoning} (flag not honored?)`);
+          }
           return { text, usage: { in: usage.prompt_tokens, out: usage.completion_tokens } };
         },
         { attempts: 4, baseDelayMs: 1000, label: 'openrouter-orchestrator' },
