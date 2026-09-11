@@ -194,3 +194,35 @@ describe('renderReport', () => {
     expect(md).toMatch(/D: Retrieval Orchestrator[^\n]*\|\s*2\s*\|\s*100\.0%/i);
   });
 });
+
+describe('renderReport — orchestrator model stamp', () => {
+  it('stamps the model when an orchestrator config ran', () => {
+    // Config D and E carry the same label in every report, so two arms that
+    // differ only by orchestrator model are otherwise indistinguishable after
+    // the fact — which is how a headline measured against a since-deprecated
+    // model id outlived the id by four months (#515).
+    const md = renderReport({
+      results: [makeResult({ config: 'e-map-fts' })],
+      cap: 50,
+      totalSpent: 0.001,
+      capExceeded: false,
+      runDate: new Date('2026-09-11T00:00:00Z'),
+      orchestratorModel: 'z-ai/glm-5.3-flash:nitro',
+    });
+    expect(md).toContain('**Orchestrator model:** `z-ai/glm-5.3-flash:nitro`');
+  });
+
+  it('omits the stamp when no orchestrator config ran', () => {
+    // A BM25-only run does not call the orchestrator at all. Stamping a model
+    // on it would assert a dependency the numbers do not have.
+    const md = renderReport({
+      results: [makeResult({ config: 'a-bm25' })],
+      cap: 50,
+      totalSpent: 0.001,
+      capExceeded: false,
+      runDate: new Date('2026-09-11T00:00:00Z'),
+      orchestratorModel: 'claude-haiku-4-5-20251001',
+    });
+    expect(md).not.toContain('Orchestrator model');
+  });
+});

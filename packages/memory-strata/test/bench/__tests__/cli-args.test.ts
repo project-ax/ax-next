@@ -84,3 +84,16 @@ describe('bench PRICING covers every selectable orchestrator arm (TASK-349)', ()
     }
   });
 });
+
+describe('parseCliArgs — --out', () => {
+  it('is absent by default, so the date-stamped path stays the default', () => {
+    expect(parseCliArgs([]).out).toBeUndefined();
+  });
+
+  it('carries an explicit report path', () => {
+    // Without this, two arms that differ only by --orchestrator-model write the
+    // SAME date-derived path: run them concurrently and one report wins at
+    // random; run them back to back and the second silently destroys the first.
+    expect(parseCliArgs(['--out', 'docs/plans/x.md']).out).toBe('docs/plans/x.md');
+  });
+});

@@ -9,6 +9,20 @@ export interface ReportInput {
   abortError?: string | null;
   skipped?: Array<{ corpus: string; config: string; questionId: string; reason: string }>;
   configFailures?: Array<{ corpus: string; config: string; phase: 'build' | 'unknown'; reason: string }>;
+  /**
+   * Which model ran the retrieval orchestrator, stamped into the header so two
+   * arms of the same config are tellable apart AFTER the run.
+   *
+   * Config D and E differ between arms ONLY by this model, and the config label
+   * ("E: Orchestrator + BM25 fallback") is identical in both reports — so an
+   * unstamped report is a number with no provenance. That is how a headline
+   * measured against `x-ai/grok-4.1-fast` survived four months past the id's
+   * deprecation (#515).
+   *
+   * Rendered only when an orchestrator config actually ran: stamping a model on
+   * a pure-BM25 run would claim a dependency the numbers do not have.
+   */
+  orchestratorModel?: string;
 }
 
 type CorpusName = BenchCorpus['name'];
@@ -89,6 +103,9 @@ const CONFIG_LABELS: Record<ConfigName, string> = {
   'f-fair-rerank': 'F: BM25 + local cross-encoder (fair)',
 };
 
+/** Configs whose numbers depend on {@link ReportInput.orchestratorModel}. */
+const ORCHESTRATOR_CONFIGS: ReadonlySet<ConfigName> = new Set<ConfigName>(['d-map', 'e-map-fts']);
+
 export function renderReport(input: ReportInput): string {
   const date = input.runDate.toISOString().slice(0, 10);
   const lines: string[] = [];
@@ -96,6 +113,9 @@ export function renderReport(input: ReportInput): string {
   lines.push(``);
   lines.push(`**Date:** ${date}`);
   lines.push(`**Cap:** $${input.cap}`);
+  if (input.orchestratorModel && input.results.some((r) => ORCHESTRATOR_CONFIGS.has(r.config))) {
+    lines.push(`**Orchestrator model:** \`${input.orchestratorModel}\``);
+  }
   lines.push(`**Total spent:** $${input.totalSpent.toFixed(4)}`);
   if (input.capExceeded) {
     lines.push(``);
