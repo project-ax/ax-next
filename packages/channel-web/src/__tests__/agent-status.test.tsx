@@ -120,7 +120,7 @@ describe('AgentStatus', () => {
     const row = container.querySelector('.agent-status');
     expect(row?.classList.contains('visible')).toBe(true);
     expect(row?.classList.contains('error')).toBe(true);
-    expect(screen.getByRole('button', { name: /retry/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /try again/i })).toBeTruthy();
   });
 
   it('error mode shows "dismiss" when only a dismiss handler is set', () => {
@@ -156,7 +156,7 @@ describe('AgentStatus', () => {
         },
       }),
     );
-    fireEvent.click(screen.getByRole('button', { name: /retry/i }));
+    fireEvent.click(screen.getByRole('button', { name: /try again/i }));
     expect(retried).toBe(1);
     // Row stays visible because the retry handler showed a new label.
     const row = container.querySelector('.agent-status');

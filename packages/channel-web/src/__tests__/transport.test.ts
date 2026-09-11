@@ -363,7 +363,12 @@ describe('AxChatTransport SSE chunk parsing', () => {
   // `agent-model-provider-unknown` when the agent's model names a provider the
   // deployment has no `llm:call:<provider>` registrant for. Without a label the
   // operator would see the generic DEFAULT_TURN_ERROR and have nothing to act on.
-  test('server error frame: agent-model-provider-unknown renders an actionable label', async () => {
+  //
+  // TASK-335 / audit A4 — "actionable" has to mean actionable BY THE READER.
+  // The old label sent everyone to Model config, an admin-only surface, so for
+  // most people it named a door they cannot open. It now says what happened and
+  // who can fix it, and names no admin-only surface.
+  test('server error frame: agent-model-provider-unknown says who can fix it', async () => {
     const transport = new AxChatTransport({ getAgentId: () => 'a' });
     const body = `data: {"reqId":"r1","error":"agent-model-provider-unknown"}\n\n`;
     const chunks = (await drain(asProcess(transport)(sseStream(body)))) as Array<{
@@ -373,8 +378,10 @@ describe('AxChatTransport SSE chunk parsing', () => {
     const errorChunk = chunks.find((c) => c.type === 'error');
     expect(errorChunk).toBeDefined();
     expect(errorChunk!.errorText).not.toBe(DEFAULT_TURN_ERROR);
-    expect(errorChunk!.errorText).toContain('provider');
-    expect(errorChunk!.errorText).toContain('Model config');
+    expect(errorChunk!.errorText).toContain('An admin can fix this');
+    // No jargon, and no instruction to visit a surface a non-admin cannot open.
+    expect(errorChunk!.errorText).not.toContain('Model config');
+    expect(errorChunk!.errorText).not.toContain('provider');
   });
 
   // An error frame WITHOUT a detail behaves exactly as before — the bare label,

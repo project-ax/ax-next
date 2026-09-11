@@ -158,8 +158,31 @@ export function Composer() {
         className="composer-inner relative w-full max-w-[640px]"
         onSubmit={onSubmit}
       >
-        <InThreadApprovals />
-        <PermissionCard />
+        {/*
+          (TASK-335 / audit A7) The composer cluster is `position: fixed` at the
+          bottom and grows UPWARD, so anything stacked here pushes the input
+          toward the top of the window. `InThreadApprovals` already guards its
+          own half of this — it shows ONE open card at a time for exactly this
+          reason — but it cannot see the permission card, and the two together
+          can still walk the input off a laptop viewport.
+
+          A scroll region caps the pair. The input stays put and the cards get a
+          scrollbar, which is the trade that keeps every actionable thing on
+          screen and visibly reachable.
+
+          Deliberately NOT a precedence gate: whether a grant card and an
+          in-thread approval should ever render together at all is audit open
+          question 3 and a human's call. This makes the current behaviour safe
+          without deciding it — and the [L] unified queue the audit rejected
+          stays unbuilt.
+        */}
+        <div
+          data-approval-stack=""
+          className="max-h-[50vh] overflow-y-auto [scrollbar-gutter:stable]"
+        >
+          <InThreadApprovals />
+          <PermissionCard />
+        </div>
         <AgentStatus />
         {held && (
           <p
@@ -194,7 +217,11 @@ export function Composer() {
             <AttachMenu disabled={held} />
             <ComposerPrimitive.Input
               disabled={held}
-              placeholder="Message ax…"
+              // (TASK-335 / audit A8) A disabled field still inviting you to
+              // "Message ax…" is what made the held composer read as broken
+              // rather than as waiting. The placeholder now says the same thing
+              // the hold line above it says.
+              placeholder={held ? 'Answer the request above to carry on…' : 'Message ax…'}
               // `composer-input` class is the hook for the field's :has()
               // ready-state rule in index.css.
               className="

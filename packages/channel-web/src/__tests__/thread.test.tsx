@@ -48,7 +48,7 @@ describe('Thread', () => {
       </StubRuntimeProvider>,
     );
     expect(screen.getByText(/One conversation/i)).toBeTruthy();
-    expect(screen.getByText(/Say anything/i)).toBeTruthy();
+    expect(screen.getByText(/Ask anything/i)).toBeTruthy();
   });
 
   it('renders the .timeline and .composer wrappers', () => {

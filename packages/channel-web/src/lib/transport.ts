@@ -143,8 +143,16 @@ export const ERROR_LABELS: Record<string, string> = {
   // that this deployment has no configuration for, so there is nowhere to send
   // the turn. An operator fixes it by picking a different model for the agent,
   // or by adding that provider's key on the Model config tab.
+  //
+  // (TASK-335 / audit A4) That fix is an ADMIN's to make, and this string is
+  // shown to whoever happened to send the message. Telling a non-admin to "add
+  // that provider's key in Model config" points them at a surface they cannot
+  // open, to do a job that is not theirs — so it now says what happened and who
+  // can fix it. The offending model ref is not lost: the orchestrator already
+  // logs it host-side (`agent_model_provider_unknown`) and deliberately keeps
+  // it off the wire, so there is nothing to move to a detail line here.
   'agent-model-provider-unknown':
-    'This agent’s model comes from a provider we don’t have set up here. Pick a different model for the agent, or add that provider’s key in Model config.',
+    'This agent can’t run right now — the AI service it uses isn’t set up on this server. An admin can fix this in Settings.',
 };
 
 /** Max chars of the untrusted `detail` line we render (defense-in-depth — it's
