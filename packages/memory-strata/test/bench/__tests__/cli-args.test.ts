@@ -44,3 +44,34 @@ describe('parseCliArgs — e2e mode flags (TASK-189)', () => {
     expect(a.ids).toBeUndefined();
   });
 });
+
+describe('parseCliArgs — --orchestrator-model (TASK-349)', () => {
+  it('defaults to haiku', () => {
+    expect(parseCliArgs([]).orchestratorModel).toBe('haiku');
+  });
+
+  it('selects the glm arm', () => {
+    // Renamed from `grok` when `x-ai/grok-4.1-fast` turned out to have been
+    // 404ing for months. The old spelling must NOT keep working: silently
+    // accepting it would drop a run back to the default arm, which is how the
+    // dead id went unnoticed in the first place.
+    expect(parseCliArgs(['--orchestrator-model', 'glm']).orchestratorModel).toBe('glm');
+  });
+
+  it('falls back to haiku for the retired `grok` spelling and any other value', () => {
+    expect(parseCliArgs(['--orchestrator-model', 'grok']).orchestratorModel).toBe('haiku');
+    expect(parseCliArgs(['--orchestrator-model', 'wat']).orchestratorModel).toBe('haiku');
+  });
+});
+
+describe('bench PRICING covers every selectable orchestrator arm (TASK-349)', () => {
+  it('prices both arms, so a run cannot die on CostMeter mid-flight', async () => {
+    // `CostMeter.record` THROWS on an unknown model key, and it is called deep
+    // inside a paid run. A missing row is therefore not a config nit — it is
+    // money spent and then discarded.
+    const { PRICING } = await import('../cli.js');
+    for (const key of ['claude-haiku-4-5-20251001', 'z-ai/glm-5.3-flash:nitro']) {
+      expect(PRICING[key], `no PRICING row for ${key}`).toBeDefined();
+    }
+  });
+});

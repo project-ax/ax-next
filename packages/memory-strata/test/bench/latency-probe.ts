@@ -22,6 +22,7 @@ import { BenchCache } from './cache.js';
 import { loadLongMemEvalS } from './corpora/longmemeval-s.js';
 import { generateMap } from './map.js';
 import {
+  MINIMAL_REASONING,
   makeOpenRouterOrchestratorClient,
   makeXaiOrchestratorClient,
   runOrchestrator,
@@ -161,7 +162,7 @@ async function main(): Promise<number> {
     // Model ids come from a live `GET /api/v1/models`, never from a comment:
     // three ids in this repo have gone deprecated and a dead id fails closed
     // into a silent BM25 fallback.
-    const MIN_REASONING = { reasoning: { effort: 'minimal' } };
+    const MIN_REASONING = MINIMAL_REASONING;
     const orCandidates: Array<{
       label: string;
       model: string;

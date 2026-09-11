@@ -170,9 +170,38 @@ export function makeAnthropicOrchestratorClient(
   };
 }
 
+/**
+ * The reasoning shape PRODUCTION sends, for bench arms that mean to measure
+ * production.
+ *
+ * `@ax/memory-strata`'s orchestrator sets `LlmCallInput.reasoningEffort:
+ * 'minimal'` (TASK-348), which `@ax/llm-openrouter`'s `toChatCompletionsRequest`
+ * emits as exactly this. Invariant 2 stops the bench importing that translator,
+ * so this constant is the bench-side half of the contract and the openrouter
+ * unit test is the other half — keep them equal.
+ *
+ * Deliberately NOT a default on the factory below: `latency-probe.ts` needs a
+ * control arm with the field absent, and a default would quietly delete the
+ * thing that arm exists to measure.
+ */
+export const MINIMAL_REASONING: Readonly<Record<string, unknown>> = Object.freeze({
+  reasoning: { effort: 'minimal' },
+});
+
+/**
+ * Default model for the orchestrator role in bench runs.
+ *
+ * Was `x-ai/grok-4.1-fast` until 2026-09-11, by which point that id had been
+ * 404ing for months — every arm that took this default was measuring nothing.
+ * Pass `MINIMAL_REASONING` as `extraBody` alongside it: GLM reasons by default,
+ * and with reasoning on it measured p50 ~3.4s against the orchestrator's 5s
+ * budget versus ~865ms with the flag.
+ */
+export const DEFAULT_BENCH_ORCHESTRATOR_MODEL = 'z-ai/glm-5.3-flash:nitro';
+
 export function makeOpenRouterOrchestratorClient(
   apiKey: string,
-  model = 'x-ai/grok-4.1-fast',
+  model = DEFAULT_BENCH_ORCHESTRATOR_MODEL,
   forceProvider?: string,
   /**
    * Extra top-level body fields, merged verbatim into the request. Same

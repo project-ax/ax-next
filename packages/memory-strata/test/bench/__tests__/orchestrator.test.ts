@@ -140,7 +140,7 @@ describe('makeOpenRouterOrchestratorClient', () => {
   });
 
   it('accepts an optional forceProvider parameter without throwing at construction', () => {
-    const client = makeOpenRouterOrchestratorClient('test-key', 'x-ai/grok-4.1-fast', 'x-ai');
+    const client = makeOpenRouterOrchestratorClient('test-key', 'z-ai/glm-5.3-flash:nitro', 'z-ai');
     expect(typeof client.complete).toBe('function');
   });
 });
