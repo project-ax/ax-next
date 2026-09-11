@@ -32,7 +32,7 @@ import type { ToolCallMessagePartProps } from '@assistant-ui/react';
 import { cn } from '@/lib/utils';
 import { ArtifactChip } from './ArtifactChip';
 import { useConversationId } from '../lib/use-conversation-id';
-import { isToolHeld } from '../lib/tool-held';
+import { toolStepStatus, type ToolStepStatus } from '../lib/tool-step-status';
 import { toolDisplayName } from '../lib/tool-phrase';
 
 const formatJSON = (v: unknown): string => {
@@ -45,18 +45,11 @@ const formatJSON = (v: unknown): string => {
   }
 };
 
-const stepStatus = (
-  p: ToolCallMessagePartProps,
-): 'running' | 'waiting' | 'failed' | 'done' => {
-  if (p.status?.type === 'running') return 'running';
-  // A hold is neither a completion nor a failure (TASK-260's floor), so it
-  // wins over the error check: the runners publish held results with
-  // `is_error` omitted, but a stale or foreign row carrying both must still
-  // read as waiting, never as failed.
-  if (isToolHeld(p.toolCallId)) return 'waiting';
-  if (p.isError || p.status?.type === 'incomplete') return 'failed';
-  return 'done';
-};
+// Moved to `lib/tool-step-status.ts` in TASK-335 so the collapsed
+// chain-of-thought header can ask the same question and get the same answer.
+// The hold-beats-error ordering that used to be explained here lives with it.
+const stepStatus = (p: ToolCallMessagePartProps): ToolStepStatus =>
+  toolStepStatus(p);
 
 const STEP_LABEL_CLASS =
   'uppercase text-[9.5px] tracking-[0.14em] text-ink-ghost mt-1.5 mb-0.5';

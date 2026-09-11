@@ -133,7 +133,14 @@ const ThreadWelcome: FC = () => (
     <div className="text-[22px] font-medium tracking-[-0.01em] text-foreground mb-1.5">
       One conversation.
     </div>
-    <div className="text-muted-foreground">Say anything.</div>
+    {/* (TASK-335 / audit A10) "Say anything." is friendly and teaches nothing.
+        A first-timer staring at an empty box does not know what an agent can
+        do, or that it will stop and ask before anything consequential — which
+        is the single most reassuring fact about this product. */}
+    <div className="text-muted-foreground">
+      Ask anything. Your agent can look things up and get real work done — and
+      it’ll check with you before anything important.
+    </div>
   </div>
 );
 

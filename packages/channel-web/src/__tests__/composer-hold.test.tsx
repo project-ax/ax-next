@@ -22,6 +22,15 @@
  *     submits a disabled button cannot stop.
  *   - The reason copy is real text in a `<p>`, not a placeholder or a dimming
  *     class.
+ *
+ * TASK-335 / audit A8 refines that last point rather than reversing it. The
+ * REASON still has to be readable text in the `<p>` — a placeholder vanishes
+ * the moment there is a draft in the field and is poor material for a screen
+ * reader, so it can never be where the explanation lives. But the placeholder
+ * was still saying "Message ax…" on a disabled input, which reads as broken
+ * rather than as waiting. So it stops inviting typing, and the test below now
+ * pins both halves: the reason is in the `<p>`, and the placeholder is neither
+ * an invitation nor a second copy of the reason.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -127,7 +136,7 @@ describe('Composer hold while an approval is open', () => {
     // Real `disabled` attributes — what blocks the click/type paths — not
     // opacity classes.
     expect(screen.getByLabelText('Send')).toBeDisabled();
-    expect(screen.getByPlaceholderText('Message ax…')).toBeDisabled();
+    expect(screen.getByPlaceholderText(/answer the request above/i)).toBeDisabled();
     expect(screen.getByLabelText('Attach')).toBeDisabled();
   });
 
@@ -165,10 +174,12 @@ describe('Composer hold while an approval is open', () => {
     // and not an opacity-only treatment with nothing to read.
     expect(copy.tagName).toBe('P');
     expect(copy.closest('[data-composer-hold]')).not.toBeNull();
-    expect(screen.getByPlaceholderText('Message ax…')).toHaveAttribute(
-      'placeholder',
-      'Message ax…',
-    );
+    // (A8) The placeholder stops inviting typing on a field that cannot take
+    // it — but it is still NOT where the reason lives.
+    const heldInput = screen.getByPlaceholderText(/answer the request above/i);
+    expect(heldInput).toBeDisabled();
+    expect(heldInput.getAttribute('placeholder')).not.toBe(HOLD_COPY);
+    expect(screen.queryByPlaceholderText('Message ax…')).toBeNull();
     held.unmount();
 
     mockOpen = [];
@@ -217,5 +228,31 @@ describe('Composer hold while an approval is open', () => {
     // Proves the blocked-submit test above is not vacuous: the same submit
     // reaches the runtime when no approval is open.
     await waitFor(() => expect(runFn).toHaveBeenCalledTimes(1));
+  });
+
+  /**
+   * TASK-335 / audit A7 — the composer cluster is fixed to the bottom and grows
+   * upward, so cards stacked above the input push it toward the top of the
+   * window. `InThreadApprovals` caps its own half at one card; it cannot see
+   * the permission card, and the two together could still walk the input off a
+   * laptop viewport with no scrollbar to hint that anything was up there.
+   *
+   * The structural property, not the styling: the cards live in a capped scroll
+   * region and the input does NOT.
+   */
+  it('caps the approval stack so the composer input cannot be pushed off screen', () => {
+    mockOpen = [decisionFixture()];
+    const { container } = renderComposer();
+
+    const stack = container.querySelector('[data-approval-stack]');
+    expect(stack).not.toBeNull();
+    expect(stack!.className).toContain('max-h-[50vh]');
+    expect(stack!.className).toContain('overflow-y-auto');
+
+    // The approval card is inside the capped region...
+    expect(stack!.textContent).toContain('Move your 1:1 with Marcus');
+    // ...and the input is outside it, so it stays put while the cards scroll.
+    const input = screen.getByPlaceholderText(/answer the request above/i);
+    expect(stack!.contains(input)).toBe(false);
   });
 });

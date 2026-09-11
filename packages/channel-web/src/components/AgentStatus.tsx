@@ -53,7 +53,10 @@ export const AgentStatus = () => {
 
   const isVisible = mode !== 'hidden';
   const isError = mode === 'error';
-  const buttonLabel = isError ? (retry ? 'retry' : 'dismiss') : 'stop';
+  // (TASK-335 / audit A9) These were lowercase console verbs — `retry`, `stop`.
+  // They are the buttons a person clicks when something has just gone wrong,
+  // which is the worst moment to sound like a terminal.
+  const buttonLabel = isError ? (retry ? 'Try again' : 'Dismiss') : 'Stop';
   const showButton = isError ? true : !!cancel;
 
   const onAction = () => {
