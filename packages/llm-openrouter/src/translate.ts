@@ -27,6 +27,14 @@ export interface ChatCompletionsRequest {
    * form — see `toChatCompletionsRequest` for why the other two members of
    * OpenRouter's union (`enabled`, `max_tokens`) are deliberately unreachable
    * from here.
+   *
+   * The rungs are spelled out rather than reusing `ReasoningEffort` from
+   * @ax/core, and that duplication is a deliberate SEAM: this type describes
+   * OpenRouter's wire vocabulary, which merely happens to coincide with ours
+   * today. Widening `ReasoningEffort` should break the assignment below and
+   * force someone to check what OpenRouter actually accepts — aliasing the two
+   * would let a new rung reach the wire unverified, and a rung this endpoint
+   * rejects is a 400 on every orchestrator call.
    */
   reasoning?: { effort: 'minimal' | 'low' | 'medium' | 'high' };
 }
