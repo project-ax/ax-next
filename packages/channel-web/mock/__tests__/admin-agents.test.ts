@@ -7,6 +7,7 @@ import { Store } from '../store';
 import { authMiddleware } from '../auth';
 import { adminAgentsMiddleware } from '../admin/agents';
 import type { Agent } from '../agents';
+import { expectStatus } from './expect-status';
 
 async function startServer(
   store: Store,
@@ -47,7 +48,7 @@ describe('mock admin agents', () => {
     const { url, close } = await startServer(store);
     try {
       const res = await fetch(`${url}/api/admin/agents`, { headers: { cookie: ADMIN } });
-      expect(res.status).toBe(200);
+      await expectStatus(res, 200);
       const body = await res.json();
       const ids = (body.agents as Agent[]).map((a) => a.id).sort();
       expect(ids).toEqual(['ax', 'mercy', 'team-engineering']);
@@ -60,7 +61,7 @@ describe('mock admin agents', () => {
     const { url, close } = await startServer(store);
     try {
       const res = await fetch(`${url}/api/admin/agents`, { headers: { cookie: ALICE } });
-      expect(res.status).toBe(403);
+      await expectStatus(res, 403);
     } finally {
       await close();
     }
@@ -84,7 +85,7 @@ describe('mock admin agents', () => {
           model: 'anthropic/claude-sonnet-4-6',
         }),
       });
-      expect(res.status).toBe(201);
+      await expectStatus(res, 201);
       const body = await res.json();
       expect(body.id).toMatch(/^agent-[0-9a-z]+-[A-Za-z0-9_-]{6}$/);
       const stored = store.collection<Agent>('agents').get(body.id);
@@ -106,7 +107,7 @@ describe('mock admin agents', () => {
         headers: { cookie: ADMIN, 'content-type': 'application/json' },
         body: JSON.stringify({ desc: 'updated description' }),
       });
-      expect(res.status).toBe(200);
+      await expectStatus(res, 200);
       const after = store.collection<Agent>('agents').get('ax');
       expect(after?.desc).toBe('updated description');
       expect(after?.name).toBe('ax');
@@ -124,7 +125,7 @@ describe('mock admin agents', () => {
         headers: { cookie: ADMIN, 'content-type': 'application/json' },
         body: JSON.stringify({ desc: 'x' }),
       });
-      expect(res.status).toBe(404);
+      await expectStatus(res, 404);
     } finally {
       await close();
     }
@@ -137,7 +138,7 @@ describe('mock admin agents', () => {
         method: 'DELETE',
         headers: { cookie: ADMIN },
       });
-      expect(res.status).toBe(204);
+      await expectStatus(res, 204);
       expect(store.collection<Agent>('agents').get('mercy')).toBeUndefined();
     } finally {
       await close();
