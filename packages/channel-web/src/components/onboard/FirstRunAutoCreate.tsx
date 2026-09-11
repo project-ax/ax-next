@@ -96,8 +96,12 @@ export function FirstRunAutoCreate({
       title="Setting up your agent…"
       description="One moment — we're bringing your new agent online. It'll introduce itself in a sec."
     >
-      <div className="flex items-center justify-center py-6 text-muted-foreground font-mono text-xs tracking-[0.04em]">
-        creating your agent…
+      {/* (TASK-339 / audit B6) Sentence case, plain words. No ten-second
+          "taking longer than usual" here: spawning a fresh agent honestly takes
+          a while, this step already has its own error state with a Try again,
+          and crying wolf on a job that is working is its own kind of lie. */}
+      <div className="flex items-center justify-center py-6 text-[13px] text-muted-foreground">
+        Bringing your agent online…
       </div>
     </SetupShell>
   );

@@ -144,7 +144,7 @@ describe('App boot — auth gate (post-bootstrap)', () => {
       bootstrapStatus: () => new Promise(() => {}),
     });
     render(<App />);
-    expect(screen.getByText(/connecting/i)).toBeTruthy();
+    expect(screen.getByText(/getting things ready/i)).toBeTruthy();
   });
 
   it('shows LoginPage when /admin/me rejects (offline)', async () => {

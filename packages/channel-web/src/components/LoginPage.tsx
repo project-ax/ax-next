@@ -19,6 +19,8 @@
  */
 import { useState } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
+import { HTTP_SESSION_ENDED } from '../lib/http';
 import { signInWithGoogle } from '../lib/auth';
 import { BrandMark } from './BrandMark';
 
@@ -27,11 +29,17 @@ import { BrandMark } from './BrandMark';
   provider from an unreachable host without guessing, and guessing wrong here
   sends someone to the wrong person for help — so the copy names both and
   offers the one action that is always right to try first.
+
+  (TASK-339 / audit B2) The ORDER is the fix. This said "the sign-in provider
+  may need attention from whoever set this up" before it said "try again",
+  which points at the operator first for what is, in the overwhelming majority
+  of cases, the reader's own connection. It now leads with the thing they can
+  check themselves, and keeps the operator as the fallback it should be.
 */
 export const SIGN_IN_FAILED =
-  'We could not start the sign-in. Please try again — if it keeps happening, the sign-in provider may need attention from whoever set this up.';
+  'We couldn’t start sign-in. Check your connection and try again. If it keeps happening, the sign-in setup may need a look from whoever installed ax.';
 
-export function LoginPage() {
+export function LoginPage({ sessionExpired = false }: { sessionExpired?: boolean } = {}) {
   const [failed, setFailed] = useState(false);
 
   return (
@@ -41,8 +49,23 @@ export function LoginPage() {
         <p className="text-[13px] tracking-[-0.005em] leading-[1.4] text-muted-foreground mb-1.5">
           Sign in to start chatting
         </p>
-        <button
-          type="button"
+        {/* (B1) A session that ends mid-use swaps the whole app for this
+            screen. Landing on a bare sign-in page with no explanation reads as
+            "something broke and threw me out" — so say what happened. Not
+            `destructive`: nothing went wrong, and colouring it red would make a
+            routine, protective event look like a failure. The sentence is the
+            shared `HTTP_SESSION_ENDED`, which `SignInAgainButton` already shows
+            inline for the same event — one sentence for one thing. */}
+        {sessionExpired && (
+          <Alert className="text-left" data-testid="session-expired">
+            <AlertDescription>{HTTP_SESSION_ENDED}</AlertDescription>
+          </Alert>
+        )}
+        {/* (B3) This was a hand-rolled `<button>` with bespoke hover-translate,
+            brightness and shadow — invariant 6, on the first button anyone ever
+            touches in this product. */}
+        <Button
+          className="w-full"
           onClick={() => {
             // On success this navigates away, so nothing below it runs. On a
             // misconfigured provider or an unreachable host it throws, and the
@@ -53,17 +76,9 @@ export function LoginPage() {
               setFailed(true);
             });
           }}
-          className="
-            w-full px-3.5 py-2.5 rounded-lg cursor-pointer text-center
-            bg-primary text-primary-foreground shadow-sm
-            text-[13.5px] font-medium tracking-[-0.005em]
-            transition-[transform,filter,box-shadow] duration-150
-            hover:-translate-y-px hover:brightness-105 hover:shadow-md
-            focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary/50 focus-visible:outline-offset-2
-          "
         >
           Sign in with Google
-        </button>
+        </Button>
         {failed && (
           <Alert variant="destructive" className="text-left">
             <AlertDescription>{SIGN_IN_FAILED}</AlertDescription>
