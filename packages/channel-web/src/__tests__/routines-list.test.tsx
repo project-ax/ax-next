@@ -192,9 +192,9 @@ describe('RoutinesList', () => {
     render(<RoutinesList isAdmin onFired={() => {}} />);
 
     // The HMAC label (slot label from CredentialSlotRow) should appear
-    expect(await screen.findByText('HMAC', { selector: 'span' })).toBeInTheDocument();
+    expect(await screen.findByText(/HMAC/, { selector: 'span' })).toBeInTheDocument();
     // The "Set credential" button from CredentialSlotRow should appear
-    expect(await screen.findByRole('button', { name: /set credential/i })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /add key/i })).toBeInTheDocument();
   });
 
   it('shows a read-only "ask an admin" note (no Set button, no admin fetch) for a non-admin when HMAC is configured', async () => {
@@ -208,7 +208,7 @@ describe('RoutinesList', () => {
     // CredentialSlotRow label, and no /admin/credentials request (it 403s).
     expect(await screen.findByText(/workspace admin/i)).toBeTruthy();
     expect(screen.queryByText('HMAC', { selector: 'span' })).toBeNull();
-    expect(screen.queryByRole('button', { name: /set credential/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /add key/i })).toBeNull();
     expect(
       fetchMock.mock.calls.some((c) => String(c[0]).includes('/admin/credentials')),
     ).toBe(false);

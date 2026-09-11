@@ -38,8 +38,8 @@ describe('SkillInstallConsentDialog', () => {
       />,
     );
     expect(await screen.findByText('Search the web.')).toBeInTheDocument();
-    expect(screen.getByText('serp')).toBeInTheDocument();
-    expect(screen.getByText('brave')).toBeInTheDocument();
+    expect(screen.getByText('Serp')).toBeInTheDocument();
+    expect(screen.getByText('Brave')).toBeInTheDocument();
   });
 
   it('installs on confirm (server-forced attach) and calls onInstalled', async () => {

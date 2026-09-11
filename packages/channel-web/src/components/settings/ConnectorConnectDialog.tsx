@@ -33,6 +33,7 @@
  *
  * shadcn primitives + semantic tokens only (invariant #6).
  */
+import { humanizeSlotLabel } from '@/lib/humanize';
 import { useCallback, useEffect, useState } from 'react';
 import {
   Dialog,
@@ -180,9 +181,13 @@ export function ConnectorConnectDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
+          {/* (TASK-344) "Update credentials" is the same phrase E3 replaces on
+              the button that OPENS this dialog. Leaving them out of step would
+              have the button say "Update key" and the dialog it opens say
+              something else about the same act. */}
           <DialogTitle>
             {mode === 'manage'
-              ? `Update credentials for ${connectorName}`
+              ? `Update your ${connectorName} key`
               : `Connect ${connectorName}`}
           </DialogTitle>
           <DialogDescription>
@@ -342,7 +347,16 @@ function ConnectKeyForms({
         // the WRITE lands in the SAME row the host resolver READS.
         return (
           <div key={entry.slot} className="flex flex-col gap-2">
-            <p className="text-xs font-medium text-foreground">{entry.slot}</p>
+            {/* (TASK-344 / audit E2) The heading was the raw `entry.slot`. The
+                label leads now; the id stays as secondary mono, because on a
+                multi-slot connector it is how you tell two similar fields
+                apart — and it is what you quote when asking for help. */}
+            <div className="flex items-baseline gap-2">
+              <p className="text-xs font-medium text-foreground">
+                {humanizeSlotLabel(entry.slot, entry.service)}
+              </p>
+              <p className="font-mono text-[11px] text-muted-foreground">{entry.slot}</p>
+            </div>
             <CredentialSlotForm
               destination={{
                 kind: 'account',

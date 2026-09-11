@@ -142,7 +142,7 @@ describe('ConnectorsTab', () => {
     fireEvent.click(within(tile).getByRole('button', { name: /approve/i }));
 
     // The approve dialog opens with a key field for the declared slot.
-    const keyField = await screen.findByLabelText('LINEAR_API_KEY');
+    const keyField = await screen.findByLabelText('Linear API key');
     fireEvent.change(keyField, { target: { value: 'lin_secret_123' } });
     fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
 

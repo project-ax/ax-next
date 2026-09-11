@@ -96,8 +96,8 @@ describe('SkillAttachmentsSection', () => {
       expect(screen.getByText('linear-tracker')).toBeInTheDocument();
     });
     // A skill declares no credential slots → no "Set credential" affordance.
-    expect(screen.queryByRole('button', { name: /set credential/i })).not.toBeInTheDocument();
-    expect(screen.queryByText('LINEAR_TOKEN')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /add key/i })).not.toBeInTheDocument();
+    expect(screen.queryByText('Linear token')).not.toBeInTheDocument();
   });
 
   it('renders existing attachments (skill id only — no slot labels)', async () => {
@@ -276,6 +276,6 @@ describe('SkillAttachmentsSection', () => {
     });
 
     // slack-notify has no credentials, so no Set credential button
-    expect(screen.queryByRole('button', { name: /set credential/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /add key/i })).toBeNull();
   });
 });

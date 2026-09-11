@@ -55,10 +55,28 @@ const BRANDS_AND_ACRONYMS = new Map<string, string>(Object.entries({
   http: 'HTTP',
   https: 'HTTPS',
   smtp: 'SMTP',
+  imap: 'IMAP',
   dsn: 'DSN',
   arn: 'ARN',
   oauth: 'OAuth',
   oidc: 'OIDC',
+  // Formats and shorthands that turn up in skill and connector ids. Without
+  // these, `pdf-tools` reads "Pdf tools" — which looks like a typo rather than
+  // a name (TASK-344).
+  pdf: 'PDF',
+  csv: 'CSV',
+  json: 'JSON',
+  yaml: 'YAML',
+  xml: 'XML',
+  html: 'HTML',
+  css: 'CSS',
+  sql: 'SQL',
+  ssh: 'SSH',
+  dns: 'DNS',
+  cdn: 'CDN',
+  crm: 'CRM',
+  ai: 'AI',
+  ml: 'ML',
   // Brands, cased as they brand themselves.
   ax: 'ax',
   anthropic: 'Anthropic',
@@ -210,8 +228,14 @@ export function humanizeSlotLabel(slot: string, service?: string): string {
     service !== undefined && service.length > 0 ? tokenize(service).map(mapToken) : [];
   if (serviceTokens.length === 0) return joinTokens(slotTokens);
 
-  const alreadyNamed = serviceTokens.every(
-    (t, i) => slotTokens[i]?.toLowerCase() === t.toLowerCase(),
-  );
+  // Prefix only when the service adds something the slot does not already say.
+  //
+  // The first version of this asked whether the service was a strict PREFIX of
+  // the slot, which is true for `anthropic` + `ANTHROPIC_API_KEY` and false for
+  // `linear-tracker` + `LINEAR_TOKEN` — so that second pair rendered as
+  // "Linear tracker Linear token". Overlap anywhere is the honest test: if the
+  // reader can already see which service this is, saying it again is noise.
+  const slotLower = new Set(slotTokens.map((t) => t.toLowerCase()));
+  const alreadyNamed = serviceTokens.some((t) => slotLower.has(t.toLowerCase()));
   return joinTokens(alreadyNamed ? slotTokens : [...serviceTokens, ...slotTokens]);
 }

@@ -12,7 +12,7 @@ describe('ProvidersPanel', () => {
     render(<ProvidersPanel />);
     expect(await screen.findByText('Anthropic')).toBeInTheDocument();
     expect(await screen.findByText('OpenRouter')).toBeInTheDocument();
-    expect(await screen.findAllByRole('button', { name: /set credential/i })).toHaveLength(2);
+    expect(await screen.findAllByRole('button', { name: /add key/i })).toHaveLength(2);
   });
 
   it('the OpenRouter row targets the provider:openrouter destination', async () => {
@@ -23,6 +23,6 @@ describe('ProvidersPanel', () => {
       new Response(JSON.stringify({ credentials: [] }), { status: 200 }),
     );
     render(<ProvidersPanel />);
-    expect(await screen.findByText('OPENROUTER_API_KEY')).toBeInTheDocument();
+    expect(await screen.findByText('OpenRouter API key')).toBeInTheDocument();
   });
 });
