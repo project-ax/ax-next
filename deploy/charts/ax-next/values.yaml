@@ -689,16 +689,30 @@ skills:
 # none and memory_search runs plain BM25, which is what it has always done.
 #
 # Empty uses the preset's default, `anthropic/claude-haiku-4.5` — picked by
-# MEASUREMENT on 2026-09-10 (p50 1049ms / p95 1580ms through OpenRouter,
-# against a 5s budget), not by reputation. Two Grok ids were tried first and
-# both 404'd as deprecated, and `x-ai/grok-4.3` measured a 7.3s p50 — worse on
-# its own than the entire budget.
+# MEASUREMENT, not by reputation, and re-confirmed on 2026-09-11 (p50 ~930ms,
+# p95 ~1200ms through OpenRouter, against a 5s budget). It wins on CONSISTENCY:
+# across four benchmark runs its slowest single call was under 2s. Two Grok ids
+# were tried first and both 404'd as deprecated, and `x-ai/grok-4.3` measured a
+# 7.3s p50 — worse on its own than the entire budget.
 #
 # Worth changing without waiting for a release, and here is why it matters:
 # the orchestrator only earns its keep if it answers inside ~5s, it falls back
 # to BM25 SILENTLY when it doesn't, and which model is both fast and cheap
-# moves much faster than this chart does. `deepseek/deepseek-v4.1-flash` is
-# the cheaper alternative that also fits.
+# moves much faster than this chart does.
+#
+# If cost starts to bite, the cheap options are real now. We ask every model for
+# minimal reasoning (some of them think before answering, and the orchestrator
+# throws that thinking away), which is what makes them usable at all — before
+# 2026-09-11 we couldn't send that request and `z-ai/glm-5.3-flash:nitro` would
+# quietly have been THREE TIMES SLOWER than the default it replaced. Two we've
+# measured:
+#   z-ai/glm-5.3-flash:nitro      ~7x cheaper. Fastest median of anything
+#                                 tried, but its slow calls vary a lot run to
+#                                 run (we've seen 4.1s). Still inside budget,
+#                                 just less predictable.
+#   google/gemini-3.8-flash:nitro ~25% cheaper, and about as steady as haiku.
+# Both degrade to BM25 rather than to a wrong answer if they miss, so this is a
+# safe knob to experiment with.
 memory:
   orchestratorModel: ""
 

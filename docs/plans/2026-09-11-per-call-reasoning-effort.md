@@ -88,6 +88,15 @@ validator-skill) are deliberately **left alone** — see PR body for the reasoni
    stale "NOT reachable from production" note goes.
 6. **Re-measure** `pnpm --filter @ax/memory-strata bench:latency`; move
    `DEFAULT_ORCHESTRATOR_MODEL` to the cheap winner if it holds.
+   **OUTCOME: it did not hold; the default stays `anthropic/claude-haiku-4.5`.**
+   Two runs of n=19 (full tables in the 2026-09-11 addendum of the Phase 3C
+   report). The flag itself is proven — the control arm, same model same run,
+   went p50 3338 -> 865ms, and its max of 5183ms was PAST the 5000ms budget.
+   But `z-ai/glm-5.3-flash:nitro`'s tail measured 1443 / 2758 / 4133ms across
+   three runs, and against a hard timeout with a silent fallback a reproducible
+   tail beats a good median. Haiku's p95 has not exceeded 1580ms in four runs.
+   Also found by reading `reasoning_tokens` back: `deepseek-v4.1-flash` accepts
+   `'minimal'` and keeps reasoning anyway (32-279 tokens on every call).
 7. **Docs/memory** — report addendum, `DEFAULT_ORCHESTRATOR_MODEL` doc table,
    `values.yaml` comment, and the now-stale `.claude/memory/patterns.md` row that
    generated this card (contract rule 5).

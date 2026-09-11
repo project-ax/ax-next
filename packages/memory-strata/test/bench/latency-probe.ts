@@ -135,56 +135,46 @@ async function main(): Promise<number> {
     console.log(`Map: ${map.length} chars across ${haystackPaths.length} docs.`);
     console.log(`Query: ${question.text}`);
 
-    // 2026-09-10 re-point. The three arms below used to measure
-    // `x-ai/grok-4.1-fast`, which this probe's own 2026-05-14 run found was
-    // already deprecated on OpenRouter (the force-xai arm FAILED for that
-    // reason, so provider-forcing was never actually measured). Quoting that
-    // run's 11s p50 as a standing fact about OpenRouter outlived its subject.
+    // ARMS MUST MIRROR PRODUCTION. The 2026-09-10 run of this probe measured
+    // flags production could not send, so two models looked deployable when
+    // they were not — the whole reason TASK-348 exists. Since TASK-348,
+    // `LlmCallInput.reasoningEffort` reaches the wire through
+    // `@ax/llm-openrouter`'s `toChatCompletionsRequest`, which emits exactly
+    // `reasoning: { effort }` and nothing else. So that is the ONLY reasoning
+    // shape allowed in here.
     //
-    // The first arm is now the model production actually ships
-    // (DEFAULT_ORCHESTRATOR_MODEL), through OpenRouter's DEFAULT routing,
-    // which is what the orchestrator gets when routed through
-    // `llm:call:openrouter`. The other two are reference points.
-    // 2026-09-10 re-point. These arms used to measure `x-ai/grok-4.1-fast`,
-    // which this probe's own 2026-05-14 run had ALREADY found deprecated on
-    // OpenRouter (the force-xai arm FAILED for that reason, so provider-forcing
-    // was never actually measured). Quoting that run's 11s p50 as a standing
-    // fact about OpenRouter outlived its subject by four months.
+    // The cross-plugin-import rule (CLAUDE.md invariant 2) means this file
+    // cannot call that translator directly, so the contract is pinned from the
+    // other side instead: `packages/llm-openrouter/src/__tests__/llm-call.test.ts`
+    // asserts the emitted body is `{ effort }` for every rung. If that test
+    // and this constant ever disagree, this probe is lying again.
     //
-    // `x-ai/grok-4-fast` — the first replacement tried — turned out to be
-    // deprecated too, 404 on every call. So the arms below are taken from a
-    // live `GET /api/v1/models`, not from memory, and the point of the probe is
-    // to pick the production default on evidence rather than on a name that
-    // sounds current.
-    // `:nitro` sorts the provider pool by throughput. `reasoning.enabled=false`
-    // is OpenRouter's unified switch for models that think before answering —
-    // worth trying here because the orchestrator emits a short op list under a
-    // 5s budget, so any thinking is budget spent on tokens the parser throws
-    // away. The client warns if `reasoning_tokens` comes back non-zero, so a
-    // provider that ignores the flag is visible rather than assumed.
-    // OpenRouter's unified reasoning control. Worth setting for this role: the
-    // orchestrator emits a short op list under a 5s budget, so thinking is
-    // budget spent on tokens the parser discards. NOT every model allows it —
-    // gemini-3.8-flash and glm-5.3-flash both 400 on `enabled:false`
-    // ("Reasoning is mandatory for this endpoint"); all three accept
-    // `effort:'minimal'`. The client warns when `reasoning_tokens` comes back
-    // non-zero, so a silently-ignored flag is visible.
+    // `reasoning: { enabled: false }` and `{ effort: 'none' }` are BANNED here
+    // even though the raw API accepts them on some models: both 400 with
+    // "Reasoning is mandatory for this endpoint and cannot be disabled" on
+    // z-ai/glm-5.3-flash and google/gemini-3.8-flash, which is why
+    // `ReasoningEffort` has no 'none' rung and production can never send one.
     //
-    // NOTE these flags are NOT reachable from production: `LlmCallInput` has
-    // no reasoning field, so a model that needs one measures better here than
-    // it can possibly behave when deployed. See the 2026-09-10 addendum in
-    // docs/plans/2026-05-13-memory-strata-phase-3c-config-d-report.md.
-    const NO_REASONING = { reasoning: { enabled: false } };
+    // `:nitro` sorts the provider pool by throughput and IS reachable — it is
+    // part of the model id, so `memory.orchestratorModel` carries it fine.
+    //
+    // Model ids come from a live `GET /api/v1/models`, never from a comment:
+    // three ids in this repo have gone deprecated and a dead id fails closed
+    // into a silent BM25 fallback.
     const MIN_REASONING = { reasoning: { effort: 'minimal' } };
     const orCandidates: Array<{
       label: string;
       model: string;
       body?: Record<string, unknown>;
     }> = [
-      { label: 'haiku-4.5 (DEFAULT, deployable as-is)', model: 'anthropic/claude-haiku-4.5' },
-      { label: 'glm-5.3-flash:nitro min-reason', model: 'z-ai/glm-5.3-flash:nitro', body: MIN_REASONING },
-      { label: 'deepseek-v4.1-flash:nitro no-reason', model: 'deepseek/deepseek-v4.1-flash:nitro', body: NO_REASONING },
-      { label: 'gemini-3.8-flash:nitro min-reason', model: 'google/gemini-3.8-flash:nitro', body: MIN_REASONING },
+      { label: 'haiku-4.5 (incumbent default)', model: 'anthropic/claude-haiku-4.5', body: MIN_REASONING },
+      { label: 'glm-5.3-flash:nitro', model: 'z-ai/glm-5.3-flash:nitro', body: MIN_REASONING },
+      { label: 'deepseek-v4.1-flash:nitro', model: 'deepseek/deepseek-v4.1-flash:nitro', body: MIN_REASONING },
+      { label: 'gemini-3.8-flash:nitro', model: 'google/gemini-3.8-flash:nitro', body: MIN_REASONING },
+      // Control arm: the same model with the field absent, so the run itself
+      // shows what the parameter is worth rather than relying on last run's
+      // table. This is what `memory.orchestratorModel` deployed BEFORE TASK-348.
+      { label: 'glm-5.3-flash:nitro NO-FLAG (control)', model: 'z-ai/glm-5.3-flash:nitro' },
     ];
     const configs: ProbeConfig[] = orCandidates.map(({ label, model, body }) => ({
       name: `openrouter/${label}`,
@@ -215,14 +205,14 @@ async function main(): Promise<number> {
     console.log('\n' + '='.repeat(80));
     console.log('Summary (latencies in ms; warmup call excluded):');
     console.log('='.repeat(80));
-    const header = `${pad('config', 30)}${pad('n', 5)}${pad('min', 8)}${pad('p50', 8)}${pad('mean', 8)}${pad('p95', 8)}${pad('max', 8)}`;
+    const header = `${pad('config', 46)}${pad('n', 5)}${pad('min', 8)}${pad('p50', 8)}${pad('mean', 8)}${pad('p95', 8)}${pad('max', 8)}`;
     console.log(header);
     console.log('-'.repeat(header.length));
     for (const config of configs) {
       const samples = results.get(config.name) ?? [];
       const s = summarize(samples);
       console.log(
-        `${pad(config.name, 30)}${pad(String(s.n), 5)}${pad(fmt(s.min), 8)}${pad(fmt(s.p50), 8)}${pad(fmt(s.mean), 8)}${pad(fmt(s.p95), 8)}${pad(fmt(s.max), 8)}`,
+        `${pad(config.name, 46)}${pad(String(s.n), 5)}${pad(fmt(s.min), 8)}${pad(fmt(s.p50), 8)}${pad(fmt(s.mean), 8)}${pad(fmt(s.p95), 8)}${pad(fmt(s.max), 8)}`,
       );
     }
 

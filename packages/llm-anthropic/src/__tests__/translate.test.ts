@@ -66,6 +66,24 @@ describe('toAnthropicRequest', () => {
 });
 
 describe('fromAnthropicResponse', () => {
+  it('leaves thinking blocks OUT of the text', () => {
+    // Newly reachable as of TASK-348: before `reasoningEffort` existed no
+    // caller could ask for extended thinking, so no `llm:call:anthropic`
+    // response could contain a thinking block. Now that low/medium/high
+    // enable one, the existing text-block filter is load-bearing — leaking
+    // the model's scratchpad into `text` would hand every caller a body its
+    // parser never expected (the orchestrator's op parser included).
+    const res = makeMessage({
+      content: [
+        { type: 'thinking', thinking: 'let me consider...', signature: 'sig' },
+        { type: 'text', text: 'The answer.' },
+      ] as unknown as Anthropic.ContentBlock[],
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 5, output_tokens: 3 },
+    });
+    expect(fromAnthropicResponse(res).text).toBe('The answer.');
+  });
+
   it('extracts text and usage from a single text-block response', () => {
     const res = makeMessage({
       content: [{ type: 'text', text: 'Hello' } as Anthropic.TextBlock],
@@ -253,6 +271,25 @@ describe('toAnthropicRequest — reasoningEffort', () => {
       {},
     );
     expect('temperature' in req).toBe(false);
+  });
+
+  it('ignores an unrecognized rung instead of building a broken request', () => {
+    // Only reachable from plain JS or a JSON-decoded config — TypeScript
+    // rejects it. 'constructor' specifically: `Object.freeze` does not stop a
+    // prototype walk, so an unguarded index would put a FUNCTION in
+    // `budget_tokens` and NaN in `max_tokens`.
+    const req = toAnthropicRequest(
+      {
+        messages: [{ role: 'user', content: 'hi' }],
+        maxTokens: 512,
+        temperature: 0.2,
+        reasoningEffort: 'constructor' as unknown as 'high',
+      },
+      {},
+    );
+    expect('thinking' in req).toBe(false);
+    expect(req.max_tokens).toBe(512);
+    expect(req.temperature).toBe(0.2);
   });
 
   it("keeps temperature for 'minimal', which enables nothing", () => {

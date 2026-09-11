@@ -52,7 +52,20 @@ export function toAnthropicRequest(
   // see THINKING_BUDGET_TOKENS for why absence is the right translation of
   // "deliberate as little as possible" here.
   if (input.reasoningEffort !== undefined && input.reasoningEffort !== 'minimal') {
-    const budget = THINKING_BUDGET_TOKENS[input.reasoningEffort];
+    // Own-property lookup, the same hygiene `@ax/llm-openrouter`'s
+    // `mapFinishReason` uses: `Object.freeze` does not stop a prototype walk,
+    // so a caller that got past the type (plain JS, a JSON-decoded config) and
+    // passed 'constructor' would otherwise put a FUNCTION in `budget_tokens`.
+    // An unrecognized rung degrades to "no analogue here" — the same thing a
+    // provider that cannot express reasoning does — rather than building a
+    // request with NaN in it.
+    const budget = Object.prototype.hasOwnProperty.call(
+      THINKING_BUDGET_TOKENS,
+      input.reasoningEffort,
+    )
+      ? THINKING_BUDGET_TOKENS[input.reasoningEffort]
+      : undefined;
+    if (budget === undefined) return req;
     req.thinking = { type: 'enabled', budget_tokens: budget };
     // The API requires max_tokens > budget_tokens, and the caller's `maxTokens`
     // is an allowance for the ANSWER — it was never sized to also cover
