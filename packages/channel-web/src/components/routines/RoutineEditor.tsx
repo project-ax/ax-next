@@ -14,6 +14,7 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { describeCron } from '@/lib/cron-describe';
 import {
   Command,
   CommandEmpty,
@@ -476,6 +477,63 @@ export function RoutineEditor({
 
 // ── Trigger-specific fields ──────────────────────────────────────────────────
 
+/**
+ * (TASK-345 / audit E5) What `0 2 * * *` actually means, as you type it.
+ *
+ * The field is exact and opaque at the same time. Someone unsure whether they
+ * just asked for 2am or 2pm has no way to find out from this form, and finds
+ * out when the routine runs.
+ *
+ * Three states, and the third is the point. When the expression is valid but
+ * beyond our describer we show the raw expression and say nothing about when it
+ * runs — a confident wrong description ("Runs at 2:00 AM, every day" over an
+ * expression that does no such thing) is worse than no description at all,
+ * because it will be believed.
+ *
+ * Deliberately not a day/time picker: that is an `[M]` the audit put out of
+ * scope for this card.
+ */
+function CronPreview({ expr, tz }: { expr: string; tz: string }) {
+  const trimmed = expr.trim();
+  const result = describeCron(trimmed, tz);
+
+  // Nothing typed yet — teach the format instead of scolding an empty field.
+  if (trimmed.length === 0) {
+    return (
+      <p id="routine-cron-preview" className="text-xs text-muted-foreground">
+        A cron schedule, like <code className="font-mono">0 2 * * *</code> for
+        2am daily, plus the timezone it should follow (for example{' '}
+        <code className="font-mono">America/New_York</code>).
+      </p>
+    );
+  }
+
+  if (result.kind === 'invalid') {
+    return (
+      <p id="routine-cron-preview" className="text-xs text-warning">
+        That doesn't look like a cron schedule yet. Five parts, like{' '}
+        <code className="font-mono">0 2 * * *</code> — minute, hour, day of
+        month, month, day of week.
+      </p>
+    );
+  }
+
+  if (result.kind === 'unknown') {
+    return (
+      <p id="routine-cron-preview" className="text-xs text-muted-foreground">
+        Runs on the schedule <code className="font-mono">{trimmed}</code>
+        {tz.trim().length > 0 ? ` (${tz.trim()})` : ''}.
+      </p>
+    );
+  }
+
+  return (
+    <p id="routine-cron-preview" className="text-xs text-muted-foreground">
+      {result.text}
+    </p>
+  );
+}
+
 interface FieldProps {
   form: RoutineFormState;
   setForm: React.Dispatch<React.SetStateAction<RoutineFormState>>;
@@ -505,31 +563,35 @@ function TriggerFields({ form, setForm }: FieldProps) {
   }
   if (form.triggerKind === 'cron') {
     return (
-      <div className="grid grid-cols-2 gap-3">
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="routine-cron-expr" className="text-xs font-medium text-muted-foreground">
-            Cron expression
-          </Label>
-          <Input
-            id="routine-cron-expr"
-            className="font-mono text-sm"
-            placeholder="0 2 * * *"
-            value={form.cronExpr}
-            onChange={(e) => setForm((f) => ({ ...f, cronExpr: e.target.value }))}
-          />
+      <div className="flex flex-col gap-2">
+        <div className="grid grid-cols-2 gap-3">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="routine-cron-expr" className="text-xs font-medium text-muted-foreground">
+              Cron expression
+            </Label>
+            <Input
+              id="routine-cron-expr"
+              className="font-mono text-sm"
+              placeholder="0 2 * * *"
+              value={form.cronExpr}
+              onChange={(e) => setForm((f) => ({ ...f, cronExpr: e.target.value }))}
+              aria-describedby="routine-cron-preview"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="routine-cron-tz" className="text-xs font-medium text-muted-foreground">
+              Timezone
+            </Label>
+            <Input
+              id="routine-cron-tz"
+              className="font-mono text-sm"
+              placeholder="America/New_York"
+              value={form.cronTz}
+              onChange={(e) => setForm((f) => ({ ...f, cronTz: e.target.value }))}
+            />
+          </div>
         </div>
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="routine-cron-tz" className="text-xs font-medium text-muted-foreground">
-            Timezone
-          </Label>
-          <Input
-            id="routine-cron-tz"
-            className="font-mono text-sm"
-            placeholder="America/New_York"
-            value={form.cronTz}
-            onChange={(e) => setForm((f) => ({ ...f, cronTz: e.target.value }))}
-          />
-        </div>
+        <CronPreview expr={form.cronExpr} tz={form.cronTz} />
       </div>
     );
   }
