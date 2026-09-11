@@ -8,6 +8,8 @@
  * PATCH /api/chat/sessions/:id, Esc cancels. Mirrors SessionRow.tsx.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { cn } from '@/lib/utils';
+import { CONVERSATION_RENAME_ENABLED } from '../lib/conversation-rename';
 import { sessionStoreActions, useSessionStore } from '../lib/session-store';
 import { AgentChip } from './AgentChip';
 import { SidebarMobileToggle } from './SidebarMobileToggle';
@@ -104,6 +106,11 @@ export function SessionHeader({ onCreateAgent }: { onCreateAgent?: (() => void) 
   }, [active, exitRename]);
 
   const enterRename = useCallback(() => {
+    // (TASK-337 / audit C2) The gate. There is no rename endpoint, so entering
+    // rename mode can only end in the edit vanishing. See
+    // `lib/conversation-rename.ts` — and audit open question 4, which this
+    // deliberately does not answer.
+    if (!CONVERSATION_RENAME_ENABLED) return;
     renameCommittedRef.current = false;
     setIsRenaming(true);
   }, []);
@@ -129,11 +136,19 @@ export function SessionHeader({ onCreateAgent }: { onCreateAgent?: (() => void) 
         <div
           ref={titleRef}
           data-testid="session-header-title"
-          className={
+          className={cn(
+            'whitespace-nowrap max-w-[360px] self-center ml-auto -mr-2 px-2 py-1 rounded-sm text-[10.5px] uppercase tracking-[0.08em]',
             isRenaming
-              ? 'whitespace-nowrap max-w-[360px] self-center ml-auto -mr-2 px-2 py-1 rounded-sm cursor-text text-[10.5px] uppercase tracking-[0.08em] outline outline-1 outline-border bg-background text-foreground overflow-visible focus:outline-primary'
-              : 'whitespace-nowrap overflow-hidden text-ellipsis max-w-[360px] self-center ml-auto -mr-2 px-2 py-1 rounded-sm cursor-text text-[10.5px] uppercase tracking-[0.08em] text-ink-ghost transition-colors hover:bg-muted hover:text-muted-foreground'
-          }
+              ? 'cursor-text outline outline-1 outline-border bg-background text-foreground overflow-visible focus:outline-primary'
+              : 'overflow-hidden text-ellipsis text-ink-ghost',
+            // (C2) The hover highlight and the text cursor are the only things
+            // that ever advertised this title as editable. With the rename
+            // gated off they would promise something that cannot happen, so
+            // they go with it — and come back with it.
+            !isRenaming &&
+              CONVERSATION_RENAME_ENABLED &&
+              'cursor-text transition-colors hover:bg-muted hover:text-muted-foreground',
+          )}
           onClick={() => {
             if (!isRenaming) enterRename();
           }}

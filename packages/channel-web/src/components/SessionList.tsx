@@ -16,8 +16,11 @@
  * Sort: newest-first by `updated_at` (the mock server already does
  * this; we re-sort defensively in case the wire shape changes).
  */
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useAui } from '@assistant-ui/react';
+import { Button } from '@/components/ui/button';
+import { HttpError } from '../lib/http';
+import { PaneStatus } from './PaneStatus';
 import { agentStoreActions, useAgentStore } from '../lib/agent-store';
 import {
   conversationToSessionRow,
@@ -65,6 +68,18 @@ export function SessionList() {
   const { agents } = useAgentStore();
   const aui = useAui();
 
+  /**
+   * (TASK-337 / audit C1) A failed fetch used to `return` on `!res.ok` and
+   * `console.warn` on a throw, which left `sessions` untouched — so the sidebar
+   * rendered exactly as it does for someone who genuinely has no conversations.
+   * That is an empty state making a claim on no evidence, which the workspace's
+   * own H7 rule forbids, and it quietly told people their history was gone.
+   *
+   * `loadFailed` is what the render reads to tell "nothing here" apart from
+   * "we don't know".
+   */
+  const [loadFailed, setLoadFailed] = useState(false);
+
   // Re-fetch on mount and on version bumps. The chat-flow API returns
   // a flat array of Conversation rows; we map to the internal SessionRow
   // shape and sort newest-first defensively below.
@@ -75,14 +90,18 @@ export function SessionList() {
         const res = await fetch('/api/chat/conversations', {
           credentials: 'include',
         });
-        if (!res.ok) return;
+        if (!res.ok) throw new HttpError('/api/chat/conversations', res.status);
         const body = (await res.json()) as unknown;
         if (cancelled) return;
         const wire = Array.isArray(body) ? (body as WireConversation[]) : [];
         const rows: SessionRowData[] = wire.map(conversationToSessionRow);
         sessionStoreActions.setSessions(rows);
+        setLoadFailed(false);
       } catch (err) {
+        // The status/detail stays in the console — it is not the reader's
+        // problem, and it is the only place a developer can still find it.
         console.warn('[session-list] fetch failed', err);
+        if (!cancelled) setLoadFailed(true);
       }
     })();
     return () => {
@@ -116,6 +135,25 @@ export function SessionList() {
 
   return (
     <>
+      {loadFailed && (
+        // Above the list, not instead of it: if a REFETCH failed, the rows
+        // already on screen are still real and blanking them would be a second
+        // lie on top of the first.
+        <PaneStatus
+          variant="error"
+          className="mx-3 mt-3 flex items-center justify-between gap-2"
+        >
+          <span>We couldn’t load your conversations.</span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-[12.5px]"
+            onClick={() => sessionStoreActions.bumpVersion()}
+          >
+            Try again
+          </Button>
+        </PaneStatus>
+      )}
       {groups.map((g) => (
         <div key={g.label}>
           <SidebarSectionLabel className="px-3 pt-3.5 pb-1.5">

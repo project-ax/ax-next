@@ -176,3 +176,64 @@ describe('SessionList', () => {
     );
   });
 });
+
+/**
+ * TASK-337 / audit C1 — an empty list is a CLAIM, and we were making it on no
+ * evidence.
+ *
+ * A failed conversations fetch was swallowed (`if (!res.ok) return;` and a
+ * `catch` that only reached `console.warn`), so the sidebar rendered exactly as
+ * it does for someone who genuinely has no conversations. The workspace's own
+ * H7 rule forbids that, and this is the one place on the surface that broke it.
+ * Someone whose history failed to load was quietly told they had none.
+ *
+ * This is a defect, not a copy nit, so per the Bug Fix Policy it gets the test
+ * that would have caught it.
+ */
+describe('SessionList — a failed fetch is not an empty list', () => {
+  it('says the list could not be loaded instead of rendering as empty', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) });
+    render(<SessionList />);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/couldn.t load your conversations/i);
+    expect(screen.getByRole('button', { name: /try again/i })).toBeTruthy();
+  });
+
+  it('says the same when the request never lands at all', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('offline'));
+    render(<SessionList />);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/couldn.t load your conversations/i);
+  });
+
+  it('recovers the list on Try again, and drops the error', async () => {
+    const oneHourAgo = Date.now() - 60 * 60 * 1000;
+    fetchMock.mockRejectedValueOnce(new Error('offline'));
+    render(<SessionList />);
+    await screen.findByRole('alert');
+
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [
+        {
+          conversationId: 's-1',
+          userId: 'u2',
+          agentId: 'ax',
+          title: 'recovered session',
+          activeSessionId: null,
+          activeReqId: null,
+          createdAt: new Date(oneHourAgo).toISOString(),
+          updatedAt: new Date(oneHourAgo).toISOString(),
+        },
+      ],
+    });
+    await act(async () => {
+      screen.getByRole('button', { name: /try again/i }).click();
+    });
+
+    await waitFor(() => expect(screen.getByText(/recovered session/)).toBeTruthy());
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+});

@@ -5,19 +5,13 @@
  *
  *   1. Renders the active session's title from `sessionStoreActions`.
  *
- *   2. Double-click the title -> contenteditable mode. Enter commits via
- *      `PATCH /api/chat/sessions/:id { title }`.
+ *   2. The title offers no rename — neither an editor nor a request — while
+ *      the backend has no route to save one (TASK-337 / audit C2).
  *
- *   3. Esc cancels rename — no PATCH, original title restored.
- *
- *   4. The "new session" action button is rendered (the ⌘N affordance).
- *
- * jsdom note: `contenteditable="plaintext-only"` is partially supported,
- * mirroring the SessionRow rename — we set the attribute and read back
- * via `textContent`, which is what the commit handler also uses.
+ *   3. The agent chip renders in the header-left slot.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { SessionHeader } from '../components/SessionHeader';
 import { sessionStoreActions } from '../lib/session-store';
 
@@ -52,31 +46,40 @@ describe('SessionHeader', () => {
     );
   });
 
-  it('single-click enters rename mode; Enter commits via PATCH', async () => {
-    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+  /**
+   * TASK-337 / audit C2 — these replace the rename tests that used to live
+   * here.
+   *
+   * They were green and they were testing a lie: `PATCH /api/chat/sessions/:id`
+   * is not a route the server registers (`routes-chat.ts` has GET and DELETE on
+   * `/api/chat/conversations/:id` and nothing else), so against the real backend
+   * every rename 404'd, the component restored the old title, and the user's
+   * edit vanished with no explanation. The old test passed because `fetchMock`
+   * answered a request the real server never would.
+   *
+   * The affordance is gated until someone answers audit open question 4 — build
+   * the endpoint, or park the feature. See `lib/conversation-rename.ts`.
+   */
+  it('does not offer a rename it cannot perform', () => {
     render(<SessionHeader />);
     const title = screen.getByTestId('session-header-title');
     fireEvent.click(title);
-    expect(title.getAttribute('contenteditable')).toMatch(
-      /plaintext-only|true/,
-    );
-    title.textContent = 'renamed';
-    fireEvent.keyDown(title, { key: 'Enter' });
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith(
-        '/api/chat/sessions/s-1',
-        expect.objectContaining({ method: 'PATCH' }),
-      );
-    });
+
+    // No edit mode...
+    expect(title.getAttribute('contenteditable')).toBeNull();
+    // ...and nothing that advertises the title as editable.
+    expect(title.className).not.toContain('cursor-text');
+    expect(title.className).not.toContain('hover:bg-muted');
   });
 
-  it('Esc cancels rename — no PATCH', () => {
+  it('issues no request when the gated title is clicked and typed into', () => {
     render(<SessionHeader />);
     const title = screen.getByTestId('session-header-title');
     fireEvent.click(title);
     title.textContent = 'wont save';
-    fireEvent.keyDown(title, { key: 'Escape' });
-    // No PATCH should have fired — only the /api/agents hydration call.
+    fireEvent.keyDown(title, { key: 'Enter' });
+    fireEvent.blur(title);
+
     expect(fetchMock).not.toHaveBeenCalledWith(
       '/api/chat/sessions/s-1',
       expect.anything(),
@@ -89,44 +92,20 @@ describe('SessionHeader', () => {
     expect(container.querySelector('.agent-chip')).toBeTruthy();
   });
 
-  it('parent re-render during rename does not clobber typed text', async () => {
-    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
-    render(<SessionHeader />);
-    const title = screen.getByTestId('session-header-title');
-    fireEvent.click(title);
-
-    // User types into the contentEditable buffer.
-    title.textContent = 'partially typed';
-
-    // A parent re-render fires (e.g., session-store update from a
-    // bumpVersion() on another row, or a /api/agents poll). Without the
-    // fix, React reconciles `{title}` back into the text node and erases
-    // the user's edit.
-    sessionStoreActions.setSessions([
-      {
-        id: 's-1',
-        title: 'first thread',
-        agent_id: 'ax',
-        updated_at: 2,
-        created_at: 1,
-        user_id: 'u2',
-      },
-    ]);
-
-    // The typed text should still be there.
-    expect(title.textContent).toBe('partially typed');
-
-    // Confirm Enter still commits the typed text.
-    fireEvent.keyDown(title, { key: 'Enter' });
-    await waitFor(() => {
-      const patch = fetchMock.mock.calls.find(
-        ([, opts]) => (opts as RequestInit | undefined)?.method === 'PATCH',
-      );
-      expect(patch).toBeTruthy();
-      const body = JSON.parse((patch![1] as RequestInit).body as string) as {
-        title: string;
-      };
-      expect(body.title).toBe('partially typed');
-    });
-  });
+  /*
+   * REMOVED with the gate: 'parent re-render during rename does not clobber
+   * typed text'.
+   *
+   * It guarded something real and non-obvious — the `useEffect` that seeds the
+   * contenteditable deliberately excludes `title` from its dep array, because
+   * re-seeding on a parent-driven title change erases whatever the user is
+   * halfway through typing. That subtlety is still in `SessionHeader`, behind
+   * the gate.
+   *
+   * It is deleted rather than skipped because it can only pass against a
+   * `fetchMock` answering a PATCH the real server does not route, and a green
+   * test for an unreachable path is worse than no test. **Whoever ungates
+   * rename (audit open question 4) should restore this test with it** — that is
+   * the whole reason this note exists instead of a silent deletion.
+   */
 });

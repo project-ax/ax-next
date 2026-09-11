@@ -1,23 +1,26 @@
 /**
- * Inline rename — double-click title or row-menu "rename" puts the
- * `.session-row-title` into contenteditable mode. Enter / blur commit
- * via `PATCH /api/chat/sessions/:id { title }`. Esc cancels with no
- * PATCH, reverting to the original title.
+ * Inline rename — gated off (TASK-337 / audit C2).
  *
- * Three behaviors under test (Task 14):
+ * This file used to hold five green tests for an inline rename that has never
+ * worked. The row committed with `PATCH /api/chat/sessions/:id { title }`;
+ * `routes-chat.ts` registers GET and DELETE on `/api/chat/conversations/:id`
+ * and nothing else, so against the real server every rename 404'd, the row
+ * restored the old title, and the user's edit vanished with only a
+ * `console.warn` to show for it. `SessionHeader`'s TODO admitted as much.
  *
- *   1. Double-click title -> contenteditable + focus. Type, press Enter
- *      -> PATCH called with the new title. Row exits rename mode.
+ * The tests passed because `fetchMock` answered a request the real backend
+ * never would — which is exactly how half-wired code survives review: it looks
+ * finished, and it has a full suite agreeing with it.
  *
- *   2. Esc cancels -- no PATCH, original title still shown.
+ * So they are replaced, not adjusted. What is worth guarding now is that the
+ * affordance is not offered at all, on either surface that had it — the row's
+ * double-click AND its "Rename" menu item, plus the header's click-to-edit
+ * (see `session-header.test.tsx`).
  *
- *   3. Blur commits same as Enter.
- *
- * jsdom note: `contenteditable="plaintext-only"` is partially supported.
- * We assert via `getAttribute('contenteditable')` so either `"plaintext-only"`
- * or `"true"` would satisfy callers; the component picks whichever is
- * needed. We read the typed value via `textContent`, which is what the
- * commit handler also uses.
+ * Whether the PATCH endpoint gets built or the feature is formally parked is
+ * **audit open question 4** — a human's decision, deliberately not made here.
+ * `lib/conversation-rename.ts` is the one line to flip, and the deleted
+ * behaviour tests should come back with it.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
@@ -64,236 +67,54 @@ const seedOneSession = (id = 's-1', title = 'old title') => {
   });
 };
 
+/** Any request that would have been the rename. */
+const renamePatches = () =>
+  fetchMock.mock.calls.filter(
+    (c) => (c[1] as RequestInit | undefined)?.method === 'PATCH',
+  );
+
 beforeEach(() => {
   fetchMock.mockReset();
   globalThis.fetch = fetchMock as unknown as typeof fetch;
   seedAgents();
 });
 
-describe('Inline rename', () => {
-  it('double-click title -> contenteditable + Enter commits via PATCH', async () => {
+describe('Inline rename is not offered while it cannot work', () => {
+  it('double-clicking a row title does not open an editor or send anything', async () => {
     seedOneSession('s-1', 'old title');
     const { container } = render(<SessionList />);
     await waitFor(() => screen.getByText('old title'));
 
-    const titleEl = container.querySelector(
-      '.session-row-title',
-    ) as HTMLElement;
+    const titleEl = container.querySelector('.session-row-title') as HTMLElement;
     expect(titleEl).toBeTruthy();
 
-    // Enter rename mode via double-click.
     act(() => {
       fireEvent.doubleClick(titleEl);
     });
-    expect(titleEl.getAttribute('contenteditable')).toMatch(
-      /plaintext-only|true/,
-    );
 
-    // Type the new title, press Enter.
-    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
-    // Subsequent re-fetch (after bumpVersion) -- supply a stub.
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => [
-        {
-          conversationId: 's-1',
-          userId: 'u2',
-          agentId: 'ax',
-          title: 'new title',
-          activeSessionId: null,
-          activeReqId: null,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-      ],
-    });
-
-    titleEl.textContent = 'new title';
-    act(() => {
-      fireEvent.keyDown(titleEl, { key: 'Enter' });
-    });
-
-    await waitFor(() => {
-      const patchCall = fetchMock.mock.calls.find(
-        (c) =>
-          typeof c[0] === 'string' &&
-          c[0] === '/api/chat/sessions/s-1' &&
-          (c[1] as RequestInit | undefined)?.method === 'PATCH',
-      );
-      expect(patchCall).toBeTruthy();
-      const body = JSON.parse(
-        (patchCall![1] as RequestInit).body as string,
-      ) as { title: string };
-      expect(body.title).toBe('new title');
-    });
-
-    // Row exits rename mode.
-    await waitFor(() => {
-      const t = container.querySelector('.session-row-title') as HTMLElement;
-      expect(t.getAttribute('contenteditable')).toBeNull();
-    });
+    expect(titleEl.getAttribute('contenteditable')).toBeNull();
+    expect(titleEl.textContent).toBe('old title');
+    expect(renamePatches()).toHaveLength(0);
   });
 
-  it('Esc cancels without PATCH and restores original title', async () => {
+  it('offers no Rename item in the row menu', async () => {
     seedOneSession('s-1', 'old title');
     const { container } = render(<SessionList />);
     await waitFor(() => screen.getByText('old title'));
 
-    const titleEl = container.querySelector(
-      '.session-row-title',
+    const menuBtn = container.querySelector(
+      '[aria-label="more"]',
     ) as HTMLElement;
-
+    expect(menuBtn).toBeTruthy();
     act(() => {
-      fireEvent.doubleClick(titleEl);
-    });
-    expect(titleEl.getAttribute('contenteditable')).toMatch(
-      /plaintext-only|true/,
-    );
-
-    titleEl.textContent = 'mid-edit garbage';
-    act(() => {
-      fireEvent.keyDown(titleEl, { key: 'Escape' });
+      fireEvent.click(menuBtn);
     });
 
-    // No PATCH after the initial GET fetch.
-    const patchCall = fetchMock.mock.calls.find(
-      (c) => (c[1] as RequestInit | undefined)?.method === 'PATCH',
-    );
-    expect(patchCall).toBeUndefined();
+    // The menu really did open — otherwise the assertion below is vacuous.
+    expect(screen.getByTestId('row-menu-delete')).toBeTruthy();
 
-    // Title visually back to original.
-    await waitFor(() => {
-      const t = container.querySelector('.session-row-title') as HTMLElement;
-      expect(t.getAttribute('contenteditable')).toBeNull();
-      expect(t.textContent).toBe('old title');
-    });
-  });
-
-  it('Empty title on Enter restores the original DOM text without PATCH', async () => {
-    seedOneSession('s-1', 'old title');
-    const { container } = render(<SessionList />);
-    await waitFor(() => screen.getByText('old title'));
-
-    const titleEl = container.querySelector(
-      '.session-row-title',
-    ) as HTMLElement;
-
-    act(() => {
-      fireEvent.doubleClick(titleEl);
-    });
-
-    // User typed an empty string (or whitespace) and hit Enter.
-    titleEl.textContent = '   ';
-    act(() => {
-      fireEvent.keyDown(titleEl, { key: 'Enter' });
-    });
-
-    // No PATCH should have been issued — the empty title is rejected client-side.
-    const patchCall = fetchMock.mock.calls.find(
-      (c) => (c[1] as RequestInit | undefined)?.method === 'PATCH',
-    );
-    expect(patchCall).toBeUndefined();
-
-    // Title text in the DOM is the original. Without the fix the user's
-    // typed whitespace would persist because React skips reconciling the
-    // text node when the prop hasn't changed.
-    await waitFor(() => {
-      const t = container.querySelector('.session-row-title') as HTMLElement;
-      expect(t.getAttribute('contenteditable')).toBeNull();
-      expect(t.textContent).toBe('old title');
-    });
-  });
-
-  it('Failed PATCH (non-2xx) restores the original DOM text', async () => {
-    seedOneSession('s-1', 'old title');
-    const { container } = render(<SessionList />);
-    await waitFor(() => screen.getByText('old title'));
-
-    const titleEl = container.querySelector(
-      '.session-row-title',
-    ) as HTMLElement;
-
-    act(() => {
-      fireEvent.doubleClick(titleEl);
-    });
-
-    // Server rejects the rename (e.g., 400 / 500).
-    fetchMock.mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) });
-    // After bumpVersion(), the list re-fetch returns the original title.
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        sessions: [
-          {
-            id: 's-1',
-            title: 'old title',
-            agent_id: 'ax',
-            updated_at: Date.now(),
-            created_at: Date.now(),
-            user_id: 'u2',
-          },
-        ],
-      }),
-    });
-
-    titleEl.textContent = 'new title that fails';
-    act(() => {
-      fireEvent.keyDown(titleEl, { key: 'Enter' });
-    });
-
-    await waitFor(() => {
-      const t = container.querySelector('.session-row-title') as HTMLElement;
-      expect(t.textContent).toBe('old title');
-    });
-  });
-
-  it('Blur commits same as Enter', async () => {
-    seedOneSession('s-1', 'old title');
-    const { container } = render(<SessionList />);
-    await waitFor(() => screen.getByText('old title'));
-
-    const titleEl = container.querySelector(
-      '.session-row-title',
-    ) as HTMLElement;
-
-    act(() => {
-      fireEvent.doubleClick(titleEl);
-    });
-
-    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        sessions: [
-          {
-            id: 's-1',
-            title: 'blurred title',
-            agent_id: 'ax',
-            updated_at: Date.now(),
-            created_at: Date.now(),
-            user_id: 'u2',
-          },
-        ],
-      }),
-    });
-
-    titleEl.textContent = 'blurred title';
-    act(() => {
-      fireEvent.blur(titleEl);
-    });
-
-    await waitFor(() => {
-      const patchCall = fetchMock.mock.calls.find(
-        (c) =>
-          typeof c[0] === 'string' &&
-          c[0] === '/api/chat/sessions/s-1' &&
-          (c[1] as RequestInit | undefined)?.method === 'PATCH',
-      );
-      expect(patchCall).toBeTruthy();
-      const body = JSON.parse(
-        (patchCall![1] as RequestInit).body as string,
-      ) as { title: string };
-      expect(body.title).toBe('blurred title');
-    });
+    // Hidden rather than disabled: a greyed-out "Rename" only raises the
+    // question we have no good answer to. Delete stays — it works.
+    expect(screen.queryByTestId('row-menu-rename')).toBeNull();
   });
 });
