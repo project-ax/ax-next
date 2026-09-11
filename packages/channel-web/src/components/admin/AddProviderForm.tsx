@@ -16,6 +16,25 @@ const SELECT_CLASS =
   'ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 ' +
   'disabled:cursor-not-allowed disabled:opacity-50';
 
+/**
+ * (TASK-342 / audit D4) One muted line under a field, wired to its control with
+ * `aria-describedby` so it reaches a screen reader rather than only a pair of
+ * eyes.
+ *
+ * This form asked a non-technical admin for a Client ID, a Client secret and a
+ * Discovery URL, and explained none of them. Those are not guessable: an admin
+ * who has never registered an OAuth app has no way to know that two of the
+ * three arrive together on one screen, or that "Discovery URL" is the same
+ * thing their provider's docs call the well-known configuration.
+ */
+function FieldHint({ id, children }: { id: string; children: React.ReactNode }) {
+  return (
+    <p id={id} className="text-xs leading-[1.45] text-muted-foreground">
+      {children}
+    </p>
+  );
+}
+
 export function AddProviderForm({ onSaved, onCancel }: AddProviderFormProps) {
   const [kind, setKind] = useState<AuthProviderKind>('google');
   const [clientId, setClientId] = useState('');
@@ -67,11 +86,16 @@ export function AddProviderForm({ onSaved, onCancel }: AddProviderFormProps) {
           value={kind}
           disabled={saving}
           onChange={(e) => setKind(e.target.value as AuthProviderKind)}
+          aria-describedby="auth-provider-kind-hint"
         >
           <option value="google">Google</option>
           <option value="github">GitHub</option>
           <option value="oidc">Generic OIDC</option>
         </select>
+        <FieldHint id="auth-provider-kind-hint">
+          The service people will use to sign in. Pick Generic OIDC if your
+          company uses its own single sign-on.
+        </FieldHint>
       </div>
 
       <div className="flex flex-col gap-2">
@@ -82,7 +106,12 @@ export function AddProviderForm({ onSaved, onCancel }: AddProviderFormProps) {
           onChange={(e) => setClientId(e.target.value)}
           disabled={saving}
           autoComplete="off"
+          aria-describedby="auth-provider-client-id-hint"
         />
+        <FieldHint id="auth-provider-client-id-hint">
+          You get this when you register ax as an application with the provider
+          above. It identifies ax, and it isn't a secret.
+        </FieldHint>
       </div>
 
       <div className="flex flex-col gap-2">
@@ -95,7 +124,12 @@ export function AddProviderForm({ onSaved, onCancel }: AddProviderFormProps) {
           disabled={saving}
           autoComplete="off"
           className="font-mono text-[13px] tracking-[0.02em]"
+          aria-describedby="auth-provider-client-secret-hint"
         />
+        <FieldHint id="auth-provider-client-secret-hint">
+          Issued alongside the Client ID, on the same screen. Treat it like a
+          password.
+        </FieldHint>
       </div>
 
       {isOidc && (
@@ -107,7 +141,13 @@ export function AddProviderForm({ onSaved, onCancel }: AddProviderFormProps) {
             onChange={(e) => setDiscoveryUrl(e.target.value)}
             disabled={saving}
             placeholder="https://issuer.example.com/.well-known/openid-configuration"
+            aria-describedby="auth-provider-discovery-url-hint"
           />
+          <FieldHint id="auth-provider-discovery-url-hint">
+            The address ax checks sign-ins against. Your provider's docs may call
+            it the discovery URL, the OIDC URL, or the well-known configuration —
+            they all mean this one.
+          </FieldHint>
         </div>
       )}
 
@@ -122,7 +162,12 @@ export function AddProviderForm({ onSaved, onCancel }: AddProviderFormProps) {
           onChange={(e) => setAllowedDomains(e.target.value)}
           disabled={saving}
           placeholder="example.com, partner.com"
+          aria-describedby="auth-provider-allowed-domains-hint"
         />
+        <FieldHint id="auth-provider-allowed-domains-hint">
+          Leave this blank and anyone with an account at that provider can sign
+          in. List your own domains to keep it to your organisation.
+        </FieldHint>
       </div>
 
       {error && (

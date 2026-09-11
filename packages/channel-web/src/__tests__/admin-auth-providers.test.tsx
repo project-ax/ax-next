@@ -120,11 +120,22 @@ describe('AuthProvidersTab', () => {
     });
   });
 
+  // A second enabled provider, so turning Google off is NOT the lockout case.
+  // (TASK-342/D5 added a confirmation for the last enabled one; this test is
+  // about the ordinary path, which must stay a single unceremonious click.)
+  const githubEntry = {
+    ...googleEntry,
+    kind: 'github' as const,
+    clientId: 'gh-client-id',
+  };
+
   it('toggle PATCHes the new enabled state and refetches', async () => {
-    fetchMock.mockResolvedValueOnce(jsonOk({ providers: [googleEntry] }));
+    fetchMock.mockResolvedValueOnce(
+      jsonOk({ providers: [googleEntry, githubEntry] }),
+    );
     fetchMock.mockResolvedValueOnce(jsonOk({ ok: true })); // PATCH
     fetchMock.mockResolvedValueOnce(
-      jsonOk({ providers: [{ ...googleEntry, enabled: false }] }),
+      jsonOk({ providers: [{ ...googleEntry, enabled: false }, githubEntry] }),
     );
 
     render(<AuthProvidersTab />);
@@ -140,6 +151,82 @@ describe('AuthProvidersTab', () => {
     expect(patchCall[0]).toBe('/admin/auth/providers/google');
     expect(patchCall[1].method).toBe('PATCH');
     expect(JSON.parse(patchCall[1].body)).toEqual({ enabled: false });
+  });
+
+  /**
+   * TASK-342 / audit D5 — turning off the LAST enabled sign-in method locks
+   * every user out of the deployment, the admin doing it included, with no way
+   * back through the UI. It used to be one unremarkable click on a toggle that
+   * looked exactly like the others.
+   */
+  describe('the last enabled sign-in method asks first', () => {
+    it('does not PATCH until the admin confirms', async () => {
+      fetchMock.mockResolvedValueOnce(jsonOk({ providers: [googleEntry] }));
+
+      render(<AuthProvidersTab />);
+      await waitFor(() => screen.getByRole('switch', { name: /Disable Google/i }));
+      fireEvent.click(screen.getByRole('switch', { name: /Disable Google/i }));
+
+      expect(
+        await screen.findByText(/turn off the only way to sign in\?/i),
+      ).toBeTruthy();
+      expect(screen.getByText(/lock everyone out/i)).toBeTruthy();
+      // Still exactly one call: the initial list. Nothing has been changed.
+      expect(fetchMock.mock.calls).toHaveLength(1);
+    });
+
+    it('changes nothing when the admin backs out', async () => {
+      fetchMock.mockResolvedValueOnce(jsonOk({ providers: [googleEntry] }));
+
+      render(<AuthProvidersTab />);
+      await waitFor(() => screen.getByRole('switch', { name: /Disable Google/i }));
+      fireEvent.click(screen.getByRole('switch', { name: /Disable Google/i }));
+      fireEvent.click(await screen.findByRole('button', { name: /keep it on/i }));
+
+      await waitFor(() =>
+        expect(screen.queryByText(/turn off the only way to sign in\?/i)).toBeNull(),
+      );
+      expect(fetchMock.mock.calls).toHaveLength(1);
+      expect(screen.getByRole('switch', { name: /Disable Google/i })).toBeTruthy();
+    });
+
+    it('goes through when the admin means it', async () => {
+      // We warn; we do not refuse. An operator who has decided to take the
+      // deployment offline is allowed to.
+      fetchMock.mockResolvedValueOnce(jsonOk({ providers: [googleEntry] }));
+      fetchMock.mockResolvedValueOnce(jsonOk({ ok: true })); // PATCH
+      fetchMock.mockResolvedValueOnce(
+        jsonOk({ providers: [{ ...googleEntry, enabled: false }] }),
+      );
+
+      render(<AuthProvidersTab />);
+      await waitFor(() => screen.getByRole('switch', { name: /Disable Google/i }));
+      fireEvent.click(screen.getByRole('switch', { name: /Disable Google/i }));
+      fireEvent.click(
+        await screen.findByRole('button', { name: /turn it off anyway/i }),
+      );
+
+      await waitFor(() => expect(fetchMock.mock.calls).toHaveLength(3));
+      const patchCall = fetchMock.mock.calls[1]!;
+      expect(patchCall[0]).toBe('/admin/auth/providers/google');
+      expect(JSON.parse(patchCall[1].body)).toEqual({ enabled: false });
+    });
+
+    it('asks nothing when turning one back ON', async () => {
+      // The guard is about REMOVING the last way in, not about adding one.
+      fetchMock.mockResolvedValueOnce(
+        jsonOk({ providers: [{ ...googleEntry, enabled: false }] }),
+      );
+      fetchMock.mockResolvedValueOnce(jsonOk({ ok: true }));
+      fetchMock.mockResolvedValueOnce(jsonOk({ providers: [googleEntry] }));
+
+      render(<AuthProvidersTab />);
+      await waitFor(() => screen.getByRole('switch', { name: /Enable Google/i }));
+      fireEvent.click(screen.getByRole('switch', { name: /Enable Google/i }));
+
+      await waitFor(() => expect(fetchMock.mock.calls).toHaveLength(3));
+      expect(screen.queryByText(/turn off the only way to sign in\?/i)).toBeNull();
+    });
   });
 
   it('delete is gated by a styled dialog; Cancel cancels the request', async () => {
@@ -209,5 +296,47 @@ describe('AuthProvidersTab', () => {
     );
     // Form still open — Retry button visible.
     expect(screen.getByRole('button', { name: /Retry/i })).toBeTruthy();
+  });
+
+  /**
+   * TASK-342 / audit D4 — this form asked a non-technical admin for a Client
+   * ID, a Client secret and a Discovery URL, and explained none of them. None
+   * of the three is guessable if you have never registered an OAuth app.
+   */
+  describe('every provider field explains itself', () => {
+    const openForm = async () => {
+      fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
+      render(<AuthProvidersTab />);
+      fireEvent.click(await screen.findByRole('button', { name: /add provider/i }));
+    };
+
+    /** A field's help must be REACHABLE, not merely nearby — so check the wiring. */
+    const hintFor = (label: string | RegExp): string => {
+      const control = screen.getByLabelText(label);
+      const id = control.getAttribute('aria-describedby');
+      expect(id).not.toBeNull();
+      return document.getElementById(id!)?.textContent ?? '';
+    };
+
+    it('explains what each OAuth value is and where it comes from', async () => {
+      await openForm();
+      expect(hintFor('Provider')).toMatch(/sign in/i);
+      expect(hintFor('Client ID')).toMatch(/register ax as an application/i);
+      expect(hintFor('Client secret')).toMatch(/like a password/i);
+    });
+
+    it('glosses Discovery URL by the names a provider’s docs actually use', async () => {
+      await openForm();
+      fireEvent.change(screen.getByLabelText('Provider'), {
+        target: { value: 'oidc' },
+      });
+      expect(hintFor('Discovery URL')).toMatch(/well-known configuration/i);
+    });
+
+    it('says what leaving the domain allow-list blank actually means', async () => {
+      // The security-relevant default: blank means anyone at that provider.
+      await openForm();
+      expect(hintFor(/Allowed email domains/)).toMatch(/anyone with an account/i);
+    });
   });
 });
