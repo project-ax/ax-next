@@ -47,7 +47,7 @@ const USER_NAV: NavItem[] = [
 
 const ADMIN_NAV: NavItem[] = [
   { id: 'providers', label: 'AI model keys', icon: KeyRound },
-  { id: 'model-config', label: 'Default AI model', icon: Cpu },
+  { id: 'model-config', label: 'Helper model', icon: Cpu },
   { id: 'auth-providers', label: 'Sign-in methods', icon: ShieldCheck },
   { id: 'teams', label: 'Teams', icon: UsersRound },
   { id: 'branding', label: 'Branding', icon: Palette },

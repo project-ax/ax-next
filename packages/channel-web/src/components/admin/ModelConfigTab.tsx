@@ -29,7 +29,7 @@ interface RoleMeta {
 const ROLE: RoleMeta = {
   id: 'fast-model',
   pill: 'fast',
-  label: 'Fast / cheap model',
+  label: 'Helper model',
   description:
     'Used for conversation titles, quick classification, low-latency tasks. ' +
     'Each agent picks its own primary chat model separately on the Agents tab.',
@@ -78,10 +78,12 @@ function parseStoredRef(ref: string | null): string {
 
 export function ModelConfigTab() {
   const [providers, setProviders] = useState<ProviderEntry[]>([]);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  // (D7) Bumping this re-runs the load effect — what the Retry button needs.
+  const [reloadTick, setReloadTick] = useState(0);
   const [selectedModel, setSelectedModel] = useState<string>('');
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState(false);
   const [savedOk, setSavedOk] = useState(false);
   const savedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -103,10 +105,13 @@ export function ModelConfigTab() {
         if (cancelled) return;
         setProviders(list);
         setSelectedModel(parseStoredRef(current));
-        setLoadError(null);
+        setLoadError(false);
       } catch (err) {
         if (cancelled) return;
-        setLoadError(err instanceof Error ? err.message : String(err));
+        // The dev detail stays in the console. An admin gets a sentence and
+        // a way to try again — which this pane had no way to do at all.
+        console.warn('[model-config] could not load providers', err);
+        setLoadError(true);
       }
     })();
     return () => {
@@ -116,7 +121,7 @@ export function ModelConfigTab() {
         savedTimeoutRef.current = null;
       }
     };
-  }, []);
+  }, [reloadTick]);
 
   const configured = providers.filter((p) => p.configured);
   const noProviders = configured.length === 0;
@@ -128,7 +133,7 @@ export function ModelConfigTab() {
   const handleSave = async () => {
     if (selectedModel.length === 0) return;
     setSaving(true);
-    setSaveError(null);
+    setSaveError(false);
     setSavedOk(false);
     if (savedTimeoutRef.current !== null) {
       clearTimeout(savedTimeoutRef.current);
@@ -152,19 +157,27 @@ export function ModelConfigTab() {
         savedTimeoutRef.current = null;
       }, 2000);
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : String(err));
+      console.warn('[model-config] could not save the helper model', err);
+      setSaveError(true);
     } finally {
       setSaving(false);
     }
   };
 
-  if (loadError !== null) {
+  if (loadError) {
+    // (D7) This used to be a dead end: the raw error message interpolated into
+    // the banner, and no way to try again short of reloading the page.
+    // AuthProvidersTab has had an error+retry pair for a while; this matches it.
     return (
-      <div
-        role="alert"
-        className="px-3 py-2 bg-destructive-soft border border-destructive/25 rounded-md text-[12.5px] text-destructive max-w-[640px] mx-auto"
-      >
-        Couldn't load providers: {loadError}
+      <div className="max-w-[640px] mx-auto flex items-center justify-between gap-3 px-3 py-2 bg-destructive-soft border border-destructive/25 rounded-md text-[12.5px] text-destructive">
+        <span role="alert">We couldn’t load your model providers.</span>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setReloadTick((t) => t + 1)}
+        >
+          Try again
+        </Button>
       </div>
     );
   }
@@ -172,12 +185,19 @@ export function ModelConfigTab() {
   return (
     <div className="max-w-[640px] mx-auto font-sans">
       <div className="mb-5">
+        {/* (TASK-341 / audit D3) This tab was called "Default AI model", in the
+            nav and here. It is not: it picks the small, fast model used for
+            conversation titles and other quick jobs, while each agent's CHAT
+            model is chosen on the Agents tab. An admin reading the old name had
+            every reason to think they were setting what their agents think
+            with — actively misleading, not merely vague. */}
         <h2 className="text-2xl font-medium tracking-[-0.018em] mb-1.5">
-          Default AI model
+          Helper model
         </h2>
         <p className="text-sm leading-[1.55] text-muted-foreground max-w-[56ch]">
-          Pick the fast model used for conversation titles and other
-          low-latency tasks. Only providers with a configured key appear here.
+          Used for conversation titles and quick tasks. Each agent picks its own
+          chat model on the Agents tab. Only providers with a saved key appear
+          here.
         </p>
       </div>
 
@@ -235,11 +255,14 @@ export function ModelConfigTab() {
           </span>
         )}
         {saveError && (
+          // (D7) Was the raw thrown message — including the internal
+          // "unavailable or ambiguous across configured providers" string,
+          // which describes our resolver rather than anything the reader did.
           <div
             role="alert"
             className="px-2.5 py-1.5 bg-destructive-soft border border-destructive/25 rounded-md text-[12.5px] text-destructive"
           >
-            {saveError}
+            We couldn’t save that. Give it another try in a moment.
           </div>
         )}
       </div>

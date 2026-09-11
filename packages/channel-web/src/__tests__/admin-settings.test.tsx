@@ -3,7 +3,7 @@
  *
  * Pinned behaviors:
  *   1. Default tab is 'providers' (ProvidersPanel rendered, not AgentForm).
- *   2. Clicking "Default AI model" nav item shows ModelConfigTab.
+ *   2. Clicking the "Helper model" nav item shows ModelConfigTab.
  *   3. Clicking "← chat" calls onClose.
  *   4. Clicking "Agents" nav item shows AgentForm content.
  *
@@ -127,9 +127,9 @@ describe('AdminShell', () => {
     });
   });
 
-  it('clicking "Default AI model" nav item shows ModelConfigTab', async () => {
+  it('clicking the "Helper model" nav item shows ModelConfigTab', async () => {
     renderShell();
-    fireEvent.click(screen.getByRole('button', { name: /default ai model/i }));
+    fireEvent.click(screen.getByRole('button', { name: /helper model/i }));
     // ModelConfigTab renders a save button.
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /Save changes/i })).toBeTruthy();
@@ -157,7 +157,7 @@ describe('AdminShell', () => {
   it('the admin nav items are present in the sidebar', () => {
     renderShell();
     expect(screen.getByRole('button', { name: /^AI model keys$/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /^Default AI model$/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Helper model$/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /^agents$/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /^teams$/i })).toBeTruthy();
   });

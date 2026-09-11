@@ -327,7 +327,7 @@ describe('AgentForm — identity save decoupled from tools gate (TASK-147)', () 
       }),
     );
     expect(
-      screen.queryByText(/must list at least one tool/i),
+      screen.queryByText(/pick at least one tool/i),
     ).toBeNull();
 
     // The PATCH must NOT send the empty wildcard pair (allowedTools=[] AND
@@ -354,10 +354,21 @@ describe('AgentForm — identity save decoupled from tools gate (TASK-147)', () 
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() =>
-      expect(screen.getByText(/must list at least one tool/i)).toBeTruthy(),
+      expect(screen.getByText(/pick at least one tool/i)).toBeTruthy(),
     );
     expect(createAgent).not.toHaveBeenCalled();
     expect(putAgentIdentity).not.toHaveBeenCalled();
+
+    // TASK-341 / audit D2 — the message reads as an instruction rather than a
+    // schema complaint ("agent must list at least one tool"), it names an
+    // example so the field is answerable, and it renders through the `Alert`
+    // primitive rather than one of the two hand-rolled destructive divs this
+    // file used to carry (which had drifted to different padding from each
+    // other — the whole argument for the primitive).
+    expect(screen.getByText(/e\.g\. Bash, Read, Write/i)).toBeTruthy();
+    const alert = screen.getByRole('alert');
+    expect(alert.className).toContain('border-destructive/50');
+    expect(alert.className).not.toContain('bg-destructive/10');
   });
 
   it('still blocks clearing the tool list on an agent that HAD tools (no silent demotion to wildcard)', async () => {
@@ -379,7 +390,7 @@ describe('AgentForm — identity save decoupled from tools gate (TASK-147)', () 
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() =>
-      expect(screen.getByText(/must list at least one tool/i)).toBeTruthy(),
+      expect(screen.getByText(/pick at least one tool/i)).toBeTruthy(),
     );
     expect(patchAgent).not.toHaveBeenCalled();
     expect(putAgentIdentity).not.toHaveBeenCalled();

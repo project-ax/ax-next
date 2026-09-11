@@ -103,7 +103,7 @@ describe('AdminShell', () => {
     // keys / model / sign-in / teams; the duplicate Catalog / Connector-catalog
     // surfaces are gone.
     expect(screen.getByRole('button', { name: 'AI model keys' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Default AI model' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Helper model' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Teams' })).toBeTruthy();
     // Skills is the default active tab for everyone.
     expect(
@@ -122,9 +122,9 @@ describe('AdminShell', () => {
 
   it('clicking Default AI model makes it the active tab', () => {
     renderShell();
-    fireEvent.click(screen.getByRole('button', { name: 'Default AI model' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Helper model' }));
     expect(
-      screen.getByRole('button', { name: 'Default AI model' }).getAttribute('data-active'),
+      screen.getByRole('button', { name: 'Helper model' }).getAttribute('data-active'),
     ).toBeTruthy();
     expect(
       screen.getByRole('button', { name: 'Skills' }).getAttribute('data-active'),

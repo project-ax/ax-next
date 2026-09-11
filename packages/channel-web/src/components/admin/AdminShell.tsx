@@ -35,7 +35,7 @@ const TAB_META: Record<AdminTabId, TabMeta> = {
   agents: { eyebrow: 'Settings', title: 'Agents' },
   routines: { eyebrow: 'Settings', title: 'Routines' },
   providers: { eyebrow: 'Admin', title: 'AI model keys' },
-  'model-config': { eyebrow: 'Admin', title: 'Default AI model' },
+  'model-config': { eyebrow: 'Admin', title: 'Helper model' },
   'auth-providers': { eyebrow: 'Admin', title: 'Sign-in methods' },
   teams: { eyebrow: 'Admin', title: 'Teams' },
   branding: { eyebrow: 'Admin', title: 'Branding' },
