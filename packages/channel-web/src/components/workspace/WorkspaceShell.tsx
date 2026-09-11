@@ -1,10 +1,17 @@
 /**
  * The agent workspace — the shell.
  *
- * Mounted at `/workspace` — and at `/`, which the flag also claims — behind
- * the `agentWorkspacePreview` feature flag, on
- * the real host: `App.tsx` supplies the signed-in user, `/api/workspace/*`
- * supplies the board, and sending a message goes to the shipped chat wire.
+ * Mounted at `/workspace/*` — and at `/`, which the flag also claims and the
+ * shell rewrites to `/workspace` on mount — behind the
+ * `agentWorkspacePreview` feature flag, on the real host: `App.tsx` supplies
+ * the signed-in user, `/api/workspace/*` supplies the board, and sending a
+ * message goes to the shipped chat wire.
+ *
+ * Views are addressable: `/workspace`, `/workspace/activity`, and
+ * `/workspace/agents/<id>[/<tab>]`. The grammar lives in
+ * `@/lib/workspace-route`; this file owns the history calls. No server route
+ * backs those paths and none is needed — `@ax/static-files` serves the SPA on
+ * any unclaimed path.
  *
  * The demo strip that used to sit along the top — three canned scenarios and a
  * global stop — went with the mock backend it drove. So did the "New agent"
@@ -13,7 +20,7 @@
  * convincing fake panels is worse than one with three honest empty ones,
  * because only the second tells you what still has to be built.
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { workspaceApi } from '@/lib/workspace-api';
 import { useActivityFeed } from '@/lib/workspace-activity';
@@ -21,17 +28,17 @@ import { useDecisionQueue } from '@/lib/workspace-decisions';
 import { WorkspaceProvider, useWorkspace } from '@/lib/workspace-context';
 import { hydrateTheme } from '@/lib/theme';
 import { isOpenDecision, type ActivityEvent } from '@/lib/workspace-types';
+import {
+  parseWorkspaceRoute,
+  workspaceRoutePath,
+  type WorkspaceRoute,
+} from '@/lib/workspace-route';
 import { ActivityFeed } from './ActivityFeed';
-import { AgentView, type AgentTab } from './AgentView';
+import { AgentView } from './AgentView';
 import { HomeComposer } from './HomeComposer';
 import { TodayView } from './TodayView';
 import { Segmented, WorkspaceHeader } from './WorkspaceHeader';
 import { WorkspaceSidebar } from './WorkspaceSidebar';
-
-type Route =
-  | { kind: 'today' }
-  | { kind: 'activity' }
-  | { kind: 'agent'; id: string; tab: AgentTab };
 
 /** "Friday, August 21" — the date the queue is describing. */
 function today(): string {
@@ -116,7 +123,80 @@ export function WorkspaceShell() {
 
 function Inner() {
   const { board, error, loading, refresh } = useWorkspace();
-  const [route, setRoute] = useState<Route>({ kind: 'today' });
+  /**
+   * The open view, and the URL, kept as one thing.
+   *
+   * This used to be plain component state seeded at Today, which meant every
+   * reload was a context loss, nothing in the workspace could be linked or
+   * shared, and Back jumped straight out of the workspace instead of
+   * unwinding it. Acceptable while this was a preview at a URL you had to
+   * know; TASK-324 made it the landing surface.
+   *
+   * Hand-rolled rather than a router dependency: three views and one tab
+   * axis, all inside one component, is not a routing table. `useState`'s
+   * initializer reads the URL once — `parseWorkspaceRoute` never throws, so a
+   * mangled link degrades to Today instead of blanking the shell.
+   */
+  const [route, setRoute] = useState<WorkspaceRoute>(() =>
+    parseWorkspaceRoute(window.location.pathname),
+  );
+
+  /**
+   * Move, and leave an address behind. Pushes only when the URL would
+   * actually change, so re-selecting the view already on screen doesn't stack
+   * a history entry the reader then has to press Back through twice.
+   */
+  const navigate = useCallback((next: WorkspaceRoute) => {
+    setRoute(next);
+    const path = workspaceRoutePath(next);
+    if (path !== window.location.pathname) {
+      window.history.pushState(null, '', path);
+    }
+  }, []);
+
+  /**
+   * Back / forward. The URL is the source of truth on the way in, exactly as
+   * it is at mount.
+   *
+   * Every entry this can see is one we pushed, so it is always a workspace
+   * path: `popstate` fires only for SAME-DOCUMENT entries, and every other
+   * surface in the app (`/chat`, `/admin`, `/setup`) is reached by a full
+   * document load. Backing out of the workspace entirely is therefore a real
+   * navigation and never arrives here.
+   */
+  useEffect(() => {
+    const onPop = () => setRoute(parseWorkspaceRoute(window.location.pathname));
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  /**
+   * Canonicalize whatever we were opened with, once.
+   *
+   * `/` is a real entry point — App renders the workspace there when the
+   * preview is on — and so are the non-canonical spellings of a view
+   * (`/workspace/agents/x/chat`, a trailing slash, an unknown tab). Left
+   * alone, the same view would have several addresses and "copy the URL"
+   * would be a coin flip.
+   *
+   * REPLACE, never push: a push here would insert a phantom entry between the
+   * visitor and wherever they came from, so their first Back would land on us
+   * again. Search and hash are carried over — they are not ours to drop, and
+   * a link with a `?ref=` on it is the ordinary case.
+   */
+  useEffect(() => {
+    const canonical = workspaceRoutePath(
+      parseWorkspaceRoute(window.location.pathname),
+    );
+    if (window.location.pathname !== canonical) {
+      window.history.replaceState(
+        null,
+        '',
+        canonical + window.location.search + window.location.hash,
+      );
+    }
+  }, []);
+
   /**
    * The single activity collection, scoped to the agent tab when one is open
    * and to the whole workspace otherwise (design §7 — one feed and a filter).
@@ -220,7 +300,7 @@ function Inner() {
   const workingCount = board.agents.filter((a) => a.state === 'working').length;
 
   const openAgent = (id: string) =>
-    setRoute({ kind: 'agent', id, tab: 'chat' });
+    navigate({ kind: 'agent', id, tab: 'chat' });
 
   return (
     <div className="flex h-screen flex-col bg-background font-sans text-foreground">
@@ -232,8 +312,8 @@ function Inner() {
           pendingCount={pending}
           rosterOpen={rosterOpen}
           onRoster={setRosterOpen}
-          onToday={() => setRoute({ kind: 'today' })}
-          onActivity={() => setRoute({ kind: 'activity' })}
+          onToday={() => navigate({ kind: 'today' })}
+          onActivity={() => navigate({ kind: 'activity' })}
           onAgent={openAgent}
         />
 
@@ -266,7 +346,7 @@ function Inner() {
                   error={queue.error}
                   loading={queue.loading}
                   onRetry={() => void queue.refresh()}
-                  onSeeActivity={() => setRoute({ kind: 'activity' })}
+                  onSeeActivity={() => navigate({ kind: 'activity' })}
                   {...(doneToday !== undefined ? { doneToday } : {})}
                 />
               </div>
@@ -279,7 +359,7 @@ function Inner() {
                     text,
                   });
                   setPendingReply({ agentId, reqId, text });
-                  setRoute({ kind: 'agent', id: agentId, tab: 'chat' });
+                  navigate({ kind: 'agent', id: agentId, tab: 'chat' });
                 }}
               />
             </>
@@ -331,7 +411,7 @@ function Inner() {
             <AgentView
               agentId={route.id}
               tab={route.tab}
-              onTab={(t) => setRoute({ ...route, tab: t })}
+              onTab={(t) => navigate({ ...route, tab: t })}
               decisions={queue.decisions}
               onApprove={queue.approve}
               onDismiss={queue.dismiss}
@@ -353,7 +433,7 @@ function Inner() {
               activityLoading={feed.loading}
               activityError={feed.error}
               agents={board.agents}
-              onBack={() => setRoute({ kind: 'today' })}
+              onBack={() => navigate({ kind: 'today' })}
               version={version}
               pendingReply={
                 pendingReply && pendingReply.agentId === route.id
