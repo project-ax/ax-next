@@ -54,14 +54,14 @@ describe('BundleReviewDialog', () => {
     mockDecide.mockResolvedValue({ admitted: true, skillId: 'linear' });
     const onDecided = vi.fn();
     render(<BundleReviewDialog request={SHARE_REQ} onClose={vi.fn()} onDecided={onDecided} />);
-    fireEvent.click(await screen.findByRole('button', { name: /^admit$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^approve$/i }));
     await waitFor(() => expect(mockDecide).toHaveBeenCalledWith('r1', 'admit'));
     await waitFor(() => expect(onDecided).toHaveBeenCalled());
   });
 
   it('disables Admit for a cold-start request (nothing to promote)', async () => {
     render(<BundleReviewDialog request={COLD_REQ} onClose={vi.fn()} onDecided={vi.fn()} />);
-    const admit = (await screen.findByRole('button', { name: /^admit$/i })) as HTMLButtonElement;
+    const admit = (await screen.findByRole('button', { name: /^approve$/i })) as HTMLButtonElement;
     expect(admit.disabled).toBe(true);
     // reject is available
     expect((screen.getByRole('button', { name: /^reject$/i }) as HTMLButtonElement).disabled).toBe(
@@ -73,7 +73,7 @@ describe('BundleReviewDialog', () => {
     // getSkillOrNull never resolves → entries stays null (loading).
     mockGetOrNull.mockReturnValue(new Promise(() => {}));
     render(<BundleReviewDialog request={SHARE_REQ} onClose={vi.fn()} onDecided={vi.fn()} />);
-    const admit = (await screen.findByRole('button', { name: /^admit$/i })) as HTMLButtonElement;
+    const admit = (await screen.findByRole('button', { name: /^approve$/i })) as HTMLButtonElement;
     expect(admit.disabled).toBe(true);
     // The loading state is shown, not a reviewable diff.
     expect(screen.getByText(/loading bundle/i)).toBeTruthy();
@@ -84,7 +84,7 @@ describe('BundleReviewDialog', () => {
     render(<BundleReviewDialog request={SHARE_REQ} onClose={vi.fn()} onDecided={vi.fn()} />);
     // The error surfaces and Admit stays disabled — no admitting un-reviewed bytes.
     await waitFor(() => expect(screen.getByText(/skills API 500/)).toBeTruthy());
-    expect((screen.getByRole('button', { name: /^admit$/i }) as HTMLButtonElement).disabled).toBe(
+    expect((screen.getByRole('button', { name: /^approve$/i }) as HTMLButtonElement).disabled).toBe(
       true,
     );
   });
@@ -134,5 +134,33 @@ describe('BundleReviewDialog', () => {
     );
     expect(await screen.findByText(/<img src=x onerror=alert\(1\)>/)).toBeTruthy();
     expect(document.querySelector('img')).toBeNull();
+  });
+
+  /**
+   * TASK-343 / audit D10 — the review dialog's own copy.
+   */
+  describe('review copy (TASK-343)', () => {
+    it('titles by a readable name and says how far approval reaches', async () => {
+      render(
+        <BundleReviewDialog request={SHARE_REQ} onClose={vi.fn()} onDecided={vi.fn()} />,
+      );
+      // "Review share request: linear" put a wire enum and a slug in a heading.
+      expect(await screen.findByText(/Review shared skill: Linear/)).toBeTruthy();
+      // "Admit" gave no clue the decision is org-wide rather than personal —
+      // the single fact a reviewer needs before pressing it.
+      expect(
+        screen.getByText(/organisation's catalog, where anyone here can install it/i),
+      ).toBeTruthy();
+    });
+
+    it('no longer points at the Catalog tab, which was removed from the nav', async () => {
+      // TASK-125 deleted that tab. The instruction outlived the surface.
+      render(
+        <BundleReviewDialog request={COLD_REQ} onClose={vi.fn()} onDecided={vi.fn()} />,
+      );
+      expect(await screen.findByText(/nothing to review yet/i)).toBeTruthy();
+      expect(screen.queryByText(/Catalog tab/i)).toBeNull();
+      expect(screen.getByText(/Add to workspace/)).toBeTruthy();
+    });
   });
 });

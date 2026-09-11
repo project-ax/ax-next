@@ -225,7 +225,9 @@ describe('SkillEditor (form-first)', () => {
     await waitFor(() => {
       expect(screen.getByLabelText('Raw SKILL.md')).toBeTruthy();
     });
-    expect(screen.getByText(/no-fence.*Missing frontmatter fence/)).toBeTruthy();
+    expect(screen.getByText(/Missing frontmatter fence/)).toBeTruthy();
+    // (TASK-343/D8) the parser's `code` prefix no longer rides the message.
+    expect(screen.queryByText(/no-fence/)).toBeNull();
     // Save is disabled while the raw manifest is invalid.
     expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(true);
   });

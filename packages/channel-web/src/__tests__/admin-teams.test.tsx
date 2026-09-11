@@ -56,8 +56,14 @@ describe('AdminSettings — Teams tab', () => {
     fetchMock.mockResolvedValueOnce(jsonOk({ teams: [] }));
 
     render(<TeamList />);
-    await waitFor(() => expect(screen.getByText(/Read-only/i)).toBeTruthy());
-    expect(screen.getByText(/Week 9\.5/i)).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByText(/team management is coming soon/i)).toBeTruthy(),
+    );
+    // (TASK-343/D6) Neither a path into our own repo nor our internal milestone
+    // vocabulary belongs on a screen an operator reads. Both named things the
+    // reader has no way to look up and no reason to care about.
+    expect(screen.queryByText(/docs\/plans/)).toBeNull();
+    expect(screen.queryByText(/Week 9\.5/i)).toBeNull();
   });
 
   it('handles error', async () => {
