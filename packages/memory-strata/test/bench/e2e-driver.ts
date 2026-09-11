@@ -25,7 +25,7 @@ import { createMemoryStrataPlugin, type OrchestratorClient } from '@ax/memory-st
 import { createMemoryStrataIndexSqlitePlugin } from '@ax/memory-strata-index-sqlite';
 import type { LongMemEvalSample } from './corpora/longmemeval-s.js';
 import { isUnanswerable } from './corpora/longmemeval-s.js';
-import type { E2EAnswerClient, MemorySearchResult } from './e2e-answer.js';
+import type { E2EAnswerClient, MemorySearchResult, ReadSectionFn } from './e2e-answer.js';
 
 /** Structural type for the plugin's consolidation debouncer (captured via the
  * onDebouncerCreated test seam). We only need `flush()` — force-fire the pending
@@ -278,7 +278,18 @@ function makeSearchFn(bus: HookBus, ctx: AgentContext) {
 }
 
 /** Wire a memory_read_section executor to the plugin's tool:execute:memory_read_section hook. */
-function makeReadSectionFn(bus: HookBus, ctx: AgentContext) {
+/**
+ * The `memory_read_section` tool, as the answer client wants it.
+ *
+ * Exported and annotated `ReadSectionFn` on purpose. Three copies of this
+ * lambda used to exist — here and in two `repro-*.ts` diagnostics — and only
+ * this one passed type arguments to `bus.call`, so the other two silently
+ * returned `Promise<unknown>` and stopped satisfying `ReadSectionFn` when the
+ * type last moved. Nothing noticed for weeks because the bench typecheck was
+ * not wired into any gate. One definition, explicitly typed, means the next
+ * change to `ReadSectionFn` breaks HERE rather than in three call sites.
+ */
+export function makeReadSectionFn(bus: HookBus, ctx: AgentContext): ReadSectionFn {
   return async (args: { docId: string; header?: string }) => {
     return bus.call<
       { input: { docId: string; header?: string } },

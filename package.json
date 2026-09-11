@@ -17,7 +17,7 @@
     "test:eslint-rules": "vitest run --root eslint-rules",
     "test:scripts": "vitest run --root scripts",
     "lint": "eslint .",
-    "typecheck": "tsc --build",
+    "typecheck": "tsc --build && pnpm -r --if-present run typecheck",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "pnpm build && changeset publish"

@@ -9,8 +9,22 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { runConsolidation } from '../../src/consolidator.js';
 
-const ws = process.argv[2];
-if (!ws) { console.error('usage: repro-reconsolidate.ts <workspaceRoot>'); process.exit(2); }
+/**
+ * `process.exit()` narrows the local flow, but that narrowing does NOT reach
+ * into the nested helpers below — which is why `ws` read as `string | undefined`
+ * inside every one of them. Returning from a function makes the type a fact
+ * rather than a flow inference.
+ */
+function requireWorkspaceArg(): string {
+  const arg = process.argv[2];
+  if (arg === undefined || arg.length === 0) {
+    console.error('usage: repro-reconsolidate.ts <workspaceRoot>');
+    process.exit(2);
+  }
+  return arg;
+}
+
+const ws = requireWorkspaceArg();
 
 function countInbox(): number {
   try { return readdirSync(join(ws, 'permanent/memory/inbox')).filter((f) => f.endsWith('.md')).length; }

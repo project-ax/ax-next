@@ -27,7 +27,7 @@ import { BenchCache } from './cache.js';
 import { loadLongMemEvalSSamples } from './corpora/longmemeval-s.js';
 import { makeAnthropicExtractionLlm } from './e2e-cli.js';
 import { makeAnthropicAnswerClient, type MemorySearchResult } from './e2e-answer.js';
-import { parseCorpusDate } from './e2e-driver.js';
+import { makeReadSectionFn, parseCorpusDate } from './e2e-driver.js';
 
 const ANSWER_MODEL = 'claude-sonnet-4-6';
 const EXTRACTION_MODEL = 'claude-haiku-4-5-20251001';
@@ -153,8 +153,7 @@ async function reproOne(
     searchLog.push({ query: args.query, ids: out.results.map((r) => r.docId ?? (r as { id?: string }).id ?? '?') });
     return out.results;
   };
-  const readSection = async (args: { docId: string; header?: string }) =>
-    bus.call('tool:execute:memory_read_section', ctx, { input: args });
+  const readSection = makeReadSectionFn(bus, ctx);
 
   const answer = await answerClient.answer({
     injectedMemory, question: sample.question,
