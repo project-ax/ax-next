@@ -141,6 +141,10 @@ const EXTERNAL_READERS: ReadonlySet<string> = new Set([
   'AX_CONFIG_PATH',
   // @ax/credentials reads at init().
   'AX_CREDENTIALS_KEY',
+  // @ax/agents' resolveAllowedModels reads at init() (TASK-326). Stamped
+  // only when config.models.default is non-empty; empty means "keep the
+  // built-in DEFAULT_ALLOWED_MODELS".
+  'AX_AGENT_MODELS_ALLOWED',
   // (ANTHROPIC_API_KEY removed: loadK8sConfigFromEnv now reads it directly
   //  to gate the conditional load of @ax/conversation-titles.)
   // Read by @ax/http-server at init() — silences the empty-allow-list
@@ -231,6 +235,25 @@ describeIfHelm('host deployment env vs preset loader', () => {
     const known = new Set<string>([...loaderReads, ...EXTERNAL_READERS]);
     const orphans = [...deploymentEnv].filter((v) => !known.has(v));
     expect(orphans, `host deployment sets env vars no plugin reads: ${orphans.join(', ')}`).toEqual([]);
+  });
+
+  it('a configured model allow-list is not flagged as an orphan env var (TASK-326)', () => {
+    // AX_AGENT_MODELS_ALLOWED is read by @ax/agents' resolveAllowedModels at
+    // plugin init, so the loader scan cannot see it. The default render
+    // stamps nothing, which means the orphan check above never exercises
+    // this path — render it deliberately.
+    const { all: loaderReads } = collectLoaderEnvReads();
+    const env = envKeysOf(
+      renderHostDeployment([
+        '--set',
+        'config.models.default={anthropic/claude-opus-4-7}',
+      ]),
+    );
+    expect(env.has('AX_AGENT_MODELS_ALLOWED')).toBe(true);
+
+    const known = new Set<string>([...loaderReads, ...EXTERNAL_READERS]);
+    const orphans = [...env].filter((v) => !known.has(v));
+    expect(orphans, `orphan env vars: ${orphans.join(', ')}`).toEqual([]);
   });
 
   it('local workspace backend stamps AX_WORKSPACE_ROOT', () => {
