@@ -134,9 +134,8 @@ export async function runObserver(input: RunObserverInput): Promise<RunObserverR
 
   const userPrompt = formatTranscript(input.messages);
 
-  // Bound the LLM call. The hook surface doesn't carry an AbortSignal
-  // (LlmCallInput is { model, maxTokens, system, messages, temperature }
-  // — no signal field), so we race a setTimeout. The slow LLM call
+  // Bound the LLM call. The hook surface doesn't carry an AbortSignal — no
+  // `signal` field on LlmCallInput — so we race a setTimeout. The slow LLM call
   // continues in the background and its eventual result is discarded.
   // Phase 2 should add `signal` to LlmCallInput so we can actually cancel
   // the round-trip; Phase 1 just bounds the wait.

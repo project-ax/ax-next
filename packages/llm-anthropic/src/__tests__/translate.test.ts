@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type Anthropic from '@anthropic-ai/sdk';
+import { PluginError } from '@ax/core';
 import { fromAnthropicResponse, toAnthropicRequest } from '../translate.js';
 
 describe('toAnthropicRequest', () => {
@@ -66,6 +67,24 @@ describe('toAnthropicRequest', () => {
 });
 
 describe('fromAnthropicResponse', () => {
+  it('leaves thinking blocks OUT of the text', () => {
+    // Newly reachable as of TASK-348: before `reasoningEffort` existed no
+    // caller could ask for extended thinking, so no `llm:call:anthropic`
+    // response could contain a thinking block. Now that low/medium/high
+    // enable one, the existing text-block filter is load-bearing — leaking
+    // the model's scratchpad into `text` would hand every caller a body its
+    // parser never expected (the orchestrator's op parser included).
+    const res = makeMessage({
+      content: [
+        { type: 'thinking', thinking: 'let me consider...', signature: 'sig' },
+        { type: 'text', text: 'The answer.' },
+      ] as unknown as Anthropic.ContentBlock[],
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 5, output_tokens: 3 },
+    });
+    expect(fromAnthropicResponse(res).text).toBe('The answer.');
+  });
+
   it('extracts text and usage from a single text-block response', () => {
     const res = makeMessage({
       content: [{ type: 'text', text: 'Hello' } as Anthropic.TextBlock],
@@ -191,3 +210,114 @@ function makeMessage(opts: {
     },
   } as unknown as Anthropic.Message;
 }
+
+// ---------------------------------------------------------------------------
+// reasoningEffort — TASK-348. Anthropic has no `effort` parameter; it has an
+// explicit thinking BUDGET, so the normalized ladder maps onto token counts.
+// The interesting half is `'minimal'`: extended thinking is off by default on
+// the Messages API, so the minimal-effort request is the ABSENCE of the field.
+// ---------------------------------------------------------------------------
+describe('toAnthropicRequest — reasoningEffort', () => {
+  it("omits `thinking` ENTIRELY for 'minimal' — absence IS Anthropic's floor", () => {
+    const req = toAnthropicRequest(
+      { messages: [{ role: 'user', content: 'hi' }], maxTokens: 512, reasoningEffort: 'minimal' },
+      {},
+    );
+    // Negative space on purpose. `thinking: {type:'disabled'}` would ALSO read
+    // as "don't think", but it 400s on models that don't support the parameter
+    // at all, and the floor rung must degrade rather than fail the call.
+    expect('thinking' in req).toBe(false);
+    // And it must not disturb anything else while doing nothing.
+    expect(req.max_tokens).toBe(512);
+  });
+
+  it('omits `thinking` when no effort is requested', () => {
+    const req = toAnthropicRequest({ messages: [{ role: 'user', content: 'hi' }] }, {});
+    expect('thinking' in req).toBe(false);
+  });
+
+  it.each([
+    ['low', 1024],
+    ['medium', 4096],
+    ['high', 16384],
+  ] as const)('maps %s to an enabled thinking budget of %i tokens', (effort, budget) => {
+    const req = toAnthropicRequest(
+      { messages: [{ role: 'user', content: 'hi' }], maxTokens: 512, reasoningEffort: effort },
+      {},
+    );
+    expect(req.thinking).toEqual({ type: 'enabled', budget_tokens: budget });
+  });
+
+  it('raises max_tokens above the thinking budget instead of 400ing', () => {
+    // Anthropic requires max_tokens > budget_tokens. The caller asked for 512
+    // tokens of ANSWER; the thinking budget is spent on top of that, so the
+    // cap becomes budget + the caller's ask rather than silently capping the
+    // answer at zero.
+    const req = toAnthropicRequest(
+      { messages: [{ role: 'user', content: 'hi' }], maxTokens: 512, reasoningEffort: 'high' },
+      {},
+    );
+    expect(req.max_tokens).toBe(16384 + 512);
+    expect(req.max_tokens).toBeGreaterThan(16384);
+  });
+
+  it('drops temperature when thinking is enabled — the API rejects both together', () => {
+    const req = toAnthropicRequest(
+      {
+        messages: [{ role: 'user', content: 'hi' }],
+        maxTokens: 512,
+        temperature: 0.2,
+        reasoningEffort: 'low',
+      },
+      {},
+    );
+    expect('temperature' in req).toBe(false);
+  });
+
+  it('REFUSES an unrecognized rung rather than building a broken request', () => {
+    // Only reachable from plain JS or a JSON-decoded config — TypeScript
+    // rejects it. 'constructor' specifically: `Object.freeze` does not stop a
+    // prototype walk, so an unguarded index would put a FUNCTION in
+    // `budget_tokens` and NaN in `max_tokens` — a corrupt request rather than
+    // a rejected one.
+    //
+    // It throws instead of degrading so that the SAME caller bug is loud on
+    // both providers: @ax/llm-openrouter forwards the value and OpenRouter
+    // answers 400.
+    const build = (): unknown =>
+      toAnthropicRequest(
+        {
+          messages: [{ role: 'user', content: 'hi' }],
+          maxTokens: 512,
+          reasoningEffort: 'constructor' as unknown as 'high',
+        },
+        {},
+      );
+    expect(build).toThrow(PluginError);
+    expect(build).toThrow(/unknown reasoningEffort "constructor"/);
+  });
+
+  it('keeps max_tokens STRICTLY above the budget even when the caller asks for 0', () => {
+    // Anthropic requires max_tokens > budget_tokens, strictly. `maxTokens: 0`
+    // is nullish-coalescing-proof (0 ?? d === 0), so without the floor the cap
+    // would land exactly ON the budget and the API would reject the call.
+    const req = toAnthropicRequest(
+      { messages: [{ role: 'user', content: 'hi' }], maxTokens: 0, reasoningEffort: 'low' },
+      {},
+    );
+    expect(req.max_tokens).toBeGreaterThan(1024);
+  });
+
+  it("keeps temperature for 'minimal', which enables nothing", () => {
+    const req = toAnthropicRequest(
+      {
+        messages: [{ role: 'user', content: 'hi' }],
+        maxTokens: 512,
+        temperature: 0.2,
+        reasoningEffort: 'minimal',
+      },
+      {},
+    );
+    expect(req.temperature).toBe(0.2);
+  });
+});

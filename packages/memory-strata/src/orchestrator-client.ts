@@ -200,26 +200,36 @@ const ORCHESTRATOR_MAX_TOKENS = 512;
  * dangerous. Exported so the CLI and k8s presets share ONE default rather than
  * drifting apart; both let an operator override it.
  *
- * CHOSEN ON MEASUREMENT, 2026-09-10 (`pnpm --filter @ax/memory-strata
- * bench:latency`, 19 samples each after a warmup, real LongMemEval-S map):
+ * CHOSEN ON MEASUREMENT and RE-CONFIRMED 2026-09-11 after TASK-348 made
+ * `reasoningEffort` reachable (`pnpm --filter @ax/memory-strata bench:latency`,
+ * two runs of 19 samples each after a warmup, real LongMemEval-S map). Every
+ * row below asks for `effort: 'minimal'`, i.e. exactly what this client sends:
  *
- * | via OpenRouter                 |  p50 |   p95 |   max |
- * |--------------------------------|------|-------|-------|
- * | anthropic/claude-haiku-4.5     | 1049 |  1580 |  1677 |
- * | deepseek/deepseek-v4.1-flash   | 1727 |  2866 |  4629 |
- * | google/gemini-3.8-flash        | 2387 |  3525 |  3532 |
- * | x-ai/grok-4.3                  | 7269 | 18482 | 19802 |
+ * | via OpenRouter, minimal reasoning |     p50 |     p95 |     max |
+ * |-----------------------------------|---------|---------|---------|
+ * | anthropic/claude-haiku-4.5        | 926/950 |1222/1152|1623/1456|
+ * | google/gemini-3.8-flash:nitro     | 941/954 |1813/1289|2277/1302|
+ * | deepseek/deepseek-v4.1-flash:nitro|1328/1139|1593/1579|1743/2054|
+ * | z-ai/glm-5.3-flash:nitro          | 790/865 |2214/3938|2758/4133|
  *
- * Haiku 4.5 wins on both speed and SPREAD — 887..1677ms end to end, where
- * Grok 4.3's p50 alone exceeds the whole budget. Two Grok ids were tried
- * before it and both 404'd as deprecated (`x-ai/grok-4-fast`, and
- * `x-ai/grok-4.1-fast` before that), which is the other half of the lesson:
- * take the id from a live `GET /api/v1/models`, not from a comment.
+ * **Haiku stays the default because of the SPREAD, not the median.** GLM is
+ * ~7× cheaper and beats haiku's p50 in both runs, but its tail moved 1443 →
+ * 2758 → 4133ms across three runs (`:nitro` re-sorts a heterogeneous provider
+ * pool per call). Against a hard timeout with a SILENT BM25 fallback, a
+ * reproducible tail beats a good average. Haiku's p95 has not exceeded 1580ms
+ * across four runs.
  *
- * `deepseek-v4.1-flash` is the cheap alternative (~3× lower input price) and
- * fits the budget too; its max sits close to it. Direct Anthropic — not
- * through OpenRouter — measured faster still (635ms p50) if the extra
- * credential path is ever worth it.
+ * Two other things that run pinned down:
+ *  - Without `reasoningEffort`, the same GLM model measured p50 3338–3422ms and
+ *    a max of 5183ms — PAST the budget. That is what a deployment got before
+ *    TASK-348, and it fell through to BM25 without saying so.
+ *  - `deepseek-v4.1-flash` accepts `'minimal'` and keeps reasoning anyway
+ *    (32–279 `reasoning_tokens` on every call). It only truly stops for
+ *    `{enabled:false}`, which is unexpressible here by design.
+ *
+ * And the standing lesson: take the id from a live `GET /api/v1/models`, never
+ * from a comment. Three ids in this repo have gone deprecated, and a dead id
+ * fails closed into the same silent BM25 fallback.
  */
 export const DEFAULT_ORCHESTRATOR_MODEL = 'anthropic/claude-haiku-4.5';
 
@@ -273,6 +283,20 @@ export function makeBusOrchestratorClient(
         maxTokens: ORCHESTRATOR_MAX_TOKENS,
         system,
         messages: [{ role: 'user', content: user }],
+        // Least deliberation the endpoint allows. This role is the reason the
+        // field exists: the orchestrator reads a densified map and emits a
+        // short op list under DEFAULT_ORCHESTRATOR_TIMEOUT_MS, past which
+        // memory_search falls back to BM25 SILENTLY — so a model that thinks
+        // first spends the budget on tokens the op parser discards and the
+        // deployment never finds out. Measured 2026-09-11 on
+        // z-ai/glm-5.3-flash:nitro, control vs flagged in the SAME bench run:
+        // p50 3338 -> 865ms, and the control's slowest call was 5183ms — past
+        // the budget, i.e. already falling through to BM25 in silence.
+        //
+        // Hard-coded rather than configurable on purpose — there is no version
+        // of this role that wants to think harder, and a knob would just be a
+        // way to reintroduce the silent timeout.
+        reasoningEffort: 'minimal',
       });
       return {
         text: out.text,

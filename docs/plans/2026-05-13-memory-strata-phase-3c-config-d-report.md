@@ -271,3 +271,100 @@ OpenAI and Google APIs, so a normalized field is defensible rather than a leak.
 
 Accuracy remains unmeasured for every model in this table.
 
+
+---
+
+## Addendum — 2026-09-11, TASK-348: the flag now reaches the wire, and what that changed
+
+The addendum above ends with "the winning configurations are NOT reachable from
+production." TASK-348 fixed that: `LlmCallInput.reasoningEffort`
+(`'minimal' | 'low' | 'medium' | 'high'`) is normalized in `@ax/core`, translated
+in both provider plugins, and `makeBusOrchestratorClient` asks for `'minimal'`.
+
+**Every arm below is now a configuration production can actually deploy.** The
+probe's arms were rewritten to carry only the shape
+`@ax/llm-openrouter`'s `toChatCompletionsRequest` emits (`reasoning: { effort }`),
+so the class of error that produced the previous table — measuring a flag the
+request-building path could not send — cannot recur silently.
+
+### Two runs, n=19 each, same corpus, same day
+
+Run A, then run B about 25 minutes later. Both after a discarded warmup.
+
+| config | n | min | p50 | mean | p95 | max |
+|---|---|---|---|---|---|---|
+| **A** `anthropic/claude-haiku-4.5` + minimal | 19 | 824 | **926** | 976 | **1222** | **1623** |
+| **B** `anthropic/claude-haiku-4.5` + minimal | 19 | 821 | **950** | 975 | **1152** | **1456** |
+| **A** `z-ai/glm-5.3-flash:nitro` + minimal | 19 | 547 | 790 | 1156 | 2214 | 2758 |
+| **B** `z-ai/glm-5.3-flash:nitro` + minimal | 19 | 600 | 865 | 1445 | **3938** | **4133** |
+| **A** `deepseek/deepseek-v4.1-flash:nitro` + minimal | 19 | 912 | 1328 | 1313 | 1593 | 1743 |
+| **B** `deepseek/deepseek-v4.1-flash:nitro` + minimal | 19 | 847 | 1139 | 1189 | 1579 | 2054 |
+| **A** `google/gemini-3.8-flash:nitro` + minimal | 19 | 780 | 941 | 1092 | 1813 | 2277 |
+| **B** `google/gemini-3.8-flash:nitro` + minimal | 19 | 769 | 954 | 975 | 1289 | 1302 |
+| **A** `z-ai/glm-5.3-flash:nitro` NO FLAG (control) | 19 | 2426 | 3422 | 3854 | 7263 | 7704 |
+| **B** `z-ai/glm-5.3-flash:nitro` NO FLAG (control) | 19 | 2453 | 3338 | 3337 | 4529 | **5183** |
+
+### The control arm settles the premise
+
+Same model, same run, one request parameter:
+
+| | p50 | p95 | max |
+|---|---|---|---|
+| GLM, flag absent (A / B) | 3422 / 3338 | 7263 / 4529 | 7704 / **5183** |
+| GLM, `effort: 'minimal'` (A / B) | 790 / 865 | 2214 / 3938 | 2758 / 4133 |
+
+A ~4× p50 improvement, reproduced twice. And the control's max in run B is
+**5183ms — past the 5000ms budget**, which is not a latency regression but a
+correctness one: that call fell through to BM25 and said nothing about it.
+`reasoning_tokens` on the control ran 259–578 per call (run B, all 19), spent on
+tokens the op parser discards.
+
+### Verified, not assumed — `reasoning_tokens` read back per call
+
+The card asked for this explicitly, and it found something:
+
+| model, `effort: 'minimal'` | calls emitting reasoning tokens | amount |
+|---|---|---|
+| `anthropic/claude-haiku-4.5` | 0 / 19 | — |
+| `google/gemini-3.8-flash:nitro` | 0 / 19 | — |
+| `z-ai/glm-5.3-flash:nitro` | 6 / 19 | 5–20 tokens |
+| `deepseek/deepseek-v4.1-flash:nitro` | **19 / 19** | **32–279 tokens** |
+
+**`deepseek-v4.1-flash` accepts `minimal` and keeps reasoning anyway.** It is the
+one model of the four that genuinely stops when told to — but only via
+`reasoning: { enabled: false }`, which the normalized surface deliberately cannot
+express because the same shape 400s on GLM and Gemini. So deepseek through this
+surface is "reasoning turned down", not "reasoning off". Worth knowing before
+anyone reads its p50 as a like-for-like comparison.
+
+### The default does NOT move. Haiku stays.
+
+The card's condition was "move `DEFAULT_ORCHESTRATOR_MODEL` to the cheap winner
+**if it holds up**". It did not hold up — on the tail, which is the only part
+that matters against a hard timeout with a silent fallback.
+
+- **GLM wins the median and loses the tail, unreliably.** Its p50 beats haiku in
+  both runs (790 / 865 vs 926 / 950). Its max was 1443 in the card's run, 2758 in
+  run A and **4133** in run B. Three runs, three different tails, the worst of
+  them 83% of the entire budget on one LongMemEval-S *subset* map. A production
+  map is bigger. `:nitro` re-sorts a heterogeneous provider pool per call, and
+  that is what we are looking at — not reasoning, which the token counts confirm
+  is off.
+- **Haiku's spread is the thing nothing else matched.** Across four runs now
+  (two here, two on 2026-09-10/11) its p95 has never exceeded 1580ms and its max
+  has never exceeded 1997ms. Boring is the requirement.
+- **`gemini-3.8-flash:nitro` is the genuine surprise** and the closest contender:
+  run B was 769–1302ms end to end, tighter than haiku's run A. But run A's own
+  max was 2277ms, and at ~$0.75/M in it is only ~25% cheaper than haiku — not
+  enough to buy a less-proven tail.
+- **Accuracy remains unmeasured for every model in this table**, including the
+  incumbent. It is its own card. Nothing here is evidence about plan quality.
+
+### What actually changed for operators
+
+Setting `memory.orchestratorModel: z-ai/glm-5.3-flash:nitro` used to deploy the
+reasoning-ON model at a p50 of ~3.4s and a max that exceeded the budget outright.
+It now deploys at a p50 of ~800–870ms for ~7× less input cost. That configuration
+went from "strictly worse than the default, silently" to "a real trade someone
+can choose" — which was the whole point of the card. The default just isn't it
+yet, because its tail is not reproducible.

@@ -57,7 +57,33 @@ describe('makeBusOrchestratorClient', () => {
       maxTokens: 512,
       system: 'SYS',
       messages: [{ role: 'user', content: 'USR' }],
+      reasoningEffort: 'minimal',
     });
+  });
+
+  it('asks for MINIMAL reasoning, whatever model is configured', async () => {
+    // The orchestrator emits a short op list under a 5000ms budget and falls
+    // back to BM25 SILENTLY when it misses, so any deliberation is budget
+    // spent on tokens the op parser throws away. Measured 2026-09-11,
+    // z-ai/glm-5.3-flash:nitro with and without this field in the same bench
+    // run: p50 3338 -> 865ms, and the no-flag arm's slowest call was 5183ms —
+    // past the budget. Without this field the cheap models are strictly worse
+    // than the default they would replace, and silent about it.
+    const call = vi.fn().mockResolvedValue({
+      text: 'plan',
+      stopReason: 'end_turn',
+      usage: { inputTokens: 1, outputTokens: 1 },
+    });
+    const client = makeBusOrchestratorClient(
+      busWith({ 'llm:call:openrouter': true }, call),
+      ctx,
+      { hook: 'llm:call:openrouter', model: 'z-ai/glm-5.3-flash:nitro' },
+    );
+
+    await client!.complete({ system: 'SYS', user: 'USR' });
+
+    const [, , input] = call.mock.calls[0]!;
+    expect((input as { reasoningEffort?: string }).reasoningEffort).toBe('minimal');
   });
 
   it('is undefined when the provider hook is not registered', () => {

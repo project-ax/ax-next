@@ -126,7 +126,35 @@ export interface LlmCallInput {
   system?: string;
   messages: Array<{ role: 'user' | 'assistant'; content: string }>;
   temperature?: number;
+  /**
+   * How hard the model should deliberate before answering. Optional and
+   * PER-CALL: the same `llm:call:<provider>` hook serves a latency-budgeted
+   * background call and an agent chat turn, and those want opposite answers,
+   * so this cannot be a plugin-level default. Omit it to take whatever the
+   * model does by default. See {@link ReasoningEffort}.
+   */
+  reasoningEffort?: ReasoningEffort;
 }
+
+/**
+ * Normalized deliberation ladder, translated per provider by the registrar
+ * plugin: OpenRouter `reasoning.effort`, Anthropic `thinking.budget_tokens`,
+ * OpenAI `reasoning_effort`. A provider with no analogue ignores it.
+ *
+ * This is a MODEL-VOCABULARY concept, not a backend one (invariant 1) — all
+ * three vendor APIs express it first-class, which is exactly what separates it
+ * from something like OpenRouter's `provider.order` (pure routing, one vendor,
+ * deliberately absent from this payload).
+ *
+ * **There is no `'none'` rung, on purpose.** Measured against OpenRouter
+ * 2026-09-11: both `reasoning:{enabled:false}` and `reasoning:{effort:'none'}`
+ * return `400 Reasoning is mandatory for this endpoint and cannot be disabled`
+ * on `z-ai/glm-5.3-flash` and `google/gemini-3.8-flash`, while `'minimal'` was
+ * accepted by every model tried. A caller asking for the least deliberation
+ * possible should DEGRADE to whatever floor the endpoint has, not 400 — so
+ * `'minimal'` is the floor this surface offers.
+ */
+export type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high';
 
 /**
  * Canonical output from `llm:call`. The model's response text and the
