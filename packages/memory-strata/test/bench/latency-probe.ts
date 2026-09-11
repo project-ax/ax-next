@@ -22,7 +22,6 @@ import { BenchCache } from './cache.js';
 import { loadLongMemEvalS } from './corpora/longmemeval-s.js';
 import { generateMap } from './map.js';
 import {
-  makeAnthropicOrchestratorClient,
   makeOpenRouterOrchestratorClient,
   makeXaiOrchestratorClient,
   runOrchestrator,
@@ -136,20 +135,67 @@ async function main(): Promise<number> {
     console.log(`Map: ${map.length} chars across ${haystackPaths.length} docs.`);
     console.log(`Query: ${question.text}`);
 
-    const configs: ProbeConfig[] = [
-      {
-        name: 'haiku-anthropic-direct',
-        client: makeAnthropicOrchestratorClient(env.ANTHROPIC_API_KEY),
-      },
-      {
-        name: 'grok-openrouter-default',
-        client: makeOpenRouterOrchestratorClient(env.OPENROUTER_API_KEY),
-      },
-      {
-        name: 'grok-openrouter-force-xai',
-        client: makeOpenRouterOrchestratorClient(env.OPENROUTER_API_KEY, 'x-ai/grok-4.1-fast', 'x-ai'),
-      },
+    // 2026-09-10 re-point. The three arms below used to measure
+    // `x-ai/grok-4.1-fast`, which this probe's own 2026-05-14 run found was
+    // already deprecated on OpenRouter (the force-xai arm FAILED for that
+    // reason, so provider-forcing was never actually measured). Quoting that
+    // run's 11s p50 as a standing fact about OpenRouter outlived its subject.
+    //
+    // The first arm is now the model production actually ships
+    // (DEFAULT_ORCHESTRATOR_MODEL), through OpenRouter's DEFAULT routing,
+    // which is what the orchestrator gets when routed through
+    // `llm:call:openrouter`. The other two are reference points.
+    // 2026-09-10 re-point. These arms used to measure `x-ai/grok-4.1-fast`,
+    // which this probe's own 2026-05-14 run had ALREADY found deprecated on
+    // OpenRouter (the force-xai arm FAILED for that reason, so provider-forcing
+    // was never actually measured). Quoting that run's 11s p50 as a standing
+    // fact about OpenRouter outlived its subject by four months.
+    //
+    // `x-ai/grok-4-fast` — the first replacement tried — turned out to be
+    // deprecated too, 404 on every call. So the arms below are taken from a
+    // live `GET /api/v1/models`, not from memory, and the point of the probe is
+    // to pick the production default on evidence rather than on a name that
+    // sounds current.
+    // `:nitro` sorts the provider pool by throughput. `reasoning.enabled=false`
+    // is OpenRouter's unified switch for models that think before answering —
+    // worth trying here because the orchestrator emits a short op list under a
+    // 5s budget, so any thinking is budget spent on tokens the parser throws
+    // away. The client warns if `reasoning_tokens` comes back non-zero, so a
+    // provider that ignores the flag is visible rather than assumed.
+    // OpenRouter's unified reasoning control. Worth setting for this role: the
+    // orchestrator emits a short op list under a 5s budget, so thinking is
+    // budget spent on tokens the parser discards. NOT every model allows it —
+    // gemini-3.8-flash and glm-5.3-flash both 400 on `enabled:false`
+    // ("Reasoning is mandatory for this endpoint"); all three accept
+    // `effort:'minimal'`. The client warns when `reasoning_tokens` comes back
+    // non-zero, so a silently-ignored flag is visible.
+    //
+    // NOTE these flags are NOT reachable from production: `LlmCallInput` has
+    // no reasoning field, so a model that needs one measures better here than
+    // it can possibly behave when deployed. See the 2026-09-10 addendum in
+    // docs/plans/2026-05-13-memory-strata-phase-3c-config-d-report.md.
+    const NO_REASONING = { reasoning: { enabled: false } };
+    const MIN_REASONING = { reasoning: { effort: 'minimal' } };
+    const orCandidates: Array<{
+      label: string;
+      model: string;
+      body?: Record<string, unknown>;
+    }> = [
+      { label: 'haiku-4.5 (DEFAULT, deployable as-is)', model: 'anthropic/claude-haiku-4.5' },
+      { label: 'glm-5.3-flash:nitro min-reason', model: 'z-ai/glm-5.3-flash:nitro', body: MIN_REASONING },
+      { label: 'deepseek-v4.1-flash:nitro no-reason', model: 'deepseek/deepseek-v4.1-flash:nitro', body: NO_REASONING },
+      { label: 'gemini-3.8-flash:nitro min-reason', model: 'google/gemini-3.8-flash:nitro', body: MIN_REASONING },
     ];
+    const configs: ProbeConfig[] = orCandidates.map(({ label, model, body }) => ({
+      name: `openrouter/${label}`,
+      client: makeOpenRouterOrchestratorClient(
+        env.OPENROUTER_API_KEY,
+        model,
+        undefined,
+        body,
+      ),
+    }));
+
     if (xaiKey) {
       configs.push({
         name: 'grok-xai-direct',

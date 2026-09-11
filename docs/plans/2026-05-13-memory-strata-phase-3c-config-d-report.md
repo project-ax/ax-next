@@ -114,3 +114,160 @@ The orchestrator emitted `<followup needed="true"/>` rarely across all configs (
 - This phase's raw single-config reports (gitignored, local-only): `docs/plans/2026-05-{13,14}-memory-strata-phase-3c-config-{a,d,d-grok,e}-*-raw.md`.
 - Implementation plan: `docs/plans/2026-05-13-memory-strata-phase-3c-config-d-impl.md`.
 - Strata design doc, c137 section: `docs/plans/memory-strata-design.md` § "Prior Art (2026-05-13 update — c137)" and § "Retrieval Orchestration: One-Hop Default, Drill-Down as Escape Valve".
+
+---
+
+## Addendum — 2026-09-10 re-measurement (TASK-347 follow-up)
+
+**Everything above about provider latency is out of date, and the way it went
+stale is the point of this addendum.**
+
+The "~11s p50 for OpenRouter" line from the 2026-05-14 probe got quoted in
+`orchestrator-client.ts` and in both presets as a standing reason not to route
+the orchestrator through OpenRouter at all. Re-reading the probe table shows
+what it actually measured: `x-ai/grok-4.1-fast` under OpenRouter's DEFAULT
+routing — and the same table records that model as **deprecated on OpenRouter**,
+which is why the `grok-openrouter-force-xai` arm FAILED. Provider-forcing, the
+mitigation everyone assumed was available, was never measured at all.
+
+So the number was a fact about one deprecated model's routing in May 2026, not
+about OpenRouter. It was still steering architecture in September.
+
+### What is true now
+
+`pnpm --filter @ax/memory-strata bench:latency`, 19 samples per config after a
+discarded warmup, same LongMemEval-S question and generated map as the original
+run. Budget for reference: `DEFAULT_ORCHESTRATOR_TIMEOUT_MS` = **5000ms**, past
+which `memory_search` silently falls back to BM25.
+
+| config | n | min | p50 | mean | p95 | max |
+|---|---|---|---|---|---|---|
+| openrouter / `anthropic/claude-haiku-4.5` | 19 | 887 | **1049** | 1117 | 1580 | 1677 |
+| openrouter / `deepseek/deepseek-v4.1-flash` | 19 | 1311 | 1727 | 1922 | 2866 | 4629 |
+| openrouter / `google/gemini-3.8-flash` | 19 | 1383 | 2387 | 2368 | 3525 | 3532 |
+| openrouter / `x-ai/grok-4.3` | 19 | 4456 | **7269** | 8696 | 18482 | 19802 |
+| anthropic-direct / haiku 4.5 (reference) | 19 | 488 | 635 | 717 | 1014 | 1443 |
+| xai-direct / grok (reference) | 19 | 650 | 812 | 4351 | 12659 | **61347** |
+
+### Conclusions, replacing the "Binding decision" above
+
+- **`anthropic/claude-haiku-4.5` through OpenRouter is the production default.**
+  Fastest of the OpenRouter options and by far the tightest spread
+  (887–1677ms end to end), comfortably inside the 5s budget.
+- **Grok is no longer the right model here.** `x-ai/grok-4.3` — xAI's own
+  recommended successor — has a p50 that on its own exceeds the entire budget,
+  so it would fall back to BM25 on most calls while spending 5s to do it. Two
+  earlier Grok ids (`x-ai/grok-4-fast`, `x-ai/grok-4.1-fast`) 404 as deprecated.
+- **"Direct xAI is fastest" no longer holds.** Its p50 is still good (812ms) but
+  this run produced a **61-second** outlier; the distribution is unusable for a
+  latency-budgeted path. Direct Anthropic is now both the fastest and the
+  steadiest thing measured.
+- **Cheaper option:** `deepseek/deepseek-v4.1-flash` fits the budget at roughly
+  a third of haiku's input price, though its max (4629ms) sits close to the
+  line.
+
+Accuracy was NOT re-measured — this probe only times calls. The n=500 accuracy
+findings above were established with Grok 4.1 Fast; whether haiku 4.5 plans
+retrieval as well is an open question, and the honest mitigation is that a bad
+plan degrades to BM25 rather than to a wrong answer.
+
+### The durable fix
+
+The model is now a values knob (`memory.orchestratorModel` → the preset →
+`DEFAULT_ORCHESTRATOR_MODEL`), so the next re-tune is a config change rather
+than a release. Take model ids from a live `GET /api/v1/models`; two of the
+three tried here were dead, and a dead id fails closed into a silent BM25
+fallback.
+
+### Follow-up probe — `z-ai/glm-5.3-flash`, same day
+
+Asked for on the strength of its price (~$0.15/M in, $0.50/M out — roughly 7×
+cheaper in and 10× cheaper out than haiku 4.5).
+
+| config | n | min | p50 | mean | p95 | max |
+|---|---|---|---|---|---|---|
+| openrouter / `z-ai/glm-5.3-flash:nitro` | 19 | 476 | 2498 | 2027 | 4330 | 4381 |
+| openrouter / `z-ai/glm-5.3-flash` (plain) | 19 | 4206 | **5146** | 5350 | 6604 | 6703 |
+| openrouter / `anthropic/claude-haiku-4.5` | 19 | 902 | 1018 | 1071 | 1371 | 1997 |
+| xai-direct (reference) | 19 | 587 | 750 | 761 | 1022 | 1151 |
+
+- **`:nitro` is load-bearing, not a tweak.** Plain `glm-5.3-flash` has a p50 of
+  5146ms — *above* the 5000ms budget — so it would fall back to BM25 on more
+  than half of all calls. The `:nitro` suffix (OpenRouter sorts the provider
+  pool by throughput) roughly halves that. Note `:nitro` is a routing suffix,
+  not a catalogue entry: it does not appear in `GET /api/v1/models`, so it can
+  only be validated by calling it.
+- **`:nitro` is BIMODAL, which the p50 hides.** Raw samples: 715, 654, 476, 587,
+  592, 2515, 3283, 3052, 538, 726, 3644, 4381, 4324, 650, 3784, 687, 2741,
+  2498, 2661. About half the calls beat haiku outright (~500–730ms); the rest
+  land at 2.5–4.4s. That is a heterogeneous provider pool, re-sorted per call.
+- **Haiku 4.5 stays the default.** Its WORST call (1997ms) is better than
+  `:nitro`'s median, and a hard timeout with a silent fallback rewards a tight
+  distribution over a good average. `:nitro`'s p95 leaves ~670ms of headroom,
+  measured on one LongMemEval-S subset map — a larger map spends that.
+- **When to switch anyway:** if orchestrator spend ever dominates, the ~7–10×
+  price difference is real and the failure mode is graceful (BM25, not a wrong
+  answer). Set `memory.orchestratorModel: z-ai/glm-5.3-flash:nitro` and
+  consider raising `orchestrator.timeoutMs` above 5s first, since the slow mode
+  is where most of the risk sits.
+
+### Follow-up probe — `:nitro` + reasoning disabled, same day
+
+Three cheap models re-run with OpenRouter's `:nitro` throughput routing AND its
+unified `reasoning` control. The client now surfaces `reasoning_tokens` from the
+response so "reasoning off" is verified rather than assumed.
+
+**Not every model will let you turn it off.** `reasoning: { enabled: false }`
+returns `400 Reasoning is mandatory for this endpoint and cannot be disabled`
+for both `google/gemini-3.8-flash` and `z-ai/glm-5.3-flash`. Only
+`deepseek/deepseek-v4.1-flash` accepted it (and reported 0 reasoning tokens).
+`reasoning: { effort: 'minimal' }` is accepted by all three.
+
+| config | n | min | p50 | mean | p95 | max |
+|---|---|---|---|---|---|---|
+| `z-ai/glm-5.3-flash:nitro` + minimal | 19 | 610 | 954 | 958 | 1256 | 1443 |
+| `deepseek/deepseek-v4.1-flash:nitro` + off | 19 | 642 | 932 | 954 | 1238 | 1632 |
+| `google/gemini-3.8-flash:nitro` + minimal | 19 | 753 | 946 | 1417 | 2883 | 7088 |
+| `anthropic/claude-haiku-4.5` (default, no flag) | 19 | 887 | 989 | 1007 | 1181 | 1412 |
+
+**Reasoning was the whole story for GLM.** Measured in the same run, with the
+flag off vs absent: p50 **3489 → 954ms**, p95 **16195 → 1256ms**, max
+**16929 → 1443ms**. A 13x p95 improvement from one request parameter, and the
+control arm confirms why — it emitted 257–339 reasoning tokens per call, spent
+on tokens the op parser discards.
+
+All four p50s now sit within 6% of each other, i.e. indistinguishable at n=19.
+Ordered by price, the cheap ones win outright: GLM is ~7x cheaper input / 10x
+cheaper output than haiku at the same latency.
+
+### The catch: the winning configurations are NOT reachable from production
+
+`LlmCallInput` is `{model, maxTokens, system, messages, temperature}`, and
+`@ax/llm-openrouter`'s `toChatCompletionsRequest` sends exactly those fields
+with no passthrough. `:nitro` rides along fine — it is part of the model id —
+but **`reasoning` cannot be expressed at all.**
+
+So, today:
+
+- Setting `memory.orchestratorModel: z-ai/glm-5.3-flash:nitro` would deploy the
+  REASONING-ON version — p50 3489ms, p95 16195ms against a 5000ms budget. That
+  is strictly worse than the current default, and it fails silently into BM25.
+- `deepseek-v4.1-flash:nitro` needs `enabled:false`; its reasoning-ON latency
+  was never measured, so it is an unknown, not a win.
+- `anthropic/claude-haiku-4.5` is the only one of the four that performs as
+  measured without a flag, because it does not reason by default.
+
+**Haiku therefore stays the default** — not because it is the best model here,
+but because it is the only one whose measured numbers survive contact with the
+deployment.
+
+To unlock the cheap arms, `reasoning` would have to reach the provider. A
+plugin-level default is wrong (the same hook serves agent chat turns, which may
+legitimately want reasoning), so it belongs on `LlmCallInput` as a per-call
+field — a hook-surface change needing boundary review. Worth noting that unlike
+`provider.order` (OpenRouter-only routing, the leak invariant 1 exists to stop),
+reasoning effort is now a cross-provider concept with an analogue in Anthropic,
+OpenAI and Google APIs, so a normalized field is defensible rather than a leak.
+
+Accuracy remains unmeasured for every model in this table.
+

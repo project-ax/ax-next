@@ -54,10 +54,15 @@ export { filterSensitive } from './sensitive-gate.js';
 export type { FilterResult, RejectedFact, RejectionKind } from './sensitive-gate.js';
 
 export {
+  DEFAULT_ORCHESTRATOR_MODEL,
+  makeBusOrchestratorClient,
   makeXaiOrchestratorClient,
   makeOpenRouterOrchestratorClient,
 } from './orchestrator-client.js';
-export type { OrchestratorClientOptions } from './orchestrator-client.js';
+export type {
+  BusOrchestratorConfig,
+  OrchestratorClientOptions,
+} from './orchestrator-client.js';
 export type { OrchestratorClient } from './orchestrator.js';
 
 export type { MemoryFrontmatter, MemoryFileType, Observation } from './types.js';

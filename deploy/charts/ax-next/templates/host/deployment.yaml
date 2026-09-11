@@ -426,6 +426,28 @@ spec:
               value: {{ .Values.titles.model | quote }}
             {{- end }}
 
+            # Which model memory_search's retrieval orchestrator runs on.
+            # Unset, the preset picks its own default. The orchestrator routes
+            # through @ax/llm-openrouter and resolves its credential the same
+            # way every other LLM call does, so there is no key to stamp here.
+            {{- with .Values.memory.orchestratorModel }}
+            - name: AX_MEMORY_ORCHESTRATOR_MODEL
+              value: {{ . | quote }}
+            {{- end }}
+
+            # Session lifetime. Unset, @ax/auth-better keeps its 7-day default.
+            {{- with .Values.auth.sessionLifetimeSeconds }}
+            - name: AX_AUTH_SESSION_LIFETIME_SECONDS
+              value: {{ . | quote }}
+            {{- end }}
+
+            # How long one chat turn may run before the orchestrator gives up.
+            # Unset, the preset keeps its own default.
+            {{- with .Values.chat.timeoutMs }}
+            - name: AX_CHAT_TIMEOUT_MS
+              value: {{ . | quote }}
+            {{- end }}
+
             # Agent model allow-list (TASK-326). Read by @ax/agents'
             # resolveAllowedModels at plugin init, NOT by the preset loader —
             # see the external-readers list in __tests__/env-shape.test.ts.

@@ -361,6 +361,99 @@ describe('orchestrator path', () => {
     expect(capturedSearchInputs).toHaveLength(0);
   });
 
+  it('routes through a registered llm:call hook when no client is injected', async () => {
+    // The production wiring since TASK-347: no client, no API key of its own —
+    // just a provider hook and a model. The credential is the provider's
+    // problem, which is the whole point of the change.
+    await writeMapFile(workspaceRoot, MAP_BODY);
+    const { bus, capturedSearchInputs } = makeOrchestratorBus();
+    const llmCall = vi.fn(async () => ({
+      text: '<load doc="preference/coffee"/>',
+      stopReason: 'end_turn' as const,
+      usage: { inputTokens: 3, outputTokens: 2 },
+    }));
+    bus.registerService('llm:call:openrouter', 'test-provider', llmCall);
+    await registerMemorySearch(bus, {
+      orchestrator: { hook: 'llm:call:openrouter', model: 'x-ai/grok-4-fast' },
+    });
+
+    const out = await bus.call(
+      'tool:execute:memory_search',
+      makeOrchestratorCtx(),
+      asToolCall({ query: 'what coffee do I like?' }),
+    );
+
+    expect(llmCall).toHaveBeenCalledTimes(1);
+    expect((out as { results: unknown[] }).results).toHaveLength(1);
+    expect(capturedSearchInputs).toHaveLength(0);
+  });
+
+  it('falls back to BM25 when the routed provider has no credential', async () => {
+    // `no-openrouter-credential` is the ORDINARY case on a deployment that
+    // never stored a key — it must read as "no orchestrator", not as a failed
+    // memory_search.
+    await writeMapFile(workspaceRoot, MAP_BODY);
+    const { bus, capturedSearchInputs } = makeOrchestratorBus();
+    bus.registerService('llm:call:openrouter', 'test-provider', async () => {
+      throw new Error('no-openrouter-credential');
+    });
+    await registerMemorySearch(bus, {
+      orchestrator: { hook: 'llm:call:openrouter', model: 'x-ai/grok-4-fast' },
+    });
+
+    const out = await bus.call(
+      'tool:execute:memory_search',
+      makeOrchestratorCtx(),
+      asToolCall({ query: 'what coffee do I like?' }),
+    );
+
+    expect(capturedSearchInputs).toHaveLength(1);
+    expect((out as { results: unknown[] }).results.length).toBeGreaterThan(0);
+  });
+
+  it('falls back to BM25 when no provider is registered for the configured hook', async () => {
+    await writeMapFile(workspaceRoot, MAP_BODY);
+    const { bus, capturedSearchInputs } = makeOrchestratorBus();
+    await registerMemorySearch(bus, {
+      orchestrator: { hook: 'llm:call:openrouter', model: 'x-ai/grok-4-fast' },
+    });
+
+    await bus.call(
+      'tool:execute:memory_search',
+      makeOrchestratorCtx(),
+      asToolCall({ query: 'what coffee do I like?' }),
+    );
+
+    expect(capturedSearchInputs).toHaveLength(1);
+  });
+
+  it('an injected client still wins over the routed hook', async () => {
+    // Bench and eval runs pass a direct client; that must keep working, and
+    // must not also fire a provider call.
+    await writeMapFile(workspaceRoot, MAP_BODY);
+    const { bus } = makeOrchestratorBus();
+    const llmCall = vi.fn();
+    bus.registerService('llm:call:openrouter', 'test-provider', llmCall);
+    const client: OrchestratorClient = {
+      complete: vi.fn(async () => ({
+        text: '<load doc="preference/coffee"/>',
+        usage: { in: 1, out: 1 },
+      })),
+    };
+    await registerMemorySearch(bus, {
+      orchestrator: { client, hook: 'llm:call:openrouter', model: 'm' },
+    });
+
+    await bus.call(
+      'tool:execute:memory_search',
+      makeOrchestratorCtx(),
+      asToolCall({ query: 'what coffee do I like?' }),
+    );
+
+    expect(client.complete).toHaveBeenCalledTimes(1);
+    expect(llmCall).not.toHaveBeenCalled();
+  });
+
   it('orchestrator miss (junk/empty response) → falls back to BM25', async () => {
     await writeMapFile(workspaceRoot, MAP_BODY);
     const { bus, capturedSearchInputs } = makeOrchestratorBus();

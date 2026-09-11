@@ -30,7 +30,10 @@ import { createToolDispatcherPlugin, createMcpClientPlugin } from '@ax/mcp-clien
 import { createToolArtifactPublishPlugin } from '@ax/tool-artifact-publish';
 import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
 import { createLlmOpenRouterPlugin } from '@ax/llm-openrouter';
-import { createMemoryStrataPlugin, makeXaiOrchestratorClient } from '@ax/memory-strata';
+import {
+  createMemoryStrataPlugin,
+  DEFAULT_ORCHESTRATOR_MODEL,
+} from '@ax/memory-strata';
 import { createMemoryStrataIndexSqlitePlugin } from '@ax/memory-strata-index-sqlite';
 import { createWebToolsPlugin } from '@ax/web-tools';
 import { createDevAgentsStubPlugin } from './dev-agents-stub.js';
@@ -385,21 +388,25 @@ export async function main(opts: MainOptions): Promise<number> {
     // the other host-side LLM capabilities (it constructs its own
     // Anthropic client from ANTHROPIC_API_KEY). Available to all agents.
     plugins.push(createWebToolsPlugin());
-    // TASK-191: default the memory_search retrieval path to the direct-xAI
-    // retrieval orchestrator (config E from the n=500 spike — orchestrator over
-    // system/map.md + BM25 fallback). Host-side egress gated by XAI_API_KEY, the
-    // same capability class as the Observer's llm:call:anthropic; absent ⇒ the
-    // plugin degrades to pure BM25. OpenRouter is intentionally NOT auto-wired
-    // (its default routing was ~11s in the spike; direct xAI is ~400ms p50).
-    // `timeoutMs: 5000` caps each fetch attempt's socket (AbortSignal) so a slow
-    // xAI response is actually torn down — the plugin's own raceTimeout(5s) only
-    // stops the caller WAITING, it doesn't abort the underlying request.
-    const xaiKey = process.env.XAI_API_KEY;
-    const orchestrator =
-      xaiKey !== undefined && xaiKey.length > 0
-        ? { orchestrator: { client: makeXaiOrchestratorClient(xaiKey, undefined, { timeoutMs: 5000 }) } }
-        : {};
-    plugins.push(createMemoryStrataPlugin(orchestrator));
+    // TASK-191: memory_search's retrieval path is the orchestrator (config E
+    // from the n=500 spike — orchestrator over system/map.md, BM25 fallback).
+    //
+    // Routed through `llm:call:openrouter`, which this file registers below iff
+    // OPENROUTER_API_KEY is set. The hook is resolved per CALL, not at boot, so
+    // the order of these two pushes does not matter — and a CLI user with no
+    // OpenRouter key just gets plain BM25.
+    //
+    // It used to hold its own direct-xAI client off `XAI_API_KEY`. Dropping
+    // that means one less key to carry, and the same key that already buys the
+    // OpenRouter provider now also buys the orchestrator.
+    plugins.push(
+      createMemoryStrataPlugin({
+        orchestrator: {
+          hook: 'llm:call:openrouter',
+          model: DEFAULT_ORCHESTRATOR_MODEL,
+        },
+      }),
+    );
     // I24 — indexer loads as a pair with memory-strata (same gate). The sqlite
     // indexer shares the same DB file as storage-sqlite; each plugin owns its
     // own table (kv vs memory_strata_index_v1_docs) — no collision.

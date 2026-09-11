@@ -450,6 +450,7 @@ credentials:
 anthropic:
   apiKey: ""
 
+
 # ─── Auto-titling ─────────────────────────────────────────────────
 # When `anthropic.apiKey` is set, the host pod loads
 # @ax/conversation-titles and writes a short title to each
@@ -614,6 +615,10 @@ auth:
   # Leave empty to auto-generate (the normal case). Set ONLY to carry an
   # existing AX_AUTH_SECRET onto a fresh cluster (decoded value).
   secret: ""
+  # How long a signed-in session lasts, in seconds. Empty keeps
+  # @ax/auth-better's 7-day default. Positive integer; the host refuses to
+  # boot on anything else rather than quietly rounding it.
+  sessionLifetimeSeconds: ""
 
 # ─── Network policies ────────────────────────────────────────────
 # `enabled: true` is the safe default. Disabling is supported only for
@@ -670,6 +675,40 @@ ingress:
 # skills — is always on and unaffected by this flag.)
 skills:
   allowUserInstalled: true
+
+# ─── Memory ───────────────────────────────────────────────────────
+# The model `memory_search`'s retrieval orchestrator runs on, as a BARE
+# OpenRouter model id (`anthropic/claude-haiku-4.5`, not `openrouter/...` — the
+# provider is already decided by the hook it routes through). Empty keeps the
+# preset's default.
+#
+# The orchestrator needs NO key of its own: it goes through the same
+# @ax/llm-openrouter plugin as everything else, which resolves a credential per
+# call (the user's key, then the global one). Store an OpenRouter key in the
+# credentials UI and the orchestrator starts working with no deploy. Store
+# none and memory_search runs plain BM25, which is what it has always done.
+#
+# Empty uses the preset's default, `anthropic/claude-haiku-4.5` — picked by
+# MEASUREMENT on 2026-09-10 (p50 1049ms / p95 1580ms through OpenRouter,
+# against a 5s budget), not by reputation. Two Grok ids were tried first and
+# both 404'd as deprecated, and `x-ai/grok-4.3` measured a 7.3s p50 — worse on
+# its own than the entire budget.
+#
+# Worth changing without waiting for a release, and here is why it matters:
+# the orchestrator only earns its keep if it answers inside ~5s, it falls back
+# to BM25 SILENTLY when it doesn't, and which model is both fast and cheap
+# moves much faster than this chart does. `deepseek/deepseek-v4.1-flash` is
+# the cheaper alternative that also fits.
+memory:
+  orchestratorModel: ""
+
+# ─── Chat ─────────────────────────────────────────────────────────
+# How long ONE chat turn may run before the orchestrator gives up, in
+# milliseconds. Empty keeps the preset's own default. Raise it if agents do
+# long tool-heavy work and turns are being cut off; a positive number, and
+# the host refuses to boot on anything else.
+chat:
+  timeoutMs: ""
 
 # ─── ax-next runtime config ──────────────────────────────────────
 # Rendered verbatim into a ConfigMap mounted at /etc/ax-next/ax.config.yaml.

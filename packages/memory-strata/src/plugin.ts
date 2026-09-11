@@ -128,13 +128,29 @@ export interface MemoryStrataConfig {
    */
   retrievalMode?: 'orchestrator' | 'bm25';
   /**
-   * Optional orchestrator wiring. When a `client` is present AND
+   * Optional orchestrator wiring. When the orchestrator can reach a model AND
    * retrievalMode !== 'bm25', memory_search runs the retrieval orchestrator
    * (reads system/map.md + query → load/fts ops) and falls back to BM25 on
-   * miss/timeout. Absent ⇒ pure BM25 (degrades cleanly when the host has no
-   * orchestrator API key).
+   * miss/timeout. Unreachable ⇒ pure BM25.
+   *
+   * `hook` + `model` is the production wiring: the completion goes through a
+   * registered `llm:call:<provider>` hook, so the provider resolves the
+   * credential per call (user key → global key → env) and the orchestrator
+   * holds no key of its own. It degrades to BM25 on three counts, all normal:
+   * no hook configured, no plugin registered for it, or the provider having no
+   * credential to resolve.
+   *
+   * `client` injects a direct fetch client instead and wins over `hook`. That
+   * is the bench/eval path — it is how the n=500 spike forced one provider —
+   * and it is deliberately NOT how a deployment is configured, because a
+   * client carries its own API key and a key needs a way in.
    */
-  orchestrator?: { client: OrchestratorClient; timeoutMs?: number };
+  orchestrator?: {
+    client?: OrchestratorClient;
+    hook?: string;
+    model?: string;
+    timeoutMs?: number;
+  };
   /**
    * Time source for observer stamps and consolidation passes. Bench-only
    * seam (e2e temporal fidelity — the harness replays sessions whose fiction

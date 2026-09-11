@@ -19,6 +19,13 @@
 // to BM25. A non-retryable non-2xx (e.g. 400 — a malformed request) throws
 // immediately; retrying it would never succeed.
 
+import type {
+  AgentContext,
+  HookBus,
+  LlmCallInput,
+  LlmCallOutput,
+} from '@ax/core';
+
 import type { OrchestratorClient } from './orchestrator.js';
 
 export interface OrchestratorClientOptions {
@@ -104,6 +111,9 @@ function sleep(ms: number): Promise<void> {
 
 export function makeXaiOrchestratorClient(
   apiKey: string,
+  // UNVERIFIED since the direct-xAI path was retired (2026-09-10) — two
+  // neighbouring Grok ids have 404'd as deprecated since this was written.
+  // Pass an explicit model if you revive this client.
   model = 'grok-4-fast-non-reasoning',
   opts?: OrchestratorClientOptions,
 ): OrchestratorClient {
@@ -127,18 +137,26 @@ export function makeXaiOrchestratorClient(
 }
 
 /**
- * OpenRouter-backed fallback client. Exported and unit-tested but INTENTIONALLY
- * NOT auto-wired by any preset — the CLI + k8s presets default to the direct-xAI
- * client because the n=500 spike found OpenRouter's default routing pathological
- * (~11s p50 vs xAI-direct's ~400ms). This stays available for operator opt-in
- * (an eval run, or a deployment without xAI access) via
- * `MemoryStrataConfig.orchestrator.client`, and for the bench's provider-forcing
- * work. It is a library export, not half-wired infrastructure: the wiring seam
- * (the config field) is live and exercised by the xAI default.
+ * OpenRouter-backed fetch client, for bench and eval runs.
+ *
+ * NOT the production path any more. Both presets now route the orchestrator
+ * through `llm:call:openrouter` (see {@link makeBusOrchestratorClient}), which
+ * resolves its credential through the provider plugin — so production needs no
+ * client holding a key. This one survives because the bench does: `forceProvider`
+ * pins OpenRouter's provider routing, which the hook cannot express and which the
+ * n=500 spike needed in order to compare providers at all.
+ *
+ * A note on that spike, since its numbers are quoted in several places: the
+ * ~11s p50 it measured was `x-ai/grok-4.1-fast` under OpenRouter's DEFAULT
+ * routing, and the same probe records that model as deprecated on OpenRouter
+ * (the force-xai arm FAILED for that reason, so provider-forcing was never
+ * actually measured). The report's own conclusion was "direct xAI **or another
+ * equivalently-fast provider**". Treat 11s as a fact about one deprecated
+ * model's routing in May 2026, not about OpenRouter.
  */
 export function makeOpenRouterOrchestratorClient(
   apiKey: string,
-  model = 'x-ai/grok-4-fast',
+  model = DEFAULT_ORCHESTRATOR_MODEL,
   forceProvider?: string,
   opts?: OrchestratorClientOptions,
 ): OrchestratorClient {
@@ -160,6 +178,106 @@ export function makeOpenRouterOrchestratorClient(
         },
         opts,
       );
+    },
+  };
+}
+
+
+/**
+ * Max tokens for one orchestrator completion. The orchestrator emits a short
+ * op list, not prose; the two fetch clients below use the same number, so the
+ * routed and direct paths cost the same.
+ */
+const ORCHESTRATOR_MAX_TOKENS = 512;
+
+/**
+ * Default model for the retrieval orchestrator, as a BARE provider-native id
+ * for whichever `llm:call:<provider>` hook it is routed through.
+ *
+ * Fast and cheap beat clever here: the orchestrator reads a densified map and
+ * emits a short op list under a ~5s budget, and anything slower simply loses to
+ * the BM25 fallback — silently, which is what makes picking this by reputation
+ * dangerous. Exported so the CLI and k8s presets share ONE default rather than
+ * drifting apart; both let an operator override it.
+ *
+ * CHOSEN ON MEASUREMENT, 2026-09-10 (`pnpm --filter @ax/memory-strata
+ * bench:latency`, 19 samples each after a warmup, real LongMemEval-S map):
+ *
+ * | via OpenRouter                 |  p50 |   p95 |   max |
+ * |--------------------------------|------|-------|-------|
+ * | anthropic/claude-haiku-4.5     | 1049 |  1580 |  1677 |
+ * | deepseek/deepseek-v4.1-flash   | 1727 |  2866 |  4629 |
+ * | google/gemini-3.8-flash        | 2387 |  3525 |  3532 |
+ * | x-ai/grok-4.3                  | 7269 | 18482 | 19802 |
+ *
+ * Haiku 4.5 wins on both speed and SPREAD — 887..1677ms end to end, where
+ * Grok 4.3's p50 alone exceeds the whole budget. Two Grok ids were tried
+ * before it and both 404'd as deprecated (`x-ai/grok-4-fast`, and
+ * `x-ai/grok-4.1-fast` before that), which is the other half of the lesson:
+ * take the id from a live `GET /api/v1/models`, not from a comment.
+ *
+ * `deepseek-v4.1-flash` is the cheap alternative (~3× lower input price) and
+ * fits the budget too; its max sits close to it. Direct Anthropic — not
+ * through OpenRouter — measured faster still (635ms p50) if the extra
+ * credential path is ever worth it.
+ */
+export const DEFAULT_ORCHESTRATOR_MODEL = 'anthropic/claude-haiku-4.5';
+
+/** What {@link makeBusOrchestratorClient} needs to route a call. */
+export interface BusOrchestratorConfig {
+  /** `llm:call:<provider>` hook to route through, e.g. `llm:call:openrouter`. */
+  hook?: string;
+  /** BARE provider-native model id — `anthropic/claude-haiku-4.5`, not `openrouter/...`. */
+  model?: string;
+}
+
+/**
+ * The production orchestrator client: one completion, routed through a
+ * registered `llm:call:<provider>` hook.
+ *
+ * This is what the two fetch clients below are NOT. They hold an API key of
+ * their own, which meant the orchestrator needed a dedicated credential, a
+ * dedicated env var and a dedicated chart value to reach it — and TASK-347
+ * found that last piece had never existed, so every deployment silently ran
+ * the BM25 fallback. Routing through the provider plugin instead means the key
+ * comes from the same credential store as every other LLM call (the provider
+ * resolves user key → global key → env per call), so storing an OpenRouter key
+ * in the credentials UI is the whole of the setup.
+ *
+ * Returns `undefined` rather than throwing when it cannot route — no hook
+ * configured, or no plugin registered for it. `memory_search` reads that as
+ * "no orchestrator" and runs plain BM25, which is the same degradation a
+ * deployment without a key has always had. Same `bus.hasService` gate as
+ * `buildStageBNamer` in plugin.ts, for the same reason.
+ *
+ * A call that FAILS (the provider throwing `no-<provider>-credential` when
+ * nothing holds a key, a timeout, a 5xx) propagates. `memory_search` catches it
+ * and falls back; swallowing it here would hand the orchestrator an empty
+ * completion and let it report an empty plan as a real one.
+ */
+export function makeBusOrchestratorClient(
+  bus: HookBus,
+  ctx: AgentContext,
+  cfg: BusOrchestratorConfig | undefined,
+): OrchestratorClient | undefined {
+  const hook = cfg?.hook;
+  const model = cfg?.model;
+  if (hook === undefined || hook.length === 0) return undefined;
+  if (model === undefined || model.length === 0) return undefined;
+  if (!bus.hasService(hook)) return undefined;
+
+  return {
+    async complete({ system, user }) {
+      const out = await bus.call<LlmCallInput, LlmCallOutput>(hook, ctx, {
+        model,
+        maxTokens: ORCHESTRATOR_MAX_TOKENS,
+        system,
+        messages: [{ role: 'user', content: user }],
+      });
+      return {
+        text: out.text,
+        usage: { in: out.usage.inputTokens, out: out.usage.outputTokens },
+      };
     },
   };
 }
