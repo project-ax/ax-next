@@ -28,7 +28,7 @@ describe('UserMenu Settings entry (TASK-42)', () => {
     const onOpen = vi.fn();
     render(<UserMenu onOpenAdminSettings={onOpen} />);
     // Open the popover (the avatar/user row button).
-    fireEvent.click(screen.getByRole('button', { name: /Uma/ }));
+    fireEvent.pointerDown(screen.getByRole('button', { name: /Uma/ }), { button: 0, ctrlKey: false });
     const settings = screen.getByText('Settings');
     expect(settings).toBeInTheDocument();
     fireEvent.click(settings);
@@ -38,7 +38,7 @@ describe('UserMenu Settings entry (TASK-42)', () => {
   it('still shows Settings to admins', () => {
     userRef.current = { id: 'u1', email: 'u@x.com', name: 'Uma', role: 'admin' };
     render(<UserMenu onOpenAdminSettings={vi.fn()} />);
-    fireEvent.click(screen.getByRole('button', { name: /Uma/ }));
+    fireEvent.pointerDown(screen.getByRole('button', { name: /Uma/ }), { button: 0, ctrlKey: false });
     expect(screen.getByText('Settings')).toBeInTheDocument();
   });
 });
