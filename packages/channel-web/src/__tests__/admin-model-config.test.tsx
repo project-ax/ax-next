@@ -311,7 +311,7 @@ describe('ModelConfigTab', () => {
     fireEvent.click(screen.getByRole('button', { name: /Save changes/i }));
 
     await waitFor(() => {
-      expect(screen.getByRole('alert').textContent).toMatch(/ambiguous|unavailable/i);
+      expect(screen.getByRole('alert').textContent).toMatch(/couldn.t save that/i);
     });
 
     // Critical: no PUT was issued.
@@ -338,8 +338,54 @@ describe('ModelConfigTab', () => {
     render(<ModelConfigTab />);
 
     await waitFor(() => {
-      expect(screen.getByRole('alert').textContent).toMatch(/Couldn't load providers/i);
+      expect(screen.getByRole('alert').textContent).toMatch(/couldn.t load your model providers/i);
     });
+  });
+
+  /**
+   * TASK-341 / audit D3, D7.
+   */
+  it('calls itself the Helper model, and says what that means', async () => {
+    // (D3) The tab picks the small, fast model used for titles and quick jobs.
+    // Calling it "Default AI model" told an admin they were choosing what their
+    // agents think with — which is set per-agent, on a different tab.
+    defaultFetchScript([configuredProvider]);
+    render(<ModelConfigTab />);
+
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /helper model/i })).toBeTruthy(),
+    );
+    expect(screen.queryByText(/default ai model/i)).toBeNull();
+    expect(screen.getByText(/each agent picks its own chat model/i)).toBeTruthy();
+  });
+
+  it('offers a Try again that actually reloads after a failed load', async () => {
+    // (D7) The load error used to be a dead end: the raw message, and no way
+    // out short of reloading the page.
+    let failNext = true;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/admin/credentials/providers') {
+        return jsonOk({ providers: [configuredProvider] });
+      }
+      if (url === '/admin/settings/fast-model') {
+        if (failNext) return new Response('boom', { status: 500 });
+        return jsonOk({ value: null });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    render(<ModelConfigTab />);
+    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+
+    failNext = false;
+    fireEvent.click(screen.getByRole('button', { name: /try again/i }));
+
+    // Recovered: the error is gone and the real pane is back.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /save changes/i })).toBeTruthy(),
+    );
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('Save button is disabled when no model is selected', async () => {

@@ -191,6 +191,39 @@ export function effectiveModelId(
   return formModel !== '' ? formModel : (options[0]?.id ?? '');
 }
 
+/**
+ * (TASK-341 / audit D1) What one agent's card says under its name.
+ *
+ * It used to be `${a.visibility} · ${a.ownerId} · ${a.model}` — a lowercase
+ * enum, a raw database id and a provider model ref, on the card an admin scans
+ * to find the agent they want. The owner id is the worst of the three:
+ * `usr_abc123` identifies the row to the machine and to nobody else.
+ *
+ * What a person actually needs is who can see it, whose it is when that is a
+ * team, and which model it runs.
+ *
+ * The model label comes from the loaded option list — the same labels the
+ * picker shows, so the card and the form can never disagree. While that list is
+ * still in flight we say NOTHING rather than fall back to the raw ref: a
+ * caption is a summary, the edit form carries the exact value, and printing
+ * `anthropic/claude-sonnet-4-6` here is the thing this finding is about.
+ */
+export function agentCaption(
+  a: Pick<AdminAgent, 'visibility' | 'ownerId' | 'model'>,
+  teams: Team[] | null,
+  models: AgentModelOption[] | null,
+): string {
+  const parts: string[] = [a.visibility === 'team' ? 'Team' : 'Personal'];
+  if (a.visibility === 'team') {
+    // A team id says nothing; the team's NAME is the entire point of the row.
+    const name = teams?.find((t) => t.id === a.ownerId)?.name;
+    if (name !== undefined && name.length > 0) parts.push(name);
+  }
+  const label = models?.find((m) => m.id === a.model)?.label;
+  if (label !== undefined && label.length > 0) parts.push(label);
+  return parts.join(' · ');
+}
+
 export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   const [agents, setAgents] = useState<AdminAgent[]>([]);
   // `null` = not yet loaded (radio disabled), `[]` = loaded but empty.
@@ -412,11 +445,11 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
     e.preventDefault();
     if (busy) return;
     if (!form.displayName.trim()) {
-      setError('name is required');
+      setError('Give the agent a name.');
       return;
     }
     if (form.visibility === 'team' && !form.teamId) {
-      setError('team is required when visibility is team');
+      setError('Pick the team this agent belongs to.');
       return;
     }
     setBusy(true);
@@ -445,7 +478,7 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
     const bareStaysBare = wasBare && allowedTools.length === 0;
     if (allowedTools.length === 0 && !bareStaysBare) {
       setBusy(false);
-      setError('agent must list at least one tool');
+      setError('Pick at least one tool this agent may use — e.g. Bash, Read, Write.');
       return;
     }
     // The server rejects an empty/unknown model, so say why HERE rather than
@@ -457,8 +490,8 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
       setBusy(false);
       setError(
         models === null
-          ? 'still loading the model list — give it a second and save again'
-          : 'no model is available to assign — configure a model provider first',
+          ? 'We’re still loading the list of models. Give it a second and try again.'
+          : 'No model is available to assign yet. Set up a model provider first.',
       );
       return;
     }
@@ -551,13 +584,14 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
           <Button onClick={startNew}>New agent</Button>
         </div>
 
+        {/* (D2) Was a hand-rolled destructive div. `Alert` is installed, this
+            file already imports it, and one of the two copies had different
+            padding from the other — which is the whole argument for the
+            primitive. */}
         {error && (
-          <div
-            role="alert"
-            className="mb-4 px-3 py-2 bg-destructive/10 border border-destructive/25 rounded-md text-[12.5px] text-destructive"
-          >
-            {error}
-          </div>
+          <Alert variant="destructive" className="mb-4">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
         )}
 
         {agents.length === 0 ? (
@@ -571,7 +605,7 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
                 key={a.id}
                 pill="agent"
                 title={a.displayName}
-                caption={`${a.visibility} · ${a.ownerId} · ${a.model || '—'}`}
+                caption={agentCaption(a, teams, models)}
               >
                 <div className="flex items-center justify-end gap-2">
                   <Button
@@ -936,12 +970,9 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
           </div>
 
           {error && (
-            <div
-              role="alert"
-              className="px-2.5 py-2 bg-destructive/10 border border-destructive/25 rounded-md text-[12.5px] text-destructive"
-            >
-              {error}
-            </div>
+            <Alert variant="destructive">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
           )}
 
           <div className="flex items-center gap-2">
