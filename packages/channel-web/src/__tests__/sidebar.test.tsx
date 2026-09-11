@@ -38,6 +38,9 @@ describe('Sidebar', () => {
 
     const userRow = container.querySelector('button.user-row');
     expect(userRow).toBeTruthy();
-    expect(userRow?.getAttribute('aria-haspopup')).toBe('true');
+    // TASK-338 — the trigger is a Radix DropdownMenuTrigger now, which sets
+    // `aria-haspopup="menu"` itself. That is strictly more precise than the
+    // `"true"` the hand-rolled version hardcoded.
+    expect(userRow?.getAttribute('aria-haspopup')).toBe('menu');
   });
 });
