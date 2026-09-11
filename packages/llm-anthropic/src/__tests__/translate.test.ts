@@ -191,3 +191,80 @@ function makeMessage(opts: {
     },
   } as unknown as Anthropic.Message;
 }
+
+// ---------------------------------------------------------------------------
+// reasoningEffort — TASK-348. Anthropic has no `effort` parameter; it has an
+// explicit thinking BUDGET, so the normalized ladder maps onto token counts.
+// The interesting half is `'minimal'`: extended thinking is off by default on
+// the Messages API, so the minimal-effort request is the ABSENCE of the field.
+// ---------------------------------------------------------------------------
+describe('toAnthropicRequest — reasoningEffort', () => {
+  it("omits `thinking` ENTIRELY for 'minimal' — absence IS Anthropic's floor", () => {
+    const req = toAnthropicRequest(
+      { messages: [{ role: 'user', content: 'hi' }], maxTokens: 512, reasoningEffort: 'minimal' },
+      {},
+    );
+    // Negative space on purpose. `thinking: {type:'disabled'}` would ALSO read
+    // as "don't think", but it 400s on models that don't support the parameter
+    // at all, and the floor rung must degrade rather than fail the call.
+    expect('thinking' in req).toBe(false);
+    // And it must not disturb anything else while doing nothing.
+    expect(req.max_tokens).toBe(512);
+  });
+
+  it('omits `thinking` when no effort is requested', () => {
+    const req = toAnthropicRequest({ messages: [{ role: 'user', content: 'hi' }] }, {});
+    expect('thinking' in req).toBe(false);
+  });
+
+  it.each([
+    ['low', 1024],
+    ['medium', 4096],
+    ['high', 16384],
+  ] as const)('maps %s to an enabled thinking budget of %i tokens', (effort, budget) => {
+    const req = toAnthropicRequest(
+      { messages: [{ role: 'user', content: 'hi' }], maxTokens: 512, reasoningEffort: effort },
+      {},
+    );
+    expect(req.thinking).toEqual({ type: 'enabled', budget_tokens: budget });
+  });
+
+  it('raises max_tokens above the thinking budget instead of 400ing', () => {
+    // Anthropic requires max_tokens > budget_tokens. The caller asked for 512
+    // tokens of ANSWER; the thinking budget is spent on top of that, so the
+    // cap becomes budget + the caller's ask rather than silently capping the
+    // answer at zero.
+    const req = toAnthropicRequest(
+      { messages: [{ role: 'user', content: 'hi' }], maxTokens: 512, reasoningEffort: 'high' },
+      {},
+    );
+    expect(req.max_tokens).toBe(16384 + 512);
+    expect(req.max_tokens).toBeGreaterThan(16384);
+  });
+
+  it('drops temperature when thinking is enabled — the API rejects both together', () => {
+    const req = toAnthropicRequest(
+      {
+        messages: [{ role: 'user', content: 'hi' }],
+        maxTokens: 512,
+        temperature: 0.2,
+        reasoningEffort: 'low',
+      },
+      {},
+    );
+    expect('temperature' in req).toBe(false);
+  });
+
+  it("keeps temperature for 'minimal', which enables nothing", () => {
+    const req = toAnthropicRequest(
+      {
+        messages: [{ role: 'user', content: 'hi' }],
+        maxTokens: 512,
+        temperature: 0.2,
+        reasoningEffort: 'minimal',
+      },
+      {},
+    );
+    expect(req.temperature).toBe(0.2);
+  });
+});

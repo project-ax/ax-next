@@ -273,6 +273,18 @@ export function makeBusOrchestratorClient(
         maxTokens: ORCHESTRATOR_MAX_TOKENS,
         system,
         messages: [{ role: 'user', content: user }],
+        // Least deliberation the endpoint allows. This role is the reason the
+        // field exists: the orchestrator reads a densified map and emits a
+        // short op list under DEFAULT_ORCHESTRATOR_TIMEOUT_MS, past which
+        // memory_search falls back to BM25 SILENTLY — so a model that thinks
+        // first spends the budget on tokens the op parser discards and the
+        // deployment never finds out. Measured 2026-09-11 on
+        // z-ai/glm-5.3-flash:nitro: p50 3489 -> 954ms, p95 16195 -> 1256ms.
+        //
+        // Hard-coded rather than configurable on purpose — there is no version
+        // of this role that wants to think harder, and a knob would just be a
+        // way to reintroduce the silent timeout.
+        reasoningEffort: 'minimal',
       });
       return {
         text: out.text,

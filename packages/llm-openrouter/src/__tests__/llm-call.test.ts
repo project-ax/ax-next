@@ -462,3 +462,51 @@ function serialise(e: unknown): string {
   }
   return String(e);
 }
+
+// ---------------------------------------------------------------------------
+// reasoningEffort — TASK-348. The orchestrator's 5s budget is dominated by
+// models that think before answering, so the normalized effort ladder has to
+// reach the wire. OpenRouter's vocabulary is identical to ours, so this is a
+// straight pass-through and the only thing worth asserting is that it happens.
+// ---------------------------------------------------------------------------
+describe('@ax/llm-openrouter llm:call:openrouter — reasoningEffort', () => {
+  it.each(['minimal', 'low', 'medium', 'high'] as const)(
+    'sends reasoning.effort=%s on the wire',
+    async (effort) => {
+      const rec = recorder();
+      const bus = await boot(rec.fetchImpl([{ status: 200, body: completion() }]));
+      await bus.call<LlmCallInput, LlmCallOutput>('llm:call:openrouter', CTX, {
+        ...INPUT,
+        reasoningEffort: effort,
+      });
+      expect(rec.calls[0].body.reasoning).toEqual({ effort });
+    },
+  );
+
+  it('omits `reasoning` ENTIRELY when the caller sets no effort', async () => {
+    const rec = recorder();
+    const bus = await boot(rec.fetchImpl([{ status: 200, body: completion() }]));
+    await bus.call<LlmCallInput, LlmCallOutput>('llm:call:openrouter', CTX, INPUT);
+    // Negative space, deliberately: `toEqual` against a body that happens to
+    // lack the key would pass on a request that carried `reasoning: undefined`
+    // or `reasoning: {}`, and OpenRouter reads an empty object as "enable it".
+    expect('reasoning' in rec.calls[0].body).toBe(false);
+  });
+
+  it('never sends a shape that disables reasoning outright', async () => {
+    // Measured 2026-09-11: BOTH `{enabled:false}` and `{effort:'none'}` return
+    // 400 "Reasoning is mandatory for this endpoint and cannot be disabled" on
+    // z-ai/glm-5.3-flash and google/gemini-3.8-flash. `minimal` is our floor
+    // precisely so a caller asking for the least deliberation degrades instead
+    // of failing the call. This test is the guard on that invariant.
+    const rec = recorder();
+    const bus = await boot(rec.fetchImpl([{ status: 200, body: completion() }]));
+    await bus.call<LlmCallInput, LlmCallOutput>('llm:call:openrouter', CTX, {
+      ...INPUT,
+      reasoningEffort: 'minimal',
+    });
+    const reasoning = rec.calls[0].body.reasoning as Record<string, unknown>;
+    expect(reasoning.enabled).toBeUndefined();
+    expect(reasoning.effort).not.toBe('none');
+  });
+});

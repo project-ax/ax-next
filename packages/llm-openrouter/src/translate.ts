@@ -22,6 +22,13 @@ export interface ChatCompletionsRequest {
   max_tokens: number;
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
   temperature?: number;
+  /**
+   * OpenRouter's unified reasoning control. We only ever emit the `effort`
+   * form — see `toChatCompletionsRequest` for why the other two members of
+   * OpenRouter's union (`enabled`, `max_tokens`) are deliberately unreachable
+   * from here.
+   */
+  reasoning?: { effort: 'minimal' | 'low' | 'medium' | 'high' };
 }
 
 /**
@@ -52,6 +59,22 @@ export function toChatCompletionsRequest(
     messages,
   };
   if (input.temperature !== undefined) req.temperature = input.temperature;
+  // Reasoning: OpenRouter's `effort` vocabulary is identical to our normalized
+  // ladder, so this is a pass-through rather than a mapping.
+  //
+  // Two things we deliberately never emit, both measured 2026-09-11:
+  //  - `{ enabled: false }` and `{ effort: 'none' }` BOTH return 400
+  //    "Reasoning is mandatory for this endpoint and cannot be disabled" on
+  //    z-ai/glm-5.3-flash and google/gemini-3.8-flash. `ReasoningEffort` has
+  //    no `'none'` rung for exactly this reason: the floor degrades, it
+  //    doesn't fail the call.
+  //  - `reasoning: {}` — OpenRouter reads a bare object as "turn it ON at the
+  //    default effort", so building the key unconditionally and letting an
+  //    undefined effort drop out in JSON.stringify would silently do the
+  //    OPPOSITE of what an absent field means. Hence the guard.
+  if (input.reasoningEffort !== undefined) {
+    req.reasoning = { effort: input.reasoningEffort };
+  }
   return req;
 }
 
