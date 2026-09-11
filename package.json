@@ -2,7 +2,7 @@
   "name": "ax-next",
   "version": "0.0.0",
   "private": true,
-  "description": "AX v2 — plugin-based personal AI agent (greenfield rewrite)",
+  "description": "AX v2 \u2014 plugin-based personal AI agent (greenfield rewrite)",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -17,7 +17,7 @@
     "test:eslint-rules": "vitest run --root eslint-rules",
     "test:scripts": "vitest run --root scripts",
     "lint": "eslint .",
-    "typecheck": "tsc --build",
+    "typecheck": "tsc --build && pnpm -r --if-present run typecheck",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "pnpm build && changeset publish"

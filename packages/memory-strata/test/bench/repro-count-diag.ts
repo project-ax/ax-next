@@ -20,7 +20,7 @@ import { BenchCache } from './cache.js';
 import { loadLongMemEvalSSamples } from './corpora/longmemeval-s.js';
 import { makeAnthropicExtractionLlm } from './e2e-cli.js';
 import { makeAnthropicAnswerClient, type MemorySearchResult } from './e2e-answer.js';
-import { parseCorpusDate } from './e2e-driver.js';
+import { makeReadSectionFn, parseCorpusDate } from './e2e-driver.js';
 
 const ANSWER_MODEL = 'claude-sonnet-4-6';
 const EXTRACTION_MODEL = 'claude-haiku-4-5-20251001';
@@ -104,7 +104,7 @@ async function diag(sample: Awaited<ReturnType<typeof loadLongMemEvalSSamples>>[
     const o = await bus.call<{ input: typeof a }, { results: MemorySearchResult[] }>('tool:execute:memory_search', ctx, { input: a });
     return o.results;
   };
-  const readSection = async (a: { docId: string; header?: string }) => bus.call('tool:execute:memory_read_section', ctx, { input: a });
+  const readSection = makeReadSectionFn(bus, ctx);
   const rows = await search({ query: enumQuery, topK: 20 });
   console.log(`\n--- memory_search("${enumQuery}", topK20) -> ${rows.length} docs ---`);
   rows.forEach((r) => console.log(`   ${r.docId}: ${(r.snippet ?? r.summary ?? '').replace(/\s+/g, ' ').slice(0, 90)}`));
