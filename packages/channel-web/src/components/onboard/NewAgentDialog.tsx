@@ -15,6 +15,13 @@ export interface NewAgentDialogProps {
   onOpenChange: (open: boolean) => void;
   /** Called with the trimmed name when the user confirms. */
   onCreate: (name: string) => void;
+  /**
+   * (TASK-340 / audit B4) `false` on first run, where there is no app behind
+   * this dialog to go back to. The caller was already ignoring close attempts;
+   * this stops the dialog OFFERING them — no ✕, no Escape, no outside-click —
+   * so the first thing a new user touches does not silently refuse.
+   */
+  dismissible?: boolean;
 }
 
 /**
@@ -25,7 +32,12 @@ export interface NewAgentDialogProps {
  *
  * shadcn primitives + semantic tokens only (invariant #6).
  */
-export function NewAgentDialog({ open, onOpenChange, onCreate }: NewAgentDialogProps) {
+export function NewAgentDialog({
+  open,
+  onOpenChange,
+  onCreate,
+  dismissible = true,
+}: NewAgentDialogProps) {
   const [name, setName] = useState('');
 
   const trimmed = name.trim();
@@ -38,12 +50,21 @@ export function NewAgentDialog({ open, onOpenChange, onCreate }: NewAgentDialogP
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-sm">
+      <DialogContent className="max-w-sm" hideClose={!dismissible}>
         <DialogHeader>
           <DialogTitle>Name your agent</DialogTitle>
+          {/* (B5) "Name your agent" assumes the reader knows what an agent is.
+              On first run this is the first noun the product has ever used at
+              them, so say what one is before asking them to name it. */}
           <DialogDescription>
-            Give your new agent a name. It'll introduce itself once it's ready.
+            An agent is your personal assistant in ax. Give it a name to get
+            started — it'll introduce itself in a moment.
           </DialogDescription>
+          {!dismissible && (
+            <DialogDescription>
+              This is the one thing we need before you can chat.
+            </DialogDescription>
+          )}
         </DialogHeader>
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">

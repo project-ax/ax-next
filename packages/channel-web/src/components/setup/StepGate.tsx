@@ -3,7 +3,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { SetupShell } from './SetupShell';
+import { SetupShell, SETUP_UNEXPECTED } from './SetupShell';
 
 interface Props {
   autoToken: string | null;
@@ -25,12 +25,18 @@ export function StepGate({ autoToken, onClaimed }: Props) {
         body: JSON.stringify({ token: t }),
       });
       if (r.ok) onClaimed();
-      else if (r.status === 401) setErr('Invalid token');
-      else if (r.status === 410) setErr('Setup already completed.');
+      else if (r.status === 401) setErr('That token didn’t match. Check you copied all of it.');
+      else if (r.status === 410) setErr('Setup is already finished on this server.');
       else if (r.status === 429) setErr('Too many attempts. Wait a minute and try again.');
-      else setErr(`Unexpected (${r.status})`);
-    } catch {
-      setErr('Network error');
+      else {
+        // (B7) The status number told the reader nothing and told a developer
+        // nothing they couldn't get from the console.
+        console.warn('[setup] claim failed', r.status);
+        setErr(SETUP_UNEXPECTED);
+      }
+    } catch (err) {
+      console.warn('[setup] claim request failed', err);
+      setErr('We couldn’t reach the server. Check your connection and try again.');
     } finally {
       setBusy(false);
     }
@@ -44,8 +50,12 @@ export function StepGate({ autoToken, onClaimed }: Props) {
 
   return (
     <SetupShell
+      step={1}
       title="Welcome to ax"
-      description="Paste the bootstrap token from your terminal to continue."
+      // (B9) "from your terminal" assumes the reader knows which output, from
+      // when. Name the moment it was printed, and say the link is the easy
+      // path — the token field is the fallback, not the instruction.
+      description="Open the setup link we printed when you started ax. Or paste the token from it below."
     >
       <form
         className="flex flex-col gap-4"

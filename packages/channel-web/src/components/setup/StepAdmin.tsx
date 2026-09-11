@@ -3,7 +3,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { SetupShell } from './SetupShell';
+import { SetupShell, SETUP_UNEXPECTED } from './SetupShell';
 
 interface Props {
   onCreated: () => void;
@@ -29,10 +29,14 @@ export function StepAdmin({ onCreated }: Props) {
       else if (r.status === 400) {
         const body = (await r.json().catch(() => ({}))) as Record<string, unknown>;
         setErr(typeof body['error'] === 'string' ? body['error'] : 'Invalid input');
-      } else if (r.status === 401) setErr('Bootstrap session expired. Reload to start over.');
-      else setErr(`Unexpected (${r.status})`);
-    } catch {
-      setErr('Network error');
+      } else if (r.status === 401) setErr('Setup timed out. Reload the page to start again.');
+      else {
+        console.warn('[setup] admin create failed', r.status);
+        setErr(SETUP_UNEXPECTED);
+      }
+    } catch (err) {
+      console.warn('[setup] admin create request failed', err);
+      setErr('We couldn’t reach the server. Check your connection and try again.');
     } finally {
       setBusy(false);
     }
@@ -40,8 +44,15 @@ export function StepAdmin({ onCreated }: Props) {
 
   return (
     <SetupShell
+      step={2}
       title="Create your admin account"
-      description="You'll be the first admin. We'll add other authentication methods later."
+      // (B8) Say what this is FOR, and promise no mechanism. The previous copy
+      // committed us to "other authentication methods later", which is a
+      // roadmap rather than an explanation and may simply not happen. This
+      // wording stays true whichever way audit open question 2 (can an
+      // email-created admin lock themselves out of a Google-only sign-in?) is
+      // eventually answered — deliberately NOT answering it here.
+      description="You're the first person here. We'll use this to set up your account and sign you back in later."
     >
       <form className="flex flex-col gap-4" onSubmit={(e) => void submit(e)}>
         <div className="flex flex-col gap-2">
