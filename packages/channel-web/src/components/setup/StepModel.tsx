@@ -10,7 +10,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { SetupShell } from './SetupShell';
+import { SetupShell, SETUP_UNEXPECTED } from './SetupShell';
 
 interface Props {
   onComplete: () => void;
@@ -48,9 +48,13 @@ export function StepModel({ onComplete }: Props) {
       else if (body['reason'] === 'credential-invalid') setErr('That API key was rejected. Double-check and try again.');
       else if (body['reason'] === 'credential-validation-timeout') setErr('Validation timed out. Network problem? Try again.');
       else if (body['reason'] === 'credential-validation-error') setErr('Validation failed. Try again.');
-      else setErr(`Unexpected (${r.status})`);
-    } catch {
-      setErr('Network error');
+      else {
+        console.warn('[setup] model step failed', r.status, body['reason']);
+        setErr(SETUP_UNEXPECTED);
+      }
+    } catch (err) {
+      console.warn('[setup] model step request failed', err);
+      setErr('We couldn’t reach the server. Check your connection and try again.');
     } finally {
       setBusy(false);
     }
@@ -62,8 +66,9 @@ export function StepModel({ onComplete }: Props) {
 
   return (
     <SetupShell
+      step={3}
       title="Connect Anthropic"
-      description="We'll validate your API key, then create a default chat agent."
+      description="We'll check your API key, then create a chat agent to get you started."
     >
       <form className="flex flex-col gap-4" onSubmit={(e) => void submit(e)}>
         <div className="flex flex-col gap-2">

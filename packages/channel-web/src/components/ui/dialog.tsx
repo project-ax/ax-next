@@ -27,10 +27,30 @@ const DialogOverlay = React.forwardRef<
 ))
 DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
 
+/**
+ * `hideClose` — for a dialog the user genuinely may not dismiss.
+ *
+ * (TASK-340 / audit B4.) The first-run "name your agent" dialog is one: there
+ * is no app behind it until an agent exists. It was already refusing to close,
+ * but it kept rendering a live-looking ✕, and Radix still fired Escape and
+ * outside-click. All three silently did nothing — on the very first interaction
+ * a new user has with the product, which is the worst possible place to look
+ * broken.
+ *
+ * The fix is to stop OFFERING the exits rather than to keep swallowing them: no
+ * ✕, and Escape / outside-click are prevented at the primitive so they never
+ * reach a handler that ignores them.
+ *
+ * Deliberately one prop rather than three. A caller that hides the ✕ but leaves
+ * Escape working has built the same lie in a smaller size, so the two are not
+ * separable here.
+ */
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(({ className, children, ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & {
+    hideClose?: boolean
+  }
+>(({ className, children, hideClose = false, ...props }, ref) => (
   <DialogPortal>
     <DialogOverlay />
     <DialogPrimitive.Content
@@ -39,13 +59,22 @@ const DialogContent = React.forwardRef<
         "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg",
         className
       )}
+      {...(hideClose
+        ? {
+            onEscapeKeyDown: (e: KeyboardEvent) => e.preventDefault(),
+            onInteractOutside: (e: { preventDefault: () => void }) =>
+              e.preventDefault(),
+          }
+        : {})}
       {...props}
     >
       {children}
-      <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
-        <X className="h-4 w-4" />
-        <span className="sr-only">Close</span>
-      </DialogPrimitive.Close>
+      {!hideClose && (
+        <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
+          <X className="h-4 w-4" />
+          <span className="sr-only">Close</span>
+        </DialogPrimitive.Close>
+      )}
     </DialogPrimitive.Content>
   </DialogPortal>
 ))

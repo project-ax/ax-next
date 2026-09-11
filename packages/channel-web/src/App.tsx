@@ -332,6 +332,10 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
         <UserProvider value={user}>
           <NewAgentDialog
             open={true}
+            // (TASK-340 / audit B4) On first run the dialog now declines to
+            // OFFER an exit, rather than rendering a ✕ and an Escape key that
+            // quietly do nothing. The guard below stays as the backstop.
+            dismissible={!isFirstRun}
             onOpenChange={(open) => {
               if (!open && !isFirstRun) {
                 // Explicit "New agent…" path — allow cancel
