@@ -39,6 +39,18 @@ describe('humanizeId', () => {
     expect(humanizeId('SENDGRID_API_KEY')).toBe('Sendgrid API key');
   });
 
+  it('is not fooled by ids that name Object.prototype members', () => {
+    // An agent can author a skill, so these ids are untrusted input. With a
+    // plain-object lookup table, `constructor` resolves through the prototype
+    // and hands back a function where a string is expected — which throws
+    // while rendering the one card whose whole job is to be trustworthy.
+    expect(humanizeId('constructor')).toBe('Constructor');
+    expect(humanizeId('valueOf_key')).toBe('Value of key');
+    expect(humanizeId('toString')).toBe('To string');
+    expect(humanizeId('hasOwnProperty')).toBe('Has own property');
+    expect(humanizeSlotLabel('api_key', 'constructor')).toBe('Constructor API key');
+  });
+
   it('degrades unknown ids to readable text rather than throwing or emptying', () => {
     expect(humanizeId('foo_bar')).toBe('Foo bar');
     expect(humanizeId('')).toBe('');

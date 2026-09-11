@@ -615,6 +615,17 @@ describe('PermissionCard — trust copy (TASK-334)', () => {
     expect(await screen.findByText('Connect ___')).toBeInTheDocument();
   });
 
+  it('still renders when an authored skill id names an Object.prototype member', async () => {
+    // An agent authors its own skills, so the id is untrusted. Humanizing it
+    // through a plain-object lookup table resolved `constructor` through the
+    // prototype and threw mid-render — taking out the security card itself,
+    // which is the worst possible thing for this particular component to do.
+    render(<PermissionCard />);
+    permissionCardActions.show({ ...withSlot, skillId: 'constructor', authored: true });
+    expect(await screen.findByText('Connect Constructor')).toBeInTheDocument();
+    expect(screen.getByLabelText('API key')).toBeInTheDocument();
+  });
+
   it('renders the authored warning as an Alert with an icon, not a bare glyph', async () => {
     render(<PermissionCard />);
     permissionCardActions.show({ ...withSlot, authored: true });

@@ -31,8 +31,16 @@
  * themselves (`openai` → `OpenAI`, and `ax`, which is lowercase on purpose).
  *
  * A token in this table is NEVER re-cased — not even when it leads a label.
+ *
+ * A `Map`, not an object, and that is load-bearing rather than stylistic. An
+ * agent can author a skill, so the ids that reach this table are untrusted: an
+ * id containing the token `constructor`, `valueOf` or `toString` would resolve
+ * through `Object.prototype` on a plain-object lookup, hand back a FUNCTION
+ * where a string was expected, and throw while rendering — killing the one card
+ * whose entire job is to be the trustworthy moment. `Object.entries` keeps the
+ * table readable and takes only own keys.
  */
-const BRANDS_AND_ACRONYMS: Record<string, string> = {
+const BRANDS_AND_ACRONYMS = new Map<string, string>(Object.entries({
   // Acronyms.
   api: 'API',
   url: 'URL',
@@ -77,7 +85,7 @@ const BRANDS_AND_ACRONYMS: Record<string, string> = {
   ollama: 'Ollama',
   bedrock: 'Bedrock',
   vertex: 'Vertex',
-};
+}));
 
 /**
  * Ordinary English words that machine ids habitually SHOUT (`ANTHROPIC_API_KEY`
@@ -146,7 +154,7 @@ function tokenize(id: string): string[] {
  */
 function mapToken(token: string): string {
   const lower = token.toLowerCase();
-  const known = BRANDS_AND_ACRONYMS[lower];
+  const known = BRANDS_AND_ACRONYMS.get(lower);
   if (known !== undefined) return known;
   if (COMMON_WORDS.has(lower)) return lower;
   // An all-caps token we don't recognise is ambiguous: producers shout both
