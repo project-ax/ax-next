@@ -4,48 +4,60 @@
 **Status:** 12 cards on the board, 11 ready, 1 dep-gated. None started.
 **Baseline:** `main` @ `2fe1b6ad` (TASK-347 merged). Every card is unblocked by
 code that is already on main.
+**Design:** `docs/plans/2026-09-06-ux-first-run-audit.md` (committed with this handoff).
 **Board:** the twelve cards carry `epic: ux-first-run`.
 
 ---
 
-## Read this first: the design doc these cards cite is NOT in this repo
+## The audit these cards come from
 
-Every one of the twelve cards has this header line:
+Every card carries `design:` pointing at the UX audit, now committed alongside
+this handoff at **`docs/plans/2026-09-06-ux-first-run-audit.md`**. Read it for
+any card you build — the cards restate their findings, but the audit carries the
+rationale, the severity, and the "already right" list below that the cards do
+not.
 
-```
-design: /home/vpulim/dev/workspaces/ax-next/docs/plans/2026-09-06-ux-first-run-audit.md
-```
+**One piece of hygiene first:** the `design:` line on all twelve cards still
+reads `/home/vpulim/dev/workspaces/ax-next/docs/plans/...`, an absolute path
+from the other machine that resolves nowhere here. Repoint it at the
+repo-relative path, or every reader re-runs the hunt that produced this handoff.
 
-That file does not exist here. Not on disk, not in any branch, not in any commit
-reachable from any ref, and nothing in the repo so much as mentions
-`ux-first-run`. Note the path is `/home/vpulim/...` — a **Linux** path, so it was
-written on the other machine and never made it across.
+### Severity, for ordering inside the track
 
-**This is not a blocker, and here is the evidence for that claim.** The cards
-were measured for self-sufficiency before this handoff was written:
+The audit tags every finding by user-impact and code-cost (`[S]` hours, `[M]`
+~a day, `[L]` structural — it biases hard to S/M and rejects the one [L]).
 
-- ~25,000 characters of specification across the twelve.
-- All twelve have a `## Acceptance` section.
-- Each restates its findings with `file:line` and, in most cases, the exact
-  replacement copy.
-- **Finding coverage is complete with no gaps**: A1–A13, B1–B9, C1–C5, D1–D10,
-  E1–E6 are each claimed by exactly one card. Nothing in the audit's
-  numbering is unassigned, so the missing doc is not hiding work.
+| | count |
+|---|---|
+| Critical, S | 2 |
+| Important, S | 16 |
+| Important, M | 5 |
+| Minor, S | 12 |
+| Nit, S | 4 |
 
-What the doc would still add: the audit's rationale, its `[S]/[M]/[L]` severity
-tags (referenced in passing by TASK-345), and two "open questions" the cards
-cite by number — **open question 1** (TASK-334: are slot labels humanized
-client-side, or should manifests carry labels/URLs?) and **open question 4**
-(TASK-337: does the rename endpoint get built, or is the feature parked?). Both
-cards state an assumption inline and proceed, so neither stops work.
+**Both Criticals are A1 and A2, and both are in TASK-334** — the credential slot
+input with a raw `api_key` label and no help, and the skill-approval card titled
+`Approve {request.skillId}?` with no statement of what approving does. The audit
+calls `PermissionCard` "the single trust moment of the product" and "where
+first-time users freeze". If the track ships in one order only, it starts there.
 
-**Decision for a human, before dispatching anything:** copy the audit over from
-the Linux machine and commit it to `main`, or accept that the cards are the
-source of truth and delete the `design:` line so nobody chases a dead path. Do
-not leave it as-is — a card citing an unreachable doc is exactly what sends
-auto-ship's triage gate to **Needs Input**, and it will do that twelve times.
+### The four open questions are already neutralized
 
----
+The audit ends with four questions marked "need a human decision — **NOT for
+autonomous cards**". Worth knowing that the decomposition handled all four:
+each affected card names its question number and states an assumption that
+does not foreclose the answer.
+
+| Q | affects | card | the card's assumption |
+|---|---|---|---|
+| 1 | A1 | TASK-334 | slot labels humanized client-side; manifest-carried labels/URLs stay producer-side, consumed only if present |
+| 2 | B8 | TASK-340 | the new copy is mechanism-agnostic and stays correct under either resolution of the auth-model question |
+| 3 | A7 | TASK-335 | implement the height-cap mitigation ONLY; whether the two cards may ever co-render stays human |
+| 4 | C2 | TASK-337 | stop the silent no-op; whether the rename endpoint gets built is separate, and ungating later is one line |
+
+So the audit's warning does not block the track. It does mean **no card should
+quietly answer its open question** — if building one tempts you to decide it,
+that is the escalation, not a judgement call.
 
 ## Goal
 
@@ -183,6 +195,22 @@ never as a coordinate.
 
 ---
 
+## Already right — do not regress
+
+The audit names the surfaces that are exemplary and are the house standard. This
+matters more than it sounds for a copy track, because **several of them live in
+files these cards edit**: `ChainOfThought`'s collapsed detail (TASK-335 edits
+its header labels), `AgentForm`'s collapsed Advanced for new agents (TASK-341),
+`StepModel`'s Advanced collapsible (TASK-340), and the whole
+`ApprovalCard` / `DecisionRow` / `AgentRail` / `decision-copy` honesty system,
+which is the voice the rest of the track is being brought up to.
+
+Also on the list: `SkillEditor` form-first with its raw escape hatch,
+`TodayView`'s empty state, `HomeComposer`'s routing proposal,
+`KeyForm`/`CredentialSlotForm`'s "A key is saved" cue, and
+`SkillInstallConsentDialog`'s consent framing — which TASK-344 is explicitly
+told not to touch while humanizing the title around it.
+
 ## Verification
 
 ```bash
@@ -211,10 +239,10 @@ against the kind cluster, and `chat-qa-sweep` covers the chat surfaces.
   excludes it explicitly as an `[M]` cleanup.
 - **A friendly day/time picker or natural-language cron input** — TASK-345
   excludes both; the `[L]` natural-language option was rejected in the audit.
-- **Building the conversation-rename endpoint** — TASK-337 only stops the silent
-  no-op. Whether the endpoint gets built is open question 4, a human decision.
-- **Manifest-carried credential labels/URLs** — TASK-334 consumes them if
-  present and invents nothing; making producers emit them is open question 1.
+- **All four open questions themselves** — see the table above. The cards work
+  around them; none of them answers one.
+- **E3's second half**, the five-button admin row collapsing into a `⋯`
+  DropdownMenu — an `[M]` the audit raises and TASK-336 excludes.
 - **Renaming anything that is not a display string.** See the hard boundary
   above.
 
@@ -227,14 +255,18 @@ After `/clear`:
 ```
 Work the ux-first-run track: TASK-334 through TASK-345 on the "TO DO" board.
 
-Read docs/plans/2026-09-11-ux-humanization-track-handoff.md first. Its opening
-section matters most — the design doc all twelve cards cite does NOT exist in
-this repo, and the handoff explains why that is survivable and what to decide
-about it before starting.
+Read docs/plans/2026-09-11-ux-humanization-track-handoff.md first, then the
+audit it points at (docs/plans/2026-09-06-ux-first-run-audit.md) for whichever
+card you are building.
 
 The cards are the specification: ~25k chars, each with file:line, intended copy,
 and acceptance criteria, covering audit findings A1-A13, B1-B9, C1-C5, D1-D10,
-E1-E6 with no gaps. Read the card you are building in full before touching code.
+E1-E6 with no gaps. Read the card in full before touching code, and read the
+audit's "Already right - do not regress" list before editing any file it names.
+
+The audit has four open questions marked NOT for autonomous cards. All four are
+already neutralized by an explicit assumption on the affected card. If building
+one tempts you to actually decide one, escalate instead.
 
 This is a copy-and-primitives track, not a redesign: display strings and shadcn
 primitives only, no behaviour, payload, IPC or identifier changes. But the
