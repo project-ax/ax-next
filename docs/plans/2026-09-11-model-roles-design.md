@@ -13,7 +13,7 @@ mean opposite things.
 
 | job | model comes from | convention |
 |---|---|---|
-| agent chat turn | `agents.model` row, allow-listed | `provider/model-id` **ref** |
+| agent chat turn | `agents.model` row, allow-listed | `provider/model-id` **ref** — *stays as-is, see below* |
 | conversation title | `storage:get('settings:fast-model')` → preset → `DEFAULT_TITLE_MODEL` | ref |
 | retrieval orchestrator | `memory.orchestratorModel` chart value → `DEFAULT_ORCHESTRATOR_MODEL` | **bare** |
 | memory extraction (observer) | inherits the calling agent's `agent.model` | ref |
@@ -92,7 +92,6 @@ stays put. A job name does not.
 
 | role | the job | agent-overridable |
 |---|---|---|
-| `chat-turn` | the agent's own conversational turns | yes — see Open question 1 |
 | `title-generation` | name a conversation from its first turns | yes |
 | `memory-extraction` | observer: turn transcript → candidate facts | yes |
 | `memory-densify` | map: doc → one-line summary | yes |
@@ -101,9 +100,26 @@ stays put. A job name does not.
 | `web-research` | `web_search` / `web_extract` synthesis | yes |
 | `safety-scan` | skill-manifest safety check | **NO** |
 
-Eight job-named roles is not proliferation. The leverage comes from several
+Seven job-named roles is not proliferation. The leverage comes from several
 roles *defaulting* to the same model, not from forcing different jobs to share
 a name.
+
+### Not a role: the agent's own chat turn — DECIDED, 2026-09-11
+
+The agent's conversational model stays exactly where it is: `agents.model`,
+allow-listed by `resolveAllowedModels`, edited in the agents admin UI. It does
+**not** get a role.
+
+Putting it in the registry would mean two places storing the same concept, which
+is the invariant-4 violation this design invokes against everything else — and
+the registry would win nothing, because `agents.model` already has the three
+properties roles exist to provide: one place, validated, operator-editable. A
+role called `chat-turn` would be a second name for a solved problem.
+
+The practical consequence is that the registry never needs a
+"role inherits another role" feature. The one caller that genuinely follows the
+agent (`memory-extraction`) reaches `agents:resolve` directly instead — see
+Open question 2.
 
 ### A role is (model, reasoning)
 
@@ -243,29 +259,30 @@ invariant 4, and it is how a "migration" becomes permanent.
    with an existing admin UI to re-point — the migration that proves the
    registry can carry a runtime-editable setting.
 4. **`safety-scan`**, first non-overridable role; proves the flag.
-5. The four remaining memory/web roles, one PR each.
-6. **`chat-turn`** last, or never — see Open question 1.
+5. The three remaining memory/web roles, one PR each. `memory-extraction` is
+   the one to schedule last of these — it is the only role whose default is not
+   a model id (Open question 2).
 
 ## Open questions
 
-1. **Does `chat-turn` belong in the registry at all?** `agents.model` is
-   already the canonical, allow-listed, admin-UI-backed source of truth for it.
-   Putting it in the registry too would be two places storing the same concept —
-   invariant 4, precisely the thing this design invokes elsewhere. Current lean:
-   the registry *defines* the role and delegates resolution to `@ax/agents`
-   rather than storing a second copy. This is the biggest unresolved question
-   and should be settled before step 1, not during step 6.
-2. **Where does the registry live?** Not `@ax/core` — the kernel holds the
+1. **Where does the registry live?** Not `@ax/core` — the kernel holds the
    vocabulary (`parseModelRef`, `ReasoningEffort`) but not runtime config or
    storage. A new `@ax/model-roles` plugin is the default answer; the case
    against is that it adds a plugin every preset must load for anything to
    resolve above the compiled-in floor.
-3. **Does `memory-extraction` keep inheriting the agent's model?** Today it
-   does, which is a quiet form of per-agent override that predates this design.
-   Making it an explicit role with `agentOverridable: true` and a default of
-   "inherit `chat-turn`" preserves the behaviour, but "inherit another role" is
-   a feature the registry would otherwise not need.
-4. **Is `reasoningEffort` per-role enough, or does it need per-role-per-model?**
+2. **How does `memory-extraction` express "follow the agent"?** Today it reads
+   `agent.model` directly, and that is not merely a default — it is load-bearing
+   for credentials. `buildAgentLlmCall` routes to `llm:call:${agent.provider}`,
+   so extraction resolves its key through the same provider the agent already
+   works with. Give the role a fixed default of its own and an operator whose
+   only key is Anthropic gets a broken observer the moment the role default
+   points elsewhere.
+   Recommended shape: one explicit sentinel (`model: 'agent'`) that resolves via
+   `agents:resolve`, rather than a general cross-role inheritance feature. With
+   `chat-turn` out of the registry there is nothing else to inherit *from*, so
+   the sentinel is the whole of the requirement. Needs a decision before
+   `memory-extraction` migrates, not before step 1.
+3. **Is `reasoningEffort` per-role enough, or does it need per-role-per-model?**
    A level that is right for a reasoning model is a no-op on Anthropic, which
    does not reason unless asked. Probably fine — "minimal" degrading to "no
    change" is the intended semantics — but worth a second look when
