@@ -35,6 +35,7 @@ import {
   useState,
   type CSSProperties,
 } from 'react';
+import { CONVERSATION_RENAME_ENABLED } from '../lib/conversation-rename';
 import { sessionStoreActions } from '../lib/session-store';
 import { cn } from '@/lib/utils';
 import {
@@ -71,6 +72,10 @@ export function SessionRow({
 
   // ---------- rename ----------
   const enterRename = useCallback(() => {
+    // (TASK-337 / audit C2) Same gate as SessionHeader, same reason: the
+    // PATCH this ends in has no route, so the edit can only vanish. See
+    // `lib/conversation-rename.ts`.
+    if (!CONVERSATION_RENAME_ENABLED) return;
     if (rowState === 'renaming') return;
     renameCommittedRef.current = false;
     setRowState('renaming');
@@ -355,6 +360,10 @@ export function SessionRow({
           role="menu"
           onClick={(e) => e.stopPropagation()}
         >
+          {/* (C2) Hidden, not disabled. A greyed-out "Rename" invites the
+              question "why can't I?", and we have no good answer that isn't
+              "we shipped a button for a route that doesn't exist". */}
+          {CONVERSATION_RENAME_ENABLED && (
           <button
             type="button"
             className="
@@ -382,6 +391,7 @@ export function SessionRow({
             </svg>
             <span>Rename</span>
           </button>
+          )}
           <button
             type="button"
             className="
