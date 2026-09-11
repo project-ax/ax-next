@@ -111,6 +111,9 @@ function sleep(ms: number): Promise<void> {
 
 export function makeXaiOrchestratorClient(
   apiKey: string,
+  // UNVERIFIED since the direct-xAI path was retired (2026-09-10) — two
+  // neighbouring Grok ids have 404'd as deprecated since this was written.
+  // Pass an explicit model if you revive this client.
   model = 'grok-4-fast-non-reasoning',
   opts?: OrchestratorClientOptions,
 ): OrchestratorClient {
@@ -153,7 +156,7 @@ export function makeXaiOrchestratorClient(
  */
 export function makeOpenRouterOrchestratorClient(
   apiKey: string,
-  model = 'x-ai/grok-4-fast',
+  model = DEFAULT_ORCHESTRATOR_MODEL,
   forceProvider?: string,
   opts?: OrchestratorClientOptions,
 ): OrchestratorClient {
@@ -193,16 +196,38 @@ const ORCHESTRATOR_MAX_TOKENS = 512;
  *
  * Fast and cheap beat clever here: the orchestrator reads a densified map and
  * emits a short op list under a ~5s budget, and anything slower simply loses to
- * the BM25 fallback. Exported so the CLI and k8s presets share ONE default
- * rather than drifting apart; both let an operator override it.
+ * the BM25 fallback — silently, which is what makes picking this by reputation
+ * dangerous. Exported so the CLI and k8s presets share ONE default rather than
+ * drifting apart; both let an operator override it.
+ *
+ * CHOSEN ON MEASUREMENT, 2026-09-10 (`pnpm --filter @ax/memory-strata
+ * bench:latency`, 19 samples each after a warmup, real LongMemEval-S map):
+ *
+ * | via OpenRouter                 |  p50 |   p95 |   max |
+ * |--------------------------------|------|-------|-------|
+ * | anthropic/claude-haiku-4.5     | 1049 |  1580 |  1677 |
+ * | deepseek/deepseek-v4.1-flash   | 1727 |  2866 |  4629 |
+ * | google/gemini-3.8-flash        | 2387 |  3525 |  3532 |
+ * | x-ai/grok-4.3                  | 7269 | 18482 | 19802 |
+ *
+ * Haiku 4.5 wins on both speed and SPREAD — 887..1677ms end to end, where
+ * Grok 4.3's p50 alone exceeds the whole budget. Two Grok ids were tried
+ * before it and both 404'd as deprecated (`x-ai/grok-4-fast`, and
+ * `x-ai/grok-4.1-fast` before that), which is the other half of the lesson:
+ * take the id from a live `GET /api/v1/models`, not from a comment.
+ *
+ * `deepseek-v4.1-flash` is the cheap alternative (~3× lower input price) and
+ * fits the budget too; its max sits close to it. Direct Anthropic — not
+ * through OpenRouter — measured faster still (635ms p50) if the extra
+ * credential path is ever worth it.
  */
-export const DEFAULT_ORCHESTRATOR_MODEL = 'x-ai/grok-4-fast';
+export const DEFAULT_ORCHESTRATOR_MODEL = 'anthropic/claude-haiku-4.5';
 
 /** What {@link makeBusOrchestratorClient} needs to route a call. */
 export interface BusOrchestratorConfig {
   /** `llm:call:<provider>` hook to route through, e.g. `llm:call:openrouter`. */
   hook?: string;
-  /** BARE provider-native model id — `x-ai/grok-4-fast`, not `openrouter/...`. */
+  /** BARE provider-native model id — `anthropic/claude-haiku-4.5`, not `openrouter/...`. */
   model?: string;
 }
 

@@ -107,7 +107,7 @@ describe('makeOpenRouterOrchestratorClient', () => {
     expect(url).toBe('https://openrouter.ai/api/v1/chat/completions');
     expect(init.headers).toMatchObject({ authorization: 'Bearer or-secret' });
     const body = JSON.parse(init.body as string);
-    expect(body.model).toBe('x-ai/grok-4-fast');
+    expect(body.model).toBe('anthropic/claude-haiku-4.5');
     expect(body).not.toHaveProperty('provider');
   });
 

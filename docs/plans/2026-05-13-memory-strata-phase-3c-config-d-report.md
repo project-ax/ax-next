@@ -114,3 +114,68 @@ The orchestrator emitted `<followup needed="true"/>` rarely across all configs (
 - This phase's raw single-config reports (gitignored, local-only): `docs/plans/2026-05-{13,14}-memory-strata-phase-3c-config-{a,d,d-grok,e}-*-raw.md`.
 - Implementation plan: `docs/plans/2026-05-13-memory-strata-phase-3c-config-d-impl.md`.
 - Strata design doc, c137 section: `docs/plans/memory-strata-design.md` § "Prior Art (2026-05-13 update — c137)" and § "Retrieval Orchestration: One-Hop Default, Drill-Down as Escape Valve".
+
+---
+
+## Addendum — 2026-09-10 re-measurement (TASK-347 follow-up)
+
+**Everything above about provider latency is out of date, and the way it went
+stale is the point of this addendum.**
+
+The "~11s p50 for OpenRouter" line from the 2026-05-14 probe got quoted in
+`orchestrator-client.ts` and in both presets as a standing reason not to route
+the orchestrator through OpenRouter at all. Re-reading the probe table shows
+what it actually measured: `x-ai/grok-4.1-fast` under OpenRouter's DEFAULT
+routing — and the same table records that model as **deprecated on OpenRouter**,
+which is why the `grok-openrouter-force-xai` arm FAILED. Provider-forcing, the
+mitigation everyone assumed was available, was never measured at all.
+
+So the number was a fact about one deprecated model's routing in May 2026, not
+about OpenRouter. It was still steering architecture in September.
+
+### What is true now
+
+`pnpm --filter @ax/memory-strata bench:latency`, 19 samples per config after a
+discarded warmup, same LongMemEval-S question and generated map as the original
+run. Budget for reference: `DEFAULT_ORCHESTRATOR_TIMEOUT_MS` = **5000ms**, past
+which `memory_search` silently falls back to BM25.
+
+| config | n | min | p50 | mean | p95 | max |
+|---|---|---|---|---|---|---|
+| openrouter / `anthropic/claude-haiku-4.5` | 19 | 887 | **1049** | 1117 | 1580 | 1677 |
+| openrouter / `deepseek/deepseek-v4.1-flash` | 19 | 1311 | 1727 | 1922 | 2866 | 4629 |
+| openrouter / `google/gemini-3.8-flash` | 19 | 1383 | 2387 | 2368 | 3525 | 3532 |
+| openrouter / `x-ai/grok-4.3` | 19 | 4456 | **7269** | 8696 | 18482 | 19802 |
+| anthropic-direct / haiku 4.5 (reference) | 19 | 488 | 635 | 717 | 1014 | 1443 |
+| xai-direct / grok (reference) | 19 | 650 | 812 | 4351 | 12659 | **61347** |
+
+### Conclusions, replacing the "Binding decision" above
+
+- **`anthropic/claude-haiku-4.5` through OpenRouter is the production default.**
+  Fastest of the OpenRouter options and by far the tightest spread
+  (887–1677ms end to end), comfortably inside the 5s budget.
+- **Grok is no longer the right model here.** `x-ai/grok-4.3` — xAI's own
+  recommended successor — has a p50 that on its own exceeds the entire budget,
+  so it would fall back to BM25 on most calls while spending 5s to do it. Two
+  earlier Grok ids (`x-ai/grok-4-fast`, `x-ai/grok-4.1-fast`) 404 as deprecated.
+- **"Direct xAI is fastest" no longer holds.** Its p50 is still good (812ms) but
+  this run produced a **61-second** outlier; the distribution is unusable for a
+  latency-budgeted path. Direct Anthropic is now both the fastest and the
+  steadiest thing measured.
+- **Cheaper option:** `deepseek/deepseek-v4.1-flash` fits the budget at roughly
+  a third of haiku's input price, though its max (4629ms) sits close to the
+  line.
+
+Accuracy was NOT re-measured — this probe only times calls. The n=500 accuracy
+findings above were established with Grok 4.1 Fast; whether haiku 4.5 plans
+retrieval as well is an open question, and the honest mitigation is that a bad
+plan degrades to BM25 rather than to a wrong answer.
+
+### The durable fix
+
+The model is now a values knob (`memory.orchestratorModel` → the preset →
+`DEFAULT_ORCHESTRATOR_MODEL`), so the next re-tune is a config change rather
+than a release. Take model ids from a live `GET /api/v1/models`; two of the
+three tried here were dead, and a dead id fails closed into a silent BM25
+fallback.
+

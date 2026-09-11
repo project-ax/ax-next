@@ -40,7 +40,7 @@ describe('makeBusOrchestratorClient', () => {
     const client = makeBusOrchestratorClient(
       busWith({ 'llm:call:openrouter': true }, call),
       ctx,
-      { hook: 'llm:call:openrouter', model: 'x-ai/grok-4-fast' },
+      { hook: 'llm:call:openrouter', model: 'anthropic/claude-haiku-4.5' },
     );
 
     const out = await client!.complete({ system: 'SYS', user: 'USR' });
@@ -53,7 +53,7 @@ describe('makeBusOrchestratorClient', () => {
     // A BARE provider-native id: the hook name already encodes the provider,
     // so a prefixed `openrouter/...` ref would be routed twice.
     expect(input).toEqual({
-      model: 'x-ai/grok-4-fast',
+      model: 'anthropic/claude-haiku-4.5',
       maxTokens: 512,
       system: 'SYS',
       messages: [{ role: 'user', content: 'USR' }],
@@ -66,7 +66,7 @@ describe('makeBusOrchestratorClient', () => {
     expect(
       makeBusOrchestratorClient(busWith({}), ctx, {
         hook: 'llm:call:openrouter',
-        model: 'x-ai/grok-4-fast',
+        model: 'anthropic/claude-haiku-4.5',
       }),
     ).toBeUndefined();
   });
@@ -89,7 +89,7 @@ describe('makeBusOrchestratorClient', () => {
     const client = makeBusOrchestratorClient(
       busWith({ 'llm:call:openrouter': true }, call),
       ctx,
-      { hook: 'llm:call:openrouter', model: 'x-ai/grok-4-fast' },
+      { hook: 'llm:call:openrouter', model: 'anthropic/claude-haiku-4.5' },
     );
 
     await expect(client!.complete({ system: 's', user: 'u' })).rejects.toThrow(

@@ -413,7 +413,7 @@ export interface K8sPresetConfig {
   hostLlmTools?: boolean;
   /**
    * Model the memory_search retrieval orchestrator runs on, as a BARE
-   * OpenRouter model id (`x-ai/grok-4-fast`, not `openrouter/x-ai/...` — the
+   * OpenRouter model id (`anthropic/claude-haiku-4.5`, not `openrouter/...` — the
    * hook name already carries the provider). Defaults to
    * `DEFAULT_ORCHESTRATOR_MODEL` (@ax/memory-strata).
    *

@@ -678,7 +678,7 @@ skills:
 
 # ─── Memory ───────────────────────────────────────────────────────
 # The model `memory_search`'s retrieval orchestrator runs on, as a BARE
-# OpenRouter model id (`x-ai/grok-4-fast`, not `openrouter/x-ai/...` — the
+# OpenRouter model id (`anthropic/claude-haiku-4.5`, not `openrouter/...` — the
 # provider is already decided by the hook it routes through). Empty keeps the
 # preset's default.
 #
@@ -688,9 +688,17 @@ skills:
 # credentials UI and the orchestrator starts working with no deploy. Store
 # none and memory_search runs plain BM25, which is what it has always done.
 #
-# Worth changing without waiting for a release: the orchestrator only earns its
-# keep if it answers inside ~5s, and which model is both fast and cheap moves
-# faster than this chart does.
+# Empty uses the preset's default, `anthropic/claude-haiku-4.5` — picked by
+# MEASUREMENT on 2026-09-10 (p50 1049ms / p95 1580ms through OpenRouter,
+# against a 5s budget), not by reputation. Two Grok ids were tried first and
+# both 404'd as deprecated, and `x-ai/grok-4.3` measured a 7.3s p50 — worse on
+# its own than the entire budget.
+#
+# Worth changing without waiting for a release, and here is why it matters:
+# the orchestrator only earns its keep if it answers inside ~5s, it falls back
+# to BM25 SILENTLY when it doesn't, and which model is both fast and cheap
+# moves much faster than this chart does. `deepseek/deepseek-v4.1-flash` is
+# the cheaper alternative that also fits.
 memory:
   orchestratorModel: ""
 

@@ -136,20 +136,42 @@ async function main(): Promise<number> {
     console.log(`Map: ${map.length} chars across ${haystackPaths.length} docs.`);
     console.log(`Query: ${question.text}`);
 
-    const configs: ProbeConfig[] = [
-      {
-        name: 'haiku-anthropic-direct',
-        client: makeAnthropicOrchestratorClient(env.ANTHROPIC_API_KEY),
-      },
-      {
-        name: 'grok-openrouter-default',
-        client: makeOpenRouterOrchestratorClient(env.OPENROUTER_API_KEY),
-      },
-      {
-        name: 'grok-openrouter-force-xai',
-        client: makeOpenRouterOrchestratorClient(env.OPENROUTER_API_KEY, 'x-ai/grok-4.1-fast', 'x-ai'),
-      },
+    // 2026-09-10 re-point. The three arms below used to measure
+    // `x-ai/grok-4.1-fast`, which this probe's own 2026-05-14 run found was
+    // already deprecated on OpenRouter (the force-xai arm FAILED for that
+    // reason, so provider-forcing was never actually measured). Quoting that
+    // run's 11s p50 as a standing fact about OpenRouter outlived its subject.
+    //
+    // The first arm is now the model production actually ships
+    // (DEFAULT_ORCHESTRATOR_MODEL), through OpenRouter's DEFAULT routing,
+    // which is what the orchestrator gets when routed through
+    // `llm:call:openrouter`. The other two are reference points.
+    // 2026-09-10 re-point. These arms used to measure `x-ai/grok-4.1-fast`,
+    // which this probe's own 2026-05-14 run had ALREADY found deprecated on
+    // OpenRouter (the force-xai arm FAILED for that reason, so provider-forcing
+    // was never actually measured). Quoting that run's 11s p50 as a standing
+    // fact about OpenRouter outlived its subject by four months.
+    //
+    // `x-ai/grok-4-fast` — the first replacement tried — turned out to be
+    // deprecated too, 404 on every call. So the arms below are taken from a
+    // live `GET /api/v1/models`, not from memory, and the point of the probe is
+    // to pick the production default on evidence rather than on a name that
+    // sounds current.
+    const orCandidates: Array<[string, string]> = [
+      ['grok-4.3', 'x-ai/grok-4.3'],
+      ['haiku-4.5', 'anthropic/claude-haiku-4.5'],
+      ['gemini-3.8-flash', 'google/gemini-3.8-flash'],
+      ['deepseek-v4.1-flash', 'deepseek/deepseek-v4.1-flash'],
     ];
+    const configs: ProbeConfig[] = orCandidates.map(([label, model]) => ({
+      name: `openrouter/${label}`,
+      client: makeOpenRouterOrchestratorClient(env.OPENROUTER_API_KEY, model),
+    }));
+    // Reference point: the same model family, not through OpenRouter.
+    configs.push({
+      name: 'haiku-anthropic-direct (reference)',
+      client: makeAnthropicOrchestratorClient(env.ANTHROPIC_API_KEY),
+    });
     if (xaiKey) {
       configs.push({
         name: 'grok-xai-direct',

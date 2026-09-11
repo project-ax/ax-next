@@ -1352,7 +1352,7 @@ describeIfHelm('ax-next chart: previously unstampable env (TASK-347)', () => {
     // dedicated orchestrator key would mean a second credential path for the
     // same provider, which is what this removed.
     const names = hostEnv([
-      '--set', 'memory.orchestratorModel=x-ai/grok-4-fast',
+      '--set', 'memory.orchestratorModel=anthropic/claude-haiku-4.5',
     ]).map((e) => e.name);
     expect(names).not.toContain('XAI_API_KEY');
   });
@@ -1375,10 +1375,10 @@ describeIfHelm('ax-next chart: previously unstampable env (TASK-347)', () => {
 
   it('memory.orchestratorModel is stamped as a bare provider-native id', () => {
     const found = hostEnv([
-      '--set', 'memory.orchestratorModel=x-ai/grok-4-fast',
+      '--set', 'memory.orchestratorModel=anthropic/claude-haiku-4.5',
     ]).find((e) => e.name === 'AX_MEMORY_ORCHESTRATOR_MODEL');
     // Bare, not `openrouter/x-ai/...`: the hook name already carries the
     // provider, and a prefixed id would be routed twice.
-    expect(found?.value).toBe('x-ai/grok-4-fast');
+    expect(found?.value).toBe('anthropic/claude-haiku-4.5');
   });
 });
