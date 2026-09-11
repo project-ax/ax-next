@@ -116,9 +116,9 @@ describe('MarkdownText ax:// URL handling', () => {
     expect(a.getAttribute('href')).toMatch(/\/api\/files\?/);
   });
 
-  it('renders "unknown artifact" for unmatched ids', () => {
+  it('renders "File unavailable" for unmatched ids', () => {
     render(<Harness markdown="[broken](ax://artifact/nope)" />);
-    expect(screen.getByText(/unknown artifact/i)).toBeTruthy();
+    expect(screen.getByText(/File unavailable/i)).toBeTruthy();
   });
 
   it('leaves regular http://… links untouched', () => {
@@ -137,7 +137,7 @@ describe('MarkdownText ax:// URL handling', () => {
 // (the runner emits the tool result, then the closing text as a fresh turn;
 // reload's history adapter builds one renderable message per turn). The
 // resolver must scan the WHOLE thread, not just the link's own message —
-// otherwise the chip renders as a dead "unknown artifact" pill (the bug).
+// otherwise the chip renders as a dead "File unavailable" pill (the bug).
 // ---------------------------------------------------------------------------
 
 const ARTIFACT = {
@@ -216,10 +216,10 @@ describe('MarkdownText ax://artifact resolution across messages (TASK-20)', () =
     }
 
     render(<LiveHarness />);
-    // The named, downloadable chip — NOT the "unknown artifact" pill.
+    // The named, downloadable chip — NOT the "File unavailable" pill.
     const a = await screen.findByRole('link', { name: 'Ocean Poem' });
     expect(a.getAttribute('href')).toMatch(/\/api\/files\?/);
-    expect(screen.queryByText(/unknown artifact/i)).toBeNull();
+    expect(screen.queryByText(/File unavailable/i)).toBeNull();
   });
 
   it('resolves the chip on reload — the history adapter splits the tool turn from the closing-text turn', async () => {
@@ -325,7 +325,7 @@ describe('MarkdownText ax://artifact resolution across messages (TASK-20)', () =
     render(<ReloadHarness />);
     const a = await screen.findByRole('link', { name: 'Ocean Poem' });
     expect(a.getAttribute('href')).toMatch(/\/api\/files\?/);
-    expect(screen.queryByText(/unknown artifact/i)).toBeNull();
+    expect(screen.queryByText(/File unavailable/i)).toBeNull();
   });
 
   // TASK-77 regression — the runner persists an artifact_publish tool_result as
@@ -333,7 +333,7 @@ describe('MarkdownText ax://artifact resolution across messages (TASK-20)', () =
   // the thread part's `result`/`output` un-flattened (e.g. a future transport
   // tweak, or a tool_result that wasn't string-flattened), `parseArtifactsFromThread`
   // must still recover the artifact JSON — otherwise a perfectly valid published
-  // artifact renders as a dead "unknown artifact" pill.
+  // artifact renders as a dead "File unavailable" pill.
   it('resolves the chip when the tool-call result is the ARRAY content shape', async () => {
     const uiMessages = [
       { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'make a poem' }] },
@@ -379,14 +379,14 @@ describe('MarkdownText ax://artifact resolution across messages (TASK-20)', () =
     render(<ArrayHarness />);
     const a = await screen.findByRole('link', { name: 'Ocean Poem' });
     expect(a.getAttribute('href')).toMatch(/\/api\/files\?/);
-    expect(screen.queryByText(/unknown artifact/i)).toBeNull();
+    expect(screen.queryByText(/File unavailable/i)).toBeNull();
   });
 
   // TASK-81 regression — the runner emits the MCP-namespaced tool name
   // `mcp__ax-sandbox-tools__artifact_publish` (the SDK renames MCP tools at the
   // canUseTool boundary, and that name is what's persisted + reaches the part).
   // `parseArtifactsFromThread` keyed on the bare `artifact_publish`, so the link
-  // never paired with its result and rendered a dead "unknown artifact" pill —
+  // never paired with its result and rendered a dead "File unavailable" pill —
   // the published artifact wasn't downloadable from the transcript.
   it('resolves the chip when the tool-call carries the MCP-namespaced tool name', async () => {
     const uiMessages = [
@@ -432,10 +432,10 @@ describe('MarkdownText ax://artifact resolution across messages (TASK-20)', () =
     render(<McpNameHarness />);
     const a = await screen.findByRole('link', { name: 'Ocean Poem' });
     expect(a.getAttribute('href')).toMatch(/\/api\/files\?/);
-    expect(screen.queryByText(/unknown artifact/i)).toBeNull();
+    expect(screen.queryByText(/File unavailable/i)).toBeNull();
   });
 
-  it('still renders "unknown artifact" when NO message in the thread published that id', async () => {
+  it('still renders "File unavailable" when NO message in the thread published that id', async () => {
     const uiMessages = [
       { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
       {
@@ -462,7 +462,7 @@ describe('MarkdownText ax://artifact resolution across messages (TASK-20)', () =
 
     render(<Harness2 />);
     await waitFor(() =>
-      expect(screen.getByText(/unknown artifact/i)).toBeTruthy(),
+      expect(screen.getByText(/File unavailable/i)).toBeTruthy(),
     );
     expect(screen.queryByRole('link', { name: 'Ocean Poem' })).toBeNull();
   });

@@ -216,7 +216,7 @@ export function SessionRow({
             whitespace-nowrap overflow-hidden text-ellipsis
           "
         >
-          delete this session?
+          Delete this chat?
         </span>
         <button
           type="button"
@@ -230,7 +230,7 @@ export function SessionRow({
             cancelConfirmDelete();
           }}
         >
-          cancel
+          Cancel
         </button>
         <button
           type="button"
@@ -245,7 +245,7 @@ export function SessionRow({
             void confirmDelete();
           }}
         >
-          delete
+          Delete
         </button>
       </div>
     );

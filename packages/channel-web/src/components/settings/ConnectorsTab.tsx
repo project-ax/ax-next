@@ -426,7 +426,7 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
               {/* Connected → the keys are already set, so this opens the
                   enter/replace-key dialog: name it for what it does ("Update
                   credentials"), not the vague "Manage" that collided with Edit. */}
-              {section === 'connected' ? 'Update credentials' : 'Connect'}
+              {section === 'connected' ? 'Update key' : 'Connect'}
             </Button>
           </div>
         </RoleCard>

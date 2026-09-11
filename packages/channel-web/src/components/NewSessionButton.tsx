@@ -60,7 +60,7 @@ export function NewSessionButton() {
           strokeLinecap="round"
         />
       </svg>
-      <span className="flex-1 min-w-0 text-left [body.sidebar-collapsed_&]:hidden">new session</span>
+      <span className="flex-1 min-w-0 text-left [body.sidebar-collapsed_&]:hidden">New chat</span>
       <span
         className="
           font-mono text-[10.5px] tracking-[0.02em] text-ink-ghost
