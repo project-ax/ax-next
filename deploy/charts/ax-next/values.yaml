@@ -450,6 +450,21 @@ credentials:
 anthropic:
   apiKey: ""
 
+# ─── xAI ──────────────────────────────────────────────────────────
+# Optional, and the ONLY switch for the memory_search retrieval
+# orchestrator (TASK-191). Leave it empty and @ax/memory-strata falls back
+# to plain BM25 — which works, and is what every deployment has been
+# running, because until TASK-347 the chart had no way to set this.
+#
+# This buys the host outbound calls to xAI on the memory_search path. It is
+# the same capability class as the host's existing Anthropic calls; the host
+# already has unrestricted port-443 egress, so no NetworkPolicy changes.
+#
+# Lookup-stable like anthropic.apiKey: an upgrade that doesn't re-pass it
+# keeps the existing value.
+xai:
+  apiKey: ""
+
 # ─── Auto-titling ─────────────────────────────────────────────────
 # When `anthropic.apiKey` is set, the host pod loads
 # @ax/conversation-titles and writes a short title to each
@@ -614,6 +629,10 @@ auth:
   # Leave empty to auto-generate (the normal case). Set ONLY to carry an
   # existing AX_AUTH_SECRET onto a fresh cluster (decoded value).
   secret: ""
+  # How long a signed-in session lasts, in seconds. Empty keeps
+  # @ax/auth-better's 7-day default. Positive integer; the host refuses to
+  # boot on anything else rather than quietly rounding it.
+  sessionLifetimeSeconds: ""
 
 # ─── Network policies ────────────────────────────────────────────
 # `enabled: true` is the safe default. Disabling is supported only for
@@ -670,6 +689,14 @@ ingress:
 # skills — is always on and unaffected by this flag.)
 skills:
   allowUserInstalled: true
+
+# ─── Chat ─────────────────────────────────────────────────────────
+# How long ONE chat turn may run before the orchestrator gives up, in
+# milliseconds. Empty keeps the preset's own default. Raise it if agents do
+# long tool-heavy work and turns are being cut off; a positive number, and
+# the host refuses to boot on anything else.
+chat:
+  timeoutMs: ""
 
 # ─── ax-next runtime config ──────────────────────────────────────
 # Rendered verbatim into a ConfigMap mounted at /etc/ax-next/ax.config.yaml.

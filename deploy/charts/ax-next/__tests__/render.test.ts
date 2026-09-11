@@ -1323,3 +1323,66 @@ describeIfHelm('ax-next chart: config.models.default → AX_AGENT_MODELS_ALLOWED
     expect(r.stderr).toContain('provider/model-id');
   });
 });
+
+
+// ── TASK-347: the three knobs the chart could not reach ──
+//
+// Found by the new third gate in env-shape.test.ts: the preset read all three
+// and no template stamped any of them, so no operator could set them. XAI_API_KEY
+// is the consequential one — it is the only switch for the memory_search
+// retrieval orchestrator, so every deployment silently ran the BM25 fallback.
+describeIfHelm('ax-next chart: previously unstampable env (TASK-347)', () => {
+  const hostEnv = (extraArgs: readonly string[]) =>
+    findHostEnv(helmTemplate(extraArgs));
+
+  const secretData = (docs: K8sDoc[]): Record<string, string> => {
+    const secret = docs.find(
+      (d) => d.kind === 'Secret' && (d.metadata?.name ?? '').endsWith('-secrets'),
+    );
+    return (secret?.data as Record<string, string>) ?? {};
+  };
+
+  it('stamps none of them by default', () => {
+    const names = hostEnv([]).map((e) => e.name);
+    expect(names).not.toContain('XAI_API_KEY');
+    expect(names).not.toContain('AX_AUTH_SESSION_LIFETIME_SECONDS');
+    expect(names).not.toContain('AX_CHAT_TIMEOUT_MS');
+  });
+
+  it('xai.apiKey reaches the host through the Secret, never as a literal', () => {
+    const args = ['--set', 'xai.apiKey=xai-test-key'];
+    const found = hostEnv(args).find((e) => e.name === 'XAI_API_KEY');
+    expect(found, 'XAI_API_KEY present').toBeDefined();
+    // An API key stamped as a plain `value:` would sit in the Deployment spec
+    // for anyone with pod-read. It goes through secretKeyRef like its sibling.
+    expect(found?.value).toBeUndefined();
+    const ref = found?.valueFrom?.['secretKeyRef'] as
+      | { key?: string }
+      | undefined;
+    expect(ref?.key).toBe('xai-api-key');
+
+    expect(secretData(helmTemplate(args))['xai-api-key']).toBe(
+      Buffer.from('xai-test-key').toString('base64'),
+    );
+  });
+
+  it('does not put an xai-api-key in the Secret when none was given', () => {
+    expect(secretData(helmTemplate([]))['xai-api-key']).toBeUndefined();
+  });
+
+  it('auth.sessionLifetimeSeconds is stamped as the loader expects it', () => {
+    const found = hostEnv([
+      '--set', 'auth.sessionLifetimeSeconds=3600',
+    ]).find((e) => e.name === 'AX_AUTH_SESSION_LIFETIME_SECONDS');
+    // Quoted: the loader Number()s the string, and an unquoted 3600 renders
+    // as a YAML int, which k8s rejects for an env value.
+    expect(found?.value).toBe('3600');
+  });
+
+  it('chat.timeoutMs is stamped as the loader expects it', () => {
+    const found = hostEnv([
+      '--set', 'chat.timeoutMs=900000',
+    ]).find((e) => e.name === 'AX_CHAT_TIMEOUT_MS');
+    expect(found?.value).toBe('900000');
+  });
+});

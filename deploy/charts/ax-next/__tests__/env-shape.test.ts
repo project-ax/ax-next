@@ -22,7 +22,7 @@
 // list is exactly the thing that drifted in PR #37.
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { globSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -35,6 +35,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const chartDir = resolve(here, '..');
 const repoRoot = resolve(here, '../../../..');
 const presetSourcePath = resolve(repoRoot, 'presets/k8s/src/index.ts');
+const templatesDir = resolve(chartDir, 'templates');
 
 const KIND_DEV_VALUES = resolve(chartDir, 'kind-dev-values.yaml');
 
@@ -458,5 +459,134 @@ describeIfHelm('host deployment env vs preset loader', () => {
       (e) => e.name === 'AX_ALLOW_USER_INSTALLED_SKILLS',
     )?.value;
     expect(v).toBe('true');
+  });
+});
+
+/**
+ * THE THIRD GATE (TASK-347): an env var the preset READS that the chart can
+ * never stamp.
+ *
+ * The two gates above are both anchored on the rendered Deployment, and so
+ * neither can see this case. Gate 1 only checks vars the loader marks
+ * REQUIRED; gate 2 only checks vars the deployment already sets. An OPTIONAL
+ * var that no template mentions is invisible to both — the code reads it,
+ * nothing can ever set it, and CI stays green.
+ *
+ * That is exactly how TASK-325 happened. `AX_AGENT_WORKSPACE_PREVIEW` is read
+ * as a bare `process.env` lookup, is optional, and had no chart value, so the
+ * whole agent-workspace UI — and later the #504 file browser behind it —
+ * shipped unreachable on any fresh install.
+ *
+ * WHY THIS ONE SCANS SOURCE INSTEAD OF RENDERING. The question is "can the
+ * chart EVER stamp this?", which a render cannot answer: a render only shows
+ * one configuration, and re-rendering with every feature switched on is not
+ * possible — the chart's own validators make some of them mutually exclusive
+ * (`sandbox.proxySocketHostPath` vs `credentialProxy.tcp.enabled` fail the
+ * template if both are set). Two earlier attempts foundered there, one of them
+ * on an errored render that produced an empty file and counted NOTHING as
+ * stamped. A template that mentions the var in an env entry can stamp it under
+ * some configuration; one that never mentions it cannot stamp it under any.
+ *
+ * Consequently this gate needs no helm, and is deliberately outside
+ * `describeIfHelm` — it still runs when the CLI is absent.
+ *
+ * WHAT IT CANNOT SEE, by construction: env vars read by PLUGINS rather than by
+ * the preset loader — `OPENROUTER_API_KEY`, for instance, which is read inside
+ * @ax/llm-openrouter and appears nowhere in this scan.
+ *
+ * That one is also the reason not to widen the scan naively: on k8s the preset
+ * loads that plugin with `credentialResolution: true`, so its key comes from
+ * the credentials table and the chart is CORRECT not to stamp it. A scan over
+ * every package would report it, and be wrong. Deciding stampability for a
+ * plugin-read var means knowing whether it has a credential path, which is a
+ * bigger and much noisier job. This gate covers the preset, which is where the
+ * k8s deployment's own configuration surface is decided.
+ */
+const NEVER_OPERATOR_FACING: ReadonlyMap<string, string> = new Map([
+  [
+    'AX_RUNNER_BINARY',
+    'Overrides the claude-sdk runner binary PATH. The binary ships inside the ' +
+      'image at a fixed location, so an operator who pointed this elsewhere ' +
+      'would only break the runner. Dev/test override, deliberately not a value.',
+  ],
+  [
+    'AX_PROXY_SOCKET_PATH',
+    'The credential-proxy socket path INSIDE the pod, which is a convention ' +
+      'shared by the host and the runner rather than a deployment choice. The ' +
+      'operator-facing knob is sandbox.proxySocketHostPath (where the socket ' +
+      'lives on the NODE), which is stamped.',
+  ],
+]);
+
+describe('preset env reads the chart can never stamp (TASK-347)', () => {
+  /** Every env var name any chart template actually stamps as a var. */
+  function collectStampedEnvNames(): Set<string> {
+    const out = new Set<string>();
+    // node:fs globSync has no `absolute` option — it yields paths relative
+    // to `cwd`, which readFileSync then resolves against the PROCESS cwd.
+    const files = [
+      ...globSync('**/*.yaml', { cwd: templatesDir }),
+      ...globSync('**/*.tpl', { cwd: templatesDir }),
+    ].map((f) => resolve(templatesDir, f));
+    // An over-guard, per the drift-guard rule: a scan that stops finding its
+    // own corpus must fail loudly rather than pass vacuously.
+    expect(files.length, 'chart templates found').toBeGreaterThan(5);
+    for (const file of files) {
+      // `- name: FOO` under an `env:` list. Matching the env-entry shape
+      // rather than a bare mention is what keeps a var that appears only in
+      // a COMMENT from counting as stamped.
+      for (const m of readFileSync(file, 'utf8').matchAll(
+        /^\s*-\s*name:\s*"?([A-Z][A-Z0-9_]*)"?\s*$/gm,
+      )) {
+        out.add(m[1]!);
+      }
+    }
+    return out;
+  }
+
+  it('every optional env var the preset reads can be stamped by some configuration', () => {
+    const { all: reads } = collectLoaderEnvReads();
+    const stamped = collectStampedEnvNames();
+
+    expect(reads.size, 'preset env reads found').toBeGreaterThan(20);
+    expect(stamped.size, 'stamped env names found').toBeGreaterThan(20);
+
+    const unstampable = [...reads]
+      .filter((name) => !stamped.has(name))
+      .filter((name) => !NEVER_OPERATOR_FACING.has(name))
+      .sort();
+
+    expect(
+      unstampable,
+      'the preset reads these env vars and NO chart template stamps them, so ' +
+        'no operator can ever set them — the TASK-325 defect. Either add a ' +
+        'value + env entry to the chart, or add the name to ' +
+        'NEVER_OPERATOR_FACING with the reason it is not operator-facing: ' +
+        unstampable.join(', '),
+    ).toEqual([]);
+  });
+
+  it('the exemption list has no stale entries', () => {
+    // A list nobody prunes is how a guard quietly stops guarding. An entry
+    // that the preset no longer reads, or that the chart has since learned to
+    // stamp, is a claim that has expired.
+    const { all: reads } = collectLoaderEnvReads();
+    const stamped = collectStampedEnvNames();
+
+    const notRead = [...NEVER_OPERATOR_FACING.keys()].filter(
+      (name) => !reads.has(name),
+    );
+    expect(
+      notRead,
+      `exempted but the preset no longer reads: ${notRead.join(', ')}`,
+    ).toEqual([]);
+
+    const nowStamped = [...NEVER_OPERATOR_FACING.keys()].filter((name) =>
+      stamped.has(name),
+    );
+    expect(
+      nowStamped,
+      `exempted as not-operator-facing, but the chart stamps them: ${nowStamped.join(', ')}`,
+    ).toEqual([]);
   });
 });

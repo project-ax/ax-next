@@ -426,6 +426,32 @@ spec:
               value: {{ .Values.titles.model | quote }}
             {{- end }}
 
+            # xAI key — optional, and the only switch for the memory_search
+            # retrieval orchestrator (TASK-191). Unset, @ax/memory-strata
+            # falls back to pure BM25. Until TASK-347 the chart could not set
+            # this at all, so every deployment ran the fallback.
+            {{- $existingXaiSecret := lookup "v1" "Secret" (include "ax-next.hostNamespace" .) (printf "%s-secrets" (include "ax-next.fullname" .)) }}
+            {{- if or .Values.xai.apiKey (and $existingXaiSecret $existingXaiSecret.data (index $existingXaiSecret.data "xai-api-key")) }}
+            - name: XAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ax-next.fullname" . }}-secrets
+                  key: xai-api-key
+            {{- end }}
+
+            # Session lifetime. Unset, @ax/auth-better keeps its 7-day default.
+            {{- with .Values.auth.sessionLifetimeSeconds }}
+            - name: AX_AUTH_SESSION_LIFETIME_SECONDS
+              value: {{ . | quote }}
+            {{- end }}
+
+            # How long one chat turn may run before the orchestrator gives up.
+            # Unset, the preset keeps its own default.
+            {{- with .Values.chat.timeoutMs }}
+            - name: AX_CHAT_TIMEOUT_MS
+              value: {{ . | quote }}
+            {{- end }}
+
             # Agent model allow-list (TASK-326). Read by @ax/agents'
             # resolveAllowedModels at plugin init, NOT by the preset loader —
             # see the external-readers list in __tests__/env-shape.test.ts.
