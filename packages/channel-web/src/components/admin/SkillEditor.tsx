@@ -374,9 +374,10 @@ export function SkillEditor({ skillId, onSaved, onCancel, api = defaultApi }: Pr
     return <p className="text-sm text-muted-foreground">Loading…</p>;
   }
 
-  const liveError = !parsedResult.ok
-    ? `${'code' in parsedResult ? parsedResult.code : ''}: ${parsedResult.message}`
-    : null;
+  // (TASK-343 / audit D8) The parser's `code` was prefixed onto every live
+  // error, so a simple typo read "invalid-frontmatter: ...". The code is for us;
+  // the message is already the part a person can act on.
+  const liveError = !parsedResult.ok ? parsedResult.message : null;
 
   const saveLabel = saving ? 'Saving…' : skillId === undefined ? 'Install' : 'Update';
 
@@ -731,7 +732,8 @@ interface RawEditorProps {
 }
 
 function RawEditor({ value, onChange, parsed }: RawEditorProps) {
-  const liveError = !parsed.ok ? `${parsed.code}: ${parsed.message}` : null;
+  // (D8) Same here — the code prefix belongs in the console, not on the field.
+  const liveError = !parsed.ok ? parsed.message : null;
   return (
     <div className="grid grid-cols-2 gap-3">
       <div className="flex flex-col gap-1">

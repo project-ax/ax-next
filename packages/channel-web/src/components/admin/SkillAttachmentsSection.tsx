@@ -10,6 +10,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { listSkills, listUserSkills } from '@/lib/skills';
+import { humanizeId } from '@/lib/humanize';
 import { patchAgentSkillAttachments } from '@/lib/admin';
 import type { SkillSummary } from '@ax/skills';
 
@@ -88,7 +89,15 @@ export function SkillAttachmentsSection({
         .filter((a) => !skillById.has(a.skillId))
         .map((a) => a.skillId);
       if (missingIds.length > 0) {
-        setError(`Cannot save: missing skill metadata for ${missingIds.join(', ')}`);
+        // (D9) "Cannot save: missing skill metadata for x,y" names our own
+        // internal shortfall and leaves the reader with no move. The ids go to
+        // the console; the message says what to do.
+        console.warn('[skill-attachments] missing skill metadata for', missingIds);
+        setError(
+          missingIds.length === 1
+            ? `We couldn’t load the details for “${humanizeId(missingIds[0]!)}”, so we can’t save yet. Remove it from the list and try again.`
+            : 'We couldn’t load the details for some of these skills, so we can’t save yet. Remove the ones that show only an id, and try again.',
+        );
         setSaving(false);
         return;
       }
@@ -123,8 +132,15 @@ export function SkillAttachmentsSection({
         </Alert>
       )}
 
+      {/* (TASK-343 / audit D9) "No skills attached." states a fact and teaches
+          nothing — least of all to the reader most likely to see it, who has
+          never attached one and does not know what it would do. */}
       {attachments.length === 0 && (
-        <p className="text-sm text-muted-foreground">No skills attached.</p>
+        <p className="text-sm text-muted-foreground">
+          No skills attached. Attaching a skill teaches this agent a specific
+          job — how to file a ticket, or read your calendar — and it can use it
+          from then on.
+        </p>
       )}
 
       <ul className="space-y-3 list-none m-0 p-0">
@@ -133,11 +149,20 @@ export function SkillAttachmentsSection({
           return (
             <li key={a.skillId} className="rounded-md border border-border p-3">
               <div className="flex items-center justify-between mb-2">
+                {/* (D9) The row led with the raw id in mono and demoted the
+                    description to a footnote — backwards, since the
+                    description is the part that says what the skill DOES. The
+                    id stays visible as secondary text: it is what an admin
+                    quotes in a bug report. */}
                 <div>
-                  <div className="text-sm font-mono">{a.skillId}</div>
-                  {skill && (
+                  <div className="text-sm">{humanizeId(a.skillId)}</div>
+                  {skill ? (
                     <div className="text-xs text-muted-foreground">
                       {skill.description}
+                    </div>
+                  ) : (
+                    <div className="text-xs font-mono text-muted-foreground">
+                      {a.skillId}
                     </div>
                   )}
                 </div>

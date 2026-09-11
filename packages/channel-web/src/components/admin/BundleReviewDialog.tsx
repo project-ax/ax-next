@@ -9,6 +9,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { getSkillOrNull } from '@/lib/skills';
+import { humanizeId } from '@/lib/humanize';
 import { decideCatalogRequest } from '@/lib/catalog';
 import { compareBundles, reconstructSkillMd, type BundleFileEntry } from '@/lib/bundle-diff';
 import { BundleDiffView } from './BundleDiffView';
@@ -104,8 +105,13 @@ export function BundleReviewDialog({ request, onClose, onDecided }: BundleReview
     >
       <DialogContent className="max-w-4xl">
         <DialogHeader>
+          {/* (TASK-343 / audit D10) "Review share request: linear-issues" put a
+              wire enum and a slug in the heading. Reuses TASK-334's shared
+              humanizer, which falls back to the raw id when there is nothing
+              readable in it. */}
           <DialogTitle>
-            Review {request.kind} request: {request.skillId}
+            {isShare ? 'Review shared skill' : 'Review skill request'}:{' '}
+            {humanizeId(request.skillId)}
           </DialogTitle>
           {/* Renders via Radix DialogDescription so aria-describedby is wired
               on the content automatically (kills the missing-description a11y
@@ -115,10 +121,14 @@ export function BundleReviewDialog({ request, onClose, onDecided }: BundleReview
 
         <div className="flex flex-col gap-3">
           {!isShare ? (
+            // (D10) This pointed at the Catalog tab, which TASK-125 REMOVED
+            // from the nav — an instruction to visit a surface that no longer
+            // exists. Skills → "+ Add to workspace" is where authoring lives now.
             <Alert>
               <AlertDescription>
-                Cold-start request — there is no bundle to promote. Author the skill in the Catalog
-                tab, then reject this request to clear it.
+                There's nothing to review yet — this request arrived without any
+                skill files. You can write the skill yourself under Skills, with
+                “+ Add to workspace”, then reject this request to clear it.
               </AlertDescription>
             </Alert>
           ) : entries === null ? (
@@ -133,6 +143,16 @@ export function BundleReviewDialog({ request, onClose, onDecided }: BundleReview
             </Alert>
           )}
 
+          {/* (D10) Say how far approval reaches. "Admit" gave no clue that the
+              decision is org-wide rather than about this reviewer's own
+              workspace, which is the single fact a reviewer needs. */}
+          {isShare && (
+            <p className="text-sm text-muted-foreground">
+              Approving puts this skill in your organisation's catalog, where
+              anyone here can install it.
+            </p>
+          )}
+
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={onClose} disabled={deciding}>
               Cancel
@@ -140,8 +160,9 @@ export function BundleReviewDialog({ request, onClose, onDecided }: BundleReview
             <Button variant="destructive" onClick={() => void decide('reject')} disabled={deciding}>
               Reject
             </Button>
+            {/* Label only — the decision value posted to the API stays 'admit'. */}
             <Button onClick={() => void decide('admit')} disabled={!canAdmit}>
-              Admit
+              Approve
             </Button>
           </div>
         </div>

@@ -113,7 +113,7 @@ describe('SkillAttachmentsSection', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText('github-api')).toBeTruthy();
+      expect(screen.getByText('GitHub API')).toBeTruthy();
     });
     expect(screen.queryByText('GITHUB_TOKEN')).toBeNull();
   });
@@ -131,7 +131,7 @@ describe('SkillAttachmentsSection', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText('github-api')).toBeTruthy();
+      expect(screen.getByText('GitHub API')).toBeTruthy();
     });
 
     // Click "Attach skill" button
@@ -157,7 +157,7 @@ describe('SkillAttachmentsSection', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText('github-api')).toBeTruthy();
+      expect(screen.getByText('GitHub API')).toBeTruthy();
     });
 
     fireEvent.click(screen.getByRole('button', { name: /save attachments/i }));
@@ -183,7 +183,7 @@ describe('SkillAttachmentsSection', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText('No skills attached.')).toBeTruthy();
+      expect(screen.getByText(/No skills attached\./)).toBeTruthy();
     });
 
     fireEvent.click(screen.getByRole('button', { name: /save attachments/i }));
@@ -191,6 +191,43 @@ describe('SkillAttachmentsSection', () => {
     await waitFor(() => {
       expect(screen.getByText('foreign key violation')).toBeTruthy();
     });
+  });
+
+  /**
+   * TASK-343 / audit D9 — the missing-metadata guard's message.
+   *
+   * "Cannot save: missing skill metadata for x,y" names our own internal
+   * shortfall and leaves the reader with nothing to do about it. The ids go to
+   * the console; the sentence says which one and what to do.
+   */
+  it('says what to do when a skill’s details could not be loaded', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    render(
+      <SkillAttachmentsSection
+        isAdmin
+        agentId={AGENT_ID}
+        // Attached, but absent from the catalog the component just fetched.
+        initialAttachments={[{ skillId: 'ghost-skill', credentialBindings: {} }]}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /save attachments/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/Remove it from the list and try again/i)).toBeTruthy(),
+    );
+    // Humanized in the sentence, exact in the console.
+    expect(screen.getByText(/“Ghost skill”/)).toBeTruthy();
+    expect(screen.queryByText(/missing skill metadata/i)).toBeNull();
+    expect(warn).toHaveBeenCalledWith(
+      '[skill-attachments] missing skill metadata for',
+      ['ghost-skill'],
+    );
+    // Nothing was sent — the guard still blocks the save.
+    expect(mockPatch).not.toHaveBeenCalled();
+
+    warn.mockRestore();
   });
 
   it('clicking detach removes the attachment from the in-memory list', async () => {
@@ -207,15 +244,15 @@ describe('SkillAttachmentsSection', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText('github-api')).toBeTruthy();
-      expect(screen.getByText('slack-notify')).toBeTruthy();
+      expect(screen.getByText('GitHub API')).toBeTruthy();
+      expect(screen.getByText('Slack notify')).toBeTruthy();
     });
 
     fireEvent.click(screen.getByRole('button', { name: 'Detach github-api' }));
 
     await waitFor(() => {
-      expect(screen.queryByText('github-api')).toBeNull();
-      expect(screen.getByText('slack-notify')).toBeTruthy();
+      expect(screen.queryByText('GitHub API')).toBeNull();
+      expect(screen.getByText('Slack notify')).toBeTruthy();
     });
 
     // The patch should NOT be called — detach is local-only until Save
@@ -235,7 +272,7 @@ describe('SkillAttachmentsSection', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText('slack-notify')).toBeTruthy();
+      expect(screen.getByText('Slack notify')).toBeTruthy();
     });
 
     // slack-notify has no credentials, so no Set credential button
