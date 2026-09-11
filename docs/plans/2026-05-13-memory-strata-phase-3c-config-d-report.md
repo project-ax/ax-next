@@ -316,8 +316,8 @@ Same model, same run, one request parameter:
 A ~4× p50 improvement, reproduced twice. And the control's max in run B is
 **5183ms — past the 5000ms budget**, which is not a latency regression but a
 correctness one: that call fell through to BM25 and said nothing about it.
-`reasoning_tokens` on the control ran ~250–550 per call, spent on tokens the op
-parser discards.
+`reasoning_tokens` on the control ran 259–578 per call (run B, all 19), spent on
+tokens the op parser discards.
 
 ### Verified, not assumed — `reasoning_tokens` read back per call
 

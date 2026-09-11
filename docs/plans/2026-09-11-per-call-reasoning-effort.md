@@ -7,9 +7,11 @@
 
 `memory_search`'s retrieval orchestrator runs under a 5000ms budget
 (`DEFAULT_ORCHESTRATOR_TIMEOUT_MS`) and falls back to BM25 **silently** on a miss.
-Benchmarking found reasoning — not model choice — dominates that budget:
-`z-ai/glm-5.3-flash:nitro` goes p50 3489 → 954ms, p95 16195 → 1256ms when asked for
-minimal reasoning, at ~7× lower input cost than the current default.
+Benchmarking found reasoning — not model choice — dominates that budget. The card
+(#512) reported `z-ai/glm-5.3-flash:nitro` going p50 3489 → 954ms and p95 16195 →
+1256ms with minimal reasoning; this branch's own control-vs-flagged runs reproduce
+the effect at p50 3338 → 865ms, with the no-flag arm's slowest call at 5183ms —
+past the budget outright. Either way, at ~7× lower input cost than the default.
 
 `LlmCallInput` is `{model, maxTokens, system, messages, temperature}` and neither
 provider's translate layer has a passthrough, so the flag cannot reach the wire. The
@@ -59,7 +61,16 @@ Model ids taken from a live `GET /api/v1/models` — all four present.
     4096 | 16384}`. The API requires `max_tokens > budget_tokens`, so `max_tokens`
     becomes `budget + caller's maxTokens` (the caller asked for N tokens of *answer*;
     thinking is extra). The API also rejects a non-1 `temperature` alongside
-    thinking, so `temperature` is dropped.
+    thinking, so `temperature` is dropped (and the cap is floored at
+    `budget + max(maxTokens, 1)`, because the API's inequality is strict and
+    `maxTokens: 0` would otherwise land exactly on the budget).
+  - An effort value outside the ladder — only reachable from plain JS or a
+    JSON-decoded config, since TypeScript rejects it — is REFUSED with a
+    `PluginError`, not silently dropped. The lookup is own-property-guarded
+    (`Object.freeze` does not stop a prototype walk, so an unguarded index on
+    `'constructor'` would put a *function* in `budget_tokens`). Refusing keeps
+    the same caller bug loud on both providers: OpenRouter forwards whatever it
+    was given and answers 400.
 - Any future provider with no analogue ignores the field.
 
 ### Boundary review (invariant 1) — answered in the PR
@@ -104,3 +115,54 @@ validator-skill) are deliberately **left alone** — see PR body for the reasoni
 ## Out of scope
 
 Orchestrator **accuracy** — unmeasured for every model in these tables. Its own card.
+
+
+## Appendix — raw acceptance probe (2026-09-11)
+
+The "no `'none'` rung" decision rests on this, and it is a separate manual probe
+from the latency bench, so the output is recorded here rather than only summarized.
+`GET /api/v1/models` first (all four ids present), then one completion per
+model × shape, reading `usage.completion_tokens_details.reasoning_tokens` back:
+
+```
+  z-ai/glm-5.3-flash:nitro           effort:none       400 "Reasoning is mandatory for this endpoint and cannot be disabled."
+  z-ai/glm-5.3-flash:nitro           effort:minimal    200 | rt=0 | 410ms
+  z-ai/glm-5.3-flash:nitro           effort:low        200 | rt=1 | 355ms
+  z-ai/glm-5.3-flash:nitro           effort:medium     200 | rt=1
+  z-ai/glm-5.3-flash:nitro           effort:high       200 | rt=0 | 449ms
+  z-ai/glm-5.3-flash:nitro           enabled:false     400 "Reasoning is mandatory for this endpoint and cannot be disabled."
+  z-ai/glm-5.3-flash:nitro           absent            200 | rt=0 | 347ms
+  deepseek/deepseek-v4.1-flash:nitro effort:none       200 | rt=0 | 373ms
+  deepseek/deepseek-v4.1-flash:nitro effort:minimal    200 | rt=16 | 461ms
+  deepseek/deepseek-v4.1-flash:nitro effort:low        200 | rt=16 | 359ms
+  deepseek/deepseek-v4.1-flash:nitro effort:medium     200 | rt=19
+  deepseek/deepseek-v4.1-flash:nitro effort:high       200 | rt=16 | 365ms
+  deepseek/deepseek-v4.1-flash:nitro enabled:false     200 | rt=0 | 346ms
+  deepseek/deepseek-v4.1-flash:nitro absent            200 | rt=16 | 371ms
+  google/gemini-3.8-flash:nitro      effort:none       400 "Reasoning is mandatory for this endpoint and cannot be disabled."
+  google/gemini-3.8-flash:nitro      effort:minimal    200 | rt=0 | 808ms
+  google/gemini-3.8-flash:nitro      effort:low        200 | rt=0 | 1327ms
+  google/gemini-3.8-flash:nitro      effort:medium     200 | rt=72
+  google/gemini-3.8-flash:nitro      effort:high       200 | rt=76 | 912ms
+  google/gemini-3.8-flash:nitro      enabled:false     400 "Reasoning is mandatory for this endpoint and cannot be disabled."
+  google/gemini-3.8-flash:nitro      absent            200 | rt=75 | 897ms
+  anthropic/claude-haiku-4.5         effort:none       200 | rt=0 | 736ms
+  anthropic/claude-haiku-4.5         effort:minimal    200 | rt=0 | 734ms
+  anthropic/claude-haiku-4.5         effort:low        200 | rt=0 | 784ms
+  anthropic/claude-haiku-4.5         effort:medium     200 | rt=0
+  anthropic/claude-haiku-4.5         effort:high       200 | rt=0 | 793ms
+  anthropic/claude-haiku-4.5         enabled:false     200 | rt=0 | 691ms
+  anthropic/claude-haiku-4.5         absent            200 | rt=0 | 704ms
+```
+
+Three things this pinned down that a summary would have lost:
+
+1. **`effort:'none'` 400s in exactly the same places `enabled:false` does.** The
+   obvious "just map our `'none'` onto theirs" design would have been dead on
+   arrival for two of four models. That is why the ladder's floor is `'minimal'`.
+2. **Latency here is not the latency that matters.** These are one-sentence
+   prompts; every arm looks fast. The reasoning penalty only shows up against a
+   real densified map, which is what the bench measures.
+3. **`deepseek` reasons at every rung including `'minimal'`** (rt=16) and stops
+   only for `enabled:false`/`effort:'none'`. Foreshadowed the bench finding that
+   it emits 32–279 reasoning tokens on every orchestrator call.

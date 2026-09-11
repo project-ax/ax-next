@@ -64,10 +64,11 @@ describe('makeBusOrchestratorClient', () => {
   it('asks for MINIMAL reasoning, whatever model is configured', async () => {
     // The orchestrator emits a short op list under a 5000ms budget and falls
     // back to BM25 SILENTLY when it misses, so any deliberation is budget
-    // spent on tokens the op parser throws away. Measured 2026-09-11:
-    // z-ai/glm-5.3-flash:nitro went p50 3489 -> 954ms, p95 16195 -> 1256ms on
-    // this one field. Without it the cheap models are strictly worse than the
-    // default they would replace, and silent about it.
+    // spent on tokens the op parser throws away. Measured 2026-09-11,
+    // z-ai/glm-5.3-flash:nitro with and without this field in the same bench
+    // run: p50 3338 -> 865ms, and the no-flag arm's slowest call was 5183ms —
+    // past the budget. Without this field the cheap models are strictly worse
+    // than the default they would replace, and silent about it.
     const call = vi.fn().mockResolvedValue({
       text: 'plan',
       stopReason: 'end_turn',

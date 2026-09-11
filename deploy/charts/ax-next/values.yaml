@@ -710,7 +710,9 @@ skills:
 #                                 tried, but its slow calls vary a lot run to
 #                                 run (we've seen 4.1s). Still inside budget,
 #                                 just less predictable.
-#   google/gemini-3.8-flash:nitro ~25% cheaper, and about as steady as haiku.
+#   google/gemini-3.8-flash:nitro ~25% cheaper. Steadier than GLM, though not
+#                                 quite haiku — its worst call across two runs
+#                                 was 2.3s against haiku's 1.6s.
 # Both degrade to BM25 rather than to a wrong answer if they miss, so this is a
 # safe knob to experiment with.
 memory:

@@ -289,7 +289,9 @@ export function makeBusOrchestratorClient(
         // memory_search falls back to BM25 SILENTLY — so a model that thinks
         // first spends the budget on tokens the op parser discards and the
         // deployment never finds out. Measured 2026-09-11 on
-        // z-ai/glm-5.3-flash:nitro: p50 3489 -> 954ms, p95 16195 -> 1256ms.
+        // z-ai/glm-5.3-flash:nitro, control vs flagged in the SAME bench run:
+        // p50 3338 -> 865ms, and the control's slowest call was 5183ms — past
+        // the budget, i.e. already falling through to BM25 in silence.
         //
         // Hard-coded rather than configurable on purpose — there is no version
         // of this role that wants to think harder, and a knob would just be a

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type Anthropic from '@anthropic-ai/sdk';
+import { PluginError } from '@ax/core';
 import { fromAnthropicResponse, toAnthropicRequest } from '../translate.js';
 
 describe('toAnthropicRequest', () => {
@@ -273,23 +274,38 @@ describe('toAnthropicRequest — reasoningEffort', () => {
     expect('temperature' in req).toBe(false);
   });
 
-  it('ignores an unrecognized rung instead of building a broken request', () => {
+  it('REFUSES an unrecognized rung rather than building a broken request', () => {
     // Only reachable from plain JS or a JSON-decoded config — TypeScript
     // rejects it. 'constructor' specifically: `Object.freeze` does not stop a
     // prototype walk, so an unguarded index would put a FUNCTION in
-    // `budget_tokens` and NaN in `max_tokens`.
+    // `budget_tokens` and NaN in `max_tokens` — a corrupt request rather than
+    // a rejected one.
+    //
+    // It throws instead of degrading so that the SAME caller bug is loud on
+    // both providers: @ax/llm-openrouter forwards the value and OpenRouter
+    // answers 400.
+    const build = (): unknown =>
+      toAnthropicRequest(
+        {
+          messages: [{ role: 'user', content: 'hi' }],
+          maxTokens: 512,
+          reasoningEffort: 'constructor' as unknown as 'high',
+        },
+        {},
+      );
+    expect(build).toThrow(PluginError);
+    expect(build).toThrow(/unknown reasoningEffort "constructor"/);
+  });
+
+  it('keeps max_tokens STRICTLY above the budget even when the caller asks for 0', () => {
+    // Anthropic requires max_tokens > budget_tokens, strictly. `maxTokens: 0`
+    // is nullish-coalescing-proof (0 ?? d === 0), so without the floor the cap
+    // would land exactly ON the budget and the API would reject the call.
     const req = toAnthropicRequest(
-      {
-        messages: [{ role: 'user', content: 'hi' }],
-        maxTokens: 512,
-        temperature: 0.2,
-        reasoningEffort: 'constructor' as unknown as 'high',
-      },
+      { messages: [{ role: 'user', content: 'hi' }], maxTokens: 0, reasoningEffort: 'low' },
       {},
     );
-    expect('thinking' in req).toBe(false);
-    expect(req.max_tokens).toBe(512);
-    expect(req.temperature).toBe(0.2);
+    expect(req.max_tokens).toBeGreaterThan(1024);
   });
 
   it("keeps temperature for 'minimal', which enables nothing", () => {
