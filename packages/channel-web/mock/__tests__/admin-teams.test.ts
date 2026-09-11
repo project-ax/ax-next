@@ -6,6 +6,7 @@ import { createServer, type Server } from 'node:http';
 import { Store } from '../store';
 import { authMiddleware } from '../auth';
 import { adminTeamsMiddleware, type Team } from '../admin/teams';
+import { expectStatus } from './expect-status';
 
 async function startServer(
   store: Store,
@@ -46,7 +47,7 @@ describe('mock admin teams', () => {
     const { url, close } = await startServer(store);
     try {
       const res = await fetch(`${url}/api/admin/teams`, { headers: { cookie: ADMIN } });
-      expect(res.status).toBe(200);
+      await expectStatus(res, 200);
       const body = await res.json();
       const teams = body.teams as Team[];
       expect(teams).toHaveLength(1);
@@ -60,7 +61,7 @@ describe('mock admin teams', () => {
     const { url, close } = await startServer(store);
     try {
       const res = await fetch(`${url}/api/admin/teams`, { headers: { cookie: ALICE } });
-      expect(res.status).toBe(403);
+      await expectStatus(res, 403);
     } finally {
       await close();
     }

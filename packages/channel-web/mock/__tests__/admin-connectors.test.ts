@@ -9,6 +9,7 @@ import {
   adminConnectorsMiddleware,
   settingsConnectorsMiddleware,
 } from '../admin/connectors';
+import { expectStatus } from './expect-status';
 
 async function startServer(
   store: Store,
@@ -67,7 +68,7 @@ describe('mock admin connectors', () => {
     const { url, close } = await startServer(store);
     try {
       const res = await fetch(`${url}/admin/connectors`);
-      expect(res.status).toBe(401);
+      await expectStatus(res, 401);
     } finally {
       await close();
     }
@@ -77,7 +78,7 @@ describe('mock admin connectors', () => {
     const { url, close } = await startServer(store);
     try {
       const res = await fetch(`${url}/admin/connectors`, { headers: { cookie: ALICE } });
-      expect(res.status).toBe(200);
+      await expectStatus(res, 200);
       const body = await res.json();
       expect(body).toEqual({ connectors: [] });
     } finally {
@@ -93,7 +94,7 @@ describe('mock admin connectors', () => {
         headers: { cookie: ALICE, 'content-type': 'application/json' },
         body: JSON.stringify(upsertBody()),
       });
-      expect(create.status).toBe(201);
+      await expectStatus(create, 201);
       const created = await create.json();
       expect(created.created).toBe(true);
       expect(created.connector.id).toBe('gdrive');
@@ -119,7 +120,7 @@ describe('mock admin connectors', () => {
         body: JSON.stringify(upsertBody()),
       });
       const res = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ALICE } });
-      expect(res.status).toBe(200);
+      await expectStatus(res, 200);
       const body = await res.json();
       expect(body.connector).toMatchObject({
         id: 'gdrive',
@@ -138,7 +139,7 @@ describe('mock admin connectors', () => {
     const { url, close } = await startServer(store);
     try {
       const res = await fetch(`${url}/admin/connectors/nope`, { headers: { cookie: ALICE } });
-      expect(res.status).toBe(404);
+      await expectStatus(res, 404);
     } finally {
       await close();
     }
@@ -152,14 +153,14 @@ describe('mock admin connectors', () => {
         headers: { cookie: ALICE, 'content-type': 'application/json' },
         body: JSON.stringify(upsertBody({ connectorId: 'Bad Slug!' })),
       });
-      expect(badSlug.status).toBe(400);
+      await expectStatus(badSlug, 400);
 
       const noName = await fetch(`${url}/admin/connectors`, {
         method: 'POST',
         headers: { cookie: ALICE, 'content-type': 'application/json' },
         body: JSON.stringify(upsertBody({ name: '' })),
       });
-      expect(noName.status).toBe(400);
+      await expectStatus(noName, 400);
     } finally {
       await close();
     }
@@ -178,7 +179,7 @@ describe('mock admin connectors', () => {
         headers: { cookie: ALICE, 'content-type': 'application/json' },
         body: JSON.stringify({ name: 'Drive (renamed)' }),
       });
-      expect(patch.status).toBe(200);
+      await expectStatus(patch, 200);
       const patched = await patch.json();
       expect(patched.created).toBe(false);
       expect(patched.connector.name).toBe('Drive (renamed)');
@@ -205,16 +206,16 @@ describe('mock admin connectors', () => {
         method: 'DELETE',
         headers: { cookie: ALICE },
       });
-      expect(del.status).toBe(204);
+      await expectStatus(del, 204);
 
       const reget = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ALICE } });
-      expect(reget.status).toBe(404);
+      await expectStatus(reget, 404);
 
       const redel = await fetch(`${url}/admin/connectors/gdrive`, {
         method: 'DELETE',
         headers: { cookie: ALICE },
       });
-      expect(redel.status).toBe(404);
+      await expectStatus(redel, 404);
     } finally {
       await close();
     }
@@ -236,20 +237,20 @@ describe('mock admin connectors', () => {
 
       // Cross-tenant get/patch/delete all surface as 404 (not 403).
       const get = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ADMIN } });
-      expect(get.status).toBe(404);
+      await expectStatus(get, 404);
 
       const patch = await fetch(`${url}/admin/connectors/gdrive`, {
         method: 'PATCH',
         headers: { cookie: ADMIN, 'content-type': 'application/json' },
         body: JSON.stringify({ name: 'hijack' }),
       });
-      expect(patch.status).toBe(404);
+      await expectStatus(patch, 404);
 
       const del = await fetch(`${url}/admin/connectors/gdrive`, {
         method: 'DELETE',
         headers: { cookie: ADMIN },
       });
-      expect(del.status).toBe(404);
+      await expectStatus(del, 404);
 
       // Alice's connector is untouched.
       const aliceGet = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ALICE } });
@@ -268,13 +269,13 @@ describe('mock admin connectors', () => {
         headers: { cookie: ALICE, 'content-type': 'application/json' },
         body: JSON.stringify(upsertBody({ userId: 'u1' })),
       });
-      expect(create.status).toBe(201);
+      await expectStatus(create, 201);
 
       // It belongs to Alice (session), not the forged u1.
       const adminGet = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ADMIN } });
-      expect(adminGet.status).toBe(404);
+      await expectStatus(adminGet, 404);
       const aliceGet = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ALICE } });
-      expect(aliceGet.status).toBe(200);
+      await expectStatus(aliceGet, 200);
     } finally {
       await close();
     }
@@ -326,7 +327,7 @@ describe('mock user connectors (/settings/connectors)', () => {
     const { url, close } = await startUserServer(store);
     try {
       const res = await fetch(`${url}/settings/connectors`);
-      expect(res.status).toBe(401);
+      await expectStatus(res, 401);
     } finally {
       await close();
     }
@@ -340,7 +341,7 @@ describe('mock user connectors (/settings/connectors)', () => {
         headers: { cookie: ALICE, 'content-type': 'application/json' },
         body: JSON.stringify(upsertBody({ visibility: undefined })),
       });
-      expect(res.status).toBe(201);
+      await expectStatus(res, 201);
       const body = (await res.json()) as { connector: { visibility: string } };
       expect(body.connector.visibility).toBe('private');
     } finally {
@@ -356,7 +357,7 @@ describe('mock user connectors (/settings/connectors)', () => {
         headers: { cookie: ALICE, 'content-type': 'application/json' },
         body: JSON.stringify(upsertBody({ visibility: 'shared' })),
       });
-      expect(res.status).toBe(400);
+      await expectStatus(res, 400);
       const body = (await res.json()) as { error: string };
       expect(body.error).toMatch(/admin-only/);
     } finally {
@@ -372,7 +373,7 @@ describe('mock user connectors (/settings/connectors)', () => {
         headers: { cookie: ALICE, 'content-type': 'application/json' },
         body: JSON.stringify(upsertBody({ defaultAttached: true })),
       });
-      expect(res.status).toBe(400);
+      await expectStatus(res, 400);
     } finally {
       await close();
     }
@@ -386,14 +387,14 @@ describe('mock user connectors (/settings/connectors)', () => {
         headers: { cookie: ALICE, 'content-type': 'application/json' },
         body: JSON.stringify(upsertBody()),
       });
-      expect(create.status).toBe(201);
+      await expectStatus(create, 201);
 
       const patch = await fetch(`${url}/settings/connectors/gdrive`, {
         method: 'PATCH',
         headers: { cookie: ALICE, 'content-type': 'application/json' },
         body: JSON.stringify({ name: 'Renamed Drive' }),
       });
-      expect(patch.status).toBe(200);
+      await expectStatus(patch, 200);
       const patched = (await patch.json()) as {
         connector: { name: string; visibility: string };
       };
@@ -404,11 +405,11 @@ describe('mock user connectors (/settings/connectors)', () => {
         method: 'DELETE',
         headers: { cookie: ALICE },
       });
-      expect(del.status).toBe(204);
+      await expectStatus(del, 204);
       const get = await fetch(`${url}/settings/connectors/gdrive`, {
         headers: { cookie: ALICE },
       });
-      expect(get.status).toBe(404);
+      await expectStatus(get, 404);
     } finally {
       await close();
     }
@@ -425,20 +426,20 @@ describe('mock user connectors (/settings/connectors)', () => {
           upsertBody({ connectorId: 'shared-conn', visibility: 'shared' }),
         ),
       });
-      expect(seed.status).toBe(201);
+      await expectStatus(seed, 201);
 
       const patch = await fetch(`${url}/settings/connectors/shared-conn`, {
         method: 'PATCH',
         headers: { cookie: ALICE, 'content-type': 'application/json' },
         body: JSON.stringify({ name: 'hijack' }),
       });
-      expect(patch.status).toBe(403);
+      await expectStatus(patch, 403);
 
       const del = await fetch(`${url}/settings/connectors/shared-conn`, {
         method: 'DELETE',
         headers: { cookie: ALICE },
       });
-      expect(del.status).toBe(403);
+      await expectStatus(del, 403);
     } finally {
       await close();
     }
@@ -461,7 +462,7 @@ describe('mock user connectors (/settings/connectors)', () => {
         headers: { cookie: ALICE, 'content-type': 'application/json' },
         body: JSON.stringify(upsertBody({ connectorId: 'shared-conn' })),
       });
-      expect(res.status).toBe(403);
+      await expectStatus(res, 403);
       // Still shared.
       const get = await fetch(`${url}/admin/connectors/shared-conn`, {
         headers: { cookie: ALICE },
@@ -488,7 +489,7 @@ describe('mock user connectors (/settings/connectors)', () => {
         headers: { cookie: ADMIN, 'content-type': 'application/json' },
         body: JSON.stringify({ name: 'hijack' }),
       });
-      expect(patch.status).toBe(404);
+      await expectStatus(patch, 404);
     } finally {
       await close();
     }

@@ -6,6 +6,7 @@ import { createServer, type Server } from 'node:http';
 import { Store } from '../store';
 import { authMiddleware } from '../auth';
 import { adminMcpServersMiddleware, type McpServer } from '../admin/mcp-servers';
+import { expectStatus } from './expect-status';
 
 async function startServer(
   store: Store,
@@ -46,7 +47,7 @@ describe('mock admin mcp-servers', () => {
     const { url, close } = await startServer(store);
     try {
       const res = await fetch(`${url}/api/admin/mcp-servers`, { headers: { cookie: ADMIN } });
-      expect(res.status).toBe(200);
+      await expectStatus(res, 200);
       const body = await res.json();
       expect(Array.isArray(body.servers)).toBe(true);
       expect(body.servers).toEqual([]);
@@ -59,7 +60,7 @@ describe('mock admin mcp-servers', () => {
     const { url, close } = await startServer(store);
     try {
       const res = await fetch(`${url}/api/admin/mcp-servers`, { headers: { cookie: ALICE } });
-      expect(res.status).toBe(403);
+      await expectStatus(res, 403);
     } finally {
       await close();
     }
@@ -77,7 +78,7 @@ describe('mock admin mcp-servers', () => {
           transport: 'http',
         }),
       });
-      expect(res.status).toBe(201);
+      await expectStatus(res, 201);
       const body = await res.json();
       expect(body.id).toMatch(/^mcp-[0-9a-z]+-[A-Za-z0-9_-]{6}$/);
       const stored = store.collection<McpServer>('mcp-servers').get(body.id);
@@ -98,7 +99,7 @@ describe('mock admin mcp-servers', () => {
         headers: { cookie: ADMIN, 'content-type': 'application/json' },
         body: JSON.stringify({ name: 'new' }),
       });
-      expect(res.status).toBe(200);
+      await expectStatus(res, 200);
       const got = store.collection<McpServer>('mcp-servers').get('m1');
       expect(got?.name).toBe('new');
       expect(got?.url).toBe('https://x');
@@ -117,7 +118,7 @@ describe('mock admin mcp-servers', () => {
         method: 'DELETE',
         headers: { cookie: ADMIN },
       });
-      expect(res.status).toBe(204);
+      await expectStatus(res, 204);
       expect(store.collection<McpServer>('mcp-servers').get('m1')).toBeUndefined();
     } finally {
       await close();
@@ -134,7 +135,7 @@ describe('mock admin mcp-servers', () => {
         method: 'POST',
         headers: { cookie: ADMIN },
       });
-      expect(res.status).toBe(200);
+      await expectStatus(res, 200);
       const body = await res.json();
       expect(body).toEqual({ ok: true });
     } finally {
