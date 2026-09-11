@@ -51,7 +51,8 @@ const DEPRECATED_MODEL_IDS: ReadonlyArray<{ id: string; note: string }> = [
 
 const PACKAGE_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const SCAN_ROOTS = ['src', 'test'];
-const THIS_FILE = 'deprecated-model-ids.test.ts';
+/** Full path, not a basename: a same-named file elsewhere must still be scanned. */
+const THIS_FILE = fileURLToPath(import.meta.url);
 
 function* walkTsFiles(dir: string): Generator<string> {
   for (const entry of readdirSync(dir)) {
@@ -63,7 +64,7 @@ function* walkTsFiles(dir: string): Generator<string> {
     if (st.isSymbolicLink()) continue;
     if (st.isDirectory()) {
       yield* walkTsFiles(full);
-    } else if (entry.endsWith('.ts') && entry !== THIS_FILE) {
+    } else if (entry.endsWith('.ts') && full !== THIS_FILE) {
       yield full;
     }
   }
