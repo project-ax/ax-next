@@ -32,6 +32,7 @@
  * is not migrated, and it should not be.
  */
 import { useState, type ReactElement } from 'react';
+import { TriangleAlert } from 'lucide-react';
 import {
   Card,
   CardContent,
@@ -46,6 +47,7 @@ import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { grantHost, setDestinationCredential } from '@/lib/credentials';
+import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
 import {
   permissionCardActions,
   usePermissionCardStore,
@@ -103,6 +105,26 @@ function accountOrSkillDestination(s: CardSlot, skillId: string): Destination {
   }
   return { kind: 'skill-slot', skillId, slot: s.slot };
 }
+
+/**
+ * (A2) The reassurance line, shared by the skill and connector cards.
+ *
+ * `workspace/ApprovalCard.tsx` has said something like this for a while and it
+ * is the reason that surface reads as trustworthy: it tells you what the button
+ * does, that nothing has happened yet, and that the decision is reversible. The
+ * grant card — the one that actually widens what an agent may do — said none of
+ * it. Every clause here is true: the grant is durable, nothing is applied until
+ * the click, and both halves are revocable in Settings (skills detach from the
+ * Skills tab, hosts from Allowed sites).
+ *
+ * No jokes on this string. It is a security decision.
+ */
+const GRANT_REASSURANCE =
+  'Connecting lets this agent do this from now on. Nothing happens until you ' +
+  'choose, and you can change it later in Settings.';
+
+/** (A6) Why the Connect button is disabled — it used to just sit there, greyed out. */
+const SLOT_HINT = 'Add the key above to continue';
 
 /**
  * The ONE bundled approval card (JIT design §11.3/§6B, decision #6) — the
@@ -324,7 +346,11 @@ export function PermissionCard() {
       <>
         {hosts.length > 0 && (
           <div className="flex flex-col gap-1.5">
-            <p className="text-xs text-muted-foreground">Will access</p>
+            {/* (A12) A bare hostname list asks the reader to work out why it is
+                there. Say what the list is for before showing it. */}
+            <p className="text-xs text-muted-foreground">
+              To do this, it needs to reach:
+            </p>
             <div className="flex flex-wrap gap-1.5">
               {hosts.map((h) => (
                 <Badge key={h} variant="secondary">
@@ -342,17 +368,25 @@ export function PermissionCard() {
               key={s.slot}
               className="flex items-center gap-2 text-sm text-muted-foreground"
             >
-              <Badge variant="secondary">{s.account ?? s.slot}</Badge>
-              <span>
-                Using your existing{' '}
-                {(s.account ?? s.slot).charAt(0).toUpperCase() +
-                  (s.account ?? s.slot).slice(1)}{' '}
-                key
-              </span>
+              <Badge variant="secondary">{humanizeId(s.account ?? s.slot)}</Badge>
+              <span>Using the {humanizeSlotLabel(s.slot, s.account)} you already saved.</span>
             </div>
           ) : (
             <div key={s.slot} className="grid gap-1.5">
-              <Label htmlFor={`perm-cred-${s.slot}`}>{s.slot}</Label>
+              {/* (A1) This is the single trust moment of the product: we are
+                  asking for a secret. The label said `api_key` and nothing said
+                  where the key goes. Both are fixed here — the label reads as
+                  English, and the helper line states the one fact a person
+                  hesitating over this field actually wants. That claim is true:
+                  the value posts straight to the host credential store and
+                  never reaches the model or the transcript (§10, TASK-35). */}
+              <Label htmlFor={`perm-cred-${s.slot}`}>
+                {humanizeSlotLabel(s.slot, s.account)}
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                We store this key on the server. The agent never sees it, and it
+                never appears in your conversation.
+              </p>
               <Input
                 id={`perm-cred-${s.slot}`}
                 type="password"
@@ -367,13 +401,13 @@ export function PermissionCard() {
         )}
         {packages != null &&
           (packages.npm.length > 0 || packages.pypi.length > 0) && (
+            // (A5) "Installs npm packages → reaches registry.npmjs.org" is a
+            // true sentence that means nothing to most people. What they need
+            // to know is that something gets downloaded — the registry
+            // hostnames are the grant's business, not theirs.
             <p className="text-sm text-muted-foreground" data-testid="permission-packages">
-              {packages.npm.length > 0 && (
-                <>Installs npm packages → reaches <code>registry.npmjs.org</code>. </>
-              )}
-              {packages.pypi.length > 0 && (
-                <>Installs Python packages → reaches <code>pypi.org</code>, <code>files.pythonhosted.org</code>.</>
-              )}
+              It will download some extra software it needs from the internet to
+              do this.
             </p>
           )}
       </>
@@ -389,13 +423,15 @@ export function PermissionCard() {
         <CardContent className="flex flex-col gap-4">
           {request.authored === true && (
             <Alert>
+              <TriangleAlert className="size-4" />
               <AlertDescription>
-                ⚠ This is a new connector your assistant just wrote. Approve the
-                access below only if you expected it.
+                Your assistant wrote this connector itself, just now. Connect it
+                only if you were expecting that.
               </AlertDescription>
             </Alert>
           )}
           {renderReach(request.hosts, request.slots, request.packages)}
+          <p className="text-sm text-muted-foreground">{GRANT_REASSURANCE}</p>
           {error !== null && (
             <Alert variant="destructive">
               <AlertDescription>{error}</AlertDescription>
@@ -403,6 +439,11 @@ export function PermissionCard() {
           )}
         </CardContent>
         <CardFooter className="justify-end gap-2">
+          {!allSlotsFilled && (
+            <p className="mr-auto text-xs text-muted-foreground">
+              {SLOT_HINT}
+            </p>
+          )}
           <Button variant="ghost" disabled={busy} onClick={close}>
             Not now
           </Button>
@@ -454,7 +495,10 @@ export function PermissionCard() {
   return (
     <Card className="mb-3" data-testid="permission-card">
       <CardHeader>
-        <CardTitle>Connect {request.skillId}</CardTitle>
+        {/* (A2) The title read `Connect linear-issues` — the id the producer
+            uses, not the name a person would. Humanized, with the raw id as its
+            own fallback for anything we can't read. */}
+        <CardTitle>Connect {humanizeId(request.skillId)}</CardTitle>
         {request.description.length > 0 && (
           <CardDescription>{request.description}</CardDescription>
         )}
@@ -462,13 +506,15 @@ export function PermissionCard() {
       <CardContent className="flex flex-col gap-4">
         {request.authored === true && (
           <Alert>
+            <TriangleAlert className="size-4" />
             <AlertDescription>
-              ⚠ This is a new skill your assistant just wrote. Approve the access
-              below only if you expected it.
+              Your assistant wrote this skill itself, just now. Connect it only
+              if you were expecting that.
             </AlertDescription>
           </Alert>
         )}
         {renderReach(request.hosts, request.slots, request.packages)}
+        <p className="text-sm text-muted-foreground">{GRANT_REASSURANCE}</p>
         {error !== null && (
           <Alert variant="destructive">
             <AlertDescription>{error}</AlertDescription>
@@ -476,6 +522,9 @@ export function PermissionCard() {
         )}
       </CardContent>
       <CardFooter className="justify-end gap-2">
+        {!allSlotsFilled && (
+          <p className="mr-auto text-xs text-muted-foreground">{SLOT_HINT}</p>
+        )}
         <Button variant="ghost" disabled={busy} onClick={close}>
           Not now
         </Button>
