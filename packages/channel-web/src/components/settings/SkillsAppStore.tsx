@@ -451,8 +451,12 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
             <p className="text-sm text-muted-foreground">Loading…</p>
           ) : installed.length === 0 && ownNotInstalled.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              No skills installed yet. Install one from your workspace below, or
-              create your own.
+              {/* Don't send a first-run reader "below" to a section that is
+                  also empty — the other half of the same walk finding. With
+                  nothing in the catalog, Create is the only door that opens. */}
+              {catalog !== null && catalog.length === 0
+                ? 'No skills installed yet. Create one to get started.'
+                : 'No skills installed yet. Install one from your workspace below, or create your own.'}
             </p>
           ) : (
             <div className="flex flex-col divide-y divide-border rounded-md border border-border">
@@ -640,7 +644,24 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
                       className="flex items-center justify-between gap-3 px-3 py-2"
                     >
                       <div className="min-w-0">
-                        <span className="text-sm truncate">{a.description}</span>
+                        {/*
+                          `block` is what makes `truncate` work, and leaving it
+                          off is silent: `overflow` and `text-overflow` do
+                          nothing to a non-replaced INLINE box, so the span
+                          reports its full intrinsic width and paints straight
+                          out of this `min-w-0` parent. A walk with a real
+                          231-character description measured the span at 1313px
+                          inside an 896px row — under the badge, under the
+                          buttons, and a horizontal scrollbar in the panel.
+
+                          The sibling below already had it; this line did not.
+                          (Spans that are flex ITEMS get blockified for free,
+                          which is why the two rows further up were fine — this
+                          parent is a block, so we have to say it.)
+                        */}
+                        <span className="block text-sm truncate">
+                          {a.description}
+                        </span>
                         <span className="block font-mono text-xs text-muted-foreground">
                           {a.skillId} · {a.agentId}
                         </span>
@@ -724,9 +745,21 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
             <p className="text-sm text-muted-foreground">Loading…</p>
           ) : notInstalled.length === 0 ? (
             <p className="text-sm text-muted-foreground">
+              {/*
+                Three situations, not two. `notInstalled.length === 0` used to
+                collapse the first-run one into the congratulatory one, so a
+                brand-new workspace was told "everything in your workspace is
+                already on this assistant" — vacuously true at 0 of 0, and it
+                read as having finished something never started. Worse, the
+                Installed section directly above says "install one from your
+                workspace below", pointing at this very line. A walk on a fresh
+                cluster hit both sentences stacked on one screen.
+              */}
               {search.trim().length > 0
                 ? 'No matching skills in your workspace.'
-                : 'Nothing left to install — everything in your workspace is already on this assistant.'}
+                : catalog.length === 0
+                  ? 'Your workspace catalog is empty. Add a skill to the workspace and it shows up here, ready to install.'
+                  : 'Nothing left to install — everything in your workspace is already on this assistant.'}
             </p>
           ) : (
             <div className="flex flex-col divide-y divide-border rounded-md border border-border">
@@ -737,8 +770,13 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
                   className="flex items-center gap-3 px-3 py-2.5"
                 >
                   <div className="flex-1 min-w-0">
-                    <span className="text-sm truncate">{c.description || c.skillId}</span>
-                    <span className="font-mono text-xs text-muted-foreground">
+                    {/* `block` for the same reason as the authored row above —
+                        this parent is a block, so an inline span ignores
+                        `truncate` entirely. */}
+                    <span className="block text-sm truncate">
+                      {c.description || c.skillId}
+                    </span>
+                    <span className="block font-mono text-xs text-muted-foreground">
                       {c.skillId}
                     </span>
                   </div>

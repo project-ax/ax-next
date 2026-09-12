@@ -176,9 +176,26 @@ export function Composer() {
           without deciding it — and the [L] unified queue the audit rejected
           stays unbuilt.
         */}
+        {/*
+          `bg-background` is load-bearing, not decoration.
+
+          The composer paints itself with `.composer-fade`, a gradient that is
+          opaque at the bottom and fully TRANSPARENT at the top — sized for a
+          composer that is just an input, where the transparent end is a soft
+          edge over the transcript. With an approval open this element is most
+          of the composer's height, so it lands squarely in that transparent
+          band. The cards are themselves translucent (`bg-warning-soft/40`), so
+          the transcript behind them showed straight THROUGH: a browser walk
+          caught the agent's own explanation of what it wanted overlapping the
+          card asking for it by 71px, both illegible, at the moment a person has
+          to read both to make a security decision.
+
+          An opaque backdrop here fixes it for any composer height, which a
+          percentage-based gradient cannot.
+        */}
         <div
           data-approval-stack=""
-          className="max-h-[50vh] overflow-y-auto [scrollbar-gutter:stable]"
+          className="max-h-[50vh] overflow-y-auto [scrollbar-gutter:stable] bg-background"
         >
           <InThreadApprovals />
           <PermissionCard />

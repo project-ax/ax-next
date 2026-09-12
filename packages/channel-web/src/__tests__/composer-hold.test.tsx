@@ -255,4 +255,30 @@ describe('Composer hold while an approval is open', () => {
     const input = screen.getByPlaceholderText(/answer the request above/i);
     expect(stack!.contains(input)).toBe(false);
   });
+
+  /**
+   * The capped region above is only half the story, and a browser walk found
+   * the other half.
+   *
+   * `.composer-fade` is a gradient: opaque at the bottom, fully transparent at
+   * the top. That is right for a composer that is just an input — the
+   * transparent end is a soft edge. With an approval open the stack becomes
+   * most of the composer's height and sits in the transparent band, and the
+   * cards are themselves translucent, so the transcript scrolling underneath
+   * showed THROUGH them. Measured on the cluster: the assistant's paragraph
+   * (y 479-595) and the approval card (y 524-700) overlapped by 71px, with
+   * both texts painted on top of each other.
+   *
+   * Nothing about that is visible to jsdom, so this asserts the fix itself:
+   * the stack carries its own opaque backdrop. A percentage gradient cannot do
+   * this job, because the composer's height changes with what is stacked in it.
+   */
+  it('gives the approval stack an opaque backdrop so the transcript cannot bleed through', () => {
+    mockOpen = [decisionFixture()];
+    const { container } = renderComposer();
+
+    const stack = container.querySelector('[data-approval-stack]');
+    expect(stack).not.toBeNull();
+    expect(stack!.className).toContain('bg-background');
+  });
 });

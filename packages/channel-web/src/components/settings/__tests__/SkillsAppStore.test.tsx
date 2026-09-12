@@ -103,6 +103,50 @@ beforeEach(() => {
 });
 
 describe('SkillsAppStore', () => {
+  /**
+   * A walk on a fresh cluster found the page arguing with itself. With nothing
+   * installed and nothing in the catalog it said, stacked on one screen:
+   *
+   *   "No skills installed yet. Install one from your workspace below..."
+   *   "Nothing left to install — everything in your workspace is already on
+   *    this assistant."
+   *
+   * The first points at a section that is also empty. The second is vacuously
+   * true at 0 of 0 and congratulates a first-run user for finishing something
+   * they never started. Both came from branching on `notInstalled.length === 0`,
+   * which cannot tell "the catalog is empty" from "you installed all of it".
+   */
+  it('an empty catalog reads as empty, not as everything-already-installed', async () => {
+    mockGetConnections.mockResolvedValue({ agentId: 'a1', skills: [] });
+    mockListCatalog.mockResolvedValue([]);
+    mockListUserSkills.mockResolvedValue([]);
+    render(<SkillsAppStore isAdmin={false} />);
+
+    expect(
+      await screen.findByText(/Your workspace catalog is empty/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Nothing left to install/i)).toBeNull();
+    // ...and the installed half stops pointing "below" at that same empty shelf.
+    expect(screen.getByText(/Create one to get started/i)).toBeInTheDocument();
+    expect(screen.queryByText(/from your workspace below/i)).toBeNull();
+  });
+
+  /** The congratulatory line still earns its place when it is actually true. */
+  it('keeps everything-already-installed when the catalog is non-empty', async () => {
+    mockGetConnections.mockResolvedValue({
+      agentId: 'a1',
+      skills: [
+        { skillId: 'web-search', description: 'Search the web.', source: 'default', removable: false },
+        { skillId: 'pdf-tools', description: 'Work with PDFs.', source: 'default', removable: true },
+      ],
+    });
+    mockListUserSkills.mockResolvedValue([]);
+    render(<SkillsAppStore isAdmin={false} />);
+
+    expect(await screen.findByText(/Nothing left to install/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Your workspace catalog is empty/i)).toBeNull();
+  });
+
   it('renders INSTALLED with a count and NOT INSTALLED with a count', async () => {
     render(<SkillsAppStore isAdmin={false} />);
     // Wait for both shelves to settle (the catalog row is the last to render).
@@ -181,6 +225,42 @@ describe('SkillsAppStore', () => {
   const AUTHORED: AuthoredSkillListing[] = [
     { skillId: 'drafted', agentId: 'a1', description: 'An agent-authored draft.', status: 'active' },
   ];
+
+  /**
+   * A browser walk installed a real agent-authored skill and its 231-character
+   * description ran out of the row: under the status badge, under the Edit and
+   * Delete buttons, and past the panel edge with a horizontal scrollbar.
+   *
+   * The span already had `truncate` and its wrapper already had `min-w-0`.
+   * Neither was the bug. `overflow` and `text-overflow` do NOTHING to a
+   * non-replaced inline box, so an inline span ignores `truncate` outright and
+   * reports its full intrinsic width — measured at 1313px inside an 896px row.
+   * `block` is the whole fix.
+   *
+   * Spans that happen to be flex ITEMS are blockified by the flex container and
+   * were never affected, which is exactly why this went unnoticed in the two
+   * rows that sit in flex parents. These two sit in block parents.
+   */
+  it('truncating descriptions are block-level, or truncate silently does nothing', async () => {
+    mockListAuthored.mockResolvedValue([
+      {
+        skillId: 'drafted',
+        agentId: 'a1',
+        description:
+          'Fetch current weather and multi-day forecasts for any location. ' +
+          'Use when the user asks about weather, temperature, rain, wind, or ' +
+          'the forecast for a city or place.',
+        status: 'active',
+      },
+    ]);
+    render(<SkillsAppStore isAdmin={false} />);
+
+    const row = await screen.findByTestId('authored-drafted');
+    const desc = row.querySelector('.truncate');
+    expect(desc).not.toBeNull();
+    // `truncate` without `block` is inert on a span in a block parent.
+    expect(desc!.className).toContain('block');
+  });
 
   it('an authored draft shows an Edit (adopt-&-edit) button', async () => {
     mockListAuthored.mockResolvedValue(AUTHORED);
