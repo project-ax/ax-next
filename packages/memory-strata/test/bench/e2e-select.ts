@@ -12,11 +12,14 @@
 // pre-existing behavior. Both flags are opt-in; run semantics are unchanged
 // unless one is passed.
 
+import { stratifiedSample } from './stratify.js';
 import type { LongMemEvalSample } from './corpora/longmemeval-s.js';
 import type { E2EReportRow } from './e2e-report.js';
 import type { E2EResumeRow } from './e2e-resume.js';
 
 export interface SelectSamplesInput {
+  /** 'stratified' (default) draws proportionally across question_type; 'first' takes the corpus-order prefix. */
+  selection?: 'stratified' | 'first';
   /** The full loaded corpus, in corpus order. */
   samples: LongMemEvalSample[];
   /** `question_type` values to keep. Empty/absent = no type filter. */
@@ -37,9 +40,19 @@ export interface SelectSamplesInput {
  */
 export function selectSamples(input: SelectSamplesInput): LongMemEvalSample[] {
   const { samples, limit } = input;
+  const selection = input.selection ?? 'stratified';
   const typeSet = input.types && input.types.length > 0 ? new Set(input.types) : null;
   const idSet = input.ids && input.ids.length > 0 ? new Set(input.ids) : null;
-  if (typeSet === null && idSet === null) return samples.slice(0, limit);
+  if (typeSet === null && idSet === null) {
+    // The header above describes this file's reason for existing: the corpus is
+    // ordered in type blocks, so the old unconditional `slice(0, limit)` drew a
+    // biased set and `--types` was the manual workaround. Stratifying makes the
+    // DEFAULT draw representative; `selection: 'first'` keeps the old prefix
+    // for reproducing a historical run.
+    return selection === 'first'
+      ? samples.slice(0, limit)
+      : stratifiedSample(samples, limit, (s) => s.question_type);
+  }
   const filtered = samples.filter(
     (s) =>
       (typeSet !== null && s.question_type !== undefined && typeSet.has(s.question_type)) ||

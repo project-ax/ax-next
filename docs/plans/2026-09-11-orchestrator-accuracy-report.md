@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-11 / 2026-09-12
 **Corpus:** LongMemEval-S, n=500 (full), the binding axis from the 2026-05-13 round
-**Spend:** ~$71 across ten runs (see [Provenance](#provenance))
+**Spend:** ~$78 across twelve runs (see [Provenance](#provenance))
 
 ## Headline
 
@@ -85,15 +85,77 @@ Grok was losing plans to the same prefix. The corrected architecture delta is ro
 what was claimed: **+12 to +14.8pp accuracy, +49 to +52.6pp recall@5**. The May conclusion
 (architecture works; map quality is load-bearing) was right, and more right than it knew.
 
-## A second methodology defect: `--sample N` is a prefix, not a sample
+## A second methodology defect: `--sample N` was a prefix, not a sample — FIXED
 
-LongMemEval-S is ordered by `question_type`. `--sample 40` returns 40 `single-session-user`
-questions and nothing else; `--sample 100` gets 70 single-session + 30 multi-session. Every
-small-n run in this repo's history therefore measured a type-biased slice — including the
-n=100 rounds the May report calls misleading, which now have a concrete mechanism for having
-misled. The n=500 runs here are the full corpus and are unaffected. **Not fixed in this
-branch** — flagged, because fixing it changes the meaning of a flag other reports were
-written against.
+LongMemEval-S is ordered by `question_type`. `--sample 40` returned 40 `single-session-user`
+questions and nothing else; `--sample 100` got 70 single-session + 30 multi-session, and
+knowledge-update questions (position 434 onward) appeared in neither. Every small-n run in
+this repo's history therefore measured a type-biased slice — including the n=100 rounds the
+May report calls misleading, which now have a concrete mechanism for having misled.
+`e2e-select.ts` had already hit this from the other side and added `--types` as a manual
+workaround.
+
+`--sample N` is now a **deterministic proportional draw across `question_type`** (largest
+remainder allocation, evenly spaced within each stratum, no RNG — a bench you cannot re-run
+identically is a bench you cannot argue with). The old behaviour is preserved exactly as
+**`--first N`**, so historical runs stay reproducible; the existing back-compat guard was
+retargeted to that flag rather than deleted, since reproducibility is what it was protecting.
+The same fix applies to the e2e path's `selectSamples`.
+
+What a stratified draw looks like against a prefix of the same size:
+
+    --first 150   -> 2 question types
+    --sample 150  -> multi-session=40 temporal-reasoning=40 knowledge-update=23
+                     single-session-user=21 single-session-assistant=17
+                     single-session-preference=9
+
+Every report now stamps the draw in its header, so no future number is ambiguous about how
+its questions were chosen.
+
+## The answer stage was starved — the truncation cost 24 accuracy points
+
+Retrieval reaches ~91-94% recall@5 while accuracy sits at 33-36%, so something between "the
+right document was retrieved" and "the answer is right" was dropping ~58 points.
+
+`pnpm --filter @ax/memory-strata bench:diag-truncation` (no API calls, pure corpus
+arithmetic) measures the injection cap against the documents it cuts:
+
+| | |
+|---|---|
+| cap in force | 2,000 chars/doc |
+| median gold-doc body | **14,424 chars** (p90 18,316; max 28,167) |
+| gold docs truncated | **944 / 948 = 99.6%** |
+| questions where EVERY matching answer token is past the cut | **17.0%** |
+| questions where some answer tokens are lost | 31.0% |
+
+The agent was being asked to answer from the first ~14% of the document. Control vs treatment
+on the **same stratified 150 questions**, changing only the cap:
+
+| | cap 2,000 | cap 30,000 | delta |
+|---|---|---|---|
+| accuracy | 36.7% | **60.7%** | **+24.0pp, z=4.16** |
+| false-refusal (answerable) | 51.0% | **19.6%** | −31.4pp, z=−5.56 |
+| recall@5 | 89.3% | 90.7% | flat — retrieval never changed |
+| answer-model input tokens | 250,404 | 1,475,378 | 5.9× |
+| run cost | $1.46 | $5.35 | 3.7× |
+
+The collapse in false refusals is the mechanism in one number: the agent was not failing to
+reason, it was saying "I don't know" about evidence that had been cut off.
+
+**The default is now 20,000 chars/doc** — clears p99 for nearly every document while keeping a
+cap so one pathological doc cannot blow up a prompt. `AX_BENCH_MAX_BODY_CHARS` buys the cheap
+old behaviour back, and the cap is stamped into every report header so two runs under
+different caps cannot be silently compared.
+
+**This is a bench property, not a product defect.** Production never injects fixed-size
+truncated bodies: `memory_search` returns snippets plus `matchedFacts`, and the agent drills
+in with `memory_read_section`. So the ~58-point gap was never all product loss, and bench
+accuracy is a floor rather than a product number — `--mode e2e` remains the faithful path.
+
+**Consequence for everything above:** every n=500 figure in this report was measured at the
+old 2,000-char cap and is therefore a floor. The arm-vs-arm comparisons stand — all three arms
+shared the same starved answer stage — but the absolute accuracies would all rise
+substantially under the new default.
 
 ## Caveats
 
@@ -137,10 +199,12 @@ The A arm needed no re-run: it has no planner, so the map format cannot reach it
 
 1. **Nothing to change in the runtime.** The shipped orchestrator and default model are both
    vindicated. This branch changes only the bench and the docs.
-2. **Fix `--sample` to stratify** (or rename it `--first`), and re-read any small-n conclusion
-   in `docs/plans/` in that light.
-3. **Chase the answer stage.** E-glm now retrieves gold into the top 5 on 94.4% of questions
-   and answers 36.0% correctly. Retrieval is emphatically no longer the bottleneck; ~58 points
-   are lost after it. `MAX_INJECTED_BODY_CHARS = 2000` is the first suspect.
+2. ~~**Fix `--sample` to stratify.**~~ Done — see above. Still worth re-reading any small-n
+   conclusion in `docs/plans/` in that light: those runs drew a prefix, and the flag that
+   reproduces them is now `--first`.
+3. ~~**Chase the answer stage.**~~ Done — see above. The 2,000-char injection cap was worth
+   24 accuracy points. Re-running the three-arm n=500 comparison under the new cap would put
+   absolute numbers on the record (~$18/arm); the model ordering is unlikely to move, since
+   the cap starved every arm equally.
 4. **Re-run the map rewrite with the production planner** — the last variable still held at
    its May value.

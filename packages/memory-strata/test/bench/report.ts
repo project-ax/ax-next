@@ -35,6 +35,19 @@ export interface ReportInput {
    * planner that simply hands the answer model less to read.
    */
   spendByModel?: Record<string, ModelSnapshot>;
+  /**
+   * How the question set was drawn. Stamped because a prefix of a type-ordered
+   * corpus is not a sample of it, and a report that does not say which one it
+   * used invites its number to be compared against one that used the other.
+   */
+  sampleNote?: string;
+  /**
+   * Per-doc body cap the answer stage ran under. Stamped because changing it
+   * moved accuracy 24 points without touching retrieval — two reports measured
+   * under different caps are not comparable, and nothing else on the page says
+   * so.
+   */
+  bodyCharCap?: number;
 }
 
 type CorpusName = BenchCorpus['name'];
@@ -125,6 +138,10 @@ export function renderReport(input: ReportInput): string {
   lines.push(``);
   lines.push(`**Date:** ${date}`);
   lines.push(`**Cap:** $${input.cap}`);
+  if (input.sampleNote) lines.push(`**Sampling:** ${input.sampleNote}`);
+  if (input.bodyCharCap !== undefined) {
+    lines.push(`**Answer-stage body cap:** ${input.bodyCharCap.toLocaleString('en-US')} chars/doc`);
+  }
   if (input.orchestratorModel && input.results.some((r) => ORCHESTRATOR_CONFIGS.has(r.config))) {
     lines.push(`**Orchestrator model:** \`${input.orchestratorModel}\``);
   }

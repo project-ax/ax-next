@@ -24,9 +24,28 @@ function corpus(): LongMemEvalSample[] {
 }
 
 describe('selectSamples', () => {
-  it('with no filters is identical to slice(0, limit) — back-compat guard', () => {
+  it("selection:'first' is identical to slice(0, limit) — back-compat guard", () => {
+    // This guard used to cover the DEFAULT. It now covers the opt-in, because
+    // the default draw changed (below) — what it protects is the ability to
+    // reproduce a historical run byte-for-byte, and that is preserved exactly.
     const all = corpus();
-    expect(selectSamples({ samples: all, limit: 10 })).toEqual(all.slice(0, 10));
+    expect(selectSamples({ samples: all, limit: 10, selection: 'first' })).toEqual(all.slice(0, 10));
+    expect(selectSamples({ samples: all, limit: 500, selection: 'first' })).toEqual(all);
+  });
+
+  it('defaults to a stratified draw, so a small run is not one type block', () => {
+    // The prefix of this corpus is 100 single-session-user rows; the assistant
+    // block starts at index 100. `--sample 10` used to mean "10 user questions
+    // and no assistant questions" while reading like a sample of the corpus.
+    const all = corpus();
+    const rows = selectSamples({ samples: all, limit: 10 });
+    expect(rows).toHaveLength(10);
+    const types = new Set(rows.map((r) => r.question_type));
+    expect(types).toEqual(new Set(['single-session-user', 'single-session-assistant']));
+  });
+
+  it('still returns the whole corpus when the limit covers it', () => {
+    const all = corpus();
     expect(selectSamples({ samples: all, limit: 500 })).toEqual(all);
   });
 
