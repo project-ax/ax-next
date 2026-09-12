@@ -226,3 +226,84 @@ describe('renderReport — orchestrator model stamp', () => {
     expect(md).not.toContain('Orchestrator model');
   });
 });
+
+describe('renderReport — spend by model', () => {
+  it('breaks the bill down per model, so the total is not read as the planner', () => {
+    // The planner is the only role that differs between arms, which makes a
+    // bare total easy to misattribute to it. In practice the answer model
+    // dominates, and a cheaper-looking arm is usually one whose planner handed
+    // the answer model FEWER documents to read — a different finding entirely.
+    const md = renderReport({
+      results: [makeResult({ config: 'e-map-fts' })],
+      cap: 50,
+      totalSpent: 10,
+      capExceeded: false,
+      runDate: new Date('2026-09-11T00:00:00Z'),
+      spendByModel: {
+        'claude-sonnet-4-6': { tokensIn: 3_000_000, tokensOut: 100_000, dollars: 10.5 },
+        'z-ai/glm-5.3-flash:nitro': { tokensIn: 1_000_000, tokensOut: 50_000, dollars: 0.175 },
+        'never-called': { tokensIn: 0, tokensOut: 0, dollars: 0 },
+      },
+    });
+    expect(md).toContain('## Spend by model');
+    expect(md).toContain('`claude-sonnet-4-6` | 3,000,000 | 100,000 | $10.5000 | 98.4%');
+    expect(md).toContain('`z-ai/glm-5.3-flash:nitro` | 1,000,000 | 50,000 | $0.1750 | 1.6%');
+    // A model with a pricing row but no calls is noise, not a zero-dollar fact.
+    expect(md).not.toContain('never-called');
+  });
+
+  it('omits the section when the meter was never fed', () => {
+    const md = renderReport({
+      results: [makeResult()],
+      cap: 50,
+      totalSpent: 0,
+      capExceeded: false,
+      runDate: new Date('2026-09-11T00:00:00Z'),
+    });
+    expect(md).not.toContain('## Spend by model');
+  });
+});
+
+describe('renderReport — plan shape', () => {
+  const planResult = (over: Partial<QuestionResult['retrieval']>, config: ConfigName = 'e-map-fts') =>
+    makeResult({
+      config,
+      retrieval: {
+        retrievedDocs: [{ path: 'a', score: 1, summary: 's' }],
+        latencyMs: 10,
+        embeddingTokens: 0,
+        rerankTokens: 0,
+        orchestratorDocCount: 3,
+        ...over,
+      },
+    });
+
+  it('reports how much retrieval the planner actually did', () => {
+    // The question this answers: is this an orchestrator run, or BM25 wearing
+    // an orchestrator's label? The fallback's rows are appended to the
+    // planner's, so retrievedDocs alone cannot tell them apart afterwards.
+    const md = renderReport({
+      results: [
+        planResult({ orchestratorDocCount: 4 }),
+        planResult({ orchestratorDocCount: 0, followupNeeded: true, fellBackToBm25: true }),
+      ],
+      cap: 50,
+      totalSpent: 1,
+      capExceeded: false,
+      runDate: new Date('2026-09-11T00:00:00Z'),
+    });
+    expect(md).toContain('## Plan shape');
+    expect(md).toContain('| 2 | 2.00 | 50.0% | 50.0% | 50.0% |');
+  });
+
+  it('omits the section for configs that run no planner', () => {
+    const md = renderReport({
+      results: [planResult({}, 'a-bm25')],
+      cap: 50,
+      totalSpent: 1,
+      capExceeded: false,
+      runDate: new Date('2026-09-11T00:00:00Z'),
+    });
+    expect(md).not.toContain('## Plan shape');
+  });
+});

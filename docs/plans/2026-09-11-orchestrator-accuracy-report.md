@@ -1,157 +1,146 @@
-# Orchestrator accuracy — the incumbent measured at last, and a new default
+# Orchestrator accuracy — the bench was breaking the thing it measured
 
-**Date:** 2026-09-11
+**Date:** 2026-09-11 / 2026-09-12
 **Corpus:** LongMemEval-S, n=500 (full), the binding axis from the 2026-05-13 round
-**Spend:** $50.07 across six runs (see [Provenance](#provenance) — every arm ran twice)
+**Spend:** ~$71 across ten runs (see [Provenance](#provenance))
 
 ## Headline
 
-Two claims have been load-bearing in this repo since May, and neither survives measurement:
+The task was to measure orchestrator accuracy, which had never been measured for any model
+we can actually run. The first answer this round produced was wrong, and the reason it was
+wrong is the most useful thing in this document.
 
-1. **"The orchestrator beats BM25 by +7.6pp accuracy / +14.2pp recall@5."** That figure was
-   measured against `x-ai/grok-4.1-fast`, an id that has been 404ing for months (#515). It
-   does not transfer to either model we can actually run today.
-2. **The incumbent orchestrator model — Haiku — had never been measured at n=500 at all.**
-   Measured now, **it does not beat BM25 on accuracy**: 23.0% vs 21.2%, a +1.8pp delta that
-   is statistically indistinguishable from zero (z=0.69). Recall@5 is the same story
-   (+1.8pp, z=0.58). On the two headline axes, the orchestrator we ship has been a
-   no-op against plain BM25.
+**The bench showed its planner a different memory map than production does.** The runtime
+stores `system/map.md` as `## <category>/` + `- <slug>: ...` and then re-renders it for the
+planner's prompt through `renderMapForOrchestrator` — flat and **fully qualified**, which is
+the form `<load doc="...">` is matched against. The bench's map string *is* its prompt, and it
+imitated the storage form. So the planner was shown ids it could not successfully copy back.
 
-The new result is that **the replacement model is not a like-for-like swap — it is a large
-accuracy win**, and it is the first configuration to clear the ≥5-point bar on live models:
+Nothing failed loudly. An unresolvable `<load>` is dropped and the BM25 fallback covers for
+it, so every arm still produced a plausible number. What those numbers measured was **which
+model guesses an undocumented prefix**.
 
-**`z-ai/glm-5.3-flash:nitro` + minimal reasoning: 32.4% accuracy, 77.2% recall@5** —
-**+11.2pp accuracy and +35.4pp recall@5 over BM25**, and +9.4pp / +33.6pp over the
-incumbent. It also beats the retired Grok configuration's best-ever numbers (28.2% / 56.0%),
-while costing ~37% less per run than Haiku.
+Corrected, the result is the opposite of the one this report carried in its first draft:
 
-## Results
-
-| Config | orchestrator model | n | accuracy | recall@5 | correct-refusal | $ |
+| Config | planner | accuracy | recall@5 | correct-refusal | run $ | planner $ |
 |---|---|---|---|---|---|---|
-| A: BM25-only | — | 500 | 21.2% | 41.8% | 76.7% | $8.99 |
-| E: Orchestrator + BM25 fallback | `claude-haiku-4-5-20251001` | 500 | 23.0% | 43.8% | **86.7%** | $9.91 |
-| E: Orchestrator + BM25 fallback | `z-ai/glm-5.3-flash:nitro` | 500 | **32.4%** | **77.2%** | 73.3% | $6.24 |
+| A: BM25-only | — | 21.2% | 41.8% | 76.7% | $8.99 | — |
+| E: Orchestrator + BM25 fallback | `claude-haiku-4-5` (**shipped**) | **33.2%** | **90.8%** | 76.7% | $4.75 | $1.2044 |
+| E: Orchestrator + BM25 fallback | `z-ai/glm-5.3-flash:nitro` | **36.0%** | **94.4%** | **83.3%** | $5.16 | **$0.1609** |
 
-Historical rows for context (2026-05-13 report, all against the now-dead Grok id):
+**The orchestrator works, and the incumbent was never the problem.** Haiku beats BM25 by
+**+12.0pp accuracy (z=4.26) and +49.0pp recall@5 (z=16.4)**. On the broken map the same model
+scored 23.0% / 43.8% — statistically tied with BM25 — and a first draft of this report
+concluded, wrongly, that the shipped orchestrator was a no-op.
 
-| Config | orchestrator model | n | accuracy | recall@5 |
+## What the broken map cost
+
+Same 40 questions, same models, only the map format changed:
+
+| | planner returned nothing | recall@5 |
+|---|---|---|
+| haiku, storage-form map | **80.0%** | 40.0% |
+| haiku, faithful map | 2.5% | **92.5%** |
+| glm, storage-form map | 20.0% | 82.5% |
+| glm, faithful map | 0.0% | **92.5%** |
+
+Haiku lost four out of five plans to a missing `episodes/` prefix. It was picking the *same
+documents* GLM picked — on question `6ade9755` both named `answer_9398da02`; GLM wrote
+`episodes/answer_9398da02` and haiku wrote `answer_9398da02`. One resolved and one was
+discarded in silence.
+
+At n=500 the repair is worth **+10.2pp accuracy and +47.0pp recall@5** to haiku, and it makes
+the arm *cheaper* ($9.91 → $4.75): a planner whose ops resolve loads 2–3 targeted docs instead
+of falling through to BM25's ten, so the answer prompt shrinks.
+
+## Model choice
+
+| comparison | Δ accuracy | z | Δ recall@5 | z |
 |---|---|---|---|---|
-| A: BM25-only (May) | — | 500 | 20.6% | 41.8% |
-| E + LLM-rewritten map (May) | `x-ai/grok-4.1-fast` | 482 | 28.2% | 56.0% |
+| A → E-haiku | +12.0pp | 4.26 | +49.0pp | 16.39 |
+| A → E-glm | +14.8pp | 5.18 | +52.6pp | 17.84 |
+| E-haiku → E-glm | +2.8pp | 0.93 (**ns**) | +3.6pp | 2.17 |
 
-**The May baseline reproduces exactly.** A's recall@5 is 41.8% in both rounds — BM25 is
-deterministic, so an identical figure four months later is the check that says the corpus,
-retrieval path, and scoring are unchanged, and that today's E rows are comparable to the
-historical ones. A's accuracy moved 20.6% → 21.2%, which is answer/judge nondeterminism.
+**On accuracy the two planners are tied** (+2.8pp, z=0.93). GLM takes recall@5 by a small but
+real margin, and correct-refusal by 6.6pp. The planner line item is 7.5× cheaper on GLM
+($0.16 vs $1.20 per 500 questions) — but that is not the whole bill: GLM requests a followup on
+34.6% of questions against haiku's 2.2%, so it falls back to BM25 more, its answer prompt runs
+**60% larger** (1.26M vs 784k input tokens), and its *run* total is higher ($5.16 vs $4.75).
 
-### Significance
+**Recommendation: keep `anthropic/claude-haiku-4.5` as the default.** Accuracy is tied, the
+whole-run cost is lower, and the documented reason it was chosen — a reproducible latency tail
+against a 5s budget with a silent fallback, where GLM's p95 moved 1443 → 2758 → 4133ms across
+runs — still stands and is not contradicted by anything here. A first draft of this report
+recommended switching; that recommendation is withdrawn.
 
-Unpaired two-proportion z-tests at n=500 (a paired McNemar's on the same question set would
-be strictly stronger; the bench does not currently dump per-question verdicts):
+GLM remains the better pick for a surface that weights abstention (83.3% vs 76.7%
+correct-refusal) or one where the planner's own token bill dominates.
 
-| comparison | Δ accuracy | z | verdict |
-|---|---|---|---|
-| A → E-haiku | +1.8pp | 0.69 | **not significant** |
-| A → E-glm | +11.2pp | 4.00 | significant (p < 0.0001) |
-| E-haiku → E-glm | +9.4pp | 3.32 | significant (p < 0.001) |
+## Against the historical record
 
-| comparison | Δ recall@5 | z | verdict |
-|---|---|---|---|
-| A → E-haiku | +1.8pp | 0.58 | **not significant** |
-| A → E-glm | +35.4pp | 11.40 | significant |
-| E-haiku → E-glm | +33.6pp | 10.86 | significant |
+The 2026-05-13 round reported E + Grok + rewritten map at 28.2% / 56.0%, "+7.6pp / +14.2pp
+over BM25", and that headline has been quoted since despite its model id having been dead for
+months (#515). Those runs used the same storage-form map, so **they were understated too** —
+Grok was losing plans to the same prefix. The corrected architecture delta is roughly double
+what was claimed: **+12 to +14.8pp accuracy, +49 to +52.6pp recall@5**. The May conclusion
+(architecture works; map quality is load-bearing) was right, and more right than it knew.
 
-## Abstention
+## A second methodology defect: `--sample N` is a prefix, not a sample
 
-| Config | unanswerable n | correct-refusal | hallucinated | false-refusal (answerable) |
-|---|---|---|---|---|
-| A: BM25-only | 30 | 23 (76.7%) | 7 | 273 / 470 (58.1%) |
-| E-haiku | 30 | 26 (**86.7%**) | 4 | 267 / 470 (56.8%) |
-| E-glm | 30 | 22 (73.3%) | 8 | **232 / 470 (49.4%)** |
-
-This is the one axis where Haiku is genuinely the best of the three: 86.7% correct-refusal is
-the highest figure ever recorded on this corpus, and the fewest hallucinations on unanswerable
-questions (4). It is a real property, and it is worth naming plainly because it is the only
-thing the incumbent does better than plain BM25.
-
-GLM trades some of that away (73.3%, below even BM25's 76.7%) — it is more willing to answer.
-That same willingness is why its false-refusal rate on *answerable* questions is the lowest of
-the three by a wide margin (49.4% vs 56.8% / 58.1%): it finds the content and uses it. With
-n=30 unanswerable questions, the correct-refusal column moves ±3.3pp per question, so the
-73.3% vs 76.7% gap is one question wide and should not be over-read. The false-refusal column
-(n=470) is the sturdier of the two.
-
-## What this settles, and what it doesn't
-
-**Settled:** the orchestrator architecture works, but *entirely* through the model in the
-planner slot. Same code, same map, same corpus, same agent, same judge — swapping only the
-orchestrator model moves accuracy 23.0% → 32.4% and recall@5 43.8% → 77.2%. The architecture
-was never the variable; the planner's quality was, exactly as c137's premise predicted and as
-the May round already suspected when Haiku-as-orchestrator misled the original n=100 binding.
-
-**Settled:** GLM + minimal reasoning is the default to ship. It wins on accuracy, wins
-decisively on recall, and costs less ($6.24 vs $9.91 per 500-question run — the orchestrator
-line item, not the agent's).
-
-**Not settled — the bottleneck has moved.** E-glm retrieves the gold document into the top 5
-on **77.2%** of questions but only answers **32.4%** correctly. Retrieval is no longer the
-limiting stage: roughly 45 points of correct-context is being dropped somewhere after it. The
-bench's answer stage truncates every injected body to 2000 chars (`MAX_INJECTED_BODY_CHARS`)
-and caps the answer at 512 tokens, which is the first place to look. Until that gap is
-understood, further orchestrator tuning is optimizing the stage that is already winning.
-
-**Not settled — latency.** See caveats.
+LongMemEval-S is ordered by `question_type`. `--sample 40` returns 40 `single-session-user`
+questions and nothing else; `--sample 100` gets 70 single-session + 30 multi-session. Every
+small-n run in this repo's history therefore measured a type-biased slice — including the
+n=100 rounds the May report calls misleading, which now have a concrete mechanism for having
+misled. The n=500 runs here are the full corpus and are unaffected. **Not fixed in this
+branch** — flagged, because fixing it changes the meaning of a flag other reports were
+written against.
 
 ## Caveats
 
-- **The latency columns in the raw reports are not usable.** Six bench processes ran
-  concurrently against the same APIs (see Provenance), so every p50/p95 in this round reflects
-  self-inflicted queueing, not model speed. The clean figure for GLM is the one from the
-  single-process n=3 smoke and the TASK-349 latency probe: **p50 ~865ms**, against the
-  orchestrator's 5s budget. Treat this round's 13035ms p95 for E-glm as an artifact.
-- **GLM emits a few reasoning tokens even at `effort: 'minimal'`.** 97 of 500 calls logged
-  `reasoning_tokens` between 13 and 34. The flag is being honored (the control arm measured
-  ~3.4s p50 without it); the provider simply does not floor to zero. Not material at this size,
-  but the bench's warning text reads as an alarm and will keep firing.
+- **Accuracy at n=40 is unusable** for anything but the mechanistic plan-shape metrics, both
+  because of the prefix defect above and because ±6pp is one question. The n=40 tables here
+  are read only for "did the planner's ops resolve".
+- **Latency in the first round's raw reports is contaminated** — six bench processes ran
+  concurrently (see Provenance). The faithful runs were two-at-a-time, and their p50s (930ms
+  haiku, 655ms GLM) are closer to real but still not a clean latency measurement. The
+  `bench:latency` probe remains the instrument for that.
+- **GLM emits a few reasoning tokens at `effort: 'minimal'`** — 8–34 on ~20% of calls. The
+  flag is honored (the unflagged control measures p50 ~3.4s); the provider just doesn't floor
+  to zero.
 - **The map-rewrite cache is Grok-authored and four months old.** Both E arms consumed the
-  same 19,195 LLM-rewritten summaries written in May by the now-dead model. That is the
-  correct choice for this comparison — it holds map quality fixed so the orchestrator model is
-  the only variable — but it means "E-glm with a GLM-rewritten map" is an unmeasured and
-  plausibly better configuration.
-- **Judge nondeterminism** is visible in A's 20.6% → 21.2% drift on identical retrieval. Read
-  sub-2pp accuracy deltas as noise; that is why E-haiku's +1.8pp is reported as a null result
-  rather than a small win.
-- Unpaired z-tests are used above because the bench does not dump per-question verdicts.
-  Pairing would narrow the intervals, not widen them, so the significant results stay
-  significant.
+  same 19,195 summaries, which is what holds map quality fixed across arms — and leaves
+  "densified by the model that will run in production" unmeasured.
+- **The bench still isn't production.** This round fixed one divergence by delegating to the
+  runtime's renderer, and found a second while writing the test: the bench's corpora use the
+  category `episodes`, which the runtime's `parseDocId` allow-list does not contain. Harmless
+  here (the bench resolves against its own `memoryTree`) but it is the same class of drift.
+- Unpaired z-tests; the bench does not dump per-question verdicts. Pairing narrows intervals
+  rather than widening them, so the significant results stay significant.
 
 ## Provenance
 
-Every arm ran **twice**. The first batch was launched detached, misdiagnosed as dead (the
-`ps` pattern used to check did not match the real process cmdline), and a second batch was
-launched over the top of it; both completed and both wrote to the same `--out` paths, so for
-each arm the file on disk is whichever finished last. Consequences, stated plainly:
+Ten n=500-equivalent runs, ~$71, and two process errors worth recording:
 
-- **Spend was $50.07, roughly double what the run needed.**
-- **Accuracy and recall are unaffected.** Each report file is one complete, independent
-  500-question run; nothing is averaged or interleaved.
-- **Latency is affected** (six-way concurrency — see caveats).
-- One accidental benefit: E-haiku was measured twice and both runs are known. Accuracy
-  **23.0% in both**; recall@5 43.6% vs 43.8%. Run-to-run noise on this harness is ~0.2pp on
-  recall, ~0pp on accuracy at n=500 — which is itself the tightest reproducibility estimate
-  we have.
+1. **Every arm in the first round ran twice** (~$50 instead of ~$25). A detached batch was
+   misdiagnosed as dead — the `ps` pattern used to check it did not match the real cmdline —
+   and a second batch was launched over the top. Both completed and wrote to the same `--out`
+   paths. Accuracy and recall were unaffected (each file is one complete independent run);
+   latency was not.
+2. **That entire first round then had to be discarded anyway** for the map-format defect, and
+   re-run. The contaminated reports are kept as
+   `2026-09-11-orchestrator-accuracy-e-*-BROKEN-MAP-raw.md` — they are the evidence for the
+   "what the broken map cost" table and should not be read as results.
 
-Raw per-arm reports carry the `**Orchestrator model:**` header stamp added in this branch, so
-each one says which model produced it — the thing whose absence let a dead model id headline
-this repo for four months.
+The A arm needed no re-run: it has no planner, so the map format cannot reach it.
 
-## Recommended follow-ups
+## Follow-ups
 
-1. **Switch the shipped orchestrator default to `z-ai/glm-5.3-flash:nitro` + minimal
-   reasoning.** The runtime path (TASK-191) still selects the incumbent.
-2. **Correct the stale claims in place.** `docs/plans/memory-strata-design.md` and
-   `.claude/memory/decisions.md` still advertise +7.6pp / +14.2pp as live findings.
-3. **Chase the 77.2% → 32.4% gap.** Almost certainly the highest-value open question in
-   Strata right now, and it is an answer-stage question, not a retrieval one.
-4. **Re-run the map rewrite with GLM** and re-measure E-glm — the last held-fixed variable.
+1. **Nothing to change in the runtime.** The shipped orchestrator and default model are both
+   vindicated. This branch changes only the bench and the docs.
+2. **Fix `--sample` to stratify** (or rename it `--first`), and re-read any small-n conclusion
+   in `docs/plans/` in that light.
+3. **Chase the answer stage.** E-glm now retrieves gold into the top 5 on 94.4% of questions
+   and answers 36.0% correctly. Retrieval is emphatically no longer the bottleneck; ~58 points
+   are lost after it. `MAX_INJECTED_BODY_CHARS = 2000` is the first suspect.
+4. **Re-run the map rewrite with the production planner** — the last variable still held at
+   its May value.

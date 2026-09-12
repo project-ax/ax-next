@@ -1,21 +1,39 @@
 # Strata vector-vs-no-vector spike report
 
-**Date:** 2026-09-11
+**Date:** 2026-09-12
 **Cap:** $50
 **Orchestrator model:** `z-ai/glm-5.3-flash:nitro`
-**Total spent:** $6.2391
+**Total spent:** $5.1611
 
 ## Results
 
 | corpus | Config | n | accuracy | recall@5 | uncertain% | p50 ms | p95 ms | $ |
 |---|---|---|---|---|---|---|---|---|
-| longmemeval-s | E: Orchestrator + BM25 fallback | 500 | 32.4% | 77.2% | 0.4% | 1342 | 13035 | $6.2391 |
+| longmemeval-s | E: Orchestrator + BM25 fallback | 500 | 36.0% | 94.4% | 0.0% | 655 | 1603 | $5.1611 |
 
 ## Abstention
 
 | corpus | Config | unanswerable n | correct-refusal | hallucinated | false-refusal (on answerable) |
 |---|---|---|---|---|---|
-| longmemeval-s | E: Orchestrator + BM25 fallback | 30 | 22 (73.3%) | 8 | 232 / 470 |
+| longmemeval-s | E: Orchestrator + BM25 fallback | 30 | 25 (83.3%) | 5 | 223 / 470 |
+
+## Spend by model
+
+| model | tokens in | tokens out | $ | % of run |
+|---|---|---|---|---|
+| `claude-sonnet-4-6` | 1,255,919 | 36,292 | $4.3121 | 83.6% |
+| `x-ai/grok-4.3` | 248,894 | 150,764 | $0.6880 | 13.3% |
+| `z-ai/glm-5.3-flash:nitro` | 1,009,286 | 19,060 | $0.1609 | 3.1% |
+
+## Plan shape
+
+How much of the retrieval the PLANNER actually did. An arm that falls back on
+most questions is running BM25 under an orchestrator's name — it will score and
+cost like BM25 no matter what the config column says.
+
+| corpus | Config | n | mean docs from planner | planner returned nothing | followup requested | fell back to BM25 |
+|---|---|---|---|---|---|---|
+| longmemeval-s | E: Orchestrator + BM25 fallback | 500 | 2.74 | 0.0% | 34.6% | 26.2% |
 
 ## Binding decision
 

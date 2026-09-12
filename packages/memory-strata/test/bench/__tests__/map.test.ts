@@ -13,7 +13,11 @@ function corpusOf(docs: ReturnType<typeof makeDoc>[]): BenchCorpus {
 }
 
 describe('generateMap', () => {
-  it('groups docs by category and emits one line per doc with sessionId + summary', async () => {
+  // NOTE: these assertions used to pin the bare-slug-under-a-header shape,
+  // which is the RUNTIME'S STORAGE form and NOT what the runtime shows its
+  // planner. That mismatch cost a paid n=500 comparison — see
+  // map-matches-runtime.test.ts. They now pin the qualified, flat prompt form.
+  it('emits one fully-qualified line per doc with its summary', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bench-map-'));
     const corpus = corpusOf([
       makeDoc({ category: 'episodes', slug: 's-001', summary: 'discussed coffee preferences', body: '' }),
@@ -21,11 +25,12 @@ describe('generateMap', () => {
       makeDoc({ category: 'knowledge', slug: 'kw-1', summary: 'caffeine biochem', body: '' }),
     ]);
     const map = await generateMap(corpus, { cacheDir: dir });
-    expect(map).toContain('## episodes/');
-    expect(map).toContain('## knowledge/');
-    expect(map).toContain('- s-001: discussed coffee preferences');
-    expect(map).toContain('- s-002: discussed dog training');
-    expect(map).toContain('- kw-1: caffeine biochem');
+    expect(map).toContain('- episodes/s-001: discussed coffee preferences');
+    expect(map).toContain('- episodes/s-002: discussed dog training');
+    expect(map).toContain('- knowledge/kw-1: caffeine biochem');
+    // The category is on every line now; a `## episodes/` header would mean the
+    // storage form crept back in and the id on the line is no longer copyable.
+    expect(map).not.toMatch(/^##\s/m);
   });
 
   it('truncates summaries to ~120 chars', async () => {
@@ -35,7 +40,7 @@ describe('generateMap', () => {
       makeDoc({ category: 'episodes', slug: 's-1', summary: long, body: '' }),
     ]);
     const map = await generateMap(corpus, { cacheDir: dir });
-    const line = map.split('\n').find((l) => l.startsWith('- s-1:'))!;
+    const line = map.split('\n').find((l) => l.startsWith('- episodes/s-1:'))!;
     expect(line.length).toBeLessThan(160);
   });
 
@@ -57,9 +62,9 @@ describe('generateMap', () => {
       makeDoc({ category: 'episodes', slug: 'c', summary: 'C', body: '' }),
     ]);
     const map = await generateMap(corpus, { cacheDir: dir, subsetPaths: ['episodes/a', 'episodes/c'] });
-    expect(map).toContain('- a: A');
-    expect(map).toContain('- c: C');
-    expect(map).not.toContain('- b: B');
+    expect(map).toContain('- episodes/a: A');
+    expect(map).toContain('- episodes/c: C');
+    expect(map).not.toContain('- episodes/b: B');
   });
 
   it('uses overrideSummaries when provided', async () => {
@@ -69,7 +74,7 @@ describe('generateMap', () => {
     ]);
     const overrides = new Map([['episodes/s-1', 'rewritten one-liner']]);
     const map = await generateMap(corpus, { cacheDir: dir, overrideSummaries: overrides });
-    expect(map).toContain('- s-1: rewritten one-liner');
+    expect(map).toContain('- episodes/s-1: rewritten one-liner');
     expect(map).not.toContain('original');
   });
 
@@ -96,8 +101,8 @@ describe('generateMap', () => {
     ]);
     const overrides = new Map([['episodes/s-1', 'rw-1']]);
     const map = await generateMap(corpus, { cacheDir: dir, overrideSummaries: overrides });
-    expect(map).toContain('- s-1: rw-1');
-    expect(map).toContain('- s-2: orig-2');
+    expect(map).toContain('- episodes/s-1: rw-1');
+    expect(map).toContain('- episodes/s-2: orig-2');
   });
 
   it('returns a map under the ~2k-token soft cap for 50 sessions', async () => {

@@ -487,6 +487,7 @@ async function main(): Promise<number> {
     skipped,
     configFailures,
     orchestratorModel: orchestratorModelKey,
+    spendByModel: meter.snapshot(),
   });
   const outPath = args.out
     ? resolve(REPO_ROOT, args.out)

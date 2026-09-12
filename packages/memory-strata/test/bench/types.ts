@@ -47,6 +47,19 @@ export interface RetrievalResult {
   orchestratorTokens?: { in: number; out: number };
   followupNeeded?: boolean;
   /**
+   * How many docs the ORCHESTRATOR's own ops resolved, before the BM25
+   * fallback appended anything.
+   *
+   * `retrievedDocs.length` alone cannot answer "did the planner do the work,
+   * or did we quietly run BM25 again?" — the fallback's rows are appended to
+   * the planner's and the two are indistinguishable afterwards. An arm whose
+   * planner contributes nothing scores, costs and reads exactly like BM25
+   * while still being labelled an orchestrator run.
+   */
+  orchestratorDocCount?: number;
+  /** Whether the BM25 fallback fired for this question (planner said followup, or produced nothing). */
+  fellBackToBm25?: boolean;
+  /**
    * Wall-clock ms spent inside the reranker (cross-encoder inference) alone,
    * isolated from the BM25 retrieval cost. Set by config F so the report can
    * surface the candidate runtime cost of the local cross-encoder per query.

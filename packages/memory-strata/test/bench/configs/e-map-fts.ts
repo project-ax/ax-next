@@ -81,6 +81,8 @@ export function createConfigE(opts: ConfigEOptions): ConfigDriver {
         rerankTokens: 0,
         orchestratorTokens: plan.usage,
         followupNeeded: plan.followupNeeded,
+        orchestratorDocCount: primary.length,
+        fellBackToBm25: shouldFallback && out.length > primary.length,
       };
     },
   };

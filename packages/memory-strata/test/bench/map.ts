@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { renderMapForOrchestrator, type MapEntry } from '../../src/orchestrator.js';
 import { join } from 'node:path';
 import type { BenchCorpus } from './types.js';
 
@@ -28,28 +29,33 @@ export async function generateMap(corpus: BenchCorpus, opts: MapOptions): Promis
   if (existsSync(cachePath)) return readFileSync(cachePath, 'utf8');
 
   const paths = opts.subsetPaths ?? [...corpus.memoryTree.keys()];
-  const byCategory = new Map<string, Array<{ slug: string; summary: string }>>();
+  const entries: MapEntry[] = [];
   for (const p of paths) {
     const doc = corpus.memoryTree.get(p);
     if (!doc) continue;
-    if (!byCategory.has(doc.category)) byCategory.set(doc.category, []);
     const summary = opts.overrideSummaries?.get(doc.path) ?? doc.summary;
-    byCategory.get(doc.category)!.push({
+    entries.push({
+      docId: doc.path,
+      category: doc.category,
       slug: doc.slug,
       summary: truncate(summary, summaryMax),
     });
   }
-  for (const arr of byCategory.values()) arr.sort((a, b) => a.slug.localeCompare(b.slug));
+  entries.sort((a, b) => a.docId.localeCompare(b.docId));
 
-  const lines: string[] = ['# Memory Map', ''];
-  for (const cat of [...byCategory.keys()].sort()) {
-    lines.push(`## ${cat}/`);
-    for (const { slug, summary } of byCategory.get(cat)!) {
-      lines.push(`- ${slug}: ${summary}`);
-    }
-    lines.push('');
-  }
-  const out = lines.join('\n');
+  // Rendered by the RUNTIME's own prompt renderer, not a bench lookalike.
+  //
+  // The two had drifted, silently and expensively. The runtime STORES the map
+  // as `## <category>/` + `- <slug>: ...` but never shows the planner that
+  // form — `renderMapForOrchestrator` re-renders it flat and fully qualified,
+  // which is the shape `<load doc="...">` is matched against. The bench, whose
+  // map string IS the prompt, imitated the storage form instead. A planner that
+  // copied the bare slug back produced an op resolving to nothing, which is
+  // dropped in silence and covered by the BM25 fallback — so the arm still
+  // returned a number, it just measured which model guesses the missing
+  // prefix. Measured 2026-09-11 at n=40: haiku lost 80% of its plans to this
+  // and its recall@5 went 40.0% -> 92.5% once the prompt was faithful.
+  const out = `# Memory Map\n\n${renderMapForOrchestrator(entries)}\n`;
   writeFileSync(cachePath, out);
   return out;
 }

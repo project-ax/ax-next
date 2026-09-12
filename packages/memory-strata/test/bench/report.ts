@@ -1,4 +1,5 @@
 import type { QuestionResult, ConfigName, BenchCorpus } from './types.js';
+import type { ModelSnapshot } from './meter.js';
 
 export interface ReportInput {
   results: QuestionResult[];
@@ -23,6 +24,17 @@ export interface ReportInput {
    * a pure-BM25 run would claim a dependency the numbers do not have.
    */
   orchestratorModel?: string;
+  /**
+   * Per-model tokens and dollars, straight from `CostMeter.snapshot()`.
+   *
+   * The meter has always tracked this; the report threw it away and printed
+   * only the total, which invites the total to be read as if the one role that
+   * DIFFERS between arms explains the whole gap. It does not: an arm's bill is
+   * dominated by the answer model, which is the same model doing the same job
+   * in every arm. Without this table you cannot tell a cheaper planner from a
+   * planner that simply hands the answer model less to read.
+   */
+  spendByModel?: Record<string, ModelSnapshot>;
 }
 
 type CorpusName = BenchCorpus['name'];
@@ -187,6 +199,54 @@ export function renderReport(input: ReportInput): string {
           `| ${corpus} | ${CONFIG_LABELS[config]} | ${a.unanswerableTotal} | ${a.correctRefusal} (${rate}) | ${a.hallucinatedOnUnanswerable} | ${a.falseRefusalOnAnswerable} / ${a.answerableTotal} |`,
         );
       }
+    }
+    lines.push(``);
+  }
+
+  const spend = input.spendByModel ?? {};
+  const spendRows = Object.entries(spend).filter(([, v]) => v.dollars > 0);
+  if (spendRows.length > 0) {
+    lines.push(`## Spend by model`);
+    lines.push(``);
+    lines.push(`| model | tokens in | tokens out | $ | % of run |`);
+    lines.push(`|---|---|---|---|---|`);
+    const total = spendRows.reduce((acc, [, v]) => acc + v.dollars, 0);
+    for (const [model, v] of spendRows.sort((a, b) => b[1].dollars - a[1].dollars)) {
+      const pct = total > 0 ? (100 * v.dollars) / total : 0;
+      lines.push(
+        `| \`${model}\` | ${v.tokensIn.toLocaleString('en-US')} | ${v.tokensOut.toLocaleString('en-US')} | $${v.dollars.toFixed(4)} | ${pct.toFixed(1)}% |`,
+      );
+    }
+    lines.push(``);
+  }
+
+  // Plan shape — only meaningful for configs that actually run a planner.
+  const planRows = new Map<string, { n: number; docs: number; followup: number; fellBack: number; zero: number }>();
+  for (const r of input.results) {
+    if (!ORCHESTRATOR_CONFIGS.has(r.config)) continue;
+    if (r.retrieval.orchestratorDocCount === undefined) continue;
+    const key = `${r.corpus} | ${CONFIG_LABELS[r.config]}`;
+    const a = planRows.get(key) ?? { n: 0, docs: 0, followup: 0, fellBack: 0, zero: 0 };
+    a.n += 1;
+    a.docs += r.retrieval.orchestratorDocCount;
+    if (r.retrieval.followupNeeded) a.followup += 1;
+    if (r.retrieval.fellBackToBm25) a.fellBack += 1;
+    if (r.retrieval.orchestratorDocCount === 0) a.zero += 1;
+    planRows.set(key, a);
+  }
+  if (planRows.size > 0) {
+    lines.push(`## Plan shape`);
+    lines.push(``);
+    lines.push(`How much of the retrieval the PLANNER actually did. An arm that falls back on`);
+    lines.push(`most questions is running BM25 under an orchestrator's name — it will score and`);
+    lines.push(`cost like BM25 no matter what the config column says.`);
+    lines.push(``);
+    lines.push(`| corpus | Config | n | mean docs from planner | planner returned nothing | followup requested | fell back to BM25 |`);
+    lines.push(`|---|---|---|---|---|---|---|`);
+    for (const [key, a] of planRows) {
+      lines.push(
+        `| ${key} | ${a.n} | ${(a.docs / a.n).toFixed(2)} | ${((100 * a.zero) / a.n).toFixed(1)}% | ${((100 * a.followup) / a.n).toFixed(1)}% | ${((100 * a.fellBack) / a.n).toFixed(1)}% |`,
+      );
     }
     lines.push(``);
   }

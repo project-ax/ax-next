@@ -1,39 +1,21 @@
 # Strata vector-vs-no-vector spike report
 
-**Date:** 2026-09-12
+**Date:** 2026-09-11
 **Cap:** $50
 **Orchestrator model:** `claude-haiku-4-5-20251001`
-**Total spent:** $4.7464
+**Total spent:** $9.9106
 
 ## Results
 
 | corpus | Config | n | accuracy | recall@5 | uncertain% | p50 ms | p95 ms | $ |
 |---|---|---|---|---|---|---|---|---|
-| longmemeval-s | E: Orchestrator + BM25 fallback | 500 | 33.2% | 90.8% | 0.0% | 930 | 1380 | $4.7464 |
+| longmemeval-s | E: Orchestrator + BM25 fallback | 500 | 23.0% | 43.8% | 0.4% | 1097 | 1607 | $9.9106 |
 
 ## Abstention
 
 | corpus | Config | unanswerable n | correct-refusal | hallucinated | false-refusal (on answerable) |
 |---|---|---|---|---|---|
-| longmemeval-s | E: Orchestrator + BM25 fallback | 30 | 23 (76.7%) | 7 | 239 / 470 |
-
-## Spend by model
-
-| model | tokens in | tokens out | $ | % of run |
-|---|---|---|---|---|
-| `claude-sonnet-4-6` | 784,474 | 33,217 | $2.8517 | 60.1% |
-| `claude-haiku-4-5-20251001` | 1,128,421 | 15,199 | $1.2044 | 25.4% |
-| `x-ai/grok-4.3` | 246,301 | 152,977 | $0.6903 | 14.5% |
-
-## Plan shape
-
-How much of the retrieval the PLANNER actually did. An arm that falls back on
-most questions is running BM25 under an orchestrator's name — it will score and
-cost like BM25 no matter what the config column says.
-
-| corpus | Config | n | mean docs from planner | planner returned nothing | followup requested | fell back to BM25 |
-|---|---|---|---|---|---|---|
-| longmemeval-s | E: Orchestrator + BM25 fallback | 500 | 2.74 | 0.2% | 2.2% | 2.2% |
+| longmemeval-s | E: Orchestrator + BM25 fallback | 30 | 26 (86.7%) | 4 | 267 / 470 |
 
 ## Binding decision
 
