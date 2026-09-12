@@ -22,6 +22,16 @@ export interface AdminShellProps {
    */
   isAdmin: boolean;
   onClose: () => void;
+  /**
+   * What the back button calls the place you came from. It said "chat"
+   * unconditionally, which was fine while chat was the only shell that could
+   * open Settings — and became a wrong sign the moment the workspace could,
+   * pointing people at a surface that is being retired.
+   *
+   * Naming the destination (rather than a bare "Back") is the existing design
+   * and worth keeping; it just has to be the CALLER's destination.
+   */
+  backLabel?: string;
 }
 
 interface TabMeta {
@@ -41,7 +51,7 @@ const TAB_META: Record<AdminTabId, TabMeta> = {
   branding: { eyebrow: 'Admin', title: 'Branding' },
 };
 
-export function AdminShell({ isAdmin, onClose }: AdminShellProps) {
+export function AdminShell({ isAdmin, onClose, backLabel = 'chat' }: AdminShellProps) {
   const [activeTab, setActiveTab] = useState<AdminTabId>('skills');
   const meta = TAB_META[activeTab];
 
@@ -51,7 +61,8 @@ export function AdminShell({ isAdmin, onClose }: AdminShellProps) {
         activeTab={activeTab}
         isAdmin={isAdmin}
         onTabChange={setActiveTab}
-        onBackToChat={onClose}
+        onBack={onClose}
+        backLabel={backLabel}
       />
       <AdminPane
         header={<AdminPaneHeader eyebrow={meta.eyebrow} title={meta.title} />}
