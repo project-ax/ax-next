@@ -493,6 +493,21 @@ export function RoutineEditor({
  * Deliberately not a day/time picker: that is an `[M]` the audit put out of
  * scope for this card.
  */
+/**
+ * The one place that decides "this cron is wrong", so the field's `aria-invalid`
+ * and the preview's warning can never disagree.
+ *
+ * An EMPTY field is not invalid — `CronPreview` teaches the format there rather
+ * than scolding, and marking an untouched field invalid would be the same
+ * scolding by another route. Neither is `unknown`: that is a legal expression we
+ * merely cannot phrase in English, and flagging it would be a lie.
+ */
+export function isCronInvalid(expr: string, tz: string): boolean {
+  const trimmed = expr.trim();
+  if (trimmed.length === 0) return false;
+  return describeCron(trimmed, tz).kind === 'invalid';
+}
+
 function CronPreview({ expr, tz }: { expr: string; tz: string }) {
   const trimmed = expr.trim();
   const result = describeCron(trimmed, tz);
@@ -569,6 +584,14 @@ function TriggerFields({ form, setForm }: FieldProps) {
             <Label htmlFor="routine-cron-expr" className="text-xs font-medium text-muted-foreground">
               Cron expression
             </Label>
+            {/*
+              `aria-invalid` mirrors the warning the preview below is already
+              showing. Without it the invalid state is carried by colour and
+              prose alone: a screen reader hears the preview as ordinary help
+              text, with nothing marking the field itself as wrong. Only the
+              INVALID branch counts — "valid but we can't describe it" is not an
+              error, and flagging it would be a lie.
+            */}
             <Input
               id="routine-cron-expr"
               className="font-mono text-sm"
@@ -576,6 +599,7 @@ function TriggerFields({ form, setForm }: FieldProps) {
               value={form.cronExpr}
               onChange={(e) => setForm((f) => ({ ...f, cronExpr: e.target.value }))}
               aria-describedby="routine-cron-preview"
+              aria-invalid={isCronInvalid(form.cronExpr, form.cronTz) || undefined}
             />
           </div>
           <div className="flex flex-col gap-1.5">

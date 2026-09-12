@@ -4,6 +4,7 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { useOpenerRestore } from "@/components/ui/use-opener-restore"
 
 const Sheet = SheetPrimitive.Root
 
@@ -54,11 +55,17 @@ interface SheetContentProps
 const SheetContent = React.forwardRef<
   React.ElementRef<typeof SheetPrimitive.Content>,
   SheetContentProps
->(({ side = "right", className, children, ...props }, ref) => (
+>(({ side = "right", className, children, onOpenAutoFocus, onCloseAutoFocus, ...props }, ref) => {
+  // Same keyboard-focus restore as DialogContent — see use-opener-restore.ts.
+  // The only SheetContent call site (the credential sheet) is trigger-less, so
+  // without this, closing it drops focus on <body>.
+  const focusRestore = useOpenerRestore(onOpenAutoFocus, onCloseAutoFocus)
+  return (
   <SheetPortal>
     <SheetOverlay />
     <SheetPrimitive.Content
       ref={ref}
+      {...focusRestore}
       className={cn(sheetVariants({ side }), className)}
       {...props}
     >
@@ -69,7 +76,8 @@ const SheetContent = React.forwardRef<
       </SheetPrimitive.Close>
     </SheetPrimitive.Content>
   </SheetPortal>
-))
+  )
+})
 SheetContent.displayName = SheetPrimitive.Content.displayName
 
 const SheetHeader = ({

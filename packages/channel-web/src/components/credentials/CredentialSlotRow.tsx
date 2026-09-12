@@ -28,6 +28,30 @@ export function CredentialSlotRow({ destination, slot, scope }: CredentialSlotRo
   // one humanizer, not one per surface).
   const humanLabel = humanizeSlotLabel(slot.label, destinationService(destination));
 
+  /*
+   * (TASK-344 / audit E1 left this open; a browser walk closed it.)
+   *
+   * The sheet read:
+   *
+   *     Add your OpenRouter API key
+   *     Used by OpenRouter.
+   *
+   * For a `provider` or `account` destination `humanDestination` returns the
+   * bare service name, and `humanizeSlotLabel` has ALREADY folded that same
+   * name into the title — so the description is a strict substring of the line
+   * directly above it. Zero information, at the exact moment someone is
+   * deciding whether to hand us a secret.
+   *
+   * It earns its place for every other kind, because those add a noun the title
+   * does not have: "the Linear skill", "the Linear server", "the daily-digest
+   * routine". So the test is overlap, not destination kind — the same test
+   * `humanizeSlotLabel` itself uses to avoid "Linear tracker Linear token".
+   */
+  const destinationLabel = humanDestination(destination);
+  const destinationAddsInfo =
+    destinationLabel.length > 0 &&
+    !humanLabel.toLowerCase().includes(destinationLabel.toLowerCase());
+
   const refresh = useCallback(async () => {
     try {
       const list =
@@ -67,7 +91,9 @@ export function CredentialSlotRow({ destination, slot, scope }: CredentialSlotRo
         </Button>
       </div>
       <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent>
+        {/* Radix warns when a dialog has no description; tell it that is
+            deliberate rather than leaving an empty one to satisfy it. */}
+        <SheetContent {...(destinationAddsInfo ? {} : { 'aria-describedby': undefined })}>
           <SheetHeader>
             {/* (E1) Was "Set credential for provider anthropic, slot
                 ANTHROPIC_API_KEY" — three machine identifiers in one sentence,
@@ -75,10 +101,11 @@ export function CredentialSlotRow({ destination, slot, scope }: CredentialSlotRo
                 secret. */}
             <SheetTitle>{isSet ? `Replace your ${humanLabel}` : `Add your ${humanLabel}`}</SheetTitle>
             {/* Which thing this key is actually for. The row it was opened from
-                may be one of several, and "API key" alone does not say whose. */}
-            <SheetDescription>
-              Used by {humanDestination(destination)}.
-            </SheetDescription>
+                may be one of several, and "API key" alone does not say whose —
+                except when the title already said it. See above. */}
+            {destinationAddsInfo && (
+              <SheetDescription>Used by {destinationLabel}.</SheetDescription>
+            )}
           </SheetHeader>
           <div className="mt-4">
             <CredentialSlotForm
