@@ -38,6 +38,8 @@ const E2E_CACHE_ROOT = join(homedir(), '.cache', 'ax-memory-bench', 'longmemeval
 export interface RunE2EOptions {
   repoRoot: string;
   sample: number;
+  /** How to draw the question set. See `selectSamples`. Defaults to stratified. */
+  selection?: 'stratified' | 'first';
   cap: number;
   resumeId?: string;
   /**
@@ -109,6 +111,7 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
   const samples = selectSamples({
     samples: await loadLongMemEvalSSamples(cache),
     limit: opts.sample,
+    ...(opts.selection ? { selection: opts.selection } : {}),
     ...(opts.types !== undefined ? { types: opts.types } : {}),
     ...(opts.ids !== undefined ? { ids: opts.ids } : {}),
   });

@@ -307,3 +307,35 @@ describe('renderReport — plan shape', () => {
     expect(md).not.toContain('## Plan shape');
   });
 });
+
+describe('renderReport — measurement-condition stamps', () => {
+  it('stamps how the questions were drawn and what the body cap was', () => {
+    // Both of these moved results by double digits without changing a single
+    // line of retrieval code: a corpus-order prefix draws one question type,
+    // and the body cap moved accuracy 24 points. A report that omits them
+    // invites comparison against a run that used different ones.
+    const md = renderReport({
+      results: [makeResult()],
+      cap: 50,
+      totalSpent: 1,
+      capExceeded: false,
+      runDate: new Date('2026-09-12T00:00:00Z'),
+      sampleNote: '--sample 150 (stratified by question_type) -> multi-session=40',
+      bodyCharCap: 20000,
+    });
+    expect(md).toContain('**Sampling:** --sample 150 (stratified by question_type)');
+    expect(md).toContain('**Answer-stage body cap:** 20,000 chars/doc');
+  });
+
+  it('omits both when the caller does not supply them', () => {
+    const md = renderReport({
+      results: [makeResult()],
+      cap: 50,
+      totalSpent: 1,
+      capExceeded: false,
+      runDate: new Date('2026-09-12T00:00:00Z'),
+    });
+    expect(md).not.toContain('**Sampling:**');
+    expect(md).not.toContain('body cap');
+  });
+});

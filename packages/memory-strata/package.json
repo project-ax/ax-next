@@ -15,6 +15,7 @@
   "scripts": {
     "bench": "tsx test/bench/cli.ts",
     "bench:latency": "tsx test/bench/latency-probe.ts",
+    "bench:diag-truncation": "tsx test/bench/diag-truncation.ts",
     "build": "tsc --build",
     "pretest": "tsc --build",
     "test": "vitest run",

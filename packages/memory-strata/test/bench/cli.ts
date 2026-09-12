@@ -33,12 +33,13 @@ import {
   makeAnthropicOrchestratorClient,
   makeOpenRouterOrchestratorClient,
 } from './orchestrator.js';
-import { runAgent, makeAnthropicAgentClient, type AgentClient } from './agent.js';
+import { runAgent, makeAnthropicAgentClient, MAX_INJECTED_BODY_CHARS, type AgentClient } from './agent.js';
 import { judgeAnswer, makeOpenRouterJudgeClient, type JudgeClient } from './judge.js';
 import { renderReport } from './report.js';
 import { renderFairRerankReport } from './fair-reranker-report.js';
 import { runE2EMode } from './e2e-cli.js';
 import { parseCsvFlag } from './e2e-select.js';
+import { stratifiedSample, describeMix } from './stratify.js';
 import {
   rewriteMapSummaries,
   loadMapRewriteCache,
@@ -99,6 +100,17 @@ export interface CliArgs {
   types?: string[];
   /** e2e mode: only run these `question_id`s (opt-in; unioned with --types). */
   ids?: string[];
+  /**
+   * Take the FIRST n questions in corpus order — the pre-2026-09-12 meaning of
+   * `--sample`.
+   *
+   * Kept because LongMemEval-S is stored in question_type blocks, so this is a
+   * biased slice and every small-n number this repo published was measured on
+   * one. Reproducing those runs needs the biased draw; producing new ones does
+   * not. `--sample` is now stratified, and this flag is how you say you meant
+   * the prefix.
+   */
+  first?: number;
   /**
    * Report output path, overriding the date-stamped default.
    *
@@ -161,6 +173,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
       types: { type: 'string' },
       ids: { type: 'string' },
       out: { type: 'string' },
+      first: { type: 'string' },
     },
   });
   const base: CliArgs = {
@@ -177,6 +190,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
     fixture: values.fixture === true,
   };
   if (values.sample) base.sample = Number(values.sample);
+  if (values.first) base.first = Number(values.first);
   if (values.cap) base.cap = Number(values.cap);
   if (values.resume) base.resume = values.resume;
   if (values.out) base.out = values.out;
@@ -196,7 +210,8 @@ async function main(): Promise<number> {
     // zeroentropy. The default is the n=100 sample; --full opts into n=500.
     return runE2EMode({
       repoRoot: REPO_ROOT,
-      sample: args.sample ?? (args.full ? 500 : 100),
+      sample: args.first ?? args.sample ?? (args.full ? 500 : 100),
+      selection: args.first !== undefined ? 'first' : 'stratified',
       cap: args.cap ?? 25,
       fixture: args.fixture,
       ...(args.resume !== undefined ? { resumeId: args.resume } : {}),
@@ -324,9 +339,30 @@ async function main(): Promise<number> {
   if (want('locomo')) corpora.push(await loadLoCoMo(cache));
   if (want('internal')) corpora.push(loadInternalCorpus());
 
-  if (args.sample !== undefined) {
-    for (const c of corpora) c.questions = c.questions.slice(0, args.sample);
+  // `--first n` is the literal prefix; `--sample n` is proportional across
+  // question_type. The corpus is stored in type BLOCKS, so a prefix of 40 is 40
+  // single-session-user questions and a prefix of 100 holds zero
+  // knowledge-update ones (they start at position 434). Sampling that way is
+  // how several small-n conclusions in docs/plans came to disagree with their
+  // n=500 re-runs.
+  let sampleNote = '';
+  if (args.first !== undefined) {
+    for (const c of corpora) c.questions = c.questions.slice(0, args.first);
+    sampleNote = `--first ${args.first} (corpus-order prefix, type-biased)`;
+  } else if (args.sample !== undefined) {
+    for (const c of corpora) {
+      c.questions = stratifiedSample(
+        c.questions,
+        args.sample,
+        (q) => q.metadata?.question_type as string | undefined,
+      );
+    }
+    const mixes = corpora
+      .map((c) => `${c.name}: ${describeMix(c.questions, (q) => q.metadata?.question_type as string | undefined)}`)
+      .join('; ');
+    sampleNote = `--sample ${args.sample} (stratified by question_type) -> ${mixes}`;
   }
+  if (sampleNote) console.log(`Sampling: ${sampleNote}`);
 
   // Per-corpus map-summary rewrite cache: if a `--rewrite-map` pass has been
   // run for this corpus, load it and feed it into configs D + E so the
@@ -488,6 +524,8 @@ async function main(): Promise<number> {
     configFailures,
     orchestratorModel: orchestratorModelKey,
     spendByModel: meter.snapshot(),
+    ...(sampleNote ? { sampleNote } : {}),
+    bodyCharCap: MAX_INJECTED_BODY_CHARS,
   });
   const outPath = args.out
     ? resolve(REPO_ROOT, args.out)
