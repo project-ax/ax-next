@@ -109,6 +109,73 @@ describe('StepGate names the moment the link was printed (B9)', () => {
   });
 });
 
+/**
+ * Found by WALKING the wizard against the kind cluster, not by reading it.
+ *
+ * TASK-340 dropped the raw HTTP status from these screens and explicitly left
+ * the 400-body branch alone as out of scope. Driving the real server showed
+ * that branch renders the error CODE verbatim: typing an address with no TLD
+ * put the word "invalid-email" in front of a first-run user. Same defect as
+ * B7, one layer down.
+ */
+describe('StepAdmin rejections read as sentences, not codes', () => {
+  const submit = async (name: string, email: string) => {
+    render(<StepAdmin onCreated={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: name } });
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: email } });
+    fireEvent.click(screen.getByRole('button', { name: /continue/i }));
+  };
+
+  const reject = (code: string) =>
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: code }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+
+  it('explains a rejected email instead of printing "invalid-email"', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    reject('invalid-email');
+
+    await submit('Walk Admin', 'walk@local');
+
+    expect(
+      await screen.findByText(/that email address doesn’t look right/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('invalid-email')).toBeNull();
+    // The code is not lost — it goes where a developer will look.
+    expect(warn).toHaveBeenCalledWith('[setup] admin create rejected', 'invalid-email');
+    vi.restoreAllMocks();
+  });
+
+  it('falls back to a sentence for a code it does not know', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    reject('some-new-code-we-have-never-seen');
+
+    await submit('Walk Admin', 'walk@example.com');
+
+    expect(await screen.findByText(/check the details above/i)).toBeInTheDocument();
+    expect(screen.queryByText(/some-new-code/)).toBeNull();
+    vi.restoreAllMocks();
+  });
+
+  it('survives a rejection code that names an Object.prototype member', async () => {
+    // The lookup key is server-controlled. On a plain-object table,
+    // `constructor` resolves through the prototype and returns a FUNCTION,
+    // which React throws on — taking out the screen whose whole job at that
+    // moment is to report an error. Same class of bug the security checklist
+    // caught in `lib/humanize.ts` (#520).
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    reject('constructor');
+
+    await submit('Walk Admin', 'walk@example.com');
+
+    expect(await screen.findByText(/check the details above/i)).toBeInTheDocument();
+    vi.restoreAllMocks();
+  });
+});
+
 describe('StepAdmin promises no mechanism it may not keep (B8)', () => {
   it('says what the email is for, without committing to how sign-in works', () => {
     render(<StepAdmin onCreated={() => {}} />);

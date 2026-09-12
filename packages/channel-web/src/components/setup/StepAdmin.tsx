@@ -5,6 +5,24 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { SetupShell, SETUP_UNEXPECTED } from './SetupShell';
 
+/**
+ * What the wizard says for each rejection `@ax/onboarding` can return from
+ * `POST /setup/admin` (`routes.ts`: `invalid-json`, `missing-name`,
+ * `invalid-email`). Anything unrecognised falls back to a plain sentence, and
+ * the code goes to the console.
+ *
+ * A `Map`, not an object, for the reason TASK-334's security checklist turned
+ * up: the key is a SERVER-CONTROLLED string, and a plain-object lookup on
+ * `constructor` or `valueOf` resolves through `Object.prototype` and hands back
+ * a function where a string was expected — which React then throws on, taking
+ * out the screen that was trying to report an error.
+ */
+const ADMIN_FIELD_ERRORS = new Map<string, string>([
+  ['missing-name', 'Please add your name.'],
+  ['invalid-email', 'That email address doesn’t look right. Check it and try again.'],
+  ['invalid-json', 'Something went wrong sending that. Give it another try in a moment.'],
+]);
+
 interface Props {
   onCreated: () => void;
 }
@@ -27,8 +45,16 @@ export function StepAdmin({ onCreated }: Props) {
       });
       if (r.ok) onCreated();
       else if (r.status === 400) {
+        // (TASK-340 follow-up, found walking the wizard against the kind
+        // cluster.) This used to render the server's error CODE verbatim, so
+        // typing an address without a TLD showed a first-run user the word
+        // "invalid-email". TASK-340 dropped the raw HTTP status for exactly
+        // this reason and left this branch alone as out of scope; the walk
+        // showed it is the same defect one layer down.
         const body = (await r.json().catch(() => ({}))) as Record<string, unknown>;
-        setErr(typeof body['error'] === 'string' ? body['error'] : 'Invalid input');
+        const code = typeof body['error'] === 'string' ? body['error'] : '';
+        console.warn('[setup] admin create rejected', code || r.status);
+        setErr(ADMIN_FIELD_ERRORS.get(code) ?? 'Check the details above and try again.');
       } else if (r.status === 401) setErr('Setup timed out. Reload the page to start again.');
       else {
         console.warn('[setup] admin create failed', r.status);
