@@ -99,6 +99,17 @@ export interface CliArgs {
   types?: string[];
   /** e2e mode: only run these `question_id`s (opt-in; unioned with --types). */
   ids?: string[];
+  /**
+   * Report output path, overriding the date-stamped default.
+   *
+   * The default path is derived from the run DATE alone, so two arms of the
+   * same day overwrite each other — which makes arms that differ only by
+   * `--orchestrator-model` impossible to run concurrently, and silently
+   * destroys the first arm's report when run back to back. Absolute paths are
+   * used as-is; relative ones resolve against the workspace root, like the
+   * default.
+   */
+  out?: string;
 }
 
 /** Arms `--orchestrator-model` accepts. See {@link CliArgs.orchestratorModel}. */
@@ -149,6 +160,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
       fixture: { type: 'boolean', default: false },
       types: { type: 'string' },
       ids: { type: 'string' },
+      out: { type: 'string' },
     },
   });
   const base: CliArgs = {
@@ -167,6 +179,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
   if (values.sample) base.sample = Number(values.sample);
   if (values.cap) base.cap = Number(values.cap);
   if (values.resume) base.resume = values.resume;
+  if (values.out) base.out = values.out;
   const types = parseCsvFlag(values.types as string | undefined);
   if (types !== undefined) base.types = types;
   const ids = parseCsvFlag(values.ids as string | undefined);
@@ -473,8 +486,12 @@ async function main(): Promise<number> {
     abortError: abortError ? ((abortError as Error)?.message ?? String(abortError)) : null,
     skipped,
     configFailures,
+    orchestratorModel: orchestratorModelKey,
+    spendByModel: meter.snapshot(),
   });
-  const outPath = join(REPO_ROOT, 'docs/plans', `${date.toISOString().slice(0, 10)}-memory-strata-vector-spike-report.md`);
+  const outPath = args.out
+    ? resolve(REPO_ROOT, args.out)
+    : join(REPO_ROOT, 'docs/plans', `${date.toISOString().slice(0, 10)}-memory-strata-vector-spike-report.md`);
   writeFileSync(outPath, md);
   console.log(`Report written to ${outPath}. Total spend: $${meter.totalDollars().toFixed(2)}.`);
 

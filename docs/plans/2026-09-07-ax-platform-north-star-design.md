@@ -317,11 +317,18 @@ Deferred work is not scheduled. It has triggers, not dates.
    for pooling and snapshot/restore? Not answerable from memory; product surface moves.
    Blocks D's design, not its existence.
 
-2. **Orchestrator vs BM25 as the default retrieval path.** The isolated bench said the
-   planner wins by 7.6pp; end-to-end the gap is ~2pp at unequal sample sizes, and BM25 was
-   never re-measured after the fix that produced the 78.0%. The `2026-07-07` levers brief
-   flags this as WS1a. Known cost: ~$27 per n=100 run. Worth settling before C builds on
-   an assumption about which path is default.
+2. **Orchestrator vs BM25 as the default retrieval path.** *Isolated bench settled
+   2026-09-11:* the planner wins by **+12.0pp accuracy / +49.0pp recall@5** at n=500 with the
+   SHIPPED haiku model — roughly double the 7.6pp that was on the books, which came from a
+   bench that showed the planner bare slugs where the runtime shows qualified doc ids and so
+   silently dropped a large share of every arm's load ops. BM25 was re-measured in the same
+   round (21.2%, reproducing its May recall@5 exactly). GLM 5.3 Flash is statistically tied on
+   accuracy (+2.8pp, z=0.93) and is not a reason to switch the default.
+   Still open end-to-end: the gap there was ~2pp at unequal sample sizes, and the planner now
+   retrieves gold into the top 5 on 90–94% of questions while answering ~33–36% correctly,
+   which points the next investigation at the ANSWER stage rather than retrieval. The
+   `2026-07-07` levers brief flags this as WS1a. See
+   `docs/plans/2026-09-11-orchestrator-accuracy-report.md`.
 
 3. **External RAG per-document ACLs.** If "search my own past work" is wanted, the corpus
    must support ACLs that line up with our grants. If it doesn't, that feature lives on our

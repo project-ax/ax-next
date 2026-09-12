@@ -878,7 +878,7 @@ The Observer treats user-originated and assistant-originated content asymmetrica
 
 - **BM25-only beat BM25 + dense + RRF by 9 points** — the dense path didn't earn its dependency cost. Vectors are OUT; embeddings sit at Level 7 (conditional) and reopen only on contradicting evidence.
 - **The LLM reranker (zerank-2) also lost to BM25-only** by 2.4 points on the same corpus. Reranker stays at Level 6, also gated on evidence.
-- **Orchestrator + LLM-rewritten map (c137-style) beat BM25-only by 7.6pp accuracy / 14.2pp recall@5** at n=500 — the structured-retrieval stage runs *above* the indexer and does the picking, so the indexer no longer needs hybrid scoring to fuse signals.
+- **Orchestrator + LLM-rewritten map (c137-style) beat BM25-only by 12.0pp accuracy / 49.0pp recall@5** at n=500 (re-measured 2026-09-11 with the SHIPPED `anthropic/claude-haiku-4.5` planner) — the structured-retrieval stage runs *above* the indexer and does the picking, so the indexer no longer needs hybrid scoring to fuse signals. The older 7.6pp / 14.2pp figure understated this: it came from a bench whose map showed the planner bare slugs where the runtime shows fully-qualified doc ids, so a large share of every arm's `<load>` ops resolved to nothing and fell back to BM25 in silence. See `docs/plans/2026-09-11-orchestrator-accuracy-report.md`.
 
 The resulting indexer is **BM25-only**, taken from memsearch's BM25 path: SQLite FTS5 + content-hash incremental indexing + markdown source-of-truth + frontmatter-scoped indexing. Dense embeddings, RRF, and the multi-signal scoring formula (`0.35 × lexical + 0.35 × dense + ...`) are cut. What Strata adds on top of memsearch's BM25 layer: tier-aware result routing (system → warm-cache → cold-search) and summary-first / header-mode shaping.
 
@@ -1499,6 +1499,8 @@ If D outperforms A/B/C on either metric, the design moves further toward c137: v
 - E (D + BM25 fallback, original map): 24.0% accuracy, 47.6% recall@5, 76.7% correct-refusal.
 - **E (D + BM25 fallback, Grok-rewritten map)**: **28.2% accuracy, 56.0% recall@5, 81.5% correct-refusal.**
 
+> **Re-measured 2026-09-11 — these numbers are UNDERSTATED, not overstated.** The bench that produced them fed the planner the runtime's map STORAGE form (`## episodes/` + bare slug) rather than the fully-qualified ids the runtime actually shows it, so `<load>` ops naming a bare slug resolved to nothing and fell back to BM25 without saying so. Corrected, the architecture delta is roughly double what this section claims: **+12.0pp accuracy / +49.0pp recall@5** with the shipped Haiku planner. The conclusion below stands and then some. See `docs/plans/2026-09-11-orchestrator-accuracy-report.md`.
+
 **E with the LLM-rewritten map beats A by 7.6 points on accuracy and 14.2 points on recall@5 — clears the ≥5-point bar on both axes.** The c137-style retrieval orchestrator architecture *works*; the original n=100 binding was misled by Haiku-as-orchestrator and `firstSentence`-quality map summaries (both of which c137 specifically calls out as load-bearing). Map summary quality is now empirically confirmed as a primary lever, exactly as c137's premise predicted.
 
 **Latency follow-up (2026-05-14).** A small `bench:latency` probe found the n=500 runs' ~7-8s p50 was an OpenRouter routing artifact, not Grok's actual latency. Direct xAI API access for the same model lands at p50 404ms / p95 646ms — ~27× faster than OpenRouter and faster than Haiku-via-Anthropic. The real orchestrator-vs-BM25 latency gap is **~5×, not 90×** (404ms vs 89ms). **The orchestrator architecture is viable as a default retrieval path**, provided production uses direct xAI access (or another low-latency provider) rather than OpenRouter's default routing. BM25-only remains a valid lower-latency fallback for surfaces where 300ms additional p50 latency is unacceptable. Full report: `docs/plans/2026-05-13-memory-strata-phase-3c-config-d-report.md`.
@@ -1531,6 +1533,9 @@ LEVEL 3: Add Retrieval Orchestrator (one-hop XML planner)
          Phase 3C spike (2026-05-13 → 2026-05-14): E with Grok 4.1 Fast
          + LLM-rewritten map beat A by 7.6pp accuracy and 14.2pp
          recall@5 at n=500 — clears the ≥5-point bar on both axes.
+         RE-MEASURED 2026-09-11 on a bench whose map finally matches
+         what the runtime shows the planner: +12.0pp / +49.0pp with
+         the SHIPPED haiku planner. The old figure was understated.
          Architecture validated. Latency probe revealed OpenRouter's
          default routing was pathological (~11s p50); direct xAI runs
          the same model at ~404ms p50, a 5x gap vs BM25 (not 90x as
