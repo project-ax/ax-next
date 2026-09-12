@@ -29,6 +29,8 @@ interface Props {
   onToday: () => void;
   onActivity: () => void;
   onAgent: (id: string) => void;
+  /** Opens Settings, via the `UserMenu` at the foot of this rail. */
+  onOpenAdminSettings?: (() => void) | undefined;
 }
 
 export function WorkspaceSidebar({
@@ -41,6 +43,7 @@ export function WorkspaceSidebar({
   onToday,
   onActivity,
   onAgent,
+  onOpenAdminSettings,
 }: Props) {
   const row = (active: boolean) =>
     cn(
@@ -124,8 +127,14 @@ export function WorkspaceSidebar({
 
         Rendered bare — it brings its own `border-t` and padding, so a wrapper
         adding either draws a second rule above it.
+
+        `onOpenAdminSettings` is not optional in practice, whatever the type
+        says: `UserMenu` renders its Settings entry unconditionally and calls
+        `onOpenAdminSettings?.()`, so omitting it leaves a live-looking menu
+        item that silently does nothing. This rail was doing exactly that until
+        the workspace grew a Settings route.
       */}
-      <UserMenu />
+      <UserMenu onOpenAdminSettings={onOpenAdminSettings} />
     </aside>
   );
 }

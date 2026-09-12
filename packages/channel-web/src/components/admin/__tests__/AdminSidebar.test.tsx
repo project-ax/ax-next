@@ -5,9 +5,32 @@ import { AdminSidebar } from '../AdminSidebar';
 const noop = () => {};
 
 describe('AdminSidebar (role-aware Settings surface)', () => {
+  /**
+   * The back button used to say "chat" unconditionally. That was correct while
+   * chat was the only shell that could open Settings, and became a wrong sign
+   * the moment the workspace could — pointing people at the surface being
+   * retired, from the surface replacing it.
+   *
+   * Naming the destination rather than saying a bare "Back" is the existing
+   * design and worth keeping. It just has to be the caller's destination.
+   */
+  it('names the destination its caller came from', () => {
+    const { unmount } = render(
+      <AdminSidebar activeTab="skills" isAdmin={false} onTabChange={noop} onBack={noop} backLabel="workspace" />,
+    );
+    expect(screen.getByRole('button', { name: /workspace/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^chat$/i })).toBeNull();
+    unmount();
+
+    render(
+      <AdminSidebar activeTab="skills" isAdmin={false} onTabChange={noop} onBack={noop} backLabel="chat" />,
+    );
+    expect(screen.getByRole('button', { name: /chat/i })).toBeInTheDocument();
+  });
+
   it('shows the user tabs (Skills, Connectors, Agents) — no separate Credentials tab', () => {
     render(
-      <AdminSidebar activeTab="skills" isAdmin={false} onTabChange={noop} onBackToChat={noop} />,
+      <AdminSidebar activeTab="skills" isAdmin={false} onTabChange={noop} onBack={noop} backLabel="chat" />,
     );
     expect(screen.getByText('Skills')).toBeInTheDocument();
     expect(screen.getByText('Connectors')).toBeInTheDocument();
@@ -21,7 +44,7 @@ describe('AdminSidebar (role-aware Settings surface)', () => {
 
   it('hides admin tabs from non-admins (but NOT Agents — it is a user tab now)', () => {
     render(
-      <AdminSidebar activeTab="skills" isAdmin={false} onTabChange={noop} onBackToChat={noop} />,
+      <AdminSidebar activeTab="skills" isAdmin={false} onTabChange={noop} onBack={noop} backLabel="chat" />,
     );
     expect(screen.queryByText('AI model keys')).not.toBeInTheDocument();
     expect(screen.queryByText('Teams')).not.toBeInTheDocument();
@@ -34,7 +57,7 @@ describe('AdminSidebar (role-aware Settings surface)', () => {
   it('routes the Agents user tab to the agents tab id', () => {
     const onTabChange = vi.fn();
     render(
-      <AdminSidebar activeTab="skills" isAdmin={false} onTabChange={onTabChange} onBackToChat={noop} />,
+      <AdminSidebar activeTab="skills" isAdmin={false} onTabChange={onTabChange} onBack={noop} backLabel="chat" />,
     );
     screen.getByText('Agents').click();
     expect(onTabChange).toHaveBeenCalledWith('agents');
@@ -42,7 +65,7 @@ describe('AdminSidebar (role-aware Settings surface)', () => {
 
   it('shows admin tabs to admins alongside the user tabs', () => {
     render(
-      <AdminSidebar activeTab="providers" isAdmin onTabChange={noop} onBackToChat={noop} />,
+      <AdminSidebar activeTab="providers" isAdmin onTabChange={noop} onBack={noop} backLabel="chat" />,
     );
     expect(screen.getByText('Skills')).toBeInTheDocument();
     expect(screen.getByText('AI model keys')).toBeInTheDocument();
@@ -55,7 +78,7 @@ describe('AdminSidebar (role-aware Settings surface)', () => {
     // entries — their curation moves inline into the user Skills/Connectors
     // tabs. Even for admins, none of these labels render.
     render(
-      <AdminSidebar activeTab="providers" isAdmin onTabChange={noop} onBackToChat={noop} />,
+      <AdminSidebar activeTab="providers" isAdmin onTabChange={noop} onBack={noop} backLabel="chat" />,
     );
     expect(screen.queryByText('Catalog')).not.toBeInTheDocument();
     expect(screen.queryByText('Skills awaiting review')).not.toBeInTheDocument();
@@ -65,7 +88,7 @@ describe('AdminSidebar (role-aware Settings surface)', () => {
   it('fires onTabChange when a tab is clicked', () => {
     const onTabChange = vi.fn();
     render(
-      <AdminSidebar activeTab="connectors-user" isAdmin={false} onTabChange={onTabChange} onBackToChat={noop} />,
+      <AdminSidebar activeTab="connectors-user" isAdmin={false} onTabChange={onTabChange} onBack={noop} backLabel="chat" />,
     );
     screen.getByText('Skills').click();
     expect(onTabChange).toHaveBeenCalledWith('skills');
@@ -74,7 +97,7 @@ describe('AdminSidebar (role-aware Settings surface)', () => {
   it('the user "Connectors" tab uses the connectors-user id', () => {
     const onTabChange = vi.fn();
     render(
-      <AdminSidebar activeTab="skills" isAdmin={false} onTabChange={onTabChange} onBackToChat={noop} />,
+      <AdminSidebar activeTab="skills" isAdmin={false} onTabChange={onTabChange} onBack={noop} backLabel="chat" />,
     );
     screen.getByText('Connectors').click();
     expect(onTabChange).toHaveBeenCalledWith('connectors-user');

@@ -113,15 +113,25 @@ function doneTodayFrom(feed: {
     .length;
 }
 
-export function WorkspaceShell() {
+export interface WorkspaceShellProps {
+  /**
+   * Opens Settings. Threaded down to the `UserMenu` in the sidebar, which is
+   * where the entry lives — see the note in `App.tsx`. Optional so the shell
+   * still renders in tests that do not care, but the app always passes it: a
+   * `UserMenu` without it shows a Settings item that does nothing.
+   */
+  onOpenAdminSettings?: (() => void) | undefined;
+}
+
+export function WorkspaceShell({ onOpenAdminSettings }: WorkspaceShellProps = {}) {
   return (
     <WorkspaceProvider>
-      <Inner />
+      <Inner onOpenAdminSettings={onOpenAdminSettings} />
     </WorkspaceProvider>
   );
 }
 
-function Inner() {
+function Inner({ onOpenAdminSettings }: WorkspaceShellProps) {
   const { board, error, loading, refresh } = useWorkspace();
   /**
    * The open view, and the URL, kept as one thing.
@@ -315,6 +325,7 @@ function Inner() {
           onToday={() => navigate({ kind: 'today' })}
           onActivity={() => navigate({ kind: 'activity' })}
           onAgent={openAgent}
+          onOpenAdminSettings={onOpenAdminSettings}
         />
 
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">

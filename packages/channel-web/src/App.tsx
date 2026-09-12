@@ -374,7 +374,39 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
     return (
       <UserProvider value={user}>
         <ErrorBoundary surface="workspace">
-          <WorkspaceShell />
+          {/*
+            Settings opens the SAME `AdminShell` the chat shell opens, from the
+            same `adminSettingsOpen` state declared above both branches — there
+            is one Settings surface, not one per shell (invariant 4).
+
+            Before this, the workspace rendered `<UserMenu />` bare. The menu
+            item was still there, still clickable, and `onOpenAdminSettings?.()`
+            resolved to undefined — so it silently did nothing. That is the
+            exact failure `hideClose` was added to stop (TASK-340 / audit B4):
+            offering a control that cannot work is worse than not offering it,
+            because the reader concludes the product is broken rather than that
+            the door is elsewhere.
+
+            It also matters for what comes next: with the workspace as the only
+            interface, this is the ONLY route to AI model keys, Sign-in methods,
+            Connectors, Skills, Teams, Routines and Branding.
+
+            The wrapper mirrors the chat branch because `AdminShell` roots at
+            `flex flex-1 min-w-0 h-full` and needs a flex parent with a height.
+          */}
+          {adminSettingsOpen ? (
+            <div className="flex h-screen bg-background font-sans text-foreground">
+              <AdminShell
+                isAdmin={user.role === 'admin'}
+                onClose={() => setAdminSettingsOpen(false)}
+                backLabel="workspace"
+              />
+            </div>
+          ) : (
+            <WorkspaceShell
+              onOpenAdminSettings={() => setAdminSettingsOpen(true)}
+            />
+          )}
         </ErrorBoundary>
         <ToastStack />
       </UserProvider>

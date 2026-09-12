@@ -57,7 +57,9 @@ export interface AdminSidebarProps {
   activeTab: AdminTabId;
   isAdmin: boolean;
   onTabChange: (tab: AdminTabId) => void;
-  onBackToChat: () => void;
+  onBack: () => void;
+  /** Names the destination — "chat", "workspace". See AdminShell. */
+  backLabel: string;
 }
 
 function NavSection({
@@ -94,7 +96,8 @@ export function AdminSidebar({
   activeTab,
   isAdmin,
   onTabChange,
-  onBackToChat,
+  onBack,
+  backLabel,
 }: AdminSidebarProps) {
   return (
     <aside className="w-[240px] shrink-0 border-r border-border bg-background flex flex-col font-sans">
@@ -102,7 +105,7 @@ export function AdminSidebar({
         <BrandMark />
         <button
           type="button"
-          onClick={onBackToChat}
+          onClick={onBack}
           className={cn(
             'cursor-pointer inline-flex items-center gap-1.5 pl-1.5 pr-2 py-1 rounded-xl text-[11.5px]',
             'text-muted-foreground bg-muted border border-transparent',
@@ -110,7 +113,7 @@ export function AdminSidebar({
           )}
         >
           <ChevronLeft className="w-[11px] h-[11px]" strokeWidth={1.4} />
-          chat
+          {backLabel}
         </button>
       </div>
       <div className="flex-1 overflow-hidden pt-2.5 pb-2 flex flex-col">
