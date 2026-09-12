@@ -19,7 +19,12 @@
     --muted-foreground: 240 4% 46%;
     --accent: 240 5% 96%;
     --accent-foreground: 240 6% 10%;
-    --destructive: 0 60% 55%;
+    /* 55% -> 50%. Light mode keeps white-on-destructive, but at 55% that
+       measured 4.47:1 — under the floor by a hair, and `text-destructive` on
+       white was the same 4.47 for the same reason. Darkening the accent is the
+       one move that lifts BOTH roles here (each to 5.13:1), which is why light
+       mode is fixed at the accent and dark mode at the foreground. */
+    --destructive: 0 60% 50%;
     --destructive-foreground: 0 0% 100%;
     --destructive-soft: 0 60% 96%;
     /* Held-for-you. A third semantic state the surface genuinely needs:
@@ -35,7 +40,27 @@
     --ink-ghost: 240 4% 78%;
   }
 
-  /* Dark tokens scoped to existing data-theme mechanism + system fallback. */
+  /* Dark tokens scoped to existing data-theme mechanism + system fallback.
+   *
+   * On `--primary-foreground` and `--destructive-foreground` being near-black
+   * here rather than white: dark mode LIGHTENS both accents (primary 44% ->
+   * 52%, destructive 55% -> 62%), which moves them toward white and takes the
+   * white text on top of them below the WCAG AA floor. Measured in a browser:
+   * "Just this once" on the permission card 3.75:1, "Turn it off anyway" on the
+   * sign-in lockout dialog 3.40:1 — the two most consequential buttons in the
+   * product, both under 4.5.
+   *
+   * The fix is the foreground, not the accent, because `--primary` and
+   * `--destructive` are ALSO foregrounds: `text-destructive` alone appears 37
+   * times and measures a healthy 6.17:1 on black precisely BECAUSE the accent
+   * is bright. Darkening the accents would fix the buttons and break the text.
+   * Every `*-foreground` use is paired with its own `bg-*`, so changing these
+   * two touches buttons, badges and chips and nothing else.
+   *
+   * This is not a new idea — `--warning-foreground` below has been `240 6% 10%`
+   * in dark mode all along. Primary and destructive simply never got the same
+   * treatment. Now: primary 4.71:1, destructive 5.20:1.
+   */
   :root[data-theme='dark'],
   :root:not([data-theme='light']) {
     @media (prefers-color-scheme: dark) {
@@ -46,7 +71,7 @@
       --popover: 240 3% 11%;
       --popover-foreground: 240 5% 96%;
       --primary: 211 100% 52%;
-      --primary-foreground: 0 0% 100%;
+      --primary-foreground: 240 6% 10%;
       --primary-soft: 212 100% 14%;
       --secondary: 240 3% 9%;
       --secondary-foreground: 240 5% 96%;
@@ -55,7 +80,7 @@
       --accent: 240 3% 9%;
       --accent-foreground: 240 5% 96%;
       --destructive: 4 86% 62%;
-      --destructive-foreground: 0 0% 100%;
+      --destructive-foreground: 240 6% 10%;
       --destructive-soft: 4 60% 16%;
       --warning: 43 96% 58%;
       --warning-foreground: 240 6% 10%;
@@ -76,7 +101,7 @@
     --popover: 240 3% 11%;
     --popover-foreground: 240 5% 96%;
     --primary: 211 100% 52%;
-    --primary-foreground: 0 0% 100%;
+    --primary-foreground: 240 6% 10%;
     --primary-soft: 212 100% 14%;
     --secondary: 240 3% 9%;
     --secondary-foreground: 240 5% 96%;
@@ -85,7 +110,7 @@
     --accent: 240 3% 9%;
     --accent-foreground: 240 5% 96%;
     --destructive: 4 86% 62%;
-    --destructive-foreground: 0 0% 100%;
+    --destructive-foreground: 240 6% 10%;
     --destructive-soft: 4 60% 16%;
     --warning: 43 96% 58%;
     --warning-foreground: 240 6% 10%;
