@@ -61,6 +61,18 @@ export default defineConfig({
             // per-user @ax/skills + connectors settings routes). Real deploys are
             // same-origin so this only matters for a local Vite walk (TASK-114).
             '/settings': { target: backendUrl, changeOrigin: false, ws: false },
+            // The first-run wizard's three POST endpoints (@ax/onboarding).
+            // Same story as /settings: real deploys are same-origin, so the
+            // omission only bit on a local walk — where it surfaced as an
+            // inexplicable 404 from Vite itself rather than anything the wizard
+            // could explain. Found walking TASK-340 against the kind cluster.
+            //
+            // Listed ONE BY ONE on purpose. `/setup` is also the SPA's own
+            // client-side route for the wizard page, so a prefix proxy sends
+            // the page itself to the backend and the app renders blank.
+            '/setup/claim': { target: backendUrl, changeOrigin: false, ws: false },
+            '/setup/admin': { target: backendUrl, changeOrigin: false, ws: false },
+            '/setup/model': { target: backendUrl, changeOrigin: false, ws: false },
           },
         }
       : {}),

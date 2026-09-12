@@ -96,7 +96,13 @@ export function AgentMenu({ agents, activeId, onPick, onCreateNew }: AgentMenuPr
             <span className="text-[14px] tracking-[-0.01em] leading-[1.1] text-foreground">New agent…</span>
           </button>
         )}
-        <div className="px-2.5 pt-2 pb-1 text-[10.5px] tracking-[0.04em] text-ink-ghost text-center">
+        {/* `text-muted-foreground`, not `text-ink-ghost`. Measured walking this
+            surface: `--ink-ghost` is deliberately ultra-faint (≈2.0:1 in dark,
+            ≈1.7:1 in light) and is right for the decoration it was built for —
+            section labels, the ⌘N hint, "⏎ send". This line is not decoration:
+            since TASK-336 it is the one sentence telling a reader what pressing
+            Enter will actually do, and it was sitting at 2.04:1. */}
+        <div className="px-2.5 pt-2 pb-1 text-[11px] leading-[1.35] text-muted-foreground text-center">
           Your next message starts a fresh chat with this agent.
         </div>
       </div>
