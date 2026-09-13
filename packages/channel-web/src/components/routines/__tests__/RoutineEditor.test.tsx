@@ -343,5 +343,40 @@ describe('RoutineEditor (form-first)', () => {
       expect(screen.getByText(/Runs on the schedule/i)).toBeTruthy();
       expect(screen.queryByText(/Runs at .* every day/)).toBeNull();
     });
+
+    /**
+     * A browser walk measured the warning tone and found it fine — 12.68:1 in
+     * dark, well clear of the floor. What it also found is that the tone was
+     * ALL there was. The preview said "That doesn't look like a cron schedule
+     * yet" and the input pointed at it with `aria-describedby`, but the input's
+     * `aria-invalid` was never set, so a screen reader announced that sentence
+     * as ordinary help text with nothing marking the field as wrong.
+     *
+     * The three states have to stay distinct, which is why this pins all of
+     * them rather than just the invalid one: empty is not an error (the preview
+     * teaches there instead of scolding), and `unknown` is a legal expression
+     * we merely cannot phrase in English — flagging either would be a lie.
+     */
+    it('marks the field invalid for a bad expression, and only for a bad one', async () => {
+      await openCron();
+      const field = () => screen.getByLabelText('Cron expression');
+
+      // Empty — being untouched is not being wrong.
+      fillField('Cron expression', '');
+      expect(field().getAttribute('aria-invalid')).toBeNull();
+
+      // Valid and describable.
+      fillField('Cron expression', '0 9 * * 1');
+      expect(field().getAttribute('aria-invalid')).toBeNull();
+
+      // Valid but beyond the describer — still not an error.
+      fillField('Cron expression', '15,45 2-4 * * *');
+      expect(field().getAttribute('aria-invalid')).toBeNull();
+
+      // Actually invalid: the tone and the accessible state now agree.
+      fillField('Cron expression', 'every tuesday');
+      expect(field().getAttribute('aria-invalid')).toBe('true');
+      expect(screen.getByText(/doesn't look like a cron schedule yet/i)).toBeTruthy();
+    });
   });
 });
