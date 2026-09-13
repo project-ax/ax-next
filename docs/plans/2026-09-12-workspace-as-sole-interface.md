@@ -72,14 +72,30 @@ The wall still holds server-side, so this fails *closed*, not open. But the
 turn dead-ends with no path forward, and on the workspace that is the only
 outcome available.
 
-Needs: a workspace surface for `permissionRequest`, and a decision about
-whether it renders in the thread (as chat does) or lands in the Today queue
-next to decisions. Note the existing distinction is deliberate and documented
-in `PermissionCard.tsx`: a grant is durable and agent-scoped with no recorded
+Needs: a workspace surface for `permissionRequest`. **Decided (2026-09-12) —
+presence routes it.** If the human is in a thread with that agent, the grant
+renders in the thread, where chat put it. Otherwise it lands in the Today
+queue next to decisions. The queue is the default and the thread is the
+exception, because most grants will be raised by an agent working unattended
+with nobody watching.
+
+One grant, one identity, two render sites — never two live copies
+(invariant 4). Answering it in either place resolves it in both, and a human
+who walks away mid-grant finds it waiting in the queue rather than orphaned in
+a thread nobody is reading.
+
+"In a thread with that agent" is **decided (2026-09-12)**: that agent's
+thread is the open route *and* the tab is visible. Everything else — another
+agent's thread, Today, Activity, a backgrounded tab, a closed laptop — is the
+queue. Cheap to implement, and it matches what a person would say if you asked
+them whether they were talking to it. Visibility, not focus: a visible but
+unfocused tab still has a human in front of it.
+
+The grant/`Decision` distinction stays. It is deliberate and documented in
+`PermissionCard.tsx`: a grant is durable and agent-scoped with no recorded
 call; a `Decision` is a one-shot outward action carrying a verbatim call and a
-freshness guard. Collapsing them was considered and rejected. Do not undo that
-casually — but *do* revisit whether the workspace's Today queue is the right
-home for a grant, because the workspace has a queue and chat did not.
+freshness guard. Sharing a queue is not collapsing them — two types, two
+cards, one list.
 
 ### 3. Create-an-agent is not reachable from the workspace
 
@@ -112,7 +128,7 @@ more than the live stream did**. A user who watches a turn happen and then
 reloads sees more detail than they did live. That is the kind of inconsistency
 people notice and cannot explain.
 
-Three ways out. Pick one before doing any Tier 3 work:
+Three ways out, and the one taken:
 
 - **(a) Extract a shared frame parser.** Both readers parse the same wire; each
   renders its own way. Most work; keeps assistant-ui out of the workspace;
@@ -122,8 +138,28 @@ Three ways out. Pick one before doing any Tier 3 work:
 - **(c) Grow renderers off the dumb reader.** Middle. Risks a second divergent
   parser — the exact failure (a) prevents.
 
-Recommendation: **(a)**. The parser is the shared thing; the rendering is
-genuinely different, and should be.
+**Decided (2026-09-12): (a).** The parser is the shared thing; the rendering
+is genuinely different, and should be. Concretely:
+
+- `consumeSseAttempt` comes out of `lib/transport.ts` into a module that owns
+  the wire and nothing else — bytes in, typed frames out: `text`, `thinking`,
+  `tool-use`, `tool-result`, `phase`, `permissionRequest`, `done`, `error`. No
+  AI-SDK chunk emission in there, no rendering.
+- `lib/transport.ts` keeps only the adapter from those frames to AI-SDK
+  chunks. The workspace reader consumes the same frames and renders its own
+  way. The "deliberately dumb" reader's private parsing goes away rather than
+  growing.
+- **Put it where chat's deletion can't reach it.** Tier 5 #4 deletes
+  `lib/transport.ts` and the chat-only tree wholesale. A parser living in
+  either is a parser that gets deleted out from under the only surface left.
+- One parser is the single source of truth for the wire (invariant 4), and
+  that is what closes the history-shows-more-than-live seam: the workspace
+  sees the detail live because it sees the frames live.
+- Grants (Tier 1 #2) arrive as a parsed `permissionRequest` frame rather than
+  a second ad-hoc branch — so the parser lands **before** grants, not after.
+- Behaviour-preserving on the chat side. Chat's existing tests are the
+  regression net and stay green through the extraction; a frame-level test of
+  the new module ships with it.
 
 ---
 
@@ -191,14 +227,23 @@ Only after 1–4.
    `AX_AGENT_WORKSPACE_PREVIEW`, and the client-side feature is
    `agentWorkspacePreview`. Three names for one switch; worth collapsing as
    part of this.
-2. **Decide whether the flag survives.** Today "off" means `/api/workspace/*`
-   is never registered — a genuine capability boundary, and the chart comment
-   defends it as "the cheapest capability minimization we know how to buy". If
-   the workspace is the only interface, "off" means a product with no UI. Either
-   retire the flag or restate what off now means.
-3. **`/chat` handling.** `pathRendersWorkspace()` is `/`, `/workspace`,
-   `/workspace/*`; chat keeps `/chat`. Decide: redirect, or a dated notice
-   before removal. People have bookmarks.
+2. **The flag survives.** Decided (2026-09-12). "Off" keeps meaning
+   `/api/workspace/*` is never registered — still the cheapest capability
+   minimization we know how to buy. What changes is what it *implies*: it
+   stops meaning "you get chat instead" and starts meaning "this deployment
+   has no web interface", which is a real shape to be able to ship once an
+   agent is reachable from somewhere other than a chat window. Restate the
+   chart comment to say exactly that, so the next reader doesn't read `off` as
+   a broken install. The three-names-for-one-switch collapse
+   (`channelWeb.agentWorkspace`, `AX_AGENT_WORKSPACE_PREVIEW`,
+   `agentWorkspacePreview`) still stands, and `Preview` should fall out of
+   both names once the workspace *is* the product.
+3. **`/chat` goes in one release.** Decided (2026-09-12) — no deprecation
+   window, no dated notice. `pathRendersWorkspace()` is `/`, `/workspace`,
+   `/workspace/*`; chat keeps `/chat` until the cutover, and then `/chat`
+   redirects to `/` in the same release that deletes it. A redirect is not a
+   deprecation window — it is just the difference between a bookmark that
+   lands somewhere and a bookmark that 404s.
 4. **Delete chat.** ~5,150 lines of chat-only components, plus the assistant-ui
    runtime, `lib/transport.ts`, and a large share of the 76 top-level test
    files. Do this *last*, as its own PR, when nothing references it — not
@@ -211,7 +256,8 @@ Only after 1–4.
 1. ~~Workspace Settings route~~ — done.
 2. Create-an-agent from the workspace. Small, same mechanism, removes a second
    dead end.
-3. **Decide Tier 2.** Blocks the rest.
+3. **Extract the shared frame parser** (Tier 2, option (a)).
+   Behaviour-preserving on the chat side; unblocks 4 and 6.
 4. Capability grants in the workspace. Functional hole, security-relevant.
 5. Walk the workspace (Tier 4). Fix what it finds, each with a regression test.
 6. Fidelity (Tier 3).
@@ -238,11 +284,24 @@ prerequisite for calling it good.
 - Before fixing anything found on a surface, check which shell owns it. A fix
   to a chat-only component is wasted work now.
 
-## Open questions for a human
+## Decisions (2026-09-12)
 
-1. Does a capability grant belong in the workspace's Today queue, or in the
-   thread as it is in chat? This is a product call, and it is the one that
-   shapes Tier 1 #2.
-2. Does the `agentWorkspace` flag survive the cutover as a capability boundary,
-   or retire with chat?
-3. Is there a deprecation window for `/chat`, or does it go in one release?
+Every open question this document raised is answered. The rationale is kept
+because it is short, and because the next reader will otherwise re-litigate
+it.
+
+1. **Capability grants: presence routes them.** The Today queue by default;
+   the thread when the human is actually there talking to that agent — that
+   agent's thread is the open route *and* the tab is visible. One grant, two
+   render sites, never two live copies. Shapes Tier 1 #2.
+2. **The `agentWorkspace` flag survives** the cutover as a capability
+   boundary. `off` no longer means "chat instead" — it means this deployment
+   has no web interface, which is worth being able to ship. Shapes Tier 5 #2.
+3. **`/chat` goes in one release.** No deprecation window; it redirects to `/`
+   in the release that deletes it. Shapes Tier 5 #3.
+4. **Tier 2 is (a): one shared frame parser.** It owns the wire; chat and the
+   workspace each render their own way. It lands before grants, and it lands
+   outside the tree Tier 5 #4 deletes. Shapes Tier 2, Tier 3, and the
+   suggested order.
+
+No open questions remain in this document. What it asks for next is work.
