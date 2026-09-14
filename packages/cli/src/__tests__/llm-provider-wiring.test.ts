@@ -63,7 +63,7 @@ describe('@ax/cli host-side LLM provider wiring', () => {
     tmp = await fs.realpath(
       await fs.mkdtemp(path.join(os.tmpdir(), 'ax-llm-provider-')),
     );
-    for (const key of ['AX_CREDENTIALS_KEY', 'OPENROUTER_API_KEY']) {
+    for (const key of ['AX_CREDENTIALS_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY']) {
       saved[key] = process.env[key];
     }
     process.env.AX_CREDENTIALS_KEY = '42'.repeat(32);
@@ -110,11 +110,27 @@ describe('@ax/cli host-side LLM provider wiring', () => {
     { timeout: 20_000 },
     async () => {
       delete process.env.OPENROUTER_API_KEY;
+      delete process.env.ANTHROPIC_API_KEY;
       const bus = await boot();
       // The CLI loads the plugin in STATIC mode, which refuses to init without
       // a key — so an ungated push here would break every keyless CLI boot.
       // This pins the gate in the other direction.
       expect(bus.hasService('llm:call:openrouter')).toBe(false);
+    },
+  );
+
+  it(
+    'FAILS THE BOOT when memory is loaded but OpenRouter is not',
+    { timeout: 20_000 },
+    async () => {
+      // ANTHROPIC_API_KEY gates the host-LLM bundle, which includes
+      // @ax/memory-strata — and memory's provider is OpenRouter now. That
+      // combination cannot work, and it is knowable before a single turn runs,
+      // so the kernel refuses the plugin graph instead of booting a host whose
+      // memory silently does nothing on every turn.
+      process.env.ANTHROPIC_API_KEY = 'sk-ant-fake-for-init';
+      delete process.env.OPENROUTER_API_KEY;
+      await expect(boot()).rejects.toThrow(/llm:call:openrouter/);
     },
   );
 });

@@ -28,6 +28,7 @@
 // index row is removed — a stale rollup answering `## Count: 3` after the file is
 // gone is a wrong-answer-by-construction bug.
 
+import { memoryFailureEvent } from './llm-failure.js';
 import { mkdir, unlink } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
@@ -564,7 +565,7 @@ async function detectAllClasses(
     try {
       bClasses = await stageB(residue, config, log);
     } catch (err) {
-      log.warn('memory_strata_rollup_stage_b_failed', {
+      log.warn(memoryFailureEvent(err, 'memory_strata_rollup_stage_b_failed'), {
         err: err instanceof Error ? err : new Error(String(err)),
       });
     }
@@ -822,7 +823,7 @@ export function makeStageBNamer(deps: {
         deps.timeoutMs,
       );
     } catch (err) {
-      log.warn('memory_strata_rollup_stage_b_llm_failed', {
+      log.warn(memoryFailureEvent(err, 'memory_strata_rollup_stage_b_llm_failed'), {
         timeout: err instanceof TimeoutError,
         err: err instanceof Error ? err : new Error(String(err)),
       });
