@@ -9,6 +9,9 @@ import {
   hashDocBody,
   cacheToOverrideMap,
   cleanSummary,
+  rewriteSystemPrompt,
+  MAP_SUMMARY_MAX_CHARS,
+  MAP_SUMMARY_PROMPT_BUDGET,
   withConcurrency,
   type MapRewriteCache,
 } from '../map-rewrite.js';
@@ -305,6 +308,43 @@ describe('rewriteMapSummaries cost reporting', () => {
     await rewriteMapSummaries({ corpus, rewriteClient: client, cachePath, onUsage: (u) => seen.push(u) });
 
     expect(seen).toHaveLength(1);
+  });
+});
+
+describe('map summary budget knobs', () => {
+  it('keeps the prompt ask and the hard cut independent', () => {
+    // The first cut of this fused them, assuming a model told "<=120" would aim
+    // at 120 so a bigger cut alone bought nothing. The probe disproved it: asked
+    // <=120, GLM writes p50 157 / p95 243 / max 346 and discards 28.1% of its
+    // characters at the cut. Raising the cut alone is therefore a real and
+    // CLEANER intervention — same intended summary, no longer mutilated —
+    // and fusing the knobs would confound it with "write denser lines".
+    const long = 'x'.repeat(500);
+    expect(cleanSummary(long, 400)).toHaveLength(400);
+    expect(cleanSummary(long, 120)).toHaveLength(120);
+    // The prompt ask does not move when the cut does.
+    expect(rewriteSystemPrompt(120)).toContain('\u2264120 chars');
+    expect(rewriteSystemPrompt(400)).toContain('\u2264400 chars');
+  });
+
+  it('defaults both knobs to the shipped 120 so an unset env changes nothing', () => {
+    expect(MAP_SUMMARY_MAX_CHARS).toBe(120);
+    expect(MAP_SUMMARY_PROMPT_BUDGET).toBe(120);
+    expect(rewriteSystemPrompt()).toContain('\u2264120 chars');
+  });
+
+  it('marks a cut line so truncation stays countable after the fact', () => {
+    // The cache stores summaries already cut, so the ellipsis is the ONLY
+    // evidence a given line was truncated — length alone cannot tell a cut line
+    // from one that happened to land on the cap. bench:diag-map-truncation
+    // counts on this.
+    const cut = cleanSummary('y'.repeat(300), 120);
+    expect(cut.endsWith('\u2026')).toBe(true);
+    expect(cleanSummary('short one', 120).endsWith('\u2026')).toBe(false);
+  });
+
+  it('leaves a summary that fits completely alone', () => {
+    expect(cleanSummary('User prefers oat milk.', 400)).toBe('User prefers oat milk.');
   });
 });
 

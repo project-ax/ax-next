@@ -36,14 +36,57 @@ export interface MapRewriteOptions {
   onUsage?: (usage: ModelUsage) => void;
 }
 
-const REWRITE_SYSTEM = `You are summarizing a single conversation session for an agent's structured memory index.
+/**
+ * Hard cut applied to a stored map summary — the line the planner reads.
+ *
+ * The planner selects documents by matching a question against these lines, so
+ * whatever a line cannot fit is not merely abbreviated, it is unreachable.
+ *
+ * Measured 2026-09-14 against the live 19,195-entry caches: at 120 the
+ * Grok-authored map had 59.3% of lines cut off mid-word and the GLM-authored
+ * one **90.0%**. p50 and p95 both sit exactly at the cap, the signature of a
+ * budget binding on most of the distribution rather than clipping an outlier.
+ *
+ * Deliberately SEPARATE from {@link MAP_SUMMARY_PROMPT_BUDGET}. The first cut
+ * of this change fused them, on the assumption that a model told "≤120" would
+ * aim at 120 and a bigger cut would buy nothing without also asking for more.
+ * `bench:diag-map-truncation --probe 60` disproved it: asked for ≤120, GLM
+ * writes p50 **157**, p95 **243**, max **346** — over its own budget on 88% of
+ * documents, with **28.1% of the characters it produces discarded at the cut**.
+ * So raising the cut alone is a real intervention, and the clean one: it keeps
+ * the summary the model already intended to write and stops mutilating it,
+ * without also changing how much it writes. Fusing the two knobs would have
+ * confounded "stop cutting lines" with "write denser lines" in one measurement.
+ *
+ * Unlike a read-side cap this cannot be raised in place: summaries are STORED
+ * cut, so changing it requires regenerating the map cache (one paid call per
+ * corpus document, ~$7 for longmemeval-s). `AX_BENCH_MAP_SUMMARY_CHARS`
+ * overrides it; `bench:diag-map-truncation` measures what it is throwing away.
+ */
+export const MAP_SUMMARY_MAX_CHARS = Number(
+  process.env.AX_BENCH_MAP_SUMMARY_CHARS ?? 120,
+);
 
-Output ONLY a one-line summary (≤120 chars) capturing the substantive facts the USER mentioned about themselves — preferences, biographical details, plans, decisions, opinions, ongoing situations. Skip greetings, assistant responses, and chitchat. Be specific, not generic.
+/**
+ * Length the rewrite PROMPT asks for, which the model treats as a suggestion.
+ *
+ * Probed 2026-09-14 (n=60/budget): asked ≤120 it returns p50 157; asked ≤240,
+ * p50 245; asked ≤400, p50 279 and only 12% exceed. It expands to fill whatever
+ * it is given, so this knob controls map DENSITY — a different question from
+ * whether the stored line gets cut, which is {@link MAP_SUMMARY_MAX_CHARS}.
+ */
+export const MAP_SUMMARY_PROMPT_BUDGET = Number(
+  process.env.AX_BENCH_MAP_SUMMARY_BUDGET ?? 120,
+);
+
+export function rewriteSystemPrompt(maxChars: number = MAP_SUMMARY_PROMPT_BUDGET): string {
+  return `You are summarizing a single conversation session for an agent's structured memory index.
+
+Output ONLY a one-line summary (≤${maxChars} chars) capturing the substantive facts the USER mentioned about themselves — preferences, biographical details, plans, decisions, opinions, ongoing situations. Skip greetings, assistant responses, and chitchat. Be specific, not generic.
 
 Good: "User commutes 45 min each way to work in Boston; prefers Tesla over BMW."
 Bad: "User had a conversation about cars and their commute."`;
-
-const REWRITE_MAX_CHARS = 120;
+}
 
 export function hashDocBody(body: string): string {
   return createHash('sha256').update(body).digest('hex').slice(0, 16);
@@ -118,14 +161,14 @@ async function rewriteOne(
   onUsage?: (usage: ModelUsage) => void,
 ): Promise<string> {
   const user = `Conversation:\n${doc.body}`;
-  const resp = await client.complete({ system: REWRITE_SYSTEM, user });
+  const resp = await client.complete({ system: rewriteSystemPrompt(), user });
   // Report usage BEFORE cleanSummary, so a summary this rejects is still paid
   // for in the total. Spend is what left the account, not what we kept.
   onUsage?.(resp.usage);
   return cleanSummary(resp.text);
 }
 
-export function cleanSummary(raw: string): string {
+export function cleanSummary(raw: string, maxChars: number = MAP_SUMMARY_MAX_CHARS): string {
   // Strip code fences, leading/trailing whitespace, and collapse to one line.
   let s = raw.replace(/^```[a-z]*\n?|\n?```$/g, '').trim();
   // Drop a leading "Summary:" prefix if the model added one.
@@ -133,8 +176,8 @@ export function cleanSummary(raw: string): string {
   // Take only the first non-empty line.
   const firstLine = s.split(/\r?\n/).find((l) => l.trim().length > 0) ?? '';
   s = firstLine.trim();
-  if (s.length > REWRITE_MAX_CHARS) {
-    s = s.slice(0, REWRITE_MAX_CHARS - 1) + '…';
+  if (s.length > maxChars) {
+    s = s.slice(0, maxChars - 1) + '…';
   }
   return s;
 }
