@@ -34,9 +34,12 @@ export interface SelectSamplesInput {
  * Filter the corpus by question type and/or id, then cap it at `limit`.
  *
  * `types` and `ids` UNION (a row matching either is kept) so an operator can say
- * "the whole assistant block plus these two specific stragglers". Output stays in
- * corpus order regardless of the order ids were listed in, which keeps a resumed
- * run's ordering stable.
+ * "the whole assistant block plus these two specific stragglers". The FILTERED
+ * path stays in corpus order regardless of the order ids were listed in; the
+ * unfiltered stratified path is interleaved across strata so that a run killed
+ * partway through has still covered every type (see `stratify.ts`). Both are
+ * pure functions of their input, which is what a resumed run actually needs —
+ * resume matches on `questionId`, not on position.
  */
 export function selectSamples(input: SelectSamplesInput): LongMemEvalSample[] {
   const { samples, limit } = input;
@@ -47,8 +50,10 @@ export function selectSamples(input: SelectSamplesInput): LongMemEvalSample[] {
     // The header above describes this file's reason for existing: the corpus is
     // ordered in type blocks, so the old unconditional `slice(0, limit)` drew a
     // biased set and `--types` was the manual workaround. Stratifying makes the
-    // DEFAULT draw representative; `selection: 'first'` keeps the old prefix
-    // for reproducing a historical run.
+    // DEFAULT draw representative — and interleaving makes every PREFIX of it
+    // representative too, which is what matters for a harness that checkpoints
+    // per question and gets interrupted. `selection: 'first'` keeps the old
+    // prefix for reproducing a historical run.
     return selection === 'first'
       ? samples.slice(0, limit)
       : stratifiedSample(samples, limit, (s) => s.question_type);

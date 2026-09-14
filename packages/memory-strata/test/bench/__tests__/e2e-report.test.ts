@@ -141,4 +141,32 @@ describe('e2e report provenance', () => {
     const md = renderE2EReport({ ...base, retrievalMode: 'orchestrator' });
     expect(md).toContain('--orchestrator-model glm');
   });
+
+  it('stamps HOW the sample was drawn, not just how many were asked for', () => {
+    // n=100 alone cannot distinguish a stratified draw from `--first 100`,
+    // which on this type-blocked corpus contains ZERO knowledge-update
+    // questions. The isolated bench report has stamped this since the sampling
+    // fix; e2e — the harness whose number is quoted as product quality — did
+    // not, so its reports were the ones that could not be told apart.
+    const md = renderE2EReport({
+      ...base,
+      sampleNote: '--sample 100 (stratified by question_type) -> multi-session=27 temporal-reasoning=27',
+    });
+    expect(md).toContain('**Sampling:**');
+    expect(md).toContain('stratified by question_type');
+    expect(md).toContain('temporal-reasoning=27');
+  });
+
+  it('distinguishes a type-biased prefix run from a stratified one', () => {
+    const biased = renderE2EReport({
+      ...base,
+      sampleNote: '--first 100 (corpus-order prefix, type-biased) -> single-session-user=70 multi-session=30',
+    });
+    expect(biased).toContain('type-biased');
+    expect(biased).not.toContain('stratified by question_type');
+  });
+
+  it('omits the line entirely rather than printing an empty one', () => {
+    expect(renderE2EReport({ ...base })).not.toContain('**Sampling:**');
+  });
 });
