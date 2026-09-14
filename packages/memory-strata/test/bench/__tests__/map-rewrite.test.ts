@@ -242,3 +242,69 @@ describe('withConcurrency', () => {
     expect(out).toEqual([]);
   });
 });
+
+describe('rewriteMapSummaries cost reporting', () => {
+  it('reports every call\'s usage, so the run can print what it cost', async () => {
+    // This path makes one paid call per corpus document (19,195 for
+    // longmemeval-s, ~$7) and used to report nothing but "Done." — which is
+    // why the 2026-09-14 cost tally had to ESTIMATE this line instead of
+    // reading it. A paid path that prints no price reads exactly like a free one.
+    const dir = mkdtempSync(join(tmpdir(), 'rewrite-usage-'));
+    const cachePath = join(dir, 'map-rewrites.json');
+    const corpus = corpusOf([
+      makeDoc({ category: 'episodes', slug: 's-1', summary: 'orig', body: 'body-1' }),
+      makeDoc({ category: 'episodes', slug: 's-2', summary: 'orig', body: 'body-2' }),
+      makeDoc({ category: 'episodes', slug: 's-3', summary: 'orig', body: 'body-3' }),
+    ]);
+    const { client } = makeStubClient((u) => `REWRITE: ${u.slice(0, 20)}`);
+
+    const seen: Array<{ in: number; out: number }> = [];
+    await rewriteMapSummaries({
+      corpus,
+      rewriteClient: client,
+      cachePath,
+      onUsage: (u) => seen.push(u),
+    });
+
+    expect(seen).toHaveLength(3);
+    expect(seen.reduce((a, u) => a + u.in, 0)).toBe(30);
+    expect(seen.reduce((a, u) => a + u.out, 0)).toBe(15);
+  });
+
+  it('does not bill for docs the hash-skip never called', async () => {
+    // The incremental skip is the trap that makes `--rewrite-map` a silent
+    // no-op over a populated cache. Whatever it skips must not appear as spend.
+    const dir = mkdtempSync(join(tmpdir(), 'rewrite-usage-skip-'));
+    const cachePath = join(dir, 'map-rewrites.json');
+    const corpus = corpusOf([
+      makeDoc({ category: 'episodes', slug: 's-1', summary: 'orig', body: 'body-1' }),
+      makeDoc({ category: 'episodes', slug: 's-2', summary: 'orig', body: 'body-2' }),
+    ]);
+    mkdirSync(dirname(cachePath), { recursive: true });
+    writeFileSync(
+      cachePath,
+      JSON.stringify({ 'episodes/s-1': { hash: hashDocBody('body-1'), summary: 'cached' } }),
+    );
+    const { client } = makeStubClient(() => 'REWRITE');
+
+    const seen: Array<{ in: number; out: number }> = [];
+    await rewriteMapSummaries({ corpus, rewriteClient: client, cachePath, onUsage: (u) => seen.push(u) });
+
+    expect(seen).toHaveLength(1);
+  });
+
+  it('counts a call whose summary is later rejected — spend is what left the account', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rewrite-usage-empty-'));
+    const cachePath = join(dir, 'map-rewrites.json');
+    const corpus = corpusOf([
+      makeDoc({ category: 'episodes', slug: 's-1', summary: 'orig', body: 'body-1' }),
+    ]);
+    const { client } = makeStubClient(() => '');
+
+    const seen: Array<{ in: number; out: number }> = [];
+    await rewriteMapSummaries({ corpus, rewriteClient: client, cachePath, onUsage: (u) => seen.push(u) });
+
+    expect(seen).toHaveLength(1);
+  });
+});
+

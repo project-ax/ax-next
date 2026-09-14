@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { OrchestratorClient } from './orchestrator.js';
 import type { BenchCorpus, MarkdownDoc } from './types.js';
+import type { ModelUsage } from './meter.js';
 
 export interface MapRewriteCacheEntry {
   hash: string;
@@ -22,6 +23,17 @@ export interface MapRewriteOptions {
   cachePath: string;
   concurrency?: number;
   onProgress?: (done: number, total: number) => void;
+  /**
+   * Called with each call's token usage so the caller can meter it.
+   *
+   * This path makes ONE paid call per corpus document — 19,195 of them for
+   * longmemeval-s, around $7 — and reported nothing. Every other paid path in
+   * this bench prints its spend, which is precisely why the omission survived:
+   * the run ends with "Done. 19195 summaries in cache" and reads like a
+   * success with no price on it. The handoff that tallied this track's cost had
+   * to estimate this line rather than read it.
+   */
+  onUsage?: (usage: ModelUsage) => void;
 }
 
 const REWRITE_SYSTEM = `You are summarizing a single conversation session for an agent's structured memory index.
@@ -103,9 +115,13 @@ interface RewriteTask {
 async function rewriteOne(
   client: OrchestratorClient,
   doc: MarkdownDoc,
+  onUsage?: (usage: ModelUsage) => void,
 ): Promise<string> {
   const user = `Conversation:\n${doc.body}`;
   const resp = await client.complete({ system: REWRITE_SYSTEM, user });
+  // Report usage BEFORE cleanSummary, so a summary this rejects is still paid
+  // for in the total. Spend is what left the account, not what we kept.
+  onUsage?.(resp.usage);
   return cleanSummary(resp.text);
 }
 
@@ -147,7 +163,7 @@ export async function rewriteMapSummaries(
   const FLUSH_EVERY = 50;
 
   await withConcurrency(todo, concurrency, async (task) => {
-    const summary = await rewriteOne(opts.rewriteClient, task.doc);
+    const summary = await rewriteOne(opts.rewriteClient, task.doc, opts.onUsage);
     cache[task.doc.path] = { hash: task.hash, summary };
     done++;
     sinceFlush++;

@@ -298,19 +298,33 @@ async function main(): Promise<number> {
       `Rewriting map summaries for ${corpusForRewrite.name} (${corpusForRewrite.memoryTree.size} docs) -> ${cachePath}`,
     );
     let lastLogged = 0;
+    // One paid call per document. Meter it like every other paid path here —
+    // a run that prints "Done." with no price is how this line ended up
+    // estimated rather than measured in the 2026-09-14 cost tally.
+    const rewriteMeter = new CostMeter({ capDollars: Number.POSITIVE_INFINITY, pricing: PRICING });
     const result = await rewriteMapSummaries({
       corpus: corpusForRewrite,
       rewriteClient,
       cachePath,
       concurrency: 10,
+      onUsage: (usage) => rewriteMeter.record(DEFAULT_BENCH_ORCHESTRATOR_MODEL, usage),
       onProgress: (done, total) => {
         if (done - lastLogged >= 100 || done === total) {
           lastLogged = done;
-          console.log(`  rewrite progress: ${done}/${total}`);
+          console.log(
+            `  rewrite progress: ${done}/${total}, $${rewriteMeter.totalDollars().toFixed(2)} spent.`,
+          );
         }
       },
     });
+    const snap = rewriteMeter.snapshot()[DEFAULT_BENCH_ORCHESTRATOR_MODEL];
     console.log(`Done. ${result.size} summaries in cache at ${cachePath}.`);
+    console.log(
+      `Rewrite spend: $${rewriteMeter.totalDollars().toFixed(4)} ` +
+        `(${(snap?.tokensIn ?? 0).toLocaleString('en-US')} in / ` +
+        `${(snap?.tokensOut ?? 0).toLocaleString('en-US')} out, ` +
+        `\`${DEFAULT_BENCH_ORCHESTRATOR_MODEL}\`).`,
+    );
     return 0;
   }
 
