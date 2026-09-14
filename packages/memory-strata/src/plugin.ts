@@ -15,6 +15,11 @@ import {
   hydrateAgentTier,
   type HydratedTier,
 } from './agent-tier-sync.js';
+import {
+  isMissingCredential,
+  noCredentialFields,
+  NO_CREDENTIAL_EVENT,
+} from './llm-failure.js';
 import { bootstrapMemoryTree } from './bootstrap.js';
 import { composeIdentityFromFiles, composeIdentityFromTier } from './compose-identity.js';
 import { runConsolidation, type ConsolidationInput, type ConsolidationResult } from './consolidator.js';
@@ -272,6 +277,12 @@ interface ChatEndPayload {
 export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
   const llmCallHook = cfg.llmCallHook ?? DEFAULT_LLM_HOOK;
   const memoryOpsModel = cfg.memoryOpsModel ?? DEFAULT_MEMORY_OPS_MODEL;
+  // Provider hook the memory-ops role routes to, resolved ONCE at manifest-build
+  // time so it can be declared as a hard dependency (see `calls` below). A
+  // malformed ref throws HERE, at construction, rather than degrading per turn:
+  // an unparseable model ref is a static misconfiguration and there is no turn
+  // at which it starts working.
+  const memoryOpsHook = `llm:call:${parseModelRef(memoryOpsModel).provider}`;
   const observerTimeoutMs = cfg.observerTimeoutMs ?? DEFAULT_OBSERVER_TIMEOUT_MS;
   const consolidatorDebounceMs = cfg.consolidatorDebounceMs ?? DEFAULT_CONSOLIDATOR_DEBOUNCE_MS;
   const consolidatorTimeoutMs = cfg.consolidatorTimeoutMs ?? DEFAULT_CONSOLIDATOR_TIMEOUT_MS;
@@ -382,14 +393,31 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
       // `memory:index:upsert`: both are registered by the SAME indexer plugin
       // (sqlite or postgres), so any deployment with an indexer has both. The
       // reindexer's `memory:doc:deleted` branch maps a doc removal to it.
-      // `llmCallHook` is the FIXED-tier provider (Stage-B naming) and stays a
-      // hard dependency. The agent-model-derived paths additionally call
-      // `llm:call:<provider>` for whatever provider the AGENT's model ref names
-      // — not enumerable at manifest-build time (it's per-row data, and the set
-      // of registered providers is preset-dependent), so those calls are gated
-      // at runtime with `bus.hasService` and degrade to a skip + warn, exactly
-      // like an `optionalCalls` entry would.
-      calls: ['agents:resolve', llmCallHook, 'memory:index:upsert', 'memory:index:delete', 'tool:register'],
+      // `llmCallHook` is the FIXED-tier provider (Stage-B naming) and
+      // `memoryOpsHook` is the memory-ops role's provider (observer extraction,
+      // map densification). BOTH are hard dependencies, which is what makes a
+      // host missing its memory provider fail at BOOT: `validateDependencyGraph`
+      // refuses a declared `calls` entry that no loaded plugin registers, before
+      // any init runs.
+      //
+      // They are usually the same hook and deduped here. They diverge when an
+      // operator points `memoryOpsModel` at a different provider than
+      // `llmCallHook` — and that case is exactly why the memory-ops hook is
+      // declared rather than left to the runtime `bus.hasService` guard: an
+      // undeclared provider would be missing SILENTLY, costing every turn's
+      // memory extraction with nothing but a warn to show for it.
+      //
+      // These used to be per-agent (`llm:call:<whatever the agent's model ref
+      // named>`), which is not enumerable at manifest-build time and so could
+      // only ever be a runtime check. Pinning memory ops to a fixed role is
+      // what makes the boot-time guarantee possible at all.
+      calls: [
+        'agents:resolve',
+        ...new Set([llmCallHook, memoryOpsHook]),
+        'memory:index:upsert',
+        'memory:index:delete',
+        'tool:register',
+      ],
       subscribes: ['chat:start', 'chat:end', 'memory:doc:written', 'memory:doc:deleted'],
     },
 
@@ -448,10 +476,7 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
           nowFn,
           memoryOpsModel,
         }).catch((err) => {
-          ctx.logger.warn('memory_strata_observer_failed', {
-            err: err instanceof Error ? err : new Error(String(err)),
-            agentId: ctx.agentId,
-          });
+          logMemoryPathFailure(ctx, 'observer', err);
         });
         // Test-only settle handle: record the ALREADY-caught promise (so an
         // awaiting test never re-throws) so a test can deterministically await
@@ -941,6 +966,25 @@ function buildMemoryOpsLlmCall(
     return undefined;
   }
   return (input) => bus.call(hook, ctx, { ...input, reasoningEffort: MEMORY_OPS_REASONING });
+}
+
+/**
+ * Log a memory-path failure at the right volume: a missing credential is an
+ * ERROR under its own event (it will not fix itself and costs every turn),
+ * anything else keeps the path's existing warn.
+ */
+function logMemoryPathFailure(ctx: AgentContext, path: string, err: unknown): void {
+  const error = err instanceof Error ? err : new Error(String(err));
+  if (isMissingCredential(err)) {
+    ctx.logger.error(NO_CREDENTIAL_EVENT, {
+      err: error,
+      agentId: ctx.agentId,
+      path,
+      ...noCredentialFields(),
+    });
+    return;
+  }
+  ctx.logger.warn(`memory_strata_${path}_failed`, { err: error, agentId: ctx.agentId });
 }
 
 /**

@@ -1,3 +1,8 @@
+import {
+  isMissingCredential,
+  memoryFailureEvent,
+  noCredentialFields,
+} from '../llm-failure.js';
 import { makeAgentContext } from '@ax/core';
 import type { AgentContext, HookBus, ToolDescriptor } from '@ax/core';
 import { readDocBody } from '../doc-body.js';
@@ -167,10 +172,18 @@ export async function registerMemorySearch(
             return { results: await withMatchedFacts(bus, ctx, orchestrated, query) };
           }
         } catch (err) {
-          ctx.logger.warn('memory_strata_orchestrator_failed', {
-            err: err instanceof Error ? err : new Error(String(err)),
-            agentId: ctx.agentId,
-          });
+          // A missing credential is not a transient orchestrator failure: it
+          // will not fix itself, and every search until someone stores a key
+          // silently falls back to BM25. Same event name as every other memory
+          // path, at error volume, because ctx.logger has the level here.
+          ctx.logger[isMissingCredential(err) ? 'error' : 'warn'](
+            memoryFailureEvent(err, 'memory_strata_orchestrator_failed'),
+            {
+              err: err instanceof Error ? err : new Error(String(err)),
+              ...(isMissingCredential(err) ? noCredentialFields() : {}),
+              agentId: ctx.agentId,
+            },
+          );
         }
       }
 

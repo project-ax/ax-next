@@ -42,6 +42,7 @@
 //     would re-pay a real LLM call every pass, forever, for a line we already
 //     know gets thrown away.
 
+import { memoryFailureEvent } from './llm-failure.js';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -312,7 +313,7 @@ async function densifyOne(args: {
   } catch (err) {
     // A single doc's densification failure degrades to its raw summary; the
     // pass continues. Do NOT cache the fallback (so the next pass retries).
-    log?.warn('memory_strata_map_densify_failed', {
+    log?.warn(memoryFailureEvent(err, 'memory_strata_map_densify_failed'), {
       err: err instanceof Error ? err : new Error(String(err)),
       docId,
     });

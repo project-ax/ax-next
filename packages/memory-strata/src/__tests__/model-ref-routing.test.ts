@@ -146,11 +146,9 @@ describe('memory-ops model ref → llm:call provider routing', () => {
     expect(anthropicCalls).toHaveLength(0);
   });
 
-  it('degrades cleanly when the configured ref is not a ref at all', async () => {
-    const bus = buildBus('anthropic/claude-sonnet-4-6');
-    const openrouterCalls = registerLlmProvider(bus, 'llm:call:openrouter');
+  // A malformed `memoryOpsModel` used to degrade per turn here. It now throws at
+  // CONSTRUCTION instead — there is no turn at which an unparseable ref starts
+  // working, so discovering it one turn at a time only delays the fix. Covered
+  // in missing-credential.test.ts alongside the other boot-time failures.
 
-    await expect(runOneTurn(bus, { memoryOpsModel: 'bare-id-no-provider' })).resolves.toBeUndefined();
-    expect(openrouterCalls).toHaveLength(0);
-  });
 });
