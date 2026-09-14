@@ -106,3 +106,32 @@ full corpus, new n=150 stratified). The in-run gap is paired and clean. Direct
 evidence of the noise scale: A's recall@5 reads 35.3% here vs 41.8% at n=500, and
 recall CANNOT move with an answer-stage cap — so that 6.5pp is pure sample
 variation (~1.6 SE).
+
+## The GLM-authored map did not beat the Grok one — and that is a non-result (2026-09-14)
+
+Step 3 of the orchestrator handoff. One variable: same planner, same 150
+questions, same caps; only the model that AUTHORED `system/map.md` changed.
+`docs/plans/2026-09-14-glm-map-rewrite-report.md`.
+
+| | Grok map | GLM map | |
+|---|---|---|---|
+| accuracy | 63.3% | 55.3% | −8.0pp, z=−1.41, **p=0.16** |
+| recall@5 | 92.7% | 88.0% | −4.7pp, p=0.17 |
+
+**Neither is significant.** Say "did not improve on", never "is 8 points worse" —
+n=150 resolves about ±11pp here, and step 1's effect on the same question set was
++32.7pp at z=5.67 for comparison.
+
+What DID move, a lot: the planner got decisive. Fallback to BM25 30.0%→22.7%,
+followup requested 42.0%→31.3%, empty plans 0.7%→0.0%, retrieval p50
+2,525→741ms (p95 15,229→2,130). **More decisive, not more correct.**
+
+Two map properties fought each other, both measured by the new
+`bench:diag-map-truncation`:
+- **Dead lines**: Grok emits "No personal details shared by user" on 16.1% of
+  docs vs GLM's 3.8%. Such a line is UNSELECTABLE — roughly one document in six
+  was unreachable via the map in every previously published E number.
+- **Truncation**: GLM 90.0% cut mid-word vs Grok 59.3%, because GLM writes longer
+  (asked ≤120 it returns p50 157 / max 346, discarding 28.1% of its characters).
+
+TASK-362 disentangles them by holding the author fixed and moving only the cut.
