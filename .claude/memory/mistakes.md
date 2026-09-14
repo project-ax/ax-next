@@ -375,3 +375,24 @@ fact-check rather than asking it to look for typos.
 - `2026-09-11` (TASK-345) — **A cron step expression inside a JSDoc block terminates the comment**, because it contains the close-comment sequence. It surfaces as an opaque esbuild `Transform failed with 1 error` with no line number, on a file that looks obviously fine. Use a line comment when documenting any pattern that can contain that sequence — cron steps, glob patterns, regex fragments.
 
 - `2026-09-11` (ux-first-run) — **Twice on this track `pnpm build` caught what `vitest` could not, in test files.** A fixture missing `AgentModelOption.kind`, and a `ToolStepLike` interface whose optionals needed `?: T | undefined` under this repo's `exactOptionalPropertyTypes` to accept a real assistant-ui part. `packages/channel-web` type-checks its tests (`include: ["src","mock"]`, no `__tests__` exclusion) but **only via `tsc`** — a green vitest run says nothing about it. Never substitute the suite for the build.
+
+## A `ps`/`pgrep` pattern that doesn't match is NOT evidence a process is dead (2026-09-14)
+
+Hit TWICE in one session, both times concluding "not running" and relaunching on
+top of a live run.
+
+- `ps aux | grep "[t]sx test/bench cli.ts"` and `pgrep -f "tsx test/bench"` both
+  return nothing while the run is alive: the real cmdline is
+  `node .../tsx@4.21.0/.../cli.mjs test/bench/cli.ts …`, so "tsx test/bench" never
+  appears contiguously.
+- The pattern that works for this repo's bench: **`pgrep -fl "bench/cli.ts"`**.
+
+Cost the first time: every arm of an n=500 bench ran twice, ~$25. Cost the
+second time: a duplicate e2e run appending to the same resume JSONL as a live
+one (no duplicate rows, by luck — the overlap was ~2.5 min).
+
+**Rule: a negative process check proves nothing until it is corroborated.** Use
+a positive control — match on a substring you have SEEN in the actual cmdline,
+or check the artifact the process touches (output file mtime, checkpoint row
+count) and confirm it is not advancing. "Nothing matched my grep" and "the
+process is gone" are different claims.

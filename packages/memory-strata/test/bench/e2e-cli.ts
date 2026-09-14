@@ -7,6 +7,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import type { LlmCallInput, LlmCallOutput } from '@ax/core';
 import { makeXaiOrchestratorClient, type OrchestratorClient } from '@ax/memory-strata';
 import {
@@ -16,6 +17,7 @@ import {
 } from './orchestrator.js';
 import { requireKeys } from './env.js';
 import { CostMeter, type Pricing } from './meter.js';
+import { runPool } from './pool.js';
 import { BenchCache } from './cache.js';
 import { withRetry } from './retry.js';
 import { loadLongMemEvalSSamples } from './corpora/longmemeval-s.js';
@@ -51,6 +53,13 @@ const E2E_CACHE_ROOT = join(homedir(), '.cache', 'ax-memory-bench', 'longmemeval
 export interface RunE2EOptions {
   repoRoot: string;
   sample: number;
+  /**
+   * Questions in flight at once. Default 1 — the historical behaviour, kept as
+   * the default because concurrency changes how close a run can get to its cost
+   * cap (it can overshoot by the questions already dispatched) and how hard it
+   * leans on the provider's rate limits. Opt in with `--concurrency`.
+   */
+  concurrency?: number;
   /** How to draw the question set. See `selectSamples`. Defaults to stratified. */
   selection?: 'stratified' | 'first';
   /**
@@ -163,6 +172,10 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
     );
   }
 
+  const concurrency = Math.max(1, Math.floor(opts.concurrency ?? 1));
+  if (concurrency > 1) {
+    console.log(`Concurrency: ${concurrency} questions in flight.`);
+  }
   const resumeId = opts.resumeId ?? new Date().toISOString().slice(0, 10);
   const resumePath = join(E2E_CACHE_ROOT, `${resumeId}.jsonl`);
   const done = new Map<string, E2EResumeRow>();
@@ -203,22 +216,7 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
   // run; the prior run's spend is in its own report.
   const meter = new CostMeter({ capDollars: opts.cap, pricing: PRICING });
 
-  // e2e never metered the planner: its tokens were spent and then dropped on
-  // the floor, so every e2e cost figure ever reported understated the
-  // orchestrator path by exactly the amount that path costs. Wrap the client so
-  // the run's own arithmetic covers it.
-  const meteredOrchestrator: OrchestratorClient | undefined =
-    orchestratorClient && orchestratorPricingKey !== undefined
-      ? {
-          async complete(args) {
-            const out = await orchestratorClient!.complete(args);
-            meter.record(orchestratorPricingKey!, out.usage);
-            return out;
-          },
-        }
-      : orchestratorClient;
-
-  const extractionLlm = makeAnthropicExtractionLlm(env.ANTHROPIC_API_KEY);
+  const extractionLlm = makeOpenRouterExtractionLlm(env.OPENROUTER_API_KEY);
   const answerClient = makeAnthropicAnswerClient(env.ANTHROPIC_API_KEY, { model: ANSWER_MODEL });
   const judge = makeOpenRouterJudgeClient(env.OPENROUTER_API_KEY, JUDGE_MODEL);
 
@@ -230,29 +228,63 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
   let capExceeded = false;
   let abortError: string | null = null;
 
+  // Questions are independent by construction — each gets its own HookBus,
+  // workspace, agentId and sqlite file, and every mutable local inside
+  // `runE2EQuestion` (the debouncer, the settle hooks, the fiction clock) is
+  // scoped to the call. A regression test asserts two samples cannot see each
+  // other's memory. That independence is what makes the pool safe; the loop was
+  // sequential only because nothing had needed otherwise.
+  //
+  // Wall-clock matters more here than it looks: a question replays ~48 sessions,
+  // each an extraction call plus a consolidation pass that makes LLM calls of
+  // its own — roughly 150 round-trips, necessarily ordered WITHIN a question
+  // (session N+1's memory must see session N's). Across questions there is no
+  // such constraint, so that is where the parallelism goes.
+  const pending = samples.filter((sample) => !done.has(sample.question_id));
   try {
-    for (const sample of samples) {
-      if (done.has(sample.question_id)) continue;
-      // Coarse pre-question cap guard: a single e2e question (many haystack
-      // sessions × extraction + an answer turn + a judge call) is the unit we
-      // refuse to start once we're near the cap.
-      if (meter.projectWouldExceedCap('claude-sonnet-4-6', { in: 8000, out: 512 })) {
-        capExceeded = true;
-        break;
-      }
+    await runPool(
+      pending,
+      async (sample: LongMemEvalSample) => {
+      // Per-question spend, tallied separately from the run meter.
+      //
+      // `meter.totalDollars() - before` was correct only while questions ran one
+      // at a time: with N in flight that delta absorbs every sibling's spend,
+      // and the per-question `dollars` on each resume row silently becomes
+      // fiction. Both meters see every call; this one is scoped to this
+      // question, and its cap is irrelevant (the run meter owns the cap).
+      const qMeter = new CostMeter({ capDollars: Number.POSITIVE_INFINITY, pricing: PRICING });
+      const record = (model: string, usage: { in: number; out: number }): void => {
+        meter.record(model, usage);
+        qMeter.record(model, usage);
+      };
       try {
-        const before = meter.totalDollars();
         const result = await runE2EQuestion({
           sample,
           extractionLlm,
           answerClient,
           extractionModel: DEFAULT_EXTRACTION_MODEL,
           shouldStopIngest: () =>
-            meter.projectWouldExceedCap('claude-haiku-4-5-20251001', { in: 2000, out: 256 }),
-          onExtractionUsage: (u) => meter.record('claude-haiku-4-5-20251001', u),
-          ...(meteredOrchestrator ? { orchestratorClient: meteredOrchestrator } : {}),
+            meter.projectWouldExceedCap(DEFAULT_EXTRACTION_MODEL, { in: 2000, out: 256 }),
+          onExtractionUsage: (u) => record(DEFAULT_EXTRACTION_MODEL, u),
+          // Meter the planner. e2e never did: its tokens were spent and then
+          // dropped, so every e2e cost figure this repo published understated
+          // the orchestrator path by exactly what that path costs. Wrapped per
+          // QUESTION rather than once, so the spend lands on the question that
+          // caused it as well as in the run total — with N in flight a single
+          // shared wrapper could only manage the latter.
+          ...(orchestratorClient && orchestratorPricingKey !== undefined
+            ? {
+                orchestratorClient: {
+                  async complete(args: { system: string; user: string }) {
+                    const out = await orchestratorClient.complete(args);
+                    record(orchestratorPricingKey, out.usage);
+                    return out;
+                  },
+                },
+              }
+            : {}),
         });
-        meter.record('claude-sonnet-4-6', result.answerTokens);
+        record('claude-sonnet-4-6', result.answerTokens);
 
         const verdict = await judgeAnswer(
           judge,
@@ -261,7 +293,7 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
           result.agentAnswer,
           { unanswerable: result.unanswerable },
         );
-        meter.record('x-ai/grok-4.3', verdict.usage);
+        record('x-ai/grok-4.3', verdict.usage);
 
         const row: E2EResumeRow = {
           questionId: result.questionId,
@@ -271,7 +303,7 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
           judgeReason: verdict.reason,
           sessionsIngested: result.sessionsIngested,
           toolCalls: result.toolCalls,
-          dollars: meter.totalDollars() - before,
+          dollars: qMeter.totalDollars(),
           question: result.question,
           goldAnswer: result.goldAnswer,
           agentAnswer: result.agentAnswer,
@@ -286,7 +318,23 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
         skipped.push({ questionId: sample.question_id, reason });
         console.warn(`Skipped ${sample.question_id}: ${reason}`);
       }
-    }
+      },
+      {
+        concurrency,
+        // Coarse pre-question cap guard: one e2e question (many haystack
+        // sessions × extraction + an answer turn + a judge call) is the unit we
+        // refuse to START once we are near the cap. Under concurrency the run
+        // can overshoot by at most the cost of the questions already in flight
+        // — bounded by `concurrency`, and preferable to killing paid work
+        // mid-question.
+        shouldStop: () => {
+          if (meter.projectWouldExceedCap('claude-sonnet-4-6', { in: 8000, out: 512 })) {
+            capExceeded = true;
+          }
+          return capExceeded;
+        },
+      },
+    );
   } catch (err) {
     abortError = (err as Error)?.message ?? String(err);
     console.error(`Aborted after ${rows.length} results; writing partial report. Reason: ${abortError}`);
@@ -303,8 +351,14 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
     answerModel: ANSWER_MODEL,
     extractionModel: DEFAULT_EXTRACTION_MODEL,
     judgeModel: JUDGE_MODEL,
+    // Every flag that shaped the run. It omitted the planner arm and the
+    // concurrency, so the printed command reproduced a DIFFERENT run than the
+    // one it was printed on — the default arm, sequential.
     command:
       `pnpm --filter @ax/memory-strata bench --mode e2e --sample ${opts.sample}` +
+      `${opts.orchestratorModel ? ` --orchestrator-model ${opts.orchestratorModel}` : ''}` +
+      `${concurrency > 1 ? ` --concurrency ${concurrency}` : ''}` +
+      `${opts.selection === 'first' ? ` --first ${opts.sample}` : ''}` +
       `${opts.types ? ` --types ${opts.types.join(',')}` : ''}` +
       `${opts.ids ? ` --ids ${opts.ids.join(',')}` : ''}`,
     abortError,
@@ -327,6 +381,56 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
  * shape the Observer expects (provider-agnostic kernel contract). The Observer
  * passes `model` (Haiku), `system`, `messages`, `maxTokens`, `temperature`.
  */
+/**
+ * Extraction LLM on the memory-ops role — OpenRouter + the reasoning shape
+ * production sends.
+ *
+ * The e2e harness exists to run the SHIPPED pipeline, and since the 2026-09-14
+ * model policy the shipped Observer runs GLM with `reasoningEffort: 'minimal'`.
+ * The Anthropic variant below registered on a hook NAMED `llm:call:openrouter`
+ * while calling Anthropic with a dated Haiku id, which would have measured a
+ * hybrid — GLM planner, Haiku extraction — that no deployment runs.
+ *
+ * `reasoning: { effort: 'minimal' }` is sent for the same reason production
+ * sends it: GLM reasons by default, and the Observer has a hard timeout whose
+ * overrun drops the extraction silently.
+ */
+export function makeOpenRouterExtractionLlm(
+  apiKey: string,
+  model = DEFAULT_EXTRACTION_MODEL,
+): (input: LlmCallInput) => Promise<LlmCallOutput> {
+  const client = new OpenAI({ apiKey, baseURL: 'https://openrouter.ai/api/v1', timeout: 60_000 });
+  return async (input: LlmCallInput) => {
+    return withRetry(
+      async () => {
+        const messages = [
+          ...(input.system !== undefined
+            ? [{ role: 'system' as const, content: input.system }]
+            : []),
+          ...input.messages.map((m) => ({ role: m.role, content: m.content })),
+        ];
+        const resp = await client.chat.completions.create({
+          model: input.model ?? model,
+          max_tokens: input.maxTokens ?? 1024,
+          messages,
+          // OpenRouter accepts `reasoning`; the openai SDK's types do not model
+          // it. Cast through unknown so the create() overload still resolves to
+          // the non-streaming variant, same escape hatch the orchestrator
+          // client uses.
+          ...({ reasoning: { effort: input.reasoningEffort ?? 'minimal' } } as unknown as Record<string, never>),
+        });
+        const usage = resp.usage ?? { prompt_tokens: 0, completion_tokens: 0 };
+        return {
+          text: resp.choices?.[0]?.message?.content ?? '',
+          stopReason: 'end_turn' as const,
+          usage: { inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens },
+        };
+      },
+      { attempts: 4, baseDelayMs: 1000, label: 'openrouter-e2e-extraction' },
+    );
+  };
+}
+
 export function makeAnthropicExtractionLlm(apiKey: string): (input: LlmCallInput) => Promise<LlmCallOutput> {
   const a = new Anthropic({ apiKey });
   return async (input: LlmCallInput) => {

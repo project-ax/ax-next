@@ -102,3 +102,43 @@ describe('renderE2EReport (TASK-189)', () => {
     expect(md).toContain('not');
   });
 });
+
+describe('e2e report provenance', () => {
+  const base = {
+    rows: [],
+    runDate: new Date('2026-09-14T00:00:00Z'),
+    requestedSample: 100,
+    cap: 60,
+    totalSpent: 7.28,
+    capExceeded: false,
+    answerModel: 'claude-sonnet-4-6',
+    extractionModel: 'z-ai/glm-5.3-flash:nitro',
+    judgeModel: 'x-ai/grok-4.3',
+    command: 'pnpm --filter @ax/memory-strata bench --mode e2e --sample 100 --orchestrator-model glm',
+  };
+
+  it('never prints a hardcoded vendor beside a model id', () => {
+    // This said "(Anthropic)" next to a z-ai model for a full run. A label that
+    // has to be maintained in lockstep with a model id will eventually lie.
+    const md = renderE2EReport({ ...base, retrievalMode: 'bm25' });
+    expect(md).toContain('`z-ai/glm-5.3-flash:nitro`');
+    expect(md).not.toMatch(/z-ai\/glm-5\.3-flash:nitro`? \(Anthropic\)/);
+  });
+
+  it('names the planner and does not cite the retired xAI latency claim', () => {
+    const md = renderE2EReport({
+      ...base,
+      retrievalMode: 'orchestrator',
+      orchestratorModel: 'z-ai/glm-5.3-flash:nitro',
+    });
+    expect(md).toContain('planner=`z-ai/glm-5.3-flash:nitro`');
+    expect(md).not.toContain('direct-xAI');
+  });
+
+  it('prints the command that actually reproduces the run', () => {
+    // It used to omit the planner arm, so the printed command reproduced the
+    // DEFAULT arm — a different run than the one it was printed on.
+    const md = renderE2EReport({ ...base, retrievalMode: 'orchestrator' });
+    expect(md).toContain('--orchestrator-model glm');
+  });
+});

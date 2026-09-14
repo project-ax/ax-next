@@ -110,6 +110,14 @@ export interface CliArgs {
   /** e2e mode: only run these `question_id`s (opt-in; unioned with --types). */
   ids?: string[];
   /**
+   * e2e mode: questions in flight at once (default 1).
+   *
+   * Only e2e has this axis. Questions there are fully independent — own bus,
+   * own workspace, own sqlite — whereas bench mode's configs share a corpus and
+   * an index per driver.
+   */
+  concurrency?: number;
+  /**
    * Take the FIRST n questions in corpus order — the pre-2026-09-12 meaning of
    * `--sample`.
    *
@@ -183,6 +191,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
       ids: { type: 'string' },
       out: { type: 'string' },
       first: { type: 'string' },
+      concurrency: { type: 'string' },
     },
   });
   const base: CliArgs = {
@@ -201,6 +210,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
   };
   if (values.sample) base.sample = Number(values.sample);
   if (values.first) base.first = Number(values.first);
+  if (values.concurrency) base.concurrency = Number(values.concurrency);
   if (values.cap) base.cap = Number(values.cap);
   if (values.resume) base.resume = values.resume;
   if (values.out) base.out = values.out;
@@ -223,6 +233,7 @@ async function main(): Promise<number> {
       sample: args.first ?? args.sample ?? (args.full ? 500 : 100),
       selection: args.first !== undefined ? 'first' : 'stratified',
       ...(args.orchestratorModelExplicit ? { orchestratorModel: args.orchestratorModel } : {}),
+      ...(args.concurrency !== undefined ? { concurrency: args.concurrency } : {}),
       cap: args.cap ?? 25,
       fixture: args.fixture,
       ...(args.resume !== undefined ? { resumeId: args.resume } : {}),
