@@ -8,7 +8,12 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import Anthropic from '@anthropic-ai/sdk';
 import type { LlmCallInput, LlmCallOutput } from '@ax/core';
-import { makeXaiOrchestratorClient } from '@ax/memory-strata';
+import { makeXaiOrchestratorClient, type OrchestratorClient } from '@ax/memory-strata';
+import {
+  makeAnthropicOrchestratorClient,
+  makeOpenRouterOrchestratorClient,
+  MINIMAL_REASONING,
+} from './orchestrator.js';
 import { requireKeys } from './env.js';
 import { CostMeter, type Pricing } from './meter.js';
 import { BenchCache } from './cache.js';
@@ -27,10 +32,18 @@ const JUDGE_MODEL = 'x-ai/grok-4.3';
 
 // Same per-token pricing rows the bench uses (cli.ts PRICING), scoped to the
 // three models e2e mode touches.
-const PRICING: Pricing = {
+/**
+ * Exported so a test can assert every selectable planner arm has a row. The
+ * planner is metered now (it was not before), so a missing row means
+ * `CostMeter.record` throws deep inside a paid run.
+ */
+export const PRICING: Pricing = {
   'claude-sonnet-4-6': { in: 3 / 1_000_000, out: 15 / 1_000_000 },
   'claude-haiku-4-5-20251001': { in: 1 / 1_000_000, out: 5 / 1_000_000 },
   'x-ai/grok-4.3': { in: 1.25 / 1_000_000, out: 2.5 / 1_000_000 },
+  // Base rates from a live GET /api/v1/models. `:nitro` re-sorts the provider
+  // pool by throughput and can route to a pricier one, so this is a floor.
+  'z-ai/glm-5.3-flash:nitro': { in: 0.15 / 1_000_000, out: 0.5 / 1_000_000 },
 };
 
 const E2E_CACHE_ROOT = join(homedir(), '.cache', 'ax-memory-bench', 'longmemeval-s-e2e');
@@ -40,6 +53,11 @@ export interface RunE2EOptions {
   sample: number;
   /** How to draw the question set. See `selectSamples`. Defaults to stratified. */
   selection?: 'stratified' | 'first';
+  /**
+   * Explicit orchestrator arm. When absent, the legacy XAI_API_KEY-or-BM25
+   * behaviour below applies.
+   */
+  orchestratorModel?: 'haiku' | 'glm';
   cap: number;
   resumeId?: string;
   /**
@@ -65,6 +83,17 @@ export interface RunE2EOptions {
  * keys). The report is ALWAYS written — even on a cap abort — so "one command
  * produces a report" holds.
  */
+/**
+ * Planner ids for `--orchestrator-model` in e2e mode.
+ *
+ * These are the same two arms bench mode offers, spelled for the clients used
+ * here: Anthropic takes a dated id, OpenRouter takes a namespaced one. Both
+ * need a PRICING row above — `CostMeter.record` throws on an unknown key, deep
+ * inside a paid run.
+ */
+export const E2E_HAIKU_MODEL = 'claude-haiku-4-5-20251001';
+export const E2E_GLM_MODEL = 'z-ai/glm-5.3-flash:nitro';
+
 export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
   if (opts.fixture) {
     return runFixtureReport(opts);
@@ -88,16 +117,51 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
   // (TASK-191, direct-xAI client) so the e2e acceptance run can reproduce the
   // spike's directional lift on the shipped pipeline.
   const xaiKey = process.env.XAI_API_KEY;
-  const orchestratorClient = xaiKey && xaiKey.length > 0 ? makeXaiOrchestratorClient(xaiKey) : undefined;
-  if (orchestratorClient) {
-    console.log(
-      'Retrieval: orchestrator (direct xAI). ~400ms p50 per the n=500 spike (NOT OpenRouter ' +
-        'default routing, which was the ~11s artifact).',
+  let orchestratorClient: OrchestratorClient | undefined;
+  let orchestratorModelId: string | undefined;
+  /** PRICING key for the planner, when it has one. See `meterOrchestrator`. */
+  let orchestratorPricingKey: string | undefined;
+
+  if (opts.orchestratorModel === 'glm') {
+    orchestratorModelId = E2E_GLM_MODEL;
+    orchestratorPricingKey = E2E_GLM_MODEL;
+    // Same pairing production sends (TASK-348): GLM reasons by default, and
+    // with reasoning on it measured p50 ~3.4s against a 5s budget whose
+    // overrun falls through to BM25 in silence.
+    orchestratorClient = makeOpenRouterOrchestratorClient(
+      env.OPENROUTER_API_KEY,
+      E2E_GLM_MODEL,
+      undefined,
+      MINIMAL_REASONING,
     );
+  } else if (opts.orchestratorModel === 'haiku') {
+    orchestratorModelId = E2E_HAIKU_MODEL;
+    orchestratorPricingKey = E2E_HAIKU_MODEL;
+    orchestratorClient = makeAnthropicOrchestratorClient(env.ANTHROPIC_API_KEY, E2E_HAIKU_MODEL);
+  } else if (xaiKey && xaiKey.length > 0) {
+    // Legacy path, kept so an existing XAI_API_KEY environment still works. Prefer
+    // --orchestrator-model, which names the arm in the report.
+    orchestratorModelId = 'grok-4-fast-non-reasoning (direct xAI)';
+    orchestratorClient = makeXaiOrchestratorClient(xaiKey);
+  }
+
+  if (orchestratorClient) {
+    console.log(`Retrieval: orchestrator over system/map.md + BM25 fallback, planner=${orchestratorModelId}.`);
   } else {
-    console.log('Retrieval: BM25-only (set XAI_API_KEY to enable the direct-xAI orchestrator path).');
+    console.log(
+      'Retrieval: BM25-only (pass --orchestrator-model haiku|glm to enable the orchestrator path).',
+    );
   }
   const retrievalMode: 'orchestrator' | 'bm25' = orchestratorClient ? 'orchestrator' : 'bm25';
+  if (orchestratorClient && orchestratorPricingKey === undefined) {
+    // The legacy xAI path has no PRICING row, so its planner tokens stay
+    // invisible — same as before this arm existed. Say so rather than letting
+    // the report's total read as complete.
+    console.warn(
+      `Note: planner spend for ${orchestratorModelId} is NOT metered (no pricing row); ` +
+        'the reported total excludes it. Use --orchestrator-model for a metered arm.',
+    );
+  }
 
   const resumeId = opts.resumeId ?? new Date().toISOString().slice(0, 10);
   const resumePath = join(E2E_CACHE_ROOT, `${resumeId}.jsonl`);
@@ -139,6 +203,21 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
   // run; the prior run's spend is in its own report.
   const meter = new CostMeter({ capDollars: opts.cap, pricing: PRICING });
 
+  // e2e never metered the planner: its tokens were spent and then dropped on
+  // the floor, so every e2e cost figure ever reported understated the
+  // orchestrator path by exactly the amount that path costs. Wrap the client so
+  // the run's own arithmetic covers it.
+  const meteredOrchestrator: OrchestratorClient | undefined =
+    orchestratorClient && orchestratorPricingKey !== undefined
+      ? {
+          async complete(args) {
+            const out = await orchestratorClient!.complete(args);
+            meter.record(orchestratorPricingKey!, out.usage);
+            return out;
+          },
+        }
+      : orchestratorClient;
+
   const extractionLlm = makeAnthropicExtractionLlm(env.ANTHROPIC_API_KEY);
   const answerClient = makeAnthropicAnswerClient(env.ANTHROPIC_API_KEY, { model: ANSWER_MODEL });
   const judge = makeOpenRouterJudgeClient(env.OPENROUTER_API_KEY, JUDGE_MODEL);
@@ -171,7 +250,7 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
           shouldStopIngest: () =>
             meter.projectWouldExceedCap('claude-haiku-4-5-20251001', { in: 2000, out: 256 }),
           onExtractionUsage: (u) => meter.record('claude-haiku-4-5-20251001', u),
-          ...(orchestratorClient ? { orchestratorClient } : {}),
+          ...(meteredOrchestrator ? { orchestratorClient: meteredOrchestrator } : {}),
         });
         meter.record('claude-sonnet-4-6', result.answerTokens);
 
@@ -231,6 +310,7 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
     abortError,
     skipped,
     retrievalMode,
+    ...(orchestratorModelId ? { orchestratorModel: orchestratorModelId } : {}),
   });
   const outPath = join(
     opts.repoRoot,

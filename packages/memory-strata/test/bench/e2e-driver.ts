@@ -21,8 +21,15 @@ import {
   type LlmCallInput,
   type LlmCallOutput,
 } from '@ax/core';
-import { createMemoryStrataPlugin, type OrchestratorClient } from '@ax/memory-strata';
+import {
+  createMemoryStrataPlugin,
+  DEFAULT_MEMORY_OPS_MODEL,
+  type OrchestratorClient,
+} from '@ax/memory-strata';
 import { createMemoryStrataIndexSqlitePlugin } from '@ax/memory-strata-index-sqlite';
+/** Provider hook for the memory-ops role — derived, never spelled out. */
+const MEMORY_OPS_HOOK = `llm:call:${DEFAULT_MEMORY_OPS_MODEL.slice(0, DEFAULT_MEMORY_OPS_MODEL.indexOf('/'))}`;
+
 import type { LongMemEvalSample } from './corpora/longmemeval-s.js';
 import { isUnanswerable } from './corpora/longmemeval-s.js';
 import type { E2EAnswerClient, MemorySearchResult, ReadSectionFn } from './e2e-answer.js';
@@ -131,18 +138,20 @@ export async function runE2EQuestion(deps: RunE2EQuestionDeps): Promise<E2EQuest
   let extractionIn = 0;
   let extractionOut = 0;
 
-  // agents:resolve → returns the extraction model the Observer calls llm:call with.
+  // agents:resolve stays registered (chat:start still resolves the agent row),
+  // but the Observer NO LONGER takes its model from here: memory operations are
+  // pinned to the memory-ops role. The stub below therefore registers the
+  // ROLE's provider hook, derived from the constant.
   bus.registerService<{ agentId: string; userId: string }, { agent: { model: string } }>(
     'agents:resolve',
     'e2e-agents',
     // PR 2: `agents:resolve` returns a `provider/model-id` ref; memory-strata
-    // routes on the provider half and calls `llm:call:anthropic` with the bare
-    // id. `extractionModel` itself stays bare — it IS the `llm:call` payload.
+    // `extractionModel` stays bare — it IS the `llm:call` payload.
     async () => ({ agent: { model: `anthropic/${extractionModel}` } }),
   );
   // The REAL extraction round-trip, metered.
   bus.registerService<LlmCallInput, LlmCallOutput>(
-    'llm:call:anthropic',
+    MEMORY_OPS_HOOK,
     'e2e-llm',
     async (_ctx, input) => {
       const out = await extractionLlm(input);

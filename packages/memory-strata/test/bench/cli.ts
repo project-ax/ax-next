@@ -88,6 +88,15 @@ export interface CliArgs {
    * vendor it no longer selects.
    */
   orchestratorModel: 'haiku' | 'glm';
+  /**
+   * Whether `--orchestrator-model` was actually passed.
+   *
+   * `orchestratorModel` always holds a value (bench mode defaults to haiku), so
+   * it cannot answer "did the caller choose this?". e2e mode needs that
+   * distinction: absent the flag it keeps its legacy XAI_API_KEY-or-BM25
+   * behaviour, and an explicit arm overrides it.
+   */
+  orchestratorModelExplicit: boolean;
   /** e2e mode: opt in to the full n=500 run (default is the n=100 sample). */
   full: boolean;
   /** e2e mode: cost cap in dollars (default 25). */
@@ -186,6 +195,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
     rewriteMap: values['rewrite-map'] === true,
     topK: Number(values['top-k']),
     orchestratorModel: parseOrchestratorModel(values['orchestrator-model']),
+    orchestratorModelExplicit: values['orchestrator-model'] !== undefined,
     full: values.full === true,
     fixture: values.fixture === true,
   };
@@ -212,6 +222,7 @@ async function main(): Promise<number> {
       repoRoot: REPO_ROOT,
       sample: args.first ?? args.sample ?? (args.full ? 500 : 100),
       selection: args.first !== undefined ? 'first' : 'stratified',
+      ...(args.orchestratorModelExplicit ? { orchestratorModel: args.orchestratorModel } : {}),
       cap: args.cap ?? 25,
       fixture: args.fixture,
       ...(args.resume !== undefined ? { resumeId: args.resume } : {}),

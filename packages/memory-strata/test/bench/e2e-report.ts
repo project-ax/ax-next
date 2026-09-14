@@ -43,6 +43,8 @@ export interface E2EReportInput {
    * fallback (config E); 'bm25' (or undefined) = pure BM25 (TASK-190 baseline).
    */
   retrievalMode?: 'orchestrator' | 'bm25';
+  /** Which planner ran, when one did. Named so two e2e runs are tellable apart. */
+  orchestratorModel?: string;
 }
 
 interface Accuracy {
@@ -83,8 +85,8 @@ export function renderE2EReport(input: E2EReportInput): string {
   L.push(`**Judge:** \`${input.judgeModel}\` (via OpenRouter)`);
   if (input.retrievalMode === 'orchestrator') {
     L.push(
-      '- **Retrieval:** orchestrator (direct xAI, config E — orchestrator over ' +
-        'system/map.md + BM25 fallback; ~400ms p50)',
+      `- **Retrieval:** orchestrator (config E — orchestrator over system/map.md + BM25 ` +
+        `fallback), planner=\`${input.orchestratorModel ?? 'unspecified'}\``,
     );
     L.push(
       '  (The spike\'s ~7s latency was an OpenRouter default-routing artifact, not the ' +

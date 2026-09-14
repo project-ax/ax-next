@@ -45,3 +45,16 @@ describe('runE2EMode (TASK-189)', () => {
     }
   });
 });
+
+describe('e2e planner arms are priced (TASK: e2e orchestrator arm)', () => {
+  it('prices every selectable planner, so a metered run cannot die mid-flight', async () => {
+    // e2e never metered the planner before this change: its tokens were spent
+    // and dropped, so every e2e cost figure understated the orchestrator path.
+    // Now that `meter.record` sees them, an unpriced arm throws — and it throws
+    // deep inside a run that has already spent real money.
+    const { PRICING, E2E_HAIKU_MODEL, E2E_GLM_MODEL } = await import('../e2e-cli.js');
+    for (const key of [E2E_HAIKU_MODEL, E2E_GLM_MODEL]) {
+      expect(PRICING[key], `no PRICING row for ${key}`).toBeDefined();
+    }
+  });
+});

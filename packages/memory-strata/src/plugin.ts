@@ -3,6 +3,7 @@ import type {
   AgentOutcome,
   HookBus,
   Plugin,
+  ReasoningEffort,
   WorkspaceListInput,
   WorkspaceListOutput,
 } from '@ax/core';
@@ -34,23 +35,60 @@ const PLUGIN_NAME = '@ax/memory-strata';
 const PLUGIN_VERSION = '0.0.0';
 
 const DEFAULT_OBSERVER_TIMEOUT_MS = 30_000;
-/** Provider hook for the FIXED-tier internal calls (Stage-B rollup naming). The
- *  agent-model-derived paths (Observer, map densifier) do NOT use this — they
- *  route by the `provider/` half of the agent's own `provider/model-id` ref. */
-const DEFAULT_LLM_HOOK = 'llm:call:anthropic';
+/** Provider hook for the FIXED-tier internal calls (Stage-B rollup naming).
+ *  Since 2026-09-14 the Observer and map densifier are ALSO fixed-tier — see
+ *  {@link DEFAULT_MEMORY_OPS_MODEL} — but they derive their hook from that
+ *  ref's provider rather than reading this, so an operator can move the memory
+ *  role without moving the rollup namer. */
+export const DEFAULT_LLM_HOOK = 'llm:call:openrouter';
 const DEFAULT_CONSOLIDATOR_DEBOUNCE_MS = 5_000;
 const DEFAULT_CONSOLIDATOR_TIMEOUT_MS = 60_000;
 const DEFAULT_MAP_DENSIFY_TIMEOUT_MS = 30_000;
 /** Cheap in-stack extraction tier for Stage-B rollup naming (TASK-201). Fixed —
  *  NOT the agent's model — so the pass stays O(1 cheap call)/dirty pass with no
- *  new egress (design §D2). The DATED id is the one actually in the stack: it is
- *  `@ax/llm-anthropic`'s `translate.DEFAULT_MODEL` and the SOLE entry in its
- *  `models:list-supported:anthropic` advertisement — the bare
- *  `claude-haiku-4-5` alias
- *  appears nowhere else and could 400 behind a supported-models allowlist,
- *  silently killing Stage B (400 → caught → []). Match the sibling callers. */
-const DEFAULT_ROLLUP_STAGE_B_MODEL = 'claude-haiku-4-5-20251001';
+ *  new egress (design §D2). BARE id: it is routed by {@link DEFAULT_LLM_HOOK},
+ *  not parsed, so `z-ai/` here is part of the vendor slug rather than a
+ *  provider prefix (the bare-vs-ref trap in
+ *  `docs/plans/2026-09-11-model-roles-design.md`). */
+const DEFAULT_ROLLUP_STAGE_B_MODEL = 'z-ai/glm-5.3-flash:nitro';
 const DEFAULT_ROLLUP_STAGE_B_TIMEOUT_MS = 30_000;
+
+/**
+ * The model every MEMORY OPERATION runs on: observer extraction and map
+ * densification (and, via {@link DEFAULT_ROLLUP_STAGE_B_MODEL} +
+ * {@link DEFAULT_LLM_HOOK}, rollup naming).
+ *
+ * A `provider/model-id` REF — `parseModelRef` splits on the first slash, so the
+ * provider is `openrouter` and the model id is `z-ai/glm-5.3-flash:nitro`. A
+ * two-slash value is expected here.
+ *
+ * **This replaces inheriting the calling agent's model.** Until 2026-09-14 the
+ * Observer and densifier routed to `llm:call:<the agent's provider>` with the
+ * agent's own model id, so memory quality and cost tracked whatever model the
+ * user happened to have selected for chat, and a deployment could not state
+ * what its memory pipeline ran on. Memory extraction is a fixed internal job,
+ * not a user-facing one; pinning it makes it answerable.
+ *
+ * Paired with {@link MEMORY_OPS_REASONING} — see there for why that is not
+ * optional for this model.
+ */
+export const DEFAULT_MEMORY_OPS_MODEL = 'openrouter/z-ai/glm-5.3-flash:nitro';
+
+/**
+ * Reasoning level for every memory operation.
+ *
+ * `minimal` because these are extraction and summarization jobs with a hard
+ * timeout, and GLM reasons by DEFAULT: measured p50 ~3.4s with the field absent
+ * versus ~865ms with it. The observer's deadline is
+ * {@link DEFAULT_OBSERVER_TIMEOUT_MS} and the densifier's is
+ * {@link DEFAULT_MAP_DENSIFY_TIMEOUT_MS}; blowing either degrades silently (a
+ * dropped observation, a map entry that falls back to its raw summary), which
+ * is precisely the failure mode that hides a slow model.
+ *
+ * Applied by {@link buildMemoryOpsLlmCall} to every call on this path, rather
+ * than at each call site, so a new memory operation cannot forget it.
+ */
+const MEMORY_OPS_REASONING: ReasoningEffort = 'minimal';
 
 export interface MemoryStrataConfig {
   /**
@@ -65,6 +103,12 @@ export interface MemoryStrataConfig {
    * provider reaches its own provider without any config change.
    */
   llmCallHook?: string;
+  /**
+   * `provider/model-id` ref for the memory operations (observer extraction, map
+   * densification). Default {@link DEFAULT_MEMORY_OPS_MODEL}. Always a REF —
+   * the provider half selects the `llm:call:<provider>` hook.
+   */
+  memoryOpsModel?: string;
   /**
    * Hard deadline for the Observer's LLM call. Per I6, exceeding this
    * drops the run cleanly with no inbox writes. Defaults to 30 s.
@@ -227,6 +271,7 @@ interface ChatEndPayload {
  */
 export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
   const llmCallHook = cfg.llmCallHook ?? DEFAULT_LLM_HOOK;
+  const memoryOpsModel = cfg.memoryOpsModel ?? DEFAULT_MEMORY_OPS_MODEL;
   const observerTimeoutMs = cfg.observerTimeoutMs ?? DEFAULT_OBSERVER_TIMEOUT_MS;
   const consolidatorDebounceMs = cfg.consolidatorDebounceMs ?? DEFAULT_CONSOLIDATOR_DEBOUNCE_MS;
   const consolidatorTimeoutMs = cfg.consolidatorTimeoutMs ?? DEFAULT_CONSOLIDATOR_TIMEOUT_MS;
@@ -401,6 +446,7 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
         const observerWork = kickOffObserver(bus, ctx, payload, {
           observerTimeoutMs,
           nowFn,
+          memoryOpsModel,
         }).catch((err) => {
           ctx.logger.warn('memory_strata_observer_failed', {
             err: err instanceof Error ? err : new Error(String(err)),
@@ -464,6 +510,7 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
             llmCallHook,
             mapDensifyEnabled,
             mapDensifyTimeoutMs,
+            memoryOpsModel,
             rollupStageBEnabled,
             rollupStageBModel,
             rollupStageBTimeoutMs,
@@ -559,19 +606,19 @@ async function kickOffObserver(
   bus: HookBus,
   ctx: AgentContext,
   payload: ChatEndPayload,
-  cfg: { observerTimeoutMs: number; nowFn: () => Date },
+  cfg: { observerTimeoutMs: number; nowFn: () => Date; memoryOpsModel: string },
 ): Promise<void> {
   // Terminated outcomes (chat:start veto, runner crash, timeout) carry no
   // transcript. Skip cleanly.
   if (payload.outcome.kind !== 'complete') return;
   if (payload.outcome.messages.length === 0) return;
 
-  const agent = await resolveAgent(bus, ctx);
-  if (agent === null) return;
-
-  // Route by the agent's OWN provider (PR 2): the model ref selects the hook,
-  // and `agent.model` is the bare, provider-native id the hook expects.
-  const llmCall = buildAgentLlmCall(bus, ctx, agent, 'observer');
+  // Pinned to the memory-ops role, NOT the calling agent's model (2026-09-14).
+  // Extraction is a fixed internal job; letting it follow whatever model the
+  // user picked for chat made memory quality and cost unstatable.
+  const role = resolveMemoryOpsModel(ctx, cfg.memoryOpsModel);
+  if (role === null) return;
+  const llmCall = buildMemoryOpsLlmCall(bus, ctx, role, 'observer');
   if (llmCall === undefined) return;
 
   // TASK-182: when memory lives in the `/agent` git tier, hydrate the agent's
@@ -589,7 +636,7 @@ async function kickOffObserver(
       workspaceRoot,
       now: cfg.nowFn(),
       timeoutMs: cfg.observerTimeoutMs,
-      model: agent.model,
+      model: role.model,
       // TASK-187: thread the DURABLE per-conversation key onto each inbox
       // observation. conversationId (not sessionId) is stable across a
       // conversation's turns/respawns — the Consolidator dedups it to count
@@ -658,11 +705,12 @@ async function consolidateRoutedToTier(deps: {
   rollupStageBEnabled: boolean;
   rollupStageBModel: string;
   rollupStageBTimeoutMs: number;
+  memoryOpsModel: string;
   nowFn: () => Date;
 }): Promise<ConsolidationResult> {
   const {
     bus, ctx, consolidate, llmCallHook, mapDensifyEnabled, mapDensifyTimeoutMs,
-    rollupStageBEnabled, rollupStageBModel, rollupStageBTimeoutMs, nowFn,
+    rollupStageBEnabled, rollupStageBModel, rollupStageBTimeoutMs, memoryOpsModel, nowFn,
   } = deps;
   const logger = {
     info: (event: string, fields: Record<string, unknown>) => ctx.logger.info(event, fields),
@@ -670,7 +718,7 @@ async function consolidateRoutedToTier(deps: {
   };
 
   // TASK-190: build the host-LLM map densifier (same `llm:call:*` gating as the
-  // Observer). When densify is disabled, or the agent model can't be resolved,
+  // Observer). When densify is disabled, or the memory-ops ref can't be parsed,
   // `densifyMap` is undefined and `regenerateMap` falls back to raw doc
   // summaries — the map is still generated, just not densified. Resolving the
   // model here keeps map.ts bus-agnostic.
@@ -679,6 +727,7 @@ async function consolidateRoutedToTier(deps: {
     ctx,
     enabled: mapDensifyEnabled,
     timeoutMs: mapDensifyTimeoutMs,
+    memoryOpsModel,
   });
 
   // TASK-201: build the Stage-B rollup namer (bounded LLM class naming over the
@@ -804,15 +853,16 @@ async function buildMapDensifier(deps: {
   ctx: AgentContext;
   enabled: boolean;
   timeoutMs: number;
+  memoryOpsModel: string;
 }): Promise<MapDensifier | undefined> {
-  const { bus, ctx, enabled, timeoutMs } = deps;
+  const { bus, ctx, enabled, timeoutMs, memoryOpsModel } = deps;
   if (!enabled) return undefined;
-  const agent = await resolveAgent(bus, ctx);
-  if (agent === null) return undefined;
-  // Same agent-provider routing as the Observer (PR 2).
-  const llmCall = buildAgentLlmCall(bus, ctx, agent, 'map-densifier');
+  // Same fixed memory-ops role as the Observer.
+  const role = resolveMemoryOpsModel(ctx, memoryOpsModel);
+  if (role === null) return undefined;
+  const llmCall = buildMemoryOpsLlmCall(bus, ctx, role, 'map-densifier');
   if (llmCall === undefined) return undefined;
-  return makeLlmDensifier({ llmCall, model: agent.model, timeoutMs });
+  return makeLlmDensifier({ llmCall, model: role.model, timeoutMs });
 }
 
 /**
@@ -861,23 +911,59 @@ interface ResolvedAgentModel {
  * (wrong-vendor id → 404, or worse, a silently different model). The `warn`
  * makes the skip visible; a misconfigured preset shouldn't kill memory quietly.
  */
-function buildAgentLlmCall(
+/**
+ * Build the LLM call for a MEMORY OPERATION, pinned to
+ * {@link DEFAULT_MEMORY_OPS_MODEL} rather than the calling agent's model.
+ *
+ * Returns `undefined` — never throws — when the role's provider has no
+ * registered hook on this host, the same graceful-degradation contract
+ * the agent-derived path had: a CI host with no LLM provider still boots and still
+ * runs turns, it just extracts no memory. The `warn` makes the skip visible.
+ *
+ * {@link MEMORY_OPS_REASONING} is applied HERE, not at the call sites, and it
+ * deliberately wins over anything a caller passes: the role owns this choice,
+ * and a call site that could override it is a call site that can forget it.
+ */
+function buildMemoryOpsLlmCall(
   bus: HookBus,
   ctx: AgentContext,
-  agent: ResolvedAgentModel,
+  role: ResolvedAgentModel,
   path: string,
 ): LlmCallFn | undefined {
-  const hook = `llm:call:${agent.provider}`;
+  const hook = `llm:call:${role.provider}`;
   if (!bus.hasService(hook)) {
     ctx.logger.warn('memory_strata_llm_provider_unregistered', {
       agentId: ctx.agentId,
-      provider: agent.provider,
+      provider: role.provider,
       hook,
       path,
     });
     return undefined;
   }
-  return (input) => bus.call(hook, ctx, input);
+  return (input) => bus.call(hook, ctx, { ...input, reasoningEffort: MEMORY_OPS_REASONING });
+}
+
+/**
+ * Parse the configured memory-ops ref into `{ provider, model }`.
+ *
+ * A bad value is a real misconfiguration, so it warns and degrades to "no
+ * memory ops" rather than throwing every turn — same posture as an
+ * unregistered provider.
+ */
+function resolveMemoryOpsModel(
+  ctx: AgentContext,
+  ref: string,
+): ResolvedAgentModel | null {
+  try {
+    const parsed = parseModelRef(ref);
+    return { provider: parsed.provider, model: parsed.modelId };
+  } catch (err) {
+    ctx.logger.warn('memory_strata_memory_ops_model_ref_invalid', {
+      err: err instanceof Error ? err : new Error(String(err)),
+      ref,
+    });
+    return null;
+  }
 }
 
 async function resolveAgent(

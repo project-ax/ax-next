@@ -44,11 +44,22 @@ const TITLE_TEMPERATURE = 0.3;
 const MAX_TITLE_ATTEMPT_TURNS = 3;
 
 /**
- * Default `provider/model` reference — preserves today's hardcoded haiku.
+ * Default `provider/model` reference.
+ *
+ * GLM 5.3 Flash as of 2026-09-14, by model policy: this deployment runs GLM for
+ * every service role and no Anthropic or xAI model. `parseModelRef` splits on
+ * the FIRST slash, so `openrouter` is the provider (hook
+ * `llm:call:openrouter`) and `z-ai/glm-5.3-flash:nitro` is the model id the
+ * call carries — a two-slash ref is expected here, not a typo.
+ *
+ * No `reasoningEffort`: naming a conversation is neither an orchestrator nor a
+ * memory operation, so it takes the model's own default rather than the
+ * `minimal` those roles pin.
+ *
  * Operators override via the preset's `AX_TITLE_MODEL` env var, which flows
  * through `K8sPresetConfig.titles.model` to the factory's `cfg.model`.
  */
-export const DEFAULT_TITLE_MODEL = 'anthropic/claude-haiku-4-5-20251001';
+export const DEFAULT_TITLE_MODEL = 'openrouter/z-ai/glm-5.3-flash:nitro';
 
 export interface ConversationTitlesConfig {
   /**

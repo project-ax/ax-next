@@ -3,7 +3,13 @@
 // extraction with sensitive-content gate). Future phases land in
 // follow-up PRs; see docs/plans/memory-strata-design.md for the roadmap.
 
-export { createMemoryStrataPlugin } from './plugin.js';
+export {
+  createMemoryStrataPlugin,
+  // The memory-ops role binding. Exported so callers and tests derive the
+  // provider hook from it instead of hardcoding a vendor that then rots.
+  DEFAULT_MEMORY_OPS_MODEL,
+  DEFAULT_LLM_HOOK,
+} from './plugin.js';
 export type { MemoryStrataConfig } from './plugin.js';
 
 export { bootstrapMemoryTree } from './bootstrap.js';
