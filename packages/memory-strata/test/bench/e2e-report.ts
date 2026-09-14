@@ -39,7 +39,7 @@ export interface E2EReportInput {
   fixtureMode?: boolean;
   /**
    * Which memory_search retrieval path this run exercised (TASK-191).
-   * 'orchestrator' = direct-xAI orchestrator over system/map.md + BM25
+   * 'orchestrator' = planner over system/map.md + BM25 (see orchestratorModel)
    * fallback (config E); 'bm25' (or undefined) = pure BM25 (TASK-190 baseline).
    */
   retrievalMode?: 'orchestrator' | 'bm25';
@@ -80,18 +80,23 @@ export function renderE2EReport(input: E2EReportInput): string {
   );
   L.push('');
   L.push(`**Date:** ${date}`);
-  L.push(`**Answer LLM (under test):** \`${input.answerModel}\` (Anthropic)`);
-  L.push(`**Observer / consolidator extraction LLM:** \`${input.extractionModel}\` (Anthropic)`);
-  L.push(`**Judge:** \`${input.judgeModel}\` (via OpenRouter)`);
+  // Model ids carry no hardcoded vendor. The extraction line said "(Anthropic)"
+  // beside `z-ai/glm-5.3-flash:nitro` for exactly one run before anyone noticed:
+  // a label that cannot be wrong is better than one that has to be maintained.
+  L.push(`**Answer LLM (under test):** \`${input.answerModel}\``);
+  L.push(`**Observer / consolidator extraction LLM:** \`${input.extractionModel}\``);
+  L.push(`**Judge:** \`${input.judgeModel}\``);
   if (input.retrievalMode === 'orchestrator') {
     L.push(
       `- **Retrieval:** orchestrator (config E — orchestrator over system/map.md + BM25 ` +
         `fallback), planner=\`${input.orchestratorModel ?? 'unspecified'}\``,
     );
     L.push(
-      '  (The spike\'s ~7s latency was an OpenRouter default-routing artifact, not the ' +
-        'orchestrator itself — direct-xAI is ~400ms p50, only ~5× BM25\'s ~89ms. See ' +
-        '`docs/plans/2026-05-13-memory-strata-phase-3c-config-d-report.md`.)',
+      '  (Planner latency measured 2026-09-14 on `z-ai/glm-5.3-flash:nitro` with minimal ' +
+        'reasoning: p50 1.4-1.6s, and p95 1.6s over the 500-call accuracy run. Without the ' +
+        'reasoning flag the SAME model measures p50 ~4.9-5.1s — past the budget, falling ' +
+        'back to BM25 in silence. See ' +
+        '`docs/plans/2026-09-11-orchestrator-accuracy-report.md`.)',
     );
   } else {
     L.push('- **Retrieval:** BM25-only (TASK-190 baseline)');

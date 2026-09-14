@@ -97,3 +97,16 @@ describe('parseCliArgs — --out', () => {
     expect(parseCliArgs(['--out', 'docs/plans/x.md']).out).toBe('docs/plans/x.md');
   });
 });
+
+describe('parseCliArgs — --concurrency (e2e)', () => {
+  it('is absent by default, so runs stay sequential unless asked', () => {
+    // Default 1 on purpose: concurrency changes how close a run gets to its
+    // cost cap (it can overshoot by whatever is already dispatched) and how
+    // hard it leans on provider rate limits. Not something to inherit silently.
+    expect(parseCliArgs([]).concurrency).toBeUndefined();
+  });
+
+  it('carries an explicit value', () => {
+    expect(parseCliArgs(['--concurrency', '4']).concurrency).toBe(4);
+  });
+});

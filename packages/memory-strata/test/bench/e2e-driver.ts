@@ -44,7 +44,15 @@ interface ConsolidationDebouncer {
 }
 
 /** The extraction LLM the Observer/consolidator run on (cheap per-turn model). */
-export const DEFAULT_EXTRACTION_MODEL = 'claude-haiku-4-5-20251001';
+/**
+ * Extraction model for the e2e harness — the BARE id the memory-ops hook
+ * carries, matching the shipped role (see DEFAULT_MEMORY_OPS_MODEL). Bare, not
+ * a ref: this value IS the `llm:call` payload, and the provider is already
+ * decided by the hook it routes through.
+ */
+export const DEFAULT_EXTRACTION_MODEL = DEFAULT_MEMORY_OPS_MODEL.slice(
+  DEFAULT_MEMORY_OPS_MODEL.indexOf('/') + 1,
+);
 
 /** A real LLM round-trip for the Observer's fact extraction. */
 export type ExtractionLlmFn = (input: LlmCallInput) => Promise<LlmCallOutput>;
@@ -147,7 +155,9 @@ export async function runE2EQuestion(deps: RunE2EQuestionDeps): Promise<E2EQuest
     'e2e-agents',
     // PR 2: `agents:resolve` returns a `provider/model-id` ref; memory-strata
     // `extractionModel` stays bare — it IS the `llm:call` payload.
-    async () => ({ agent: { model: `anthropic/${extractionModel}` } }),
+    // Memory ops no longer read this (they are pinned to the memory-ops role),
+    // but chat:start still resolves the agent row, so the stub stays.
+    async () => ({ agent: { model: DEFAULT_MEMORY_OPS_MODEL } }),
   );
   // The REAL extraction round-trip, metered.
   bus.registerService<LlmCallInput, LlmCallOutput>(
@@ -182,6 +192,11 @@ export async function runE2EQuestion(deps: RunE2EQuestionDeps): Promise<E2EQuest
     // has no parseable corpus date (or once ingestion is done and we're just
     // running the answer turn's own consolidation, if any).
     nowFn: () => fictionNow ?? new Date(),
+    // Wire the caller's extraction model through as the memory-ops role, so
+    // `deps.extractionModel` actually selects what the Observer runs on. It is
+    // a BARE id (it is the `llm:call` payload); the role wants a REF, and the
+    // provider is the one this harness registers its stub on.
+    memoryOpsModel: `${MEMORY_OPS_HOOK.slice('llm:call:'.length)}/${extractionModel}`,
     ...(deps.orchestratorClient ? { orchestrator: { client: deps.orchestratorClient } } : {}),
     testHooks: {
       onDebouncerCreated(d) {
