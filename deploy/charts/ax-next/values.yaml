@@ -699,14 +699,19 @@ skills:
 # without the request it measured ~3.4s p50 against a 5s budget instead of
 # ~865ms.
 #
+# Measured 2026-09-14, two probe runs: p50 1.4-1.6s with minimal reasoning
+# versus 4.9-5.1s without it (and without it, EVERY call is slow — the model
+# thinks first and we throw the thinking away). Over the n=500 accuracy run the
+# whole retrieval step measured p95 1.6s.
+#
 # What to watch, because the failure is quiet: the orchestrator only earns its
 # keep if it answers inside ~5s, and it falls back to BM25 SILENTLY when it
-# doesn't. GLM's median is the fastest of anything we've measured, but its slow
-# calls vary run to run (we've seen 4.1s) — `:nitro` re-sorts a heterogeneous
-# provider pool per call. The cost of that fallback is bounded and known: at
-# n=500 on LongMemEval-S the orchestrator scores 33-36% against BM25's 21.2%,
-# so a miss loses the lift, not correctness. Watch
-# `memory_strata_orchestrator_failed`.
+# doesn't. Rare routing spikes do happen — one run caught a 13s call, the next
+# run's worst was 4.2s, and gemini-3.8-flash:nitro spikes the same way. That is
+# the `:nitro` suffix re-sorting a heterogeneous provider pool per call, not a
+# property of GLM. The cost when it bites is bounded: at n=500 on LongMemEval-S
+# the orchestrator scores 33-36% against BM25's 21.2%, so a miss loses the lift,
+# not correctness. Watch `memory_strata_orchestrator_failed`.
 #
 # Worth changing without waiting for a release — which model is both fast and
 # cheap moves much faster than this chart does.

@@ -212,20 +212,39 @@ const ORCHESTRATOR_MAX_TOKENS = 512;
  * | deepseek/deepseek-v4.1-flash:nitro|1328/1139|1593/1579|1743/2054|
  * | z-ai/glm-5.3-flash:nitro          | 790/865 |2214/3938|2758/4133|
  *
- * **GLM is the default as of 2026-09-14, by model policy: this deployment runs
- * GLM 5.3 Flash for every service role and no Anthropic or xAI model.** The
- * latency table above is why haiku held the slot before that — GLM's tail moved
- * 1443 → 2758 → 4133ms across three runs (`:nitro` re-sorts a heterogeneous
- * provider pool per call) against a 5s budget whose overrun falls through to
- * BM25 in silence, and haiku's p95 never exceeded 1580ms.
+ * (Those last two GLM columns are p95 and MAX from 19-call samples. Re-measured
+ * on 2026-09-14 they came back 8974/3110 and 13111/4192 — the spread between
+ * runs is the provider pool, not the model. Treat any single number here as a
+ * window, not a property.)
  *
- * That tail risk is real and did not go away; what changed is that it is no
- * longer weighed against a model we still use. It is also bounded by
- * measurement rather than assumed: at n=500 the two planners are statistically
- * TIED on accuracy (33.2% haiku vs 36.0% GLM, +2.8pp, z=0.93), and the failure
- * mode when the tail is exceeded is the BM25 fallback, which itself scores
- * 21.2%. Watch `memory_strata_orchestrator_failed` — a provider-pool
- * regression shows up there as a quiet accuracy loss, not an error.
+ * **GLM is the default as of 2026-09-14, by model policy: this deployment runs
+ * GLM 5.3 Flash for every service role and no Anthropic or xAI model.**
+ *
+ * `MINIMAL_REASONING` is what makes that viable, and the control arm measures
+ * exactly how much (two probe runs, 2026-09-14):
+ *
+ * | z-ai/glm-5.3-flash:nitro |      p50 |      p95 |       max |
+ * |--------------------------|----------|----------|-----------|
+ * | minimal reasoning        | 1558/1368| 8974/3110| 13111/4192|
+ * | NO flag (control)        | 5121/4886| 6808/6390|  6963/6397|
+ *
+ * Without the flag EVERY call is slow — min 4153ms, 341-512 reasoning tokens
+ * each — which is systematic and would blow the 5s budget on most calls. With
+ * it, typical is 1.2-1.6s, and the n=500 accuracy run measured p95 1603ms over
+ * 500 calls for the whole retrieval step (map + planner + ops).
+ *
+ * The residual risk is a RARE routing spike, not a slow model: run 1 caught one
+ * 8.5s and one 13.1s call, run 2's worst was 4.2s, and `gemini-3.8-flash:nitro`
+ * spikes the same way (7.6s, 5.8s). `:nitro` re-sorts a heterogeneous provider
+ * pool per call, so this is a property of the suffix rather than of GLM. Do not
+ * read a max as a typical latency — an earlier version of this comment quoted
+ * 4133ms as GLM's "tail", when 4133ms is simply the worst call in a good
+ * window.
+ *
+ * When a spike does exceed the budget the cost is bounded and known: the
+ * fallback is BM25, which scores 21.2% against this planner's 36.0% at n=500,
+ * so a miss loses the lift rather than correctness. Watch
+ * `memory_strata_orchestrator_failed`.
  * See `docs/plans/2026-09-11-orchestrator-accuracy-report.md`.
  *
  * Two other things that run pinned down:
