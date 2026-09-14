@@ -7,6 +7,10 @@ import {
 import { REQUEST_CAPABILITY_DESCRIPTOR, SEARCH_CATALOG_DESCRIPTOR } from '@ax/skill-broker';
 import { ARTIFACT_PUBLISH_DESCRIPTOR } from '@ax/tool-artifact-publish';
 import { CONNECTOR_PROPOSE_DESCRIPTOR } from '@ax/tool-connector-propose';
+// Derived, not copied: the assertions below check that the preset applies THE
+// DEFAULT. A literal makes a deliberate model-policy change look like a broken
+// preset.
+import { DEFAULT_TITLE_MODEL } from '@ax/conversation-titles';
 import { SKILL_PROPOSE_DESCRIPTOR } from '@ax/tool-skill-propose';
 import { WEB_EXTRACT_DESCRIPTOR, WEB_SEARCH_DESCRIPTOR } from '@ax/web-tools';
 import { describe, expect, it, vi } from 'vitest';
@@ -150,7 +154,7 @@ describe('@ax/preset-k8s wiring', () => {
   it('every required service hook has exactly one registrant (titles enabled)', () => {
     const plugins = createK8sPlugins({
       ...stubConfig,
-      titles: { model: 'anthropic/claude-haiku-4-5-20251001' },
+      titles: { model: DEFAULT_TITLE_MODEL },
     });
     const registrations = new Map<string, string[]>();
     for (const p of plugins) {
@@ -169,7 +173,7 @@ describe('@ax/preset-k8s wiring', () => {
   it('every "calls" entry is satisfied by some plugin\'s "registers" (titles enabled)', () => {
     const plugins = createK8sPlugins({
       ...stubConfig,
-      titles: { model: 'anthropic/claude-haiku-4-5-20251001' },
+      titles: { model: DEFAULT_TITLE_MODEL },
     });
     const allRegistered = new Set<string>(
       plugins.flatMap((p) => p.manifest.registers),
@@ -1436,7 +1440,7 @@ describe('loadK8sConfigFromEnv', () => {
   describe('loadK8sConfigFromEnv — titles + host LLM tools', () => {
     it('always sets cfg.titles with the default model (titles no longer gated on ANTHROPIC_API_KEY)', () => {
       const cfg = loadK8sConfigFromEnv(minRequired());
-      expect(cfg.titles).toEqual({ model: 'anthropic/claude-haiku-4-5-20251001' });
+      expect(cfg.titles).toEqual({ model: DEFAULT_TITLE_MODEL });
     });
 
     it('leaves cfg.hostLlmTools unset when ANTHROPIC_API_KEY is unset', () => {
@@ -1448,7 +1452,7 @@ describe('loadK8sConfigFromEnv', () => {
       const cfg = loadK8sConfigFromEnv(minRequired({ ANTHROPIC_API_KEY: 'sk-ant-stub' }));
       expect(cfg.hostLlmTools).toBe(true);
       // titles still configured (it always is now).
-      expect(cfg.titles).toEqual({ model: 'anthropic/claude-haiku-4-5-20251001' });
+      expect(cfg.titles).toEqual({ model: DEFAULT_TITLE_MODEL });
     });
 
     it('respects AX_TITLE_MODEL when set', () => {
@@ -1462,7 +1466,7 @@ describe('loadK8sConfigFromEnv', () => {
       const cfg = loadK8sConfigFromEnv(minRequired({
         AX_TITLE_MODEL: '',
       }));
-      expect(cfg.titles).toEqual({ model: 'anthropic/claude-haiku-4-5-20251001' });
+      expect(cfg.titles).toEqual({ model: DEFAULT_TITLE_MODEL });
     });
   });
 });

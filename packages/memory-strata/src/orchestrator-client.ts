@@ -212,12 +212,21 @@ const ORCHESTRATOR_MAX_TOKENS = 512;
  * | deepseek/deepseek-v4.1-flash:nitro|1328/1139|1593/1579|1743/2054|
  * | z-ai/glm-5.3-flash:nitro          | 790/865 |2214/3938|2758/4133|
  *
- * **Haiku stays the default because of the SPREAD, not the median.** GLM is
- * ~7× cheaper and beats haiku's p50 in both runs, but its tail moved 1443 →
- * 2758 → 4133ms across three runs (`:nitro` re-sorts a heterogeneous provider
- * pool per call). Against a hard timeout with a SILENT BM25 fallback, a
- * reproducible tail beats a good average. Haiku's p95 has not exceeded 1580ms
- * across four runs.
+ * **GLM is the default as of 2026-09-14, by model policy: this deployment runs
+ * GLM 5.3 Flash for every service role and no Anthropic or xAI model.** The
+ * latency table above is why haiku held the slot before that — GLM's tail moved
+ * 1443 → 2758 → 4133ms across three runs (`:nitro` re-sorts a heterogeneous
+ * provider pool per call) against a 5s budget whose overrun falls through to
+ * BM25 in silence, and haiku's p95 never exceeded 1580ms.
+ *
+ * That tail risk is real and did not go away; what changed is that it is no
+ * longer weighed against a model we still use. It is also bounded by
+ * measurement rather than assumed: at n=500 the two planners are statistically
+ * TIED on accuracy (33.2% haiku vs 36.0% GLM, +2.8pp, z=0.93), and the failure
+ * mode when the tail is exceeded is the BM25 fallback, which itself scores
+ * 21.2%. Watch `memory_strata_orchestrator_failed` — a provider-pool
+ * regression shows up there as a quiet accuracy loss, not an error.
+ * See `docs/plans/2026-09-11-orchestrator-accuracy-report.md`.
  *
  * Two other things that run pinned down:
  *  - Without `reasoningEffort`, the same GLM model measured p50 3338–3422ms and
@@ -231,7 +240,7 @@ const ORCHESTRATOR_MAX_TOKENS = 512;
  * from a comment. Three ids in this repo have gone deprecated, and a dead id
  * fails closed into the same silent BM25 fallback.
  */
-export const DEFAULT_ORCHESTRATOR_MODEL = 'anthropic/claude-haiku-4.5';
+export const DEFAULT_ORCHESTRATOR_MODEL = 'z-ai/glm-5.3-flash:nitro';
 
 /** What {@link makeBusOrchestratorClient} needs to route a call. */
 export interface BusOrchestratorConfig {

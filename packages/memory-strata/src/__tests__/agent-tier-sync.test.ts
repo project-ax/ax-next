@@ -21,13 +21,22 @@ import {
   type WorkspaceVersion,
 } from '@ax/core';
 import { createMemoryStrataIndexSqlitePlugin } from '@ax/memory-strata-index-sqlite';
-import { createMemoryStrataPlugin } from '../plugin.js';
+import { createMemoryStrataPlugin, DEFAULT_MEMORY_OPS_MODEL } from '../plugin.js';
 import {
   AGENT_TIER_MEMORY_ROOT,
   agentTierAvailable,
   flushAgentTier,
   hydrateAgentTier,
 } from '../agent-tier-sync.js';
+
+/**
+ * The `llm:call:<provider>` hook the memory operations actually use, DERIVED
+ * from the role binding rather than spelled out. These stubs used to hardcode
+ * `llm:call:anthropic`; when the memory role moved to another provider they
+ * failed with "the Observer wrote nothing", which reads like a broken feature
+ * and was really a stub registered on the wrong hook.
+ */
+const MEMORY_OPS_HOOK = `llm:call:${DEFAULT_MEMORY_OPS_MODEL.slice(0, DEFAULT_MEMORY_OPS_MODEL.indexOf('/'))}`;
 
 // ---------------------------------------------------------------------------
 // TASK-182: prove consolidated memory lands per-agent in the `/agent` git tier
@@ -150,13 +159,13 @@ async function buildBus(observations: Record<string, string>): Promise<{
     async (_ctx, input) => {
       void input;
       // PR 2: agent models are `provider/model-id` refs; the plugin routes on
-      // the `anthropic/` half and sends the bare id to `llm:call:anthropic`.
+      // the `anthropic/` half and sends the bare id to the memory-ops provider hook.
       return { agent: { model: 'anthropic/claude-haiku-4-5-20251001' } };
     },
   );
   // The LLM returns whichever observation list the test seeded for the agentId
   // embedded in the prompt — so agent A and agent B extract DIFFERENT facts.
-  bus.registerService<LlmCallInput, LlmCallOutput>('llm:call:anthropic', 'test-llm', async (ctx) => {
+  bus.registerService<LlmCallInput, LlmCallOutput>(MEMORY_OPS_HOOK, 'test-llm', async (ctx) => {
     const text = observations[ctx.agentId] ?? '[]';
     return { text, stopReason: 'end_turn', usage: { inputTokens: 5, outputTokens: 5 } };
   });
@@ -563,7 +572,7 @@ describe('host-tool + index per-agent keying on the tier path (TASK-186)', () =>
         { fact: 'Zephyr rollback marker: roll back with the undo command.', subject: 'rollback', factType: 'preference', confidence: 0.95 },
       ]),
     };
-    bus.registerService<LlmCallInput, LlmCallOutput>('llm:call:anthropic', 'test-llm', async (ctx) => ({
+    bus.registerService<LlmCallInput, LlmCallOutput>(MEMORY_OPS_HOOK, 'test-llm', async (ctx) => ({
       text: observations[ctx.agentId] ?? '[]', stopReason: 'end_turn', usage: { inputTokens: 5, outputTokens: 5 },
     }));
     bus.registerService('tool:register', 'test-tool-dispatcher', async () => ({ ok: true as const }));

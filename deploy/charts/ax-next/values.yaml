@@ -457,17 +457,18 @@ anthropic:
 # conversation after its first assistant turn (ifNull: true, never
 # clobbers a user rename). When unset, titles stay null.
 #
-# `model` uses the `<provider>/<model-id>` convention. Today's only
-# provider is `anthropic`. Future providers slot in by registering
-# `llm:call:<provider>` from a sibling plugin.
+# `model` uses the `<provider>/<model-id>` convention. The provider is
+# everything before the FIRST slash, so a two-slash value like
+# `openrouter/z-ai/glm-5.3-flash:nitro` is correct, not a typo: provider
+# `openrouter`, model id `z-ai/glm-5.3-flash:nitro`. Providers slot in by
+# registering `llm:call:<provider>` from a sibling plugin.
 titles:
-  # Title-LLM model. Default: cheapest current Claude. Override for
-  # benchmarking or to follow a model deprecation.
+  # Title-LLM model. Override for benchmarking or to follow a deprecation.
   #
   # NOTE: this default must stay in lockstep with `DEFAULT_TITLE_MODEL`
   # exported from @ax/conversation-titles — helm can't import TS, so
   # the operator-facing default is duplicated here by hand.
-  model: anthropic/claude-haiku-4-5-20251001
+  model: openrouter/z-ai/glm-5.3-flash:nitro
 
 # ─── Channel-web (browser SPA) ───────────────────────────────────
 # When enabled, the host pod's @ax/static-files plugin serves the
@@ -678,9 +679,10 @@ skills:
 
 # ─── Memory ───────────────────────────────────────────────────────
 # The model `memory_search`'s retrieval orchestrator runs on, as a BARE
-# OpenRouter model id (`anthropic/claude-haiku-4.5`, not `openrouter/...` — the
-# provider is already decided by the hook it routes through). Empty keeps the
-# preset's default.
+# OpenRouter model id (`z-ai/glm-5.3-flash:nitro`, NOT `openrouter/z-ai/...` —
+# the provider is already decided by the hook it routes through, so a
+# provider prefix here 404s at call time and degrades to BM25 in silence).
+# Empty keeps the preset's default.
 #
 # The orchestrator needs NO key of its own: it goes through the same
 # @ax/llm-openrouter plugin as everything else, which resolves a credential per
@@ -688,33 +690,26 @@ skills:
 # credentials UI and the orchestrator starts working with no deploy. Store
 # none and memory_search runs plain BM25, which is what it has always done.
 #
-# Empty uses the preset's default, `anthropic/claude-haiku-4.5` — picked by
-# MEASUREMENT, not by reputation, and re-confirmed on 2026-09-11 (p50 ~930ms,
-# p95 ~1200ms through OpenRouter, against a 5s budget). It wins on CONSISTENCY:
-# across four benchmark runs its slowest single call was under 2s. Two Grok ids
-# were tried first and both 404'd as deprecated, and `x-ai/grok-4.3` measured a
-# 7.3s p50 — worse on its own than the entire budget.
+# Empty uses the preset's default, `z-ai/glm-5.3-flash:nitro` — this
+# deployment runs GLM 5.3 Flash for every service role and no Anthropic or xAI
+# model (2026-09-14).
 #
-# Worth changing without waiting for a release, and here is why it matters:
-# the orchestrator only earns its keep if it answers inside ~5s, it falls back
-# to BM25 SILENTLY when it doesn't, and which model is both fast and cheap
-# moves much faster than this chart does.
+# We ask it for minimal reasoning, which is not optional: GLM thinks before
+# answering by default and the orchestrator throws that thinking away, so
+# without the request it measured ~3.4s p50 against a 5s budget instead of
+# ~865ms.
 #
-# If cost starts to bite, the cheap options are real now. We ask every model for
-# minimal reasoning (some of them think before answering, and the orchestrator
-# throws that thinking away), which is what makes them usable at all — before
-# 2026-09-11 we couldn't send that request and `z-ai/glm-5.3-flash:nitro` would
-# quietly have been THREE TIMES SLOWER than the default it replaced. Two we've
-# measured:
-#   z-ai/glm-5.3-flash:nitro      ~7x cheaper. Fastest median of anything
-#                                 tried, but its slow calls vary a lot run to
-#                                 run (we've seen 4.1s). Still inside budget,
-#                                 just less predictable.
-#   google/gemini-3.8-flash:nitro ~25% cheaper. Steadier than GLM, though not
-#                                 quite haiku — its worst call across two runs
-#                                 was 2.3s against haiku's 1.6s.
-# Both degrade to BM25 rather than to a wrong answer if they miss, so this is a
-# safe knob to experiment with.
+# What to watch, because the failure is quiet: the orchestrator only earns its
+# keep if it answers inside ~5s, and it falls back to BM25 SILENTLY when it
+# doesn't. GLM's median is the fastest of anything we've measured, but its slow
+# calls vary run to run (we've seen 4.1s) — `:nitro` re-sorts a heterogeneous
+# provider pool per call. The cost of that fallback is bounded and known: at
+# n=500 on LongMemEval-S the orchestrator scores 33-36% against BM25's 21.2%,
+# so a miss loses the lift, not correctness. Watch
+# `memory_strata_orchestrator_failed`.
+#
+# Worth changing without waiting for a release — which model is both fast and
+# cheap moves much faster than this chart does.
 memory:
   orchestratorModel: ""
 

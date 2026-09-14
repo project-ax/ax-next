@@ -3,8 +3,17 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HookBus, makeAgentContext, type AgentOutcome, type LlmCallInput, type LlmCallOutput } from '@ax/core';
-import { createMemoryStrataPlugin } from '../plugin.js';
+import { createMemoryStrataPlugin, DEFAULT_MEMORY_OPS_MODEL } from '../plugin.js';
 import { systemFile, INBOX_DIR } from '../paths.js';
+
+/**
+ * The `llm:call:<provider>` hook the memory operations actually use, DERIVED
+ * from the role binding rather than spelled out. These stubs used to hardcode
+ * `llm:call:anthropic`; when the memory role moved to another provider, every
+ * one of them failed with "the Observer wrote nothing", which reads like a
+ * broken feature and was really a stub on the wrong hook.
+ */
+const MEMORY_OPS_HOOK = `llm:call:${DEFAULT_MEMORY_OPS_MODEL.slice(0, DEFAULT_MEMORY_OPS_MODEL.indexOf('/'))}`;
 
 /** Write an agent's `.ax/IDENTITY.md` under `<root>/permanent/.ax/`, where
  * memory-strata's composeIdentityFromFiles (TASK-142) reads it from. */
@@ -49,7 +58,7 @@ function buildBus(agents: Record<string, AgentSpec>, llmText: string): HookBus {
       return { agent: { model: a.model } };
     },
   );
-  bus.registerService<LlmCallInput, LlmCallOutput>('llm:call:anthropic', 'test-llm', async () => ({
+  bus.registerService<LlmCallInput, LlmCallOutput>(MEMORY_OPS_HOOK, 'test-llm', async () => ({
     text: llmText,
     stopReason: 'end_turn',
     usage: { inputTokens: 5, outputTokens: 5 },

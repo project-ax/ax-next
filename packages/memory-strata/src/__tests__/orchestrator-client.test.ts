@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   makeOpenRouterOrchestratorClient,
   makeXaiOrchestratorClient,
+  DEFAULT_ORCHESTRATOR_MODEL,
 } from '../orchestrator-client.js';
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -107,7 +108,7 @@ describe('makeOpenRouterOrchestratorClient', () => {
     expect(url).toBe('https://openrouter.ai/api/v1/chat/completions');
     expect(init.headers).toMatchObject({ authorization: 'Bearer or-secret' });
     const body = JSON.parse(init.body as string);
-    expect(body.model).toBe('anthropic/claude-haiku-4.5');
+    expect(body.model).toBe(DEFAULT_ORCHESTRATOR_MODEL);
     expect(body).not.toHaveProperty('provider');
   });
 

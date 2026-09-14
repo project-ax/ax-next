@@ -9,7 +9,13 @@ import {
   type LlmCallOutput,
 } from '@ax/core';
 import type { ContentBlock } from '@ax/ipc-protocol';
-import { createConversationTitlesPlugin } from '../plugin.js';
+import { createConversationTitlesPlugin, DEFAULT_TITLE_MODEL } from '../plugin.js';
+
+/** Provider half of DEFAULT_TITLE_MODEL — `parseModelRef` splits on the FIRST slash. */
+const DEFAULT_PROVIDER = DEFAULT_TITLE_MODEL.slice(0, DEFAULT_TITLE_MODEL.indexOf('/'));
+/** Model half — everything after that first slash, so a two-slash ref survives. */
+const DEFAULT_MODEL_ID = DEFAULT_TITLE_MODEL.slice(DEFAULT_TITLE_MODEL.indexOf('/') + 1);
+const DEFAULT_LLM_HOOK = `llm:call:${DEFAULT_PROVIDER}`;
 import type {
   Conversation,
   GetInput,
@@ -23,7 +29,13 @@ import type {
 // ---------------------------------------------------------------------------
 // Test fixtures.
 //
-// We register stubs for `conversations:get`, `llm:call:anthropic`, and
+// The LLM hook these stubs register is DERIVED from DEFAULT_TITLE_MODEL rather
+// than spelled out. It used to be hardcoded `llm:call:anthropic`, so changing
+// the default model to one on another provider failed ~14 tests that have
+// nothing to do with provider routing — the failure said "titling is broken"
+// when the truth was "the stub is registered on the wrong hook".
+//
+// We register stubs for `conversations:get`, the title provider's llm hook, and
 // `conversations:set-title` directly on a HookBus, mirror the @ax/llm-anthropic
 // plugin test pattern (HookBus + makeAgentContext + manual hook registration).
 // ---------------------------------------------------------------------------
@@ -88,7 +100,7 @@ function makeStubsBus(): Stubs {
     },
   );
   bus.registerService<LlmCallInput, LlmCallOutput>(
-    'llm:call:anthropic',
+    DEFAULT_LLM_HOOK,
     'mock-llm',
     async (_ctx, input) => {
       llmCalls.push(input);
@@ -196,6 +208,8 @@ describe('@ax/conversation-titles plugin manifest', () => {
     const plugin = createConversationTitlesPlugin({
       model: 'anthropic/claude-haiku-4-5-20251001',
     });
+    // Literal on purpose: this asserts an EXPLICIT cfg.model drives the hook,
+    // independent of whatever the default happens to be.
     expect(plugin.manifest).toEqual({
       name: '@ax/conversation-titles',
       version: '0.0.0',
@@ -471,7 +485,7 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
     });
 
     expect(stubs.llmCalls).toHaveLength(1);
-    expect(stubs.llmCalls[0]?.model).toBe('claude-haiku-4-5-20251001');
+    expect(stubs.llmCalls[0]?.model).toBe(DEFAULT_MODEL_ID);
     expect(stubs.llmCalls[0]?.maxTokens).toBe(32);
     expect(stubs.llmCalls[0]?.temperature).toBe(0.3);
     expect(stubs.llmCalls[0]?.messages).toEqual([
@@ -660,8 +674,13 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
   it('uses storage:get override when present (different model-id, same provider)', async () => {
     const stubs = makeStubsBus();
     seedAssistantTurn(stubs);
+    // Same provider as the default, different model-id — that is this test's
+    // whole point, so the override is built FROM the default provider. Spelling
+    // a vendor here made it a provider-change test the moment the default
+    // provider changed, duplicating the one immediately below.
+    const OVERRIDE_ID = 'some-other-model-id';
     stubs.registerStorageGet(
-      new TextEncoder().encode('anthropic/claude-sonnet-4-6'),
+      new TextEncoder().encode(`${DEFAULT_PROVIDER}/${OVERRIDE_ID}`),
     );
     const plugin = createConversationTitlesPlugin();
     await plugin.init({ bus: stubs.bus, config: {} });
@@ -672,7 +691,7 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
 
     expect(stubs.storageGetCalls).toEqual([{ key: 'settings:fast-model' }]);
     expect(stubs.llmCalls).toHaveLength(1);
-    expect(stubs.llmCalls[0]?.model).toBe('claude-sonnet-4-6');
+    expect(stubs.llmCalls[0]?.model).toBe(OVERRIDE_ID);
   });
 
   it('uses storage:get override with a different provider hook', async () => {
@@ -705,8 +724,8 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
     });
 
     expect(stubs.llmCalls).toHaveLength(1);
-    // Default fast model id from DEFAULT_TITLE_MODEL.
-    expect(stubs.llmCalls[0]?.model).toBe('claude-haiku-4-5-20251001');
+    // Default model id from DEFAULT_TITLE_MODEL, not a copy of it.
+    expect(stubs.llmCalls[0]?.model).toBe(DEFAULT_MODEL_ID);
   });
 
   it('falls back to cfg.model when storage:get throws', async () => {
@@ -730,7 +749,7 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
     );
     expect(fireResult.rejected).toBe(false);
     expect(stubs.llmCalls).toHaveLength(1);
-    expect(stubs.llmCalls[0]?.model).toBe('claude-haiku-4-5-20251001');
+    expect(stubs.llmCalls[0]?.model).toBe(DEFAULT_MODEL_ID);
   });
 
   it('falls back to cfg.model when storage:get is not registered', async () => {
@@ -745,7 +764,7 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
 
     expect(stubs.storageGetCalls).toHaveLength(0);
     expect(stubs.llmCalls).toHaveLength(1);
-    expect(stubs.llmCalls[0]?.model).toBe('claude-haiku-4-5-20251001');
+    expect(stubs.llmCalls[0]?.model).toBe(DEFAULT_MODEL_ID);
   });
 
   it('falls back to cfg.model when storage value is empty bytes', async () => {
@@ -760,7 +779,7 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
     });
 
     expect(stubs.llmCalls).toHaveLength(1);
-    expect(stubs.llmCalls[0]?.model).toBe('claude-haiku-4-5-20251001');
+    expect(stubs.llmCalls[0]?.model).toBe(DEFAULT_MODEL_ID);
   });
 
   it('falls back to cfg.model when the override provider hook is not registered', async () => {
@@ -783,7 +802,7 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
 
     // The default anthropic stub (registered in makeStubsBus) was hit.
     expect(stubs.llmCalls).toHaveLength(1);
-    expect(stubs.llmCalls[0]?.model).toBe('claude-haiku-4-5-20251001');
+    expect(stubs.llmCalls[0]?.model).toBe(DEFAULT_MODEL_ID);
     expect(warnSpy).toHaveBeenCalledWith(
       'conversation_titles_override_hook_missing',
       expect.objectContaining({ provider: 'openai' }),
@@ -806,7 +825,7 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
     await stubs.bus.fire('chat:turn-end', ctx, { role: 'assistant' });
 
     expect(stubs.llmCalls).toHaveLength(1);
-    expect(stubs.llmCalls[0]?.model).toBe('claude-haiku-4-5-20251001');
+    expect(stubs.llmCalls[0]?.model).toBe(DEFAULT_MODEL_ID);
     expect(warnSpy).toHaveBeenCalledWith(
       'conversation_titles_invalid_storage_ref',
       expect.objectContaining({ length: 'no-slash'.length }),
@@ -885,6 +904,7 @@ describe('@ax/conversation-titles factory config', () => {
     const plugin = createConversationTitlesPlugin({
       model: 'anthropic/claude-haiku-4-5-20251001',
     });
+    // Literal on purpose — see above.
     expect(plugin.manifest.calls).toEqual([
       'llm:call:anthropic',
       'storage:get',
@@ -905,7 +925,7 @@ describe('@ax/conversation-titles factory config', () => {
 
   it('uses the default model when cfg.model is omitted', () => {
     const plugin = createConversationTitlesPlugin();
-    expect(plugin.manifest.calls).toContain('llm:call:anthropic');
+    expect(plugin.manifest.calls).toContain(DEFAULT_LLM_HOOK);
   });
 
   it('throws invalid-config at factory time on bad model', () => {

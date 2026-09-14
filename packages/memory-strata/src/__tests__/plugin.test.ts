@@ -3,12 +3,21 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HookBus, makeAgentContext, type AgentOutcome, type LlmCallInput, type LlmCallOutput } from '@ax/core';
-import { createMemoryStrataPlugin } from '../plugin.js';
+import { createMemoryStrataPlugin, DEFAULT_MEMORY_OPS_MODEL } from '../plugin.js';
 import type { Debouncer } from '../debounce.js';
 import { systemFile, INBOX_DIR, docFile } from '../paths.js';
 import { buildMarkdownFile } from '../frontmatter.js';
 import { readDoc } from '../doc-store.js';
 import type { MemoryFrontmatter } from '../types.js';
+
+/**
+ * The `llm:call:<provider>` hook the memory operations actually use, DERIVED
+ * from the role binding rather than spelled out. These stubs used to hardcode
+ * `llm:call:anthropic`; when the memory role moved to another provider, every
+ * one of them failed with "the Observer wrote nothing", which reads like a
+ * broken feature and was really a stub on the wrong hook.
+ */
+const MEMORY_OPS_HOOK = `llm:call:${DEFAULT_MEMORY_OPS_MODEL.slice(0, DEFAULT_MEMORY_OPS_MODEL.indexOf('/'))}`;
 
 let workspaceRoot: string;
 
@@ -85,7 +94,7 @@ function buildBus(opts: {
 }): HookBus {
   const bus = new HookBus();
   bus.registerService('agents:resolve', 'test-agents', async () => ({ agent: opts.agent }));
-  bus.registerService<LlmCallInput, LlmCallOutput>('llm:call:anthropic', 'test-llm', async () => ({
+  bus.registerService<LlmCallInput, LlmCallOutput>(MEMORY_OPS_HOOK, 'test-llm', async () => ({
     text: opts.llmText,
     stopReason: 'end_turn',
     usage: { inputTokens: 10, outputTokens: 10 },
@@ -125,7 +134,7 @@ describe('createMemoryStrataPlugin', () => {
     expect(plugin.manifest.subscribes).toContain('memory:doc:written');
     expect(plugin.manifest.subscribes).toContain('memory:doc:deleted');
     expect(plugin.manifest.calls).toContain('agents:resolve');
-    expect(plugin.manifest.calls).toContain('llm:call:anthropic');
+    expect(plugin.manifest.calls).toContain(MEMORY_OPS_HOOK);
     expect(plugin.manifest.calls).toContain('memory:index:upsert');
     expect(plugin.manifest.calls).toContain('memory:index:delete');
     expect(plugin.manifest.calls).toContain('tool:register');
@@ -141,7 +150,7 @@ describe('createMemoryStrataPlugin', () => {
     const withOrchestrator = createMemoryStrataPlugin({
       orchestrator: { client: { complete: async () => ({ text: '', usage: { in: 0, out: 0 } }) } },
     });
-    const expectedCalls = ['agents:resolve', 'llm:call:anthropic', 'memory:index:upsert', 'memory:index:delete', 'tool:register'];
+    const expectedCalls = ['agents:resolve', MEMORY_OPS_HOOK, 'memory:index:upsert', 'memory:index:delete', 'tool:register'];
     expect(withoutOrchestrator.manifest.calls.slice().sort()).toEqual(expectedCalls.slice().sort());
     expect(withOrchestrator.manifest.calls.slice().sort()).toEqual(expectedCalls.slice().sort());
   });
@@ -309,7 +318,7 @@ describe('createMemoryStrataPlugin', () => {
     bus.registerService('tool:register', 'test-tool-dispatcher', async () => ({ ok: true as const }));
     // Extraction LLM resolves only after 200 ms — longer than any naive debounce.
     bus.registerService<LlmCallInput, LlmCallOutput>(
-      'llm:call:anthropic',
+      MEMORY_OPS_HOOK,
       'slow-extraction-llm',
       () =>
         new Promise<LlmCallOutput>((resolve) =>
@@ -389,7 +398,7 @@ describe('createMemoryStrataPlugin', () => {
     bus.registerService('tool:register', 'test-tool-dispatcher', async () => ({ ok: true as const }));
     let llmStarted = false;
     bus.registerService<LlmCallInput, LlmCallOutput>(
-      'llm:call:anthropic',
+      MEMORY_OPS_HOOK,
       'slow-llm',
       () =>
         new Promise<LlmCallOutput>((resolve) => {
@@ -441,7 +450,7 @@ describe('routine-fire guard (ctx.source === "routine")', () => {
     const bus = new HookBus();
     let llmCalled = false;
     bus.registerService('agents:resolve', 'test-agents', async () => ({ agent: opts.agent }));
-    bus.registerService<LlmCallInput, LlmCallOutput>('llm:call:anthropic', 'test-llm', async () => {
+    bus.registerService<LlmCallInput, LlmCallOutput>(MEMORY_OPS_HOOK, 'test-llm', async () => {
       llmCalled = true;
       return { text: opts.llmText, stopReason: 'end_turn', usage: { inputTokens: 10, outputTokens: 10 } };
     });
@@ -697,7 +706,7 @@ describe('Consolidator wiring (chat:end subscriber, I10)', () => {
       bus.registerService('agents:resolve', 'test-agents', async () => ({ agent: fakeAgent() }));
       // Stub tool:register — required by plugin.init() for memory_search registration.
       bus.registerService('tool:register', 'test-tool-dispatcher', async () => ({ ok: true as const }));
-      bus.registerService<LlmCallInput, LlmCallOutput>('llm:call:anthropic', 'test-llm', async () => ({
+      bus.registerService<LlmCallInput, LlmCallOutput>(MEMORY_OPS_HOOK, 'test-llm', async () => ({
         text: '[]',
         stopReason: 'end_turn',
         usage: { inputTokens: 0, outputTokens: 0 },

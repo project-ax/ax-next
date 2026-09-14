@@ -13,6 +13,7 @@
 // the StatefulSet, when `gitServer.enabled=true`.
 
 import { execFileSync, spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -418,13 +419,25 @@ describeIfHelm('ax-next chart: workspace.backend wiring', () => {
   });
 });
 
+/** The `titles.model` default as it is actually written in values.yaml. */
+function valuesYamlTitleModel(): string {
+  const raw = readFileSync(resolve(chartDir, 'values.yaml'), 'utf8');
+  const m = /^titles:\n(?:[ \t]+#.*\n|\n)*[ \t]+model:[ \t]*(\S+)/m.exec(raw);
+  if (m === null) throw new Error('could not read titles.model from values.yaml');
+  return m[1]!;
+}
+
 describeIfHelm('ax-next chart: titles.model wiring', () => {
   it('default: AX_TITLE_MODEL renders the values.yaml default', () => {
     const docs = helmTemplate([]);
     const env = findHostEnv(docs);
     const found = env.find((e) => e.name === 'AX_TITLE_MODEL');
     expect(found, 'AX_TITLE_MODEL env var present').toBeDefined();
-    expect(found?.value).toBe('anthropic/claude-haiku-4-5-20251001');
+    // Read from values.yaml rather than a third copy of the literal: this
+    // asserts "helm renders THE DEFAULT", which is what the lockstep note in
+    // values.yaml promises. A hardcoded id here turns a deliberate model-policy
+    // change into a chart test failure that reads like a rendering bug.
+    expect(found?.value).toBe(valuesYamlTitleModel());
   });
 
   it('overrides: titles.model=<value> stamps that value into the env', () => {
