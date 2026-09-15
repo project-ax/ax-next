@@ -50,6 +50,8 @@ import {
   ERROR_LABELS,
   MAX_DETAIL_CHARS,
 } from './transport';
+import { readSseFrames } from './sse-frames';
+import type { SseFrame } from '../server/types';
 import type { PostMessageResponse } from '@/wire/chat';
 import type {
   ActivityEvent,
@@ -615,16 +617,24 @@ export const workspaceApi = {
 /**
  * Read one turn's SSE stream and hand the caller plain text.
  *
- * WHY A SECOND READER EXISTS. `lib/transport.ts` already parses this exact
- * wire, but every path through it emits AI-SDK `UIMessageChunk`s into a
- * `ReadableStream` controller, and the parser itself (`consumeSseAttempt`) is
- * module-private and inseparable from that emission. There is nothing to reuse
- * without either exporting a chunk-shaped API the workspace cannot consume, or
- * pulling the whole assistant-ui runtime into a surface that deliberately does
- * not mount it. So this is a small, deliberately dumb reader over the same
- * frames: text chunks, a `done` terminator, an `error` terminator, and it
- * ignores every other frame kind (thinking, tool-use, tool-result, phase,
- * permissionRequest) because this surface renders none of them yet.
+ * WHY THIS IS STILL A SEPARATE READER. It no longer parses anything. The wire
+ * — `data: ` framing, the carry buffer, malformed JSON, `:` comments, and the
+ * TASK-23 seq dedup + gap detection — belongs to `./sse-frames`, shared with
+ * chat's `lib/transport.ts`. What is different between the two surfaces is what
+ * a frame BECOMES, and that difference is deliberate: chat emits AI-SDK
+ * `UIMessageChunk`s into the assistant-ui runtime, and the workspace does not
+ * mount that runtime at all. So this reader turns frames into plain callbacks.
+ *
+ * It still renders text only, and ignores `thinking`, `tool-use`, `tool-result`
+ * and `phase` — TASK-352 grows those renderers. What it no longer does is
+ * ignore them because it could not see them.
+ *
+ * WHAT IT GAINED WITH THE SHARED READER (TASK-349): seq dedup and gap
+ * detection, which this surface never had. A replayed buffer used to render its
+ * tail twice here, and a bounded-buffer gap used to render a truncated answer
+ * as if it were the whole thing. Both now behave the way chat has since
+ * TASK-23 — a duplicate is dropped, and a gap is a visible lost-stream line
+ * rather than a silently short reply.
  *
  * Frame shapes: `src/server/types.ts` (`SseFrame`).
  */
@@ -657,92 +667,84 @@ async function streamReply(
     return;
   }
 
-  const reader = res.body
-    .pipeThrough(
-      new TextDecoderStream() as ReadableWritablePair<string, Uint8Array>,
-    )
-    .getReader();
-  let carry = '';
+  /**
+   * Set by the two terminal branches. `stopped` tells us the caller-facing
+   * callback has already fired, so the end-of-read handling below must not
+   * fire a second one.
+   */
+  let terminated = false;
 
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) {
-        // No terminator arrived — the stream dropped. Never silently finish.
-        onError(WORKSPACE_STREAM_LOST);
-        return;
-      }
-      const lines = (carry + value).split('\n');
-      carry = lines.pop() ?? '';
+  const end = await readSseFrames(res.body, (frame: SseFrame) => {
+    if ('done' in frame && frame.done === true) {
+      terminated = true;
+      onDone();
+      return 'stop';
+    }
+    if ('error' in frame && typeof frame.error === 'string') {
+      /*
+        MAP THE REASON CODE, DO NOT PRINT IT. `frame.error` is a STABLE
+        REASON CODE — `dev-service-failed`, `chat-run-timeout` — and this
+        used to hand it to the caller verbatim, which put an internal
+        identifier on screen in the same breath as the rest of this epic
+        was taking them off. `lib/transport.ts` has mapped these to authored
+        labels since Fault A; reading its table rather than growing a second
+        one is the difference between one source of truth and two that drift
+        (invariant 4). An unknown code falls back to `DEFAULT_TURN_ERROR`,
+        so a reason code can never reach a reader again.
 
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith('data: ')) continue;
-        let frame: Record<string, unknown>;
-        try {
-          frame = JSON.parse(trimmed.slice(6)) as Record<string, unknown>;
-        } catch {
-          continue; // Malformed line — the server is the source of truth.
-        }
-        if (frame.done === true) {
-          onDone();
-          return;
-        }
-        if (typeof frame.error === 'string') {
-          /*
-            MAP THE REASON CODE, DO NOT PRINT IT. `frame.error` is a STABLE
-            REASON CODE — `dev-service-failed`, `chat-run-timeout` — and this
-            used to hand it to the caller verbatim, which put an internal
-            identifier on screen in the same breath as the rest of this epic
-            was taking them off. `lib/transport.ts` has mapped these to authored
-            labels since Fault A; reading its table rather than growing a second
-            one is the difference between one source of truth and two that drift
-            (invariant 4). An unknown code falls back to `DEFAULT_TURN_ERROR`,
-            so a reason code can never reach a reader again.
+        TASK-160 — `detail` is the OPTIONAL author-facing line beneath the
+        label (a dev-service sidecar naming the service and path). Per
+        `server/types.ts` it is bounded and sanitized server-side and is
+        meant to be rendered; we clamp it once more and keep it as plain
+        text. It is NOT plumbing and NOT the reason code — dropping it
+        costs the reader the only actionable specifics they get.
+      */
+      const label = ERROR_LABELS[frame.error] ?? DEFAULT_TURN_ERROR;
+      const detail =
+        'detail' in frame && typeof frame.detail === 'string'
+          ? frame.detail.slice(0, MAX_DETAIL_CHARS).trim()
+          : '';
+      terminated = true;
+      onError(detail.length > 0 ? `${label}\n${detail}` : label);
+      return 'stop';
+    }
+    if ('kind' in frame && frame.kind === 'text' && typeof frame.text === 'string') {
+      onText(frame.text);
+      return 'continue';
+    }
+    /*
+      A decision was raised mid-turn. Non-terminal: we keep reading, because
+      on an attended conversation the agent is still parked waiting for the
+      answer and the rest of the turn follows once it gets one.
 
-            TASK-160 — `detail` is the OPTIONAL author-facing line beneath the
-            label (a dev-service sidecar naming the service and path). Per
-            `server/types.ts` it is bounded and sanitized server-side and is
-            meant to be rendered; we clamp it once more and keep it as plain
-            text. It is NOT plumbing and NOT the reason code — dropping it
-            costs the reader the only actionable specifics they get.
-          */
-          const label = ERROR_LABELS[frame.error] ?? DEFAULT_TURN_ERROR;
-          const detail =
-            typeof frame.detail === 'string'
-              ? frame.detail.slice(0, MAX_DETAIL_CHARS).trim()
-              : '';
-          onError(detail.length > 0 ? `${label}\n${detail}` : label);
-          return;
-        }
-        if (frame.kind === 'text' && typeof frame.text === 'string') {
-          onText(frame.text);
-          continue;
-        }
-        /*
-          A decision was raised mid-turn. Non-terminal: we keep reading, because
-          on an attended conversation the agent is still parked waiting for the
-          answer and the rest of the turn follows once it gets one.
-
-          We read only the two fields the frame is documented to carry and
-          ignore anything else on it. A frame missing either one is dropped
-          rather than forwarded — a card with no id is a card whose buttons
-          cannot do anything, which is worse than no card.
-        */
-        const raised = frame.decisionRaised;
-        if (onDecisionRaised && raised !== null && typeof raised === 'object') {
-          const { decisionId, summary } = raised as Record<string, unknown>;
-          if (typeof decisionId === 'string' && typeof summary === 'string') {
-            onDecisionRaised({ decisionId, summary });
-          }
-        }
+      We read only the two fields the frame is documented to carry and
+      ignore anything else on it. A frame missing either one is dropped
+      rather than forwarded — a card with no id is a card whose buttons
+      cannot do anything, which is worse than no card.
+    */
+    if (onDecisionRaised && 'decisionRaised' in frame && frame.decisionRaised) {
+      const { decisionId, summary } = frame.decisionRaised;
+      if (typeof decisionId === 'string' && typeof summary === 'string') {
+        onDecisionRaised({ decisionId, summary });
       }
     }
-  } catch (e) {
-    if (signal?.aborted) return;
-    console.warn('[workspace] reply stream ended badly', e);
-    onError(WORKSPACE_STREAM_LOST);
-  } finally {
-    reader.releaseLock();
+    return 'continue';
+  });
+
+  if (terminated) return;
+
+  // Every remaining end is a stream that stopped without saying so. An abort is
+  // the one that is not a failure: the caller asked for it, and firing an error
+  // line at someone who navigated away is noise.
+  if (signal?.aborted) return;
+  if (end.reason === 'body-error') {
+    console.warn('[workspace] reply stream ended badly', end.error);
+  } else if (end.reason === 'gap') {
+    // TASK-23 territory, newly reachable on this surface. The rest of the turn
+    // is unrecoverable from here — frames this client never saw are already
+    // gone from the host's bounded buffer — so the honest outcome is the
+    // lost-stream line, not a short answer that looks complete.
+    console.warn(`[workspace] reply stream lost frames (${end.kind})`);
   }
+  onError(WORKSPACE_STREAM_LOST);
 }
