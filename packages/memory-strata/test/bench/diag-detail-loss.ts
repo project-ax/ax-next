@@ -46,22 +46,34 @@ const DEFAULT_IDS = [
 ];
 
 /**
- * Exact probes for gold answers that do not tokenize into evidence.
+ * Exact probes, because the gold ANSWER is often not the thing memory had to keep.
  *
- * Two distinct reasons a question needs one:
+ * **Probe the evidence required to answer, not the answer string.** Getting this
+ * wrong scored `gpt4_5438fa52` as `retained`: its gold is "Spanish classes",
+ * which memory has, while the half that went missing is the CULTURAL FESTIVAL
+ * the question compares it against — absent from the tree entirely. A probe
+ * aimed at the gold string reports a healthy pipeline on a question the pipeline
+ * failed.
+ *
+ * Three reasons a question needs an explicit probe:
  *  - the answer is not made of words ("C D E F G A B A G F E D C");
- *  - the answer is DERIVED rather than quoted, so the corpus never contains it
- *    and the thing memory had to retain is the evidence. "0.5 hours" is computed
- *    from a 30-minute jog; "one week" from a rug bought a month ago against a
- *    rearrangement three weeks ago. Probing the gold string there would score
- *    every such question `absent-from-corpus` and teach us nothing.
+ *  - the answer is DERIVED, so the corpus never contains it and the evidence is
+ *    what mattered: "0.5 hours" comes from a 30-minute jog, "one week" from a rug
+ *    bought a month ago against a rearrangement three weeks ago;
+ *  - the question COMPARES two events, so both have to be present and only one
+ *    of them is in the gold answer.
  */
 const NEEDLES: Record<string, string[]> = {
   '7024f17c': ['30-minute jog', '30 minutes'],
   '993da5e2': ['area rug'],
   eaca4986: ['C D E F G A B A G F E D C'],
-  'gpt4_5dcc0aab': ['Adidas'],
-  'gpt4_fa19884d': ['banjo'],
+  'gpt4_5dcc0aab': ['cleaned', 'Adidas'],
+  'gpt4_fa19884d': ['bluegrass'],
+  // Comparison question: the festival is the half that has to survive too.
+  'gpt4_5438fa52': ['cultural festival', 'Spanish class'],
+  '0e5e2d1a': ['38 subjects'],
+  '352ab8bd': ['20%', 'HAMT'],
+  '5809eb10': ['2014'],
 };
 
 const args = process.argv.slice(2);
@@ -226,18 +238,24 @@ for (const sample of samples) {
   for (const e of verdict.evidence.slice(0, 2)) {
     console.log(`    «${e.probe}» → ${e.line.slice(0, 220)}`);
   }
+  for (const l of verdict.lostProbes) {
+    console.log(`    LOST at ${l.lostAt}: «${l.probe}» — in the sessions, not in the tree`);
+  }
   // Once a value is `retained`, memory is not the bug — so ask the next question
   // in the same pass: would the shipped matcher have handed it to the agent?
-  if (verdict.lostAt === 'retained') {
+  if (verdict.lostAt === 'retained' || verdict.lostAt === 'partial') {
     const { retrievable, matched } = await probeRetrievability(
       tree,
       sample.question,
       verdict.survivedConsolidation,
     );
+    // "matchable", not "retrieved": doc SELECTION is not modelled here.
     console.log(
-      `    retrieval would surface it: ${retrievable ? 'YES' : 'NO'}` +
-        (retrievable ? ` — ${matched[0]?.slice(0, 180)}` : ''),
+      `    matchable from the tree (selection not modelled): ${retrievable ? 'YES' : 'NO'}` +
+        (retrievable ? `\n      in ${matched[0]?.docId} — ${matched[0]?.fact.slice(0, 160)}` : ''),
     );
+    const docs = [...new Set(matched.map((m) => m.docId))];
+    if (docs.length > 1) console.log(`      (also in: ${docs.slice(1).join(', ')})`);
   }
 }
 

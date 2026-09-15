@@ -71,7 +71,15 @@ export type DetailLossVerdict =
   | 'extraction'
   /** Extracted, then not carried into the tree the agent retrieves from. */
   | 'consolidation'
-  /** Memory kept it — so the failure is downstream (retrieval or answer). */
+  /**
+   * SOME required evidence survived and some did not. Its own verdict because a
+   * comparison question ("which came first, X or Y?") needs both halves, and the
+   * gold answer names only one of them — so an any-probe-survives rule reports a
+   * healthy pipeline on a question it failed. See `lostProbes` for what died
+   * where.
+   */
+  | 'partial'
+  /** Memory kept every probe — so the failure is downstream (retrieval or answer). */
   | 'retained'
   /** No probe appears in the sessions at all, so this question proves nothing. */
   | 'absent-from-corpus';
@@ -84,6 +92,8 @@ export interface DetailLossResult {
   lostAt: DetailLossVerdict;
   /** For each probe that survived to the tree, the prose line it matched. */
   evidence: Array<{ probe: string; line: string }>;
+  /** Probes that were in the sessions and did not reach the tree, and where they died. */
+  lostProbes: Array<{ probe: string; lostAt: 'extraction' | 'consolidation' }>;
 }
 
 /**
@@ -151,26 +161,51 @@ export function classifyDetailLoss(
     evidence.push({ probe: p, line: line.trim().slice(0, 400) });
   }
 
+  const lostProbes = presentInRaw
+    .filter((p) => !survivedConsolidation.includes(p))
+    .map((probe) => ({
+      probe,
+      lostAt: (survivedExtraction.includes(probe) ? 'consolidation' : 'extraction') as
+        | 'extraction'
+        | 'consolidation',
+    }));
+
   const lostAt: DetailLossVerdict =
     presentInRaw.length === 0
       ? 'absent-from-corpus'
-      : survivedExtraction.length === 0
-        ? 'extraction'
-        : survivedConsolidation.length === 0
-          ? 'consolidation'
+      : survivedConsolidation.length === 0
+        ? (survivedExtraction.length === 0 ? 'extraction' : 'consolidation')
+        : lostProbes.length > 0
+          ? 'partial'
           : 'retained';
 
-  return { probes, presentInRaw, survivedExtraction, survivedConsolidation, lostAt, evidence };
+  return {
+    probes,
+    presentInRaw,
+    survivedExtraction,
+    survivedConsolidation,
+    lostAt,
+    evidence,
+    lostProbes,
+  };
 }
 
 /**
- * Would the SHIPPED retrieval surface one of these probes from this tree?
+ * Is a probe reachable by the SHIPPED fact matcher anywhere in this tree?
  *
  * Once a value scores `retained`, memory is not the bug and the next question is
  * whether retrieval handed it to the agent. Delegating to the shipped
  * `extractMatchedFacts` rather than reimplementing its line matching is the
  * point: the answer has to move when the tool's rule moves, or this becomes
  * another diagnostic measuring a pipeline nothing runs.
+ *
+ * What this does NOT model is SELECTION. The real path has the planner choose a
+ * handful of docs off `system/map.md` first, and only those are matched. So a
+ * `true` here means "if this doc were selected, the matcher would return the
+ * value" — not "the agent saw it". That gap is the finding on 993da5e2: the
+ * value was matchable in `entity/living-room-decor` while the agent quoted
+ * `general/living-room-decor`, a same-slug sibling under another category. Hence
+ * the docId: without it the two read as one doc.
  *
  * Only the `- ` fact bullets are reachable through this path, exactly as in
  * production — a value that survives only into frontmatter is present in the
@@ -180,11 +215,11 @@ export async function probeRetrievability(
   tree: Map<string, string>,
   question: string,
   probes: string[],
-): Promise<{ retrievable: boolean; matched: string[] }> {
-  const matched: string[] = [];
-  for (const body of tree.values()) {
+): Promise<{ retrievable: boolean; matched: Array<{ docId: string; fact: string }> }> {
+  const matched: Array<{ docId: string; fact: string }> = [];
+  for (const [docId, body] of tree.entries()) {
     for (const fact of extractMatchedFacts(body, question, { maxLines: 6 })) {
-      if (probes.some((p) => fact.toLowerCase().includes(p.toLowerCase()))) matched.push(fact);
+      if (probes.some((p) => fact.toLowerCase().includes(p.toLowerCase()))) matched.push({ docId, fact });
     }
   }
   return { retrievable: matched.length > 0, matched };

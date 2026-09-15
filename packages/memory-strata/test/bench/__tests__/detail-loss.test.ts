@@ -132,7 +132,12 @@ describe('retrievability', () => {
       ['38'],
     );
     expect(retrievable).toBe(true);
-    expect(matched[0]).toContain('38 subjects');
+    expect(matched[0]?.fact).toContain('38 subjects');
+    // WHICH doc holds it is the load-bearing part: on 993da5e2 the value sat in
+    // `entity/living-room-decor` while the agent quoted the summary of
+    // `general/living-room-decor` — same slug, different category, different
+    // doc. Without the path that reads as one doc and the wrong conclusion.
+    expect(matched[0]?.docId).toBe('docs/general/binaural-beats.md');
   });
 
   it('is false when the value sits in a doc no query token reaches', async () => {
@@ -200,5 +205,50 @@ describe('numeric probes match whole numbers', () => {
     });
     expect(v.survivedConsolidation).toContain('38');
     expect(v.lostAt).toBe('retained');
+  });
+});
+
+describe('partial loss — some required evidence survived and some did not', () => {
+  it('does not call a question retained when one probe died on the way', () => {
+    // gpt4_5438fa52 asks which came FIRST, a cultural festival or Spanish
+    // classes. Gold is "Spanish classes", which memory keeps — so an
+    // any-probe-survives rule scored it `retained` while "cultural festival"
+    // was absent from the tree entirely. Answering needs BOTH events, so one
+    // survivor is not a healthy pipeline.
+    const v = classifyDetailLoss(
+      'Spanish classes',
+      {
+        raw: 'I attended a cultural festival yesterday. I have been taking Spanish classes.',
+        extracted: 'User has been taking Spanish classes.',
+        consolidated: 'User has been taking Spanish classes since Feb 2023.',
+      },
+      { needles: ['cultural festival', 'Spanish class'] },
+    );
+    expect(v.lostAt).toBe('partial');
+    expect(v.lostProbes).toEqual([{ probe: 'cultural festival', lostAt: 'extraction' }]);
+    expect(v.survivedConsolidation).toContain('Spanish class');
+  });
+
+  it('still says retained when every probe present in the sessions survived', () => {
+    const v = classifyDetailLoss(
+      'Spanish classes',
+      {
+        raw: 'cultural festival yesterday; taking Spanish classes',
+        extracted: 'cultural festival; Spanish classes',
+        consolidated: 'cultural festival attended; Spanish classes since Feb',
+      },
+      { needles: ['cultural festival', 'Spanish class'] },
+    );
+    expect(v.lostAt).toBe('retained');
+    expect(v.lostProbes).toEqual([]);
+  });
+
+  it('names the stage each lost probe died at', () => {
+    const v = classifyDetailLoss(
+      'x',
+      { raw: 'alpha beta', extracted: 'alpha beta', consolidated: 'alpha' },
+      { needles: ['alpha', 'beta'] },
+    );
+    expect(v.lostProbes).toEqual([{ probe: 'beta', lostAt: 'consolidation' }]);
   });
 });
