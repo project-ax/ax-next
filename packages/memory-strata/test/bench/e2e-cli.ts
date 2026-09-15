@@ -22,6 +22,7 @@ import { BenchCache } from './cache.js';
 import { withRetry } from './retry.js';
 import { loadLongMemEvalSSamples } from './corpora/longmemeval-s.js';
 import { selectSamples, seedResumeRows, zeroMatchError } from './e2e-select.js';
+import { describeMix } from './stratify.js';
 import { judgeAnswer, makeOpenRouterJudgeClient } from './judge.js';
 import { makeAnthropicAnswerClient, type E2EAnswerClient } from './e2e-answer.js';
 import { runE2EQuestion, DEFAULT_EXTRACTION_MODEL } from './e2e-driver.js';
@@ -192,6 +193,24 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
     ...(opts.types !== undefined ? { types: opts.types } : {}),
     ...(opts.ids !== undefined ? { ids: opts.ids } : {}),
   });
+
+  // Stamp HOW the set was drawn, not just how many were asked for. `--first`
+  // is the type-biased corpus prefix kept for reproducing historical runs;
+  // `--types`/`--ids` narrow it further. A report that records only "n=100"
+  // cannot be told apart from one measured the other way.
+  const sampleNote = (() => {
+    const mix = describeMix(samples, (q) => q.question_type);
+    const filters = [
+      opts.types && opts.types.length > 0 ? `--types ${opts.types.join(',')}` : '',
+      opts.ids && opts.ids.length > 0 ? `--ids ${opts.ids.length} id(s)` : '',
+    ].filter(Boolean).join(' ');
+    const how = filters
+      ? `${filters} (filtered, corpus-order)`
+      : opts.selection === 'first'
+        ? `--first ${opts.sample} (corpus-order prefix, type-biased)`
+        : `--sample ${opts.sample} (stratified by question_type)`;
+    return `${how} -> ${mix || 'no type labels'}`;
+  })();
   if (opts.types !== undefined || opts.ids !== undefined) {
     // Integrity guard (review fix, 2026-07-29): a typo'd --types/--ids value
     // silently selects 0 questions — spend $0 and still render a confident-
@@ -345,6 +364,7 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
     rows,
     runDate,
     requestedSample: opts.sample,
+    sampleNote,
     cap: opts.cap,
     totalSpent: meter.totalDollars(),
     capExceeded,

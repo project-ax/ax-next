@@ -23,6 +23,17 @@ export interface E2EReportInput {
   runDate: Date;
   /** Sample size requested (e.g. 100). */
   requestedSample: number;
+  /**
+   * HOW that sample was drawn, and what type mix it actually produced.
+   *
+   * `requestedSample: 100` alone says nothing about whether those 100 questions
+   * were stratified or a corpus-order prefix — and the corpus is stored in type
+   * BLOCKS, so the prefix draw contains zero knowledge-update questions. The
+   * isolated bench report has stamped this since the sampling fix; e2e, the
+   * harness whose number gets quoted as product quality, did not. Two runs whose
+   * measurement conditions are not written down eventually get compared.
+   */
+  sampleNote?: string;
   /** Cost cap in dollars. */
   cap: number;
   totalSpent: number;
@@ -102,6 +113,7 @@ export function renderE2EReport(input: E2EReportInput): string {
     L.push('- **Retrieval:** BM25-only (TASK-190 baseline)');
   }
   L.push(`**Requested sample:** n=${input.requestedSample}`);
+  if (input.sampleNote) L.push(`**Sampling:** ${input.sampleNote}`);
   L.push(`**Cost cap:** $${input.cap}`);
   L.push(`**Total spent:** $${input.totalSpent.toFixed(4)}`);
   L.push(`**Command:** \`${input.command}\``);

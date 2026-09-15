@@ -396,3 +396,25 @@ a positive control — match on a substring you have SEEN in the actual cmdline,
 or check the artifact the process touches (output file mtime, checkpoint row
 count) and confirm it is not advancing. "Nothing matched my grep" and "the
 process is gone" are different claims.
+
+## A handoff's own "small, cheap" list can point the wrong way (2026-09-14)
+
+The `2026-09-14-orchestrator-glm-handoff.md` next-steps list item 5 read:
+
+> `--sample` for the isolated bench does not stamp its selection into the
+> non-e2e report the way e2e does. Worth a look for parity.
+
+**It is exactly backwards.** `test/bench/report.ts:141` stamps
+`**Sampling:** --sample 150 (stratified by question_type) -> <full type mix>`,
+plus the body cap and the planner id — verified by running the isolated bench.
+`test/bench/e2e-report.ts` stamped only `**Requested sample:** n=100`, with no
+indication of whether the draw was stratified or `--first`, and no resulting
+mix. So the gap was in **e2e**, the harness whose number the same handoff says
+to quote for product quality.
+
+The author was describing work they had done from memory, one commit after
+doing it. **Verify a handoff's factual claims against the file before acting on
+them**, especially the ones filed under "smaller, cheap" — those get the least
+scrutiny when written and the least when read. Same class as the
+`feedback_check_plan_vs_reality` rule, but the stale assumption here was a
+*self-report*, which reads more trustworthy than a plan's assumption and is not.

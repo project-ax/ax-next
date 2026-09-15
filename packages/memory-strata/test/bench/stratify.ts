@@ -15,6 +15,16 @@
 // questions (a bench you cannot re-run identically is a bench you cannot argue
 // with), and a stratum's own internal ordering cannot bias the pick the way
 // taking its first k would.
+//
+// The RESULT ORDER is then interleaved across strata rather than sorted back
+// into corpus order, because a proportional SAMPLE emitted in corpus order
+// still yields a biased PREFIX: the run walks the whole
+// `single-session-user` block before reaching its first `knowledge-update`
+// question. Every long run in this repo gets interrupted — three did in one
+// afternoon — and e2e checkpoints per question, so an interrupted run's
+// completed rows ARE the dataset somebody reads. Interleaving makes every
+// prefix proportional, so a run killed at 40% is a representative n=60 rather
+// than a complete census of the two easiest types.
 
 /** Proportional allocation by largest remainder. Sums to exactly `limit`. */
 export function allocate(sizes: number[], limit: number): number[] {
@@ -53,6 +63,31 @@ export function spacedIndices(size: number, take: number): number[] {
 }
 
 /**
+ * Interleave per-stratum picks so that EVERY prefix is proportional.
+ *
+ * Each stratum's picks are laid on the unit interval at their midpoints —
+ * stratum with k picks puts its j-th at (j + 0.5) / k — and the merged list is
+ * that interval read left to right. A stratum holding twice the seats emits
+ * twice as often, at every depth, which is exactly the property a truncated run
+ * needs. Ties resolve by the larger stratum first, then by corpus index, so the
+ * order is a pure function of the input (a resumed run must re-derive the same
+ * sequence).
+ *
+ * @param groups per-stratum corpus indices, already selected and in corpus order
+ */
+export function representativeOrder(groups: readonly (readonly number[])[]): number[] {
+  const keyed: Array<{ idx: number; key: number; size: number }> = [];
+  for (const picks of groups) {
+    const k = picks.length;
+    for (let j = 0; j < k; j++) {
+      keyed.push({ idx: picks[j]!, key: (j + 0.5) / k, size: k });
+    }
+  }
+  keyed.sort((a, b) => (a.key - b.key) || (b.size - a.size) || (a.idx - b.idx));
+  return keyed.map((e) => e.idx);
+}
+
+/**
  * Take `limit` items, proportionally across strata, preserving the corpus's
  * original ordering in the result.
  *
@@ -78,16 +113,15 @@ export function stratifiedSample<T>(
   const keys = [...strata.keys()];
   const counts = allocate(keys.map((k) => strata.get(k)!.length), limit);
 
-  const chosen: number[] = [];
-  keys.forEach((k, i) => {
+  const groups = keys.map((k, i) => {
     const idxs = strata.get(k)!;
-    for (const pos of spacedIndices(idxs.length, counts[i]!)) chosen.push(idxs[pos]!);
+    return spacedIndices(idxs.length, counts[i]!).map((pos) => idxs[pos]!);
   });
 
-  // Corpus order, not stratum order: a run's progress log should walk the
-  // corpus the way an unsampled run does.
-  chosen.sort((a, b) => a - b);
-  return chosen.map((i) => items[i]!);
+  // Interleaved, NOT sorted back into corpus order — see the header. Corpus
+  // order would make the run walk one type block at a time, so any prefix of an
+  // interrupted run is a census of the earliest types rather than a sample.
+  return representativeOrder(groups).map((i) => items[i]!);
 }
 
 /** Human-readable stratum mix, for the report's provenance line. */
