@@ -103,6 +103,10 @@ export interface CliArgs {
   cap?: number;
   /** e2e mode: resume JSONL run id (defaults to a date-stamped id). */
   resume?: string;
+  /** e2e mode: append the answer-stage recall-discipline scaffold (TASK-370 arm). */
+  answerScaffold?: boolean;
+  /** e2e mode: adaptive thinking at this effort (TASK-371 arm). Absent = thinking off. */
+  answerEffort?: 'low' | 'medium' | 'high' | 'max';
   /** e2e mode: produce a representative report from the fixture (no keys, no spend). */
   fixture: boolean;
   /** e2e mode: only run questions of these `question_type`s (opt-in; unioned with --ids). */
@@ -169,6 +173,21 @@ function parseOrchestratorModel(raw: unknown): CliArgs['orchestratorModel'] {
   );
 }
 
+/**
+ * `--answer-effort`. Sonnet 4.6 accepts low|medium|high|max — there is no
+ * `xhigh` on 4.6 — and throwing on an unknown value is deliberate: a flag that
+ * selects how much the answer stage spends must fail loudly, because a silently
+ * ignored one is only visible in the cost table after the run is paid for.
+ * (Same lesson as the retired `--orchestrator-model grok` arm, TASK-349.)
+ */
+export function parseAnswerEffort(raw: string): 'low' | 'medium' | 'high' | 'max' {
+  if (raw === 'low' || raw === 'medium' || raw === 'high' || raw === 'max') return raw;
+  throw new Error(
+    `--answer-effort: unknown level ${JSON.stringify(raw)}. Expected low, medium, high or max. ` +
+      'Note claude-sonnet-4-6 does not accept `xhigh`.',
+  );
+}
+
 export function parseCliArgs(argv: string[]): CliArgs {
   const { values } = parseArgs({
     args: argv,
@@ -190,6 +209,8 @@ export function parseCliArgs(argv: string[]): CliArgs {
       types: { type: 'string' },
       ids: { type: 'string' },
       out: { type: 'string' },
+      'answer-scaffold': { type: 'boolean', default: false },
+      'answer-effort': { type: 'string' },
       first: { type: 'string' },
       concurrency: { type: 'string' },
     },
@@ -207,7 +228,9 @@ export function parseCliArgs(argv: string[]): CliArgs {
     orchestratorModelExplicit: values['orchestrator-model'] !== undefined,
     full: values.full === true,
     fixture: values.fixture === true,
+    answerScaffold: values['answer-scaffold'] === true,
   };
+  if (values['answer-effort']) base.answerEffort = parseAnswerEffort(values['answer-effort']);
   if (values.sample) base.sample = Number(values.sample);
   if (values.first) base.first = Number(values.first);
   if (values.concurrency) base.concurrency = Number(values.concurrency);
@@ -239,6 +262,8 @@ async function main(): Promise<number> {
       ...(args.resume !== undefined ? { resumeId: args.resume } : {}),
       ...(args.types !== undefined ? { types: args.types } : {}),
       ...(args.ids !== undefined ? { ids: args.ids } : {}),
+      answerScaffold: args.answerScaffold === true,
+      ...(args.answerEffort !== undefined ? { answerEffort: args.answerEffort } : {}),
     });
   }
 
