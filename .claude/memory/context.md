@@ -135,3 +135,37 @@ Two map properties fought each other, both measured by the new
   (asked ≤120 it returns p50 157 / max 346, discarding 28.1% of its characters).
 
 TASK-362 disentangles them by holding the author fixed and moving only the cut.
+
+## Un-truncating the map bought nothing — the map is a router, not evidence (2026-09-14)
+
+TASK-362. Same rewriter/planner/questions/body-cap; only the map summary cut moved
+120 -> 400, taking mid-word truncation from **90.0% of lines to 0.0%**.
+`docs/plans/2026-09-14-task362-map-cap-report.md`.
+
+| | @120 | @400 | |
+|---|---|---|---|
+| accuracy | 55.3% | 52.0% | −3.3pp, **p=0.56** |
+| recall@5 | 88.0% | 89.3% | +1.3pp, p=0.72 |
+
+Point estimate is slightly NEGATIVE, so this is a clean negative result, not an
+underpowered one — there is no direction to chase with a bigger n.
+
+**Why this cap is not the body cap, even though they look identical.** recall@5 is
+88-93% in every orchestrator arm. The BODY cap starved the ANSWER stage (gold
+evidence cut off ⇒ the agent refused; +24pp to restore). The MAP cap only affects
+SELECTION, which was already near ceiling — and a map line is a routing label, not
+evidence: once a doc is picked its full body is injected up to 20,000 chars, so a
+truncated-but-topical line routes about as well as a complete one.
+
+**Three map variants, none distinguishable** (3 comparisons, Bonferroni α=0.0167):
+Grok@120 63.3% / GLM@120 55.3% (p=0.158) / GLM@400 52.0% (vs Grok p=0.047, not
+significant after correction). The ORIGINAL Grok map — 13.6% dead lines, 59.3%
+truncated — trends highest, and fixing both properties (45x fewer dead, then zero
+truncation) never moved the number up.
+
+**Takeaway: map fidelity is not the lever.** "Map quality is the lever the whole
+c137 design rests on" is not supported across a 13.6%→0.1% dead-line and
+90%→0% truncation span. With recall ~90% the remaining errors are DOWNSTREAM of
+retrieval — which is independently what the temporal-reasoning triage found.
+TASK-361 (is the specific value lost at extraction or at consolidation?) is the
+better-motivated next step. Cost of this negative result: ~$15.
