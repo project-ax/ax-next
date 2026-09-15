@@ -36,7 +36,7 @@ import { makeOpenRouterExtractionLlm } from './e2e-cli.js';
 import { PRICING } from './e2e-cli.js';
 import { CostMeter } from './meter.js';
 import { runE2EQuestion, DEFAULT_EXTRACTION_MODEL } from './e2e-driver.js';
-import { classifyDetailLoss, type DetailLossResult } from './detail-loss.js';
+import { classifyDetailLoss, probeRetrievability, type DetailLossResult } from './detail-loss.js';
 import type { E2EAnswerClient } from './e2e-answer.js';
 
 /** The 9 `abstained-incorrectly` rows of the 2026-09-14 n=100 e2e run. */
@@ -72,10 +72,18 @@ const flag = (name: string): string | undefined => {
 
 const ids = parseCsvFlag(flag('ids')) ?? DEFAULT_IDS;
 const outDir = flag('out-dir');
+/**
+ * Re-score trees a previous run already dumped. FREE — no ingest, no API calls.
+ * The ingest is the only paid part, and its output is deterministic once
+ * written, so re-asking a question of the same trees should not cost again. It
+ * is also how a verdict stays checkable after the fact: the dumps are the
+ * evidence, and this re-reads them rather than asking anyone to trust a table.
+ */
+const fromDump = flag('from-dump');
 
 const apiKey = process.env.OPENROUTER_API_KEY;
-if (apiKey === undefined || apiKey === '') {
-  console.error('OPENROUTER_API_KEY required (set -a && . ./.env.walk && set +a)');
+if (fromDump === undefined && (apiKey === undefined || apiKey === '')) {
+  console.error('OPENROUTER_API_KEY required (set -a && . ./.env.walk && set +a), or pass --from-dump');
   process.exit(2);
 }
 
@@ -89,7 +97,7 @@ if (samples.length === 0) {
   process.exit(2);
 }
 
-const extractionLlm = makeOpenRouterExtractionLlm(apiKey);
+const extractionLlm = makeOpenRouterExtractionLlm(apiKey ?? '');
 const meter = new CostMeter({ capDollars: Number.POSITIVE_INFINITY, pricing: PRICING });
 
 /** No answer stage: this diagnostic measures what memory KEPT, not what the
@@ -99,6 +107,18 @@ const noAnswer: E2EAnswerClient = {
     return { text: '', usage: { in: 0, out: 0 }, toolCalls: 0 };
   },
 };
+
+/** Inverse of the `--- <path>` join below, so a dump round-trips to a tree. */
+function parseDumpedTree(text: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const part of text.split(/^--- /m)) {
+    if (part.trim().length === 0) continue;
+    const nl = part.indexOf('\n');
+    if (nl < 0) continue;
+    out.set(part.slice(0, nl), part.slice(nl + 1));
+  }
+  return out;
+}
 
 async function readTree(root: string): Promise<Map<string, string>> {
   const out = new Map<string, string>();
@@ -132,7 +152,21 @@ for (const sample of samples) {
   let extractedFacts = 0;
   let consolidated = '';
   let consolidatedFiles = 0;
+  let tree = new Map<string, string>();
 
+  if (fromDump !== undefined) {
+    const qDir = join(fromDump, sample.question_id);
+    const ext = await readFile(join(qDir, 'extracted.md'), 'utf8').catch(() => '');
+    consolidated = await readFile(join(qDir, 'consolidated.md'), 'utf8').catch(() => '');
+    if (ext === '' && consolidated === '') {
+      console.log(`${sample.question_id.padEnd(16)} (no dump under ${qDir})`);
+      continue;
+    }
+    extractedParts.push(ext);
+    extractedFacts = ext.split('\n---\n').filter((p) => p.trim().length > 0).length;
+    tree = parseDumpedTree(consolidated);
+    consolidatedFiles = tree.size;
+  } else {
   await runE2EQuestion({
     sample,
     extractionLlm,
@@ -149,7 +183,7 @@ for (const sample of samples) {
       },
       // Post-ingest: the whole tree the agent's retrieval reads from.
       async afterIngest(workspaceRoot) {
-        const tree = await readTree(join(workspaceRoot, MEMORY_ROOT));
+        tree = await readTree(join(workspaceRoot, MEMORY_ROOT));
         consolidatedFiles = tree.size;
         consolidated = [...tree.entries()].map(([p, body]) => `--- ${p}\n${body}`).join('\n');
         if (outDir !== undefined) {
@@ -161,6 +195,7 @@ for (const sample of samples) {
       },
     },
   });
+  }
 
   const needles = NEEDLES[sample.question_id];
   const verdict = classifyDetailLoss(
@@ -190,6 +225,19 @@ for (const sample of samples) {
   // rather than requiring a trip through the dump to confirm it is not a digest.
   for (const e of verdict.evidence.slice(0, 2)) {
     console.log(`    «${e.probe}» → ${e.line.slice(0, 220)}`);
+  }
+  // Once a value is `retained`, memory is not the bug — so ask the next question
+  // in the same pass: would the shipped matcher have handed it to the agent?
+  if (verdict.lostAt === 'retained') {
+    const { retrievable, matched } = await probeRetrievability(
+      tree,
+      sample.question,
+      verdict.survivedConsolidation,
+    );
+    console.log(
+      `    retrieval would surface it: ${retrievable ? 'YES' : 'NO'}` +
+        (retrievable ? ` — ${matched[0]?.slice(0, 180)}` : ''),
+    );
   }
 }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { contentTokens, classifyDetailLoss } from '../detail-loss.js';
+import { contentTokens, classifyDetailLoss, probeRetrievability } from '../detail-loss.js';
 
 describe('contentTokens', () => {
   it('keeps short numeric tokens, which are exactly the values being dropped', () => {
@@ -111,5 +111,94 @@ describe('metadata lines are not evidence', () => {
     expect(v.lostAt).toBe('retained');
     expect(v.evidence.map((e) => e.line).join()).toContain('Music and Medicine');
     expect(v.evidence.map((e) => e.line).join()).not.toContain('hash:');
+  });
+});
+
+describe('retrievability', () => {
+  it('reports whether the shipped matcher would surface a probe from the tree', async () => {
+    // The split that matters once a value is `retained`: memory has it, but did
+    // retrieval hand it to the agent? Delegates to the SHIPPED
+    // extractMatchedFacts rather than reimplementing line matching, so a change
+    // to the tool's matching rule changes this answer too.
+    const tree = new Map([
+      [
+        'docs/general/binaural-beats.md',
+        '# Doc\n\n## Facts\n- The assistant listed 3 studies: Music and Medicine — 38 subjects.\n',
+      ],
+    ]);
+    const { retrievable, matched } = await probeRetrievability(
+      tree,
+      'how many subjects were in the Music and Medicine study',
+      ['38'],
+    );
+    expect(retrievable).toBe(true);
+    expect(matched[0]).toContain('38 subjects');
+  });
+
+  it('is false when the value sits in a doc no query token reaches', async () => {
+    const tree = new Map([['docs/general/unrelated.md', '# Doc\n\n## Facts\n- Gardening notes: 38 tulips.\n']]);
+    const { retrievable } = await probeRetrievability(tree, 'binaural beats study subjects', ['38']);
+    expect(retrievable).toBe(false);
+  });
+
+  it('ignores lines that are not fact bullets, matching the shipped rule', async () => {
+    // extractMatchedFacts only reads `- ` bullets; a value in frontmatter is not
+    // retrievable through this path even though it is present in the file.
+    const tree = new Map([['docs/general/x.md', 'summary: study of 38 subjects\n\n## Facts\n- unrelated line\n']]);
+    const { retrievable } = await probeRetrievability(tree, 'study subjects', ['38']);
+    expect(retrievable).toBe(false);
+  });
+});
+
+describe('probe quality (defects found against live dumps)', () => {
+  it('drops single-digit numeric probes, which match almost any line', () => {
+    // Gold "0.5 hours" tokenized to ["0","5","hours"], and "0" matched an
+    // unrelated productivity-apps note — scoring a question `retained` on a
+    // digit. Derived answers like this are carried by their explicit needle
+    // ("30-minute jog"), not by their digits.
+    const t = contentTokens('0.5 hours');
+    expect(t).not.toContain('0');
+    expect(t).not.toContain('5');
+    // Two-digit values are the ones under investigation and must survive.
+    expect(contentTokens('38 subjects')).toContain('38');
+    expect(contentTokens('approximately 20% improvement')).toContain('20');
+    expect(contentTokens('2014.')).toContain('2014');
+  });
+
+  it('treats a JSON-quoted hash key as metadata too', () => {
+    // The first filter only caught bare `hash: abc`. Part of the dumped tree is
+    // JSON, where the same field reads `"hash": "c61f89d013899ecc",` — and "38"
+    // matched exactly that before it matched the answering sentence.
+    const v = classifyDetailLoss('38 subjects', {
+      raw: 'a study of 38 subjects',
+      extracted: 'study of 38 subjects',
+      consolidated: '    "hash": "c61f89d013899ecc",',
+    });
+    expect(v.lostAt).toBe('consolidation');
+  });
+});
+
+describe('numeric probes match whole numbers', () => {
+  it('does not let "38" match inside "3389"', () => {
+    // Substring matching made "38" land on a gaming-mouse spec ("Pixart 3389")
+    // before the sentence that answers the question. A number is a value, not a
+    // fragment, so it matches on word boundaries; words keep substring matching
+    // because morphology matters there ("subject" in "subjects").
+    const v = classifyDetailLoss('38 subjects', {
+      raw: '38 subjects took part',
+      extracted: '38 subjects took part',
+      consolidated: '- mouse with a Pixart 3389 sensor',
+    });
+    expect(v.survivedConsolidation).not.toContain('38');
+  });
+
+  it('still matches the number when it stands alone', () => {
+    const v = classifyDetailLoss('38 subjects', {
+      raw: '38 subjects took part',
+      extracted: '38 subjects took part',
+      consolidated: '- Music and Medicine — 38 subjects, 30 minutes daily.',
+    });
+    expect(v.survivedConsolidation).toContain('38');
+    expect(v.lostAt).toBe('retained');
   });
 });

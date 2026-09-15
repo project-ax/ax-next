@@ -8,6 +8,8 @@
 // cannot say whether the Observer never extracted the value or the consolidator
 // later dropped it, and those are different fixes.
 
+import { extractMatchedFacts } from '../../src/matched-facts.js';
+
 /** Words that carry no evidence, so their survival proves nothing. */
 const STOP = new Set([
   'the','a','an','and','or','but','of','to','in','on','at','for','with','was','were','is','are',
@@ -33,9 +35,14 @@ export function contentTokens(value: unknown): string[] {
   for (const raw of s.toLowerCase().split(/[^a-z0-9]+/)) {
     if (raw.length === 0) continue;
     if (STOP.has(raw)) continue;
-    // Numbers are kept at any length; words must be substantial enough that a
-    // chance match is not the reason they appear.
-    if (!/^\d+$/.test(raw) && raw.length < 4) continue;
+    // Numbers survive well below the 4-char word floor — "38" and "20" ARE the
+    // values going missing — but a SINGLE digit is noise: "0.5 hours" tokenizes
+    // to 0 and 5, and "0" matched an unrelated note well enough to score a
+    // question `retained`. Derived answers are carried by their explicit needle
+    // instead. Words must be substantial enough that chance is not why they
+    // appear.
+    const numeric = /^\d+$/.test(raw);
+    if (numeric ? raw.length < 2 : raw.length < 4) continue;
     seen.add(raw);
   }
   return [...seen];
@@ -90,8 +97,10 @@ export interface DetailLossResult {
  * that counted a truncated clause as a whole line — a probe must land on prose.
  */
 function isMetadataLine(line: string): boolean {
-  const t = line.trim();
-  if (/^[a-z_]*hash:\s*[0-9a-f]+$/i.test(t)) return true;
+  // Tolerate the JSON form as well as the YAML one: part of the dumped tree is
+  // JSON, where the same field reads `"hash": "c61f89d013899ecc",`.
+  const t = line.trim().replace(/^"([^"]+)"\s*:/, '$1:').replace(/[",]+$/, '');
+  if (/^[a-z_]*hash:\s*"?[0-9a-f]+"?$/i.test(t)) return true;
   if (/^(id|uuid|rollup_id|source_ids?):/i.test(t)) return true;
   // A bare list item or scalar that is nothing but a uuid / hex digest.
   return /^-?\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(t);
@@ -116,8 +125,16 @@ export function classifyDetailLoss(
   options: DetailLossOptions = {},
 ): DetailLossResult {
   const probes = [...(options.needles ?? []), ...contentTokens(goldAnswer)];
+  // Numbers match on word boundaries, words by substring. A number is a whole
+  // value — letting "38" match inside "3389" put a gaming-mouse spec forward as
+  // evidence for a question about study subjects. Words keep substring matching
+  // because morphology is real there: "subject" should find "subjects".
+  const matches = (line: string, probe: string): boolean => {
+    if (!/^\d+$/.test(probe)) return line.toLowerCase().includes(probe.toLowerCase());
+    return new RegExp(`(?<!\\d)${probe}(?!\\d)`).test(line);
+  };
   const matchIn = (lines: string[], probe: string): string | undefined =>
-    lines.find((l) => l.toLowerCase().includes(probe.toLowerCase()));
+    lines.find((l) => matches(l, probe));
 
   const rawLines = proseLines(layers.raw);
   const extractedLines = proseLines(layers.extracted);
@@ -144,4 +161,31 @@ export function classifyDetailLoss(
           : 'retained';
 
   return { probes, presentInRaw, survivedExtraction, survivedConsolidation, lostAt, evidence };
+}
+
+/**
+ * Would the SHIPPED retrieval surface one of these probes from this tree?
+ *
+ * Once a value scores `retained`, memory is not the bug and the next question is
+ * whether retrieval handed it to the agent. Delegating to the shipped
+ * `extractMatchedFacts` rather than reimplementing its line matching is the
+ * point: the answer has to move when the tool's rule moves, or this becomes
+ * another diagnostic measuring a pipeline nothing runs.
+ *
+ * Only the `- ` fact bullets are reachable through this path, exactly as in
+ * production — a value that survives only into frontmatter is present in the
+ * file and invisible to the tool.
+ */
+export async function probeRetrievability(
+  tree: Map<string, string>,
+  question: string,
+  probes: string[],
+): Promise<{ retrievable: boolean; matched: string[] }> {
+  const matched: string[] = [];
+  for (const body of tree.values()) {
+    for (const fact of extractMatchedFacts(body, question, { maxLines: 6 })) {
+      if (probes.some((p) => fact.toLowerCase().includes(p.toLowerCase()))) matched.push(fact);
+    }
+  }
+  return { retrievable: matched.length > 0, matched };
 }
