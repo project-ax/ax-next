@@ -25,7 +25,7 @@ import {
 import { createMemoryStrataIndexSqlitePlugin } from '@ax/memory-strata-index-sqlite';
 import { BenchCache } from './cache.js';
 import { loadLongMemEvalSSamples } from './corpora/longmemeval-s.js';
-import { makeAnthropicExtractionLlm } from './e2e-cli.js';
+import { makeOpenRouterExtractionLlm } from './e2e-cli.js';
 import { makeAnthropicAnswerClient, type MemorySearchResult } from './e2e-answer.js';
 import { makeReadSectionFn, parseCorpusDate } from './e2e-driver.js';
 
@@ -183,13 +183,18 @@ async function reproOne(
 async function main(): Promise<void> {
   const xaiKey = process.env.XAI_API_KEY || undefined; // unset => BM25 path
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
-  if (!anthropicKey) {
-    console.error('Need ANTHROPIC_API_KEY (+ optional XAI_API_KEY for the orchestrator path).');
+  // Extraction and answering are on DIFFERENT providers since the 2026-09-14
+  // model policy: the Observer runs GLM via OpenRouter, the answer stage Sonnet.
+  const extractionKey = process.env.OPENROUTER_API_KEY;
+  if (!anthropicKey || !extractionKey) {
+    console.error(
+      'Need ANTHROPIC_API_KEY (answer) + OPENROUTER_API_KEY (extraction) (+ optional XAI_API_KEY for the orchestrator path).',
+    );
     process.exit(2);
   }
   const cache = new BenchCache();
   const samples = await loadLongMemEvalSSamples(cache);
-  const extractionLlm = makeAnthropicExtractionLlm(anthropicKey);
+  const extractionLlm = makeOpenRouterExtractionLlm(extractionKey);
   const answerClient = makeAnthropicAnswerClient(anthropicKey, { model: ANSWER_MODEL });
   for (const t of TARGETS) {
     const sample = samples.find((s) => s.question_id === t.qid);

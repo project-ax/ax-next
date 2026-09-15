@@ -6,7 +6,6 @@
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import type { LlmCallInput, LlmCallOutput } from '@ax/core';
 import { makeXaiOrchestratorClient, type OrchestratorClient } from '@ax/memory-strata';
@@ -396,10 +395,13 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
   return capExceeded || abortError ? 1 : 0;
 }
 
-/**
- * Build a real Anthropic extraction round-trip in the `LlmCallInput → LlmCallOutput`
- * shape the Observer expects (provider-agnostic kernel contract). The Observer
- * passes `model` (Haiku), `system`, `messages`, `maxTokens`, `temperature`.
+/*
+ * There is deliberately no Anthropic extraction client any more. The one that
+ * lived here defaulted to DEFAULT_EXTRACTION_MODEL, which became a GLM id at the
+ * 2026-09-14 model policy — so it sent `z-ai/glm-5.3-flash:nitro` to the
+ * Anthropic API and 404'd on every call, silently breaking all three repro
+ * diagnostics. Extraction has ONE shipped provider; a second client only
+ * creates the opportunity to measure a hybrid nothing runs.
  */
 /**
  * Extraction LLM on the memory-ops role — OpenRouter + the reasoning shape
@@ -407,9 +409,8 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
  *
  * The e2e harness exists to run the SHIPPED pipeline, and since the 2026-09-14
  * model policy the shipped Observer runs GLM with `reasoningEffort: 'minimal'`.
- * The Anthropic variant below registered on a hook NAMED `llm:call:openrouter`
- * while calling Anthropic with a dated Haiku id, which would have measured a
- * hybrid — GLM planner, Haiku extraction — that no deployment runs.
+ * It is the ONLY extraction client here; see the note above on why the Anthropic
+ * one was removed rather than repaired.
  *
  * `reasoning: { effort: 'minimal' }` is sent for the same reason production
  * sends it: GLM reasons by default, and the Observer has a hard timeout whose
@@ -451,31 +452,6 @@ export function makeOpenRouterExtractionLlm(
   };
 }
 
-export function makeAnthropicExtractionLlm(apiKey: string): (input: LlmCallInput) => Promise<LlmCallOutput> {
-  const a = new Anthropic({ apiKey });
-  return async (input: LlmCallInput) => {
-    return withRetry(
-      async () => {
-        const resp = await a.messages.create({
-          model: input.model ?? DEFAULT_EXTRACTION_MODEL,
-          max_tokens: input.maxTokens ?? 1024,
-          ...(input.system !== undefined ? { system: input.system } : {}),
-          messages: input.messages.map((m) => ({ role: m.role, content: m.content })),
-        });
-        const text = resp.content
-          .filter((b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text')
-          .map((b) => b.text)
-          .join('');
-        return {
-          text,
-          stopReason: 'end_turn' as const,
-          usage: { inputTokens: resp.usage.input_tokens, outputTokens: resp.usage.output_tokens },
-        };
-      },
-      { attempts: 4, baseDelayMs: 1000, label: 'anthropic-e2e-extraction' },
-    );
-  };
-}
 
 /** Like requireKeys but returns null (instead of throwing) on a miss — lets the
  * caller emit a friendly message + a non-zero exit rather than a stack trace. */
