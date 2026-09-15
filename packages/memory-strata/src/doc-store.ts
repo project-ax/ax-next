@@ -15,7 +15,7 @@ import * as fs from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { load as yamlLoad } from 'js-yaml';
 import { buildMarkdownFile } from './frontmatter.js';
-import { categoryDir, docFile, type DocCategory } from './paths.js';
+import { categoryDir, docFile, DOC_CATEGORIES, type DocCategory } from './paths.js';
 import { mergeConversationId } from './recurrence.js';
 import type { DocFile, DocFrontmatter } from './types.js';
 import { guardAutomaticWrite } from './human-tier.js';
@@ -206,7 +206,9 @@ export async function listDocs(input: { workspaceRoot: string }): Promise<DocFil
 
 // TASK-200: 'rollup' included so `listDocs` enumerates `docs/rollup/` — the map
 // regen + consolidator rollup pass both rely on rollups showing up here.
-const CATEGORIES: DocCategory[] = ['entity', 'preference', 'decision', 'episode', 'general', 'rollup'];
+// TASK-367: sourced from `DOC_CATEGORIES` (paths.ts) rather than a hand-maintained
+// copy — see that export's comment for why.
+const CATEGORIES: readonly DocCategory[] = DOC_CATEGORIES;
 
 function buildBody(facts: string[]): string {
   return ['# Doc', '', '## Facts', ...facts.map((f) => `- ${f}`), ''].join('\n');

@@ -31,7 +31,7 @@ import { deleteInboxFile, listInbox } from './inbox-store.js';
 import { decidePromotion } from './promotion.js';
 import { regenerateRecent } from './recent.js';
 import { regenerateMap, type MapDensifier } from './map.js';
-import { categoryDir, MEMORY_ROOT, type DocCategory } from './paths.js';
+import { categoryDir, MEMORY_ROOT, SUBJECT_DOC_CATEGORIES, type DocCategory } from './paths.js';
 import { findNearDupSlug } from './slug-guard.js';
 import { runRollupPass, type RollupConfig, type StageBNamer } from './rollup.js';
 import { guardAutomaticWrite } from './human-tier.js';
@@ -175,7 +175,22 @@ export async function runConsolidation(
       // must not emit a phantom-merge line that corrupts the very metric this
       // feature exists to expose.
       const originalSlug = cluster.slug;
-      const slugsInCategory = await listCategorySlugs(input.workspaceRoot, cluster.category);
+      let slugsInCategory = await listCategorySlugs(input.workspaceRoot, cluster.category);
+      // TASK-367: the elected category is a per-pass plurality vote over
+      // factType (cluster.ts's pickCategory), not a stable identity — the SAME
+      // subject can vote `entity` this pass and `general` next. Before falling
+      // back to the same-category near-dup scan, check whether the exact slug
+      // already has a doc under a DIFFERENT subject category and, if so, adopt
+      // that category so the cluster appends to the existing doc instead of
+      // minting a same-slug sibling under the newly-elected category.
+      const electedCategory = cluster.category;
+      if (!slugsInCategory.includes(originalSlug)) {
+        const adopted = await findSlugInOtherCategories(input.workspaceRoot, originalSlug, cluster.category);
+        if (adopted !== null) {
+          cluster.category = adopted;
+          slugsInCategory = await listCategorySlugs(input.workspaceRoot, adopted);
+        }
+      }
       // An exact-slug doc wins over a near-dup (TASK-202). In a LEGACY workspace
       // that already holds BOTH b-29-bomber-model AND b-29-bomber-model-kit
       // (created before #379, no migration), a new b-29-bomber-model cluster must
@@ -359,6 +374,18 @@ export async function runConsolidation(
           mergedInto: nearDup,
         });
       }
+
+      // TASK-367: emit the cross-category adoption line under the SAME gate as
+      // the near-dup merge above — only when a real write/merge advanced a
+      // counter this pass, so a cluster whose observations all quarantine or
+      // stay low-confidence (left in the inbox) does not emit a phantom line.
+      if (cluster.category !== electedCategory && (promoted > promotedBefore || dupesMerged > dupesMergedBefore)) {
+        log.warn('memory_strata_doc_category_adopted', {
+          slug: originalSlug,
+          electedCategory,
+          adoptedCategory: cluster.category,
+        });
+      }
     }
 
     // TASK-200 rollup pass — ordered AFTER near-dup merge/write (so a class
@@ -522,9 +549,10 @@ function noopLogger(): ConsolidationLogger {
 }
 
 /**
- * List the doc slugs already on disk in a category directory (D4 near-dup
- * guard). A missing category directory (no docs promoted there yet) is not
- * an error — it just means there are no near-dup candidates.
+ * List the doc slugs already on disk in a category directory. Two callers:
+ * the D4 near-dup guard (same-category fuzzy match) and, since TASK-367, the
+ * cross-category exact-slug scan below. A missing category directory (no docs
+ * promoted there yet) is not an error — it just means there are no candidates.
  */
 async function listCategorySlugs(workspaceRoot: string, category: DocCategory): Promise<string[]> {
   const dirAbs = join(workspaceRoot, categoryDir(category));
@@ -535,4 +563,30 @@ async function listCategorySlugs(workspaceRoot: string, category: DocCategory): 
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw err;
   }
+}
+
+/**
+ * TASK-367: does the exact slug already have a subject doc under a DIFFERENT
+ * category than the one this cluster just elected? Scans `SUBJECT_DOC_CATEGORIES`
+ * in canonical order (deterministic on a legacy tree that already holds the
+ * slug in more than one category — see the "legacy multi-hit" regression test),
+ * skipping the elected category, and returns the first category whose slug
+ * list contains an exact match, else `null`.
+ *
+ * `rollup` is excluded because `SUBJECT_DOC_CATEGORIES` excludes it: rollup
+ * docs are synthesized (not elected by a cluster), hash-GC'd, and
+ * unlink-guarded (`rollup.ts`) — appending a subject cluster's facts into one
+ * would corrupt a file that a future pass may delete out from under it.
+ */
+async function findSlugInOtherCategories(
+  workspaceRoot: string,
+  slug: string,
+  electedCategory: DocCategory,
+): Promise<Exclude<DocCategory, 'rollup'> | null> {
+  for (const category of SUBJECT_DOC_CATEGORIES) {
+    if (category === electedCategory) continue;
+    const slugs = await listCategorySlugs(workspaceRoot, category);
+    if (slugs.includes(slug)) return category;
+  }
+  return null;
 }
