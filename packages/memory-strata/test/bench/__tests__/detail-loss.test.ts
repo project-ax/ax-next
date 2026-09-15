@@ -252,3 +252,31 @@ describe('partial loss — some required evidence survived and some did not', ()
     expect(v.lostProbes).toEqual([{ probe: 'beta', lostAt: 'consolidation' }]);
   });
 });
+
+describe('a bare year is not a specific probe', () => {
+  it('needs a phrase when the value is a year the corpus uses elsewhere', () => {
+    // 5809eb10 asks what year construction began (2014). The tree does not have
+    // it — the Observer kept the article-editing work and dropped the case facts
+    // — but "2014" matched a line about Gillian Flynn's novels and scored the
+    // question `retained`. A year is a value with no context; the phrase around
+    // it is the probe.
+    const layers = {
+      raw: 'The construction of the house began in 2014, and the contract was signed in 2015.',
+      // The unrelated 2014 is in BOTH layers, because it was extracted too —
+      // that is what made the false positive survive all the way to `retained`.
+      extracted: '- The assistant listed Gone Girl (2014) among her novels.',
+      consolidated: '- The assistant listed Gone Girl (2014) among her novels.',
+    };
+    // Probing the bare gold year says the pipeline kept it. It did not.
+    expect(classifyDetailLoss(2014, layers).lostAt).toBe('retained');
+    // With the phrase, the real loss surfaces. The verdict is `partial` rather
+    // than `extraction` because the stray 2014 genuinely IS in the tree — which
+    // is the honest answer, and why lostProbes names what actually went missing.
+    const v = classifyDetailLoss(2014, layers, {
+      needles: ['began in 2014', 'construction of the house'],
+    });
+    expect(v.lostAt).toBe('partial');
+    expect(v.lostProbes.map((l) => l.probe)).toEqual(['began in 2014', 'construction of the house']);
+    expect(v.lostProbes.every((l) => l.lostAt === 'extraction')).toBe(true);
+  });
+});

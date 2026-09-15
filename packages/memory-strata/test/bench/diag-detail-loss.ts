@@ -73,7 +73,9 @@ const NEEDLES: Record<string, string[]> = {
   'gpt4_5438fa52': ['cultural festival', 'Spanish class'],
   '0e5e2d1a': ['38 subjects'],
   '352ab8bd': ['20%', 'HAMT'],
-  '5809eb10': ['2014'],
+  // A bare year has no context and matched an unrelated novel's publication
+  // date; the phrase around it is the probe.
+  '5809eb10': ['began in 2014', 'construction of the house'],
 };
 
 const args = process.argv.slice(2);
@@ -254,8 +256,15 @@ for (const sample of samples) {
       `    matchable from the tree (selection not modelled): ${retrievable ? 'YES' : 'NO'}` +
         (retrievable ? `\n      in ${matched[0]?.docId} — ${matched[0]?.fact.slice(0, 160)}` : ''),
     );
+    // Cap the tail: a generic surviving probe ("20", "agent") matches scores of
+    // docs, and printing 90 paths buries the one line that matters.
     const docs = [...new Set(matched.map((m) => m.docId))];
-    if (docs.length > 1) console.log(`      (also in: ${docs.slice(1).join(', ')})`);
+    if (docs.length > 1) {
+      const rest = docs.slice(1);
+      console.log(
+        `      (also in ${rest.length} other doc(s): ${rest.slice(0, 4).join(', ')}${rest.length > 4 ? ', …' : ''})`,
+      );
+    }
   }
 }
 
