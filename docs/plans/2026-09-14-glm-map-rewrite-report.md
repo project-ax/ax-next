@@ -51,14 +51,21 @@ across all 19,195 entries:
 
 | | Grok map | GLM map |
 |---|---|---|
-| lines declaring the doc has nothing in it | 3,085 (**16.1%**) | 735 (**3.8%**) |
+| lines with no selectable content | 2,617 (**13.6%**) | 51 (**0.3%**) |
 | lines cut off mid-word at the 120 cap | 11,376 (59.3%) | 17,267 (**90.0%**) |
 
+> **Corrected 2026-09-14.** This row first read 16.1% vs 3.8%, from a metric that
+> simply searched for "no personal details". That overcounts: a rewriter with
+> room writes informative lines that merely END with the clause. The corrected
+> rule strips the clause and asks whether anything substantive remains
+> (`isDeadLine`). The gap is **45×, not 4×** — the original numbers understated
+> GLM's advantage, which sharpens rather than softens the puzzle below.
+
 A line reading "No personal details shared by user" is **unselectable** — the
-planner cannot route a question to that document at all. Grok emitted 3,085 of
-them, so roughly **one document in six was unreachable via the map in every
-previously published E measurement**. GLM cuts that by 4×, and the replacements
-are substantive:
+planner cannot route a question to that document at all. Grok emitted 2,617 of
+them, so roughly **one document in seven was unreachable via the map in every
+previously published E measurement**. GLM cuts that by **45×**, and the
+replacements are substantive:
 
 > **Grok:** "No personal details shared by user."
 > **GLM:** "User is curious about marine biology—mussel predator defenses and
@@ -75,15 +82,16 @@ documents — so the same 120-char cap that trims Grok's lines *mutilates* GLM's
 `bench:diag-map-truncation --probe 60` measures **28.1% of the characters GLM
 produces being discarded at the cut**.
 
-So the two changes fought each other: 4× fewer dead entries against 1.5× more
-mutilated ones. That is consistent with everything above — a planner given
+So the two changes fought each other: **45× fewer dead entries** against 1.5×
+more mutilated ones. That is consistent with everything above — a planner given
 confident-looking but truncated lines commits faster (fewer follow-ups, fewer
 fallbacks) on a weaker basis.
 
 **This is a hypothesis, not a conclusion.** TASK-362 tests it directly by holding
 the map's author fixed and moving only the cut: GLM map at 120 (this run, 55.3%)
-versus GLM map at 400, where nothing GLM writes is cut at all. If truncation is
-the explanation, that arm should clear both numbers in this report.
+versus GLM map at 400, where nothing GLM writes is cut at all (measured: 3 cut
+lines out of 19,195, and 18 dead). If truncation is the explanation, that arm
+should clear both numbers in this report.
 
 ## What not to conclude
 

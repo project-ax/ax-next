@@ -26,12 +26,39 @@ import {
 } from './map-rewrite.js';
 import { makeOpenRouterOrchestratorClient, MINIMAL_REASONING } from './orchestrator.js';
 import { homedir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 
 const CACHE_ROOT = join(homedir(), '.cache', 'ax-memory-bench');
 /** Budgets the probe asks for. 120 is the shipped default. */
 const PROBE_BUDGETS = [120, 240, 400];
+
+/**
+ * A map line the planner cannot act on: it describes no selectable content.
+ *
+ * Must NOT be a bare search for "no personal details". A rewriter given room
+ * writes informative lines that merely END with that clause — "User asked
+ * informational questions about mussel predators, defenses, and toxins; no
+ * personal details disclosed." is entirely selectable. Matching the phrase
+ * alone counted 1,226 dead lines in the cut-400 map when only 18 were really
+ * dead, and it did so in a direction that mattered: the clause is TRUNCATED
+ * AWAY at a 120-char cap and survives at 400, so the naive metric reported the
+ * map getting worse precisely because it had stopped being mutilated.
+ *
+ * So: strip the disclaimer clause, then ask whether anything substantive is
+ * left. Corrected counts across the live caches — Grok@120 13.6% (not 16.1%),
+ * GLM@120 0.3% (not 3.8%), GLM@400 0.1% (not 6.4%).
+ */
+const DISCLAIMER =
+  /\b(?:no|nothing)\s+(?:new\s+|other\s+|further\s+)?(?:personal\s+|substantive\s+|specific\s+)?(?:details?|facts?|information|info|preferences?)[^;.()]*/gi;
+const CONTENTLESS = /^(?:user\s+)?(?:greeted?|greeting|hello|hi|test|sent|a|the|message|assistant|only|shared|by)(?:\s+\w+){0,3}$/i;
+
+export function isDeadLine(summary: string): boolean {
+  const rest = summary.replace(DISCLAIMER, '').replace(/[^A-Za-z0-9]+/g, ' ').trim();
+  if (CONTENTLESS.test(rest)) return true;
+  return rest.length < 20;
+}
 
 function quantile(xs: number[], q: number): number {
   if (xs.length === 0) return 0;
@@ -55,11 +82,7 @@ function describeCache(label: string, path: string): void {
   // specific line was cut; length alone cannot tell a cut line from one that
   // happened to land on the cap.
   const cut = summaries.filter((s) => s.endsWith('…')).length;
-  // A line the planner cannot act on. Not truncation, but the same symptom —
-  // a document that cannot be selected from the map.
-  const dead = summaries.filter((s) =>
-    /no (personal |substantive |specific )?(details|facts|information|info)|nothing (substantive|personal)/i.test(s),
-  ).length;
+  const dead = summaries.filter(isDeadLine).length;
   console.log(
     `  ${label.padEnd(22)} n=${summaries.length}  cut=${cut} (${((100 * cut) / summaries.length).toFixed(1)}%)` +
       `  dead=${dead} (${((100 * dead) / summaries.length).toFixed(1)}%)` +
@@ -81,8 +104,12 @@ async function main(): Promise<number> {
   describeCache('glm-sept (backup)', join(dir, 'map-rewrites.glm-sept.json.bak'));
   console.log(
     '\n  cut%  = lines ending in the ellipsis cleanSummary appends at the cap.\n' +
-      '  dead% = lines declaring the document has nothing in it. A planner cannot\n' +
-      '          select on those either, so they cost recall the same way.',
+      '  dead% = lines with no selectable content once a \"no personal details\" clause\n' +
+      '          is removed. A planner cannot route to those, so they cost recall the\n' +
+      '          same way truncation does. Matching that phrase ALONE overcounts badly:\n' +
+      '          an informative line often ends with it, and the clause survives a\n' +
+      '          bigger cap \u2014 which made the naive metric report a map getting worse\n' +
+      '          exactly because it had stopped being truncated.',
   );
 
   if (probeN <= 0) {
@@ -139,4 +166,8 @@ async function main(): Promise<number> {
   return 0;
 }
 
-main().then((c) => process.exit(c)).catch((e) => { console.error(e); process.exit(1); });
+// Only when run as a script. Importing this module (the unit test does, for
+// `isDeadLine`) must not kick off a corpus load and a paid probe.
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().then((c) => process.exit(c)).catch((e) => { console.error(e); process.exit(1); });
+}
