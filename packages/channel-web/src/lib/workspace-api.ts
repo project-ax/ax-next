@@ -51,7 +51,7 @@ import {
   MAX_DETAIL_CHARS,
 } from './transport';
 import { readSseFrames } from './sse-frames';
-import type { SseFrame } from '@/server/types';
+import type { SseFrame } from '../server/types';
 import type { PostMessageResponse } from '@/wire/chat';
 import type {
   ActivityEvent,

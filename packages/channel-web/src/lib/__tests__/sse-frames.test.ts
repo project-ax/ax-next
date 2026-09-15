@@ -133,8 +133,14 @@ describe('readSseFrames — framing', () => {
     // Deliberate: an unterminated line may still be growing. The server always
     // terminates a frame it means to send, so a partial tail is a truncation,
     // and parsing it would surface half a frame as if it were whole.
+    //
+    // The tail here is DELIBERATELY complete, valid JSON — it is missing only
+    // its newline. An earlier version of this test used a syntactically broken
+    // tail, which meant an implementation that wrongly flushed the carry buffer
+    // at close would have hit the malformed-JSON skip and passed anyway. The
+    // only thing withholding this frame is the missing terminator.
     const line = data({ reqId: 'r1', kind: 'text', text: 'complete' });
-    const partial = 'data: {"reqId":"r1","kind":"text","text":"trun';
+    const partial = data({ reqId: 'r1', kind: 'text', text: 'unterminated' }).replace(/\n$/, '');
     const { frames, end } = await collect([line + partial]);
 
     expect(frames).toEqual([{ reqId: 'r1', kind: 'text', text: 'complete' }]);

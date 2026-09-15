@@ -951,7 +951,30 @@ async function consumeSseAttempt(
   // a graceful close with no terminator, a seq gap, a body error, or a
   // consumer that threw — is a drop the caller turns into CONNECTION_LOST.
   if (end.reason === 'stopped' && terminal !== null) return terminal;
+  if (end.reason === 'body-error' && !isAbortError(end.error)) {
+    // The reader sees CONNECTION_LOST either way; this is the CAUSE behind it.
+    // Before TASK-349 there was nothing to log — the old handler was a bare
+    // `catch { return 'lost'; }` that never bound the error, so a TCP reset, a
+    // decode failure and a renderer that threw were indistinguishable in the
+    // console. Extracting the reader made the cause available, and dropping it
+    // on the floor after deliberately plumbing it out is the swallowed-error
+    // shape this repo keeps finding. The workspace reader logs the same thing.
+    console.warn('[chat] reply stream ended badly', end.error);
+  }
   return 'lost';
+}
+
+/**
+ * A fetch/stream abort — the user pressed Stop, or the component unmounted.
+ * Nothing went wrong, so it must not be logged as a failure. Chat's reader has
+ * no `AbortSignal` of its own to consult (the workspace's does, and checks it
+ * instead), so this reads the rejection the abort actually produces: a
+ * `DOMException` named `AbortError`.
+ */
+function isAbortError(e: unknown): boolean {
+  return (
+    typeof e === 'object' && e !== null && (e as { name?: unknown }).name === 'AbortError'
+  );
 }
 
 /**
