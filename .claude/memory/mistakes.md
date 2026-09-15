@@ -418,3 +418,54 @@ them**, especially the ones filed under "smaller, cheap" — those get the least
 scrutiny when written and the least when read. Same class as the
 `feedback_check_plan_vs_reality` rule, but the stale assumption here was a
 *self-report*, which reads more trustworthy than a plan's assumption and is not.
+## A handoff's "this is free" is a claim about a tool that may not exist yet (2026-09-15)
+
+TASK-361 was scoped as "dump the memory state the agent actually had… **No API
+calls**". It cannot be free. `docs/` does not exist until the Observer and
+consolidator have run, and `runE2EQuestion` deletes its throwaway workspace in a
+`finally`, so the state the scored run had was gone the moment it finished.
+Answering the card costs a re-ingest (~$0.04/question — extraction only, no
+Sonnet answer and no judge, which is ~70% of a scored question's bill).
+
+The genuinely free half is smaller and worth doing FIRST: the corpus is on disk,
+so "is the gold value in the raw sessions at all, and in which role?" costs
+nothing and rules out the questions that prove nothing.
+
+**Rule: when a plan says a step is free, find the artifact it would read before
+budgeting on it.** If the artifact is produced by a pipeline that tears itself
+down, the step is a re-run wearing a diagnostic's clothes.
+
+## Three ways a presence probe lied, all toward the same false verdict (2026-09-15)
+
+The TASK-361 diagnostic asks "does this value survive into memory". Every defect
+in its probe pushed toward `retained` — the verdict that means "stop looking at
+memory" — so a false one sends the next session to the wrong component entirely.
+
+- **`"hash": "c61f89d0…"` slipped a filter written for `hash: c61f89d0…`.** Part
+  of the dumped tree is JSON. "38" matched a digest before it reached the
+  sentence that answers the question.
+- **Single-digit numeric probes match anything.** Gold "0.5 hours" tokenizes to
+  `0` and `5`; "0" matched an unrelated productivity-apps note.
+- **Numbers matched as substrings.** "38" landed inside "Pixart 3389", offering a
+  gaming-mouse spec as evidence about study subjects.
+
+None changed a final verdict, because each was caught by **reading the matched
+line**. That is the transferable part: a presence metric must emit the line it
+matched, not just the score. Same defect class as the dead-map-line metric that
+counted a truncated clause as a whole line (2026-09-14).
+
+## The model policy silently broke every extraction diagnostic (2026-09-15)
+
+`makeAnthropicExtractionLlm` defaulted to `DEFAULT_EXTRACTION_MODEL`. That
+constant became `z-ai/glm-5.3-flash:nitro` on 2026-09-14, so the helper spent a
+month sending a GLM id to api.anthropic.com. All three callers —
+`repro-extract`, `repro-count-diag`, `repro-orch-retrieval` — 404'd on their
+first call.
+
+**A diagnostic has no gate, so it does not go red; it stops being runnable.** The
+next person to reach for it loses an afternoon suspecting the pipeline. Worst
+part: `repro-extract` exists to answer "does assistant content survive
+extraction", which is exactly the question TASK-361 then had to re-answer from
+scratch. Fixed by deleting the second client outright — extraction has ONE
+shipped provider — and pinning it with a test that the module offers exactly one
+extraction factory, named for the provider `DEFAULT_MEMORY_OPS_MODEL` routes to.
