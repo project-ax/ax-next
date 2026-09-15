@@ -6,7 +6,6 @@
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import type { LlmCallInput, LlmCallOutput } from '@ax/core';
 import { makeXaiOrchestratorClient, type OrchestratorClient } from '@ax/memory-strata';
@@ -410,9 +409,8 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
  *
  * The e2e harness exists to run the SHIPPED pipeline, and since the 2026-09-14
  * model policy the shipped Observer runs GLM with `reasoningEffort: 'minimal'`.
- * The Anthropic variant below registered on a hook NAMED `llm:call:openrouter`
- * while calling Anthropic with a dated Haiku id, which would have measured a
- * hybrid — GLM planner, Haiku extraction — that no deployment runs.
+ * It is the ONLY extraction client here; see the note above on why the Anthropic
+ * one was removed rather than repaired.
  *
  * `reasoning: { effort: 'minimal' }` is sent for the same reason production
  * sends it: GLM reasons by default, and the Observer has a hard timeout whose
