@@ -53,6 +53,8 @@ import { rememberToolPhrase } from './tool-phrase';
 import { decisionRaisedActions } from './decision-raised-store';
 import { continuationActions } from './continuation-actions';
 import { HttpError, httpFetch } from './http';
+import { readSseFrames } from './sse-frames';
+import type { SseFrame } from '../server/types';
 
 const DEFAULT_USER = 'guest';
 
@@ -159,74 +161,14 @@ export const ERROR_LABELS: Record<string, string> = {
  *  already bounded + sanitized server-side; this is a final client-side clamp). */
 export const MAX_DETAIL_CHARS = 400;
 
-/** Shape of one SSE `data:` JSON payload. Matches `SseFrame` in src/server/types.ts.
- *  `seq` (TASK-23) is the host-minted monotonic per-reqId cursor on content
- *  frames; the client dedups replayed frames at/below its last-seen seq and
- *  falls back to the CONNECTION_LOST banner on a contiguity gap. Optional —
- *  an older server build that never stamps seq parses (and behaves) as before. */
-type SseFrame =
-  | { reqId: string; kind: 'text'; text: string; seq?: number }
-  | { reqId: string; kind: 'thinking'; text: string; seq?: number }
-  | {
-      reqId: string;
-      kind: 'tool-use';
-      toolCallId: string;
-      toolName: string;
-      input: Record<string, unknown>;
-      seq?: number;
-      // TASK-271: host-authored display label, fenced server-side. Stashed
-      // into the tool-phrase map (toolName stays the stable dispatch key).
-      activityPhrase?: string;
-    }
-  | {
-      reqId: string;
-      kind: 'tool-result';
-      toolCallId: string;
-      output: string;
-      isError?: boolean;
-      seq?: number;
-      // TASK-270: live twin of the persisted held flag, fenced server-side.
-      // Stashed into the tool-held map (the part itself cannot carry it —
-      // the assistant-ui bridge rebuilds tool-call parts lossily).
-      held?: boolean;
-    }
-  | { reqId: string; phase: string }
-  | { reqId: string; done: true }
-  | { reqId: string; error: string; detail?: string }
-  | {
-      reqId: string;
-      permissionRequest:
-        | {
-            kind: 'skill';
-            skillId: string;
-            description: string;
-            hosts: string[];
-            slots: { slot: string; kind: 'api-key'; account?: string; haveExisting?: boolean }[];
-            // TASK-39: open-mode banner flag — rides the SSE frame verbatim and
-            // is forwarded to the card store (drives the "new skill" warning).
-            authored?: boolean;
-            // npm/pypi packages declared by the skill — forwarded verbatim to
-            // the card store (drives the informational registry line).
-            packages?: { npm: string[]; pypi: string[] };
-          }
-        | { kind: 'host'; host: string; sessionId: string }
-        | {
-            // TASK-112 — the upfront authored-connector approval card (TASK-94
-            // fires it host-side). Forwarded verbatim to the card store. No
-            // `description` — a connector carries a `name`.
-            kind: 'connector';
-            connectorId: string;
-            name: string;
-            hosts: string[];
-            slots: { slot: string; kind: 'api-key'; account?: string; haveExisting?: boolean }[];
-            authored?: boolean;
-            packages?: { npm: string[]; pypi: string[] };
-          };
-    }
-  // TASK-261 — decision-raised frame (server §4c-quater). Carries only
-  // {decisionId, summary}, deliberately not the whole Decision (see
-  // decision-raised-store.ts). Non-terminal — see the handling branch below.
-  | { reqId: string; decisionRaised: { decisionId: string; summary: string } };
+/**
+ * The wire shape used to be restated here — a third copy of `SseFrame`,
+ * already drifting from `src/server/types.ts` (it had no `service` / `slotTag`
+ * on a permission slot, and typed `phase` as a bare `string`). TASK-349 moved
+ * the parsing itself into `./sse-frames`, so the type comes from the one file
+ * that defines the wire. What stays in this module is everything that turns a
+ * frame into a `UIMessageChunk`.
+ */
 
 interface AxChatTransportOptions {
   /**
@@ -659,14 +601,17 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
   }
 
   /**
-   * Single-attempt parse of one SSE body into UIMessageChunks. The unit-test
-   * entry point, and the core of `buildTurnStream`. Each `data:` line is a
-   * JSON `SseFrame`; lines split across decoder chunks are stitched via a
-   * `carry` buffer.
+   * Single-attempt render of one SSE body into UIMessageChunks. The unit-test
+   * entry point, and the core of `buildTurnStream`. The wire underneath it —
+   * `data:` framing, lines split across reads, the TASK-23 seq cursor — is
+   * `./sse-frames`, shared with the agent workspace's reader (TASK-349).
    *
    * Emission policy:
    *   - text-kind chunk → text-delta under id `text-N`.
-   *   - thinking-kind chunk → text-delta under id `thinking-N`.
+   *   - thinking-kind chunk → reasoning-delta under id `thinking-N`, so
+   *     assistant-ui folds it into the collapsed chain-of-thought (TASK-307;
+   *     this line said `text-delta` for three months after it stopped being
+   *     true).
    *   - phase frame → side-channel: drives `agentStatusActions.set(label)`.
    *   - done frame → close any open part, emit `finish`.
    *   - server `error` frame (Fault A) → close any open part, emit an `error`
@@ -708,8 +653,8 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
    *   - A GET-only same-reqId reconnect replays the server's per-reqId ring
    *     buffer (sse.ts), which is BOUNDED (chunk-buffer.ts: last 256 chunks).
    *     TASK-23 added a host-minted monotonic per-chunk `seq` to the wire, so
-   *     `consumeSseAttempt` can now dedup a replayed partial buffer EXACTLY
-   *     (skip frames at/below the last-seen seq) and DETECT a gap (a seq that
+   *     the shared reader (`./sse-frames`) dedups a replayed partial buffer
+   *     EXACTLY (skips frames at/below the last-seen seq) and DETECTS a gap (a seq that
    *     jumps past last-seen + 1 after content already streamed = the buffer
    *     dropped frames the client never saw). On such a gap it falls back to
    *     this same CONNECTION_LOST banner — silent loss is worse than a banner.
@@ -764,22 +709,12 @@ interface ParseCtx {
   openText: string | null;
   openThinking: string | null;
   contentSeen: boolean;
-  carry: string;
   /** Count of content chunks (text/thinking deltas + tool frames) emitted so
    *  far across attempts. Drives the "have we shown anything yet?" gate that
    *  decides whether a drop is silently reconnectable (pre-content) or must
    *  surface the banner (content already streamed — a partial replay can't be
    *  safely deduped). */
   emittedContent: number;
-  /** Highest host-minted content `seq` seen so far across attempts (TASK-23).
-   *  0 = no seq-bearing content frame yet. A frame with `seq <= lastSeq` is a
-   *  replay duplicate (skip it — exact dedup). A frame with `seq > lastSeq + 1`
-   *  AFTER lastSeq > 0 is a contiguity gap: the bounded buffer dropped frames
-   *  the client never saw, so we surface the CONNECTION_LOST banner rather than
-   *  silently rendering a truncated reply. The FIRST content frame (lastSeq 0)
-   *  may start at any seq — connect-time buffer truncation is not a mid-stream
-   *  loss. Frames with no seq (older server) never touch this and always pass. */
-  lastSeq: number;
   closeOpen(controller: { enqueue(c: UIMessageChunk): void }): void;
 }
 
@@ -790,9 +725,7 @@ function createParseCtx(): ParseCtx {
     openText: null,
     openThinking: null,
     contentSeen: false,
-    carry: '',
     emittedContent: 0,
-    lastSeq: 0,
     closeOpen(controller) {
       if (ctx.openText !== null) {
         controller.enqueue({ type: 'text-end', id: ctx.openText });
@@ -814,9 +747,16 @@ function createParseCtx(): ParseCtx {
  *   - 'server-error' — a server `error` frame (Fault A); an `error` chunk
  *                      with a mapped label was enqueued.
  *   - 'lost'         — the body ended (gracefully OR with an error) WITHOUT a
- *                      terminal frame (Faults B/D). NO terminal chunk is
+ *                      terminal frame (Faults B/D), or the shared reader
+ *                      detected a TASK-23 sequence gap. NO terminal chunk is
  *                      enqueued here — the caller (`buildTurnStream`) emits
  *                      CONNECTION_LOST (or closes cleanly on abort).
+ *
+ * The wire itself — `data: ` framing, the carry buffer across reads, malformed
+ * JSON, `:` keepalive comments, and the TASK-23 seq dedup + gap detection —
+ * belongs to `./sse-frames` and is shared with the agent workspace's reader.
+ * What is left here is the half that is genuinely chat's: turning a frame into
+ * an AI-SDK `UIMessageChunk`, and driving the stores that assistant-ui reads.
  *
  * Each forwarded content chunk bumps `ctx.emittedContent` (the "have we shown
  * anything yet?" counter).
@@ -863,231 +803,157 @@ async function consumeSseAttempt(
     return ctx.openThinking;
   };
 
-  const reader = body
-    .pipeThrough(
-      new TextDecoderStream() as ReadableWritablePair<string, Uint8Array>,
-    )
-    .getReader();
+  /**
+   * Set by the two terminal branches before they stop the read, so the reader's
+   * `stopped` reason can be resolved back to WHICH terminator it was — the
+   * caller behaves differently for the two (a `done` closes cleanly; a
+   * `server-error` has already enqueued its own error chunk).
+   */
+  let terminal: AttemptEnd | null = null;
 
-  // True once we've actively cancelled the reader (a LOCALLY-detected seq gap;
-  // TASK-23 / Codex P2). `reader.cancel()` already releases the lock, so the
-  // finally must NOT also `releaseLock()` or it throws. Cancelling here
-  // propagates upstream through the pipe to the underlying HTTP body, so the
-  // SSE request actually closes — otherwise the browser would leave it open and
-  // the server would keep its per-connection subscribers/writes alive until the
-  // turn ends or times out, even though the client already showed the banner.
-  let cancelledForGap = false;
-  const cancelForGap = async (): Promise<'lost'> => {
-    cancelledForGap = true;
-    try {
-      await reader.cancel();
-    } catch {
-      // Body already closed/errored — nothing to cancel.
+  const end = await readSseFrames(body, (frame: SseFrame) => {
+    if ('done' in frame && frame.done === true) {
+      ctx.closeOpen(controller);
+      controller.enqueue({ type: 'finish', finishReason: 'stop' });
+      terminal = 'done';
+      return 'stop';
     }
-    return 'lost';
-  };
-
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) {
-        // Graceful close with no terminal frame → lost (Faults B/D).
-        return 'lost';
+    // Server `error` frame (Fault A) — orchestrator-terminated turn. NOT
+    // a connection drop: a reconnect wouldn't help, so we surface it.
+    if ('error' in frame && typeof frame.error === 'string') {
+      ctx.closeOpen(controller);
+      const label = ERROR_LABELS[frame.error] ?? DEFAULT_TURN_ERROR;
+      // TASK-160 — append the optional author-facing `detail` line (e.g. a
+      // dev-service-sidecar self-diagnosis). It's UNTRUSTED text: already
+      // bounded + control-char-stripped server-side, we clamp it once more
+      // and render it as plain text (it is never interpreted as markup —
+      // the AgentStatus error row shows the string verbatim).
+      const detail =
+        'detail' in frame && typeof frame.detail === 'string'
+          ? frame.detail.slice(0, MAX_DETAIL_CHARS).trim()
+          : '';
+      controller.enqueue({
+        type: 'error',
+        errorText: detail.length > 0 ? `${label}\n${detail}` : label,
+      });
+      terminal = 'server-error';
+      return 'stop';
+    }
+    // phase frame — out-of-band; drives the status row directly.
+    if ('phase' in frame && typeof frame.phase === 'string') {
+      if (ctx.contentSeen) return 'continue'; // pre-content only
+      const label = PHASE_LABELS[frame.phase];
+      if (label !== undefined) agentStatusActions.set(label);
+      return 'continue';
+    }
+    // permissionRequest frame — out-of-band JIT bundled approval card
+    // (§11.3). Drives the card store; the stream keeps flowing
+    // (NON-terminal, like phase). Carries only public manifest data — no
+    // secret rides this frame.
+    if ('permissionRequest' in frame && frame.permissionRequest) {
+      permissionCardActions.show(frame.permissionRequest);
+      return 'continue';
+    }
+    // decisionRaised frame (TASK-261) — out-of-band, same posture as
+    // permissionRequest: the stream keeps flowing (NON-terminal), and
+    // nothing here touches `controller` or enqueues a UIMessageChunk.
+    // A held call is not part of the transcript; the card that renders
+    // it (T4) is fed by the decisions route, not by this frame. All this
+    // branch does is bump a counter so `useConversationDecisions` knows
+    // to re-read that route. A frame without a decisionId describes
+    // nothing actionable, so it's dropped rather than triggering a read.
+    if ('decisionRaised' in frame && frame.decisionRaised) {
+      if (
+        typeof frame.decisionRaised.decisionId === 'string' &&
+        frame.decisionRaised.decisionId.length > 0
+      ) {
+        decisionRaisedActions.raise();
       }
-      const data = ctx.carry + value;
-      const lines = data.split('\n');
-      ctx.carry = lines.pop() ?? '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith(':')) continue;
-        if (!trimmed.startsWith('data: ')) continue;
-
-        let frame: SseFrame;
-        try {
-          frame = JSON.parse(trimmed.slice(6)) as SseFrame;
-        } catch {
-          // Malformed JSON — skip. Server is the source of truth.
-          continue;
-        }
-
-        if ('done' in frame && frame.done === true) {
-          ctx.closeOpen(controller);
-          controller.enqueue({ type: 'finish', finishReason: 'stop' });
-          return 'done';
-        }
-        // Server `error` frame (Fault A) — orchestrator-terminated turn. NOT
-        // a connection drop: a reconnect wouldn't help, so we surface it.
-        if ('error' in frame && typeof frame.error === 'string') {
-          ctx.closeOpen(controller);
-          const label = ERROR_LABELS[frame.error] ?? DEFAULT_TURN_ERROR;
-          // TASK-160 — append the optional author-facing `detail` line (e.g. a
-          // dev-service-sidecar self-diagnosis). It's UNTRUSTED text: already
-          // bounded + control-char-stripped server-side, we clamp it once more
-          // and render it as plain text (it is never interpreted as markup —
-          // the AgentStatus error row shows the string verbatim).
-          const detail =
-            'detail' in frame && typeof frame.detail === 'string'
-              ? frame.detail.slice(0, MAX_DETAIL_CHARS).trim()
-              : '';
-          controller.enqueue({
-            type: 'error',
-            errorText: detail.length > 0 ? `${label}\n${detail}` : label,
-          });
-          return 'server-error';
-        }
-        // phase frame — out-of-band; drives the status row directly.
-        if ('phase' in frame && typeof frame.phase === 'string') {
-          if (ctx.contentSeen) continue; // pre-content only
-          const label = PHASE_LABELS[frame.phase];
-          if (label !== undefined) agentStatusActions.set(label);
-          continue;
-        }
-        // permissionRequest frame — out-of-band JIT bundled approval card
-        // (§11.3). Drives the card store; the stream keeps flowing
-        // (NON-terminal, like phase). Carries only public manifest data — no
-        // secret rides this frame.
-        if ('permissionRequest' in frame && frame.permissionRequest) {
-          permissionCardActions.show(frame.permissionRequest);
-          continue;
-        }
-        // decisionRaised frame (TASK-261) — out-of-band, same posture as
-        // permissionRequest: the stream keeps flowing (NON-terminal), and
-        // nothing here touches `controller` or enqueues a UIMessageChunk.
-        // A held call is not part of the transcript; the card that renders
-        // it (T4) is fed by the decisions route, not by this frame. All this
-        // branch does is bump a counter so `useConversationDecisions` knows
-        // to re-read that route. A frame without a decisionId describes
-        // nothing actionable, so it's dropped rather than triggering a read.
-        if ('decisionRaised' in frame && frame.decisionRaised) {
-          if (
-            typeof frame.decisionRaised.decisionId === 'string' &&
-            frame.decisionRaised.decisionId.length > 0
-          ) {
-            decisionRaisedActions.raise();
-          }
-          continue;
-        }
-        // TASK-23 — per-chunk seq dedup + gap detection (content frames only).
-        // The host stamps a monotonic per-reqId `seq` (minted from 1) on every
-        // content frame.
-        //   - seq <= lastSeq  → a replayed duplicate; SKIP it (exact dedup of a
-        //     partial buffer replay — this is what makes a same-reqId reconnect
-        //     loss-free instead of double-rendering the replayed tail).
-        //   - the FIRST seq-bearing content frame with seq > 1 → the bounded
-        //     256-frame buffer already dropped the head (seq 1..seq-1) before
-        //     THIS client ever saw it. Servers always mint from 1, so a first
-        //     frame above 1 is proof of a truncated head → surface the
-        //     CONNECTION_LOST banner (return 'lost') rather than rendering the
-        //     tail as a complete answer and silently omitting the head (Codex
-        //     P2). A first frame at exactly seq 1 is the clean start.
-        //   - lastSeq > 0 && seq > lastSeq + 1 → a mid-stream contiguity GAP:
-        //     the buffer dropped frames the client never saw. Same banner.
-        //   - otherwise → accept and advance lastSeq.
-        // Frames WITHOUT a numeric seq (older server build) bypass this entirely
-        // and stream as before (forward-compat — no dedup, no gap detection).
-        if ('kind' in frame && typeof (frame as { seq?: unknown }).seq === 'number') {
-          const seq = (frame as { seq: number }).seq;
-          if (seq <= ctx.lastSeq) {
-            continue; // duplicate replayed frame — already shown
-          }
-          if (ctx.lastSeq === 0) {
-            // First seq-bearing content frame for this stream. A clean start is
-            // seq 1; anything higher means the buffer head was dropped before
-            // this client connected → loss, not a valid baseline. The body is
-            // still open, so cancel it (we won't read any more of it).
-            if (seq > 1) {
-              return await cancelForGap();
-            }
-          } else if (seq > ctx.lastSeq + 1) {
-            // Hole in the sequence after content already streamed → loss.
-            return await cancelForGap();
-          }
-          ctx.lastSeq = seq;
-        }
-        // text/thinking chunk
-        if (
-          'kind' in frame &&
-          (frame.kind === 'text' || frame.kind === 'thinking')
-        ) {
-          if (!ctx.contentSeen) {
-            ctx.contentSeen = true;
-            agentStatusActions.set('Thinking…');
-          }
-          const id = ensureOpenForKind(frame.kind);
-          enqueueContent(
-            frame.kind === 'thinking'
-              ? { type: 'reasoning-delta', id, delta: frame.text }
-              : { type: 'text-delta', id, delta: frame.text },
-          );
-          continue;
-        }
-        // tool-use frame
-        if ('kind' in frame && frame.kind === 'tool-use') {
-          if (!ctx.contentSeen) {
-            ctx.contentSeen = true;
-            agentStatusActions.set('Thinking…');
-          }
-          ctx.closeOpen(controller);
-          // TASK-271: stash the host-authored phrase for the ToolFallback
-          // label. toolName stays the STABLE stripped identifier — renderer
-          // dispatch (Thread.tsx) and artifact pairing (MarkdownText.tsx)
-          // key on it, and the mcp__ strip remains the fallback for calls
-          // with no phrase.
-          rememberToolPhrase(frame.toolCallId, frame.activityPhrase);
-          enqueueContent({
-            type: 'tool-input-available',
-            toolCallId: frame.toolCallId,
-            // TASK-260: the SDK renames an MCP-hosted tool to
-            // `mcp__<server>__<tool>` — that's an internal wire identifier,
-            // not something a person should see. Strip it so the transcript
-            // renders the bare ax-native name the renderers already key on.
-            toolName: stripMcpToolPrefix(frame.toolName),
-            input: frame.input,
-            dynamic: true,
-          });
-          continue;
-        }
-        // tool-result frame
-        if ('kind' in frame && frame.kind === 'tool-result') {
-          if (!ctx.contentSeen) {
-            ctx.contentSeen = true;
-            agentStatusActions.set('Thinking…');
-          }
-          // TASK-270: stash the held mark before enqueueing — the enqueued
-          // part cannot carry it (lossy bridge), and the reader side
-          // (history-adapter) stashes the same way, so live and reload agree.
-          rememberToolHeld(frame.toolCallId, frame.held);
-          if (frame.isError === true) {
-            enqueueContent({
-              type: 'tool-output-error',
-              toolCallId: frame.toolCallId,
-              errorText: frame.output || 'tool failed',
-              dynamic: true,
-            });
-          } else {
-            enqueueContent({
-              type: 'tool-output-available',
-              toolCallId: frame.toolCallId,
-              output: frame.output,
-              dynamic: true,
-            });
-          }
-          continue;
-        }
+      return 'continue';
+    }
+    // Everything below is a content frame. Anything the reader handed us at
+    // this point has already cleared the TASK-23 seq cursor: a replayed
+    // duplicate never arrives, and a contiguity gap ends the read instead
+    // (see `./sse-frames`), which surfaces as the CONNECTION_LOST banner.
+    //
+    // text/thinking chunk
+    if (
+      'kind' in frame &&
+      (frame.kind === 'text' || frame.kind === 'thinking')
+    ) {
+      if (!ctx.contentSeen) {
+        ctx.contentSeen = true;
+        agentStatusActions.set('Thinking…');
       }
+      const id = ensureOpenForKind(frame.kind);
+      enqueueContent(
+        frame.kind === 'thinking'
+          ? { type: 'reasoning-delta', id, delta: frame.text }
+          : { type: 'text-delta', id, delta: frame.text },
+      );
+      return 'continue';
     }
-  } catch {
-    // Hard body error (network drop mid-consumption) with no terminal frame.
-    return 'lost';
-  } finally {
-    // `reader.cancel()` (the locally-detected gap path) already released the
-    // lock — calling releaseLock() again would throw. Only release on the
-    // non-cancel exits (done / terminal frame / body error).
-    if (!cancelledForGap) {
-      reader.releaseLock();
+    // tool-use frame
+    if ('kind' in frame && frame.kind === 'tool-use') {
+      if (!ctx.contentSeen) {
+        ctx.contentSeen = true;
+        agentStatusActions.set('Thinking…');
+      }
+      ctx.closeOpen(controller);
+      // TASK-271: stash the host-authored phrase for the ToolFallback
+      // label. toolName stays the STABLE stripped identifier — renderer
+      // dispatch (Thread.tsx) and artifact pairing (MarkdownText.tsx)
+      // key on it, and the mcp__ strip remains the fallback for calls
+      // with no phrase.
+      rememberToolPhrase(frame.toolCallId, frame.activityPhrase);
+      enqueueContent({
+        type: 'tool-input-available',
+        toolCallId: frame.toolCallId,
+        // TASK-260: the SDK renames an MCP-hosted tool to
+        // `mcp__<server>__<tool>` — that's an internal wire identifier,
+        // not something a person should see. Strip it so the transcript
+        // renders the bare ax-native name the renderers already key on.
+        toolName: stripMcpToolPrefix(frame.toolName),
+        input: frame.input,
+        dynamic: true,
+      });
+      return 'continue';
     }
-  }
+    // tool-result frame
+    if ('kind' in frame && frame.kind === 'tool-result') {
+      if (!ctx.contentSeen) {
+        ctx.contentSeen = true;
+        agentStatusActions.set('Thinking…');
+      }
+      // TASK-270: stash the held mark before enqueueing — the enqueued
+      // part cannot carry it (lossy bridge), and the reader side
+      // (history-adapter) stashes the same way, so live and reload agree.
+      rememberToolHeld(frame.toolCallId, frame.held);
+      if (frame.isError === true) {
+        enqueueContent({
+          type: 'tool-output-error',
+          toolCallId: frame.toolCallId,
+          errorText: frame.output || 'tool failed',
+          dynamic: true,
+        });
+      } else {
+        enqueueContent({
+          type: 'tool-output-available',
+          toolCallId: frame.toolCallId,
+          output: frame.output,
+          dynamic: true,
+        });
+      }
+      return 'continue';
+    }
+    return 'continue';
+  });
+
+  // 'stopped' is the only end that carries a terminal chunk. Everything else —
+  // a graceful close with no terminator, a seq gap, a body error, or a
+  // consumer that threw — is a drop the caller turns into CONNECTION_LOST.
+  if (end.reason === 'stopped' && terminal !== null) return terminal;
+  return 'lost';
 }
 
 /**

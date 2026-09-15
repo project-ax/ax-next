@@ -265,4 +265,58 @@ export default tseslint.config(
       '@typescript-eslint/no-restricted-imports': 'off',
     },
   },
+  {
+    // TASK-349 — the shared SSE frame reader owns the wire and nothing else.
+    //
+    // It exists because chat's parser was welded to assistant-ui chunk emission,
+    // which is why the agent workspace grew a second parser rather than reuse
+    // it. The module's whole value is that BOTH surfaces can consume it, and it
+    // loses that the moment it imports a renderer: an `ai` or `@assistant-ui/*`
+    // import drags the runtime the workspace deliberately does not mount, and a
+    // `react` import makes it unusable outside a component tree.
+    //
+    // Its docblock claims all three. This is the claim being checked rather
+    // than asserted — the next person to add "just one" render helper here gets
+    // told at lint time, not after the workspace has quietly grown a bundle.
+    //
+    // NOTE: a flat-config block REPLACES this rule's options for the matched
+    // files rather than merging, so the @ax/* group from the base block is
+    // repeated here. Dropping it would silently exempt this file from
+    // invariant 2.
+    files: ['packages/channel-web/src/lib/sse-frames.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['ai', 'ai/*', '@assistant-ui/*', 'react', 'react-dom'],
+              message:
+                'sse-frames.ts is the shared SSE wire reader: bytes in, typed frames out. Rendering belongs to its consumers — lib/transport.ts turns frames into AI-SDK chunks for chat, lib/workspace-api.ts turns them into callbacks for the agent workspace. If this module needs a renderer, the thing you are adding belongs in one of those two instead. See TASK-349 / docs/plans/2026-09-12-workspace-as-sole-interface.md Tier 2.',
+            },
+            {
+              group: [
+                '@ax/*',
+                '!@ax/core',
+                '!@ax/test-harness',
+                '!@ax/ipc-protocol',
+                '!@ax/workspace-protocol',
+                '!@ax/sandbox-protocol',
+                '!@ax/workspace-bundle-protocol',
+                '!@ax/ipc-core',
+                '!@ax/agent-claude-sdk-runner-host',
+                '!@ax/validator-routine',
+                '!@ax/skills-parser',
+                '!@ax/agent-identity-templates',
+                '!@ax/user-files-read',
+              ],
+              allowTypeImports: true,
+              message:
+                'Cross-plugin runtime imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. Type-only imports (`import type {...}` / `export type {...}`) are allowed — boundary types are how plugins agree on a shared contract without runtime coupling. The only @ax/* runtime imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol + @ax/sandbox-protocol + @ax/workspace-bundle-protocol (wire / hook-bus contracts), @ax/ipc-core (transport-agnostic IPC library), @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser), @ax/validator-routine (pure-function routine frontmatter parser shared between the validator and the routines plugin), @ax/skills-parser (pure-function SKILL.md parser + capability types shared between @ax/skills and @ax/agents), @ax/agent-identity-templates (pure-data bootstrap/identity template strings shared between @ax/agent-claude-sdk-runner and @ax/channel-web), and @ax/user-files-read (the one realpath-confined reader for an agent durable user-files subtree, shared by both sandbox providers)',
+            },
+          ],
+        },
+      ],
+    },
+  },
 );
