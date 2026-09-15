@@ -113,6 +113,24 @@ export interface RunE2EQuestionDeps {
    * fallback; when absent, pure BM25 (the TASK-190 baseline).
    */
   orchestratorClient?: OrchestratorClient;
+  /**
+   * Diagnostic seam (TASK-361) for inspecting the memory tree mid-ingest.
+   *
+   * `afterExtraction` runs once per session, after that session's Observer has
+   * settled and BEFORE the consolidation flush — so the inbox it sees is raw
+   * extraction output, before the consolidator can promote, merge or drop
+   * anything. `afterIngest` runs once, after the last session, on the
+   * consolidated tree.
+   *
+   * A seam rather than a second copy of the ingest loop on purpose: the loop
+   * below encodes the settle-then-flush ordering that the inbox-stranding bug
+   * (2026-07-08) came from getting wrong, and a diagnostic that reimplemented it
+   * would eventually measure a pipeline nothing runs.
+   */
+  observeIngest?: {
+    afterExtraction?: (sessionIndex: number, workspaceRoot: string) => Promise<void>;
+    afterIngest?: (workspaceRoot: string) => Promise<void>;
+  };
 }
 
 /**
@@ -246,10 +264,13 @@ export async function runE2EQuestion(deps: RunE2EQuestionDeps): Promise<E2EQuest
       //      alone resolves on the bounded raceTimeout wrapper, not the detached
       //      work, so both steps are required before we touch docs/ or tear down.
       if (settleObserver) await settleObserver(agentId);
+      // TASK-361: the inbox is only raw extraction output at this exact point.
+      await deps.observeIngest?.afterExtraction?.(i, workspaceRoot);
       if (debouncer) await debouncer.flush();
       if (settleConsolidation) await settleConsolidation(agentId);
       sessionsIngested += 1;
     }
+    await deps.observeIngest?.afterIngest?.(workspaceRoot);
 
     // Answer: get the REAL injected block via system-prompt:augment, and give the
     // agent the REAL retrieval surface over the consolidated sqlite index —

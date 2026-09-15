@@ -1,6 +1,9 @@
+import { readdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { describe, it, expect, vi } from 'vitest';
 import type { LlmCallInput, LlmCallOutput } from '@ax/core';
 import type { OrchestratorClient } from '@ax/memory-strata';
+import { INBOX_DIR, DOCS_DIR } from '../../../src/paths.js';
 import { runE2EQuestion, parseCorpusDate } from '../e2e-driver.js';
 import type { E2EAnswerClient } from '../e2e-answer.js';
 import type { LongMemEvalSample } from '../corpora/longmemeval-s.js';
@@ -315,6 +318,52 @@ describe('runE2EQuestion (TASK-189 integration, stubbed LLMs)', () => {
     expect(JSON.stringify(capturedSearchRows)).toContain('(2023-05-20)');
     // (b) question_date reached the answer client.
     expect(capturedSystem).toBe("Today's date: 2023-06-01");
+  });
+
+  it('exposes the ingest to observeIngest: inbox BEFORE consolidation, tree after (TASK-361)', async () => {
+    // The detail-loss diagnostic has to tell "the Observer never wrote the value
+    // down" apart from "the consolidator dropped it later", which is only
+    // possible if something reads the inbox while it still holds raw extraction
+    // output. Consolidation drains it, so the ONLY correct observation point is
+    // after settleObserver and before flush() — pin it here, because a seam that
+    // silently moved after the flush would report every extraction success as an
+    // extraction failure.
+    const inboxPerSession: string[][] = [];
+    let consolidatedDocs: string[] = [];
+
+    const answerClient: E2EAnswerClient = {
+      async answer() {
+        return { text: 'stub', usage: { in: 0, out: 0 }, toolCalls: 0 };
+      },
+    };
+
+    await runE2EQuestion({
+      sample: answerableSample,
+      extractionLlm: stubExtraction(),
+      answerClient,
+      observeIngest: {
+        async afterExtraction(_i, workspaceRoot) {
+          inboxPerSession.push(
+            await readdir(join(workspaceRoot, INBOX_DIR)).catch(() => [] as string[]),
+          );
+        },
+        async afterIngest(workspaceRoot) {
+          consolidatedDocs = await readdir(join(workspaceRoot, DOCS_DIR), { recursive: true })
+            .then((n) => n.map(String))
+            .catch(() => [] as string[]);
+        },
+      },
+    });
+
+    // Session 0 mentions cortado, so its fact is in the inbox, unconsolidated.
+    expect(inboxPerSession).toHaveLength(2);
+    expect(inboxPerSession[0]).toHaveLength(1);
+    // Session 1 extracts nothing AND session 0's fact has since been promoted
+    // out of the inbox — i.e. the observation really is pre-flush for the
+    // current session and post-flush for prior ones.
+    expect(inboxPerSession[1]).toHaveLength(0);
+    // After ingest the promoted fact is in the tree the agent retrieves from.
+    expect(consolidatedDocs.join('\n')).toContain('coffee');
   });
 });
 
