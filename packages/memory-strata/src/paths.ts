@@ -58,14 +58,26 @@ export type DocCategory =
 
 /**
  * All `DocCategory` values, ordered canonically (TASK-367). The source of truth
- * for every RUNTIME use of the category set. Three callers read it instead of
- * hand-maintaining a copy: `doc-store.ts`'s `listDocs` walk, `doc-id.ts`'s
- * `VALID_CATEGORIES` traversal guard, and the consolidator's cross-category
- * slug adoption. `.claude/memory/decisions.md` (2026-07-07) records that a
- * hand-maintained copy is a silent no-op waiting to happen when a category is
+ * for every RUNTIME use of the category set. Two callers read it directly —
+ * `doc-store.ts`'s `listDocs` walk and `doc-id.ts`'s `VALID_CATEGORIES`
+ * traversal guard — and a third, the consolidator's cross-category slug
+ * adoption, reaches it through `SUBJECT_DOC_CATEGORIES` below (it MUST use the
+ * subset: scanning this list would include `docs/rollup/`, which is the whole
+ * point of the subset). `.claude/memory/decisions.md` (2026-07-07) records that
+ * a hand-maintained copy is a silent no-op waiting to happen when a category is
  * added.
  *
- * Two enumerations deliberately remain separate — neither is a stale copy:
+ * SCOPE: this is the `DocCategory` axis — where a doc LIVES. The parallel
+ * `factType` axis (what KIND of fact an observation carries) is a different
+ * enumeration that happens to share five of these names while adding `answer`
+ * and omitting `rollup`: `observer.ts`'s extraction enum, `types.ts`'s
+ * `Observation.factType`, and `tools/memory-note.ts`'s `VALID_FACT_TYPES`.
+ * Those are deliberately NOT unified with this list — `cluster.ts` maps between
+ * the two axes (`FACT_TYPE_TO_CATEGORY`, `pickCategory`) precisely because they
+ * are different concepts.
+ *
+ * Two enumerations on THIS axis deliberately remain separate — neither is a
+ * stale copy:
  *
  *   - `cluster.ts`'s `KNOWN_CATEGORIES` enumerates `ClusterCategory`, a
  *     different type with different semantics ("what kind of fact dominated

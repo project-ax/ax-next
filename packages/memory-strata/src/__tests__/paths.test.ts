@@ -27,15 +27,20 @@ describe('DOC_CATEGORIES', () => {
   it('SUBJECT_DOC_CATEGORIES is DOC_CATEGORIES minus exactly rollup, in a pinned order', () => {
     expect(SUBJECT_DOC_CATEGORIES).not.toContain('rollup');
     expect(DOC_CATEGORIES).toContain('rollup');
-    // Pinned as a LITERAL, deliberately, rather than re-derived with the same
-    // `filter(c => c !== 'rollup')` the source uses — that phrasing is
-    // tautological and cannot catch a bug in the predicate itself. Order is
-    // load-bearing: the consolidator's cross-category slug adoption scans this
-    // list in order and returns the FIRST hit, which is what makes adoption
-    // deterministic on a legacy tree holding the same slug in two categories
-    // (the "legacy multi-hit" regression test in consolidator.test.ts).
-    // Reordering or extending the categories SHOULD fail here and be
-    // re-confirmed deliberately.
+    // Pinned as a LITERAL, deliberately, rather than re-derived as
+    // `DOC_CATEGORIES.filter(c => c !== 'rollup')`. To be precise about why,
+    // because the obvious reason is the wrong one: that phrasing DOES catch a
+    // change to the source predicate (flip it to `c !== 'entity'` and the two
+    // sides diverge). What it cannot catch is a change to `DOC_CATEGORIES`
+    // itself — membership or ORDER — because both sides re-derive from it and
+    // move together. Order is the half that matters here: the consolidator's
+    // cross-category slug adoption scans this list in order and returns the
+    // FIRST hit, which is what makes adoption deterministic on a legacy tree
+    // holding the same slug under two categories. Note the "legacy multi-hit"
+    // test in consolidator.test.ts asserts only that the choice is STABLE, not
+    // which category wins — so this literal is the only thing pinning
+    // entity-before-general. Reordering or extending the categories SHOULD fail
+    // here and be re-confirmed deliberately.
     expect([...SUBJECT_DOC_CATEGORIES]).toEqual([
       'entity', 'preference', 'decision', 'episode', 'general',
     ]);
