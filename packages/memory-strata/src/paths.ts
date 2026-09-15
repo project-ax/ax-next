@@ -57,12 +57,28 @@ export type DocCategory =
   | 'rollup';
 
 /**
- * All `DocCategory` values, ordered canonically (TASK-367). The single source
- * of truth for the category set — `doc-store.ts`'s `listDocs` walk and the
- * consolidator's cross-category slug adoption both iterate this instead of
- * hand-maintaining their own copy. `.claude/memory/decisions.md` (2026-07-07)
- * records that a hand-maintained copy is a silent no-op waiting to happen when
- * a category is added.
+ * All `DocCategory` values, ordered canonically (TASK-367). The source of truth
+ * for every RUNTIME use of the category set. Three callers read it instead of
+ * hand-maintaining a copy: `doc-store.ts`'s `listDocs` walk, `doc-id.ts`'s
+ * `VALID_CATEGORIES` traversal guard, and the consolidator's cross-category
+ * slug adoption. `.claude/memory/decisions.md` (2026-07-07) records that a
+ * hand-maintained copy is a silent no-op waiting to happen when a category is
+ * added.
+ *
+ * Two enumerations deliberately remain separate — neither is a stale copy:
+ *
+ *   - `cluster.ts`'s `KNOWN_CATEGORIES` enumerates `ClusterCategory`, a
+ *     different type with different semantics ("what kind of fact dominated
+ *     this batch" vs "where the file lives"). That file's header explains why
+ *     collapsing them would be wrong.
+ *   - `types.ts`'s `DocFileType` / `MemoryFileType` are TYPE-level
+ *     `docs/<category>` literal unions, not a runtime list. They could be
+ *     derived (`` `docs/${DocCategory}` ``) and arguably should be — left
+ *     alone here to keep this change scoped; see the TASK-367 follow-up.
+ *
+ * `ENUMERABLE_CATEGORIES` (consolidator.ts / rollup.ts) is a SUBSET
+ * ({episode, entity, general}), not the category set, so it is not a copy of
+ * this list — but it is its own hand-maintained mirror pair. Same follow-up.
  *
  * TWO separate guards, because they catch opposite mistakes and neither one
  * covers both:

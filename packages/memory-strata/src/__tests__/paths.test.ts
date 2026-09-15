@@ -24,12 +24,20 @@ describe('DOC_CATEGORIES', () => {
     expect(new Set(DOC_CATEGORIES).size).toBe(DOC_CATEGORIES.length);
   });
 
-  it('SUBJECT_DOC_CATEGORIES is DOC_CATEGORIES minus exactly rollup, order preserved', () => {
+  it('SUBJECT_DOC_CATEGORIES is DOC_CATEGORIES minus exactly rollup, in a pinned order', () => {
     expect(SUBJECT_DOC_CATEGORIES).not.toContain('rollup');
     expect(DOC_CATEGORIES).toContain('rollup');
-    // Order matters: the consolidator's cross-category slug adoption scans this
-    // list in order, and the "legacy multi-hit tree" regression test in
-    // consolidator.test.ts depends on that order being deterministic.
-    expect([...SUBJECT_DOC_CATEGORIES]).toEqual(DOC_CATEGORIES.filter((c) => c !== 'rollup'));
+    // Pinned as a LITERAL, deliberately, rather than re-derived with the same
+    // `filter(c => c !== 'rollup')` the source uses — that phrasing is
+    // tautological and cannot catch a bug in the predicate itself. Order is
+    // load-bearing: the consolidator's cross-category slug adoption scans this
+    // list in order and returns the FIRST hit, which is what makes adoption
+    // deterministic on a legacy tree holding the same slug in two categories
+    // (the "legacy multi-hit" regression test in consolidator.test.ts).
+    // Reordering or extending the categories SHOULD fail here and be
+    // re-confirmed deliberately.
+    expect([...SUBJECT_DOC_CATEGORIES]).toEqual([
+      'entity', 'preference', 'decision', 'episode', 'general',
+    ]);
   });
 });

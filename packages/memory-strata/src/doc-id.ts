@@ -12,20 +12,19 @@
 // closed category set, single slash, `^[a-z0-9-]+$` slug, no `..`, no
 // leading/trailing slash. Run it before ANY lookup, host or agent-tier.
 
-import type { DocCategory } from './paths.js';
+import { DOC_CATEGORIES, type DocCategory } from './paths.js';
 
-const VALID_CATEGORIES = new Set<DocCategory>([
-  'entity',
-  'preference',
-  'decision',
-  'episode',
-  'general',
-  // TASK-200: rollups are addressable docs. `parseDocId` gates the orchestrator
-  // map menu, the `<load>` guard, `memory_read_section`, AND matchedFacts
-  // enrichment (tools/memory-search.ts). Omit and a retrieved rollup surfaces
-  // with NO instance lines on the orchestrator path being tuned 60→65%.
-  'rollup',
-]);
+// TASK-367: derived from `DOC_CATEGORIES` rather than hand-listed. This is the
+// copy it was most dangerous to leave behind: `parseDocId` is the TRAVERSAL
+// GUARD above, so a category present on the type but missing here does not
+// merely no-op — it rejects legitimate docIds of the new category on the
+// `<load>` path, the orchestrator map menu, `memory_read_section`, AND
+// matchedFacts enrichment (tools/memory-search.ts). That is the TASK-200
+// lesson (rollups had to be added here or a retrieved rollup surfaced with no
+// instance lines) generalized: the list is now impossible to forget, because
+// `paths.ts`'s `_everyDocCategoryIsListed` fails the build if a union member
+// is missing from the one array both files read.
+const VALID_CATEGORIES = new Set<DocCategory>(DOC_CATEGORIES);
 const SLUG_RE = /^[a-z0-9-]+$/;
 
 export function parseDocId(docId: string): { category: DocCategory; slug: string } | null {
