@@ -161,14 +161,12 @@ export const ERROR_LABELS: Record<string, string> = {
  *  already bounded + sanitized server-side; this is a final client-side clamp). */
 export const MAX_DETAIL_CHARS = 400;
 
-/**
- * The wire shape used to be restated here — a third copy of `SseFrame`,
- * already drifting from `src/server/types.ts` (it had no `service` / `slotTag`
- * on a permission slot, and typed `phase` as a bare `string`). TASK-349 moved
- * the parsing itself into `./sse-frames`, so the type comes from the one file
- * that defines the wire. What stays in this module is everything that turns a
- * frame into a `UIMessageChunk`.
- */
+// The wire shape used to be restated here — a third copy of `SseFrame`, already
+// drifting from `src/server/types.ts` (it had no `service` / `slotTag` on a
+// permission slot, and typed `phase` as a bare `string`). TASK-349 moved the
+// parsing itself into `./sse-frames`, so the type now comes from the one file
+// that defines the wire. What stays in this module is everything that turns a
+// frame into a `UIMessageChunk`.
 
 interface AxChatTransportOptions {
   /**
