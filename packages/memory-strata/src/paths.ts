@@ -56,6 +56,54 @@ export type DocCategory =
   // hot-tier content).
   | 'rollup';
 
+/**
+ * All `DocCategory` values, ordered canonically (TASK-367). The single source
+ * of truth for the category set — `doc-store.ts`'s `listDocs` walk and the
+ * consolidator's cross-category slug adoption both iterate this instead of
+ * hand-maintaining their own copy. `.claude/memory/decisions.md` (2026-07-07)
+ * records that a hand-maintained copy is a silent no-op waiting to happen when
+ * a category is added.
+ *
+ * TWO separate guards, because they catch opposite mistakes and neither one
+ * covers both:
+ *
+ *   - `satisfies` below rejects an entry that is NOT a `DocCategory` (a typo,
+ *     a removed category left behind).
+ *   - `_everyDocCategoryIsListed` rejects a `DocCategory` that is MISSING from
+ *     this array. `satisfies` does NOT do this — measured: a list of `['a','b']`
+ *     `satisfies readonly ('a'|'b'|'c')[]` compiles clean. Without the second
+ *     guard, adding a 7th category to the union and forgetting this array is
+ *     exactly the silent no-op the 2026-07-07 entry warns about.
+ */
+export const DOC_CATEGORIES = [
+  'entity', 'preference', 'decision', 'episode', 'general', 'rollup',
+] as const satisfies readonly DocCategory[];
+
+/**
+ * Compile-time exhaustiveness for `DOC_CATEGORIES` (see above). If a
+ * `DocCategory` union member is not listed, `Exclude<...>` is non-`never`, the
+ * conditional resolves to `never`, and assigning `true` fails to compile with
+ * "Type 'true' is not assignable to type 'never'" — pointing here. Lives in
+ * `paths.ts` rather than a test because `pnpm build` does not type-check
+ * `__tests__` (see `.claude/memory/` — tsc excludes test files).
+ */
+const _everyDocCategoryIsListed: [Exclude<DocCategory, (typeof DOC_CATEGORIES)[number]>] extends [never]
+  ? true
+  : never = true;
+void _everyDocCategoryIsListed;
+
+/**
+ * `DOC_CATEGORIES` minus `rollup` — the categories a promoted SUBJECT doc can
+ * live in. `rollup` docs are synthesized from other docs (write-time, hash-GC'd,
+ * unlink-guarded — see `rollup.ts`), not a destination a subject cluster ever
+ * elects, so callers that scan "where could this subject's doc already live"
+ * (the consolidator's cross-category slug adoption) use this list, not
+ * `DOC_CATEGORIES`.
+ */
+export const SUBJECT_DOC_CATEGORIES = DOC_CATEGORIES.filter(
+  (c): c is Exclude<DocCategory, 'rollup'> => c !== 'rollup',
+);
+
 export function workspaceMemoryRoot(): string {
   return MEMORY_ROOT;
 }

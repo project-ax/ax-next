@@ -15,7 +15,7 @@ import { HookBus, makeAgentContext } from '@ax/core';
 import { runConsolidation, type ConsolidationLogger } from '../consolidator.js';
 import { writeNewDoc } from '../doc-store.js';
 import { buildMarkdownFile } from '../frontmatter.js';
-import { INBOX_DIR, MEMORY_ROOT } from '../paths.js';
+import { INBOX_DIR, MEMORY_ROOT, SUBJECT_DOC_CATEGORIES, type DocCategory } from '../paths.js';
 import type { MemoryFrontmatter } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -928,5 +928,355 @@ describe('consolidator', () => {
     );
     expect(doc).toContain('Roscioli');
     expect(doc).toContain('planning a trip to Rome');
+  });
+
+  // -------------------------------------------------------------------------
+  // TASK-367: cross-category slug adoption
+  // -------------------------------------------------------------------------
+
+  /** Assert none of `SUBJECT_DOC_CATEGORIES` except `keep` holds a doc for `slug`. */
+  async function assertOnlyDocIn(slug: string, keep: DocCategory): Promise<void> {
+    for (const category of SUBJECT_DOC_CATEGORIES) {
+      const p = join(workspaceRoot, 'permanent/memory/docs', category, `${slug}.md`);
+      if (category === keep) {
+        await expect(stat(p)).resolves.toBeTruthy();
+      } else {
+        await expect(stat(p)).rejects.toThrow(/ENOENT/);
+      }
+    }
+  }
+
+  it('cross-category slug adoption: a cluster that flips vote appends to the pre-existing doc in the OTHER category instead of minting a sibling', async () => {
+    const now = new Date('2026-05-10T12:00:00.000Z');
+
+    // Pre-existing doc under 'entity' (e.g. written by a prior pass that voted
+    // entity for this subject).
+    await writeNewDoc({
+      workspaceRoot,
+      category: 'entity',
+      slug: 'book-club',
+      summary: 'The book club meets on Thursdays',
+      subject: 'Book Club',
+      factType: 'entity',
+      confidence: 0.9,
+      sourceObservationIds: ['obs-seed-book-club'],
+      now,
+      facts: ['(2026-04-01) The book club meets on Thursdays'],
+    });
+
+    // A NEW cluster for the same subject whose only observation votes 'general'.
+    await writeInboxFixture(
+      'obs-book-club-new.md',
+      {
+        id: 'obs-book-club-new',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.9,
+        pinned: false,
+        summary: 'The book club picked "Klara and the Sun" for next month',
+        subject: 'Book Club',
+        factType: 'general',
+        event_time: now.toISOString(),
+        recorded_at: now.toISOString(),
+      },
+      '# Observation\n\nThe book club picked "Klara and the Sun" for next month\n',
+    );
+
+    const logger = makeLoggerSpy();
+    const result = await runConsolidation({ workspaceRoot, now, logger });
+    expect(result.promoted).toBe(1);
+
+    // Exactly one doc for this slug, tree-wide — the ORIGINAL (entity) one.
+    await assertOnlyDocIn('book-club', 'entity');
+
+    const doc = await readFile(
+      join(workspaceRoot, 'permanent/memory/docs/entity/book-club.md'),
+      'utf8',
+    );
+    expect(doc).toContain('The book club meets on Thursdays');
+    expect(doc).toContain('picked "Klara and the Sun"');
+
+    const adoptedWarnings = logger.warnCalls.filter(
+      (c) => c.event === 'memory_strata_doc_category_adopted',
+    );
+    expect(adoptedWarnings).toHaveLength(1);
+    expect(adoptedWarnings[0]!.fields).toMatchObject({
+      slug: 'book-club',
+      electedCategory: 'general',
+      adoptedCategory: 'entity',
+    });
+  });
+
+  it('cross-category slug adoption: both halves of a split subject are retrievable from ONE doc (living-room-decor shape)', async () => {
+    const now = new Date('2026-05-10T12:00:00.000Z');
+
+    // First half: seeded under 'entity' (as if a prior pass voted entity).
+    await writeNewDoc({
+      workspaceRoot,
+      category: 'entity',
+      slug: 'living-room-decor',
+      summary: 'Rearranged the living room furniture',
+      subject: 'Living Room Decor',
+      factType: 'entity',
+      confidence: 0.9,
+      sourceObservationIds: ['obs-seed-furniture'],
+      now,
+      facts: ['(2026-04-20) Rearranged furniture three weeks ago'],
+    });
+
+    // Second half: a new cluster on the SAME subject, voting 'general' this pass.
+    await writeInboxFixture(
+      'obs-living-room-rug.md',
+      {
+        id: 'obs-living-room-rug',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.9,
+        pinned: false,
+        summary: 'Bought a Moroccan-inspired area rug a month ago',
+        subject: 'Living Room Decor',
+        factType: 'general',
+        event_time: now.toISOString(),
+        recorded_at: now.toISOString(),
+      },
+      '# Observation\n\nBought a Moroccan-inspired area rug a month ago\n',
+    );
+
+    await runConsolidation({ workspaceRoot, now });
+
+    await assertOnlyDocIn('living-room-decor', 'entity');
+    const doc = await readFile(
+      join(workspaceRoot, 'permanent/memory/docs/entity/living-room-decor.md'),
+      'utf8',
+    );
+    expect(doc).toContain('Rearranged furniture three weeks ago');
+    expect(doc).toContain('Moroccan-inspired area rug a month ago');
+  });
+
+  it('cross-category slug adoption: rollup is NOT adoptable — a colliding rollup slug is left untouched', async () => {
+    const now = new Date('2026-05-10T12:00:00.000Z');
+
+    // Seed a synthesized rollup doc whose slug happens to collide with a
+    // subject slug about to be promoted.
+    await writeNewDoc({
+      workspaceRoot,
+      category: 'rollup',
+      slug: 'weddings',
+      summary: '3 weddings attended',
+      subject: 'weddings',
+      factType: 'rollup',
+      confidence: 0.9,
+      sourceObservationIds: ['obs-seed-rollup'],
+      now,
+      facts: ['(2026-04-01) 3 weddings attended: a, b, c'],
+    });
+    const rollupPath = join(workspaceRoot, 'permanent/memory/docs/rollup/weddings.md');
+    const rollupBefore = await readFile(rollupPath, 'utf8');
+
+    // factType 'decision' (not one of ENUMERABLE_CATEGORIES) so this pass does
+    // NOT trigger the unrelated rollup GC pass (runRollupPass would otherwise
+    // audit and possibly delete the hand-seeded, unbacked rollup doc for
+    // reasons that have nothing to do with cross-category slug adoption) —
+    // keeps this test isolated to the one thing it's checking.
+    await writeInboxFixture(
+      'obs-weddings-subject.md',
+      {
+        id: 'obs-weddings-subject',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.9,
+        pinned: false,
+        summary: 'Weddings are exhausting to plan for',
+        subject: 'weddings',
+        factType: 'decision',
+        event_time: now.toISOString(),
+        recorded_at: now.toISOString(),
+      },
+      '# Observation\n\nWeddings are exhausting to plan for\n',
+    );
+
+    const logger = makeLoggerSpy();
+    const result = await runConsolidation({ workspaceRoot, now, logger });
+    expect(result.promoted).toBe(1);
+
+    // The cluster wrote its OWN subject doc under its elected category...
+    const entityDoc = await readFile(
+      join(workspaceRoot, 'permanent/memory/docs/decision/weddings.md'),
+      'utf8',
+    );
+    expect(entityDoc).toContain('Weddings are exhausting to plan for');
+
+    // ...and the rollup file is byte-for-byte untouched.
+    const rollupAfter = await readFile(rollupPath, 'utf8');
+    expect(rollupAfter).toBe(rollupBefore);
+
+    // No cross-category adoption fired (rollup was never a candidate).
+    expect(
+      logger.warnCalls.filter((c) => c.event === 'memory_strata_doc_category_adopted'),
+    ).toHaveLength(0);
+  });
+
+  it('cross-category slug adoption: a legacy multi-hit tree adopts the SAME category deterministically on repeated runs', async () => {
+    const now = new Date('2026-05-10T12:00:00.000Z');
+
+    async function seedTwins(root: string): Promise<void> {
+      await writeNewDoc({
+        workspaceRoot: root,
+        category: 'entity',
+        slug: 'x',
+        summary: 'X entity fact',
+        subject: 'x',
+        factType: 'entity',
+        confidence: 0.9,
+        sourceObservationIds: ['obs-seed-x-entity'],
+        now,
+        facts: ['(2026-04-01) X entity fact'],
+      });
+      await writeNewDoc({
+        workspaceRoot: root,
+        category: 'general',
+        slug: 'x',
+        summary: 'X general fact',
+        subject: 'x',
+        factType: 'general',
+        confidence: 0.9,
+        sourceObservationIds: ['obs-seed-x-general'],
+        now,
+        facts: ['(2026-04-02) X general fact'],
+      });
+    }
+
+    async function driveClusterAndGetAdoptedCategory(root: string): Promise<string> {
+      const dir = join(root, INBOX_DIR);
+      await mkdir(dir, { recursive: true });
+      const fm: MemoryFrontmatter = {
+        id: 'obs-x-new',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.9,
+        pinned: false,
+        summary: 'A brand-new fact about x',
+        subject: 'x',
+        factType: 'decision',
+        event_time: now.toISOString(),
+        recorded_at: now.toISOString(),
+      };
+      await writeFile(join(dir, 'obs-x-new.md'), buildMarkdownFile(fm, '# Observation\n\nA brand-new fact about x\n'), 'utf8');
+
+      const logger = makeLoggerSpy();
+      const result = await runConsolidation({ workspaceRoot: root, now, logger });
+      expect(result.promoted).toBe(1);
+      const adopted = logger.warnCalls.find((c) => c.event === 'memory_strata_doc_category_adopted');
+      expect(adopted).toBeDefined();
+      return adopted!.fields['adoptedCategory'] as string;
+    }
+
+    const rootA = await mkdtemp(join(tmpdir(), 'memstr-legacy-a-'));
+    const rootB = await mkdtemp(join(tmpdir(), 'memstr-legacy-b-'));
+    await seedTwins(rootA);
+    await seedTwins(rootB);
+
+    const categoryA = await driveClusterAndGetAdoptedCategory(rootA);
+    const categoryB = await driveClusterAndGetAdoptedCategory(rootB);
+
+    expect(categoryA).toBe(categoryB);
+
+    // No third doc minted in either tree: exactly the two pre-existing docs
+    // for slug 'x' exist, and no docs/decision/x.md was created.
+    for (const root of [rootA, rootB]) {
+      await expect(
+        stat(join(root, 'permanent/memory/docs/decision/x.md')),
+      ).rejects.toThrow(/ENOENT/);
+      await expect(stat(join(root, 'permanent/memory/docs/entity/x.md'))).resolves.toBeTruthy();
+      await expect(stat(join(root, 'permanent/memory/docs/general/x.md'))).resolves.toBeTruthy();
+    }
+  });
+
+  it('cross-category slug adoption: an exact cross-category match beats a same-category near-dup', async () => {
+    const now = new Date('2026-05-10T12:00:00.000Z');
+
+    // Exact cross-category match candidate.
+    await writeNewDoc({
+      workspaceRoot,
+      category: 'general',
+      slug: 'b-29-bomber-model',
+      summary: 'Started the B-29 bomber model build',
+      subject: 'B-29 Bomber Model',
+      factType: 'general',
+      confidence: 0.9,
+      sourceObservationIds: ['obs-seed-model-general'],
+      now,
+      facts: ['(2026-04-01) Started the B-29 bomber model build'],
+    });
+    // Same-category near-dup decoy.
+    await writeNewDoc({
+      workspaceRoot,
+      category: 'entity',
+      slug: 'b-29-bomber-model-kit',
+      summary: 'Bought a B-29 bomber model kit',
+      subject: 'B-29 Bomber Model Kit',
+      factType: 'entity',
+      confidence: 0.9,
+      sourceObservationIds: ['obs-seed-kit-entity'],
+      now,
+      facts: ['(2026-04-01) Bought a B-29 bomber model kit'],
+    });
+
+    // A new cluster voting 'entity' for the exact subject slug b-29-bomber-model.
+    await writeInboxFixture(
+      'obs-b29-cross.md',
+      {
+        id: 'obs-b29-cross',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.9,
+        pinned: false,
+        summary: 'Decided to add a display stand for the finished model',
+        subject: 'B-29 Bomber Model',
+        factType: 'entity',
+        event_time: now.toISOString(),
+        recorded_at: now.toISOString(),
+      },
+      '# Observation\n\nDecided to add a display stand for the finished model\n',
+    );
+
+    const logger = makeLoggerSpy();
+    const result = await runConsolidation({ workspaceRoot, now, logger });
+    expect(result.promoted).toBe(1);
+
+    // No new entity/b-29-bomber-model.md was minted.
+    await expect(
+      stat(join(workspaceRoot, 'permanent/memory/docs/entity/b-29-bomber-model.md')),
+    ).rejects.toThrow(/ENOENT/);
+
+    // It adopted 'general' and appended to the EXACT doc there.
+    const generalDoc = await readFile(
+      join(workspaceRoot, 'permanent/memory/docs/general/b-29-bomber-model.md'),
+      'utf8',
+    );
+    expect(generalDoc).toContain('Started the B-29 bomber model build');
+    expect(generalDoc).toContain('Decided to add a display stand for the finished model');
+
+    // The near-dup decoy is untouched (did not fold in).
+    const kitDoc = await readFile(
+      join(workspaceRoot, 'permanent/memory/docs/entity/b-29-bomber-model-kit.md'),
+      'utf8',
+    );
+    expect(kitDoc).not.toContain('display stand');
+
+    // No near-dup-merge log fired — the resolution went through cross-category
+    // adoption, not the near-dup guard.
+    expect(
+      logger.warnCalls.filter((c) => c.event === 'memory_strata_near_dup_slug_merged'),
+    ).toHaveLength(0);
+    const adoptedWarnings = logger.warnCalls.filter(
+      (c) => c.event === 'memory_strata_doc_category_adopted',
+    );
+    expect(adoptedWarnings).toHaveLength(1);
+    expect(adoptedWarnings[0]!.fields).toMatchObject({
+      slug: 'b-29-bomber-model',
+      electedCategory: 'entity',
+      adoptedCategory: 'general',
+    });
   });
 });

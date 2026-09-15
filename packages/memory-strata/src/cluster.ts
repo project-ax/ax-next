@@ -99,13 +99,19 @@ function normalizeCategory(raw: string | undefined): ClusterCategory {
  * to `general` for DOC ROUTING (see FACT_TYPE_TO_CATEGORY), but letting it also
  * vote in the election means enough assistant facts on a subject can outvote a
  * genuine majority (e.g. 2 `entity` + 3 `answer` → `general`), flipping the
- * cluster's category across consolidation passes. That splits the same subject
- * across BOTH `docs/entity/<slug>.md` and `docs/general/<slug>.md` — exactly the
- * co-location breakage the design rejected a separate `docs/answer/` category to
- * avoid, and `findNearDupSlug` only dedups within one category so it goes blind
- * across the twins. A cluster with NO non-answer observations still falls back
- * to 'general' — `best`'s initial value covers that; the loop below only ever
- * raises it when a non-answer vote exists.
+ * cluster's category across consolidation passes. That flip is still possible
+ * from other causes (a preference-heavy session, an episode-heavy week, a tie
+ * broken by Map insertion order) — the exclusion only reduces how often it
+ * happens, it does not make the vote stable. A cluster with NO non-answer
+ * observations still falls back to 'general' — `best`'s initial value covers
+ * that; the loop below only ever raises it when a non-answer vote exists.
+ *
+ * The actual guarantee against a same-subject split across categories (e.g.
+ * BOTH `docs/entity/<slug>.md` and `docs/general/<slug>.md`) is NOT here — it
+ * is the consolidator's cross-category slug adoption
+ * (`findSlugInOtherCategories` in `consolidator.ts`, TASK-367), which resolves
+ * an exact-slug hit in another category before a flipped vote can mint a
+ * sibling doc.
  *
  * Ties among the remaining (non-answer) votes are broken by first-encountered
  * winner (Map insertion order). Any `factType` value not matching the five known
