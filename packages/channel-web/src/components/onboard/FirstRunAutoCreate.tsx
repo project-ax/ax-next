@@ -29,7 +29,11 @@ export function FirstRunAutoCreate({
   onDone,
 }: {
   agentName: string;
-  onDone: () => void;
+  // Hands back the new agent's id: the chat surface resolves a freshly
+  // created agent from the agent store via its transport, but the
+  // workspace's send is explicit about which agent it's talking to, so the
+  // caller needs the id to hand the kickoff to the right agent.
+  onDone: (agentId: string) => void;
 }) {
   const ran = useRef(false);
   const [err, setErr] = useState<string | null>(null);
@@ -47,8 +51,35 @@ export function FirstRunAutoCreate({
         // empty) and the chat shell renders this agent.
         agentStoreActions.setSelectedAgent(agent.agentId);
         await hydrateAgentsOnce();
-        if (cancelled) return;
-        onDone();
+        /*
+          NOT gated on `cancelled` — and that is the fix for a silent failure
+          this component was causing itself.
+
+          `hydrateAgentsOnce` writes to `agent-store`, which App subscribes to
+          through `useSyncExternalStore`. The agent list is now non-empty, so
+          `shouldShowAgentBootstrap`'s `noAgents` arm flips false and, on FIRST
+          RUN — where `createAgentOpen` is false and `noAgents` is the only
+          thing holding the gate open — App unmounts us. React can flush that
+          sync-lane re-render in a microtask queued BEFORE the continuation you
+          are reading, so our own cleanup sets `cancelled = true` and a
+          `if (cancelled) return` here swallows the completion of work that
+          fully succeeded. Measured: the agent was created (POST returned 201)
+          and `onDone` was called ZERO times.
+
+          The cost of that is the whole conversational half of the create flow.
+          `onDone` is what sends the bootstrap kickoff — the first message that
+          makes a bare agent wake up and introduce itself — so the user got an
+          agent that never said anything.
+
+          `cancelled` is here to stop setState-after-unmount, and `onDone` is
+          not our state: it is a callback on `AppContent`, which is still
+          mounted (it is the thing that unmounted us). The guards that remain
+          are the two that do touch local state. Leaving this one in made a
+          success or a silence depend on which React lane an unrelated store
+          write happened to take, which is not a property this component should
+          be resting on.
+        */
+        onDone(agent.agentId);
       } catch {
         if (!cancelled) {
           setErr(
