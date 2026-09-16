@@ -40,7 +40,10 @@ import type {
   ThreadMessage,
   WorkspaceAgent,
 } from '@/lib/workspace-api';
-import { workspaceGrantActions } from '@/lib/workspace-grant-store';
+import {
+  workspaceGrantActions,
+  type WorkspaceGrant,
+} from '@/lib/workspace-grant-store';
 import type { AgentTab } from '@/lib/workspace-route';
 
 // The tab vocabulary lives with the URL grammar that has to name it — one
@@ -52,6 +55,20 @@ interface Props {
   tab: AgentTab;
   onTab: (t: AgentTab) => void;
   decisions: Decision[];
+  /**
+   * Open capability grants presence routed to THIS thread (TASK-351).
+   *
+   * Passed through rather than read from the store here, for the same reason
+   * `decisions` is: the shell owns the route, and the route is half of the
+   * presence rule. Deciding it here would mean a second reader of the URL,
+   * disagreeing with the shell's own route state the moment the two drift.
+   *
+   * Forwarded as-is to `AgentConversation`. The rule (`threadGrants`) has
+   * already checked the tab, so this is empty on every tab but `chat`.
+   */
+  threadGrants: readonly WorkspaceGrant[];
+  /** A grant answered in the thread. The store's `resolve`. */
+  onGrantResolved: (key: string) => void;
   activity: ActivityEvent[];
   /** Threaded straight through to the `did` tab's `ActivityFeed` — see there. */
   activityHasMore?: boolean;
@@ -169,6 +186,8 @@ export function AgentView({
   tab,
   onTab,
   decisions,
+  threadGrants,
+  onGrantResolved,
   activity,
   activityHasMore,
   onActivityLoadMore,
@@ -409,11 +428,21 @@ export function AgentView({
           be reused by anything that renders differently.)
         */
         onPermissionRequest: (request) => {
-          workspaceGrantActions.raise(request, conversationRef.current);
+          /*
+            `agentId` is recorded alongside the conversation (TASK-351) so
+            presence can route the row back into THIS thread. It comes from the
+            prop — the view already knows whose turn it is streaming — rather
+            than from a new field on the frame, which would put a client
+            routing concern on the wire (invariant 1).
+          */
+          workspaceGrantActions.raise(request, {
+            conversationId: conversationRef.current,
+            agentId,
+          });
         },
       });
     },
-    [load, onChanged, onDecisionRaised],
+    [agentId, load, onChanged, onDecisionRaised],
   );
 
   /*
@@ -786,6 +815,8 @@ export function AgentView({
                 {...(notices !== undefined ? { notices } : {})}
                 approvalRead={approvalRead}
                 onRetryApprovals={retryApprovals}
+                grants={threadGrants}
+                onGrantResolved={onGrantResolved}
               />
             </>
           )}

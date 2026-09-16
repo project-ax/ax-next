@@ -25,7 +25,7 @@ function row(request: PermissionRequest, conversationId: string | null = 'cnv-1'
   const onResolved = vi.fn();
   render(
     <GrantRow
-      grant={{ key: grantKey(request), request, conversationId }}
+      grant={{ key: grantKey(request), request, conversationId, agentId: 'a-quill' }}
       onResolved={onResolved}
     />,
   );

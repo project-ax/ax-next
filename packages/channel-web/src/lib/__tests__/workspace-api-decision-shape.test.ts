@@ -179,6 +179,24 @@ describe('the grants read-back (TASK-373)', () => {
     );
   });
 
+  it('rejects a row with no agentId — presence routes on it (TASK-351)', async () => {
+    /*
+      The one field whose absence used to be INVISIBLE. `PendingGrant.agentId`
+      is typed `string`, so an `undefined` here type-checks its way into the
+      store, matches no route, and quietly costs the grant its thread — a
+      degradation with no error anywhere. It became load-bearing the moment
+      presence started reading it, so it is checked like the other two.
+    */
+    respondWith({
+      grants: [
+        { conversationId: 'cnv-1', request: { kind: 'skill', skillId: 'linear' } },
+      ],
+    });
+    await expect(workspaceApi.grants()).rejects.toBeInstanceOf(
+      WorkspaceShapeError,
+    );
+  });
+
   it('accepts an honestly empty page', async () => {
     respondWith({ grants: [] });
     await expect(workspaceApi.grants()).resolves.toEqual({ grants: [] });

@@ -12,13 +12,19 @@
  * frame is transient, and this store's contents live exactly as long as the
  * page does.
  *
- * KNOWN LIMIT, on purpose (TASK-350's scope decision). The only producer is the
- * per-turn SSE stream, and `streamReply` is opened only by `AgentView` when a
- * turn is sent. On an idle Today no stream is open, so a grant raised by an
- * agent working unattended has nothing to arrive on. Closing that needs durable
- * server-side pending-grant state and a read route; it is filed separately.
- * Until then, what this delivers is: a grant raised WHILE a turn is streaming
- * becomes answerable from Today instead of dead-ending the turn.
+ * TWO PRODUCERS, ONE ENTRY POINT. The per-turn SSE stream (`AgentView`) raises
+ * a grant that arrives on a live turn; the mount read-back (TASK-373, `GET
+ * /api/workspace/grants`) raises one that was waiting while the workspace was
+ * closed. Both go through `raise`, which replaces on the subject key — a
+ * second, hydrate-flavoured entry point is exactly how two rows for one grant
+ * would happen. (TASK-350's header said the stream was the only producer; it
+ * stopped being true when TASK-373 landed.)
+ *
+ * TWO READERS, ONE ROW (TASK-351). The Today queue renders every open grant;
+ * an agent's thread additionally renders the ones presence routes to it — see
+ * `workspace-grant-presence.ts`. Both read THIS array, so the card in the
+ * thread and the row in the queue are the same object and answering either
+ * resolves both. Neither reader keeps a copy.
  *
  * Same `useSyncExternalStore` shape as `decision-raised-store.ts` /
  * `permission-card-store.ts`.
@@ -26,10 +32,41 @@
 import { useSyncExternalStore } from 'react';
 import type { PermissionRequest } from '../server/types';
 
+/**
+ * Where a grant came from — recorded by whichever producer raised it.
+ *
+ * Both fields are REQUIRED, and neither is optional-with-a-default, because
+ * the two producers (the turn stream and the mount read-back) both genuinely
+ * hold both. An optional `agentId` would default to "route it nowhere", which
+ * is the safe direction but also the silent one: a third producer added later
+ * would render grants that never reach a thread and nothing would say why.
+ */
+export interface GrantOrigin {
+  /** The conversation the grant was raised on. See `WorkspaceGrant`. */
+  conversationId: string | null;
+  /** The agent that asked. See `WorkspaceGrant`. */
+  agentId: string;
+}
+
 /** One open grant, plus the identity that makes it one row. */
 export interface WorkspaceGrant {
   key: string;
   request: PermissionRequest;
+  /**
+   * The agent that asked.
+   *
+   * Recorded so PRESENCE can route the row (TASK-351): the same grant renders
+   * in that agent's thread when the person is there reading it, and in the
+   * Today queue always. It is compared for equality against the open route's
+   * agent id and used for nothing else — in particular it never reaches the
+   * answer POST, which targets `conversationId`. Where we DRAW a grant is
+   * therefore not an input to what we GRANT.
+   *
+   * Not part of `grantKey`, deliberately: identity is the subject. Two agents
+   * blocked on one connector is still one question, and keying on the pair is
+   * exactly how one grant would become two rows.
+   */
+  agentId: string;
   /**
    * The conversation the grant was raised on.
    *
@@ -119,7 +156,7 @@ export const workspaceGrantActions = {
    * drops it — one product, one answer. Connector still wins both directions,
    * and every other transition goes through.
    */
-  raise(request: PermissionRequest, conversationId: string | null): void {
+  raise(request: PermissionRequest, origin: GrantOrigin): void {
     if (
       request.kind === 'host' &&
       state.grants.some((g) => g.request.kind === 'connector')
@@ -127,14 +164,17 @@ export const workspaceGrantActions = {
       return;
     }
     const key = grantKey(request);
+    const row: WorkspaceGrant = { key, request, ...origin };
     const at = state.grants.findIndex((g) => g.key === key);
     if (at === -1) {
-      set({ grants: [...state.grants, { key, request, conversationId }] });
+      set({ grants: [...state.grants, row] });
       return;
     }
-    // Replace in place: same row, same position, newer payload.
+    // Replace in place: same row, same position, newer payload — including a
+    // newer origin. The subject is the identity, so the same connector asked
+    // for by a second agent updates this row rather than adding one.
     const grants = state.grants.slice();
-    grants[at] = { key, request, conversationId };
+    grants[at] = row;
     set({ grants });
   },
 

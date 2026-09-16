@@ -197,9 +197,10 @@ export interface ActivityPage {
 export interface PendingGrant {
   conversationId: string;
   /**
-   * The agent that asked. Not read by any renderer yet — it rides because the
-   * row names who asked (the design's wire shape, mirrored from the buffer),
-   * and a future "which agent asked" display should not need a wire change.
+   * The agent that asked. Read since TASK-351: presence routes a grant back
+   * into that agent's thread, which needs to know whose grant it is. Compared
+   * against the open route's agent id and nothing else — never interpolated
+   * into a path, and never part of the answer POST.
    */
   agentId: string;
   request: PermissionRequest;
@@ -484,10 +485,12 @@ export const workspaceApi = {
     const body = await req<unknown>('/grants');
     // Same shape guard as the queue read, at the boundary the two share: what
     // must never happen is a malformed body being mistaken for an empty list.
-    // `request` and `conversationId` are checked because the merge in
-    // WorkspaceShell dereferences exactly those two — one wrong row there
+    // `request`, `conversationId` and `agentId` are checked because the merge
+    // in WorkspaceShell dereferences exactly those three — one wrong row there
     // throws inside the mount effect, and a throw a person cannot see or fix
-    // is worse than a read that fails loudly.
+    // is worse than a read that fails loudly. `agentId` joined the list when
+    // TASK-351 started READING it: an `undefined` there would be typed as a
+    // `string`, match no route, and silently cost the grant its thread.
     return checkedRead<GrantsPage>(
       '/grants',
       body,
@@ -498,6 +501,7 @@ export const workspaceApi = {
           (g) =>
             isRecord(g) &&
             typeof (g as { conversationId?: unknown }).conversationId === 'string' &&
+            typeof (g as { agentId?: unknown }).agentId === 'string' &&
             isRecord((g as { request?: unknown }).request),
         ),
     );

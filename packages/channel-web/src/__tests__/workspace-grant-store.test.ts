@@ -37,6 +37,16 @@ const host = (h = 'example.org', sessionId = 's-1'): PermissionRequest => ({
   sessionId,
 });
 
+/**
+ * Where a grant came from. Every test below raises from one agent unless it is
+ * specifically about two, so the default keeps the interesting argument — the
+ * request — the only one that varies.
+ */
+const from = (agentId = 'a-quill', conversationId: string | null = 'cnv-1') => ({
+  conversationId,
+  agentId,
+});
+
 beforeEach(() => {
   workspaceGrantActions.resetForTest();
 });
@@ -70,8 +80,8 @@ describe('grantKey — identity per kind', () => {
 
 describe('raise — one grant, one row', () => {
   test('two different grants both appear, in arrival order', () => {
-    workspaceGrantActions.raise(skill('linear'), 'cnv-1');
-    workspaceGrantActions.raise(host('example.org'), 'cnv-1');
+    workspaceGrantActions.raise(skill('linear'), from());
+    workspaceGrantActions.raise(host('example.org'), from());
 
     expect(getWorkspaceGrantSnapshot().grants.map((g) => g.key)).toEqual([
       'skill:linear',
@@ -82,23 +92,56 @@ describe('raise — one grant, one row', () => {
   test('the same grant arriving twice produces one row, not two', () => {
     // The SSE buffer replays a pending card on reconnect (TASK-82), so this is
     // the ordinary case, not a rare one.
-    workspaceGrantActions.raise(skill('linear'), 'cnv-1');
-    workspaceGrantActions.raise(skill('linear'), 'cnv-1');
+    workspaceGrantActions.raise(skill('linear'), from());
+    workspaceGrantActions.raise(skill('linear'), from());
 
     expect(getWorkspaceGrantSnapshot().grants).toHaveLength(1);
   });
 
   test('a repeat replaces in place — it keeps its position and takes the newer payload', () => {
-    workspaceGrantActions.raise(skill('linear'), 'cnv-1');
-    workspaceGrantActions.raise(host('example.org', 's-1'), 'cnv-1');
-    workspaceGrantActions.raise(skill('linear'), 'cnv-1');
+    workspaceGrantActions.raise(skill('linear'), from());
+    workspaceGrantActions.raise(host('example.org', 's-1'), from());
+    workspaceGrantActions.raise(skill('linear'), from());
     // Re-raised with a fresher session; the POST must target that one.
-    workspaceGrantActions.raise(host('example.org', 's-2'), 'cnv-1');
+    workspaceGrantActions.raise(host('example.org', 's-2'), from());
 
     const grants = getWorkspaceGrantSnapshot().grants;
     expect(grants.map((g) => g.key)).toEqual(['skill:linear', 'host:example.org']);
     const raised = grants[1]?.request;
     expect(raised?.kind === 'host' && raised.sessionId).toBe('s-2');
+  });
+});
+
+describe('raise — the origin rides along (TASK-351)', () => {
+  test('the agent that asked is recorded, so presence can route the row', () => {
+    workspaceGrantActions.raise(skill('linear'), from('a-quill'));
+
+    expect(getWorkspaceGrantSnapshot().grants[0]?.agentId).toBe('a-quill');
+  });
+
+  test('two agents asking for the SAME subject is still one row', () => {
+    // Identity is the subject, not the (subject, agent) pair. Keying on the
+    // pair would put two rows in the queue for one question — which, with a
+    // second render site added, is exactly the two live copies invariant 4
+    // forbids. The newer origin wins, as the newer payload does.
+    workspaceGrantActions.raise(connector('linear'), from('a-quill'));
+    workspaceGrantActions.raise(connector('linear'), from('a-scout'));
+
+    const grants = getWorkspaceGrantSnapshot().grants;
+    expect(grants).toHaveLength(1);
+    expect(grants[0]?.agentId).toBe('a-scout');
+  });
+
+  test('a re-raise cannot silently keep a stale origin', () => {
+    // Both halves of the origin move together: the thread it routes to and
+    // the conversation the answer POST targets came from the same producer,
+    // and half-updating would answer the old turn from the new thread.
+    workspaceGrantActions.raise(skill('linear'), from('a-quill', 'cnv-1'));
+    workspaceGrantActions.raise(skill('linear'), from('a-scout', 'cnv-2'));
+
+    const row = getWorkspaceGrantSnapshot().grants[0];
+    expect(row?.agentId).toBe('a-scout');
+    expect(row?.conversationId).toBe('cnv-2');
   });
 });
 
@@ -108,8 +151,8 @@ describe('raise — TASK-113: the wall does not speak over the connector card', 
     // wall both fire. The connector card is the ROOT CAUSE — the wall is
     // downstream of the same missing connector — so a second row would point at
     // a cause the first row already names.
-    workspaceGrantActions.raise(connector('linear'), 'cnv-1');
-    workspaceGrantActions.raise(host('api.linear.app'), 'cnv-1');
+    workspaceGrantActions.raise(connector('linear'), from());
+    workspaceGrantActions.raise(host('api.linear.app'), from());
 
     expect(getWorkspaceGrantSnapshot().grants.map((g) => g.key)).toEqual([
       'connector:linear',
@@ -118,8 +161,8 @@ describe('raise — TASK-113: the wall does not speak over the connector card', 
 
   test('a connector grant still arrives while a host grant is open', () => {
     // Connector wins both directions.
-    workspaceGrantActions.raise(host('api.linear.app'), 'cnv-1');
-    workspaceGrantActions.raise(connector('linear'), 'cnv-1');
+    workspaceGrantActions.raise(host('api.linear.app'), from());
+    workspaceGrantActions.raise(connector('linear'), from());
 
     expect(getWorkspaceGrantSnapshot().grants.map((g) => g.key)).toEqual([
       'host:api.linear.app',
@@ -129,19 +172,19 @@ describe('raise — TASK-113: the wall does not speak over the connector card', 
 
   test('a host grant is NOT dropped while only a skill grant is open', () => {
     // The guard is exactly one condition. A skill card is not the wall's cause.
-    workspaceGrantActions.raise(skill('linear'), 'cnv-1');
-    workspaceGrantActions.raise(host('example.org'), 'cnv-1');
+    workspaceGrantActions.raise(skill('linear'), from());
+    workspaceGrantActions.raise(host('example.org'), from());
 
     expect(getWorkspaceGrantSnapshot().grants).toHaveLength(2);
   });
 
   test('once the connector grant is resolved, the wall can be raised again', () => {
-    workspaceGrantActions.raise(connector('linear'), 'cnv-1');
-    workspaceGrantActions.raise(host('api.linear.app'), 'cnv-1');
+    workspaceGrantActions.raise(connector('linear'), from());
+    workspaceGrantActions.raise(host('api.linear.app'), from());
     expect(getWorkspaceGrantSnapshot().grants).toHaveLength(1);
 
     workspaceGrantActions.resolve('connector:linear');
-    workspaceGrantActions.raise(host('api.linear.app'), 'cnv-1');
+    workspaceGrantActions.raise(host('api.linear.app'), from());
 
     expect(getWorkspaceGrantSnapshot().grants.map((g) => g.key)).toEqual([
       'host:api.linear.app',
@@ -151,8 +194,8 @@ describe('raise — TASK-113: the wall does not speak over the connector card', 
 
 describe('resolve and reset', () => {
   test('resolving removes exactly that row', () => {
-    workspaceGrantActions.raise(skill('linear'), 'cnv-1');
-    workspaceGrantActions.raise(skill('github'), 'cnv-1');
+    workspaceGrantActions.raise(skill('linear'), from());
+    workspaceGrantActions.raise(skill('github'), from());
     workspaceGrantActions.resolve('skill:linear');
 
     expect(getWorkspaceGrantSnapshot().grants.map((g) => g.key)).toEqual([
@@ -161,7 +204,7 @@ describe('resolve and reset', () => {
   });
 
   test('resolving a key that is not there changes nothing and does not notify', () => {
-    workspaceGrantActions.raise(skill('linear'), 'cnv-1');
+    workspaceGrantActions.raise(skill('linear'), from());
     const before = getWorkspaceGrantSnapshot().grants;
     const hits = vi.fn();
     const unsub = workspaceGrantActions.subscribeForTest(hits);
@@ -174,7 +217,7 @@ describe('resolve and reset', () => {
   });
 
   test('reset empties the queue — evidence from one agent cannot speak for another', () => {
-    workspaceGrantActions.raise(skill('linear'), 'cnv-1');
+    workspaceGrantActions.raise(skill('linear'), from());
     workspaceGrantActions.reset();
 
     expect(getWorkspaceGrantSnapshot().grants).toEqual([]);
@@ -184,11 +227,11 @@ describe('resolve and reset', () => {
     const hits = vi.fn();
     const unsub = workspaceGrantActions.subscribeForTest(hits);
 
-    workspaceGrantActions.raise(skill('linear'), 'cnv-1');
+    workspaceGrantActions.raise(skill('linear'), from());
     expect(hits).toHaveBeenCalledTimes(1);
 
     unsub();
-    workspaceGrantActions.raise(skill('github'), 'cnv-1');
+    workspaceGrantActions.raise(skill('github'), from());
     expect(hits).toHaveBeenCalledTimes(1);
   });
 });

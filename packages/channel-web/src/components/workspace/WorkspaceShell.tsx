@@ -32,6 +32,10 @@ import {
   useWorkspaceGrants,
   workspaceGrantActions,
 } from '@/lib/workspace-grant-store';
+import {
+  threadGrants,
+  useDocumentVisible,
+} from '@/lib/workspace-grant-presence';
 import { WorkspaceProvider, useWorkspace } from '@/lib/workspace-context';
 import { hydrateTheme } from '@/lib/theme';
 import { KICKOFF_TEXT } from '@/lib/bootstrap-kickoff';
@@ -280,6 +284,28 @@ function Inner({
     point is exactly how two rows for one grant would happen.
   */
   const grants = useWorkspaceGrants();
+  /*
+    PRESENCE ROUTES A GRANT (TASK-351). Every open grant stays in the Today
+    queue; the ones raised by the agent whose chat tab is open, while this tab
+    is visible, are ALSO handed to that thread, where chat used to put them.
+
+    Decided here because this is the one component that holds the route — and
+    the route is half the rule. A thread that read the URL for itself would be
+    a second reader of it, free to disagree with this state the moment the two
+    drift.
+
+    Evaluated on every render, and `useDocumentVisible` re-renders on
+    `visibilitychange`, so presence is continuous rather than sampled when the
+    grant arrived: walking away takes the card out of the thread and coming
+    back puts it there again. The queue never lets go of it either way, which
+    is what stops a grant being orphaned in a thread nobody is reading.
+
+    `threadGrants` FILTERS this array — the rows are the same objects Today
+    renders, so there is one grant with one identity and `resolve` on either
+    site drops it from both.
+  */
+  const visible = useDocumentVisible();
+  const grantsInThread = threadGrants(grants.grants, { route, visible });
   /**
    * How the mount read-back went. `null` = read fine (or not attempted);
    * `'failed'` = a blip, retryable; `'expired'` = 401, the session ran out and
@@ -324,7 +350,14 @@ function Inner({
         if (cancelled) return;
         setGrantsError(null);
         for (const g of page.grants) {
-          workspaceGrantActions.raise(g.request, g.conversationId);
+          // `agentId` rides on the wire already (TASK-373 recorded it with the
+          // card); TASK-351 is the reader. It is what lets a grant that was
+          // waiting while the workspace was closed land in the right thread
+          // when the person opens that agent, not only in the queue.
+          workspaceGrantActions.raise(g.request, {
+            conversationId: g.conversationId,
+            agentId: g.agentId,
+          });
         }
       })
       .catch((e) => {
@@ -512,6 +545,14 @@ function Inner({
     where it could not check. A badge cannot carry that sentence, so it does
     not try to.
   */
+  /*
+    DELIBERATELY EVERY GRANT, not just the queue-only ones. A grant routed into
+    the open thread is still waiting on this person, so dropping it from the
+    count would make the badge tick down at the exact moment the question
+    appeared in front of them — and would put two "waiting on you" numbers on
+    one screen that disagree, which is the thing TASK-350 added grants here to
+    stop.
+  */
   const pending =
     queue.decisions.filter(isOpenDecision).length + grants.grants.length;
   const workingCount = board.agents.filter((a) => a.state === 'working').length;
@@ -625,6 +666,8 @@ function Inner({
               tab={route.tab}
               onTab={(t) => navigate({ ...route, tab: t })}
               decisions={queue.decisions}
+              threadGrants={grantsInThread}
+              onGrantResolved={workspaceGrantActions.resolve}
               onApprove={queue.approve}
               onDismiss={queue.dismiss}
               onUndo={queue.undo}
