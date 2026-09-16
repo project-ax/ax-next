@@ -12,8 +12,14 @@
  * one. It also gives the routing a place to show its reasoning, which is the
  * only way a user ever learns to trust or distrust it.
  */
-import { useState } from 'react';
-import { ArrowUp, ChevronDown, MessageSquare, Zap } from 'lucide-react';
+import { useRef, useState } from 'react';
+import {
+  ArrowUp,
+  ChevronDown,
+  MessageSquare,
+  Paperclip,
+  Zap,
+} from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import {
@@ -23,8 +29,14 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
+import { ATTACHMENT_ACCEPT } from '@/lib/attachment-upload';
 import { workspaceApi, type WorkspaceAgent } from '@/lib/workspace-api';
+import {
+  composerSendBlock,
+  useWorkspaceAttachments,
+} from '@/lib/workspace-attachments';
 import { AgentTile } from './bits';
+import { WorkspaceAttachmentChip } from './WorkspaceAttachmentChip';
 
 interface Proposal {
   agentId: string;
@@ -43,8 +55,18 @@ export function HomeComposer({
    * Awaited, and its rejection is the caller's news to hear. Returning `void`
    * here is what let a failed send reject unhandled while the draft was
    * already gone — see `dispatch`.
+   *
+   * `attachmentIds` are the uploaded files this message carries, in pick
+   * order. An EMPTY LIST AND AN OMITTED ONE MEAN THE SAME THING: a plain
+   * text-only send. The text-only path deliberately calls this with two
+   * arguments, so a caller that never asked for attachments sees exactly the
+   * call it saw before they existed.
    */
-  onSend: (agentId: string, text: string) => void | Promise<void>;
+  onSend: (
+    agentId: string,
+    text: string,
+    attachmentIds?: readonly string[],
+  ) => void | Promise<void>;
 }) {
   const [draft, setDraft] = useState('');
   const [pick, setPick] = useState<string>('auto');
@@ -52,10 +74,24 @@ export function HomeComposer({
   const [routing, setRouting] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const { attachments, add, remove, retry, clear, attachmentIds, sendBlock } =
+    useWorkspaceAttachments();
 
   const picked = agents.find((a) => a.id === pick) ?? null;
   const nameOf = (id: string) =>
     agents.find((a) => a.id === id)?.name ?? 'that agent';
+
+  /*
+    THE ONE REASON THE SEND IS HELD RIGHT NOW, or null. The rule itself lives
+    in `lib/workspace-attachments` because the thread composer asks the exact
+    same question and the two must never answer it differently.
+  */
+  const blocked = composerSendBlock(
+    sendBlock,
+    draft.trim() !== '',
+    attachments.length,
+  );
 
   /*
     THE DRAFT IS ONLY CLEARED ONCE THE SEND HAS RESOLVED.
@@ -67,16 +103,31 @@ export function HomeComposer({
     server hiccuped is not an acceptable failure mode at any severity.
   */
   const dispatch = async (agentId: string, text: string) => {
+    // Every send funnels through here — the explicit-agent one, the Auto
+    // confirmation, and the "Someone else" items — so the hold is checked once,
+    // here, rather than once per button and forgotten on the fourth.
+    if (blocked !== null) return;
     setSending(true);
     setError(null);
     try {
-      await onSend(agentId, text);
+      const ids = attachmentIds;
+      // Two arguments when nothing is attached: an empty list and no list are
+      // the same send (see the prop doc), and keeping the text-only call
+      // two-argument means nothing downstream had to change to keep working.
+      await (ids.length > 0
+        ? onSend(agentId, text, ids)
+        : onSend(agentId, text));
       // On the home surface `onSend` navigates to the agent, so this component
       // is on its way out by the time these run. React makes a setState on an
       // unmounted component a no-op rather than a warning, and the clears
       // still matter on the paths that DON'T navigate — so they stay.
       setProposal(null);
       setDraft('');
+      // The chips leave on the same terms as the words, and for the same
+      // reason: only once the send has RESOLVED. The `catch` below clears
+      // neither, so a 503 leaves the message and the files both sitting there
+      // and the retry is one click rather than a re-pick.
+      clear();
     } catch {
       setProposal(null);
       setError(
@@ -89,7 +140,7 @@ export function HomeComposer({
 
   const submit = async () => {
     const text = draft.trim();
-    if (!text || routing || sending) return;
+    if (!text || routing || sending || blocked !== null) return;
 
     if (picked) {
       await dispatch(picked.id, text);
@@ -112,6 +163,12 @@ export function HomeComposer({
 
   const confirm = (agentId: string) => {
     if (!proposal) return;
+    /*
+      `dispatch` reads the CURRENT `attachmentIds`, not a copy taken when the
+      route came back, so a file picked while the "Send to X" row was on screen
+      still goes with the message. Only the TEXT is frozen at route time,
+      because the text is what was routed.
+    */
     void dispatch(agentId, proposal.text);
   };
 
@@ -150,7 +207,11 @@ export function HomeComposer({
             )}
           </span>
           <div className="ml-auto flex items-center gap-1.5">
-            <Button size="sm" onClick={() => confirm(proposal.agentId)}>
+            <Button
+              size="sm"
+              disabled={blocked !== null}
+              onClick={() => confirm(proposal.agentId)}
+            >
               Send to {proposal.agentName}
             </Button>
             <DropdownMenu>
@@ -160,8 +221,18 @@ export function HomeComposer({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                {/*
+                  Held for the same reason "Send to X" beside it is: `dispatch`
+                  already refuses while `blocked` stands, so an enabled item
+                  here would be a live-looking control whose only answer is
+                  nothing happening. The sentence above the field says why.
+                */}
                 {agents.map((a) => (
-                  <DropdownMenuItem key={a.id} onClick={() => confirm(a.id)}>
+                  <DropdownMenuItem
+                    key={a.id}
+                    disabled={blocked !== null}
+                    onClick={() => confirm(a.id)}
+                  >
                     <AgentTile agent={a} size={18} />
                     {a.name}
                   </DropdownMenuItem>
@@ -178,6 +249,32 @@ export function HomeComposer({
           </div>
         </div>
       )}
+
+      {attachments.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-2">
+          {attachments.map((a) => (
+            <WorkspaceAttachmentChip
+              key={a.id}
+              attachment={a}
+              onRemove={() => remove(a.id)}
+              onRetry={() => retry(a.id)}
+            />
+          ))}
+        </div>
+      )}
+      {/*
+        The reason, as REAL DOM TEXT above the field — the same shape
+        `AgentConversation` uses for its approval hold. Not a tooltip and not a
+        `title=`: both are invisible on touch and invisible to anyone who does
+        not hover, and this sentence is the only thing standing between a
+        disabled Send and a person wondering what they did wrong.
+      */}
+      {blocked !== null && (
+        <div className="mb-2 text-[12.5px] text-muted-foreground">{blocked}</div>
+      )}
+      <span className="sr-only" role="status" aria-live="polite">
+        {blocked ?? ''}
+      </span>
 
       <div className="flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 shadow-sm">
         <MessageSquare size={15} className="shrink-0 text-muted-foreground" />
@@ -228,11 +325,45 @@ export function HomeComposer({
           </DropdownMenuContent>
         </DropdownMenu>
 
+        {/*
+          The input is plumbing, not a control: the labelled Button below is
+          what a person (or a screen reader) operates, so the input stays out
+          of the accessibility tree and out of the tab order rather than
+          turning up as a second, unnamed thing to tab through.
+        */}
+        <input
+          ref={fileInput}
+          type="file"
+          multiple
+          accept={ATTACHMENT_ACCEPT}
+          className="sr-only"
+          tabIndex={-1}
+          aria-hidden="true"
+          onChange={(e) => {
+            add(e.target.files ?? []);
+            // Picking the SAME file twice in a row is a no-op unless the value
+            // is cleared — the input's value would not change, so no `change`
+            // event fires and the second pick silently does nothing.
+            e.target.value = '';
+          }}
+        />
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-8 shrink-0"
+          aria-label="Attach a file"
+          disabled={routing || sending}
+          onClick={() => fileInput.current?.click()}
+        >
+          <Paperclip strokeWidth={1.5} aria-hidden="true" />
+        </Button>
+
         <Button
           size="icon"
           className="h-8 w-8 shrink-0"
           aria-label="Send"
-          disabled={routing || sending}
+          disabled={routing || sending || blocked !== null}
           onClick={() => void submit()}
         >
           <ArrowUp size={14} />

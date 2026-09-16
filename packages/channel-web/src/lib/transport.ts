@@ -45,6 +45,7 @@
 
 import type { ContentBlock } from '@ax/ipc-protocol';
 import { HttpChatTransport, type UIMessage, type UIMessageChunk } from 'ai';
+import { attachmentRefBlock, AX_ATTACHMENT_URL_PREFIX } from './attachment-upload';
 import { agentStatusActions } from './agent-status-store';
 import { permissionCardActions } from './permission-card-store';
 import { stripMcpToolPrefix } from './tool-name';
@@ -207,8 +208,6 @@ interface AxChatTransportOptions {
   fetch?: typeof fetch;
 }
 
-const AX_ATTACHMENT_URL_PREFIX = 'ax://attachment/';
-
 function isAxAttachmentPart(p: unknown): { attachmentId: string } | null {
   if (!p || typeof p !== 'object') return null;
   const obj = p as { type?: unknown; data?: unknown; url?: unknown };
@@ -248,7 +247,7 @@ function toContentBlocks(msg: UIMessage): ContentBlock[] {
     if (p.type !== 'file') continue;
     const ax = isAxAttachmentPart(p);
     if (ax !== null) {
-      blocks.push({ type: 'attachment_ref', attachmentId: ax.attachmentId });
+      blocks.push(attachmentRefBlock(ax.attachmentId));
       continue;
     }
     // Non-ax file part — text-mention fallback (preserves the legacy
