@@ -135,6 +135,74 @@ const MEMORY_READ_SECTION_TOOL: Anthropic.Tool = {
 /** Default ceiling on memory_search round-trips per question (cost + loop bound). */
 const DEFAULT_MAX_TOOL_TURNS = 6;
 const MAX_ANSWER_TOKENS = 512;
+/**
+ * Output ceiling for the arms that need the model to write something longer than
+ * a bare answer — the recall scaffold mandates written working-out, and adaptive
+ * thinking bills its thinking tokens against `max_tokens`. 512 is plenty for the
+ * DEFAULT arm (measured 2026-09-15: median answer ~62–154 tokens across all
+ * verdicts on the n=100 run, 1 of 101 within 15% of the cap), so this is not a
+ * fix for a truncation that was happening — it is headroom the treatments need
+ * and the control does not use.
+ */
+const ANSWER_TOKENS_WITH_ROOM = 4096;
+
+/** Effort levels `claude-sonnet-4-6` accepts. Note: no `xhigh` on 4.6. */
+export type AnswerEffort = 'low' | 'medium' | 'high' | 'max';
+
+/**
+ * TASK-370 arm — answer-stage recall discipline.
+ *
+ * Adapted from c137's published LongMemEval-S answer scaffold
+ * (github.com/ra1ngod/c137-runner, `scaffolds/gemini.txt`, MIT). Their file is
+ * disclosed as benchmark-tuned, so this is deliberately NOT a copy: it takes only
+ * the rules that are defensible as reasoning discipline independent of the
+ * benchmark, and omits the one that is most obviously benchmark-shaped (their
+ * mandatory "LIST every fact" working-out, which would make every product answer
+ * long — measure that separately before adopting it).
+ *
+ * Each rule below traces to a scored failure in the 2026-09-14 n=100 run; see
+ * `docs/plans/2026-09-15-c137-oracle-diff.md` for the row-by-row mapping.
+ */
+const RECALL_SCAFFOLD = `
+## Answering from memory
+
+**An intention is not an occurrence.** When a fact records that the user was
+"thinking of", "planning to", or "about to" do something, that is NOT evidence it
+happened. Match the question's verb to an actual occurrence. A plan and a
+completed event are different facts.
+
+**The newest dated value wins.** For "what is my current X", or any value that
+changed over time, take the NEWEST dated value and commit to it — it supersedes
+every older one. Never average it with an older figure, and never fall back to an
+older exact number because it was stated more precisely. A newest value phrased
+approximately ("around / about / close to X") resolves to X; state X.
+
+**Respect the qualifier.** If the question names a window ("last week", "in the
+past two weeks", "this year"), exclude anything dated outside it — and say which
+window you used. If it names a qualifier ("that I led", "from a store"), count
+only what matches it.
+
+**Dates are relative to when they were said.** Each fact's date is when the user
+told you, which is not always when the event happened. If the fact's text gives an
+explicit date, use that; if it describes the event as happening then, use the
+fact's date; if it phrases it relatively ("yesterday", "three weeks ago"), resolve
+that offset against the fact's own date. Resolve every date the question needs
+before computing, then subtract. **Do not refuse when a dated fact records the
+event** — if you hold the dates, do the arithmetic.
+
+**Answer under each reading.** If a borderline item, or which sense of the
+question you take, would change the result, give the answer for EACH ("3 — or 4 if
+the borderline item counts"). Do not silently pick one, and do not hedge instead
+of answering: a caveat belongs AFTER the answer, never in place of it.
+
+**Advice questions are memory questions.** When asked for a recommendation,
+suggestion, or opinion, lead with what you already know about this user — their
+stated goals, constraints, past choices, what they liked. Build on that rather
+than giving advice anyone could give.
+
+**Finish with one self-contained sentence** stating the answer to exactly what was
+asked. Someone reading only your last sentence must get it right.
+`;
 
 /**
  * Build the answer client over the real Anthropic API.
@@ -146,10 +214,23 @@ const MAX_ANSWER_TOKENS = 512;
  */
 export function makeAnthropicAnswerClient(
   apiKey: string,
-  opts: { model?: string; maxToolTurns?: number } = {},
+  opts: {
+    model?: string;
+    maxToolTurns?: number;
+    /** TASK-370 arm: append the recall-discipline rules to the system prompt. */
+    scaffold?: boolean;
+    /** TASK-371 arm: adaptive thinking at this effort. Absent = thinking OFF. */
+    effort?: AnswerEffort;
+  } = {},
 ): E2EAnswerClient {
   const model = opts.model ?? 'claude-sonnet-4-6';
   const maxToolTurns = opts.maxToolTurns ?? DEFAULT_MAX_TOOL_TURNS;
+  const scaffold = opts.scaffold === true;
+  // Either treatment needs room the control does not: the scaffold asks for
+  // written working-out, and thinking tokens bill against max_tokens.
+  const maxTokens = scaffold || opts.effort !== undefined
+    ? ANSWER_TOKENS_WITH_ROOM
+    : MAX_ANSWER_TOKENS;
   const a = new Anthropic({ apiKey });
   // Adapt the SDK client to the narrow {messages:{create}} shape runAnswerLoop
   // needs. A direct pass of `a` doesn't typecheck — the SDK's create() has a
@@ -164,6 +245,8 @@ export function makeAnthropicAnswerClient(
           system: req.system,
           messages: req.messages as Anthropic.MessageParam[],
           ...(req.tools ? { tools: req.tools } : {}),
+          ...(req.thinking ? { thinking: req.thinking } : {}),
+          ...(req.output_config ? { output_config: req.output_config } : {}),
         });
         return {
           content: resp.content as AnswerBlock[],
@@ -174,8 +257,11 @@ export function makeAnthropicAnswerClient(
   };
   return {
     async answer({ injectedMemory, question, questionDate, search, readSection }) {
-      const system = buildAnswerSystem(injectedMemory, questionDate);
-      return runAnswerLoop({ client, model, maxToolTurns, system, question, search, readSection });
+      const system = buildAnswerSystem(injectedMemory, questionDate, scaffold);
+      return runAnswerLoop({
+        client, model, maxToolTurns, system, question, search, readSection, maxTokens,
+        ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
+      });
     },
   };
 }
@@ -190,10 +276,15 @@ export function makeAnthropicAnswerClient(
  * itself), so a dropped `.trim()`, a single-newline separator, or a misspelled
  * label would otherwise slip through green.
  */
-export function buildAnswerSystem(injectedMemory: string, questionDate?: string): string {
+export function buildAnswerSystem(
+  injectedMemory: string,
+  questionDate?: string,
+  scaffold = false,
+): string {
+  const preamble = scaffold ? `${SYSTEM_PREAMBLE}\n${RECALL_SCAFFOLD}` : SYSTEM_PREAMBLE;
   let system = injectedMemory.trim().length > 0
-    ? `${SYSTEM_PREAMBLE}\n\n# Injected memory\n${injectedMemory}`
-    : SYSTEM_PREAMBLE;
+    ? `${preamble}\n\n# Injected memory\n${injectedMemory}`
+    : preamble;
   if (questionDate !== undefined && questionDate.trim().length > 0) {
     system += `\n\nToday's date: ${questionDate.trim()}`;
   }
@@ -218,8 +309,13 @@ export async function runAnswerLoop(deps: {
   question: string;
   search: MemorySearchFn;
   readSection: ReadSectionFn;
+  /** Defaults to the control ceiling so existing callers/tests are unchanged. */
+  maxTokens?: number;
+  /** Absent = no `thinking` param at all, which on Sonnet 4.6 means thinking OFF. */
+  effort?: AnswerEffort;
 }): Promise<E2EAnswer> {
   const { client, model, maxToolTurns, system, question, search, readSection } = deps;
+  const maxTokens = deps.maxTokens ?? MAX_ANSWER_TOKENS;
   const messages: AnswerMessage[] = [{ role: 'user', content: question }];
   let totalIn = 0;
   let totalOut = 0;
@@ -233,10 +329,13 @@ export async function runAnswerLoop(deps: {
       () =>
         client.messages.create({
           model,
-          max_tokens: MAX_ANSWER_TOKENS,
+          max_tokens: maxTokens,
           system,
           messages,
           ...(allowTools ? { tools: [MEMORY_SEARCH_TOOL, MEMORY_READ_SECTION_TOOL] } : {}),
+          ...(deps.effort !== undefined
+            ? { thinking: { type: 'adaptive' as const }, output_config: { effort: deps.effort } }
+            : {}),
         }),
       { attempts: 4, baseDelayMs: 1000, label: 'anthropic-e2e-answer' },
     );
@@ -366,6 +465,14 @@ interface AnswerRequest {
   system: string;
   messages: AnswerMessage[];
   tools?: Anthropic.Tool[];
+  /**
+   * Adaptive extended thinking. `budget_tokens` is DEPRECATED on Sonnet 4.6 —
+   * the current surface is `{ type: 'adaptive' }` plus `output_config.effort`.
+   * Thinking tokens count toward `max_tokens`, which is why the effort arms
+   * raise it (see ANSWER_TOKENS_WITH_ROOM).
+   */
+  thinking?: Anthropic.ThinkingConfigParam;
+  output_config?: { effort: AnswerEffort };
 }
 interface AnswerResponse {
   content: AnswerBlock[];

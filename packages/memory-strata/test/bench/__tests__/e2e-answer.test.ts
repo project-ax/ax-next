@@ -342,3 +342,64 @@ describe('buildAnswerSystem (answer system-prompt assembly)', () => {
     expect(system).not.toContain('# Injected memory');
   });
 });
+
+describe('answer-stage arms (TASK-370 scaffold / TASK-371 thinking)', () => {
+  it('omits the recall scaffold by default, so the control arm is unchanged', () => {
+    const system = buildAnswerSystem('mem', undefined);
+    expect(system).not.toContain('An intention is not an occurrence');
+    expect(system).not.toContain('The newest dated value wins');
+  });
+
+  it('appends the recall scaffold when asked, before the injected-memory block', () => {
+    const system = buildAnswerSystem('User loves cortados.', undefined, true);
+    expect(system).toContain('An intention is not an occurrence');
+    expect(system).toContain('The newest dated value wins');
+    // Order matters: the rules must precede the memory they govern.
+    expect(system.indexOf('An intention is not an occurrence')).toBeLessThan(
+      system.indexOf('# Injected memory'),
+    );
+  });
+
+  it('sends NO thinking or output_config by default — on Sonnet 4.6 that means thinking is off', async () => {
+    const seen: Record<string, unknown>[] = [];
+    const client = {
+      messages: {
+        create: async (req: Record<string, unknown>) => {
+          seen.push(req);
+          return { content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 1, output_tokens: 1 } };
+        },
+      },
+    };
+    await runAnswerLoop({
+      client: client as never, model: 'm', maxToolTurns: 0, system: 's', question: 'q',
+      search: async () => [] as MemorySearchResult[], readSection: (async () => ({ body: '' })) as ReadSectionFn,
+    });
+    expect(seen[0]).not.toHaveProperty('thinking');
+    expect(seen[0]).not.toHaveProperty('output_config');
+    // The control ceiling, which the 2026-09-15 measurement showed is not binding.
+    expect(seen[0]?.max_tokens).toBe(512);
+  });
+
+  it('sends adaptive thinking + effort when an effort is given (never budget_tokens)', async () => {
+    const seen: Record<string, unknown>[] = [];
+    const client = {
+      messages: {
+        create: async (req: Record<string, unknown>) => {
+          seen.push(req);
+          return { content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 1, output_tokens: 1 } };
+        },
+      },
+    };
+    await runAnswerLoop({
+      client: client as never, model: 'm', maxToolTurns: 0, system: 's', question: 'q',
+      search: async () => [] as MemorySearchResult[], readSection: (async () => ({ body: '' })) as ReadSectionFn,
+      effort: 'high', maxTokens: 4096,
+    });
+    // budget_tokens is DEPRECATED on Sonnet 4.6; adaptive is the current surface.
+    expect(seen[0]?.thinking).toEqual({ type: 'adaptive' });
+    expect(seen[0]?.output_config).toEqual({ effort: 'high' });
+    expect(seen[0]?.thinking).not.toHaveProperty('budget_tokens');
+    // Thinking tokens bill against max_tokens, so the ceiling must rise with it.
+    expect(seen[0]?.max_tokens).toBe(4096);
+  });
+});

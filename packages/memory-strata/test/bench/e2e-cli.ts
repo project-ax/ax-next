@@ -84,6 +84,10 @@ export interface RunE2EOptions {
   types?: string[];
   /** Opt-in question-id filter, unioned with `types`. */
   ids?: string[];
+  /** Answer-stage arm: append the recall-discipline scaffold (TASK-370). */
+  answerScaffold?: boolean;
+  /** Answer-stage arm: adaptive thinking at this effort (TASK-371). */
+  answerEffort?: 'low' | 'medium' | 'high' | 'max';
 }
 
 /**
@@ -235,7 +239,20 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
   const meter = new CostMeter({ capDollars: opts.cap, pricing: PRICING });
 
   const extractionLlm = makeOpenRouterExtractionLlm(env.OPENROUTER_API_KEY);
-  const answerClient = makeAnthropicAnswerClient(env.ANTHROPIC_API_KEY, { model: ANSWER_MODEL });
+  const answerClient = makeAnthropicAnswerClient(env.ANTHROPIC_API_KEY, {
+    model: ANSWER_MODEL,
+    ...(opts.answerScaffold === true ? { scaffold: true } : {}),
+    ...(opts.answerEffort !== undefined ? { effort: opts.answerEffort } : {}),
+  });
+  // Name the arm in the log AND the report command line: an answer-stage arm is
+  // invisible in the output otherwise, and a report that does not say which arm
+  // produced it is not comparable to anything.
+  if (opts.answerScaffold === true || opts.answerEffort !== undefined) {
+    console.log(
+      `Answer stage: scaffold=${opts.answerScaffold === true}, ` +
+        `thinking=${opts.answerEffort !== undefined ? `adaptive/${opts.answerEffort}` : 'off'}.`,
+    );
+  }
   const judge = makeOpenRouterJudgeClient(env.OPENROUTER_API_KEY, JUDGE_MODEL);
 
   // Seeded ONLY from resume rows in THIS run's selection (review fix, 2026-07-29)
@@ -379,7 +396,9 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
       `${concurrency > 1 ? ` --concurrency ${concurrency}` : ''}` +
       `${opts.selection === 'first' ? ` --first ${opts.sample}` : ''}` +
       `${opts.types ? ` --types ${opts.types.join(',')}` : ''}` +
-      `${opts.ids ? ` --ids ${opts.ids.join(',')}` : ''}`,
+      `${opts.ids ? ` --ids ${opts.ids.join(',')}` : ''}` +
+      `${opts.answerScaffold === true ? ' --answer-scaffold' : ''}` +
+      `${opts.answerEffort !== undefined ? ` --answer-effort ${opts.answerEffort}` : ''}`,
     abortError,
     skipped,
     retrievalMode,

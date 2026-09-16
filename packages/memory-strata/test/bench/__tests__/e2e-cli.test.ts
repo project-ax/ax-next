@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runE2EMode } from '../e2e-cli.js';
+import { parseAnswerEffort } from '../cli.js';
 
 describe('runE2EMode (TASK-189)', () => {
   it('fixture mode writes a labelled representative report end-to-end (no keys, no network)', async () => {
@@ -56,5 +57,21 @@ describe('e2e planner arms are priced (TASK: e2e orchestrator arm)', () => {
     for (const key of [E2E_HAIKU_MODEL, E2E_GLM_MODEL]) {
       expect(PRICING[key], `no PRICING row for ${key}`).toBeDefined();
     }
+  });
+});
+
+describe('--answer-effort parsing', () => {
+  it('accepts the four levels claude-sonnet-4-6 supports', () => {
+    for (const lvl of ['low', 'medium', 'high', 'max'] as const) {
+      expect(parseAnswerEffort(lvl)).toBe(lvl);
+    }
+  });
+
+  it('THROWS on xhigh — Sonnet 4.6 does not accept it, and a silently ignored spend flag is only visible after the run is paid for', () => {
+    expect(() => parseAnswerEffort('xhigh')).toThrow(/xhigh/);
+  });
+
+  it('throws on an unknown level rather than falling back to a default', () => {
+    expect(() => parseAnswerEffort('turbo')).toThrow(/unknown level/);
   });
 });
