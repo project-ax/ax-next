@@ -472,7 +472,7 @@ export function AgentView({
   }, [pendingReply, streamFrom, onPendingReplyConsumed]);
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, attachmentIds?: readonly string[]) => {
       setSent(text);
       setTurnError(null);
       try {
@@ -480,6 +480,7 @@ export function AgentView({
           agentId,
           conversationId: conversationRef.current,
           text,
+          ...(attachmentIds !== undefined ? { attachmentIds } : {}),
         });
         conversationRef.current = conversationId;
         await streamFrom(reqId);
@@ -807,7 +808,7 @@ export function AgentView({
                 decisions={decisions}
                 readOnly={past !== null}
                 busy={streaming}
-                onSend={(text) => void send(text)}
+                onSend={(text, attachmentIds) => void send(text, attachmentIds)}
                 onApprove={onApprove}
                 onDismiss={onDismiss}
                 onUndo={onUndo}

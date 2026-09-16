@@ -8,11 +8,18 @@
  * bury the two conversations the human actually had.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowUp, ChevronRight, Layers, ListChecks } from 'lucide-react';
+import {
+  ArrowUp,
+  ChevronRight,
+  Layers,
+  ListChecks,
+  Paperclip,
+} from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
+import { ATTACHMENT_ACCEPT } from '@/lib/attachment-upload';
 import { signInWithGoogle } from '@/lib/auth';
 import { readAlertVariant } from '@/lib/read-register';
 import {
@@ -21,6 +28,10 @@ import {
   findFieldKey,
   threadFindFields,
 } from '@/lib/thread-find';
+import {
+  composerSendBlock,
+  useWorkspaceAttachments,
+} from '@/lib/workspace-attachments';
 import { isOpenDecision } from '@/lib/workspace-types';
 import type {
   Decision,
@@ -43,6 +54,7 @@ import {
   ThreadFindToggle,
   type FindView,
 } from './ThreadFind';
+import { WorkspaceAttachmentChip } from './WorkspaceAttachmentChip';
 
 /**
  * What this thread can honestly say about its approvals.
@@ -63,7 +75,13 @@ interface Props {
   readOnly: boolean;
   /** True while a reply is streaming — the composer waits it out. */
   busy?: boolean;
-  onSend: (text: string) => void;
+  /**
+   * `attachmentIds` are the uploaded files this message carries, in pick
+   * order. An EMPTY LIST AND AN OMITTED ONE MEAN THE SAME THING: a plain
+   * text-only send, which is why the text-only path still calls this with one
+   * argument.
+   */
+  onSend: (text: string, attachmentIds?: readonly string[]) => void;
   /**
    * The three ways out of a decision. REQUIRED: the routes behind them ship
    * with the rows, so there is no longer a state where a card is on screen with
@@ -129,6 +147,9 @@ export function AgentConversation({
   onGrantResolved,
 }: Props) {
   const [draft, setDraft] = useState('');
+  const fileInput = useRef<HTMLInputElement>(null);
+  const { attachments, add, remove, retry, clear, attachmentIds, sendBlock } =
+    useWorkspaceAttachments();
 
   /*
     TASK-275 — the composer holds while an approval is open IN THIS THREAD.
@@ -146,11 +167,41 @@ export function AgentConversation({
       decisions.some((d) => d.id === m.decisionId && isOpenDecision(d)),
   );
 
+  /*
+    THE ATTACHMENT HOLD, decided by the same shared rule the home composer
+    uses (`lib/workspace-attachments`) rather than by a second copy of it here.
+  */
+  const attachBlock = composerSendBlock(
+    sendBlock,
+    draft.trim() !== '',
+    attachments.length,
+  );
+
+  /*
+    BOTH HOLDS CAN BE TRUE AT ONCE, and they are not equals, so the approval
+    one is shown first. It is a fact about the agent — the turn is parked
+    server-side and nothing the person types moves it until they answer — where
+    the attachment hold is a fact about this draft that they can clear in a
+    second. The attachment hold is not lost, only queued behind it: it still
+    stops the send, and its sentence takes the spot the moment the approval is
+    answered.
+  */
+  const holdReason = held ? COMPOSER_HOLD_COPY : attachBlock;
+
   const send = () => {
     const v = draft.trim();
-    if (!v || busy || held) return;
+    if (!v || busy || held || attachBlock !== null) return;
     setDraft('');
-    onSend(v);
+    const ids = attachmentIds;
+    // One argument when nothing is attached — see the prop doc. An empty list
+    // and no list are the same send, and the text-only call stays the call it
+    // was before a file could ride along with it.
+    if (ids.length > 0) onSend(v, ids);
+    else onSend(v);
+    // Only now. The chips stood for files that are already on the server and
+    // have just been handed to the agent; leaving them would put the same file
+    // on the next message too.
+    clear();
   };
 
   /*
@@ -437,13 +488,27 @@ export function AgentConversation({
 
       {!readOnly && (
         <div className="border-t border-border px-6 py-4">
+          {attachments.length > 0 && (
+            <div className="mb-2 flex max-w-[720px] flex-wrap gap-2">
+              {attachments.map((a) => (
+                <WorkspaceAttachmentChip
+                  key={a.id}
+                  attachment={a}
+                  onRemove={() => remove(a.id)}
+                  onRetry={() => retry(a.id)}
+                />
+              ))}
+            </div>
+          )}
           {/*
             TASK-275 — the hold reason, as real DOM text above the field: the
-            same sentence as `/`. Shown only for `held`, not for `busy`.
+            same sentence as `/`. Shown for `held` and for an attachment hold,
+            never for `busy` (a reply on its way is not something the reader
+            has to do anything about).
           */}
-          {held && (
+          {holdReason !== null && (
             <div className="mb-2 max-w-[720px] text-[12.5px] text-muted-foreground">
-              {COMPOSER_HOLD_COPY}
+              {holdReason}
             </div>
           )}
           {/*
@@ -454,22 +519,62 @@ export function AgentConversation({
             a second, which would bury the sentence that mattered).
           */}
           <span className="sr-only" role="status" aria-live="polite">
-            {held ? 'Your agent is waiting for your approval.' : ''}
+            {held
+              ? 'Your agent is waiting for your approval.'
+              : (attachBlock ?? '')}
           </span>
           <div className="flex max-w-[720px] items-center gap-2">
+            {/*
+              The input is plumbing, not a control: the labelled Button beside
+              it is what a person (or a screen reader) operates, so the input
+              stays out of the accessibility tree and out of the tab order
+              rather than turning up as a second, unnamed thing to tab through.
+            */}
+            <input
+              ref={fileInput}
+              type="file"
+              multiple
+              accept={ATTACHMENT_ACCEPT}
+              className="sr-only"
+              tabIndex={-1}
+              aria-hidden="true"
+              onChange={(e) => {
+                add(e.target.files ?? []);
+                // Picking the SAME file twice in a row is a no-op unless the
+                // value is cleared: the input's value would not change, so no
+                // `change` event fires and the second pick does nothing.
+                e.target.value = '';
+              }}
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Attach a file"
+              disabled={busy || held}
+              onClick={() => fileInput.current?.click()}
+            >
+              <Paperclip strokeWidth={1.5} aria-hidden="true" />
+            </Button>
             <Input
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && send()}
               placeholder={`Message ${agent.name}`}
               className="h-10"
+              /*
+                Deliberately NOT disabled on `attachBlock`: one of the two
+                attachment holds is "you have not written anything", and the
+                field is where a person fixes that. Quieting it would leave
+                them with a hold they cannot clear.
+              */
               disabled={busy || held}
             />
             <Button
               size="icon"
               onClick={send}
               aria-label="Send"
-              disabled={busy || held}
+              disabled={busy || held || attachBlock !== null}
             >
               <ArrowUp size={15} />
             </Button>

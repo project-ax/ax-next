@@ -28,6 +28,7 @@ import {
   DECISION_SESSION_EXPIRED,
   DECISION_THREAD_READ_FAILED,
 } from '../decision-copy';
+import { uploadAttachment } from '@/lib/attachment-upload';
 import { rail as railFixture } from './rail-fixture';
 import {
   getWorkspaceGrantSnapshot,
@@ -53,7 +54,19 @@ vi.mock('@/lib/workspace-api', async () => {
   };
 });
 
+/*
+  Only the upload POST is faked. `attachmentRefBlock` and `ATTACHMENT_ACCEPT`
+  stay real — the first is what `workspace-api` builds the wire block with, and
+  the second is the picker's `accept` hint.
+*/
+vi.mock('@/lib/attachment-upload', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@/lib/attachment-upload')>();
+  return { ...actual, uploadAttachment: vi.fn() };
+});
+
 const agentMock = vi.mocked(workspaceApi.agent);
+const uploadMock = vi.mocked(uploadAttachment);
 const sendMock = vi.mocked(workspaceApi.sendMessage);
 const streamMock = vi.mocked(workspaceApi.streamReply);
 
@@ -118,6 +131,7 @@ beforeEach(() => {
   agentMock.mockReset();
   sendMock.mockReset();
   streamMock.mockReset();
+  uploadMock.mockReset();
 });
 
 describe('past conversations', () => {
@@ -787,6 +801,57 @@ describe('a grant raised on a pending reply', () => {
     );
     expect(getWorkspaceGrantSnapshot().grants[0]?.conversationId).toBe(
       'c-from-send',
+    );
+  });
+});
+
+
+/*
+  TASK-353 — the whole path, end to end on this surface: a file picked in the
+  thread composer reaches `sendMessage` as an attachment id.
+
+  Every piece below the UI shipped before the UI did, so this case could not be
+  written until now: there was no picker to drive. It is the one assertion that
+  fails if any single link — picker, chip, `attachmentIds` on the composer's
+  `onSend`, `AgentView`'s `send`, the `sendMessage` spread — is missing.
+*/
+describe('handing this agent a file', () => {
+  it('sends the picked file as an attachment id on the message', async () => {
+    agentMock.mockResolvedValue(detail());
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r1' });
+    streamMock.mockResolvedValue(undefined as never);
+    uploadMock.mockResolvedValue({
+      attachmentId: 'att-1',
+      sizeBytes: 1,
+      mediaType: 'application/pdf',
+      displayName: 'notes.pdf',
+      expiresAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    renderView();
+    const box = await screen.findByPlaceholderText('Message Quill');
+
+    // The picker is sr-only plumbing behind the paperclip Button, deliberately
+    // out of the accessibility tree — the DOM is the honest way in.
+    const picker = document.querySelector('input[type="file"]');
+    expect(picker).not.toBeNull();
+    fireEvent.change(picker as HTMLInputElement, {
+      target: {
+        files: [new File(['x'], 'notes.pdf', { type: 'application/pdf' })],
+      },
+    });
+    await screen.findByText('Ready to send');
+
+    fireEvent.change(box, { target: { value: 'have a look at this' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+
+    await waitFor(() =>
+      expect(sendMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: 'have a look at this',
+          attachmentIds: ['att-1'],
+        }),
+      ),
     );
   });
 });
