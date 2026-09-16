@@ -150,10 +150,24 @@ describe('the grants read-back (TASK-373)', () => {
     an unhandled rejection nobody is watching — so the guard catches it here,
     where a malformed body fails loudly instead of being applied.
   */
+  /*
+    A row the product could actually DRAW. It used to stop at
+    `{ kind: 'skill', skillId: 'linear' }`, which was never a real row: `hosts`
+    and `slots` are what `GrantRow` iterates, and without them it throws. The
+    fixture passed anyway because the guard only asked whether `request` was an
+    object — so "accepts a real row" was, until TASK-351 widened the guard,
+    accepting a row that would have taken the workspace down.
+  */
   const realRow = {
     conversationId: 'cnv-1',
     agentId: 'a-quill',
-    request: { kind: 'skill', skillId: 'linear' },
+    request: {
+      kind: 'skill',
+      skillId: 'linear',
+      description: 'File and read Linear issues',
+      hosts: ['api.linear.app'],
+      slots: [{ slot: 'api_key', kind: 'api-key' }],
+    },
   };
 
   it('rejects a 200 with no grants array', async () => {
@@ -177,6 +191,107 @@ describe('the grants read-back (TASK-373)', () => {
     await expect(workspaceApi.grants()).rejects.toBeInstanceOf(
       WorkspaceShapeError,
     );
+  });
+
+  it('rejects a row with no agentId — presence routes on it (TASK-351)', async () => {
+    /*
+      The one field whose absence used to be INVISIBLE. `PendingGrant.agentId`
+      is typed `string`, so an `undefined` here type-checks its way into the
+      store, matches no route, and quietly costs the grant its thread — a
+      degradation with no error anywhere. It became load-bearing the moment
+      presence started reading it, so it is checked like the other two.
+    */
+    respondWith({
+      grants: [
+        { conversationId: 'cnv-1', request: { kind: 'skill', skillId: 'linear' } },
+      ],
+    });
+    await expect(workspaceApi.grants()).rejects.toBeInstanceOf(
+      WorkspaceShapeError,
+    );
+  });
+
+  it('rejects a row whose request has no kind we can draw', async () => {
+    /*
+      `request` being an object was never enough. `grantKey` switches on the
+      DISCRIMINANT and its switch is exhaustive over the union, which means a
+      `kind` from outside the union returns `undefined` at runtime with nothing
+      complaining — and then `GrantRow` reaches for fields that shape has not
+      got. The throw lands in the workspace `ErrorBoundary`, so ONE unreadable
+      row buries every legible grant AND every decision beside it.
+
+      Failing the read instead keeps the rest of the surface: the shell already
+      knows how to say it could not check the grants without claiming the day
+      was empty.
+    */
+    respondWith({
+      grants: [
+        {
+          conversationId: 'cnv-1',
+          agentId: 'a-quill',
+          request: { kind: 'device', deviceId: 'd-1' },
+        },
+      ],
+    });
+    await expect(workspaceApi.grants()).rejects.toBeInstanceOf(
+      WorkspaceShapeError,
+    );
+  });
+
+  it('rejects a row whose request is an empty object', async () => {
+    // The cheapest version of the same hole, and the one a half-written server
+    // handler actually produces.
+    respondWith({
+      grants: [{ conversationId: 'cnv-1', agentId: 'a-quill', request: {} }],
+    });
+    await expect(workspaceApi.grants()).rejects.toBeInstanceOf(
+      WorkspaceShapeError,
+    );
+  });
+
+  it('rejects a right-kind row missing the fields the row iterates', async () => {
+    // `kind: 'skill'` is not on its own enough to draw: `GrantRow` maps over
+    // `hosts` and `slots`, so a row without them throws the same way an unknown
+    // kind does, and takes the same surface with it.
+    respondWith({
+      grants: [
+        {
+          conversationId: 'cnv-1',
+          agentId: 'a-quill',
+          request: { kind: 'skill', skillId: 'linear', description: 'x' },
+        },
+      ],
+    });
+    await expect(workspaceApi.grants()).rejects.toBeInstanceOf(
+      WorkspaceShapeError,
+    );
+  });
+
+  it('accepts all three kinds it CAN draw', async () => {
+    /*
+      The positive control for the two rejections above: without it they would
+      pass just as well against a guard that refused everything, and a grants
+      read that always throws is a worse bug than the one being fixed.
+    */
+    const grants = [
+      {
+        conversationId: 'cnv-1',
+        agentId: 'a-quill',
+        request: { kind: 'skill', skillId: 'linear', description: '', hosts: [], slots: [] },
+      },
+      {
+        conversationId: 'cnv-2',
+        agentId: 'a-quill',
+        request: { kind: 'connector', connectorId: 'linear', name: 'Linear', hosts: [], slots: [] },
+      },
+      {
+        conversationId: 'cnv-3',
+        agentId: 'a-scout',
+        request: { kind: 'host', host: 'example.org', sessionId: 's-1' },
+      },
+    ];
+    respondWith({ grants });
+    await expect(workspaceApi.grants()).resolves.toEqual({ grants });
   });
 
   it('accepts an honestly empty page', async () => {

@@ -12,13 +12,19 @@
  * frame is transient, and this store's contents live exactly as long as the
  * page does.
  *
- * KNOWN LIMIT, on purpose (TASK-350's scope decision). The only producer is the
- * per-turn SSE stream, and `streamReply` is opened only by `AgentView` when a
- * turn is sent. On an idle Today no stream is open, so a grant raised by an
- * agent working unattended has nothing to arrive on. Closing that needs durable
- * server-side pending-grant state and a read route; it is filed separately.
- * Until then, what this delivers is: a grant raised WHILE a turn is streaming
- * becomes answerable from Today instead of dead-ending the turn.
+ * TWO PRODUCERS, ONE ENTRY POINT. The per-turn SSE stream (`AgentView`) raises
+ * a grant that arrives on a live turn; the mount read-back (TASK-373, `GET
+ * /api/workspace/grants`) raises one that was waiting while the workspace was
+ * closed. Both go through `raise`, which replaces on the subject key — a
+ * second, hydrate-flavoured entry point is exactly how two rows for one grant
+ * would happen. (TASK-350's header said the stream was the only producer; it
+ * stopped being true when TASK-373 landed.)
+ *
+ * TWO READERS, ONE ROW (TASK-351). The Today queue renders every open grant;
+ * an agent's thread additionally renders the ones presence routes to it — see
+ * `workspace-grant-presence.ts`. Both read THIS array, so the card in the
+ * thread and the row in the queue are the same object and answering either
+ * resolves both. Neither reader keeps a copy.
  *
  * Same `useSyncExternalStore` shape as `decision-raised-store.ts` /
  * `permission-card-store.ts`.
@@ -26,10 +32,41 @@
 import { useSyncExternalStore } from 'react';
 import type { PermissionRequest } from '../server/types';
 
+/**
+ * Where a grant came from — recorded by whichever producer raised it.
+ *
+ * Both fields are REQUIRED, and neither is optional-with-a-default, because
+ * the two producers (the turn stream and the mount read-back) both genuinely
+ * hold both. An optional `agentId` would default to "route it nowhere", which
+ * is the safe direction but also the silent one: a third producer added later
+ * would render grants that never reach a thread and nothing would say why.
+ */
+export interface GrantOrigin {
+  /** The conversation the grant was raised on. See `WorkspaceGrant`. */
+  conversationId: string | null;
+  /** The agent that asked. See `WorkspaceGrant`. */
+  agentId: string;
+}
+
 /** One open grant, plus the identity that makes it one row. */
 export interface WorkspaceGrant {
   key: string;
   request: PermissionRequest;
+  /**
+   * The agent that asked.
+   *
+   * Recorded so PRESENCE can route the row (TASK-351): the same grant renders
+   * in that agent's thread when the person is there reading it, and in the
+   * Today queue always. It is compared for equality against the open route's
+   * agent id and used for nothing else — in particular it never reaches the
+   * answer POST, which targets `conversationId`. Where we DRAW a grant is
+   * therefore not an input to what we GRANT.
+   *
+   * Not part of `grantKey`, deliberately: identity is the subject. Two agents
+   * blocked on one connector is still one question, and keying on the pair is
+   * exactly how one grant would become two rows.
+   */
+  agentId: string;
   /**
    * The conversation the grant was raised on.
    *
@@ -72,6 +109,88 @@ export function grantKey(request: PermissionRequest): string {
       return `connector:${request.connectorId}`;
     case 'host':
       return `host:${request.host}`;
+  }
+}
+
+/** The reach a `skill` and a `connector` both declare — and both ITERATE. */
+function hasIterableReach(r: Record<string, unknown>): boolean {
+  return (
+    Array.isArray(r.hosts) &&
+    r.hosts.every((h) => typeof h === 'string') &&
+    Array.isArray(r.slots) &&
+    r.slots.every(
+      (s) =>
+        typeof s === 'object' &&
+        s !== null &&
+        typeof (s as { slot?: unknown }).slot === 'string',
+    )
+  );
+}
+
+/**
+ * Is this something we can actually put on screen?
+ *
+ * `grantKey`'s switch is exhaustive over the union, which makes TypeScript
+ * happy and does nothing at runtime: a request whose `kind` is none of the
+ * three falls off the end and the key comes back `undefined`. That row lands in
+ * the store keyed `undefined`, `GrantRow` reaches straight for fields the shape
+ * has not got, and the throw lands in the workspace `ErrorBoundary` — which
+ * bounds it to the whole surface, so ONE unreadable row takes every legible
+ * grant and decision down with it.
+ *
+ * The case is not hypothetical and not only a malformed-server case: a server
+ * that adds a FOURTH `PermissionRequest` kind does exactly this to every client
+ * built before it. Refusing is the forward-compatible answer — this build skips
+ * what it cannot render and the rest of the queue survives. The grant is not
+ * lost, either: it is still open server-side, and a build that knows the kind
+ * will draw it.
+ *
+ * WHERE THE LINE IS DRAWN, and why it is not "validate the whole type". This
+ * checks the discriminant, the id that BECOMES THE KEY, and the two collections
+ * without which there is no answerable row left to draw (`hosts`, `slots`).
+ * `description`, `name`, `sessionId` and `packages` are required-or-optional by
+ * the type and are NOT checked: none of them decides whether the question can
+ * be ANSWERED, so refusing a grant over one would trade a plain-looking row for
+ * a question that silently never gets asked.
+ *
+ * That trade is only honest because the RENDER SITE holds up its end, and it
+ * took TWO rounds of review to make that true. First `description`: this
+ * comment called it cosmetic while `GrantRow` was reading `description.length`
+ * unguarded, so a missing one threw exactly as hard as a missing `hosts`
+ * (`packages.npm`/`pypi` had the same hole). Then `name`: cleared on the
+ * grounds that interpolation "cannot throw" — which is true and is the WRONG
+ * TEST. `Connect ${undefined}` does not throw; it renders "Connect undefined"
+ * over a password field, a credential prompt with no subject, which is worse
+ * than a crash because it is quiet. All four now have a real fallback at the
+ * render site.
+ *
+ * The rule, stated so the next person does not have to rediscover it twice:
+ * **a guard may leave a field out only if the renderer is KNOWN to tolerate
+ * its absence — and "tolerate" means renders something a person can act on,
+ * not merely "does not throw". Verify it at the render site; never infer it
+ * from the field sounding decorative.**
+ *
+ * Deliberately returns `boolean` and not `request is PermissionRequest`: it
+ * does not check every field of that type, and a predicate that says it did
+ * would hand the next reader a guarantee this does not make.
+ *
+ * Both producers go through `raise`, so this one check covers the SSE stream —
+ * which has no shape guard of its own — and the mount read-back alike.
+ * `workspace-api.ts` ALSO calls it at the wire, where a bad row is news about
+ * the server rather than about the future.
+ */
+export function isRenderableGrant(request: unknown): boolean {
+  if (typeof request !== 'object' || request === null) return false;
+  const r = request as Record<string, unknown>;
+  switch (r.kind) {
+    case 'skill':
+      return typeof r.skillId === 'string' && hasIterableReach(r);
+    case 'connector':
+      return typeof r.connectorId === 'string' && hasIterableReach(r);
+    case 'host':
+      return typeof r.host === 'string';
+    default:
+      return false;
   }
 }
 
@@ -119,7 +238,24 @@ export const workspaceGrantActions = {
    * drops it — one product, one answer. Connector still wins both directions,
    * and every other transition goes through.
    */
-  raise(request: PermissionRequest, conversationId: string | null): void {
+  raise(request: PermissionRequest, origin: GrantOrigin): void {
+    // Something this build cannot key or draw. Dropped, loudly enough for
+    // whoever is debugging a version skew — see `isRenderableGrant`. The person
+    // sees one fewer row rather than a workspace that will not render.
+    //
+    // The `kind` goes in the log because it is the one fact that makes the
+    // warning actionable, and it is safe to log: a public discriminant, never a
+    // secret. The rest of the payload stays out — a rejected grant is exactly
+    // the payload we have decided we do not understand.
+    if (!isRenderableGrant(request)) {
+      console.warn('[workspace] dropping a grant this build cannot draw', {
+        // `?.` because `isRenderableGrant(null)` is `false` — so the one value
+        // that reaches this branch WITHOUT a `kind` to report is exactly the
+        // one a plain dereference would throw on, inside the error path.
+        kind: (request as { kind?: unknown } | null | undefined)?.kind,
+      });
+      return;
+    }
     if (
       request.kind === 'host' &&
       state.grants.some((g) => g.request.kind === 'connector')
@@ -127,14 +263,31 @@ export const workspaceGrantActions = {
       return;
     }
     const key = grantKey(request);
+    const row: WorkspaceGrant = { key, request, ...origin };
     const at = state.grants.findIndex((g) => g.key === key);
     if (at === -1) {
-      set({ grants: [...state.grants, { key, request, conversationId }] });
+      set({ grants: [...state.grants, row] });
       return;
     }
-    // Replace in place: same row, same position, newer payload.
+    // Replace in place: same row, same position, newer payload — including a
+    // newer origin. The subject is the identity, so the same connector asked
+    // for by a second agent updates this row rather than adding one.
+    //
+    // A NOTE FOR THE NEXT PRODUCER (TASK-351 review). Replacing the origin is
+    // what lets presence re-route a row, and it has a cost: a re-raise by agent
+    // B while the person is reading agent A's thread takes the card OUT of that
+    // thread, and `GrantRow` keeps its half-typed key in local state, so the
+    // typing goes with it. Unreachable today — the only live producer is the
+    // stream of the agent you are looking at, and the read-back runs once at
+    // mount — so this is written down rather than guarded, because the guard
+    // would mean lifting per-row input state somewhere both render sites can
+    // reach, which is the shared-state tangle invariant 4 is about. A producer
+    // that raises grants GLOBALLY (a workspace-wide SSE feed, a poll) makes it
+    // reachable and owes it a real answer. That answer is NOT keying the agent
+    // into `grantKey`: identity is the subject, and keying the pair turns one
+    // question into two rows on two surfaces.
     const grants = state.grants.slice();
-    grants[at] = { key, request, conversationId };
+    grants[at] = row;
     set({ grants });
   },
 

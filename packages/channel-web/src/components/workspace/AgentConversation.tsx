@@ -22,8 +22,10 @@ import type {
   WorkspaceAgent,
   WorkspaceReadStatus,
 } from '@/lib/workspace-api';
+import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 import { AgentTile } from './bits';
 import { ApprovalCard } from './ApprovalCard';
+import { GrantRow } from './GrantRow';
 import {
   COMPOSER_HOLD_COPY,
   DECISION_SESSION_EXPIRED,
@@ -77,6 +79,24 @@ interface Props {
   approvalRead: ApprovalRead;
   /** Re-runs every read behind `approvalRead` — see `AgentView`, which owns the list. */
   onRetryApprovals: () => void;
+  /**
+   * Open capability grants PRESENCE ROUTED HERE (TASK-351) — the ones this
+   * agent raised while the person is demonstrably reading this thread. The
+   * shell decides, because the shell owns the route (see
+   * `workspace-grant-presence.ts`); this draws what it is handed.
+   *
+   * These are the queue's own row objects, not copies, and the Today queue is
+   * still showing every one of them. That is the invariant: one grant, one
+   * identity, two render sites, never two live copies. `onGrantResolved` is the
+   * store's `resolve`, so answering here drops the row for both sites.
+   *
+   * REQUIRED, like `decisions` and for the same reason: a thread that silently
+   * drew no grants is indistinguishable from an agent that asked for nothing,
+   * and a default of `[]` is how the next caller forgets to pass them.
+   */
+  grants: readonly WorkspaceGrant[];
+  /** A grant here was answered or turned down. The store's `resolve`. */
+  onGrantResolved: (key: string) => void;
 }
 
 export function AgentConversation({
@@ -93,6 +113,8 @@ export function AgentConversation({
   notices,
   approvalRead,
   onRetryApprovals,
+  grants,
+  onGrantResolved,
 }: Props) {
   const [draft, setDraft] = useState('');
 
@@ -198,6 +220,48 @@ export function AgentConversation({
           )}
         </div>
       </div>
+
+      {/*
+        THE SECOND RENDER SITE (TASK-351). Above the composer, where chat put
+        it, and OUT OF BAND: not a `ThreadMessage` variant and not a transcript
+        row, because a grant has no recorded call and is not part of what was
+        said. (`kind: 'approval'` above is the `Decision` row and stays exactly
+        that.)
+
+        Same `GrantRow` as Today, in the same bordered frame Today gives its
+        list, so it reads as the same kind of object in both places. A second,
+        reduced renderer on the surface most people use is how the two would
+        drift into asking the same question two different ways.
+
+        NOT gated on `readOnly`. The composer is hidden while a past
+        conversation is open, but a grant is not about the transcript being
+        read — it is a live question that stops this agent until it is answered,
+        and hiding it because somebody scrolled into history is exactly the
+        orphaning this card exists to prevent.
+
+        Capped and scrollable, as chat's approval stack is: two grants each
+        asking for a key are tall enough to push the composer off screen, and a
+        composer you cannot reach is a worse bug than a card you must scroll.
+
+        KNOWN WRINKLE of presence being continuous: switching browser tabs
+        unmounts this region, so a half-typed key in it is gone on return. It
+        is the flow where that hurts — people leave to fetch the key from a
+        password manager — but they leave BEFORE pasting far more often than
+        after, the field is never the only copy of anything, and the grant
+        itself is never lost (the queue still has it). Keeping the draft would
+        mean lifting per-row input state out of `GrantRow` and into something
+        that outlives both render sites, which is a second piece of shared
+        grant state — the thing invariant 4 is about. Filed rather than fixed.
+      */}
+      {grants.length > 0 && (
+        <div className="px-6 pt-4" data-testid="thread-grants">
+          <div className="max-h-[50vh] max-w-[720px] overflow-y-auto rounded-lg border border-border bg-card shadow-sm [scrollbar-gutter:stable]">
+            {grants.map((g) => (
+              <GrantRow key={g.key} grant={g} onResolved={onGrantResolved} />
+            ))}
+          </div>
+        </div>
+      )}
 
       {!readOnly && (
         <div className="border-t border-border px-6 py-4">
