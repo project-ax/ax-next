@@ -28,6 +28,7 @@ import {
   DECISION_SESSION_EXPIRED,
   DECISION_THREAD_READ_FAILED,
 } from '../decision-copy';
+import { uploadAttachment } from '@/lib/attachment-upload';
 import { rail as railFixture } from './rail-fixture';
 import {
   getWorkspaceGrantSnapshot,
@@ -53,7 +54,19 @@ vi.mock('@/lib/workspace-api', async () => {
   };
 });
 
+/*
+  Only the upload POST is faked. `attachmentRefBlock` and `ATTACHMENT_ACCEPT`
+  stay real — the first is what `workspace-api` builds the wire block with, and
+  the second is the picker's `accept` hint.
+*/
+vi.mock('@/lib/attachment-upload', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@/lib/attachment-upload')>();
+  return { ...actual, uploadAttachment: vi.fn() };
+});
+
 const agentMock = vi.mocked(workspaceApi.agent);
+const uploadMock = vi.mocked(uploadAttachment);
 const sendMock = vi.mocked(workspaceApi.sendMessage);
 const streamMock = vi.mocked(workspaceApi.streamReply);
 
@@ -118,6 +131,7 @@ beforeEach(() => {
   agentMock.mockReset();
   sendMock.mockReset();
   streamMock.mockReset();
+  uploadMock.mockReset();
 });
 
 describe('past conversations', () => {
@@ -788,5 +802,168 @@ describe('a grant raised on a pending reply', () => {
     expect(getWorkspaceGrantSnapshot().grants[0]?.conversationId).toBe(
       'c-from-send',
     );
+  });
+});
+
+
+/*
+  TASK-353 — the whole path, end to end on this surface: a file picked in the
+  thread composer reaches `sendMessage` as an attachment id.
+
+  Every piece below the UI shipped before the UI did, so this case could not be
+  written until now: there was no picker to drive. It is the one assertion that
+  fails if any single link — picker, chip, `attachmentIds` on the composer's
+  `onSend`, `AgentView`'s `send`, the `sendMessage` spread — is missing.
+*/
+describe('handing this agent a file', () => {
+  it('sends the picked file as an attachment id on the message', async () => {
+    agentMock.mockResolvedValue(detail());
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r1' });
+    streamMock.mockResolvedValue(undefined as never);
+    uploadMock.mockResolvedValue({
+      attachmentId: 'att-1',
+      sizeBytes: 1,
+      mediaType: 'application/pdf',
+      displayName: 'notes.pdf',
+      expiresAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    renderView();
+    const box = await screen.findByPlaceholderText('Message Quill');
+
+    // The picker is sr-only plumbing behind the paperclip Button, deliberately
+    // out of the accessibility tree — the DOM is the honest way in.
+    const picker = document.querySelector('input[type="file"]');
+    expect(picker).not.toBeNull();
+    fireEvent.change(picker as HTMLInputElement, {
+      target: {
+        files: [new File(['x'], 'notes.pdf', { type: 'application/pdf' })],
+      },
+    });
+    await screen.findByText('Ready to send');
+
+    fireEvent.change(box, { target: { value: 'have a look at this' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+
+    await waitFor(() =>
+      expect(sendMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: 'have a look at this',
+          attachmentIds: ['att-1'],
+        }),
+      ),
+    );
+  });
+
+  /*
+    RESEND MUST NOT DELIVER LESS THAN THE PERSON WROTE.
+
+    The thread composer hands the message over and clears its chips in the same
+    breath — `onSend` returns `void`, so it never learns whether the POST
+    landed. After a 503 the only surviving record that a file was part of this
+    message is `AgentView`'s own `sent`. Before this was carried there, Resend
+    re-posted the text alone: the agent got "have a look at this" and no file,
+    nobody was told, and the chip that might have hinted at it was already gone.
+    That is the exact failure this card exists to prevent, on the error path.
+
+    Against the unfixed code the second call carries no `attachmentIds` at all,
+    so this fails on the assertion rather than on a wrong value.
+  */
+  it('resends the file with the words after a failed send', async () => {
+    agentMock.mockResolvedValue(detail());
+    sendMock.mockRejectedValueOnce(
+      new WorkspaceApiError('/chat/messages', 503),
+    );
+    uploadMock.mockResolvedValue({
+      attachmentId: 'att-1',
+      sizeBytes: 1,
+      mediaType: 'application/pdf',
+      displayName: 'notes.pdf',
+      expiresAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    renderView();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(document.querySelector('input[type="file"]')!, {
+      target: {
+        files: [new File(['x'], 'notes.pdf', { type: 'application/pdf' })],
+      },
+    });
+    await screen.findByText('Ready to send');
+    fireEvent.change(box, { target: { value: 'have a look at this' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+
+    // The composer has already dropped its chips, so nothing on screen is
+    // holding the file any more.
+    await screen.findByText(/didn’t finish/);
+    expect(screen.queryByText('Ready to send')).toBeNull();
+
+    sendMock.mockClear();
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r2' });
+    streamMock.mockResolvedValue(undefined as never);
+    fireEvent.click(screen.getByRole('button', { name: 'Resend' }));
+
+    await waitFor(() =>
+      expect(sendMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: 'have a look at this',
+          attachmentIds: ['att-1'],
+        }),
+      ),
+    );
+  });
+
+  /*
+    THE OTHER HALF OF THE SAME RULE, and the reason "always resend the ids" is
+    the wrong fix. Here the POST SUCCEEDED and only the reply stream fell over,
+    so `attachments:commit` has already consumed `att-1` into that turn — the
+    file is in the conversation and its temp record is gone. Naming it again
+    would earn a 400 `attachment-not-found`, turning Resend into a button that
+    can never work (the dead-button offer TASK-276 spent a card removing).
+
+    Asserted as absence, on purpose: `toHaveBeenCalledWith(objectContaining(…))`
+    cannot prove a key is missing, so this reads the recorded argument and says
+    the key is not there.
+  */
+  it('resends only the words when the file already reached the conversation', async () => {
+    agentMock.mockResolvedValue(detail());
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r1' });
+    streamMock.mockImplementation(
+      async (_reqId: string, h: { onError: (m: string) => void }) => {
+        h.onError('the reply stream would not open');
+      },
+    );
+    uploadMock.mockResolvedValue({
+      attachmentId: 'att-1',
+      sizeBytes: 1,
+      mediaType: 'application/pdf',
+      displayName: 'notes.pdf',
+      expiresAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    renderView();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(document.querySelector('input[type="file"]')!, {
+      target: {
+        files: [new File(['x'], 'notes.pdf', { type: 'application/pdf' })],
+      },
+    });
+    await screen.findByText('Ready to send');
+    fireEvent.change(box, { target: { value: 'have a look at this' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+
+    await screen.findByText(/didn’t finish/);
+    // The first POST did carry the file — that is what spent the id.
+    expect(sendMock.mock.calls[0]?.[0]).toMatchObject({
+      attachmentIds: ['att-1'],
+    });
+
+    sendMock.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Resend' }));
+
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(1));
+    const resent = sendMock.mock.calls[0]?.[0];
+    expect(resent?.text).toBe('have a look at this');
+    expect(Object.keys(resent ?? {})).not.toContain('attachmentIds');
   });
 });

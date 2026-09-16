@@ -119,8 +119,31 @@ const ACCENT_PAIRS = [
   ['--secondary', '--secondary-foreground'],
 ] as const;
 
-/** Accents that are ALSO used as text directly on the page background. */
+/** Accents that are ALSO used as text directly on a plain surface. */
 const ACCENTS_USED_AS_TEXT = ['--primary', '--destructive', '--warning'] as const;
+
+/**
+ * The plain surfaces those accents land on. `--card` is a SECOND surface, not
+ * a synonym for `--background`: in light mode they happen to be the same white,
+ * but dark mode lifts the card to `240 3% 11%` off a pure-black page. Anything
+ * measured only against `--background` is therefore unmeasured on every card,
+ * panel and chip in dark mode — which is most of the product.
+ *
+ * TASK-353 is what surfaced the gap: the workspace composer's attachment chip
+ * puts `text-destructive` and `text-muted-foreground` on `bg-card`, and neither
+ * pair was covered here. Measured at the time: destructive 5.14 light / 5.06
+ * dark, muted-foreground 4.83 / 5.03, primary 4.97 / 4.58, warning 4.84 /
+ * 10.38. All clear, and now they stay that way by test rather than by luck.
+ */
+const PLAIN_SURFACES = ['--background', '--card'] as const;
+
+/**
+ * Body copy that is deliberately quiet. It is still text a person has to read
+ * — "Ready to send" on an upload chip, every timestamp, every hint line — so
+ * it answers to the same AA floor as anything else, and it is the token most
+ * likely to be nudged lighter by someone chasing a calmer look.
+ */
+const QUIET_TEXT = '--muted-foreground';
 
 describe('theme contrast', () => {
   for (const [name, selector] of THEMES) {
@@ -137,13 +160,23 @@ describe('theme contrast', () => {
         });
       }
 
-      for (const accent of ACCENTS_USED_AS_TEXT) {
-        it(`${accent} as text on --background clears AA`, () => {
-          const accentV = tokens.get(accent);
-          const bgV = tokens.get('--background');
-          expect(accentV, `${accent} missing from ${selector}`).toBeDefined();
-          expect(bgV, `--background missing from ${selector}`).toBeDefined();
-          expect(contrast(accentV!, bgV!)).toBeGreaterThanOrEqual(AA_NORMAL);
+      for (const surface of PLAIN_SURFACES) {
+        for (const accent of ACCENTS_USED_AS_TEXT) {
+          it(`${accent} as text on ${surface} clears AA`, () => {
+            const accentV = tokens.get(accent);
+            const bgV = tokens.get(surface);
+            expect(accentV, `${accent} missing from ${selector}`).toBeDefined();
+            expect(bgV, `${surface} missing from ${selector}`).toBeDefined();
+            expect(contrast(accentV!, bgV!)).toBeGreaterThanOrEqual(AA_NORMAL);
+          });
+        }
+
+        it(`${QUIET_TEXT} as text on ${surface} clears AA`, () => {
+          const quietV = tokens.get(QUIET_TEXT);
+          const bgV = tokens.get(surface);
+          expect(quietV, `${QUIET_TEXT} missing from ${selector}`).toBeDefined();
+          expect(bgV, `${surface} missing from ${selector}`).toBeDefined();
+          expect(contrast(quietV!, bgV!)).toBeGreaterThanOrEqual(AA_NORMAL);
         });
       }
     });
