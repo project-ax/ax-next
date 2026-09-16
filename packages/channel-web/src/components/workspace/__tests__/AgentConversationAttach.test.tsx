@@ -67,6 +67,15 @@ function props(
     onUndo: vi.fn(),
     approvalRead: 'ok',
     onRetryApprovals: vi.fn(),
+    /*
+      TASK-351 routes open capability grants into this thread, and both props
+      are REQUIRED on purpose — an agent whose grants failed to load must not
+      be indistinguishable from one that asked for nothing. Nothing in this
+      file is about grants, so it passes the honest empty answer rather than
+      making them optional.
+    */
+    grants: [],
+    onGrantResolved: vi.fn(),
     ...over,
   };
 }
