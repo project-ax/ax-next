@@ -626,8 +626,14 @@ export function createChannelWebServerPlugin(
       // the three /api/workspace/* reads mount only behind the preview flag.
       // Ships with its consumer (the workspace shell) in the same PR (I3 — no
       // half-wired surface).
+      //
+      // TASK-373 — the SAME buffer instance goes to the workspace routes, so
+      // GET /api/workspace/grants reads the cards the SSE fill subscriber and
+      // the chat routes' eviction callbacks write and drop. A second instance
+      // would answer from a different world than the streams create.
       const workspaceRouteUnregisters = await registerWorkspaceRoutes(bus, initCtx, {
         agentWorkspacePreview: config.agentWorkspacePreview === true,
+        buffer: localBuffer,
       });
       for (const u of workspaceRouteUnregisters) unregisterRoutes.push(u);
     },

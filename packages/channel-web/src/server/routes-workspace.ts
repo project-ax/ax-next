@@ -16,6 +16,8 @@
  * POST /api/workspace/decisions/:decisionId/approve
  * POST /api/workspace/decisions/:decisionId/dismiss
  * POST /api/workspace/decisions/:decisionId/undo
+ * GET  /api/workspace/grants           — pending capability grants for the
+ *                                        caller (TASK-373)
  * POST /api/workspace/route            — "which agent should hear this?"
  *
  * The agent-centric workspace surface (TASK-230 / plan task AW-9). This is the
@@ -108,6 +110,11 @@ import type {
 } from '../lib/workspace-types.js';
 import { isOpenDecision } from '../lib/workspace-types.js';
 import { byVerdict } from '../lib/permission-frames.js';
+// Type-only: the pending-card store is this plugin's own module (same package,
+// not a cross-plugin import), and the route reads it rather than re-deriving
+// what is pending from anything else.
+import type { ChunkBuffer } from './chunk-buffer.js';
+import type { PermissionRequest } from './types.js';
 import { listTeamIdsForUser, type RouteRequest, type RouteResponse } from './routes-chat.js';
 import { workspaceFilePath } from './safe-path.js';
 // Type-only: the `sandbox:read-user-files` hook-bus contract. The DURABLE
@@ -625,6 +632,42 @@ export interface WorkspaceStateResponse {
 /** `GET /api/workspace/decisions` — the Today queue, still-open rows only. */
 export interface DecisionsResponse {
   decisions: Decision[];
+}
+
+/**
+ * `GET /api/workspace/grants` — capability grants still waiting on this person
+ * (TASK-373).
+ *
+ * The rows come straight out of the pending-card buffer the SSE stream fills:
+ * the same `PermissionRequest` the live stream would have carried, read back
+ * with the conversation and agent it was raised on, so a grant raised while
+ * the workspace was closed is waiting on an idle Today instead of lost.
+ *
+ * There is no scoping parameter, and there cannot be one: scoping is the owner
+ * the PRODUCER recorded at append time (`ChunkBuffer.appendPermissionCard`),
+ * and nothing the caller sent took any part in it. "No such conversation" and
+ * "not yours" are therefore the same empty list — no existence leak is
+ * possible by construction.
+ *
+ * Host cards are deliberately absent (they are turn-scoped; answering a stale
+ * one offers a control that cannot do what it says — TASK-375), and so are
+ * cards buffered with no owner: an unattributable card is never shown to
+ * whoever happened to ask.
+ */
+export interface GrantsResponse {
+  grants: Array<{
+    /** The conversation the grant was raised on. The answer POST needs it. */
+    conversationId: string;
+    /** The agent that asked — recorded with the card by the producer. */
+    agentId: string;
+    /**
+     * The card verbatim. Public manifest data by construction (hostnames, slot
+     * names), and byte-identical to what the SSE `permissionRequest` frame
+     * writes to the same browser — fencing one copy and not the other would
+     * make the fetched grant and the streamed grant of one subject disagree.
+     */
+    request: PermissionRequest;
+  }>;
 }
 
 /**
@@ -1697,6 +1740,17 @@ export interface WorkspaceHandlerDeps {
   bus: HookBus;
   initCtx: AgentContext;
   /**
+   * The per-reqId chunk buffer, which also owns the durable pending-card
+   * stores (TASK-373). `plugin.ts` always passes the SAME instance the SSE
+   * handler and the card-fill subscriber write into — a second instance would
+   * answer from a different world than the streams create. Optional only so
+   * handler tests that never touch grants can omit it; with no buffer there
+   * are no cards in this process to answer with, so the route answers an empty
+   * list rather than failing (a configuration of the caller, not a fault —
+   * the same posture the queue route takes without a decisions producer).
+   */
+  buffer?: ChunkBuffer;
+  /**
    * Echoed by `GET /api/features`. The route-mounting decision lives in
    * `registerWorkspaceRoutes`; the handler only needs it to tell the truth.
    */
@@ -1711,6 +1765,7 @@ export interface WorkspaceHandlerDeps {
 
 export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   const { bus, initCtx } = deps;
+  const buffer = deps.buffer;
   const agentWorkspacePreview = deps.agentWorkspacePreview === true;
   const now = deps.now ?? ((): Date => new Date());
 
@@ -3078,6 +3133,38 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     },
 
     /**
+     * GET /api/workspace/grants — pending capability grants waiting on this
+     * person (TASK-373).
+     *
+     * Thin on purpose, like the queue route above: the buffer owns the rules —
+     * dedupe, the per-conversation bound, eviction on resolve — and its tests
+     * hold them (invariant 4, one store per concept). This route
+     * authenticates, reads, and puts the caller's own rows on the wire.
+     *
+     * NO PARAMETERS, and that is the whole security posture. The filter inside
+     * `pendingGrantsForUser` compares the authenticated caller against the
+     * owner the producer recorded when the card was buffered — two values
+     * neither of which the request supplied, so there is nothing to forge and
+     * nothing to guess. A cross-tenant read and a genuinely empty store are
+     * the same 200 with `[]`: never a 403-vs-404 oracle over other people's
+     * pending grants, whose skill ids, connector names and hostnames all
+     * belong to somebody.
+     */
+    async grants(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+
+      const rows = buffer?.pendingGrantsForUser(userId) ?? [];
+      res.status(200).json({
+        grants: rows.map((g) => ({
+          conversationId: g.conversationId,
+          agentId: g.agentId,
+          request: g.card,
+        })),
+      } satisfies GrantsResponse);
+    },
+
+    /**
      * GET /api/workspace/decisions/:decisionId — ONE row, read back.
      *
      * The list route above answers with the still-open rows only, so a
@@ -3937,12 +4024,16 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
 export async function registerWorkspaceRoutes(
   bus: HookBus,
   initCtx: AgentContext,
-  opts: { agentWorkspacePreview: boolean },
+  opts: { agentWorkspacePreview: boolean; buffer?: ChunkBuffer },
 ): Promise<Array<() => void>> {
   const handlers = makeWorkspaceHandlers({
     bus,
     initCtx,
     agentWorkspacePreview: opts.agentWorkspacePreview,
+    // Spread, not a plain property: with exactOptionalPropertyTypes an
+    // explicit `buffer: undefined` is not assignable to `buffer?: ChunkBuffer`
+    // (the same shape the rest of this file uses for optional inputs).
+    ...(opts.buffer !== undefined ? { buffer: opts.buffer } : {}),
   });
   // Same duck-typed cast as routes-attachments.ts — http-server's HttpRequest /
   // HttpResponse are a structural superset of our adapter.
@@ -4008,6 +4099,16 @@ export async function registerWorkspaceRoutes(
         method: 'GET',
         path: '/api/workspace/state',
         handler: handlers.state as unknown as RouteHandler,
+      },
+      {
+        // TASK-373 — the read-back for grants raised while the workspace was
+        // closed. Its only consumer is the workspace surface itself (the
+        // Today queue's mount fetch), so it mounts with the rest of the
+        // preview-gated routes: with the flag off, no surface reads it, and
+        // an unmounted route is the cheapest capability minimization.
+        method: 'GET',
+        path: '/api/workspace/grants',
+        handler: handlers.grants as unknown as RouteHandler,
       },
       {
         method: 'GET',
