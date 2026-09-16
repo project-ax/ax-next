@@ -377,10 +377,21 @@ describe('workspace create-agent door + kickoff routing (TASK-249)', () => {
    * completion. So `bootstrapKickoff.trigger()` is never called on the CHAT
    * path either.
    *
-   * Which makes this the regression net for the `onDone` ungating as much as
-   * for the branch: it is the one test here that fails if someone puts
-   * `if (cancelled) return` back in front of `onDone`, since the two tests
-   * above would still pass on the workspace arm.
+   * Which makes this a regression net for the `onDone` ungating as much as
+   * for the branch — but it is NOT the only one, and an earlier version of
+   * this comment wrongly claimed it was. Putting `if (cancelled) return` back
+   * in front of `onDone` turns BOTH first-run tests red, measured: this one
+   * on `expected "trigger" to be called 1 times, but got 0 times`, and `hands
+   * the kickoff to the workspace` on `expected null to be 'a-new'`. The reason
+   * is that `App.tsx` sets `kickoffAgentId` only inside this same `onDone`, so
+   * re-gating it strands the workspace arm exactly as it strands the chat arm.
+   * That is what the block header above already says: tests 2 and 3 both drive
+   * the first-run arm because that is the arm that exercises `onDone`.
+   *
+   * What IS distinct about this test: it is the only one that asserts
+   * `trigger()` **is** called, and that the workspace is never mounted — it
+   * pins the CHAT branch of the `rendersWorkspace` fork, where test 2 pins the
+   * workspace branch. Neither subsumes the other.
    */
   it('still uses bootstrapKickoff on the chat path (no regression)', async () => {
     setPathname('/workspace');
