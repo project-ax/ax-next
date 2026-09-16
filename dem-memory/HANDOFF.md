@@ -17,10 +17,10 @@ It is a **standalone npm sub-project** — deliberately NOT a member of the pnpm
 workspace (`pnpm-workspace.yaml` doesn't cover it, root eslint ignores it via a
 scoped `dem-memory/**` entry). Use `npm`, not `pnpm`, inside `dem-memory/`.
 
-Current state: `npm run typecheck` clean, `npm test` **47/47 passing**, LongMemEval-S
-smoke at **86.7-93.3% (26-28/30)** on the full production stack, with
-**temporal-reasoning at 7-8/8** (was 3/8). The temporal fix is done; see
-"Temporal grounding" below for what it was and what it was NOT.
+Current state: `npm run typecheck` clean, `npm test` **54/54 passing**, LongMemEval-S
+at **82.0% (n=100)** against the Strata e2e baseline's **76.0%** on the same 100
+questions, with **temporal-reasoning 92.6% vs 59.3%**. See "Against Strata" below --
+including the two types where dem-memory is WORSE.
 
 ## Run the benchmark
 
@@ -46,28 +46,68 @@ npx tsx bench/run.ts --n 30 --stack production
   `bench/cache/embeddings.json` (~90MB, sha1(task:text) → 384d vector).
   With warm caches, a full n=30 run is ~8 minutes and costs cents.
 
-## Verified benchmark results (same 30 stratified samples, same judge)
+## Against Strata (n=100, same questions, same judge)
 
-| stack | file | TOTAL |
-|---|---|---|
-| stub | `bench/results/run-2026-09-16.jsonl` | 15/30 (50.0%) |
-| vertex | `bench/results/run-2026-09-16-vertex.jsonl` | 17/30 (56.7%) |
-| **production** | `bench/results/run-2026-09-16-production.jsonl` | **24/30 (80.0%), 0 errors** |
+`--sampler spaced` reproduces the Strata e2e bench's stratified selection exactly: same
+type mix, 5 `_abs`, median 47 sessions/question against its reported 47.8 avg, and all 3
+TASK-368 known-bad-gold ids present -- which is what makes its "76.0%, or 79.0% excluding
+3" arithmetic land on these same rows. Baseline:
+`docs/plans/2026-09-14-memory-strata-e2e-report.md`.
 
-| run | config | TOTAL | temporal |
+Strata answers with `claude-sonnet-4-6` and uses GLM only to extract and plan, so the
+matched arm answers with Sonnet too. The GLM arm is dem-memory's own cheap-answerer config.
+
+| question_type | n | Strata | dem (sonnet-4.6) | delta | dem (GLM flash) |
+|---|---|---|---|---|---|
+| temporal-reasoning | 27 | 59.3% | **92.6%** | **+33.3** | 88.9% |
+| single-session-preference | 6 | 66.7% | **100.0%** | +33.3 | 83.3% |
+| knowledge-update | 15 | 80.0% | 80.0% | 0.0 | 80.0% |
+| single-session-user | 14 | 100.0% | 100.0% | 0.0 | 92.9% |
+| multi-session | 27 | 85.2% | 74.1% | **-11.1** | 81.5% |
+| single-session-assistant | 11 | 63.6% | 45.5% | **-18.1** | 45.5% |
+| **TOTAL** | 100 | **76.0%** | **82.0%** | **+6.0** | **81.0%** |
+| TOTAL excl. known-bad-gold | 97 | 79.0% | 84.5% | +5.5 | 83.5% |
+
+Abstention is identical across all three: correct-refusal 80.0%, hallucination 20.0% (the
+same 5 `_abs` questions, the same one slipping through). False-refusal is lower here (6.3%
+sonnet / 8.4% GLM vs 9.5%).
+
+**How much of this to believe.** The +6.0 total is **1.6 SE** (SE 3.8pp at n=100) --
+suggestive, not decisive. The temporal +33.3 is **6.6 SE** (SE 5.0pp at n=27) and is the
+real result; it also carries +9.0 of the +6.0 total on its own. Read the per-type row,
+not the headline.
+
+**Where dem-memory is worse, and the obvious next lever.**
+`single-session-assistant` at 45.5% is the weak type in BOTH arms (identical, so it is
+retrieval/ingestion, not the answerer) with 5 of 11 as `abstain-miss` -- facts the
+assistant supplied are not making it into memory. Strata has already been here: its
+2026-08-02 assistant-content extraction work moved that type 25.9% -> 83.3% and, notably,
+dragged temporal-reasoning up with it. That is the highest-value next experiment, and it
+is an extraction-prompt change, so mind the fact-cache fingerprint (it will re-extract).
+
+**One asymmetry to state out loud.** Strata's number is its real product pipeline
+(observer -> inbox -> consolidator decay/cluster/dedup/promote -> docs -> injection +
+agentic `memory_search`, ~2 tool calls/question, $7.28). dem-memory's bench ingests every
+session directly with no consolidation step to survive, and answers single-pass from a
+15-row table (~$0.50 of Sonnet for 100 questions). It is a fair system-to-system score on
+this benchmark; it is not evidence that dem-memory's *ingestion* would hold up under
+Strata's consolidation regime.
+
+### Earlier runs on the OLD easy-slice sampler (not comparable to the above)
+
+`--sampler shortest` allocated by type and then took the k shortest haystacks, putting all
+30 questions of an n=30 sample at the 3rd percentile (median) of the corpus haystack-size
+distribution. Retained only so these stay reproducible:
+
+| run | file | TOTAL | temporal |
 |---|---|---|---|
-| `run-2026-09-16-production.jsonl` | baseline | 24/30 (80.0%) | 3/8 |
-| `v2-asof/` | asOf + chronological sort | 25/30 (83.3%) | 7/8 |
-| `v3-rank/` | asOf, rank order (shipped) | 28/30 (93.3%) | 8/8 |
-| `v3-repeat/` | identical re-run of `v3-rank` | 26/30 (86.7%) | 7/8 |
+| baseline | `run-2026-09-16-production.jsonl` | 24/30 | 3/8 |
+| asOf + chronological | `v2-asof/` | 25/30 | 7/8 |
+| asOf, rank order | `v3-rank/` | 28/30 | 8/8 |
+| identical re-run | `v3-repeat/` | 26/30 | 7/8 |
 
-**Read the last two rows together.** Two runs of the *same* code gave 28/30 and
-26/30: four questions flip between identical runs, so the noise floor on n=30 is
-about ±2. The durable claim is not "93.3%" — it is that **4 of the 5 temporal
-questions that used to fail are now correct in both runs** (`d01c6aa8`,
-`0bc8ad92`, `gpt4_e072b769`, `5e1b23de`), the 5th (`gpt4_d6585ce9`) is flaky, and
-none of the 3 that already passed regressed. Against the in-repo Strata baseline
-of 76.0% @ n=500, this is still a smoke — don't overclaim.
+Two runs of the same code there gave 28/30 and 26/30 -- 4 questions flip between identical
+runs, so treat any single n=30 number as +/-2.
 
 ## Hard-won gotchas (all recorded in `.claude/memory/decisions.md` — read the 2026-09-16 entries)
 
