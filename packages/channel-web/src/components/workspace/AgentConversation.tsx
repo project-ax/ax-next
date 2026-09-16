@@ -242,10 +242,20 @@ export function AgentConversation({
         Capped and scrollable, as chat's approval stack is: two grants each
         asking for a key are tall enough to push the composer off screen, and a
         composer you cannot reach is a worse bug than a card you must scroll.
+
+        KNOWN WRINKLE of presence being continuous: switching browser tabs
+        unmounts this region, so a half-typed key in it is gone on return. It
+        is the flow where that hurts — people leave to fetch the key from a
+        password manager — but they leave BEFORE pasting far more often than
+        after, the field is never the only copy of anything, and the grant
+        itself is never lost (the queue still has it). Keeping the draft would
+        mean lifting per-row input state out of `GrantRow` and into something
+        that outlives both render sites, which is a second piece of shared
+        grant state — the thing invariant 4 is about. Filed rather than fixed.
       */}
       {grants.length > 0 && (
         <div className="px-6 pt-4" data-testid="thread-grants">
-          <div className="max-h-[50vh] max-w-[720px] overflow-y-auto overflow-x-hidden rounded-lg border border-border bg-card shadow-sm [scrollbar-gutter:stable]">
+          <div className="max-h-[50vh] max-w-[720px] overflow-y-auto rounded-lg border border-border bg-card shadow-sm [scrollbar-gutter:stable]">
             {grants.map((g) => (
               <GrantRow key={g.key} grant={g} onResolved={onGrantResolved} />
             ))}

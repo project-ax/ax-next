@@ -544,14 +544,12 @@ function Inner({
     grants) contributes what it actually read, and the surface itself says
     where it could not check. A badge cannot carry that sentence, so it does
     not try to.
-  */
-  /*
-    DELIBERATELY EVERY GRANT, not just the queue-only ones. A grant routed into
-    the open thread is still waiting on this person, so dropping it from the
-    count would make the badge tick down at the exact moment the question
-    appeared in front of them — and would put two "waiting on you" numbers on
-    one screen that disagree, which is the thing TASK-350 added grants here to
-    stop.
+
+    EVERY GRANT, including the ones presence routes into the open thread
+    (TASK-351). One in front of you is still waiting on you, so dropping it
+    would make this number tick down at the exact moment the question appeared
+    — and would put two disagreeing "waiting on you" numbers on one screen,
+    which is the thing grants were added to this sum to stop.
   */
   const pending =
     queue.decisions.filter(isOpenDecision).length + grants.grants.length;
