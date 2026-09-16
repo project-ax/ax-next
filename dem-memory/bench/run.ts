@@ -188,10 +188,15 @@ async function main(): Promise<void> {
       extractionCache.flush();
       flushEmbed?.();
 
+      let skipped = 0;
       for (const job of jobs) {
         const facts = extractionCache.get(job.key);
         if (!facts) throw new Error(`extraction cache miss for session ${job.sessionId}`);
-        await memory.retain({ facts }, { now: job.nowIso });
+        const retained = await memory.retain({ facts }, { now: job.nowIso });
+        skipped += retained.skipped.length;
+      }
+      if (skipped > 0) {
+        console.log(`  note: ${sample.question_id} dropped ${skipped} unstorable fact(s) from extraction`);
       }
 
       // The question date is the moment the user is asking, not a time-travel anchor: it

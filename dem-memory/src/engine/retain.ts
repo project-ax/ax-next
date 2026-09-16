@@ -9,6 +9,7 @@ import {
   normalizeTimestamp,
   type DialogueTurn,
   type EmbeddingFn,
+  type ExtractedFact,
   type ExtractFn,
   type IngestionPayload,
   type MemoryTuple,
@@ -19,11 +20,22 @@ export interface RetainOptions {
   now?: string;
 }
 
+export interface SkippedFact {
+  fact: ExtractedFact;
+  reason: string;
+}
+
 export interface RetainResult {
   bankId: string;
   transactionTime: string;
   tuples: MemoryTuple[];
   invalidatedCount: number;
+  /**
+   * Facts the extractor produced that could not be stored, with the reason. Surfaced rather
+   * than thrown: extractor output is model output, and one unusable fact must not cost the
+   * whole batch. Surfaced rather than swallowed, so bad extraction stays observable.
+   */
+  skipped: SkippedFact[];
 }
 
 export const EXTRACTION_SYSTEM_PROMPT = [
@@ -96,7 +108,21 @@ export class RetainEngine {
     } else {
       payload = input;
     }
-    const facts = IngestionPayloadSchema.parse(payload).facts;
+    const parsed = IngestionPayloadSchema.parse(payload).facts;
+
+    // Validate every timestamp BEFORE touching the database. `normalizeTimestamp` throwing
+    // from the middle of the write loop used to abandon a half-written batch; observed with
+    // a three-digit year ("135-01-01T00:00:00Z") out of GLM.
+    const facts: ExtractedFact[] = [];
+    const skipped: SkippedFact[] = [];
+    for (const fact of parsed) {
+      try {
+        normalizeTimestamp(fact.validStart, "validStart");
+        facts.push(fact);
+      } catch (error) {
+        skipped.push({ fact, reason: error instanceof Error ? error.message : String(error) });
+      }
+    }
 
     let invalidatedCount = 0;
     for (const fact of facts) {
@@ -139,6 +165,6 @@ export class RetainEngine {
 
     this.graph.coOccur(facts.map((fact) => fact.subject));
 
-    return { bankId, transactionTime, tuples, invalidatedCount };
+    return { bankId, transactionTime, tuples, invalidatedCount, skipped };
   }
 }

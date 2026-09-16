@@ -198,6 +198,7 @@ export {
   buildExtractionPrompt,
   createOpenAIExtractor,
   type RetainResult,
+  type SkippedFact,
 } from "./engine/retain.js";
 export { createVertexEmbedder, hashEmbedder } from "./models/embeddings.js";
 export { createCohereReranker, lexicalReranker } from "./models/reranker.js";

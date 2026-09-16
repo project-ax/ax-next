@@ -164,3 +164,97 @@ describe("retain", () => {
     memory.close();
   });
 });
+
+describe("malformed extractor output", () => {
+  it("skips a fact with an unparseable validStart instead of losing the whole batch", async () => {
+    // Observed in the wild: GLM emitted a three-digit year, and normalizeTimestamp threw
+    // out of the middle of retain() -- taking all 45 sessions of that question's ingest
+    // with it. One bad date must cost one fact, not the batch.
+    const memory = await createTestMemory();
+    const result = await memory.retain(
+      {
+        facts: [
+          {
+            network: "world",
+            subject: "user",
+            predicate: "studied_period",
+            object: "ancient rome",
+            validStart: "135-01-01T00:00:00Z",
+            confidence: 1,
+            invalidatesPrevious: false,
+          },
+          {
+            network: "world",
+            subject: "user",
+            predicate: "lives_in",
+            object: "Austin",
+            validStart: "2023-01-01T00:00:00.000Z",
+            confidence: 1,
+            invalidatesPrevious: false,
+          },
+        ],
+      },
+      { now: "2023-05-01T00:00:00.000Z" },
+    );
+
+    expect(result.tuples).toHaveLength(1);
+    expect(result.tuples[0]?.predicate).toBe("lives_in");
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0]?.reason).toContain("validStart");
+    expect(result.skipped[0]?.fact.predicate).toBe("studied_period");
+    expect(memory.stats().total).toBe(1);
+
+    memory.close();
+  });
+
+  it("does not let a malformed fact suppress an invalidation carried by a later one", async () => {
+    const memory = await createTestMemory();
+    await memory.retain(
+      {
+        facts: [
+          {
+            network: "world",
+            subject: "user",
+            predicate: "lives_in",
+            object: "Boston",
+            validStart: "2023-01-01T00:00:00.000Z",
+            confidence: 1,
+            invalidatesPrevious: false,
+          },
+        ],
+      },
+      { now: "2023-01-01T00:00:00.000Z" },
+    );
+    const result = await memory.retain(
+      {
+        facts: [
+          {
+            network: "world",
+            subject: "user",
+            predicate: "broken",
+            object: "x",
+            validStart: "not-a-date",
+            confidence: 1,
+            invalidatesPrevious: true,
+          },
+          {
+            network: "world",
+            subject: "user",
+            predicate: "lives_in",
+            object: "Austin",
+            validStart: "2023-06-01T00:00:00.000Z",
+            confidence: 1,
+            invalidatesPrevious: true,
+          },
+        ],
+      },
+      { now: "2023-06-01T00:00:00.000Z" },
+    );
+
+    expect(result.skipped).toHaveLength(1);
+    expect(result.invalidatedCount).toBe(1);
+    expect(memory.stats().active).toBe(1);
+
+    memory.close();
+  });
+});
