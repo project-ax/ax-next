@@ -71,12 +71,11 @@ afford — heed it rather than dispatching and hoping.
 >   dispatched builder's own environment named the same scratchpad root — same session
 >   id, same path — that the orchestrator dispatched against. Unscoped writes therefore
 >   collide by default, and collide *silently*: three builders in one wave shared one
->   scratchpad dir and a
->   sibling's `pr-body.md` overwrote another builder's (reported first-hand by the
->   builder it happened to — TASK-377), and separately a builder clobbered the
->   orchestrator's pending commit message. A builder that notices is lucky; one that
->   does not opens a PR whose body describes a different card's work, and no CI check
->   can see it. (`scripts/__tests__/autoship-dispatch-scratch-scoping.test.js` fails if
+>   scratchpad dir and a sibling's `pr-body.md` overwrote another builder's (reported
+>   first-hand by the builder it happened to — TASK-377), and separately a builder
+>   clobbered the orchestrator's pending commit message. A builder that notices is
+>   lucky; one that does not opens a PR whose body describes a different card's work,
+>   and no CI check can see it. (`scripts/__tests__/autoship-dispatch-scratch-scoping.test.js` fails if
 >   this bullet leaves the prompt, loses its `<TASK-ID>` path segment, or drifts up
 >   into the orchestrator-facing prose above.)
 > - Branch: `auto-ship/<TASK-ID>-<short-slug>`. PR title MUST start with

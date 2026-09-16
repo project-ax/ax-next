@@ -67,8 +67,9 @@ const templatesText = readFileSync(TEMPLATES_PATH, 'utf8');
 /**
  * The body of a `## `-level section, up to the next `## ` heading or EOF.
  *
- * Anchored at column 0 with the `m` flag so a `## ` appearing inside a fenced
- * block or a blockquote (`> ## `) cannot end the section early.
+ * Matched line by line with `startsWith('## ')`, i.e. anchored at column 0, so a
+ * `## ` appearing inside a fenced block or a blockquote (`> ## `) cannot end the
+ * section early.
  */
 function sectionBody(text, heading) {
   const lines = text.split('\n');
@@ -101,6 +102,17 @@ function blockquote(body) {
  * Properties 1 and 3 must hold of the SAME bullet. Testing them against the
  * whole prompt separately would pass a template that mentions a scratch dir in
  * one bullet and `<TASK-ID>` in an unrelated one -- which is not this fix.
+ *
+ * KNOWN LIMITS, both accepted. (a) Only `- ` bullets are recognized, so
+ * reformatting the prompt to `* ` bullets would redden this guard even though
+ * the property still holds. The file uses `- ` throughout and is headed "copy
+ * these literally, do not paraphrase", so that reformat is unlikely -- and it
+ * would fail legibly rather than pass silently, which is the right direction to
+ * be wrong in. (b) The check is structural, so it sees the SHAPE of the
+ * instruction, not its meaning: a bullet saying "do NOT use
+ * `<scratchpad>/<TASK-ID>/`" would satisfy it. That is inherent to guarding
+ * prose, and the alternative -- no guard -- is what let this regress in the
+ * first place.
  */
 function bullets(text) {
   const out = [];
