@@ -40,9 +40,10 @@ export interface WorkspaceGrant {
    * the frame arrives, by the only code that knows: the view streaming the turn.
    *
    * `/api/chat/permission-decision` requires it, so a `skill` or `connector`
-   * grant with none cannot be answered — the row disables its button and says
-   * so rather than posting something the server must reject. A `host` grant
-   * does not need it (`/api/chat/allow-host` routes on the session id).
+   * grant with none cannot be answered — the row disables Connect and renders
+   * `GRANT_NO_CONVERSATION` beside it, rather than posting something the server
+   * must reject or leaving a dead button unexplained. A `host` grant does not
+   * need it (`/api/chat/allow-host` routes on the session id).
    */
   conversationId: string | null;
 }
@@ -140,8 +141,11 @@ export const workspaceGrantActions = {
   /** The grant was answered (or turned down). Drop the row. */
   resolve(key: string): void {
     const next = state.grants.filter((g) => g.key !== key);
-    // A no-op must not notify — a spurious re-render of the whole queue is how
-    // an unrelated row loses its in-progress input.
+    // Skip the notify when nothing changed. This is an optimisation, not a
+    // correctness guard: React keeps each row's state across a parent re-render
+    // because the rows are keyed by `g.key`, so a spurious notify would NOT
+    // lose a half-typed key. (An earlier version of this comment claimed it
+    // would, which was wrong and would have justified the wrong fix later.)
     if (next.length === state.grants.length) return;
     set({ grants: next });
   },

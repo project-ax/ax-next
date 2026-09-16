@@ -13,7 +13,12 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { GrantRow } from '../GrantRow';
 import { grantKey } from '@/lib/workspace-grant-store';
 import { HTTP_SERVER_ERROR } from '@/lib/http';
-import { GRANT_REASSURANCE, KEY_SAFETY, SLOT_HINT } from '@/lib/grant-copy';
+import {
+  GRANT_NO_CONVERSATION,
+  GRANT_REASSURANCE,
+  KEY_SAFETY,
+  SLOT_HINT,
+} from '@/lib/grant-copy';
 import type { PermissionRequest } from '@/server/types';
 
 function row(request: PermissionRequest, conversationId: string | null = 'cnv-1') {
@@ -109,6 +114,14 @@ describe('a skill grant', () => {
     expect(decision?.[1]?.body).not.toContain('"connectorId"');
     // CSRF: the route is gated on this header, not on a token.
     expect(decision?.[1]?.headers).toMatchObject({ 'x-requested-with': 'ax-admin' });
+
+    // THE PROPERTY THAT MATTERS: the secret went to the vault and nowhere else.
+    // Asserting it is in the credential body proves it arrived; only this
+    // proves it did not ALSO ride the decision, which is the request that gets
+    // logged, replayed and correlated downstream. Both spellings, because
+    // "it is base64 so it is fine" is not a thing.
+    expect(decision?.[1]?.body).not.toContain('lin_test_123');
+    expect(decision?.[1]?.body).not.toContain('bGluX3Rlc3RfMTIz');
   });
 });
 
@@ -221,11 +234,28 @@ describe('when the POST fails', () => {
 });
 
 describe('without a conversation', () => {
-  test('the connect button is disabled rather than failing on click', () => {
-    // The decision route requires a conversationId. A button that posts a
-    // request the server must reject is worse than one that is plainly off.
-    row(skillReq, null);
+  test('the connect button is disabled, and says why', () => {
+    // A SLOTLESS request on purpose. Using the skill fixture here proved
+    // nothing: its unfilled `api_key` slot disables Connect on its own, so the
+    // test passed with the conversation guard deleted. The connector fixture
+    // has no slots, so the only thing that can disable this button is the
+    // missing conversation.
+    row(connectorReq, null);
 
     expect(screen.getByRole('button', { name: /^connect$/i })).toBeDisabled();
+    // And it is not a dead control: the one disabled state a person cannot fix
+    // by typing is the one that most needs a sentence.
+    expect(screen.getByText(GRANT_NO_CONVERSATION)).toBeInTheDocument();
+  });
+
+  test('a filled slot is not enough on its own', () => {
+    // The other half of the same guard: fill the key, still no conversation.
+    row(skillReq, null);
+    fireEvent.change(screen.getByLabelText('API key'), {
+      target: { value: 'lin_test_123' },
+    });
+
+    expect(screen.getByRole('button', { name: /^connect$/i })).toBeDisabled();
+    expect(screen.getByText(GRANT_NO_CONVERSATION)).toBeInTheDocument();
   });
 });

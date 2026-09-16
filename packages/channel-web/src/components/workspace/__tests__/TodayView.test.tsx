@@ -404,3 +404,48 @@ describe('a grant in the queue', () => {
     );
   });
 });
+
+/*
+  TASK-350 review finding — a grant must outlive an unreadable decisions queue.
+
+  The first cut of this change put `grants.map(...)` inside the container gated
+  on `readable`, so a 401/503 on `GET /api/workspace/decisions` hid every open
+  grant. That re-created the exact dead-end the card exists to remove — an agent
+  stopped at the wall, a person who cannot answer, a turn going nowhere — and
+  triggered it from an unrelated failure on a different route.
+
+  Grants do not come from that fetch. They arrive on the turn stream and live in
+  their own store, so a failed read says nothing about them.
+*/
+describe('a grant when the decisions queue cannot be read', () => {
+  const unreadable = { kind: 'failed' as const, detail: 'workspace /decisions → 503' };
+  const hostGrant = {
+    key: 'host:example.org',
+    conversationId: 'c1',
+    request: { kind: 'host' as const, host: 'example.org', sessionId: 's-1' },
+  };
+
+  it('still renders, and is still answerable', () => {
+    renderToday({ error: unreadable, grants: [hostGrant] });
+
+    expect(screen.getByText('Allow access to example.org?')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /just this once/i })).toBeEnabled();
+  });
+
+  it('does not stop the page saying the decisions could not be read', () => {
+    // Both claims are true at once and both are shown: we could not check for
+    // decisions, and here is a grant we did not need to check for.
+    renderToday({ error: unreadable, grants: [hostGrant] });
+
+    expect(screen.getByText('We could not check what is waiting on you.')).toBeTruthy();
+  });
+
+  it('shows no hint over a queue with nothing expandable in it', () => {
+    // The hint is about opening a row for its detail, and only a decision row
+    // expands. Keyed on the grant count it printed "Open a row…" over rows that
+    // are already open — and, before the gate was fixed, over no rows at all.
+    renderToday({ error: unreadable, grants: [hostGrant] });
+
+    expect(screen.queryByText(/Open a row to see the detail/)).toBeNull();
+  });
+});

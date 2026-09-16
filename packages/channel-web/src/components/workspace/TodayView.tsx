@@ -204,9 +204,16 @@ export function TodayView({
     list it was instructions for furniture that is not there. "Line" also read
     like a phone line — these are rows.
   */
+  /*
+    Keyed on decisions, not on `waiting`. The sentence is about opening a row to
+    see its detail, and only a decision row expands — a grant is already open
+    and has its buttons on show. Counting grants here printed "Open a row…" over
+    a queue with no expandable row in it, and (before the gate above was fixed)
+    over no visible rows at all.
+  */
   const hint =
     filter === 'needs'
-      ? waiting > 0
+      ? open.length > 0
         ? 'Open a row to see the detail and act on it.'
         : null
       : working.length > 0
@@ -324,8 +331,17 @@ export function TodayView({
         place for the eye to land and nothing for it to read there. The
         "Working" filter is unaffected: it is built from the roster, which
         loaded.
+
+        GRANTS SURVIVE AN UNREADABLE QUEUE. They do not come from the decisions
+        fetch — they arrive on the turn stream and live in their own store — so
+        a failed read says nothing about them. Hiding them here would re-create
+        the exact dead-end this card removes: an agent stopped at the wall, a
+        person who cannot answer, and a turn that goes nowhere, triggered by an
+        unrelated 401 on a different route. The error alert above still says the
+        decisions could not be read; that claim is unaffected by showing a row
+        we did read.
       */}
-      {(readable || filter === 'working') && (
+      {(readable || filter === 'working' || (filter === 'needs' && grants.length > 0)) && (
         <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
           {filter === 'needs' ? (
             <>

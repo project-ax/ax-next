@@ -54,6 +54,19 @@ export const KEY_SAFETY =
 export const SLOT_HINT = 'Add the key above to continue';
 
 /**
+ * The other reason Connect can be off, and the one a person cannot act on by
+ * typing. Workspace-only: chat always has an active conversation, but a grant
+ * in the Today queue can arrive before the view has resolved which conversation
+ * raised it, and `/api/chat/permission-decision` cannot be posted without one.
+ *
+ * Without this the button was simply dead with no explanation — a control that
+ * cannot work and does not say so, which is the failure `hideClose` exists to
+ * prevent elsewhere in this product.
+ */
+export const GRANT_NO_CONVERSATION =
+  'We could not tell which conversation this came from. Open the agent and try again.';
+
+/**
  * Lead-in for the host list. A bare list of hostnames asks the reader to work
  * out why it is there; say what the list is for before showing it.
  */

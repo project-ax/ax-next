@@ -32,6 +32,7 @@ import {
   GRANT_CONNECT_LABEL,
   GRANT_CONNECTING_LABEL,
   GRANT_REASSURANCE,
+  GRANT_NO_CONVERSATION,
   GRANT_REJECT_LABEL,
   HOST_ALLOW_ALWAYS_LABEL,
   HOST_ALLOW_ONCE_LABEL,
@@ -283,9 +284,15 @@ export function GrantRow({ grant, onResolved }: Props): ReactElement {
         <Button size="sm" variant="ghost" disabled={busy} onClick={reject}>
           {GRANT_REJECT_LABEL}
         </Button>
-        {!allSlotsFilled && (
+        {!allSlotsFilled ? (
           <span className="text-[11.5px] text-muted-foreground">{SLOT_HINT}</span>
-        )}
+        ) : conversationId === null ? (
+          // The one disabled state typing cannot fix. Say so rather than
+          // leaving a dead button on a surface whose whole job is asking.
+          <span className="text-[11.5px] text-muted-foreground">
+            {GRANT_NO_CONVERSATION}
+          </span>
+        ) : null}
       </div>
     </div>
   );

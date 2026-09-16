@@ -29,6 +29,11 @@ import {
   DECISION_THREAD_READ_FAILED,
 } from '../decision-copy';
 import { rail as railFixture } from './rail-fixture';
+import {
+  getWorkspaceGrantSnapshot,
+  workspaceGrantActions,
+} from '@/lib/workspace-grant-store';
+import type { PermissionRequest } from '@/server/types';
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>(
@@ -661,5 +666,80 @@ describe('AgentView — the approval read', () => {
     });
 
     expect(await screen.findByText(DECISION_THREAD_READ_FAILED)).toBeTruthy();
+  });
+});
+
+/*
+  TASK-350 — the hop from the stream to the grant queue.
+
+  `streamReply` forwarding the frame (covered in
+  `lib/__tests__/workspace-api-permission-frame.test.ts`) and the store holding
+  it (covered in `__tests__/workspace-grant-store.test.ts`) are each useless
+  without this: the handler that carries one to the other, and records WHICH
+  conversation the grant came from. Deleting it left every other test green.
+*/
+describe('an agent that asks for a capability mid-turn', () => {
+  it('puts the grant in the queue, tagged with the conversation it came from', async () => {
+    workspaceGrantActions.resetForTest();
+    agentMock.mockResolvedValue(detail());
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r1' });
+    streamMock.mockImplementation(
+      async (
+        _reqId: string,
+        h: { onPermissionRequest?: (r: PermissionRequest) => void },
+      ) => {
+        h.onPermissionRequest?.({
+          kind: 'host',
+          host: 'example.org',
+          sessionId: 'sess-1',
+        });
+      },
+    );
+
+    renderView();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'fetch the roof quote' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+
+    await waitFor(() =>
+      expect(getWorkspaceGrantSnapshot().grants).toHaveLength(1),
+    );
+    const [grant] = getWorkspaceGrantSnapshot().grants;
+    expect(grant?.key).toBe('host:example.org');
+    // The conversation is the part the row cannot work out for itself: Today
+    // can hold grants from several agents, so it has to be recorded here, by
+    // the only code that knows which turn the frame arrived on.
+    expect(grant?.conversationId).toBe('c-now');
+  });
+
+  it('does not treat the ask as the turn failing', async () => {
+    // The wall parks the turn; it does not end it. A grant that surfaced the
+    // "that reply didn't finish" banner would be telling the person the
+    // opposite of what happened, right as they are deciding whether to trust it.
+    workspaceGrantActions.resetForTest();
+    agentMock.mockResolvedValue(detail());
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r1' });
+    streamMock.mockImplementation(
+      async (
+        _reqId: string,
+        h: { onPermissionRequest?: (r: PermissionRequest) => void },
+      ) => {
+        h.onPermissionRequest?.({
+          kind: 'host',
+          host: 'example.org',
+          sessionId: 'sess-1',
+        });
+      },
+    );
+
+    renderView();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'fetch the roof quote' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+
+    await waitFor(() =>
+      expect(getWorkspaceGrantSnapshot().grants).toHaveLength(1),
+    );
+    expect(screen.queryByText(/didn’t finish/)).toBeNull();
   });
 });
