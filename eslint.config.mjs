@@ -338,6 +338,13 @@ export default tseslint.config(
     // outside both trees (`lib/sse-frames.ts`, `lib/turn-error-labels.ts`,
     // `lib/grant-copy.ts`).
     //
+    // The FILE set is the workspace's own modules — `lib/workspace-*` by naming
+    // convention, plus its component tree. A lib module both surfaces share
+    // (`lib/permission-frames.ts`, `lib/agent-store.ts`, …) is NOT matched, and
+    // could not be: chat's own `lib/turn-error.ts` legitimately imports
+    // `./transport`, so a fence around all of `src/lib/**` would fail on the
+    // chat side. None of the shared modules imports the chat tree today.
+    //
     // Tests are excluded: the base config turns this rule OFF under
     // `__tests__/`, and matching them here would silently switch invariant 2
     // back on for the workspace's test files.
