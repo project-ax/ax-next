@@ -417,11 +417,19 @@ function Inner({
    * draft), and the kickoff effect needs it to decide whether to toast.
    */
   const startTurn = useCallback(
-    async (agentId: string, text: string): Promise<void> => {
+    // `attachmentIds` is optional so the TASK-249 kickoff effect's existing
+    // two-arg call (`startTurn(id, KICKOFF_TEXT)`) keeps compiling and
+    // behaving exactly as before — a plain text-only send.
+    async (
+      agentId: string,
+      text: string,
+      attachmentIds?: readonly string[],
+    ): Promise<void> => {
       const { reqId, conversationId } = await workspaceApi.sendMessage({
         agentId,
         conversationId: null,
         text,
+        ...(attachmentIds !== undefined ? { attachmentIds } : {}),
       });
       setPendingReply({ agentId, reqId, text, conversationId });
       navigate({ kind: 'agent', id: agentId, tab: 'chat' });

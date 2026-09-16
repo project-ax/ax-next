@@ -37,6 +37,7 @@
  * route in front of the chat POST would be a second source of truth for
  * starting a turn (invariant 4).
  */
+import { attachmentRefBlock } from './attachment-upload';
 import { HttpError, httpErrorMessage, httpFetch } from './http';
 /*
   The Fault A reason-code → authored-label table, read rather than re-declared.
@@ -392,6 +393,15 @@ export interface SendMessageInput {
   /** `null` starts a new conversation — the server mints the row and the id. */
   conversationId: string | null;
   text: string;
+  /**
+   * Server-minted attachment ids from `POST /api/attachments`, in the order the
+   * user picked them. Each becomes one `attachment_ref` block alongside the
+   * text block — the SAME block chat's transport produces from
+   * `ax://attachment/<id>`, built through the one shared `attachmentRefBlock`
+   * so the two surfaces cannot drift into two spellings of one wire shape.
+   * Omitted / empty = a plain text-only send, byte-identical to before.
+   */
+  attachmentIds?: readonly string[];
 }
 
 export interface StreamHandlers {
@@ -690,6 +700,7 @@ export const workspaceApi = {
     agentId,
     conversationId,
     text,
+    attachmentIds = [],
   }: SendMessageInput): Promise<PostMessageResponse> {
     const res = await httpFetch('/api/chat/messages', {
       method: 'POST',
@@ -697,7 +708,10 @@ export const workspaceApi = {
       body: JSON.stringify({
         conversationId,
         agentId,
-        contentBlocks: [{ type: 'text', text }],
+        contentBlocks: [
+          { type: 'text', text },
+          ...attachmentIds.map((id) => attachmentRefBlock(id)),
+        ],
       }),
     });
     if (!res.ok) {

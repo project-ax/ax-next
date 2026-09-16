@@ -3,6 +3,11 @@ import type {
   PendingAttachment,
   CompleteAttachment,
 } from '@assistant-ui/react';
+import {
+  ATTACHMENT_ACCEPT,
+  AX_ATTACHMENT_URL_PREFIX,
+  uploadAttachment,
+} from './attachment-upload';
 
 /**
  * AxAttachmentAdapter — assistant-ui AttachmentAdapter implementation that
@@ -26,11 +31,7 @@ import type {
  *       Future: explicit DELETE /api/attachments/<id>.
  */
 export class AxAttachmentAdapter implements AttachmentAdapter {
-  // Comma-joined MIME list. Matches the server's default allowlist.
-  // Server is authoritative — this is just a UX hint for the file picker.
-  accept =
-    'image/png,image/jpeg,image/gif,image/webp,application/pdf,' +
-    'text/plain,text/csv,text/markdown,application/json,application/zip';
+  accept = ATTACHMENT_ACCEPT;
 
   /**
    * assistant-ui identifies attachments by `id` — if `add()` yields two states
@@ -57,8 +58,10 @@ export class AxAttachmentAdapter implements AttachmentAdapter {
     };
 
     let lastProgress = 0;
-    const result = await uploadWithProgress(file, (progress) => {
-      lastProgress = progress;
+    const result = await uploadAttachment(file, {
+      onProgress: (progress) => {
+        lastProgress = progress;
+      },
     });
     void lastProgress; // observed via the promise's progress callback above
 
@@ -86,7 +89,7 @@ export class AxAttachmentAdapter implements AttachmentAdapter {
       content: [
         {
           type: 'file',
-          data: `ax://attachment/${serverId}`,
+          data: `${AX_ATTACHMENT_URL_PREFIX}${serverId}`,
           mimeType: pending.contentType ?? 'application/octet-stream',
           filename: pending.name,
         },
@@ -102,64 +105,9 @@ export class AxAttachmentAdapter implements AttachmentAdapter {
   }
 }
 
-interface UploadResult {
-  attachmentId: string;
-  sizeBytes: number;
-  mediaType: string;
-  displayName: string;
-  expiresAt: string;
-}
-
 function typeForMime(mime: string): PendingAttachment['type'] {
   if (mime.startsWith('image/')) return 'image';
   if (mime.startsWith('video/')) return 'video';
   if (mime.startsWith('audio/')) return 'audio';
   return 'document';
-}
-
-function uploadWithProgress(
-  file: File,
-  onProgress: (fraction: number) => void,
-): Promise<UploadResult> {
-  return new Promise((resolve, reject) => {
-    const form = new FormData();
-    form.append('file', file, file.name);
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/attachments');
-    xhr.withCredentials = true;
-    xhr.setRequestHeader('X-Requested-With', 'ax-admin');
-    xhr.upload.onprogress = (e: ProgressEvent) => {
-      if (e.lengthComputable && e.total > 0) {
-        onProgress(e.loaded / e.total);
-      }
-    };
-    // Cap stall-out at 60s so an unreachable server doesn't leave the
-    // returned promise pending forever. abort + timeout get their own
-    // rejection reasons so an upstream surface (toast, retry button) can
-    // distinguish them from a generic network failure.
-    xhr.timeout = 60_000;
-    xhr.onerror = () => reject(new Error('upload failed'));
-    xhr.onabort = () => reject(new Error('upload aborted'));
-    xhr.ontimeout = () => reject(new Error('upload timed out'));
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          const parsed = JSON.parse(xhr.responseText) as UploadResult;
-          resolve(parsed);
-        } catch (err) {
-          reject(err instanceof Error ? err : new Error(String(err)));
-        }
-      } else {
-        // Try to parse a JSON error body for a nicer UX; otherwise
-        // surface status code.
-        let errCode = `upload failed (${xhr.status})`;
-        try {
-          const parsed = JSON.parse(xhr.responseText) as { error?: string };
-          if (parsed.error) errCode = parsed.error;
-        } catch { /* ignore */ }
-        reject(new Error(errCode));
-      }
-    };
-    xhr.send(form);
-  });
 }
