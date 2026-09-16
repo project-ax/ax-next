@@ -41,16 +41,20 @@ import { attachmentRefBlock } from './attachment-upload';
 import { HttpError, httpErrorMessage, httpFetch } from './http';
 /*
   The Fault A reason-code → authored-label table, read rather than re-declared.
-  `transport.ts` has owned it since Fault A and `turn-error.ts` already derives
-  from it; a second copy here would be invariant 4 violated in the one place the
-  drift is invisible, because a missing code silently becomes a raw identifier
-  on screen instead of a type error.
+  A second copy here would be invariant 4 violated in the one place the drift is
+  invisible, because a missing code silently becomes a raw identifier on screen
+  instead of a type error.
+
+  It used to be read out of `./transport`, which owned it from Fault A until
+  TASK-372. That was correct and is no longer survivable: TASK-360 deletes
+  `transport.ts` with the rest of chat, and this is the surface that is left.
+  The table now lives in `./turn-error-labels`, outside the tree that goes.
 */
 import {
   DEFAULT_TURN_ERROR,
   ERROR_LABELS,
   MAX_DETAIL_CHARS,
-} from './transport';
+} from './turn-error-labels';
 import { readSseFrames } from './sse-frames';
 // The store owns "can this build draw it?", because `grantKey` is the function
 // that breaks without it. Read, not re-declared: a second copy of the same

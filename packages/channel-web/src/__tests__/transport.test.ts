@@ -17,8 +17,8 @@ import {
   AxChatTransport,
   toContentBlocksForTesting,
   CONNECTION_LOST,
-  DEFAULT_TURN_ERROR,
 } from '../lib/transport';
+import { DEFAULT_TURN_ERROR } from '../lib/turn-error-labels';
 import {
   agentStatusActions,
   getAgentStatusSnapshot,
