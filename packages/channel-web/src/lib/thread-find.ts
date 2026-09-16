@@ -158,6 +158,13 @@ export function findFieldKey(index: number, id: string): string {
  *     count that moves on its own. If it starts to bite, the fix is to make the
  *     queue read part of this thread's read, not to reach into `decisions` from
  *     here.
+ *
+ *     THE SAME IS TRUE OF THE GRANT ROWS that TASK-351 routes into this thread.
+ *     They are not `ThreadMessage`s at all — `AgentConversation` takes them as
+ *     a separate `grants` prop off a presence-routed store and renders them
+ *     below the transcript — so their words are invisible to find for the same
+ *     reason and with the same justification. Anything that fixes one of these
+ *     should fix both, and it is a wider change than a client-side loop.
  *   - a `steps` turn's `stepsLabel` and `steps[]` — that panel is COLLAPSIBLE
  *     (it renders open and the reader can shut it), so a count including it can
  *     name a match that is not on the screen at the moment it is counted.

@@ -62,6 +62,8 @@ function conversation(
       onUndo={vi.fn()}
       approvalRead="ok"
       onRetryApprovals={vi.fn()}
+      grants={[]}
+      onGrantResolved={vi.fn()}
       {...over}
     />
   );
