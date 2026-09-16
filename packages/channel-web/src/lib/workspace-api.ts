@@ -196,6 +196,11 @@ export interface ActivityPage {
  */
 export interface PendingGrant {
   conversationId: string;
+  /**
+   * The agent that asked. Not read by any renderer yet — it rides because the
+   * row names who asked (the design's wire shape, mirrored from the buffer),
+   * and a future "which agent asked" display should not need a wire change.
+   */
   agentId: string;
   request: PermissionRequest;
 }

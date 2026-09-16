@@ -6,11 +6,15 @@
  */
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { workspaceApi } from '@/lib/workspace-api';
+import { workspaceApi, WorkspaceApiError } from '@/lib/workspace-api';
 import { UserProvider } from '@/lib/user-context';
 import { WorkspaceShell } from '../WorkspaceShell';
 import { workspaceGrantActions } from '@/lib/workspace-grant-store';
-import { DECISION_THREAD_READ_FAILED } from '../decision-copy';
+import {
+  DECISION_SESSION_EXPIRED,
+  DECISION_THREAD_READ_FAILED,
+  GRANT_READ_FAILED,
+} from '../decision-copy';
 import { decisionFixture } from './decision-fixture';
 import type { ActivityEvent } from '@/lib/workspace-types';
 import type { PermissionRequest } from '../../../server/types';
@@ -185,6 +189,81 @@ describe('WorkspaceShell', () => {
     });
 
     expect(screen.getAllByTestId('grant-skill:linear')).toHaveLength(1);
+  });
+
+  it('never claims the day is empty when the GRANTS read fails', async () => {
+    /*
+      The read-back made grants a fetch, and a fetch can fail. The queue came
+      back (empty), the grants read did not — "Nothing is waiting on you."
+      here would be the most damaging sentence this page can print, over an
+      unknown number of grants. The headline refuses it and the page says
+      what it could not check instead.
+    */
+    boardMock.mockResolvedValue({ agents: [] });
+    decisionsMock.mockResolvedValue({ decisions: [] });
+    grantsMock.mockRejectedValue(new Error('workspace /grants → 503'));
+
+    renderShell();
+
+    expect(
+      await screen.findByText('We could not check what is waiting on you.'),
+    ).toBeTruthy();
+    expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();
+  });
+
+  it('counts decisions it did read while the grants read failed — a floor, said as one', async () => {
+    // One open decision read fine; the grants read failed. The headline may
+    // claim the ONE (true) without claiming the whole day, and the failure
+    // alert explains the rest.
+    boardMock.mockResolvedValue({ agents: [] });
+    decisionsMock.mockResolvedValue({
+      decisions: [decisionFixture({ id: 'd1', agentId: 'a-quill', conversationId: 'c1' })],
+    });
+    grantsMock.mockRejectedValue(new Error('workspace /grants → 503'));
+
+    renderShell();
+
+    expect(await screen.findByText('One thing is waiting on you.')).toBeTruthy();
+    expect(screen.getByText(GRANT_READ_FAILED)).toBeTruthy();
+    expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();
+  });
+
+  it('a 401 on the grants read offers sign-in, not a retry that cannot work', async () => {
+    // Every retry returns the same 401 — "Try again" there would be a button
+    // that cannot move. The queue alert draws this line; the grants alert
+    // draws the same one, with the same sentence: the session ran out, and
+    // that is a fact about the session, not about this route.
+    boardMock.mockResolvedValue({ agents: [] });
+    grantsMock.mockRejectedValue(new WorkspaceApiError('/grants', 401));
+
+    renderShell();
+
+    expect(
+      await screen.findByText(DECISION_SESSION_EXPIRED),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+  });
+
+  it('the grants retry actually re-fetches — and recovers', async () => {
+    // A retry button wired to nothing is worse than none. Down once, back on
+    // the retry: the alert goes and the grant it was hiding appears.
+    boardMock.mockResolvedValue({ agents: [] });
+    grantsMock
+      .mockRejectedValueOnce(new Error('workspace /grants → 503'))
+      .mockResolvedValue({
+        grants: [
+          { conversationId: 'cnv-1', agentId: 'a-quill', request: linearSkill() },
+        ],
+      });
+
+    renderShell();
+    expect(await screen.findByText(GRANT_READ_FAILED)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByTestId('grant-skill:linear')).toBeTruthy();
+    expect(screen.queryByText(GRANT_READ_FAILED)).toBeNull();
   });
 
   it('does not offer a demo strip or a global stop', async () => {

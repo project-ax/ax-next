@@ -573,6 +573,13 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
 
     evictConversationCards(conversationId) {
       skillCards.delete(conversationId);
+      // Drop the owner with the cards, exactly as `evictPermissionCard` does
+      // with its LAST card. Otherwise a conversation that ever held a pending
+      // card leaks one `{userId, agentId}` entry into a long-lived host
+      // process (conversation delete is the caller, via plugin.ts) — and,
+      // worse, a later OWNERLESS append to the same key would inherit the
+      // stale owner and become enumerable to a user who was never asked.
+      cardOwners.delete(conversationId);
     },
 
     dispose() {

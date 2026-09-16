@@ -709,6 +709,24 @@ describe('pendingGrantsForUser', () => {
     ]);
   });
 
+  it('a conversation delete drops the owner with the cards', () => {
+    // evictConversationCards fires on conversation delete (plugin.ts). If it
+    // left the owner behind, the map grows one entry per deleted conversation
+    // that ever held a card — and a later OWNERLESS append to the same key
+    // would inherit the stale owner and become enumerable to a user who was
+    // never asked. This pins the second half, which is the dangerous one.
+    const buf = createChunkBuffer();
+    buf.appendPermissionCard('cnv-1', skill('linear'), {
+      userId: 'u-ann',
+      agentId: 'a-quill',
+    });
+    buf.evictConversationCards('cnv-1');
+
+    buf.appendPermissionCard('cnv-1', skill('github'));
+
+    expect(buf.pendingGrantsForUser('u-ann')).toEqual([]);
+  });
+
   it('never returns another user their grants', () => {
     // The leak this exists to prevent: skill ids, connector names and hostnames
     // are all readable from a card, and they belong to somebody.
