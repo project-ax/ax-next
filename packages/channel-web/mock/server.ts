@@ -1,4 +1,5 @@
-import { resolve } from 'node:path';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Store } from './store';
 import { authMiddleware } from './auth';
@@ -13,8 +14,13 @@ import {
 import { adminTeamsMiddleware } from './admin/teams';
 import { brandingMiddleware } from './branding';
 
+// Package-relative, NOT process.cwd() — a cwd-relative fallback here would
+// scatter its seed JSONs wherever the caller's shell happens to be (which can
+// be the repo root). See TASK-376.
+const DEFAULT_DATA_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '.mock-data');
+
 export function createMockHandler(dataDir?: string): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {
-  const dir = dataDir ?? resolve(process.cwd(), '.mock-data');
+  const dir = dataDir ?? DEFAULT_DATA_DIR;
   const store = new Store(dir);
   store.seed();
   const handlers = [

@@ -42,8 +42,13 @@ export default defineConfig({
           {
             name: 'channel-web-mock-api',
             configureServer(server: { middlewares: { use: (mw: unknown) => void } }) {
+              // Anchored to __dirname (this package), NOT process.cwd() — a
+              // cwd-relative path here writes its 6 seed JSONs wherever the
+              // dev server happens to be invoked from, which can be the repo
+              // root if `vite` is launched from outside this package
+              // directory. See TASK-376.
               server.middlewares.use(
-                mockMiddleware(resolve(process.cwd(), '.mock-data')) as never,
+                mockMiddleware(resolve(__dirname, '.mock-data')) as never,
               );
             },
           },
