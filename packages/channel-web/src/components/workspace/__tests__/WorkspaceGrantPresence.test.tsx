@@ -17,7 +17,14 @@
  * whichever site draws it.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 
 import { workspaceApi } from '@/lib/workspace-api';
 import { UserProvider } from '@/lib/user-context';
@@ -92,6 +99,20 @@ const linearSkill = (): PermissionRequest => ({
   slots: [{ slot: 'api_key', kind: 'api-key', account: 'linear', haveExisting: true }],
 });
 
+/**
+ * A SECOND subject, raised by the OTHER agent — the queue-only half of a sum.
+ * A different skill id rather than a `host`, because `raise` deliberately drops
+ * a host wall while a connector grant is open and that rule is not what these
+ * tests are about.
+ */
+const notionSkill = (): PermissionRequest => ({
+  kind: 'skill',
+  skillId: 'notion',
+  description: 'Read and write Notion pages',
+  hosts: ['api.notion.com'],
+  slots: [{ slot: 'api_key', kind: 'api-key', account: 'notion', haveExisting: true }],
+});
+
 /** `document.visibilityState`, stubbed for the file and reset per test. */
 let visibility: 'visible' | 'hidden' = 'visible';
 Object.defineProperty(document, 'visibilityState', {
@@ -121,6 +142,13 @@ function renderAt(path: string) {
 const threadRegion = () => screen.queryByTestId('thread-grants');
 
 const grantRows = () => screen.queryAllByTestId('grant-skill:linear');
+
+/**
+ * The sidebar's "waiting on you" badge — the number, or `null` when the badge
+ * is absent because the count is zero.
+ */
+const pendingBadge = () =>
+  within(screen.getByRole('button', { name: /today/i })).queryByText(/^\d+$/);
 
 beforeEach(() => {
   visibility = 'visible';
@@ -178,6 +206,71 @@ describe('the thread takes the grant when the human is there', () => {
     await waitFor(() => expect(threadRegion()).toBeNull());
     expect(grantRows()).toHaveLength(1);
     expect(getWorkspaceGrantSnapshot().grants).toHaveLength(1);
+  });
+});
+
+describe('the badge counts a grant the thread is holding', () => {
+  /*
+    THE COUNT IS EVERY OPEN GRANT, wherever it happens to be drawn. A grant in
+    front of you is still a grant waiting on you, and Today — one click away —
+    is still listing it. Ticking the badge down the instant the question
+    appeared would put two "waiting on you" numbers on one screen disagreeing
+    with each other, which is the thing grants were added to this sum to stop.
+
+    THIS BLOCK EXISTS BECAUSE EVERY OTHER COUNT ASSERTION IN THE SUITE RUNS ON
+    TODAY, where presence never routes anything away and `grants.length` and
+    `grants.length - grantsInThread.length` are the same number. This is the
+    only route where the difference is visible, so without these three cases a
+    refactor to the subtraction drops the badge the instant the question
+    appears AND passes the entire suite green. (Confirmed, not assumed: that
+    refactor reddens exactly these three and leaves `WorkspaceShell.test.tsx`
+    and `TodayView.test.tsx` — every other count assertion we have — passing.)
+  */
+
+  it('still shows the badge while the grant is in the thread', async () => {
+    renderAt('/workspace/agents/a-quill');
+    await screen.findByTestId('thread-grants');
+
+    expect(pendingBadge()).toHaveTextContent('1');
+  });
+
+  it('counts the queue-only grant and the thread-routed one alike', async () => {
+    grantsMock.mockResolvedValue({
+      grants: [
+        { conversationId: 'cnv-1', agentId: 'a-quill', request: linearSkill() },
+        { conversationId: 'cnv-2', agentId: 'a-scout', request: notionSkill() },
+      ],
+    });
+
+    renderAt('/workspace/agents/a-quill');
+    await screen.findByTestId('thread-grants');
+
+    // Quill's is in front of us and Scout's is not; both are waiting on us.
+    // The `2` is what makes this case sharper than the one above: a count that
+    // subtracted the routed grant would say `1` here and still badge something,
+    // so "the badge is present" alone would not have caught it.
+    expect(grantRows()).toHaveLength(1);
+    expect(screen.queryByTestId('grant-skill:notion')).toBeNull();
+    expect(pendingBadge()).toHaveTextContent('2');
+  });
+
+  it('and reaches zero only when the grant is actually answered', async () => {
+    /*
+      The positive control. Without it the two assertions above would pass
+      against a badge that had simply been wired to a constant — and it pins
+      the shape of the intended tick-down: the number falls when the question
+      is ANSWERED, not when it is merely displayed somewhere else.
+    */
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+    );
+    renderAt('/workspace/agents/a-quill');
+    await screen.findByTestId('thread-grants');
+    expect(pendingBadge()).toHaveTextContent('1');
+
+    fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
+
+    await waitFor(() => expect(pendingBadge()).toBeNull());
   });
 });
 

@@ -51,6 +51,10 @@ import {
   MAX_DETAIL_CHARS,
 } from './transport';
 import { readSseFrames } from './sse-frames';
+// The store owns "can this build draw it?", because `grantKey` is the function
+// that breaks without it. Read, not re-declared: a second copy of the same
+// three kinds is a drift waiting to happen.
+import { isRenderableGrant } from './workspace-grant-store';
 import type { PermissionRequest, SseFrame } from '../server/types';
 import type { PostMessageResponse } from '@/wire/chat';
 import type {
@@ -491,6 +495,21 @@ export const workspaceApi = {
     // is worse than a read that fails loudly. `agentId` joined the list when
     // TASK-351 started READING it: an `undefined` there would be typed as a
     // `string`, match no route, and silently cost the grant its thread.
+    //
+    // `request` is checked for its DISCRIMINANT and not merely for being an
+    // object: `{}`, or a kind this build has never heard of, gets no key out of
+    // `grantKey` and no fields out of `GrantRow`, and the resulting throw lands
+    // in the workspace's `ErrorBoundary` — which takes every legible grant and
+    // decision down with the one unreadable row. `isRenderableGrant` is the
+    // store's own answer to "can we draw this?" — the discriminant, the id that
+    // becomes the key, and the two collections the row ITERATES — borrowed
+    // rather than copied so the wire and the store cannot drift about it.
+    //
+    // (The store refuses an unknown kind as well, which is what covers the SSE
+    // stream — that path has no shape guard at all. Here it is a WHOLE-page
+    // failure on purpose: a server answering `/grants` with a row we cannot
+    // read is news about the server, and the mount path already knows how to
+    // say "I could not check" without pretending the day is empty.)
     return checkedRead<GrantsPage>(
       '/grants',
       body,
@@ -502,7 +521,7 @@ export const workspaceApi = {
             isRecord(g) &&
             typeof (g as { conversationId?: unknown }).conversationId === 'string' &&
             typeof (g as { agentId?: unknown }).agentId === 'string' &&
-            isRecord((g as { request?: unknown }).request),
+            isRenderableGrant((g as { request?: unknown }).request),
         ),
     );
   },

@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   getWorkspaceGrantSnapshot,
   grantKey,
+  isRenderableGrant,
   workspaceGrantActions,
 } from '../lib/workspace-grant-store';
 import type { PermissionRequest } from '../server/types';
@@ -142,6 +143,123 @@ describe('raise — the origin rides along (TASK-351)', () => {
     const row = getWorkspaceGrantSnapshot().grants[0];
     expect(row?.agentId).toBe('a-scout');
     expect(row?.conversationId).toBe('cnv-2');
+  });
+});
+
+describe('raise — a kind this build cannot draw', () => {
+  /*
+    `grantKey`'s switch is exhaustive over the union, so TypeScript is satisfied
+    and NOTHING happens at runtime: a fourth kind falls off the end and the key
+    comes back `undefined`. A row keyed `undefined` reaches `GrantRow`, which
+    reads fields the unknown shape does not have, and the throw lands in the
+    workspace `ErrorBoundary` — so the one row we could not read takes every
+    grant and decision on the surface down with it.
+
+    This is a version-skew case, not a corrupt-payload case: a server that adds
+    a fourth `PermissionRequest` kind does exactly this to every client built
+    before it. So the answer is to skip the row and keep the queue, not to fail.
+  */
+
+  /** A kind from a future server. Cast because the union deliberately excludes it. */
+  const fromTheFuture = () =>
+    ({ kind: 'device', deviceId: 'd-1' }) as unknown as PermissionRequest;
+
+  test('it is refused rather than keyed `undefined`', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    workspaceGrantActions.raise(fromTheFuture(), from());
+
+    expect(getWorkspaceGrantSnapshot().grants).toHaveLength(0);
+    // Loud for whoever is debugging the skew, silent for the person: they
+    // simply do not see a row they could not have answered anyway.
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  test('and it does not take the rest of the queue with it', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    workspaceGrantActions.raise(skill('linear'), from());
+    workspaceGrantActions.raise(fromTheFuture(), from());
+    workspaceGrantActions.raise(host('example.org'), from());
+
+    expect(getWorkspaceGrantSnapshot().grants.map((g) => g.key)).toEqual([
+      'skill:linear',
+      'host:example.org',
+    ]);
+    warn.mockRestore();
+  });
+
+  test('isRenderableGrant accepts the three kinds this build draws', () => {
+    // The positive half, and it has to come first: every rejection below would
+    // pass equally well against a predicate that refused everything, and a
+    // guard that drops all grants is a worse bug than the one it fixes. Pinned
+    // here, where the predicate lives, so a fourth kind added to `grantKey`
+    // without adding it here reddens a test rather than silently dropping
+    // every grant of that kind at both call sites.
+    expect(isRenderableGrant(skill('linear'))).toBe(true);
+    expect(isRenderableGrant(connector('linear'))).toBe(true);
+    expect(isRenderableGrant(host('example.org'))).toBe(true);
+  });
+
+  test('isRenderableGrant refuses a kind it has never heard of', () => {
+    expect(isRenderableGrant({ kind: 'device' })).toBe(false);
+    expect(isRenderableGrant({})).toBe(false);
+    expect(isRenderableGrant(null)).toBe(false);
+    expect(isRenderableGrant('skill')).toBe(false);
+    expect(isRenderableGrant([])).toBe(false);
+  });
+
+  test('isRenderableGrant refuses a right kind with a missing crash-surface field', () => {
+    /*
+      The discriminant alone was not enough. `GrantRow` ITERATES `hosts` and
+      `slots` — `.length`, `.map`, and a `.filter` over the slot names — so a
+      skill card that arrives without them throws exactly as hard as an unknown
+      kind does, and buries the same surface. The id is checked because it
+      BECOMES the key: `skill:undefined` is a row two different questions would
+      share.
+    */
+    expect(isRenderableGrant({ kind: 'skill', skillId: 'linear' })).toBe(false);
+    expect(
+      isRenderableGrant({ kind: 'skill', skillId: 'linear', hosts: [] }),
+    ).toBe(false);
+    expect(
+      isRenderableGrant({ kind: 'skill', hosts: [], slots: [] }),
+    ).toBe(false);
+    expect(
+      isRenderableGrant({ kind: 'connector', connectorId: 'linear', hosts: [] }),
+    ).toBe(false);
+    // A slot the row cannot name is no better than no slots at all.
+    expect(
+      isRenderableGrant({
+        kind: 'skill',
+        skillId: 'linear',
+        hosts: [],
+        slots: [{ kind: 'api-key' }],
+      }),
+    ).toBe(false);
+    expect(isRenderableGrant({ kind: 'host' })).toBe(false);
+  });
+
+  test('isRenderableGrant is no stricter than the crash surface', () => {
+    /*
+      `description`, `name` and `sessionId` are required by the type and are
+      NOT required here, on purpose: a missing one renders a shabby row, never
+      a throw. Dropping an answerable grant over a cosmetic field would trade a
+      blemish for a silently missing question — the worse of the two.
+    */
+    expect(
+      isRenderableGrant({ kind: 'skill', skillId: 'linear', hosts: [], slots: [] }),
+    ).toBe(true);
+    expect(
+      isRenderableGrant({
+        kind: 'connector',
+        connectorId: 'linear',
+        hosts: [],
+        slots: [],
+      }),
+    ).toBe(true);
+    expect(isRenderableGrant({ kind: 'host', host: 'example.org' })).toBe(true);
   });
 });
 
