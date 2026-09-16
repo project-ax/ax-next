@@ -197,6 +197,31 @@ export function useWorkspaceAttachments(): WorkspaceAttachments {
         const result = await uploadAttachment(file, {
           onProgress: (fraction) => patch(id, { progress: clamp01(fraction) }),
         });
+        /*
+          THE RESPONSE IS UNTRUSTED UNTIL SOMETHING CHECKS IT. `uploadAttachment`
+          casts the parsed JSON to its result type; nothing validates it. A body
+          that arrives without a usable `attachmentId` — a proxy's courtesy page
+          that happens to be JSON, a server change, a truncated write — would
+          otherwise settle this chip on "Ready to send" and then hand `undefined`
+          to the wire, where the send fails for a reason pointing at the message
+          rather than at the file.
+
+          Tolerating a missing field is only allowed when what renders is still
+          something a person can act on, and "Ready to send" over nothing to send
+          is the opposite of that. So this is a FAILED upload with a retry, which
+          is both true and actionable.
+        */
+        if (
+          typeof result.attachmentId !== 'string' ||
+          result.attachmentId.length === 0
+        ) {
+          patch(id, {
+            status: 'failed',
+            attachmentId: null,
+            message: ATTACHMENT_FAILED_MALFORMED,
+          });
+          return;
+        }
         patch(id, {
           status: 'uploaded',
           progress: 1,
@@ -281,7 +306,17 @@ export function useWorkspaceAttachments(): WorkspaceAttachments {
   const attachmentIds = useMemo(
     () =>
       attachments
-        .filter((a) => a.status === 'uploaded' && a.attachmentId !== null)
+        /*
+          `!== null` would let an `undefined` through, which is the shape a
+          malformed response produces — belt and braces with the guard in
+          `start`, because this list is what reaches the wire.
+        */
+        .filter(
+          (a) =>
+            a.status === 'uploaded' &&
+            typeof a.attachmentId === 'string' &&
+            a.attachmentId.length > 0,
+        )
         .map((a) => a.attachmentId as string),
     [attachments],
   );

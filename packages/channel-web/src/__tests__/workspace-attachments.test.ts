@@ -28,6 +28,7 @@ import {
   type AttachmentUploadResult,
 } from '@/lib/attachment-upload';
 import {
+  ATTACHMENT_FAILED_MALFORMED,
   ATTACHMENT_SEND_BLOCKED_FAILED,
   ATTACHMENT_SEND_BLOCKED_UPLOADING,
   attachmentFailureSentence,
@@ -511,5 +512,58 @@ describe('useWorkspaceAttachments — clear', () => {
     act(() => result.current.retry(id));
     expect(upload).toHaveBeenCalledTimes(1);
     expect(result.current.attachments).toEqual([]);
+  });
+});
+
+/*
+  A 200 THAT DOES NOT CARRY AN ID IS A FAILED UPLOAD, not a ready one.
+
+  `uploadAttachment` casts the parsed JSON to its result type and validates
+  nothing, so a proxy's JSON courtesy page, a server change or a truncated
+  write can resolve with no usable `attachmentId`. Tolerating that field is
+  only allowed if what renders is still something a person can act on —
+  "Ready to send" over nothing to send is the opposite, and the failure would
+  surface later as a rejected MESSAGE, pointing the blame at the wrong thing.
+
+  Against the unguarded hook the chip reads `uploaded` and `undefined` rides
+  out in `attachmentIds`, so both assertions below fail.
+*/
+describe('useWorkspaceAttachments — a response with no attachment id', () => {
+  it('fails the chip instead of calling it ready, and keeps the id off the wire', async () => {
+    const { result } = renderHook(() => useWorkspaceAttachments());
+    act(() => result.current.add(fileList(textFile())));
+    await waitFor(() => expect(pending).toHaveLength(1));
+
+    act(() => {
+      pending[0]!.resolve({
+        ...serverResult('ignored'),
+        attachmentId: undefined as unknown as string,
+      });
+    });
+    await settle();
+
+    await waitFor(() =>
+      expect(result.current.attachments[0]?.status).toBe('failed'),
+    );
+    expect(result.current.attachments[0]?.message).toBe(
+      ATTACHMENT_FAILED_MALFORMED,
+    );
+    expect(result.current.attachmentIds).toEqual([]);
+    // And the send is held, so the message cannot leave without it.
+    expect(result.current.sendBlock).toBe(ATTACHMENT_SEND_BLOCKED_FAILED);
+  });
+
+  it('treats an empty-string id the same way', async () => {
+    const { result } = renderHook(() => useWorkspaceAttachments());
+    act(() => result.current.add(fileList(textFile())));
+    await waitFor(() => expect(pending).toHaveLength(1));
+
+    act(() => pending[0]!.resolve({ ...serverResult('') }));
+    await settle();
+
+    await waitFor(() =>
+      expect(result.current.attachments[0]?.status).toBe('failed'),
+    );
+    expect(result.current.attachmentIds).toEqual([]);
   });
 });
