@@ -121,12 +121,18 @@ describe('tool-policy canary', () => {
     }
     /*
       NON-VACUITY GUARD. Everything above passes identically against a schema
-      with no `effect` line IF no shipped rule declares one — the branch that
-      expects the key would simply never be taken. So pin that the live table
-      really does declare at least one, which is what makes the loop a test of
-      the wire rather than a description of an empty set.
+      with no `effect` line IF no effect-bearing row reaches the loop — the
+      branch that expects the key would simply never be taken.
+
+      Asserted on the ROWS, not on `BUILTIN_RULES`. The first version of this
+      guard pinned that the TABLE declares an effect somewhere, which coincides
+      with "a row carrying one arrived" only because this call sends no
+      `outOfReach`. Add a subtraction here that happened to drop the two web
+      rules and a table-level guard would still pass while the loop went quiet
+      again — re-vacuizing silently, which is the whole failure mode this
+      guard exists to prevent. Caught in review.
     */
-    expect(BUILTIN_RULES.filter((r) => r.effect !== undefined).length).toBeGreaterThan(0);
+    expect(caps.rows.some((r) => r.effect !== undefined)).toBe(true);
   });
 
   it('carries fullyDescribedTools ACROSS THE BUS, naming every tool an unconditional rule covers', async () => {

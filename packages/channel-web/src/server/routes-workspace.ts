@@ -2794,6 +2794,18 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         // whose effect nobody has classified — the row's mechanical shape
         // already tells the reader we cannot say what this tool does, and
         // `effect` is no exception. Never invent one from the tool's name.
+        //
+        // ONE CASE THIS HARDCODED `null` WOULD GET WRONG, and it is guarded
+        // rather than merely noted. A tool named only by `when`-predicated
+        // rules ALSO lands here — as its base row, the unconditional
+        // fall-through half — and that row has no rule to read an effect off,
+        // because it is built from `evaluate`'s answer and `EvaluateResult`
+        // carries no `effect`. Were such a rule to declare `spends` or
+        // `outward`, this row would render with no marker while the call still
+        // spent the money, i.e. it would UNDERSTATE reach. No shipped rule is
+        // both conditional and effect-bearing, and @ax/tool-policy's
+        // `rules.test.ts` has a tripwire asserting exactly that, naming this
+        // site and `EvaluateResult.effect` as the fix. Do not relax it here.
         effect: null,
         mechanicalLabel: label,
         // The vendor's own prose, for MCP tools only, and only as attributed

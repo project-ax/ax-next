@@ -163,6 +163,38 @@ describe('BUILTIN_RULES', () => {
     expect('effect' in memorySearch!).toBe(false);
   });
 
+  it('TASK-329: no CONDITIONAL rule declares an effect — the rail cannot disclose one yet', () => {
+    /*
+      A TRIPWIRE for a gap that is real but not reachable today. Found in
+      review; it is cheaper to fail here than to under-disclose on the rail.
+
+      The rail emits two kinds of row. Described rows come from
+      `tool-policy:list-capabilities` and now carry `effect`. But a tool named
+      ONLY by `when`-predicated rules also gets a MECHANICAL BASE ROW, built
+      by the caller from `evaluate`'s fall-through verdict — and `evaluate`
+      answers `EvaluateResult`, which has no `effect` (deliberately: adding it
+      is a second hook-surface change). So that base row hardcodes no effect
+      and has no rule to read one from.
+
+      Harmless while every effect-bearing rule is unconditional, which is why
+      this is a guard and not a fix: `web.search` and `web.extract` are both
+      unconditional, so they are fully described and never take the mechanical
+      path. The day a CONDITIONAL rule declares `spends` or `outward`, its base
+      row — the one covering every call the predicate misses — would render
+      with no marker while the call still spends the money or acts outward.
+      Understating reach is the one direction design H4 forbids.
+
+      If you are here because this test just went red: you have added exactly
+      that rule, and the fix is to carry `effect` on `EvaluateResult` (and
+      through the caller's base-row builder) rather than to relax this
+      assertion.
+    */
+    for (const rule of BUILTIN_RULES) {
+      if (rule.match.when === undefined) continue;
+      expect(rule.effect, rule.id).toBeUndefined();
+    }
+  });
+
   it('every rule names an agent subject — there is no other subject yet', () => {
     for (const rule of BUILTIN_RULES) {
       expect(rule.subject, rule.id).toBe('agent');

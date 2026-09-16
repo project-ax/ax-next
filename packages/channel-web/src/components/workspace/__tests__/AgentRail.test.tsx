@@ -402,22 +402,55 @@ describe('AgentRail — "What it may do alone"', () => {
       expect(screen.queryByText('Costs money')).toBeNull();
     });
 
-    it('renders no marker when effect is null', async () => {
+    it('renders no marker when effect is null — exactly one marker across the two rows', async () => {
+      /*
+        The FIRST version of this test rendered a lone `effect: null` row and
+        asserted `queryByText('Costs money')` was null. That test could not
+        fail, and review caught it: delete the `effect !== null` guard and a
+        null row renders `EffectMark({ effect: null })`, whose
+        `EFFECT_DISCLOSURES[null]` is `undefined` — spreading `undefined` is
+        legal, so the button renders with NO TEXT, throws nothing, and a
+        query for "Costs money" is still null. The assertion passed against
+        working code, broken code, and a mutation of the very guard it named.
+
+        So this counts BADGES, not words, and it pairs the null row with a
+        spends row. Querying by the trailing "Details." of the trigger's
+        `aria-label` finds a marker even when its visible label fenced away to
+        nothing, which is exactly the empty-badge case the old test was blind
+        to: one marker means the renderer CAN draw one and chose not to for
+        the null row; two means the guard is gone.
+      */
       railMock.mockResolvedValue(
         rail({
           permissions: {
             status: 'ok',
             incomplete: false,
             unrestrictedTools: false,
-            rows: [describedRow({ verdict: 'allow', effect: null })],
+            rows: [
+              describedRow({
+                verdict: 'allow',
+                capability: 'search the web',
+                source: 'rule:web.search',
+                effect: 'spends',
+              }),
+              describedRow({
+                verdict: 'allow',
+                capability: 'read files in its own workspace',
+                source: 'rule:sandbox.read',
+                effect: null,
+              }),
+            ],
           },
         }),
       );
       renderRail();
 
-      await screen.findByText(/search the web/);
-      expect(screen.queryByText('Costs money')).toBeNull();
-      expect(screen.queryByText('Affects the outside world')).toBeNull();
+      await screen.findByText(/read files in its own workspace/);
+      expect(screen.getAllByRole('button', { name: /Details\.$/ })).toHaveLength(1);
+      // …and it is the spending row's, not a nameless badge on the other one.
+      expect(
+        screen.getByRole('button', { name: /Details\.$/ }).textContent,
+      ).toBe('Costs money');
     });
 
     it('opens the popover and shows the per-use cost detail', async () => {

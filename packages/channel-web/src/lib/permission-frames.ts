@@ -201,3 +201,46 @@ const EFFECT_DISCLOSURES: Record<CapabilityEffect, EffectDisclosure> = {
 export function effectDisclosure(effect: CapabilityEffect): EffectDisclosure {
   return { ...EFFECT_DISCLOSURES[effect] };
 }
+
+/**
+ * Whether a row's declared effect should be DISCLOSED to a reader at all.
+ *
+ * This lives here, beside the copy, rather than as a condition at the render
+ * site — and that placement is the whole point. The rule is part of the claim,
+ * and this module is explicitly the piece a second renderer (a Slack card, a
+ * plain-text digest) would take. A renderer holding `effectDisclosure` but not
+ * this predicate would faithfully print "Cannot pay an invoice — Costs money",
+ * which is precisely the false positive the rule exists to prevent. The
+ * suppression travelling with the words is what stops the next surface having
+ * to re-derive it, or failing to.
+ *
+ * `deny` is the whole rule, and the argument is narrow. A `deny` row says
+ * "Cannot X": the call does not happen, so there is no money spent and no
+ * outward action taken, and there is nothing to disclose about either. Worse
+ * than redundant, it is misleading — somebody scanning the rail for the rows
+ * that spend their money reads a "Costs money" badge as reach the agent HAS,
+ * which is backwards from what the row asserts.
+ *
+ * And it is safe in the one direction this surface cares about. Design H4 says
+ * never to UNDERSTATE reach; a `deny` row already asserts ZERO reach, so
+ * withholding a caveat about it cannot understate anything — there is no reach
+ * left to understate. Note this is a RENDERING decision only: the wire row
+ * still carries the rule's declared effect faithfully either way, so nothing
+ * downstream loses the fact.
+ *
+ * Returns a TYPE PREDICATE on `effect`, not a plain boolean, and that is load
+ * bearing rather than a convenience. The render site needs `effect` narrowed to
+ * non-null to pass it on, and if this returned `boolean` that site would have
+ * to re-test `effect !== null` itself — which is a SECOND copy of half this
+ * decision, sitting where nothing tests it. Measured while bite-checking: with
+ * the redundant check in place, mutating the `effect !== null` branch here left
+ * every render test green, because the call site was quietly still enforcing
+ * it. Narrowing here makes this function the only thing that decides, so a
+ * mutation to either half of the rule reddens a test.
+ */
+export function shouldDiscloseEffect(
+  verdict: CapabilityVerdict,
+  effect: CapabilityEffect | null,
+): effect is CapabilityEffect {
+  return effect !== null && verdict !== 'deny';
+}

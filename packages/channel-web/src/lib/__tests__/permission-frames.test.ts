@@ -12,6 +12,7 @@ import {
   byVerdict,
   effectDisclosure,
   frameCapability,
+  shouldDiscloseEffect,
   verdictFrame,
 } from '../permission-frames';
 
@@ -183,6 +184,23 @@ describe('effectDisclosure (TASK-329)', () => {
     const first = effectDisclosure('spends');
     first.label = 'mutated';
     expect(effectDisclosure('spends').label).toBe('Costs money');
+  });
+
+  it('discloses on allow and hold, and never on deny', () => {
+    // The rule lives beside the copy rather than at the render site so a
+    // second renderer takes it along with `effectDisclosure` — without it,
+    // a faithful renderer prints "Cannot pay an invoice — Costs money".
+    // Raised in review as a nit; this is the test that pins it here.
+    expect(shouldDiscloseEffect('allow', 'spends')).toBe(true);
+    expect(shouldDiscloseEffect('hold', 'outward')).toBe(true);
+    expect(shouldDiscloseEffect('hold', 'spends')).toBe(true);
+    // `deny` suppresses whatever the rule declared — the call does not happen.
+    expect(shouldDiscloseEffect('deny', 'spends')).toBe(false);
+    expect(shouldDiscloseEffect('deny', 'outward')).toBe(false);
+    // Unclassified is nothing to say, at every verdict.
+    expect(shouldDiscloseEffect('allow', null)).toBe(false);
+    expect(shouldDiscloseEffect('hold', null)).toBe(false);
+    expect(shouldDiscloseEffect('deny', null)).toBe(false);
   });
 
   it('never claims irreversibility — that is a separate field with its own UI', () => {

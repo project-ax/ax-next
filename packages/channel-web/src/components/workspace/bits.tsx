@@ -15,7 +15,12 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
-import { effectDisclosure, frameCapability, verdictFrame } from '@/lib/permission-frames';
+import {
+  effectDisclosure,
+  frameCapability,
+  shouldDiscloseEffect,
+  verdictFrame,
+} from '@/lib/permission-frames';
 import { cn } from '@/lib/utils';
 import type {
   AgentRunState,
@@ -277,17 +282,18 @@ export function PermissionLine({ row }: { row: PermissionRow }) {
         )}
         {frame.suffix !== null && <span> — {frame.suffix}</span>}
         {/*
-          Suppressed on `deny` (D3) — and only on `deny`, never on `effect`
-          itself, which the wire row still carries faithfully either way.
-          A `deny` row says "Cannot X": the call never happens, so there is no
-          spend and no outward action to disclose. "Cannot pay an invoice —
-          Costs money" reads to someone scanning for money-spenders as reach
-          the agent HAS, which is exactly backwards from what the row asserts.
-          This cannot understate reach (design H4's one forbidden direction)
-          because a `deny` row already asserts ZERO reach — there is nothing
-          left to understate by leaving the badge off.
+          The suppression rule is `shouldDiscloseEffect`, NOT a condition
+          written out here — it carries the reasoning, and it lives beside the
+          copy in `permission-frames.ts` so a second renderer that takes
+          `effectDisclosure` takes the rule with it rather than printing
+          "Cannot pay an invoice — Costs money". It is a type predicate, so it
+          is also what narrows `row.effect` for the prop — there is deliberately
+          no second `!== null` here, because a call site re-testing half the
+          rule is a copy of the rule that nothing tests.
         */}
-        {row.effect !== null && row.verdict !== 'deny' && <EffectMark effect={row.effect} />}
+        {shouldDiscloseEffect(row.verdict, row.effect) && (
+          <EffectMark effect={row.effect} />
+        )}
         {/*
           THE TRUST LINE, and it is its own line on purpose.
 
