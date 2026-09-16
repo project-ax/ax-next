@@ -119,10 +119,12 @@ function readTimeout(configText, key) {
  * match is non-greedy, so in a file where a bare hook precedes a timed one the
  * argument can be attributed to the wrong hook. That is harmless here for the
  * same reason — the assertion below consumes the MAXIMUM over the suite, and
- * mis-attributing a value between two hooks cannot change a maximum. The closing
- * brace is indentation-tolerant (`\n\s*\}`) so that describe-nested hooks are
- * seen; anchoring it at column 0 is the bug that made the sibling guard green on
- * the very violation it was written to catch.
+ * mis-attributing a value between two hooks cannot change a maximum. Both the
+ * opening keyword and the closing brace are indentation-tolerant — `^[ \t]*` and
+ * `\n[ \t]*\}` — so describe-nested hooks are seen; anchoring either at column 0
+ * is the bug that made the sibling guard green on the very violation it was
+ * written to catch. `[ \t]` rather than `\s` on purpose: `\s` matches newlines,
+ * which would let the anchor drift off the line it is meant to pin.
  */
 const HOOK_WITH_TIMEOUT =
   /^[ \t]*(?:beforeAll|afterAll|beforeEach|afterEach)\s*\([\s\S]*?\n[ \t]*\}\s*,\s*(\d[\d_]*)\s*\)\s*;/gm;
