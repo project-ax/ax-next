@@ -453,6 +453,46 @@ export interface StreamHandlers {
 export const WORKSPACE_STREAM_LOST =
   'the reply stream ended without finishing';
 
+/**
+ * Which of the agent's two file tiers a read is addressed to.
+ *
+ * `workspace` — the git-backed tier AX manages and governs.
+ * `user-files` — the agent's DURABLE tier: its cwd and HOME, where a
+ *                deliverable lands when nobody said where.
+ *
+ * Two names rather than a boolean, because they are two BACKENDS and the
+ * surface fails them independently; a `governed: boolean` would read as two
+ * modes of one store, which is the thing the Files tab is careful not to say.
+ */
+export type FileTier = 'workspace' | 'user-files';
+
+/**
+ * `attachment; filename="notes.md"` → `notes.md`.
+ *
+ * Deliberately not a general RFC 6266 parser. The only producer of this header
+ * on these routes is the download route's own sanitizer, whose output is
+ * `[A-Za-z0-9._ -]` and therefore cannot contain the quote that ends this
+ * match. A parser that handled continuations and `filename*=` would be a
+ * bigger surface reading a string whose shape we already control.
+ *
+ * Taking the name from the SERVER rather than from the row that was clicked is
+ * the point: a filename is agent-authored, the route already sanitized it once
+ * for a header a newline can end, and re-deriving it here would be a second
+ * sanitizer with a second set of rules.
+ *
+ * `null` when the header is absent or shaped differently than we produce it —
+ * the caller supplies its own fallback rather than this inventing one.
+ */
+export function filenameFromContentDisposition(header: string | null): string | null {
+  if (header === null) return null;
+  const m = /filename="([^"]*)"/.exec(header);
+  const name = m?.[1] ?? '';
+  return name.length === 0 ? null : name;
+}
+
+/** The name a download gets when the server did not give it one. */
+export const FALLBACK_SAVED_FILENAME = 'download';
+
 /** `POST` to a decision, with no body — the id in the path is the whole request. */
 function decisionPost<T>(id: string, action: string): Promise<T> {
   return req<T>(`/decisions/${encodeURIComponent(id)}/${action}`, {
@@ -619,6 +659,47 @@ export const workspaceApi = {
       `/agents/${encodeURIComponent(agentId)}/user-files` +
         (relPath === '' ? '' : `/${encodeURIComponent(relPath)}`),
     ),
+
+  /**
+   * The BYTES of one file, from whichever tier it lives in.
+   * See `FileTier` and `filenameFromContentDisposition` below this object.
+   *
+   * The sibling of `file`/`userFiles` above, and the only read on this surface
+   * that does not come back as JSON: those two answer with TEXT and say when
+   * they could not — `clipped: 'binary'` for a PDF, a clipped head for a long
+   * one. This is the way to the file itself.
+   *
+   * `tier` picks the ROUTE, not a query parameter, because the two tiers are
+   * two backends: `workspace` is the git-backed tier AX manages, `user-files`
+   * is the agent's own cwd and HOME. They fail independently on this surface
+   * on purpose, and a shared route would have made which-backend a
+   * caller-supplied string the server then had to validate.
+   *
+   * `path` is encoded WHOLE — slashes included — for exactly the reason `file`
+   * gives: the server receives one splat segment and decodes it exactly once.
+   *
+   * NOT `res.json()`. A non-ok answer becomes a `WorkspaceApiError` carrying
+   * its status, so the caller can tell "too big to send" from "not there any
+   * more" and write a different sentence for each.
+   */
+  downloadFile: async (
+    agentId: string,
+    tier: FileTier,
+    path: string,
+  ): Promise<{ blob: Blob; filename: string }> => {
+    const segment = tier === 'workspace' ? 'files' : 'user-files';
+    const route =
+      `/agents/${encodeURIComponent(agentId)}/download/${segment}/` +
+      encodeURIComponent(path);
+    const res = await httpFetch(`/api/workspace${route}`);
+    if (!res.ok) throw new WorkspaceApiError(route, res.status);
+    return {
+      blob: await res.blob(),
+      filename:
+        filenameFromContentDisposition(res.headers.get('content-disposition')) ??
+        FALLBACK_SAVED_FILENAME,
+    };
+  },
 
   /**
    * The right-hand rail: what it is doing, what it may do alone, what you
