@@ -4,7 +4,8 @@
 run through the scored path, count how many are wrong again, and say whether the
 ones that are are wrong *the same way*.
 
-**Answer: 12 of 15 — and 11 of those 12 are wrong the same way.**
+**Answer: 12 of 15 reproduce. Of those 12, I judge 11 wrong the same way** — the
+first number is a count of verdicts, the second a count of readings.
 
 | | n |
 |---|---|
@@ -45,16 +46,27 @@ change, which reproduced anyway: `0a995998` (bad gold — the gold counts 3 stor
 items where the corpus supports 2), `4b24c848` and `gpt4_93159ced_abs` (strict —
 the gold is present in our own answer and the row was failed on style).
 
-Cross-check from the other direction, because a ratio nothing recomputes is the
-part most likely to be wrong: of the **11** rows TASK-368 reads as *real*, **9**
-reproduced (`d24813b1` and `gpt4_e061b84f` did not). Both derivations give 9.
+Said the other way round: of the **11** rows TASK-368 reads as *real*, **9**
+reproduced (`d24813b1` and `gpt4_e061b84f` did not).
+
+**That is not a cross-check, and an earlier draft of this report wrongly called it
+one.** TASK-368's labels partition the 15, so `real = all − (bad gold ∪ strict)`
+and the two statements are the same set counted twice — the "check" cannot fail.
+The check that *can* fail, and which this report actually runs, is that the
+labels are **parsed out of TASK-368's markdown table** rather than hand-copied
+here: a mis-transcribed label changes the partition and the assertion reddens.
+It does.
 
 ---
 
 ## Every row
 
-MEASURED — each row executed once through the scored path and observed. Nothing
-in this table is inferred from reading code.
+**Measured vs judged, in one table — the seam is the last column.** `scored`,
+`replay`, and `$` are MEASURED: each row was executed once through the scored
+path and its verdict observed. **`same wrong anchor?` is a JUDGMENT** — my
+reading of the two answer texts against a criterion written before the run. So
+"12 of 15" is a count; "11 of those 12" is a count of judgments, and the two
+should not be quoted with the same confidence.
 
 | question | type | TASK-368's reading | scored 2026-09-14 | replay | same wrong anchor? | $ |
 |---|---|---|---|---|---|---|
@@ -75,9 +87,10 @@ in this table is inferred from reading code.
 | `a2f3aa27` | knowledge-update | strict | incorrect | **correct** | — | 0.071 |
 
 **Ingest fidelity: 15/15 ingested the full haystack**, `sessionsIngested` identical
-to the scored run on every row (46.9 average, matching the baseline's 47.8 across
-its own 100). No cost-cap truncation, so the replay saw the same input. No
-observer or consolidator failures in the log.
+to the scored run on every row. No cost-cap truncation, so the replay saw the
+same input, and no observer or consolidator failure lines appear in the run log.
+(The per-row identity is the check that matters; run-level averages are not
+comparable across the two runs' different denominators.)
 
 ---
 
@@ -163,60 +176,98 @@ here is consistency, not a new bar.
 
 TASK-365 recommended rewriting TASK-363 around **"a stated intention is stored and
 then recalled as a completed event"**, naming three rows as one mechanism and
-gating the rewrite on this run. The gate returns a split verdict:
+gating the rewrite on this run. The gate returns:
 
 | row | the claimed mechanism | replay |
 |---|---|---|
 | `gpt4_4fc4f797` | used the *planned* May-15 track day | **reproduces, same anchor** |
-| `88432d0a` | counted a *planned* chicken-wing bake | reproduces (still **5**) — but see below |
+| `88432d0a` | counted a *planned* chicken-wing bake | **reproduces, same anchor** |
 | `gpt4_e061b84f` | substituted a *planned* volleyball game | **did not reproduce** |
 
-So it is 2/3 at best, and `88432d0a` argues against the mechanism even while
-failing. In the replay the agent **explicitly applied plan-vs-event discipline**
-and said so:
+**Both rows that still fail instantiate the mechanism. Rewrite TASK-363 around
+it — but state it more precisely than "plans are counted as events."**
+
+An earlier draft of this report argued the opposite, on the strength of the
+replay excluding a planned bake by name:
 
 > "(Note: The focaccia was planned for the weekend of May 28 but I don't have a
 > confirmed record that you actually baked it.)"
 
-It excluded a plan by name and still counted five. On 2026-09-14 it excluded a
-different plan by name — *"The tart … is still planned and hasn't been baked
-yet"* — and still counted five. Twice the agent demonstrated the discipline the
-proposed fix would teach it, and twice it over-counted anyway. Its two lists are
-also not the same five: the dates move (cookies ~May 18 vs May 22, baguette ~May
-24 vs ~May 20) and the fifth item is the wings both times.
+That reading was wrong, and checking the corpus is what settles it. `88432d0a`'s
+four gold bakes are four completions — sourdough *"came out dense"*, cookies
+*"last Thursday … turned out perfectly"*, whole wheat baguette *"made a delicious
+… last Saturday"*, chocolate cake *"just baked … turned out amazing"*. The fifth
+item the agent counts on **both** draws is the chicken wings, and in the corpus
+the wings are a plan with no completion anywhere:
 
-**Recommendation: do not rewrite TASK-363 around plans-as-events on this
-evidence.** One row supports it cleanly (`gpt4_4fc4f797`), one refutes it
-(`gpt4_e061b84f`, which now answers correctly unaided), and one fails for a
-reason the mechanism does not explain (`88432d0a`). A card built on "three rows,
-one mechanism" would be built on one row.
+> `answer_733e443a_2`, 2023/05/28 — *"**I'm thinking of baking** some chicken
+> wings for tonight's dinner."*
 
----
+The focaccia it excluded is **in that same session**, and is the same kind of
+plan — *"I think I'll try out the Garlic and Herb Whole Wheat Focaccia recipe."*
+So in one conversation the agent excluded one intention by name and counted
+another. TASK-368 read this row the same way all along ("counted a *planned*
+chicken-wing bake as a 5th bake"); the draft over-read a single exclusion
+sentence as evidence of a capability.
 
-## The stable core: 9 rows, 4 mechanisms
+**What is observed, stated without the inference:** on both draws the agent
+excluded one intention from the count *by name and with a reason* (the tart on
+2026-09-14, the focaccia on the replay) while counting another intention from the
+same corpus — and on the replay, from the same session. So the exclusion
+behaviour is **item-level, not set-level**.
 
-The 9 memory-addressable reproductions, grouped by what actually went wrong. All
-9 reproduced with the same anchor except `gpt4_7f6b06db`.
+**What that does and does not license.** It rules out "the agent never produces
+plan-vs-event reasoning", because it produced it twice. It does **not** establish
+that a reliable capability exists and is merely misapplied — two self-aware
+sentences are equally consistent with the phrasing being cued by something local
+to those items. Distinguishing those two readings needs an experiment this run
+did not do (e.g. asking the same question with the wings and the focaccia
+swapped). I am flagging that explicitly because the draft this replaces made the
+opposite over-read from the very same sentence.
 
-**Arithmetic/derivation with the inputs in hand (3).** `9a707b81` had both dates
-and would not subtract. `c9f37c46` had both anchors (Feb, Apr) and called it 3
-months. `6e984301` had the Feb-11 "6 weeks" and the Mar-4 purchase and reached
-8–9 weeks. Nothing about retrieval or extraction reaches these.
+The part that survives either reading, and the part a fix should target: the
+determination is being made **per item at answer time**, where it can come out
+differently for two identical-shaped items in one conversation. Settling
+plan-vs-event **once per fact at extraction**, so the answer stage cannot
+re-decide it, fixes the inconsistency under both readings.
 
-**A qualifier dropped from a stored number (2).** `91b15a6e` used $200 for the
-vanity where the user's own floor is $150 — twice, to the same $5,200.
-`6a1eabeb` returned the stale 27:12 over the later 25:50 — twice, and in the
-replay it added a confident date and an exclamation mark.
+Two honest limits on that recommendation. The bucket is smaller than TASK-365
+thought — `gpt4_e061b84f` now answers correctly with no change at all, so it
+should not be cited as evidence for the card. And n=1: two rows reproducing once
+each is a thinner base than "three rows, one mechanism" sounded.
 
-**Counting/ordering over a set (3).** `0a995998` (2 vs 3, bad gold), `88432d0a`
-(5 vs 4), `gpt4_7f6b06db` (wrong trips, unstably wrong).
+## The stable core: 9 rows, 5 mechanisms
 
-**Over-answering (1).** `32260d93` led with the gold preference and then offered
-true crime and history again, on both draws.
+The 9 memory-addressable reproductions — the 12 failures minus the 3 that
+reproduced for reasons TASK-368 reads as unwinnable by memory (`0a995998` bad
+gold, `4b24c848` and `gpt4_93159ced_abs` strict). Every one repeated its anchor
+except `gpt4_7f6b06db`.
 
-The first two groups — 5 rows — are the sharpest target in the set: the value is
-in memory, it is retrieved, and it is then used wrongly in a way that repeats
-verbatim. That is a defect, not a draw.
+**Arithmetic/derivation with the inputs already in hand (3)** — `9a707b81` had
+both dates and would not subtract; `c9f37c46` had both anchors (Feb, Apr) and
+called it 3 months; `6e984301` had the Feb-11 "6 weeks" and the Mar-4 purchase
+and reached 8-9 weeks. Nothing about retrieval or extraction reaches these.
+
+**A qualifier dropped from a stored number (2)** — `91b15a6e` used $200 for the
+vanity where the user's own floor is $150, twice, to the same $5,200; `6a1eabeb`
+returned the stale 27:12 over the later 25:50, twice, and in the replay added a
+confident date and an exclamation mark.
+
+**A plan counted as a completed event (2)** — `gpt4_4fc4f797` (the May-15
+*planned* track day, twice) and `88432d0a` (the *planned* chicken wings, twice).
+See the TASK-363 section: on `88432d0a` the agent excluded a *different*
+intention by name in the same breath, so the determination is being made per item
+at answer time.
+
+**Recall over a set, unstably wrong (1)** — `gpt4_7f6b06db`. No repeated wrong
+value, only a repeated gap.
+
+**Over-answering (1)** — `32260d93` led with the gold preference and then offered
+true crime and ancient-history picks again, on both draws.
+
+The first two groups — 5 rows — are the sharpest target: the value is in memory,
+it is retrieved, and it is then used wrongly in a way that repeats verbatim. That
+is a defect, not a draw.
 
 ---
 
@@ -281,7 +332,7 @@ haystack 704 sessions.
 
 **What counted as "wrong the same way":** reproduces AND the failure turns on the
 same wrong value or substituted event. **The per-row criteria were written down
-before the first row was scored** (`preregistered-criteria.md`, 22:04:11Z; the
+before the first row was scored** (`docs/plans/2026-09-16-task-369-preregistered-criteria.md`, written 22:04:11Z; the
 resume JSONL did not exist until 22:14Z), so each call is a prediction checked
 against the replay rather than a story fitted to it. 11 of 12 matched the
 prediction; the miss is `gpt4_7f6b06db`, predicted "Sequoia again" and observed
