@@ -221,8 +221,18 @@ export function HomeComposer({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                {/*
+                  Held for the same reason "Send to X" beside it is: `dispatch`
+                  already refuses while `blocked` stands, so an enabled item
+                  here would be a live-looking control whose only answer is
+                  nothing happening. The sentence above the field says why.
+                */}
                 {agents.map((a) => (
-                  <DropdownMenuItem key={a.id} onClick={() => confirm(a.id)}>
+                  <DropdownMenuItem
+                    key={a.id}
+                    disabled={blocked !== null}
+                    onClick={() => confirm(a.id)}
+                  >
                     <AgentTile agent={a} size={18} />
                     {a.name}
                   </DropdownMenuItem>

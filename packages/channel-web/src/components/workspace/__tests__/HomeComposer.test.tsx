@@ -408,3 +408,48 @@ describe('attaching a file', () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 });
+
+/*
+  THE HOLD REACHES EVERY WAY OUT OF THE PROPOSAL ROW, not just the obvious one.
+
+  Auto's row offers three: "Send to X", a "Someone else" menu of every agent,
+  and Cancel. A file can fail AFTER the row is on screen, and when it does the
+  hold has to cover the menu too — `dispatch` already refuses, so an item left
+  enabled is a control that looks live and answers with nothing at all. That is
+  the dead-button offer TASK-276 spent a card removing, and it is the kind of
+  gap that survives review because the button next to it IS disabled.
+*/
+describe('a file that fails while Auto is proposing', () => {
+  it('holds every send in the proposal row, not just the primary button', async () => {
+    routeMock.mockResolvedValue({
+      agentId: 'scheduler',
+      agentName: 'Scheduler',
+      why: 'it is about your calendar',
+      confident: true,
+    });
+    upload.mockRejectedValue(
+      new AttachmentUploadError('unsupported-media-type', 'http', 415),
+    );
+    const { onSend } = setup();
+
+    ask('book me a room');
+    const primary = await screen.findByRole('button', {
+      name: 'Send to Scheduler',
+    });
+    expect(primary).not.toBeDisabled();
+
+    pickFile();
+    await screen.findByText(ATTACHMENT_FAILED_UNSUPPORTED);
+    saysOnceVisibly(ATTACHMENT_SEND_BLOCKED_FAILED);
+    expect(primary).toBeDisabled();
+
+    openMenu(screen.getByRole('button', { name: 'Someone else' }));
+    const item = await screen.findByRole('menuitem', { name: /Scheduler/ });
+    expect(item).toHaveAttribute('aria-disabled', 'true');
+
+    // And belt-and-braces: even if a click gets through the disabled state,
+    // nothing is dispatched. `aria-disabled` alone is a claim, not a guard.
+    fireEvent.click(item);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+});

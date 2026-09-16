@@ -241,8 +241,27 @@ export function AgentView({
    */
   const [pastReload, setPastReload] = useState(0);
 
-  /** The turn in flight: what we sent, what has streamed back, how it ended. */
-  const [sent, setSent] = useState<string | null>(null);
+  /**
+   * The turn in flight: what we sent, what has streamed back, how it ended.
+   *
+   * `attachmentIds` is not decoration — it is what makes "Resend" honest.
+   * The composer clears its chips the moment it hands the message over, so
+   * after a failed send the ONLY record that a file was part of this message
+   * is right here. A resend that read the text alone would quietly deliver
+   * less than the person wrote, which is the exact failure TASK-353 exists to
+   * prevent, reintroduced on the error path.
+   *
+   * IT EMPTIES THE INSTANT THE POST LANDS, and that is the other half of the
+   * rule. `attachments:commit` consumes each temp upload into that turn, so a
+   * second message naming the same ids gets `attachment-not-found` — a resend
+   * that could never work. Once the POST has returned, the file is already in
+   * the conversation and the only thing left worth retrying is the reply.
+   */
+  interface SentTurn {
+    text: string;
+    attachmentIds: readonly string[];
+  }
+  const [sent, setSent] = useState<SentTurn | null>(null);
   const [streamed, setStreamed] = useState('');
   const [streaming, setStreaming] = useState(false);
   /**
@@ -466,22 +485,33 @@ export function AgentView({
       cheaper and more certain than re-deriving it (TASK-350 review).
     */
     conversationRef.current = pendingReply.conversationId;
-    setSent(pendingReply.text);
+    /*
+      No ids: the shell only mints a `pendingReply` AFTER its own POST resolved,
+      so anything it attached is already committed into that turn. See `sent`.
+    */
+    setSent({ text: pendingReply.text, attachmentIds: [] });
     onPendingReplyConsumed?.();
     void streamFrom(pendingReply.reqId);
   }, [pendingReply, streamFrom, onPendingReplyConsumed]);
 
   const send = useCallback(
     async (text: string, attachmentIds?: readonly string[]) => {
-      setSent(text);
+      const ids = attachmentIds ?? [];
+      setSent({ text, attachmentIds: ids });
       setTurnError(null);
       try {
         const { conversationId, reqId } = await workspaceApi.sendMessage({
           agentId,
           conversationId: conversationRef.current,
           text,
-          ...(attachmentIds !== undefined ? { attachmentIds } : {}),
+          ...(ids.length > 0 ? { attachmentIds: ids } : {}),
         });
+        /*
+          The POST landed, so every id it carried has been committed into that
+          turn and its temp record is gone. Drop them before anything can offer
+          to send them a second time — see `sent`.
+        */
+        setSent({ text, attachmentIds: [] });
         conversationRef.current = conversationId;
         await streamFrom(reqId);
       } catch (e) {
@@ -568,7 +598,7 @@ export function AgentView({
   */
   const liveThread: ThreadMessage[] = [...detail.thread];
   if (sent !== null) {
-    liveThread.push({ kind: 'user', id: 'pending-user', text: sent });
+    liveThread.push({ kind: 'user', id: 'pending-user', text: sent.text });
   }
   if (streaming || streamed.length > 0) {
     liveThread.push(
@@ -746,7 +776,16 @@ export function AgentView({
                         {sent !== null && turnError.kind === 'failed' && (
                           <Button
                             size="sm"
-                            onClick={() => void send(sent)}
+                            /*
+                              THE FILE GOES BACK WITH THE WORDS. `sent` holds
+                              the ids only while they are still unspent (see
+                              its declaration), so this re-sends the whole
+                              message after a failed POST and just the text
+                              after a failed stream — where the file already
+                              reached the conversation and re-naming it would
+                              only earn an `attachment-not-found`.
+                            */
+                            onClick={() => void send(sent.text, sent.attachmentIds)}
                             disabled={streaming}
                           >
                             Resend
