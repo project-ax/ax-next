@@ -8,6 +8,11 @@ alone.
 default. Step 1 below is done (PR: workspace Settings route). Everything else
 is unstarted.
 
+**Status 2026-09-16.** Tier 1 is closed: #1 (Settings route), #2 (capability
+grants — TASK-350 raise + TASK-373 read-back) and #3 (create-an-agent
+entry — TASK-249) are all done. Note #3's postmortem below before sizing
+anything in Tier 3 off this document's estimates.
+
 **How this document was produced.** By reading the code, and — for the first
 time — by turning the flag on against the `ax-next-dev` kind cluster and
 driving the workspace in a browser. Where a claim below is from the source
@@ -97,15 +102,45 @@ call; a `Decision` is a one-shot outward action carrying a verbatim call and a
 freshness guard. Sharing a queue is not collapsing them — two types, two
 cards, one list.
 
-### 3. Create-an-agent is not reachable from the workspace
+### 3. Create-an-agent is not reachable from the workspace — DONE
 
-Already documented in `WorkspaceSidebar`'s own header: the "New agent" row was
+Was documented in `WorkspaceSidebar`'s own header: the "New agent" row was
 removed because "the shipped create-an-agent flow is driven from `App.tsx`
 state this surface cannot reach. A nav row that does nothing when clicked is
 worse than one row fewer."
 
-Same shape as #1, same fix — the callback thread now exists, so this is small.
-Today a workspace-only user can never create a second agent.
+**This section said "same shape as #1, same fix — the callback thread now
+exists, so this is small", and that estimate was wrong in a way worth
+recording**, because the same reasoning is load-bearing for Tier 3.
+
+The callback thread really was the same one-callback move, and it really was
+small. But *routing to the create flow* is not the same as routing to the
+**conversational** create flow, and the conversational half — the kickoff `'hi'`
+that makes a bare bootstrap agent wake up and introduce itself — was being
+dropped on this surface by two independent mechanisms neither this document nor
+the card mentioned:
+
+- `bootstrapKickoff` is reachable **only** from the chat runtime. Its one
+  registrant is `useChatThreadRuntime`, and assistant-ui invokes a
+  `useRemoteThreadListRuntime({ runtimeHook })` hook only from inside
+  `_RuntimeBinder`, reached via the runtime core's `RenderComponent` — i.e.
+  only under an `AssistantRuntimeProvider`, which the workspace branch
+  deliberately mounts none of. `trigger()` there just stranded `_pending`.
+  Fixed by branching in `App.tsx`: the workspace is handed the new agent's id
+  and greets it through its own `startTurn` / `workspaceApi.sendMessage`.
+- `FirstRunAutoCreate` discarded its own `onDone` on the **first-run** arm: the
+  `hydrateAgentsOnce` it awaits closes the bootstrap gate and unmounts it, and
+  its `cancelled` cleanup then won the race against its own completion
+  callback. Measured 0 calls on first run vs 1 on the explicit "+ New agent"
+  path. Fixed by not gating a parent callback on an unmount flag.
+
+**The transferable lesson for Tier 2 and Tier 3:** "the callback thread exists"
+sizes the *wiring*, not the *flow*. Every remaining Tier 3 item ("chat has it,
+the workspace does not") should be sized by asking what the feature's last step
+depends on, not by whether a prop can reach the surface — three of the four
+(tool steps, attachments, artifacts) have a chat-runtime-shaped dependency of
+exactly the kind that bit this one. See
+`docs/plans/2026-09-16-workspace-create-agent-entry.md`.
 
 ---
 
