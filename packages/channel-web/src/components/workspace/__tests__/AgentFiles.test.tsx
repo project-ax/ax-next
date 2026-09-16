@@ -690,8 +690,8 @@ describe('AgentFiles: downloading', () => {
   });
 
   it('explains a file that is too big for us to pass along', async () => {
-    // Not "an error occurred". The person needs to know we can only reach the
-    // first megabyte and that a fragment would be useless — that is the part
+    // Not "an error occurred". The person needs to know that we cannot send
+    // this one whole and that a fragment would be useless — that is the part
     // that tells them to go ask for a smaller copy.
     oneGovernedFile({ body: null, clipped: 'binary' });
     downloadMock.mockRejectedValue(
@@ -745,5 +745,82 @@ describe('AgentFiles: downloading', () => {
     renderTab();
     expect(await screen.findByText('a.md')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /download/i })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SWITCHING FILES. Found by review: the download hook's state is per-FILE, and
+// the pane that holds it is reused across files unless something says not to.
+// ---------------------------------------------------------------------------
+describe('AgentFiles: the download state belongs to the file, not to the pane', () => {
+  let saved: string[];
+
+  beforeEach(() => {
+    saved = [];
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(
+      function (this: HTMLAnchorElement) {
+        saved.push(this.download);
+      },
+    );
+    filesMock.mockResolvedValue({
+      files: [
+        { path: 'a.pdf', name: 'a.pdf' },
+        { path: 'b.pdf', name: 'b.pdf' },
+      ],
+      truncated: false,
+    });
+    fileMock.mockImplementation(async (_agentId: string, path: string) => ({
+      path,
+      name: path,
+      body: null,
+      clipped: 'binary' as const,
+    }));
+  });
+
+  it('does not carry one file’s download failure onto the next file', async () => {
+    /*
+      The fifth state is a claim about ONE click on ONE file. Showing it over a
+      different file says a download failed that was never attempted — which is
+      the same lie as "this agent has written nothing" over a workspace we did
+      not read, just pointed at a smaller thing.
+    */
+    downloadMock.mockRejectedValue(new WorkspaceApiError('/x', 500));
+    renderTab();
+    fireEvent.click(await screen.findByText('a.pdf'));
+    fireEvent.click(await screen.findByRole('button', { name: /download/i }));
+    expect(await screen.findByText(/could not download/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByText('b.pdf'));
+    await waitFor(() => expect(screen.queryByText(/could not download/i)).toBeNull());
+  });
+
+  it('does not let one file’s in-flight download swallow the next file’s click', async () => {
+    /*
+      The same state, costing something worse than a stale sentence. The
+      in-flight guard is deliberately a ref so a second click on the SAME file
+      cannot start a second download — and if that ref outlives the file, the
+      first click on the NEXT file is silently dropped while its button says
+      "Getting it…". A control that does nothing and reports that it is working
+      is the worst outcome available here.
+    */
+    let finishA: (() => void) | undefined;
+    downloadMock.mockImplementation(async (_a: string, _t: unknown, path: string) => {
+      if (path === 'a.pdf') {
+        return new Promise((resolve) => {
+          finishA = () => resolve({ blob: new Blob(['a']), filename: 'a.pdf' });
+        });
+      }
+      return { blob: new Blob(['b']), filename: 'b.pdf' };
+    });
+    renderTab();
+    fireEvent.click(await screen.findByText('a.pdf'));
+    fireEvent.click(await screen.findByRole('button', { name: /download/i }));
+    await waitFor(() => expect(downloadMock).toHaveBeenCalledTimes(1));
+
+    // A is still in flight. Move to B and ask for it.
+    fireEvent.click(screen.getByText('b.pdf'));
+    fireEvent.click(await screen.findByRole('button', { name: /^download$/i }));
+    await waitFor(() => expect(saved).toEqual(['b.pdf']));
+    finishA?.();
   });
 });

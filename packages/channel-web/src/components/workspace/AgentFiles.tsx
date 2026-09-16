@@ -393,8 +393,33 @@ export function AgentFiles({
       </div>
 
       <div className="flex-1 overflow-y-auto px-6 pb-8 pt-5">
+        {/*
+          THE KEY IS ON THE COMPONENT, and it has to be. `FileViewer` owns the
+          download's state — the in-flight ref and the failure sentence — and
+          both belong to ONE file. Without a key React reuses the same instance
+          across a file switch (both branches render a `FileViewer` at the same
+          position), and that state comes with it: the sentence "we could not
+          download that" ends up over a file whose download was never
+          attempted, which is the same lie this tab spends its whole existence
+          avoiding, just pointed at a smaller thing. Worse, the in-flight ref
+          survives too, so the next file's first Download click is swallowed
+          while its button says "Getting it…".
+
+          `tier` is part of the key because the two tiers are different stores
+          and a path can exist in both — `notes.md` in the workspace is not
+          `notes.md` in the agent's HOME.
+
+          `agentId` is part of it for completeness rather than for a bug you
+          can reproduce today: both file hooks drop their selection when the
+          agent changes, so this pane unmounts before an identical path under a
+          different agent could ever reach it. That reset lives in another
+          file, this key does not depend on it, and no test can tell the
+          difference — which is exactly why it is written down instead of
+          claimed.
+        */}
         {durableSelected !== null ? (
           <FileViewer
+            key={`${agentId}:user-files:${durableSelected}`}
             rawPath={durableSelected}
             label={durable.file?.name ?? basename(durableSelected)}
             agentId={agentId}
@@ -406,6 +431,7 @@ export function AgentFiles({
           />
         ) : governedSelected !== null ? (
           <FileViewer
+            key={`${agentId}:workspace:${governedSelected.path}`}
             rawPath={governedSelected.path}
             label={governedSelected.name}
             agentId={agentId}
@@ -428,10 +454,9 @@ export function AgentFiles({
 /**
  * The right-hand pane for whichever file is open.
  *
- * Takes the raw key ONLY as a React key discriminator and for addressing the
- * download, and never renders it — `label` is the fenced string, and that is
- * what goes on the screen. Same split, same reason, as everywhere else on this
- * surface.
+ * Takes the raw key ONLY to address the download with, and never renders it —
+ * `label` is the fenced string, and that is what goes on the screen. Same
+ * split, same reason, as everywhere else on this surface.
  *
  * THE DOWNLOAD IS OFFERED FOR EVERY FILE, including one whose body we could
  * not show. Those are the files that need it most: "this one isn't text" is
@@ -461,7 +486,14 @@ function FileViewer({
 }) {
   const download = useFileDownload({ agentId, agentName, tier, path: rawPath });
   return (
-    <div key={rawPath}>
+    /*
+      No key here any more. There used to be one on this div, and it was not
+      enough once this component held state: a key on the OUTPUT remounts the
+      DOM, while the hook above it keeps running with the previous file's
+      download in it. The key that matters is on `<FileViewer>` at both call
+      sites — one mechanism, at the level that actually resets.
+    */
+    <div>
       <div className="mb-1 flex items-center gap-2.5">
         <span className="truncate font-mono text-[13px]">{basename(label)}</span>
         <Badge variant="secondary" className="shrink-0">
@@ -474,6 +506,15 @@ function FileViewer({
           onClick={download.start}
           disabled={download.busy}
         >
+          {/*
+            `data-icon` is INERT against the Button this repo has installed —
+            that one sizes and spaces icons itself, with `[&_svg]:size-4` and
+            `gap-2`. It is written anyway because it is the shadcn convention
+            the upstream Button reads, and because the two existing icon
+            buttons in this codebase spell it the same way
+            (`AuthoredSkillsSection`). One spelling now beats a migration
+            later; if the Button is ever updated, nothing here needs finding.
+          */}
           <Download data-icon="inline-start" />
           {download.busy ? 'Getting it…' : 'Download'}
         </Button>

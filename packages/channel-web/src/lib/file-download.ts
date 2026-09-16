@@ -70,7 +70,16 @@ export function saveBlob(blob: Blob, filename: string): void {
 export function downloadFailureMessage(e: unknown, agentName: string): string {
   const status = e instanceof HttpError ? e.status : 0;
   if (status === 413) {
-    return `This file is too big for us to pass along in one piece — we can only reach the first megabyte of it, and part of a file is worse than none. Ask ${agentName} for a smaller copy, or to split it up.`;
+    /*
+      NO NUMBER IN THIS SENTENCE, on purpose. It read "we can only reach the
+      first megabyte", which was true and is not ours to say: the cap lives in
+      the sandbox provider, two packages away and deliberately not importable
+      from here, so the figure could change without a single test noticing that
+      this sentence had started to lie. A message that quotes a limit it cannot
+      verify is a slow-motion inaccuracy, and the actionable half — it is too
+      big, ask for a smaller one — does not need the figure.
+    */
+    return `This file is too big for us to pass along in one piece — we can only reach the beginning of it, and part of a file is worse than none. Ask ${agentName} for a smaller copy, or to split it up.`;
   }
   if (status === 404) {
     return 'We could not find that file to send. It may have been rewritten or deleted since this list was drawn.';

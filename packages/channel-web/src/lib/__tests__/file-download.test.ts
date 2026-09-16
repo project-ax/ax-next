@@ -124,8 +124,23 @@ describe('downloadFailureMessage', () => {
     // this one whole and that a fragment would be useless — that is the only
     // thing that tells them to go ask for a smaller copy.
     expect(msg).toContain('too big');
-    expect(msg).toContain('megabyte');
+    expect(msg).toContain('part of a file is worse than none');
     expect(msg).toContain(AGENT);
+  });
+
+  it('does not quote a size limit it cannot verify', () => {
+    /*
+      The cap lives in the sandbox provider, two packages away and deliberately
+      not importable from here. A sentence naming a figure would keep reading
+      correctly long after the figure changed, and no test could tell — so the
+      sentence names the CONSEQUENCE instead. Asserted, because "helpfully"
+      putting the number back is a one-line change somebody will be tempted to
+      make.
+    */
+    const msg = downloadFailureMessage(new HttpError('/x', 413), AGENT);
+    expect(msg).not.toMatch(/\d/);
+    expect(msg).not.toContain('megabyte');
+    expect(msg).not.toContain('MB');
   });
 
   it('gives each outcome its own sentence', () => {

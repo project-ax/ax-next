@@ -566,7 +566,7 @@ describe('the download routes', () => {
       disaster here: a truncated PDF is a corrupt PDF that looks exactly like a
       whole one, and the person finds out when they open it rather than when
       they click. So we refuse, and the client turns the 413 into a sentence
-      that says we could only reach the first megabyte.
+      that says we can only reach the beginning of it.
     */
     registerAuth({ id: 'u1', isAdmin: false });
     registerAgents();
