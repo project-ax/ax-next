@@ -1,0 +1,242 @@
+// @vitest-environment node
+/**
+ * Tier-A direct-handler tests for GET /api/workspace/grants (TASK-373).
+ *
+ * The route is thin on purpose — authenticate, read the caller's own rows off
+ * the pending-card buffer, put them on the wire — so these tests are mostly
+ * the "did we leak anybody?" checks the route exists to pass: a cross-tenant
+ * read is an empty list and never a 403-vs-404 oracle, an unowned card is
+ * never enumerable, and an answered grant stops being offered.
+ *
+ * The buffer is the REAL `createChunkBuffer()`, not a stub: the scoping
+ * contract under test (owner recorded at append, filter in the accessor) is
+ * the buffer's, and a stub would agree with whatever the route assumes.
+ */
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
+import { makeWorkspaceHandlers } from '../../server/routes-workspace.js';
+import { createChunkBuffer, type ChunkBuffer } from '../../server/chunk-buffer.js';
+import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
+
+function mkReq(params: Record<string, string> = {}): RouteRequest {
+  return {
+    headers: {},
+    body: Buffer.alloc(0),
+    cookies: {},
+    query: {},
+    params,
+    signedCookie: () => null,
+  };
+}
+
+interface CapturedRes {
+  statusCode: number;
+  body: unknown;
+}
+function mkRes(): { res: RouteResponse; captured: CapturedRes } {
+  const captured: CapturedRes = { statusCode: 0, body: undefined };
+  const res: RouteResponse = {
+    status(n: number) {
+      captured.statusCode = n;
+      return res;
+    },
+    json(v: unknown) {
+      captured.body = v;
+    },
+    text(_s: string) {
+      /* unused */
+    },
+    end() {
+      /* unused */
+    },
+  };
+  return { res, captured };
+}
+
+const initCtx: AgentContext = makeAgentContext({
+  sessionId: 'init',
+  agentId: '@ax/channel-web',
+  userId: 'system',
+});
+
+const skill = (skillId: string) => ({
+  kind: 'skill' as const,
+  skillId,
+  description: '',
+  hosts: [],
+  slots: [],
+});
+
+const connector = (connectorId: string) => ({
+  kind: 'connector' as const,
+  connectorId,
+  name: connectorId,
+  hosts: [],
+  slots: [],
+});
+
+describe('GET /api/workspace/grants', () => {
+  let bus: HookBus;
+  let buffer: ChunkBuffer;
+  /** The caller `auth:require-user` answers with. `null` = unauthenticated. */
+  let caller: { id: string } | null;
+
+  beforeEach(() => {
+    bus = new HookBus();
+    buffer = createChunkBuffer();
+    caller = null;
+    bus.registerService('auth:require-user', 'auth', async () => {
+      if (caller === null) {
+        throw new PluginError({
+          code: 'unauthenticated',
+          plugin: 'auth',
+          message: 'no session',
+        });
+      }
+      return { user: { id: caller.id, isAdmin: false } };
+    });
+  });
+
+  afterEach(() => {
+    buffer.dispose();
+  });
+
+  async function read(user: { id: string } | null): Promise<CapturedRes> {
+    caller = user;
+    const h = makeWorkspaceHandlers({ bus, initCtx, buffer });
+    const { res, captured } = mkRes();
+    await h.grants(mkReq(), res);
+    return captured;
+  }
+
+  it('returns only the caller’s own pending grants, with the conversation and agent', async () => {
+    buffer.appendPermissionCard('cnv-ann', skill('linear'), {
+      userId: 'u-ann',
+      agentId: 'a-quill',
+    });
+    buffer.appendPermissionCard('cnv-ann', connector('github'), {
+      userId: 'u-ann',
+      agentId: 'a-quill',
+    });
+
+    const captured = await read({ id: 'u-ann' });
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toEqual({
+      grants: [
+        { conversationId: 'cnv-ann', agentId: 'a-quill', request: skill('linear') },
+        {
+          conversationId: 'cnv-ann',
+          agentId: 'a-quill',
+          request: connector('github'),
+        },
+      ],
+    });
+  });
+
+  it('a second user reading the same deployment gets their own and never the first’s', async () => {
+    // The leak this route exists to not have: a card's skill id, connector
+    // name and hostnames all belong to somebody. Scoping ran at APPEND time
+    // against the producer's identity, so there is no parameter a caller
+    // could have supplied to widen this read even if the route wanted one.
+    buffer.appendPermissionCard('cnv-ann', skill('linear'), {
+      userId: 'u-ann',
+      agentId: 'a-quill',
+    });
+    buffer.appendPermissionCard('cnv-bob', skill('github'), {
+      userId: 'u-bob',
+      agentId: 'a-scout',
+    });
+
+    const captured = await read({ id: 'u-bob' });
+    expect(captured.statusCode).toBe(200);
+    // u-bob's OWN row comes back; u-ann's does not. And "not yours" was never
+    // a 403 or a 404 — it is the same 200 shape, so a caller cannot probe the
+    // deployment into mapping which users hold which pending grants.
+    expect(captured.body).toEqual({
+      grants: [
+        { conversationId: 'cnv-bob', agentId: 'a-scout', request: skill('github') },
+      ],
+    });
+
+    // A second card of u-bob's lands beside it, still without u-ann's.
+    buffer.appendPermissionCard('cnv-bob', skill('npm-scan'), {
+      userId: 'u-bob',
+      agentId: 'a-scout',
+    });
+    const again = await read({ id: 'u-bob' });
+    expect(again.body).toEqual({
+      grants: [
+        { conversationId: 'cnv-bob', agentId: 'a-scout', request: skill('github') },
+        {
+          conversationId: 'cnv-bob',
+          agentId: 'a-scout',
+          request: skill('npm-scan'),
+        },
+      ],
+    });
+  });
+
+  it('never enumerates an unowned card, and never enumerates a host card', async () => {
+    // Unowned: buffered with no identity (a canary probe, an ephemeral admin
+    // path) — replayable on its own stream, but attributing it to whoever
+    // asked is the failure mode this route must not have.
+    buffer.appendPermissionCard('cnv-x', skill('linear'));
+    // Host: turn-scoped (the wall widens the LIVE session's allowlist), so a
+    // stale one would offer a control that cannot do what it says — TASK-375,
+    // deliberately out of here.
+    buffer.appendPermissionCard('req-1', {
+      kind: 'host',
+      host: 'example.org',
+      sessionId: 's-1',
+    });
+
+    const captured = await read({ id: 'u-ann' });
+    expect(captured.body).toEqual({ grants: [] });
+  });
+
+  it('unauthenticated is 401', async () => {
+    buffer.appendPermissionCard('cnv-ann', skill('linear'), {
+      userId: 'u-ann',
+      agentId: 'a-quill',
+    });
+
+    const captured = await read(null);
+    expect(captured.statusCode).toBe(401);
+    expect(captured.body).toEqual({ error: 'unauthenticated' });
+  });
+
+  it('an answered grant is gone', async () => {
+    buffer.appendPermissionCard('cnv-ann', skill('linear'), {
+      userId: 'u-ann',
+      agentId: 'a-quill',
+    });
+    buffer.appendPermissionCard('cnv-ann', skill('github'), {
+      userId: 'u-ann',
+      agentId: 'a-quill',
+    });
+
+    // The grant route (permission-decision) evicts through the same callback
+    // plugin.ts wires to onCardResolved — the answer, not this route, ends a
+    // grant's life.
+    buffer.evictPermissionCard('cnv-ann', 'linear');
+
+    const captured = await read({ id: 'u-ann' });
+    expect(captured.body).toEqual({
+      grants: [
+        { conversationId: 'cnv-ann', agentId: 'a-quill', request: skill('github') },
+      ],
+    });
+  });
+
+  it('answers an empty list when no buffer is wired at all', async () => {
+    // plugin.ts always passes one; this documents the handler-test posture.
+    // A process with no pending-card store has no cards to offer, so `[]` is
+    // the true answer rather than a failed read.
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    caller = { id: 'u-ann' };
+    await h.grants(mkReq(), res);
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toEqual({ grants: [] });
+  });
+});

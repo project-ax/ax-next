@@ -139,3 +139,53 @@ describe('the single-decision re-read (the undo-window poll)', () => {
     await expect(workspaceApi.decision('d1')).resolves.toEqual({ decision });
   });
 });
+
+describe('the grants read-back (TASK-373)', () => {
+  /*
+    Same boundary, same rule — with one difference worth spelling out. The
+    decision reads dereference rows during RENDER; the grants read feeds
+    `workspaceGrantActions.raise()`, which dereferences `request` (the subject
+    key) and `conversationId` (what the answer POST targets) inside the
+    shell's mount effect. A throw there does not hit a React boundary — it is
+    an unhandled rejection nobody is watching — so the guard catches it here,
+    where a malformed body fails loudly instead of being applied.
+  */
+  const realRow = {
+    conversationId: 'cnv-1',
+    agentId: 'a-quill',
+    request: { kind: 'skill', skillId: 'linear' },
+  };
+
+  it('rejects a 200 with no grants array', async () => {
+    respondWith({});
+    await expect(workspaceApi.grants()).rejects.toBeInstanceOf(
+      WorkspaceShapeError,
+    );
+  });
+
+  it('rejects a row whose request is missing — raise() dereferences it', async () => {
+    respondWith({ grants: [{ conversationId: 'cnv-1', agentId: 'a-quill' }] });
+    await expect(workspaceApi.grants()).rejects.toBeInstanceOf(
+      WorkspaceShapeError,
+    );
+  });
+
+  it('rejects a row with no conversationId — the answer POST targets it', async () => {
+    respondWith({
+      grants: [{ agentId: 'a-quill', request: { kind: 'skill', skillId: 'linear' } }],
+    });
+    await expect(workspaceApi.grants()).rejects.toBeInstanceOf(
+      WorkspaceShapeError,
+    );
+  });
+
+  it('accepts an honestly empty page', async () => {
+    respondWith({ grants: [] });
+    await expect(workspaceApi.grants()).resolves.toEqual({ grants: [] });
+  });
+
+  it('accepts a real row', async () => {
+    respondWith({ grants: [realRow] });
+    await expect(workspaceApi.grants()).resolves.toEqual({ grants: [realRow] });
+  });
+});

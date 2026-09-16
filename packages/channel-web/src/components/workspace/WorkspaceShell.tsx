@@ -22,7 +22,10 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { workspaceApi } from '@/lib/workspace-api';
+import {
+  workspaceApi,
+  WorkspaceApiError,
+} from '@/lib/workspace-api';
 import { useActivityFeed } from '@/lib/workspace-activity';
 import { useDecisionQueue } from '@/lib/workspace-decisions';
 import {
@@ -228,11 +231,85 @@ function Inner({ onOpenAdminSettings }: WorkspaceShellProps) {
    */
   const queue = useDecisionQueue();
   /*
-    Open capability grants (TASK-350). A store rather than a fetch: the frame
-    that raises one arrives on the turn stream, and nothing persists it, so
-    there is no route to read it back from.
+    Open capability grants (TASK-350). A store with TWO producers that meet in
+    one place — `raise()` — so a grant is one row however it arrives:
+
+      - the turn stream (`AgentView` → `onPermissionRequest`), for a grant
+        raised while a turn is live; and
+      - the mount fetch below (`GET /api/workspace/grants`, TASK-373), for one
+        raised while the workspace was closed — the buffer holds pending cards
+        past the turn, and this read-back is what makes them answerable.
+
+    `raise()` replaces in place on the subject key, so a grant that is BOTH
+    fetched and streamed stays one row, last writer wins. (Today the two
+    payloads are the same buffered card, so they cannot disagree; nothing here
+    needs a deeper merge rule than that.) A second, hydrate-flavoured entry
+    point is exactly how two rows for one grant would happen.
   */
   const grants = useWorkspaceGrants();
+  /**
+   * How the mount read-back went. `null` = read fine (or not attempted);
+   * `'failed'` = a blip, retryable; `'expired'` = 401, the session ran out and
+   * no retry can work — offered sign-in instead, the same split the queue
+   * read makes. A failed read can NEVER be allowed to render as an empty
+   * day: Today's headline takes `grantsError` and refuses the empty sentence.
+   */
+  const [grantsError, setGrantsError] = useState<
+    'expired' | 'failed' | null
+  >(null);
+
+  /**
+   * TASK-373 — read back what is waiting, once, at mount. Together with the
+   * live stream this covers the gap between them: a grant raised by an agent
+   * working unattended lands in the buffer, survives the turn ending and the
+   * page reloading, and is here when Today opens.
+   *
+   * A failed read is SURFACED, not swallowed: it sets `grantsError`, which
+   * Today renders as its own alert (with a real retry on the blip branch).
+   * The stream remains the live path for anything raised on an open turn, so
+   * the store keeps whatever rows it already has — the failure only means the
+   * read-back contributed nothing, never that the day was empty.
+   *
+   * Unmount cancels the apply rather than racing the store (the store is
+   * module-level and outlives this component).
+   *
+   * KNOWN RACE, accepted deliberately: a response that lands AFTER the person
+   * answered the same subject locally would re-raise an answered grant — a
+   * ghost row whose POST re-asks a settled question. The window is one fetch
+   * round-trip at mount, which is orders of magnitude shorter than the time
+   * it takes to see a row and act on it, and the same race already exists on
+   * the stream path (a replayed frame in flight while a person answers —
+   * TASK-350). If it is ever observed, the fix belongs in the store (resolve
+   * remembers when, raise declines re-raising a key settled after a stated
+   * instant), not here.
+   */
+  const fetchGrants = useCallback((): (() => void) => {
+    let cancelled = false;
+    workspaceApi
+      .grants()
+      .then((page) => {
+        if (cancelled) return;
+        setGrantsError(null);
+        for (const g of page.grants) {
+          workspaceGrantActions.raise(g.request, g.conversationId);
+        }
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        console.warn('[workspace] pending grants could not be read', e);
+        setGrantsError(
+          e instanceof WorkspaceApiError && e.status === 401
+            ? 'expired'
+            : 'failed',
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => fetchGrants(), [fetchGrants]);
+
   const [filter, setFilter] = useState<'needs' | 'working'>('needs');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [rosterOpen, setRosterOpen] = useState(true);
@@ -318,12 +395,17 @@ function Inner({ onOpenAdminSettings }: WorkspaceShellProps) {
   }
 
   /*
-    The sidebar badge counts only what we actually read. A failed queue read
-    leaves it at zero — which is the same number a genuinely empty queue shows,
-    and that is the honest ambiguity: Today itself says out loud that it could
-    not check. A badge cannot carry that sentence, so it does not try to.
+    The sidebar badge and the "Needs you" tab count the same queue Today's
+    headline counts: open decisions plus open grants. Grants used to be
+    missing here, which put two "waiting on you" numbers on one screen that
+    could disagree the moment a grant was open — the headline counted it, the
+    badge did not. Same honesty rule as the headline: a failed read (queue or
+    grants) contributes what it actually read, and the surface itself says
+    where it could not check. A badge cannot carry that sentence, so it does
+    not try to.
   */
-  const pending = queue.decisions.filter(isOpenDecision).length;
+  const pending =
+    queue.decisions.filter(isOpenDecision).length + grants.grants.length;
   const workingCount = board.agents.filter((a) => a.state === 'working').length;
 
   const openAgent = (id: string) =>
@@ -376,6 +458,8 @@ function Inner({ onOpenAdminSettings }: WorkspaceShellProps) {
                   error={queue.error}
                   loading={queue.loading}
                   onRetry={() => void queue.refresh()}
+                  grantsError={grantsError}
+                  onRetryGrants={fetchGrants}
                   onSeeActivity={() => navigate({ kind: 'activity' })}
                   {...(doneToday !== undefined ? { doneToday } : {})}
                 />

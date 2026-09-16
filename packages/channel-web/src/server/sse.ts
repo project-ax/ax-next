@@ -746,7 +746,13 @@ export function createPermissionCardFillSubscriber(buffer: ChunkBuffer) {
       // Strip the optional reqId envelope (these cards don't carry one; the
       // replay path stamps the connection reqId). Store the card verbatim.
       const { reqId: _reqId, ...card } = payload;
-      buffer.appendPermissionCard(ctx.conversationId, card as PermissionRequest);
+      // Record who it belongs to (TASK-373) so the Today queue can read back
+      // "grants waiting on ME" without re-deriving ownership per request. The
+      // ctx is the host's own, never the browser's.
+      buffer.appendPermissionCard(ctx.conversationId, card as PermissionRequest, {
+        userId: ctx.userId,
+        agentId: ctx.agentId,
+      });
       return undefined;
     }
     if (payload.kind === 'host') {

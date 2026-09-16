@@ -778,6 +778,15 @@ describe('@ax/channel-web server plugin (integration)', () => {
       );
       expect(state.status).toBe(401);
 
+      // TASK-373 — the grants read-back sits behind the same flag, and this
+      // pin is the reason it does: a typo'd path or a move outside the gated
+      // block would otherwise pass every handler-level test, which never ask
+      // whether the route is REACHABLE.
+      const grants = await fetch(
+        `http://127.0.0.1:${booted.port}/api/workspace/grants`,
+      );
+      expect(grants.status).toBe(401);
+
       // The flag echo needs no session at all — the SPA reads it before it
       // knows whether anyone is signed in.
       const features = await fetch(`http://127.0.0.1:${booted.port}/api/features`);
@@ -1067,6 +1076,15 @@ describe('@ax/channel-web server plugin (integration)', () => {
         `http://127.0.0.1:${booted.port}/api/workspace/agents/agt_test/files/x.md`,
       );
       expect(oneFile.status).toBe(404);
+
+      // TASK-373 — the grants read-back stays behind the flag too. Its only
+      // consumer is the workspace shell's mount fetch, which does not exist
+      // when the preview is off, so an unmounted route is the cheapest
+      // capability minimization there is.
+      const grants = await fetch(
+        `http://127.0.0.1:${booted.port}/api/workspace/grants`,
+      );
+      expect(grants.status).toBe(404);
 
       /*
         "Unmounted" has exactly one exception, and it is a whole collection

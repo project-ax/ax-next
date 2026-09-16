@@ -32,6 +32,7 @@ import { GrantRow } from './GrantRow';
 import {
   DECISION_READ_FAILED,
   DECISION_SESSION_EXPIRED,
+  GRANT_READ_FAILED,
 } from './decision-copy';
 import { Elapsed, StateDot } from './bits';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
@@ -117,6 +118,20 @@ interface Props {
    * never a zero standing in for "we did not look far enough".
    */
   doneToday?: number;
+  /**
+   * How the pending-grants read-back went (TASK-373). `null` = read fine (or
+   * not attempted); `'failed'` = blip, retryable; `'expired'` = 401, the
+   * session ran out and no retry can work.
+   *
+   * TASK-350 could say grants "are never unreadable — they arrive on the turn
+   * stream rather than through a fetch that can fail". The read-back broke
+   * that premise, so the headline may no longer count an empty grants array
+   * as an empty day: when this is non-null and nothing else is waiting, the
+   * page says it could not check rather than saying nobody needs you (H7).
+   */
+  grantsError?: 'expired' | 'failed' | null;
+  /** Re-read the grants. Only offered on the retryable branch. */
+  onRetryGrants?: () => void;
 }
 
 export function TodayView({
@@ -138,8 +153,11 @@ export function TodayView({
   onRetry,
   onSeeActivity,
   doneToday,
+  grantsError = null,
+  onRetryGrants,
 }: Props) {
   const readable = error === null;
+  const grantsUnknown = grantsError !== null;
 
   const open = readable ? decisions.filter(isOpenDecision) : [];
   /*
@@ -160,10 +178,14 @@ export function TodayView({
     Grants are counted with the decisions, not beside them. They are in the same
     list and they ask the same thing of the person, so a heading that counted
     only one of them would be wrong in the ordinary case where both are open.
-    Unlike decisions they are never "unreadable" — they arrive on the turn
-    stream rather than through a fetch that can fail — so they are counted even
-    when the decisions read failed, which is the honest answer: we know about
-    these, we could not check for others.
+
+    TASK-373 — the second half of the old note here is gone: grants DO arrive
+    through a fetch that can fail now, so an empty `grants` array is no longer
+    evidence that no grant is waiting. What keeps the page honest is the
+    headline gate below (never the empty sentence over an unchecked read) and
+    the alert the shell renders when the read failed. When something IS
+    readable and waiting, the count stands as a floor: true even if the grants
+    read knows nothing.
   */
   const waiting = open.length + grants.length;
 
@@ -171,12 +193,15 @@ export function TodayView({
     The headline speaks only for what we could read. While the queue is
     unreadable it says nothing about it — "Nothing is waiting on you" over a
     failed fetch is the single most damaging sentence this page could print.
+    The grants read-back is the second way to not know, and the empty sentence
+    is exactly as false over it.
   */
-  const headline = !readable
-    ? 'We could not check what is waiting on you.'
-    : waiting === 0
-      ? 'Nothing is waiting on you.'
-      : `${WORDS[waiting] ?? `${waiting} things`} ${waiting === 1 ? 'is' : 'are'} waiting on you.`;
+  const headline =
+    !readable || (waiting === 0 && grantsUnknown)
+      ? 'We could not check what is waiting on you.'
+      : waiting === 0
+        ? 'Nothing is waiting on you.'
+        : `${WORDS[waiting] ?? `${waiting} things`} ${waiting === 1 ? 'is' : 'are'} waiting on you.`;
 
   /*
     A COUNT IS ONLY RENDERED WHEN IT IS POSITIVE.
@@ -325,6 +350,40 @@ export function TodayView({
         </Alert>
       )}
 
+      {grantsError !== null && (
+        /*
+          The pending-grants read-back failed (TASK-373). A SECOND alert, not a
+          branch inside the one above, on purpose: the decisions list and the
+          grants list are two fetches of two collections, either can fail alone,
+          and one sentence covering both would have to say "we could not check"
+          about a list that DID come back. Each alert names its own fact and its
+          own retry — a Try again that re-runs the fetch that failed, never a
+          decoration on a button that cannot work.
+
+          Same two-branch shape as the queue alert, for the same reason: a 401
+          is the session running out, and every retry returns the same 401, so
+          the offer there is sign-in rather than a button that cannot move.
+        */
+        <Alert variant={readAlertVariant(grantsError)} className="mb-4">
+          <AlertDescription className="flex flex-col items-start gap-2.5">
+            <span className="text-[13px] leading-relaxed">
+              {grantsError === 'expired'
+                ? DECISION_SESSION_EXPIRED
+                : GRANT_READ_FAILED}
+            </span>
+            {grantsError === 'expired' ? (
+              <SignInAgainButton variant="secondary" />
+            ) : (
+              onRetryGrants && (
+                <Button variant="secondary" size="sm" onClick={onRetryGrants}>
+                  Try again
+                </Button>
+              )
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
+
       {/*
         The card is the list. With no list to show — the read failed and the
         alert above has already said so — an empty bordered box adds a second
@@ -332,14 +391,14 @@ export function TodayView({
         "Working" filter is unaffected: it is built from the roster, which
         loaded.
 
-        GRANTS SURVIVE AN UNREADABLE QUEUE. They do not come from the decisions
-        fetch — they arrive on the turn stream and live in their own store — so
-        a failed read says nothing about them. Hiding them here would re-create
-        the exact dead-end this card removes: an agent stopped at the wall, a
-        person who cannot answer, and a turn that goes nowhere, triggered by an
-        unrelated 401 on a different route. The error alert above still says the
-        decisions could not be read; that claim is unaffected by showing a row
-        we did read.
+        GRANTS SURVIVE AN UNREADABLE QUEUE. The decisions read and the grants
+        read are separate — a failure of one says nothing about the other — so
+        hiding a row we did read would re-create the exact dead-end this card
+        removes: an agent stopped at the wall, a person who cannot answer, and
+        a turn that goes nowhere, triggered by an unrelated failure on a
+        different route. When the GRANTS read itself is the one that failed,
+        the alert above says so; the headline refuses the empty sentence, and
+        this list simply shows whatever rows we do have.
       */}
       {(readable || filter === 'working' || (filter === 'needs' && grants.length > 0)) && (
         <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">

@@ -6,12 +6,18 @@
  */
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { workspaceApi } from '@/lib/workspace-api';
+import { workspaceApi, WorkspaceApiError } from '@/lib/workspace-api';
 import { UserProvider } from '@/lib/user-context';
 import { WorkspaceShell } from '../WorkspaceShell';
-import { DECISION_THREAD_READ_FAILED } from '../decision-copy';
+import { workspaceGrantActions } from '@/lib/workspace-grant-store';
+import {
+  DECISION_SESSION_EXPIRED,
+  DECISION_THREAD_READ_FAILED,
+  GRANT_READ_FAILED,
+} from '../decision-copy';
 import { decisionFixture } from './decision-fixture';
 import type { ActivityEvent } from '@/lib/workspace-types';
+import type { PermissionRequest } from '../../../server/types';
 
 import { rail as railFixture } from './rail-fixture';
 
@@ -30,6 +36,9 @@ vi.mock('@/lib/workspace-api', async () => {
       approveDecision: vi.fn(),
       dismissDecision: vi.fn(),
       undoDecision: vi.fn(),
+      // The mount read-back for grants raised while the workspace was closed
+      // (TASK-373). Default empty below; the tests that care override it.
+      grants: vi.fn(),
       // The rail reads its own route (TASK-235 / AW-14). Without it in the
       // mock, opening an agent throws before this file's subject renders.
       rail: vi.fn(async () => railFixture()),
@@ -41,7 +50,19 @@ vi.mock('@/lib/workspace-api', async () => {
 const boardMock = vi.mocked(workspaceApi.board);
 const activityMock = vi.mocked(workspaceApi.activity);
 const decisionsMock = vi.mocked(workspaceApi.decisions);
+const grantsMock = vi.mocked(workspaceApi.grants);
 const agentMock = vi.mocked(workspaceApi.agent);
+
+/** A skill grant, as the wire carries it — the subject the tests raise twice. */
+function linearSkill(): PermissionRequest {
+  return {
+    kind: 'skill',
+    skillId: 'linear',
+    description: 'File and read Linear issues',
+    hosts: ['api.linear.app'],
+    slots: [],
+  };
+}
 
 const user = {
   id: 'u1',
@@ -70,6 +91,11 @@ beforeEach(() => {
   activityMock.mockResolvedValue({ events: [], nextBefore: null });
   decisionsMock.mockReset();
   decisionsMock.mockResolvedValue({ decisions: [] });
+  grantsMock.mockReset();
+  grantsMock.mockResolvedValue({ grants: [] });
+  // The grant store is module-level and this file raises rows into it; a
+  // leaked row would follow the next test into its Today render.
+  workspaceGrantActions.resetForTest();
 });
 
 describe('WorkspaceShell', () => {
@@ -114,6 +140,130 @@ describe('WorkspaceShell', () => {
     renderShell();
 
     expect(await screen.findByText('Nothing is waiting on you.')).toBeTruthy();
+  });
+
+  it('reads back grants raised while the workspace was closed (TASK-373)', async () => {
+    /*
+      The whole point of the read-back: an agent stopped at a capability wall
+      while Today was closed, the grant outlived the turn in the host's buffer,
+      and without a fetch-on-mount the person would never be asked. The row
+      below renders off the wire — a card id that appears in no fixture.
+    */
+    boardMock.mockResolvedValue({ agents: [] });
+    grantsMock.mockResolvedValue({
+      grants: [
+        { conversationId: 'cnv-1', agentId: 'a-quill', request: linearSkill() },
+      ],
+    });
+
+    renderShell();
+
+    expect(await screen.findByTestId('grant-skill:linear')).toBeTruthy();
+    expect(screen.getByText('Connect Linear')).toBeTruthy();
+    // And it counts: one grant means the headline does not claim an empty day.
+    expect(screen.getByText('One thing is waiting on you.')).toBeTruthy();
+  });
+
+  it('a grant that is fetched AND streamed is one row', async () => {
+    /*
+      The fetch and the stream meet in ONE place — `raise()`, which replaces in
+      place on the subject key. This is the case that punishes a second,
+      hydrate-flavoured entry point: mount with the fetched grant, then have
+      the same subject arrive the way the SSE replay carries it. One row, or
+      the merge is wrong.
+    */
+    boardMock.mockResolvedValue({ agents: [] });
+    grantsMock.mockResolvedValue({
+      grants: [
+        { conversationId: 'cnv-1', agentId: 'a-quill', request: linearSkill() },
+      ],
+    });
+
+    renderShell();
+    await screen.findByTestId('grant-skill:linear');
+
+    act(() => {
+      // Same subject, a fresher payload — what `AgentView` does when the
+      // stream (or a reconnect replay) delivers the card it buffered.
+      workspaceGrantActions.raise(linearSkill(), 'cnv-1');
+    });
+
+    expect(screen.getAllByTestId('grant-skill:linear')).toHaveLength(1);
+  });
+
+  it('never claims the day is empty when the GRANTS read fails', async () => {
+    /*
+      The read-back made grants a fetch, and a fetch can fail. The queue came
+      back (empty), the grants read did not — "Nothing is waiting on you."
+      here would be the most damaging sentence this page can print, over an
+      unknown number of grants. The headline refuses it and the page says
+      what it could not check instead.
+    */
+    boardMock.mockResolvedValue({ agents: [] });
+    decisionsMock.mockResolvedValue({ decisions: [] });
+    grantsMock.mockRejectedValue(new Error('workspace /grants → 503'));
+
+    renderShell();
+
+    expect(
+      await screen.findByText('We could not check what is waiting on you.'),
+    ).toBeTruthy();
+    expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();
+  });
+
+  it('counts decisions it did read while the grants read failed — a floor, said as one', async () => {
+    // One open decision read fine; the grants read failed. The headline may
+    // claim the ONE (true) without claiming the whole day, and the failure
+    // alert explains the rest.
+    boardMock.mockResolvedValue({ agents: [] });
+    decisionsMock.mockResolvedValue({
+      decisions: [decisionFixture({ id: 'd1', agentId: 'a-quill', conversationId: 'c1' })],
+    });
+    grantsMock.mockRejectedValue(new Error('workspace /grants → 503'));
+
+    renderShell();
+
+    expect(await screen.findByText('One thing is waiting on you.')).toBeTruthy();
+    expect(screen.getByText(GRANT_READ_FAILED)).toBeTruthy();
+    expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();
+  });
+
+  it('a 401 on the grants read offers sign-in, not a retry that cannot work', async () => {
+    // Every retry returns the same 401 — "Try again" there would be a button
+    // that cannot move. The queue alert draws this line; the grants alert
+    // draws the same one, with the same sentence: the session ran out, and
+    // that is a fact about the session, not about this route.
+    boardMock.mockResolvedValue({ agents: [] });
+    grantsMock.mockRejectedValue(new WorkspaceApiError('/grants', 401));
+
+    renderShell();
+
+    expect(
+      await screen.findByText(DECISION_SESSION_EXPIRED),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+  });
+
+  it('the grants retry actually re-fetches — and recovers', async () => {
+    // A retry button wired to nothing is worse than none. Down once, back on
+    // the retry: the alert goes and the grant it was hiding appears.
+    boardMock.mockResolvedValue({ agents: [] });
+    grantsMock
+      .mockRejectedValueOnce(new Error('workspace /grants → 503'))
+      .mockResolvedValue({
+        grants: [
+          { conversationId: 'cnv-1', agentId: 'a-quill', request: linearSkill() },
+        ],
+      });
+
+    renderShell();
+    expect(await screen.findByText(GRANT_READ_FAILED)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByTestId('grant-skill:linear')).toBeTruthy();
+    expect(screen.queryByText(GRANT_READ_FAILED)).toBeNull();
   });
 
   it('does not offer a demo strip or a global stop', async () => {

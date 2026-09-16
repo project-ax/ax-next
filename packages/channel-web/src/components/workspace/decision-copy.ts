@@ -195,6 +195,23 @@ export const DECISION_THREAD_READ_FAILED =
   'We could not check whether this conversation is waiting on you. Nothing has been decided without you — we just could not read the approvals back right now.';
 
 /**
+ * The pending-GRANTS read (TASK-373) failed — the Today fetch that reads back
+ * capability grants raised while the workspace was closed.
+ *
+ * A separate string from `DECISION_READ_FAILED` because it names a different
+ * fact about a different read: the decisions list and the grants list are two
+ * fetches with two producers, and one can fail while the other succeeds. When
+ * the decisions read is fine but this one is not, the queue still shows its
+ * rows — what this sentence has to guard is the headline above them, which
+ * must never read "nothing is waiting" while a grant may be. Same register as
+ * its sibling: what happened, the reassurance that survives the outage (the
+ * wall holds server-side — an un-answered grant connects nothing), and the
+ * retry is the reader's.
+ */
+export const GRANT_READ_FAILED =
+  'We could not check whether an agent is waiting for your OK. Nothing has been allowed without you — we just could not read it back right now.';
+
+/**
  * How close an expiry has to be before the row mentions it. A deadline three
  * days out is not a fact anybody needs while triaging, and a line on every row
  * is a line nobody reads.
