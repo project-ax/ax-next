@@ -90,7 +90,44 @@ export function uploadAttachment(
         try {
           const parsed = JSON.parse(
             xhr.responseText,
-          ) as AttachmentUploadResult;
+          ) as AttachmentUploadResult | null;
+          /*
+            A 2xx IS NOT A PROMISE THAT THE BODY IS OURS. `JSON.parse` will
+            happily return `null`, a number, an array, or a proxy's JSON
+            courtesy page, and nothing downstream re-checks — so an unvalidated
+            resolve hands a missing id to every caller. On the workspace chip
+            that reads as "Ready to send" over nothing to send; in chat's
+            adapter `serverIds.set(tempId, undefined)` then `?? pending.id`
+            puts `ax://attachment/<client-uuid>` on the wire, and a bare `{}`
+            reaches `typeForMime(undefined)` and throws inside an async
+            generator. One guard here covers both, which is the whole reason
+            this module exists rather than a copy per surface.
+
+            `parsed?.` and not `parsed.`, for a narrower reason than it looks:
+            `JSON.parse('null')` returns `null`, and a bare property read on it
+            throws — but the throw lands in this function's own `catch` two
+            lines down and comes back out as the same `kind: 'malformed'`, so
+            the SENTENCE a person sees is identical either way. What the
+            optional chain changes is the error's `message`: ours
+            ("missing attachmentId") rather than V8's "Cannot read properties
+            of null (reading 'attachmentId')". Chat's adapter lets this
+            rejection propagate to assistant-ui, so `.message` is a string that
+            can reach a person, and an engine's internal wording has no more
+            business there than the server's `{error}` does.
+          */
+          if (
+            typeof parsed?.attachmentId !== 'string' ||
+            parsed.attachmentId.length === 0
+          ) {
+            reject(
+              new AttachmentUploadError(
+                'missing attachmentId',
+                'malformed',
+                xhr.status,
+              ),
+            );
+            return;
+          }
           resolve(parsed);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);

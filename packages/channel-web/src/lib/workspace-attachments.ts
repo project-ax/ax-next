@@ -198,30 +198,14 @@ export function useWorkspaceAttachments(): WorkspaceAttachments {
           onProgress: (fraction) => patch(id, { progress: clamp01(fraction) }),
         });
         /*
-          THE RESPONSE IS UNTRUSTED UNTIL SOMETHING CHECKS IT. `uploadAttachment`
-          casts the parsed JSON to its result type; nothing validates it. A body
-          that arrives without a usable `attachmentId` — a proxy's courtesy page
-          that happens to be JSON, a server change, a truncated write — would
-          otherwise settle this chip on "Ready to send" and then hand `undefined`
-          to the wire, where the send fails for a reason pointing at the message
-          rather than at the file.
-
-          Tolerating a missing field is only allowed when what renders is still
-          something a person can act on, and "Ready to send" over nothing to send
-          is the opposite of that. So this is a FAILED upload with a retry, which
-          is both true and actionable.
+          No shape check here on purpose. A 200 whose body carries no usable
+          `attachmentId` is rejected by `uploadAttachment` itself as
+          `kind: 'malformed'`, so it arrives in the `catch` below and
+          `attachmentFailureSentence` turns it into `ATTACHMENT_FAILED_MALFORMED`
+          — a failed chip with a Retry, which is both true and actionable.
+          Guarding here instead would have left chat's adapter, the other
+          consumer of that uploader, holding the unchecked body.
         */
-        if (
-          typeof result.attachmentId !== 'string' ||
-          result.attachmentId.length === 0
-        ) {
-          patch(id, {
-            status: 'failed',
-            attachmentId: null,
-            message: ATTACHMENT_FAILED_MALFORMED,
-          });
-          return;
-        }
         patch(id, {
           status: 'uploaded',
           progress: 1,

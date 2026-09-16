@@ -518,7 +518,18 @@ export function AgentConversation({
             any ticking counter (a settled receipt's `Undo | Ns` re-renders once
             a second, which would bury the sentence that mattered).
           */}
-          <span className="sr-only" role="status" aria-live="polite">
+          {/*
+            `data-testid` because this surface now renders TWO `role="status"`
+            nodes — this one and the find bar's match counter — so an unscoped
+            `getByRole('status')` matches both and fails for a reason that has
+            nothing to do with whichever of the two a test meant.
+          */}
+          <span
+            data-testid="composer-announcer"
+            className="sr-only"
+            role="status"
+            aria-live="polite"
+          >
             {held
               ? 'Your agent is waiting for your approval.'
               : (attachBlock ?? '')}

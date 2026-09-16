@@ -232,3 +232,75 @@ describe('attachmentRefBlock', () => {
     });
   });
 });
+
+/*
+  EVERY 200 WHOSE BODY IS NOT OURS.
+
+  `JSON.parse` succeeds on far more than the object we expect, and a resolve
+  here hands the missing id to BOTH surfaces: the workspace chip settles on
+  "Ready to send" over nothing to send, and chat's `AxAttachmentAdapter` does
+  `serverIds.set(tempId, undefined)` then `?? pending.id`, putting
+  `ax://attachment/<client-uuid>` on the wire. A bare `{}` is worse still — it
+  reaches `typeForMime(undefined)` and throws inside an async generator.
+
+  Against the unguarded uploader every case below RESOLVES, so each assertion
+  fails on the rejection rather than on a wrong field.
+
+  ONE CAVEAT, STATED BECAUSE A WEAKER VERSION OF THIS TEST PASSED BOTH WAYS.
+  The guard sits inside a `try` whose `catch` already re-labels any throw as
+  `kind: 'malformed'`, so for the `null` body a bare `parsed.attachmentId`
+  reaches the same KIND and the same user-facing sentence as the optional
+  chain does. `kind`/`status` alone therefore prove nothing about `parsed?.`.
+  What actually differs is the `message` — ours, or V8's "Cannot read
+  properties of null" — and chat's adapter propagates that message to
+  assistant-ui, where it can reach a person. So the `null` case pins the
+  message, and only the `null` case does.
+*/
+describe('uploadAttachment — a 2xx body that carries no usable id', () => {
+  const badBodies: Array<[string, string]> = [
+    ['an empty object', '{}'],
+    ['a JSON null', 'null'],
+    ['a JSON number', '7'],
+    ['a JSON array', '[]'],
+    ['a bare JSON string', '"ok"'],
+    ['an error-shaped body', '{"error":"nope"}'],
+    ['metadata with the id missing', '{"mediaType":"text/plain","displayName":"notes.txt"}'],
+    ['an empty-string id', '{"attachmentId":""}'],
+    ['a non-string id', '{"attachmentId":123}'],
+  ];
+
+  for (const [label, responseText] of badBodies) {
+    it(`rejects ${label} as malformed rather than resolving it`, async () => {
+      MockXhr.script = { status: 200, responseText, outcome: 'load' };
+      let caught: unknown;
+      try {
+        await uploadAttachment(file());
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(AttachmentUploadError);
+      const e = caught as AttachmentUploadError;
+      expect(e.kind).toBe('malformed');
+      expect(e.status).toBe(200);
+      expect(e.message).toBe('missing attachmentId');
+    });
+  }
+
+  it('still resolves a body that does carry an id', async () => {
+    // The guard must refuse bad bodies without refusing good ones.
+    MockXhr.script = {
+      status: 200,
+      responseText: JSON.stringify({
+        attachmentId: 'att-9',
+        sizeBytes: 3,
+        mediaType: 'text/plain',
+        displayName: 'notes.txt',
+        expiresAt: '2026-01-01T00:00:00.000Z',
+      }),
+      outcome: 'load',
+    };
+    await expect(uploadAttachment(file())).resolves.toMatchObject({
+      attachmentId: 'att-9',
+    });
+  });
+});

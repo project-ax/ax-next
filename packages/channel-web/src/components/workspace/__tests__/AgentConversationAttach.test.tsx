@@ -13,9 +13,9 @@
  */
 import type { ComponentProps } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { AgentConversation } from '../AgentConversation';
-import type { WorkspaceAgent } from '@/lib/workspace-api';
+import type { ThreadMessage, WorkspaceAgent } from '@/lib/workspace-api';
 import {
   ATTACHMENT_ACCEPT,
   AttachmentUploadError,
@@ -184,9 +184,15 @@ describe('AgentConversation — attaching a file', () => {
     expect(await screen.findByText(ATTACHMENT_FAILED_UNSUPPORTED)).toBeTruthy();
     expect(screen.getByText(COMPOSER_HOLD_COPY)).toBeTruthy();
     expect(screen.queryByText(ATTACHMENT_SEND_BLOCKED_FAILED)).toBeNull();
-    expect(screen.getByRole('status').textContent).toBe(
-      'Your agent is waiting for your approval.',
-    );
+    /*
+      SCOPED. This surface renders two `role="status"` nodes — this composer
+      announcer and the find bar's match counter — so the unscoped query passes
+      only while the find bar happens to be closed, and the first test to open
+      it would fail here with something that reads like an attachment bug.
+    */
+    expect(
+      screen.getByTestId('composer-announcer').textContent,
+    ).toBe('Your agent is waiting for your approval.');
 
     rerender(
       <AgentConversation
@@ -277,5 +283,99 @@ describe('AgentConversation — attaching a file', () => {
     fireEvent.keyDown(box(), { key: 'Enter' });
 
     expect(onSend).not.toHaveBeenCalled();
+  });
+});
+
+/*
+  THE COMBINATION THE REBASE ACTUALLY RAISED.
+
+  Find-in-thread (TASK-354) and the attach affordance landed on this component
+  within hours of each other, and the merge had no conflict outside the import
+  block — exactly the situation where "clean merge + green gate" is doing no
+  work on the question. The two features share the component but not a line of
+  state, and the only way to say that out loud is to run them together: the
+  find bar needs a non-empty thread to mount at all, so every other test in
+  this file (`thread: []`) leaves it absent.
+
+  What this pins: a file can be attached while the bar is open, the bar keeps
+  counting while a chip is on screen, and the two `role="status"` nodes on this
+  surface stay their own separate announcements.
+
+  Conventions borrowed from `AgentConversationFind.test.tsx` rather than
+  reinvented: the bar is reached through the toggle's `aria-controls`, and the
+  count asserted is the VISIBLE `[data-find-count]` — the announced one is a
+  debounced live region, and asserting on it here would be asserting on a timer.
+*/
+describe('find and attach on the same thread', () => {
+  const thread: ThreadMessage[] = [
+    { kind: 'user', id: 'u1', text: 'can you look at the roof quote' },
+    {
+      kind: 'agent',
+      id: 'a1',
+      text: 'the roof quote is attached',
+      time: '4:12 PM',
+    },
+  ];
+
+  const findBar = (): HTMLElement => {
+    const id = screen
+      .getByRole('button', { name: 'Find' })
+      .getAttribute('aria-controls');
+    const region = id === null ? null : document.getElementById(id);
+    if (region === null) throw new Error('the find bar is not open');
+    return region;
+  };
+
+  const visibleCount = (): string => {
+    const el = findBar().querySelector('[data-find-count]');
+    if (!(el instanceof HTMLElement)) throw new Error('the bar shows no count');
+    return el.textContent ?? '';
+  };
+
+  it('attaches a file while the find bar is open, and neither swallows the other', async () => {
+    upload.mockResolvedValue(uploadedAs('att-1'));
+    const onSend = vi.fn();
+    renderConversation({ thread, onSend });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Find' }));
+    fireEvent.change(
+      within(findBar()).getByRole('textbox', {
+        name: 'Find in this conversation',
+      }),
+      { target: { value: 'roof' } },
+    );
+
+    // The bar is live and counting before a file enters the picture.
+    const before = visibleCount();
+    expect(before).toMatch(/2/);
+
+    pickFile();
+    await screen.findByText('Ready to send');
+
+    // Still counting the same matches, with a chip on screen.
+    expect(visibleCount()).toBe(before);
+    /*
+      And the two announcers are saying DIFFERENT things at the same moment —
+      the bar its match count, the composer the file-with-no-message hold. That
+      is the real check: one live region clobbering the other is precisely what
+      sharing a component invites, and it would be invisible on screen.
+    */
+    expect(screen.getByTestId('composer-announcer').textContent).toBe(
+      ATTACHMENT_NEEDS_MESSAGE,
+    );
+
+    fireEvent.change(box(), { target: { value: 'here is the quote' } });
+    // Typing clears the composer's hold without touching the bar's count.
+    expect(screen.getByTestId('composer-announcer').textContent).toBe('');
+    expect(visibleCount()).toBe(before);
+    fireEvent.click(sendButton());
+
+    expect(onSend).toHaveBeenCalledWith('here is the quote', ['att-1']);
+    // And the bar survived the send rather than being torn down with the chips.
+    expect(
+      within(findBar()).getByRole('textbox', {
+        name: 'Find in this conversation',
+      }),
+    ).toBeTruthy();
   });
 });

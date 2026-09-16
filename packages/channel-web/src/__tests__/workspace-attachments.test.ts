@@ -518,15 +518,16 @@ describe('useWorkspaceAttachments — clear', () => {
 /*
   A 200 THAT DOES NOT CARRY AN ID IS A FAILED UPLOAD, not a ready one.
 
-  `uploadAttachment` casts the parsed JSON to its result type and validates
-  nothing, so a proxy's JSON courtesy page, a server change or a truncated
-  write can resolve with no usable `attachmentId`. Tolerating that field is
-  only allowed if what renders is still something a person can act on —
-  "Ready to send" over nothing to send is the opposite, and the failure would
-  surface later as a rejected MESSAGE, pointing the blame at the wrong thing.
+  The SHAPE CHECK LIVES IN `uploadAttachment` (both surfaces share it, so a
+  guard in this hook alone would have left chat's adapter holding the unchecked
+  body — see `attachment-upload.test.ts` for the body shapes it refuses). What
+  is pinned here is what this hook does with the resulting rejection: tolerating
+  a missing id is only allowed if what renders is still something a person can
+  act on, and "Ready to send" over nothing to send is the opposite.
 
-  Against the unguarded hook the chip reads `uploaded` and `undefined` rides
-  out in `attachmentIds`, so both assertions below fail.
+  Against a hook that ignored `kind: 'malformed'` — or reported it as a generic
+  failure — the message assertion fails; against one that let the chip settle as
+  `uploaded`, all four do.
 */
 describe('useWorkspaceAttachments — a response with no attachment id', () => {
   it('fails the chip instead of calling it ready, and keeps the id off the wire', async () => {
@@ -535,10 +536,9 @@ describe('useWorkspaceAttachments — a response with no attachment id', () => {
     await waitFor(() => expect(pending).toHaveLength(1));
 
     act(() => {
-      pending[0]!.resolve({
-        ...serverResult('ignored'),
-        attachmentId: undefined as unknown as string,
-      });
+      pending[0]!.reject(
+        new AttachmentUploadError('missing attachmentId', 'malformed', 200),
+      );
     });
     await settle();
 
@@ -553,17 +553,26 @@ describe('useWorkspaceAttachments — a response with no attachment id', () => {
     expect(result.current.sendBlock).toBe(ATTACHMENT_SEND_BLOCKED_FAILED);
   });
 
-  it('treats an empty-string id the same way', async () => {
+  /*
+    THE LAST LINE BEFORE THE WIRE, kept even though `uploadAttachment` now
+    refuses these bodies upstream. `attachmentIds` is what the composer posts,
+    and `!== null` would wave an `undefined` through — so this asserts the
+    filter is a type check rather than a null check, independently of whoever
+    is guarding above it.
+  */
+  it('never puts a non-string id on the wire, whatever settled the chip', async () => {
     const { result } = renderHook(() => useWorkspaceAttachments());
     act(() => result.current.add(fileList(textFile())));
     await waitFor(() => expect(pending).toHaveLength(1));
 
-    act(() => pending[0]!.resolve({ ...serverResult('') }));
+    act(() => {
+      pending[0]!.resolve({
+        ...serverResult('ignored'),
+        attachmentId: undefined as unknown as string,
+      });
+    });
     await settle();
 
-    await waitFor(() =>
-      expect(result.current.attachments[0]?.status).toBe('failed'),
-    );
     expect(result.current.attachmentIds).toEqual([]);
   });
 });
