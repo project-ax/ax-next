@@ -3910,10 +3910,20 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         return;
       }
 
-      // No truncation question on this tier: `workspace:read` answers with the
-      // whole blob (the 128 KiB `clipped` bound is the READ route's JSON
-      // envelope, not the backend's). The durable tier below is the one that
-      // has to check.
+      /*
+        No truncation question on this tier: `workspace:read` answers with the
+        WHOLE blob (the 128 KiB `clipped` bound is the READ route's JSON
+        envelope, not the backend's), so nothing here can be a prefix. The
+        durable tier below is the one that has to check.
+
+        Said plainly, because it is the other side of that coin: this tier has
+        no read cap at all, so a huge committed file is a huge buffer in this
+        process. That is NOT new — the read route above already pulls the same
+        whole blob into memory and only clips on the way out — and it is not
+        something this route can fix without breaking the one promise it makes,
+        which is that what you get is the file. A bound belongs on the backend
+        or on a streaming read, not here.
+      */
       sendFileDownload(res, path, out.bytes);
     },
 
