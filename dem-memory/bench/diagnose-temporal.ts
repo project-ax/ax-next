@@ -10,12 +10,12 @@
 import { createDemMemory } from "../src/index.js";
 import { compileEvidenceTable } from "../src/engine/reflect.js";
 import { flattenDialogue, type DialogueTurn } from "../src/types.js";
-import { ExtractionCache, sessionCacheKey } from "./extraction.js";
+import { DEFAULT_EXTRACT_MODEL, ExtractionCache, sessionCacheKey } from "./extraction.js";
 import {
   CACHE_DIR,
   loadCorpus,
   parseArgs,
-  pickStratified,
+  stratifiedSample,
   resolveStack,
   sessionDateToIso,
   type LongMemEvalSample,
@@ -43,8 +43,9 @@ async function main(): Promise<void> {
     });
   } else {
     // Mirror run.ts's selection exactly so the rows line up with a results file.
-    selected = pickStratified(corpus, n, Number(args["min-abs"] ?? Math.max(1, Math.round((n * 30) / 500))))
-      .filter((sample) => typeFilter.includes(sample.question_type ?? "(none)"));
+    selected = stratifiedSample(corpus, n).filter((sample) =>
+      typeFilter.includes(sample.question_type ?? "(none)"),
+    );
   }
 
   console.log(`stack=${label} | ${selected.length} question(s)\n`);
@@ -69,7 +70,7 @@ async function main(): Promise<void> {
       const date = sample.haystack_dates?.[i];
       const nowIso = date ? sessionDateToIso(date) : new Date().toISOString();
       const dialogue = flattenDialogue(turns as DialogueTurn[]);
-      const facts = extractionCache.get(sessionCacheKey(sessionId, dialogue));
+      const facts = extractionCache.get(sessionCacheKey(sessionId, dialogue, DEFAULT_EXTRACT_MODEL));
       if (!facts) {
         missing += 1;
         continue;

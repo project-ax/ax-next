@@ -145,11 +145,100 @@ export function embedCacheWrap(inner: EmbeddingFn): EmbeddingFn & { flush(): voi
   return wrapper;
 }
 
-export function pickStratified(
+/**
+ * Deterministic stratified sampling, ported from the in-repo Strata bench
+ * (`packages/memory-strata/test/bench/stratify.ts`) so that numbers from the two
+ * harnesses are comparable. dem-memory is deliberately outside the pnpm workspace and
+ * cannot import it; keep the two implementations in step by hand.
+ *
+ * Proportional allocation by largest remainder, then EVENLY SPACED picks within each
+ * stratum. The spacing is the point: this bench's original picker sorted each type by
+ * haystack size and took the k shortest, which put all 30 of an n=30 sample below the
+ * corpus median haystack (median 3rd percentile) and made every score an easy-slice score.
+ */
+function allocate(sizes: number[], limit: number): number[] {
+  const total = sizes.reduce((a, b) => a + b, 0);
+  if (total === 0) return sizes.map(() => 0);
+  if (limit >= total) return [...sizes];
+
+  const exact = sizes.map((size) => (size * limit) / total);
+  const out = exact.map(Math.floor);
+  let used = out.reduce((a, b) => a + b, 0);
+  const order = exact
+    .map((value, index) => ({ index, frac: value - Math.floor(value) }))
+    .sort((a, b) => b.frac - a.frac || a.index - b.index);
+  for (const { index } of order) {
+    if (used >= limit) break;
+    if ((out[index] ?? 0) >= (sizes[index] ?? 0)) continue;
+    out[index] = (out[index] ?? 0) + 1;
+    used += 1;
+  }
+  return out;
+}
+
+/** Evenly spaced indices across `size`, always including the first. */
+function spacedIndices(size: number, take: number): number[] {
+  if (take <= 0) return [];
+  if (take >= size) return Array.from({ length: size }, (_, i) => i);
+  const step = size / take;
+  const out: number[] = [];
+  for (let k = 0; k < take; k += 1) out.push(Math.min(size - 1, Math.floor(k * step)));
+  return [...new Set(out)];
+}
+
+/**
+ * Interleave per-stratum picks so EVERY prefix is proportional — a run killed at 40% is
+ * then a representative sample rather than a census of whichever types came first.
+ */
+function representativeOrder(groups: readonly (readonly number[])[]): number[] {
+  const keyed: Array<{ idx: number; key: number; size: number }> = [];
+  for (const picks of groups) {
+    for (let j = 0; j < picks.length; j += 1) {
+      keyed.push({ idx: picks[j] ?? 0, key: (j + 0.5) / picks.length, size: picks.length });
+    }
+  }
+  keyed.sort((a, b) => a.key - b.key || b.size - a.size || a.idx - b.idx);
+  return keyed.map((entry) => entry.idx);
+}
+
+export function stratifiedSample(samples: LongMemEvalSample[], limit: number): LongMemEvalSample[] {
+  if (limit >= samples.length) return [...samples];
+  if (limit <= 0) return [];
+
+  const strata = new Map<string, number[]>();
+  samples.forEach((sample, index) => {
+    const key = sample.question_type ?? "__unlabelled__";
+    const bucket = strata.get(key);
+    if (bucket) bucket.push(index);
+    else strata.set(key, [index]);
+  });
+
+  const keys = [...strata.keys()];
+  const counts = allocate(
+    keys.map((key) => strata.get(key)?.length ?? 0),
+    limit,
+  );
+  const groups = keys.map((key, i) => {
+    const idxs = strata.get(key) ?? [];
+    return spacedIndices(idxs.length, counts[i] ?? 0).map((pos) => idxs[pos] ?? 0);
+  });
+  return representativeOrder(groups).flatMap((i) => {
+    const sample = samples[i];
+    return sample ? [sample] : [];
+  });
+}
+
+/**
+ * The ORIGINAL picker: proportional by type, then the k shortest haystacks within each.
+ * Retained only so the 2026-09-16 runs stay reproducible — it is an easy-slice sampler and
+ * its scores are not comparable to a spaced sample or to the Strata bench.
+ */
+export function pickShortest(
   samples: LongMemEvalSample[],
   n: number,
   minAbs: number,
 ): LongMemEvalSample[] {
+
   const byType = new Map<string, LongMemEvalSample[]>();
   for (const sample of samples) {
     const type = sample.question_type ?? "(none)";

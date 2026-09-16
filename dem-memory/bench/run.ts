@@ -3,13 +3,19 @@ import { join } from "node:path";
 import { createDemMemory } from "../src/index.js";
 import { flattenDialogue, type DialogueTurn } from "../src/types.js";
 import { OpenRouterLlm, type LlmUsage } from "./llm.js";
-import { ExtractionCache, createGlmExtractor, sessionCacheKey } from "./extraction.js";
+import {
+  DEFAULT_EXTRACT_MODEL,
+  ExtractionCache,
+  createGlmExtractor,
+  sessionCacheKey,
+} from "./extraction.js";
 import {
   CACHE_DIR,
   loadCorpus,
   parseArgs,
-  pickStratified,
+  pickShortest,
   resolveStack,
+  stratifiedSample,
   runWithConcurrency,
   sessionDateToIso,
   type Stack,
@@ -65,7 +71,11 @@ async function main(): Promise<void> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error("OPENROUTER_API_KEY is required (source your env file)");
   const n = Number(args.n ?? 30);
-  const model = args.model ?? "z-ai/glm-5.3-flash:nitro";
+  const model = args.model ?? DEFAULT_EXTRACT_MODEL;
+  // Extraction and answering are separate arms: Strata's e2e baseline extracts with GLM and
+  // ANSWERS with claude-sonnet-4.6, so comparing against it means varying one without the other.
+  const extractModel = args["extract-model"] ?? model;
+  const answerModel = args["answer-model"] ?? model;
   const judgeModel = args["judge-model"] ?? "x-ai/grok-4.3";
   const cacheDir = args["cache-dir"] ?? CACHE_DIR;
   const outDir = args["out-dir"] ?? join(import.meta.dirname, "results");
@@ -75,13 +85,18 @@ async function main(): Promise<void> {
   const { embed, rerank, label, flushEmbed } = resolveStack(stack);
   const minAbs = Number(args["min-abs"] ?? Math.max(1, Math.round((n * 30) / 500)));
 
-  const llm = new OpenRouterLlm({ apiKey, model, reasoningEffort: args.effort ?? "minimal" });
+  const effort = args.effort ?? "minimal";
+  const extractLlm = new OpenRouterLlm({ apiKey, model: extractModel, reasoningEffort: effort });
+  const answerLlm =
+    answerModel === extractModel
+      ? extractLlm
+      : new OpenRouterLlm({ apiKey, model: answerModel, reasoningEffort: args["answer-effort"] ?? effort });
   const judgeLlm = new OpenRouterLlm({ apiKey, model: judgeModel, reasoningEffort: "low" });
-  const extractor = createGlmExtractor(llm);
-  const extractionCache = new ExtractionCache(cacheDir);
+  const extractor = createGlmExtractor(extractLlm);
+  const extractionCache = new ExtractionCache(cacheDir, extractModel);
   const answerUsage = zero();
   const generate = async ({ system, prompt }: { system: string; prompt: string }) => {
-    const response = await llm.chat({ system, user: prompt, maxTokens: 512 });
+    const response = await answerLlm.chat({ system, user: prompt, maxTokens: 512 });
     addUsage(answerUsage, response.usage);
     return response.text;
   };
@@ -90,9 +105,14 @@ async function main(): Promise<void> {
   const filtered = typesFilter
     ? samples.filter((sample) => typesFilter.includes(sample.question_type ?? "(none)"))
     : samples;
-  const selected = pickStratified(filtered, n, minAbs);
+  // "spaced" matches the Strata bench's stratifier, so the two harnesses' numbers can be
+  // compared. "shortest" reproduces the pre-2026-09-16 easy-slice runs and nothing else.
+  const sampler = args.sampler ?? "spaced";
+  const extractConcurrency = Number(args["extract-concurrency"] ?? 6);
+  const selected =
+    sampler === "shortest" ? pickShortest(filtered, n, minAbs) : stratifiedSample(filtered, n);
   console.log(
-    `corpus ${samples.length} samples -> selected ${selected.length} (n=${n}, min-abs=${minAbs}) | model=${model} | judge=${judgeModel} | stack=${label} | extraction cache: ${extractionCache.size} entries`,
+    `corpus ${samples.length} samples -> selected ${selected.length} (n=${n}, sampler=${sampler}) | extract=${extractModel} | answer=${answerModel} | judge=${judgeModel} | stack=${label} | extraction cache: ${extractionCache.size} entries`,
   );
 
   mkdirSync(outDir, { recursive: true });
@@ -154,12 +174,12 @@ async function main(): Promise<void> {
         const date = sample.haystack_dates?.[i];
         const nowIso = date ? sessionDateToIso(date) : new Date().toISOString();
         const dialogue = flattenDialogue(turns as DialogueTurn[]);
-        return { sessionId, nowIso, dialogue, key: sessionCacheKey(sessionId, dialogue) };
+        return { sessionId, nowIso, dialogue, key: sessionCacheKey(sessionId, dialogue, extractModel) };
       });
 
       await runWithConcurrency(
         jobs.filter((job) => extractionCache.get(job.key) === undefined),
-        6,
+        extractConcurrency,
         async (job) => {
           const payload = await extractor(job.dialogue, { now: job.nowIso });
           extractionCache.put(job.key, payload.facts);
@@ -249,7 +269,9 @@ async function main(): Promise<void> {
   };
 
   console.log("\n=== LongMemEval-S smoke (dem-memory) ===");
-  console.log(`model: ${model} (reasoning effort: ${args.effort ?? "minimal"}) | judge: ${judgeModel} | stack: ${label}`);
+  console.log(
+    `extract: ${extractModel} | answer: ${answerModel} (effort ${args["answer-effort"] ?? effort}) | judge: ${judgeModel} | stack: ${label} | sampler: ${sampler}`,
+  );
   for (const [type, bucket] of [...byType.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
     const pct = bucket.total === 0 ? 0 : ((bucket.correct / bucket.total) * 100).toFixed(1);
     console.log(

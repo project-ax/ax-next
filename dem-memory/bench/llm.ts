@@ -46,7 +46,7 @@ export class OpenRouterLlm {
             ],
             max_tokens: request.maxTokens ?? 2048,
             ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
-            reasoning: { effort: this.reasoningEffort },
+            ...(this.reasoningEffort === "none" ? {} : { reasoning: { effort: this.reasoningEffort } }),
           }),
         });
         if (response.status === 429 || response.status >= 500) {

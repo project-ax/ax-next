@@ -14,29 +14,50 @@ export interface ExtractionCacheStats {
 }
 
 /**
- * Facts are cached per session, and the prompt that produced them is part of what the entry
- * means. Keying on the transcript alone lets a changed extraction prompt silently reuse facts
- * extracted under the old one — the fix looks inert and the bench looks unchanged.
+ * Facts are cached per session, and BOTH the prompt and the model that produced them are
+ * part of what the entry means. Keying on the transcript alone lets a changed prompt — or a
+ * different extraction model — silently reuse the old facts: the change looks inert and the
+ * bench looks unchanged.
  */
-const PROMPT_FINGERPRINT = createHash("sha1")
-  .update(EXTRACTION_SYSTEM_PROMPT)
-  .update(buildExtractionPrompt("", ""))
+export const DEFAULT_EXTRACT_MODEL = "z-ai/glm-5.3-flash:nitro";
+
+const promptShape = (): string => EXTRACTION_SYSTEM_PROMPT + buildExtractionPrompt("", "");
+
+export function extractionFingerprint(model: string): string {
+  return createHash("sha1").update(promptShape()).update(model).digest("hex").slice(0, 8);
+}
+
+/** Entries written before the model joined the fingerprint; all of them came from GLM. */
+const PROMPT_ONLY_FINGERPRINT = createHash("sha1")
+  .update(promptShape())
   .digest("hex")
   .slice(0, 8);
 
-export function sessionCacheKey(sessionId: string, content: string): string {
+export function sessionCacheKey(sessionId: string, content: string, model: string): string {
   const digest = createHash("sha1").update(content).digest("hex").slice(0, 12);
-  return `${sessionId}:${PROMPT_FINGERPRINT}:${digest}`;
+  return `${sessionId}:${extractionFingerprint(model)}:${digest}`;
 }
 
-/** Legacy entries predate prompt fingerprinting; they were produced by whatever prompt was
- *  current when they were written, so adopt them once under today's fingerprint. */
-function migrateLegacyKeys(entries: Record<string, IngestionPayload["facts"]>): number {
+/**
+ * Adopt entries written under an older key scheme, once. Only safe for the model those
+ * entries were actually produced by, so anything else is left alone to miss and re-extract.
+ */
+function migrateLegacyKeys(
+  entries: Record<string, IngestionPayload["facts"]>,
+  model: string,
+): number {
+  if (model !== DEFAULT_EXTRACT_MODEL) return 0;
+  const current = extractionFingerprint(model);
   let migrated = 0;
   for (const [key, facts] of Object.entries(entries)) {
     const parts = key.split(":");
-    if (parts.length !== 2) continue;
-    const upgraded = `${parts[0]}:${PROMPT_FINGERPRINT}:${parts[1]}`;
+    const legacy =
+      (parts.length === 2 && parts[0] !== undefined) ||
+      (parts.length === 3 && parts[1] === PROMPT_ONLY_FINGERPRINT);
+    if (!legacy) continue;
+    const id = parts[0] ?? "";
+    const digest = parts[parts.length - 1] ?? "";
+    const upgraded = `${id}:${current}:${digest}`;
     if (entries[upgraded] === undefined) {
       entries[upgraded] = facts;
       migrated += 1;
@@ -51,15 +72,15 @@ export class ExtractionCache {
   private readonly entries: Record<string, IngestionPayload["facts"]>;
   stats: ExtractionCacheStats = { hits: 0, misses: 0 };
 
-  constructor(cacheDir: string) {
+  constructor(cacheDir: string, model: string = DEFAULT_EXTRACT_MODEL) {
     this.path = join(cacheDir, "extraction.json");
     mkdirSync(cacheDir, { recursive: true });
     this.entries = existsSync(this.path)
       ? (JSON.parse(readFileSync(this.path, "utf8")) as Record<string, IngestionPayload["facts"]>)
       : {};
-    const migrated = migrateLegacyKeys(this.entries);
+    const migrated = migrateLegacyKeys(this.entries, model);
     if (migrated > 0) {
-      console.log(`extraction cache: adopted ${migrated} un-fingerprinted entries as ${PROMPT_FINGERPRINT}`);
+      console.log(`extraction cache: adopted ${migrated} legacy entries as ${extractionFingerprint(model)}`);
       this.flush();
     }
   }
