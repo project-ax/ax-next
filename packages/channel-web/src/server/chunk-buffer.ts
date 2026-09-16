@@ -178,13 +178,52 @@ export interface ChunkBuffer {
    * `evictPermissionCard` on grant or by conversation eviction. Host cards ride
    * the turn and are dropped by `evictReqId` at the turn boundary.
    */
-  appendPermissionCard(key: string, card: PermissionRequest): void;
+  appendPermissionCard(
+    key: string,
+    card: PermissionRequest,
+    /**
+     * Who the card belongs to, recorded by the producer (TASK-373).
+     *
+     * The alternative was resolving it at READ time — enumerate every pending
+     * conversation, then ask `conversations:get` whose each one is. That is an
+     * N+1 (the shape already filed against `/api/workspace/state`) and a weaker
+     * posture, because the scope would be re-derived on every read from data
+     * the reader supplies. The producer already holds an `AgentContext` with
+     * both ids, so it records them once and the filter is exact thereafter.
+     *
+     * Optional so a caller that genuinely has no identity (canary probes,
+     * ephemeral admin paths) can still buffer a card for same-turn replay; such
+     * a card is simply never enumerable by user.
+     */
+    owner?: { userId: string; agentId: string },
+  ): void;
   /**
    * Snapshot of pending skill cards for a conversation, in insertion order.
    * Empty when none. The SSE handler replays these on stream open keyed by
    * conversationId.
    */
   tailPermissionCards(conversationId: string): readonly PermissionRequest[];
+  /**
+   * Every pending conversation-keyed card belonging to this user, with the
+   * conversation and agent it was raised on (TASK-373).
+   *
+   * This is what lets a grant outlive the stream it arrived on: the Today queue
+   * reads it on mount, so a skill or connector grant raised while the workspace
+   * was closed is waiting when the person opens it.
+   *
+   * HOST CARDS ARE DELIBERATELY EXCLUDED. They are turn-scoped, and a host
+   * grant answered after its session has gone is only half-meaningful —
+   * `proxy:add-host` widens the LIVE session's allowlist, so "just this once"
+   * would report success and change nothing. Surfacing one here would put a
+   * dead control on screen. The post-session wall is TASK-375, and it needs a
+   * different question rather than this card replayed.
+   *
+   * Cards buffered without an owner are never returned: an unattributed card
+   * cannot be shown to somebody without guessing whose it is.
+   */
+  pendingGrantsForUser(
+    userId: string,
+  ): readonly { conversationId: string; agentId: string; card: PermissionRequest }[];
   /**
    * Snapshot of pending host cards for a routing reqId, in insertion order.
    * Empty when none. The SSE handler replays these on stream open keyed by the
@@ -245,6 +284,13 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
   //   - hostCards: routing reqId → ordered list of pending host cards (the SSE
   //     host match key). Cleared by evictReqId at the turn boundary.
   const skillCards = new Map<string, PermissionRequest[]>();
+  /**
+   * conversationId → who it belongs to (TASK-373). A sibling map rather than a
+   * field on each card so the stored card stays byte-identical to the wire
+   * shape the SSE replay path writes out — the owner is OUR bookkeeping and
+   * must never reach the browser.
+   */
+  const cardOwners = new Map<string, { userId: string; agentId: string }>();
   const hostCards = new Map<string, PermissionRequest[]>();
   let timer: ReturnType<typeof setInterval> | null = setIntervalFn(() => {
     sweep();
@@ -423,7 +469,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
       hostCards.delete(reqId);
     },
 
-    appendPermissionCard(key, card) {
+    appendPermissionCard(key, card, owner) {
       if (typeof key !== 'string' || key.length === 0) return;
       // Skill AND connector cards are conversationId-matched (TASK-112) and share
       // the same per-conversation replay list. De-dupe by the card's SUBJECT id
@@ -446,6 +492,9 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
           }
         }
         skillCards.set(key, list);
+        // Record (or refresh) the owner. Only for conversation-keyed cards:
+        // host cards are turn-scoped and never enumerated by user.
+        if (owner !== undefined) cardOwners.set(key, owner);
         return;
       }
       // Host card.
@@ -472,6 +521,26 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
       return list.slice();
     },
 
+    pendingGrantsForUser(userId) {
+      if (typeof userId !== 'string' || userId.length === 0) return [];
+      const out: {
+        conversationId: string;
+        agentId: string;
+        card: PermissionRequest;
+      }[] = [];
+      for (const [conversationId, list] of skillCards) {
+        const owner = cardOwners.get(conversationId);
+        // No owner → not attributable → not enumerable. Falling back to
+        // "show it to whoever asked" is exactly the leak this map exists to
+        // prevent.
+        if (owner === undefined || owner.userId !== userId) continue;
+        for (const card of list) {
+          out.push({ conversationId, agentId: owner.agentId, card });
+        }
+      }
+      return out;
+    },
+
     tailHostCards(reqId) {
       const list = hostCards.get(reqId);
       if (list === undefined) return [];
@@ -494,6 +563,9 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
       );
       if (next.length === 0) {
         skillCards.delete(conversationId);
+        // Drop the owner with the last card, or the map grows forever with
+        // entries pointing at nothing.
+        cardOwners.delete(conversationId);
       } else {
         skillCards.set(conversationId, next);
       }

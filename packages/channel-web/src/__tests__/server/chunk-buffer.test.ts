@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createChunkBuffer } from '../../server/chunk-buffer';
-import type { StreamChunk } from '../../server/types';
+import type { PermissionRequest, StreamChunk } from '../../server/types';
 
 // Type-narrow accessor — these tests only push text/thinking variants.
 const textOf = (c: StreamChunk): string =>
@@ -673,5 +673,151 @@ describe('@ax/channel-web ChunkBuffer', () => {
         buf.dispose();
       }
     });
+  });
+});
+
+/*
+  TASK-373 — reading back "grants waiting on ME".
+
+  The buffer already kept pending conversation-keyed cards alive past the turn
+  (they are exempt from the IDLE_TTL sweep). What it could not do was answer the
+  question the Today queue asks, because `skillCards` is keyed by conversation
+  and nothing recorded whose conversation it was.
+
+  The owner is recorded by the PRODUCER, which holds an `AgentContext`. That is
+  the whole security posture of the feature: the filter runs against identity
+  the host wrote down, never against anything a reader supplies.
+*/
+describe('pendingGrantsForUser', () => {
+  const skill = (skillId: string): PermissionRequest => ({
+    kind: 'skill',
+    skillId,
+    description: '',
+    hosts: [],
+    slots: [],
+  });
+
+  it('returns a user their own pending grants, with the conversation and agent', () => {
+    const buf = createChunkBuffer();
+    buf.appendPermissionCard('cnv-1', skill('linear'), {
+      userId: 'u-ann',
+      agentId: 'a-quill',
+    });
+
+    expect(buf.pendingGrantsForUser('u-ann')).toEqual([
+      { conversationId: 'cnv-1', agentId: 'a-quill', card: skill('linear') },
+    ]);
+  });
+
+  it('never returns another user their grants', () => {
+    // The leak this exists to prevent: skill ids, connector names and hostnames
+    // are all readable from a card, and they belong to somebody.
+    const buf = createChunkBuffer();
+    buf.appendPermissionCard('cnv-ann', skill('linear'), {
+      userId: 'u-ann',
+      agentId: 'a-quill',
+    });
+    buf.appendPermissionCard('cnv-bob', skill('github'), {
+      userId: 'u-bob',
+      agentId: 'a-scout',
+    });
+
+    expect(buf.pendingGrantsForUser('u-ann')).toEqual([
+      { conversationId: 'cnv-ann', agentId: 'a-quill', card: skill('linear') },
+    ]);
+    expect(buf.pendingGrantsForUser('u-bob')).toEqual([
+      { conversationId: 'cnv-bob', agentId: 'a-scout', card: skill('github') },
+    ]);
+  });
+
+  it('drops a card nobody owns rather than showing it to whoever asked', () => {
+    // A card buffered without an owner (a canary probe, an ephemeral admin
+    // path) is still replayable on its own stream — it is simply not
+    // attributable, and guessing is the failure mode.
+    const buf = createChunkBuffer();
+    buf.appendPermissionCard('cnv-1', skill('linear'));
+
+    expect(buf.pendingGrantsForUser('u-ann')).toEqual([]);
+    // Still replayable the old way, on the conversation it belongs to.
+    expect(buf.tailPermissionCards('cnv-1')).toHaveLength(1);
+  });
+
+  it('excludes host cards — a stale wall offers an answer that would do nothing', () => {
+    // `proxy:add-host` widens the LIVE session's allowlist, so "just this once"
+    // after the turn has ended reports success and changes nothing. TASK-375.
+    const buf = createChunkBuffer();
+    buf.appendPermissionCard(
+      'req-1',
+      { kind: 'host', host: 'example.org', sessionId: 's-1' },
+      { userId: 'u-ann', agentId: 'a-quill' },
+    );
+
+    expect(buf.pendingGrantsForUser('u-ann')).toEqual([]);
+    // But it is still replayable on its own turn's stream, as before.
+    expect(buf.tailHostCards('req-1')).toHaveLength(1);
+  });
+
+  it('returns every pending grant across the user’s conversations', () => {
+    const buf = createChunkBuffer();
+    buf.appendPermissionCard('cnv-1', skill('linear'), {
+      userId: 'u-ann',
+      agentId: 'a-quill',
+    });
+    buf.appendPermissionCard('cnv-2', skill('github'), {
+      userId: 'u-ann',
+      agentId: 'a-scout',
+    });
+
+    const got = buf.pendingGrantsForUser('u-ann');
+    expect(got).toHaveLength(2);
+    expect(got.map((g) => g.agentId).sort()).toEqual(['a-quill', 'a-scout']);
+  });
+
+  it('stops returning a grant once it is answered', () => {
+    // Eviction already existed and is wired to the decision route; this pins
+    // that the new read path honours it rather than keeping a second copy.
+    const buf = createChunkBuffer();
+    buf.appendPermissionCard('cnv-1', skill('linear'), {
+      userId: 'u-ann',
+      agentId: 'a-quill',
+    });
+    buf.evictPermissionCard('cnv-1', 'linear');
+
+    expect(buf.pendingGrantsForUser('u-ann')).toEqual([]);
+  });
+
+  it('a re-proposal stays one grant, and refreshes the owner', () => {
+    const buf = createChunkBuffer();
+    buf.appendPermissionCard('cnv-1', skill('linear'), {
+      userId: 'u-ann',
+      agentId: 'a-quill',
+    });
+    buf.appendPermissionCard('cnv-1', skill('linear'), {
+      userId: 'u-ann',
+      agentId: 'a-quill',
+    });
+
+    expect(buf.pendingGrantsForUser('u-ann')).toHaveLength(1);
+  });
+
+  it('an empty user id matches nothing — even a card stored with one', () => {
+    /*
+      The shape where a missing identity quietly becomes a wildcard.
+
+      An earlier version of this test queried `''` against a card owned by
+      `u-ann` and asserted an empty result — which the `userId` comparison gives
+      you anyway, so it passed with the guard deleted and pinned nothing. The
+      case the guard actually covers is an owner recorded with an EMPTY id
+      (`ctx.userId` is typed non-optional but nothing enforces non-empty at
+      runtime): without it, one unattributed card plus one unauthenticated read
+      match each other.
+    */
+    const buf = createChunkBuffer();
+    buf.appendPermissionCard('cnv-1', skill('linear'), {
+      userId: '',
+      agentId: 'a-quill',
+    });
+
+    expect(buf.pendingGrantsForUser('')).toEqual([]);
   });
 });
