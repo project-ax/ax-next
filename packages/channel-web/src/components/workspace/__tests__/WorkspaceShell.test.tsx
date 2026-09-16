@@ -185,7 +185,10 @@ describe('WorkspaceShell', () => {
     act(() => {
       // Same subject, a fresher payload — what `AgentView` does when the
       // stream (or a reconnect replay) delivers the card it buffered.
-      workspaceGrantActions.raise(linearSkill(), 'cnv-1');
+      workspaceGrantActions.raise(linearSkill(), {
+        conversationId: 'cnv-1',
+        agentId: 'a-quill',
+      });
     });
 
     expect(screen.getAllByTestId('grant-skill:linear')).toHaveLength(1);

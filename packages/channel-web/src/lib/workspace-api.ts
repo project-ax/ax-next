@@ -51,6 +51,10 @@ import {
   MAX_DETAIL_CHARS,
 } from './transport';
 import { readSseFrames } from './sse-frames';
+// The store owns "can this build draw it?", because `grantKey` is the function
+// that breaks without it. Read, not re-declared: a second copy of the same
+// three kinds is a drift waiting to happen.
+import { isRenderableGrant } from './workspace-grant-store';
 import type { PermissionRequest, SseFrame } from '../server/types';
 import type { PostMessageResponse } from '@/wire/chat';
 import type {
@@ -197,9 +201,10 @@ export interface ActivityPage {
 export interface PendingGrant {
   conversationId: string;
   /**
-   * The agent that asked. Not read by any renderer yet — it rides because the
-   * row names who asked (the design's wire shape, mirrored from the buffer),
-   * and a future "which agent asked" display should not need a wire change.
+   * The agent that asked. Read since TASK-351: presence routes a grant back
+   * into that agent's thread, which needs to know whose grant it is. Compared
+   * against the open route's agent id and nothing else — never interpolated
+   * into a path, and never part of the answer POST.
    */
   agentId: string;
   request: PermissionRequest;
@@ -484,10 +489,27 @@ export const workspaceApi = {
     const body = await req<unknown>('/grants');
     // Same shape guard as the queue read, at the boundary the two share: what
     // must never happen is a malformed body being mistaken for an empty list.
-    // `request` and `conversationId` are checked because the merge in
-    // WorkspaceShell dereferences exactly those two — one wrong row there
+    // `request`, `conversationId` and `agentId` are checked because the merge
+    // in WorkspaceShell dereferences exactly those three — one wrong row there
     // throws inside the mount effect, and a throw a person cannot see or fix
-    // is worse than a read that fails loudly.
+    // is worse than a read that fails loudly. `agentId` joined the list when
+    // TASK-351 started READING it: an `undefined` there would be typed as a
+    // `string`, match no route, and silently cost the grant its thread.
+    //
+    // `request` is checked for its DISCRIMINANT and not merely for being an
+    // object: `{}`, or a kind this build has never heard of, gets no key out of
+    // `grantKey` and no fields out of `GrantRow`, and the resulting throw lands
+    // in the workspace's `ErrorBoundary` — which takes every legible grant and
+    // decision down with the one unreadable row. `isRenderableGrant` is the
+    // store's own answer to "can we draw this?" — the discriminant, the id that
+    // becomes the key, and the two collections the row ITERATES — borrowed
+    // rather than copied so the wire and the store cannot drift about it.
+    //
+    // (The store refuses an unknown kind as well, which is what covers the SSE
+    // stream — that path has no shape guard at all. Here it is a WHOLE-page
+    // failure on purpose: a server answering `/grants` with a row we cannot
+    // read is news about the server, and the mount path already knows how to
+    // say "I could not check" without pretending the day is empty.)
     return checkedRead<GrantsPage>(
       '/grants',
       body,
@@ -498,7 +520,8 @@ export const workspaceApi = {
           (g) =>
             isRecord(g) &&
             typeof (g as { conversationId?: unknown }).conversationId === 'string' &&
-            isRecord((g as { request?: unknown }).request),
+            typeof (g as { agentId?: unknown }).agentId === 'string' &&
+            isRenderableGrant((g as { request?: unknown }).request),
         ),
     );
   },

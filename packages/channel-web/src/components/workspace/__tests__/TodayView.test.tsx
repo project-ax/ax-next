@@ -327,11 +327,13 @@ describe('resolved rows', () => {
 */
 const hostGrant = {
   key: 'host:example.org',
+  agentId: 'a-quill',
   conversationId: 'c1',
   request: { kind: 'host' as const, host: 'example.org', sessionId: 's-1' },
 };
 const skillGrant = {
   key: 'skill:linear',
+  agentId: 'a-quill',
   conversationId: 'c1',
   request: {
     kind: 'skill' as const,
@@ -421,6 +423,7 @@ describe('a grant when the decisions queue cannot be read', () => {
   const unreadable = { kind: 'failed' as const, detail: 'workspace /decisions → 503' };
   const hostGrant = {
     key: 'host:example.org',
+    agentId: 'a-quill',
     conversationId: 'c1',
     request: { kind: 'host' as const, host: 'example.org', sessionId: 's-1' },
   };

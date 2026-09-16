@@ -25,7 +25,7 @@ function row(request: PermissionRequest, conversationId: string | null = 'cnv-1'
   const onResolved = vi.fn();
   render(
     <GrantRow
-      grant={{ key: grantKey(request), request, conversationId }}
+      grant={{ key: grantKey(request), request, conversationId, agentId: 'a-quill' }}
       onResolved={onResolved}
     />,
   );
@@ -62,6 +62,175 @@ const hostReq: PermissionRequest = {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe('a payload the guard lets through but the row must survive', () => {
+  /*
+    `isRenderableGrant` deliberately does not require `description` or
+    `packages`: neither decides whether the question can be ANSWERED, and
+    refusing a grant over one would trade a plain-looking row for a question
+    that silently never gets asked. That trade is only honest if the row
+    actually tolerates their absence — and it did not.
+
+    Both of these threw `TypeError` during render. The workspace
+    `ErrorBoundary` catches the throw, which makes it look survivable, but it
+    is scoped to the whole surface: ONE such row took every other legible grant
+    AND every decision down with it. That is the exact failure the shape guard
+    beside it exists to prevent, still reachable through the fields the guard
+    was told it could skip.
+
+    Caught in review, not by these tests — the first version of the guard's
+    comment asserted "a missing description renders a shabby row, never a
+    throw", which was simply false. The rule worth keeping: a guard may only
+    leave a field out if the renderer is known to tolerate its absence. Check
+    it; do not infer it from the field sounding decorative.
+  */
+
+  test('a skill with no description renders an answerable row, not the word "undefined"', () => {
+    // `haveExisting` so Connect is genuinely ENABLED: the claim being pinned is
+    // that the grant is still answerable, and an unfilled slot would disable
+    // the button for an unrelated and correct reason, making the assertion say
+    // less than it looks like it says.
+    const noDescription = {
+      kind: 'skill',
+      skillId: 'linear-issues',
+      hosts: ['api.linear.app'],
+      slots: [{ slot: 'api_key', kind: 'api-key', haveExisting: true }],
+    } as unknown as PermissionRequest;
+
+    row(noDescription);
+
+    expect(screen.getByText('Connect Linear issues')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^connect$/i })).toBeEnabled();
+    expect(screen.getByText(GRANT_REASSURANCE)).toBeTruthy();
+    // NOT merely "did not throw". `String(request.description)` would also not
+    // throw — and would print a paragraph reading "undefined" at the person.
+    // Absent is the only acceptable rendering of an absent description.
+    expect(screen.queryByText('undefined')).toBeNull();
+  });
+
+  test('a non-string description is dropped rather than rendered', () => {
+    /*
+      This is what the `typeof` guard buys over a bare `?? ''`, and it had a
+      four-line comment calling it load-bearing and no test at all — the same
+      "asserted in prose, never verified" move that produced the two bugs this
+      block exists for.
+
+      `{ length: 5 }` is the shape that separates them: `?? ''` passes it
+      through (it is not nullish), `.length > 0` is then true, and React throws
+      on an object child. The `typeof` check drops it instead.
+    */
+    const objectDescription = {
+      ...skillReq,
+      description: { length: 5 },
+    } as unknown as PermissionRequest;
+
+    row(objectDescription);
+
+    expect(screen.getByText('Connect Linear issues')).toBeTruthy();
+    expect(screen.queryByText('undefined')).toBeNull();
+  });
+
+  test('a connector with no name is titled from its id, never "Connect undefined"', () => {
+    /*
+      THE MAJOR FROM THE SECOND REVIEW ROUND. `name` was excluded from
+      `isRenderableGrant` on the grounds that interpolating it "cannot throw".
+      True, and the wrong test — `Connect ${undefined}` renders the literal
+      words "Connect undefined" above KEY_SAFETY copy and a `type="password"`
+      input. A credential prompt whose subject is missing is worse than a crash,
+      because a crash is loud and this just quietly asks for an API key on
+      behalf of nobody.
+
+      Excluding `name` from the guard is still right — a nameless connector is
+      an answerable grant, and refusing it would cost the person the question.
+      What was missing is the fallback, and `connectorId` is guarded, so it is
+      always there.
+    */
+    const nameless = {
+      kind: 'connector',
+      connectorId: 'linear',
+      hosts: ['api.linear.app'],
+      slots: [],
+    } as unknown as PermissionRequest;
+
+    row(nameless);
+
+    expect(screen.getByText('Connect Linear')).toBeTruthy();
+    expect(screen.queryByText(/undefined/)).toBeNull();
+  });
+
+  test('an empty-string name falls back the same way', () => {
+    // Absent and blank are the same thing to a reader, so they are the same
+    // thing here. A `.trim()`-less check would have let this one through.
+    const blankName = {
+      ...connectorReq,
+      name: '   ',
+    } as unknown as PermissionRequest;
+
+    row(blankName);
+
+    expect(screen.getByText('Connect Linear')).toBeTruthy();
+  });
+
+  test('a real connector name still wins over the fallback', () => {
+    // The positive control: the fallback must not have replaced the name.
+    row({ ...connectorReq, name: 'Linear Issues' } as PermissionRequest);
+
+    expect(screen.getByText('Connect Linear Issues')).toBeTruthy();
+  });
+
+  test('a half-filled packages list renders the row instead of throwing', () => {
+    // `npm` and `pypi` are both required when `packages` is present, so this
+    // is off-type — which is precisely why only the wire can produce it, and
+    // why the type system was never going to catch it here.
+    const halfPackages = {
+      ...skillReq,
+      packages: { pypi: ['requests'] },
+    } as unknown as PermissionRequest;
+
+    row(halfPackages);
+
+    expect(screen.getByText('Connect Linear issues')).toBeTruthy();
+    // The one list that IS there still counts: the line appears rather than
+    // being quietly dropped along with the crash.
+    expect(screen.getByTestId('grant-packages')).toBeTruthy();
+  });
+
+  test('a packages list with npm present and pypi absent renders too', () => {
+    /*
+      THE OTHER DIRECTION, and it was genuinely unpinned: the `{ pypi: [...] }`
+      case above short-circuits on the first operand, so deleting the `pypi?.`
+      guard left the whole suite green. `{ npm: [] }` is the fixture that
+      reaches the second operand — `npm.length > 0` is false, so evaluation
+      continues to `pypi`, which is not there.
+
+      `{ npm: ['x'] }` would NOT do it: a truthy first operand short-circuits
+      before `pypi` is ever touched. Two guards need two fixtures.
+    */
+    const npmOnly = {
+      ...skillReq,
+      packages: { npm: [] },
+    } as unknown as PermissionRequest;
+
+    row(npmOnly);
+
+    expect(screen.getByText('Connect Linear issues')).toBeTruthy();
+    // Both lists are empty-or-absent, so there is nothing to announce.
+    expect(screen.queryByTestId('grant-packages')).toBeNull();
+  });
+
+  test('an empty packages list still draws no packages line', () => {
+    // The positive control for the case above: `(x?.length ?? 0) > 0` must not
+    // become "packages is present, so say so".
+    const emptyPackages = {
+      ...skillReq,
+      packages: { npm: [], pypi: [] },
+    } as unknown as PermissionRequest;
+
+    row(emptyPackages);
+
+    expect(screen.queryByTestId('grant-packages')).toBeNull();
+  });
 });
 
 describe('a skill grant', () => {
