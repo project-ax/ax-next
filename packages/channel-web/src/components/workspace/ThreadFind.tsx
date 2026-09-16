@@ -20,7 +20,13 @@
  * the rail, which re-reads them by `conversationId`, so each becomes "the
  * thread on screen" in its turn.
  */
-import { useEffect, useRef, type ReactNode, type RefObject } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from 'react';
 import { ChevronDown, ChevronUp, Search, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -29,6 +35,32 @@ import type { FindIndex } from '@/lib/thread-find';
 
 /** The id the toggle's `aria-controls` points at. One bar per conversation. */
 export const THREAD_FIND_BAR_ID = 'thread-find-bar';
+
+/**
+ * How long the announced count waits for the typing to stop.
+ *
+ * Long enough that a word typed at a normal pace produces ONE reading instead
+ * of one per letter; short enough that the answer still feels like it belongs
+ * to what was just typed. Exported so the test can wait exactly this long
+ * rather than guess.
+ */
+export const ANNOUNCE_DELAY_MS = 400;
+
+/**
+ * `value`, but only after it has stopped changing for `delay`.
+ *
+ * Deliberately starts EMPTY rather than at `value`: this backs a live region,
+ * and a region whose first render already contains its message is the case
+ * assistive tech does not reliably announce.
+ */
+function useDebounced(value: string, delay: number): string {
+  const [settled, setSettled] = useState('');
+  useEffect(() => {
+    const id = setTimeout(() => setSettled(value), delay);
+    return () => clearTimeout(id);
+  }, [value, delay]);
+  return settled;
+}
 
 /**
  * What a rendered message needs to know to paint itself, or `null` when the
@@ -77,6 +109,18 @@ export function ThreadFindBar({
 
   const searching = query.trim().length > 0;
 
+  /*
+    The sentence a screen reader gets. Spelled out rather than borrowing the
+    visible "1 of 3", which is a find-bar idiom that reads as a fragment when
+    there is no bar to look at.
+  */
+  const sentence = !searching
+    ? ''
+    : total === 0
+      ? 'No matches.'
+      : `Match ${active + 1} of ${total}.`;
+  const announced = useDebounced(sentence, ANNOUNCE_DELAY_MS);
+
   return (
     <div
       id={THREAD_FIND_BAR_ID}
@@ -107,32 +151,38 @@ export function ThreadFindBar({
       />
 
       {/*
-        The count says nothing until there is a query to count — "0 matches"
-        over an untouched field answers a question nobody asked. But the NODE is
-        always here, emptied rather than unmounted: a live region that is
-        inserted into the DOM already holding its message is not reliably
-        announced, because the assistive tech has nothing to have observed
-        changing. Present-and-empty is the same shape the composer's approval
-        announcer below uses, for the same reason.
+        TWO NODES, not one, and the split is the point.
 
-        `aria-live="polite"` so the answer reaches a screen reader without
-        interrupting the field they are still typing in. The visible text is the
-        idiom people know from every other find bar; the `sr-only` word after it
-        is what turns "1 of 3" into a sentence when there is no bar to look at.
+        The SEEN count is conditional: "0 matches" over an untouched field
+        answers a question nobody asked. It carries no ARIA at all. An earlier
+        draft made this same node the live region and kept it permanently
+        mounted-but-empty, which cost 6px twice over — an empty flex item still
+        sits between its neighbours, so `gap-1.5` applied on both sides of
+        nothing and the bar's spacing doubled every time it opened.
+
+        The ANNOUNCED count is a permanently mounted `sr-only` region. It has to
+        be permanent: a live region inserted into the DOM already holding its
+        message is not reliably announced, because the assistive tech has
+        nothing to have observed changing. `hidden`/`display:none` would have
+        kept the layout tidy and taken it straight back out of the a11y tree,
+        undoing the fix; `sr-only` keeps it there and takes no space.
+
+        It is also DEBOUNCED. `role="status"` implies `aria-atomic`, so every
+        keystroke re-reads the WHOLE sentence: typing "deploy" queues six full
+        readings and the reader hears the first one over and over. The eye gets
+        its answer immediately; the ear gets it once the typing settles.
       */}
-      <span
-        role="status"
-        aria-live="polite"
-        className="shrink-0 whitespace-nowrap text-[12px] tabular-nums text-muted-foreground"
-      >
-        {!searching ? null : total === 0 ? (
-          'No matches'
-        ) : (
-          <>
-            {active + 1} of {total}
-            <span className="sr-only"> matches</span>
-          </>
-        )}
+      {searching && (
+        <span
+          data-find-count=""
+          aria-hidden="true"
+          className="shrink-0 whitespace-nowrap text-[12px] tabular-nums text-muted-foreground"
+        >
+          {total === 0 ? 'No matches' : `${active + 1} of ${total}`}
+        </span>
+      )}
+      <span role="status" aria-live="polite" className="sr-only">
+        {announced}
       </span>
 
       {/*

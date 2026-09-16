@@ -57,20 +57,27 @@ export interface FindRange {
  * Be honest about the size of that smaller wrong: the fallback drops case
  * insensitivity for the WHOLE message, not just around the offending character.
  * One 'İ' anywhere in a turn makes every search of that turn case-sensitive,
- * which can silently miss a match the reader can see. Both lengths are checked
- * because only an expanding needle and an expanding haystack together could
- * cancel out — no known mapping CONTRACTS, so this is belt and braces.
+ * which can silently miss a match the reader can see.
+ *
+ * ONLY THE HAYSTACK'S LENGTH IS CHECKED, and an earlier draft that also checked
+ * the needle's was wrong — it cost matches for nothing. The haystack is the
+ * string the offsets index into, so if it lowercases one-for-one then positions
+ * in the copy ARE positions in the original, and a run of `pin.length`
+ * characters in the copy is the same run of characters in the original however
+ * long the needle became. Checking the needle too only forced a needle like
+ * 'İ' down the case-sensitive path, missing a hit the copy would have found.
+ * (A contraction would break the 1:1 argument, but `toLowerCase` has no
+ * contracting mappings — a sweep of every BMP and astral code point finds
+ * exactly one that expands, U+0130, and none that shrink.)
  */
 export function findRanges(haystack: string, needle: string): FindRange[] {
   const out: FindRange[] = [];
   if (needle.length === 0 || haystack.length === 0) return out;
 
   const lowerHay = haystack.toLowerCase();
-  const lowerNeedle = needle.toLowerCase();
-  const lengthPreserved =
-    lowerHay.length === haystack.length && lowerNeedle.length === needle.length;
-  const hay = lengthPreserved ? lowerHay : haystack;
-  const pin = lengthPreserved ? lowerNeedle : needle;
+  const positionsHold = lowerHay.length === haystack.length;
+  const hay = positionsHold ? lowerHay : haystack;
+  const pin = positionsHold ? needle.toLowerCase() : needle;
 
   let from = 0;
   for (;;) {
@@ -102,6 +109,24 @@ export interface FindField {
  * `past-loading`) are distinct constants. But that is an invariant held in four
  * other files, and this module's one job is to not depend on invariants it
  * cannot see. Position is unique by construction.
+ *
+ * AND THE SAME KEY IS REACT'S KEY, which is the half an earlier draft missed.
+ * Making the INDEX independent of id-uniqueness while the renderer still said
+ * `key={m.id}` bought nothing: on a duplicate id React drops or duplicates a
+ * `Message`, the painted marks stop matching the total the index computed, and
+ * that is precisely the count-vs-marks drift this key exists to make
+ * impossible — reintroduced one line below the claim. Both now read the same
+ * key, so the claim covers the whole path.
+ *
+ * The cost of a position-bearing React key is a remount whenever a message's
+ * POSITION changes, and it was measured rather than assumed: the thread only
+ * ever grows at the end (streaming appends, and the turn-end re-read swaps the
+ * transient rows for server ones at the tail), so ordinary use remounts
+ * nothing. A compaction rewrite that replaces the head does remount the tail —
+ * and that costs nothing here, because the `Message` subtree holds no
+ * accumulated state: `Steps`' open/closed flag has no producer in production,
+ * and `ApprovalCard`'s `useDecisionClock` is derived from `Date.now()` and the
+ * decision row, so a remount re-reads the clock rather than losing a countdown.
  */
 export function findFieldKey(index: number, id: string): string {
   return `${index}:${id}`;

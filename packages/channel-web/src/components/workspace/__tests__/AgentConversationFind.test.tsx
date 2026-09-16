@@ -21,8 +21,9 @@
  */
 import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { AgentConversation } from '../AgentConversation';
+import { ANNOUNCE_DELAY_MS } from '../ThreadFind';
 import type { ThreadMessage, WorkspaceAgent } from '@/lib/workspace-api';
 import { decisionFixture } from './decision-fixture';
 
@@ -85,8 +86,19 @@ const findBar = (): HTMLElement => {
 const findBox = (): HTMLElement =>
   within(findBar()).getByRole('textbox', { name: 'Find in this conversation' });
 
-/** The bar's own live count — scoped, see the header. */
-const count = (): HTMLElement => within(findBar()).getByRole('status');
+/**
+ * The count the READER SEES. Separate from the one a screen reader hears: the
+ * announced copy is an `sr-only` live region and is debounced, so asserting on
+ * it here would be asserting on a timer rather than on what is on screen.
+ */
+const count = (): HTMLElement => {
+  const el = findBar().querySelector('[data-find-count]');
+  if (!(el instanceof HTMLElement)) throw new Error('the bar shows no count');
+  return el;
+};
+
+/** The count a screen reader HEARS — permanently mounted, debounced. */
+const announced = (): HTMLElement => within(findBar()).getByRole('status');
 
 function openFind(): HTMLElement {
   fireEvent.click(findButton());
@@ -145,9 +157,11 @@ describe('finding something in an agent thread', () => {
 
     type('');
     expect(container.querySelectorAll('mark')).toHaveLength(0);
-    // The live region stays mounted (it has to, to be announced at all) and
-    // goes SILENT — no "0 matches" over a field nobody has typed in.
-    expect(count().textContent).toBe('');
+    // No "0 matches" over a field nobody has typed in: the seen count is gone
+    // entirely. The ANNOUNCED region stays mounted — it has to, to be announced
+    // at all — and goes silent.
+    expect(findBar().querySelector('[data-find-count]')).toBeNull();
+    expect(announced().textContent).toBe('');
     expect(screen.getByText(USER_LINE)).toBeTruthy();
     expect(screen.getByText(AGENT_LINE)).toBeTruthy();
     expect(screen.getByText(QUIET_LINE)).toBeTruthy();
@@ -240,9 +254,14 @@ describe('finding something in an agent thread', () => {
   it('finds in a read-only past conversation, not just offers to', () => {
     /*
       "Three weeks ago" is mostly a PAST conversation, so the excerpt is the
-      case this card exists for. Asserting only that the button renders would
-      pass against a build where find was wired to the live thread alone, so
-      this runs a real query through it.
+      case this card exists for. Asserting only that the BUTTON renders would
+      stay green if find were ever gated behind `readOnly` — a plausible change,
+      since every other control in this component is (the composer, the send
+      button, the hold copy). So this runs a real query through it.
+
+      What it deliberately does NOT claim is anything about live-vs-past
+      routing: this component takes one `thread` prop and never chooses between
+      them. That choice lives in `AgentView`, which this test never renders.
     */
     const { container } = renderConversation({ readOnly: true });
     openFind();
@@ -265,7 +284,7 @@ describe('finding something in an agent thread', () => {
       the document. That is the same silent failure `use-opener-restore.ts` was
       written to fix, and it breaks the card's fourth acceptance line.
     */
-    const { rerender, container } = renderConversation();
+    const { rerender } = renderConversation();
     const box = openFind();
     type('deploy');
 
@@ -273,8 +292,10 @@ describe('finding something in an agent thread', () => {
     fireEvent.keyDown(box, { key: 'Escape' });
 
     expect(document.activeElement).not.toBe(document.body);
+    // The landing spot is NAMED, so a screen-reader user is told where they
+    // have arrived rather than being teleported into an unlabelled container.
     expect(document.activeElement).toBe(
-      container.querySelector('[data-conversation-transcript]'),
+      screen.getByRole('region', { name: 'Conversation with Quill' }),
     );
   });
 
@@ -316,14 +337,26 @@ describe('finding something in an agent thread', () => {
     expect(count()).toHaveTextContent('1 of 1');
   });
 
-  /*
-    There is deliberately NO "keeps the composer usable while the bar is open"
-    test here. It was written and then removed: the composer's `disabled` is
-    `busy || held`, neither of which find touches, so on this fixture it can
-    never be disabled and the assertion would have passed against a find
-    implementation that was completely broken. A test that cannot fail pins
-    nothing and reads as coverage.
-  */
+  it('does not quiet the composer — find is a reader\u2019s tool, not a modal', () => {
+    /*
+      This guard names ONE regression and goes red on it: the day someone
+      writes `disabled={busy || held || findOpen}` to "focus the reader on the
+      search", the composer stops taking input while the bar is open and this
+      fails.
+
+      It was briefly deleted as vacuous, on the grounds that it would also pass
+      against a completely broken find. That is the wrong bar. An invariant
+      guard is not measured against unrelated breakage; it is measured against
+      the regression it names, and this one has a plausible author.
+    */
+    renderConversation();
+    openFind();
+    type('deploy');
+    const composer = screen.getByPlaceholderText('Message Quill');
+    expect(composer).not.toBeDisabled();
+    fireEvent.change(composer, { target: { value: 'and now a reply' } });
+    expect(composer).toHaveValue('and now a reply');
+  });
 
   it('wires the toggle to the bar it opens', () => {
     renderConversation();
@@ -332,6 +365,86 @@ describe('finding something in an agent thread', () => {
     fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(findBox()).toBeTruthy();
+  });
+
+  it('renders every turn even when two of them share an id', () => {
+    /*
+      The count-cannot-drift-from-the-marks claim runs through REACT, not just
+      through `buildFindIndex`. With `key={m.id}` a duplicate id makes React
+      drop or duplicate a `Message`, and the painted marks stop matching the
+      total the index computed — the exact drift the field key exists to
+      prevent, one line below the claim. Both now use `findFieldKey`.
+
+      Duplicate ids are not reachable today (turn ids are unique, the transient
+      client rows are distinct constants). This pins that nothing downstream
+      depends on that staying true.
+    */
+    /*
+      Asserting only "3 marks" would be VACUOUS here: React renders both
+      children on a FIRST render even with colliding keys, and only mishandles
+      them on a later reconcile — so the counts come out right either way and
+      the test would pass against the very bug it names. What actually differs
+      is that React complains, so that is what this watches.
+    */
+    const warn = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+    try {
+      const { container } = renderConversation({
+        thread: [
+          { kind: 'user', id: 'same', text: 'deploy once' },
+          {
+            kind: 'agent',
+            id: 'same',
+            text: 'deploy twice deploy',
+            time: '4:12 PM',
+          },
+        ],
+      });
+      openFind();
+      type('deploy');
+
+      expect(count()).toHaveTextContent('1 of 3');
+      expect(container.querySelectorAll('mark')).toHaveLength(3);
+      expect(
+        container.querySelectorAll('mark[data-find-active="true"]'),
+      ).toHaveLength(1);
+
+      const collisions = warn.mock.calls
+        .map((args) => String(args[0] ?? ''))
+        .filter((line) => line.includes('same key'));
+      expect(collisions).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('announces the count once the typing settles, not once per keystroke', async () => {
+    /*
+      `role="status"` implies `aria-atomic`, so every change re-reads the WHOLE
+      region. Typing a six-letter word un-debounced queues six full readings and
+      the reader hears the first one over and over. The eye gets its answer
+      immediately; the ear gets it when the typing stops.
+    */
+    vi.useFakeTimers();
+    try {
+      renderConversation();
+      openFind();
+      type('d');
+      type('de');
+      type('deploy');
+
+      // Seen at once; not yet spoken.
+      expect(count()).toHaveTextContent('1 of 3');
+      expect(announced().textContent).toBe('');
+
+      await act(async () => {
+        vi.advanceTimersByTime(ANNOUNCE_DELAY_MS);
+      });
+      expect(announced().textContent).toBe('Match 1 of 3.');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not offer navigation it cannot perform', () => {

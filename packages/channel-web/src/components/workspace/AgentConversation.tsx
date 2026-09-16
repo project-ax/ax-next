@@ -183,16 +183,29 @@ export function AgentConversation({
       find state outlives a thread change. Open find, click a past conversation
       in the rail, and while its excerpt is loading (a lone `status`
       placeholder) or after that read fails (`[]`), the pane holds nothing
-      searchable. The toolbar is still up only because the open bar holds it
-      there, so closing takes the TOGGLE down in the same commit and the focus
-      call lands on a detached node: the keyboard user is dropped on `<body>`
-      at the top of the document.
+      searchable. The toolbar is then up only because the open bar holds it
+      there, so the close takes the TOGGLE with it.
 
-      That is exactly the silent restore-to-nothing that
-      `use-opener-restore.ts` was written to fix for dialogs, and a comment
-      claiming immunity from it is not immunity. So when the toggle is not
-      going to survive, focus goes to the transcript itself — always rendered,
-      and the place the reader was already looking.
+      THE MECHANISM, MEASURED — because the obvious guess about it is wrong and
+      leads straight to a fix that does nothing. The toggle is NOT detached when
+      we call `focus()`. A probe of the unfixed code recorded, in this order:
+      `document.contains(toggle) === true`, `toggle !== null`, and
+      `document.activeElement` immediately after the call === the Find button.
+      The focus lands. React batches `setFindOpen(false)` and flushes AFTER the
+      handler returns; that commit unmounts the focused button, and the browser
+      resets `document.activeElement` to `<body>`.
+
+      So a null check does not help, and neither does `document.contains` —
+      both are true at call time. The only thing that helps is choosing a target
+      that is still mounted after the state update. `searchable` is exactly that
+      question: the row's post-close condition is `searchable || findOpen` with
+      `findOpen` about to be false, so `searchable` IS "the toggle survives".
+      When it does not, focus goes to the transcript — always rendered, and the
+      place the reader was already looking.
+
+      Same family as the silent restore-to-nothing `use-opener-restore.ts` fixes
+      for dialogs, but not the same cause, and the difference is the part worth
+      keeping.
     */
     setFindOpen(false);
     setFindQuery('');
@@ -250,18 +263,39 @@ export function AgentConversation({
         it in the tab order — the standard landing spot when a control that had
         focus is about to unmount (see `closeFind`). The reader's next Tab then
         continues from the conversation instead of from the top of the page.
+
+        It is NAMED and it is VISIBLE when focused, because being dropped
+        somewhere sensible in silence is still being dropped in silence. A bare
+        `tabIndex={-1}` div is `role="generic"`, where `aria-label` is ignored,
+        so the landing needs a real role to be announced at all — `region` plus
+        the agent's name says where you have arrived. And `outline-none` alone
+        would leave a sighted keyboard user with nothing to see, so the outline
+        is replaced rather than removed.
       */}
       <div
         ref={scrollRef}
         tabIndex={-1}
-        data-conversation-transcript=""
-        className="flex-1 overflow-y-auto px-6 py-6 outline-none"
+        role="region"
+        aria-label={`Conversation with ${agent.name}`}
+        className="flex-1 overflow-y-auto px-6 py-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
         <div className="flex max-w-[720px] flex-col gap-5">
-          {thread.map((m, i) => (
+          {thread.map((m, i) => {
+            /*
+              ONE KEY, not two. React's key and the find index's field key are
+              the same string deliberately — see `findFieldKey`. Keying React by
+              `m.id` alone while the index keyed by position left the drift this
+              change is supposed to remove: on a duplicate id React drops or
+              duplicates a `Message` and the painted marks stop matching the
+              total. Measured cost of the position-bearing key: nothing in
+              ordinary use (the thread only grows at the end), and a harmless
+              remount if compaction ever rewrites the head.
+            */
+            const key = findFieldKey(i, m.id);
+            return (
             <Message
-              key={m.id}
-              fieldKey={findFieldKey(i, m.id)}
+              key={key}
+              fieldKey={key}
               m={m}
               agent={agent}
               decisions={decisions}
@@ -272,7 +306,8 @@ export function AgentConversation({
               {...(busyIds !== undefined ? { busyIds } : {})}
               {...(notices !== undefined ? { notices } : {})}
             />
-          ))}
+            );
+          })}
 
           {/*
             The notice sits where the missing cards would have been — the foot

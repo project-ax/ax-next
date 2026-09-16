@@ -67,6 +67,22 @@ describe('findRanges', () => {
     expect(only).toBeDefined();
     expect(haystack.slice(only!.start, only!.end)).toBe('deploy');
   });
+
+  it('still matches case-insensitively when only the QUERY expands', () => {
+    /*
+      Only the haystack's length decides whether offsets survive — it is the
+      string they index into. An earlier draft also demanded a length-preserving
+      NEEDLE, which bought nothing and cost this match: the haystack here
+      lowercases one-for-one, so positions hold, and the expanded query is
+      perfectly safe to look for.
+    */
+    const haystack = 'the i̇ dot';
+    expect(haystack.toLowerCase().length).toBe(haystack.length);
+    expect('İ'.toLowerCase().length).toBe(2);
+    const [only] = findRanges(haystack, 'İ');
+    expect(only).toBeDefined();
+    expect(haystack.slice(only!.start, only!.end)).toBe('i̇');
+  });
 });
 
 const thread: ThreadMessage[] = [
@@ -178,9 +194,17 @@ describe('activeMatch', () => {
   });
 
   it('stays inside a total that shrank underneath it', () => {
-    // The bar must never print "6 of 3": `active` is always in [0, total).
+    /*
+      The bar must never print "6 of 3": `active` is always in [0, total).
+      NOTE for anyone mutation-testing this file — these two assertions are
+      GREEN against a naive `step % total` (5 % 3 is 2, 97 % 4 is 1). They pin
+      the shrink against dropping the modulo altogether. The assertions that
+      catch `step % total` are the NEGATIVE ones above and below.
+    */
     expect(activeMatch(5, 3)).toBe(2);
     expect(activeMatch(97, 4)).toBe(1);
+    // Negative AND past the end at once: `-5 % 3` is -2 in JS.
+    expect(activeMatch(-5, 3)).toBe(1);
   });
 
   it('says there is nowhere to stand when nothing matched', () => {
