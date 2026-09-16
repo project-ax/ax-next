@@ -90,9 +90,18 @@ export function normalizeTimestamp(value: string, label = "timestamp"): string {
   return parsed.toISOString();
 }
 
+/**
+ * Render a tuple as the one sentence that gets embedded, reranked, and shown to the answerer.
+ *
+ * `subject` and `predicate` are snake_case identifiers by extraction contract, so their
+ * underscores are separators and get spaced out. `object` is FREE TEXT and is passed through
+ * verbatim: its underscores are content. Spacing them out turned the stored handle
+ * `@jessica_poole_jewellery` into `@jessica poole jewellery`, and the answerer reported a
+ * handle that does not exist (LongMemEval b759caee).
+ */
 export function memoryStatement(subject: string, predicate: string, object: string): string {
   const words = (value: string): string => value.replace(/_/g, " ").trim();
-  return `${words(subject)} ${words(predicate)}: ${words(object)}`;
+  return `${words(subject)} ${words(predicate)}: ${object.trim()}`;
 }
 
 export function flattenDialogue(input: string | DialogueTurn[]): string {

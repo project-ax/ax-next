@@ -18,9 +18,13 @@ with `[DATA_ABSENT]` abstention.
   (`pnpm-workspace.yaml` doesn't cover it; root `eslint.config.mjs` ignores it via a
   scoped `dem-memory/**` entry). Use **`npm`, not `pnpm`**, inside `dem-memory/`.
 
-**Four commits on the branch, none pushed, no PR:**
+**Six commits on the branch, none pushed, no PR** (`git log --oneline`; HEAD's own hash is
+deliberately not written here — a commit cannot cite itself without going stale on the next
+amend):
 
 ```
+HEAD     single-session-assistant 45.5% to 81.8%: the prompt was compressing the answer away
+bf5b5e69 docs: rewrite HANDOFF.md for a fresh session
 485f7732 n=100 vs Strata: 82.0% to its 76.0%, and the lead is one question type
 196ef6fd retain: one malformed date cost a whole batch of memories
 abc3efa1 bench: the sampler was picking the easiest questions, and the answer model was welded to the extractor
@@ -28,8 +32,10 @@ abc3efa1 bench: the sampler was picking the easiest questions, and the answer mo
 ```
 
 **Current state:** `npm run typecheck` clean, `npm run build` clean, `npm test`
-**54/54 passing** across 6 files. LongMemEval-S **82.0% at n=100** against the Strata
-e2e baseline's **76.0%** on the same 100 questions.
+**72/72 passing** across 8 files. LongMemEval-S **88.0% at n=100** (Sonnet arm) against the
+Strata e2e baseline's **76.0%** on the same 100 questions — but see "How much of this to
+believe" below, because the GLM arm scores 83.0% on the same change and only part of the
+gain replicates.
 
 ## Run the benchmark
 
@@ -63,11 +69,19 @@ npx tsx bench/compare-strata.ts bench/results/n100-sonnet/*.jsonl
 - Results append to `<out-dir>/run-<date>-<stack>.jsonl` and **RESUME**: rows with
   verdict `error` are retried, good rows skipped. Use a fresh `--out-dir` per config or
   you will silently score the old one.
-- **Caches (gitignored):** `bench/cache/extraction.json` (5,467 sessions, 10.4 MB — the
-  dominant cost lever) and `bench/cache/embeddings.json` (357 MB, sha1(task:text) →
-  384d). Extraction cache keys are `sessionId:fingerprint:contentHash`, where the
+- **Caches (gitignored):** `bench/cache/extraction.json` (22 MB — the dominant cost lever)
+  and `bench/cache/embeddings.ndjson` (537 MB, one `{"k":sha1(task:text),"v":[384 floats]}`
+  per line). Extraction cache keys are `sessionId:fingerprint:contentHash`, where the
   fingerprint covers the extraction **prompt and model**, so changing either
   re-extracts instead of silently serving stale facts.
+- **The embedding cache is APPEND-ONLY, and it has to stay that way.** It was one JSON object
+  rewritten in full on every flush; at 536,270,828 bytes `JSON.stringify` exceeded V8's
+  `MAX_STRING_LENGTH` (536,870,888) and threw `Invalid string length` from inside run.ts's
+  per-question try block — 49 of 100 questions scored `error` **after** their work had
+  succeeded, and no restart could converge because every flush threw again. Reads go through a
+  `Buffer` and slice per line for the same reason (a whole-file `readFileSync(path,"utf8")`
+  hits the identical ceiling). The legacy `embeddings.json` (536 MB) is adopted once, then
+  never read again — **safe to delete whenever you want the disk back.**
 - **Timing/cost with warm caches:** n=100 answer-only ≈ 15 min, ~$0.50 of Sonnet.
   Cold extraction for a new n=100 sample ≈ 1.5 h and ~$2.20.
 
@@ -82,25 +96,37 @@ TASK-368 known-bad-gold ids present — which is what makes its "76.0%, or 79.0%
 Strata answers with `claude-sonnet-4-6` and uses GLM only to extract and plan, so the
 matched arm answers with Sonnet too. The GLM arm is dem-memory's own cheap-answerer config.
 
-| question_type | n | Strata | dem (sonnet-4.6) | delta | dem (GLM flash) |
+| question_type | n | Strata | dem sonnet | dem GLM | (pre-fix sonnet) |
 |---|---|---|---|---|---|
-| temporal-reasoning | 27 | 59.3% | **92.6%** | **+33.3** | 88.9% |
-| single-session-preference | 6 | 66.7% | **100.0%** | +33.3 | 83.3% |
-| knowledge-update | 15 | 80.0% | 80.0% | 0.0 | 80.0% |
-| single-session-user | 14 | 100.0% | 100.0% | 0.0 | 92.9% |
-| multi-session | 27 | 85.2% | 74.1% | **-11.1** | 81.5% |
-| single-session-assistant | 11 | 63.6% | 45.5% | **-18.1** | 45.5% |
-| **TOTAL** | 100 | **76.0%** | **82.0%** | **+6.0** | **81.0%** |
-| TOTAL excl. known-bad-gold | 97 | 79.0% | 84.5% | +5.5 | 83.5% |
+| temporal-reasoning | 27 | 59.3% | 85.2% | 77.8% | 92.6% |
+| single-session-preference | 6 | 66.7% | 83.3% | 83.3% | 100.0% |
+| knowledge-update | 15 | 80.0% | 86.7% | 93.3% | 80.0% |
+| single-session-user | 14 | 100.0% | 100.0% | 92.9% | 100.0% |
+| multi-session | 27 | 85.2% | 88.9% | 77.8% | 74.1% |
+| single-session-assistant | 11 | 63.6% | **81.8%** | **81.8%** | 45.5% |
+| **TOTAL** | 100 | **76.0%** | **88.0%** | **83.0%** | 82.0% |
+| TOTAL excl. known-bad-gold | 97 | 79.0% | 89.7% | 83.5% | 84.5% |
 
-Abstention is identical across all three: correct-refusal 80.0%, hallucination 20.0%
-(the same 5 `_abs` questions, the same one slipping through). False-refusal is lower
-here (6.3% sonnet / 8.4% GLM vs 9.5%).
+Arms: `bench/results/n100-sonnet-asst/` and `n100-glm-asst/`; the pre-fix arms are
+`n100-sonnet/` and `n100-glm/`, same 100 questions, same judge.
 
-**How much of this to believe.** The +6.0 total is **1.6 SE** (SE 3.8pp at n=100) —
-suggestive, not a decisive system win. The temporal +33.3 is **6.6 SE** (SE 5.0pp at
-n=27), is decisive, and carries +9.0 of that +6.0 on its own. Strip temporal out and
-dem-memory is behind. **Quote the per-type row, not the headline.**
+**How much of this to believe.** **Quote the REPLICATED row, not the headline and not one
+arm.** The two arms are the same 100 questions scored by two independent answerers, which is
+this bench's cheapest noise filter — and they disagree a lot:
+
+- **`single-session-assistant` 45.5% → 81.8% is real.** Identical in BOTH arms (5/11 → 9/11),
+  the same four questions, each judged correct for the predicted reason. This is the one
+  claim here that is safe to make.
+- **The overall gain is not.** Sonnet +6.0, GLM +2.0 — and **+0.0 excluding known-bad-gold**.
+  McNemar on paired discordant rows: sonnet 12W/6L **p=0.238**, GLM 11W/9L **p=0.824**.
+- **`multi-session` +14.8 in the sonnet arm is NOISE** — the GLM arm scores −3.7 on the same
+  questions and `36b9f61e` flips in opposite directions in the two arms. Do not quote it.
+- Across both arms only **7 wins and 4 losses replicate**; outside the target type the
+  replicated flips net to **−1**. That is what a well-aimed lever looks like: it fixes what it
+  targeted and is roughly neutral elsewhere.
+
+Use McNemar on discordant pairs, not an unpaired SE: the runs are paired, so an unpaired SE
+overstates the uncertainty of a targeted fix and understates how little the off-target rows say.
 
 **One asymmetry to state out loud.** Strata's number is its real product pipeline
 (observer → inbox → consolidator decay/cluster/dedup/promote → docs → injection +
@@ -111,29 +137,40 @@ dem-memory's ingestion holds up under a consolidation regime.
 
 ## Next work, in value order
 
-### 1. `single-session-assistant` 45.5% — assistant-content extraction
+### 1. Three REPLICATED temporal-reasoning regressions from the assistant-content change
 
-The weak type, and the clearest lever anywhere in this project.
+`single-session-assistant` is **done** — 45.5% → 81.8%, identically in both answer arms
+(5/11 → 9/11, the same four questions). See "Assistant-content extraction" below. What it
+left behind is the highest-value diagnosed work: three regressions that flipped in **both**
+arms, so they are real, not noise. Each is a separate lever and wants its own measured arm.
 
-- It is **identical (45.5%) in both answer arms**, so the failure is ingestion/retrieval,
-  not synthesis.
-- 5 of its 11 are `abstain-miss` — the fact never reached memory at all.
-- **Strata has already solved this exact problem**: its 2026-08-02 assistant-content
-  extraction moved that same type **25.9% → 83.3%**, and dragged temporal-reasoning up
-  +9.1 as an unforecast side effect. See
-  `/Users/vpulim/dev/ai/ax-next/.claude/memory/context.md` (2026-08-02 entry) and
-  `.superpowers/sdd/2026-07-29-assistant-content-extraction-plan/`.
-- Start by dumping what actually reaches the table for the 5 abstain-miss rows
-  (`bench/diagnose-temporal.ts --ids ...`, see below) before changing the prompt.
-- This is an extraction-prompt change, so it **will** invalidate the fact cache by
-  design. Budget a full re-extract: ~1.5 h, ~$2.20 at n=100.
+- **`gpt4_59149c77` — extraction date drift.** The new prompt attached a *different date to
+  the same event* (Jan 15 → Jan 14), turning a 7-day gap into 6. Start by diffing the
+  `validStart` the two prompts assign to the same session; this may be a population, not one
+  row.
+- **`gpt4_7f6b06db` — distractor crowding.** Richer facts displace distinct events out of the
+  top 15 ("two Yosemites, no Muir Woods"). **Not the token cap:** `evidence_rows` stayed
+  pinned at 15 in every question of every run, median tokens 490 → 887 against a 2000 budget.
+  It is rank displacement, so raising `DEFAULT_MAX_CONTEXT_TOKENS` would not touch it.
+- **`gpt4_93159ced_abs` — abstention erosion.** More evidence, more willingness to answer
+  something adjacent. Both directions of one dial, both replicated: false-refusal 6.3% → 1.1%
+  (sonnet) / 8.4% → 3.2% (GLM) while hallucination went 20% → 40% in both (1 → 2 of 5).
+  Answerable 77/95 → 84/95, unanswerable 5/5 → 4/5. Read the two together before touching the
+  abstention directive — and re-read "Two prompt sentences that cost answers" first.
 
-### 2. `multi-session` 74.1% (80.0% excluding known-bad-gold)
+Also still open, from the same type: **`7161e7e2`** now HAS the full 7×4 shift table in its
+evidence row and the answerer still refuses the positional lookup ("the sheet does not specify
+Admon's exact Sunday shift"). That is a synthesis failure on correct evidence — the only one
+of its kind in the set, and a cheap `diagnose-temporal.ts` dump will show you the exact row.
 
-Second-largest gap, but no known lever and no diagnosis yet. Two of its 27 are
-known-bad-gold. Worth a `diagnose` pass over its failures before theorising — the GLM
-arm scores 81.5% here vs Sonnet's 74.1%, which is odd enough to be worth understanding
-on its own (it is the only type where the cheaper answerer does better).
+### 2. `multi-session` — the two arms disagree by 11 points
+
+88.9% (sonnet) vs 77.8% (GLM) on the same 27 questions after the assistant-content change,
+having been 74.1% vs 81.5% before it — i.e. the arms swapped which one is ahead. Two of the
+27 are known-bad-gold. There is still no diagnosed lever here, and the arm disagreement means
+**any multi-session number from a single arm is uninterpretable**. Run a `diagnose` pass over
+the questions where the arms disagree (`36b9f61e` is the cleanest: WIN in sonnet, LOSS in GLM
+on identical evidence) before theorising — that set isolates synthesis from retrieval for free.
 
 ### 3. Residual temporal: same-date disambiguation
 
@@ -199,10 +236,18 @@ that both said otherwise.
    reproducible. **Never compare a number from one sampler to a number from the other.**
 9. **Variance is large at small n.** Two runs of identical code at n=30 gave 28/30 and
    26/30 — 4 questions flip between identical runs. Re-run the same config before
-   attributing any single-question flip to a change. At n=100, SE is ~3.8pp.
-10. **Tests are HERMETIC** (hash embedder, lexical reranker, canned extractors, no
+   attributing any single-question flip to a change. At n=100, SE is ~3.8pp — and a
+   PER-TYPE row sits on n=6–27, where SE is 8–20pp.
+10. **Run BOTH answer arms before believing any per-type delta.** The second arm costs
+    ~15 min and cents on warm caches, and it is this bench's cheapest noise filter. On the
+    assistant-content change, of 26 flips across the two arms only **7 wins and 4 losses
+    replicated**, one question (`36b9f61e`) flipped in OPPOSITE directions, and a headline
+    multi-session **+14.8** in one arm showed as **−3.7** in the other. A mechanism story is
+    not corroboration — one is equally easy to write for either sign, after the fact. Use
+    McNemar on discordant pairs; the runs are paired.
+11. **Tests are HERMETIC** (hash embedder, lexical reranker, canned extractors, no
     network). Keep it that way — new retrieval features need deterministic tests.
-11. **Memory discipline:** write `.claude/memory/` updates ONLY in this worktree and
+12. **Memory discipline:** write `.claude/memory/` updates ONLY in this worktree and
     fold them into the same commit as the work.
 
 ## Temporal grounding — what the fix was (2026-09-16)
@@ -254,6 +299,61 @@ An intermediate directive said the elapsed time "is already computed for you" an
 The shipped wording says every row is dated, that you must subtract two rows yourself,
 and that only the distance from today is precomputed.
 
+## Assistant-content extraction — what the fix was (2026-09-16)
+
+`/Users/vpulim/Downloads/assistant-fix.md` prescribed four fixes. **Three of the four were
+aimed at causes this codebase did not have** — the second consecutive fix doc for which that
+was true. Dumping the cached facts and then the evidence table (~10 minutes, free) showed:
+
+- assistant facts were **already** being emitted with `subject: assistant` and
+  `network: experience`, in all six failing sessions;
+- retrieval **already** ranked the right session's facts **1–7** in five of six.
+
+What was actually wrong was the detail inside them:
+`assistant | generated_song | sad song with lyrics and note sequences` — for a question
+asking what the chorus's chord progression was. The line that caused it was
+**"Keep objects concise: a phrase, a value, or an outcome."** Do not reintroduce it.
+
+The replacement ports the shape of Strata's proven 2026-08-02 observer contract
+(`packages/memory-strata/src/observer.ts`, which moved the same type 25.9% → 83.3%): two
+named kinds of fact (USER and ASSISTANT), keep the specifics rather than the topic, keep a
+list/table/sequence whole and in order as ONE fact, copy verbatim strings exactly, at most 5
+assistant facts each under 400 characters. Measured effect: object length p50 **56 → 189**
+chars, max 444 → 564. Newlines in `object`: **0 in 46,654 facts**, before and after — the
+markdown evidence table is not at risk from the longer payloads.
+
+A second, independent bug was fixed alongside it: **`memoryStatement` spaced out underscores
+in `object`**. `subject`/`predicate` are snake_case by contract, but `object` is free text, so
+the stored handle `@jessica_poole_jewellery` reached the answerer as `@jessica poole
+jewellery` and it reported a handle that does not exist. The judge named it outright: *"Agent
+gives a different Instagram handle (no underscores)."* That one row is `b759caee`.
+
+### What was deliberately NOT built, and why
+
+- **`parseAssistantIntent` regex + query expansion** (doc Fix 2) — no failing question needed
+  it; retrieval was already ranking the right session 1–7.
+- **A +0.35 RRF boost for `network=experience` AND `subject='assistant'`** (doc Fix 3) —
+  **would have made things worse.** `b759caee`'s gold is a WORLD fact
+  (`jessica_poole | instagram_account | @jessica_poole_jewellery`); boosting `subject=assistant`
+  demotes it beneath the vaguer `assistant | wrote_blog_post`.
+- **An `actor: "user" | "assistant"` field on `ExtractedFactSchema`** (doc Fix 1) —
+  `subject: "assistant"` already carries the speaker, and a parallel field is two sources of
+  truth for one concept.
+- **`formatCandidateForReranker`** (doc Fix 4) — `memoryStatement` already emits
+  `assistant recommended: X`; the delta was the word "The", against a retrieval stage that was
+  not the bottleneck.
+
+### The two questions this did NOT fix
+
+- **`5809eb10`** — gold ("construction began in 2014") sits in a **user-pasted document**, not
+  an assistant turn. Outside this lever by construction. The "keep the specifics" rule is
+  scoped to assistant facts, following Strata; widening it to long pasted user content is a
+  plausible next arm, but it would fatten every fact and wants its own measurement.
+- **`7161e7e2`** — the full 7×4 shift table IS in the evidence row now, and the answerer still
+  says "the sheet does not specify Admon's exact Sunday shift". Extraction fixed, synthesis
+  did not follow through: it will not map `Sunday: Admon, Magdy, Ehab, Sara` positionally onto
+  the column header list. The only pure-synthesis failure in the set.
+
 ## Earlier runs on the OLD easy-slice sampler (not comparable to anything above)
 
 `--sampler shortest` allocated by type and then took the k shortest haystacks, putting
@@ -283,13 +383,15 @@ dem-memory/
 │   │   └── reflect.ts            When column, relativeTime, prompt, synthesis
 │   └── cli.ts                    REPL; `ask`/`recall` default asOf to the wall clock
 ├── bench/
-│   ├── harness.ts                corpus, stacks, caches, stratifiedSample/pickShortest
+│   ├── harness.ts                corpus, stacks, append-only embed cache, stratifiedSample
 │   ├── extraction.ts             GLM extractor + prompt/model-fingerprinted fact cache
 │   ├── llm.ts                    OpenRouter client (effort "none" omits reasoning)
 │   ├── run.ts                    scoring run
 │   ├── diagnose-temporal.ts      dump the evidence table a question actually sees
 │   └── compare-strata.ts         re-express results in Strata's metrics
-├── tests/                        54 passing, hermetic
+├── tests/                        72 passing, hermetic
+│   ├── assistant-content.test.ts verbatim objects + extraction-prompt contract
+│   └── embed-cache.test.ts       append-only ndjson, legacy adoption, torn lines
 ├── scripts/verify-db.ts          vec0/FTS5 smoke
 └── README.md
 ```

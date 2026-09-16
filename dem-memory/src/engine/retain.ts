@@ -38,17 +38,64 @@ export interface RetainResult {
   skipped: SkippedFact[];
 }
 
+/**
+ * The extraction contract.
+ *
+ * The assistant-content half is not decoration. At n=100 the weak type was
+ * single-session-assistant (45.5%, identical in both answer arms), and dumping what actually
+ * reached the table showed the right session's facts ranked 1-7 in five of six failures with
+ * the asked-for detail compressed out of them: "assistant generated song: sad song with
+ * lyrics and note sequences" for a question about the chorus's chord progression. Retrieval
+ * was doing its job; the prompt had thrown the answer away at ingest. The instruction that
+ * did it was "Keep objects concise: a phrase, a value, or an outcome" — do not reintroduce it.
+ *
+ * The shape of the fix is ported from `@ax/memory-strata`'s 2026-08-02 assistant-content
+ * extraction (`packages/memory-strata/src/observer.ts`), which moved the same LongMemEval type
+ * 25.9% -> 83.3% with no other type regressing.
+ */
 export const EXTRACTION_SYSTEM_PROMPT = [
   "You are a memory-extraction engine. You convert dialogue transcripts into discrete relational facts.",
   "",
-  "Rules:",
-  "- Each fact is a quadruple: subject, predicate, object.",
-  "- Canonicalize subjects to snake_case entity identifiers (e.g. sam, postgres_database).",
-  "- Normalize predicates to snake_case relationships or properties (e.g. prefers_backend, works_at).",
-  "- Keep objects concise: a phrase, a value, or an outcome.",
+  "Extract TWO kinds of fact, in both directions.",
+  "",
+  "1. USER facts — what the user told you: preferences, decisions, deadlines, identities, project",
+  "   state, and events in their life.",
+  "2. ASSISTANT facts — substantive content YOU (the assistant) supplied that the user may later ask",
+  "   you to recall: recommendations, named places/titles/products/handles, specific values and",
+  "   numbers, schedules and tables, and lists you gave them. These are the ones memory systems drop,",
+  "   and dropping them is what makes \"what did you recommend?\" unanswerable a month later.",
+  "",
+  "Shape:",
+  "- Each fact is a triple — subject, predicate, object — plus a network, a date, and a confidence.",
+  "- Canonicalize subjects to snake_case entity identifiers (e.g. sam, postgres_database). Use the",
+  "  subject `assistant` for a fact about what the assistant itself said, did, or supplied.",
+  "- Normalize predicates to snake_case relationships or properties (e.g. prefers_backend, works_at,",
+  "  recommended, listed, stated, provided_solution).",
+  "- The object is FREE TEXT, written exactly as it should be read back. Do not convert it to",
+  "  snake_case, and do not compress away the part that makes it worth remembering.",
+  "",
+  "Rules for ASSISTANT facts:",
+  "- Keep the specifics. The point is the detail — the name, the number, the handle, the measurement,",
+  "  the step — not the topic. \"assistant | suggested_projects | some DIY decor ideas\" is worthless;",
+  "  \"assistant | recommended_sealant | Mod Podge or another sealant, to seal the newspaper flower",
+  "  vase\" is the fact.",
+  "- Keep a list, table, schedule, or sequence whole and in order, as ONE fact that preserves the",
+  "  original order and item count — the user may ask which item was 7th, or what Admon's Sunday row",
+  "  said. Do not split it into one fact per item. Past 10 items, record the first 10 and state the",
+  "  total count.",
+  "- Copy verbatim strings exactly as written: handles (@name_here), identifiers, code, URLs, file",
+  "  paths, chord and note sequences. Never re-space, re-case, or tidy them.",
+  "- No speculation. Skip anything the assistant hedged, guessed at, or flagged as uncertain",
+  "  (\"might be\", \"possibly\", \"I'm not sure\"). Memory must not turn a guess into a fact.",
+  "- No echoes. If the assistant merely repeated something the user said, record it once, as a user fact.",
+  "- Be selective: at most 5 assistant facts per transcript, each object under 400 characters. Skip",
+  "  generic advice, pleasantries, and anything the user could trivially re-derive.",
+  "",
+  "Rules for every fact:",
   "- Classify each fact:",
   "  - world: objective, verifiable assertions about external entities or domain rules.",
-  "  - experience: first-person records of user interactions, assistant actions, or recommendations.",
+  "  - experience: first-person records of user interactions, and of what the assistant did, said,",
+  "    recommended, or supplied.",
   "  - opinion: subjective beliefs or inferred user preferences; assign confidence below 1.0.",
   "- validStart: ISO-8601 UTC date-time marking when the statement became true. Use dialogue timestamps",
   "  when present; otherwise use the current time provided in the prompt. Never output a future time.",

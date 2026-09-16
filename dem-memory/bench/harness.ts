@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -113,34 +113,121 @@ export function resolveStack(stack: Stack): ResolvedStack {
   };
 }
 
-export function embedCacheWrap(inner: EmbeddingFn): EmbeddingFn & { flush(): void } {
-  const path = join(CACHE_DIR, "embeddings.json");
-  mkdirSync(CACHE_DIR, { recursive: true });
-  const cache: Record<string, number[]> = existsSync(path)
-    ? (JSON.parse(readFileSync(path, "utf8")) as Record<string, number[]>)
-    : {};
+/**
+ * Embedding cache: ONE JSON RECORD PER LINE, appended, never rewritten.
+ *
+ * It used to be a single JSON object rewritten in full on every flush. At 536,270,828 bytes
+ * `JSON.stringify` exceeded V8's max string length (536,870,888) and threw
+ * `Invalid string length` — inside run.ts's per-question try block, so 49 questions of an
+ * n=100 run scored `error` after their work had already succeeded, and no restart could ever
+ * converge because every flush threw again. Appending only what is new keeps each write small
+ * however large the cache grows, and drops the per-question cost from "rewrite half a gigabyte"
+ * to "write the rows you just added".
+ *
+ * Reads go through a Buffer and slice per line for the same reason: `readFileSync(path, "utf8")`
+ * on a cache this size would hit the same ceiling from the other direction.
+ */
+export const EMBED_CACHE_FILE = "embeddings.ndjson";
+/** Pre-2026-09-16 format. Adopted once, then left alone. */
+export const LEGACY_EMBED_CACHE_FILE = "embeddings.json";
+
+const FLUSH_BATCH_LINES = 512;
+
+interface EmbedCacheRecord {
+  k: string;
+  v: number[];
+}
+
+function readNdjsonCache(path: string, into: Map<string, number[]>): void {
+  // Buffer, not string: the whole-file string is exactly the ceiling this format exists to duck.
+  const buffer = readFileSync(path);
+  let start = 0;
+  while (start < buffer.length) {
+    let end = buffer.indexOf(0x0a, start);
+    if (end === -1) end = buffer.length;
+    if (end > start) {
+      try {
+        const record = JSON.parse(buffer.toString("utf8", start, end)) as EmbedCacheRecord;
+        if (typeof record.k === "string" && Array.isArray(record.v)) into.set(record.k, record.v);
+      } catch {
+        /* a line torn by a kill mid-append costs that one vector, not the file */
+      }
+    }
+    start = end + 1;
+  }
+}
+
+function adoptLegacyCache(path: string, into: Map<string, number[]>): number {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, number[]>;
+    for (const [key, vector] of Object.entries(parsed)) {
+      if (Array.isArray(vector)) into.set(key, vector);
+    }
+    return into.size;
+  } catch (error) {
+    // Best-effort by design: a cache is an optimization, and re-embedding is merely expensive.
+    // Taking the run down over one unreadable file is not.
+    console.warn(
+      `embedding cache: ignoring unreadable ${LEGACY_EMBED_CACHE_FILE} (${error instanceof Error ? error.message : String(error)})`,
+    );
+    return 0;
+  }
+}
+
+export function embedCacheWrap(
+  inner: EmbeddingFn,
+  cacheDir: string = CACHE_DIR,
+): EmbeddingFn & { flush(): void } {
+  const path = join(cacheDir, EMBED_CACHE_FILE);
+  const legacyPath = join(cacheDir, LEGACY_EMBED_CACHE_FILE);
+  mkdirSync(cacheDir, { recursive: true });
+
+  const cache = new Map<string, number[]>();
+  const pending: string[] = [];
+  if (existsSync(path)) {
+    readNdjsonCache(path, cache);
+  } else if (existsSync(legacyPath)) {
+    const adopted = adoptLegacyCache(legacyPath, cache);
+    if (adopted > 0) {
+      console.log(`embedding cache: adopting ${adopted} entries from ${LEGACY_EMBED_CACHE_FILE}`);
+      // Everything adopted is unwritten in the new format, so the first flush lays down the
+      // ndjson. The legacy file is left in place rather than deleted — it is the only copy
+      // until that flush lands, and deleting an expensive cache is the caller's call.
+      for (const [key, vector] of cache) pending.push(JSON.stringify({ k: key, v: vector }));
+    }
+  }
+
   const keyOf = (text: string, task?: string): string =>
     createHash("sha1").update(`${task ?? "document"}:${text}`).digest("hex");
+
   const wrapper = async (texts: string[], task?: "document" | "query"): Promise<number[][]> => {
     const keys = texts.map((text) => keyOf(text, task));
     const missing = new Map<number, string>();
     keys.forEach((key, index) => {
-      if (cache[key] === undefined) missing.set(index, key);
+      if (!cache.has(key)) missing.set(index, key);
     });
     if (missing.size > 0) {
       const missingTexts = [...missing.keys()].map((index) => texts[index] ?? "");
       const vectors = await inner(missingTexts, task);
       let offset = 0;
-      for (const [index, key] of missing) {
+      for (const [, key] of missing) {
         const vector = vectors[offset];
         offset += 1;
-        if (vector) cache[key] = vector;
+        if (vector) {
+          cache.set(key, vector);
+          pending.push(JSON.stringify({ k: key, v: vector }));
+        }
       }
     }
-    return keys.map((key) => cache[key] ?? []);
+    return keys.map((key) => cache.get(key) ?? []);
   };
+
   wrapper.flush = (): void => {
-    writeFileSync(path, JSON.stringify(cache));
+    if (pending.length === 0) return;
+    for (let i = 0; i < pending.length; i += FLUSH_BATCH_LINES) {
+      appendFileSync(path, `${pending.slice(i, i + FLUSH_BATCH_LINES).join("\n")}\n`);
+    }
+    pending.length = 0;
   };
   return wrapper;
 }
