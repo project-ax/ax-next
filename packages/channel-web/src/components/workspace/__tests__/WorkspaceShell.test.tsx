@@ -9,9 +9,11 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { workspaceApi } from '@/lib/workspace-api';
 import { UserProvider } from '@/lib/user-context';
 import { WorkspaceShell } from '../WorkspaceShell';
+import { workspaceGrantActions } from '@/lib/workspace-grant-store';
 import { DECISION_THREAD_READ_FAILED } from '../decision-copy';
 import { decisionFixture } from './decision-fixture';
 import type { ActivityEvent } from '@/lib/workspace-types';
+import type { PermissionRequest } from '../../../server/types';
 
 import { rail as railFixture } from './rail-fixture';
 
@@ -30,6 +32,9 @@ vi.mock('@/lib/workspace-api', async () => {
       approveDecision: vi.fn(),
       dismissDecision: vi.fn(),
       undoDecision: vi.fn(),
+      // The mount read-back for grants raised while the workspace was closed
+      // (TASK-373). Default empty below; the tests that care override it.
+      grants: vi.fn(),
       // The rail reads its own route (TASK-235 / AW-14). Without it in the
       // mock, opening an agent throws before this file's subject renders.
       rail: vi.fn(async () => railFixture()),
@@ -41,7 +46,19 @@ vi.mock('@/lib/workspace-api', async () => {
 const boardMock = vi.mocked(workspaceApi.board);
 const activityMock = vi.mocked(workspaceApi.activity);
 const decisionsMock = vi.mocked(workspaceApi.decisions);
+const grantsMock = vi.mocked(workspaceApi.grants);
 const agentMock = vi.mocked(workspaceApi.agent);
+
+/** A skill grant, as the wire carries it — the subject the tests raise twice. */
+function linearSkill(): PermissionRequest {
+  return {
+    kind: 'skill',
+    skillId: 'linear',
+    description: 'File and read Linear issues',
+    hosts: ['api.linear.app'],
+    slots: [],
+  };
+}
 
 const user = {
   id: 'u1',
@@ -70,6 +87,11 @@ beforeEach(() => {
   activityMock.mockResolvedValue({ events: [], nextBefore: null });
   decisionsMock.mockReset();
   decisionsMock.mockResolvedValue({ decisions: [] });
+  grantsMock.mockReset();
+  grantsMock.mockResolvedValue({ grants: [] });
+  // The grant store is module-level and this file raises rows into it; a
+  // leaked row would follow the next test into its Today render.
+  workspaceGrantActions.resetForTest();
 });
 
 describe('WorkspaceShell', () => {
@@ -114,6 +136,55 @@ describe('WorkspaceShell', () => {
     renderShell();
 
     expect(await screen.findByText('Nothing is waiting on you.')).toBeTruthy();
+  });
+
+  it('reads back grants raised while the workspace was closed (TASK-373)', async () => {
+    /*
+      The whole point of the read-back: an agent stopped at a capability wall
+      while Today was closed, the grant outlived the turn in the host's buffer,
+      and without a fetch-on-mount the person would never be asked. The row
+      below renders off the wire — a card id that appears in no fixture.
+    */
+    boardMock.mockResolvedValue({ agents: [] });
+    grantsMock.mockResolvedValue({
+      grants: [
+        { conversationId: 'cnv-1', agentId: 'a-quill', request: linearSkill() },
+      ],
+    });
+
+    renderShell();
+
+    expect(await screen.findByTestId('grant-skill:linear')).toBeTruthy();
+    expect(screen.getByText('Connect Linear')).toBeTruthy();
+    // And it counts: one grant means the headline does not claim an empty day.
+    expect(screen.getByText('One thing is waiting on you.')).toBeTruthy();
+  });
+
+  it('a grant that is fetched AND streamed is one row', async () => {
+    /*
+      The fetch and the stream meet in ONE place — `raise()`, which replaces in
+      place on the subject key. This is the case that punishes a second,
+      hydrate-flavoured entry point: mount with the fetched grant, then have
+      the same subject arrive the way the SSE replay carries it. One row, or
+      the merge is wrong.
+    */
+    boardMock.mockResolvedValue({ agents: [] });
+    grantsMock.mockResolvedValue({
+      grants: [
+        { conversationId: 'cnv-1', agentId: 'a-quill', request: linearSkill() },
+      ],
+    });
+
+    renderShell();
+    await screen.findByTestId('grant-skill:linear');
+
+    act(() => {
+      // Same subject, a fresher payload — what `AgentView` does when the
+      // stream (or a reconnect replay) delivers the card it buffered.
+      workspaceGrantActions.raise(linearSkill(), 'cnv-1');
+    });
+
+    expect(screen.getAllByTestId('grant-skill:linear')).toHaveLength(1);
   });
 
   it('does not offer a demo strip or a global stop', async () => {

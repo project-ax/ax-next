@@ -228,11 +228,53 @@ function Inner({ onOpenAdminSettings }: WorkspaceShellProps) {
    */
   const queue = useDecisionQueue();
   /*
-    Open capability grants (TASK-350). A store rather than a fetch: the frame
-    that raises one arrives on the turn stream, and nothing persists it, so
-    there is no route to read it back from.
+    Open capability grants (TASK-350). A store with TWO producers that meet in
+    one place — `raise()` — so a grant is one row however it arrives:
+
+      - the turn stream (`AgentView` → `onPermissionRequest`), for a grant
+        raised while a turn is live; and
+      - the mount fetch below (`GET /api/workspace/grants`, TASK-373), for one
+        raised while the workspace was closed — the buffer holds pending cards
+        past the turn, and this read-back is what makes them answerable.
+
+    `raise()` replaces in place on the subject key, so a grant that is BOTH
+    fetched and streamed stays one row and the newer payload wins. A second,
+    hydrate-flavoured entry point is exactly how two rows for one grant would
+    happen.
   */
   const grants = useWorkspaceGrants();
+
+  /**
+   * TASK-373 — read back what is waiting, once, at mount. Together with the
+   * live stream this covers the gap between them: a grant raised by an agent
+   * working unattended lands in the buffer, survives the turn ending and the
+   * page reloading, and is here when Today opens.
+   *
+   * Best-effort. A failed read leaves the store as the stream made it — the
+   * stream is still the live path for anything raised on an open turn — and
+   * the queue it feeds already distinguishes "read and empty" from "could not
+   * check" through the decisions read; a grants blip does not get its own
+   * sentence on top. Unmount cancels the apply rather than racing the store
+   * (the store is module-level and outlives this component).
+   */
+  useEffect(() => {
+    let cancelled = false;
+    workspaceApi
+      .grants()
+      .then((page) => {
+        if (cancelled) return;
+        for (const g of page.grants) {
+          workspaceGrantActions.raise(g.request, g.conversationId);
+        }
+      })
+      .catch((e) => {
+        console.warn('[workspace] pending grants could not be read', e);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const [filter, setFilter] = useState<'needs' | 'working'>('needs');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [rosterOpen, setRosterOpen] = useState(true);

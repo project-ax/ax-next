@@ -35,6 +35,9 @@ vi.mock('@/lib/workspace-api', async () => {
       approveDecision: vi.fn(),
       dismissDecision: vi.fn(),
       undoDecision: vi.fn(),
+      // TASK-373 — the shell's mount read-back; nothing in this file raises a
+      // grant, so an empty page keeps every subject out of the render.
+      grants: vi.fn(async () => ({ grants: [] })),
       rail: vi.fn(async () => railFixture()),
       revokeGrant: vi.fn(),
     },

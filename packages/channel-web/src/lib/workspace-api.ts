@@ -186,6 +186,25 @@ export interface ActivityPage {
   nextBefore: string | null;
 }
 
+/**
+ * One pending grant as `GET /api/workspace/grants` carries it (TASK-373).
+ *
+ * `request` is the same `PermissionRequest` the SSE `permissionRequest` frame
+ * carries — the server sends the buffered card verbatim — and
+ * `conversationId` is what makes it answerable: Today can hold grants from
+ * several agents, so the row records the conversation the POST will target.
+ */
+export interface PendingGrant {
+  conversationId: string;
+  agentId: string;
+  request: PermissionRequest;
+}
+
+/** `GET /api/workspace/grants` — everything still waiting on this person. */
+export interface GrantsPage {
+  grants: PendingGrant[];
+}
+
 /** One listing of an agent's files — see `workspaceApi.files`. */
 export interface AgentFilesPage {
   files: WorkspaceFileSummary[];
@@ -446,6 +465,38 @@ export const workspaceApi = {
   approveDecision: (id: string) => decisionPost<ApproveResult>(id, 'approve'),
   dismissDecision: (id: string) => decisionPost<DismissResult>(id, 'dismiss'),
   undoDecision: (id: string) => decisionPost<UndoResult>(id, 'undo'),
+
+  /**
+   * Every pending capability grant waiting on this person (TASK-373) — the
+   * read-back that lets a grant survive the stream it arrived on. The server
+   * answers only the caller's own rows (scoping ran when the card was
+   * buffered), so there are no parameters to pass and none to get wrong.
+   *
+   * Deliberately unpaginated, like `decisions()`: the set is bounded by the
+   * per-conversation card cap and holds only PENDING grants.
+   */
+  grants: async () => {
+    const body = await req<unknown>('/grants');
+    // Same shape guard as the queue read, at the boundary the two share: what
+    // must never happen is a malformed body being mistaken for an empty list.
+    // `request` and `conversationId` are checked because the merge in
+    // WorkspaceShell dereferences exactly those two — one wrong row there
+    // throws inside the mount effect, and a throw a person cannot see or fix
+    // is worse than a read that fails loudly.
+    return checkedRead<GrantsPage>(
+      '/grants',
+      body,
+      (b) =>
+        isRecord(b) &&
+        Array.isArray(b.grants) &&
+        b.grants.every(
+          (g) =>
+            isRecord(g) &&
+            typeof (g as { conversationId?: unknown }).conversationId === 'string' &&
+            isRecord((g as { request?: unknown }).request),
+        ),
+    );
+  },
 
   /** One row, re-read by id. See `DecisionRead` for why this exists. */
   decision: async (id: string) => {
