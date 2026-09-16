@@ -40,6 +40,7 @@ import type {
   ThreadMessage,
   WorkspaceAgent,
 } from '@/lib/workspace-api';
+import { workspaceGrantActions } from '@/lib/workspace-grant-store';
 import type { AgentTab } from '@/lib/workspace-route';
 
 // The tab vocabulary lives with the URL grammar that has to name it — one
@@ -392,6 +393,23 @@ export function AgentView({
           void load();
           onDecisionRaised?.(decisionId);
           onChanged();
+        },
+        /*
+          The agent is asking for a capability it does not have (TASK-350).
+
+          Unlike a decision, there is nothing to re-read: a grant is not a row
+          anybody else owns, and `GET /api/workspace/decisions` knows nothing
+          about it. The frame IS the record, so it goes straight into the store
+          the Today queue renders from.
+
+          Writing the store from here rather than from `workspace-api` follows
+          this surface's own idiom — `streamReply` hands the caller callbacks
+          and the component decides what they mean. (Chat does the opposite and
+          writes its store from the transport, which is why its reader cannot
+          be reused by anything that renders differently.)
+        */
+        onPermissionRequest: (request) => {
+          workspaceGrantActions.raise(request, conversationRef.current);
         },
       });
     },

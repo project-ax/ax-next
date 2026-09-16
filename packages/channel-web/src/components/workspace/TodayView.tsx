@@ -28,19 +28,34 @@ import type { DecisionReadError } from '@/lib/workspace-decisions';
 import { readAlertVariant } from '@/lib/read-register';
 import { isOpenDecision } from '@/lib/workspace-types';
 import { DecisionRow } from './DecisionRow';
+import { GrantRow } from './GrantRow';
 import {
   DECISION_READ_FAILED,
   DECISION_SESSION_EXPIRED,
 } from './decision-copy';
 import { Elapsed, StateDot } from './bits';
+import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 
+/*
+  The heading's job is a COUNT, not a taxonomy — the rows below say what each
+  thing is.
+
+  These read "One decision"… until TASK-350, which put capability grants in the
+  same queue. A grant is deliberately NOT a decision (2026-09-12: a grant is
+  durable and agent-scoped with no recorded call; a decision is a one-shot
+  outward action with a verbatim call and a freshness guard — two types, two
+  rows, one list), so the old wording made the heading lie about a third of what
+  it was counting. An over-specific heading that is sometimes false is worse
+  than a general one that is always true, and the zero case already carried no
+  noun, so the whole set is nounless now.
+*/
 const WORDS = [
   'Nothing',
-  'One decision',
-  'Two decisions',
-  'Three decisions',
-  'Four decisions',
-  'Five decisions',
+  'One thing',
+  'Two things',
+  'Three things',
+  'Four things',
+  'Five things',
 ];
 
 /**
@@ -54,6 +69,16 @@ const JUST_RESOLVED_MS = 60_000;
 
 interface Props {
   decisions: Decision[];
+  /**
+   * Open capability grants (TASK-350). A separate array from `decisions`
+   * because they are a separate type with a separate lifecycle — they arrive on
+   * the turn stream rather than through the decisions fetch, and nothing
+   * persists them. They render in the same list and count toward the same
+   * heading, which is the whole point: one queue of things waiting on a person.
+   */
+  grants: readonly WorkspaceGrant[];
+  /** A grant was answered or turned down. */
+  onGrantResolved: (key: string) => void;
   agents: WorkspaceAgent[];
   filter: 'needs' | 'working';
   expandedId: string | null;
@@ -96,6 +121,8 @@ interface Props {
 
 export function TodayView({
   decisions,
+  grants,
+  onGrantResolved,
   agents,
   filter,
   expandedId,
@@ -129,6 +156,16 @@ export function TodayView({
       )
     : [];
   const working = agents.filter((a) => a.state === 'working');
+  /*
+    Grants are counted with the decisions, not beside them. They are in the same
+    list and they ask the same thing of the person, so a heading that counted
+    only one of them would be wrong in the ordinary case where both are open.
+    Unlike decisions they are never "unreadable" — they arrive on the turn
+    stream rather than through a fetch that can fail — so they are counted even
+    when the decisions read failed, which is the honest answer: we know about
+    these, we could not check for others.
+  */
+  const waiting = open.length + grants.length;
 
   /*
     The headline speaks only for what we could read. While the queue is
@@ -137,9 +174,9 @@ export function TodayView({
   */
   const headline = !readable
     ? 'We could not check what is waiting on you.'
-    : open.length === 0
+    : waiting === 0
       ? 'Nothing is waiting on you.'
-      : `${WORDS[open.length] ?? `${open.length} decisions`} ${open.length === 1 ? 'is' : 'are'} waiting on you.`;
+      : `${WORDS[waiting] ?? `${waiting} things`} ${waiting === 1 ? 'is' : 'are'} waiting on you.`;
 
   /*
     A COUNT IS ONLY RENDERED WHEN IT IS POSITIVE.
@@ -157,7 +194,7 @@ export function TodayView({
       `${working.length} ${working.length === 1 ? 'agent' : 'agents'} working`,
     );
   }
-  if (open.length > 0) summary.push(`${open.length} waiting on you`);
+  if (waiting > 0) summary.push(`${waiting} waiting on you`);
   if (doneToday !== undefined && doneToday > 0) {
     summary.push(`${doneToday} done today`);
   }
@@ -169,7 +206,7 @@ export function TodayView({
   */
   const hint =
     filter === 'needs'
-      ? open.length > 0
+      ? waiting > 0
         ? 'Open a row to see the detail and act on it.'
         : null
       : working.length > 0
@@ -292,9 +329,23 @@ export function TodayView({
         <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
           {filter === 'needs' ? (
             <>
+              {/*
+                Grants sit above the decisions. A held action is waiting; an
+                agent that hit the wall is STOPPED until this is answered, so it
+                is the more urgent of the two and goes where the eye lands
+                first. They are also the rows most likely to be unfamiliar, and
+                burying an unfamiliar row under familiar ones is how it goes
+                unread.
+              */}
+              {grants.map((g) => (
+                <GrantRow key={g.key} grant={g} onResolved={onGrantResolved} />
+              ))}
               {open.map((d) => renderRow(d, true))}
               {justResolved.map((d) => renderRow(d, false))}
-              {readable && open.length === 0 && justResolved.length === 0 && (
+              {readable &&
+                open.length === 0 &&
+                justResolved.length === 0 &&
+                grants.length === 0 && (
                 /*
                   The headline already said the queue is empty. Saying it again
                   two inches lower tells a first-timer nothing; what they do not
@@ -309,8 +360,8 @@ export function TodayView({
                   {loading
                     ? 'Checking what is waiting on you…'
                     : 'When an agent hits something it wants your OK on, it’ll wait for you here.'}
-                </div>
-              )}
+                  </div>
+                )}
             </>
           ) : working.length === 0 ? (
             <div className="px-5 py-10 text-center text-[13.5px] text-muted-foreground">

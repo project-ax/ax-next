@@ -25,6 +25,10 @@ import { Button } from '@/components/ui/button';
 import { workspaceApi } from '@/lib/workspace-api';
 import { useActivityFeed } from '@/lib/workspace-activity';
 import { useDecisionQueue } from '@/lib/workspace-decisions';
+import {
+  useWorkspaceGrants,
+  workspaceGrantActions,
+} from '@/lib/workspace-grant-store';
 import { WorkspaceProvider, useWorkspace } from '@/lib/workspace-context';
 import { hydrateTheme } from '@/lib/theme';
 import { isOpenDecision, type ActivityEvent } from '@/lib/workspace-types';
@@ -223,6 +227,12 @@ function Inner({ onOpenAdminSettings }: WorkspaceShellProps) {
    * without a second read and without two copies drifting apart on screen.
    */
   const queue = useDecisionQueue();
+  /*
+    Open capability grants (TASK-350). A store rather than a fetch: the frame
+    that raises one arrives on the turn stream, and nothing persists it, so
+    there is no route to read it back from.
+  */
+  const grants = useWorkspaceGrants();
   const [filter, setFilter] = useState<'needs' | 'working'>('needs');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [rosterOpen, setRosterOpen] = useState(true);
@@ -344,6 +354,8 @@ function Inner({ onOpenAdminSettings }: WorkspaceShellProps) {
               <div className="flex-1 overflow-y-auto">
                 <TodayView
                   decisions={queue.decisions}
+                  grants={grants.grants}
+                  onGrantResolved={workspaceGrantActions.resolve}
                   agents={board.agents}
                   filter={filter}
                   expandedId={expandedId}

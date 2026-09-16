@@ -66,6 +66,8 @@ function renderToday(
   return render(
     <TodayView
       decisions={[]}
+      grants={[]}
+      onGrantResolved={vi.fn()}
       agents={[agent()]}
       filter="needs"
       expandedId={null}
@@ -309,5 +311,96 @@ describe('resolved rows', () => {
       ],
     });
     expect(container.textContent).not.toContain('Quill sent the reply to Dana');
+  });
+});
+
+/*
+  TASK-350 — the queue holds two kinds of thing now, and the heading counts
+  both.
+
+  These cases did not exist before. The populated headline was untested: only
+  the zero case ("Nothing is waiting on you.") and the unreadable case had
+  assertions, which is why the wording could be changed from "One decision" to
+  "One thing" with the whole suite still green. A heading that is allowed to lie
+  about a third of what it counts is exactly what this card exists to stop, so
+  it gets covered here.
+*/
+const hostGrant = {
+  key: 'host:example.org',
+  conversationId: 'c1',
+  request: { kind: 'host' as const, host: 'example.org', sessionId: 's-1' },
+};
+const skillGrant = {
+  key: 'skill:linear',
+  conversationId: 'c1',
+  request: {
+    kind: 'skill' as const,
+    skillId: 'linear',
+    description: '',
+    hosts: [],
+    slots: [],
+  },
+};
+
+describe('the heading counts grants as well as decisions', () => {
+  it('says one thing when one decision is open', () => {
+    renderToday({ decisions: [decision()] });
+
+    expect(screen.getByText('One thing is waiting on you.')).toBeTruthy();
+  });
+
+  it('says one thing when the only thing open is a grant', () => {
+    // Before TASK-350 this said "Nothing is waiting on you." over a row that
+    // was plainly waiting on you — the queue could not see grants at all.
+    renderToday({ grants: [hostGrant] });
+
+    expect(screen.getByText('One thing is waiting on you.')).toBeTruthy();
+    expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();
+  });
+
+  it('adds them up when the queue holds one of each', () => {
+    // The discriminating case: counting only decisions gives "One thing".
+    renderToday({ decisions: [decision()], grants: [hostGrant] });
+
+    expect(screen.getByText('Two things are waiting on you.')).toBeTruthy();
+  });
+
+  it('counts both in the summary line too', () => {
+    const { container } = renderToday({
+      decisions: [decision()],
+      grants: [hostGrant, skillGrant],
+    });
+
+    expect(container.textContent).toMatch(/3 waiting on you/);
+  });
+});
+
+describe('a grant in the queue', () => {
+  it('renders as an answerable row', () => {
+    renderToday({ grants: [hostGrant] });
+
+    expect(screen.getByText('Allow access to example.org?')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /just this once/i })).toBeTruthy();
+  });
+
+  it('suppresses the empty state — the list is not empty', () => {
+    // "When an agent hits something it wants your OK on, it'll wait for you
+    // here" printed UNDER the thing waiting for you here is the same class of
+    // defect as the heading: a true-sounding sentence the screen disproves.
+    renderToday({ grants: [hostGrant] });
+
+    expect(screen.queryByText(/wait for you here/)).toBeNull();
+  });
+
+  it('sits above the decisions — a stopped agent outranks a held action', () => {
+    const { container } = renderToday({
+      decisions: [decision()],
+      grants: [hostGrant],
+    });
+
+    const text = container.textContent ?? '';
+    expect(text.indexOf('Allow access to example.org?')).toBeLessThan(
+      text.indexOf('Send the reply to Dana?'),
+    );
   });
 });
