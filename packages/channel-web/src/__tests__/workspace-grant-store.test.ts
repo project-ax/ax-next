@@ -172,7 +172,12 @@ describe('raise — a kind this build cannot draw', () => {
     expect(getWorkspaceGrantSnapshot().grants).toHaveLength(0);
     // Loud for whoever is debugging the skew, silent for the person: they
     // simply do not see a row they could not have answered anyway.
-    expect(warn).toHaveBeenCalled();
+    //
+    // The ARGUMENT is pinned, not just the call. The entire justification for
+    // logging here is that the `kind` is what makes the warning actionable
+    // during a version skew — `toHaveBeenCalled()` alone would stay green if
+    // someone dropped it back to a bare message.
+    expect(warn).toHaveBeenCalledWith(expect.any(String), { kind: 'device' });
     warn.mockRestore();
   });
 
@@ -256,13 +261,26 @@ describe('raise — a kind this build cannot draw', () => {
       regression tests) rather than to this guard, which is what makes the
       sentence above true and keeps the answerable grant.
 
-      So this assertion is only meaningful next to those: a guard may leave a
-      field out ONLY if the renderer is known to tolerate its absence. Check
-      it; never infer it from the field sounding decorative.
+      A SECOND round of review then caught the same mistake on `name`, cleared
+      because interpolation "cannot throw" — true, and the wrong test. It
+      renders "Connect undefined" over a password field instead, which is
+      quieter and worse.
+
+      So these assertions are only meaningful next to the render-site tests: a
+      guard may leave a field out ONLY if the renderer is known to tolerate its
+      absence, where TOLERATE means "renders something a person can act on",
+      not "does not throw". Verify it; never infer it from the field sounding
+      decorative.
     */
     expect(
       isRenderableGrant({ kind: 'skill', skillId: 'linear', hosts: [], slots: [] }),
     ).toBe(true);
+    // A connector with no `name`. Renderable on purpose — and `GrantRow` has a
+    // real fallback for it (`humanizeId(connectorId)`), pinned over there in
+    // `GrantRow.test.tsx`. Without that fallback this assertion was licensing
+    // a card titled "Connect undefined" above a password field: the second
+    // time this suite cleared a field on "it cannot throw" rather than on what
+    // the person would actually see.
     expect(
       isRenderableGrant({
         kind: 'connector',

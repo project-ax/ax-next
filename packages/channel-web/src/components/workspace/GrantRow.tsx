@@ -49,6 +49,7 @@ import {
 } from '@/lib/grant-destinations';
 import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
 import { HttpError, httpFetch, userFacingMessage } from '@/lib/http';
+import type { PermissionRequest } from '@/server/types';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 
 interface Props {
@@ -192,9 +193,33 @@ export function GrantRow({ grant, onResolved }: Props): ReactElement {
     );
   }
 
+  /*
+    THE TITLE IS THE SUBJECT OF THE CONSENT, so it is the one string on this
+    card that must never be missing.
+
+    `name` is typed `string` and required, and `isRenderableGrant` deliberately
+    does not check it — correctly, since a connector with no name is still an
+    answerable grant and refusing it would cost the person the question
+    entirely. But the first version of that reasoning cleared `name` on the
+    wrong test: "it is interpolated, so it cannot throw." Not throwing is not
+    tolerating. `Connect ${undefined}` renders **"Connect undefined"** above a
+    `type="password"` input and the KEY_SAFETY copy — a credential prompt whose
+    subject has gone missing, on the one surface whose entire job is informed
+    consent. That is worse than the crash it was compared against: a crash is
+    loud and this is a person typing an API key into a question they cannot
+    read.
+
+    `connectorId` IS guarded, so it is always there to fall back on, and
+    `humanizeId` is already how the skill arm below builds its title. An empty
+    string counts as missing for the same reason `undefined` does.
+  */
+  const connectorTitle = (r: Extract<PermissionRequest, { kind: 'connector' }>) =>
+    typeof r.name === 'string' && r.name.trim().length > 0
+      ? r.name
+      : humanizeId(r.connectorId);
   const title =
     request.kind === 'connector'
-      ? `Connect ${request.name}`
+      ? `Connect ${connectorTitle(request)}`
       : `Connect ${humanizeId(request.skillId)}`;
   const authoredWarning =
     request.kind === 'connector' ? AUTHORED_CONNECTOR_WARNING : AUTHORED_SKILL_WARNING;

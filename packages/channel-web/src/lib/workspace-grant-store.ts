@@ -153,15 +153,22 @@ function hasIterableReach(r: Record<string, unknown>): boolean {
  * be ANSWERED, so refusing a grant over one would trade a plain-looking row for
  * a question that silently never gets asked.
  *
- * That trade is only honest because the RENDER SITE holds up its end. Review
- * caught the first draft of this comment claiming `description` was cosmetic
- * when `GrantRow` was reading `description.length` unguarded — so a missing one
- * threw exactly as hard as a missing `hosts`, and the "shabby row" this
- * paragraph promised did not exist. The fix went there, not here (`?? ''` at
- * the two dereferences, `description` and `packages.npm`/`pypi`), which is what
- * makes the sentence true. The rule to carry forward: **a guard may only leave
- * a field out if the renderer actually tolerates its absence — check that, do
- * not assume it from the field sounding decorative.**
+ * That trade is only honest because the RENDER SITE holds up its end, and it
+ * took TWO rounds of review to make that true. First `description`: this
+ * comment called it cosmetic while `GrantRow` was reading `description.length`
+ * unguarded, so a missing one threw exactly as hard as a missing `hosts`
+ * (`packages.npm`/`pypi` had the same hole). Then `name`: cleared on the
+ * grounds that interpolation "cannot throw" — which is true and is the WRONG
+ * TEST. `Connect ${undefined}` does not throw; it renders "Connect undefined"
+ * over a password field, a credential prompt with no subject, which is worse
+ * than a crash because it is quiet. All four now have a real fallback at the
+ * render site.
+ *
+ * The rule, stated so the next person does not have to rediscover it twice:
+ * **a guard may leave a field out only if the renderer is KNOWN to tolerate
+ * its absence — and "tolerate" means renders something a person can act on,
+ * not merely "does not throw". Verify it at the render site; never infer it
+ * from the field sounding decorative.**
  *
  * Deliberately returns `boolean` and not `request is PermissionRequest`: it
  * does not check every field of that type, and a predicate that says it did
@@ -242,7 +249,10 @@ export const workspaceGrantActions = {
     // the payload we have decided we do not understand.
     if (!isRenderableGrant(request)) {
       console.warn('[workspace] dropping a grant this build cannot draw', {
-        kind: (request as { kind?: unknown }).kind,
+        // `?.` because `isRenderableGrant(null)` is `false` — so the one value
+        // that reaches this branch WITHOUT a `kind` to report is exactly the
+        // one a plain dereference would throw on, inside the error path.
+        kind: (request as { kind?: unknown } | null | undefined)?.kind,
       });
       return;
     }
