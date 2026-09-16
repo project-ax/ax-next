@@ -256,6 +256,20 @@ export function AgentView({
    * second message naming the same ids gets `attachment-not-found` — a resend
    * that could never work. Once the POST has returned, the file is already in
    * the conversation and the only thing left worth retrying is the reply.
+   *
+   * WHAT THE REJECTED CASE DOES *NOT* GUARANTEE, so nobody reads more into
+   * this than it says: a rejected POST does not mean nothing was committed.
+   * The handler's commit loop is a PREFIX operation (`server/routes-chat.ts`
+   * says so itself) — refs #1..#k land and then #k+1 refuses, so a 400 or a
+   * 413 can leave earlier uploads already spent. Resending then re-names a
+   * consumed id and 400s again. The ids are still kept on this path because
+   * the common rejection is a transport failure where nothing was consumed
+   * and the file WOULD otherwise be dropped silently, and because a repeated
+   * visible refusal beats a message that quietly arrives without its
+   * attachment. Telling those two rejections apart needs the server's error
+   * CODE, which `sendMessage` does not surface today (it throws a bare
+   * `HttpError`); the honest answer for the partial-commit case is not a
+   * Resend at all but a "re-attach your files", and that is a follow-up.
    */
   interface SentTurn {
     text: string;
