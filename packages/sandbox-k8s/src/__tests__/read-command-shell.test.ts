@@ -107,6 +107,21 @@ describe('the reader script, through a real shell', () => {
     const out = read('big.bin');
     if (out.kind !== 'file') throw new Error('expected file');
     expect(out.contents.byteLength).toBe(1024 * 1024);
+    // …and the prefix SAYS it is one, through a real `head -c`, a real
+    // base64 and the real parser. A consumer handing these bytes over as the
+    // file needs this bit; it cannot recover it from the length.
+    expect(out.truncated).toBe(true);
+  });
+
+  it('a file of EXACTLY the cap comes back whole and NOT truncated', async () => {
+    // The off-by-one, end to end through a real shell. `head -c cap+1` on a
+    // cap-sized file returns cap bytes, so nothing marks it truncated — which
+    // is what stops a complete file from being refused as a fragment.
+    await fs.writeFile(path.join(agentDir, 'exact.bin'), Buffer.alloc(1024 * 1024, 0x43));
+    const out = read('exact.bin');
+    if (out.kind !== 'file') throw new Error('expected file');
+    expect(out.contents.byteLength).toBe(1024 * 1024);
+    expect(out.truncated).toBe(false);
   });
 
   it('an empty directory lists as an empty dir, not as absent', () => {

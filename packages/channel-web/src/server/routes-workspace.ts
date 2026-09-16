@@ -10,6 +10,9 @@
  *                                      — what the agent has written
  * GET  /api/workspace/agents/:agentId/files/*
  *                                      — one of those files, as text
+ * GET  /api/workspace/agents/:agentId/download/files/*
+ * GET  /api/workspace/agents/:agentId/download/user-files/*
+ *                                      — one of those files, as BYTES
  * PUT  /api/workspace/agents/:agentId/memory/rules
  *                                      — save the human-owned memory tier
  * GET  /api/workspace/decisions        — THE Today queue (one collection)
@@ -116,6 +119,7 @@ import { byVerdict } from '../lib/permission-frames.js';
 import type { ChunkBuffer } from './chunk-buffer.js';
 import type { PermissionRequest } from './types.js';
 import { listTeamIdsForUser, type RouteRequest, type RouteResponse } from './routes-chat.js';
+import { sanitizeContentDispositionFilename } from './content-disposition.js';
 import { workspaceFilePath } from './safe-path.js';
 // Type-only: the `sandbox:read-user-files` hook-bus contract. The DURABLE
 // user-files tier is read through this hook rather than through `workspace:*`,
@@ -1516,6 +1520,72 @@ export function decodeFileBody(bytes: Uint8Array): {
     };
   }
   return { body: fenceBody(FILE_DECODER.decode(bytes)), clipped: null };
+}
+
+/**
+ * The response adapter a DOWNLOAD needs, on top of the one every other route
+ * on this surface uses.
+ *
+ * `RouteResponse` (routes-chat.ts) is deliberately tiny — status, json, text,
+ * end — because that is all a JSON surface needs, and every test in this
+ * package builds one by hand. Widening it would make every one of those fakes
+ * a compile error for the benefit of two routes. So the two routes declare the
+ * extra shape they use, and it is still the same duck-typed mirror of
+ * `@ax/http-server`'s `HttpResponse` (invariant I2 — no cross-plugin import).
+ */
+export interface DownloadRouteResponse extends RouteResponse {
+  status(n: number): DownloadRouteResponse;
+  header(name: string, value: string): DownloadRouteResponse;
+  /** Raw bytes. Single-shot, like every other terminator on this adapter. */
+  body(buf: Buffer, contentType?: string): void;
+}
+
+/**
+ * THE content type of every download this surface serves.
+ *
+ * Not derived from the bytes, not read off the file's extension, and — most of
+ * all — never taken from anything the caller sent. Every one of those is a way
+ * for the file's own content to decide how a browser treats it, and the file
+ * was written by an agent. `text/html` on an agent-authored file is stored XSS
+ * on our origin; `image/svg+xml` is the same thing wearing a picture.
+ *
+ * `application/octet-stream` plus `nosniff` plus `Content-Disposition:
+ * attachment` is the boring combination that means "save this, do not run it".
+ * The cost is that a PNG will not preview in a tab. That is the intended
+ * trade: this is a download affordance, and previewing is what the Files tab
+ * already does, in a renderer we control.
+ */
+const DOWNLOAD_CONTENT_TYPE = 'application/octet-stream';
+
+/**
+ * One file's bytes, as a download, with the headers that keep it one.
+ *
+ * `path` is the RAW workspace key. Only its last segment reaches the header,
+ * and only after `sanitizeContentDispositionFilename` — the name is
+ * agent-authored, and `Content-Disposition` is a header a newline can end.
+ */
+function sendFileDownload(
+  res: DownloadRouteResponse,
+  path: string,
+  bytes: Uint8Array,
+): void {
+  // A view over the same memory, not a copy: these files are already as big as
+  // this process is willing to hold, and doubling that to add a header would
+  // be a strange way to spend a megabyte.
+  const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const filename = sanitizeContentDispositionFilename(basenameOf(path));
+  res.status(200);
+  // Stated, not defaulted. `body()` would fall back to the same value, but a
+  // route that serves somebody else's bytes should say what it is serving them
+  // as rather than inherit it — and the day the framework's default changes,
+  // this one does not.
+  res.header('content-type', DOWNLOAD_CONTENT_TYPE);
+  res.header('content-disposition', `attachment; filename="${filename}"`);
+  res.header('x-content-type-options', 'nosniff');
+  // No `content-length` here: `@ax/http-server` pins it from the buffer it is
+  // about to write. A second copy computed here could only ever agree with it
+  // or be wrong, and the framework's would win either way (invariant 4).
+  res.body(buf);
 }
 
 /**
@@ -3773,6 +3843,174 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     },
 
     /**
+     * GET /api/workspace/agents/:agentId/download/files/* — the BYTES of one
+     * governed-tier file.
+     *
+     * The read route above answers with TEXT and says so when it could not:
+     * `clipped: 'binary'` for a PDF, `clipped: 'too-large'` for a long log. An
+     * agent that made you a spreadsheet therefore showed up on this surface as
+     * the word "binary", with no way to get the thing itself. This is that way.
+     *
+     * It is a SIBLING of the read, not a mode of it: the same auth, the same
+     * ACL, the same single decode, the same exclusion — and a different
+     * response, because bytes and a JSON envelope are different answers. The
+     * five steps are copied from `agentFile` deliberately, ordering included:
+     *
+     *   1. authenticate    — identity is the session's, never the request's.
+     *   2. ACL             — `agents:resolve`, and a failure is 404.
+     *   3. validate path   — `workspaceFilePath`, which decodes exactly once.
+     *   4. apply the same exclusion the listing uses.
+     *   5. only now, read.
+     *
+     * Steps 2-before-3 is the oracle argument from `agentFile`, and it is not
+     * weaker here: a 400-vs-404 split on somebody else's agent would still say
+     * which of their paths are well-formed.
+     */
+    async agentFileDownload(
+      req: RouteRequest,
+      res: DownloadRouteResponse,
+    ): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+      if (agent === null) return;
+
+      const path = workspaceFilePath(req.params['*'] ?? '');
+      if (path === null) {
+        res.status(400).json({ error: 'invalid-path' });
+        return;
+      }
+      if (!isServableWorkspaceFile(path)) {
+        // Same answer the read route gives, for the same reason: the listing
+        // never offered this file, so from the caller's side it is not here.
+        // A download route that served `.ax/IDENTITY.md` would be a bypass of
+        // an exclusion the other route enforces, which is how a cosmetic
+        // filter is born.
+        res.status(404).json({ error: 'file-not-found' });
+        return;
+      }
+
+      if (!bus.hasService('workspace:read')) {
+        res.status(503).json({ error: 'workspace-unavailable' });
+        return;
+      }
+
+      const out = await bus.call<WorkspaceReadInput, WorkspaceReadResult>(
+        'workspace:read',
+        agentWorkspaceCtx(agentId, userId),
+        { path },
+      );
+      if (!out.found) {
+        res.status(404).json({ error: 'file-not-found' });
+        return;
+      }
+
+      /*
+        No truncation question on this tier: `workspace:read` answers with the
+        WHOLE blob (the 128 KiB `clipped` bound is the READ route's JSON
+        envelope, not the backend's), so nothing here can be a prefix. The
+        durable tier below is the one that has to check.
+
+        Said plainly, because it is the other side of that coin: this tier has
+        no read cap at all, so a huge committed file is a huge buffer in this
+        process. That is NOT new — the read route above already pulls the same
+        whole blob into memory and only clips on the way out — and it is not
+        something this route can fix without breaking the one promise it makes,
+        which is that what you get is the file. A bound belongs on the backend
+        or on a streaming read, not here.
+      */
+      sendFileDownload(res, path, out.bytes);
+    },
+
+    /**
+     * GET /api/workspace/agents/:agentId/download/user-files/* — the BYTES of
+     * one durable-tier file.
+     *
+     * The other tier's download, and a separate route for the same reason the
+     * reads are separate: a different backend behind it, failing
+     * independently. Folding both into one route with a `?tier=` would put a
+     * caller-supplied string in charge of which backend we read, which is a
+     * choice we would then have to validate; two registered paths make it a
+     * fact about the route table instead.
+     *
+     * TWO THINGS THIS ROUTE DOES THAT ITS GOVERNED SIBLING DOES NOT:
+     *
+     *   - It refuses a DIRECTORY. The read route answers a listing there,
+     *     because a caller walking a tree does not know which it clicked. A
+     *     download does know — it is only ever offered on a file — so a folder
+     *     arriving here is a malformed request, not a listing request.
+     *   - It refuses a TRUNCATED file. `sandbox:read-user-files` bounds one
+     *     read (an unbounded read of an NFS file into the host process is a
+     *     denial of service against the host) and answers with a PREFIX. A
+     *     prefix is fine for a preview that SAYS it is showing the beginning.
+     *     It is not fine here: a truncated PDF is a corrupt PDF that looks
+     *     exactly like a whole one, and the person would find out when they
+     *     opened it, not when they clicked. So we say no, out loud, and say
+     *     why — which is the honest half of not being able to serve it.
+     *
+     * `truncated !== false` rather than `=== true`: a realization that has not
+     * been taught the field yet answers `undefined`, and "we do not know
+     * whether this is the whole file" is not a promise we can pass on to
+     * somebody as a file.
+     */
+    async agentUserFileDownload(
+      req: RouteRequest,
+      res: DownloadRouteResponse,
+    ): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      // ACL FIRST — see `agentUserFile`. This tier is ONE export holding every
+      // tenant's subtree, so a 400-vs-404 split below this line would be an
+      // oracle over somebody else's files.
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+      if (agent === null) return;
+
+      // No root download: the tier root is a directory, and `workspaceFilePath`
+      // rejects the empty string, so this is the same 400 a malformed path gets.
+      const relPath = workspaceFilePath(req.params['*'] ?? '');
+      if (relPath === null) {
+        res.status(400).json({ error: 'invalid-path' });
+        return;
+      }
+
+      if (!bus.hasService('sandbox:read-user-files')) {
+        res.status(503).json({ error: 'user-files-unavailable' });
+        return;
+      }
+
+      const out = await bus.call<ReadUserFilesInput, ReadUserFilesOutput>(
+        'sandbox:read-user-files',
+        agentWorkspaceCtx(agentId, userId),
+        { owner: userFilesOwner(agent, userId), relPath },
+      );
+
+      if (out.kind === 'absent') {
+        res.status(404).json({ error: 'file-not-found' });
+        return;
+      }
+      if (out.kind === 'dir') {
+        res.status(400).json({ error: 'not-a-file' });
+        return;
+      }
+      if (out.truncated !== false) {
+        res.status(413).json({ error: 'file-too-large' });
+        return;
+      }
+
+      sendFileDownload(res, relPath, out.contents);
+    },
+
+    /**
      * GET /api/workspace/agents/:agentId/rail — the right-hand rail.
      *
      * THE ACL FOR `agent-activity:get` LIVES HERE. That hook has none of its
@@ -4189,6 +4427,31 @@ export async function registerWorkspaceRoutes(
         method: 'GET',
         path: '/api/workspace/agents/:agentId/user-files/*',
         handler: handlers.agentUserFile as unknown as RouteHandler,
+      },
+      {
+        /*
+          THE BYTES, for each tier. Two routes, because they are two backends
+          — the same reason `/files` and `/user-files` are two routes.
+
+          `download` sits where `files`/`user-files` sit, not after them, and
+          that placement is load-bearing: `/files/download/*` would be
+          ambiguous with a file the agent actually named `download/…`, and the
+          splat would hand both to the same handler. Here the segment is part
+          of the ROUTE, so no path an agent can write can collide with it.
+
+          Same splat rules as every other route on this surface: a bare `*` as
+          the FINAL segment is the only spelling `@ax/http-server`'s router
+          recognises, and the remainder arrives under `req.params['*']`
+          undecoded.
+        */
+        method: 'GET',
+        path: '/api/workspace/agents/:agentId/download/files/*',
+        handler: handlers.agentFileDownload as unknown as RouteHandler,
+      },
+      {
+        method: 'GET',
+        path: '/api/workspace/agents/:agentId/download/user-files/*',
+        handler: handlers.agentUserFileDownload as unknown as RouteHandler,
       },
       {
         method: 'GET',
