@@ -33,6 +33,8 @@ import {
   GRANT_CONNECTING_LABEL,
   GRANT_REASSURANCE,
   GRANT_NO_CONVERSATION,
+  GRANT_NOT_RESUMED,
+  GRANT_NOT_RESUMED_DISMISS,
   GRANT_REJECT_LABEL,
   HOST_ALLOW_ALWAYS_LABEL,
   HOST_ALLOW_ONCE_LABEL,
@@ -56,6 +58,27 @@ interface Props {
   grant: WorkspaceGrant;
   /** The grant is answered or turned down: drop the row. */
   onResolved: (key: string) => void;
+  /**
+   * The capability has just been granted — pick the stopped agent back up
+   * (TASK-374). Resolves `true` when the interrupted turn was re-issued and
+   * `false` when it was not, which is the difference between dropping this row
+   * and turning it into a sentence that says so.
+   *
+   * WHY IT LIVES ON THE PRIMITIVE and not on the two surfaces that draw it.
+   * This row is what Today and the agent's thread SHARE, and answering a grant
+   * has to mean the same thing in both — a resume wired into one of them is the
+   * drift the shared component exists to prevent (TASK-353's rule, one file
+   * over). It is also the only code that knows a grant was APPROVED rather than
+   * turned down: `onResolved` fires for both, so a caller keying off that alone
+   * would restart an agent whose answer was "not now".
+   *
+   * REQUIRED, and not optional-with-a-no-op default. A missing resume is
+   * exactly the silence this task is about, and a default would let the next
+   * render site reintroduce it without writing a line of code. Fires only for
+   * `skill` and `connector`: a `host` grant widens the LIVE session allowlist
+   * and the agent never stopped, so there is nothing to pick up.
+   */
+  onGranted: (grant: WorkspaceGrant) => Promise<boolean>;
 }
 
 /** Slots the person still has to fill — the vaulted ones need no input. */
@@ -63,13 +86,23 @@ function blankSlots(slots: readonly { slot: string; haveExisting?: boolean }[]):
   return slots.filter((s) => s.haveExisting !== true).map((s) => s.slot);
 }
 
-export function GrantRow({ grant, onResolved }: Props): ReactElement {
+export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement {
   // The conversation is recorded on the grant when the frame arrives: Today can
   // hold grants from several agents, so the row cannot work it out from context.
   const { request, conversationId } = grant;
   const [values, setValues] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * The grant was applied and the agent did not start again (TASK-374).
+   *
+   * A THIRD outcome, not an error: `error` above means the grant did not land
+   * and the buttons are still worth pressing, and this means it DID land and
+   * they are not. Rendering it through `error` would put "Connect" under a
+   * sentence saying we already had, and re-pressing it would post a second
+   * decision for a capability the person already owns.
+   */
+  const [stalled, setStalled] = useState(false);
 
   const slots = request.kind === 'host' ? [] : request.slots;
   const needed = blankSlots(slots);
@@ -127,7 +160,28 @@ export function GrantRow({ grant, onResolved }: Props): ReactElement {
         ),
       });
       if (!resp.ok) throw new HttpError('/api/chat/permission-decision', resp.status);
-      onResolved(grant.key);
+      /*
+        THE GRANT IS APPLIED FROM HERE DOWN, and nothing below may report
+        otherwise. The skill is attached and the warm session retired; the only
+        open question is whether the agent picked up again.
+
+        `onGranted` is contracted not to throw, and this catches anyway —
+        because the alternative is that a bug in the resume path falls into the
+        `catch` below and tells the person their connection failed when it is
+        the one thing that definitely worked, sending them back to re-enter a
+        key that is already saved.
+      */
+      let resumed = false;
+      try {
+        resumed = await onGranted(grant);
+      } catch (e) {
+        console.warn('[workspace] the resume after a grant threw', e);
+      }
+      if (resumed) {
+        onResolved(grant.key);
+        return;
+      }
+      setStalled(true);
     } catch (err) {
       // Never the status, never the path — those go to the console.
       setError(userFacingMessage(err, 'grant-row'));
@@ -246,6 +300,51 @@ export function GrantRow({ grant, onResolved }: Props): ReactElement {
       ? request.description
       : '';
   const packages = request.packages;
+
+  /*
+    THE GRANT LANDED AND THE AGENT DID NOT (TASK-374).
+
+    The row STAYS, wearing one sentence and one way out, because the thing it
+    has to report is invisible everywhere else: the capability is attached
+    (nothing on screen would contradict a row that simply vanished) and the
+    agent is stopped (which looks exactly like an agent that is thinking). The
+    old behaviour was for the row to disappear on both counts, which told the
+    person the opposite of what had happened in the only place they were
+    looking.
+
+    It keeps the title so it is still legible as the answer to the question
+    that was here a moment ago, and drops everything else — the reach badges,
+    the key field, the reassurance line. Those are for DECIDING, and the
+    decision is made.
+
+    Unreachable on a `host` grant: that arm returns above, and `onGranted` is
+    never called there because the agent never stopped.
+  */
+  if (stalled) {
+    return (
+      <div
+        className="border-b border-rule-soft p-4 last:border-b-0"
+        data-testid={`grant-${grant.key}`}
+      >
+        <p className="text-[14px] font-medium">{title}</p>
+        <p
+          className="mt-1 max-w-[660px] text-[13px] leading-relaxed text-muted-foreground"
+          data-testid="grant-not-resumed"
+        >
+          {GRANT_NOT_RESUMED}
+        </p>
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => onResolved(grant.key)}
+          >
+            {GRANT_NOT_RESUMED_DISMISS}
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

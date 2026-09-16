@@ -69,6 +69,14 @@ interface Props {
   threadGrants: readonly WorkspaceGrant[];
   /** A grant answered in the thread. The store's `resolve`. */
   onGrantResolved: (key: string) => void;
+  /**
+   * A grant approved in the thread — pick the stopped agent back up
+   * (TASK-374). Owned by the shell for the same reason `threadGrants` is: the
+   * resume re-issues a turn in the grant's OWN conversation, which may not be
+   * the one this panel has open, and a grant answered on Today has no panel at
+   * all. One implementation, both render sites.
+   */
+  onGranted: (grant: WorkspaceGrant) => Promise<boolean>;
   activity: ActivityEvent[];
   /** Threaded straight through to the `did` tab's `ActivityFeed` — see there. */
   activityHasMore?: boolean;
@@ -188,6 +196,7 @@ export function AgentView({
   decisions,
   threadGrants,
   onGrantResolved,
+  onGranted,
   activity,
   activityHasMore,
   onActivityLoadMore,
@@ -871,6 +880,7 @@ export function AgentView({
                 onRetryApprovals={retryApprovals}
                 grants={threadGrants}
                 onGrantResolved={onGrantResolved}
+                onGranted={onGranted}
               />
             </>
           )}

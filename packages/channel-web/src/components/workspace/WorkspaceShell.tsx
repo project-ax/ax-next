@@ -28,9 +28,11 @@ import {
 } from '@/lib/workspace-api';
 import { useActivityFeed } from '@/lib/workspace-activity';
 import { useDecisionQueue } from '@/lib/workspace-decisions';
+import { resumeParkedTurn } from '@/lib/workspace-resume';
 import {
   useWorkspaceGrants,
   workspaceGrantActions,
+  type WorkspaceGrant,
 } from '@/lib/workspace-grant-store';
 import {
   threadGrants,
@@ -438,6 +440,62 @@ function Inner({
   );
 
   /**
+   * A capability grant was APPROVED — start the agent it stopped (TASK-374).
+   *
+   * THE ROUTE THIS SURFACE ACTUALLY HAS. Chat's is `resumeActions` →
+   * assistant-ui's `regenerate()`, registered by a runtime this branch of the
+   * app deliberately does not mount; calling it from here would be a no-op
+   * wearing the shape of wiring. So the workspace re-issues the turn over its
+   * own wire — see `lib/workspace-resume.ts` for why a re-POST and not an
+   * attach.
+   *
+   * OWNED HERE, not in `AgentView`, because a grant answered on Today belongs
+   * to an agent that may have no panel on screen — and that is the common case,
+   * since most grants are raised by an agent working unattended. This runs the
+   * same way from either render site.
+   *
+   * WHAT WE DO NOT DO IS NAVIGATE. The person answering a row in a queue may
+   * have more rows to answer, and yanking them into a thread would cost them
+   * their place. The turn runs server-side whether or not anyone is watching
+   * it; `refresh()` puts the agent back to "working" on the board, which is the
+   * feedback the queue can honestly give.
+   *
+   * `pendingReply` is set ONLY when this agent's panel is already open, which
+   * is the presence case — the grant was answered in the thread, so the reply
+   * streams where the person is looking. Setting it unconditionally would leave
+   * a finished turn's `reqId` in state for a panel that mounts minutes later,
+   * and `GET /api/chat/stream/:reqId` answers a long-dead turn with a 404 —
+   * which `AgentView` would render as a failed reply over a conversation that
+   * completed perfectly well.
+   */
+  const resumeAfterGrant = useCallback(
+    async (grant: WorkspaceGrant): Promise<boolean> => {
+      /*
+        Unreachable from the shipped row — `GrantRow` disables Connect and says
+        `GRANT_NO_CONVERSATION` when there is no conversation — but the type
+        allows it and a resume needs one, so it is a refusal rather than a cast.
+      */
+      if (grant.conversationId === null) return false;
+      const result = await resumeParkedTurn({
+        agentId: grant.agentId,
+        conversationId: grant.conversationId,
+      });
+      if (!result.resumed) return false;
+      if (route.kind === 'agent' && route.id === grant.agentId) {
+        setPendingReply({
+          agentId: grant.agentId,
+          reqId: result.reqId,
+          text: result.text,
+          conversationId: result.conversationId,
+        });
+      }
+      void refresh();
+      return true;
+    },
+    [route, refresh],
+  );
+
+  /**
    * TASK-249 — the kickoff for an agent just created from THIS surface.
    *
    * `bootstrapKickoff` (the chat runtime's module-level trigger/register
@@ -601,6 +659,7 @@ function Inner({
                   decisions={queue.decisions}
                   grants={grants.grants}
                   onGrantResolved={workspaceGrantActions.resolve}
+                  onGranted={resumeAfterGrant}
                   agents={board.agents}
                   filter={filter}
                   expandedId={expandedId}
@@ -674,6 +733,7 @@ function Inner({
               decisions={queue.decisions}
               threadGrants={grantsInThread}
               onGrantResolved={workspaceGrantActions.resolve}
+              onGranted={resumeAfterGrant}
               onApprove={queue.approve}
               onDismiss={queue.dismiss}
               onUndo={queue.undo}

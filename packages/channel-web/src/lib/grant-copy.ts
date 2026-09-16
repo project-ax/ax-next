@@ -120,3 +120,37 @@ export const GRANT_CONNECTING_LABEL = 'Connecting…';
 export const HOST_ALLOW_ONCE_LABEL = 'Just this once';
 export const HOST_ALLOW_ALWAYS_LABEL = 'Always for this agent';
 export const HOST_ALLOWING_LABEL = 'Allowing…';
+
+/**
+ * The grant landed and the agent did not pick up again (TASK-374).
+ *
+ * The behaviour this replaces was SILENCE: the row vanished, the capability was
+ * genuinely attached, and the agent sat stopped with nothing on screen saying
+ * so or saying what to do. A person who had just been told "connecting lets
+ * this agent do this from now on" reasonably read that as "and now it will".
+ *
+ * Three things have to be true in one sentence, and all three are load-bearing:
+ * the connection WORKED (so nobody re-enters a key that is already saved), the
+ * agent stopped BEFORE they answered (so this reads as timing rather than as
+ * the grant failing), and messaging the agent is what gets it going.
+ *
+ * ONE SENTENCE FOR EVERY `ResumeFailure`, and the wording is what makes that
+ * honest. The reasons differ in what WE could not do — read the conversation,
+ * find a turn in it, post it — and not at all in what the person should do
+ * next, so spelling the difference out would ask them to care about our
+ * plumbing at the moment they are least able to.
+ *
+ * It says "send it a message" and NOT "send your message again", which reads
+ * better and is false in one branch: `nothing-to-resume` means there was no
+ * message of theirs in that conversation to begin with, so "again" would be
+ * telling someone to repeat something they never did. The action is the same
+ * either way — say something to the agent — so the sentence says the thing that
+ * is true in both.
+ */
+export const GRANT_NOT_RESUMED =
+  'Connected. The agent had already stopped by the time you answered, though, ' +
+  'and we could not start it again from here — send it a message and it will ' +
+  'carry on with this connection in place.';
+
+/** Clears the stopped-agent row. It is an acknowledgement, not an action. */
+export const GRANT_NOT_RESUMED_DISMISS = 'Got it';

@@ -113,6 +113,7 @@ function renderView(over: Partial<ComponentProps<typeof AgentView>> = {}) {
       decisions={[]}
       threadGrants={[]}
       onGrantResolved={vi.fn()}
+        onGranted={vi.fn(async () => true)}
       onApprove={vi.fn()}
       onDismiss={vi.fn()}
       onUndo={vi.fn()}
