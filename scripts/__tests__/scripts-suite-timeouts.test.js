@@ -82,19 +82,40 @@ const CONFIG_PATH = join(SCRIPTS_ROOT, 'vitest.config.mjs');
 // passed vacuously. A guard that under-reports is worse than no guard, because
 // it also reports success.
 //
-// Line anchoring needs no stripper and cannot mangle anything, because a
-// comment's continuation lines always begin with a character that is not the
-// identifier being matched: `//` for line comments, `*` for block comments. So
+// Line anchoring needs no stripper, so it cannot mangle the source the way
+// draft 2 did. It reaches past prose because a comment's continuation lines
+// CONVENTIONALLY begin with a character that is not the identifier being
+// matched: `//` for line comments, ` * ` for a starred block. So
 // `^[ \t]*hookTimeout` and `^[ \t]*beforeAll` are unreachable from inside either
-// style, while indentation-tolerance still finds a describe-nested hook (the
-// column-0 anchor is the bug that made the sibling guard green on the very
-// violation it was written to catch).
+// style as this repo writes them, while indentation-tolerance still finds a
+// describe-nested hook (the column-0 anchor is the bug that made the sibling
+// guard green on the very violation it was written to catch).
 //
-// Where it errs, it errs closed. A real setting sharing a line with something
-// else — `test: { testTimeout: 30_000, hookTimeout: 120_000 }` — reads as
-// ABSENT and fails the "declares both" assertion loudly, rather than passing a
-// budget nobody checked. One key per line is the price, and `scripts/vitest.config.mjs`
-// pays it.
+// That is a CONVENTION, not a language guarantee, and it is stated here rather
+// than implied away — the sibling guard documents its own gaps the same way, and
+// an absolute claim is the failure this guard family exists to make harder. JS
+// does not require a block comment's continuation lines to start with `*`, and
+// nothing machine-enforces it here (there is no `multiline-comment-style`
+// eslint rule and no prettier config). A column-0 continuation line INSIDE a
+// block comment therefore defeats the anchor. Measured, and the two scans fail
+// in OPPOSITE directions, which is what decides how much each one matters:
+//
+//   - `readTimeout` is the fail-OPEN one, and the only one worth closing. A
+//     block comment whose column-0 line reads `hookTimeout: 600_000` is matched
+//     ahead of a real, lower setting, and the consistency assertion then passes
+//     a budget nobody checked. `noBlockCommentsInConfig` below closes that for
+//     real, on the 37-line file this guard owns, instead of trusting the
+//     convention.
+//   - `HOOK_WITH_TIMEOUT` is fail-CLOSED. A column-0 example hook inside a
+//     block comment inflates the suite maximum, so the assertion demands a
+//     budget nobody asked for and reddens loudly. Annoying, never silent, so it
+//     is documented rather than guarded.
+//
+// The other way it errs closed: a real setting sharing a line with another
+// — `test: { testTimeout: 30_000, hookTimeout: 120_000 }` — reads as ABSENT and
+// fails the "declares both" assertion loudly, rather than passing a budget
+// nobody checked. One key per line is the price, and
+// `scripts/vitest.config.mjs` pays it.
 
 /**
  * Read a numeric `test.<key>` from a vitest config, tolerating `_` separators.
@@ -179,6 +200,25 @@ describe('the scripts vitest root declares its own timeouts (TASK-331)', () => {
     expect(missing).toEqual([]);
   });
 
+  it('the config carries no block comment, so a column-0 line cannot outrank the setting', () => {
+    // Closes the one fail-OPEN residue of line anchoring (see the note above) on
+    // the one file where it is cheap to close: this config is 37 lines and this
+    // guard owns it. JS does not require a block comment's continuation lines to
+    // begin with `*`, and nothing here enforces it, so a column-0
+    // `hookTimeout: 600_000` inside a `/* ... */` would be read ahead of a real,
+    // lower setting and pass a budget nobody checked. Having no block comment at
+    // all makes that unreachable rather than merely unlikely.
+    //
+    // If a block comment is genuinely wanted here, this assertion is the wrong
+    // thing to delete — teach `readTimeout` to skip block comments first, then
+    // delete it.
+    if (configText === undefined) return; // reported by the test above
+    expect(
+      configText.includes('/*'),
+      'scripts/vitest.config.mjs must use `//` comments only — see the anchoring note in this file',
+    ).toBe(false);
+  });
+
   it('no guard file declares a hook timeout this test cannot read', () => {
     const unreadable = [];
     for (const { name, text } of testFiles) {
@@ -238,6 +278,25 @@ describe('the scripts vitest root declares its own timeouts (TASK-331)', () => {
       expect(
         readTimeout(['/**', ' * Never raise hookTimeout: 600_000 — it would mask a hang.', ' */', ...CONFIG].join('\n'), 'hookTimeout'),
       ).toBe(120_000);
+    });
+
+    it('reads two settings on ONE line as absent — the fail-closed direction', () => {
+      // Documented above but previously unpinned, which in a file whose whole
+      // ethos is "pin every case" was an omission. Absent reddens the
+      // "declares both" assertion loudly; it never passes an unchecked budget.
+      expect(
+        readTimeout('  test: { testTimeout: 30_000, hookTimeout: 120_000 },', 'hookTimeout'),
+      ).toBeUndefined();
+    });
+
+    it('a column-0 line inside a block comment DOES defeat the anchor (known gap)', () => {
+      // Pinned as a known limitation, not as desired behaviour — the same way
+      // the sibling guard states its blind spots rather than implying them away.
+      // This is why `noBlockCommentsInConfig` exists for the file `readTimeout`
+      // reads. If someone teaches the reader to skip block comments, this
+      // assertion should flip to `toBe(120_000)` and the config guard can go.
+      const cfg = ['/*', 'hookTimeout: 600_000', '*/', '    hookTimeout: 120_000,'].join('\n');
+      expect(readTimeout(cfg, 'hookTimeout')).toBe(600_000);
     });
 
     it('reports an absent setting as undefined, never as zero', () => {
