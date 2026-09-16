@@ -1,0 +1,107 @@
+import { z } from "zod";
+
+export type EpistemicNetwork = "world" | "experience" | "observation" | "opinion";
+
+export interface MemoryTuple {
+  id: string;
+  bankId: string;
+  network: EpistemicNetwork;
+  subject: string;
+  predicate: string;
+  object: string;
+  confidence: number;
+  validStart: string;
+  validEnd: string;
+  transactionTime: string;
+}
+
+export const ExtractedFactSchema = z.object({
+  network: z.enum(["world", "experience", "opinion"]),
+  subject: z.string().describe("Canonicalized entity identifier in snake_case"),
+  predicate: z.string().describe("Normalized relationship or property in snake_case"),
+  object: z.string().describe("Concise statement of fact, preference, or outcome"),
+  validStart: z.string().describe("ISO-8601 UTC date-time string marking when the statement became true"),
+  confidence: z.number().min(0).max(1).default(1.0),
+  invalidatesPrevious: z.boolean().describe("Set to true if this statement updates or supersedes a prior state")
+});
+
+export const IngestionPayloadSchema = z.object({
+  facts: z.array(ExtractedFactSchema)
+});
+
+export type ExtractedFact = z.infer<typeof ExtractedFactSchema>;
+export type IngestionPayload = z.infer<typeof IngestionPayloadSchema>;
+
+export interface DispositionProfile {
+  skepticism: number; // Scale: 1 to 5
+  literalism: number; // Scale: 1 to 5
+  empathy: number; // Scale: 1 to 5
+}
+
+export interface RecallOptions {
+  limit?: number;
+  /**
+   * Bi-temporal time travel: return the bank as it stood at this instant. Filters the
+   * candidate set to records whose validity interval covers the anchor.
+   */
+  temporalAnchor?: string;
+  /**
+   * The wall-clock time the question is being asked at. Used to resolve relative
+   * expressions ("last Saturday", "how many weeks ago") when presenting evidence.
+   * Presentation only — it never filters what is recalled.
+   */
+  asOf?: string;
+  maxContextTokens?: number;
+}
+
+export interface DialogueTurn {
+  role: "user" | "assistant" | "system";
+  content: string;
+  at?: string;
+}
+
+export type ExtractFn = (dialogue: string, context: { now: string }) => Promise<IngestionPayload>;
+
+export type EmbeddingTask = "document" | "query";
+
+export type EmbeddingFn = (texts: string[], task?: EmbeddingTask) => Promise<number[][]>;
+
+export type RerankFn = (query: string, documents: string[]) => Promise<number[]>;
+
+export type GenerateFn = (input: { system: string; prompt: string }) => Promise<string>;
+
+export const INFINITY_SENTINEL = "9999-12-31T23:59:59.999Z";
+
+export const DEFAULT_DISPOSITION: DispositionProfile = {
+  skepticism: 3,
+  literalism: 3,
+  empathy: 3,
+};
+
+export const DEFAULT_MAX_CONTEXT_TOKENS = 2000;
+
+export const DEFAULT_RRF_K = 60;
+
+export function normalizeTimestamp(value: string, label = "timestamp"): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`Invalid ISO-8601 ${label}: ${JSON.stringify(value)}`);
+  }
+  return parsed.toISOString();
+}
+
+export function memoryStatement(subject: string, predicate: string, object: string): string {
+  const words = (value: string): string => value.replace(/_/g, " ").trim();
+  return `${words(subject)} ${words(predicate)}: ${words(object)}`;
+}
+
+export function flattenDialogue(input: string | DialogueTurn[]): string {
+  if (typeof input === "string") return input;
+  return input
+    .map((turn) => `${turn.at ? `[${turn.at}] ` : ""}${turn.role}: ${turn.content}`)
+    .join("\n");
+}
+
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
