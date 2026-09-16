@@ -10,9 +10,15 @@
  * surface spends the most effort not doing.
  *
  * So we ask for the bytes ourselves, and then we either hand them over or say
- * what went wrong in words. It costs one buffer in memory — the routes bound
- * what they serve, so it is a bounded one — and it buys a failure the reader
- * can act on.
+ * what went wrong in words. It buys a failure the reader can act on.
+ *
+ * WHAT IT COSTS, honestly: the whole file lands in the tab's memory before it
+ * reaches the disk. The durable tier caps a read at a megabyte, so that half is
+ * bounded — but the governed tier has NO cap, so a large committed file is a
+ * large buffer here. The streaming alternative is `window.open`, and it was
+ * rejected above for a reason that has not changed. If a file ever arrives big
+ * enough for this to matter, the fix is a route that streams and a client that
+ * reads it as a stream, not a quiet return to showing people JSON.
  *
  * THE FILENAME COMES FROM THE SERVER, not from the row that was clicked. The
  * route already sanitizes it for `Content-Disposition` (a filename is
