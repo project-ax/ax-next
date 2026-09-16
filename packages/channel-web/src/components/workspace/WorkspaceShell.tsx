@@ -413,12 +413,18 @@ function Inner({
    * `kickoffAgentId` (or the id sticking around after `App.tsx` reacts to
    * `onKickoffConsumed`) does not resend it.
    *
-   * Deliberately ABOVE the `error` / `loading` / `!board` early returns: this
-   * effect only calls `navigate` (route state + a URL push) and `startTurn`
-   * (a POST), neither of which needs the board, and `AgentView` picks up
-   * `pendingReply` once the board — and it — eventually mount. Moving this
-   * below those returns would mean it never runs on a fresh mount, and a
-   * freshly-created agent would go right back to being silently un-greeted.
+   * ABOVE the `error` / `loading` / `!board` early returns — which the rules
+   * of hooks require anyway, and which is also what we want: this effect only
+   * calls `navigate` (route state + a URL push) and `startTurn` (a POST),
+   * neither of which needs the board, and `AgentView` picks up `pendingReply`
+   * once the board — and it — eventually mount.
+   *
+   * One rare consequence, accepted (review): if the board read FAILS while a
+   * kickoff is pending, the `'hi'` is still POSTed and the route still moves,
+   * under the error screen. The turn is real and server-side, so nothing is
+   * lost; it just is not streamed, and a refresh shows it. Holding the kickoff
+   * back until the board lands would trade that for the worse failure — a
+   * brand-new agent left permanently un-greeted because one read blipped.
    */
   const kickedOffId = useRef<string | null>(null);
   useEffect(() => {

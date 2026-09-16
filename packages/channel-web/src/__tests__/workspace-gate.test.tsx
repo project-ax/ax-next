@@ -362,6 +362,26 @@ describe('workspace create-agent door + kickoff routing (TASK-249)', () => {
     expect(trigger).not.toHaveBeenCalled();
   });
 
+  /**
+   * VACUITY, corrected after review. This was first written off as the
+   * no-regression arm that "passes either way" — the guard that stops the new
+   * `rendersWorkspace` branch from routing BOTH surfaces at the workspace. It
+   * is that, but it is also stronger than that, and the weaker label was
+   * wrong.
+   *
+   * Against `main` this test is **red**, measured by swapping `main`'s
+   * `FirstRunAutoCreate.tsx` in and running it: `expected "trigger" to be
+   * called 1 times, but got 0 times`. On first run the unfixed component never
+   * reaches `onDone` at all — the `hydrateAgentsOnce` it awaits closes the
+   * bootstrap gate, unmounts it, and its own `cancelled` guard discards the
+   * completion. So `bootstrapKickoff.trigger()` is never called on the CHAT
+   * path either.
+   *
+   * Which makes this the regression net for the `onDone` ungating as much as
+   * for the branch: it is the one test here that fails if someone puts
+   * `if (cancelled) return` back in front of `onDone`, since the two tests
+   * above would still pass on the workspace arm.
+   */
   it('still uses bootstrapKickoff on the chat path (no regression)', async () => {
     setPathname('/workspace');
     mockGetSession.mockResolvedValue(ALICE);

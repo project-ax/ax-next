@@ -210,6 +210,16 @@ describe('workspace create-agent door', () => {
     await waitFor(() => expect(toastActions.error).toHaveBeenCalledTimes(1));
   });
 
+  /**
+   * The SECOND passes-either-way guard in this file, and it is declared as one
+   * (review finding: the file's vacuity accounting had named only the row
+   * one). It is red on neither the unfixed code — where no effect exists — nor
+   * the fixed code, where `if (!kickoffAgentId) return` handles it. Its job is
+   * the same as the row guard's: it makes the positive kickoff test above mean
+   * something, by ruling out a shell that greets whatever it is handed. A
+   * surface that sends an unasked-for message to an agent would be worse than
+   * one that sends none.
+   */
   it('with no kickoffAgentId, sendMessage is never called', async () => {
     renderShell();
     await screen.findByRole('heading', { name: 'Today' });
