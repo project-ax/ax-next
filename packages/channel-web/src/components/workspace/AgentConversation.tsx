@@ -7,7 +7,7 @@
  * rail; routine fires never appear here at all, or 612 unattended runs would
  * bury the two conversations the human actually had.
  */
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUp, ChevronRight, Layers, ListChecks } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -15,6 +15,7 @@ import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { signInWithGoogle } from '@/lib/auth';
 import { readAlertVariant } from '@/lib/read-register';
+import { activeMatch, buildFindIndex, threadFindFields } from '@/lib/thread-find';
 import { isOpenDecision } from '@/lib/workspace-types';
 import type {
   Decision,
@@ -29,6 +30,12 @@ import {
   DECISION_SESSION_EXPIRED,
   DECISION_THREAD_READ_FAILED,
 } from './decision-copy';
+import {
+  FindHighlight,
+  ThreadFindBar,
+  ThreadFindToggle,
+  type FindView,
+} from './ThreadFind';
 
 /**
  * What this thread can honestly say about its approvals.
@@ -119,9 +126,105 @@ export function AgentConversation({
     onSend(v);
   };
 
+  /*
+    TASK-354 — finding something in a long thread.
+
+    The bar reads the thread THIS COMPONENT WAS HANDED, which is the current
+    conversation on the live view and the read-only excerpt when the rail has
+    one open. That is deliberate: "what did it say three weeks ago" is mostly a
+    question about a past conversation, and the rail already re-reads those by
+    `conversationId`, so each becomes the thread on screen in its turn. There is
+    no second search wire, and no control hinting at one.
+
+    `findStep` is a free-running counter rather than a clamped index — see
+    `activeMatch`, which owns the wrap. Typing resets it to 0 so a new query
+    starts at its first match instead of wherever the last one ended up.
+  */
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState('');
+  const [findStep, setFindStep] = useState(0);
+  const findToggleRef = useRef<HTMLButtonElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // No control over a thread with nothing in it to find. An empty thread's
+  // find bar can only ever answer "No matches", which is a true sentence about
+  // a question the reader was invited to ask for no reason.
+  const searchable = useMemo(
+    () => threadFindFields(thread).length > 0,
+    [thread],
+  );
+  const findIndex = useMemo(
+    () => buildFindIndex(thread, findOpen ? findQuery : ''),
+    [thread, findOpen, findQuery],
+  );
+  const findActive = activeMatch(findStep, findIndex.total);
+  const finding = findOpen && findQuery.trim().length > 0;
+  const find: FindView | null = finding
+    ? { query: findQuery, active: findActive, index: findIndex }
+    : null;
+
+  const closeFind = () => {
+    /*
+      Closing CLEARS the query. Leaving the thread painted with the bar gone
+      would strand highlights on screen with nothing left to explain them or
+      take them off again.
+
+      Focus goes back to the toggle, which is why the toggle stays mounted
+      while the bar is open: the element we restore to has to still exist when
+      we get here. Same failure `use-opener-restore.ts` documents for dialogs —
+      the restore is a silent no-op and the keyboard user lands on `<body>`.
+    */
+    setFindOpen(false);
+    setFindQuery('');
+    setFindStep(0);
+    findToggleRef.current?.focus();
+  };
+
+  // Walk the reader to the match they asked for. Queried out of the DOM rather
+  // than tracked with a ref per mark: which mark is current is already stated
+  // in the markup, and a second copy of that fact is a second thing to get
+  // wrong. `scrollIntoView` is guarded because jsdom only has it when the
+  // suite's setup installs one.
+  useEffect(() => {
+    if (!finding) return;
+    const el = scrollRef.current?.querySelector('[data-find-active="true"]');
+    if (el instanceof HTMLElement && typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ block: 'nearest' });
+    }
+  }, [finding, findActive, findQuery]);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex-1 overflow-y-auto px-6 py-6">
+      {/*
+        `|| findOpen` so an open bar survives the thread going empty underneath
+        it — a failed excerpt read renders `[]`, and a control that vanishes
+        mid-keystroke takes the keyboard user's focus with it.
+      */}
+      {(searchable || findOpen) && (
+        <div className="flex shrink-0 items-center justify-end gap-2 border-b border-border px-6 py-1.5">
+          <ThreadFindToggle
+            open={findOpen}
+            onOpen={() => setFindOpen(true)}
+            onClose={closeFind}
+            buttonRef={findToggleRef}
+          />
+          {findOpen && (
+            <ThreadFindBar
+              query={findQuery}
+              onQuery={(next) => {
+                setFindQuery(next);
+                setFindStep(0);
+              }}
+              active={findActive}
+              total={findIndex.total}
+              onNext={() => setFindStep((n) => n + 1)}
+              onPrev={() => setFindStep((n) => n - 1)}
+              onClose={closeFind}
+            />
+          )}
+        </div>
+      )}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-6">
         <div className="flex max-w-[720px] flex-col gap-5">
           {thread.map((m) => (
             <Message
@@ -132,6 +235,7 @@ export function AgentConversation({
               onApprove={onApprove}
               onDismiss={onDismiss}
               onUndo={onUndo}
+              find={find}
               {...(busyIds !== undefined ? { busyIds } : {})}
               {...(notices !== undefined ? { notices } : {})}
             />
@@ -258,6 +362,7 @@ function Message({
   onUndo,
   busyIds,
   notices,
+  find,
 }: {
   m: ThreadMessage;
   agent: WorkspaceAgent;
@@ -267,12 +372,14 @@ function Message({
   onUndo: (id: string) => void;
   busyIds?: ReadonlySet<string>;
   notices?: ReadonlyMap<string, string>;
+  /** Null whenever find is shut or its field is blank — see `ThreadFind`. */
+  find: FindView | null;
 }) {
   if (m.kind === 'user') {
     return (
       <div className="flex justify-end">
         <div className="max-w-[80%] rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[13.5px] leading-relaxed text-primary-foreground">
-          {m.text}
+          <FindHighlight fieldKey={m.id} text={m.text} find={find} />
         </div>
       </div>
     );
@@ -284,7 +391,7 @@ function Message({
         <Separator className="flex-1" />
         <span className="flex shrink-0 items-center gap-1.5 text-[11.5px] text-muted-foreground">
           <Layers size={11} />
-          {m.text}
+          <FindHighlight fieldKey={m.id} text={m.text} find={find} />
         </span>
         <Separator className="flex-1" />
       </div>
@@ -343,7 +450,7 @@ function Message({
       <AgentTile agent={agent} />
       <div className="min-w-0 flex-1">
         <div className="max-w-[600px] text-[13.5px] leading-relaxed text-pretty">
-          {m.text}
+          <FindHighlight fieldKey={m.id} text={m.text} find={find} />
         </div>
         {m.kind === 'steps' && <Steps label={m.stepsLabel} steps={m.steps} />}
         <div className="mt-1.5 text-[11.5px] text-muted-foreground">{m.time}</div>
