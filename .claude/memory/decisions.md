@@ -2,6 +2,14 @@
 
 Architectural / process decisions. Never deleted — strikethrough if reversed.
 
+## 2026-09-16 — TASK-377 auto-ship builders get a task-scoped scratch dir
+
+| Date | Decision | Rationale | Alternatives |
+|---|---|---|---|
+| 2026-09-16 | **The builder derives its own scratch path (`<your scratchpad>/<TASK-ID>/`); the orchestrator does NOT interpolate an absolute one.** `<your scratchpad>` is deliberately lowercase so it does not read as a placeholder the orchestrator must substitute. | `<TASK-ID>` is already substituted into this template, so the rendered dispatch is concrete without adding a seventh placeholder to the list at the top of the file — and a placeholder an orchestrator can forget to fill is the same class of defect as the one being fixed. The card allows either form ("by the dispatch template mandating it **or** by each builder deriving it from its own task id"). | Add a `<SCRATCH-DIR>` placeholder the orchestrator fills in — rejected: one more thing to forget, for no gain. |
+| 2026-09-16 | **The guard asserts the instruction sits INSIDE the `> `-quoted builder prompt, names the task id as a path SEGMENT (`/<TASK-ID>/`), and exists at all — three properties, one bullet.** | Each pins a distinct plausible regression, and all three were run as mutants rather than reasoned about: delete the bullet (fails: "says nothing about where to put temp files"), keep it but point it at the shared root (fails: "a shared path is the collision" — this is the original bug restored), move it into the orchestrator-facing prose (fails: "an orchestrator habit, not a fix"). A bare grep for `scratchpad` would pass mutants 2 and 3 — it survives both the repoint and the relocation. (Pick the token carefully when making this argument: a grep for `scratchpad/TASK-` would actually CATCH mutant 2, since that is exactly the segment mutant 2 deletes. It would still miss mutant 3, and it matches nothing in the real fix either, whose text is `<your scratchpad>/<TASK-ID>/`.) | Grep for a literal string — rejected as near-vacuous. No guard at all — rejected: the card asks for one, and prose fixes in this skill have been re-broken by later edits. |
+| 2026-09-16 | **Scope held to the code-lane prompt.** The walk/triage/decomposition prompts in the same file were left alone. | The card names the code-lane prompt specifically, and three sibling cards (TASK-378/382/392) are editing this same file in this same wave. Widening invites conflicts for no measured benefit — the walk lane is serialized, so it has no concurrent-writer hazard to fix. | Fix all four prompts — rejected (scope + merge conflicts); filed as a follow-up instead. |
+
 ## 2026-09-16 — TASK-351 presence routes a capability grant into the thread
 
 | Date | Decision | Rationale | Alternatives |

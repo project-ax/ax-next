@@ -62,6 +62,22 @@ afford — heed it rather than dispatching and hoping.
 >   `git rev-parse --show-toplevel` is NOT the primary checkout, and NEVER
 >   `git checkout -b`, commit, or `git switch` in the shared main checkout (it would
 >   clobber the orchestrator and sibling agents). Create your branch in the worktree.
+> - **Put every temp file in a task-scoped scratch dir — `<your scratchpad>/<TASK-ID>/`**,
+>   your PR body included. `<your scratchpad>` is not a placeholder anyone fills in for
+>   you: it is the scratchpad directory named in your own environment, and you
+>   `mkdir -p` the `<TASK-ID>` subdirectory under it yourself. Worktree isolation does
+>   **not** cover this: the scratchpad is scoped to the SESSION, not to the agent, and a
+>   wave's builders are all subagents of one session. `MEASURED-BY-PROBE` 2026-09-16: a
+>   dispatched builder's own environment named the same scratchpad root — same session
+>   id, same path — that the orchestrator dispatched against. Unscoped writes therefore
+>   collide by default, and collide *silently*: three builders in one wave shared one
+>   scratchpad dir and a sibling's `pr-body.md` overwrote another builder's (reported
+>   first-hand by the builder it happened to — TASK-377), and separately a builder
+>   clobbered the orchestrator's pending commit message. A builder that notices is
+>   lucky; one that does not opens a PR whose body describes a different card's work,
+>   and no CI check can see it. (`scripts/__tests__/autoship-dispatch-scratch-scoping.test.js` fails if
+>   this bullet leaves the prompt, loses its `<TASK-ID>` path segment, or drifts up
+>   into the orchestrator-facing prose above.)
 > - Branch: `auto-ship/<TASK-ID>-<short-slug>`. PR title MUST start with
 >   `[<TASK-ID>] `. Base `main`.
 > - **Do NOT merge.** Stop at a green, verified-mergeable PR (yolo-ship ends at
