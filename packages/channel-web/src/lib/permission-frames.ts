@@ -185,6 +185,26 @@ const EFFECT_DISCLOSURES: Record<CapabilityEffect, EffectDisclosure> = {
     detail:
       "Every time the agent does this, it makes a paid request on this AX deployment's account — so it costs money on each use, not just the first. Whoever set up this deployment pays the bill; we can't tell you the amount from here.",
   },
+  /*
+    KNOWN NARROWER THAN THE TYPE, on purpose, and flagged so the first outward
+    rule fixes it rather than inheriting it. `CapabilityEffect`'s `outward`
+    means "a third party sees the call **OR** it cannot be taken back", and
+    this detail only spells out the first disjunct. An irreversible action
+    nobody else observes would be slightly misstated by the last sentence.
+
+    Left alone rather than broadened now, for three reasons. It errs in the
+    OVERSTATING direction, which is the one design H4 permits. No `outward`
+    rule ships yet, so nothing renders this string today. And broadening it to
+    "…or it can't be undone" would red `permission-frames.test.ts`' assertion
+    that neither detail claims irreversibility — a rule that exists because
+    `PolicyRule.irreversible` owns that claim on the approval surface, and the
+    right way to resolve that tension is with the real tool in front of us, not
+    speculatively.
+
+    The forcing function already exists: `rules.test.ts`' "marks nothing
+    outward yet" is deliberately stricter than the lint, so the first outward
+    rule reds it and sends someone here. Re-read this copy then.
+  */
   outward: {
     label: 'Affects the outside world',
     srLabel: 'Affects the outside world.',

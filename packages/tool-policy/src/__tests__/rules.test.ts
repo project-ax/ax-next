@@ -93,6 +93,12 @@ describe('BUILTIN_RULES', () => {
     // check the rail and the undo window (`irreversible`) handle it, the same
     // way the irreversible test below is a tripwire rather than a preference.
     //
+    // TASK-329 ADDED A THIRD THING TO CHECK when that day comes: the rail's
+    // authored `outward` copy in channel-web's `permission-frames.ts` spells
+    // out only the "a third party sees it" half of what `outward` means, not
+    // the "cannot be taken back" half. That file carries the reasoning; this
+    // is the test that sends you to it.
+    //
     // DELIBERATELY STRICTER THAN THE LINT, which permits `outward` + hold/deny.
     // A correctly-held outward rule will red this test even though the shipped
     // enforcement is happy — that is the intent: the first one should stop and
@@ -188,6 +194,15 @@ describe('BUILTIN_RULES', () => {
       that rule, and the fix is to carry `effect` on `EvaluateResult` (and
       through the caller's base-row builder) rather than to relax this
       assertion.
+
+      IT EXECUTES ZERO ASSERTIONS TODAY, and that is stated rather than left for
+      the next reader to discover. `BUILTIN_RULES` contains no `when`-predicated
+      rules at all (`grep -c 'when:' rules.ts` → 0), so the `continue` skips
+      every rule and the loop body never runs. Its green is therefore NOT
+      evidence of active coverage — it is a guard armed for a rule shape that
+      does not exist yet. Unlike the canary's key-list loop, this one cannot be
+      made non-vacuous without planting a fake conditional rule in the shipping
+      table, which would be worse: the table is the thing under test.
     */
     for (const rule of BUILTIN_RULES) {
       if (rule.match.when === undefined) continue;

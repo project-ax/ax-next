@@ -569,6 +569,59 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     });
   });
 
+  it('TASK-329: carries a declared effect through the REAL route, and shows the base-row gap', async () => {
+    /*
+      The end-to-end seam, which the projection unit tests below do not cover:
+      `toWirePermission`'s allow-list is tested directly, and the canary proves
+      `effect` survives the hook bus, but nothing asserted it comes out of
+      `rail()` on the response body. Raised in review as the one untested hop.
+
+      This stages the SAME two-row shape as the conditional-rule test above — a
+      `when`-predicated rule plus the mechanical base row covering the calls its
+      predicate misses — because that shape proves both halves at once:
+
+        - the described row carries the declared effect all the way to the wire;
+        - the base row does NOT, and cannot, because it is built from
+          `tool-policy:evaluate` and `EvaluateResult` has no `effect` field.
+
+      The second assertion PINS A KNOWN GAP rather than blessing it. No shipped
+      rule is conditional at all today (`grep -c 'when:' rules.ts` → 0), let
+      alone conditional and effect-bearing, and `rules.test.ts`' tripwire fails
+      the moment one is added. If you are here because this test went red, you
+      have probably carried `effect` onto `EvaluateResult` and through the
+      base-row builder — that is the fix, so update the second assertion to
+      expect `'spends'` deliberately rather than reverting anything.
+    */
+    registerPolicy();
+    registerCatalog();
+    policyRows = [
+      {
+        verdict: 'hold',
+        capability: 'delete a folder and everything in it',
+        source: 'rule:files.delete-recursive',
+        provenance: 'rule',
+        described: true,
+        conditional: true,
+        effect: 'spends',
+      },
+    ];
+    catalog = [{ name: 'delete_file', executesIn: 'host' }];
+
+    const body = (await railFor()).body as AgentRailData;
+    expect(body.permissions.rows).toHaveLength(2);
+    // Reading order is allow-then-hold, so the mechanical base row comes first.
+    expect(body.permissions.rows[0]).toMatchObject({
+      described: false,
+      mechanicalLabel: 'delete_file',
+      effect: null,
+    });
+    expect(body.permissions.rows[1]).toMatchObject({
+      described: true,
+      source: 'rule:files.delete-recursive',
+      effect: 'spends',
+    });
+  });
+
   it('does not render an authored skill as a rail row of its own', async () => {
     /*
       Authored skills are zero-reach by construction: a skill manifest declares
