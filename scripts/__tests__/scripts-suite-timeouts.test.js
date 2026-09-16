@@ -60,31 +60,41 @@ const TESTS_DIR = join(SCRIPTS_ROOT, '__tests__');
 // it, and `vitest run --root scripts` resolves a `.mjs` config natively.
 const CONFIG_PATH = join(SCRIPTS_ROOT, 'vitest.config.mjs');
 
-/**
- * Strip `/* *\/` and `//` comments so the scans below read CODE, not prose.
- *
- * This is load-bearing, and it is here because the first draft of this file
- * proved why. `readTimeout` without it matched the phrase
- * "vitest's `hookTimeout: 10_000` defaults" in the new config's own explanatory
- * comment — ahead of the real setting further down — and the guard failed
- * demanding that 10_000 be raised to 120_000. A guard steered by the prose
- * beside the code is worse than a strict one: the same mistake pointed the other
- * way (a comment naming a LARGER number) would have passed a config that was too
- * low, silently. The same applies to the hook scan: an example hook written in a
- * doc comment, like the `}, 60_000)` in HOOK_WITH_TIMEOUT's own docs below,
- * otherwise counts toward the suite maximum and can demand a budget nobody asked
- * for.
- *
- * Conservative by design. `//` is only treated as a comment when it is not
- * preceded by `:` or `\`, so URLs and escaped slashes survive; a `//` inside a
- * string or regex literal is still stripped, which is acceptable because the only
- * thing read out of the result is a numeric timeout literal, and the vacuity
- * guard plus the explicit expected values below keep any mangling visible rather
- * than silent.
- */
-function stripComments(src) {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:\\])\/\/.*$/gm, '$1');
-}
+// Every pattern below is anchored to the START of a line (`^[ \t]*`), and that
+// anchor is the whole trick for reading CODE rather than the prose beside it.
+//
+// It is here because two earlier drafts of this file got it wrong in both
+// directions, and the second way was the dangerous one.
+//
+// Draft 1 did not filter comments at all. `readTimeout` matched the phrase
+// "vitest's `hookTimeout: 10_000` defaults" in the new config's own explanatory
+// comment, ahead of the real setting further down, and the guard failed
+// demanding that the COMMENT be raised to 120_000. Loud, and merely wrong.
+//
+// Draft 2 stripped comments first — `/*...*\/` then `//...` — and that was
+// silently fail-OPEN, which is the mode `container-test-timeouts.test.js`'s
+// header warns about at length. Several guards here discuss ESLint globs in
+// line comments, e.g. "`**/worktrees/**` does cross dot-segments". That text
+// contains `/*`, so the block-comment pass treated it as a comment OPENER and
+// ate everything up to the next `*\/` — across real code. Measured: the suite
+// maximum computed from the stripped sources was **0**, so this file's own
+// `beforeAll(..., 120_000)` went unseen and the consistency assertion below
+// passed vacuously. A guard that under-reports is worse than no guard, because
+// it also reports success.
+//
+// Line anchoring needs no stripper and cannot mangle anything, because a
+// comment's continuation lines always begin with a character that is not the
+// identifier being matched: `//` for line comments, `*` for block comments. So
+// `^[ \t]*hookTimeout` and `^[ \t]*beforeAll` are unreachable from inside either
+// style, while indentation-tolerance still finds a describe-nested hook (the
+// column-0 anchor is the bug that made the sibling guard green on the very
+// violation it was written to catch).
+//
+// Where it errs, it errs closed. A real setting sharing a line with something
+// else — `test: { testTimeout: 30_000, hookTimeout: 120_000 }` — reads as
+// ABSENT and fails the "declares both" assertion loudly, rather than passing a
+// budget nobody checked. One key per line is the price, and `scripts/vitest.config.mjs`
+// pays it.
 
 /**
  * Read a numeric `test.<key>` from a vitest config, tolerating `_` separators.
@@ -93,12 +103,12 @@ function stripComments(src) {
  *
  * Mirrors the helper in `container-test-timeouts.test.js` rather than importing
  * it: these guard files are deliberately self-contained, so one can be deleted
- * with its subject without breaking another. NOTE that the sibling does NOT
- * strip comments, so it carries the hole described on `stripComments` above for
- * the 21 container packages it covers — worth closing, but not from here.
+ * with its subject without breaking another. NOTE that the sibling is NOT
+ * anchored, so for the 21 container packages it covers a number in a config
+ * comment still outranks the setting — worth closing, but not from here.
  */
 function readTimeout(configText, key) {
-  const m = new RegExp(`\\b${key}\\s*:\\s*(\\d[\\d_]*)`).exec(stripComments(configText));
+  const m = new RegExp(`^[ \\t]*${key}\\s*:\\s*(\\d[\\d_]*)`, 'm').exec(configText);
   return m ? Number(m[1].replace(/_/g, '')) : undefined;
 }
 
@@ -115,7 +125,7 @@ function readTimeout(configText, key) {
  * the very violation it was written to catch.
  */
 const HOOK_WITH_TIMEOUT =
-  /\b(?:beforeAll|afterAll|beforeEach|afterEach)\s*\([\s\S]*?\n\s*\}\s*,\s*(\d[\d_]*)\s*\)\s*;/g;
+  /^[ \t]*(?:beforeAll|afterAll|beforeEach|afterEach)\s*\([\s\S]*?\n[ \t]*\}\s*,\s*(\d[\d_]*)\s*\)\s*;/gm;
 
 /**
  * The named-constant spelling of the same thing (`}, TIMEOUT_MS)`), which this
@@ -127,11 +137,11 @@ const HOOK_WITH_TIMEOUT =
  * under-reports is worse than no guard, because it also reports success.
  */
 const UNREADABLE_HOOK_TIMEOUT =
-  /\b(?:beforeAll|afterAll|beforeEach|afterEach)\s*\([\s\S]*?\n\s*\}\s*,\s*([A-Za-z_$][\w$]*)\s*\)\s*;/g;
+  /^[ \t]*(?:beforeAll|afterAll|beforeEach|afterEach)\s*\([\s\S]*?\n[ \t]*\}\s*,\s*([A-Za-z_$][\w$]*)\s*\)\s*;/gm;
 
 const testFiles = readdirSync(TESTS_DIR)
   .filter((f) => f.endsWith('.test.js'))
-  .map((f) => ({ name: f, text: stripComments(readFileSync(join(TESTS_DIR, f), 'utf8')) }));
+  .map((f) => ({ name: f, text: readFileSync(join(TESTS_DIR, f), 'utf8') }));
 
 // Read once, and keep "absent" as a value rather than as a throw: a missing
 // config is the headline failure, and it should be reported by the assertion
@@ -207,38 +217,56 @@ describe('the scripts vitest root declares its own timeouts (TASK-331)', () => {
     ).toBeGreaterThanOrEqual(maxDeclared);
   });
 
-  // The reader's own regression tests. These exist because the first draft of
-  // this guard failed on exactly the input below: it read a number out of the
-  // config's explanatory comment instead of the setting. Both directions matter,
-  // and the second is the dangerous one — a comment naming a larger number makes
-  // the guard PASS a config that is too low.
-  describe('readTimeout reads the setting, not the prose beside it', () => {
-    it('ignores a smaller number mentioned in a line comment', () => {
-      const cfg = [
-        "// This root ran on vitest's hookTimeout: 10_000 defaults until TASK-331.",
-        'export default defineConfig({ test: { hookTimeout: 120_000 } });',
-      ].join('\n');
-      expect(readTimeout(cfg, 'hookTimeout')).toBe(120_000);
+  // The scanners' own regression tests. Every case below is one this file got
+  // wrong before it got it right, which is why they are pinned rather than
+  // assumed. The dangerous direction is the LAST two: a scan that silently
+  // misses a real value passes a config nobody checked.
+  describe('the scanners read code, not the prose beside it', () => {
+    const CONFIG = ['export default defineConfig({', '  test: {', '    hookTimeout: 120_000,', '  },', '});'];
+
+    it('ignores a smaller number named in a line comment (draft 1 read this one)', () => {
+      expect(
+        readTimeout(["// it ran on vitest's `hookTimeout: 10_000` defaults", ...CONFIG].join('\n'), 'hookTimeout'),
+      ).toBe(120_000);
     });
 
-    it('ignores a larger number mentioned in a block comment', () => {
-      const cfg = [
-        '/* Do not raise this to 600_000: hookTimeout: 600_000 would mask a hang. */',
-        'export default defineConfig({ test: { hookTimeout: 120_000 } });',
-      ].join('\n');
-      expect(readTimeout(cfg, 'hookTimeout')).toBe(120_000);
+    it('ignores a LARGER number named in a block comment', () => {
+      // The fail-open direction: believing this comment would pass a 120s config
+      // as though it were budgeted for 600s.
+      expect(
+        readTimeout(['/**', ' * Never raise hookTimeout: 600_000 — it would mask a hang.', ' */', ...CONFIG].join('\n'), 'hookTimeout'),
+      ).toBe(120_000);
     });
 
-    it('still reports an absent setting as undefined rather than as zero', () => {
+    it('reports an absent setting as undefined, never as zero', () => {
       expect(readTimeout('export default defineConfig({ test: {} });', 'hookTimeout')).toBeUndefined();
+      // Zero is a real (terrible) budget and must stay distinguishable from absent.
+      expect(readTimeout('    hookTimeout: 0,', 'hookTimeout')).toBe(0);
     });
 
-    it('keeps a `://` URL out of the line-comment rule', () => {
-      const cfg = [
-        '// see https://vitest.dev/config/#hooktimeout',
-        'export default defineConfig({ test: { hookTimeout: 120_000 } });',
+    it('finds a describe-nested hook, not just a top-level one', () => {
+      // The indentation-tolerant anchor. A column-0-only anchor is what made the
+      // sibling guard green on the violation it was written to catch.
+      const src = ['describe("x", () => {', '  beforeAll(async () => {', '    await warm();', '  }, 120_000);', '});'].join('\n');
+      expect([...src.matchAll(HOOK_WITH_TIMEOUT)].map((m) => m[1])).toEqual(['120_000']);
+    });
+
+    it('does not count a hook written as an example inside a doc comment', () => {
+      const src = [
+        '/**', ' * A hook that declares its own timeout:', ' *', ' *     beforeAll(async () => {', ' *       await x();', ' *     }, 600_000);', ' */', 'it("real", () => {});',
       ].join('\n');
-      expect(readTimeout(cfg, 'hookTimeout')).toBe(120_000);
+      expect([...src.matchAll(HOOK_WITH_TIMEOUT)].map((m) => m[1])).toEqual([]);
+    });
+
+    it("still sees this suite's own real hook — the fail-open case draft 2 hit", () => {
+      // Draft 2 stripped comments before scanning, and a line comment discussing
+      // the glob `**/worktrees/**` opened a phantom block comment that swallowed
+      // real code: the suite maximum came out 0 and this file's consistency
+      // assertion passed vacuously. Assert the positive, against the real file.
+      const src = testFiles.find((f) => f.name === 'eslint-ignores-worktrees.test.js');
+      expect(src, 'eslint-ignores-worktrees.test.js is missing from the scan').not.toBeUndefined();
+      expect(src.text).toContain('**/worktrees/**'); // the text that broke draft 2
+      expect([...src.text.matchAll(HOOK_WITH_TIMEOUT)].map((m) => m[1])).toEqual(['120_000']);
     });
   });
 });
