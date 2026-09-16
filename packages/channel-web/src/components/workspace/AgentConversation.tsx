@@ -7,7 +7,7 @@
  * rail; routine fires never appear here at all, or 612 unattended runs would
  * bury the two conversations the human actually had.
  */
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUp, ChevronRight, Layers, ListChecks } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -15,6 +15,12 @@ import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { signInWithGoogle } from '@/lib/auth';
 import { readAlertVariant } from '@/lib/read-register';
+import {
+  activeMatch,
+  buildFindIndex,
+  findFieldKey,
+  threadFindFields,
+} from '@/lib/thread-find';
 import { isOpenDecision } from '@/lib/workspace-types';
 import type {
   Decision,
@@ -31,6 +37,12 @@ import {
   DECISION_SESSION_EXPIRED,
   DECISION_THREAD_READ_FAILED,
 } from './decision-copy';
+import {
+  FindHighlight,
+  ThreadFindBar,
+  ThreadFindToggle,
+  type FindView,
+} from './ThreadFind';
 
 /**
  * What this thread can honestly say about its approvals.
@@ -141,23 +153,183 @@ export function AgentConversation({
     onSend(v);
   };
 
+  /*
+    TASK-354 — finding something in a long thread.
+
+    The bar reads the thread THIS COMPONENT WAS HANDED, which is the current
+    conversation on the live view and the read-only excerpt when the rail has
+    one open. That is deliberate: "what did it say three weeks ago" is mostly a
+    question about a past conversation, and the rail already re-reads those by
+    `conversationId`, so each becomes the thread on screen in its turn. There is
+    no second search wire, and no control hinting at one.
+
+    `findStep` is a free-running counter rather than a clamped index — see
+    `activeMatch`, which owns the wrap. Typing resets it to 0 so a new query
+    starts at its first match instead of wherever the last one ended up.
+  */
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState('');
+  const [findStep, setFindStep] = useState(0);
+  const findToggleRef = useRef<HTMLButtonElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // No control over a thread with nothing in it to find. An empty thread's
+  // find bar can only ever answer "No matches", which is a true sentence about
+  // a question the reader was invited to ask for no reason.
+  const searchable = useMemo(
+    () => threadFindFields(thread).length > 0,
+    [thread],
+  );
+  const findIndex = useMemo(
+    () => buildFindIndex(thread, findOpen ? findQuery : ''),
+    [thread, findOpen, findQuery],
+  );
+  const findActive = activeMatch(findStep, findIndex.total);
+  const finding = findOpen && findQuery.trim().length > 0;
+  const find: FindView | null = finding
+    ? { query: findQuery, active: findActive, index: findIndex }
+    : null;
+
+  const closeFind = () => {
+    /*
+      Closing CLEARS the query. Leaving the thread painted with the bar gone
+      would strand highlights on screen with nothing left to explain them or
+      take them off again.
+
+      WHERE FOCUS GOES, and why it is not simply "the toggle". Normally it is:
+      the toggle stays mounted while the bar is open precisely so the element
+      we restore to still exists when we get here.
+
+      But this component is mounted ONCE and un-keyed — `AgentView` swaps its
+      `thread` prop between the live conversation and a read-only excerpt — so
+      find state outlives a thread change. Open find, click a past conversation
+      in the rail, and while its excerpt is loading (a lone `status`
+      placeholder) or after that read fails (`[]`), the pane holds nothing
+      searchable. The toolbar is then up only because the open bar holds it
+      there, so the close takes the TOGGLE with it.
+
+      THE MECHANISM, MEASURED — because the obvious guess about it is wrong and
+      leads straight to a fix that does nothing. The toggle is NOT detached when
+      we call `focus()`. A probe of the unfixed code recorded, in this order:
+      `document.contains(toggle) === true`, `toggle !== null`, and
+      `document.activeElement` immediately after the call === the Find button.
+      The focus lands. React batches `setFindOpen(false)` and flushes AFTER the
+      handler returns; that commit unmounts the focused button, and the browser
+      resets `document.activeElement` to `<body>`.
+
+      So a null check does not help, and neither does `document.contains` —
+      both are true at call time. The only thing that helps is choosing a target
+      that is still mounted after the state update. `searchable` is exactly that
+      question: the row's post-close condition is `searchable || findOpen` with
+      `findOpen` about to be false, so `searchable` IS "the toggle survives".
+      When it does not, focus goes to the transcript — always rendered, and the
+      place the reader was already looking.
+
+      Same family as the silent restore-to-nothing `use-opener-restore.ts` fixes
+      for dialogs, but not the same cause, and the difference is the part worth
+      keeping.
+    */
+    setFindOpen(false);
+    setFindQuery('');
+    setFindStep(0);
+    if (searchable) findToggleRef.current?.focus();
+    else scrollRef.current?.focus();
+  };
+
+  // Walk the reader to the match they asked for. Queried out of the DOM rather
+  // than tracked with a ref per mark: which mark is current is already stated
+  // in the markup, and a second copy of that fact is a second thing to get
+  // wrong. `scrollIntoView` is guarded because jsdom only has it when the
+  // suite's setup installs one.
+  useEffect(() => {
+    if (!finding) return;
+    const el = scrollRef.current?.querySelector('[data-find-active="true"]');
+    if (el instanceof HTMLElement && typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ block: 'nearest' });
+    }
+  }, [finding, findActive, findQuery]);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex-1 overflow-y-auto px-6 py-6">
+      {/*
+        `|| findOpen` so an open bar survives the thread going empty underneath
+        it — a failed excerpt read renders `[]`, and a control that vanishes
+        mid-keystroke takes the keyboard user's focus with it.
+      */}
+      {(searchable || findOpen) && (
+        <div className="flex shrink-0 items-center justify-end gap-2 border-b border-border px-6 py-1.5">
+          <ThreadFindToggle
+            open={findOpen}
+            onOpen={() => setFindOpen(true)}
+            onClose={closeFind}
+            buttonRef={findToggleRef}
+          />
+          {findOpen && (
+            <ThreadFindBar
+              query={findQuery}
+              onQuery={(next) => {
+                setFindQuery(next);
+                setFindStep(0);
+              }}
+              active={findActive}
+              total={findIndex.total}
+              onNext={() => setFindStep((n) => n + 1)}
+              onPrev={() => setFindStep((n) => n - 1)}
+              onClose={closeFind}
+            />
+          )}
+        </div>
+      )}
+      {/*
+        `tabIndex={-1}` makes the transcript focusable BY CODE without putting
+        it in the tab order — the standard landing spot when a control that had
+        focus is about to unmount (see `closeFind`). The reader's next Tab then
+        continues from the conversation instead of from the top of the page.
+
+        It is NAMED and it is VISIBLE when focused, because being dropped
+        somewhere sensible in silence is still being dropped in silence. A bare
+        `tabIndex={-1}` div is `role="generic"`, where `aria-label` is ignored,
+        so the landing needs a real role to be announced at all — `region` plus
+        the agent's name says where you have arrived. And `outline-none` alone
+        would leave a sighted keyboard user with nothing to see, so the outline
+        is replaced rather than removed.
+      */}
+      <div
+        ref={scrollRef}
+        tabIndex={-1}
+        role="region"
+        aria-label={`Conversation with ${agent.name}`}
+        className="flex-1 overflow-y-auto px-6 py-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      >
         <div className="flex max-w-[720px] flex-col gap-5">
-          {thread.map((m) => (
+          {thread.map((m, i) => {
+            /*
+              ONE KEY, not two. React's key and the find index's field key are
+              the same string deliberately — see `findFieldKey`. Keying React by
+              `m.id` alone while the index keyed by position left the drift this
+              change is supposed to remove: on a duplicate id React drops or
+              duplicates a `Message` and the painted marks stop matching the
+              total. Measured cost of the position-bearing key: nothing in
+              ordinary use (the thread only grows at the end), and a harmless
+              remount if compaction ever rewrites the head.
+            */
+            const key = findFieldKey(i, m.id);
+            return (
             <Message
-              key={m.id}
+              key={key}
+              fieldKey={key}
               m={m}
               agent={agent}
               decisions={decisions}
               onApprove={onApprove}
               onDismiss={onDismiss}
               onUndo={onUndo}
+              find={find}
               {...(busyIds !== undefined ? { busyIds } : {})}
               {...(notices !== undefined ? { notices } : {})}
             />
-          ))}
+            );
+          })}
 
           {/*
             The notice sits where the missing cards would have been — the foot
@@ -322,6 +494,8 @@ function Message({
   onUndo,
   busyIds,
   notices,
+  find,
+  fieldKey,
 }: {
   m: ThreadMessage;
   agent: WorkspaceAgent;
@@ -331,12 +505,20 @@ function Message({
   onUndo: (id: string) => void;
   busyIds?: ReadonlySet<string>;
   notices?: ReadonlyMap<string, string>;
+  /** Null whenever find is shut or its field is blank — see `ThreadFind`. */
+  find: FindView | null;
+  /**
+   * What the find index calls this message's text. Handed DOWN rather than
+   * derived here, because it carries the message's position in the thread and
+   * only the caller doing the mapping knows that — see `findFieldKey`.
+   */
+  fieldKey: string;
 }) {
   if (m.kind === 'user') {
     return (
       <div className="flex justify-end">
         <div className="max-w-[80%] rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[13.5px] leading-relaxed text-primary-foreground">
-          {m.text}
+          <FindHighlight fieldKey={fieldKey} text={m.text} find={find} />
         </div>
       </div>
     );
@@ -348,7 +530,7 @@ function Message({
         <Separator className="flex-1" />
         <span className="flex shrink-0 items-center gap-1.5 text-[11.5px] text-muted-foreground">
           <Layers size={11} />
-          {m.text}
+          <FindHighlight fieldKey={fieldKey} text={m.text} find={find} />
         </span>
         <Separator className="flex-1" />
       </div>
@@ -407,7 +589,7 @@ function Message({
       <AgentTile agent={agent} />
       <div className="min-w-0 flex-1">
         <div className="max-w-[600px] text-[13.5px] leading-relaxed text-pretty">
-          {m.text}
+          <FindHighlight fieldKey={fieldKey} text={m.text} find={find} />
         </div>
         {m.kind === 'steps' && <Steps label={m.stepsLabel} steps={m.steps} />}
         <div className="mt-1.5 text-[11.5px] text-muted-foreground">{m.time}</div>

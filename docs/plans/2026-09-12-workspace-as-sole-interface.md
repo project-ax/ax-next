@@ -157,11 +157,26 @@ workspace shows text only.** None of the chain-of-thought work, none of the
 tool steps, none of the failed/held states measured during the ux-first-run
 walk (`text-destructive` 6.17:1, `text-warning` 12.68:1).
 
-There is already a visible seam: re-reading a thread yields a `steps` variant
-(`workspace-types.ts:483` — `stepsLabel` plus `string[]`), so **history shows
-more than the live stream did**. A user who watches a turn happen and then
-reloads sees more detail than they did live. That is the kind of inconsistency
-people notice and cannot explain.
+**CORRECTED 2026-09-16 (TASK-352, TASK-354).** This paragraph used to claim
+there was "already a visible seam" — that re-reading a thread yields a `steps`
+variant, so *history shows more than the live stream did*. **That was never
+true, and it blocked TASK-352 when a builder tried to build on it.** Measured
+twice, independently: `stepsLabel` has ZERO producers repo-wide. Grep the whole
+tree and you get two hits — the type declaration (`workspace-types.ts:525`) and
+the one renderer that would draw it (`AgentConversation.tsx:348`). The same is
+true of the whole `steps` variant and of `fold`. `buildThread`
+(`routes-workspace.ts`) emits `user` and `agent` turns of plain text and
+nothing else.
+
+So live and reload agree: **both show text only.** The cost named above is
+real, but it is a cost the workspace pays uniformly, not an inconsistency
+between two paths. Nobody sees more detail by reloading, and any card scoped
+around closing that gap is scoped around a gap that does not exist.
+
+(The line number in the original claim had also drifted — it pointed at
+`workspace-types.ts:483`, which is now part of `ActivityEvent`. A citation that
+no longer resolves is how a claim survives past the code that once supported
+it.)
 
 Three ways out, and the one taken:
 
@@ -207,9 +222,14 @@ still wants it":
 - **Attachments.** No attach affordance in `HomeComposer` or
   `AgentConversation`; `AttachmentChip`, `AttachmentComposerChip` and
   `ArtifactChip` are chat-only. A user cannot give an agent a file.
-- **Search.** `SearchBar` is used only by `Thread.tsx`. With conversations
-  living inside agents and compaction folding them, *finding* something said
-  three weeks ago matters more here than it did in chat, not less.
+- **Search.** ~~`SearchBar` is used only by `Thread.tsx`.~~ **SHIPPED as
+  in-conversation find (TASK-354), and it was not a port.** Chat's `SearchBar`
+  never filtered anything — `search-store.ts` says so in its own header — so
+  porting it would have moved an affordance that lies. The workspace instead
+  has a find control over the thread on screen: highlight, count, next/previous,
+  Escape to close. Still open, and deliberately NOT started here:
+  cross-conversation search, which needs a backend decision (route? index?
+  embeddings?) rather than a wider client-side loop.
 - **Artifact/download affordances.** Chat has `ArtifactChip`; the workspace has
   `AgentFiles` (a real two-tier file browser), so this may already be covered
   by a better mechanism. Verify before building.
