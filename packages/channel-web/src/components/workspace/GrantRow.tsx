@@ -1,0 +1,299 @@
+/**
+ * A capability grant, as a row in the Today queue (TASK-350).
+ *
+ * WHY NOT `components/PermissionCard.tsx`. That card is chat's, it mounts above
+ * chat's composer, and TASK-360 deletes it with the rest of the chat tree.
+ * Mounting it here would tie the surviving surface to the retiring one. What
+ * the two share — the words, and where a key is written — lives in
+ * `@/lib/grant-copy` and `@/lib/grant-destinations`, which both import.
+ *
+ * WHY IT IS A ROW AND NOT A CARD. It sits inside Today's existing bordered
+ * list, next to `DecisionRow`. A `Card` inside that list would read as a
+ * different kind of object; it is the same kind of object — something waiting
+ * on a person — so it gets the same frame.
+ *
+ * THE GRANT/DECISION DISTINCTION STAYS (2026-09-12). A grant is durable and
+ * agent-scoped and carries no recorded call; a `Decision` is a one-shot outward
+ * action with a verbatim call and a freshness guard. Two types, two rows, one
+ * list. Sharing a queue is not collapsing them, which is why this is its own
+ * component and not a `kind` branch inside `DecisionRow`.
+ */
+import { useState, type ReactElement } from 'react';
+import { TriangleAlert } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { grantHost, setDestinationCredential } from '@/lib/credentials';
+import {
+  AUTHORED_CONNECTOR_WARNING,
+  AUTHORED_SKILL_WARNING,
+  GRANT_CONNECT_LABEL,
+  GRANT_CONNECTING_LABEL,
+  GRANT_REASSURANCE,
+  GRANT_NO_CONVERSATION,
+  GRANT_REJECT_LABEL,
+  HOST_ALLOW_ALWAYS_LABEL,
+  HOST_ALLOW_ONCE_LABEL,
+  HOST_ALLOWING_LABEL,
+  HOST_WALL_EXPLANATION,
+  KEY_SAFETY,
+  PACKAGES_LINE,
+  REACH_LEAD_IN,
+  SLOT_HINT,
+} from '@/lib/grant-copy';
+import {
+  accountDestinationForConnectorSlot,
+  accountOrSkillDestination,
+} from '@/lib/grant-destinations';
+import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
+import { HttpError, httpFetch, userFacingMessage } from '@/lib/http';
+import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
+
+interface Props {
+  grant: WorkspaceGrant;
+  /** The grant is answered or turned down: drop the row. */
+  onResolved: (key: string) => void;
+}
+
+/** Slots the person still has to fill — the vaulted ones need no input. */
+function blankSlots(slots: readonly { slot: string; haveExisting?: boolean }[]): string[] {
+  return slots.filter((s) => s.haveExisting !== true).map((s) => s.slot);
+}
+
+export function GrantRow({ grant, onResolved }: Props): ReactElement {
+  // The conversation is recorded on the grant when the frame arrives: Today can
+  // hold grants from several agents, so the row cannot work it out from context.
+  const { request, conversationId } = grant;
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const slots = request.kind === 'host' ? [] : request.slots;
+  const needed = blankSlots(slots);
+  const allSlotsFilled = needed.every((s) => (values[s] ?? '').trim().length > 0);
+
+  /**
+   * Turning a grant down is PURELY LOCAL — no network call, the same as chat.
+   * There is nothing to tell the server: the wall already holds, and a grant
+   * that was never given needs no revoking.
+   */
+  function reject(): void {
+    onResolved(grant.key);
+  }
+
+  /** Write each freshly-typed key to the host credential store, then decide. */
+  async function writeKeys(subjectId: string, forConnector: boolean): Promise<void> {
+    for (const s of slots) {
+      if (s.haveExisting === true) continue;
+      const value = (values[s.slot] ?? '').trim();
+      if (value.length === 0) continue;
+      await setDestinationCredential({
+        destination: forConnector
+          ? accountDestinationForConnectorSlot(s, subjectId)
+          : accountOrSkillDestination(s, subjectId),
+        slot: { kind: 'api-key' },
+        scope: { scope: 'user', ownerId: null },
+        payload: value,
+      });
+    }
+  }
+
+  async function connect(): Promise<void> {
+    if (request.kind === 'host' || conversationId === null) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const forConnector = request.kind === 'connector';
+      const subjectId = forConnector ? request.connectorId : request.skillId;
+      await writeKeys(subjectId, forConnector);
+      // What the row DISPLAYED. The authored grant intersects its proposal with
+      // this, so a card that showed less than the manifest asks for grants less.
+      const shown = {
+        hosts: request.hosts,
+        slots: request.slots.map((s) => s.slot),
+        npm: request.packages?.npm ?? [],
+        pypi: request.packages?.pypi ?? [],
+      };
+      const resp = await httpFetch('/api/chat/permission-decision', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+        body: JSON.stringify(
+          forConnector
+            ? { conversationId, connectorId: subjectId, shown }
+            : { conversationId, skillId: subjectId, shown },
+        ),
+      });
+      if (!resp.ok) throw new HttpError('/api/chat/permission-decision', resp.status);
+      onResolved(grant.key);
+    } catch (err) {
+      // Never the status, never the path — those go to the console.
+      setError(userFacingMessage(err, 'grant-row'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function allow(persist: boolean): Promise<void> {
+    if (request.kind !== 'host') return;
+    setBusy(true);
+    setError(null);
+    try {
+      await grantHost({ sessionId: request.sessionId, host: request.host, persist });
+      onResolved(grant.key);
+    } catch (err) {
+      setError(userFacingMessage(err, 'grant-row'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const failure =
+    error === null ? null : (
+      <Alert variant="destructive" className="mt-3 max-w-[660px]">
+        <AlertDescription className="text-[13px] leading-relaxed">
+          {error}
+        </AlertDescription>
+      </Alert>
+    );
+
+  if (request.kind === 'host') {
+    return (
+      <div
+        className="border-b border-rule-soft p-4 last:border-b-0"
+        data-testid={`grant-${grant.key}`}
+      >
+        <p className="text-[14px] font-medium">Allow access to {request.host}?</p>
+        <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+          {HOST_WALL_EXPLANATION}
+        </p>
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          <Badge variant="secondary">{request.host}</Badge>
+        </div>
+        {failure}
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <Button size="sm" disabled={busy} onClick={() => void allow(false)}>
+            {busy ? HOST_ALLOWING_LABEL : HOST_ALLOW_ONCE_LABEL}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={busy}
+            onClick={() => void allow(true)}
+          >
+            {HOST_ALLOW_ALWAYS_LABEL}
+          </Button>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={reject}>
+            {GRANT_REJECT_LABEL}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  const title =
+    request.kind === 'connector'
+      ? `Connect ${request.name}`
+      : `Connect ${humanizeId(request.skillId)}`;
+  const authoredWarning =
+    request.kind === 'connector' ? AUTHORED_CONNECTOR_WARNING : AUTHORED_SKILL_WARNING;
+  const description = request.kind === 'skill' ? request.description : '';
+  const packages = request.packages;
+
+  return (
+    <div
+      className="border-b border-rule-soft p-4 last:border-b-0"
+      data-testid={`grant-${grant.key}`}
+    >
+      <p className="text-[14px] font-medium">{title}</p>
+      {description.length > 0 && (
+        <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+          {description}
+        </p>
+      )}
+
+      {request.authored === true && (
+        <Alert className="mt-3 max-w-[660px]">
+          <TriangleAlert className="size-4" />
+          <AlertDescription className="text-[13px] leading-relaxed">
+            {authoredWarning}
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {request.hosts.length > 0 && (
+        <div className="mt-3 flex flex-col gap-1.5">
+          <p className="text-xs text-muted-foreground">{REACH_LEAD_IN}</p>
+          <div className="flex flex-wrap gap-1.5">
+            {request.hosts.map((h) => (
+              <Badge key={h} variant="secondary">
+                {h}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {request.slots.map((s) =>
+        s.haveExisting === true ? (
+          <div
+            key={s.slot}
+            className="mt-3 flex items-center gap-2 text-[13px] text-muted-foreground"
+          >
+            <Badge variant="secondary">{humanizeId(s.account ?? s.slot)}</Badge>
+            <span>Using the {humanizeSlotLabel(s.slot, s.account)} you already saved.</span>
+          </div>
+        ) : (
+          <div key={s.slot} className="mt-3 grid max-w-[420px] gap-1.5">
+            <Label htmlFor={`grant-cred-${grant.key}-${s.slot}`}>
+              {humanizeSlotLabel(s.slot, s.account)}
+            </Label>
+            <p className="text-xs text-muted-foreground">{KEY_SAFETY}</p>
+            <Input
+              id={`grant-cred-${grant.key}-${s.slot}`}
+              type="password"
+              autoComplete="off"
+              value={values[s.slot] ?? ''}
+              onChange={(e) => setValues((v) => ({ ...v, [s.slot]: e.target.value }))}
+            />
+          </div>
+        ),
+      )}
+
+      {packages != null && (packages.npm.length > 0 || packages.pypi.length > 0) && (
+        <p className="mt-3 text-[13px] text-muted-foreground" data-testid="grant-packages">
+          {PACKAGES_LINE}
+        </p>
+      )}
+
+      <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
+        {GRANT_REASSURANCE}
+      </p>
+
+      {failure}
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <Button
+          size="sm"
+          disabled={busy || !allSlotsFilled || conversationId === null}
+          onClick={() => void connect()}
+        >
+          {busy ? GRANT_CONNECTING_LABEL : GRANT_CONNECT_LABEL}
+        </Button>
+        <Button size="sm" variant="ghost" disabled={busy} onClick={reject}>
+          {GRANT_REJECT_LABEL}
+        </Button>
+        {!allSlotsFilled ? (
+          <span className="text-[11.5px] text-muted-foreground">{SLOT_HINT}</span>
+        ) : conversationId === null ? (
+          // The one disabled state typing cannot fix. Say so rather than
+          // leaving a dead button on a surface whose whole job is asking.
+          <span className="text-[11.5px] text-muted-foreground">
+            {GRANT_NO_CONVERSATION}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}

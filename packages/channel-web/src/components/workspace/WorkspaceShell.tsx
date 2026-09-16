@@ -25,6 +25,10 @@ import { Button } from '@/components/ui/button';
 import { workspaceApi } from '@/lib/workspace-api';
 import { useActivityFeed } from '@/lib/workspace-activity';
 import { useDecisionQueue } from '@/lib/workspace-decisions';
+import {
+  useWorkspaceGrants,
+  workspaceGrantActions,
+} from '@/lib/workspace-grant-store';
 import { WorkspaceProvider, useWorkspace } from '@/lib/workspace-context';
 import { hydrateTheme } from '@/lib/theme';
 import { isOpenDecision, type ActivityEvent } from '@/lib/workspace-types';
@@ -223,6 +227,12 @@ function Inner({ onOpenAdminSettings }: WorkspaceShellProps) {
    * without a second read and without two copies drifting apart on screen.
    */
   const queue = useDecisionQueue();
+  /*
+    Open capability grants (TASK-350). A store rather than a fetch: the frame
+    that raises one arrives on the turn stream, and nothing persists it, so
+    there is no route to read it back from.
+  */
+  const grants = useWorkspaceGrants();
   const [filter, setFilter] = useState<'needs' | 'working'>('needs');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [rosterOpen, setRosterOpen] = useState(true);
@@ -236,6 +246,13 @@ function Inner({ onOpenAdminSettings }: WorkspaceShellProps) {
     agentId: string;
     reqId: string;
     text: string;
+    /**
+     * The conversation the send created. Carried rather than re-derived: the
+     * agent view streams this turn BEFORE its own read resolves, so without
+     * this it has no conversation to attribute the turn to — and a capability
+     * grant raised on it would arrive unanswerable (TASK-350 review).
+     */
+    conversationId: string;
   } | null>(null);
 
   useEffect(() => {
@@ -344,6 +361,8 @@ function Inner({ onOpenAdminSettings }: WorkspaceShellProps) {
               <div className="flex-1 overflow-y-auto">
                 <TodayView
                   decisions={queue.decisions}
+                  grants={grants.grants}
+                  onGrantResolved={workspaceGrantActions.resolve}
                   agents={board.agents}
                   filter={filter}
                   expandedId={expandedId}
@@ -364,12 +383,12 @@ function Inner({ onOpenAdminSettings }: WorkspaceShellProps) {
               <HomeComposer
                 agents={board.agents}
                 onSend={async (agentId, text) => {
-                  const { reqId } = await workspaceApi.sendMessage({
+                  const { reqId, conversationId } = await workspaceApi.sendMessage({
                     agentId,
                     conversationId: null,
                     text,
                   });
-                  setPendingReply({ agentId, reqId, text });
+                  setPendingReply({ agentId, reqId, text, conversationId });
                   navigate({ kind: 'agent', id: agentId, tab: 'chat' });
                 }}
               />
@@ -448,7 +467,11 @@ function Inner({ onOpenAdminSettings }: WorkspaceShellProps) {
               version={version}
               pendingReply={
                 pendingReply && pendingReply.agentId === route.id
-                  ? { reqId: pendingReply.reqId, text: pendingReply.text }
+                  ? {
+                      reqId: pendingReply.reqId,
+                      text: pendingReply.text,
+                      conversationId: pendingReply.conversationId,
+                    }
                   : null
               }
               onPendingReplyConsumed={() => setPendingReply(null)}

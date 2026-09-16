@@ -51,7 +51,7 @@ import {
   MAX_DETAIL_CHARS,
 } from './transport';
 import { readSseFrames } from './sse-frames';
-import type { SseFrame } from '../server/types';
+import type { PermissionRequest, SseFrame } from '../server/types';
 import type { PostMessageResponse } from '@/wire/chat';
 import type {
   ActivityEvent,
@@ -379,6 +379,23 @@ export interface StreamHandlers {
    * descriptions of it.
    */
   onDecisionRaised?: (raised: { decisionId: string; summary: string }) => void;
+  /**
+   * The agent hit a capability it does not have and is asking for it (TASK-350).
+   * NON-TERMINAL, like `onDecisionRaised` — the wall holds server-side, so the
+   * turn is parked rather than failed.
+   *
+   * Before this existed the frame was parsed and then dropped on the floor: the
+   * reader handled `done`, `error`, text and `decisionRaised`, and a
+   * `permissionRequest` fell through to `continue`. The wall still held — this
+   * failed CLOSED, not open — but the person was never asked, so the turn
+   * dead-ended with no path forward.
+   *
+   * Carries the request verbatim. It is public manifest data by construction —
+   * hostnames, slot NAMES, an opaque sessionId — and never a secret: a key the
+   * person types posts straight to the host credential store and reaches
+   * neither the model nor the transcript.
+   */
+  onPermissionRequest?: (request: PermissionRequest) => void;
   signal?: AbortSignal;
 }
 
@@ -640,7 +657,14 @@ export const workspaceApi = {
  */
 async function streamReply(
   reqId: string,
-  { onText, onDone, onError, onDecisionRaised, signal }: StreamHandlers,
+  {
+    onText,
+    onDone,
+    onError,
+    onDecisionRaised,
+    onPermissionRequest,
+    signal,
+  }: StreamHandlers,
 ): Promise<void> {
   let res: Response;
   try {
@@ -710,6 +734,19 @@ async function streamReply(
     }
     if ('kind' in frame && frame.kind === 'text' && typeof frame.text === 'string') {
       onText(frame.text);
+      return 'continue';
+    }
+    /*
+      The agent is asking for a capability. Non-terminal for the same reason a
+      decision is: the wall holds server-side and the turn parks, so the stream
+      stays open and the rest of the turn follows once the person answers.
+
+      Forwarded verbatim rather than reshaped — the row renders every kind
+      (`skill`, `connector`, `host`), and a reader that understood one of them
+      would leave the other two dead-ending, which is the bug.
+    */
+    if (onPermissionRequest && 'permissionRequest' in frame && frame.permissionRequest) {
+      onPermissionRequest(frame.permissionRequest);
       return 'continue';
     }
     /*

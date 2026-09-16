@@ -47,6 +47,22 @@ import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { grantHost, setDestinationCredential } from '@/lib/credentials';
+import {
+  AUTHORED_CONNECTOR_WARNING,
+  AUTHORED_SKILL_WARNING,
+  GRANT_CONNECT_LABEL,
+  GRANT_CONNECTING_LABEL,
+  GRANT_REASSURANCE,
+  GRANT_REJECT_LABEL,
+  HOST_ALLOW_ALWAYS_LABEL,
+  HOST_ALLOW_ONCE_LABEL,
+  HOST_ALLOWING_LABEL,
+  HOST_WALL_EXPLANATION,
+  KEY_SAFETY,
+  PACKAGES_LINE,
+  REACH_LEAD_IN,
+  SLOT_HINT,
+} from '@/lib/grant-copy';
 import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
 import {
   permissionCardActions,
@@ -55,76 +71,14 @@ import {
 import { HttpError, httpFetch, userFacingMessage } from '@/lib/http';
 import { resumeActions } from '@/lib/resume-actions';
 import { useConversationId } from '@/lib/use-conversation-id';
-import type { Destination } from '@ax/credentials';
+import {
+  accountDestinationForConnectorSlot,
+  accountOrSkillDestination,
+} from '@/lib/grant-destinations';
 
-/**
- * One card slot row, as the WRITE paths read it. `service`/`slotTag` (TASK-124)
- * are the resolved vault-key tags the producer (orchestrator / skill-broker) set;
- * `account` is the legacy pre-TASK-124 field kept for back-compat with a card that
- * predates the new tags.
- */
-interface CardSlot {
-  slot: string;
-  account?: string;
-  service?: string;
-  slotTag?: string;
-}
-
-/**
- * TASK-124 — build the account destination for a CONNECTOR slot. Prefer the
- * resolved `service`/`slotTag` (so a multi-slot connector hits its distinct
- * per-slot `account:<service>:<slot>` row); fall back to the legacy
- * `account ?? connectorId` collapsed shape for a card without the new tags.
- */
-function accountDestinationForConnectorSlot(s: CardSlot, connectorId: string): Destination {
-  const service = s.service ?? s.account ?? connectorId;
-  return {
-    kind: 'account',
-    service,
-    ...(s.slotTag !== undefined ? { slot: s.slotTag } : {}),
-  };
-}
-
-/**
- * TASK-124 — build the destination for a SKILL-card slot. A connector-derived
- * slot carries `service` (always set by the producer) → the
- * `account:<service>[:<slot>]` vault row; a legacy slot with only `account` keeps
- * the collapsed account route; an untagged slot keeps the per-skill `skill-slot`
- * destination.
- */
-function accountOrSkillDestination(s: CardSlot, skillId: string): Destination {
-  if (s.service !== undefined) {
-    return {
-      kind: 'account',
-      service: s.service,
-      ...(s.slotTag !== undefined ? { slot: s.slotTag } : {}),
-    };
-  }
-  if (s.account !== undefined) {
-    return { kind: 'account', service: s.account };
-  }
-  return { kind: 'skill-slot', skillId, slot: s.slot };
-}
-
-/**
- * (A2) The reassurance line, shared by the skill and connector cards.
- *
- * `workspace/ApprovalCard.tsx` has said something like this for a while and it
- * is the reason that surface reads as trustworthy: it tells you what the button
- * does, that nothing has happened yet, and that the decision is reversible. The
- * grant card — the one that actually widens what an agent may do — said none of
- * it. Every clause here is true: the grant is durable, nothing is applied until
- * the click, and both halves are revocable in Settings (skills detach from the
- * Skills tab, hosts from Allowed sites).
- *
- * No jokes on this string. It is a security decision.
- */
-const GRANT_REASSURANCE =
-  'Connecting lets this agent do this from now on. Nothing happens until you ' +
-  'choose, and you can change it later in Settings.';
-
-/** (A6) Why the Connect button is disabled — it used to just sit there, greyed out. */
-const SLOT_HINT = 'Add the key above to continue';
+// (TASK-350) The grant copy moved to `@/lib/grant-copy` so the agent
+// workspace's own grant renderer reads the same strings rather than repeating
+// them. This file is deleted by TASK-360; the copy must outlive it.
 
 /**
  * The ONE bundled approval card (JIT design §11.3/§6B, decision #6) — the
@@ -348,9 +302,7 @@ export function PermissionCard() {
           <div className="flex flex-col gap-1.5">
             {/* (A12) A bare hostname list asks the reader to work out why it is
                 there. Say what the list is for before showing it. */}
-            <p className="text-xs text-muted-foreground">
-              To do this, it needs to reach:
-            </p>
+            <p className="text-xs text-muted-foreground">{REACH_LEAD_IN}</p>
             <div className="flex flex-wrap gap-1.5">
               {hosts.map((h) => (
                 <Badge key={h} variant="secondary">
@@ -383,10 +335,7 @@ export function PermissionCard() {
               <Label htmlFor={`perm-cred-${s.slot}`}>
                 {humanizeSlotLabel(s.slot, s.account)}
               </Label>
-              <p className="text-xs text-muted-foreground">
-                We store this key on the server. The agent never sees it, and it
-                never appears in your conversation.
-              </p>
+              <p className="text-xs text-muted-foreground">{KEY_SAFETY}</p>
               <Input
                 id={`perm-cred-${s.slot}`}
                 type="password"
@@ -406,8 +355,7 @@ export function PermissionCard() {
             // to know is that something gets downloaded — the registry
             // hostnames are the grant's business, not theirs.
             <p className="text-sm text-muted-foreground" data-testid="permission-packages">
-              It will download some extra software it needs from the internet to
-              do this.
+              {PACKAGES_LINE}
             </p>
           )}
       </>
@@ -424,10 +372,7 @@ export function PermissionCard() {
           {request.authored === true && (
             <Alert>
               <TriangleAlert className="size-4" />
-              <AlertDescription>
-                Your assistant wrote this connector itself, just now. Connect it
-                only if you were expecting that.
-              </AlertDescription>
+              <AlertDescription>{AUTHORED_CONNECTOR_WARNING}</AlertDescription>
             </Alert>
           )}
           {renderReach(request.hosts, request.slots, request.packages)}
@@ -445,13 +390,13 @@ export function PermissionCard() {
             </p>
           )}
           <Button variant="ghost" disabled={busy} onClick={close}>
-            Not now
+            {GRANT_REJECT_LABEL}
           </Button>
           <Button
             disabled={busy || !allSlotsFilled || conversationId === null}
             onClick={() => void approveConnector()}
           >
-            {busy ? 'Connecting…' : 'Connect'}
+            {busy ? GRANT_CONNECTING_LABEL : GRANT_CONNECT_LABEL}
           </Button>
         </CardFooter>
       </Card>
@@ -463,9 +408,7 @@ export function PermissionCard() {
       <Card className="mb-3" data-testid="permission-card-host">
         <CardHeader>
           <CardTitle>Allow access to {request.host}?</CardTitle>
-          <CardDescription>
-            Your assistant tried to reach a site it isn’t allowed to yet.
-          </CardDescription>
+          <CardDescription>{HOST_WALL_EXPLANATION}</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <div className="flex flex-wrap gap-1.5">
@@ -479,13 +422,13 @@ export function PermissionCard() {
         </CardContent>
         <CardFooter className="justify-end gap-2">
           <Button variant="ghost" disabled={busy} onClick={close}>
-            Not now
+            {GRANT_REJECT_LABEL}
           </Button>
           <Button variant="outline" disabled={busy} onClick={() => void allow(true)}>
-            Always for this agent
+            {HOST_ALLOW_ALWAYS_LABEL}
           </Button>
           <Button disabled={busy} onClick={() => void allow(false)}>
-            {busy ? 'Allowing…' : 'Just this once'}
+            {busy ? HOST_ALLOWING_LABEL : HOST_ALLOW_ONCE_LABEL}
           </Button>
         </CardFooter>
       </Card>
@@ -507,10 +450,7 @@ export function PermissionCard() {
         {request.authored === true && (
           <Alert>
             <TriangleAlert className="size-4" />
-            <AlertDescription>
-              Your assistant wrote this skill itself, just now. Connect it only
-              if you were expecting that.
-            </AlertDescription>
+            <AlertDescription>{AUTHORED_SKILL_WARNING}</AlertDescription>
           </Alert>
         )}
         {renderReach(request.hosts, request.slots, request.packages)}
@@ -526,13 +466,13 @@ export function PermissionCard() {
           <p className="mr-auto text-xs text-muted-foreground">{SLOT_HINT}</p>
         )}
         <Button variant="ghost" disabled={busy} onClick={close}>
-          Not now
+          {GRANT_REJECT_LABEL}
         </Button>
         <Button
           disabled={busy || !allSlotsFilled || conversationId === null}
           onClick={() => void connect()}
         >
-          {busy ? 'Connecting…' : 'Connect'}
+          {busy ? GRANT_CONNECTING_LABEL : GRANT_CONNECT_LABEL}
         </Button>
       </CardFooter>
     </Card>

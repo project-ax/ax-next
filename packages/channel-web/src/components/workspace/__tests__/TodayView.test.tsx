@@ -66,6 +66,8 @@ function renderToday(
   return render(
     <TodayView
       decisions={[]}
+      grants={[]}
+      onGrantResolved={vi.fn()}
       agents={[agent()]}
       filter="needs"
       expandedId={null}
@@ -309,5 +311,141 @@ describe('resolved rows', () => {
       ],
     });
     expect(container.textContent).not.toContain('Quill sent the reply to Dana');
+  });
+});
+
+/*
+  TASK-350 — the queue holds two kinds of thing now, and the heading counts
+  both.
+
+  These cases did not exist before. The populated headline was untested: only
+  the zero case ("Nothing is waiting on you.") and the unreadable case had
+  assertions, which is why the wording could be changed from "One decision" to
+  "One thing" with the whole suite still green. A heading that is allowed to lie
+  about a third of what it counts is exactly what this card exists to stop, so
+  it gets covered here.
+*/
+const hostGrant = {
+  key: 'host:example.org',
+  conversationId: 'c1',
+  request: { kind: 'host' as const, host: 'example.org', sessionId: 's-1' },
+};
+const skillGrant = {
+  key: 'skill:linear',
+  conversationId: 'c1',
+  request: {
+    kind: 'skill' as const,
+    skillId: 'linear',
+    description: '',
+    hosts: [],
+    slots: [],
+  },
+};
+
+describe('the heading counts grants as well as decisions', () => {
+  it('says one thing when one decision is open', () => {
+    renderToday({ decisions: [decision()] });
+
+    expect(screen.getByText('One thing is waiting on you.')).toBeTruthy();
+  });
+
+  it('says one thing when the only thing open is a grant', () => {
+    // Before TASK-350 this said "Nothing is waiting on you." over a row that
+    // was plainly waiting on you — the queue could not see grants at all.
+    renderToday({ grants: [hostGrant] });
+
+    expect(screen.getByText('One thing is waiting on you.')).toBeTruthy();
+    expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();
+  });
+
+  it('adds them up when the queue holds one of each', () => {
+    // The discriminating case: counting only decisions gives "One thing".
+    renderToday({ decisions: [decision()], grants: [hostGrant] });
+
+    expect(screen.getByText('Two things are waiting on you.')).toBeTruthy();
+  });
+
+  it('counts both in the summary line too', () => {
+    const { container } = renderToday({
+      decisions: [decision()],
+      grants: [hostGrant, skillGrant],
+    });
+
+    expect(container.textContent).toMatch(/3 waiting on you/);
+  });
+});
+
+describe('a grant in the queue', () => {
+  it('renders as an answerable row', () => {
+    renderToday({ grants: [hostGrant] });
+
+    expect(screen.getByText('Allow access to example.org?')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /just this once/i })).toBeTruthy();
+  });
+
+  it('suppresses the empty state — the list is not empty', () => {
+    // "When an agent hits something it wants your OK on, it'll wait for you
+    // here" printed UNDER the thing waiting for you here is the same class of
+    // defect as the heading: a true-sounding sentence the screen disproves.
+    renderToday({ grants: [hostGrant] });
+
+    expect(screen.queryByText(/wait for you here/)).toBeNull();
+  });
+
+  it('sits above the decisions — a stopped agent outranks a held action', () => {
+    const { container } = renderToday({
+      decisions: [decision()],
+      grants: [hostGrant],
+    });
+
+    const text = container.textContent ?? '';
+    expect(text.indexOf('Allow access to example.org?')).toBeLessThan(
+      text.indexOf('Send the reply to Dana?'),
+    );
+  });
+});
+
+/*
+  TASK-350 review finding — a grant must outlive an unreadable decisions queue.
+
+  The first cut of this change put `grants.map(...)` inside the container gated
+  on `readable`, so a 401/503 on `GET /api/workspace/decisions` hid every open
+  grant. That re-created the exact dead-end the card exists to remove — an agent
+  stopped at the wall, a person who cannot answer, a turn going nowhere — and
+  triggered it from an unrelated failure on a different route.
+
+  Grants do not come from that fetch. They arrive on the turn stream and live in
+  their own store, so a failed read says nothing about them.
+*/
+describe('a grant when the decisions queue cannot be read', () => {
+  const unreadable = { kind: 'failed' as const, detail: 'workspace /decisions → 503' };
+  const hostGrant = {
+    key: 'host:example.org',
+    conversationId: 'c1',
+    request: { kind: 'host' as const, host: 'example.org', sessionId: 's-1' },
+  };
+
+  it('still renders, and is still answerable', () => {
+    renderToday({ error: unreadable, grants: [hostGrant] });
+
+    expect(screen.getByText('Allow access to example.org?')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /just this once/i })).toBeEnabled();
+  });
+
+  it('does not stop the page saying the decisions could not be read', () => {
+    // Both claims are true at once and both are shown: we could not check for
+    // decisions, and here is a grant we did not need to check for.
+    renderToday({ error: unreadable, grants: [hostGrant] });
+
+    expect(screen.getByText('We could not check what is waiting on you.')).toBeTruthy();
+  });
+
+  it('shows no hint over a queue with nothing expandable in it', () => {
+    // The hint is about opening a row for its detail, and only a decision row
+    // expands. Keyed on the grant count it printed "Open a row…" over rows that
+    // are already open — and, before the gate was fixed, over no rows at all.
+    renderToday({ error: unreadable, grants: [hostGrant] });
+
+    expect(screen.queryByText(/Open a row to see the detail/)).toBeNull();
   });
 });
