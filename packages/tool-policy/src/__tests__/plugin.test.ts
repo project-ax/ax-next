@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { capabilityRows, fullyDescribedTools } from '../plugin.js';
+import { CapabilityRowSchema } from '../types.js';
 import type { PolicyRule } from '../types.js';
 
 const RULES: PolicyRule[] = [
@@ -88,6 +89,12 @@ describe('capabilityRows — outOfReach (the scope subtraction)', () => {
   it('never exposes the tool it filtered on', () => {
     // `match.tool` stays inside this module. Putting an identifier on a display
     // row is a foot-gun on a surface whose mechanical rows ARE tool names.
+    //
+    // None of `RULES` declares an `effect`, so this is also the "no effect
+    // declared → no effect key" half of the TASK-329 key-shape assertion — see
+    // the paired test below (with `EFFECT_RULES`) for the "declared → present"
+    // half. Together the two halves are the point: `match.tool` never leaks
+    // onto a row, and `effect` does, and neither test alone would show that.
     for (const row of capabilityRows(RULES, { outOfReach: ['a2'] })) {
       expect(Object.keys(row).sort()).toEqual([
         'capability',
@@ -98,6 +105,101 @@ describe('capabilityRows — outOfReach (the scope subtraction)', () => {
         'verdict',
       ]);
     }
+  });
+
+  it('never exposes the tool it filtered on, AND carries effect when the rule declares one', () => {
+    // Same assertion as above, over a table whose rule DOES declare an
+    // effect. The exact-key-list form is deliberate: `toEqual` on the full
+    // sorted key list catches an `effect` key sneaking on when unwanted just
+    // as surely as it would catch `match.tool` sneaking on — a `toHaveProperty`
+    // check would only prove the positive half.
+    for (const row of capabilityRows(EFFECT_RULES.spends, { outOfReach: ['a2'] })) {
+      expect(Object.keys(row).sort()).toEqual([
+        'capability',
+        'conditional',
+        'described',
+        'effect',
+        'provenance',
+        'source',
+        'verdict',
+      ]);
+    }
+  });
+});
+
+/*
+  TASK-329. `PolicyRule.effect` (TASK-263) was never carried onto the rail row,
+  so nothing downstream could render it — this is the fixture set that proves
+  `indexRules()` now copies it, including the "declared nothing" case, which is
+  the one a naive fix (`effect: rule.effect`, always present) would get wrong:
+  it would put `effect: undefined` on every row instead of leaving the key
+  absent, and `toBeUndefined()` cannot tell those two shapes apart (see the
+  `'effect' in row` assertions below, which can).
+*/
+const EFFECT_RULES = {
+  spends: [
+    {
+      id: 'w.search',
+      match: { tool: 'w' },
+      verdict: 'allow',
+      capability: 'search the web',
+      subject: 'agent',
+      effect: 'spends',
+    } satisfies PolicyRule,
+  ],
+  // `outward` may not be `allow` (`lintRuleEffect`, enforced in CI) — a fixture
+  // pairing them would be an invalid rule, not a narrow test case, so this one
+  // is `hold` per the plan's explicit instruction.
+  outward: [
+    {
+      id: 'o.post',
+      match: { tool: 'o' },
+      verdict: 'hold',
+      capability: 'post where others can see it',
+      subject: 'agent',
+      effect: 'outward',
+    } satisfies PolicyRule,
+  ],
+  none: [
+    {
+      id: 'n.read',
+      match: { tool: 'n' },
+      verdict: 'allow',
+      capability: 'read a file it made',
+      subject: 'agent',
+    } satisfies PolicyRule,
+  ],
+};
+
+describe('capabilityRows — effect (TASK-329)', () => {
+  it('a rule declaring spends produces a row carrying effect: spends', () => {
+    const [row] = capabilityRows(EFFECT_RULES.spends);
+    expect(row!.effect).toBe('spends');
+  });
+
+  it('a rule declaring outward produces a row carrying effect: outward', () => {
+    const [row] = capabilityRows(EFFECT_RULES.outward);
+    expect(row!.effect).toBe('outward');
+  });
+
+  it('a rule declaring no effect produces a row with NO effect key at all', () => {
+    // Deliberately `'effect' in row`, not `toBeUndefined()`. `toBeUndefined()`
+    // passes on BOTH "the key is absent" and "the key is present and set to
+    // `undefined`" — it cannot distinguish them, and that distinction is
+    // exactly what `exactOptionalPropertyTypes` and the spread-only-if-defined
+    // pattern in `indexRules()` exist to enforce. Only `in` tells them apart.
+    const [row] = capabilityRows(EFFECT_RULES.none);
+    expect('effect' in row!).toBe(false);
+  });
+
+  it('the declared effect survives the real zod schema, not just the object', () => {
+    // Reddens if the `effect` line is ever removed from `CapabilityRowSchema`
+    // — `z.object` strips undeclared keys, so a row built correctly by
+    // `indexRules()` would still come back with no `effect` after a bus-style
+    // re-parse, and this is the one test in the file that actually calls
+    // `.parse()` rather than inspecting the plain object.
+    const [row] = capabilityRows(EFFECT_RULES.spends);
+    expect(CapabilityRowSchema.parse(row).effect).toBe('spends');
   });
 });
 

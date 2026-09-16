@@ -1430,6 +1430,86 @@ describe('rail projections', () => {
     expect(row.conditional).toBe(true);
   });
 
+  it('carries a declared `spends` effect onto the wire row', () => {
+    const row = toWirePermission({
+      verdict: 'allow',
+      capability: 'search the web',
+      source: 'rule:web.search',
+      provenance: 'catalog',
+      described: true,
+      effect: 'spends',
+    });
+    expect(row.effect).toBe('spends');
+  });
+
+  it('carries a declared `outward` effect onto the wire row', () => {
+    const row = toWirePermission({
+      verdict: 'hold',
+      capability: 'send a message to someone outside AX',
+      source: 'rule:messages.send',
+      provenance: 'rule',
+      described: true,
+      effect: 'outward',
+    });
+    expect(row.effect).toBe('outward');
+  });
+
+  it('allow-lists `effect` — an unrecognised value lands as `null`, not as a copy-through', () => {
+    // The load-bearing case: a plain `row.effect ?? null` would let this
+    // string straight onto the wire, where the renderer's `Record` has no
+    // entry for it and the row would carry a claim nobody typed into the
+    // authored table.
+    const row = toWirePermission({
+      verdict: 'allow',
+      capability: 'search the web',
+      source: 'rule:web.search',
+      provenance: 'catalog',
+      described: true,
+      effect: 'harmless',
+    });
+    expect(row.effect).toBeNull();
+  });
+
+  it('allow-lists `effect` — a non-string value lands as `null`', () => {
+    // The input is a duck-typed hook answer (I2); a hook can answer anything.
+    const row = toWirePermission({
+      verdict: 'allow',
+      capability: 'search the web',
+      source: 'rule:web.search',
+      provenance: 'catalog',
+      described: true,
+      effect: 42 as unknown as string,
+    });
+    expect(row.effect).toBeNull();
+  });
+
+  it('normalises a missing `effect` to `null`', () => {
+    const row = toWirePermission({
+      verdict: 'allow',
+      capability: 'search the web',
+      source: 'rule:web.search',
+      provenance: 'catalog',
+      described: true,
+    });
+    expect(row.effect).toBeNull();
+  });
+
+  it('keeps a declared effect on a described row that demotes to mechanical', () => {
+    // Same reasoning as `conditional` right above: losing OUR SENTENCE when
+    // `capability` fences to nothing does not unspend the money.
+    const row = toWirePermission({
+      verdict: 'hold',
+      capability: '​',
+      source: 'rule:x',
+      provenance: 'rule',
+      described: true,
+      effect: 'spends',
+      mechanicalLabel: 'delete_file',
+    });
+    expect(row.described).toBe(false);
+    expect(row.effect).toBe('spends');
+  });
+
   it('caps a capability clause by CODE POINTS, never by UTF-16 units', () => {
     const row = toWirePermission({
       verdict: 'allow',

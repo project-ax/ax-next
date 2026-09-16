@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { lintCapability } from '../capability-lint.js';
 import { BUILTIN_RULES } from '../rules.js';
+import { capabilityRows } from '../plugin.js';
 
 describe('BUILTIN_RULES', () => {
   it('every rule has a lint-clean capability clause', () => {
@@ -136,6 +137,30 @@ describe('BUILTIN_RULES', () => {
     for (const rule of BUILTIN_RULES) {
       if (rule.id.startsWith('builtins.')) expect(rule.verdict).toBe('deny');
     }
+  });
+
+  it('TASK-329: the two spending rules reach the rail rows as effect: spends', () => {
+    // The card's literal complaint ("the rail says 'search the web' without
+    // saying it costs money") asserted end-to-end INSIDE the plugin: build the
+    // real rail rows off the real built-in table, the same way
+    // `tool-policy:list-capabilities` does, and check the two known-spending
+    // rules carry the disclosure a caller could render. `plugin.test.ts`
+    // proves the mechanism (`indexRules()` copies `effect`) with tiny
+    // fixtures; this proves it fires for the actual rules that motivated the
+    // card, via `source`, which is how a caller matches a row back to a rule.
+    const rows = capabilityRows(BUILTIN_RULES);
+    const bySource = new Map(rows.map((r) => [r.source, r]));
+    expect(bySource.get('rule:web.search')?.effect).toBe('spends');
+    expect(bySource.get('rule:web.extract')?.effect).toBe('spends');
+
+    // And the negative: a catalog fact that costs nothing must NOT pick up a
+    // stray effect key. This is what keeps the test about PROPAGATION rather
+    // than "everything on the rail is spends" — if `indexRules()` ever set
+    // `effect` unconditionally, this line would catch it even though the two
+    // assertions above would still pass.
+    const memorySearch = bySource.get('rule:memory.search');
+    expect(memorySearch).toBeDefined();
+    expect('effect' in memorySearch!).toBe(false);
   });
 
   it('every rule names an agent subject — there is no other subject yet', () => {

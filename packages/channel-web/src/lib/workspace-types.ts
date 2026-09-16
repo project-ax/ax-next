@@ -255,6 +255,33 @@ export type CapabilityVerdict = 'allow' | 'hold' | 'deny';
 export type CapabilityProvenance = 'rule' | 'catalog' | 'grant' | 'mcp' | 'unmapped';
 
 /**
+ * The declared real-world consequence of a rail row's call, orthogonal to
+ * whether we allow it. Mirrors `@ax/tool-policy`'s `ToolEffect` rather than
+ * importing it (invariant 2), same as `CapabilityProvenance` above.
+ *
+ *   - `spends`  — the call costs money, on EVERY use, not just the first.
+ *     THIS IS A MONEY-ONLY CLAIM. It does not say the call is safe, and it
+ *     does not say the call is not also `outward` — `web.extract` is filed
+ *     `spends` even though reading a page is also an exfiltration channel,
+ *     because classifying it `outward` would force a hold on every page read,
+ *     and that is a live-deployment decision for a human (TASK-330), not
+ *     something this rail gets to decide by picking a label. Do not let a
+ *     reader, or a future renderer, read `spends` as "harmless" or
+ *     "contained" — it says nothing about either.
+ *   - `outward` — a third party sees the call, or it cannot be taken back: a
+ *     message sent, something posted where others can see it, a payment
+ *     made. `lintRuleEffect` in `@ax/tool-policy` enforces that an `outward`
+ *     rule can never be `allow`, so on the wire an `outward` row is always
+ *     `hold` or `deny` — never `allow`.
+ *
+ * `null` on a row means UNCLASSIFIED — nobody has declared an effect for this
+ * tool. It is not a claim that the call is free or contained; it is the
+ * honest gap for a rule that predates TASK-263, or a catalog/MCP/grant row
+ * with no rule behind it at all.
+ */
+export type CapabilityEffect = 'outward' | 'spends';
+
+/**
  * One row of "What it may do alone".
  *
  * GENERATED, never authored here. A row is one of two things and the boolean
@@ -293,6 +320,17 @@ export interface PermissionRow {
    * a catalog, MCP or grant row has no predicate to be conditional on.
    */
   conditional: boolean;
+  /**
+   * A DISCLOSURE, not a gate — `verdict` is the gate that decides whether the
+   * call happens at all, and this is a separate claim about what happens
+   * when it does. A row is routinely `allow` AND `spends` at the same time
+   * (that is `web_search`): the call goes through, and it costs money every
+   * time it does. `null` means nobody classified this tool's effect, which
+   * is the honest answer for a rule that predates TASK-263 or a catalog/MCP
+   * row with no rule behind it — it is NOT a claim that the call is free or
+   * has no effect beyond AX.
+   */
+  effect: CapabilityEffect | null;
   /** `described: false` only — what we DO control: the tool's own name. */
   mechanicalLabel: string | null;
   /** `described: false` only — the third party's words, fenced and attributed. */

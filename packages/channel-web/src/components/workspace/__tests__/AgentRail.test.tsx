@@ -281,6 +281,7 @@ describe('AgentRail — "What it may do alone"', () => {
               provenance: 'unmapped',
               described: false,
               conditional: false,
+              effect: null,
               mechanicalLabel: 'some_unmapped_tool',
               theirDescription: null,
               theirName: null,
@@ -316,6 +317,7 @@ describe('AgentRail — "What it may do alone"', () => {
               provenance: 'unmapped',
               described: false,
               conditional: false,
+              effect: null,
               mechanicalLabel: null,
               theirDescription: null,
               theirName: null,
@@ -330,6 +332,141 @@ describe('AgentRail — "What it may do alone"', () => {
     expect(container.textContent).toMatch(/Can do something we can't put a name to/);
     expect(container.textContent).toMatch(/We haven't described this one/);
     expect(container.querySelector('code')).toBeNull();
+  });
+
+  describe('effect disclosure (TASK-329)', () => {
+    it('renders the "Costs money" marker on a spends+allow row', async () => {
+      railMock.mockResolvedValue(
+        rail({
+          permissions: {
+            status: 'ok',
+            incomplete: false,
+            unrestrictedTools: false,
+            rows: [describedRow({ verdict: 'allow', effect: 'spends' })],
+          },
+        }),
+      );
+      renderRail();
+
+      await screen.findByText(/search the web/);
+      expect(await screen.findByText('Costs money')).toBeTruthy();
+    });
+
+    it('renders the "Affects the outside world" marker on an outward+hold row', async () => {
+      // The lint means `outward` can never be `allow`, so `hold` is the
+      // realistic verdict for the first outward row this surface will ever
+      // carry — the card asks for that row to render with no further work.
+      railMock.mockResolvedValue(
+        rail({
+          permissions: {
+            status: 'ok',
+            incomplete: false,
+            unrestrictedTools: false,
+            rows: [describedRow({ verdict: 'hold', effect: 'outward' })],
+          },
+        }),
+      );
+      renderRail();
+
+      await screen.findByText(/search the web/);
+      expect(await screen.findByText('Affects the outside world')).toBeTruthy();
+    });
+
+    it('suppresses the marker on a deny row that still declares an effect (D3)', async () => {
+      // A `deny` row says "Cannot X" — the call never happens, so there is no
+      // spend to disclose. "Cannot pay an invoice — Costs money" would read as
+      // reach the agent HAS to someone scanning for money-spenders, which is
+      // backwards. The wire row still carries `effect: 'spends'` faithfully;
+      // only the renderer declines to draw it.
+      railMock.mockResolvedValue(
+        rail({
+          permissions: {
+            status: 'ok',
+            incomplete: false,
+            unrestrictedTools: false,
+            rows: [
+              describedRow({
+                verdict: 'deny',
+                capability: 'pay an invoice',
+                effect: 'spends',
+              }),
+            ],
+          },
+        }),
+      );
+      renderRail();
+
+      // The row itself must render — otherwise this test would pass whether
+      // or not the suppression logic exists at all.
+      await screen.findByText(/pay an invoice/);
+      expect(screen.queryByText('Costs money')).toBeNull();
+    });
+
+    it('renders no marker when effect is null', async () => {
+      railMock.mockResolvedValue(
+        rail({
+          permissions: {
+            status: 'ok',
+            incomplete: false,
+            unrestrictedTools: false,
+            rows: [describedRow({ verdict: 'allow', effect: null })],
+          },
+        }),
+      );
+      renderRail();
+
+      await screen.findByText(/search the web/);
+      expect(screen.queryByText('Costs money')).toBeNull();
+      expect(screen.queryByText('Affects the outside world')).toBeNull();
+    });
+
+    it('opens the popover and shows the per-use cost detail', async () => {
+      railMock.mockResolvedValue(
+        rail({
+          permissions: {
+            status: 'ok',
+            incomplete: false,
+            unrestrictedTools: false,
+            rows: [describedRow({ verdict: 'allow', effect: 'spends' })],
+          },
+        }),
+      );
+      renderRail();
+
+      const trigger = await screen.findByText('Costs money');
+      fireEvent.click(trigger);
+      expect(await screen.findByText(/paid request/)).toBeTruthy();
+    });
+
+    it('never renders the same visible string for the two effects', async () => {
+      railMock.mockResolvedValue(
+        rail({
+          permissions: {
+            status: 'ok',
+            incomplete: false,
+            unrestrictedTools: false,
+            rows: [
+              describedRow({
+                verdict: 'allow',
+                capability: 'search the web',
+                source: 'rule:web.search',
+                effect: 'spends',
+              }),
+              describedRow({
+                verdict: 'hold',
+                capability: 'post a message where others can see it',
+                source: 'rule:messaging.post',
+                effect: 'outward',
+              }),
+            ],
+          },
+        }),
+      );
+      renderRail();
+
+      expect(await screen.findByText('Costs money')).toBeTruthy();
+      expect(await screen.findByText('Affects the outside world')).toBeTruthy();
+    });
   });
 
   it('says the list is not a limit when the agent has no tool allow-list', async () => {
