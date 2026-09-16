@@ -25,7 +25,8 @@ import {
   workspaceGrantActions,
 } from '@/lib/workspace-grant-store';
 import { GRANT_NOT_RESUMED } from '@/lib/grant-copy';
-import type { PermissionRequest, StreamHandlers } from '@/lib/workspace-api';
+import type { StreamHandlers } from '@/lib/workspace-api';
+import type { PermissionRequest } from '@/server/types';
 import { WorkspaceShell } from '../WorkspaceShell';
 import { rail as railFixture } from './rail-fixture';
 
