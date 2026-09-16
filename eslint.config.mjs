@@ -319,4 +319,83 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // TASK-372 — the agent workspace may not read out of the chat tree.
+    //
+    // Tier 5 #4 of docs/plans/2026-09-12-workspace-as-sole-interface.md deletes
+    // chat: the assistant-ui runtime (`lib/runtime.tsx`), `lib/transport.ts`,
+    // and the chat-only components. The workspace is the surface that is left,
+    // so anything it imports from in there is a dependency on a file scheduled
+    // for deletion — TASK-372 exists because `lib/workspace-api.ts` had exactly
+    // one of those (the Fault A error-label table) and it failed nobody's test.
+    //
+    // The three modules named below are the chat-only ones the workspace could
+    // plausibly reach for, verified chat-only at the time of writing: outside
+    // their own test files, `lib/runtime.tsx` is imported only by `App.tsx` and
+    // `lib/turn-error.ts` only by `lib/runtime.tsx`. This is a NAMED list, not
+    // a fence around the whole chat tree — it catches a repeat of the import
+    // that prompted it, not every future one. Shared code belongs in a module
+    // outside both trees (`lib/sse-frames.ts`, `lib/turn-error-labels.ts`,
+    // `lib/grant-copy.ts`).
+    //
+    // Tests are excluded: the base config turns this rule OFF under
+    // `__tests__/`, and matching them here would silently switch invariant 2
+    // back on for the workspace's test files.
+    //
+    // NOTE: a flat-config block REPLACES this rule's options for the matched
+    // files rather than merging, so the @ax/* group from the base block is
+    // repeated here. Dropping it would silently exempt the workspace from
+    // invariant 2.
+    files: [
+      'packages/channel-web/src/lib/workspace-*.ts',
+      'packages/channel-web/src/lib/workspace-*.tsx',
+      'packages/channel-web/src/components/workspace/**/*.ts',
+      'packages/channel-web/src/components/workspace/**/*.tsx',
+    ],
+    ignores: ['**/__tests__/**'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: [
+                './transport',
+                './runtime',
+                './turn-error',
+                '../transport',
+                '../runtime',
+                '../turn-error',
+                '**/lib/transport',
+                '**/lib/runtime',
+                '**/lib/turn-error',
+              ],
+              message:
+                'The agent workspace must not import from the chat tree. lib/transport.ts, lib/runtime.tsx and lib/turn-error.ts are chat-only and are deleted by TASK-360 (Tier 5 #4 of docs/plans/2026-09-12-workspace-as-sole-interface.md), which would take this import with them. If you need something they hold, move it to a module outside both trees first — that is what lib/turn-error-labels.ts (the Fault A error-label table), lib/sse-frames.ts (the SSE wire reader) and lib/grant-copy.ts (the grant trust copy) are.',
+            },
+            {
+              group: [
+                '@ax/*',
+                '!@ax/core',
+                '!@ax/test-harness',
+                '!@ax/ipc-protocol',
+                '!@ax/workspace-protocol',
+                '!@ax/sandbox-protocol',
+                '!@ax/workspace-bundle-protocol',
+                '!@ax/ipc-core',
+                '!@ax/agent-claude-sdk-runner-host',
+                '!@ax/validator-routine',
+                '!@ax/skills-parser',
+                '!@ax/agent-identity-templates',
+                '!@ax/user-files-read',
+              ],
+              allowTypeImports: true,
+              message:
+                'Cross-plugin runtime imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. Type-only imports (`import type {...}` / `export type {...}`) are allowed — boundary types are how plugins agree on a shared contract without runtime coupling. The only @ax/* runtime imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol + @ax/sandbox-protocol + @ax/workspace-bundle-protocol (wire / hook-bus contracts), @ax/ipc-core (transport-agnostic IPC library), @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser), @ax/validator-routine (pure-function routine frontmatter parser shared between the validator and the routines plugin), @ax/skills-parser (pure-function SKILL.md parser + capability types shared between @ax/skills and @ax/agents), @ax/agent-identity-templates (pure-data bootstrap/identity template strings shared between @ax/agent-claude-sdk-runner and @ax/channel-web), and @ax/user-files-read (the one realpath-confined reader for an agent durable user-files subtree, shared by both sandbox providers)',
+            },
+          ],
+        },
+      ],
+    },
+  },
 );

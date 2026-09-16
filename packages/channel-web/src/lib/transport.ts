@@ -54,6 +54,11 @@ import { decisionRaisedActions } from './decision-raised-store';
 import { continuationActions } from './continuation-actions';
 import { HttpError, httpFetch } from './http';
 import { readSseFrames } from './sse-frames';
+import {
+  DEFAULT_TURN_ERROR,
+  ERROR_LABELS,
+  MAX_DETAIL_CHARS,
+} from './turn-error-labels';
 import type { SseFrame } from '../server/types';
 
 const DEFAULT_USER = 'guest';
@@ -68,16 +73,6 @@ const DEFAULT_USER = 'guest';
 const PHASE_LABELS: Record<string, string> = {
   'sandbox-starting': 'Starting sandbox…',
 };
-
-/**
- * Default user-facing wording for an abnormal turn end (Fault A — the
- * runner died mid-turn or wedged past the chat timeout). Exported so the
- * runtime's `onError` can fall back to the same string when the AI-SDK
- * error carries no message. Kept here (client-side) so wording/i18n is one
- * place, mirroring PHASE_LABELS.
- */
-export const DEFAULT_TURN_ERROR =
-  'The agent stopped unexpectedly. Retry to continue.';
 
 /**
  * User-facing banner text for a `done`-less stream close (Faults B/D — the
@@ -128,38 +123,6 @@ const SSE_OPEN_BACKOFF_CAP_MS = 2_000;
 const SSE_OPEN_TOTAL_BUDGET_MS = 30_000;
 /** HTTP statuses that signal "not ready yet / try again", not "you're wrong". */
 const SSE_OPEN_RETRYABLE_STATUS = new Set([404, 425, 429, 502, 503, 504]);
-
-/**
- * Map a wire turn-error reason code (backend-agnostic, from the orchestrator)
- * to a user-facing label. Unknown codes fall back to DEFAULT_TURN_ERROR —
- * forward-compat with newer server builds that emit a code the client
- * doesn't yet recognize.
- */
-export const ERROR_LABELS: Record<string, string> = {
-  'chat-run-timeout': 'The agent timed out. Retry to continue.',
-  // TASK-160 — a declared dev service failed to start. The actionable
-  // specifics (which service, which path) ride the optional `detail` field and
-  // are appended below; this is the headline.
-  'dev-service-failed': 'A dev service failed to start.',
-  // PR 4 — the agent's model names a provider (the bit before the first `/`)
-  // that this deployment has no configuration for, so there is nowhere to send
-  // the turn. An operator fixes it by picking a different model for the agent,
-  // or by adding that provider's key on the Model config tab.
-  //
-  // (TASK-335 / audit A4) That fix is an ADMIN's to make, and this string is
-  // shown to whoever happened to send the message. Telling a non-admin to "add
-  // that provider's key in Model config" points them at a surface they cannot
-  // open, to do a job that is not theirs — so it now says what happened and who
-  // can fix it. The offending model ref is not lost: the orchestrator already
-  // logs it host-side (`agent_model_provider_unknown`) and deliberately keeps
-  // it off the wire, so there is nothing to move to a detail line here.
-  'agent-model-provider-unknown':
-    'This agent can’t run right now — the AI service it uses isn’t set up on this server. An admin can fix this in Settings.',
-};
-
-/** Max chars of the untrusted `detail` line we render (defense-in-depth — it's
- *  already bounded + sanitized server-side; this is a final client-side clamp). */
-export const MAX_DETAIL_CHARS = 400;
 
 // The wire shape used to be restated here — a third copy of `SseFrame`, already
 // drifting from `src/server/types.ts` (it had no `service` / `slotTag` on a
