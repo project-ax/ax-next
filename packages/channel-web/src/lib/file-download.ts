@@ -22,7 +22,7 @@
  * the name the server settled on, and fall back to a plain one if the header
  * is missing.
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { HttpError } from './http';
 import { workspaceApi, type FileTier } from './workspace-api';
 
@@ -101,9 +101,20 @@ export function useFileDownload(args: {
   const { agentId, agentName, tier, path } = args;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * The in-flight guard, in a REF rather than read off `busy`.
+   *
+   * `busy` disables the button, but only after a render — so two clicks
+   * dispatched in the same frame both see `busy === false` and both start a
+   * download. The visible result is the file saved twice, which is a small
+   * thing that looks exactly like a bug to whoever it happens to. A ref is
+   * written synchronously, so the second click sees the first one.
+   */
+  const inFlight = useRef(false);
 
   const start = useCallback(() => {
-    if (busy) return;
+    if (inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     setError(null);
     void (async () => {
@@ -113,10 +124,11 @@ export function useFileDownload(args: {
       } catch (e) {
         setError(downloadFailureMessage(e, agentName));
       } finally {
+        inFlight.current = false;
         setBusy(false);
       }
     })();
-  }, [busy, agentId, agentName, tier, path]);
+  }, [agentId, agentName, tier, path]);
 
   return { start, busy, error };
 }

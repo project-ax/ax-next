@@ -13,7 +13,8 @@ import {
   workspaceApi,
   WorkspaceApiError,
 } from '../workspace-api';
-import { downloadFailureMessage, saveBlob } from '../file-download';
+import { act, renderHook } from '@testing-library/react';
+import { downloadFailureMessage, saveBlob, useFileDownload } from '../file-download';
 import {
   HTTP_FAILED,
   HTTP_NOT_FOUND,
@@ -155,6 +156,70 @@ describe('downloadFailureMessage', () => {
       if (status === 413) expect(msg).not.toBe(HTTP_FAILED);
       if (status === 500) expect(msg).not.toBe(HTTP_SERVER_ERROR);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('useFileDownload', () => {
+  it('starts ONE download when start() is called twice in the same frame', async () => {
+    /*
+      The guard has to be a REF, not a read of `busy`.
+
+      `busy` disables the button, but only after React commits. Two clicks
+      dispatched inside one frame both run the same `start` closure, which
+      still sees `busy === false` — and the person gets the file saved twice,
+      which is small and looks exactly like a bug.
+
+      This has to be driven through the hook rather than through the button:
+      `fireEvent.click` wraps each click in its own `act()`, so the state is
+      already committed by the second one and a `busy`-based guard passes the
+      test it should fail. (Measured — the component-level version of this test
+      stayed green against the broken guard, which is why it is not written
+      there.)
+    */
+    const calls: string[] = [];
+    vi.spyOn(workspaceApi, 'downloadFile').mockImplementation(async () => {
+      calls.push('one');
+      return new Promise(() => undefined);
+    });
+    const { result } = renderHook(() =>
+      useFileDownload({
+        agentId: 'a1',
+        agentName: 'Scout',
+        tier: 'workspace',
+        path: 'q3.pdf',
+      }),
+    );
+    act(() => {
+      result.current.start();
+      result.current.start();
+    });
+    expect(calls).toHaveLength(1);
+    expect(result.current.busy).toBe(true);
+  });
+
+  it('lets the next attempt through once the first one has finished', async () => {
+    // The other half: a guard that never releases is a button that works once.
+    vi.spyOn(workspaceApi, 'downloadFile').mockRejectedValue(
+      new HttpError('/x', 500),
+    );
+    const { result } = renderHook(() =>
+      useFileDownload({
+        agentId: 'a1',
+        agentName: 'Scout',
+        tier: 'workspace',
+        path: 'q3.pdf',
+      }),
+    );
+    await act(async () => {
+      result.current.start();
+    });
+    expect(result.current.busy).toBe(false);
+    expect(result.current.error).not.toBeNull();
+    await act(async () => {
+      result.current.start();
+    });
+    expect(vi.mocked(workspaceApi.downloadFile)).toHaveBeenCalledTimes(2);
   });
 });
 

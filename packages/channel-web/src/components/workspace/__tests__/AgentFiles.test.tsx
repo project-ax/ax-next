@@ -720,6 +720,21 @@ describe('AgentFiles: downloading', () => {
     await waitFor(() => expect(screen.queryByText(/could not download/i)).toBeNull());
   });
 
+  it('disables the button while a download is in flight', async () => {
+    // The visible half of the in-flight guard. The invisible half — two calls
+    // landing in ONE frame, before this `disabled` can take effect — is not
+    // reachable through `fireEvent`, which commits between clicks; it is
+    // pinned at the hook level in `lib/__tests__/file-download.test.ts`.
+    oneGovernedFile({ body: 'plain', clipped: null });
+    downloadMock.mockImplementation(async () => new Promise(() => undefined));
+    renderTab();
+    fireEvent.click(await screen.findByText('reports/q3.pdf'));
+    const button = await screen.findByRole('button', { name: /download/i });
+    fireEvent.click(button);
+    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(true));
+    expect(button.textContent).toContain('Getting it');
+  });
+
   it('offers nothing to download when no file is open', async () => {
     // The affordance hangs off the open file, so an empty pane has no button
     // to press and nothing to be wrong about.
