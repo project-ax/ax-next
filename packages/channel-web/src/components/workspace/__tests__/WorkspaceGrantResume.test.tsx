@@ -140,7 +140,13 @@ let scripts: Map<string, (h: StreamHandlers) => void>;
 /** Did the shell announce the resume? See `beforeEach` for why this is a spy. */
 let toastSpy: MockInstance<typeof toastActions.show>;
 
-/** `document.visibilityState` — half the presence rule, so it is pinned. */
+/*
+  Held at `visible` for the whole file. Not something this file is pinning —
+  `WorkspaceGrantPresence.test.tsx` owns the rule — but a PREREQUISITE for it:
+  presence only routes a grant into the thread while the tab is visible, and
+  jsdom's default is not something to leave to chance in a file whose first act
+  is to find that grant in the thread.
+*/
 Object.defineProperty(document, 'visibilityState', {
   configurable: true,
   get: () => 'visible',

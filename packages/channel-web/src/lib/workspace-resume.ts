@@ -2,7 +2,9 @@
  * Picking a stopped agent back up after a capability grant (TASK-374).
  *
  * WHAT ACTUALLY HAPPENS when an agent asks for a skill or a connector, because
- * the word "parked" hides it. `request_capability` fires
+ * the word "parked" hides it — and the export below keeps that word only
+ * because it is what the card, the board and every conversation about this call
+ * it, not because it is accurate. `request_capability` fires
  * `chat:permission-request` and returns to the model, the model says it has
  * asked, and the TURN ENDS — a `done` frame, `chat:turn-end`, the lot. Nothing
  * is suspended server-side and nothing is waiting to be attached to. Answering

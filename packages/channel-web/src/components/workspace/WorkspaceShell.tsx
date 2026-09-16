@@ -458,16 +458,21 @@ function Inner({
    * WHAT WE DO NOT DO IS NAVIGATE. The person answering a row in a queue may
    * have more rows to answer, and yanking them into a thread would cost them
    * their place. The turn runs server-side whether or not anyone is watching
-   * it; `refresh()` puts the agent back to "working" on the board, which is the
-   * feedback the queue can honestly give.
+   * it, so there is nothing to follow them for.
    *
-   * `pendingReply` is set ONLY when this agent's panel is already open, which
-   * is the presence case — the grant was answered in the thread, so the reply
-   * streams where the person is looking. Setting it unconditionally would leave
-   * a finished turn's `reqId` in state for a panel that mounts minutes later,
-   * and `GET /api/chat/stream/:reqId` answers a long-dead turn with a 404 —
-   * which `AgentView` would render as a failed reply over a conversation that
-   * completed perfectly well.
+   * WHICH LEAVES TWO WAYS TO SAY IT HAPPENED, and the branch below picks one.
+   * If that agent's panel is already open, the reply is staged and streams in
+   * front of the reader. If it is not, a toast names the agent — because the
+   * row leaving is otherwise the only thing that changes on screen, and
+   * `refresh()` moving the tile to "working" is a read whose timing we do not
+   * control. Only one of the two ever fires: a notification about a reply
+   * somebody is already watching arrive is noise.
+   *
+   * Staging `pendingReply` unconditionally would be worse than not staging it:
+   * a finished turn's `reqId` left in state for a panel that mounts minutes
+   * later, and `GET /api/chat/stream/:reqId` answers a long-dead turn with a
+   * 404 — which `AgentView` would render as a failed reply over a conversation
+   * that completed perfectly well.
    */
   const resumeAfterGrant = useCallback(
     async (grant: WorkspaceGrant): Promise<boolean> => {
