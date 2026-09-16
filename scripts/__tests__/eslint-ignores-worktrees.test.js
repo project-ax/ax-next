@@ -63,10 +63,13 @@ const eslint = new ESLint({ cwd: REPO_ROOT });
 // slow should report as slow and a hook that has genuinely hung should be the
 // only thing this budget ever catches.
 //
-// The warm-up path is one of the assertions below on purpose -- resolving the
-// real config is the only work being warmed, so there is nothing to get stale.
+// The warmed path is deliberately NOT one of the paths asserted below, and the
+// result is deliberately discarded. What is being warmed is the config
+// resolution, which any path triggers; warming with a path under test would move
+// that path's first real failure out of its named `it` and into this hook, where
+// the reason for the run being red is harder to read.
 beforeAll(async () => {
-  await eslint.isPathIgnored(join(REPO_ROOT, 'packages/core/src/index.ts'));
+  await eslint.isPathIgnored(join(REPO_ROOT, 'eslint.config.mjs'));
 }, 120_000);
 
 const IGNORED = [
