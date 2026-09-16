@@ -4,8 +4,10 @@
  * `frame.error` is a STABLE REASON CODE (`dev-service-failed`,
  * `chat-run-timeout`), and this reader used to hand it to its caller verbatim,
  * which put an internal identifier on the one surface TASK-296 was clearing of
- * exactly that. `lib/transport.ts` has mapped these codes to authored labels
- * since Fault A; the fix was to read that table rather than grow a second one.
+ * exactly that. We have mapped these codes to authored labels since Fault A;
+ * the fix was to read that table rather than grow a second one. (TASK-372 moved
+ * the table from `lib/transport.ts` to `lib/turn-error-labels.ts` so chat's
+ * deletion cannot take it; which module holds it is not what this test checks.)
  *
  * The optional `detail` line rides along and is KEPT. Per `server/types.ts` it
  * is bounded and sanitized server-side and is meant to be rendered — it is the
@@ -14,7 +16,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { workspaceApi } from '../workspace-api';
-import { DEFAULT_TURN_ERROR, ERROR_LABELS, MAX_DETAIL_CHARS } from '../transport';
+import { DEFAULT_TURN_ERROR, ERROR_LABELS, MAX_DETAIL_CHARS } from '../turn-error-labels';
 
 /** One SSE response carrying exactly the frames given. */
 function sseResponse(frames: unknown[]): Response {

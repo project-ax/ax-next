@@ -4,7 +4,8 @@ import {
   agentStatusActions,
   getAgentStatusSnapshot,
 } from '../lib/agent-status-store';
-import { CONNECTION_LOST, DEFAULT_TURN_ERROR } from '../lib/transport';
+import { CONNECTION_LOST } from '../lib/transport';
+import { DEFAULT_TURN_ERROR } from '../lib/turn-error-labels';
 import { HttpError, HTTP_SESSION_ENDED } from '../lib/http';
 
 // applyTurnError is the runtime's onError glue: it flips the agent-status row

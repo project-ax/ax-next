@@ -15,8 +15,9 @@
  * if we can point at where its words came from:
  *
  *   - an `HttpError`, whose message is authored copy by construction; or
- *   - one of the transport's own sentences (`CONNECTION_LOST`,
- *     `DEFAULT_TURN_ERROR`, an `ERROR_LABELS` value). Fault A appends an
+ *   - one of our own authored sentences (`CONNECTION_LOST` from the transport,
+ *     `DEFAULT_TURN_ERROR` or an `ERROR_LABELS` value from
+ *     `./turn-error-labels`). Fault A appends an
  *     untrusted-but-clamped `detail` line under the label, so the match is on
  *     the FIRST LINE and the rest rides along.
  *
@@ -46,11 +47,11 @@
  */
 import { agentStatusActions } from './agent-status-store';
 import { HttpError } from './http';
-import {
-  CONNECTION_LOST,
-  DEFAULT_TURN_ERROR,
-  ERROR_LABELS,
-} from './transport';
+// `CONNECTION_LOST` is chat's own banner for a `done`-less drop and stays with
+// chat's transport. The reason-code table moved out from under it in TASK-372 —
+// the agent workspace reads the same table and outlives `transport.ts`.
+import { CONNECTION_LOST } from './transport';
+import { DEFAULT_TURN_ERROR, ERROR_LABELS } from './turn-error-labels';
 
 /**
  * Built once, from the same constants the transport emits, so adding a turn

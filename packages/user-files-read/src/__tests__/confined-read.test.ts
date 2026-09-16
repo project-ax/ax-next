@@ -158,6 +158,58 @@ describe('readConfinedUserFiles', () => {
     // A prefix, not an error and not an `absent`: "no such file" over a file
     // the agent definitely wrote is the lie this surface exists to avoid.
     expect(Buffer.from(out.contents).toString('utf-8')).toBe('xxxxxxxxxx');
+    // …and it SAYS it is a prefix. A consumer handing these bytes to a person
+    // as the file cannot work this out from the length: see the next test.
+    expect(out.truncated).toBe(true);
+  });
+
+  it('a file of EXACTLY maxFileBytes is whole, not truncated', async () => {
+    /*
+      The case a length cannot answer. Ten bytes of a ten-byte cap and the
+      first ten bytes of an eleven-byte file are the same `contents.length`, so
+      a consumer comparing against the cap would call this one truncated and
+      refuse to hand over a perfectly complete file. The reader asks for one
+      byte more than the cap precisely so these two are distinguishable, and
+      this test is the half that a naive `length >= cap` check fails.
+    */
+    await fs.writeFile(path.join(root, 'exact.txt'), 'x'.repeat(10));
+    const out = await readConfinedUserFiles(root, 'exact.txt', {
+      maxFileBytes: 10,
+      maxDirEntries: 100,
+    });
+    if (out.kind !== 'file') throw new Error('expected file');
+    expect(out.contents.byteLength).toBe(10);
+    expect(out.truncated).toBe(false);
+  });
+
+  it('a file under the cap is whole, and says so', async () => {
+    await fs.writeFile(path.join(root, 'small.txt'), 'hi');
+    const out = await readConfinedUserFiles(root, 'small.txt', {
+      maxFileBytes: 10,
+      maxDirEntries: 100,
+    });
+    if (out.kind !== 'file') throw new Error('expected file');
+    expect(out.truncated).toBe(false);
+  });
+
+  it('an empty file is whole, not truncated', async () => {
+    await fs.writeFile(path.join(root, 'nothing.txt'), '');
+    const out = await readConfinedUserFiles(root, 'nothing.txt');
+    if (out.kind !== 'file') throw new Error('expected file');
+    expect(out.truncated).toBe(false);
+  });
+
+  it('never returns MORE than the cap, even though it reads one byte past it', async () => {
+    // The probe byte is a measurement, not payload. If it ever leaked into
+    // `contents`, every consumer's own bound would be off by one.
+    await fs.writeFile(path.join(root, 'huge.txt'), 'y'.repeat(500));
+    const out = await readConfinedUserFiles(root, 'huge.txt', {
+      maxFileBytes: 32,
+      maxDirEntries: 100,
+    });
+    if (out.kind !== 'file') throw new Error('expected file');
+    expect(out.contents.byteLength).toBe(32);
+    expect(out.truncated).toBe(true);
   });
 
   it('caps a directory listing at maxDirEntries', async () => {

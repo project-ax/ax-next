@@ -474,8 +474,12 @@ describe('the two realizations agree on their bounds', () => {
     // One hook returning a different amount of the same file depending on
     // which realization the deployment loaded is a browser nobody can reason
     // about — so the numbers are pinned to each other here.
+    // ONE BYTE PAST the cap, and the off-by-one is the point: its presence is
+    // how `parseReadOutput` tells a file of exactly the cap from a longer one,
+    // and it is dropped there. The pin is still against the SHARED cap, so the
+    // two realizations cannot drift apart on how much of a file they serve.
     expect(script).toContain(
-      `head -c ${String(DEFAULT_CONFINED_READ_LIMITS.maxFileBytes)}`,
+      `head -c ${String(DEFAULT_CONFINED_READ_LIMITS.maxFileBytes + 1)}`,
     );
     expect(script).toContain(
       `-lt ${String(DEFAULT_CONFINED_READ_LIMITS.maxDirEntries)}`,
@@ -502,6 +506,32 @@ describe('parseReadOutput (one-shot pod log → ReadUserFilesOutput)', () => {
     expect(out.kind).toBe('file');
     if (out.kind !== 'file') throw new Error('expected file');
     expect(Array.from(out.contents)).toEqual([0, 1, 2, 255, 254]);
+  });
+
+  it('a FILE line at or under the cap is WHOLE, and says so', () => {
+    const exact = Buffer.alloc(DEFAULT_CONFINED_READ_LIMITS.maxFileBytes, 0x41);
+    const out = parseReadOutput('FILE ' + exact.toString('base64'));
+    if (out.kind !== 'file') throw new Error('expected file');
+    // Exactly the cap and NOT truncated — the case a length cannot answer on
+    // its own, and the one a `length >= cap` check gets wrong. Refusing this
+    // file would refuse a complete one.
+    expect(out.contents.byteLength).toBe(DEFAULT_CONFINED_READ_LIMITS.maxFileBytes);
+    expect(out.truncated).toBe(false);
+  });
+
+  it('a FILE line PAST the cap is truncated, and is cut back to the cap', () => {
+    /*
+      The script reads `cap + 1`. That extra byte is a measurement: it proves
+      the file is longer than we will serve. It must never reach the caller —
+      a consumer bounding its own response at the cap would be off by one — and
+      the answer must say `truncated`, because a prefix handed to a person as
+      the file is a corrupt file that looks like a whole one.
+    */
+    const over = Buffer.alloc(DEFAULT_CONFINED_READ_LIMITS.maxFileBytes + 1, 0x42);
+    const out = parseReadOutput('FILE ' + over.toString('base64'));
+    if (out.kind !== 'file') throw new Error('expected file');
+    expect(out.contents.byteLength).toBe(DEFAULT_CONFINED_READ_LIMITS.maxFileBytes);
+    expect(out.truncated).toBe(true);
   });
 
   it('maps ABSENT, empty, and any unrecognized token to absent', () => {
@@ -533,6 +563,9 @@ describe('parseReadOutput (one-shot pod log → ReadUserFilesOutput)', () => {
     expect(out.kind).toBe('file');
     if (out.kind !== 'file') throw new Error('expected file');
     expect(out.contents.byteLength).toBe(0);
+    // An empty file is a WHOLE empty file. Reporting `undefined` here would
+    // make a consumer that refuses unknowns refuse a zero-byte file.
+    expect(out.truncated).toBe(false);
   });
 
   it('base64-decodes each entry NAME, so a delimiter in a filename is data', () => {

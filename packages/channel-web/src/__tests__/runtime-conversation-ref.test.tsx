@@ -18,10 +18,12 @@ import { sessionStoreActions } from '../lib/session-store';
 // Capture the options the runtime passes to the transport constructor — the
 // `getConversationId` resolver is what the AI SDK calls before every send.
 let capturedOpts: { getConversationId?: () => string | null } | undefined;
-// The copy constants are real, not stubs: `lib/turn-error.ts` reads them at
-// module load to build its allow-list of publishable messages (TASK-288), so a
-// mock that omits them fails the whole suite at import time rather than in a
-// test. They are plain strings — there is nothing to fake.
+// `CONNECTION_LOST` is real, not a stub: `lib/turn-error.ts` reads it at module
+// load to build its allow-list of publishable messages (TASK-288), so a mock
+// that omits it fails the whole suite at import time rather than in a test. It
+// is a plain string — there is nothing to fake. The rest of that allow-list
+// (`DEFAULT_TURN_ERROR`, `ERROR_LABELS`) comes from `lib/turn-error-labels.ts`
+// since TASK-372 and is not mocked here at all.
 vi.mock('../lib/transport', () => ({
   AxChatTransport: class {
     constructor(opts: { getConversationId?: () => string | null }) {
@@ -29,8 +31,6 @@ vi.mock('../lib/transport', () => ({
     }
   },
   CONNECTION_LOST: 'Connection lost. Retry to continue.',
-  DEFAULT_TURN_ERROR: 'The agent stopped unexpectedly. Retry to continue.',
-  ERROR_LABELS: {},
 }));
 
 // useAxChatRuntime only calls useRemoteThreadListRuntime at the top level; the

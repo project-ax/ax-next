@@ -114,6 +114,9 @@ const ACCENT_PAIRS = [
   ['--primary', '--primary-foreground'],
   ['--destructive', '--destructive-foreground'],
   ['--warning', '--warning-foreground'],
+  // The Download button on the Files tab is `variant="secondary"` (TASK-355),
+  // which puts `--secondary-foreground` on `--secondary` as a real text pair.
+  ['--secondary', '--secondary-foreground'],
 ] as const;
 
 /** Accents that are ALSO used as text directly on a plain surface. */
