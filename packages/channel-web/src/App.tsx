@@ -260,6 +260,12 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
   // `bootstrapAgentName` holds the name the user enters in the NewAgentDialog
   // before the bootstrap starts. null = dialog not yet submitted.
   const [bootstrapAgentName, setBootstrapAgentName] = useState<string | null>(null);
+  // The new agent the workspace still has to greet. The chat surface has
+  // `bootstrapKickoff` for this (a module-level bridge to the assistant-ui
+  // runtime); the workspace mounts no `AssistantRuntimeProvider`, so that
+  // bridge's registrant never runs there. This state hands the id to
+  // `WorkspaceShell` instead, which sends the kickoff itself.
+  const [kickoffAgentId, setKickoffAgentId] = useState<string | null>(null);
   // Mobile slide-over open state (Task 27). Used to render the scrim
   // that closes the sidebar on tap. Desktop CSS hides the scrim.
   const sidebarOpen = useSidebarOpen();
@@ -312,6 +318,13 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
     return <BootScreen message="Loading your agents…" />;
   }
 
+  // Hoisted above the bootstrap gate (not just the branch below) so the
+  // gate's `onDone` can tell which surface is about to render and hand the
+  // kickoff to the right send path. Still a plain per-render const —
+  // `pathRendersWorkspace()` reads `window.location.pathname` and is not
+  // reactive, same as the existing call site below.
+  const rendersWorkspace = pathRendersWorkspace() && features.agentWorkspacePreview;
+
   // First-run (no personal agent yet) OR the explicit "+ New agent…" entry.
   // 'error' deliberately falls through to the chat shell — a transient blip
   // must not force an existing user into the create flow; "+ New agent…"
@@ -353,10 +366,25 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
       <UserProvider value={user}>
         <FirstRunAutoCreate
           agentName={bootstrapAgentName}
-          onDone={() => {
+          // One kickoff, two surfaces, two send paths — this is the load-
+          // bearing line of the whole "create agent from the workspace"
+          // card. `bootstrapKickoff` bridges to the CHAT runtime and only
+          // that: assistant-ui invokes `useChatThreadRuntime` only under an
+          // `AssistantRuntimeProvider`, which the workspace branch below
+          // deliberately mounts none of — so on that path `register()` never
+          // runs and `trigger()` would strand the intent in `_pending`,
+          // silently. A bare agent that is never greeted never introduces
+          // itself, which is the conversational half of the create flow.
+          // The workspace has its own send (`workspaceApi.sendMessage`), so
+          // it gets handed the agent id and greets it there.
+          onDone={(agentId) => {
             setCreateAgentOpen(false);
             setBootstrapAgentName(null);
-            bootstrapKickoff.trigger();
+            if (rendersWorkspace) {
+              setKickoffAgentId(agentId);
+            } else {
+              bootstrapKickoff.trigger();
+            }
           }}
         />
         <ToastStack />
@@ -370,7 +398,7 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
   //
   // No AssistantRuntimeProvider here — the workspace doesn't mount the
   // assistant-ui runtime.
-  if (pathRendersWorkspace() && features.agentWorkspacePreview) {
+  if (rendersWorkspace) {
     return (
       <UserProvider value={user}>
         <ErrorBoundary surface="workspace">
@@ -405,6 +433,12 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
           ) : (
             <WorkspaceShell
               onOpenAdminSettings={() => setAdminSettingsOpen(true)}
+              // Byte-identical in effect to the chat branch's
+              // `SessionHeader onCreateAgent` below — same two setters, same
+              // order. One create-agent entry, not one per shell.
+              onCreateAgent={() => { setBootstrapAgentName(null); setCreateAgentOpen(true); }}
+              kickoffAgentId={kickoffAgentId}
+              onKickoffConsumed={() => setKickoffAgentId(null)}
             />
           )}
         </ErrorBoundary>

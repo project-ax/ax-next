@@ -5,13 +5,13 @@
  * agent they belong to, which is the structural change the whole refresh is
  * about. The roster is the navigation now.
  *
- * Also not here: a "New agent" entry. It used to open a prototype-only view
- * that has been deleted, and the shipped create-an-agent flow is driven from
- * `App.tsx` state this surface cannot reach. A nav row that does nothing when
- * clicked is worse than one row fewer, so it is gone until the create flow is
- * reachable from here.
+ * The "New agent…" row at the foot of the nav opens the create-an-agent flow.
+ * `App.tsx` supplies the callback, the same thread `onOpenAdminSettings` uses
+ * for Settings. The row is prop-gated — rendered only when `onCreateAgent` is
+ * passed — because a nav row that does nothing when clicked is worse than one
+ * row fewer, and that's still true even now that the flow is reachable.
  */
-import { Activity, Bot, ChevronDown, ChevronUp, Inbox } from 'lucide-react';
+import { Activity, Bot, ChevronDown, ChevronUp, Inbox, Plus } from 'lucide-react';
 import { BrandMark } from '@/components/BrandMark';
 import { UserMenu } from '@/components/UserMenu';
 import { Badge } from '@/components/ui/badge';
@@ -31,6 +31,11 @@ interface Props {
   onAgent: (id: string) => void;
   /** Opens Settings, via the `UserMenu` at the foot of this rail. */
   onOpenAdminSettings?: (() => void) | undefined;
+  /**
+   * Opens the create-an-agent flow. Rendered as a "New agent…" row at the
+   * foot of the nav, only when supplied.
+   */
+  onCreateAgent?: (() => void) | undefined;
 }
 
 export function WorkspaceSidebar({
@@ -44,6 +49,7 @@ export function WorkspaceSidebar({
   onActivity,
   onAgent,
   onOpenAdminSettings,
+  onCreateAgent,
 }: Props) {
   const row = (active: boolean) =>
     cn(
@@ -116,6 +122,17 @@ export function WorkspaceSidebar({
           <p className="px-2.5 py-2 text-[12.5px] leading-relaxed text-muted-foreground">
             No agents yet.
           </p>
+        )}
+
+        {/*
+          Not gated on `rosterOpen`: a collapsed roster must still have a
+          create door, since reachability is the whole point of this row.
+        */}
+        {onCreateAgent && (
+          <button type="button" onClick={onCreateAgent} className={row(false)}>
+            <Plus size={14} className="shrink-0" />
+            New agent…
+          </button>
         )}
       </nav>
 

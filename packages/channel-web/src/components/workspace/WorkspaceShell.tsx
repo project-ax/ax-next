@@ -20,7 +20,7 @@
  * convincing fake panels is worse than one with three honest empty ones,
  * because only the second tells you what still has to be built.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   workspaceApi,
@@ -34,6 +34,8 @@ import {
 } from '@/lib/workspace-grant-store';
 import { WorkspaceProvider, useWorkspace } from '@/lib/workspace-context';
 import { hydrateTheme } from '@/lib/theme';
+import { KICKOFF_TEXT } from '@/lib/bootstrap-kickoff';
+import { toastActions } from '@/lib/toast-store';
 import { isOpenDecision, type ActivityEvent } from '@/lib/workspace-types';
 import {
   parseWorkspaceRoute,
@@ -128,17 +130,48 @@ export interface WorkspaceShellProps {
    * `UserMenu` without it shows a Settings item that does nothing.
    */
   onOpenAdminSettings?: (() => void) | undefined;
+  /**
+   * Opens the create-an-agent flow. Threaded to `WorkspaceSidebar`'s
+   * "New agent…" row, same shape and same reason as `onOpenAdminSettings`:
+   * optional so tests that don't care can omit it, but the app always passes
+   * it, because a row that renders and does nothing is worse than no row.
+   */
+  onCreateAgent?: (() => void) | undefined;
+  /**
+   * The id of a just-bootstrapped agent still waiting for its kickoff — set
+   * by `App.tsx` when `FirstRunAutoCreate`'s `onDone` fires on this surface.
+   * See the effect below for why the workspace cannot reuse
+   * `bootstrapKickoff`.
+   */
+  kickoffAgentId?: string | null | undefined;
+  /** Fired once the kickoff for `kickoffAgentId` has been sent (or failed). */
+  onKickoffConsumed?: (() => void) | undefined;
 }
 
-export function WorkspaceShell({ onOpenAdminSettings }: WorkspaceShellProps = {}) {
+export function WorkspaceShell({
+  onOpenAdminSettings,
+  onCreateAgent,
+  kickoffAgentId,
+  onKickoffConsumed,
+}: WorkspaceShellProps = {}) {
   return (
     <WorkspaceProvider>
-      <Inner onOpenAdminSettings={onOpenAdminSettings} />
+      <Inner
+        onOpenAdminSettings={onOpenAdminSettings}
+        onCreateAgent={onCreateAgent}
+        kickoffAgentId={kickoffAgentId}
+        onKickoffConsumed={onKickoffConsumed}
+      />
     </WorkspaceProvider>
   );
 }
 
-function Inner({ onOpenAdminSettings }: WorkspaceShellProps) {
+function Inner({
+  onOpenAdminSettings,
+  onCreateAgent,
+  kickoffAgentId,
+  onKickoffConsumed,
+}: WorkspaceShellProps) {
   const { board, error, loading, refresh } = useWorkspace();
   /**
    * The open view, and the URL, kept as one thing.
@@ -339,6 +372,81 @@ function Inner({ onOpenAdminSettings }: WorkspaceShellProps) {
   const bump = () => setVersion((v) => v + 1);
 
   /**
+   * One turn-start on this surface, two callers: the home composer (a person
+   * picking or being routed to an agent) and the kickoff effect below (a
+   * freshly-bootstrapped agent nobody has greeted yet). Both need the exact
+   * same three steps — POST the message, remember it as the reply
+   * `AgentView` should stream, and move the reader to that agent's chat tab —
+   * and two copies of that sequence would be two sources of truth for what
+   * "starting a turn" means. The rejection is NOT caught here: `HomeComposer`
+   * needs it to keep the user's draft on a failed send (its own comment on
+   * `dispatch` documents the past bug where a swallowed rejection lost the
+   * draft), and the kickoff effect needs it to decide whether to toast.
+   */
+  const startTurn = useCallback(
+    async (agentId: string, text: string): Promise<void> => {
+      const { reqId, conversationId } = await workspaceApi.sendMessage({
+        agentId,
+        conversationId: null,
+        text,
+      });
+      setPendingReply({ agentId, reqId, text, conversationId });
+      navigate({ kind: 'agent', id: agentId, tab: 'chat' });
+    },
+    [navigate],
+  );
+
+  /**
+   * TASK-249 — the kickoff for an agent just created from THIS surface.
+   *
+   * `bootstrapKickoff` (the chat runtime's module-level trigger/register
+   * bridge) cannot serve the workspace: its only registrant is
+   * `useChatThreadRuntime`, which assistant-ui calls only from inside
+   * `_RuntimeBinder`, reached only under an `AssistantRuntimeProvider` — and
+   * the workspace branch of `App.tsx` deliberately mounts none. `trigger()`
+   * would set `_pending` and nothing would ever consume it: a created agent
+   * that never says anything. So the workspace sends its own kickoff, through
+   * the same `startTurn` a person's own first message uses.
+   *
+   * Ref-guarded on the id, mirroring `AgentView`'s `consumedReqId` /
+   * `onPendingReplyConsumed` pattern, so a re-render with the same
+   * `kickoffAgentId` (or the id sticking around after `App.tsx` reacts to
+   * `onKickoffConsumed`) does not resend it.
+   *
+   * ABOVE the `error` / `loading` / `!board` early returns — which the rules
+   * of hooks require anyway, and which is also what we want: this effect only
+   * calls `navigate` (route state + a URL push) and `startTurn` (a POST),
+   * neither of which needs the board, and `AgentView` picks up `pendingReply`
+   * once the board — and it — eventually mount.
+   *
+   * One rare consequence, accepted (review): if the board read FAILS while a
+   * kickoff is pending, the `'hi'` is still POSTed and the route still moves,
+   * under the error screen. The turn is real and server-side, so nothing is
+   * lost; it just is not streamed, and a refresh shows it. Holding the kickoff
+   * back until the board lands would trade that for the worse failure — a
+   * brand-new agent left permanently un-greeted because one read blipped.
+   */
+  const kickedOffId = useRef<string | null>(null);
+  useEffect(() => {
+    if (!kickoffAgentId) return;
+    if (kickedOffId.current === kickoffAgentId) return;
+    kickedOffId.current = kickoffAgentId;
+    const id = kickoffAgentId;
+    onKickoffConsumed?.();
+    startTurn(id, KICKOFF_TEXT).catch(() => {
+      // The agent exists, it just has not been greeted — never silently.
+      toastActions.error(
+        'Your agent is ready, but we could not say hello for you.',
+        'Send it a message to get started — it will introduce itself.',
+      );
+      navigate({ kind: 'agent', id, tab: 'chat' });
+    });
+    // `startTurn` and `navigate` are useCallback-stable; `onKickoffConsumed`
+    // may not be, but the ref guard above is what actually prevents a
+    // resend, so a changed identity re-running this effect is harmless.
+  }, [kickoffAgentId, startTurn, navigate, onKickoffConsumed]);
+
+  /**
    * `undefined` when the pages we hold cannot back the number — see
    * `doneTodayFrom`. Passed as an ABSENT prop rather than an explicit
    * `undefined` (`exactOptionalPropertyTypes`), which is the same thing to
@@ -425,6 +533,7 @@ function Inner({ onOpenAdminSettings }: WorkspaceShellProps) {
           onActivity={() => navigate({ kind: 'activity' })}
           onAgent={openAgent}
           onOpenAdminSettings={onOpenAdminSettings}
+          onCreateAgent={onCreateAgent}
         />
 
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -464,18 +573,7 @@ function Inner({ onOpenAdminSettings }: WorkspaceShellProps) {
                   {...(doneToday !== undefined ? { doneToday } : {})}
                 />
               </div>
-              <HomeComposer
-                agents={board.agents}
-                onSend={async (agentId, text) => {
-                  const { reqId, conversationId } = await workspaceApi.sendMessage({
-                    agentId,
-                    conversationId: null,
-                    text,
-                  });
-                  setPendingReply({ agentId, reqId, text, conversationId });
-                  navigate({ kind: 'agent', id: agentId, tab: 'chat' });
-                }}
-              />
+              <HomeComposer agents={board.agents} onSend={startTurn} />
             </>
           )}
 

@@ -11,6 +11,16 @@
  *   App.tsx         → bootstrapKickoff.trigger()   (in FirstRunAutoCreate onDone)
  *   runtime.tsx     → bootstrapKickoff.register()  (in useChatThreadRuntime useEffect on mount)
  *                  → bootstrapKickoff.unregister() (cleanup on unmount)
+ *
+ * This bridge is the **chat runtime's** kickoff path, and only that path.
+ * `register()` has exactly one caller, `useChatThreadRuntime` in
+ * `lib/runtime.tsx`, and assistant-ui only invokes that hook from inside its
+ * `_RuntimeBinder` — reached via the runtime core's `RenderComponent`, i.e.
+ * only under an `AssistantRuntimeProvider`. The workspace branch of `App.tsx`
+ * deliberately mounts none, so on that path `register()` never runs:
+ * `trigger()` just sets `_pending = true` and the kickoff is silently
+ * dropped. The workspace therefore sends its own kickoff through
+ * `workspaceApi.sendMessage` (see `WorkspaceShell`), not through this module.
  */
 
 type AppendFn = (text: string) => void;
@@ -18,7 +28,12 @@ type AppendFn = (text: string) => void;
 let _append: AppendFn | null = null;
 let _pending = false;
 
-const KICKOFF_TEXT = 'hi';
+/**
+ * The first message a freshly-bootstrapped agent receives. One spelling,
+ * exported, because both the chat runtime (via this module) and the
+ * workspace (via `workspaceApi.sendMessage`) now send it.
+ */
+export const KICKOFF_TEXT = 'hi';
 
 export const bootstrapKickoff = {
   /**
