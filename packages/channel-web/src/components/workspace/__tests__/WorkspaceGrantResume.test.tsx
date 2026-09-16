@@ -15,7 +15,7 @@
  * Deleting the resume — the `onGranted` call in `GrantRow`, or the shell's
  * `resumeAfterGrant` — reddens this file and nothing else in the suite.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 import { workspaceApi, type AgentDetail, type ThreadMessage } from '@/lib/workspace-api';
@@ -24,7 +24,8 @@ import {
   getWorkspaceGrantSnapshot,
   workspaceGrantActions,
 } from '@/lib/workspace-grant-store';
-import { GRANT_NOT_RESUMED } from '@/lib/grant-copy';
+import { GRANT_NOT_RESUMED, grantResumedTitle } from '@/lib/grant-copy';
+import { toastActions } from '@/lib/toast-store';
 import type { StreamHandlers } from '@/lib/workspace-api';
 import type { PermissionRequest } from '@/server/types';
 import { WorkspaceShell } from '../WorkspaceShell';
@@ -136,6 +137,8 @@ const stoppedThread = (): ThreadMessage[] => [
 let threads: Record<string, ThreadMessage[]>;
 /** `reqId` → what that stream does. An unscripted reqId is a bug, so it throws. */
 let scripts: Map<string, (h: StreamHandlers) => void>;
+/** Did the shell announce the resume? See `beforeEach` for why this is a spy. */
+let toastSpy: MockInstance<typeof toastActions.show>;
 
 /** `document.visibilityState` — half the presence rule, so it is pinned. */
 Object.defineProperty(document, 'visibilityState', {
@@ -191,6 +194,14 @@ beforeEach(() => {
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(
     new Response(JSON.stringify({ ok: true }), { status: 200 }),
   );
+
+  /*
+    Spied rather than read out of the store, which has no getter — and spying on
+    the action is the right level anyway: what is under test is whether the SHELL
+    decided to say something, not whether the toast component drew it. `<Toast />`
+    is mounted by `App.tsx`, above this tree.
+  */
+  toastSpy = vi.spyOn(toastActions, 'show');
 });
 
 afterEach(() => {
@@ -270,6 +281,12 @@ describe('a grant answered in the thread', () => {
       expect(getWorkspaceGrantSnapshot().grants).toHaveLength(0),
     );
     expect(screen.queryByTestId('thread-grants')).toBeNull();
+
+    // NO TOAST HERE. The reply is streaming in front of the person; a
+    // notification saying the agent picked up would be telling them about
+    // something they are watching happen. The Today case below is where the
+    // sentence is the only evidence there is.
+    expect(toastSpy).not.toHaveBeenCalled();
   });
 
   it('says so, and keeps the row, when it cannot start the agent again', async () => {
@@ -360,5 +377,14 @@ describe('a grant answered on Today, for an agent nobody is looking at', () => {
     await waitFor(() =>
       expect(getWorkspaceGrantSnapshot().grants).toHaveLength(0),
     );
+
+    /*
+      SO IT SAYS SO. With no panel streaming and the row gone, the only other
+      evidence is the agent's tile eventually turning over on a board read whose
+      timing we do not control — which is the same silence this task exists to
+      remove, in a smaller size. It names Scout, because Today can hold grants
+      from several agents and "your agent" would not say which one started.
+    */
+    expect(toastSpy).toHaveBeenCalledWith({ title: grantResumedTitle('Scout') });
   });
 });

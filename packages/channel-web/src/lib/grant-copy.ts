@@ -154,3 +154,25 @@ export const GRANT_NOT_RESUMED =
 
 /** Clears the stopped-agent row. It is an acknowledgement, not an action. */
 export const GRANT_NOT_RESUMED_DISMISS = 'Got it';
+
+/**
+ * The grant landed and the agent DID start again — said out loud, but only
+ * where the person cannot already see it happening (TASK-374).
+ *
+ * The asymmetry is deliberate. Answering a grant in the agent's own thread puts
+ * the reply on screen as it streams, and a toast on top of that would be a
+ * notification about something the reader is already watching. Answering one in
+ * the Today queue has no such view: the row disappears and the agent restarts
+ * somewhere else. Without this, the queue's successful case would look exactly
+ * like the silence this task set out to fix.
+ *
+ * The name is a parameter rather than "your agent" because Today can hold
+ * grants from several agents and the reader needs to know WHICH one just
+ * started. `null` is the fallback for the window before the roster has loaded —
+ * rare, since answering a row means the roster drew it, and still better than
+ * interpolating `undefined` into a sentence.
+ */
+export const grantResumedTitle = (agentName: string | null): string =>
+  agentName === null
+    ? 'Connected. Your agent is picking up where it left off.'
+    : `Connected. ${agentName} is picking up where it left off.`;

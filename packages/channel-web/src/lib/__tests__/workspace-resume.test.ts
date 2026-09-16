@@ -92,12 +92,19 @@ describe('which turn gets re-issued', () => {
       `buildThread` appends an `approval` card per open decision, and `status` /
       `fold` variants exist. None of them is something a person typed. A scan
       that matched on "has a text field" would re-send a fold marker.
+
+      All three of the non-`user` kinds that can sit at the END of a thread are
+      here, `status` included: `fold` and `status` both carry a `text` and are
+      the ones a loosened predicate would grab, and `approval` is the one with
+      no `text` at all, which a predicate written the other way round would
+      throw on.
     */
     expect(
       lastUserText([
         userMsg('t1', 'file my open Linear issues'),
         { kind: 'fold', id: 't2', text: 'Earlier turns were summarised' },
-        { kind: 'approval', id: 't3', decisionId: 'dec-1' },
+        { kind: 'status', id: 't3', text: 'Waiting on approval' },
+        { kind: 'approval', id: 't4', decisionId: 'dec-1' },
       ]),
     ).toBe('file my open Linear issues');
   });

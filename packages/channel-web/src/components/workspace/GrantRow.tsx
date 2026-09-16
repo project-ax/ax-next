@@ -64,13 +64,18 @@ interface Props {
    * `false` when it was not, which is the difference between dropping this row
    * and turning it into a sentence that says so.
    *
+   * MUST NOT REJECT. Every failure is a `false`, because by the time this is
+   * called the capability has already been granted, and a rejection would be
+   * reported to the person as the connection failing — the one thing it did
+   * not do. `lib/workspace-resume.ts` says the same from its own side.
+   *
    * WHY IT LIVES ON THE PRIMITIVE and not on the two surfaces that draw it.
    * This row is what Today and the agent's thread SHARE, and answering a grant
-   * has to mean the same thing in both — a resume wired into one of them is the
-   * drift the shared component exists to prevent (TASK-353's rule, one file
-   * over). It is also the only code that knows a grant was APPROVED rather than
-   * turned down: `onResolved` fires for both, so a caller keying off that alone
-   * would restart an agent whose answer was "not now".
+   * has to mean the same thing in both; wiring the resume into one of them is
+   * the drift a shared component exists to prevent. It is also the only code
+   * that knows a grant was APPROVED rather than turned down: `onResolved` fires
+   * for both, so a caller keying off that alone would restart an agent whose
+   * answer was "not now".
    *
    * REQUIRED, and not optional-with-a-no-op default. A missing resume is
    * exactly the silence this task is about, and a default would let the next
@@ -165,11 +170,11 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
         otherwise. The skill is attached and the warm session retired; the only
         open question is whether the agent picked up again.
 
-        `onGranted` is contracted not to throw, and this catches anyway —
-        because the alternative is that a bug in the resume path falls into the
-        `catch` below and tells the person their connection failed when it is
-        the one thing that definitely worked, sending them back to re-enter a
-        key that is already saved.
+        `onGranted` must not reject (its own doc says so) and this catches
+        anyway — because the alternative is that a bug in the resume path falls
+        into the `catch` below and tells the person their connection failed when
+        it is the one thing that definitely worked, sending them back to
+        re-enter a key that is already saved.
       */
       let resumed = false;
       try {

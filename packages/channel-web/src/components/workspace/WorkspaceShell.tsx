@@ -42,6 +42,7 @@ import { WorkspaceProvider, useWorkspace } from '@/lib/workspace-context';
 import { hydrateTheme } from '@/lib/theme';
 import { KICKOFF_TEXT } from '@/lib/bootstrap-kickoff';
 import { toastActions } from '@/lib/toast-store';
+import { grantResumedTitle } from '@/lib/grant-copy';
 import { isOpenDecision, type ActivityEvent } from '@/lib/workspace-types';
 import {
   parseWorkspaceRoute,
@@ -481,6 +482,16 @@ function Inner({
         conversationId: grant.conversationId,
       });
       if (!result.resumed) return false;
+      /*
+        IS THAT AGENT'S PANEL MOUNTED? That is the whole question, and it is a
+        different one from `grantBelongsInThread` — which asks whether the
+        THREAD should draw the grant, and additionally wants the `chat` tab and
+        a visible browser tab. Reusing it here would be a tidier-looking bug:
+        `AgentView` owns the tabs, so it is mounted on `files`/`memory`/`did`
+        too and streams the reply into state the reader sees the moment they
+        come back to `chat`; and a hidden browser tab is still a mounted panel.
+        Both are cases where we WANT the stream and the presence rule says no.
+      */
       if (route.kind === 'agent' && route.id === grant.agentId) {
         setPendingReply({
           agentId: grant.agentId,
@@ -488,11 +499,25 @@ function Inner({
           text: result.text,
           conversationId: result.conversationId,
         });
+      } else {
+        /*
+          Nobody is looking at that agent, so nothing on this screen is about to
+          show the turn running — the row simply leaves. Say it happened.
+          `refresh()` below eventually moves the agent's tile to "working", but
+          that is a read whose timing we do not control, and a successful resume
+          that looks like nothing happened is the same silence in a smaller
+          size.
+        */
+        toastActions.show({
+          title: grantResumedTitle(
+            board?.agents.find((a) => a.id === grant.agentId)?.name ?? null,
+          ),
+        });
       }
       void refresh();
       return true;
     },
-    [route, refresh],
+    [route, refresh, board],
   );
 
   /**
