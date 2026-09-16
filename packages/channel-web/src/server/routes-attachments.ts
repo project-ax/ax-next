@@ -5,6 +5,7 @@ import {
   type AgentContext,
   type HookBus,
 } from '@ax/core';
+import { sanitizeContentDispositionFilename } from './content-disposition.js';
 import { parseSingleFileMultipart } from './multipart.js';
 
 // ---------------------------------------------------------------------------
@@ -267,19 +268,6 @@ export function createAttachmentsRouteHandlers(deps: AttachmentsRouteDeps) {
       }
     },
   };
-}
-
-/**
- * Sanitize a display name for Content-Disposition. Browsers parse this
- * header loosely; we drop anything outside printable ASCII to avoid
- * injection (CRLF, quote-escape). For multi-byte filenames the proper
- * answer is RFC 5987's `filename*=UTF-8''...` syntax — out of scope at
- * v1 (display names are user-typed, not URL-encoded). Drop chars
- * outside [A-Za-z0-9._ -] to a single `_`.
- */
-function sanitizeContentDispositionFilename(displayName: string): string {
-  const trimmed = displayName.slice(0, 255);
-  return trimmed.replace(/[^A-Za-z0-9._ -]/g, '_');
 }
 
 /** Register routes against @ax/http-server. */

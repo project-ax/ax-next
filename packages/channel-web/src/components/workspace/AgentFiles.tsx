@@ -49,7 +49,14 @@
  * are rendered either as markdown through the package's shared renderer — with
  * images off and no artifact widening — or as plain preformatted text.
  */
-import { AlertTriangle, ChevronRight, FileText, Folder, Loader2 } from 'lucide-react';
+import {
+  AlertTriangle,
+  ChevronRight,
+  Download,
+  FileText,
+  Folder,
+  Loader2,
+} from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -61,9 +68,10 @@ import {
   BreadcrumbSeparator,
 } from '@/components/ui/breadcrumb';
 import { Markdown } from '@/components/Markdown';
+import { useFileDownload } from '@/lib/file-download';
 import { useAgentFiles } from '@/lib/workspace-files';
 import { useAgentUserFiles, type UserFileBody } from '@/lib/user-files';
-import type { WorkspaceFileBody } from '@/lib/workspace-api';
+import type { FileTier, WorkspaceFileBody } from '@/lib/workspace-api';
 import { cn } from '@/lib/utils';
 import { SectionLabel } from './bits';
 
@@ -389,7 +397,9 @@ export function AgentFiles({
           <FileViewer
             rawPath={durableSelected}
             label={durable.file?.name ?? basename(durableSelected)}
+            agentId={agentId}
             agentName={agentName}
+            tier="user-files"
             loading={durable.fileLoading}
             failed={durable.fileError !== null}
             file={durable.file}
@@ -398,7 +408,9 @@ export function AgentFiles({
           <FileViewer
             rawPath={governedSelected.path}
             label={governedSelected.name}
+            agentId={agentId}
             agentName={agentName}
+            tier="workspace"
             loading={governed.openLoading}
             failed={governed.openError !== null}
             file={governed.openFile}
@@ -416,25 +428,38 @@ export function AgentFiles({
 /**
  * The right-hand pane for whichever file is open.
  *
- * Takes the raw key ONLY as a React key discriminator and never renders it —
- * `label` is the fenced string, and that is what goes on the screen. Same
- * split, same reason, as everywhere else on this surface.
+ * Takes the raw key ONLY as a React key discriminator and for addressing the
+ * download, and never renders it — `label` is the fenced string, and that is
+ * what goes on the screen. Same split, same reason, as everywhere else on this
+ * surface.
+ *
+ * THE DOWNLOAD IS OFFERED FOR EVERY FILE, including one whose body we could
+ * not show. Those are the files that need it most: "this one isn't text" is
+ * exactly what a PDF looks like here, and until now that sentence was the end
+ * of the road. The two reads are independent — a body we could not render says
+ * nothing about bytes we can fetch — so the affordance does not hide behind
+ * the preview succeeding.
  */
 function FileViewer({
   rawPath,
   label,
+  agentId,
   agentName,
+  tier,
   loading,
   failed,
   file,
 }: {
   rawPath: string;
   label: string;
+  agentId: string;
   agentName: string;
+  tier: FileTier;
   loading: boolean;
   failed: boolean;
   file: WorkspaceFileBody | UserFileBody | null;
 }) {
+  const download = useFileDownload({ agentId, agentName, tier, path: rawPath });
   return (
     <div key={rawPath}>
       <div className="mb-1 flex items-center gap-2.5">
@@ -442,10 +467,36 @@ function FileViewer({
         <Badge variant="secondary" className="shrink-0">
           written by {agentName}
         </Badge>
+        <Button
+          variant="secondary"
+          size="sm"
+          className="ml-auto shrink-0"
+          onClick={download.start}
+          disabled={download.busy}
+        >
+          <Download data-icon="inline-start" />
+          {download.busy ? 'Getting it…' : 'Download'}
+        </Button>
       </div>
       <div className="mb-5 truncate text-[12.5px] text-muted-foreground">
         {label}
       </div>
+
+      {/*
+        A FIFTH THING, kept apart from the other four. This tab already tells
+        "the listing failed", "no backend for this tier", "loading" and "the
+        agent wrote nothing" apart, because collapsing any of them into another
+        would make a claim about the agent that we cannot support. A download
+        that did not happen is none of those — the file is listed, the body is
+        on screen, and what failed is the handing-over. So it says so here, next
+        to the button that did not work, and leaves the rest of the pane alone.
+      */}
+      {download.error !== null && (
+        <Alert variant="destructive" className="mb-5">
+          <AlertTriangle />
+          <AlertDescription>{download.error}</AlertDescription>
+        </Alert>
+      )}
 
       {failed ? (
         <Alert variant="destructive">

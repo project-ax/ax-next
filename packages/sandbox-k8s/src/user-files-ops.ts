@@ -332,8 +332,12 @@ export async function cleanupUserFiles(
 // stdout that the host parses from `pods/log`:
 //
 //   DIR <base64-json-of-entries>            (relPath is a directory)
-//   FILE <base64-of-first-READ_MAX_FILE_BYTES-bytes>   (regular file)
+//   FILE <base64-of-first-(READ_MAX_FILE_BYTES+1)-bytes>  (regular file)
 //   ABSENT                                  (path missing / not file-or-dir)
+//
+// The FILE line carries ONE byte more than the cap on purpose: its presence is
+// what tells `parseReadOutput` that the file is longer than we will serve, and
+// the byte is dropped there. `truncated` on the answer is that bit.
 //
 // base64 keeps binary file bytes intact over the text log channel; the cap
 // bounds what the apiserver must buffer.
@@ -423,7 +427,11 @@ export function buildReadCommand(): string {
     'if [ -f "$target" ]; then',
     // Redirect rather than pass the filename: no `--`/BusyBox-`head` argument
     // portability question, and no filename ever reaching argv.
-    `  printf "FILE "; head -c ${READ_MAX_FILE_BYTES} < "$target" | base64 | tr -d "\\n"; echo`,
+    // ONE BYTE OVER THE CAP, deliberately — `parseReadOutput` uses the extra
+    // byte to tell a file of exactly the cap from a file that is longer, then
+    // drops it. A prefix that cannot say it is a prefix is a corrupt file that
+    // looks like a whole one to whoever is handed it.
+    `  printf "FILE "; head -c ${READ_MAX_FILE_BYTES + 1} < "$target" | base64 | tr -d "\\n"; echo`,
     '  exit 0',
     'fi',
     'echo ABSENT',
@@ -563,7 +571,7 @@ export function parseReadOutput(raw: string): ReadUserFilesOutput {
   // through a real shell (`read-command-shell.test.ts`) — no amount of
   // grepping the generated text would have shown it.
   if (line === 'DIR') return { kind: 'dir', entries: [] };
-  if (line === 'FILE') return { kind: 'file', contents: new Uint8Array() };
+  if (line === 'FILE') return { kind: 'file', contents: new Uint8Array(), truncated: false };
   if (line.startsWith('DIR ')) {
     const b64 = line.slice('DIR '.length);
     const decoded = Buffer.from(b64, 'base64').toString('utf-8');
@@ -586,7 +594,18 @@ export function parseReadOutput(raw: string): ReadUserFilesOutput {
   }
   if (line.startsWith('FILE ')) {
     const b64 = line.slice('FILE '.length);
-    return { kind: 'file', contents: new Uint8Array(Buffer.from(b64, 'base64')) };
+    const bytes = Buffer.from(b64, 'base64');
+    // The script reads `READ_MAX_FILE_BYTES + 1`; anything past the cap proves
+    // the file is longer than what we can serve. The probe byte is dropped
+    // here, so a caller still never receives more than the cap.
+    const truncated = bytes.length > READ_MAX_FILE_BYTES;
+    return {
+      kind: 'file',
+      contents: new Uint8Array(
+        truncated ? bytes.subarray(0, READ_MAX_FILE_BYTES) : bytes,
+      ),
+      truncated,
+    };
   }
   return { kind: 'absent' };
 }

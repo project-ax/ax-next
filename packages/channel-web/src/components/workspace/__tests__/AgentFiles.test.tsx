@@ -39,13 +39,19 @@ vi.mock('@/lib/workspace-api', async () => {
   );
   return {
     ...actual,
-    workspaceApi: { files: vi.fn(), file: vi.fn(), userFiles: vi.fn() },
+    workspaceApi: {
+      files: vi.fn(),
+      file: vi.fn(),
+      userFiles: vi.fn(),
+      downloadFile: vi.fn(),
+    },
   };
 });
 
 const filesMock = vi.mocked(workspaceApi.files);
 const fileMock = vi.mocked(workspaceApi.file);
 const userFilesMock = vi.mocked(workspaceApi.userFiles);
+const downloadMock = vi.mocked(workspaceApi.downloadFile);
 
 function renderTab() {
   return render(<AgentFiles agentId="a-quill" agentName="Quill" />);
@@ -66,6 +72,7 @@ beforeEach(() => {
   filesMock.mockReset();
   fileMock.mockReset();
   userFilesMock.mockReset();
+  downloadMock.mockReset();
   // The governed-tier tests are not about the durable tier. 503 is the quiet
   // answer: a deployment with no durable backend, no retry button, no claim
   // about the agent.
@@ -509,5 +516,219 @@ describe('AgentFiles: the two tiers fail independently', () => {
     renderTab();
     expect(await screen.findByText('committed.md')).toBeTruthy();
     expect(screen.getByText(/could not read Quill’s files/i)).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GETTING THE FILE OUT (TASK-355).
+//
+// Until this, the tab could show you a file and never hand it to you. The two
+// cases that mattered most were the two it could say least about: a PDF
+// rendered as the sentence "this one isn't text", and a long file rendered as
+// its first 128 KiB. So the affordance is offered for EVERY open file, not
+// just the ones we managed to draw.
+//
+// The other half is the failure. A download that does not happen is a FIFTH
+// thing this tab has to tell apart from the four it already does — and it must
+// not borrow any of their sentences, because each of those is a claim about
+// the agent's files rather than about one click.
+// ---------------------------------------------------------------------------
+describe('AgentFiles: downloading', () => {
+  /**
+   * What the browser was actually asked to save.
+   *
+   * jsdom has no download machinery, so a real `<a download>` click here is
+   * both unobservable and noisy ("Not implemented: navigation"). Intercepting
+   * the click gives us the one thing worth asserting: the name the file lands
+   * under.
+   */
+  let saved: string[];
+
+  beforeEach(() => {
+    saved = [];
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(
+      function (this: HTMLAnchorElement) {
+        saved.push(this.download);
+      },
+    );
+  });
+
+  /** A one-file governed tier with `file` already answering. */
+  function oneGovernedFile(body: {
+    body: string | null;
+    clipped: 'binary' | 'too-large' | null;
+  }) {
+    filesMock.mockResolvedValue({
+      files: [{ path: 'reports/q3.pdf', name: 'reports/q3.pdf' }],
+      truncated: false,
+    });
+    fileMock.mockResolvedValue({
+      path: 'reports/q3.pdf',
+      name: 'reports/q3.pdf',
+      ...body,
+    });
+  }
+
+  it('offers a download for a file whose body we could NOT show', async () => {
+    // The case the whole card is about. `clipped: 'binary'` is what a PDF an
+    // agent made you looks like on this tab, and it used to be the end of the
+    // road.
+    oneGovernedFile({ body: null, clipped: 'binary' });
+    downloadMock.mockResolvedValue({ blob: new Blob(['x']), filename: 'q3.pdf' });
+    renderTab();
+    fireEvent.click(await screen.findByText('reports/q3.pdf'));
+    const button = await screen.findByRole('button', { name: /download/i });
+    expect(screen.getByText(/isn’t text/i)).toBeTruthy();
+
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(downloadMock).toHaveBeenCalledWith(
+        'a-quill',
+        'workspace',
+        'reports/q3.pdf',
+      ),
+    );
+  });
+
+  it('asks the DURABLE tier for a durable-tier file', async () => {
+    // Two tiers, two backends, and the tab already knows which one a row came
+    // from. Sending a durable path to the governed route would 404 — or worse,
+    // hit a governed file that happens to share the name.
+    filesMock.mockResolvedValue({ files: [], truncated: false });
+    durableTree({
+      '': {
+        kind: 'dir',
+        path: '',
+        name: '',
+        entries: [{ path: 'out.csv', name: 'out.csv', kind: 'file' }],
+        truncated: false,
+      },
+      'out.csv': {
+        kind: 'file',
+        path: 'out.csv',
+        name: 'out.csv',
+        body: 'a,b',
+        clipped: null,
+      },
+    });
+    downloadMock.mockResolvedValue({ blob: new Blob(['a,b']), filename: 'out.csv' });
+    renderTab();
+    fireEvent.click(await screen.findByText('out.csv'));
+    fireEvent.click(await screen.findByRole('button', { name: /download/i }));
+    await waitFor(() =>
+      expect(downloadMock).toHaveBeenCalledWith('a-quill', 'user-files', 'out.csv'),
+    );
+  });
+
+  it('saves under the name the SERVER sanitized, not the label on the row', async () => {
+    /*
+      The row's label was fenced for a SCREEN; the download name was sanitized
+      for a FILESYSTEM and a header, which is a different rule set. Re-deriving
+      one from the other in the browser would be a second sanitizer, and two
+      sanitizers is the shape where one gets fixed and the other quietly does
+      not. So the client uses what came back on `Content-Disposition`.
+    */
+    oneGovernedFile({ body: null, clipped: 'binary' });
+    downloadMock.mockResolvedValue({
+      blob: new Blob(['x']),
+      filename: 'q3_final.pdf',
+    });
+    renderTab();
+    fireEvent.click(await screen.findByText('reports/q3.pdf'));
+    fireEvent.click(await screen.findByRole('button', { name: /download/i }));
+    await waitFor(() => expect(saved).toEqual(['q3_final.pdf']));
+  });
+
+  it('sends the RAW path, not the fenced label', async () => {
+    // Same split as the read: the fenced name is for the screen, the raw key
+    // is what addresses the file. Sending the label would 404 on every name
+    // that needed fencing.
+    const raw = 'inv‮oice.pdf';
+    filesMock.mockResolvedValue({
+      files: [{ path: raw, name: 'invoice.pdf' }],
+      truncated: false,
+    });
+    fileMock.mockResolvedValue({
+      path: raw,
+      name: 'invoice.pdf',
+      body: null,
+      clipped: 'binary',
+    });
+    downloadMock.mockResolvedValue({
+      blob: new Blob(['x']),
+      filename: 'invoice.pdf',
+    });
+    renderTab();
+    fireEvent.click(await screen.findByText('invoice.pdf'));
+    fireEvent.click(await screen.findByRole('button', { name: /download/i }));
+    await waitFor(() =>
+      expect(downloadMock).toHaveBeenCalledWith('a-quill', 'workspace', raw),
+    );
+  });
+
+  it('says why a download failed, in a sentence, and says nothing else', async () => {
+    /*
+      The fifth state. A failed download must NOT reach for any of the other
+      four sentences — "Quill has not written anything yet" over a file that is
+      listed, on screen, and readable would be a claim about the agent made
+      from a click that did not work.
+    */
+    oneGovernedFile({ body: 'plain', clipped: null });
+    downloadMock.mockRejectedValue(
+      new WorkspaceApiError('/agents/a-quill/download/files/reports%2Fq3.pdf', 500),
+    );
+    renderTab();
+    fireEvent.click(await screen.findByText('reports/q3.pdf'));
+    fireEvent.click(await screen.findByRole('button', { name: /download/i }));
+
+    expect(await screen.findByText(/could not download that just now/i)).toBeTruthy();
+    expect(screen.queryByText(/has not written anything yet/)).toBeNull();
+    expect(screen.queryByText(/could not read Quill/i)).toBeNull();
+    // The body it DID manage to show is still there — the failure was the
+    // handing-over, not the read.
+    expect(screen.getByText('plain')).toBeTruthy();
+  });
+
+  it('explains a file that is too big for us to pass along', async () => {
+    // Not "an error occurred". The person needs to know we can only reach the
+    // first megabyte and that a fragment would be useless — that is the part
+    // that tells them to go ask for a smaller copy.
+    oneGovernedFile({ body: null, clipped: 'binary' });
+    downloadMock.mockRejectedValue(
+      new WorkspaceApiError('/agents/a-quill/download/files/reports%2Fq3.pdf', 413),
+    );
+    renderTab();
+    fireEvent.click(await screen.findByText('reports/q3.pdf'));
+    fireEvent.click(await screen.findByRole('button', { name: /download/i }));
+    const said = await screen.findByText(/too big for us to pass along/i);
+    expect(said.textContent).toContain('Quill');
+    expect(said.textContent).not.toContain('413');
+  });
+
+  it('clears the failure when the next attempt is made', async () => {
+    // A stale error under a button that is currently working is its own lie.
+    oneGovernedFile({ body: 'plain', clipped: null });
+    downloadMock
+      .mockRejectedValueOnce(new WorkspaceApiError('/x', 500))
+      .mockResolvedValueOnce({ blob: new Blob(['x']), filename: 'q3.pdf' });
+    renderTab();
+    fireEvent.click(await screen.findByText('reports/q3.pdf'));
+    const button = await screen.findByRole('button', { name: /download/i });
+    fireEvent.click(button);
+    expect(await screen.findByText(/could not download/i)).toBeTruthy();
+    fireEvent.click(button);
+    await waitFor(() => expect(screen.queryByText(/could not download/i)).toBeNull());
+  });
+
+  it('offers nothing to download when no file is open', async () => {
+    // The affordance hangs off the open file, so an empty pane has no button
+    // to press and nothing to be wrong about.
+    filesMock.mockResolvedValue({
+      files: [{ path: 'a.md', name: 'a.md' }],
+      truncated: false,
+    });
+    renderTab();
+    expect(await screen.findByText('a.md')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /download/i })).toBeNull();
   });
 });
