@@ -219,17 +219,49 @@ export interface UserFileDirEntry {
 /**
  * Output of `sandbox:read-user-files` — a read-only view of one path.
  *
- * - `{ kind: 'file', contents }` — `relPath` resolved to a regular file; its
- *   bytes are returned.
+ * - `{ kind: 'file', contents, truncated }` — `relPath` resolved to a regular
+ *   file; its bytes are returned, and `truncated` says whether they are ALL of
+ *   them.
  * - `{ kind: 'dir', entries }` — `relPath` resolved to a directory; its
  *   immediate children are listed (not recursive).
  * - `{ kind: 'absent' }` — no user-files mount for this owner (no resolver
  *   loaded, anonymous owner, or the mount/path does not exist). A graceful
  *   "nothing to serve", never an error — mirrors `sandbox:resolve-mounts`
  *   returning `[]`.
+ *
+ * WHY `truncated` EXISTS. Every realization bounds one file read — an
+ * unbounded read of somebody else's filesystem into the host process is a
+ * denial of service against the host, not a slow request — and a bounded read
+ * answers with a PREFIX rather than an error, because "no such file" over a
+ * 4 GB dataset the agent definitely wrote would be a lie.
+ *
+ * But a prefix that does not SAY it is a prefix is the same lie pointing the
+ * other way, and the consumer cannot work it out: `contents.length === cap`
+ * is equally what a file of exactly the cap looks like. A preview can survive
+ * that (it says "showing the beginning" whenever it clips at its own, much
+ * smaller, bound). A consumer handing the bytes to a person as THE FILE cannot
+ * — a truncated PDF is a corrupt PDF, and it looks like a whole one.
+ *
+ * So the bit rides on the answer. It is a fact about the ANSWER, not about the
+ * backend: no cap, no mount kind and no byte count crosses this boundary, and
+ * a realization with no cap at all simply always reports `false`.
  */
 export type ReadUserFilesOutput =
-  | { kind: 'file'; contents: Uint8Array }
+  | {
+      kind: 'file';
+      contents: Uint8Array;
+      /**
+       * `true` when the file is LONGER than `contents` — i.e. these bytes are
+       * a prefix and the rest was not read.
+       *
+       * Optional so a realization written before this field keeps type-checking,
+       * but every realization in this repo sets it explicitly. A consumer that
+       * must not hand over a partial file treats `undefined` as "unknown, and
+       * unknown is not a promise" — see the download routes in
+       * `@ax/channel-web`.
+       */
+      truncated?: boolean;
+    }
   | { kind: 'dir'; entries: UserFileDirEntry[] }
   | { kind: 'absent' };
 

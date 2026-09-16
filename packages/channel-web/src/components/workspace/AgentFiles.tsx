@@ -49,7 +49,14 @@
  * are rendered either as markdown through the package's shared renderer — with
  * images off and no artifact widening — or as plain preformatted text.
  */
-import { AlertTriangle, ChevronRight, FileText, Folder, Loader2 } from 'lucide-react';
+import {
+  AlertTriangle,
+  ChevronRight,
+  Download,
+  FileText,
+  Folder,
+  Loader2,
+} from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -61,9 +68,10 @@ import {
   BreadcrumbSeparator,
 } from '@/components/ui/breadcrumb';
 import { Markdown } from '@/components/Markdown';
+import { useFileDownload } from '@/lib/file-download';
 import { useAgentFiles } from '@/lib/workspace-files';
 import { useAgentUserFiles, type UserFileBody } from '@/lib/user-files';
-import type { WorkspaceFileBody } from '@/lib/workspace-api';
+import type { FileTier, WorkspaceFileBody } from '@/lib/workspace-api';
 import { cn } from '@/lib/utils';
 import { SectionLabel } from './bits';
 
@@ -385,20 +393,50 @@ export function AgentFiles({
       </div>
 
       <div className="flex-1 overflow-y-auto px-6 pb-8 pt-5">
+        {/*
+          THE KEY IS ON THE COMPONENT, and it has to be. `FileViewer` owns the
+          download's state — the in-flight ref and the failure sentence — and
+          both belong to ONE file. Without a key React reuses the same instance
+          across a file switch (both branches render a `FileViewer` at the same
+          position), and that state comes with it: the sentence "we could not
+          download that" ends up over a file whose download was never
+          attempted, which is the same lie this tab spends its whole existence
+          avoiding, just pointed at a smaller thing. Worse, the in-flight ref
+          survives too, so the next file's first Download click is swallowed
+          while its button says "Getting it…".
+
+          `tier` is part of the key because the two tiers are different stores
+          and a path can exist in both — `notes.md` in the workspace is not
+          `notes.md` in the agent's HOME.
+
+          `agentId` is part of it for completeness rather than for a bug you
+          can reproduce today: both file hooks drop their selection when the
+          agent changes, so this pane unmounts before an identical path under a
+          different agent could ever reach it. That reset lives in another
+          file, this key does not depend on it, and no test can tell the
+          difference — which is exactly why it is written down instead of
+          claimed.
+        */}
         {durableSelected !== null ? (
           <FileViewer
+            key={`${agentId}:user-files:${durableSelected}`}
             rawPath={durableSelected}
             label={durable.file?.name ?? basename(durableSelected)}
+            agentId={agentId}
             agentName={agentName}
+            tier="user-files"
             loading={durable.fileLoading}
             failed={durable.fileError !== null}
             file={durable.file}
           />
         ) : governedSelected !== null ? (
           <FileViewer
+            key={`${agentId}:workspace:${governedSelected.path}`}
             rawPath={governedSelected.path}
             label={governedSelected.name}
+            agentId={agentId}
             agentName={agentName}
+            tier="workspace"
             loading={governed.openLoading}
             failed={governed.openError !== null}
             file={governed.openFile}
@@ -416,36 +454,90 @@ export function AgentFiles({
 /**
  * The right-hand pane for whichever file is open.
  *
- * Takes the raw key ONLY as a React key discriminator and never renders it —
+ * Takes the raw key ONLY to address the download with, and never renders it —
  * `label` is the fenced string, and that is what goes on the screen. Same
  * split, same reason, as everywhere else on this surface.
+ *
+ * THE DOWNLOAD IS OFFERED FOR EVERY FILE, including one whose body we could
+ * not show. Those are the files that need it most: "this one isn't text" is
+ * exactly what a PDF looks like here, and until now that sentence was the end
+ * of the road. The two reads are independent — a body we could not render says
+ * nothing about bytes we can fetch — so the affordance does not hide behind
+ * the preview succeeding.
  */
 function FileViewer({
   rawPath,
   label,
+  agentId,
   agentName,
+  tier,
   loading,
   failed,
   file,
 }: {
   rawPath: string;
   label: string;
+  agentId: string;
   agentName: string;
+  tier: FileTier;
   loading: boolean;
   failed: boolean;
   file: WorkspaceFileBody | UserFileBody | null;
 }) {
+  const download = useFileDownload({ agentId, agentName, tier, path: rawPath });
   return (
-    <div key={rawPath}>
+    /*
+      No key here any more. There used to be one on this div, and it was not
+      enough once this component held state: a key on the OUTPUT remounts the
+      DOM, while the hook above it keeps running with the previous file's
+      download in it. The key that matters is on `<FileViewer>` at both call
+      sites — one mechanism, at the level that actually resets.
+    */
+    <div>
       <div className="mb-1 flex items-center gap-2.5">
         <span className="truncate font-mono text-[13px]">{basename(label)}</span>
         <Badge variant="secondary" className="shrink-0">
           written by {agentName}
         </Badge>
+        <Button
+          variant="secondary"
+          size="sm"
+          className="ml-auto shrink-0"
+          onClick={download.start}
+          disabled={download.busy}
+        >
+          {/*
+            `data-icon` is INERT against the Button this repo has installed —
+            that one sizes and spaces icons itself, with `[&_svg]:size-4` and
+            `gap-2`. It is written anyway because it is the shadcn convention
+            the upstream Button reads, and because the two existing icon
+            buttons in this codebase spell it the same way
+            (`AuthoredSkillsSection`). One spelling now beats a migration
+            later; if the Button is ever updated, nothing here needs finding.
+          */}
+          <Download data-icon="inline-start" />
+          {download.busy ? 'Getting it…' : 'Download'}
+        </Button>
       </div>
       <div className="mb-5 truncate text-[12.5px] text-muted-foreground">
         {label}
       </div>
+
+      {/*
+        A FIFTH THING, kept apart from the other four. This tab already tells
+        "the listing failed", "no backend for this tier", "loading" and "the
+        agent wrote nothing" apart, because collapsing any of them into another
+        would make a claim about the agent that we cannot support. A download
+        that did not happen is none of those — the file is listed, the body is
+        on screen, and what failed is the handing-over. So it says so here, next
+        to the button that did not work, and leaves the rest of the pane alone.
+      */}
+      {download.error !== null && (
+        <Alert variant="destructive" className="mb-5">
+          <AlertTriangle />
+          <AlertDescription>{download.error}</AlertDescription>
+        </Alert>
+      )}
 
       {failed ? (
         <Alert variant="destructive">

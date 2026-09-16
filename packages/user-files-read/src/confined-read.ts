@@ -66,6 +66,12 @@ export interface ConfinedReadLimits {
    * `absent`. Rendering "no such file" over a 4 GB dataset the agent definitely
    * wrote would be a lie; handing back a prefix lets the consumer say "this is
    * the beginning of it", which is what the Files surface already says.
+   *
+   * A prefix is reported as one: the answer carries `truncated: true`. The
+   * read therefore asks the filesystem for `maxFileBytes + 1` bytes and keeps
+   * `maxFileBytes` of them — one byte is what tells a file of exactly the cap
+   * apart from a file that is longer, and the consumer cannot recover that
+   * from a length.
    */
   maxFileBytes: number;
   /**
@@ -225,7 +231,8 @@ async function listDir(
 }
 
 /**
- * Up to `maxBytes` of a confirmed-in-root regular file.
+ * Up to `maxBytes` of a confirmed-in-root regular file, plus whether that was
+ * all of it.
  *
  * `O_NOFOLLOW` shrinks the realpath→open TOCTOU window: if the final component
  * was swapped for a symlink between the confinement check and this open, the
@@ -234,6 +241,13 @@ async function listDir(
  * The read is bounded at the syscall, not after the fact — `readFile()` on a
  * multi-gigabyte NFS file would already have spent the memory by the time we
  * looked at its length.
+ *
+ * ONE BYTE OVER THE CAP is requested, and it is the whole truncation test: a
+ * read that comes back with `maxBytes + 1` bytes proves there was more, while
+ * `maxBytes` exactly proves there was not. Nothing cheaper works — an `fstat`
+ * size is a second syscall racing the same file, and a bare length is
+ * ambiguous at exactly the cap. The extra byte is then dropped, so the bytes a
+ * caller receives are still capped at `maxBytes`.
  */
 async function readFilePrefix(
   target: string,
@@ -242,11 +256,30 @@ async function readFilePrefix(
   let fh: fs.FileHandle | undefined;
   try {
     fh = await fs.open(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-    const buf = Buffer.allocUnsafe(maxBytes);
-    const { bytesRead } = await fh.read(buf, 0, maxBytes, 0);
+    const probe = maxBytes + 1;
+    const buf = Buffer.allocUnsafe(probe);
+    // READ UNTIL EOF OR FULL, not once. A single `read()` is allowed to come
+    // back short of what was asked for with the file far from over — rare on a
+    // local disk, entirely ordinary over NFS, which is the filesystem this
+    // reader was built for. A short read that happened to stop at `maxBytes`
+    // would report a truncated file as whole, which is the exact failure this
+    // extra byte exists to prevent.
+    let filled = 0;
+    for (;;) {
+      const { bytesRead } = await fh.read(buf, filled, probe - filled, filled);
+      if (bytesRead === 0) break;
+      filled += bytesRead;
+      if (filled >= probe) break;
+    }
+    const truncated = filled > maxBytes;
+    const kept = truncated ? maxBytes : filled;
     // Copy out of the over-allocated buffer so the returned view cannot expose
-    // whatever `allocUnsafe` handed us past `bytesRead`.
-    return { kind: 'file', contents: new Uint8Array(buf.subarray(0, bytesRead)) };
+    // whatever `allocUnsafe` handed us past `kept`.
+    return {
+      kind: 'file',
+      contents: new Uint8Array(buf.subarray(0, kept)),
+      truncated,
+    };
   } catch {
     return { kind: 'absent' };
   } finally {

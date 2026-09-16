@@ -2669,6 +2669,19 @@ invisible in the UI. Plan: `docs/plans/2026-09-10-userfiles-host-read-handoff.md
 
 **Also measured:** `channel-web`'s FULL suite is 2039/2039 green. Two separate agents reported a "pre-existing unrelated failure" in `SkillAttachmentsSection.test.tsx`; it does not exist. It, and the 4-package `pnpm -r --no-bail` failures whose membership changed run to run, were all local parallel contention. **A subagent's "pre-existing failure" claim is not evidence — re-run it in isolation after `pnpm build` before repeating it.** Same class caught the real one: `tool-policy.canary.test.ts` was reported as a pre-existing `@ax/test-harness` resolution error and was in fact this change breaking its exact-key-list guard, visible only after a build.
 
+## 2026-09-16 — TASK-355: getting a file out of the workspace
+
+**Two download routes, not one with a `?tier=`.** `GET /api/workspace/agents/:agentId/download/files/*` and `.../download/user-files/*`. The tiers are two BACKENDS (git-backed `workspace:read` vs `sandbox:read-user-files`), they already fail independently on this surface, and a shared route would put "which backend do we read" in a caller-supplied string the server then has to validate. Two registered paths make it a fact about the route table instead.
+
+**`download` sits WHERE `files` sits, not after it.** `/files/download/*` would be ambiguous with a file the agent genuinely named `download/...` — the splat would hand both to the same handler — and `@ax/http-server` only recognises a bare `*` as the FINAL segment, so a `/files/*/download` spelling does not exist. Putting the marker in the route position no agent-written path can occupy is what makes the two patterns non-overlapping (pinned by a test that `/files/*` still answers JSON).
+
+**`application/octet-stream` + `nosniff` + `attachment`, always.** Never sniffed from the bytes, never from the extension, never caller-supplied. `text/html` on an agent-authored file is stored XSS on our own origin and `image/svg+xml` is the same thing wearing a picture. The cost — a PNG will not preview in a tab — is the intended trade: previewing is what the Files tab already does, in a renderer we control.
+
+**The client fetches the bytes itself instead of `window.open(url)`.** The attachment chip uses `window.open`, which is fine there; here a non-200 shows the person a blank tab or `{"error":"file-not-found"}` in the corner of an empty page. So `workspaceApi.downloadFile` returns `{blob, filename}` or throws a status-carrying `WorkspaceApiError`, and the hook turns that into one of four authored sentences. The saved filename is parsed from `Content-Disposition` rather than re-derived in the browser — the row's label was fenced for a SCREEN, the download name was sanitized for a FILESYSTEM, and two sanitizers is the shape where one gets fixed and the other quietly does not.
+
+**A failed download is a FIFTH state on the Files tab.** It renders beside the button that did not work and borrows none of the four existing sentences (listing failed / no backend / loading / the agent wrote nothing) — each of those is a claim about the agent's files, and a click that failed is not evidence for any of them.
+
+**TASK-257 is deliberately NOT fixed here.** `agentWorkspaceCtx` routes on the CALLER's userId rather than the agent's ownerId; the download routes copy that exactly. It fails closed (a non-owner reads their own empty shard — no leak) and TASK-257 sits in **Needs Input** because the team-agent shard semantics are a human call. Fixing it only on the download routes would make a shared agent's download read a different shard than its preview — a download and a preview disagreeing about which file they mean is worse than the bug.
 ## 2026-09-16 — TASK-353 review findings: two taken, one rejected, one refuted
 
 | Date | Decision | Rationale | Alternatives |
