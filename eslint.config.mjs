@@ -119,6 +119,42 @@ import tseslint from 'typescript-eslint';
 
 import noBareTenantTables from './eslint-rules/no-bare-tenant-tables.js';
 
+/**
+ * CLAUDE.md invariant 2, as one object shared by every block that needs it.
+ *
+ * A flat-config block REPLACES a rule's options for the files it matches
+ * rather than merging them, so each scoped `no-restricted-imports` block
+ * below has to carry this group itself or the files it matches quietly stop
+ * being checked for cross-plugin imports. That used to mean three hand-kept
+ * verbatim copies: allow-list a new @ax/* package in one and forget the
+ * others, and two trees disagree with nothing failing.
+ *
+ * One binding removes that. `eslint-rules/__tests__/workspace-chat-tree-guard.test.js`
+ * lints through this file and asserts a forbidden @ax/* import still errors
+ * from both a scoped tree and an unscoped one, so the sharing is checked
+ * rather than trusted.
+ */
+const crossPluginImports = {
+group: [
+  '@ax/*',
+  '!@ax/core',
+  '!@ax/test-harness',
+  '!@ax/ipc-protocol',
+  '!@ax/workspace-protocol',
+  '!@ax/sandbox-protocol',
+  '!@ax/workspace-bundle-protocol',
+  '!@ax/ipc-core',
+  '!@ax/agent-claude-sdk-runner-host',
+  '!@ax/validator-routine',
+  '!@ax/skills-parser',
+  '!@ax/agent-identity-templates',
+  '!@ax/user-files-read',
+],
+allowTypeImports: true,
+message:
+  'Cross-plugin runtime imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. Type-only imports (`import type {...}` / `export type {...}`) are allowed — boundary types are how plugins agree on a shared contract without runtime coupling. The only @ax/* runtime imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol + @ax/sandbox-protocol + @ax/workspace-bundle-protocol (wire / hook-bus contracts), @ax/ipc-core (transport-agnostic IPC library), @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser), @ax/validator-routine (pure-function routine frontmatter parser shared between the validator and the routines plugin), @ax/skills-parser (pure-function SKILL.md parser + capability types shared between @ax/skills and @ax/agents), @ax/agent-identity-templates (pure-data bootstrap/identity template strings shared between @ax/agent-claude-sdk-runner and @ax/channel-web), and @ax/user-files-read (the one realpath-confined reader for an agent durable user-files subtree, shared by both sandbox providers)',
+};
+
 export default tseslint.config(
   {
     ignores: [
@@ -173,26 +209,7 @@ export default tseslint.config(
         'error',
         {
           patterns: [
-            {
-              group: [
-                '@ax/*',
-                '!@ax/core',
-                '!@ax/test-harness',
-                '!@ax/ipc-protocol',
-                '!@ax/workspace-protocol',
-                '!@ax/sandbox-protocol',
-                '!@ax/workspace-bundle-protocol',
-                '!@ax/ipc-core',
-                '!@ax/agent-claude-sdk-runner-host',
-                '!@ax/validator-routine',
-                '!@ax/skills-parser',
-                '!@ax/agent-identity-templates',
-                '!@ax/user-files-read',
-              ],
-              allowTypeImports: true,
-              message:
-                'Cross-plugin runtime imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. Type-only imports (`import type {...}` / `export type {...}`) are allowed — boundary types are how plugins agree on a shared contract without runtime coupling. The only @ax/* runtime imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol + @ax/sandbox-protocol + @ax/workspace-bundle-protocol (wire / hook-bus contracts), @ax/ipc-core (transport-agnostic IPC library), @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser), @ax/validator-routine (pure-function routine frontmatter parser shared between the validator and the routines plugin), @ax/skills-parser (pure-function SKILL.md parser + capability types shared between @ax/skills and @ax/agents), @ax/agent-identity-templates (pure-data bootstrap/identity template strings shared between @ax/agent-claude-sdk-runner and @ax/channel-web), and @ax/user-files-read (the one realpath-confined reader for an agent durable user-files subtree, shared by both sandbox providers)',
-            },
+            crossPluginImports,
           ],
         },
       ],
@@ -280,9 +297,8 @@ export default tseslint.config(
     // told at lint time, not after the workspace has quietly grown a bundle.
     //
     // NOTE: a flat-config block REPLACES this rule's options for the matched
-    // files rather than merging, so the @ax/* group from the base block is
-    // repeated here. Dropping it would silently exempt this file from
-    // invariant 2.
+    // files rather than merging, so `crossPluginImports` is listed here too.
+    // Dropping it would silently exempt this file from invariant 2.
     files: ['packages/channel-web/src/lib/sse-frames.ts'],
     rules: {
       '@typescript-eslint/no-restricted-imports': [
@@ -294,26 +310,7 @@ export default tseslint.config(
               message:
                 'sse-frames.ts is the shared SSE wire reader: bytes in, typed frames out. Rendering belongs to its consumers — lib/transport.ts turns frames into AI-SDK chunks for chat, lib/workspace-api.ts turns them into callbacks for the agent workspace. If this module needs a renderer, the thing you are adding belongs in one of those two instead. See TASK-349 / docs/plans/2026-09-12-workspace-as-sole-interface.md Tier 2.',
             },
-            {
-              group: [
-                '@ax/*',
-                '!@ax/core',
-                '!@ax/test-harness',
-                '!@ax/ipc-protocol',
-                '!@ax/workspace-protocol',
-                '!@ax/sandbox-protocol',
-                '!@ax/workspace-bundle-protocol',
-                '!@ax/ipc-core',
-                '!@ax/agent-claude-sdk-runner-host',
-                '!@ax/validator-routine',
-                '!@ax/skills-parser',
-                '!@ax/agent-identity-templates',
-                '!@ax/user-files-read',
-              ],
-              allowTypeImports: true,
-              message:
-                'Cross-plugin runtime imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. Type-only imports (`import type {...}` / `export type {...}`) are allowed — boundary types are how plugins agree on a shared contract without runtime coupling. The only @ax/* runtime imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol + @ax/sandbox-protocol + @ax/workspace-bundle-protocol (wire / hook-bus contracts), @ax/ipc-core (transport-agnostic IPC library), @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser), @ax/validator-routine (pure-function routine frontmatter parser shared between the validator and the routines plugin), @ax/skills-parser (pure-function SKILL.md parser + capability types shared between @ax/skills and @ax/agents), @ax/agent-identity-templates (pure-data bootstrap/identity template strings shared between @ax/agent-claude-sdk-runner and @ax/channel-web), and @ax/user-files-read (the one realpath-confined reader for an agent durable user-files subtree, shared by both sandbox providers)',
-            },
+            crossPluginImports,
           ],
         },
       ],
@@ -350,9 +347,9 @@ export default tseslint.config(
     // back on for the workspace's test files.
     //
     // NOTE: a flat-config block REPLACES this rule's options for the matched
-    // files rather than merging, so the @ax/* group from the base block is
-    // repeated here. Dropping it would silently exempt the workspace from
-    // invariant 2.
+    // files rather than merging, so `crossPluginImports` is listed here too.
+    // Dropping it would silently exempt the workspace from invariant 2 — which
+    // is what the guard test's cross-plugin cases exist to catch.
     files: [
       'packages/channel-web/src/lib/workspace-*.ts',
       'packages/channel-web/src/lib/workspace-*.tsx',
@@ -380,26 +377,7 @@ export default tseslint.config(
               message:
                 'The agent workspace must not import from the chat tree. lib/transport.ts, lib/runtime.tsx and lib/turn-error.ts are chat-only and are deleted by TASK-360 (Tier 5 #4 of docs/plans/2026-09-12-workspace-as-sole-interface.md), which would take this import with them. If you need something they hold, move it to a module outside both trees first — that is what lib/turn-error-labels.ts (the Fault A error-label table), lib/sse-frames.ts (the SSE wire reader) and lib/grant-copy.ts (the grant trust copy) are.',
             },
-            {
-              group: [
-                '@ax/*',
-                '!@ax/core',
-                '!@ax/test-harness',
-                '!@ax/ipc-protocol',
-                '!@ax/workspace-protocol',
-                '!@ax/sandbox-protocol',
-                '!@ax/workspace-bundle-protocol',
-                '!@ax/ipc-core',
-                '!@ax/agent-claude-sdk-runner-host',
-                '!@ax/validator-routine',
-                '!@ax/skills-parser',
-                '!@ax/agent-identity-templates',
-                '!@ax/user-files-read',
-              ],
-              allowTypeImports: true,
-              message:
-                'Cross-plugin runtime imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. Type-only imports (`import type {...}` / `export type {...}`) are allowed — boundary types are how plugins agree on a shared contract without runtime coupling. The only @ax/* runtime imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol + @ax/sandbox-protocol + @ax/workspace-bundle-protocol (wire / hook-bus contracts), @ax/ipc-core (transport-agnostic IPC library), @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser), @ax/validator-routine (pure-function routine frontmatter parser shared between the validator and the routines plugin), @ax/skills-parser (pure-function SKILL.md parser + capability types shared between @ax/skills and @ax/agents), @ax/agent-identity-templates (pure-data bootstrap/identity template strings shared between @ax/agent-claude-sdk-runner and @ax/channel-web), and @ax/user-files-read (the one realpath-confined reader for an agent durable user-files subtree, shared by both sandbox providers)',
-            },
+            crossPluginImports,
           ],
         },
       ],
