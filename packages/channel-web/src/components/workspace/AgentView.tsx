@@ -97,7 +97,7 @@ interface Props {
    * A message the shell already sent on this agent's behalf (the home
    * composer). We stream its reply as soon as we mount.
    */
-  pendingReply?: { reqId: string; text: string } | null;
+  pendingReply?: { reqId: string; text: string; conversationId: string } | null;
   onPendingReplyConsumed?: () => void;
 }
 
@@ -427,6 +427,16 @@ export function AgentView({
     if (!pendingReply) return;
     if (consumedReqId.current === pendingReply.reqId) return;
     consumedReqId.current = pendingReply.reqId;
+    /*
+      Adopt the conversation the send created, BEFORE streaming it.
+
+      `load()` sets this ref too, but it races: this effect streams as soon as
+      the view mounts, and a `permissionRequest` frame arriving first would be
+      stored with no conversation and could never be answered — the decision
+      route requires one. The composer already knew the id; carrying it is
+      cheaper and more certain than re-deriving it (TASK-350 review).
+    */
+    conversationRef.current = pendingReply.conversationId;
     setSent(pendingReply.text);
     onPendingReplyConsumed?.();
     void streamFrom(pendingReply.reqId);

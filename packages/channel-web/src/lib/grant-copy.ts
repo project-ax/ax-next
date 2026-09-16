@@ -60,11 +60,21 @@ export const SLOT_HINT = 'Add the key above to continue';
  * raised it, and `/api/chat/permission-decision` cannot be posted without one.
  *
  * Without this the button was simply dead with no explanation — a control that
- * cannot work and does not say so, which is the failure `hideClose` exists to
- * prevent elsewhere in this product.
+ * cannot work and does not say so, which is the failure `hideClose`
+ * (`components/ui/dialog.tsx`) exists to prevent elsewhere in this product.
+ *
+ * THE ADVICE HAS TO BE THE ACTION THAT WORKS. This first said "Open the agent
+ * and try again", which is wrong in a way that would have wasted someone's
+ * time: opening the agent sets the ref for FUTURE frames but does not heal the
+ * row already sitting in the queue with no conversation on it. Only a re-sent
+ * turn raises a fresh frame, which replaces the row in place with the id now
+ * set. The common cause of this state is fixed at the source — `pendingReply`
+ * now carries the conversation the send created — so this is the residual race,
+ * and the sentence points at the one thing that resolves it.
  */
 export const GRANT_NO_CONVERSATION =
-  'We could not tell which conversation this came from. Open the agent and try again.';
+  'We could not tell which conversation this came from. Send your message ' +
+  'again and the agent will ask a second time.';
 
 /**
  * Lead-in for the host list. A bare list of hostnames asks the reader to work

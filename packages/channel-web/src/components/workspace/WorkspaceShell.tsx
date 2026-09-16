@@ -246,6 +246,13 @@ function Inner({ onOpenAdminSettings }: WorkspaceShellProps) {
     agentId: string;
     reqId: string;
     text: string;
+    /**
+     * The conversation the send created. Carried rather than re-derived: the
+     * agent view streams this turn BEFORE its own read resolves, so without
+     * this it has no conversation to attribute the turn to — and a capability
+     * grant raised on it would arrive unanswerable (TASK-350 review).
+     */
+    conversationId: string;
   } | null>(null);
 
   useEffect(() => {
@@ -376,12 +383,12 @@ function Inner({ onOpenAdminSettings }: WorkspaceShellProps) {
               <HomeComposer
                 agents={board.agents}
                 onSend={async (agentId, text) => {
-                  const { reqId } = await workspaceApi.sendMessage({
+                  const { reqId, conversationId } = await workspaceApi.sendMessage({
                     agentId,
                     conversationId: null,
                     text,
                   });
-                  setPendingReply({ agentId, reqId, text });
+                  setPendingReply({ agentId, reqId, text, conversationId });
                   navigate({ kind: 'agent', id: agentId, tab: 'chat' });
                 }}
               />
@@ -460,7 +467,11 @@ function Inner({ onOpenAdminSettings }: WorkspaceShellProps) {
               version={version}
               pendingReply={
                 pendingReply && pendingReply.agentId === route.id
-                  ? { reqId: pendingReply.reqId, text: pendingReply.text }
+                  ? {
+                      reqId: pendingReply.reqId,
+                      text: pendingReply.text,
+                      conversationId: pendingReply.conversationId,
+                    }
                   : null
               }
               onPendingReplyConsumed={() => setPendingReply(null)}

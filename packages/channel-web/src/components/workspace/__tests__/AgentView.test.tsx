@@ -743,3 +743,48 @@ describe('an agent that asks for a capability mid-turn', () => {
     expect(screen.queryByText(/didn’t finish/)).toBeNull();
   });
 });
+
+/*
+  TASK-350 review — the pending-reply path must tag its grant with a real
+  conversation.
+
+  This is the race that made `GRANT_NO_CONVERSATION` reachable. The home
+  composer sends, the shell navigates to the agent, and `AgentView` streams the
+  reply BEFORE its own `load()` resolves. A `permissionRequest` arriving in that
+  window used to be stored with `conversationId: null` — and a grant with no
+  conversation cannot be answered at all, because the decision route requires
+  one. The composer knew the id the whole time; the shell was dropping it.
+*/
+describe('a grant raised on a pending reply', () => {
+  it('is tagged with the conversation the send created, not null', async () => {
+    workspaceGrantActions.resetForTest();
+    // `agent()` never resolves: this pins the state BEFORE the view's own read
+    // lands, which is the only window the bug lived in.
+    agentMock.mockImplementation(() => new Promise(() => {}));
+    streamMock.mockImplementation(
+      async (
+        _reqId: string,
+        h: { onPermissionRequest?: (r: PermissionRequest) => void },
+      ) => {
+        h.onPermissionRequest?.({
+          kind: 'skill',
+          skillId: 'linear',
+          description: '',
+          hosts: [],
+          slots: [],
+        });
+      },
+    );
+
+    renderView({
+      pendingReply: { reqId: 'r-1', text: 'go', conversationId: 'c-from-send' },
+    });
+
+    await waitFor(() =>
+      expect(getWorkspaceGrantSnapshot().grants).toHaveLength(1),
+    );
+    expect(getWorkspaceGrantSnapshot().grants[0]?.conversationId).toBe(
+      'c-from-send',
+    );
+  });
+});
