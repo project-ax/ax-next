@@ -8,7 +8,9 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  activeMatch,
   buildFindIndex,
+  findFieldKey,
   findRanges,
   threadFindFields,
 } from '@/lib/thread-find';
@@ -77,7 +79,11 @@ const thread: ThreadMessage[] = [
 
 describe('threadFindFields', () => {
   it('reads user and agent turns, and the fold marker', () => {
-    expect(threadFindFields(thread).map((f) => f.key)).toEqual(['u1', 'a1', 'f1']);
+    expect(threadFindFields(thread).map((f) => f.key)).toEqual([
+      findFieldKey(0, 'u1'),
+      findFieldKey(1, 'a1'),
+      findFieldKey(4, 'f1'),
+    ]);
   });
 
   it('skips the transient status placeholder', () => {
@@ -87,7 +93,9 @@ describe('threadFindFields', () => {
   });
 
   it('skips approval cards, whose words live in the decisions queue', () => {
-    expect(threadFindFields(thread).some((f) => f.key === 'p1')).toBe(false);
+    expect(
+      threadFindFields(thread).some((f) => f.key.endsWith(':p1')),
+    ).toBe(false);
   });
 
   it('reads a steps turn’s bubble text but not its collapsible detail', () => {
@@ -102,7 +110,7 @@ describe('threadFindFields', () => {
       },
     ];
     expect(threadFindFields(withSteps)).toEqual([
-      { key: 's1', text: 'here is what I did' },
+      { key: findFieldKey(0, 's1'), text: 'here is what I did' },
     ]);
   });
 });
@@ -116,9 +124,9 @@ describe('buildFindIndex', () => {
 
   it('numbers each field from where its first match falls in the whole thread', () => {
     const { firstMatch } = buildFindIndex(thread, 'deploy');
-    expect(firstMatch.get('u1')).toBe(0);
-    expect(firstMatch.get('a1')).toBe(1);
-    expect(firstMatch.has('f1')).toBe(false);
+    expect(firstMatch.get(findFieldKey(0, 'u1'))).toBe(0);
+    expect(firstMatch.get(findFieldKey(1, 'a1'))).toBe(1);
+    expect(firstMatch.has(findFieldKey(4, 'f1'))).toBe(false);
   });
 
   it('reports nothing for a blank query', () => {
@@ -130,5 +138,54 @@ describe('buildFindIndex', () => {
     const idx = buildFindIndex(thread, 'kubernetes');
     expect(idx.total).toBe(0);
     expect(idx.firstMatch.size).toBe(0);
+  });
+
+  it('keeps two turns apart even when they carry the same id', () => {
+    /*
+      The whole count-cannot-drift-from-the-marks argument needs every field to
+      have its own key. Ids are unique today, but that invariant lives in four
+      other files; keying by POSITION as well makes it unbreakable from here.
+      With ids alone, the second row would overwrite the first in `firstMatch`,
+      both turns would number their marks from the same base, and the thread
+      could show two "current" matches or none.
+    */
+    const collided: ThreadMessage[] = [
+      { kind: 'user', id: 'same', text: 'deploy once' },
+      { kind: 'agent', id: 'same', text: 'deploy twice deploy', time: '4:12 PM' },
+    ];
+    const { total, firstMatch } = buildFindIndex(collided, 'deploy');
+    expect(total).toBe(3);
+    expect(firstMatch.size).toBe(2);
+    expect(firstMatch.get(findFieldKey(0, 'same'))).toBe(0);
+    expect(firstMatch.get(findFieldKey(1, 'same'))).toBe(1);
+  });
+});
+
+describe('activeMatch', () => {
+  /*
+    `findStep` is a free-running signed counter the bar bumps on next/prev, so
+    it runs off both ends and can outlive the total it was counting against —
+    a streaming reply changes the thread under an open bar. Wrapping here is
+    what stops "next" at the last match dead-ending on a button that has
+    stopped working.
+  */
+  it('wraps off the end and off the front', () => {
+    expect(activeMatch(0, 3)).toBe(0);
+    expect(activeMatch(2, 3)).toBe(2);
+    expect(activeMatch(3, 3)).toBe(0);
+    expect(activeMatch(-1, 3)).toBe(2);
+    expect(activeMatch(-4, 3)).toBe(2);
+  });
+
+  it('stays inside a total that shrank underneath it', () => {
+    // The bar must never print "6 of 3": `active` is always in [0, total).
+    expect(activeMatch(5, 3)).toBe(2);
+    expect(activeMatch(97, 4)).toBe(1);
+  });
+
+  it('says there is nowhere to stand when nothing matched', () => {
+    expect(activeMatch(0, 0)).toBe(-1);
+    expect(activeMatch(7, 0)).toBe(-1);
+    expect(activeMatch(-7, 0)).toBe(-1);
   });
 });

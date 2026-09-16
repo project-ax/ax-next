@@ -15,7 +15,12 @@ import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { signInWithGoogle } from '@/lib/auth';
 import { readAlertVariant } from '@/lib/read-register';
-import { activeMatch, buildFindIndex, threadFindFields } from '@/lib/thread-find';
+import {
+  activeMatch,
+  buildFindIndex,
+  findFieldKey,
+  threadFindFields,
+} from '@/lib/thread-find';
 import { isOpenDecision } from '@/lib/workspace-types';
 import type {
   Decision,
@@ -169,15 +174,31 @@ export function AgentConversation({
       would strand highlights on screen with nothing left to explain them or
       take them off again.
 
-      Focus goes back to the toggle, which is why the toggle stays mounted
-      while the bar is open: the element we restore to has to still exist when
-      we get here. Same failure `use-opener-restore.ts` documents for dialogs —
-      the restore is a silent no-op and the keyboard user lands on `<body>`.
+      WHERE FOCUS GOES, and why it is not simply "the toggle". Normally it is:
+      the toggle stays mounted while the bar is open precisely so the element
+      we restore to still exists when we get here.
+
+      But this component is mounted ONCE and un-keyed — `AgentView` swaps its
+      `thread` prop between the live conversation and a read-only excerpt — so
+      find state outlives a thread change. Open find, click a past conversation
+      in the rail, and while its excerpt is loading (a lone `status`
+      placeholder) or after that read fails (`[]`), the pane holds nothing
+      searchable. The toolbar is still up only because the open bar holds it
+      there, so closing takes the TOGGLE down in the same commit and the focus
+      call lands on a detached node: the keyboard user is dropped on `<body>`
+      at the top of the document.
+
+      That is exactly the silent restore-to-nothing that
+      `use-opener-restore.ts` was written to fix for dialogs, and a comment
+      claiming immunity from it is not immunity. So when the toggle is not
+      going to survive, focus goes to the transcript itself — always rendered,
+      and the place the reader was already looking.
     */
     setFindOpen(false);
     setFindQuery('');
     setFindStep(0);
-    findToggleRef.current?.focus();
+    if (searchable) findToggleRef.current?.focus();
+    else scrollRef.current?.focus();
   };
 
   // Walk the reader to the match they asked for. Queried out of the DOM rather
@@ -224,11 +245,23 @@ export function AgentConversation({
           )}
         </div>
       )}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-6">
+      {/*
+        `tabIndex={-1}` makes the transcript focusable BY CODE without putting
+        it in the tab order — the standard landing spot when a control that had
+        focus is about to unmount (see `closeFind`). The reader's next Tab then
+        continues from the conversation instead of from the top of the page.
+      */}
+      <div
+        ref={scrollRef}
+        tabIndex={-1}
+        data-conversation-transcript=""
+        className="flex-1 overflow-y-auto px-6 py-6 outline-none"
+      >
         <div className="flex max-w-[720px] flex-col gap-5">
-          {thread.map((m) => (
+          {thread.map((m, i) => (
             <Message
               key={m.id}
+              fieldKey={findFieldKey(i, m.id)}
               m={m}
               agent={agent}
               decisions={decisions}
@@ -363,6 +396,7 @@ function Message({
   busyIds,
   notices,
   find,
+  fieldKey,
 }: {
   m: ThreadMessage;
   agent: WorkspaceAgent;
@@ -374,12 +408,18 @@ function Message({
   notices?: ReadonlyMap<string, string>;
   /** Null whenever find is shut or its field is blank — see `ThreadFind`. */
   find: FindView | null;
+  /**
+   * What the find index calls this message's text. Handed DOWN rather than
+   * derived here, because it carries the message's position in the thread and
+   * only the caller doing the mapping knows that — see `findFieldKey`.
+   */
+  fieldKey: string;
 }) {
   if (m.kind === 'user') {
     return (
       <div className="flex justify-end">
         <div className="max-w-[80%] rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[13.5px] leading-relaxed text-primary-foreground">
-          <FindHighlight fieldKey={m.id} text={m.text} find={find} />
+          <FindHighlight fieldKey={fieldKey} text={m.text} find={find} />
         </div>
       </div>
     );
@@ -391,7 +431,7 @@ function Message({
         <Separator className="flex-1" />
         <span className="flex shrink-0 items-center gap-1.5 text-[11.5px] text-muted-foreground">
           <Layers size={11} />
-          <FindHighlight fieldKey={m.id} text={m.text} find={find} />
+          <FindHighlight fieldKey={fieldKey} text={m.text} find={find} />
         </span>
         <Separator className="flex-1" />
       </div>
@@ -450,7 +490,7 @@ function Message({
       <AgentTile agent={agent} />
       <div className="min-w-0 flex-1">
         <div className="max-w-[600px] text-[13.5px] leading-relaxed text-pretty">
-          <FindHighlight fieldKey={m.id} text={m.text} find={find} />
+          <FindHighlight fieldKey={fieldKey} text={m.text} find={find} />
         </div>
         {m.kind === 'steps' && <Steps label={m.stepsLabel} steps={m.steps} />}
         <div className="mt-1.5 text-[11.5px] text-muted-foreground">{m.time}</div>

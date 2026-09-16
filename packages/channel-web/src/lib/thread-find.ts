@@ -51,8 +51,15 @@ export interface FindRange {
  * offsets found in the copy would point one character to the left of the truth
  * in the original for every match after it, and the highlight would land on the
  * wrong letters. When the copy's length differs we fall back to a
- * case-SENSITIVE scan of the original, which is a smaller wrong (a missed match
- * in a rare message) than a confidently misplaced highlight.
+ * case-SENSITIVE scan of the original, which is a smaller wrong than a
+ * confidently misplaced highlight.
+ *
+ * Be honest about the size of that smaller wrong: the fallback drops case
+ * insensitivity for the WHOLE message, not just around the offending character.
+ * One 'İ' anywhere in a turn makes every search of that turn case-sensitive,
+ * which can silently miss a match the reader can see. Both lengths are checked
+ * because only an expanding needle and an expanding haystack together could
+ * cancel out — no known mapping CONTRACTS, so this is belt and braces.
  */
 export function findRanges(haystack: string, needle: string): FindRange[] {
   const out: FindRange[] = [];
@@ -81,6 +88,26 @@ export interface FindField {
 }
 
 /**
+ * The key a rendered message and the index agree to call the same field by.
+ *
+ * It carries the message's POSITION as well as its id, and the position is the
+ * load-bearing half. The whole count-cannot-drift-from-the-marks argument rests
+ * on every field having a distinct key: if two messages shared one, the later
+ * `firstMatch.set` would overwrite the earlier, both renderers would number
+ * their marks from the second base, and the thread could show two "current"
+ * matches or none while the bar reported a total that fits neither.
+ *
+ * Ids ARE unique today — the server's are turn ids, and the client's handful of
+ * transient ones (`pending-user`, `pending-agent`, `pending-status`,
+ * `past-loading`) are distinct constants. But that is an invariant held in four
+ * other files, and this module's one job is to not depend on invariants it
+ * cannot see. Position is unique by construction.
+ */
+export function findFieldKey(index: number, id: string): string {
+  return `${index}:${id}`;
+}
+
+/**
  * The text of the thread that a reader can actually see, in render order.
  *
  * WHAT IS IN: `user` and `agent` turns — in production these are the only two
@@ -98,25 +125,33 @@ export interface FindField {
  *     from the GLOBAL decisions queue, which is a separate fetch, and a pointer
  *     whose row has not arrived renders nothing at all. A count that included
  *     them would change when an unrelated read landed.
- *   - a `steps` turn's `stepsLabel` and `steps[]` — that panel collapses. A
- *     count that includes text the reader cannot see sends them hunting for a
- *     match that is not on the screen.
+ *
+ *     STATE THE COST PLAINLY: an approval card DOES render visible prose (the
+ *     decision's summary), so a reader looking at "Deploy the site?" on a card
+ *     and searching "deploy" is told "No matches" about text on their own
+ *     screen. That is a real limitation, accepted because the alternative is a
+ *     count that moves on its own. If it starts to bite, the fix is to make the
+ *     queue read part of this thread's read, not to reach into `decisions` from
+ *     here.
+ *   - a `steps` turn's `stepsLabel` and `steps[]` — that panel is COLLAPSIBLE
+ *     (it renders open and the reader can shut it), so a count including it can
+ *     name a match that is not on the screen at the moment it is counted.
  */
 export function threadFindFields(thread: readonly ThreadMessage[]): FindField[] {
   const out: FindField[] = [];
-  for (const m of thread) {
+  thread.forEach((m, index) => {
     switch (m.kind) {
       case 'user':
       case 'agent':
       case 'steps':
       case 'fold':
-        out.push({ key: m.id, text: m.text });
+        out.push({ key: findFieldKey(index, m.id), text: m.text });
         break;
       case 'status':
       case 'approval':
         break;
     }
-  }
+  });
   return out;
 }
 

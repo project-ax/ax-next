@@ -46,10 +46,10 @@ const thread: ThreadMessage[] = [
   { kind: 'agent', id: 'a2', text: QUIET_LINE, time: '4:13 PM' },
 ];
 
-function renderConversation(
+function conversation(
   over: Partial<ComponentProps<typeof AgentConversation>> = {},
 ) {
-  return render(
+  return (
     <AgentConversation
       agent={quill}
       thread={thread}
@@ -62,8 +62,14 @@ function renderConversation(
       approvalRead="ok"
       onRetryApprovals={vi.fn()}
       {...over}
-    />,
+    />
   );
+}
+
+function renderConversation(
+  over: Partial<ComponentProps<typeof AgentConversation>> = {},
+) {
+  return render(conversation(over));
 }
 
 const findButton = (): HTMLElement =>
@@ -179,11 +185,11 @@ describe('finding something in an agent thread', () => {
         .querySelector('mark[data-find-active="true"]')
         ?.getAttribute('data-find-field') ?? null;
 
-    expect(active()).toBe('u1');
+    expect(active()).toBe('0:u1');
     fireEvent.click(
       within(findBar()).getByRole('button', { name: 'Next match' }),
     );
-    expect(active()).toBe('a1');
+    expect(active()).toBe('1:a1');
     // Exactly one at a time — two "current" marks is no current mark.
     expect(
       container.querySelectorAll('mark[data-find-active="true"]'),
@@ -231,11 +237,45 @@ describe('finding something in an agent thread', () => {
     expect(screen.queryByRole('button', { name: 'Find' })).toBeNull();
   });
 
-  it('offers find on a read-only past conversation too', () => {
-    // "Three weeks ago" is mostly a PAST conversation, so the excerpt is the
-    // case this card exists for.
-    renderConversation({ readOnly: true });
-    expect(findButton()).toBeTruthy();
+  it('finds in a read-only past conversation, not just offers to', () => {
+    /*
+      "Three weeks ago" is mostly a PAST conversation, so the excerpt is the
+      case this card exists for. Asserting only that the button renders would
+      pass against a build where find was wired to the live thread alone, so
+      this runs a real query through it.
+    */
+    const { container } = renderConversation({ readOnly: true });
+    openFind();
+    type('deploy');
+    expect(count()).toHaveTextContent('1 of 3');
+    expect(container.querySelectorAll('mark')).toHaveLength(3);
+  });
+
+  it('does not drop focus on the document when the thread it searched goes away', () => {
+    /*
+      `AgentConversation` is mounted ONCE and un-keyed (`AgentView` swaps its
+      `thread` prop between the live conversation and a past excerpt), so find
+      state outlives a thread change. Open find on a real thread, click a past
+      conversation in the rail, and while its excerpt is loading — or after the
+      read fails — the pane holds no searchable turns at all.
+
+      The toolbar is still up, because the open bar holds it there. But the
+      moment the bar closes, the toggle Escape is supposed to hand focus back
+      to goes with it, and a keyboard user is dropped on `<body>` at the top of
+      the document. That is the same silent failure `use-opener-restore.ts` was
+      written to fix, and it breaks the card's fourth acceptance line.
+    */
+    const { rerender, container } = renderConversation();
+    const box = openFind();
+    type('deploy');
+
+    rerender(conversation({ thread: [], readOnly: true }));
+    fireEvent.keyDown(box, { key: 'Escape' });
+
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(
+      container.querySelector('[data-conversation-transcript]'),
+    );
   });
 
   it('does not count the words on an approval card', () => {
@@ -276,14 +316,14 @@ describe('finding something in an agent thread', () => {
     expect(count()).toHaveTextContent('1 of 1');
   });
 
-  it('keeps the composer usable while the bar is open', () => {
-    // The find bar is a reader's tool, not a modal. Typing into it must not
-    // quiet the thing the user came here to do.
-    renderConversation();
-    openFind();
-    type('deploy');
-    expect(screen.getByPlaceholderText('Message Quill')).not.toBeDisabled();
-  });
+  /*
+    There is deliberately NO "keeps the composer usable while the bar is open"
+    test here. It was written and then removed: the composer's `disabled` is
+    `busy || held`, neither of which find touches, so on this fixture it can
+    never be disabled and the assertion would have passed against a find
+    implementation that was completely broken. A test that cannot fail pins
+    nothing and reads as coverage.
+  */
 
   it('wires the toggle to the bar it opens', () => {
     renderConversation();
