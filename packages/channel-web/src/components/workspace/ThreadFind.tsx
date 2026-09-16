@@ -107,31 +107,33 @@ export function ThreadFindBar({
       />
 
       {/*
-        The count only exists once there is a query to count. Rendering "0
-        matches" over an untouched field would answer a question nobody asked.
+        The count says nothing until there is a query to count — "0 matches"
+        over an untouched field answers a question nobody asked. But the NODE is
+        always here, emptied rather than unmounted: a live region that is
+        inserted into the DOM already holding its message is not reliably
+        announced, because the assistive tech has nothing to have observed
+        changing. Present-and-empty is the same shape the composer's approval
+        announcer below uses, for the same reason.
 
-        `role="status"` + `aria-live="polite"` so the answer reaches a screen
-        reader without stealing focus from the field they are still typing in.
-        The visible text is the idiom people know from every other find bar; the
-        `sr-only` word after it is what turns "1 of 3" into a sentence when
-        there is no bar to look at.
+        `aria-live="polite"` so the answer reaches a screen reader without
+        interrupting the field they are still typing in. The visible text is the
+        idiom people know from every other find bar; the `sr-only` word after it
+        is what turns "1 of 3" into a sentence when there is no bar to look at.
       */}
-      {searching && (
-        <span
-          role="status"
-          aria-live="polite"
-          className="shrink-0 whitespace-nowrap text-[12px] tabular-nums text-muted-foreground"
-        >
-          {total === 0 ? (
-            'No matches'
-          ) : (
-            <>
-              {active + 1} of {total}
-              <span className="sr-only"> matches</span>
-            </>
-          )}
-        </span>
-      )}
+      <span
+        role="status"
+        aria-live="polite"
+        className="shrink-0 whitespace-nowrap text-[12px] tabular-nums text-muted-foreground"
+      >
+        {!searching ? null : total === 0 ? (
+          'No matches'
+        ) : (
+          <>
+            {active + 1} of {total}
+            <span className="sr-only"> matches</span>
+          </>
+        )}
+      </span>
 
       {/*
         Disabled rather than hidden when there is nowhere to go: a control that

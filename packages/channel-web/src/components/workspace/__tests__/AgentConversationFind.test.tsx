@@ -139,7 +139,9 @@ describe('finding something in an agent thread', () => {
 
     type('');
     expect(container.querySelectorAll('mark')).toHaveLength(0);
-    expect(within(findBar()).queryByRole('status')).toBeNull();
+    // The live region stays mounted (it has to, to be announced at all) and
+    // goes SILENT — no "0 matches" over a field nobody has typed in.
+    expect(count().textContent).toBe('');
     expect(screen.getByText(USER_LINE)).toBeTruthy();
     expect(screen.getByText(AGENT_LINE)).toBeTruthy();
     expect(screen.getByText(QUIET_LINE)).toBeTruthy();
