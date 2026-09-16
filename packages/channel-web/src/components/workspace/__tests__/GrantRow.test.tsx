@@ -64,6 +64,75 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe('a payload the guard lets through but the row must survive', () => {
+  /*
+    `isRenderableGrant` deliberately does not require `description` or
+    `packages`: neither decides whether the question can be ANSWERED, and
+    refusing a grant over one would trade a plain-looking row for a question
+    that silently never gets asked. That trade is only honest if the row
+    actually tolerates their absence — and it did not.
+
+    Both of these threw `TypeError` during render. The workspace
+    `ErrorBoundary` catches the throw, which makes it look survivable, but it
+    is scoped to the whole surface: ONE such row took every other legible grant
+    AND every decision down with it. That is the exact failure the shape guard
+    beside it exists to prevent, still reachable through the fields the guard
+    was told it could skip.
+
+    Caught in review, not by these tests — the first version of the guard's
+    comment asserted "a missing description renders a shabby row, never a
+    throw", which was simply false. The rule worth keeping: a guard may only
+    leave a field out if the renderer is known to tolerate its absence. Check
+    it; do not infer it from the field sounding decorative.
+  */
+
+  test('a skill with no description renders the row instead of throwing', () => {
+    const noDescription = {
+      kind: 'skill',
+      skillId: 'linear-issues',
+      hosts: ['api.linear.app'],
+      slots: [{ slot: 'api_key', kind: 'api-key' }],
+    } as unknown as PermissionRequest;
+
+    row(noDescription);
+
+    // The row is fully there and fully answerable — not merely "did not throw".
+    expect(screen.getByText('Connect Linear issues')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^connect$/i })).toBeTruthy();
+    expect(screen.getByText(GRANT_REASSURANCE)).toBeTruthy();
+  });
+
+  test('a half-filled packages list renders the row instead of throwing', () => {
+    // `npm` and `pypi` are both required when `packages` is present, so this
+    // is off-type — which is precisely why only the wire can produce it, and
+    // why the type system was never going to catch it here.
+    const halfPackages = {
+      ...skillReq,
+      packages: { pypi: ['requests'] },
+    } as unknown as PermissionRequest;
+
+    row(halfPackages);
+
+    expect(screen.getByText('Connect Linear issues')).toBeTruthy();
+    // The one list that IS there still counts: the line appears rather than
+    // being quietly dropped along with the crash.
+    expect(screen.getByTestId('grant-packages')).toBeTruthy();
+  });
+
+  test('an empty packages list still draws no packages line', () => {
+    // The positive control for the case above: `(x?.length ?? 0) > 0` must not
+    // become "packages is present, so say so".
+    const emptyPackages = {
+      ...skillReq,
+      packages: { npm: [], pypi: [] },
+    } as unknown as PermissionRequest;
+
+    row(emptyPackages);
+
+    expect(screen.queryByTestId('grant-packages')).toBeNull();
+  });
+});
+
 describe('a skill grant', () => {
   test('asks in English, and says where the key goes before asking for it', async () => {
     row(skillReq);

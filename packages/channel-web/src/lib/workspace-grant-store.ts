@@ -147,12 +147,21 @@ function hasIterableReach(r: Record<string, unknown>): boolean {
  *
  * WHERE THE LINE IS DRAWN, and why it is not "validate the whole type". This
  * checks the discriminant, the id that BECOMES THE KEY, and the two collections
- * `GrantRow` ITERATES (`hosts`, `slots`) — the fields whose absence throws
- * rather than merely reads oddly. `description`, `name` and `sessionId` are
- * required by the type and are NOT checked here: a missing one renders a
- * shabby row, and dropping an answerable grant over a cosmetic field would be a
- * worse trade than showing it. Being stricter than the crash surface turns a
- * blemish into a silently missing question.
+ * without which there is no answerable row left to draw (`hosts`, `slots`).
+ * `description`, `name`, `sessionId` and `packages` are required-or-optional by
+ * the type and are NOT checked: none of them decides whether the question can
+ * be ANSWERED, so refusing a grant over one would trade a plain-looking row for
+ * a question that silently never gets asked.
+ *
+ * That trade is only honest because the RENDER SITE holds up its end. Review
+ * caught the first draft of this comment claiming `description` was cosmetic
+ * when `GrantRow` was reading `description.length` unguarded — so a missing one
+ * threw exactly as hard as a missing `hosts`, and the "shabby row" this
+ * paragraph promised did not exist. The fix went there, not here (`?? ''` at
+ * the two dereferences, `description` and `packages.npm`/`pypi`), which is what
+ * makes the sentence true. The rule to carry forward: **a guard may only leave
+ * a field out if the renderer actually tolerates its absence — check that, do
+ * not assume it from the field sounding decorative.**
  *
  * Deliberately returns `boolean` and not `request is PermissionRequest`: it
  * does not check every field of that type, and a predicate that says it did
@@ -223,11 +232,18 @@ export const workspaceGrantActions = {
    * and every other transition goes through.
    */
   raise(request: PermissionRequest, origin: GrantOrigin): void {
-    // A kind this build cannot key or draw. Dropped, loudly enough for whoever
-    // is debugging a version skew — see `isRenderableGrant`. The person sees
-    // one fewer row rather than a workspace that will not render.
+    // Something this build cannot key or draw. Dropped, loudly enough for
+    // whoever is debugging a version skew — see `isRenderableGrant`. The person
+    // sees one fewer row rather than a workspace that will not render.
+    //
+    // The `kind` goes in the log because it is the one fact that makes the
+    // warning actionable, and it is safe to log: a public discriminant, never a
+    // secret. The rest of the payload stays out — a rejected grant is exactly
+    // the payload we have decided we do not understand.
     if (!isRenderableGrant(request)) {
-      console.warn('[workspace] a grant arrived in a kind this build cannot draw');
+      console.warn('[workspace] dropping a grant this build cannot draw', {
+        kind: (request as { kind?: unknown }).kind,
+      });
       return;
     }
     if (

@@ -241,12 +241,24 @@ describe('raise — a kind this build cannot draw', () => {
     expect(isRenderableGrant({ kind: 'host' })).toBe(false);
   });
 
-  test('isRenderableGrant is no stricter than the crash surface', () => {
+  test('isRenderableGrant lets through what the ROW is known to tolerate', () => {
     /*
-      `description`, `name` and `sessionId` are required by the type and are
-      NOT required here, on purpose: a missing one renders a shabby row, never
-      a throw. Dropping an answerable grant over a cosmetic field would trade a
-      blemish for a silently missing question — the worse of the two.
+      `description`, `name`, `sessionId` and `packages` are not required here,
+      on purpose: none of them decides whether the question can be ANSWERED, so
+      refusing a grant over one would trade a plain-looking row for a question
+      that silently never gets asked.
+
+      THE FIRST VERSION OF THIS TEST WAS A LIE, and it is worth the paragraph.
+      It said a missing `description` "renders a shabby row, never a throw" —
+      but `GrantRow` was reading `description.length` unguarded, so it threw
+      exactly as hard as a missing `hosts` and buried the same surface. Review
+      caught it. The fix went to the RENDER SITE (`GrantRow.tsx`, with its own
+      regression tests) rather than to this guard, which is what makes the
+      sentence above true and keeps the answerable grant.
+
+      So this assertion is only meaningful next to those: a guard may leave a
+      field out ONLY if the renderer is known to tolerate its absence. Check
+      it; never infer it from the field sounding decorative.
     */
     expect(
       isRenderableGrant({ kind: 'skill', skillId: 'linear', hosts: [], slots: [] }),

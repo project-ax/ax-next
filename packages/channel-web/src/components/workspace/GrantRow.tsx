@@ -198,7 +198,28 @@ export function GrantRow({ grant, onResolved }: Props): ReactElement {
       : `Connect ${humanizeId(request.skillId)}`;
   const authoredWarning =
     request.kind === 'connector' ? AUTHORED_CONNECTOR_WARNING : AUTHORED_SKILL_WARNING;
-  const description = request.kind === 'skill' ? request.description : '';
+  /*
+    THE FALLBACK IS LOAD-BEARING, not defensive noise. `description` is typed
+    `string` and required, and the JSX below asks it for `.length` — so a
+    payload that omits it threw `TypeError` here, the workspace
+    `ErrorBoundary` caught it, and ONE such row buried every other legible
+    grant and decision on the surface with it.
+
+    Coalescing rather than validating at the wire is the deliberate choice:
+    a description is how the card reads, not whether it can be ANSWERED, and
+    refusing the grant over it would trade a plain-looking row for a question
+    that silently never gets asked. `hosts` and `slots` get the opposite
+    treatment in `isRenderableGrant` precisely because without them there is
+    no answerable row left to draw.
+
+    `typeof` rather than a bare `??` so a non-string survives too: this value
+    is also rendered as a React child, and an object with a truthy `.length`
+    would throw again one line further down.
+  */
+  const description =
+    request.kind === 'skill' && typeof request.description === 'string'
+      ? request.description
+      : '';
   const packages = request.packages;
 
   return (
@@ -261,11 +282,19 @@ export function GrantRow({ grant, onResolved }: Props): ReactElement {
         ),
       )}
 
-      {packages != null && (packages.npm.length > 0 || packages.pypi.length > 0) && (
-        <p className="mt-3 text-[13px] text-muted-foreground" data-testid="grant-packages">
-          {PACKAGES_LINE}
-        </p>
-      )}
+      {/*
+        Same shape of bug as `description` above, one field over: `npm` and
+        `pypi` are both required when `packages` is present, so a payload
+        carrying only one of them threw on the other's `.length`. The click
+        handler was already reading them as `packages?.npm ?? []`; this is
+        the render site catching up with it.
+      */}
+      {packages != null &&
+        ((packages.npm?.length ?? 0) > 0 || (packages.pypi?.length ?? 0) > 0) && (
+          <p className="mt-3 text-[13px] text-muted-foreground" data-testid="grant-packages">
+            {PACKAGES_LINE}
+          </p>
+        )}
 
       <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
         {GRANT_REASSURANCE}
