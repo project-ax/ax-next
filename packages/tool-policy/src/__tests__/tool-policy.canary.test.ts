@@ -87,18 +87,52 @@ describe('tool-policy canary', () => {
       h.ctx(),
       { agentId: 'a1' },
     );
+    /*
+      `effect` (TASK-329) is declared PER RULE, so the key is present on some
+      rows and absent on others, and the expected key list is DERIVED from the
+      live table rather than fixed.
+
+      That derivation is the point, not a weakening. A `z.object` STRIPS what
+      it does not declare, so this loop — which goes through the real `returns`
+      parse — is the only thing standing between `effect` and vanishing
+      silently on the way out of the bus, and the rail would render no
+      disclosure with every unit test on the row object still green. A
+      hard-coded list could not express it: it would have to either demand the
+      key on rows whose rule declares nothing or forbid it on the rows that
+      carry one.
+    */
+    const declaredEffect = new Map(BUILTIN_RULES.map((r) => [`rule:${r.id}`, r.effect]));
+    const BASE_KEYS = [
+      'capability',
+      'conditional',
+      'described',
+      'provenance',
+      'source',
+      'verdict',
+    ];
     for (const row of caps.rows) {
-      expect(Object.keys(row).sort()).toEqual(
-        [
-          'capability',
-          'conditional',
-          'described',
-          'provenance',
-          'source',
-          'verdict',
-        ].sort(),
+      const effect = declaredEffect.get(row.source);
+      expect(Object.keys(row).sort(), row.source).toEqual(
+        [...BASE_KEYS, ...(effect === undefined ? [] : ['effect'])].sort(),
       );
+      // The VALUE crossed too, not just the key — this is the assertion that
+      // reddens if `effect` is dropped from `CapabilityRowSchema`.
+      expect(row.effect, row.source).toBe(effect);
     }
+    /*
+      NON-VACUITY GUARD. Everything above passes identically against a schema
+      with no `effect` line IF no effect-bearing row reaches the loop — the
+      branch that expects the key would simply never be taken.
+
+      Asserted on the ROWS, not on `BUILTIN_RULES`. The first version of this
+      guard pinned that the TABLE declares an effect somewhere, which coincides
+      with "a row carrying one arrived" only because this call sends no
+      `outOfReach`. Add a subtraction here that happened to drop the two web
+      rules and a table-level guard would still pass while the loop went quiet
+      again — re-vacuizing silently, which is the whole failure mode this
+      guard exists to prevent. Caught in review.
+    */
+    expect(caps.rows.some((r) => r.effect !== undefined)).toBe(true);
   });
 
   it('carries fullyDescribedTools ACROSS THE BUS, naming every tool an unconditional rule covers', async () => {

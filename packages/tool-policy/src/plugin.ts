@@ -68,6 +68,16 @@ function indexRules(rules: readonly PolicyRule[]): IndexedRow[] {
         // TOOL's vocabulary, not ours. What the reader needs from it is that
         // this row does not apply to every call, and that is a boolean.
         conditional: rule.match.when !== undefined,
+        // Left ABSENT rather than set to `undefined` when the rule declares
+        // nothing — the same shape `theirDescription` / `mechanicalLabel` use
+        // on a built-in row. `exactOptionalPropertyTypes` is on for this
+        // package, so `effect: undefined` and "no `effect` key" are two
+        // different, type-checked things, and "absent" is the one that means
+        // unclassified (see the doc comment on `CapabilityRow.effect`).
+        // Unlike `capability`, this value is copied through UNCHANGED: the
+        // renderer picks its own words for `outward` / `spends`, so there is
+        // nothing here to author, only to carry.
+        ...(rule.effect !== undefined && { effect: rule.effect }),
       } satisfies CapabilityRow,
     }));
 }

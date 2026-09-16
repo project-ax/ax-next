@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { lintCapability } from '../capability-lint.js';
 import { BUILTIN_RULES } from '../rules.js';
+import { capabilityRows } from '../plugin.js';
 
 describe('BUILTIN_RULES', () => {
   it('every rule has a lint-clean capability clause', () => {
@@ -92,6 +93,12 @@ describe('BUILTIN_RULES', () => {
     // check the rail and the undo window (`irreversible`) handle it, the same
     // way the irreversible test below is a tripwire rather than a preference.
     //
+    // TASK-329 ADDED A THIRD THING TO CHECK when that day comes: the rail's
+    // authored `outward` copy in channel-web's `permission-frames.ts` spells
+    // out only the "a third party sees it" half of what `outward` means, not
+    // the "cannot be taken back" half. That file carries the reasoning; this
+    // is the test that sends you to it.
+    //
     // DELIBERATELY STRICTER THAN THE LINT, which permits `outward` + hold/deny.
     // A correctly-held outward rule will red this test even though the shipped
     // enforcement is happy — that is the intent: the first one should stop and
@@ -135,6 +142,71 @@ describe('BUILTIN_RULES', () => {
     );
     for (const rule of BUILTIN_RULES) {
       if (rule.id.startsWith('builtins.')) expect(rule.verdict).toBe('deny');
+    }
+  });
+
+  it('TASK-329: the two spending rules reach the rail rows as effect: spends', () => {
+    // The card's literal complaint ("the rail says 'search the web' without
+    // saying it costs money") asserted end-to-end INSIDE the plugin: build the
+    // real rail rows off the real built-in table, the same way
+    // `tool-policy:list-capabilities` does, and check the two known-spending
+    // rules carry the disclosure a caller could render. `plugin.test.ts`
+    // proves the mechanism (`indexRules()` copies `effect`) with tiny
+    // fixtures; this proves it fires for the actual rules that motivated the
+    // card, via `source`, which is how a caller matches a row back to a rule.
+    const rows = capabilityRows(BUILTIN_RULES);
+    const bySource = new Map(rows.map((r) => [r.source, r]));
+    expect(bySource.get('rule:web.search')?.effect).toBe('spends');
+    expect(bySource.get('rule:web.extract')?.effect).toBe('spends');
+
+    // And the negative: a catalog fact that costs nothing must NOT pick up a
+    // stray effect key. This is what keeps the test about PROPAGATION rather
+    // than "everything on the rail is spends" — if `indexRules()` ever set
+    // `effect` unconditionally, this line would catch it even though the two
+    // assertions above would still pass.
+    const memorySearch = bySource.get('rule:memory.search');
+    expect(memorySearch).toBeDefined();
+    expect('effect' in memorySearch!).toBe(false);
+  });
+
+  it('TASK-329: no CONDITIONAL rule declares an effect — the rail cannot disclose one yet', () => {
+    /*
+      A TRIPWIRE for a gap that is real but not reachable today. Found in
+      review; it is cheaper to fail here than to under-disclose on the rail.
+
+      The rail emits two kinds of row. Described rows come from
+      `tool-policy:list-capabilities` and now carry `effect`. But a tool named
+      ONLY by `when`-predicated rules also gets a MECHANICAL BASE ROW, built
+      by the caller from `evaluate`'s fall-through verdict — and `evaluate`
+      answers `EvaluateResult`, which has no `effect` (deliberately: adding it
+      is a second hook-surface change). So that base row hardcodes no effect
+      and has no rule to read one from.
+
+      Harmless while every effect-bearing rule is unconditional, which is why
+      this is a guard and not a fix: `web.search` and `web.extract` are both
+      unconditional, so they are fully described and never take the mechanical
+      path. The day a CONDITIONAL rule declares `spends` or `outward`, its base
+      row — the one covering every call the predicate misses — would render
+      with no marker while the call still spends the money or acts outward.
+      Understating reach is the one direction design H4 forbids.
+
+      If you are here because this test just went red: you have added exactly
+      that rule, and the fix is to carry `effect` on `EvaluateResult` (and
+      through the caller's base-row builder) rather than to relax this
+      assertion.
+
+      IT EXECUTES ZERO ASSERTIONS TODAY, and that is stated rather than left for
+      the next reader to discover. `BUILTIN_RULES` contains no `when`-predicated
+      rules at all (`grep -c 'when:' rules.ts` → 0), so the `continue` skips
+      every rule and the loop body never runs. Its green is therefore NOT
+      evidence of active coverage — it is a guard armed for a rule shape that
+      does not exist yet. Unlike the canary's key-list loop, this one cannot be
+      made non-vacuous without planting a fake conditional rule in the shipping
+      table, which would be worse: the table is the thing under test.
+    */
+    for (const rule of BUILTIN_RULES) {
+      if (rule.match.when === undefined) continue;
+      expect(rule.effect, rule.id).toBeUndefined();
     }
   });
 

@@ -18,7 +18,7 @@
  * second renderer (a future Slack card, a plain-text digest) would need, and a
  * frame that only exists inside a JSX file is a frame that gets re-invented.
  */
-import type { CapabilityVerdict } from './workspace-types';
+import type { CapabilityEffect, CapabilityVerdict } from './workspace-types';
 
 /**
  * Which mark a row wears. A NAME, not a glyph and not a colour — the renderer
@@ -124,4 +124,143 @@ export function byVerdict<T extends { verdict: CapabilityVerdict }>(rows: readon
         a.index - b.index,
     )
     .map(({ row }) => row);
+}
+
+/**
+ * The disclosure for a declared `effect` — TASK-329, the follow-up to
+ * TASK-263 that added the field to `PolicyRule` and deliberately did not
+ * render it.
+ *
+ * This is AUTHORED copy, and it lives here for the same reason the verdict
+ * frames above do: a claim assembled by whoever happens to be rendering is a
+ * claim that can be assembled wrong, and this is the one piece a second
+ * renderer (a Slack card, a plain-text digest) would need without also
+ * needing to re-derive the wording from the type's doc comment. Pulling it
+ * into `bits.tsx` would mean the next renderer either imports React to get at
+ * plain strings or reinvents them, and reinvention is exactly how `spends`
+ * and `outward` would drift back together.
+ *
+ * `spends` and `outward` get DIFFERENTLY WORDED entries on purpose.
+ * TASK-263 split `ToolEffect` into two members precisely because the risks
+ * are not the same one — a metered spend is not the same fact as a third
+ * party seeing (or being unable to undo) something the agent did — and a
+ * renderer that collapsed them into one generic "has an effect" chip would
+ * throw away the distinction the type exists to preserve. So there is no
+ * shared template string with an effect-name slot; there are two separately
+ * authored entries, and adding a third member of `CapabilityEffect` is a
+ * compile error here (see the `Record` below), not a silent fallback.
+ *
+ * The `spends` copy is deliberately careful about WHO PAYS: it says the
+ * deployment's operator is billed, and it explicitly says we cannot name an
+ * amount from here. Saying "you are billed" would be a guess — the reader
+ * viewing the rail is not necessarily the account holder — and naming a price
+ * would be a number this surface does not have and cannot make up.
+ *
+ * Neither entry claims irreversibility. `irreversible` is a separate field on
+ * the approval surface with its own UI (the undo window on approvals);
+ * saying "can't be undone" here as well would duplicate that claim and, the
+ * day the two disagree, contradict it. This disclosure's only job is the
+ * effect, not the reversibility of it.
+ */
+export interface EffectDisclosure {
+  /** The badge's visible words. Short, scannable. */
+  label: string;
+  /** The standalone clause for assistive tech — the badge out of context is ambiguous. */
+  srLabel: string;
+  /** The "why", behind the affordance. */
+  detail: string;
+}
+
+/**
+ * The whole table, and there is nothing else — same discipline as `FRAMES`
+ * above. `Record<CapabilityEffect, EffectDisclosure>` means a third member
+ * added to the union without a corresponding row here fails to compile,
+ * which is the review moment we want rather than a member that silently
+ * renders as `undefined`.
+ */
+const EFFECT_DISCLOSURES: Record<CapabilityEffect, EffectDisclosure> = {
+  spends: {
+    label: 'Costs money',
+    srLabel: 'Costs money — every use makes a paid request.',
+    detail:
+      "Every time the agent does this, it makes a paid request on this AX deployment's account — so it costs money on each use, not just the first. Whoever set up this deployment pays the bill; we can't tell you the amount from here.",
+  },
+  /*
+    KNOWN NARROWER THAN THE TYPE, on purpose, and flagged so the first outward
+    rule fixes it rather than inheriting it. `CapabilityEffect`'s `outward`
+    means "a third party sees the call **OR** it cannot be taken back", and
+    this detail only spells out the first disjunct. An irreversible action
+    nobody else observes would be slightly misstated by the last sentence.
+
+    Left alone rather than broadened now, for three reasons. It errs in the
+    OVERSTATING direction, which is the one design H4 permits. No `outward`
+    rule ships yet, so nothing renders this string today. And broadening it to
+    "…or it can't be undone" would red `permission-frames.test.ts`' assertion
+    that neither detail claims irreversibility — a rule that exists because
+    `PolicyRule.irreversible` owns that claim on the approval surface, and the
+    right way to resolve that tension is with the real tool in front of us, not
+    speculatively.
+
+    The forcing function already exists: `rules.test.ts`' "marks nothing
+    outward yet" is deliberately stricter than the lint, so the first outward
+    rule reds it and sends someone here. Re-read this copy then.
+  */
+  outward: {
+    label: 'Affects the outside world',
+    srLabel: 'Affects the outside world.',
+    detail:
+      'This does something out in the world beyond AX — like sending a message, posting where others can see it, or making a payment. Other people see the result, not just the agent.',
+  },
+};
+
+/**
+ * The disclosure for a declared effect. Returns a shallow copy, like
+ * `verdictFrame` does, so a caller mutating the result cannot corrupt the
+ * shared table for the next row.
+ */
+export function effectDisclosure(effect: CapabilityEffect): EffectDisclosure {
+  return { ...EFFECT_DISCLOSURES[effect] };
+}
+
+/**
+ * Whether a row's declared effect should be DISCLOSED to a reader at all.
+ *
+ * This lives here, beside the copy, rather than as a condition at the render
+ * site — and that placement is the whole point. The rule is part of the claim,
+ * and this module is explicitly the piece a second renderer (a Slack card, a
+ * plain-text digest) would take. A renderer holding `effectDisclosure` but not
+ * this predicate would faithfully print "Cannot pay an invoice — Costs money",
+ * which is precisely the false positive the rule exists to prevent. The
+ * suppression travelling with the words is what stops the next surface having
+ * to re-derive it, or failing to.
+ *
+ * `deny` is the whole rule, and the argument is narrow. A `deny` row says
+ * "Cannot X": the call does not happen, so there is no money spent and no
+ * outward action taken, and there is nothing to disclose about either. Worse
+ * than redundant, it is misleading — somebody scanning the rail for the rows
+ * that spend their money reads a "Costs money" badge as reach the agent HAS,
+ * which is backwards from what the row asserts.
+ *
+ * And it is safe in the one direction this surface cares about. Design H4 says
+ * never to UNDERSTATE reach; a `deny` row already asserts ZERO reach, so
+ * withholding a caveat about it cannot understate anything — there is no reach
+ * left to understate. Note this is a RENDERING decision only: the wire row
+ * still carries the rule's declared effect faithfully either way, so nothing
+ * downstream loses the fact.
+ *
+ * Returns a TYPE PREDICATE on `effect`, not a plain boolean, and that is load
+ * bearing rather than a convenience. The render site needs `effect` narrowed to
+ * non-null to pass it on, and if this returned `boolean` that site would have
+ * to re-test `effect !== null` itself — which is a SECOND copy of half this
+ * decision, sitting where nothing tests it. Measured while bite-checking: with
+ * the redundant check in place, mutating the `effect !== null` branch here left
+ * every render test green, because the call site was quietly still enforcing
+ * it. Narrowing here makes this function the only thing that decides, so a
+ * mutation to either half of the rule reddens a test.
+ */
+export function shouldDiscloseEffect(
+  verdict: CapabilityVerdict,
+  effect: CapabilityEffect | null,
+): effect is CapabilityEffect {
+  return effect !== null && verdict !== 'deny';
 }

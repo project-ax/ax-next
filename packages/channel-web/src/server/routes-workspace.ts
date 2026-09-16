@@ -175,6 +175,16 @@ interface PolicyCapabilityRow {
   conditional?: boolean;
   theirDescription?: string;
   mechanicalLabel?: string;
+  /**
+   * The hook's unvalidated answer for the rule's declared effect. Typed
+   * `string`, NOT `CapabilityEffect`, because that is exactly what it is at
+   * this point: an unvalidated answer from a duck-typed hook (I2), crossing a
+   * trust boundary. Declaring it as the union here would assert the
+   * guarantee that `toWirePermission`'s allow-list exists to provide —
+   * anything that survives to `PermissionRow.effect` has to earn that
+   * narrower type by passing through the check, not by being cast into it.
+   */
+  effect?: string;
 }
 interface ToolPolicyListCapabilitiesInput {
   agentId: string;
@@ -2780,6 +2790,23 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         // the predicates miss — and marking it "in some cases" would qualify
         // the one claim here that has no condition on it.
         conditional: false,
+        // A third-party tool we cannot describe in our own words is also one
+        // whose effect nobody has classified — the row's mechanical shape
+        // already tells the reader we cannot say what this tool does, and
+        // `effect` is no exception. Never invent one from the tool's name.
+        //
+        // ONE CASE THIS HARDCODED `null` WOULD GET WRONG, and it is guarded
+        // rather than merely noted. A tool named only by `when`-predicated
+        // rules ALSO lands here — as its base row, the unconditional
+        // fall-through half — and that row has no rule to read an effect off,
+        // because it is built from `evaluate`'s answer and `EvaluateResult`
+        // carries no `effect`. Were such a rule to declare `spends` or
+        // `outward`, this row would render with no marker while the call still
+        // spent the money, i.e. it would UNDERSTATE reach. No shipped rule is
+        // both conditional and effect-bearing, and @ax/tool-policy's
+        // `rules.test.ts` has a tripwire asserting exactly that, naming this
+        // site and `EvaluateResult.effect` as the fix. Do not relax it here.
+        effect: null,
         mechanicalLabel: label,
         // The vendor's own prose, for MCP tools only, and only as attributed
         // evidence. A native tool's `description` is written to steer an LLM
@@ -4230,6 +4257,19 @@ export function toWirePermission(row: PolicyCapabilityRow): PermissionRow {
     // sometimes allows. `=== true` because the field is optional on a
     // duck-typed row and `undefined` must not render as a claim either way.
     conditional: row.conditional === true,
+    // An ALLOW-LIST, not a cast. The renderer picks authored copy KEYED on
+    // this value, so an impl answering `effect: 'harmless'` (or anything else
+    // it invents) must land as `null` — no claim — rather than as a value
+    // that is present on the wire and silently unrendered because the
+    // renderer's `Record` doesn't have an entry for it. Two members in, two
+    // members out; everything else is `null`.
+    //
+    // Survives the clause-fence demotion above for the same reason
+    // `conditional` does: losing OUR SENTENCE when `capability` fences to
+    // nothing does not unspend the money or un-happen the outward action —
+    // the row still describes a real call with a real declared effect, it
+    // has just lost the words we had for it. Not gated on `described`.
+    effect: row.effect === 'outward' || row.effect === 'spends' ? row.effect : null,
     mechanicalLabel: described ? null : mechanicalLabel,
     theirDescription: described
       ? null

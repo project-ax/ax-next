@@ -8,14 +8,19 @@
  */
 import { AlertTriangle, Ban, Check, Hand, type LucideIcon } from 'lucide-react';
 import { AvatarTile } from '@/components/AvatarTile';
-import { Badge } from '@/components/ui/badge';
+import { Badge, badgeVariants } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
-import { frameCapability, verdictFrame } from '@/lib/permission-frames';
+import {
+  effectDisclosure,
+  frameCapability,
+  shouldDiscloseEffect,
+  verdictFrame,
+} from '@/lib/permission-frames';
 import { cn } from '@/lib/utils';
 import type {
   AgentRunState,
@@ -176,6 +181,60 @@ function TheirDescription({ row }: { row: PermissionRow }) {
 }
 
 /**
+ * The declared-`effect` disclosure — TASK-329.
+ *
+ * `Popover`, not `Tooltip` (D5): `Tooltip` needs a `TooltipProvider` this rail
+ * does not have, is hover-only, and auto-dismisses — unreliable on touch and
+ * awkward for assistive tech. `TheirDescription` above already puts its
+ * explanatory affordance behind a `Popover` for the same reason, and this
+ * follows that structure closely on purpose.
+ *
+ * The trigger is a real `<button>` wearing `badgeVariants` rather than the
+ * `Badge` component (D6). `Badge` renders a `<div>`, and `PermissionLine`'s
+ * content sits inside a `<span>` — a `div` there is invalid nesting, and a
+ * `PopoverTrigger asChild` over a non-interactive `div` is not a
+ * keyboard-reachable control. Applying the exported `badgeVariants` to a
+ * `<button>` is shadcn's own documented escape hatch for exactly this. Layout
+ * classes shrink the badge to the rail's micro-type (the badge's base class
+ * sets `text-xs`; the rail runs `text-[10.5px]`/`text-[11px]`) — that override
+ * is type-scale and padding only, never colour.
+ *
+ * `variant="outline"` plus `text-muted-foreground`, explicitly NOT
+ * `variant="destructive"`. A red badge would out-shout the verdict glyph to
+ * its left, which is the more important claim on this row ("can it run at
+ * all"), and a cost is not a danger — painting it in the same red as "Never"
+ * would tell a scanning reader the wrong thing about which fact matters more.
+ * Hierarchy stays glyph > badge > the muted `source` id that follows it.
+ *
+ * The badge is a CLAIM, not decoration, so it stays in the a11y tree —
+ * `aria-label` carries the standalone clause (the visible label alone,
+ * "Costs money", reads as a floating fragment to a screen reader that has not
+ * also seen the row's icon and clause).
+ */
+function EffectMark({ effect }: { effect: NonNullable<PermissionRow['effect']> }) {
+  const d = effectDisclosure(effect);
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={`${d.srLabel} Details.`}
+          className={cn(
+            badgeVariants({ variant: 'outline' }),
+            'ml-1.5 px-1.5 py-0 text-[10.5px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+          )}
+        >
+          {d.label}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-72">
+        <p className="text-[12.5px] text-muted-foreground">{d.detail}</p>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/**
  * One row of "What it may do alone".
  *
  * Two shapes, and `described` picks. A described row is OUR sentence, generated
@@ -222,6 +281,19 @@ export function PermissionLine({ row }: { row: PermissionRow }) {
           <span>do something we can&apos;t put a name to</span>
         )}
         {frame.suffix !== null && <span> — {frame.suffix}</span>}
+        {/*
+          The suppression rule is `shouldDiscloseEffect`, NOT a condition
+          written out here — it carries the reasoning, and it lives beside the
+          copy in `permission-frames.ts` so a second renderer that takes
+          `effectDisclosure` takes the rule with it rather than printing
+          "Cannot pay an invoice — Costs money". It is a type predicate, so it
+          is also what narrows `row.effect` for the prop — there is deliberately
+          no second `!== null` here, because a call site re-testing half the
+          rule is a copy of the rule that nothing tests.
+        */}
+        {shouldDiscloseEffect(row.verdict, row.effect) && (
+          <EffectMark effect={row.effect} />
+        )}
         {/*
           THE TRUST LINE, and it is its own line on purpose.
 

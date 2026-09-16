@@ -10,7 +10,9 @@ import { describe, expect, it } from 'vitest';
 import {
   VERDICT_ORDER,
   byVerdict,
+  effectDisclosure,
   frameCapability,
+  shouldDiscloseEffect,
   verdictFrame,
 } from '../permission-frames';
 
@@ -149,5 +151,66 @@ describe('byVerdict', () => {
     const rows = [{ verdict: 'deny' as const }, { verdict: 'allow' as const }];
     byVerdict(rows);
     expect(rows[0]?.verdict).toBe('deny');
+  });
+});
+
+describe('effectDisclosure (TASK-329)', () => {
+  it('returns non-empty copy for spends', () => {
+    const d = effectDisclosure('spends');
+    expect(d.label).toBeTruthy();
+    expect(d.srLabel).toBeTruthy();
+    expect(d.detail).toBeTruthy();
+  });
+
+  it('returns non-empty copy for outward', () => {
+    const d = effectDisclosure('outward');
+    expect(d.label).toBeTruthy();
+    expect(d.srLabel).toBeTruthy();
+    expect(d.detail).toBeTruthy();
+  });
+
+  it('never shares wording between the two effects — TASK-263 split them on purpose', () => {
+    // A generic "has an effect" chip would collapse these back into one
+    // string. This reddens the moment somebody templates the two entries
+    // instead of authoring them separately.
+    const spends = effectDisclosure('spends');
+    const outward = effectDisclosure('outward');
+    expect(spends.label).not.toBe(outward.label);
+    expect(spends.srLabel).not.toBe(outward.srLabel);
+    expect(spends.detail).not.toBe(outward.detail);
+  });
+
+  it('hands back a fresh object, so a renderer cannot edit the shared table', () => {
+    const first = effectDisclosure('spends');
+    first.label = 'mutated';
+    expect(effectDisclosure('spends').label).toBe('Costs money');
+  });
+
+  it('discloses on allow and hold, and never on deny', () => {
+    // The rule lives beside the copy rather than at the render site so a
+    // second renderer takes it along with `effectDisclosure` — without it,
+    // a faithful renderer prints "Cannot pay an invoice — Costs money".
+    // Raised in review as a nit; this is the test that pins it here.
+    expect(shouldDiscloseEffect('allow', 'spends')).toBe(true);
+    expect(shouldDiscloseEffect('hold', 'outward')).toBe(true);
+    expect(shouldDiscloseEffect('hold', 'spends')).toBe(true);
+    // `deny` suppresses whatever the rule declared — the call does not happen.
+    expect(shouldDiscloseEffect('deny', 'spends')).toBe(false);
+    expect(shouldDiscloseEffect('deny', 'outward')).toBe(false);
+    // Unclassified is nothing to say, at every verdict.
+    expect(shouldDiscloseEffect('allow', null)).toBe(false);
+    expect(shouldDiscloseEffect('hold', null)).toBe(false);
+    expect(shouldDiscloseEffect('deny', null)).toBe(false);
+  });
+
+  it('never claims irreversibility — that is a separate field with its own UI', () => {
+    // `irreversible` has its own UI on the approval surface. Duplicating the
+    // claim here risks contradicting it the day the two disagree.
+    expect(effectDisclosure('spends').detail).not.toMatch(
+      /undo|undone|take it back|permanent/i,
+    );
+    expect(effectDisclosure('outward').detail).not.toMatch(
+      /undo|undone|take it back|permanent/i,
+    );
   });
 });

@@ -155,6 +155,28 @@ export interface CapabilityRow {
    * there is no predicate to be conditional on.
    */
   conditional: boolean;
+  /**
+   * The declared `effect` of the rule behind this row, carried onto the row so
+   * the rail can DISCLOSE it — see TASK-329. This is NOT a second gate:
+   * `verdict` already decides whether the call happens, and `effect` sits
+   * beside it as a separate claim about what the call does in the world when
+   * it does happen. `web_search` is exactly the case that makes the two
+   * independent: `verdict: 'allow'` AND `effect: 'spends'` on the same row,
+   * because the money leaves regardless of whether anyone was asked.
+   *
+   * OMITTED MEANS UNCLASSIFIED, NOT HARMLESS — the same warning `ToolEffect`
+   * carries on `PolicyRule`, repeated here because it is easy to read a row
+   * with no `effect` key as "this one is fine" rather than "nobody has
+   * classified this one". A row with no rule behind it (`mcp`, `unmapped`) has
+   * no `effect` for the identical reason it has no `capability`: there was
+   * never a rule to declare one, so the honest answer is absent, not `false`
+   * or a fabricated default.
+   *
+   * See `ToolEffect` for the `spends`-is-money-only caveat and the
+   * one-value-per-row limitation — both apply here unchanged, and are not
+   * re-argued in this comment.
+   */
+  effect?: ToolEffect | undefined;
   /** Only set when `described` is false: the third party's own words, attributed. */
   theirDescription?: string | undefined;
   /** Only set when `described` is false: what we DO control — the tool name. */
@@ -278,6 +300,9 @@ export const CapabilityProvenanceSchema = z.enum([
   'unmapped',
 ]);
 
+/** Mirrors `ToolEffect`. See that type for what the two members mean. */
+export const ToolEffectSchema = z.enum(['outward', 'spends']);
+
 export const EvaluateResultSchema = z.object({
   verdict: PolicyVerdictSchema,
   ruleId: z.string().nullable(),
@@ -292,6 +317,12 @@ export const CapabilityRowSchema = z.object({
   provenance: CapabilityProvenanceSchema,
   described: z.boolean(),
   conditional: z.boolean(),
+  // Per the block comment above this block: a `z.object` STRIPS keys it does
+  // not declare, so leaving this line out would not fail loudly — it would
+  // make `effect` vanish silently on the way out of the bus, and the rail
+  // would render no disclosure while every unit test on the row OBJECT (built
+  // before the bus re-parse) still passed.
+  effect: ToolEffectSchema.optional(),
   theirDescription: z.string().optional(),
   mechanicalLabel: z.string().optional(),
 });
