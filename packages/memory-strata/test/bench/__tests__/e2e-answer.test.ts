@@ -372,7 +372,7 @@ describe('answer-stage arms (TASK-370 scaffold / TASK-371 thinking)', () => {
     };
     await runAnswerLoop({
       client: client as never, model: 'm', maxToolTurns: 0, system: 's', question: 'q',
-      search: async () => [] as MemorySearchResult[], readSection: (async () => '') as ReadSectionFn,
+      search: async () => [] as MemorySearchResult[], readSection: (async () => ({ body: '' })) as ReadSectionFn,
     });
     expect(seen[0]).not.toHaveProperty('thinking');
     expect(seen[0]).not.toHaveProperty('output_config');
@@ -392,7 +392,7 @@ describe('answer-stage arms (TASK-370 scaffold / TASK-371 thinking)', () => {
     };
     await runAnswerLoop({
       client: client as never, model: 'm', maxToolTurns: 0, system: 's', question: 'q',
-      search: async () => [] as MemorySearchResult[], readSection: (async () => '') as ReadSectionFn,
+      search: async () => [] as MemorySearchResult[], readSection: (async () => ({ body: '' })) as ReadSectionFn,
       effort: 'high', maxTokens: 4096,
     });
     // budget_tokens is DEPRECATED on Sonnet 4.6; adaptive is the current surface.
