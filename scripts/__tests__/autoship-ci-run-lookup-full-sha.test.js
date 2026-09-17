@@ -458,8 +458,12 @@ describe('CI-run existence gates: `--commit` gets the full 40-char sha', () => {
       // mutant (`-ge 1` -> `-ge 0`) would then fail this assertion too, and its message
       // would say the prelude "stops before the existence halt" -- which is false, and
       // would send the reader after a broken extractor instead of the fail-open gate that
-      // is actually the problem. Measured: with `/-ge 1/` here the fail-open mutant went
-      // from 6 red to 7, the extra one carrying that wrong message.
+      // is actually the problem. Measured at the time, on the then-baseline of 39: with
+      // `/-ge 1/` here the fail-open mutant went from 6 red to 7, the extra one carrying
+      // that wrong message. Scoped to that tree deliberately -- re-run today the same
+      // mutant reddens 12, because the invented-sha cases were added afterwards and also
+      // ride on the halt. An unscoped "6 to 7" would read as a current claim and fail to
+      // reproduce, which is the defect this file keeps paying for.
       const last = s.script.trimEnd().split('\n').pop();
       expect(
         last,
