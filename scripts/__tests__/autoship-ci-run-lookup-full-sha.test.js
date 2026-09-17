@@ -74,51 +74,66 @@
 // the implementation -- there is no second copy in a script to drift from it.
 //
 // MUTANTS RUN, NOT REASONED ABOUT (2026-09-17, against the committed text; baseline
-// 33 passed, and every mutant below still reports 33 tests, so none of them reddened by
+// 39 passed, and every mutant below still reports 39 tests, so none of them reddened by
 // making the suite smaller).
 //
-// The counts are from a machine with zsh installed, where every gate case runs twice
-// (bash and zsh). On a runner without zsh those zsh cases do not exist at all, so both
-// the baseline and the red counts are lower there -- I have not measured that variant,
-// so no number is quoted for it.
-//   - delete the `[ ${#HEAD_SHA} -eq 40 ]` assertion -> 7 red, and exactly the right 7:
-//     the truncating-caller test at all three gate sites x both shells, plus the
-//     doc-note test. The gate falls through to the NO-RUN message, which is the false
-//     diagnosis this whole card is about.
+// The counts are from a machine with zsh AND jq installed, where every gate case and
+// every backstop case runs twice (bash and zsh). On a runner missing either, those cases
+// do not exist at all, so both the baseline and the red counts are lower there -- I have
+// not measured that variant, so no number is quoted for it.
+//
+//   - delete the `[ ${#HEAD_SHA} -eq 40 ]` assertion -> 6 red: the truncating-caller
+//     test at all three gate sites x both shells. The gate falls through to the NO-RUN
+//     message, which is the false diagnosis this whole card is about.
 //   - `[ "${runs:-0}" -ge 1 ]` -> `-ge 0` (fail-OPEN, guard clause still present) -> 6
 //     red, exactly the fail-closed test at every site x shell.
 //   - `select(.workflowName == "CI")` -> `select(true)` in the backstop filter, i.e.
-//     `--limit 1` behaviour -> 2 red, and the pair is the interesting part. The
-//     CodeQL-first test goes red because the block reports GREEN off a CodeQL row while
-//     CI had failed on that same head. The no-CI-run test goes red too, because with the
-//     workflow unpinned an absent CI run is no longer an empty list -- the CodeQL rows
-//     fill it, `length == 0` is false, and the fail-closed halt never fires. So the
-//     workflow pin carries TWO properties: it selects the right run, and it is what
-//     makes "no CI run at all" detectable. An earlier version of this note said "the
-//     CodeQL-first test" as though it were one; that was a re-derivation from which
-//     assertion I had in mind, not from the run.
-//   - point the backstop's wait arm at the green message -> exactly the in-progress
-//     test goes red.
-//   - move the `completed*` arm below the catch-all -> exactly the completed-with-empty-
-//     conclusion test goes red (it spins instead of halting).
+//     `--limit 1` behaviour -> 4 red (2 scenarios x 2 shells), and the pair of scenarios
+//     is the interesting part. The CodeQL-first test goes red because the block reports
+//     GREEN off a CodeQL row while CI had failed on that same head. The no-CI-run test
+//     goes red too, because with the workflow unpinned an absent CI run is no longer an
+//     empty list -- the CodeQL rows fill it, `length == 0` is false, and the fail-closed
+//     halt never fires. So the workflow pin carries TWO properties: it selects the right
+//     run, and it is what makes "no CI run at all" detectable.
+//   - point the backstop's wait arm at the green message -> 2 red, exactly the
+//     in-progress test x both shells.
+//   - move the `completed*` arm below the catch-all -> 2 red, exactly the
+//     completed-with-empty-conclusion test x both shells (it spins instead of halting).
+//   - remove `existenceGate`'s `!isComment` filter AND add a comment quoting the command
+//     in full above the `-eq 40` guard -> 3 red: the vacuity test (the extracted prelude
+//     no longer contains the run-list call) plus the fail-closed test at that site x both
+//     shells. With the filter in place the same comment is a no-op: 39 passed.
 //
-// TWO MUTANTS THAT FIRST CAME BACK WRONG, RECORDED BECAUSE THEY CHANGED THE DESIGN:
+// FOUR MUTANTS THAT FIRST CAME BACK WRONG, RECORDED BECAUSE EACH CHANGED THE DESIGN:
 //   1. Deleting the `-ge 1` halt outright did not redden the fail-closed test -- it
 //      reddened the VACUITY test, because the extractor keyed its cut on the literal
-//      `-ge 1` and so returned nothing. The suite silently shrank 33 -> 15 and the
-//      fail-closed assertion never ran. A guard whose extractor depends on the line it
-//      is guarding cannot prove that line does anything. `existenceGate` now cuts on the
-//      structural `|| {` guard clause instead, and the mutant above is the fail-OPEN
-//      edit, which keeps the extraction intact.
+//      `-ge 1` and so returned nothing. The fail-closed assertion never ran. A guard
+//      whose extractor depends on the line it is guarding cannot prove that line does
+//      anything. The cut is now structural (`|| {`), and the mutant above is the
+//      fail-OPEN edit, which keeps the extraction intact.
 //      The shrink figure is re-measured against this file AS COMMITTED (restore the
-//      coupled cut + delete the halt: 33 -> 15). It was 32 -> 14 when first observed,
-//      before this file gained its last test; both numbers are real, but only the first
-//      is reproducible from the tree, so that is the one quoted above.
+//      coupled cut + delete the halt: 33 -> 15 at the time that was measured). It was
+//      32 -> 14 when first observed. Both are real; the point is the silent shrink.
 //   2. An earlier version of the doc computed the conclusion word with an explicit
 //      empty-string test, and an earlier version of this test asserted that word. The
 //      mutant that removed it PASSED: both spellings land in the same case arm, because
 //      the verdict keys off `status`. The claim was true but not load-bearing, so the
 //      filter was simplified and the test now asserts the arm, which is.
+//   3. The `!isComment` mutant PASSED on its first run too, and for a duller reason: I
+//      put the offending comment directly above the run-list line, where it is harmless
+//      -- the cut still spans the query and the halt. It only bites above the `-eq 40`
+//      guard. A mutant is a claim about a LOCATION as much as about an edit, and a
+//      passing mutant is as likely to mean "I mutated the wrong spot" as "the code is
+//      fine". I had the guard, the mutant and a green run, and that combination says
+//      nothing until the mutant is shown to bite without the guard.
+//   4. The delete-the-`-eq 40` mutant measured 7 red for a while, and the 7th was an
+//      accident. The documentation check below was case-SENSITIVE, and Phase 7's comment
+//      says "needs the FULL 40-char sha" -- mixed case, matching neither alternative --
+//      so that site satisfied the check only through its assert LINE, which made a prose
+//      check double as a runtime one. A reviewer predicted 6 by analysis and was right
+//      about the number while wrong about the mechanism (they expected the comment to
+//      carry it at every site). Made case-insensitive; the mutant now measures 6, and the
+//      prose check tests prose.
 //
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally -- no
 // network and no build. The `gh` and `git` on PATH are stubs, so nothing here reaches
@@ -217,11 +232,28 @@ function bashBlocks(md) {
  */
 function existenceGate(block) {
   const lines = block.split('\n');
+  // `!isComment` is load-bearing, and was added after the failure mode was demonstrated
+  // rather than imagined. These blocks are heavily commented, and their comments quote
+  // the very command being located -- one of them already says
+  // "`gh run list --commit` NEEDS THE FULL 40-CHAR SHA". It survives today only because
+  // it happens not to also contain "ci.yml". A future comment that quotes the command in
+  // full -- the most natural thing in the world to write here -- would become the located
+  // "query", the cut would end at the `-eq 40` guard above it, and the extracted script
+  // would never run the run-list call at all. Measured: a two-term version of this
+  // predicate does exactly that on the current text, and the extracted script exits 0 on
+  // an absent run.
+  //
+  // The suite is self-protecting either way -- an early cut reddens the fail-closed test,
+  // because the truncated script stops halting -- so this is defence in depth, not a bug
+  // fix. The value is that it fails for the RIGHT reason: without it, a reader chasing a
+  // red fail-closed test would go looking for a hole in the gate that isn't there.
+  const isComment = (l) => /^\s*#/.test(l);
   const query = lines.findIndex(
-    (l) => /gh run list/.test(l) && /ci\.yml/.test(l) && /--commit/.test(l),
+    (l) =>
+      !isComment(l) && /gh run list/.test(l) && /ci\.yml/.test(l) && /--commit/.test(l),
   );
   if (query === -1) return undefined;
-  const halt = lines.findIndex((l, i) => i > query && /\|\|\s*\{/.test(l));
+  const halt = lines.findIndex((l, i) => i > query && !isComment(l) && /\|\|\s*\{/.test(l));
   if (halt === -1) return undefined;
   return lines
     .slice(0, halt + 1)
@@ -239,7 +271,16 @@ function gateSites() {
     const md = readFileSync(path, 'utf8');
     const blocks = bashBlocks(md).filter(
       (b) =>
-        /gh run list/.test(b) && /ci\.yml/.test(b) && /--commit/.test(b),
+        /gh run list/.test(b) &&
+        /ci\.yml/.test(b) &&
+        /--commit/.test(b) &&
+        // The backstop block matches all three terms too. It is a different subject with
+        // its own describe below, and until now it was excluded only INCIDENTALLY --
+        // `existenceGate` finds no `|| {` after its query and returns undefined. That
+        // worked, but it left the gate/backstop split implicit: an edit giving the
+        // backstop a trailing guard clause would silently enrol it as a fourth "gate"
+        // and trip the toHaveLength(3) check with a message about the wrong thing.
+        !/workflowName == "CI"/.test(b),
     );
     blocks.forEach((b, i) => {
       const gate = existenceGate(b);
@@ -368,6 +409,28 @@ describe('CI-run existence gates: `--commit` gets the full 40-char sha', () => {
     ).toHaveLength(3);
     for (const s of sites) {
       expect(s.script, `${s.name} lost its \`gh run list\` call`).toMatch(/gh run list/);
+      // The cut must reach the real decision, not stop at the full-sha guard above it.
+      // Without these two, a comment quoting the command becomes the located "query" and
+      // the extracted script never runs the run-list call -- every gate case below would
+      // then be exercising a three-line prelude that cannot halt for the right reason.
+      expect(
+        s.script,
+        `${s.name}: the extracted prelude does not contain the run-list query itself. ` +
+          'The cut located a COMMENT that quotes the command rather than the command.',
+      ).toMatch(/runs=\$\(gh run list/);
+      // Structural, NOT `/-ge 1/`. Matching the literal comparison here would re-create
+      // the coupling that `existenceGate` was fixed to avoid, one level up: the fail-OPEN
+      // mutant (`-ge 1` -> `-ge 0`) would then fail this assertion too, and its message
+      // would say the prelude "stops before the existence halt" -- which is false, and
+      // would send the reader after a broken extractor instead of the fail-open gate that
+      // is actually the problem. Measured: with `/-ge 1/` here the fail-open mutant went
+      // from 6 red to 7, the extra one carrying that wrong message.
+      const last = s.script.trimEnd().split('\n').pop();
+      expect(
+        last,
+        `${s.name}: the extracted prelude does not end in a guard clause acting on ` +
+          '`runs`, so the fail-closed case below is not testing the halt at all.',
+      ).toMatch(/runs.*\|\|\s*\{/);
     }
   });
 
@@ -516,10 +579,32 @@ describe('cross-package backstop: pins the CI workflow, not whichever run sorts 
     expect(block).toMatch(/--commit "\$MAIN_SHA"/);
   });
 
+  it('names the token, not the exit code, as the signal to proceed', () => {
+    // The green arm and the wait arm BOTH exit 0 -- only the output token separates
+    // "proceed" from "wait". That is deliberate (a run still in progress is not an
+    // error), but it means a caller that keyed on rc, `<block> && merge`, would proceed
+    // onto a main whose full suite had not finished: a false green in the one block
+    // whose job is to prevent exactly that. The repo already has this convention for
+    // `MERGE-OK #<n>`, so the fix is to state it rather than to re-signal, and to pin
+    // the statement so the next editor does not quietly add `&& merge` downstream.
+    // Two concepts rather than one phrase: the block must name a PROCEED SIGNAL and must
+    // mention rc 0 in the same breath. A single regex on one wording would fail the next
+    // legitimate reword, which is how a guard teaches people to delete it.
+    expect(
+      block,
+      'the backstop must name `main green` as the proceed signal, because its wait arm ' +
+        'also exits 0 and a caller keying on rc would read "still running" as "go".',
+    ).toMatch(/proceed signal/i);
+    expect(
+      block,
+      'the backstop must say explicitly that rc 0 is not the proceed signal.',
+    ).toMatch(/rc 0/i);
+  });
+
   // The behavioural half. Real jq, because the doc ships a real jq filter and a canned
   // answer would assert nothing about it -- the filter IS the fix. jq is not guaranteed
   // on a runner, so these are conditional in the same shape the sibling hazards guard
-  // uses for zsh; the three text assertions above run unconditionally, so the workflow
+  // uses for zsh; the four text assertions above run unconditionally, so the workflow
   // pin is never left entirely unguarded.
   const jqIt = it.skipIf(!HAS_JQ);
 
@@ -535,82 +620,91 @@ describe('cross-package backstop: pins the CI workflow, not whichever run sorts 
       })),
     );
 
-  const runBackstop = (rowsJson) =>
-    runBlock('bash', block, {
+  // Under EVERY shell, not just bash. The backstop is the most complex shell in this
+  // change -- a multi-line `$()`, a jq filter and a `case` -- and zsh is the shell the
+  // Bash tool actually runs, so bash-only coverage here was the thinnest spot in the
+  // suite. A reviewer named it; closing it costs one loop.
+  const runBackstop = (shell, rowsJson) =>
+    runBlock(shell, block, {
       STUB_MAIN_SHA: MAIN_SHA,
       STUB_FULL_SHA: MAIN_SHA,
       STUB_ROWS: rowsJson,
     });
 
-  jqIt('reads RED when CI failed, even though a CodeQL success sorts first', () => {
-    // These are the exact three rows live GitHub returned for main head 3e1c0915.
-    const { code, out } = runBackstop(
-      rows(
-        ['CodeQL - Code Quality', 'completed', 'success'],
-        ['CI', 'completed', 'failure'],
-        ['CodeQL', 'completed', 'success'],
-      ),
-    );
-    expect(
-      out,
-      'the backstop read the first row (CodeQL) instead of CI -- a false green on a ' +
-        'head whose tests failed',
-    ).not.toMatch(/main green/);
-    expect(out).toMatch(/RED/);
-    expect(code, `expected a halt, rc=${code}\n${out}`).not.toBe(0);
-  });
+  for (const shell of SHELLS) {
+    jqIt(`reads RED when CI failed, even though a CodeQL success sorts first (${shell})`, () => {
+      // These are the exact three rows live GitHub returned for main head 3e1c0915.
+      const { code, out } = runBackstop(
+        shell,
+        rows(
+          ['CodeQL - Code Quality', 'completed', 'success'],
+          ['CI', 'completed', 'failure'],
+          ['CodeQL', 'completed', 'success'],
+        ),
+      );
+      expect(
+        out,
+        'the backstop read the first row (CodeQL) instead of CI -- a false green on a ' +
+          'head whose tests failed',
+      ).not.toMatch(/main green/);
+      expect(out).toMatch(/RED/);
+      expect(code, `expected a halt, rc=${code}\n${out}`).not.toBe(0);
+    });
 
-  jqIt('halts fail-closed when no CI run exists, however many other runs do', () => {
-    const { code, out } = runBackstop(
-      rows(
-        ['CodeQL - Code Quality', 'completed', 'success'],
-        ['CodeQL', 'completed', 'success'],
-      ),
-    );
-    expect(out).toMatch(/no CI run/);
-    expect(out).not.toMatch(/main green/);
-    expect(code, `an absent CI run must halt, rc=${code}\n${out}`).not.toBe(0);
-  });
+    jqIt(`halts fail-closed when no CI run exists, however many other runs do (${shell})`, () => {
+      const { code, out } = runBackstop(
+        shell,
+        rows(
+          ['CodeQL - Code Quality', 'completed', 'success'],
+          ['CodeQL', 'completed', 'success'],
+        ),
+      );
+      expect(out).toMatch(/no CI run/);
+      expect(out).not.toMatch(/main green/);
+      expect(code, `an absent CI run must halt, rc=${code}\n${out}`).not.toBe(0);
+    });
 
-  jqIt('an in-progress run (conclusion "") is never green', () => {
-    // Measured: a live in-progress run carries `"conclusion": ""`, not null. That is
-    // the trap the block sidesteps by keying the verdict on `status` first -- any rule
-    // reading the conclusion first inherits it, because jq's `//` falls through on null
-    // and false only, so `.conclusion // "pending"` yields "" rather than "pending".
-    //
-    // An earlier version of this test asserted the pending WORD and was vacuous: with
-    // `status` deciding the arm, both spellings of the filter produced the same verdict
-    // and the mutant passed. What is actually load-bearing is the arm this lands in, so
-    // that is what is asserted; the mutant that reddens it points the wait arm at the
-    // green message.
-    const { code, out } = runBackstop(rows(['CI', 'in_progress', '']));
-    expect(out, 'an in-progress run is not a green main').not.toMatch(/main green/);
-    expect(out).toMatch(/still running/);
-    // Not terminal, so not a halt -- the orchestrator waits rather than reporting.
-    expect(code, `pending must not halt, rc=${code}\n${out}`).toBe(0);
-  });
+    jqIt(`an in-progress run (conclusion "") is never green (${shell})`, () => {
+      // Measured: a live in-progress run carries `"conclusion": ""`, not null. That is
+      // the trap the block sidesteps by keying the verdict on `status` first -- any rule
+      // reading the conclusion first inherits it, because jq's `//` falls through on null
+      // and false only, so `.conclusion // "pending"` yields "" rather than "pending".
+      //
+      // An earlier version of this test asserted the pending WORD and was vacuous: with
+      // `status` deciding the arm, both spellings of the filter produced the same verdict
+      // and the mutant passed. What is actually load-bearing is the arm this lands in, so
+      // that is what is asserted; the mutant that reddens it points the wait arm at the
+      // green message.
+      const { code, out } = runBackstop(shell, rows(['CI', 'in_progress', '']));
+      expect(out, 'an in-progress run is not a green main').not.toMatch(/main green/);
+      expect(out).toMatch(/still running/);
+      // Not terminal, so not a halt -- the orchestrator waits rather than reporting.
+      expect(code, `pending must not halt, rc=${code}\n${out}`).toBe(0);
+    });
 
-  jqIt('a completed run with an empty conclusion HALTS rather than spinning', () => {
-    // The arm-order property: `completed*` sits above the catch-all, so a terminal run
-    // whose conclusion is a shape nobody anticipated is treated as red, not as "still
-    // running". Fail-closed beats a wait loop that never ends.
-    const { code, out } = runBackstop(rows(['CI', 'completed', '']));
-    expect(out).not.toMatch(/main green|still running/);
-    expect(code, `rc=${code}\n${out}`).not.toBe(0);
-  });
+    jqIt(`a completed run with an empty conclusion HALTS rather than spinning (${shell})`, () => {
+      // The arm-order property: `completed*` sits above the catch-all, so a terminal run
+      // whose conclusion is a shape nobody anticipated is treated as red, not as "still
+      // running". Fail-closed beats a wait loop that never ends.
+      const { code, out } = runBackstop(shell, rows(['CI', 'completed', '']));
+      expect(out).not.toMatch(/main green|still running/);
+      expect(code, `rc=${code}\n${out}`).not.toBe(0);
+    });
 
-  jqIt('reads GREEN on a completed, successful CI run (so the above are not vacuous)', () => {
-    // Without this control a block that halted unconditionally would pass every
-    // negative test in this describe.
-    const { code, out } = runBackstop(
-      rows(
-        ['CodeQL - Code Quality', 'completed', 'success'],
-        ['CI', 'completed', 'success'],
-      ),
-    );
-    expect(out, `expected a green verdict\n${out}`).toMatch(/main green/);
-    expect(code).toBe(0);
-  });
+    jqIt(`reads GREEN on a completed, successful CI run, so the above are not vacuous (${shell})`, () => {
+      // Without this control a block that halted unconditionally would pass every
+      // negative test in this describe.
+      const { code, out } = runBackstop(
+        shell,
+        rows(
+          ['CodeQL - Code Quality', 'completed', 'success'],
+          ['CI', 'completed', 'success'],
+        ),
+      );
+      expect(out, `expected a green verdict\n${out}`).toMatch(/main green/);
+      expect(code).toBe(0);
+    });
+  }
 });
 
 describe('the docs record the measurement, not just the rule', () => {
@@ -618,9 +712,15 @@ describe('the docs record the measurement, not just the rule', () => {
     // A future reader meeting `runs=0` needs the cause at the command, not three
     // sections away. Each of the three gate blocks carries it; this asserts the count
     // so deleting one copy is caught.
-    const withNote = gateSites().filter(({ script }) =>
-      /FULL 40-CHAR SHA|full 40-char sha/.test(script),
-    );
+    // Case-INSENSITIVE, and that matters more than it looks. The sites spell the phrase
+    // three ways: "NEEDS THE FULL 40-CHAR SHA" in two comments, "is not a full 40-char
+    // sha" in three echo strings, and "needs the FULL 40-char sha" in Phase 7's comment.
+    // The last matched NEITHER case-sensitive alternative, so Phase 7 satisfied this test
+    // only via its assert LINE -- which made a documentation check accidentally double as
+    // a runtime one, and is the whole reason deleting the assert reddened 7 tests rather
+    // than 6. A coverage claim resting on a case mismatch is not a coverage claim. The
+    // truncation tests below cover the runtime behaviour; this one covers the prose.
+    const withNote = gateSites().filter(({ script }) => /full 40-char sha/i.test(script));
     expect(
       withNote.map((s) => s.name),
       'every ci.yml existence gate must say, at the command, that `--commit` needs ' +

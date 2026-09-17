@@ -519,6 +519,19 @@ esac
 # Note the arm order: `completed*` catches a completed run with ANY non-success
 # conclusion, including an empty one, so a shape nobody anticipated halts rather than
 # falling through to the wait arm and spinning forever.
+#
+# ⚠ THE PROCEED SIGNAL IS THE `main green` TOKEN, NOT rc 0. The green arm and the wait
+# arm BOTH exit 0, deliberately — a run still in progress is not an error. So never write
+# `<this block> && gh pr merge ...`: that reads "still running" as "go" and merges onto a
+# main whose full suite has not finished, which is the one thing this block exists to
+# stop. Same convention as `MERGE-OK #<n>` in the merge queue above: read the token.
+#
+# A `none` immediately after a merge is usually TIMING, not absence — the push-to-main
+# run can take a few seconds to register. It halts fail-closed, which is correct and is
+# strictly better than the old `--limit 1` (which could serve the PREVIOUS commit's green
+# run as a false green). But before reporting a backstop failure, re-read it a couple of
+# times the way you would a pending one; a halt on a run that simply had not appeared yet
+# is queue noise, not a broken main.
 ```
 
 If it goes **red**, **HALT and report** — do not merge onto a broken `main`. Resume once
