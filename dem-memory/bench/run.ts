@@ -109,6 +109,12 @@ async function main(): Promise<void> {
   // compared. "shortest" reproduces the pre-2026-09-16 easy-slice runs and nothing else.
   const sampler = args.sampler ?? "spaced";
   const extractConcurrency = Number(args["extract-concurrency"] ?? 6);
+  // Pin the extraction generation. A prompt edit re-keys the fact cache, so without this any
+  // later run cold-extracts the whole corpus (~$7, ~5h) even when the change under test is
+  // downstream of extraction. Pinning the generation a baseline was measured on makes a
+  // reflect-side arm free AND isolates it: same facts in, only synthesis differs.
+  // Only safe when the change under test does NOT touch the extraction prompt.
+  const fingerprint = args.fingerprint;
   // Path B: carry a verbatim slice of the source dialogue for the top N evidence rows.
   const sourceExcerpts = Number(args["source-excerpts"] ?? 0);
   // Path A: rows per answer. Default matches src (15); pass 80 to fill the token budget.
@@ -180,17 +186,28 @@ async function main(): Promise<void> {
         const date = sample.haystack_dates?.[i];
         const nowIso = date ? sessionDateToIso(date) : new Date().toISOString();
         const dialogue = flattenDialogue(turns as DialogueTurn[]);
-        return { sessionId, nowIso, dialogue, key: sessionCacheKey(sessionId, dialogue, extractModel) };
+        return {
+          sessionId,
+          nowIso,
+          dialogue,
+          key: sessionCacheKey(sessionId, dialogue, extractModel, fingerprint),
+        };
       });
 
-      await runWithConcurrency(
-        jobs.filter((job) => extractionCache.get(job.key) === undefined),
-        extractConcurrency,
-        async (job) => {
-          const payload = await extractor(job.dialogue, { now: job.nowIso });
-          extractionCache.put(job.key, payload.facts);
-        },
-      );
+      const uncached = jobs.filter((job) => extractionCache.get(job.key) === undefined);
+      if (fingerprint !== undefined && uncached.length > 0) {
+        // Extracting here would run the CURRENT prompt and file the result under the PINNED
+        // generation's key, quietly mixing two fact stores in a 65 MB cache and destroying the
+        // baseline the pin exists to reproduce. A pinned run is read-only by construction.
+        throw new Error(
+          `--fingerprint ${fingerprint} is read-only and ${uncached.length} session(s) are not in it ` +
+            `(first: ${uncached[0]?.sessionId}). Drop --fingerprint to extract with the current prompt.`,
+        );
+      }
+      await runWithConcurrency(uncached, extractConcurrency, async (job) => {
+        const payload = await extractor(job.dialogue, { now: job.nowIso });
+        extractionCache.put(job.key, payload.facts);
+      });
       extractionCache.flush();
       flushEmbed?.();
 

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { coerceNetworkValue, describeValidationFailure, buildRepairPrompt } from "../bench/extraction.js";
+import {
+  coerceNetworkValue,
+  describeValidationFailure,
+  buildRepairPrompt,
+  extractionFingerprint,
+  sessionCacheKey,
+  DEFAULT_EXTRACT_MODEL,
+} from "../bench/extraction.js";
 
 /**
  * gpt-4.1-nano reads the prompt's "USER facts / ASSISTANT facts" framing as if it named the
@@ -137,5 +144,35 @@ describe("missing facts array", () => {
   it("rejects a facts value that is not an array", () => {
     expect(describeValidationFailure({ facts: "none" })).not.toBe("");
     expect(describeValidationFailure({ facts: null })).not.toBe("");
+  });
+});
+
+/**
+ * Editing the extraction prompt re-keys the whole fact cache, which strands every number
+ * measured on the old generation. The fingerprint override lets a DOWNSTREAM change (reflect
+ * prompt, evidence table, retrieval) be measured against the exact facts a baseline used,
+ * instead of paying a ~$7 / ~5h cold re-extract to compare against something slightly
+ * different. The danger it creates is the reason `run.ts` treats a pinned run as read-only:
+ * extracting on a miss would file CURRENT-prompt facts under the PINNED generation's key.
+ */
+describe("sessionCacheKey fingerprint override", () => {
+  it("defaults to the current prompt+model generation", () => {
+    const key = sessionCacheKey("s1", "dialogue", DEFAULT_EXTRACT_MODEL);
+    expect(key.split(":")[1]).toBe(extractionFingerprint(DEFAULT_EXTRACT_MODEL));
+  });
+
+  it("addresses an explicit past generation without disturbing the content digest", () => {
+    const current = sessionCacheKey("s1", "dialogue", DEFAULT_EXTRACT_MODEL);
+    const pinned = sessionCacheKey("s1", "dialogue", DEFAULT_EXTRACT_MODEL, "f4752a79");
+    expect(pinned.split(":")[1]).toBe("f4752a79");
+    // Same session, same content -> only the generation differs.
+    expect(pinned.split(":")[0]).toBe(current.split(":")[0]);
+    expect(pinned.split(":")[2]).toBe(current.split(":")[2]);
+  });
+
+  it("still keys different content to different entries under a pin", () => {
+    const a = sessionCacheKey("s1", "one", DEFAULT_EXTRACT_MODEL, "f4752a79");
+    const b = sessionCacheKey("s1", "two", DEFAULT_EXTRACT_MODEL, "f4752a79");
+    expect(a).not.toBe(b);
   });
 });
