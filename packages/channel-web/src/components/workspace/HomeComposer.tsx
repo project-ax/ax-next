@@ -11,6 +11,11 @@
  * explicitly sends straight away) and turns a silent misroute into a visible
  * one. It also gives the routing a place to show its reasoning, which is the
  * only way a user ever learns to trust or distrust it.
+ *
+ * All of which presumes there is a routing decision to make. With exactly ONE
+ * agent there is not, and the confirmation became a step that asked the person
+ * to approve the only possible answer — see `sole` below (TASK-250). The rule
+ * above holds unchanged from two agents up.
  */
 import { useRef, useState } from 'react';
 import {
@@ -78,7 +83,32 @@ export function HomeComposer({
   const { attachments, add, remove, retry, clear, attachmentIds, sendBlock } =
     useWorkspaceAttachments();
 
-  const picked = agents.find((a) => a.id === pick) ?? null;
+  /**
+   * ONE AGENT IS NOT A CHOICE (TASK-250).
+   *
+   * `Auto` used to be the default whatever the roster looked like, so a
+   * brand-new account's very first message went out to
+   * `POST /api/workspace/route` — which for a single agent answers, in its own
+   * words, `why: "it's your only agent"` — and came back as a confirmation
+   * strip reading *"Auto picked Quill — it's your only agent."* with a
+   * `Send to Quill` button. A first-timer was asked to confirm a decision that
+   * had one option, and told so, at the cost of a round-trip and a second
+   * click.
+   *
+   * So with one agent, that agent simply IS the pick. The menu goes away
+   * (nothing to pick from), the placeholder names them, and `submit` takes the
+   * explicit-agent branch — no routing call, no proposal step. Nothing changes
+   * for two or more, where Auto has a real question to answer; the server's
+   * own contract says as much, claiming `confident` only "when there is
+   * literally no other agent to choose".
+   *
+   * DERIVED, not seeded into `pick`'s initial state: the roster is fetched, so
+   * an initialiser would have read whatever `agents` was on the first render
+   * and then gone stale the moment a second agent was created.
+   */
+  const sole = agents.length === 1 ? agents[0]! : null;
+
+  const picked = sole ?? agents.find((a) => a.id === pick) ?? null;
   const nameOf = (id: string) =>
     agents.find((a) => a.id === id)?.name ?? 'that agent';
 
@@ -296,34 +326,48 @@ export function HomeComposer({
           className="h-8 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
         />
 
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              className="flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-muted px-2.5 text-[12.5px] font-medium"
-            >
-              {picked ? (
-                <AgentTile agent={picked} size={16} />
-              ) : (
-                <Zap size={11} className="text-primary" />
-              )}
-              {picked ? picked.name : 'Auto'}
-              <ChevronDown size={11} className="text-muted-foreground" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={() => setPick('auto')}>
-              <Zap size={13} className="text-primary" />
-              Anyone — pick for me
-            </DropdownMenuItem>
-            {agents.map((a) => (
-              <DropdownMenuItem key={a.id} onClick={() => setPick(a.id)}>
-                <AgentTile agent={a} size={18} />
-                {a.name}
+        {sole ? (
+          /*
+            With one agent there is nothing to pick, so this is a label rather
+            than a menu — it still says who you are talking to, which is worth
+            having on day one, without dressing a foregone conclusion up as a
+            decision. A `<span>`, not a disabled `<button>`: a control that
+            cannot be used is still a control the eye has to rule out.
+          */
+          <span className="flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-muted px-2.5 text-[12.5px] font-medium">
+            <AgentTile agent={sole} size={16} />
+            {sole.name}
+          </span>
+        ) : (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-muted px-2.5 text-[12.5px] font-medium"
+              >
+                {picked ? (
+                  <AgentTile agent={picked} size={16} />
+                ) : (
+                  <Zap size={11} className="text-primary" />
+                )}
+                {picked ? picked.name : 'Auto'}
+                <ChevronDown size={11} className="text-muted-foreground" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => setPick('auto')}>
+                <Zap size={13} className="text-primary" />
+                Anyone — pick for me
               </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
+              {agents.map((a) => (
+                <DropdownMenuItem key={a.id} onClick={() => setPick(a.id)}>
+                  <AgentTile agent={a} size={18} />
+                  {a.name}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
 
         {/*
           The input is plumbing, not a control: the labelled Button below is
