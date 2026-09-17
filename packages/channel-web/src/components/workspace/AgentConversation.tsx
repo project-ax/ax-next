@@ -17,8 +17,14 @@ import {
 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
+import { cn } from '@/lib/utils';
 import { ATTACHMENT_ACCEPT } from '@/lib/attachment-upload';
 import { signInWithGoogle } from '@/lib/auth';
 import { readAlertVariant } from '@/lib/read-register';
@@ -716,9 +722,16 @@ function Message({
     <div className="flex gap-3">
       <AgentTile agent={agent} />
       <div className="min-w-0 flex-1">
-        <div className="max-w-[600px] text-[13.5px] leading-relaxed text-pretty">
-          <FindHighlight fieldKey={fieldKey} text={m.text} find={find} />
-        </div>
+        {/*
+          A turn that only ran tools has no prose, and the step panel IS the
+          reply. The empty bubble is dropped rather than drawn, so the reader
+          is not left with a blank line they cannot account for.
+        */}
+        {m.text.length > 0 && (
+          <div className="max-w-[600px] text-[13.5px] leading-relaxed text-pretty">
+            <FindHighlight fieldKey={fieldKey} text={m.text} find={find} />
+          </div>
+        )}
         {m.kind === 'steps' && <Steps label={m.stepsLabel} steps={m.steps} />}
         <div className="mt-1.5 text-[11.5px] text-muted-foreground">{m.time}</div>
       </div>
@@ -726,38 +739,58 @@ function Message({
   );
 }
 
+/**
+ * What the agent did, as a list you can shut.
+ *
+ * `label` and `steps` come from ONE producer — `lib/workspace-steps.ts`'s
+ * `shapeSteps` — whether this turn is streaming or was read back from the
+ * transcript, so the header's count is `steps.length` by construction rather
+ * than by agreement. This draws them and derives nothing.
+ *
+ * Open by default: the panel exists to answer "what did it actually do", and a
+ * disclosure that starts shut answers that only for people who thought to
+ * click. (Chat's chain-of-thought starts CLOSED for the opposite reason —
+ * invariant J4, it holds reasoning. This one holds no reasoning at all.)
+ *
+ * A real `ul`/`li`, not a stack of divs: it is a list, and a screen reader that
+ * announces "list, 4 items" is telling the reader the same thing the header
+ * does. The key is position-bearing because two steps can legitimately read
+ * the same — an agent that ran `Bash` twice produces two identical rows, and
+ * a key that was just the sentence would be a duplicate React key across
+ * siblings, which is a reconciliation bug waiting for the first list that
+ * grows in the middle. `AgentConversationSteps.test.tsx` renders that case.
+ */
 function Steps({ label, steps }: { label: string; steps: string[] }) {
-  const [open, setOpen] = useState(true);
   return (
-    <div className="mt-3 max-w-[600px] overflow-hidden rounded-lg border border-border">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="flex w-full items-center gap-2 bg-muted px-3.5 py-2 text-[12px] text-muted-foreground"
-      >
-        <ListChecks size={12} />
+    <Collapsible
+      defaultOpen
+      data-testid="workspace-steps"
+      className="mt-3 max-w-[600px] overflow-hidden rounded-lg border border-border"
+    >
+      <CollapsibleTrigger className="group flex w-full items-center gap-2 bg-muted px-3.5 py-2 text-[12px] text-muted-foreground">
+        <ListChecks size={12} aria-hidden="true" />
         {label}
         <ChevronRight
           size={12}
-          className={open ? 'ml-auto rotate-90' : 'ml-auto'}
+          aria-hidden="true"
+          className="ml-auto transition-transform duration-150 group-data-[state=open]:rotate-90"
         />
-      </button>
-      {open && (
-        <div className="px-3.5 py-1">
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <ul className="px-3.5 py-1">
           {steps.map((s, i) => (
-            <div
-              key={s}
-              className={
-                i === 0
-                  ? 'py-2 text-[12.5px] text-muted-foreground'
-                  : 'border-t border-rule-soft py-2 text-[12.5px] text-muted-foreground'
-              }
+            <li
+              key={`${i}-${s}`}
+              className={cn(
+                'py-2 text-[12.5px] text-muted-foreground',
+                i > 0 && 'border-t border-rule-soft',
+              )}
             >
               {s}
-            </div>
+            </li>
           ))}
-        </div>
-      )}
-    </div>
+        </ul>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }

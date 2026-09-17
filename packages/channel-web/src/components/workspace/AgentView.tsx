@@ -29,6 +29,20 @@ import {
 } from '@/lib/read-register';
 import { workspaceApi, type AgentDetail, type Decision } from '@/lib/workspace-api';
 import type { DecisionReadError } from '@/lib/workspace-decisions';
+/*
+  The one shaping function, shared with the server's reload path
+  (`server/routes-workspace.ts`). Both sides normalize their own frames/blocks
+  into `WorkspaceToolCall` and then call `shapeSteps`, so a live step row and a
+  reloaded step row are the same sentence by construction rather than by two
+  people remembering the same wording.
+*/
+import {
+  applyToolResult,
+  applyToolUse,
+  shapeSteps,
+  type WorkspaceToolCall,
+} from '@/lib/workspace-steps';
+import type { PhaseKind } from '@/server/types';
 import { ActivityFeed } from './ActivityFeed';
 import { AgentConversation, type ApprovalRead } from './AgentConversation';
 import { AgentFiles } from './AgentFiles';
@@ -288,6 +302,27 @@ export function AgentView({
   const [streamed, setStreamed] = useState('');
   const [streaming, setStreaming] = useState(false);
   /**
+   * The tool calls this turn has made so far (TASK-352).
+   *
+   * Separate state from `streamed` because it is not a string append: a
+   * `tool-result` REVISES a row the `tool-use` already added, so a running step
+   * becomes done, failed or waiting in place. It is shaped into the panel by
+   * the same `shapeSteps` the server's reload path calls, which is the whole
+   * point — the live row and the reloaded row cannot word themselves
+   * differently if only one function words them.
+   *
+   * Transient, like `streamed`: it clears on `done`, when the re-read brings
+   * back the server's version of the same turn.
+   */
+  const [liveCalls, setLiveCalls] = useState<readonly WorkspaceToolCall[]>([]);
+  /**
+   * The agent's last reported phase, shown as the pre-content status line.
+   *
+   * Cleared at the start of every turn so a stale `sandbox-starting` cannot
+   * outlive the sandbox it described.
+   */
+  const [phase, setPhase] = useState<PhaseKind | null>(null);
+  /**
    * The turn's failure: the outcome (which controls to offer) plus the
    * producer's own sentence when it has one worth reading.
    *
@@ -383,6 +418,8 @@ export function AgentView({
     setPastId(null);
     setSent(null);
     setStreamed('');
+    setLiveCalls([]);
+    setPhase(null);
     setStreaming(false);
     setTurnError(null);
   }, [agentId]);
@@ -400,14 +437,34 @@ export function AgentView({
       abortRef.current = ac;
       setStreaming(true);
       setStreamed('');
+      setLiveCalls([]);
+      setPhase(null);
       setTurnError(null);
       await workspaceApi.streamReply(reqId, {
         signal: ac.signal,
         onText: (chunk) => setStreamed((prev) => prev + chunk),
+        /*
+          What the agent is doing, as it does it (TASK-352). `applyToolUse`
+          adds the row; `applyToolResult` revises the one already there, which
+          is why this is a list of calls rather than an append-only list of
+          sentences — a step that failed has to stop claiming it ran.
+        */
+        onToolUse: (call) => setLiveCalls((prev) => applyToolUse(prev, call)),
+        onToolResult: (result) =>
+          setLiveCalls((prev) => applyToolResult(prev, result)),
+        /*
+          Pre-content only, and the gate is structural: the status row below
+          exists ONLY while the turn has produced no text and no steps, so a
+          phase arriving after content has nowhere to render. Chat gets the
+          same rule from `ctx.contentSeen`; here it falls out of the shape.
+        */
+        onPhase: (next) => setPhase(next),
         onDone: () => {
           setStreaming(false);
           setSent(null);
           setStreamed('');
+          setLiveCalls([]);
+          setPhase(null);
           // The durable thread is the source of truth — re-read it rather than
           // keeping our transient copy around to drift.
           void load();
@@ -623,12 +680,38 @@ export function AgentView({
   if (sent !== null) {
     liveThread.push({ kind: 'user', id: 'pending-user', text: sent.text });
   }
-  if (streaming || streamed.length > 0) {
-    liveThread.push(
-      streamed.length > 0
-        ? { kind: 'agent', id: 'pending-agent', text: streamed, time: '' }
-        : { kind: 'status', id: 'pending-status', text: 'Thinking…' },
-    );
+  /*
+    The in-flight reply. `livePanel` is built by the SAME `shapeSteps` the
+    server calls on reload (TASK-352), so the step labels a reader sees while
+    the turn runs are the ones still there after they refresh.
+
+    The status line is the pre-content branch and nothing else: it renders only
+    when the turn has produced neither text nor a step, which is what keeps a
+    phase label from appearing after content has started.
+  */
+  const livePanel = shapeSteps(liveCalls);
+  const hasLiveContent = streamed.length > 0 || livePanel !== null;
+  if (streaming || hasLiveContent) {
+    if (hasLiveContent) {
+      liveThread.push(
+        livePanel === null
+          ? { kind: 'agent', id: 'pending-agent', text: streamed, time: '' }
+          : {
+              kind: 'steps',
+              id: 'pending-agent',
+              text: streamed,
+              time: '',
+              stepsLabel: livePanel.label,
+              steps: livePanel.steps,
+            },
+      );
+    } else {
+      liveThread.push({
+        kind: 'status',
+        id: 'pending-status',
+        text: phase === 'sandbox-starting' ? 'Getting set up…' : 'Thinking…',
+      });
+    }
   }
 
   /*

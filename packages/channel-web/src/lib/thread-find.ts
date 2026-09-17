@@ -122,11 +122,16 @@ export interface FindField {
  * POSITION changes, and it was measured rather than assumed: the thread only
  * ever grows at the end (streaming appends, and the turn-end re-read swaps the
  * transient rows for server ones at the tail), so ordinary use remounts
- * nothing. A compaction rewrite that replaces the head does remount the tail —
- * and that costs nothing here, because the `Message` subtree holds no
- * accumulated state: `Steps`' open/closed flag has no producer in production,
- * and `ApprovalCard`'s `useDecisionClock` is derived from `Date.now()` and the
- * decision row, so a remount re-reads the clock rather than losing a countdown.
+ * nothing. A compaction rewrite that replaces the head does remount the tail,
+ * and what that costs is now ONE thing rather than nothing (TASK-352, which
+ * gave the `steps` variant its first producer): `Steps` is an uncontrolled
+ * `Collapsible defaultOpen`, so a reader who had shut a step panel finds it
+ * open again after such a rewrite. That is a lost preference on a rare event,
+ * not lost data, and lifting the flag into state keyed by something stabler is
+ * a worse trade than the count-vs-marks drift this key exists to prevent.
+ * `ApprovalCard`'s `useDecisionClock` still costs nothing — it is derived from
+ * `Date.now()` and the decision row, so a remount re-reads the clock rather
+ * than losing a countdown.
  */
 export function findFieldKey(index: number, id: string): string {
   return `${index}:${id}`;

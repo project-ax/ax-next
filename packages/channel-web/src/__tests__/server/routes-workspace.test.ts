@@ -681,7 +681,7 @@ describe('channel-web agent-workspace BFF', () => {
     expect(foreign.captured.statusCode).toBe(404);
   });
 
-  it('builds the thread from real turns, dropping thinking + tool blocks', async () => {
+  it('builds the thread from real turns, keeping tool steps and dropping thinking', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
     turnsByConversation.set('c1', [
@@ -699,12 +699,19 @@ describe('channel-web agent-workspace BFF', () => {
         contentBlocks: [
           { type: 'thinking', thinking: 'secret scratchpad' },
           { type: 'text', text: 'Four things need you.' },
-          { type: 'tool_use', id: 'tu1', name: 'gmail_list', input: {} },
+          {
+            type: 'tool_use',
+            id: 'tu1',
+            name: 'mcp__gmail__gmail_list',
+            input: {},
+            activityPhrase: 'Checking your inbox',
+          },
         ],
         createdAt: '2026-08-01T10:00:05.000Z',
       },
-      // A turn that is ONLY a tool call has nothing to render — it must be
-      // skipped, not turned into an empty bubble.
+      // A turn that is ONLY a tool call used to vanish here, which is how a
+      // turn that did something could render as if the agent said nothing.
+      // TASK-352: it renders as its step, with no bubble above it.
       {
         turnId: 't3',
         turnIndex: 2,
@@ -712,7 +719,8 @@ describe('channel-web agent-workspace BFF', () => {
         contentBlocks: [{ type: 'tool_use', id: 'tu2', name: 'gmail_get', input: {} }],
         createdAt: '2026-08-01T10:00:06.000Z',
       },
-      // Tool-result turns belong to AW-10's tool view, not the thread.
+      // Tool-result turns are read for their OUTCOMES and never drawn on their
+      // own — the step they settle hangs off the assistant turn that called.
       {
         turnId: 't4',
         turnIndex: 3,
@@ -732,20 +740,74 @@ describe('channel-web agent-workspace BFF', () => {
       thread: Array<Record<string, unknown>>;
     };
     expect(body.conversationId).toBe('c1');
-    expect(body.thread).toHaveLength(2);
+    expect(body.thread).toHaveLength(3);
     expect(body.thread[0]).toEqual({
       kind: 'user',
       id: 't1',
       text: 'summarise my inbox',
     });
     expect(body.thread[1]).toMatchObject({
-      kind: 'agent',
+      kind: 'steps',
       id: 't2',
       text: 'Four things need you.',
+      stepsLabel: '1 step',
+      // The host-authored phrase, not `mcp__gmail__gmail_list`.
+      steps: ['Checking your inbox'],
     });
     expect(String(body.thread[1]!.time)).toMatch(/^\d{1,2}:\d{2}\s?(AM|PM)$/);
+    // No result row for tu2, so it is honestly still running rather than done.
+    expect(body.thread[2]).toMatchObject({
+      kind: 'steps',
+      id: 't3',
+      text: '',
+      stepsLabel: '1 step, 1 in progress',
+      steps: ['gmail_get — in progress'],
+    });
     // The scratchpad never crosses the wire.
     expect(JSON.stringify(body.thread)).not.toContain('secret scratchpad');
+    // Neither does an MCP wire name.
+    expect(JSON.stringify(body.thread)).not.toContain('mcp__');
+  });
+
+  it('reports a failed tool call as failed and a held one as held', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
+    turnsByConversation.set('c1', [
+      {
+        turnId: 't1',
+        turnIndex: 0,
+        role: 'assistant',
+        contentBlocks: [
+          { type: 'tool_use', id: 'bad', name: 'send_email', input: {}, activityPhrase: 'Sending the email' },
+          { type: 'tool_use', id: 'wait', name: 'delete_repo', input: {}, activityPhrase: 'Deleting the repo' },
+        ],
+        createdAt: '2026-08-01T10:00:00.000Z',
+      },
+      {
+        turnId: 't2',
+        turnIndex: 1,
+        role: 'tool',
+        contentBlocks: [
+          { type: 'tool_result', tool_use_id: 'bad', content: 'boom', is_error: true },
+          { type: 'tool_result', tool_use_id: 'wait', content: 'asked', held: true },
+        ],
+        createdAt: '2026-08-01T10:00:01.000Z',
+      },
+    ]);
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    const body = captured.body as { thread: Array<Record<string, unknown>> };
+    expect(body.thread).toHaveLength(1);
+    expect(body.thread[0]).toMatchObject({
+      kind: 'steps',
+      stepsLabel: "2 steps, 1 didn't finish",
+      steps: [
+        "Sending the email — didn't finish",
+        'Deleting the repo — waiting for you',
+      ],
+    });
   });
 
   it('splits current vs past conversations, newest first', async () => {
