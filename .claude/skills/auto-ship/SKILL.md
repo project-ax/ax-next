@@ -498,6 +498,11 @@ MAIN_SHA=$(git rev-parse HEAD)          # full 40 chars — never an abbreviated
 # The twin trap runs along the other axis (measured 2026-09-16): `--branch main
 # --workflow ci.yml --limit 1` returned a re-run of an unrelated four-month-old commit
 # and produced a false RED. One pin is not enough; pin workflow AND commit, every time.
+# Re-checking later will NOT reproduce the pairing: that CI run has since been re-run to
+# success, so `--limit 1` on 3e1c0915 now returns a CodeQL row that happens to agree with
+# CI. The ORDERING is the durable part and still reproduces -- `--limit 1` returns
+# "CodeQL - Code Quality", not "CI". Do not read a later green as evidence the trap is
+# gone; it only means the two rows currently agree, which is luck, not a guarantee.
 # The verdict keys off `status` FIRST, and that is what makes it immune to the
 # empty-conclusion trap. An unfinished run's `conclusion` is not null, it is "" (an
 # empty STRING — measured), so the tempting `.conclusion // "pending"` does NOT fire:

@@ -46,7 +46,13 @@
 //
 // The convenience query reported SUCCESS for a head whose CI had FAILED. This is the
 // backstop that exists to stop exactly that, so a false green here is the worst of the
-// available bugs. The twin, on the other axis, is already in `.claude/memory/
+// available bugs.
+//
+// Re-running this later will not reproduce the PAIRING -- that CI run has since been
+// re-run to success, so the two rows now agree. The ordering is what is durable, and it
+// still reproduces: `--limit 1` on that head returns "CodeQL - Code Quality", not "CI".
+// Checked again 2026-09-17, after the re-run. A later green is not evidence the trap is
+// gone; it means the rows happen to agree. The twin, on the other axis, is already in `.claude/memory/
 // mistakes.md` (2026-09-16): `--branch main --workflow ci.yml --limit 1` returned a
 // re-run of an unrelated four-month-old commit and produced a false RED. One pin is
 // never enough -- pin workflow AND commit.
