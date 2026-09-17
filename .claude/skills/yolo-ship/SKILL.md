@@ -179,9 +179,14 @@ digraph review {
   merge door that way, every one of them under an honest `reviewer: clean`. The passes
   auto-ship then ordered found a **Major** on #557, an **Important** on #553 and **two
   Majors** on #556 — and on #553 and #557 a wrong rule had already been committed into
-  `.claude/memory/`, which every later agent reads as ground truth. So: fixed something
-  after a clean round? That round no longer counts; dispatch once more. The loop is
-  still finite — a round that changes nothing is the round that ends it.
+  `.claude/memory/`, which every later agent reads as ground truth. So: fixed
+  **production code** after a clean round? That round no longer counts; dispatch once
+  more. The loop is still finite — a round that changes nothing is the round that ends
+  it. **Carve-out, so this does not cost 40 minutes per typo:** if everything you
+  pushed after the clean round touches only tests, docs or `.claude/memory/`, proceed —
+  just report the older `reviewed-sha` and label the commits honestly. That is the same
+  scope rule auto-ship's review gate applies, deliberately: one rule, two places that
+  enforce it, so they cannot disagree.
 - Only when the review is clean **and `reviewed-sha` is the head you are about to
   push** do you proceed to Phase 6 and open the PR. **Orchestrated mode:** report that
   sha as the handoff's `reviewed-sha:` field, and if anything did land after it (a CI
