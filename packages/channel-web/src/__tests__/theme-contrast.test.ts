@@ -160,9 +160,14 @@ const QUIET_TEXT = '--muted-foreground';
  * `--muted` is what TASK-380 was: `text-muted-foreground` on `bg-muted`
  * measured 4.40:1 in light mode in a real browser — under the floor, and
  * unmeasured here because `--muted` was in neither list. It is not a rare
- * pairing. The Steps trigger in `AgentConversation`, `TabsList`, the Routines
- * `TriggerChip` and `StatusChip`, the Thread date divider and the admin
- * `RoleCard` badge all render exactly it, as real text a person has to read.
+ * pairing, and it is not decorative: five sites render it as text a person
+ * has to read — the Steps trigger in `AgentConversation`, every INACTIVE
+ * `TabsTrigger` (`TabsList` sets the pair and only `data-[state=active]`
+ * overrides it, so this is every tab strip in the product), the Routines
+ * `TriggerChip`, the Thread search-results banner, and the admin `RoleCard`
+ * pill. (`StatusChip` and the attachment/artifact icon tiles also carry the
+ * pair, but they render a glyph — an em dash, an icon — and answer to the 3:1
+ * non-text floor instead.)
  *
  * `--popover` carries `CommandGroup`'s `[cmdk-group-heading]` rule and
  * `CommandShortcut`, both inside `Command`'s `bg-popover` root. It holds the
