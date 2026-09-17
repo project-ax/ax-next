@@ -47,30 +47,38 @@
  *   - identity is ALWAYS the authenticated user (auth:require-user → 401).
  *     `userId` is never read from the body, query, or params.
  *   - every read of an agent's WORKSPACE or MEMORY is gated by
- *     `agents:resolve`, strictly before the read; any PluginError → 404 (not
- *     403 — we don't tell a foreign caller whether an id exists). That is the
- *     eleven `:agentId` routes (`agentDetail`, files, user-files, downloads,
- *     rail, grants/revoke, memory/rules) plus the agent-scoped branch of
- *     `/activity`.
+ *     `agents:resolve`, STRICTLY BEFORE the read; any PluginError → 404 (not
+ *     403 — we don't tell a foreign caller whether an id exists). Concretely,
+ *     that is every `/api/workspace/agents/:agentId…` route — the detail
+ *     panel, `files`, `files/*`, `user-files`, `user-files/*`,
+ *     `download/files/*`, `download/user-files/*`, `rail`, `grants/revoke`
+ *     and `memory/rules` — plus the agent-scoped branch of `/activity`. The
+ *     order on each is: `authOr401` → empty-id 400 → `resolveAgentOr404` →
+ *     (path validation) → read. Nothing reads before the resolve.
  *
  *     ⚠ Since TASK-257 (2026-09-17) this gate is the ONLY barrier on those
  *     routes. The workspace tier used to hash the CALLER's userId into the
  *     repo id, so a non-owner who slipped past the ACL still landed in their
  *     own empty shard; the partition is now `agentId` alone, because shared
- *     team files and per-caller isolation are contradictory. Do not bypass
- *     this gate, do not make it best-effort, and do not move it after a read.
+ *     team files and per-caller isolation are contradictory requirements. Do
+ *     not bypass this gate, do not make it best-effort, and do not move it
+ *     after a read. `routes-workspace-team-agent.test.ts` pins it from the
+ *     outside: a caller `agents:resolve` rejects gets a 404 AND the read hook
+ *     records zero calls.
  *
- *     Five routes here are deliberately gated DIFFERENTLY, and NONE of them
- *     reads workspace files or memory: `/state`, `/route` and the UNSCOPED branch
- *     of `/activity` fan out over `agents:list-for-user` — the roster IS the
- *     ACL there, and it is a different predicate (server-derived teamIds vs.
- *     a live `teams:is-member` call), one that is strictly narrower in
- *     practice. `/grants` filters the in-memory card-owner map on the
- *     authenticated userId. `/decisions` reads the caller's OWN decisions
- *     first and then drops rows whose agent it cannot reach, so there a
- *     resolve failure is a filtered row rather than a 404. Say so plainly:
- *     the blanket claim this comment used to make ("every per-agent read")
- *     was not true, and a security note nobody can check is worse than none.
+ *     Everything NOT in that list is gated DIFFERENTLY on purpose, and none
+ *     of it reads workspace files or memory. `/state`, `/route` and the
+ *     UNSCOPED branch of `/activity` fan out over `agents:list-for-user` —
+ *     there the roster IS the ACL, and it is a different predicate
+ *     (server-derived teamIds vs. a live `teams:is-member` call), one that is
+ *     strictly narrower in practice. `/grants` filters the in-memory
+ *     card-owner map on the authenticated userId. `/decisions` reads the
+ *     caller's OWN decisions first and then drops rows whose agent it cannot
+ *     reach, so a resolve failure there is a filtered row rather than a 404.
+ *
+ *     Spelled out because the blanket claim this comment used to make —
+ *     "every per-agent read is gated by `agents:resolve`" — was not true, and
+ *     a security note nobody can check against the code is worse than none.
  *   - transcript text is UNTRUSTED model output. It rides as a plain string and
  *     React renders it as text; we never build markup from it here.
  *   - I2 — no cross-plugin imports. Every hook is a duck-typed `bus.call`, and
