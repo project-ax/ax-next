@@ -13,10 +13,18 @@ import {
   ChevronRight,
   Layers,
   ListChecks,
+  MessageSquare,
   Paperclip,
 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '@/components/ui/empty';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { ATTACHMENT_ACCEPT } from '@/lib/attachment-upload';
@@ -388,6 +396,48 @@ export function AgentConversation({
             />
             );
           })}
+
+          {/*
+            TASK-250 — a thread with no turns says so, but only where it can
+            say it honestly. This is where the messages would be, because that
+            is where the reader is looking for them.
+
+            `!readOnly` IS THE HONESTY GATE, not a style choice. `AgentView`
+            passes `readOnly={past !== null}`, and its `pastThread` renders
+            `[]` while `pastError` is set — see the comment at
+            `AgentView.tsx:753`, which keeps that pane deliberately blank so
+            the alert above it is the only thing speaking. So a past
+            conversation whose excerpt read FAILED arrives here as an empty
+            thread, and "Nothing here yet" over it would be a claim about the
+            CONTENT built from a fact about the FETCH: the same substitution
+            the approval notice below exists to stop. A read-only thread with
+            zero messages therefore keeps rendering nothing.
+
+            The live side has no matching hole: `AgentView` renders "Loading…"
+            while `detail` is null, so `liveThread` reaches zero length only
+            once the detail read has landed and come back with no turns. And a
+            zero-turn transcript can carry no approval pointer either — an
+            approval is raised during a turn — so this copy does not overlap
+            with the read notice below even when that read failed.
+
+            No suggestions, no example prompts, nothing about what the agent
+            can do. It names where the reader is and what the box below is
+            for, and stops there.
+          */}
+          {thread.length === 0 && !readOnly && (
+            <Empty>
+              <EmptyHeader>
+                <EmptyMedia variant="icon">
+                  <MessageSquare />
+                </EmptyMedia>
+                <EmptyTitle>Nothing here yet</EmptyTitle>
+                <EmptyDescription>
+                  This is where you and {agent.name} talk. Send something below
+                  — {agent.name} picks it up from there.
+                </EmptyDescription>
+              </EmptyHeader>
+            </Empty>
+          )}
 
           {/*
             The notice sits where the missing cards would have been — the foot
