@@ -7,31 +7,40 @@
  * their own private, empty shard, so a teammate opening the Files tab on a
  * shared agent saw nothing there — the bug this key change fixes.
  *
- * This file proves the acceptance criterion AT THE ROUTE LEVEL: a team
- * agent's files and memory, written by one user (`alice`), are readable by a
- * DIFFERENT authorized user (`bob`). It reuses the harness from
- * `routes-workspace-files.test.ts` and `routes-workspace.test.ts` — a real
- * `HookBus`, fake `auth:require-user` / `agents:resolve` / `workspace:list` /
- * `workspace:read` / `memory:rules:read` services, and the direct-handler
- * call style (`makeWorkspaceHandlers(...).agentFiles(...)`, etc).
+ * ⚠ WHAT THIS FILE DOES AND DOES NOT PROVE. Read this before trusting it.
  *
- * The load-bearing wrinkle: the fake `workspace:*` and `memory:*` services
- * below key their storage on `ctx.agentId` ALONE, mirroring what
- * `@ax/workspace-git-server` does post-TASK-257. If they were keyed on
- * `ctx.userId` too (the OLD partition), cases 1-3 would still pass, but for
- * the wrong reason — they'd pass even if the route silently passed the wrong
- * ctx through, because each user would just be reading their own separate
- * shard. Run this file's cases 1-3 against a `${ctx.userId}|${ctx.agentId}`
- * keyed fake (the pre-TASK-257 shape) and they FAIL, because bob's read would
- * land in his own empty shard instead of alice's populated one. That mutant
- * run is the actual evidence this test is worth anything; see the PR notes.
+ * It tests the ROUTE PLUMBING and the ACL, not the partition derivation. The
+ * fakes below stand in for `@ax/workspace-git-server`, and `@ax/channel-web`
+ * does not depend on that package at all — so the real `workspaceIdFor` is
+ * never called here, and cases 1-3 would pass just as green against the
+ * pre-TASK-257 derivation. They are NOT the tests that would have caught the
+ * bug. (An earlier version of this comment claimed they were, on the strength
+ * of a "mutant" that flipped `storeKey` — the test's own double. Mutating the
+ * harness proves the harness is load-bearing in the harness. It says nothing
+ * about production. Flagged in review; corrected here.)
  *
- * Case 4 is the other half: the ACL (`agents:resolve`) is now the ONLY gate
- * standing between "authorized teammate" and "any caller who knows the
- * agentId", so it has to run — and reject — BEFORE any `workspace:*` /
- * `memory:*` hook is ever called. A caller `agents:resolve` rejects
- * (`mallory`, not on the team) must get 404 on every route below, with the
- * underlying read hook's spy showing zero calls.
+ * THE TESTS THAT DO CATCH IT, both of which go red against `[userId, agentId]`:
+ *   - `workspace-git-server/src/client/__tests__/plugin.test.ts`, block 3b —
+ *     boots a real git server and drives the REAL derivation: bob reads
+ *     alice's bytes on a shared agentId, and exactly one bare repo exists.
+ *   - `workspace-git-server/src/client/__tests__/workspace-id.test.ts` —
+ *     pinned outputs plus the userId-invariance cases.
+ *   - `memory-strata-index-contract`'s Test 11, for the index tier.
+ *
+ * WHAT THIS FILE IS STILL WORTH, which is why it exists:
+ *   1-3. The route hands the workspace hooks a ctx carrying the TARGET
+ *     agent's id rather than, say, `initCtx` or something derived from the
+ *     caller — so once the tier partitions on agentId, a teammate's read
+ *     genuinely lands on the agent's tree. That is the plumbing half of the
+ *     acceptance criterion, and it would catch a regression that re-derived
+ *     the ctx from the caller.
+ *   4. The half that matters most now. Since TASK-257 the hash provides no
+ *     defence-in-depth, so `agents:resolve` is the ONLY gate between
+ *     "authorized teammate" and "any caller who knows the agentId". It must
+ *     run — and reject — BEFORE any `workspace:*` / `memory:*` hook. A caller
+ *     `agents:resolve` rejects (`mallory`) gets 404 on every route below AND
+ *     the read hook's spy records zero calls. That case is fix-independent by
+ *     design: it guards the barrier, not the partition.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
@@ -102,17 +111,14 @@ describe('team-agent workspace isolation (TASK-257)', () => {
   let rulesReadCalls: Array<{ agentId: string; userId: string }>;
 
   /**
-   * The fakes partition exactly the way the real backend does since TASK-257:
-   * on `agentId` ALONE. This is load-bearing for the cases below — key these
-   * stores on the caller as well and bob's reads would pass for the wrong
-   * reason, since he would then be looking in whatever shard the route
-   * happened to hand the fake.
+   * The fake tier partitions the way the real one does since TASK-257: on
+   * `agentId` ALONE. Keep it that way — it is what makes cases 1-3 a question
+   * about the ctx the ROUTE builds rather than about the fake's own keying.
    *
-   * MUTANT (measured, 2026-09-17): making this `${ctx.userId}|${ctx.agentId}`
-   * — i.e. restoring the pre-TASK-257 partition — turns cases 1-3 RED (3
-   * failed / 3 passed); bob lands in his own empty `bob|team-1` shard. The
-   * three ACL cases stay green, correctly: mallory is refused by
-   * `agents:resolve` before any partition is consulted.
+   * Do not read a mutation of this function as evidence about production:
+   * flipping it to `${ctx.userId}|${ctx.agentId}` does redden cases 1-3, but
+   * it reddens them by changing the test double, not the shipped derivation
+   * (which this package cannot even import). See the header.
    */
   function storeKey(ctx: { agentId: string; userId?: string | null }): string {
     return ctx.agentId;

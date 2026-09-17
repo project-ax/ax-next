@@ -72,9 +72,12 @@
  *     there the roster IS the ACL, and it is a different predicate
  *     (server-derived teamIds vs. a live `teams:is-member` call), one that is
  *     strictly narrower in practice. `/grants` filters the in-memory
- *     card-owner map on the authenticated userId. `/decisions` reads the
- *     caller's OWN decisions first and then drops rows whose agent it cannot
- *     reach, so a resolve failure there is a filtered row rather than a 404.
+ *     card-owner map on the authenticated userId. The `/decisions` LIST route
+ *     reads the caller's OWN decisions first and then drops rows whose agent
+ *     it cannot reach, so a resolve failure there is a filtered row rather
+ *     than a 404 — note that is the list route only; `/decisions/:decisionId`
+ *     and its approve/dismiss/undo siblings DO 404, through
+ *     `loadOwnedDecision`.
  *
  *     Spelled out because the blanket claim this comment used to make —
  *     "every per-agent read is gated by `agents:resolve`" — was not true, and
