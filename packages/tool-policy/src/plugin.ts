@@ -270,11 +270,15 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
        * The hosts this caller may reach silently.
        *
        * FAILS CLOSED, and that is the whole reason it is a function with a
-       * catch rather than an inline await: every failure mode here — no store,
-       * a database blip, an id we would not write under — means "we do not know
-       * what this person allowed", and the only safe reading of that is
-       * "nothing", which holds. Returning the rule's own verdict is the outcome;
-       * an empty set is how we get there without a second code path.
+       * catch rather than an inline await: every failure here — no store, a
+       * database blip, a schema that has not migrated — means "we do not know
+       * what is allowed", and the only safe reading of that is "nothing", which
+       * holds. Returning the rule's own verdict is the outcome; an empty set is
+       * how we get there without a second code path.
+       *
+       * An id that names no person is NOT one of those failures. It answers the
+       * operator's global list and nothing personal — see the store, and the
+       * note below.
        */
       const allowedHosts = async (ctx: AgentContext): Promise<ReadonlySet<string>> => {
         // NO SHORT-CIRCUIT ON A NON-PERSON CALLER, deliberately, and it used to
