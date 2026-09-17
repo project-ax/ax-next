@@ -412,6 +412,23 @@ export interface K8sPresetConfig {
    */
   hostLlmTools?: boolean;
   /**
+   * Hosts `web_extract` may read from without stopping to ask anybody
+   * (TASK-330). The operator's half of the egress allowlist: an entry here
+   * applies to everyone on the deployment, and is the only kind of entry no
+   * individual can mint — the other kind is written when a person approves a
+   * hold, and belongs to that person alone.
+   *
+   * DEFAULTS TO NOTHING, and leave it that way unless a site genuinely needs to
+   * be silent for everybody. An empty list does not break a deployment: the
+   * first read of a new site is HELD for one approval, not refused. Seeding it
+   * to dodge the prompt is seeding away the feature.
+   *
+   * Set from `AX_WEB_EXTRACT_ALLOWED_HOSTS` (comma-separated) by
+   * `loadK8sConfigFromEnv`. A malformed entry is skipped with a warning at
+   * init rather than failing the boot — one typo must not take the host down.
+   */
+  webExtractAllowedHosts?: string[];
+  /**
    * Model the memory_search retrieval orchestrator runs on, as a BARE
    * OpenRouter model id (`anthropic/claude-haiku-4.5`, not `openrouter/...` — the
    * hook name already carries the provider). Defaults to
@@ -1071,7 +1088,19 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // route, which asks it for the verdict on every catalog tool no rule
   // describes; `tool-policy:list-capabilities` from that same rail route, where
   // it produces "What it may do alone".
-  plugins.push(createToolPolicyPlugin());
+  //
+  // It also owns the EGRESS ALLOWLIST (TASK-330) that makes `web_extract`'s
+  // hold bearable: a host on it reads silently, a host off it is held once.
+  // The operator's global entries come in here; a person's own are written by
+  // `egress-allowlist:remember` when they approve, which is @ax/web-tools'
+  // caller (pushed with the host-LLM-tools bundle below).
+  plugins.push(
+    createToolPolicyPlugin(
+      config.webExtractAllowedHosts === undefined
+        ? {}
+        : { globalEgressHosts: config.webExtractAllowedHosts },
+    ),
+  );
 
   // ----- 8a''''. decisions -----------------------------------------------
   // @ax/decisions — the durable Decision row (agent-workspace design §3.2,
@@ -2044,6 +2073,23 @@ export function loadK8sConfigFromEnv(
     env.AX_MEMORY_ORCHESTRATOR_MODEL !== ''
   ) {
     config.memoryOrchestratorModel = env.AX_MEMORY_ORCHESTRATOR_MODEL;
+  }
+
+  // ---- web_extract egress allowlist (TASK-330) ----------------------------
+  // Comma-separated hosts every user of this deployment may read silently.
+  // Parsed loosely here (split, trim, drop blanks) and VALIDATED in the plugin,
+  // which is the boundary that writes: a malformed host is skipped with a
+  // warning there rather than failing the boot, because one typo in a
+  // deployment's config must not take the host down. Unset means nobody is
+  // pre-approved, which is the intended default — a miss is a hold, not a
+  // refusal, so nothing breaks.
+  const allowedHostsRaw = env.AX_WEB_EXTRACT_ALLOWED_HOSTS;
+  if (allowedHostsRaw !== undefined && allowedHostsRaw.trim() !== '') {
+    const hosts = allowedHostsRaw
+      .split(',')
+      .map((h) => h.trim())
+      .filter((h) => h !== '');
+    if (hosts.length > 0) config.webExtractAllowedHosts = hosts;
   }
 
   // ---- onboarding (first-run wizard) ------------------------------------

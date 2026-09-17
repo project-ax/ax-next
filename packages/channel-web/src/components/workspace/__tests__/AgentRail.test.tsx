@@ -281,7 +281,7 @@ describe('AgentRail — "What it may do alone"', () => {
               provenance: 'unmapped',
               described: false,
               conditional: false,
-              effect: null,
+              effect: [],
               mechanicalLabel: 'some_unmapped_tool',
               theirDescription: null,
               theirName: null,
@@ -317,7 +317,7 @@ describe('AgentRail — "What it may do alone"', () => {
               provenance: 'unmapped',
               described: false,
               conditional: false,
-              effect: null,
+              effect: [],
               mechanicalLabel: null,
               theirDescription: null,
               theirName: null,
@@ -342,7 +342,7 @@ describe('AgentRail — "What it may do alone"', () => {
             status: 'ok',
             incomplete: false,
             unrestrictedTools: false,
-            rows: [describedRow({ verdict: 'allow', effect: 'spends' })],
+            rows: [describedRow({ verdict: 'allow', effect: ['spends'] })],
           },
         }),
       );
@@ -362,7 +362,7 @@ describe('AgentRail — "What it may do alone"', () => {
             status: 'ok',
             incomplete: false,
             unrestrictedTools: false,
-            rows: [describedRow({ verdict: 'hold', effect: 'outward' })],
+            rows: [describedRow({ verdict: 'hold', effect: ['outward'] })],
           },
         }),
       );
@@ -376,7 +376,7 @@ describe('AgentRail — "What it may do alone"', () => {
       // A `deny` row says "Cannot X" — the call never happens, so there is no
       // spend to disclose. "Cannot pay an invoice — Costs money" would read as
       // reach the agent HAS to someone scanning for money-spenders, which is
-      // backwards. The wire row still carries `effect: 'spends'` faithfully;
+      // backwards. The wire row still carries `effect: ['spends']` faithfully;
       // only the renderer declines to draw it.
       railMock.mockResolvedValue(
         rail({
@@ -388,7 +388,7 @@ describe('AgentRail — "What it may do alone"', () => {
               describedRow({
                 verdict: 'deny',
                 capability: 'pay an invoice',
-                effect: 'spends',
+                effect: ['spends'],
               }),
             ],
           },
@@ -402,23 +402,26 @@ describe('AgentRail — "What it may do alone"', () => {
       expect(screen.queryByText('Costs money')).toBeNull();
     });
 
-    it('renders no marker when effect is null — exactly one marker across the two rows', async () => {
+    it('renders no marker for an unclassified row — exactly one marker across the two rows', async () => {
       /*
-        The FIRST version of this test rendered a lone `effect: null` row and
+        Unclassified is an EMPTY ARRAY (TASK-330), and this is the row that
+        declares nothing.
+
+        The FIRST version of this test rendered a lone unclassified row and
         asserted `queryByText('Costs money')` was null. That test could not
-        fail, and review caught it: delete the `effect !== null` guard and a
-        null row renders `EffectMark({ effect: null })`, whose
-        `EFFECT_DISCLOSURES[null]` is `undefined` — spreading `undefined` is
-        legal, so the button renders with NO TEXT, throws nothing, and a
-        query for "Costs money" is still null. The assertion passed against
+        fail, and review caught it: back when the field was nullable, deleting
+        the `effect !== null` guard rendered `EffectMark({ effect: null })`,
+        whose `EFFECT_DISCLOSURES[null]` is `undefined` — spreading `undefined`
+        is legal, so the button rendered with NO TEXT, threw nothing, and a
+        query for "Costs money" was still null. The assertion passed against
         working code, broken code, and a mutation of the very guard it named.
 
-        So this counts BADGES, not words, and it pairs the null row with a
-        spends row. Querying by the trailing "Details." of the trigger's
+        So this counts BADGES, not words, and it pairs the unclassified row
+        with a spends row. Querying by the trailing "Details." of the trigger's
         `aria-label` finds a marker even when its visible label fenced away to
         nothing, which is exactly the empty-badge case the old test was blind
-        to: one marker means the renderer CAN draw one and chose not to for
-        the null row; two means the guard is gone.
+        to: one marker means the renderer CAN draw one and drew none for the
+        unclassified row; two means it is drawing something for `[]`.
       */
       railMock.mockResolvedValue(
         rail({
@@ -431,13 +434,13 @@ describe('AgentRail — "What it may do alone"', () => {
                 verdict: 'allow',
                 capability: 'search the web',
                 source: 'rule:web.search',
-                effect: 'spends',
+                effect: ['spends'],
               }),
               describedRow({
                 verdict: 'allow',
                 capability: 'read files in its own workspace',
                 source: 'rule:sandbox.read',
-                effect: null,
+                effect: [],
               }),
             ],
           },
@@ -460,7 +463,7 @@ describe('AgentRail — "What it may do alone"', () => {
             status: 'ok',
             incomplete: false,
             unrestrictedTools: false,
-            rows: [describedRow({ verdict: 'allow', effect: 'spends' })],
+            rows: [describedRow({ verdict: 'allow', effect: ['spends'] })],
           },
         }),
       );
@@ -483,13 +486,13 @@ describe('AgentRail — "What it may do alone"', () => {
                 verdict: 'allow',
                 capability: 'search the web',
                 source: 'rule:web.search',
-                effect: 'spends',
+                effect: ['spends'],
               }),
               describedRow({
                 verdict: 'hold',
                 capability: 'post a message where others can see it',
                 source: 'rule:messaging.post',
-                effect: 'outward',
+                effect: ['outward'],
               }),
             ],
           },
@@ -499,6 +502,56 @@ describe('AgentRail — "What it may do alone"', () => {
 
       expect(await screen.findByText('Costs money')).toBeTruthy();
       expect(await screen.findByText('Affects the outside world')).toBeTruthy();
+    });
+
+    it('draws BOTH disclosures on one row that declares two (TASK-330)', async () => {
+      /*
+        `web_extract` is the first shipped rule to declare a SET: it spends
+        money AND it hands the URL to a third party that sees the request. A
+        renderer that drew only the first member would show "Costs money" and
+        silently swallow the outward half — understating reach, which is the
+        one direction design H4 forbids, and precisely the state the rail was
+        in before this card.
+
+        Counts BADGES rather than only querying the two strings, for the same
+        reason the unclassified test above does: a marker whose visible label
+        came out empty is still a marker, and "there are exactly two" is the
+        assertion that a one-badge renderer cannot pass.
+      */
+      railMock.mockResolvedValue(
+        rail({
+          permissions: {
+            status: 'ok',
+            incomplete: false,
+            unrestrictedTools: false,
+            rows: [
+              describedRow({
+                verdict: 'hold',
+                capability: 'read a web page, and remember the site it came from',
+                source: 'rule:web.extract',
+                provenance: 'rule',
+                conditional: true,
+                effect: ['spends', 'outward'],
+              }),
+            ],
+          },
+        }),
+      );
+      const { container } = renderRail();
+
+      await screen.findByText(/read a web page/);
+      const marks = screen.getAllByRole('button', { name: /Details\.$/ });
+      expect(marks).toHaveLength(2);
+      // Two facts, read as two, in the order the rule declared them.
+      expect(marks.map((m) => m.textContent)).toEqual([
+        'Costs money',
+        'Affects the outside world',
+      ]);
+      // The verdict frame still leads the row — the badges qualify it, they
+      // do not replace it.
+      expect(container.textContent).toMatch(
+        /Can read a web page, and remember the site it came from — asks you first, in some cases/,
+      );
     });
   });
 

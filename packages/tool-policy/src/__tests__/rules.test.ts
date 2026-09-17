@@ -55,9 +55,13 @@ describe('BUILTIN_RULES', () => {
     // genuinely reviewed allow is legitimate and is the design's own §4.3.2
     // example ("Can reply to scheduling requests — on its own"). The invariant
     // is one-directional: the seven catalog facts below must stay `catalog`.
+    //
+    // `web.extract` USED TO BE ON THIS LIST and is deliberately no longer
+    // (TASK-330). Its permission is now a reviewed decision — held unless the
+    // person has allowed that host — and `catalog` means precisely "no rule
+    // gates it", which stopped being true the moment one did.
     const CATALOG_FACTS = new Set([
       'web.search',
-      'web.extract',
       'memory.search',
       'memory.read-section',
       'memory.note',
@@ -82,37 +86,73 @@ describe('BUILTIN_RULES', () => {
     // are consent flows. If a third tool starts spending, it belongs here — and
     // if one of these two stops, this fails rather than leaving a stale claim
     // that the agent's web search costs money when it no longer does.
-    const spending = BUILTIN_RULES.filter((r) => r.effect === 'spends').map((r) => r.id);
+    //
+    // `.includes` and not `===` since TASK-330 made `effect` a SET: `web.extract`
+    // declares `['spends', 'outward']`, and a test that still asked for equality
+    // with the string would quietly answer "nothing spends money" — green, and
+    // wrong in the understating direction.
+    const spending = BUILTIN_RULES.filter((r) => r.effect?.includes('spends') === true).map(
+      (r) => r.id,
+    );
     expect(spending.sort()).toEqual(['web.extract', 'web.search']);
   });
 
-  it('marks nothing outward yet — the enforcement exists before the case does', () => {
-    // Not an aspiration: TASK-263 shipped `effect: 'outward'` and its lint
-    // BEFORE any outward tool exists, precisely so the first one cannot be
-    // added as a quiet `allow`. When one arrives this test is the prompt to
-    // check the rail and the undo window (`irreversible`) handle it, the same
-    // way the irreversible test below is a tripwire rather than a preference.
+  it('declares outward on exactly web.extract, and never allows an outward rule', () => {
+    // THIS TEST USED TO READ "marks nothing outward yet", and it was a tripwire
+    // armed for the first outward tool. TASK-330 is that tool, so the tripwire
+    // fired and this is what it was fired at: the rule now DECLARES `outward`,
+    // and the assertion moved from "nobody does" to "exactly this one does, and
+    // it is not allowed".
     //
-    // TASK-329 ADDED A THIRD THING TO CHECK when that day comes: the rail's
-    // authored `outward` copy in channel-web's `permission-frames.ts` spells
-    // out only the "a third party sees it" half of what `outward` means, not
-    // the "cannot be taken back" half. That file carries the reasoning; this
-    // is the test that sends you to it.
+    // WHY IT IS NOT SIMPLY DELETED. The old version was also a prompt to check
+    // three things when the day came, and the answers belong here rather than
+    // in a commit message:
     //
-    // DELIBERATELY STRICTER THAN THE LINT, which permits `outward` + hold/deny.
-    // A correctly-held outward rule will red this test even though the shipped
-    // enforcement is happy — that is the intent: the first one should stop and
-    // make someone look, not slide in green.
+    //   - THE RAIL. `web.extract`'s row now carries BOTH members and reads
+    //     `conditional` (the verdict depends on whether the person has allowed
+    //     that host). Pinned by the TASK-329 propagation test below and by
+    //     channel-web's rail tests.
+    //   - THE UNDO WINDOW. `irreversible` is still NOT set, and the test below
+    //     still pins that. An outward call is USUALLY irreversible, and a page
+    //     fetch genuinely cannot be unmade — but `irreversible` is specifically
+    //     the claim that AW-5 must defer the replay by the undo window, which
+    //     is a change to approval TIMING and not to classification. Left for a
+    //     follow-up rather than smuggled in here.
+    //   - THE COPY. `permission-frames.ts`' `outward` detail spells out only
+    //     the "a third party sees it" half of what `outward` means. That half
+    //     IS the true half for `web_extract`, so nothing is misstated today —
+    //     but the copy is still narrower than the type, and TASK-384 owns
+    //     broadening it.
     //
-    // This also subsumes the table-wide `lintRuleEffect` loop an earlier draft
-    // had beside it: if nothing is `outward`, "no outward rule is allowed" is
-    // trivially implied, and two tests asserting one fact is how a reader comes
-    // to believe there are two guards. `lintRuleEffect` itself is proven by
-    // fixtures in capability-lint.test.ts, and enforced in CI by
-    // scripts/lint-capabilities.ts.
-    for (const rule of BUILTIN_RULES) {
-      expect(rule.effect, rule.id).not.toBe('outward');
+    // `.includes` and not `===`: `effect` is a SET, and after TASK-330 the
+    // string comparison this test used to make is one an array silently passes.
+    // That is precisely how a guard becomes a check that cannot fail while
+    // still wearing the costume of one.
+    const outward = BUILTIN_RULES.filter((r) => r.effect?.includes('outward') === true);
+    expect(outward.map((r) => r.id)).toEqual(['web.extract']);
+
+    // The lint's rule, asserted against the shipped table rather than against
+    // fixtures. `capability-lint.test.ts` proves the function fires; this
+    // proves the table obeys it, and it is NON-VACUOUS now that a member
+    // exists — which is exactly what the old version could not claim.
+    for (const rule of outward) {
+      expect(rule.verdict, rule.id).not.toBe('allow');
     }
+  });
+
+  it('gates web.extract on the target host, with the effect and verdict that implies', () => {
+    // The TASK-330 decision, pinned where it is enforced. Each line is a
+    // separate way the decision could be quietly undone:
+    const rule = BUILTIN_RULES.find((r) => r.id === 'web.extract');
+    expect(rule).toBeDefined();
+    // ...by dropping the contingency and going back to a flat allow;
+    expect(rule!.egress).toEqual({ urlField: 'url' });
+    // ...by holding without the disclosure that says why;
+    expect(rule!.effect).toEqual(['spends', 'outward']);
+    // ...or by relaxing the fall-through, which is the verdict for every host
+    // nobody has allowed and is the only thing standing between a fresh
+    // install and "any public URL the agent names".
+    expect(rule!.verdict).toBe('hold');
   });
 
   it('marks nothing irreversible — every seeded approval can be taken back', () => {
@@ -156,8 +196,12 @@ describe('BUILTIN_RULES', () => {
     // card, via `source`, which is how a caller matches a row back to a rule.
     const rows = capabilityRows(BUILTIN_RULES);
     const bySource = new Map(rows.map((r) => [r.source, r]));
-    expect(bySource.get('rule:web.search')?.effect).toBe('spends');
-    expect(bySource.get('rule:web.extract')?.effect).toBe('spends');
+    expect(bySource.get('rule:web.search')?.effect).toEqual(['spends']);
+    // BOTH members reach the row, in the rule's order. Carrying only the
+    // strictest one would stop telling anybody the call costs money; carrying
+    // only the first would drop the outward disclosure, which is the direction
+    // design H4 forbids.
+    expect(bySource.get('rule:web.extract')?.effect).toEqual(['spends', 'outward']);
 
     // And the negative: a catalog fact that costs nothing must NOT pick up a
     // stray effect key. This is what keeps the test about PROPAGATION rather
