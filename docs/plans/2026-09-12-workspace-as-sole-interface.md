@@ -173,6 +173,21 @@ real, but it is a cost the workspace pays uniformly, not an inconsistency
 between two paths. Nobody sees more detail by reloading, and any card scoped
 around closing that gap is scoped around a gap that does not exist.
 
+**SHIPPED 2026-09-17 (TASK-352).** The cost is now paid off, and paid off
+symmetrically. `steps` has a producer on BOTH paths: `lib/workspace-steps.ts`
+holds the one shaping function, `server/routes-workspace.ts`'s `buildThread`
+feeds it stored `tool_use` / `tool_result` blocks, and `AgentView` feeds it
+live `tool-use` / `tool-result` frames. Neither path formats a label of its
+own, so the seam this section worried about cannot open by drift — it would
+take a second formatter to open it, and `src/__tests__/workspace-steps-seam.test.tsx`
+renders one fixture down both paths and asserts the two agree on screen.
+
+**Thinking did NOT come with it, and must not.** `renderableText` still keeps
+`type === 'text'` blocks only. The workspace route calls `conversations:get`
+unfiltered — chat gates reasoning behind `?includeThinking=true` and this
+surface has no such gate — so that filter is the only thing keeping
+chain-of-thought off this wire (invariant J4). Tool steps are additive to it.
+
 (The line number in the original claim had also drifted — it pointed at
 `workspace-types.ts:483`, which is now part of `ActivityEvent`. A citation that
 no longer resolves is how a claim survives past the code that once supported

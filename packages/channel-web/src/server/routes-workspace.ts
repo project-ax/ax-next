@@ -113,6 +113,12 @@ import type {
 } from '../lib/workspace-types.js';
 import { isOpenDecision } from '../lib/workspace-types.js';
 import { byVerdict } from '../lib/permission-frames.js';
+import { fenceLine } from '../lib/fence-line.js';
+import {
+  shapeSteps,
+  type WorkspaceStepStatus,
+  type WorkspaceToolCall,
+} from '../lib/workspace-steps.js';
 // Type-only: the pending-card store is this plugin's own module (same package,
 // not a cross-plugin import), and the route reads it rather than re-deriving
 // what is pending from anything else.
@@ -365,8 +371,33 @@ interface ConversationsListInput {
 }
 type ConversationsListOutput = ConversationRow[];
 
-/** Content blocks, narrowed to the two things this surface cares about. */
-type TurnBlock = { type: string; text?: string };
+/**
+ * Content blocks, narrowed to the things this surface reads.
+ *
+ * `text` is the bubble. The `tool_use` / `tool_result` fields behind it are the
+ * step panel (TASK-352) — the persisted twins of the live `tool-use` /
+ * `tool-result` SSE frames. The spellings do NOT line up field for field: the
+ * transcript says `id` / `tool_use_id` / `is_error` where the wire says
+ * `toolCallId` / `isError`, while `activityPhrase` and `held` are the same word
+ * in both. Normalizing that difference away is what `turnToolCalls` below is
+ * for, and why the shared shaper takes neither shape directly.
+ *
+ * WHAT IS NOT LISTED, on purpose: `thinking`. It is not narrowed away by
+ * accident — nothing on this surface reads it, and `renderableText` below is
+ * the filter that keeps it off the wire entirely.
+ */
+type TurnBlock = {
+  type: string;
+  text?: string;
+  /** `tool_use`: the call id, the tool's wire name, the host-authored phrase. */
+  id?: string;
+  name?: string;
+  activityPhrase?: string;
+  /** `tool_result`: which call it answers, and how that call ended. */
+  tool_use_id?: string;
+  is_error?: boolean;
+  held?: boolean;
+};
 interface TurnRow {
   turnId: string;
   turnIndex: number;
@@ -1093,50 +1124,14 @@ function sortableStamp(firedAt: Date | string): number {
 export const ACTIVITY_LABEL_MAX_CHARS = 60;
 export const ACTIVITY_DETAIL_MAX_CHARS = 200;
 
-/**
- * Characters that rewrite the surface rather than appear on it: C0/C1 controls,
- * the zero-width family, and the bidi marks, embeddings, overrides and isolates.
- *
- * The bidi half is the Trojan-source problem (CVE-2021-42574) pointed at a feed
- * row. A lone U+202E reverses the visual order of everything after it, so a
- * routine name authored with one in front of `"gnp.dorp-eteled"` renders as a
- * completely different filename; an unterminated isolate leaks that reordering
- * into whatever the renderer draws next, which here is the row's own timestamp
- * and the row below it. React escapes markup, so this was never XSS — it is the
- * quieter failure where the feed says, in our voice, something other than what
- * is on the wire.
- *
- * They become spaces rather than vanishing, so a name that leaned on one to
- * separate two words still reads as two words.
- */
-const REWRITES_THE_SURFACE =
-  /[\u0000-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]+/g;
-
-/**
- * One line, plain text, bounded — or `null` when nothing legible survives.
- *
- * A routine's `name` is authored in a file in the agent's own workspace and
- * validated only for non-emptiness, so it is untrusted text arriving from
- * across a trust boundary; the recorded `error` on a fire is the same. This is
- * the trust boundary — fencing here bounds what goes on the wire, not just what
- * a particular renderer happens to do with it.
- *
- * Deliberately a local twin of `@ax/agent-activity`'s `fencePhrase` rather than
- * an import: plugins talk through the hook bus, never through each other's
- * modules (invariant 2).
- *
- * The cap counts CODE POINTS, not UTF-16 units, so truncation can never split a
- * surrogate pair and leave a lone half behind — ill-formed UTF-16 out of a
- * function whose whole job is "plain text" would be a poor joke.
- */
-function fenceLine(value: string | null | undefined, maxChars: number): string | null {
-  if (typeof value !== 'string') return null;
-  const flattened = value.replace(REWRITES_THE_SURFACE, ' ').replace(/\s+/g, ' ').trim();
-  if (flattened.length === 0) return null;
-  const points = [...flattened];
-  if (points.length <= maxChars) return flattened;
-  return `${points.slice(0, maxChars - 1).join('').trimEnd()}\u2026`;
-}
+/*
+  The fence itself lives in `lib/fence-line.ts`. It used to be a private copy
+  here, until TASK-352 needed the SAME fence in the browser: the live thread is
+  built from SSE frames that never pass through this route, so a fence only
+  this file applied would leave a live row and a reloaded row saying different
+  things about the same tool call. A fence one of two paths applies is not a
+  fence.
+*/
 
 /**
  * How much of a decision's authored prose reaches the browser.
@@ -1781,9 +1776,17 @@ export function shortTime(iso: string): string {
 /**
  * The renderable text of a turn: its `text` blocks and nothing else.
  *
- * Thinking blocks are the model's scratchpad and never cross this wire. Tool
- * blocks belong to the tool view AW-10 owns; surfacing a raw tool_use here
- * would be a second, worse rendering of the same thing.
+ * THIS FILTER IS LOAD-BEARING, not a formatting choice. The workspace calls
+ * `conversations:get` UNFILTERED — chat gates reasoning behind
+ * `?includeThinking=true` and this surface has no such gate — so keeping
+ * `type === 'text'` and only that is the ONE thing keeping the model's
+ * scratchpad off the workspace wire (invariant J4). Loosening it breaches J4
+ * silently, with nothing failing.
+ *
+ * Tool blocks are not text either, and they do not become text here. TASK-352
+ * renders them as their own thing — a step panel, built by `turnToolCalls` +
+ * `shapeSteps` below and carried in separate fields — which is additive to
+ * this filter rather than a relaxation of it.
  */
 function renderableText(blocks: TurnBlock[]): string {
   const parts: string[] = [];
@@ -1795,23 +1798,104 @@ function renderableText(blocks: TurnBlock[]): string {
   return parts.join('\n\n').trim();
 }
 
-/** Turns → thread messages. Turns with nothing to show are dropped, not blanked. */
-function buildThread(turns: TurnRow[]): ThreadMessage[] {
-  const out: ThreadMessage[] = [];
+/**
+ * How each tool call ended, keyed by the call it answers.
+ *
+ * Built across ALL turns before any of them is shaped, because a `tool_result`
+ * lives in a tool-role turn of its own — the turn AFTER the assistant turn
+ * that called it. Pairing them one turn at a time would find nothing.
+ */
+function toolOutcomes(
+  turns: TurnRow[],
+): Map<string, { isError: boolean; held: boolean }> {
+  const out = new Map<string, { isError: boolean; held: boolean }>();
   for (const turn of turns) {
-    if (turn.role === 'tool') continue; // AW-10 owns the tool view.
-    const text = renderableText(turn.contentBlocks ?? []);
-    if (text.length === 0) continue; // An empty bubble is worse than no bubble.
-    if (turn.role === 'user') {
-      out.push({ kind: 'user', id: turn.turnId, text });
-    } else {
-      out.push({
-        kind: 'agent',
-        id: turn.turnId,
-        text,
-        time: shortTime(turn.createdAt),
+    for (const block of turn.contentBlocks ?? []) {
+      if (block.type !== 'tool_result') continue;
+      if (typeof block.tool_use_id !== 'string') continue;
+      out.set(block.tool_use_id, {
+        isError: block.is_error === true,
+        held: block.held === true,
       });
     }
+  }
+  return out;
+}
+
+/**
+ * One turn's `tool_use` blocks, paired with their outcomes.
+ *
+ * A call with NO result row is `running`, not `done`: the transcript records
+ * what happened, and "we called it and nothing came back" is a different fact
+ * from "it finished". That is the same reading `lib/tool-step-status.ts` gives
+ * chat, and the ordering below is its ordering — held above failed, because a
+ * call waiting on a person has not failed, and the runners publish held
+ * results with `is_error` omitted.
+ */
+function turnToolCalls(
+  blocks: TurnBlock[],
+  outcomes: ReadonlyMap<string, { isError: boolean; held: boolean }>,
+): WorkspaceToolCall[] {
+  const calls: WorkspaceToolCall[] = [];
+  for (const block of blocks) {
+    if (block.type !== 'tool_use') continue;
+    if (typeof block.id !== 'string' || typeof block.name !== 'string') continue;
+    const outcome = outcomes.get(block.id);
+    const status: WorkspaceStepStatus =
+      outcome === undefined
+        ? 'running'
+        : outcome.held
+          ? 'waiting'
+          : outcome.isError
+            ? 'failed'
+            : 'done';
+    calls.push({
+      id: block.id,
+      name: block.name,
+      phrase: block.activityPhrase,
+      status,
+    });
+  }
+  return calls;
+}
+
+/**
+ * Turns → thread messages. Turns with nothing to show are dropped, not blanked.
+ *
+ * "Nothing to show" now means no text AND no tool calls (TASK-352). An
+ * assistant turn that only ran tools used to vanish here, which is how a turn
+ * that did six things could render as if the agent had said nothing at all.
+ */
+function buildThread(turns: TurnRow[]): ThreadMessage[] {
+  const out: ThreadMessage[] = [];
+  const outcomes = toolOutcomes(turns);
+  for (const turn of turns) {
+    // A tool-role turn carries `tool_result` blocks and nothing else worth
+    // drawing; `outcomes` has already read them, and the step row they belong
+    // to hangs off the assistant turn that made the call.
+    if (turn.role === 'tool') continue;
+    const blocks = turn.contentBlocks ?? [];
+    const text = renderableText(blocks);
+    if (turn.role === 'user') {
+      if (text.length === 0) continue; // An empty bubble is worse than no bubble.
+      out.push({ kind: 'user', id: turn.turnId, text });
+      continue;
+    }
+    const panel = shapeSteps(turnToolCalls(blocks, outcomes));
+    if (text.length === 0 && panel === null) continue;
+    const time = shortTime(turn.createdAt);
+    out.push(
+      panel === null
+        ? { kind: 'agent', id: turn.turnId, text, time }
+        : {
+            kind: 'steps',
+            id: turn.turnId,
+            text,
+            time,
+            stepsLabel: panel.label,
+            steps: panel.steps,
+          },
+    );
   }
   return out;
 }

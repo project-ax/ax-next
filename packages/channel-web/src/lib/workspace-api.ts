@@ -60,7 +60,7 @@ import { readSseFrames } from './sse-frames';
 // that breaks without it. Read, not re-declared: a second copy of the same
 // three kinds is a drift waiting to happen.
 import { isRenderableGrant } from './workspace-grant-store';
-import type { PermissionRequest, SseFrame } from '../server/types';
+import type { PermissionRequest, PhaseKind, SseFrame } from '../server/types';
 import type { PostMessageResponse } from '@/wire/chat';
 import type {
   ActivityEvent,
@@ -409,6 +409,41 @@ export interface StreamHandlers {
   onText: (chunk: string) => void;
   /** The turn ended normally. */
   onDone: () => void;
+  /**
+   * The agent called a tool (TASK-352). NON-TERMINAL — the turn carries on.
+   *
+   * Forwarded as the three fields a step row is built from and NOT as the
+   * frame: `input` is model-authored and the panel never renders it, so
+   * handing it on would be reach nothing on this surface needs (invariant 5).
+   * `activityPhrase` is the host-authored label; the caller falls back to the
+   * stripped tool name when it is absent, which `lib/workspace-steps.ts` does
+   * for both paths at once.
+   */
+  onToolUse?: (call: {
+    toolCallId: string;
+    toolName: string;
+    activityPhrase?: string | undefined;
+  }) => void;
+  /**
+   * A tool call came back (TASK-352). NON-TERMINAL.
+   *
+   * `output` is deliberately dropped here. A step row says WHAT ran and how it
+   * ended; the output is untrusted tool content and putting it on a surface
+   * that has no renderer for it is how a raw blob ends up on screen.
+   */
+  onToolResult?: (result: {
+    toolCallId: string;
+    isError?: boolean | undefined;
+    held?: boolean | undefined;
+  }) => void;
+  /**
+   * The agent's phase changed — today only `sandbox-starting` (TASK-352).
+   *
+   * OUT-OF-BAND and non-terminal. The caller shows it as a status line BEFORE
+   * any content arrives and never after, which is the rule chat gates with
+   * `ctx.contentSeen`. It is a stable backend-agnostic kind, never a pod name.
+   */
+  onPhase?: (phase: PhaseKind) => void;
   /** The turn ended badly, or the stream dropped without a terminator. */
   onError: (message: string) => void;
   /**
@@ -828,9 +863,10 @@ export const workspaceApi = {
  * `UIMessageChunk`s into the assistant-ui runtime, and the workspace does not
  * mount that runtime at all. So this reader turns frames into plain callbacks.
  *
- * It still renders text only, and ignores `thinking`, `tool-use`, `tool-result`
- * and `phase` — TASK-352 grows those renderers. What it no longer does is
- * ignore them because it could not see them.
+ * TASK-352 grew the renderers: `tool-use`, `tool-result` and `phase` now reach
+ * the caller as their own callbacks, so the live thread can say what the agent
+ * DID. `thinking` is still dropped, and that is a decision rather than a gap —
+ * see the frame switch below and invariant J4.
  *
  * WHAT IT GAINED WITH THE SHARED READER (TASK-349): seq dedup and gap
  * detection, which this surface never had. A replayed buffer used to render its
@@ -847,6 +883,9 @@ async function streamReply(
     onText,
     onDone,
     onError,
+    onToolUse,
+    onToolResult,
+    onPhase,
     onDecisionRaised,
     onPermissionRequest,
     signal,
@@ -920,6 +959,52 @@ async function streamReply(
     }
     if ('kind' in frame && frame.kind === 'text' && typeof frame.text === 'string') {
       onText(frame.text);
+      return 'continue';
+    }
+    /*
+      A tool call, and its result (TASK-352). Non-terminal: the turn keeps
+      going, and these are the frames that let the live thread say what the
+      agent DID rather than only what it said.
+
+      THERE IS NO `thinking` BRANCH HERE AND THERE MUST NOT BE. The frame
+      exists on the wire — chat reads it behind `?includeThinking=true` — and
+      the workspace has no such gate, so the model's scratchpad reaching this
+      reader would put chain-of-thought on the one surface that never asked for
+      it (invariant J4). Falling through to `continue` is the decision, not an
+      omission.
+
+      Only the fields a step row needs are forwarded. `input` and `output` are
+      untrusted model/tool content with no renderer on this surface, and
+      handing them to a caller that cannot draw them is reach for nothing
+      (invariant 5).
+    */
+    if (onToolUse && 'kind' in frame && frame.kind === 'tool-use') {
+      if (typeof frame.toolCallId === 'string' && typeof frame.toolName === 'string') {
+        onToolUse({
+          toolCallId: frame.toolCallId,
+          toolName: frame.toolName,
+          activityPhrase: frame.activityPhrase,
+        });
+      }
+      return 'continue';
+    }
+    if (onToolResult && 'kind' in frame && frame.kind === 'tool-result') {
+      if (typeof frame.toolCallId === 'string') {
+        onToolResult({
+          toolCallId: frame.toolCallId,
+          isError: frame.isError,
+          held: frame.held,
+        });
+      }
+      return 'continue';
+    }
+    /*
+      An out-of-band phase change — today only `sandbox-starting`. Forwarded as
+      the stable kind, never as prose: the label is the caller's to author, and
+      a reason code on screen is what this epic is taking away.
+    */
+    if (onPhase && 'phase' in frame && typeof frame.phase === 'string') {
+      onPhase(frame.phase);
       return 'continue';
     }
     /*

@@ -51,6 +51,36 @@ describe('workspace components', () => {
     expect(offenders).toEqual([]);
   });
 
+  it('mount no assistant-ui runtime, at any depth', () => {
+    /*
+      The workspace deliberately does not mount assistant-ui, and TASK-360
+      deletes that runtime along with the rest of chat. An `@assistant-ui/*`
+      import here would be both a large runtime pulled into a surface designed
+      without one and a dependency on code scheduled for deletion.
+
+      This walks the WHOLE subtree rather than the flat listing the other cases
+      use — there are no subdirectories today, and this is the guard that has
+      to keep being true when there are. Test files are skipped: a test may
+      legitimately reason about what chat does.
+    */
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name !== '__tests__') walk(full);
+          continue;
+        }
+        if (!/\.(ts|tsx)$/.test(entry.name)) continue;
+        if (/@assistant-ui\//.test(readFileSync(full, 'utf-8'))) {
+          offenders.push(full.slice(COMPONENTS_DIR.length + 1));
+        }
+      }
+    };
+    walk(COMPONENTS_DIR);
+    expect(offenders).toEqual([]);
+  });
+
   it('the rail names no tool, host or capability of its own', () => {
     /*
       Every noun on the rail arrives from a hook. A literal naming a specific
