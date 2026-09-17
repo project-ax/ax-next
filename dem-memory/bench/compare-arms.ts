@@ -104,8 +104,13 @@ function main(): void {
   const answerable = ids.filter((id) => !isUnanswerable(id));
   console.log(`\nabstention (unanswerable n=${unanswerable.length}, answerable n=${answerable.length})`);
   console.log(`${"".padEnd(28)}${"control".padStart(10)}${"treat".padStart(10)}`);
+  // A refusal written in prose ("the table records no visits in December") is the DESIRED
+  // behaviour, and the judge scores it `correct`, not `abstained-correctly`. Counting every
+  // non-`abstained-correctly` row as a hallucination therefore penalises right answers: it
+  // reports dem's GLM arm at 26.7% when the true rate is 20.0%, and the Sonnet arm at 36.7%
+  // when it is 26.7%. Only a judge verdict of `incorrect` is an invented answer.
   const halluc = (arm: Map<string, Row>): number =>
-    unanswerable.filter((id) => arm.get(id)!.verdict !== "abstained-correctly").length;
+    unanswerable.filter((id) => arm.get(id)!.verdict === "incorrect").length;
   const refuse = (arm: Map<string, Row>): number =>
     answerable.filter((id) => arm.get(id)!.verdict === "abstained-incorrectly").length;
   console.log(

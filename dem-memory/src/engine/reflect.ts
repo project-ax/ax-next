@@ -241,14 +241,6 @@ const EMPATHY_GUIDANCE: Record<number, string> = {
 export interface ReflectPromptOptions {
   /** Reference "now". Without it the model has no way to resolve "last Saturday" or "how long ago". */
   asOf?: string;
-  /**
-   * Add directives 7-10: gated arithmetic, count commitment, event coreference, and
-   * event-date-over-statement-date. OFF by default and measured before it moves — every
-   * clause is gated on the evidence being PRESENT, because the failure this targets
-   * (under-counting, hedging, refusing arithmetic) sits on the same dial as the failure it
-   * must not cause (answering an unanswerable question). See `diagnosed from` in the block.
-   */
-  groundedCounting?: boolean;
 }
 
 export function buildReflectSystemPrompt(
@@ -290,22 +282,6 @@ export function buildReflectSystemPrompt(
     }.`,
     "   Every row is dated — do not claim a dated statement is undated. To compare two rows,",
     "   subtract their dates yourself; only the distance from today is precomputed.",
-    ...(options.groundedCounting
-      ? [
-          "7. When the quantities are present in the table, do the arithmetic: add, subtract, or",
-          "   total them and state the result. Do not decline arithmetic whose operands are all in",
-          "   the table. If an operand is missing, say which one — do not guess it.",
-          "8. For a counting question, commit to ONE number supported by the table. Do not answer",
-          '   with a range or an alternative ("three, possibly four"). If the table substantiates no',
-          "   occurrences at all, directive 3 governs and you abstain.",
-          "9. Count each underlying event, project, or item ONCE. The same wedding, trip, or purchase",
-          "   often appears in several rows, under different names or from different angles; separate",
-          "   rows are not separate occurrences. Distinguish them by date, place, and participants.",
-          "10. A row's When column dates the STATEMENT. When the statement's own text names a date",
-          "    for the event it describes — a deadline, a submission, when something happened — that",
-          "    named date governs the event, and When does not override it.",
-        ]
-      : []),
     "",
     "Evidence table:",
     table,
@@ -341,14 +317,12 @@ export interface ReflectEngineOptions {
   disposition?: DispositionProfile;
   maxContextTokens?: number;
   sourceExcerpts?: number;
-  groundedCounting?: boolean;
 }
 
 export class ReflectEngine {
   private readonly disposition: DispositionProfile;
   private readonly maxContextTokens: number;
   private readonly sourceExcerpts: number;
-  private readonly groundedCounting: boolean;
 
   constructor(
     private readonly recallEngine: RecallEngine,
@@ -358,7 +332,6 @@ export class ReflectEngine {
     this.disposition = options.disposition ?? DEFAULT_DISPOSITION;
     this.maxContextTokens = options.maxContextTokens ?? DEFAULT_MAX_CONTEXT_TOKENS;
     this.sourceExcerpts = options.sourceExcerpts ?? 0;
-    this.groundedCounting = options.groundedCounting ?? false;
   }
 
   async reflect(question: string, options: RecallOptions = {}): Promise<ReflectResult> {
@@ -393,10 +366,8 @@ export class ReflectEngine {
       };
     }
 
-    const groundedCounting = options.groundedCounting ?? this.groundedCounting;
     const system = buildReflectSystemPrompt(evidence.table, this.disposition, {
       ...(asOf ? { asOf } : {}),
-      ...(groundedCounting ? { groundedCounting: true } : {}),
     });
     const answer = this.generate
       ? await this.generate({ system, prompt: question })
