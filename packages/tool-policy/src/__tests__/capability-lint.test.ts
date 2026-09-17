@@ -101,20 +101,20 @@ describe('lintRuleEffect (TASK-263)', () => {
     assertion in rules.test.ts is the secondary check.
   */
   it('rejects an outward rule that is allowed', () => {
-    expect(lintRuleEffect({ effect: 'outward', verdict: 'allow' })).toEqual([
+    expect(lintRuleEffect({ effect: ['outward'], verdict: 'allow' })).toEqual([
       expect.stringContaining('outward'),
     ]);
   });
 
   it('accepts an outward rule that is held or denied', () => {
-    expect(lintRuleEffect({ effect: 'outward', verdict: 'hold' })).toEqual([]);
-    expect(lintRuleEffect({ effect: 'outward', verdict: 'deny' })).toEqual([]);
+    expect(lintRuleEffect({ effect: ['outward'], verdict: 'hold' })).toEqual([]);
+    expect(lintRuleEffect({ effect: ['outward'], verdict: 'deny' })).toEqual([]);
   });
 
   it('accepts a spending rule that is allowed — metered spend is not an outward effect', () => {
     // The asymmetry this whole design rests on. If this ever starts failing,
     // web_search holds on every call and the gate gets turned off.
-    expect(lintRuleEffect({ effect: 'spends', verdict: 'allow' })).toEqual([]);
+    expect(lintRuleEffect({ effect: ['spends'], verdict: 'allow' })).toEqual([]);
   });
 
   it('accepts an unclassified rule — omitted effect is not an error', () => {
@@ -122,5 +122,57 @@ describe('lintRuleEffect (TASK-263)', () => {
     // would be 20 rows of `effect: undefined` noise. The cost is that omitted
     // and unclassified are indistinguishable; see the ToolEffect doc.
     expect(lintRuleEffect({ verdict: 'allow' })).toEqual([]);
+  });
+
+  /*
+    TASK-330 — STRICTEST MEMBER WINS.
+
+    The whole reason `effect` became a set is that `web_extract` is genuinely
+    both `spends` and `outward`, and the single-value field made someone pick.
+    They picked `spends`, the lint saw a non-outward rule, and an exfiltration
+    channel shipped as a silent `allow`. These fixtures pin the rule that makes
+    that unrepeatable: the set's requirement is the harshest one any member
+    asks for, NOT the first member's and NOT the majority's.
+  */
+  it('rejects an allowed rule with outward ANYWHERE in the set, not just alone', () => {
+    // Both orders, because "the first member decides" is the plausible wrong
+    // implementation and it would pass one of these.
+    expect(lintRuleEffect({ effect: ['spends', 'outward'], verdict: 'allow' })).toEqual([
+      expect.stringContaining('outward'),
+    ]);
+    expect(lintRuleEffect({ effect: ['outward', 'spends'], verdict: 'allow' })).toEqual([
+      expect.stringContaining('outward'),
+    ]);
+  });
+
+  it('accepts a spends+outward rule that holds or denies', () => {
+    // The shipped `web.extract` shape. Declaring both must not be punished —
+    // only allowing them is.
+    expect(lintRuleEffect({ effect: ['spends', 'outward'], verdict: 'hold' })).toEqual([]);
+    expect(lintRuleEffect({ effect: ['spends', 'outward'], verdict: 'deny' })).toEqual([]);
+  });
+
+  it('rejects an empty set — absent already means unclassified', () => {
+    // Two spellings of one meaning is how a reader comes to believe they are
+    // two different meanings, and the one they would invent for `[]` is
+    // "classified, and harmless".
+    expect(lintRuleEffect({ effect: [], verdict: 'allow' })).toEqual([
+      expect.stringContaining('empty'),
+    ]);
+  });
+
+  it('rejects a duplicate member — it is a set of claims, not a tally', () => {
+    expect(lintRuleEffect({ effect: ['spends', 'spends'], verdict: 'allow' })).toEqual([
+      expect.stringContaining('duplicate'),
+    ]);
+  });
+
+  it('reports the empty-set and the outward problems independently', () => {
+    // Not a style point: the gate prints every failure so one CI run fixes all
+    // of them, and a linter that returned early would hide the second.
+    expect(lintRuleEffect({ effect: ['outward', 'outward'], verdict: 'allow' })).toEqual([
+      expect.stringContaining('duplicate'),
+      expect.stringContaining('outward'),
+    ]);
   });
 });

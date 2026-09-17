@@ -435,6 +435,15 @@ spec:
               value: {{ . | quote }}
             {{- end }}
 
+            # Sites web_extract may read without asking — the operator's half of
+            # the egress allowlist. Unset, nobody is pre-approved, and that is
+            # safe because a site nobody allowed is HELD for one approval rather
+            # than refused. See values.yaml before adding to it.
+            {{- with .Values.webTools.extractAllowedHosts }}
+            - name: AX_WEB_EXTRACT_ALLOWED_HOSTS
+              value: {{ . | quote }}
+            {{- end }}
+
             # Session lifetime. Unset, @ax/auth-better keeps its 7-day default.
             {{- with .Values.auth.sessionLifetimeSeconds }}
             - name: AX_AUTH_SESSION_LIFETIME_SECONDS

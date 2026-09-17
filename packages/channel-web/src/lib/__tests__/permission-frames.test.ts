@@ -10,11 +10,12 @@ import { describe, expect, it } from 'vitest';
 import {
   VERDICT_ORDER,
   byVerdict,
+  disclosedEffects,
   effectDisclosure,
   frameCapability,
-  shouldDiscloseEffect,
   verdictFrame,
 } from '../permission-frames';
+import type { CapabilityEffect } from '../workspace-types';
 
 describe('frameCapability', () => {
   it('frames allow', () => {
@@ -191,16 +192,38 @@ describe('effectDisclosure (TASK-329)', () => {
     // second renderer takes it along with `effectDisclosure` — without it,
     // a faithful renderer prints "Cannot pay an invoice — Costs money".
     // Raised in review as a nit; this is the test that pins it here.
-    expect(shouldDiscloseEffect('allow', 'spends')).toBe(true);
-    expect(shouldDiscloseEffect('hold', 'outward')).toBe(true);
-    expect(shouldDiscloseEffect('hold', 'spends')).toBe(true);
+    expect(disclosedEffects('allow', ['spends'])).toEqual(['spends']);
+    expect(disclosedEffects('hold', ['outward'])).toEqual(['outward']);
+    expect(disclosedEffects('hold', ['spends'])).toEqual(['spends']);
     // `deny` suppresses whatever the rule declared — the call does not happen.
-    expect(shouldDiscloseEffect('deny', 'spends')).toBe(false);
-    expect(shouldDiscloseEffect('deny', 'outward')).toBe(false);
+    expect(disclosedEffects('deny', ['spends'])).toEqual([]);
+    expect(disclosedEffects('deny', ['outward'])).toEqual([]);
+    expect(disclosedEffects('deny', ['spends', 'outward'])).toEqual([]);
     // Unclassified is nothing to say, at every verdict.
-    expect(shouldDiscloseEffect('allow', null)).toBe(false);
-    expect(shouldDiscloseEffect('hold', null)).toBe(false);
-    expect(shouldDiscloseEffect('deny', null)).toBe(false);
+    expect(disclosedEffects('allow', [])).toEqual([]);
+    expect(disclosedEffects('hold', [])).toEqual([]);
+    expect(disclosedEffects('deny', [])).toEqual([]);
+  });
+
+  it('keeps EVERY member of a two-effect row, in the declared order (TASK-330)', () => {
+    // `web.extract` declares both. A row that disclosed only the first would
+    // understate its reach, which is the one direction design H4 forbids, and
+    // the order is the rule's — the renderer draws them in it.
+    expect(disclosedEffects('hold', ['spends', 'outward'])).toEqual([
+      'spends',
+      'outward',
+    ]);
+    expect(disclosedEffects('hold', ['outward', 'spends'])).toEqual([
+      'outward',
+      'spends',
+    ]);
+  });
+
+  it('hands back a fresh array, so a renderer cannot edit the wire row', () => {
+    const effects: CapabilityEffect[] = ['spends', 'outward'];
+    const out = disclosedEffects('hold', effects);
+    out.pop();
+    expect(effects).toEqual(['spends', 'outward']);
   });
 
   it('never claims irreversibility — that is a separate field with its own UI', () => {

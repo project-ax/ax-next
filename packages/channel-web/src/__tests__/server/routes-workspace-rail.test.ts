@@ -580,17 +580,22 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
       `when`-predicated rule plus the mechanical base row covering the calls its
       predicate misses — because that shape proves both halves at once:
 
-        - the described row carries the declared effect all the way to the wire;
+        - the described row carries the declared effects all the way to the wire;
         - the base row does NOT, and cannot, because it is built from
           `tool-policy:evaluate` and `EvaluateResult` has no `effect` field.
 
-      The second assertion PINS A KNOWN GAP rather than blessing it. No shipped
-      rule is conditional at all today (`grep -c 'when:' rules.ts` → 0), let
-      alone conditional and effect-bearing, and `rules.test.ts`' tripwire fails
-      the moment one is added. If you are here because this test went red, you
-      have probably carried `effect` onto `EvaluateResult` and through the
-      base-row builder — that is the fix, so update the second assertion to
-      expect `'spends'` deliberately rather than reverting anything.
+      The second assertion PINS A KNOWN GAP rather than blessing it, and the
+      gap is narrower than this comment used to claim. It said no shipped rule
+      was conditional at all; `web.extract` now is (TASK-330, `effect:
+      ['spends', 'outward']`). It does not reach the base-row site: its
+      conditionality comes from `egress`, not from a `when` predicate, and
+      `fullyDescribedTools` filters on `when === undefined` — so `web_extract`
+      is fully described, gets no mechanical base row, and its effects arrive
+      on the described row. The live gap is specifically a rule carrying BOTH a
+      `when` predicate and an effect. If you are here because this test went
+      red, you have probably carried `effect` onto `EvaluateResult` and through
+      the base-row builder — that is the fix, so update the second assertion to
+      expect the declared set deliberately rather than reverting anything.
     */
     registerPolicy();
     registerCatalog();
@@ -602,7 +607,7 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
         provenance: 'rule',
         described: true,
         conditional: true,
-        effect: 'spends',
+        effect: ['spends'],
       },
     ];
     catalog = [{ name: 'delete_file', executesIn: 'host' }];
@@ -613,13 +618,50 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     expect(body.permissions.rows[0]).toMatchObject({
       described: false,
       mechanicalLabel: 'delete_file',
-      effect: null,
+      effect: [],
     });
     expect(body.permissions.rows[1]).toMatchObject({
       described: true,
       source: 'rule:files.delete-recursive',
-      effect: 'spends',
+      effect: ['spends'],
     });
+  });
+
+  it('TASK-330: carries BOTH declared effects of a web.extract-shaped rule onto the wire', async () => {
+    /*
+      THE REGRESSION THIS TEST EXISTS TO CATCH, end to end.
+
+      `@ax/tool-policy` moved `effect` from a single value to a SET, and this
+      route duck-types the row. The old projection asked
+      `row.effect === 'spends' || row.effect === 'outward'`, which an ARRAY
+      fails — so every declared effect silently became `null` and the rail
+      stopped disclosing that `web_extract` spends money AND acts outward.
+      `pnpm build` stayed green throughout, because a duck-typed
+      `effect?: string` has no opinion about an array arriving in its place.
+
+      Understating reach is the one direction design H4 forbids, so this asks
+      the REAL route for the real shipped shape — hold, conditional, both
+      effects — and asserts the ORDER the rule declared them in, because the
+      renderer draws them in that order.
+    */
+    registerPolicy();
+    registerCatalog();
+    policyRows = [
+      {
+        verdict: 'hold',
+        capability: 'read a web page, and remember the site it came from',
+        source: 'rule:web.extract',
+        provenance: 'rule',
+        described: true,
+        conditional: true,
+        effect: ['spends', 'outward'],
+      },
+    ];
+    catalog = [];
+
+    const body = (await railFor()).body as AgentRailData;
+    expect(body.permissions.rows).toHaveLength(1);
+    expect(body.permissions.rows[0]?.effect).toEqual(['spends', 'outward']);
   });
 
   it('does not render an authored skill as a rail row of its own', async () => {
@@ -1490,9 +1532,9 @@ describe('rail projections', () => {
       source: 'rule:web.search',
       provenance: 'catalog',
       described: true,
-      effect: 'spends',
+      effect: ['spends'],
     });
-    expect(row.effect).toBe('spends');
+    expect(row.effect).toEqual(['spends']);
   });
 
   it('carries a declared `outward` effect onto the wire row', () => {
@@ -1502,41 +1544,106 @@ describe('rail projections', () => {
       source: 'rule:messages.send',
       provenance: 'rule',
       described: true,
-      effect: 'outward',
+      effect: ['outward'],
     });
-    expect(row.effect).toBe('outward');
+    expect(row.effect).toEqual(['outward']);
   });
 
-  it('allow-lists `effect` — an unrecognised value lands as `null`, not as a copy-through', () => {
-    // The load-bearing case: a plain `row.effect ?? null` would let this
-    // string straight onto the wire, where the renderer's `Record` has no
-    // entry for it and the row would carry a claim nobody typed into the
-    // authored table.
+  it('carries BOTH members of a two-effect rule, in the declared order (TASK-330)', () => {
+    /*
+      THE SILENT-NULL BUG. `@ax/tool-policy` made `effect` a SET, and this
+      projection asked `row.effect === 'spends' || row.effect === 'outward'`
+      — an array satisfies neither, so `web.extract`'s declared spend AND its
+      declared outward reach both vanished into `null` on the wire, with a
+      green build the whole time (the field is duck-typed, so no type error
+      announced the change).
+
+      The order is asserted, not just the membership: the renderer draws one
+      badge per member in array order, and a re-ordered set is a row that
+      leads with a different fact than the rule does.
+    */
+    const row = toWirePermission({
+      verdict: 'hold',
+      capability: 'read a web page, and remember the site it came from',
+      source: 'rule:web.extract',
+      provenance: 'rule',
+      described: true,
+      conditional: true,
+      effect: ['spends', 'outward'],
+    });
+    expect(row.effect).toEqual(['spends', 'outward']);
+  });
+
+  it('allow-lists `effect` per MEMBER — an unrecognised one is dropped, the rest survive', () => {
+    // The load-bearing case, and it is load-bearing in BOTH directions. A
+    // plain copy-through would let `'nonsense'` onto the wire, where the
+    // renderer's `Record` has no entry for it and the row would carry a claim
+    // nobody typed into the authored table. Dropping the whole set over the
+    // one bad member would be the opposite failure: a row that spends money
+    // and says nothing, which is understating reach (design H4).
     const row = toWirePermission({
       verdict: 'allow',
       capability: 'search the web',
       source: 'rule:web.search',
       provenance: 'catalog',
       described: true,
-      effect: 'harmless',
+      effect: ['spends', 'nonsense'],
     });
-    expect(row.effect).toBeNull();
+    expect(row.effect).toEqual(['spends']);
   });
 
-  it('allow-lists `effect` — a non-string value lands as `null`', () => {
-    // The input is a duck-typed hook answer (I2); a hook can answer anything.
+  it('allow-lists `effect` — a set of nothing we know lands as `[]`', () => {
     const row = toWirePermission({
       verdict: 'allow',
       capability: 'search the web',
       source: 'rule:web.search',
       provenance: 'catalog',
       described: true,
-      effect: 42 as unknown as string,
+      effect: ['harmless', 42, null],
     });
-    expect(row.effect).toBeNull();
+    expect(row.effect).toEqual([]);
   });
 
-  it('normalises a missing `effect` to `null`', () => {
+  it('collapses a duplicated member — the field is a set of claims, not a tally', () => {
+    // The lint in @ax/tool-policy rejects duplicates at authoring time; this
+    // is the duck-typed hop, where an alternate impl can still answer one.
+    // Two identical badges on a row read as a rendering bug, and `key` at the
+    // render site is the effect name.
+    const row = toWirePermission({
+      verdict: 'hold',
+      capability: 'read a web page',
+      source: 'rule:web.extract',
+      provenance: 'rule',
+      described: true,
+      effect: ['spends', 'outward', 'spends'],
+    });
+    expect(row.effect).toEqual(['spends', 'outward']);
+  });
+
+  it.each([
+    ['a bare string', 'spends'],
+    ['a number', 42],
+    ['null', null],
+    ['an object', { spends: true }],
+    ['a boolean', true],
+  ])('a non-array `effect` (%s) lands as `[]`', (_label, value) => {
+    // The input is a duck-typed hook answer (I2); a hook can answer anything,
+    // including the single value this field used to hold. A lone `'spends'`
+    // is NOT quietly wrapped into `['spends']`: guessing at the shape would
+    // manufacture a claim in a form nobody agreed to send, and the honest
+    // reading of an answer we cannot parse is "unclassified".
+    const row = toWirePermission({
+      verdict: 'allow',
+      capability: 'search the web',
+      source: 'rule:web.search',
+      provenance: 'catalog',
+      described: true,
+      effect: value,
+    });
+    expect(row.effect).toEqual([]);
+  });
+
+  it('normalises a missing `effect` to `[]`', () => {
     const row = toWirePermission({
       verdict: 'allow',
       capability: 'search the web',
@@ -1544,10 +1651,10 @@ describe('rail projections', () => {
       provenance: 'catalog',
       described: true,
     });
-    expect(row.effect).toBeNull();
+    expect(row.effect).toEqual([]);
   });
 
-  it('keeps a declared effect on a described row that demotes to mechanical', () => {
+  it('keeps declared effects on a described row that demotes to mechanical', () => {
     // Same reasoning as `conditional` right above: losing OUR SENTENCE when
     // `capability` fences to nothing does not unspend the money.
     const row = toWirePermission({
@@ -1556,11 +1663,11 @@ describe('rail projections', () => {
       source: 'rule:x',
       provenance: 'rule',
       described: true,
-      effect: 'spends',
+      effect: ['spends', 'outward'],
       mechanicalLabel: 'delete_file',
     });
     expect(row.described).toBe(false);
-    expect(row.effect).toBe('spends');
+    expect(row.effect).toEqual(['spends', 'outward']);
   });
 
   it('caps a capability clause by CODE POINTS, never by UTF-16 units', () => {

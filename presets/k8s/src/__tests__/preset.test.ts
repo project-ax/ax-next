@@ -246,7 +246,7 @@ describe('@ax/preset-k8s wiring', () => {
     expect(vs!.manifest.registers).toEqual(['services:validate']);
   });
 
-  it('loads @ax/tool-policy and registers its two hooks (TASK-224)', () => {
+  it('loads @ax/tool-policy and registers its three hooks (TASK-224/TASK-330)', () => {
     // Invariant 3, same PR: the plugin is registered in the preset the day it
     // lands, even though its two consumers (TASK-225's tool:pre-call
     // subscriber and TASK-235's permissions rail) are not built yet.
@@ -256,10 +256,69 @@ describe('@ax/preset-k8s wiring', () => {
     expect(tp!.manifest.registers).toEqual([
       'tool-policy:evaluate',
       'tool-policy:list-capabilities',
+      // TASK-330. Its caller is @ax/web-tools' `web_extract` executor, which
+      // this preset loads with the host-LLM-tools bundle — asserted below so
+      // the hook cannot sit here registered by somebody and called by nobody,
+      // which is what `decisions:executed` did before TASK-279 deleted it.
+      'egress-allowlist:remember',
     ]);
-    // No database, no per-call hook dependency — the rule table is in-repo.
+    // The rule table is still in-repo and still consulted with no I/O. What
+    // needs storage is the per-person egress allowlist, and a deployment
+    // WITHOUT a database can still enforce the table — it just cannot remember
+    // anything, which is the safe direction. Hence optional, not required.
     expect(tp!.manifest.calls).toEqual([]);
+    expect(tp!.manifest.optionalCalls?.map((c) => c.hook)).toEqual([
+      'database:get-instance',
+    ]);
     expect(tp!.manifest.subscribes).toEqual([]);
+  });
+
+  it('gives egress-allowlist:remember a caller — @ax/web-tools (TASK-330)', () => {
+    // The rule this preset's suite states in so many words: every hook
+    // registered here has a caller here. `web_extract`'s executor is that
+    // caller, and it is what turns one approval into silence for that host.
+    const plugins = createK8sPlugins({ ...stubConfig, hostLlmTools: true });
+    const wt = plugins.find((p) => p.manifest.name === '@ax/web-tools');
+    expect(wt).toBeDefined();
+    expect(wt!.manifest.optionalCalls?.map((c) => c.hook)).toContain(
+      'egress-allowlist:remember',
+    );
+  });
+
+  it('passes the operator egress allowlist through to @ax/tool-policy (TASK-330)', () => {
+    // Without this the `globalEgressHosts` option would be reachable only from
+    // tests — infrastructure with no production caller, which is exactly what
+    // the half-wired policy forbids. Asserted by BEHAVIOUR rather than by
+    // reading the option back off the plugin, because the option is closed
+    // over and the manifest does not carry it.
+    const baseEnv: NodeJS.ProcessEnv = {
+      DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
+      AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+      AX_WORKSPACE_BACKEND: 'git-protocol',
+      AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
+      AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
+      AX_HTTP_HOST: '0.0.0.0',
+      AX_HTTP_PORT: '9090',
+      AX_HTTP_COOKIE_KEY: '0'.repeat(64),
+      AX_HTTP_ALLOWED_ORIGINS: '',
+    };
+    const seeded = loadK8sConfigFromEnv({
+      ...baseEnv,
+      AX_WEB_EXTRACT_ALLOWED_HOSTS: ' docs.example.com , ,intranet.example.com ',
+    });
+    expect(seeded.webExtractAllowedHosts).toEqual([
+      'docs.example.com',
+      'intranet.example.com',
+    ]);
+    // Unset means nobody is pre-approved — the intended default, and safe only
+    // because a miss holds rather than refuses.
+    expect(loadK8sConfigFromEnv({ ...baseEnv }).webExtractAllowedHosts).toBeUndefined();
+    // And an empty / whitespace-only value is the same as unset, not a list
+    // containing one blank host.
+    expect(
+      loadK8sConfigFromEnv({ ...baseEnv, AX_WEB_EXTRACT_ALLOWED_HOSTS: '  ,  ' })
+        .webExtractAllowedHosts,
+    ).toBeUndefined();
   });
 
   it('loads @ax/decisions and registers its eight hooks (TASK-225/TASK-226/TASK-279/TASK-266)', () => {

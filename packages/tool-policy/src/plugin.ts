@@ -1,10 +1,22 @@
-import type { Plugin } from '@ax/core';
+import { makeAgentContext, type AgentContext, type Plugin } from '@ax/core';
+import type { Kysely } from 'kysely';
+import {
+  createDbEgressAllowlistStore,
+  createMemoryEgressAllowlistStore,
+  isOwnerId,
+  normalizeHost,
+  type EgressAllowlistStore,
+} from './egress-allowlist.js';
 import { evaluate } from './evaluate.js';
+import { runToolPolicyMigration, type ToolPolicyDatabase } from './migrations.js';
 import { BUILTIN_RULES } from './rules.js';
 import {
+  EgressRememberOutputSchema,
   EvaluateResultSchema,
   ListCapabilitiesOutputSchema,
   type CapabilityRow,
+  type EgressRememberInput,
+  type EgressRememberOutput,
   type EvaluateInput,
   type EvaluateResult,
   type ListCapabilitiesInput,
@@ -67,7 +79,14 @@ function indexRules(rules: readonly PolicyRule[]): IndexedRow[] {
         // would have to turn a tool's argument name into English, and it is the
         // TOOL's vocabulary, not ours. What the reader needs from it is that
         // this row does not apply to every call, and that is a boolean.
-        conditional: rule.match.when !== undefined,
+        //
+        // AN `egress` RULE IS CONDITIONAL TOO (TASK-330), for exactly the same
+        // reason a `when` one is: its verdict applies to some calls and not
+        // others. Saying "asks you first" flat, about a rule that is silent for
+        // every host you already allowed, promises a gate that is not always
+        // there — and a reader who believes the gate is always there is the
+        // person this row is supposed to protect.
+        conditional: rule.match.when !== undefined || rule.egress !== undefined,
         // Left ABSENT rather than set to `undefined` when the rule declares
         // nothing — the same shape `theirDescription` / `mechanicalLabel` use
         // on a built-in row. `exactOptionalPropertyTypes` is on for this
@@ -136,10 +155,35 @@ function applyReach(
 export interface ToolPolicyPluginOptions {
   /** Override the rule table. Tests only — production uses BUILTIN_RULES. */
   rules?: readonly PolicyRule[];
+  /**
+   * Hosts the OPERATOR allows every user of this deployment to reach silently
+   * through an `egress`-gated tool. Seeded at init, in-process; there is no bus
+   * hook that writes a global entry, because minting one is an operator
+   * decision and not something a plugin should be able to do on its own.
+   *
+   * DEFAULT EMPTY, and that is safe only because a miss holds rather than
+   * refuses. Do not pre-seed this with something permissive to "make the tool
+   * work again" — the tool works, it just asks the first time.
+   *
+   * A malformed entry is skipped and logged, not fatal: one typo in a
+   * deployment's config must not take the host down.
+   */
+  globalEgressHosts?: readonly string[];
+  /** Override the allowlist store. Tests only. */
+  egressStore?: EgressAllowlistStore;
 }
 
 export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
   const rules = opts?.rules ?? BUILTIN_RULES;
+  /**
+   * Tools some rule gates on the target host. Precomputed so the common case —
+   * every other tool in the catalog — never pays for an allowlist read on the
+   * `tool:pre-call` path, which runs under a 10 s ceiling the runner turns into
+   * a deny.
+   */
+  const egressTools = new Set(
+    rules.filter((r) => r.egress !== undefined).map((r) => r.match.tool),
+  );
   // Indexed once: the table is immutable for the process's lifetime, and the
   // rail asks for it on every render of the workspace shell. Only the per-call
   // `outOfReach` subtraction runs per request, and that is a Set lookup.
@@ -152,25 +196,174 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
   const indexed = indexRules(rules).map((r) => ({ ...r, row: Object.freeze(r.row) }));
   Object.freeze(indexed);
 
+  let egressStore: EgressAllowlistStore = opts?.egressStore ?? createMemoryEgressAllowlistStore();
+
   return {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['tool-policy:evaluate', 'tool-policy:list-capabilities'],
-      // No runtime dependencies at all: the rule table is in-repo, there is no
-      // database, and nothing is consulted per call. `host-grants:list-for-user`
-      // will supply the "Granted by you" group (§4.3.4) — that is AW-14's
-      // reader, in channel-web, not this plugin's call.
+      registers: [
+        'tool-policy:evaluate',
+        'tool-policy:list-capabilities',
+        'egress-allowlist:remember',
+      ],
+      // The rule TABLE is still in-repo and still consulted with no I/O. What
+      // needs storage is the egress ALLOWLIST (TASK-330) — per-person data a
+      // deployment accumulates, which is a different thing from the reviewed
+      // rules and is why it is a table rather than a constant.
       calls: [],
+      // OPTIONAL, not required, because a deployment without a database is
+      // perfectly capable of enforcing this table — it just cannot remember
+      // anything, which is the safe direction.
+      optionalCalls: [
+        {
+          hook: 'database:get-instance',
+          degradation:
+            'The egress allowlist lives only in this process. Operator-seeded ' +
+            'global hosts still apply, but a host a person allowed is forgotten ' +
+            'on restart and the next page read from it is held again — one extra ' +
+            'approval, never a silent grant.',
+        },
+      ],
       subscribes: [],
     },
 
     async init({ bus }) {
+      const initCtx = makeAgentContext({
+        sessionId: 'init',
+        agentId: PLUGIN_NAME,
+        userId: 'system',
+      });
+
+      // The store, if this deployment has somewhere to put it. `hasService` and
+      // not a try/catch around the call: a MISSING database is a supported
+      // configuration with a stated degradation, while a database that is
+      // present and broken is a boot failure we want to hear about.
+      if (opts?.egressStore === undefined && bus.hasService('database:get-instance')) {
+        const { db } = await bus.call<unknown, { db: Kysely<unknown> }>(
+          'database:get-instance',
+          initCtx,
+          {},
+        );
+        const typed = db as Kysely<ToolPolicyDatabase>;
+        await runToolPolicyMigration(typed);
+        egressStore = createDbEgressAllowlistStore(typed);
+      }
+
+      for (const raw of opts?.globalEgressHosts ?? []) {
+        const host = normalizeHost(raw);
+        if (host === null) {
+          initCtx.logger.warn('tool_policy_global_egress_host_invalid', {
+            plugin: PLUGIN_NAME,
+            // The VALIDATED-OR-NOTHING rule does not apply to a value that
+            // failed validation, and this one comes from the deployment's own
+            // config rather than from a model — an operator who mistyped a host
+            // cannot fix it if we refuse to say which one.
+            host: String(raw).slice(0, 253),
+          });
+          continue;
+        }
+        await egressStore.remember({ scope: 'global', ownerId: null, host });
+      }
+
+      /**
+       * The hosts this caller may reach silently.
+       *
+       * FAILS CLOSED, and that is the whole reason it is a function with a
+       * catch rather than an inline await: every failure here — no store, a
+       * database blip, a schema that has not migrated — means "we do not know
+       * what is allowed", and the only safe reading of that is "nothing", which
+       * holds. Returning the rule's own verdict is the outcome; an empty set is
+       * how we get there without a second code path.
+       *
+       * An id that names no person is NOT one of those failures. It answers the
+       * operator's global list and nothing personal — see the store, and the
+       * note below.
+       */
+      const allowedHosts = async (ctx: AgentContext): Promise<ReadonlySet<string>> => {
+        // NO SHORT-CIRCUIT ON A NON-PERSON CALLER, deliberately, and it used to
+        // be here. `allowedFor` already drops the personal half of its read for
+        // an id it would never have written under, so the guard was redundant —
+        // and worse than redundant: it also threw away the OPERATOR's global
+        // list, which is not a claim about a person at all. One place owns the
+        // rule about which ids are real (`isOwnerId`, inside the store), and
+        // this is not a second one.
+        try {
+          return await egressStore.allowedFor(ctx.userId);
+        } catch (err) {
+          ctx.logger.error('tool_policy_egress_allowlist_read_failed', {
+            plugin: PLUGIN_NAME,
+            err: err instanceof Error ? err : new Error(String(err)),
+          });
+          return new Set<string>();
+        }
+      };
+
       bus.registerService<EvaluateInput, EvaluateResult>(
         'tool-policy:evaluate',
         PLUGIN_NAME,
-        async (_ctx, input) => evaluate(rules, input.call),
+        async (ctx, input) => {
+          // A PAYLOAD WE CANNOT READ IS A DENY, NOT A THROW.
+          //
+          // `evaluate` reads `call.name`, so a missing `call` would raise a
+          // TypeError here — and this runs inside `@ax/decisions`' `tool:pre-call`
+          // subscriber, where `HookBus.fire` catches a subscriber's throw and
+          // CONTINUES. A throw on this path is therefore a SILENT ALLOW, which is
+          // the worst outcome the gate has. Unreachable through the one caller
+          // today, which always sends a well-formed call; guarded anyway, because
+          // the cost of being wrong is asymmetric and the guard is three lines.
+          //
+          // `deny` rather than `hold`: a hold invites a human to say yes to a
+          // call we could not describe, and `decisions` deliberately routes an
+          // unrecognised verdict down the deny branch for the same reason.
+          const call = input?.call;
+          if (typeof call?.name !== 'string' || call.name.length === 0) {
+            ctx.logger.warn('tool_policy_evaluate_malformed_call', { plugin: PLUGIN_NAME });
+            return { verdict: 'deny', ruleId: null, capability: null, irreversible: false };
+          }
+          // Only an `egress`-gated tool pays for the read. Everything else gets
+          // the same pure, I/O-free answer it got before this existed.
+          const opts2 = egressTools.has(call.name)
+            ? { allowedHosts: await allowedHosts(ctx) }
+            : {};
+          return evaluate(rules, call, opts2);
+        },
         { returns: EvaluateResultSchema },
+      );
+
+      /**
+       * "This host was just fetched under a verdict that permitted it."
+       *
+       * The OWNER IS `ctx.userId` AND NOTHING ELSE. There is no owner field on
+       * the payload, so no caller can file an entry against somebody else —
+       * which is the same privilege escalation the missing `agent` scope exists
+       * to prevent, and closing it by shape beats closing it by a check
+       * somebody has to remember to write.
+       *
+       * Never throws for a bad host: `remembered: false` is the answer. A tool
+       * call that already succeeded must not fail because a convenience did,
+       * and forgetting costs one more approval next time — it grants nothing.
+       */
+      bus.registerService<EgressRememberInput, EgressRememberOutput>(
+        'egress-allowlist:remember',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const host = normalizeHost(input?.host);
+          if (host === null || !isOwnerId(ctx.userId)) return { remembered: false };
+          try {
+            return { remembered: await egressStore.remember({ scope: 'user', ownerId: ctx.userId, host }) };
+          } catch (err) {
+            ctx.logger.warn('tool_policy_egress_remember_failed', {
+              plugin: PLUGIN_NAME,
+              // Safe to name: it passed `normalizeHost`, so it is a hostname
+              // and not the model's URL — no query string, nothing to leak.
+              host,
+              err: err instanceof Error ? err : new Error(String(err)),
+            });
+            return { remembered: false };
+          }
+        },
+        { returns: EgressRememberOutputSchema },
       );
 
       bus.registerService<ListCapabilitiesInput, ListCapabilitiesOutput>(
