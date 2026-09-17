@@ -404,9 +404,9 @@ export function AgentConversation({
 
             `!readOnly` IS THE HONESTY GATE, not a style choice. `AgentView`
             passes `readOnly={past !== null}`, and its `pastThread` renders
-            `[]` while `pastError` is set — see the comment at
-            `AgentView.tsx:753`, which keeps that pane deliberately blank so
-            the alert above it is the only thing speaking. So a past
+            `[]` while `pastError` is set — see the comment on `pastThread`
+            in that file, which keeps that pane deliberately blank so the
+            alert above it is the only thing speaking. So a past
             conversation whose excerpt read FAILED arrives here as an empty
             thread, and "Nothing here yet" over it would be a claim about the
             CONTENT built from a fact about the FETCH: the same substitution

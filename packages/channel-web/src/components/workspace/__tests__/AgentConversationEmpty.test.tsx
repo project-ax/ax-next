@@ -7,7 +7,7 @@
  *
  * The gate is the interesting half. `AgentView` passes
  * `readOnly={past !== null}` and its `pastThread` renders `[]` while
- * `pastError` is set (`AgentView.tsx:753`), so a past conversation whose
+ * `pastError` is set, so a past conversation whose
  * excerpt read FAILED arrives here as an empty thread. "Nothing here yet" over
  * that is a claim about the content assembled from a fact about the fetch, and
  * it is exactly the H7 dishonesty this surface is built to avoid. The
@@ -50,6 +50,15 @@ function renderConversation(
       onUndo={vi.fn()}
       approvalRead="ok"
       onRetryApprovals={vi.fn()}
+      /*
+        No grant is ever in play here: a zero-turn thread cannot be hiding one,
+        because a grant is raised DURING a turn. These three are required props
+        that the empty-state branch has nothing to say about, filled the same
+        way the sibling `AgentConversation*` suites fill them.
+      */
+      grants={[]}
+      onGrantResolved={vi.fn()}
+      onGranted={vi.fn(async () => true)}
       {...over}
     />,
   );
