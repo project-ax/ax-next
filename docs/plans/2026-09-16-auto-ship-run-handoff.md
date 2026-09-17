@@ -157,9 +157,17 @@ Two are defects in auto-ship itself, found by builders rather than by me:
   the template still needs the fix plus a guard.
 - **TASK-378** — the dispatch template never told builders that a fresh worktree
   needs `pnpm install --frozen-lockfile && pnpm build` before any test. Without
-  it ~41 test files fail to load on unbuilt workspace deps, and the failures look
-  like real breakage. Already in project memory; it recurred anyway, which means
-  the knowledge was not where agents read.
+  it a large share of the repo's test files fail to load on unbuilt workspace
+  deps, and the failures look like real breakage. Already in project memory; it
+  recurred anyway, which means the knowledge was not where agents read.
+  **Correction, 2026-09-17:** this bullet originally said "~41 test files", a
+  figure carried over from a report rather than measured. TASK-378 probed it
+  directly — a freshly added worktree of `main` at `6bd2b280`, installed but not
+  built, `pnpm -r --no-bail run test` — and the real count is **363 test files
+  across 68 packages**, about 9x higher. No single package accounts for 41
+  either, so "~41" was not a subset figure. Left here rather than silently
+  rewritten, because the wrong number is what made the card look like a small
+  one.
 - **TASK-382** — the merge-queue review gate asks the *handoff's* `reviewer:`
   field, not the *branch*. **Measured 2/2 PRs this run:** a builder obtained a
   review, applied the findings, pushed the fix, and that fix commit became the
