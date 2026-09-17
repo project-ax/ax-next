@@ -397,12 +397,13 @@ orchestrator to order a pass on it. The labels decide where the loop stops:
 production code, and independent passes found an **Important** and a **Major**
 respectively. Both had also written a wrong rule into `.claude/memory/` — the file
 every later agent reads as ground truth. So **scope** decides whether a pass runs;
-**class** decides where the loop stops. Measured over the 2026-09-16/17 runs: #553 and
-#554 (2 of 2 that run), then #557, #556, #558, #559, #560 — every one of them reached
-the merge door carrying code no reviewer had seen, with an honest `reviewer: clean`.
-The 2026-09-17 orchestrator reports that #558–#560's builders classified their own
-deltas correctly, but only because it asked by hand; that hand-asking is the habit this
-handoff field replaces.
+**class** decides where the loop stops. Seven PRs over the 2026-09-16/17 runs, and the
+evidence is not uniform — **#553, #554, #556 and #557 are the verified four**, each with
+a named finding from the pass that was ordered on it (#553 and #554 being 2 of 2 in
+their run). **#558, #559 and #560 are the 2026-09-17 orchestrator's account**: it
+reports all three had production code the reviewer never saw, and that their builders
+classified their own deltas correctly — but only because it asked each of them by hand.
+That hand-asking is the habit this handoff field replaces.
 
 **Ordering the pass.** **Dispatch your own independent `ax-code-reviewer`** with a
 **short, self-contained prompt**, from a fresh agent and with **no `name`** (yolo-ship

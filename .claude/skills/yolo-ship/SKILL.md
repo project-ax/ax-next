@@ -174,12 +174,13 @@ digraph review {
   moment you dispatch each round; the round that returns no actionable findings pins
   that sha as your **`reviewed-sha`**. The two conditions look identical and are not:
   the ordinary rhythm is review → apply the findings → push the fix, and *that fix
-  commit is now the head with nobody having read it*. Measured across the 2026-09-16
-  and 2026-09-17 runs: **7 PRs** (#553, #554, #556, #557, #558, #559, #560) reached the
-  merge door that way, every one of them under an honest `reviewer: clean`. The passes
-  auto-ship then ordered found a **Major** on #557, an **Important** on #553 and **two
-  Majors** on #556 — and on #553 and #557 a wrong rule had already been committed into
-  `.claude/memory/`, which every later agent reads as ground truth. So: fixed
+  commit is now the head with nobody having read it*. **7 PRs** did exactly that across
+  the 2026-09-16/17 runs, every one under an honest `reviewer: clean`. Four carry named
+  findings from the pass auto-ship then ordered — a **Major** on #557, an **Important**
+  on #553, **two Majors** on #556, plus #554 — and on #553 and #557 a wrong rule had
+  already been committed into `.claude/memory/`, which every later agent reads as ground
+  truth. The other three (#558-#560) are the orchestrator's report, not a recorded
+  finding. So: fixed
   **production code** after a clean round? That round no longer counts; dispatch once
   more. The loop is still finite — a round that changes nothing is the round that ends
   it. **Carve-out, so this does not cost 40 minutes per typo:** if everything you

@@ -8,16 +8,22 @@
 // findings -> push the fix. That fix commit becomes the PR head, and nobody has read
 // it. The gate never asked, so it never noticed.
 //
-// MEASURED, 7 PRs across the 2026-09-16 and 2026-09-17 auto-ship runs -- #553, #554
-// (2 of 2 that run), then #557, #556, #558, #559, #560. Every one arrived at the merge
-// door carrying code no reviewer had seen, and every builder reported `reviewer: clean`
-// honestly. Independent passes the orchestrator then ordered by hand found an
-// **Important** on #553, a **Major** on #557 and **two Majors** on #556; on #553 and
-// #557 a wrong rule had already been committed into `.claude/memory/`, which is the
-// file every later agent reads as ground truth. (For #558-#560 the orchestrator reports
-// that the builders classified their own post-review deltas correctly once asked --
-// take that as the operator's account, not something this test measured. What is not in
-// dispute is that asking was a habit living in whoever was driving.)
+// SEVEN PRs across the 2026-09-16 and 2026-09-17 auto-ship runs, and the evidence is
+// not uniform across them -- worth separating, since this whole card is about claims
+// outrunning what was checked:
+//
+//   - #553, #554, #556, #557 are the ones with named evidence. Each arrived at the
+//     merge door carrying code no reviewer had seen, under an honest `reviewer: clean`,
+//     and the independent pass the orchestrator then ordered by hand found an
+//     **Important** on #553, a **Major** on #557 and **two Majors** on #556. On #553
+//     and #557 a wrong rule had already been committed into `.claude/memory/` -- the
+//     file every later agent reads as ground truth. (#553 and #554 were 2 of 2 in their
+//     run, which is where this card came from.)
+//   - #558, #559, #560 are the ORCHESTRATOR'S ACCOUNT, not something measured here: it
+//     reports all three had production code the reviewer never saw, and that their
+//     builders classified their own post-review deltas correctly -- but only because it
+//     asked each of them by hand. Take the count as 4 verified + 3 reported. What is
+//     not in dispute is that the asking was a habit living in whoever was driving.
 //
 // THE HEAD-COMMIT TEST IS NOT SUFFICIENT, and that is the expensive half of this
 // lesson. The obvious fix -- "scope-test the head commit" -- was measured to miss:

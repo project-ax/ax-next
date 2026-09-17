@@ -158,8 +158,10 @@ afford — heed it rather than dispatching and hoping.
 >   Phase 5's loop already ends at "a review saw THIS head" — this field is what makes
 >   that checkable instead of assumed, because the usual rhythm (review → apply the
 >   findings → push the fix) leaves the fix commit as the PR head with nobody having
->   read it. Measured on 7 PRs across the 2026-09-16/17 runs: every one reached the
->   merge door carrying code no reviewer had seen, under an honest `reviewer: clean`.
+>   read it. Seven PRs did exactly that across the 2026-09-16/17 runs, each under an
+>   honest `reviewer: clean` — four of them (#553, #554, #556, #557) with a named
+>   finding from the pass later ordered on the delta, three (#558-#560) on the
+>   orchestrator's report rather than a recorded finding.
 >   If commits landed after `reviewed-sha:`, list each on its own line under it,
 >   labelled `fix:` (it answers a finding your reviewer named) or `new:` (you found it
 >   yourself, afterwards) — auto-ship's review gate routes on those labels and orders
