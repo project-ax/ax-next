@@ -69,12 +69,13 @@ export interface PredicateSpec {
  * rules omit it truthfully (a sandbox read is neither), but an unmatched tool
  * has no rule at all and so no effect either; see `evaluate()`.
  *
- * A KNOWN LIMIT OF THIS SHAPE: it holds one value, and a tool can be both.
- * `web_extract` spends money AND is an exfiltration channel. It is filed as
- * `spends` because marking it `outward` would force a hold on every page read
- * through the lint below, which is a live-deployment UX decision rather than a
- * classification one (TASK-330). If a second tool needs both, this becomes an
- * array — do that rather than picking the convenient half.
+ * A RULE DECLARES A SET OF THESE, NOT ONE (TASK-330). The field used to hold a
+ * single value, and `web_extract` — which both spends money and hands data to
+ * a third party — is exactly the tool that made that a lie: it shipped as
+ * `spends` alone, and the outward half went undisclosed because the field had
+ * room for only the convenient truth. Declaring both is now expressible, and
+ * `lintRuleEffect` reads the set with STRICTEST MEMBER WINS, so an `outward`
+ * anywhere in it forces `hold` or `deny` no matter what else is in there.
  */
 export type ToolEffect = 'outward' | 'spends';
 
@@ -106,8 +107,62 @@ export interface PolicyRule {
    * yet there is no outward action to withdraw.
    */
   irreversible?: boolean;
-  /** See `ToolEffect`. Omitted means unclassified, not harmless. */
-  effect?: ToolEffect;
+  /**
+   * See `ToolEffect`. OMITTED means unclassified, not harmless.
+   *
+   * An EMPTY ARRAY is not a second spelling of "unclassified" — it is rejected
+   * by `lintRuleEffect`, because two ways to say the same thing is how a
+   * reader ends up believing they mean different things. Duplicates are
+   * rejected for the same reason.
+   */
+  effect?: ToolEffect[];
+  /**
+   * EGRESS CONTINGENCY (TASK-330). When set, this rule's `verdict` is the
+   * answer for a call whose target host the caller has NOT allowed, and is
+   * RELAXED to `allow` for one they have.
+   *
+   * `urlField` is the top-level input key holding the target URL — the tool's
+   * own vocabulary, the same way `PredicateSpec.field` is, and deliberately not
+   * a URL matcher: the match is on the parsed HOST and nothing else. A
+   * path-or-prefix allowlist would be bypassed by a query string, and a query
+   * string is the exfiltration vector this exists to close
+   * (`https://allowed.example/?x=<secret>` must not inherit
+   * `https://allowed.example`'s permission by looking like it).
+   *
+   * Kept OFF `match` on purpose. Everything under `match` decides WHETHER a
+   * rule applies to a call; this decides what the rule ANSWERS once it does.
+   * Folding it into `match` would mean an allowed host fell through to the
+   * next rule — and the next rule for a tool is usually nothing at all, which
+   * `evaluate` answers `allow` with a null `ruleId`, so the rail would lose the
+   * row and the hold would lose its sentence.
+   */
+  egress?: { urlField: string };
+}
+
+/**
+ * Who an egress-allowlist entry belongs to.
+ *
+ * This is `@ax/connectors`' `CredentialScope` (`'global' | 'user' | 'agent'`)
+ * MINUS the agent tier, and the omission is the security decision, not a
+ * simplification to be tidied up later. TASK-257 partitions agent state on
+ * `agentId` alone, so a team agent's storage is shared by every teammate who
+ * can reach it. An agent-scoped entry would therefore mean one teammate's
+ * approval silently granting outbound reach to everyone else using that agent
+ * — a privilege escalation behind a UI that looks like a personal decision.
+ *
+ * `global` (an operator curates it) and `user` (the person who answered the
+ * prompt) are the only two scopes where the approver and the beneficiary are
+ * the same party.
+ */
+export type EgressScope = 'global' | 'user';
+
+/** One host somebody has allowed `web_extract`-style egress to. */
+export interface EgressAllowlistEntry {
+  scope: EgressScope;
+  /** `null` exactly when `scope === 'global'`. */
+  ownerId: string | null;
+  /** Lowercased hostname. Never a URL, never a prefix, never a port. */
+  host: string;
 }
 
 export interface EvaluateResult {
@@ -172,11 +227,17 @@ export interface CapabilityRow {
    * never a rule to declare one, so the honest answer is absent, not `false`
    * or a fabricated default.
    *
-   * See `ToolEffect` for the `spends`-is-money-only caveat and the
-   * one-value-per-row limitation — both apply here unchanged, and are not
-   * re-argued in this comment.
+   * See `ToolEffect` for the `spends`-is-money-only caveat, which applies here
+   * unchanged and is not re-argued in this comment.
+   *
+   * CARRIED AS THE WHOLE SET, not the first or the worst member (TASK-330). A
+   * renderer handed only the strictest one would drop `spends` from
+   * `['spends', 'outward']` and stop telling anybody the call costs money;
+   * handed only the first it would drop the `outward` disclosure, which is the
+   * understating direction design H4 forbids. Absent when the rule declares
+   * nothing; never present and empty.
    */
-  effect?: ToolEffect | undefined;
+  effect?: ToolEffect[] | undefined;
   /** Only set when `described` is false: the third party's own words, attributed. */
   theirDescription?: string | undefined;
   /** Only set when `described` is false: what we DO control — the tool name. */
@@ -290,7 +351,45 @@ export interface ListCapabilitiesOutput {
 // vanishes silently on the way out of the bus.
 // ---------------------------------------------------------------------------
 
+/**
+ * `egress-allowlist:remember` — "this host was just fetched under a verdict
+ * that permitted it; stop asking about it."
+ *
+ * THE PAYLOAD CARRIES NO OWNER, AND THAT IS THE POINT. The entry is written
+ * for `ctx.userId` and nobody else. An `ownerId` field would let any
+ * in-process plugin grant silent outbound reach on another person's behalf —
+ * the same privilege escalation the missing `agent` tier exists to prevent,
+ * just through a different door. Deriving the owner from the context makes
+ * "the approver and the beneficiary are the same party" a property of the
+ * shape rather than a check somebody has to remember to write.
+ *
+ * There is no `scope` field either: this hook only ever writes `user`. A
+ * `global` entry is an OPERATOR decision and is seeded from the plugin's
+ * options at init, in-process, so no bus caller can mint one.
+ */
+export interface EgressRememberInput {
+  /**
+   * A hostname — not a URL, not a prefix, no scheme, no port, no path. The
+   * caller has already parsed it out of whatever it was fetching; this hook
+   * validates the shape again anyway (it is the trust boundary, and the caller
+   * got the URL from a model).
+   */
+  host: string;
+}
+
+export interface EgressRememberOutput {
+  /**
+   * False when the host was rejected as malformed, or when there is nowhere to
+   * write it. NOT an error: failing to remember costs a second approval next
+   * time, which is the safe direction, and a tool call must never fail because
+   * a convenience did.
+   */
+  remembered: boolean;
+}
+
 export const PolicyVerdictSchema = z.enum(['allow', 'hold', 'deny']);
+
+export const EgressRememberOutputSchema = z.object({ remembered: z.boolean() });
 
 export const CapabilityProvenanceSchema = z.enum([
   'rule',
@@ -322,7 +421,11 @@ export const CapabilityRowSchema = z.object({
   // make `effect` vanish silently on the way out of the bus, and the rail
   // would render no disclosure while every unit test on the row OBJECT (built
   // before the bus re-parse) still passed.
-  effect: ToolEffectSchema.optional(),
+  //
+  // `z.array(...)` and not `z.union([enum, array])`: there is one wire shape,
+  // and a schema that accepted both would let a producer answer either while
+  // every consumer had to handle both forever.
+  effect: z.array(ToolEffectSchema).optional(),
   theirDescription: z.string().optional(),
   mechanicalLabel: z.string().optional(),
 });

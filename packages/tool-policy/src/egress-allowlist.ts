@@ -1,0 +1,226 @@
+/**
+ * The egress allowlist — hosts a `web_extract`-style call may be pointed at
+ * without stopping to ask (TASK-330).
+ *
+ * WHAT THIS IS NOT. It is not the sandbox's egress allowlist. That one lives in
+ * `@ax/host-grants` and is unioned into the MITM proxy by the chat
+ * orchestrator, so an entry there lets the agent open a raw connection to the
+ * host. An entry HERE only stops a page read being held for approval. Keeping
+ * them apart is the point: approving "read this page" must not quietly hand out
+ * "open sockets to this host", which is what reusing that table would have
+ * meant.
+ *
+ * It is also not `@ax/credential-proxy`'s `allowedHosts`. Those are declared by
+ * a SKILL, for the hosts that skill needs. `web_extract` is a built-in tool and
+ * belongs to no skill, so there was nothing there to reuse.
+ */
+import type { Kysely } from 'kysely';
+import type { EgressAllowlistRow, ToolPolicyDatabase } from './migrations.js';
+import type { EgressAllowlistEntry, EgressScope } from './types.js';
+
+/**
+ * Exact-match allowlist hostnames only: no wildcards, no ports, no schemes, no
+ * uppercase, no trailing dot. Re-implemented here rather than imported from
+ * `@ax/host-grants` or `@ax/credential-proxy` — invariant 2, and the stated
+ * convention at every other trust boundary in this repo, which is that each one
+ * validates independently rather than inheriting somebody else's idea of a
+ * hostname.
+ */
+const HOST_RE =
+  /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/;
+
+/**
+ * A user id we are willing to own an entry. Same shape `@ax/credentials` uses
+ * for a credential owner, re-declared locally for the same reason `HOST_RE` is.
+ *
+ * It matters here beyond hygiene: `''` is the GLOBAL sentinel in the table, so
+ * a write that accepted an empty owner would file a personal entry as an
+ * operator-curated one that applies to everybody.
+ */
+const USER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$/;
+
+/**
+ * Ids that pass the shape check but do not name a person.
+ *
+ * `'system'` is this repo's sentinel for an init / canary / admin-probe context
+ * — `makeAgentContext({ userId: 'system' })` appears in almost every plugin's
+ * `init`. It is a well-formed id, so nothing above would stop an entry being
+ * filed under it, and an entry owned by "not a person" is exactly the kind of
+ * row a later reader mistakes for one that applies to everybody. Reserved here
+ * as well as at the calling tool, deliberately: each trust boundary validates
+ * independently, and this is the one that writes.
+ */
+const RESERVED_OWNER_IDS = new Set(['system']);
+
+/**
+ * A host we are willing to store, or `null`.
+ *
+ * TOTAL — every caller is on a path that must not throw over a malformed host
+ * (the pre-call gate, or a tool call that has already succeeded), and every
+ * `null` means "do not remember this", which costs an approval and grants
+ * nothing.
+ *
+ * Lowercasing is the ONLY normalisation. In particular a trailing dot is
+ * rejected rather than stripped: `example.com.` and `example.com` are the same
+ * host to DNS, but treating them as the same here would be a second matching
+ * rule to keep in step with `evaluate`'s exact comparison, and getting it wrong
+ * fails OPEN. Rejecting costs one extra approval and cannot grant anything.
+ */
+export function normalizeHost(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const host = raw.trim().toLowerCase();
+  return HOST_RE.test(host) ? host : null;
+}
+
+/** Whether a string is a user id this store will file an entry under. */
+export function isOwnerId(raw: unknown): raw is string {
+  return typeof raw === 'string' && USER_ID_RE.test(raw) && !RESERVED_OWNER_IDS.has(raw);
+}
+
+/**
+ * At most this many remembered hosts per person. A cap and not a quota: the
+ * list is read on every gated call, and an unbounded one is a slow read that
+ * gets slower every time the agent visits a new site. Global entries are an
+ * operator's deliberate list and are not capped by this.
+ */
+export const MAX_USER_HOSTS = 512;
+
+export interface EgressAllowlistStore {
+  /**
+   * Every host this person may reach silently — the operator's global entries
+   * UNIONED with their own. Never another person's.
+   */
+  allowedFor(userId: string): Promise<Set<string>>;
+  /**
+   * Record one entry. Returns false when the host or owner is malformed, or
+   * when the person is already at the cap. Idempotent: re-remembering a host
+   * already present is a no-op that returns false.
+   */
+  remember(entry: EgressAllowlistEntry): Promise<boolean>;
+}
+
+function ownerKey(entry: EgressAllowlistEntry): string | null {
+  // The one place the `null` ↔ `''` conversion happens. See migrations.ts.
+  if (entry.scope === 'global') return entry.ownerId === null ? '' : null;
+  return isOwnerId(entry.ownerId) ? entry.ownerId : null;
+}
+
+/** The shape both stores share, so neither can drift on validation. */
+function validate(entry: EgressAllowlistEntry): { owner: string; host: string } | null {
+  const owner = ownerKey(entry);
+  const host = normalizeHost(entry.host);
+  if (owner === null || host === null) return null;
+  return { owner, host };
+}
+
+export function createDbEgressAllowlistStore(
+  db: Kysely<ToolPolicyDatabase>,
+): EgressAllowlistStore {
+  return {
+    async allowedFor(userId) {
+      // Two exact keys rather than an OR over a scope column with a wildcard:
+      // the PK is (scope, owner_user_id, host), so both halves are index reads,
+      // and — more importantly — a query that could not name the owner is one
+      // that could return somebody else's rows.
+      //
+      // The personal half is DROPPED ENTIRELY for an id this store would never
+      // have written under, rather than queried with a sentinel that cannot
+      // match. Same answer, and it is the honest shape: there is no question to
+      // ask the database about an identity we do not accept. (The sentinel
+      // version was also a literal NUL byte, which Postgres rejects in a text
+      // parameter — so the read would have THROWN and been caught as "we do not
+      // know what is allowed". Fail-closed, but by accident.)
+      const personal = isOwnerId(userId);
+      const rows = await db
+        .selectFrom('tool_policy_v1_egress_allowlist')
+        .select(['host'])
+        .where((eb) => {
+          const global = eb.and([
+            eb('scope', '=', 'global'),
+            eb('owner_user_id', '=', ''),
+          ]);
+          if (!personal) return global;
+          return eb.or([
+            global,
+            eb.and([eb('scope', '=', 'user'), eb('owner_user_id', '=', userId)]),
+          ]);
+        })
+        .execute();
+      return new Set(rows.map((r: Pick<EgressAllowlistRow, 'host'>) => r.host));
+    },
+
+    async remember(entry) {
+      const checked = validate(entry);
+      if (checked === null) return false;
+      const { owner, host } = checked;
+
+      const existing = await db
+        .selectFrom('tool_policy_v1_egress_allowlist')
+        .select('host')
+        .where('scope', '=', entry.scope)
+        .where('owner_user_id', '=', owner)
+        .where('host', '=', host)
+        .executeTakeFirst();
+      if (existing !== undefined) return false;
+
+      if (entry.scope === 'user') {
+        const { count } = await db
+          .selectFrom('tool_policy_v1_egress_allowlist')
+          .select((eb) => eb.fn.countAll<number>().as('count'))
+          .where('scope', '=', 'user')
+          .where('owner_user_id', '=', owner)
+          .executeTakeFirstOrThrow();
+        if (Number(count) >= MAX_USER_HOSTS) return false;
+      }
+
+      // Accepted race, same posture as @ax/host-grants: two concurrent
+      // remembers of one host surface as a PK violation. The caller treats a
+      // throw as "not remembered", which costs an approval and grants nothing.
+      await db
+        .insertInto('tool_policy_v1_egress_allowlist')
+        .values({
+          scope: entry.scope,
+          owner_user_id: owner,
+          host,
+          created_at: new Date(),
+        })
+        .execute();
+      return true;
+    },
+  };
+}
+
+/**
+ * The store a deployment with no database gets.
+ *
+ * Not a stub: it is what makes the plugin loadable where `database:get-instance`
+ * is absent, and it is honest about the consequence — operator-seeded global
+ * hosts still apply, remembered ones do not outlive the process, so after a
+ * restart the host is held again. That is the safe direction, which is why the
+ * degradation is acceptable rather than a boot failure.
+ */
+export function createMemoryEgressAllowlistStore(): EgressAllowlistStore {
+  const byOwner = new Map<string, Set<string>>();
+  const key = (scope: EgressScope, owner: string): string => `${scope}:${owner}`;
+  return {
+    async allowedFor(userId) {
+      const out = new Set<string>(byOwner.get(key('global', '')) ?? []);
+      if (isOwnerId(userId)) {
+        for (const h of byOwner.get(key('user', userId)) ?? []) out.add(h);
+      }
+      return out;
+    },
+    async remember(entry) {
+      const checked = validate(entry);
+      if (checked === null) return false;
+      const { owner, host } = checked;
+      const k = key(entry.scope, owner);
+      const set = byOwner.get(k) ?? new Set<string>();
+      if (set.has(host)) return false;
+      if (entry.scope === 'user' && set.size >= MAX_USER_HOSTS) return false;
+      set.add(host);
+      byOwner.set(k, set);
+      return true;
+    },
+  };
+}

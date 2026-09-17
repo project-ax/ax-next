@@ -190,24 +190,29 @@ const EFFECT_DISCLOSURES: Record<CapabilityEffect, EffectDisclosure> = {
       "Every time the agent does this, it makes a paid request on this AX deployment's account — so it costs money on each use, not just the first. Whoever set up this deployment pays the bill; we can't tell you the amount from here.",
   },
   /*
-    KNOWN NARROWER THAN THE TYPE, on purpose, and flagged so the first outward
-    rule fixes it rather than inheriting it. `CapabilityEffect`'s `outward`
-    means "a third party sees the call **OR** it cannot be taken back", and
-    this detail only spells out the first disjunct. An irreversible action
-    nobody else observes would be slightly misstated by the last sentence.
+    STILL KNOWN NARROWER THAN THE TYPE, and now it is on screen.
+    `CapabilityEffect`'s `outward` means "a third party sees the call **OR**
+    it cannot be taken back", and this detail only spells out the first
+    disjunct. An irreversible action nobody else observes would be slightly
+    misstated by the last sentence.
 
-    Left alone rather than broadened now, for three reasons. It errs in the
-    OVERSTATING direction, which is the one design H4 permits. No `outward`
-    rule ships yet, so nothing renders this string today. And broadening it to
-    "…or it can't be undone" would red `permission-frames.test.ts`' assertion
+    THE FORCING FUNCTION HAS FIRED. The first outward rule shipped —
+    `web.extract` declares `['spends', 'outward']` (TASK-330) — so this string
+    IS rendered today, on the rail, beside the "Costs money" badge on the same
+    row. It is no longer a string nobody reads.
+
+    Left alone in THIS change anyway, deliberately and narrowly. It errs in
+    the OVERSTATING direction, which is the one design H4 permits, and
+    `web.extract` happens to fit the disjunct it does spell out: a page fetch
+    is precisely a third party seeing the request. Broadening it to "…or it
+    can't be undone" would also red `permission-frames.test.ts`' assertion
     that neither detail claims irreversibility — a rule that exists because
-    `PolicyRule.irreversible` owns that claim on the approval surface, and the
-    right way to resolve that tension is with the real tool in front of us, not
-    speculatively.
+    `PolicyRule.irreversible` owns that claim on the approval surface, and
+    resolving that tension is a copy decision, not a plumbing one.
 
-    The forcing function already exists: `rules.test.ts`' "marks nothing
-    outward yet" is deliberately stricter than the lint, so the first outward
-    rule reds it and sends someone here. Re-read this copy then.
+    TASK-384 OWNS BROADENING THIS COPY. If you are here to widen the wording,
+    that is the card; do not do it as a drive-by, and do not re-add "no
+    outward rule ships yet" — it has not been true since TASK-330.
   */
   outward: {
     label: 'Affects the outside world',
@@ -227,13 +232,14 @@ export function effectDisclosure(effect: CapabilityEffect): EffectDisclosure {
 }
 
 /**
- * Whether a row's declared effect should be DISCLOSED to a reader at all.
+ * Which of a row's declared effects should be DISCLOSED to a reader — the
+ * members to draw, in the order the rule declared them.
  *
  * This lives here, beside the copy, rather than as a condition at the render
  * site — and that placement is the whole point. The rule is part of the claim,
  * and this module is explicitly the piece a second renderer (a Slack card, a
  * plain-text digest) would take. A renderer holding `effectDisclosure` but not
- * this predicate would faithfully print "Cannot pay an invoice — Costs money",
+ * this rule would faithfully print "Cannot pay an invoice — Costs money",
  * which is precisely the false positive the rule exists to prevent. The
  * suppression travelling with the words is what stops the next surface having
  * to re-derive it, or failing to.
@@ -249,22 +255,33 @@ export function effectDisclosure(effect: CapabilityEffect): EffectDisclosure {
  * never to UNDERSTATE reach; a `deny` row already asserts ZERO reach, so
  * withholding a caveat about it cannot understate anything — there is no reach
  * left to understate. Note this is a RENDERING decision only: the wire row
- * still carries the rule's declared effect faithfully either way, so nothing
+ * still carries the rule's declared effects faithfully either way, so nothing
  * downstream loses the fact.
  *
- * Returns a TYPE PREDICATE on `effect`, not a plain boolean, and that is load
- * bearing rather than a convenience. The render site needs `effect` narrowed to
- * non-null to pass it on, and if this returned `boolean` that site would have
- * to re-test `effect !== null` itself — which is a SECOND copy of half this
- * decision, sitting where nothing tests it. Measured while bite-checking: with
- * the redundant check in place, mutating the `effect !== null` branch here left
- * every render test green, because the call site was quietly still enforcing
- * it. Narrowing here makes this function the only thing that decides, so a
- * mutation to either half of the rule reddens a test.
+ * IT TAKES THE WHOLE SET AND HANDS BACK A SET, which is a change of shape from
+ * the single-member predicate this replaced, and the reason is worth recording
+ * because the old comment argued hard for that one.
+ *
+ * `shouldDiscloseEffect(verdict, effect)` was a TYPE PREDICATE
+ * (`effect is CapabilityEffect`) whose real job was the `effect !== null` half:
+ * narrowing here meant the render site did not re-test nullability itself — a
+ * second copy of half the rule, sitting where nothing tested it. TASK-330
+ * removed the half being duplicated rather than the guard against duplicating
+ * it: `PermissionRow.effect` is an ARRAY, its members are non-nullable by
+ * construction, and "nothing declared" is `[]`. With the null branch gone, a
+ * per-member boolean would have read its `effect` argument NOT AT ALL — a
+ * function whose name promises it weighs the effect while deciding purely on
+ * the verdict. Returning the filtered set instead keeps one honest job here
+ * (which claims survive this verdict) and hands the caller exactly what it
+ * draws, so the iteration and the suppression travel together to the next
+ * renderer instead of only the second one making the trip.
+ *
+ * Returns a NEW array; the caller can sort or slice it without reaching back
+ * into the wire row, same discipline as `verdictFrame`'s shallow copy.
  */
-export function shouldDiscloseEffect(
+export function disclosedEffects(
   verdict: CapabilityVerdict,
-  effect: CapabilityEffect | null,
-): effect is CapabilityEffect {
-  return effect !== null && verdict !== 'deny';
+  effects: readonly CapabilityEffect[],
+): CapabilityEffect[] {
+  return verdict === 'deny' ? [] : [...effects];
 }
