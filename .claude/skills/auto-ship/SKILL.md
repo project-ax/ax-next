@@ -46,7 +46,7 @@ across passes.
 
 | Thought | Reality |
 |---|---|
-| "Let me peek at the diff to check it" | The agent + CI + the reviewer already did. You hold a one-line status. |
+| "Let me peek at the diff to check it" | The agent + CI + the reviewer already did — *for the commits the reviewer actually saw*, which is the review gate's **Q2**, not something you settle by reading code. You hold a one-line status. |
 | "I'll remember what I dispatched last pass" | Re-read the board. Cross-pass memory is the trap; the board is truth. |
 | "I'll merge these two at once to be fast" | The merge queue is serialized. One PR at a time, always. |
 | "I'll `item-list` again for that id / body / snapshot" | **One** board read per pass (`item-list` is a heavy GraphQL query); bind `$ITEMS` / `board_snapshot` and reuse it for the ready set, ids, bodies, and snapshot. Re-querying per item exhausted the 5000/hr GraphQL budget and stalled the loop for ~6 min. |
@@ -335,17 +335,102 @@ does. Leave the local branch + worktree alone during the run — a lingering one
 harmless to the queue — and sweep them at session end (`references/github-project.md`
 §7 cleanup block, which needs `remove -f -f` for harness-locked worktrees).
 
-**Review gate (blocking — check BEFORE `gh pr merge`).** Read the handoff's
-`reviewer:` field. If it is anything other than `clean` — `hung`, `skipped-…`, or
-**missing entirely** — the card never got its deep review, and CI does not substitute
-for one (the three worst bugs of the agent-workspace run were invisible to CI).
-**Dispatch your own independent `ax-code-reviewer`** on that PR's diff
-(`git diff main...<branch>`) with a **short, self-contained prompt**, from a fresh
-agent and with **no `name`** (yolo-ship Phase 5 › dispatch contract). The reason
-orchestrator-dispatched passes returned where builder-spawned ones "hung" was the
-dispatch shape, not the diff — a named teammate cannot hand its findings back
-(TASK-268). Merge only once it returns and its actionable findings are addressed (hand
-fixes back to the builder, or file them as follow-up cards if they are non-blocking).
+**Review gate (blocking — check BEFORE `gh pr merge`). It asks TWO questions, and the
+second one is the one that has actually been failing.**
+
+**Q1 — did a review happen at all?** Read the handoff's `reviewer:` field. If it is
+anything other than `clean` — `hung`, `skipped-…`, or **missing entirely** — the card
+never got its deep review, and CI does not substitute for one (the three worst bugs of
+the agent-workspace run were invisible to CI). Order an independent pass over the whole
+branch diff (`git diff main...<branch>`) — see **Ordering the pass**, below.
+
+**Q2 — did that review see the commits you are about to merge?** `reviewer: clean` is
+an honest answer to a question about the PAST. The normal builder rhythm is: obtain a
+review, apply its findings, push the fix — and that fix commit becomes the PR head.
+Nobody reviewed it. The handoff names both shas now, so **compare them instead of
+inferring**: `reviewed-sha:` is what the reviewer approved, `headSha:` is what you are
+about to merge.
+
+```bash
+# The post-review delta: everything no reviewer has seen.
+BRANCH=$(gh pr view <n> --json headRefName --jq .headRefName)
+REVIEWED_SHA=<reviewed-sha>   # from the handoff. MISSING or `-` fails CLOSED:
+                              # use origin/main, i.e. the whole branch is unreviewed.
+git fetch origin "${BRANCH}"
+git log  --oneline   "${REVIEWED_SHA}..origin/${BRANCH}"   # the unseen commits
+git diff --name-only "${REVIEWED_SHA}..origin/${BRANCH}"   # the unseen FILES
+```
+
+A **file list is not the diff** — you route on it and you never judge code from it, so
+the "peek at the diff" anti-pattern above still stands.
+
+**Scope the WHOLE post-review delta, never the head commit alone.** This correction is
+the expensive half of the lesson, so do not re-derive the cheaper version: on **PR
+#556** the head commit was memory-only (`2c44f4ae`, `.claude/memory/mistakes.md` and
+nothing else) — a head-commit scope test *passes* it — while three production files sat
+unreviewed in the two commits under it: `AgentConversation.tsx` and `thread-find.ts` in
+`a509d23a`, `ThreadFind.tsx` in `c329c272`. An independent pass over the delta found
+**two Majors**. Route on the delta's file list:
+
+- Delta **empty** → a reviewer did see the head. Merge.
+- Delta touches **only** tests, docs, or `.claude/memory/` → merge on the builder's
+  `clean`, and journal that you did. Two limits on that word "docs", both learned the
+  hard way. **`.claude/skills/**` does not count** — those files are the procedure you
+  execute, not prose about it, so an unreviewed edit there takes the production path
+  below. (This gate's own PR would otherwise have qualified to merge on its author's
+  word while rewriting the merge gate.) And **`.claude/memory/` is not risk-free**: on
+  #553 and #557 the wrong rule that landed *was* in a memory file, read by every later
+  agent as ground truth. It stays on this side only because ordering a pass on every
+  memory edit is the non-termination this gate refuses — so read the journal line as
+  "accepted risk", not "safe".
+- Delta touches **any production file** → order an independent pass **scoped to the
+  delta** (`git diff <reviewed-sha>..origin/<branch>`), not the whole branch again.
+  Do not weaken this to "the delta is small": the two misses whose line counts were
+  recorded were an 18-line and a 20-line review-fix commit.
+
+**What keeps this bounded is the classification, not the size.** The handoff asks the
+builder to label each post-review commit **`fix:`** (it answers a finding the reviewer
+named) or **`new:`** (the builder found it itself, afterwards). Builders answer this
+accurately once the handoff asks — one labelled its own commit `new:` and told the
+orchestrator to order a pass on it. The labels decide where the loop stops:
+
+- The one round of review you order closes the gate for the `fix:` commits answering
+  **its own** findings. Do not re-open it for those. "Re-review every review-fix
+  commit" never terminates, and a non-terminating merge queue is a worse bug than the
+  one this gate closes.
+- A `new:` commit is unreviewed work nobody asked for, so it never earns that
+  exemption, whenever it lands. It does not *override* the scope routing either: a
+  tests-only `new:` commit still merges. Scope decides whether a pass runs; class only
+  decides where the loop stops.
+
+**`fix:` is not a safety claim.** It routes the gate's *exit*, not its *entry*: on
+**#553** and **#557** the unreviewed commits were faithful `fix:` commits touching
+production code, and independent passes found an **Important** and a **Major**
+respectively. Both had also written a wrong rule into `.claude/memory/` — the file
+every later agent reads as ground truth. So **scope** decides whether a pass runs;
+**class** decides where the loop stops. Seven PRs over the 2026-09-16/17 runs, and the
+evidence behind them is three different strengths — worth keeping straight, on a card
+about a gate that believed a claim without checking its scope:
+
+- **#553, #556, #557** — the unreviewed commit is on record *and* the pass ordered on it
+  returned a named finding (an Important, two Majors, a Major).
+- **#554** — the unreviewed head is on record (20 lines of `permission-frames.ts`), with
+  no finding reported either way. It is evidence that the gate let it through, not that
+  it was harmful. (#553 and #554 were 2 of 2 in their run: that is where this card
+  came from.)
+- **#558, #559, #560** — the 2026-09-17 orchestrator's account: it reports all three had
+  production code the reviewer never saw, and that their builders classified their own
+  deltas correctly — but only because it asked each of them by hand. That hand-asking is
+  the habit this handoff field replaces.
+
+**Ordering the pass.** **Dispatch your own independent `ax-code-reviewer`** with a
+**short, self-contained prompt**, from a fresh agent and with **no `name`** (yolo-ship
+Phase 5 › dispatch contract). The reason orchestrator-dispatched passes returned where
+builder-spawned ones "hung" was the dispatch shape, not the diff — a named teammate
+cannot hand its findings back (TASK-268). Name the diff range (the whole branch for Q1,
+the post-review delta for Q2) and the builder's worktree path. Merge only once it
+returns and its actionable findings are addressed (hand fixes back to the builder, or
+file them as follow-up cards if they are non-blocking).
 
 **Reviewers are SLOW, and slow is not dead.** Measured 2026-08-23: reviews containing
 4 and 7.5 minutes of actual work were *delivered ~40 minutes apart*, one of them
