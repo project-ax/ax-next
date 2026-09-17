@@ -139,10 +139,12 @@ function actualParentFromMismatch(
   return cause.actualParent ?? null;
 }
 
-/** Owner-routed ctx so workspace:apply lands in the AGENT'S workspace. ctx
- *  carries (userId, agentId); userId is the agent's REAL owner (from
- *  agents:resolve), never the plugin name or a synthetic actor — passing the
- *  plugin's own ctx through would write to the wrong workspace. */
+/** Ctx so workspace:apply lands in the AGENT'S workspace, routed by
+ *  ctx.agentId (TASK-257 — userId no longer selects the repo). ctx.userId
+ *  must still be the agent's REAL owner (from agents:resolve), never the
+ *  plugin name or a synthetic actor — it is the attribution recorded in
+ *  `delta.author`, and passing the plugin's own ctx through would write to
+ *  the wrong workspace regardless. */
 function ctxForWorkspace(ownerUserId: string, agentId: string): AgentContext {
   return makeAgentContext({
     sessionId: 'routines-editor',

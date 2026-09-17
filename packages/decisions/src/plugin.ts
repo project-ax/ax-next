@@ -498,9 +498,10 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           //
           // The read runs under a ctx built for the DECISION's owner and agent
           // — never the approving request's. Hooks downstream of a producer
-          // route by `(userId, agentId)`, so checking with the wrong one would
-          // re-read somebody else's world and answer confidently about it. This
-          // repo has been bitten by exactly that on `workspace:apply`.
+          // route by `agentId` (TASK-257 — `workspace:apply` no longer keys on
+          // `userId` too), so checking with the wrong ctx would re-read
+          // somebody else's world and answer confidently about it. This repo
+          // has been bitten by exactly that on `workspace:apply`.
           //
           // `checkFreshness` is TOTAL and fails CLOSED: a check hook that is
           // gone, throws, or answers unreadably resolves to a value that cannot

@@ -641,9 +641,10 @@ describe('the download routes', () => {
     /*
       The same property the read routes have, and it is what keeps a download
       from crossing into another agent's tree: the git-backed backend shards by
-      (userId, agentId), and the durable reader joins `owner.agentId` onto the
-      export root. The plugin's own initCtx (`@ax/channel-web` / `system`)
-      would land in the wrong subtree, or in every subtree.
+      agentId (TASK-257 — previously (userId, agentId)), and the durable reader
+      joins `owner.agentId` onto the export root. The plugin's own initCtx
+      (`@ax/channel-web` / `system`) would land in the wrong subtree, or in
+      every subtree.
     */
     registerAuth({ id: 'u1', isAdmin: false });
     registerAgents();

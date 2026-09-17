@@ -20,7 +20,7 @@
 // Why we keep this plugin alongside `createWorkspaceGitServerPlugin`: the
 // contract test wants ONE workspaceId per plugin instance (so each scenario
 // gets a clean version history). The production plugin derives workspaceId
-// from `ctx` (a per-call userId/agentId) — that's correct for production
+// from `ctx` (a per-call agentId — TASK-257) — that's correct for production
 // where many agents share a single host pod, but wrong for the harness which
 // has no real ctx. Keeping a thin test-only adapter avoids contorting the
 // production factory's contract for test purposes.

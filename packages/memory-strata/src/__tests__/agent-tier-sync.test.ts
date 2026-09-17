@@ -45,10 +45,15 @@ const MEMORY_OPS_HOOK = `llm:call:${DEFAULT_MEMORY_OPS_MODEL.slice(0, DEFAULT_ME
 // EVERY agent's `ctx.workspace.rootPath` is the SAME shared host CWD, so a
 // rootPath-keyed store pools all agents together AND never reaches the runner.
 //
-// The mock below is keyed per-(userId, agentId) — exactly like the real
-// workspace-git-server tier (workspaceIdFor hashes (userId, agentId)). It also
-// emits `parent-mismatch` + `cause.actualParent` so the CAS rebase-retry path
-// is exercised, NOT short-circuited.
+// The mock below is keyed per-(userId, agentId), which is stricter than the
+// real workspace-git-server tier now is: since TASK-257, `workspaceIdFor`
+// hashes `agentId` alone, so the real tier is shared by every user
+// authorized to reach the agent. The mock's extra userId axis is still
+// exercised harmlessly here (every case below varies agentId too), and
+// keeping it stricter than production is a fine, conservative test double —
+// it just no longer mirrors the real derivation exactly. It also emits
+// `parent-mismatch` + `cause.actualParent` so the CAS rebase-retry path is
+// exercised, NOT short-circuited.
 // ---------------------------------------------------------------------------
 
 type Snapshot = Map<string, Uint8Array>;

@@ -173,7 +173,8 @@ is the **exact current behavior**. This feature supplies the *trigger* that exer
 > **As-built (TASK-182):** consolidated memory's single durable home is the per-agent
 > **`/agent` governed git tier** at **`memory/…`** (i.e. `/agent/memory/system/recent.md`,
 > `/agent/memory/docs/…`). memory-strata writes it there through the storage-agnostic
-> `workspace:apply` hook (owner-routed by `(userId, agentId)`, so per-agent isolated), and
+> `workspace:apply` hook (routed by `agentId` — TASK-257, previously `(userId, agentId)` —
+> so per-agent isolated but shared across every user authorized to reach that agent), and
 > the runner's session-start materialize bundle carries it into the reflection turn's
 > `/agent`. The host's per-turn local processing uses a disposable scratch hydrated from
 > `/agent`; `/agent` is canonical (Invariant 4). See `@ax/memory-strata`'s `agent-tier-sync`.

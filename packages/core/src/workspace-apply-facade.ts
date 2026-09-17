@@ -39,7 +39,7 @@ import type {
 //
 // `ctx` is passed straight through to all three steps. The facade never
 // constructs or rewrites it — `workspace:apply` routes by the caller's
-// userId/agentId, so transparency is correct.
+// agentId (TASK-257), so transparency is correct.
 //
 // Lives in `@ax/core` (not a workspace backend) so a future GCS backend
 // reuses the identical pre/post-fire logic — one source of truth for the

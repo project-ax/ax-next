@@ -46,8 +46,31 @@
  * Security posture (matches routes-connections.ts):
  *   - identity is ALWAYS the authenticated user (auth:require-user → 401).
  *     `userId` is never read from the body, query, or params.
- *   - every per-agent read is gated by `agents:resolve`; any PluginError → 404
- *     (not 403 — we don't tell a foreign caller whether an id exists).
+ *   - every read of an agent's WORKSPACE or MEMORY is gated by
+ *     `agents:resolve`, strictly before the read; any PluginError → 404 (not
+ *     403 — we don't tell a foreign caller whether an id exists). That is the
+ *     eleven `:agentId` routes (`agentDetail`, files, user-files, downloads,
+ *     rail, grants/revoke, memory/rules) plus the agent-scoped branch of
+ *     `/activity`.
+ *
+ *     ⚠ Since TASK-257 (2026-09-17) this gate is the ONLY barrier on those
+ *     routes. The workspace tier used to hash the CALLER's userId into the
+ *     repo id, so a non-owner who slipped past the ACL still landed in their
+ *     own empty shard; the partition is now `agentId` alone, because shared
+ *     team files and per-caller isolation are contradictory. Do not bypass
+ *     this gate, do not make it best-effort, and do not move it after a read.
+ *
+ *     Five routes here are deliberately gated DIFFERENTLY, and NONE of them
+ *     reads workspace files or memory: `/state`, `/route` and the UNSCOPED branch
+ *     of `/activity` fan out over `agents:list-for-user` — the roster IS the
+ *     ACL there, and it is a different predicate (server-derived teamIds vs.
+ *     a live `teams:is-member` call), one that is strictly narrower in
+ *     practice. `/grants` filters the in-memory card-owner map on the
+ *     authenticated userId. `/decisions` reads the caller's OWN decisions
+ *     first and then drops rows whose agent it cannot reach, so there a
+ *     resolve failure is a filtered row rather than a 404. Say so plainly:
+ *     the blanket claim this comment used to make ("every per-agent read")
+ *     was not true, and a security note nobody can check is worse than none.
  *   - transcript text is UNTRUSTED model output. It rides as a plain string and
  *     React renders it as text; we never build markup from it here.
  *   - I2 — no cross-plugin imports. Every hook is a duck-typed `bus.call`, and
@@ -2155,21 +2178,29 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * workspace is addressed, one tab follows and the other quietly reads a
    * different agent's tree.
    *
-   * `memory:rules:write` reaches `workspace:apply`, which routes by
-   * `(userId, agentId)` — hand it the wrong ctx and the write lands in another
-   * agent's workspace. Constructing it HERE, from the authenticated caller and
-   * the agent they just passed the ACL for, is what keeps that honest; reusing
+   * `memory:rules:write` reaches `workspace:apply`, which routes on
+   * `agentId` — hand it the wrong ctx and the write lands in another agent's
+   * workspace. Constructing it HERE, from the authenticated caller and the
+   * agent they just passed the ACL for, is what keeps that honest; reusing
    * `initCtx` (agentId `@ax/channel-web`, userId `system`) would not.
+   *
+   * The `userId` on this ctx no longer picks the repo — since TASK-257 the
+   * workspace partition is `agentId` alone, so every user authorized to reach
+   * an agent reads and writes the same tree. It still matters, for two
+   * reasons, which is why it stays the AUTHENTICATED caller and never a
+   * lookup of some notional owner: `workspace:apply` stamps it into
+   * `delta.author`, making it the only record of WHO changed a shared file;
+   * and the memory hooks carry it through to their own ctx checks.
    *
    * The workspace root is inherited from `initCtx` so the CLI preset — which
    * has no workspace backend and writes memory to the host filesystem — lands
    * in the same root everything else in that preset uses.
    */
-  function agentWorkspaceCtx(agentId: string, ownerUserId: string): AgentContext {
+  function agentWorkspaceCtx(agentId: string, callerUserId: string): AgentContext {
     return makeAgentContext({
       sessionId: 'workspace-surface',
       agentId,
-      userId: ownerUserId,
+      userId: callerUserId,
       workspace: initCtx.workspace,
     });
   }
@@ -2306,9 +2337,20 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    *
    * A failed LEARNED read is different: it drops those rows, because the worst
    * it can cost is a section that says the agent has written nothing yet.
+   *
+   * ⚠ Takes the RESOLVED agent, not a bare `agentId`, and that is the whole
+   * point of the signature. Since TASK-257 an agent's memory is shared by
+   * everyone authorized to reach it, so `agents:resolve` is the only thing
+   * standing between a caller and these bytes. A `string` parameter would let
+   * a future second caller pass an unvetted id from the URL and never notice;
+   * a `ResolvedAgent` can only be obtained from `resolveAgentOr404`, so the
+   * gate is enforced by the type rather than by this comment. (Contrast
+   * `readActivity`, which still takes a string because `/state` legitimately
+   * fans out over an already-ACL'd roster — see its own warning.)
    */
-  async function readMemory(agentId: string, userId: string): Promise<MemoryDoc[]> {
+  async function readMemory(agent: ResolvedAgent, userId: string): Promise<MemoryDoc[]> {
     if (!bus.hasService('memory:rules:read')) return [];
+    const agentId = agent.id;
     const ctx = agentWorkspaceCtx(agentId, userId);
     let rules: string | null = null;
     try {
@@ -3748,7 +3790,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         thread,
         decisions: { status: decisionsRead },
         past,
-        memory: await readMemory(agentId, userId),
+        memory: await readMemory(agent, userId),
       } satisfies AgentDetail);
     },
 
@@ -3762,7 +3804,9 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * So a throw propagates and the tab shows an error.
      *
      * NOTE ON ISOLATION. The `git-protocol` workspace backend shards by
-     * (userId, agentId), so this listing is genuinely one agent's tree. The
+     * agentId (TASK-257 — previously (userId, agentId)), so this listing is
+     * genuinely one agent's tree, shared by every user authorized to reach
+     * it. The
      * `local` single-repo backend — the CLI and the chart's default — ignores
      * ctx entirely and keeps ONE tree for the whole deployment; there, this
      * lists that shared tree, exactly as the identity editor and the routines

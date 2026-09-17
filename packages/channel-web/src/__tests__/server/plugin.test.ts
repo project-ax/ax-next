@@ -351,9 +351,9 @@ function skillsMockPlugin(): Plugin {
  * AW-13 — @ax/memory-strata's Memory-tab hooks, in memory.
  *
  * Deliberately records the CTX each call arrives on. `memory:rules:write`
- * reaches `workspace:apply`, which routes by `(userId, agentId)`; a route that
- * fires with the wrong ctx writes another agent's workspace, and only a test
- * that looks at the ctx can see it.
+ * reaches `workspace:apply`, which routes by `agentId` (TASK-257); a route
+ * that fires with the wrong ctx writes another agent's workspace, and only a
+ * test that looks at the ctx can see it.
  */
 function memoryMockPlugin(state: {
   rules: string;

@@ -34,7 +34,16 @@ per-localdir workspace root, unchanged).
 
 - Add a stable `agent_key` dimension to both backends, derived from `ctx`
   (`sha256(JSON.stringify([userId, agentId]))`, truncated — "workspaceIdFor or
-  equivalent"). The backends already receive `_ctx`; compute the key there. A small
+  equivalent").
+
+  > **Superseded 2026-09-17 (TASK-257):** `agentScopeKey` (and the matching
+  > `workspaceIdFor` in `workspace-git-server`) now hashes `agentId` alone —
+  > `userId` was dropped from the derivation. The partition is per-agent
+  > only, shared by every user authorized to reach that agent. This section
+  > is left as-written for history; see the TASK-257 change for current
+  > behavior.
+
+  The backends already receive `_ctx`; compute the key there. A small
   local `agentScopeKey(ctx)` helper per backend (duplicated like `MAX_TOP_K`; Invariant
   2 forbids cross-plugin import).
 - Schema: add `agent_key` column. sqlite FTS5 table gets `agent_key UNINDEXED`;

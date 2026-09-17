@@ -179,8 +179,9 @@ export function makeAgentBootstrapHandler(deps: AgentBootstrapDeps) {
         );
 
         // 4) Seed `.ax/BOOTSTRAP.md` into the NEW agent's durable workspace.
-        //    The ctx carries (userId, agentId) so `workspace:apply` routes to
-        //    THIS agent's `/agent`. BEST-EFFORT: the agent already exists and the
+        //    The ctx carries agentId so `workspace:apply` routes to THIS
+        //    agent's `/agent` (TASK-257: keyed by agentId alone, not by the
+        //    caller's userId too). BEST-EFFORT: the agent already exists and the
         //    SPA will open a chat regardless — a seed failure is logged, never a
         //    500. But the seed landing is what puts the agent in bootstrap mode
         //    (the runner injects BOOTSTRAP.md verbatim); if it never lands, the

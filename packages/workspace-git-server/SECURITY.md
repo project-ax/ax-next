@@ -257,7 +257,7 @@ The full set of git invocations lives in `src/client/git-engine.ts` (the helpers
 
 The only caller-derived elements that ever land in argv are:
 
-- **`workspaceId`** — produced upstream by `workspaceIdFor` (sha256-of-`userId/agentId`, prefixed `ws-`). Output always matches the regex `^[a-z0-9][a-z0-9_-]{0,62}$` by construction. No way for a caller to inject a `..`, a slash, or anything shell-special.
+- **`workspaceId`** — produced upstream by `workspaceIdFor` (sha256-of-`agentId`, prefixed `ws-`; TASK-257 dropped `userId` from the hash input). Output always matches the regex `^[a-z0-9][a-z0-9_-]{0,62}$` by construction. No way for a caller to inject a `..`, a slash, or anything shell-special.
 - **`path`** — the file path inside the workspace, used in `git cat-file blob <oid>:<path>`. Lives under the workspace's bare-repo working tree. Subscribers don't pick it; the wire schema does.
 - **`oid`** — a 40-hex SHA from git's own object database (we never accept a caller-supplied oid as authoritative — we read it back from `rev-parse`).
 - **`remoteUrl`** — composed from a chart-stamped `baseUrl` (e.g. `http://<release>-ax-next-git-server-experimental.<ns>.svc.cluster.local:7780`) plus the regex-validated `workspaceId`. Both halves are regex-safe; there's no place to slip a shell metacharacter in.
