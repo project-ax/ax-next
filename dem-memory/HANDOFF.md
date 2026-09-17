@@ -263,10 +263,20 @@ that both said otherwise.
 8. **`--sampler` changes what you are measuring.** `spaced` is comparable to Strata;
    `shortest` is the old easy-slice picker, kept only so the 2026-09-16 n=30 runs stay
    reproducible. **Never compare a number from one sampler to a number from the other.**
-9. **Variance is large at small n.** Two runs of identical code at n=30 gave 28/30 and
-   26/30 — 4 questions flip between identical runs. Re-run the same config before
-   attributing any single-question flip to a change. At n=100, SE is ~3.8pp — and a
-   PER-TYPE row sits on n=6–27, where SE is 8–20pp.
+9. **MEASURED NOISE FLOOR AT n=100: +/-4-6pp on IDENTICAL code. Nothing smaller than ~4pp
+   is detectable here, and a single run per arm cannot detect anything at all.**
+   Eight runs, same code, same 100 questions, GLM answerer: 15-row config scored
+   86.0/86.0/84.0/82.0 (mean 84.50, sd 1.91), budget-fill config 85.0/83.0/89.0/87.0
+   (mean 86.00, sd 2.58). **21 of 100 questions flip at least once across the 8 runs.**
+   Cherry-picking the best budget run against the worst 15-row run manufactures **+7.0pp**
+   from two configs doing nothing different — larger than any real effect measured on this
+   project except the assistant-content fix. With 4 repeats per arm the minimum detectable
+   difference is ~3.9pp (t(6), SE 1.61); with one run per arm you cannot estimate variance,
+   so no delta is interpretable. Per-TYPE rows sit on n=6-27 and are far worse.
+   **Before believing any change: 4+ repeats per arm, or an effect big enough to not care.**
+   (This measures answerer + judge variance only — one sample, one extraction cache — so it
+   is a LOWER BOUND on the real error budget.) Repeats are cheap: GLM answering is ~$0.02
+   per run and the grok judge ~$0.10, so 8 runs cost about $1 on warm caches.
 10. **Run BOTH answer arms before believing any per-type delta.** The second arm costs
     ~15 min and cents on warm caches, and it is this bench's cheapest noise filter. On the
     assistant-content change, of 26 flips across the two arms only **7 wins and 4 losses

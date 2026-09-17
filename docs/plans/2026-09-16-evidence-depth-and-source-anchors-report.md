@@ -80,6 +80,39 @@ failure mode you only have with a weak extractor. dem's shipping extractor does 
 - **The answerer barely matters.** Sonnet costs 30-50x for a difference inside the noise band.
 - Treat **83-88% at n=100 as one number** (SE ~3.8pp).
 
+## Settled with repeats: the budget does not beat 15 rows, and here is the noise floor
+
+Eight further runs — 4 per config, identical code, same 100 questions, GLM answerer, ~$1 total
+on warm caches:
+
+| config | four runs | mean | sd |
+|---|---|---|---|
+| 15 rows | 86.0, 86.0, 84.0, 82.0 | 84.50% | 1.91 |
+| 2000-token budget | 85.0, 83.0, 89.0, 87.0 | 86.00% | 2.58 |
+
+Difference **+1.50pp**, **t(6) = 0.93** (2.45 needed for p<0.05). Per question across all eight
+runs: budget better on 12, worse on 7, tied on 81.
+
+**The run-to-run noise floor at n=100 is +/-4-6pp on IDENTICAL code, and 21 of 100 questions
+flip at least once across the eight runs.** Minimum detectable difference with 4 repeats per
+arm is ~3.9pp; with ONE run per arm — which is how every arm in this report and every arm
+earlier in the day was measured — variance cannot be estimated at all, so no single-arm delta
+was ever interpretable.
+
+This explains the whole day rather than just this table. Cherry-picking the best budget run
+(89.0%) against the worst 15-row run (82.0%) manufactures **+7.0pp** from two configurations
+doing nothing different — larger than any effect reported today except the assistant-content
+fix. The GLM Path A "+5.0", Path B's "+4.0", and all four `multi-session` "+14.8"s sit inside
+this band.
+
+Caveat on the number: these eight runs share one question sample and one extraction cache, so
+they measure answerer + judge variance only. The true error budget, including sampling, is
+LARGER than +/-4-6pp.
+
+**Standing bar for this bench: 4+ repeats per arm, or an effect big enough not to need the
+test.** The assistant-content extraction fix is the second kind — +36.4pp on its type, in both
+answerers, with all four flipped questions confirmed mechanically.
+
 ## Method note worth keeping
 
 **Run both answer arms before believing any per-type delta.** A second arm costs ~15 min and
