@@ -119,9 +119,6 @@ async function main(): Promise<void> {
   const sourceExcerpts = Number(args["source-excerpts"] ?? 0);
   // Path A: rows per answer. Default matches src (15); pass 80 to fill the token budget.
   const evidenceRows = Number(args["evidence-rows"] ?? 0);
-  // Reader-side only: adds reflect directives 7-10, changes nothing about retrieval, so an
-  // arm differs from its control by the prompt alone.
-  const groundedCounting = args["counting-directives"] !== undefined;
   const selected =
     sampler === "shortest" ? pickShortest(filtered, n, minAbs) : stratifiedSample(filtered, n);
   console.log(
@@ -234,7 +231,6 @@ async function main(): Promise<void> {
       const asOf = sample.question_date ? sessionDateToIso(sample.question_date) : undefined;
       if (asOf) row.as_of = asOf;
       const reflected = await memory.reflect(sample.question, {
-        ...(groundedCounting ? { groundedCounting: true } : {}),
         ...(asOf ? { asOf } : {}),
         ...(evidenceRows > 0 ? { limit: evidenceRows } : {}),
       });

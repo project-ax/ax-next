@@ -24,7 +24,7 @@ because ~15 `auto-ship/*` agents append to `.claude/memory/*.md` continuously. R
 always "keep both sides, upstream first" — they are append-only files.
 
 **Current state:** `npm run typecheck`, `npm run build`, `npm test` all clean —
-**115 tests** across 13 files, hermetic.
+**121 tests** across 14 files, hermetic.
 
 **THE headline number: LongMemEval-S n=500 (the FULL corpus) = 87.4%**, against the Strata
 n=500 reference of 76.0%. SE +/-1.5pp, so +11.4pp is ~7 SE, and it reproduces EXACTLY across
@@ -101,10 +101,16 @@ Strata configs land on 76.0% overall, which is what makes the headline comparabl
 extraction). **Two places dem is WORSE and they matter:**
 
 - `multi-session` 80.5/78.9 vs 85.2 — Strata still wins the largest stratum, in both arms.
-- **Abstention: hallucination 36.7% (sonnet) / 26.7% (GLM) vs Strata's 20.0%.** dem buys a low
-  false-refusal rate (1.9-2.3% vs 9.5%) by answering more readily, and invents an answer on a
-  quarter to a third of unanswerable questions. **For a memory product this is the worst
-  failure mode available, and it is the thing to fix before claiming dem is better.**
+- **Abstention: hallucination 26.7% (sonnet) / 20.0% (GLM) vs Strata's 20.0% — CORRECTED
+  2026-09-17, and the earlier 36.7/26.7 figures were a metric bug.** On `_abs` questions the
+  judge returns **`correct`** for a refusal written in prose (`80ec1f4f_abs` answered
+  `[DATA_ABSENT]` plus an explanation); counting every non-`abstained-correctly` verdict as a
+  hallucination penalises the desired behaviour. Only a verdict of `incorrect` is an invented
+  answer. **dem-GLM is LEVEL with Strata here, not worse**, while keeping the far lower
+  false-refusal rate (1.9-2.3% vs 9.5%). The previous claim that this is "the worst failure
+  mode available, the thing to fix before claiming dem is better" was overstated.
+  **Also: at n=30 this metric moves 13.4pp between two runs of IDENTICAL code (8/30 vs 4/30),
+  so no abstention claim survives one run per arm.**
 
 **The answerer is worth ~nothing: McNemar 19 wins each, p=1.000**, at 30x the cost ($3.16 vs
 ~$0.10 per 500). Sonnet exists in these runs only to match Strata's answerer.
@@ -199,6 +205,29 @@ gpt-4.1-nano extraction scores 26.0% where glm-5.3-flash scores 83-88%, on ident
 and answerer, and nothing recovered it. Sonnet answering costs 30-50x GLM for a difference
 inside the noise band. Best value: **glm-5.3-flash on both ends, fixed-15, $0.012/100q**.
 
+### 0c. DO NOT REBUILD: reflect counting/arithmetic directives were measured and REVERTED
+
+`docs/plans/2026-09-17-counting-directives-report.md`. Four gated directives (arithmetic, count
+commitment, event coreference, event-date-over-statement-date) aimed at the diagnosed
+multi-session failures. n=500, GLM, 2 control + 2 treatment arms, facts pinned to `f4752a79`.
+
+**Accuracy: +0.6pp TOTAL, +1.9pp multi-session — both inside a control-to-control spread of
+1.6pp and 5.3pp.** The target-type effect changes SIGN depending on which control you pair
+against (+4.5 vs -0.8). **False refusal roughly DOUBLED and replicated**: controls [1.7%, 1.1%]
+vs treatments [2.6%, 3.4%], non-overlapping ranges, 6.5 -> 14 questions. Hallucination
+unchanged within every pair.
+
+The mechanism is the gating itself: "if an operand is missing, say which one" and "hand the
+zero case to directive 3" are low-risk exits, and a model told to check its operands takes
+them on colloquially phrased aggregation questions. **Gating a directive on evidence being
+present does not make it safe — it relocates the cost from hallucination to refusal.**
+
+Two retrieval fixes proposed alongside it were also rejected on measurement: a per-subject
+quota (dem's `subject` is the SPEAKER — 90.0% of facts are `user`/`assistant`, and the crowded
+table is 12 `user` + 3 `assistant`) and MMR (Cedar Creek is at rank 16 of 40; lambda 0.5 and
+0.7 both fail to admit it, because the crowding rows are semantically but not lexically
+redundant).
+
 ### 1. Three REPLICATED temporal-reasoning regressions from the assistant-content change
 
 `single-session-assistant` is **nearly done** — 45.5% → 81.8%, identically in both answer
@@ -255,10 +284,17 @@ disambiguation among same-dated rows, not temporal grounding.
 
 ### 4. Known extraction noise (measured, not yet acted on)
 
-Across 16,804 cached facts: 67.0% carry exactly their session date, **16.5% are dated
->1 day in the future** (mostly legitimate planned events), **~1% are wild outliers**
-(p100 314 years off). `retain()` now skips unparseable dates rather than dying, but
+Across 16,804 cached facts (an older, smaller sample): 67.0% carry exactly their session date,
+**16.5% are dated >1 day in the future** (mostly legitimate planned events), **~1% are wild
+outliers** (p100 314 years off). `retain()` now skips unparseable dates rather than dying, but
 absurd-yet-parseable years still land in the table. Not known to cost any answer.
+
+**Re-measured 2026-09-17 across ALL 130,779 facts of `f4752a79` — the generation behind 87.4%
+— the drift is much smaller: 93.0% of facts carry exactly their session date, 1.9% are dated
+after it, 5.1% before.** Quote these, not the 16,804-fact numbers. This matters because it is
+the basis for any claim about what the `When` column means: it is `validStart`, and it equals
+the session date on 93% of rows, so relabelling the column "session date" is mostly accurate —
+but it would still rewrite the signal that `temporal-reasoning` scores 90.2% on.
 
 ### 5. Still unbuilt, still no evidence for them
 
@@ -389,7 +425,15 @@ is a prompt change to Strata measured in days, not an architecture swap.
 8. **`--sampler` changes what you are measuring.** `spaced` is comparable to Strata;
    `shortest` is the old easy-slice picker, kept only so the 2026-09-16 n=30 runs stay
    reproducible. **Never compare a number from one sampler to a number from the other.**
-9. **MEASURED NOISE FLOOR AT n=100: +/-4-6pp on IDENTICAL code. Nothing smaller than ~4pp
+9. **MEASURED NOISE FLOOR — n=500 (2026-09-17): TOTAL 1.6pp, multi-session 5.3pp,
+   knowledge-update 3.8pp, hallucination 13.4pp, all on IDENTICAL code.** Two full-corpus runs
+   scored 85.8% and 87.4% (28W/20L, p=0.312). The 87.4% headline is robust — the stored
+   baseline sits inside that range. **Per-type is not: multi-session moves 5.3pp for free,
+   which exceeds the binomial SE (~3.4pp) at n=133 that this file's error budget assumed, and
+   exceeded the treatment effect it was used to judge.** single-session-preference moved 10.0pp
+   between two identical treatment arms (SE ~7.9pp at n=30 — three questions move it 10
+   points). See `docs/plans/2026-09-17-counting-directives-report.md`.
+   **MEASURED NOISE FLOOR AT n=100: +/-4-6pp on IDENTICAL code. Nothing smaller than ~4pp
    is detectable here, and a single run per arm cannot detect anything at all.**
    Eight runs, same code, same 100 questions, GLM answerer: 15-row config scored
    86.0/86.0/84.0/82.0 (mean 84.50, sd 1.91), budget-fill config 85.0/83.0/89.0/87.0
@@ -555,7 +599,7 @@ dem-memory/
 │   ├── diagnose-temporal.ts      dump the evidence table a question actually sees
 │   ├── consolidation-survival.ts would dem's facts survive Strata consolidation? (free)
 │   └── compare-strata.ts         re-express results in Strata's metrics
-├── tests/                        115 passing, hermetic
+├── tests/                        121 passing, hermetic
 │   ├── assistant-content.test.ts verbatim objects + extraction-prompt contract
 │   ├── consolidation-survival.test.ts  pins the copied Strata predicates against theirs
 │   └── embed-cache.test.ts       append-only ndjson, legacy adoption, torn lines
