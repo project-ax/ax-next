@@ -28,11 +28,22 @@
 //     living in whoever was driving.
 //
 // THE HEAD-COMMIT TEST IS NOT SUFFICIENT, and that is the expensive half of this
-// lesson. The obvious fix -- "scope-test the head commit" -- was measured to miss:
-// **#556**'s head commit was memory-only, so a head-commit scope test PASSES it, while
-// three production files (`AgentConversation.tsx`, `ThreadFind.tsx`, `thread-find.ts`)
-// sat unreviewed one commit below. Hence property 2 below, which pins the file scan to
-// a RANGE anchored at the reviewed sha rather than to a single commit.
+// lesson. The obvious fix -- "scope-test the head commit" -- misses, and #556 is the
+// counterexample. Checked against the GitHub API rather than taken on report: its head
+// at gate time was `2c44f4ae`, whose only file is `.claude/memory/mistakes.md`, so a
+// head-commit scope test PASSES it -- while three production files sat unreviewed in
+// the TWO commits under it (`AgentConversation.tsx` + `thread-find.ts` in `a509d23a`,
+// `ThreadFind.tsx` in `c329c272`). The pass that was then ordered produced `6277df6e`,
+// "Review round 2: two Majors". Hence property 2, which pins the file scan to a RANGE
+// anchored at the reviewed sha rather than to any single commit.
+//
+// The same check confirmed the other three: #553's head `54f85308` changed 18 lines of
+// `WorkspaceShell.tsx` (12 added, 6 removed) and was answered by `1e48f1fa`, "correct a
+// false docstring claim and the mislabelled MEASURED memory row"; #557's reviewed sha
+// `bbfafd58` was followed by `42ff416c` touching `GrantRow.tsx`,
+// `workspace-grant-store.ts` AND two `.claude/memory/` files, answered by `d5e25f0a`,
+// '"Connect undefined" -- I audited `name` against the wrong test'; #554's head
+// `d99b0b9d` added 20 lines to `permission-frames.ts` with no finding recorded.
 //
 // The opposite over-correction is also a bug, and a worse one: "re-review every
 // review-fix commit" makes the merge queue non-terminating. What keeps it bounded is
@@ -50,7 +61,11 @@
 //      single commit (`git show --name-only HEAD`) is exactly the #556 miss.
 //   3. The routing is scope-based in BOTH directions: a tests/docs/`.claude/memory/`-
 //      only delta may merge on the builder's `clean`, and a delta touching production
-//      code orders an independent pass.
+//      code orders an independent pass. Plus: the allowance explicitly excludes
+//      `.claude/skills/` from what "docs" means. Without that exclusion the gate waves
+//      through edits to the procedure agents execute -- including itself: this PR
+//      touches only tests, skill files and memory, so under the unqualified wording it
+//      qualified to merge on its own author's word while rewriting the merge gate.
 //   4. The gate still speaks the `fix:` / `new:` labels the handoff emits. This is the
 //      termination bound, and the part most likely to be quietly dropped by an editor
 //      tightening prose.
@@ -76,6 +91,8 @@
 //     but only after the `bullets()` helper below was fixed. It was GREEN first, which
 //     is documented at that helper and is the reason this file's copy differs from the
 //     two sibling guards'.
+//   - The `.claude/skills/` exclusion sentence deleted from the allowance bullet:
+//     **exactly property 3 red**.
 //
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally -- no
 // network, no build, no subprocess (same pattern as autoship-dispatch-scratch-scoping
@@ -183,6 +200,9 @@ const RANGE_FROM_REVIEWED = new RegExp(`${REVIEWED_SHA_TOKEN}\\.\\.(?!\\.)`);
 const FILE_SCAN_OVER_RANGE = new RegExp(`--name-only[^\\n]*${REVIEWED_SHA_TOKEN}\\.\\.(?!\\.)`);
 
 const MEMORY_DIR = /\.claude\/memory\//;
+// The skills tree, named inside the allowance bullet so that "docs" cannot quietly
+// include the procedure agents execute. Matches the glob form too (`.claude/skills/**`).
+const SKILLS_DIR = /\.claude\/skills\//;
 const MERGE_ON_BUILDERS_WORD = /merge on the builder'?s?\s+`?clean/i;
 const PRODUCTION = /production/i;
 const INDEPENDENT_PASS = /independent pass/i;
@@ -243,6 +263,11 @@ describe('auto-ship merge-queue review gate compares reviewed sha to merge head 
       allowance.length,
       `${SKILL_PATH}: no bullet lets a tests/docs/\`.claude/memory/\`-only delta merge on the builder's \`clean\`. Without it the gate re-reviews every review-fix commit and the merge queue never terminates`,
     ).toBeGreaterThanOrEqual(1);
+
+    expect(
+      allowance.some((b) => SKILLS_DIR.test(b)),
+      `${SKILL_PATH}: the allowance bullet does not exclude \`.claude/skills/\` from what "docs" means, so an unreviewed edit to the procedure agents EXECUTE merges on the builder's word — this gate's own PR included, since it touches only tests, skill files and memory`,
+    ).toBe(true);
 
     expect(
       requirement.length,

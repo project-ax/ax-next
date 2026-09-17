@@ -138,14 +138,17 @@ digraph review {
     "Actionable findings?" [shape=diamond];
     "Fix (test-first) + log any rejected" [shape=box];
     "reviewed-sha == HEAD?" [shape=diamond];
+    "Unreviewed delta touches production code?" [shape=diamond];
     "Proceed to PR (Phase 6)" [shape=doublecircle];
 
     "Dispatch ax-code-reviewer (whole branch vs main)" -> "Actionable findings?";
     "Actionable findings?" -> "Fix (test-first) + log any rejected" [label="yes"];
     "Fix (test-first) + log any rejected" -> "Dispatch ax-code-reviewer (whole branch vs main)";
     "Actionable findings?" -> "reviewed-sha == HEAD?" [label="no"];
-    "reviewed-sha == HEAD?" -> "Dispatch ax-code-reviewer (whole branch vs main)" [label="no — the fix is unreviewed"];
     "reviewed-sha == HEAD?" -> "Proceed to PR (Phase 6)" [label="yes"];
+    "reviewed-sha == HEAD?" -> "Unreviewed delta touches production code?" [label="no"];
+    "Unreviewed delta touches production code?" -> "Dispatch ax-code-reviewer (whole branch vs main)" [label="yes — the fix is unreviewed"];
+    "Unreviewed delta touches production code?" -> "Proceed to PR (Phase 6)" [label="no — report the older reviewed-sha"];
 }
 ```
 
@@ -185,17 +188,23 @@ digraph review {
   more. The loop is still finite — a round that changes nothing is the round that ends
   it. **Carve-out, so this does not cost 40 minutes per typo:** if everything you
   pushed after the clean round touches only tests, docs or `.claude/memory/`, proceed —
-  just report the older `reviewed-sha` and label the commits honestly. That is the same
-  scope rule auto-ship's review gate applies, deliberately: one rule, two places that
-  enforce it, so they cannot disagree.
-- Only when the review is clean **and `reviewed-sha` is the head you are about to
-  push** do you proceed to Phase 6 and open the PR. **Orchestrated mode:** report that
-  sha as the handoff's `reviewed-sha:` field, and if anything did land after it (a CI
-  fix in Phase 6, say), label each such commit `fix:` (it answers a finding your
-  reviewer named) or `new:` (you found it yourself). auto-ship's review gate routes on
-  those labels; `new:` on a production file orders an independent pass over the delta.
-  Answer honestly — one builder labelled its own commit `new:` and asked for the pass,
-  which is the expected answer, not a confession.
+  just report the older `reviewed-sha` and label the commits honestly. `.claude/skills/**`
+  is **not** "docs" for this purpose: those files are the procedure other agents
+  execute, so an unreviewed edit there is production code and dispatch again. That is
+  the same scope rule auto-ship's review gate applies, deliberately: one rule, two
+  places that enforce it, so they cannot disagree.
+- Proceed to Phase 6 and open the PR when the review is clean **and** either
+  `reviewed-sha` is the head you are about to push, or everything after it falls under
+  the carve-out above. **Orchestrated mode:** report that sha as the handoff's
+  `reviewed-sha:` field, and if anything did land after it (a CI fix in Phase 6, say),
+  label each such commit `fix:` (it answers a finding your reviewer named) or `new:`
+  (you found it yourself). Be clear what those labels do: **scope** decides whether
+  auto-ship orders an independent pass — *any* production file in the post-review delta
+  does, `fix:` included, because #553 and #557 were faithful `fix:` commits that still
+  carried an Important and a Major. The labels only bound the loop, by telling the
+  orchestrator which commits answer findings it already holds. Answer honestly — one
+  builder labelled its own commit `new:` and asked for the pass, which is the expected
+  answer, not a confession.
 - **Progress:** `⚠ review flagged <M> — addressing` when you start fixing, then `review clean` once the loop closes.
 
 #### The reviewer dispatch contract (REQUIRED — read before you dispatch)

@@ -366,14 +366,23 @@ the "peek at the diff" anti-pattern above still stands.
 
 **Scope the WHOLE post-review delta, never the head commit alone.** This correction is
 the expensive half of the lesson, so do not re-derive the cheaper version: on **PR
-#556** the head commit was memory-only — a head-commit scope test *passes* it — while
-three production files (`AgentConversation.tsx`, `ThreadFind.tsx`, `thread-find.ts`)
-sat unreviewed one commit below. An independent pass over the delta found **two
-Majors**. Route on the delta's file list:
+#556** the head commit was memory-only (`2c44f4ae`, `.claude/memory/mistakes.md` and
+nothing else) — a head-commit scope test *passes* it — while three production files sat
+unreviewed in the two commits under it: `AgentConversation.tsx` and `thread-find.ts` in
+`a509d23a`, `ThreadFind.tsx` in `c329c272`. An independent pass over the delta found
+**two Majors**. Route on the delta's file list:
 
 - Delta **empty** → a reviewer did see the head. Merge.
 - Delta touches **only** tests, docs, or `.claude/memory/` → merge on the builder's
-  `clean`, and journal that you did.
+  `clean`, and journal that you did. Two limits on that word "docs", both learned the
+  hard way. **`.claude/skills/**` does not count** — those files are the procedure you
+  execute, not prose about it, so an unreviewed edit there takes the production path
+  below. (This gate's own PR would otherwise have qualified to merge on its author's
+  word while rewriting the merge gate.) And **`.claude/memory/` is not risk-free**: on
+  #553 and #557 the wrong rule that landed *was* in a memory file, read by every later
+  agent as ground truth. It stays on this side only because ordering a pass on every
+  memory edit is the non-termination this gate refuses — so read the journal line as
+  "accepted risk", not "safe".
 - Delta touches **any production file** → order an independent pass **scoped to the
   delta** (`git diff <reviewed-sha>..origin/<branch>`), not the whole branch again.
   Do not weaken this to "the delta is small": the two misses whose line counts were
@@ -389,8 +398,10 @@ orchestrator to order a pass on it. The labels decide where the loop stops:
   **its own** findings. Do not re-open it for those. "Re-review every review-fix
   commit" never terminates, and a non-terminating merge queue is a worse bug than the
   one this gate closes.
-- A `new:` commit is unreviewed work nobody asked for, and gets no such exemption
-  whenever it lands.
+- A `new:` commit is unreviewed work nobody asked for, so it never earns that
+  exemption, whenever it lands. It does not *override* the scope routing either: a
+  tests-only `new:` commit still merges. Scope decides whether a pass runs; class only
+  decides where the loop stops.
 
 **`fix:` is not a safety claim.** It routes the gate's *exit*, not its *entry*: on
 **#553** and **#557** the unreviewed commits were faithful `fix:` commits touching
