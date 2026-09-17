@@ -41,7 +41,7 @@ async function printRecallAsync(memory: DemMemory, query: string, asOf?: string)
   }
   for (const tuple of result.tuples) {
     console.log(
-      `  [${tuple.network}] ${tuple.validStart.slice(0, 10)} -> ${tuple.validEnd === "9999-12-31T23:59:59.999Z" ? "∞" : tuple.validEnd.slice(0, 10)} (conf ${tuple.confidence.toFixed(2)}) ${memoryStatement(tuple.subject, tuple.predicate, tuple.object)}`,
+      `  [${tuple.network}] ${tuple.validStart.slice(0, 10)} -> ${tuple.validEnd === "9999-12-31T23:59:59.999Z" ? "∞" : tuple.validEnd.slice(0, 10)} ${memoryStatement(tuple.subject, tuple.predicate, tuple.object)}`,
     );
   }
 }

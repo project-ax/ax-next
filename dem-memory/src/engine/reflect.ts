@@ -131,8 +131,7 @@ export interface EvidenceRowOptions {
 
 export function evidenceTableRow(tuple: MemoryTuple, options: EvidenceRowOptions = {}): string {
   const statement = memoryStatement(tuple.subject, tuple.predicate, tuple.object);
-  const confidence = tuple.confidence.toFixed(2);
-  return `| [${NETWORK_TAG[tuple.network]}] | ${formatWhen(tuple, options.asOf)} | ${confidence} | ${statement} |`;
+  return `| [${NETWORK_TAG[tuple.network]}] | ${formatWhen(tuple, options.asOf)} | ${statement} |`;
 }
 
 export interface CompileEvidenceOptions {
@@ -183,10 +182,7 @@ export function compileEvidenceTable(
   options: CompileEvidenceOptions = {},
 ): CompiledEvidence {
   const maxTokens = options.maxTokens ?? DEFAULT_MAX_CONTEXT_TOKENS;
-  const header = [
-    "| Network | When | Confidence | Statement |",
-    "| :---- | :---- | :---- | :---- |",
-  ];
+  const header = ["| Network | When | Statement |", "| :---- | :---- | :---- |"];
   // Excerpts come off the TOP of the ranked list and are fixed before rows are trimmed: they
   // are the reason this option exists, so rows pay for them rather than the other way round.
   const excerptBlock = buildExcerptBlock(tuples, options.sourceExcerpts ?? 0);
@@ -194,7 +190,11 @@ export function compileEvidenceTable(
   const render = (rows: MemoryTuple[]): string =>
     [
       ...header,
-      ...rows.map((tuple) => evidenceTableRow(tuple, { asOf: options.asOf })),
+      ...rows.map((tuple) =>
+        evidenceTableRow(tuple, {
+          ...(options.asOf ? { asOf: options.asOf } : {}),
+        }),
+      ),
       ...(excerptBlock ? ["", excerptBlock] : []),
     ].join("\n");
 
@@ -217,7 +217,7 @@ export function compileEvidenceTable(
 const SKEPTICISM_GUIDANCE: Record<number, string> = {
   1: "accept the evidence table at face value",
   2: "generally trust the evidence table",
-  3: "trust the evidence table but hedge on low-confidence rows",
+  3: "trust the evidence table but hedge where rows are thin or indirect",
   4: "require explicit confirmation from the table before asserting anything",
   5: "treat every claim as unverified unless the table states it outright; flag all uncertainty",
 };
@@ -366,7 +366,9 @@ export class ReflectEngine {
       };
     }
 
-    const system = buildReflectSystemPrompt(evidence.table, this.disposition, { asOf });
+    const system = buildReflectSystemPrompt(evidence.table, this.disposition, {
+      ...(asOf ? { asOf } : {}),
+    });
     const answer = this.generate
       ? await this.generate({ system, prompt: question })
       : await createOpenAIAnswerer()({ system, prompt: question });

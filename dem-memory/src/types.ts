@@ -11,7 +11,6 @@ export interface MemoryTuple {
   object: string;
   /** Verbatim dialogue the fact came from, when a source turn could be attributed. */
   sourceChunk?: string;
-  confidence: number;
   validStart: string;
   validEnd: string;
   transactionTime: string;
@@ -23,7 +22,6 @@ export const ExtractedFactSchema = z.object({
   predicate: z.string().describe("Normalized relationship or property in snake_case"),
   object: z.string().describe("Concise statement of fact, preference, or outcome"),
   validStart: z.string().describe("ISO-8601 UTC date-time string marking when the statement became true"),
-  confidence: z.number().min(0).max(1).default(1.0),
   invalidatesPrevious: z.boolean().describe("Set to true if this statement updates or supersedes a prior state")
 });
 

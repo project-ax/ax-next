@@ -16,7 +16,6 @@ function backendFact(object: string, validStart: string, invalidatesPrevious: bo
         predicate: "prefers_backend",
         object,
         validStart,
-        confidence: 1.0,
         invalidatesPrevious,
       },
     ],

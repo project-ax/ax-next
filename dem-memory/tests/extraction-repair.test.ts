@@ -25,7 +25,6 @@ describe("extraction repair prompt", () => {
       subject: "sam",
       predicate: "likes",
       object: "tea",
-      confidence: 1,
       invalidatesPrevious: false,
     }));
     const detail = describeValidationFailure({ facts });
@@ -50,7 +49,6 @@ describe("extraction repair prompt", () => {
             predicate: "likes",
             object: "tea",
             validStart: "2023-01-01T00:00:00.000Z",
-            confidence: 1,
             invalidatesPrevious: false,
           },
         ],
@@ -109,7 +107,6 @@ describe("network coercion", () => {
           predicate: "recommended",
           object: "Mod Podge",
           validStart: "2023-01-01T00:00:00.000Z",
-          confidence: 1,
           invalidatesPrevious: false,
         },
       ],

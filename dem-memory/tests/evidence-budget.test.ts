@@ -30,7 +30,6 @@ function facts(count: number, objectText: string): IngestionPayload {
       predicate: "has_property",
       object: `${objectText} ${i}`,
       validStart: NOW,
-      confidence: 1,
       invalidatesPrevious: false,
     })),
   };

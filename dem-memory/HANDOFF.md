@@ -238,6 +238,17 @@ Reach for this **before** theorising about retrieval. It is what proved the temp
 misses were prompt failures rather than recall gaps, against a handoff and a design doc
 that both said otherwise.
 
+## The extraction cache was re-keyed on 2026-09-17 — the next run is a COLD extract
+
+Removing `confidence` changed the extraction prompt, so the fingerprint moved
+`f4752a79 -> 06414f62` and **all 130,779 cached facts are unreachable**. The next bench run
+cold-extracts all 19,195 sessions: **~$7 and ~5 hours** at `--extract-concurrency 10`.
+
+Nothing is lost — the old entries are still in `extraction.json` under the old key, so
+restoring the prompt line makes them reachable again. But **the n=500 = 87.4% baseline cannot
+be reproduced without re-paying**, and any re-extracted number differs from it by extraction
+noise regardless of this change. Pair the re-extract with the next change that needs one.
+
 ## Hard-won gotchas
 
 1. **npm install recipe:** `npm install --ignore-scripts`, then

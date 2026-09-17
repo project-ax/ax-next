@@ -13,7 +13,6 @@ function syntheticTuple(index: number): MemoryTuple {
     subject: `entity_${index}`,
     predicate: "has_property",
     object: `a reasonably verbose statement of fact number ${index} with several words in it`,
-    confidence: 0.9,
     validStart: "2025-01-01T00:00:00.000Z",
     validEnd: INFINITY_SENTINEL,
     transactionTime: "2025-01-01T00:00:00.000Z",
@@ -71,7 +70,7 @@ describe("reflect", () => {
 
     expect(compiled.rows.length).toBeLessThan(500);
     expect(compiled.tokens).toBeLessThanOrEqual(2000);
-    expect(compiled.table.startsWith("| Network | When | Confidence | Statement |")).toBe(true);
+    expect(compiled.table.startsWith("| Network | When | Statement |")).toBe(true);
     // Rows are truncated from the tail, preserving the highest-ranked evidence.
     expect(compiled.rows[0]?.id).toBe("id-0000");
   });

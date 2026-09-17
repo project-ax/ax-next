@@ -24,7 +24,6 @@ interface MemoryRow {
   predicate: string;
   object: string;
   source_chunk: string | null;
-  confidence: number;
   valid_start: string;
   valid_end: string;
   transaction_time: string;
@@ -39,7 +38,6 @@ function rowToTuple(row: MemoryRow): MemoryTuple {
     predicate: row.predicate,
     object: row.object,
     ...(row.source_chunk ? { sourceChunk: row.source_chunk } : {}),
-    confidence: row.confidence,
     validStart: row.valid_start,
     validEnd: row.valid_end,
     transactionTime: row.transaction_time,
@@ -71,7 +69,7 @@ export function buildFtsMatchQuery(query: string): string | null {
 }
 
 const SELECT_COLUMNS =
-  "id, bank_id, network, subject, predicate, object, source_chunk, confidence, valid_start, valid_end, transaction_time";
+  "id, bank_id, network, subject, predicate, object, source_chunk, valid_start, valid_end, transaction_time";
 
 export class MemoryRepository {
   constructor(private readonly db: Database.Database) {}
@@ -81,8 +79,8 @@ export class MemoryRepository {
       this.db
         .prepare(
           `INSERT INTO memories
-             (id, bank_id, network, subject, predicate, object, source_chunk, confidence, valid_start, valid_end, transaction_time)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             (id, bank_id, network, subject, predicate, object, source_chunk, valid_start, valid_end, transaction_time)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           tuple.id,
@@ -92,7 +90,6 @@ export class MemoryRepository {
           tuple.predicate,
           tuple.object,
           tuple.sourceChunk ?? null,
-          tuple.confidence,
           tuple.validStart,
           tuple.validEnd,
           tuple.transactionTime,

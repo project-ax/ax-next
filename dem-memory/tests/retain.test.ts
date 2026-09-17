@@ -26,8 +26,7 @@ describe("retain", () => {
     }
     const networks = result.tuples.map((tuple) => tuple.network).sort();
     expect(networks).toEqual(["experience", "opinion"]);
-    const opinion = result.tuples.find((tuple) => tuple.network === "opinion");
-    expect(opinion?.confidence).toBeCloseTo(0.85);
+    expect(result.tuples.find((tuple) => tuple.network === "opinion")).toBeDefined();
 
     memory.close();
   });
@@ -75,7 +74,6 @@ describe("retain", () => {
               predicate: "prefers_backend",
               object: "Python FastAPI",
               validStart: T1,
-              confidence: 1.0,
               invalidatesPrevious: false,
             },
           ],
@@ -88,7 +86,6 @@ describe("retain", () => {
               predicate: "prefers_backend",
               object: "Go on raw SQL",
               validStart: T2,
-              confidence: 1.0,
               invalidatesPrevious: true,
             },
           ],
@@ -124,18 +121,6 @@ describe("retain", () => {
       }),
     ).toThrow();
 
-    expect(() =>
-      ExtractedFactSchema.parse({
-        network: "world",
-        subject: "sam",
-        predicate: "likes",
-        object: "tea",
-        validStart: T1,
-        confidence: 1.5,
-        invalidatesPrevious: false,
-      }),
-    ).toThrow();
-
     const parsed = IngestionPayloadSchema.parse({
       facts: [
         {
@@ -148,7 +133,12 @@ describe("retain", () => {
         },
       ],
     });
-    expect(parsed.facts[0]?.confidence).toBe(1.0);
+    // `confidence` was removed entirely: of 130,779 extracted facts 99.73% sat above 0.7 with
+    // an absolute floor of 0.5, so it had no discriminative power, and no code ever branched on
+    // it. An extractor that emits a fact has already decided the fact exists; asking it to
+    // self-score that decision zero-shot yields a constant. A payload that still carries one is
+    // accepted and the value ignored.
+    expect(parsed.facts[0]).not.toHaveProperty("confidence");
   });
 
   it("normalizes date-only validStart values to full ISO-8601 UTC", async () => {
@@ -180,7 +170,6 @@ describe("malformed extractor output", () => {
             predicate: "studied_period",
             object: "ancient rome",
             validStart: "135-01-01T00:00:00Z",
-            confidence: 1,
             invalidatesPrevious: false,
           },
           {
@@ -189,7 +178,6 @@ describe("malformed extractor output", () => {
             predicate: "lives_in",
             object: "Austin",
             validStart: "2023-01-01T00:00:00.000Z",
-            confidence: 1,
             invalidatesPrevious: false,
           },
         ],
@@ -218,7 +206,6 @@ describe("malformed extractor output", () => {
             predicate: "lives_in",
             object: "Boston",
             validStart: "2023-01-01T00:00:00.000Z",
-            confidence: 1,
             invalidatesPrevious: false,
           },
         ],
@@ -234,7 +221,6 @@ describe("malformed extractor output", () => {
             predicate: "broken",
             object: "x",
             validStart: "not-a-date",
-            confidence: 1,
             invalidatesPrevious: true,
           },
           {
@@ -243,7 +229,6 @@ describe("malformed extractor output", () => {
             predicate: "lives_in",
             object: "Austin",
             validStart: "2023-06-01T00:00:00.000Z",
-            confidence: 1,
             invalidatesPrevious: true,
           },
         ],

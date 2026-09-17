@@ -13,7 +13,6 @@ function tuple(i: number, sourceChunk?: string): MemoryTuple {
     predicate: "suggested_projects",
     object: `recycled decor project set ${i}`,
     ...(sourceChunk ? { sourceChunk } : {}),
-    confidence: 1,
     validStart: NOW,
     validEnd: INFINITY_SENTINEL,
     transactionTime: NOW,
