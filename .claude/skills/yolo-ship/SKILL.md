@@ -312,6 +312,14 @@ digraph ship {
   `statusCheckRollup` both answer "green" on a head where the build and tests **never ran**:
   ```bash
   HEAD_SHA=$(gh pr view <n> --json headRefOid --jq .headRefOid)
+  # ⚠ `gh run list --commit` NEEDS THE FULL 40-CHAR SHA. Given an abbreviation it
+  # matches NOTHING and exits 0 — a silent false "no run" (measured 2026-09-17 on two
+  # heads: full sha → 1, its 8-char prefix → 0, rc=0 both). Never `${HEAD_SHA:0:8}`,
+  # never an abbreviated rev-parse, never `%h`. `headRefOid` is already full; assert it
+  # anyway, because a truncated sha and a genuinely absent run are indistinguishable
+  # downstream — both read `runs=0` — and the remedy for the second (rebase-push) is a
+  # wasted CI cycle for the first.
+  [ ${#HEAD_SHA} -eq 40 ] || { echo "⚠ HEAD_SHA '$HEAD_SHA' is not a full 40-char sha — do not abbreviate"; exit 1; }
   runs=$(gh run list --workflow ci.yml --commit "$HEAD_SHA" --json databaseId --jq 'length')
   # FATAL, not advisory. A warn-and-continue here lets you emit `CI green ✅` on a head
   # where nothing ran: the downstream merge gates would still block it, but you would
@@ -352,6 +360,9 @@ How this phase behaves depends on **mode**:
 # Assert the ci.yml run EXISTS for this head FIRST (see Phase 6) — a rollup can be
 # all-SUCCESS while the build/test workflow never ran.
 HEAD_SHA=$(gh pr view <n> --json headRefOid --jq .headRefOid)
+# `--commit` needs the FULL 40-char sha (see Phase 6): an abbreviation matches nothing
+# and exits 0, which reads as "no run" and sends you to rebase-push for nothing.
+[ ${#HEAD_SHA} -eq 40 ] || { echo "HALT #<n>: HEAD_SHA '$HEAD_SHA' is not a full 40-char sha"; exit 1; }
 runs=$(gh run list --workflow ci.yml --commit "$HEAD_SHA" --json databaseId --jq 'length')
 [ "${runs:-0}" -ge 1 ] || { echo "HALT #<n>: no ci.yml run for $HEAD_SHA"; exit 1; }
 gh pr view <n> --json mergeable,statusCheckRollup    # must be green + mergeable
@@ -368,7 +379,9 @@ git push origin --delete <branch> || echo "⚠ cleanup failed (non-fatal)"
 If the PR is **not mergeable** because `main` moved while you worked: check out
 the branch, `git rebase origin/main`, resolve conflicts, push, wait for CI to
 re-green — and a rebase push is also the remedy when **no `ci.yml` run exists**, so
-re-assert existence for the NEW head (`gh run list --workflow ci.yml --commit <sha>`)
+re-assert existence for the NEW head (`gh run list --workflow ci.yml --commit <sha>`,
+where `<sha>` is the **full 40-char** `headRefOid` — an abbreviation silently matches
+nothing)
 before reading `gh pr checks <n>` — then merge. A non-trivial rebase changes the diff —
 re-run the Phase 5 review on the new diff before merging.
 
