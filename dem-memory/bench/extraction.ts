@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { OpenRouterLlm, extractJson, type LlmUsage } from "./llm.js";
 import {
@@ -82,6 +82,8 @@ export class ExtractionCache {
   private readonly path: string;
   private readonly entries: Record<string, IngestionPayload["facts"]>;
   stats: ExtractionCacheStats = { hits: 0, misses: 0 };
+  /** Nothing new to write means nothing to write. See `flush`. */
+  private dirty = false;
 
   constructor(cacheDir: string, model: string = DEFAULT_EXTRACT_MODEL) {
     this.path = join(cacheDir, "extraction.json");
@@ -105,11 +107,27 @@ export class ExtractionCache {
 
   put(key: string, facts: IngestionPayload["facts"]): void {
     this.entries[key] = facts;
+    this.dirty = true;
   }
 
+  /**
+   * Write only when something was added, and write atomically.
+   *
+   * run.ts calls this once per QUESTION. Unconditionally it re-serialized and rewrote the
+   * whole 65 MB file every time — 8.7s/question of real work became 38s/question, and two
+   * bench arms running at once were two processes truncating the same file concurrently,
+   * which can interleave into a corrupt cache. That file is ~$7 and ~5h of extraction, and a
+   * run pinned to a past generation adds nothing to it at all, so the common case is now a
+   * no-op. The temp-then-rename makes the remaining writes safe under concurrency: a reader
+   * sees either the old file or the new one, never a half-written one.
+   */
   flush(): void {
+    if (!this.dirty) return;
     mkdirSync(dirname(this.path), { recursive: true });
-    writeFileSync(this.path, JSON.stringify(this.entries));
+    const tmp = `${this.path}.tmp.${process.pid}`;
+    writeFileSync(tmp, JSON.stringify(this.entries));
+    renameSync(tmp, this.path);
+    this.dirty = false;
   }
 
   get size(): number {
