@@ -162,6 +162,45 @@ describe('AgentConversation — the zero-turn thread', () => {
     expect(screen.getByText(EMPTY_TITLE)).toBeTruthy();
   });
 
+  it('leaves a prose-less tool turn to the step panel, and adds nothing of its own', () => {
+    /*
+      THE CO-EXISTENCE CHECK with #567 (TASK-352), written because the two
+      changes look adjacent and are not.
+
+      #567 drops the prose bubble when a turn has no text — a turn that only
+      ran tools, where the step panel IS the reply. That test is
+      `m.text.length > 0`, INSIDE `Message`, and `Message` only renders for a
+      message that exists. Mine is `thread.length === 0`, i.e. whether there is
+      any message at all. Different quantities, so they cannot both fire: a
+      zero-turn thread never reaches `Message`, and a thread holding a
+      prose-less steps turn is not zero-turn.
+
+      Asserted rather than reasoned about. What this test does NOT assert is
+      that no empty bubble is drawn — `AgentConversationSteps.test.tsx`'s
+      `draws no empty bubble above a turn that only ran tools` owns that, and
+      repeating it here would imply this test discriminates something it does
+      not. This one pins the INTERACTION: their panel renders and my empty
+      state stays out, on the one thread shape where both could plausibly fire.
+    */
+    const thread: ThreadMessage[] = [
+      {
+        kind: 'steps',
+        id: 'm-1',
+        text: '',
+        time: '09:20',
+        stepsLabel: 'Read 2 files',
+        steps: ['Read roof-quote.pdf', 'Read notes.md'],
+      },
+    ];
+    renderConversation({ thread, readOnly: false });
+
+    // #567's half: the panel is the reply, and it is on screen.
+    expect(screen.getByTestId('workspace-steps')).toBeTruthy();
+    // My half: this thread has a turn in it, so it is not "nothing here yet".
+    expect(screen.queryByText(EMPTY_TITLE)).toBeNull();
+    expect(document.querySelector('[data-slot="empty"]')).toBeNull();
+  });
+
   it('is gone the moment the thread has anything in it', () => {
     const thread: ThreadMessage[] = [
       { kind: 'user', id: 'm-1', text: 'morning' },

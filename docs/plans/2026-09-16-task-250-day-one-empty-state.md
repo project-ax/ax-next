@@ -139,10 +139,12 @@ provably empty, never when the read failed. Four places this bites:
 
 ## Contrast — measured, not eyeballed
 
-**Re-measured 2026-09-17 on the rebased base (`6bd2b280`), for the pairs the
-SHIPPED empty state actually produces.** The earlier table here covered T3's
-panel too, and its worst row — 4.72:1, the `Say hi to …` button — belonged to
-code that no longer exists.
+**Re-measured 2026-09-17 on the rebased base, for the pairs the SHIPPED work
+actually produces — twice, because the base moved.** Taken first on `6bd2b280`,
+then again on `4bd9afcb` after #567 (TASK-352) merged; `index.css` had not
+changed, and every figure came back identical. The original table here covered
+T3's panel too, and its worst row — 4.72:1, the `Say hi to …` button —
+belonged to code that no longer exists.
 
 Taken from `src/index.css`'s token values and put through a real browser engine
 (`browser_evaluate`: the browser converts each `hsl()` to sRGB, then WCAG 2.x
@@ -156,9 +158,11 @@ sets no background of its own, so it inherits `WorkspaceShell`'s root
 | `EmptyTitle` | `foreground` on `background` | 17.72:1 | 19.11:1 |
 | `EmptyDescription` | `muted-foreground` on `background` | 4.83:1 | 6.14:1 |
 | `EmptyMedia variant="icon"` chip | `foreground` on `muted` | 16.12:1 | 16.44:1 |
+| T5's one-agent composer label | `foreground` on `muted` | 16.12:1 | 16.44:1 |
 
 Worst pair across both themes: **4.83:1** — the description in light mode.
-Nothing here is below the floor.
+Nothing here is below the floor. T5's label is the same pairing the picker
+button it replaced already used, so that row is unchanged rather than new.
 
 **The one thing to avoid,** for whoever extends this: `muted-foreground` on
 `muted` measures **4.40:1 in light mode** — under the floor — because `muted`,
