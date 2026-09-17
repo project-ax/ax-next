@@ -35,8 +35,8 @@ vi.mock('@/lib/attachment-upload', async (importOriginal) => {
 const routeMock = vi.mocked(workspaceApi.route);
 const upload = vi.mocked(uploadAttachment);
 
-const agents: WorkspaceAgent[] = [
-  {
+function agent(over: Partial<WorkspaceAgent> = {}): WorkspaceAgent {
+  return {
     id: 'scheduler',
     name: 'Scheduler',
     state: 'waiting',
@@ -44,10 +44,27 @@ const agents: WorkspaceAgent[] = [
     counter: null,
     startedAt: null,
     stoppedReason: null,
-  },
+    ...over,
+  };
+}
+
+/**
+ * ROUTING NEEDS SOMETHING TO ROUTE BETWEEN.
+ *
+ * This whole file used to run on a one-agent roster, which is the one roster
+ * where Auto has no question to answer — see `sole` in `HomeComposer`
+ * (TASK-250). The Auto suite therefore uses TWO agents now, and the one-agent
+ * case gets its own suite below. Testing Auto against a single agent was how
+ * "Auto picked Scheduler — it's your only agent" survived as long as it did.
+ */
+const twoAgents: WorkspaceAgent[] = [
+  agent(),
+  agent({ id: 'scribe', name: 'Scribe' }),
 ];
 
-function setup() {
+const oneAgent: WorkspaceAgent[] = [agent()];
+
+function setup(agents: WorkspaceAgent[] = twoAgents) {
   const onSend = vi.fn();
   render(<HomeComposer agents={agents} onSend={onSend} />);
   return { onSend };
@@ -201,6 +218,57 @@ describe('Auto routing', () => {
 });
 
 /**
+ * ONE AGENT IS NOT A CHOICE (TASK-250).
+ *
+ * A brand-new account has exactly one agent, and its first message used to go
+ * through `POST /api/workspace/route` — whose single-agent answer is, verbatim,
+ * `why: "it's your only agent"` — and come back as a confirmation strip reading
+ * "Auto picked Scheduler — it's your only agent." with a Send button. A
+ * first-timer confirming the only possible answer, told in so many words that
+ * it was the only one.
+ */
+describe('a roster of one', () => {
+  it('sends straight away, with no route call and nothing to confirm', async () => {
+    const { onSend } = setup(oneAgent);
+
+    ask('hi');
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('scheduler', 'hi'));
+    expect(routeMock).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Auto picked/)).toBeNull();
+    expect(screen.queryByRole('button', { name: /Send to/ })).toBeNull();
+  });
+
+  it('offers no picker, because there is nothing to pick', () => {
+    setup(oneAgent);
+
+    expect(screen.queryByRole('button', { name: /Auto/ })).toBeNull();
+    // Not a disabled control either: one that cannot be used is still one the
+    // eye has to rule out.
+    expect(
+      screen.queryByRole('button', { name: /Scheduler/ }),
+    ).toBeNull();
+  });
+
+  it('still says who you are talking to', () => {
+    setup(oneAgent);
+
+    expect(screen.getByText('Scheduler')).toBeTruthy();
+    expect(composer().getAttribute('placeholder')).toMatch(/^Ask Scheduler /);
+  });
+
+  it('keeps the draft when the send fails', async () => {
+    const onSend = vi.fn().mockRejectedValue(new Error('send message → 500'));
+    render(<HomeComposer agents={oneAgent} onSend={onSend} />);
+
+    ask('draft the reply to Dana');
+
+    expect(await screen.findByText(/could not get that to/i)).toBeTruthy();
+    expect((composer() as HTMLInputElement).value).toBe('draft the reply to Dana');
+  });
+});
+
+/**
  * The composer used to `await` both the routing call and the send with no
  * catch. A 503 rejected an unhandled promise, nothing rendered, and the draft
  * had already been cleared — the user's words were simply gone.
@@ -224,7 +292,7 @@ describe('when the send does not go through', () => {
 
   it('keeps the draft and says so when the send itself fails', async () => {
     const onSend = vi.fn().mockRejectedValue(new Error('send message → 500'));
-    render(<HomeComposer agents={agents} onSend={onSend} />);
+    render(<HomeComposer agents={twoAgents} onSend={onSend} />);
 
     // Pick the agent explicitly so the send is the only call in play.
     openMenu(screen.getByRole('button', { name: /Auto/ }));
@@ -243,7 +311,7 @@ describe('when the send does not go through', () => {
       confident: true,
     });
     const onSend = vi.fn().mockRejectedValue(new Error('send message → 500'));
-    render(<HomeComposer agents={agents} onSend={onSend} />);
+    render(<HomeComposer agents={twoAgents} onSend={onSend} />);
 
     ask('find me a slot on Thursday');
     fireEvent.click(await screen.findByRole('button', { name: /Send to Scheduler/ }));
@@ -254,7 +322,7 @@ describe('when the send does not go through', () => {
 
   it('clears the draft once the send resolves', async () => {
     const onSend = vi.fn().mockResolvedValue(undefined);
-    render(<HomeComposer agents={agents} onSend={onSend} />);
+    render(<HomeComposer agents={twoAgents} onSend={onSend} />);
 
     openMenu(screen.getByRole('button', { name: /Auto/ }));
     fireEvent.click(await screen.findByRole('menuitem', { name: /Scheduler/ }));

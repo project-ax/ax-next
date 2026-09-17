@@ -160,10 +160,22 @@ describe('landing on a URL', () => {
 });
 
 describe('navigating', () => {
+  /**
+   * The roster row for the one agent, by role rather than by bare text.
+   *
+   * "Quill" is no longer unique on Today: a one-agent roster now shows the
+   * agent's name in the composer's picker slot too, because with one agent
+   * there is nothing to pick and the slot became a label (TASK-250). A
+   * `findByText('Quill')` matched both and threw on the ambiguity.
+   */
+  function rosterRow() {
+    return screen.findByRole('button', { name: 'Quill' });
+  }
+
   it('gives an opened agent an address', async () => {
     renderAt('/workspace');
 
-    fireEvent.click(await screen.findByText('Quill'));
+    fireEvent.click(await rosterRow());
 
     await waitFor(() =>
       expect(window.location.pathname).toBe('/workspace/agents/a-quill'),
@@ -184,7 +196,7 @@ describe('navigating', () => {
 
   it('unwinds in-workspace navigation with Back', async () => {
     renderAt('/workspace');
-    fireEvent.click(await screen.findByText('Quill'));
+    fireEvent.click(await rosterRow());
     await waitFor(() =>
       expect(window.location.pathname).toBe('/workspace/agents/a-quill'),
     );
@@ -201,7 +213,7 @@ describe('navigating', () => {
 
   it('does not stack a history entry for the view already on screen', async () => {
     renderAt('/workspace');
-    await screen.findByText('Quill');
+    await rosterRow();
     const before = window.history.length;
 
     // The sidebar's Today button, while Today is what is showing.
