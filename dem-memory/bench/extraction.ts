@@ -33,9 +33,20 @@ const PROMPT_ONLY_FINGERPRINT = createHash("sha1")
   .digest("hex")
   .slice(0, 8);
 
-export function sessionCacheKey(sessionId: string, content: string, model: string): string {
+/**
+ * `fingerprint` overrides the generation this key points at. Default (undefined) is the
+ * current prompt+model, which is what any run that EXTRACTS must use. Pass an explicit one
+ * to read facts produced by an EARLIER prompt — after a prompt edit re-keys the cache, that
+ * is the only way to diagnose against the fact store a past number was measured on.
+ */
+export function sessionCacheKey(
+  sessionId: string,
+  content: string,
+  model: string,
+  fingerprint?: string,
+): string {
   const digest = createHash("sha1").update(content).digest("hex").slice(0, 12);
-  return `${sessionId}:${extractionFingerprint(model)}:${digest}`;
+  return `${sessionId}:${fingerprint ?? extractionFingerprint(model)}:${digest}`;
 }
 
 /**
