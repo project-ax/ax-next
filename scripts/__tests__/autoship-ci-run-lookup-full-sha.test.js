@@ -38,7 +38,8 @@
 // 2026-09-17 against live GitHub on main head 3e1c0915:
 //
 //     --limit 1        -> {"workflowName":"CodeQL - Code Quality","conclusion":"success"}
-//     --limit 6 (same head, same moment):
+//     --limit 6, same moment -- its first THREE rows, which are the ones on this head
+//     (rows 4-6 belong to the previous head, 060a42fe):
 //                         {"workflowName":"CodeQL - Code Quality","conclusion":"success"}
 //                         {"workflowName":"CI",                   "conclusion":"failure"}
 //                         {"workflowName":"CodeQL",               "conclusion":"success"}
@@ -86,11 +87,15 @@
 // TWO MUTANTS THAT FIRST CAME BACK WRONG, RECORDED BECAUSE THEY CHANGED THE DESIGN:
 //   1. Deleting the `-ge 1` halt outright did not redden the fail-closed test -- it
 //      reddened the VACUITY test, because the extractor keyed its cut on the literal
-//      `-ge 1` and so returned nothing. The suite silently shrank 33 -> 14 and the
+//      `-ge 1` and so returned nothing. The suite silently shrank 33 -> 15 and the
 //      fail-closed assertion never ran. A guard whose extractor depends on the line it
 //      is guarding cannot prove that line does anything. `existenceGate` now cuts on the
 //      structural `|| {` guard clause instead, and the mutant above is the fail-OPEN
 //      edit, which keeps the extraction intact.
+//      The shrink figure is re-measured against this file AS COMMITTED (restore the
+//      coupled cut + delete the halt: 33 -> 15). It was 32 -> 14 when first observed,
+//      before this file gained its last test; both numbers are real, but only the first
+//      is reproducible from the tree, so that is the one quoted above.
 //   2. An earlier version of the doc computed the conclusion word with an explicit
 //      empty-string test, and an earlier version of this test asserted that word. The
 //      mutant that removed it PASSED: both spellings land in the same case arm, because
