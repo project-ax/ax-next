@@ -18,8 +18,11 @@
  * exactly how this card's original acceptance criterion was unsatisfiable. The
  * count is read OUT OF THE RENDERED HEADER and checked against the rendered
  * rows, so an empty panel fails on the header lookup before the equality ever
- * runs. Verified by mutation: revert `buildThread`'s steps branch and this file
- * goes red.
+ * runs. Measured, not assumed: forcing `shapeSteps` to return `null` — which is
+ * what both paths did before this card — turns this file red with "no step
+ * panel was rendered", before any comparison happens. Killing either path alone
+ * is caught too: `readPanel` throws on the reload side, and the live side never
+ * satisfies its `waitFor`.
  */
 import type { ComponentProps } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';

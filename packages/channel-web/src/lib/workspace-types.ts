@@ -540,7 +540,12 @@ export type ThreadMessage =
    * `approval` NOW HAS A PRODUCER (AW-11): `GET /api/workspace/agents/:id`
    * appends one message per still-open decision on the conversation it read,
    * so the in-thread card is the same row the Today queue shows rather than a
-   * second copy of it. `status` (AW-8) is still waiting for one.
+   * second copy of it. `steps` GOT ONE TOO (TASK-352): `lib/workspace-steps.ts`
+   * shapes it for the reload path (`buildThread`) and the live stream
+   * (`AgentView`) alike. `status` (AW-8) is the one still waiting, and
+   * `fold` above. This list is meant to be exhaustive — if you add a
+   * producer, say so here, because the next card scoped off this comment
+   * will believe it.
    */
   | { kind: 'fold'; id: string; text: string };
 
