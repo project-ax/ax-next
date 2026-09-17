@@ -182,6 +182,10 @@ export default tseslint.config(
       // over-ignore assertion, so don't collapse these into something broader.
       '**/worktrees/**',
       '**/.worktrees/**',
+      // Standalone npm sub-project with its own toolchain (npm, vitest, its own
+      // tsconfig) per docs/plans DEM design -- deliberately outside the pnpm
+      // workspace and this lint config; it lints itself via `npm run typecheck`.
+      'dem-memory/**',
     ],
   },
 

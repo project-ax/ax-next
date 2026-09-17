@@ -1,0 +1,100 @@
+{
+  "sessions": [
+    {
+      "id": "session-1",
+      "topic": "backend preferences",
+      "turns": [
+        {
+          "role": "user",
+          "at": "2025-01-15T10:00:00.000Z",
+          "content": "I have decided to build my backend with Python and FastAPI."
+        },
+        {
+          "role": "assistant",
+          "at": "2025-01-15T10:00:05.000Z",
+          "content": "Noted. FastAPI suits async services well."
+        },
+        {
+          "role": "user",
+          "at": "2025-01-15T10:01:00.000Z",
+          "content": "Honestly, I dislike extensive ORM abstractions."
+        }
+      ]
+    },
+    {
+      "id": "session-2",
+      "topic": "database migration",
+      "turns": [
+        {
+          "role": "user",
+          "at": "2025-03-01T09:00:00.000Z",
+          "content": "Update: we migrated our database layer from the ORM to raw SQL last week."
+        }
+      ]
+    },
+    {
+      "id": "session-3",
+      "topic": "infrastructure",
+      "turns": [
+        {
+          "role": "user",
+          "at": "2025-02-10T14:00:00.000Z",
+          "content": "Our staging cluster runs Postgres 16."
+        },
+        {
+          "role": "user",
+          "at": "2025-02-10T14:05:00.000Z",
+          "content": "Sam owns the migration tooling for it."
+        }
+      ]
+    }
+  ],
+  "expectedFacts": {
+    "session-1": [
+      {
+        "network": "experience",
+        "subject": "sam",
+        "predicate": "prefers_backend",
+        "object": "Python FastAPI",
+        "validStart": "2025-01-15T10:00:00.000Z",
+        "invalidatesPrevious": false
+      },
+      {
+        "network": "opinion",
+        "subject": "sam",
+        "predicate": "dislikes_orm_abstractions",
+        "object": "extensive ORM abstractions",
+        "validStart": "2025-01-15T10:01:00.000Z",
+        "invalidatesPrevious": false
+      }
+    ],
+    "session-2": [
+      {
+        "network": "experience",
+        "subject": "sam",
+        "predicate": "migrated_database_layer",
+        "object": "ORM to raw SQL",
+        "validStart": "2025-03-01T09:00:00.000Z",
+        "invalidatesPrevious": false
+      }
+    ],
+    "session-3": [
+      {
+        "network": "world",
+        "subject": "staging_cluster",
+        "predicate": "runs_database",
+        "object": "Postgres 16",
+        "validStart": "2025-02-10T14:00:00.000Z",
+        "invalidatesPrevious": false
+      },
+      {
+        "network": "world",
+        "subject": "sam",
+        "predicate": "owns_migration_tooling",
+        "object": "migration tooling",
+        "validStart": "2025-02-10T14:05:00.000Z",
+        "invalidatesPrevious": false
+      }
+    ]
+  }
+}

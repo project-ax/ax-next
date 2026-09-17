@@ -1,0 +1,38 @@
+{
+  "name": "dem-memory",
+  "version": "0.1.0",
+  "description": "Decoupled Epistemic Memory — long-horizon agent memory substrate with bi-temporal storage, four-network epistemic typing, multi-channel retrieval, and single-pass synthesis",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "dem-memory": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && cp src/db/schema.sql dist/db/schema.sql",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify": "tsx scripts/verify-db.ts",
+    "cli": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^2.0.0",
+    "ai": "^5.0.0",
+    "better-sqlite3": "^13.0.0",
+    "google-auth-library": "^10.0.0",
+    "sqlite-vec": "^0.1.6",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}
