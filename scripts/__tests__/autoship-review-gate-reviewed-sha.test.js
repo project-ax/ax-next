@@ -222,7 +222,7 @@ describe('auto-ship merge-queue review gate compares reviewed sha to merge head 
 
     expect(
       RANGE_FROM_REVIEWED.test(gateBlock),
-      `${SKILL_PATH}: the review gate never forms a git range from the reviewed sha, so it still asks the handoff's \`reviewer:\` field instead of the branch — the exact defect measured on 7 PRs`,
+      `${SKILL_PATH}: the review gate never forms a git range from the reviewed sha, so it still asks the handoff's \`reviewer:\` field instead of the branch — the defect that walked 7 PRs up to the merge door, 4 of them with a named finding behind it`,
     ).toBe(true);
 
     expect(
@@ -295,7 +295,7 @@ describe('auto-ship code-lane handoff carries the reviewed sha (TASK-382)', () =
         return 'a bullet names `reviewed-sha` but not the `fix:` / `new:` labels — the gate routes on those, and without them it can only trust or re-review';
       }
       if (/reviewed-sha/.test(codeLaneBody)) {
-        return 'the reviewed-sha instruction sits in the orchestrator-facing prose, not in the `> `-quoted builder prompt — that is an orchestrator habit, not a fix, and asking by hand is precisely what failed on 7 PRs';
+        return 'the reviewed-sha instruction sits in the orchestrator-facing prose, not in the `> `-quoted builder prompt — that is an orchestrator habit, not a fix — asking by hand is exactly what the 2026-09-17 orchestrator had to do, card by card';
       }
       return 'the builder prompt never asks which sha the reviewer approved, so the handoff field (if declared at all) is one nobody is told to fill';
     })();
