@@ -292,6 +292,13 @@ HEAD_SHA=$(gh pr view <n> --json headRefOid --jq .headRefOid)
 # a freshly created run and labelled that INFERRED; the inference is FALSE, so do not
 # add a retry loop for a race that is not there.
 # So never `${HEAD_SHA:0:8}`, never a `--short` rev-parse, never a `%h` format.
+# And never RETYPE one. A hand-reconstructed 40-char sha passes the length check below
+# and still matches nothing — the check catches truncation, not invention. (Measured the
+# hard way: the agent writing this rule pasted a made-up tail onto a short sha twice in
+# one session and got a silent empty list both times.) Bind the sha from `headRefOid` or
+# a full `rev-parse` and pass the variable; never copy the digits out of a log line.
+# The `-ge 1` halt below is what catches an invented sha — it reports the run as absent,
+# which is the ambiguous message again, so the cheap fix is upstream: do not retype.
 # `headRefOid` is already full — assert it anyway, because the two failure modes are
 # INDISTINGUISHABLE downstream: a truncated sha and a genuinely absent run both read as
 # `runs=0`, and the remedy for the absent case (rebase-push) is a wasted CI cycle and a
