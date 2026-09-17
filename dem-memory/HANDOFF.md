@@ -24,7 +24,7 @@ because ~15 `auto-ship/*` agents append to `.claude/memory/*.md` continuously. R
 always "keep both sides, upstream first" — they are append-only files.
 
 **Current state:** `npm run typecheck`, `npm run build`, `npm test` all clean —
-**103 tests** across 12 files, hermetic.
+**115 tests** across 13 files, hermetic.
 
 **THE headline number: LongMemEval-S n=500 (the FULL corpus) = 87.4%**, against the Strata
 n=500 reference of 76.0%. SE +/-1.5pp, so +11.4pp is ~7 SE, and it reproduces EXACTLY across
@@ -161,11 +161,23 @@ dem-memory's ingestion holds up under a consolidation regime.
 
 ## Next work, in value order
 
-### 0. The question that actually decides dem's future: does 87.4% survive CONSOLIDATION?
+### 0. ANSWERED 2026-09-17 — 87.4% survives consolidation; the open question moved to Level 2
 
-See "Can dem replace Strata inside ax?" below. dem has never been tested under a regime where
-facts must survive decay/dedup/promotion to stay recallable, and that is the whole difference
-between a benchmark win and a product. Level 1 there is ~1 day and ~$3 of local computation.
+`npx tsx bench/consolidation-survival.ts` (~27s, no LLM calls, $0) replays each question's
+~48 sessions in date order through Strata's three DROP predicates. **99.1% of gold-session
+facts survive and 0/500 questions lose all of theirs**; even at global scope — every fact
+compared against every other in the bank, harsher than Strata could ever be — it is 99.0%
+and still 0/500 starved. Level 1 is no longer needed to settle it.
+
+What dedup DOES take is small but pointed: 0.26% by volume, yet of the 74 gold-session drops
+only **2** are verbatim restatements and **53** sit in the 0.6-0.7 band where two different
+facts collapse (`chose Giannis Antetokounmpo` dropped against `chose Luka Doncic`). It lands
+on **temporal-reasoning (1.26%) and multi-session (0.92%)** and takes **0.00%** of
+single-session-user and single-session-assistant — i.e. it aims at the two types dem leads on.
+
+**The deciding question is now Level 2, and it is about the INTERFACE, not the rules:**
+Strata retrieves over DOCUMENTS, and that contract has nowhere to put a validity interval.
+See "Can dem replace Strata inside ax?" below.
 
 ### 0b. READ FIRST: evidence depth and source anchors were both measured, and both are NULL
 
@@ -301,7 +313,12 @@ in hook payloads.
 
 **What "consolidation" IS** (`packages/memory-strata/src/consolidator.ts`), one ordered pass:
 **decay -> cluster -> decide -> dedup -> write -> delete**.
-1. inbox observations older than `DECAY_DAYS = 14` are dropped before anything else;
+1. `decayInbox` drops inbox observations whose **`created` is older than `DECAY_DAYS = 14`** —
+   that is how long an observation sat UNCONSOLIDATED IN THE INBOX, **not how old the
+   remembered fact is**. Consolidation runs on a debounce after `chat:end`, so observations
+   promote within minutes and decay only ever collects orphans. Read as fact age (which this
+   line used to invite) it deletes a multi-year corpus wholesale and reports a catastrophe the
+   real pipeline does not produce;
 2. `clusterBySubject` groups them and elects a doc category by majority factType vote;
 3. `decidePromotion` drops anything below `CONFIDENCE_THRESHOLD = 0.7`;
 4. `isDupe` drops anything with Jaccard token overlap **>= 0.6** against facts already in the
@@ -312,20 +329,21 @@ Plus quarantine, `system/recent.md` + `map.md` regeneration, a rollup pass, and
 `RECURRENCE_THRESHOLD = 2` for procedures to crystallize.
 
 So consolidation is the **lossy compaction step**: a fact is recallable later only if it
-survives. **dem has never faced it** — `retain()` writes every fact and nothing ever removes,
-merges or decays it, so at query time every fact ever extracted is present. That is why 87.4%
-is not evidence dem would win in production.
+survives. `retain()` writes every fact and nothing ever removes, merges or decays it, so at
+query time every fact ever extracted is present. **Measured 2026-09-17: dem's facts survive
+this almost untouched — 99.1% of gold-session facts, 0/500 questions starved.** The drop rules
+are not what stands between 87.4% and a product; the document-shaped retrieval contract is.
 
 **How to test it, cheapest first:**
-- **Level 0 (free, partly done):** apply each rule's predicate to dem's fact store and count
-  what would be dropped. **Already measured: the confidence gate is a no-op** (only 0.2% of
-  facts fall below 0.7 — this is also why `confidence` was deleted). **Still to measure: the
-  Jaccard >= 0.6 dedup**, which is the one likely to bite, because the assistant-content fix
-  deliberately produces long list-shaped objects under repeated subjects. A naive O(n^2) pass
-  over 130k facts times out — bound the sample.
-- **Level 1 (~1 day, ~$3):** add a post-`retain` consolidation regime to the bench (confidence
-  gate, per-subject Jaccard dedup, decay vs the question date) and re-run n=500. **No new LLM
-  calls** — all local. This yields the number that actually decides the question.
+- **Level 0 — DONE, `bench/consolidation-survival.ts`.** Confidence gate 0.18%, Jaccard dedup
+  0.26%, decay a no-op. Gold-session survival 99.1%, nothing starved. Note the prediction in
+  the previous version of this file was **backwards**: long list-shaped objects have large
+  token sets, so the Jaccard DENOMINATOR grows and they are HARDER to reach 0.6 —
+  `single-session-assistant` loses **0 of 263** gold facts, the best of any type. The O(n^2)
+  pass also does not need bounding: memoizing tokenization runs the full 500 in ~27s.
+- **Level 1 (~1 day, ~$3) — DEFERRED, not rejected.** It would price the accuracy cost of
+  those 0.26%, but survival is the hard ceiling and survival is ~100%, so it can only find a
+  fraction of a point. Worth doing only if Level 2 is blocked.
 - **Level 2 (~1 week):** run dem behind Strata's real observer -> inbox -> consolidator as a
   `memory:index:*` backend and use Strata's own e2e bench. True answer; runs into the storage
   blocker above. Note the contract is DOCUMENT-shaped
@@ -535,9 +553,11 @@ dem-memory/
 │   ├── llm.ts                    OpenRouter client (effort "none" omits reasoning)
 │   ├── run.ts                    scoring run
 │   ├── diagnose-temporal.ts      dump the evidence table a question actually sees
+│   ├── consolidation-survival.ts would dem's facts survive Strata consolidation? (free)
 │   └── compare-strata.ts         re-express results in Strata's metrics
-├── tests/                        72 passing, hermetic
+├── tests/                        115 passing, hermetic
 │   ├── assistant-content.test.ts verbatim objects + extraction-prompt contract
+│   ├── consolidation-survival.test.ts  pins the copied Strata predicates against theirs
 │   └── embed-cache.test.ts       append-only ndjson, legacy adoption, torn lines
 ├── scripts/verify-db.ts          vec0/FTS5 smoke
 └── README.md
