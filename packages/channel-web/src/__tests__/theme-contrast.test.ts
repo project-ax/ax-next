@@ -177,10 +177,14 @@ const QUIET_TEXT = '--muted-foreground';
  * Deliberately NOT here, so the next person does not have to re-grep:
  *
  *   - `--secondary` — no `text-muted-foreground` pairing exists in the tree.
- *   - `--accent` — its only two are glyphs, not text: `DialogClose`'s `X` and a
- *     hovered-while-on `Toggle`. Both answer to the 3:1 non-text floor. It also
- *     holds the same value as `--muted` in both themes, so the `--muted` row
- *     above is already measuring those exact numbers.
+ *   - `--accent` — the one that does is `DialogClose`, whose only visible child
+ *     is an `X` glyph (the label beside it is `sr-only`), so it answers to the
+ *     3:1 non-text floor.
+ *
+ * Both currently hold the SAME value as `--muted` in either theme, so the
+ * `--muted` row is already measuring their numbers. If either is ever given a
+ * value of its own AND picks up readable quiet text, it needs its own row —
+ * that divergence is exactly what caught `--card` out in TASK-353.
  *
  * Fractional variants (`bg-muted/60`, `bg-muted/30`, …) get no row of their
  * own: alpha-blending puts the effective surface strictly between `--muted`
