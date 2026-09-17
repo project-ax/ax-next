@@ -131,9 +131,11 @@ const ACCENTS_USED_AS_TEXT = ['--primary', '--destructive', '--warning'] as cons
  *
  * TASK-353 is what surfaced the gap: the workspace composer's attachment chip
  * puts `text-destructive` and `text-muted-foreground` on `bg-card`, and neither
- * pair was covered here. Measured at the time: destructive 5.14 light / 5.06
- * dark, muted-foreground 4.83 / 5.03, primary 4.97 / 4.58, warning 4.84 /
- * 10.38. All clear, and now they stay that way by test rather than by luck.
+ * pair was covered here. Currently: destructive 5.14 light / 5.06 dark,
+ * muted-foreground 5.20 / 5.03, primary 4.97 / 4.58, warning 4.84 / 10.38. All
+ * clear, and now they stay that way by test rather than by luck. (Light
+ * muted-foreground read 4.83 when this note was written; TASK-380 darkened the
+ * token to 44% and lifted it, which is the whole point of measuring here.)
  */
 const PLAIN_SURFACES = ['--background', '--card'] as const;
 
@@ -144,6 +146,44 @@ const PLAIN_SURFACES = ['--background', '--card'] as const;
  * likely to be nudged lighter by someone chasing a calmer look.
  */
 const QUIET_TEXT = '--muted-foreground';
+
+/**
+ * The opaque surfaces the quiet text is painted on — a SUPERSET of
+ * `PLAIN_SURFACES`, and the two lists must NOT be collapsed into one.
+ * `PLAIN_SURFACES` is the list the ACCENTS land on, and it stops at the page
+ * and the card because that is where `text-primary` / `text-destructive` /
+ * `text-warning` are actually used. `--muted-foreground` goes further: it is
+ * also the text on a FILLED chip. Merging the lists would start asserting
+ * `--warning` on `--muted` — a pairing that exists nowhere in the tree and
+ * that measures 4.40:1, so the merge fails the suite on a fiction.
+ *
+ * `--muted` is what TASK-380 was: `text-muted-foreground` on `bg-muted`
+ * measured 4.40:1 in light mode in a real browser — under the floor, and
+ * unmeasured here because `--muted` was in neither list. It is not a rare
+ * pairing. The Steps trigger in `AgentConversation`, `TabsList`, the Routines
+ * `TriggerChip` and `StatusChip`, the Thread date divider and the admin
+ * `RoleCard` badge all render exactly it, as real text a person has to read.
+ *
+ * `--popover` carries `CommandGroup`'s `[cmdk-group-heading]` rule and
+ * `CommandShortcut`, both inside `Command`'s `bg-popover` root. It holds the
+ * same value as `--card` in both themes today; it is a separate token that can
+ * drift, which is the same argument that put `--card` here.
+ *
+ * Deliberately NOT here, so the next person does not have to re-grep:
+ *
+ *   - `--secondary` — no `text-muted-foreground` pairing exists in the tree.
+ *   - `--accent` — its only two are glyphs, not text: `DialogClose`'s `X` and a
+ *     hovered-while-on `Toggle`. Both answer to the 3:1 non-text floor. It also
+ *     holds the same value as `--muted` in both themes, so the `--muted` row
+ *     above is already measuring those exact numbers.
+ *
+ * Fractional variants (`bg-muted/60`, `bg-muted/30`, …) get no row of their
+ * own: alpha-blending puts the effective surface strictly between `--muted`
+ * and whatever is behind it, so the solid row bounds one end of every one of
+ * them. If a fractional muted is ever layered over a surface that is NOT in
+ * this list, that surface needs its own row.
+ */
+const QUIET_TEXT_SURFACES = ['--background', '--card', '--popover', '--muted'] as const;
 
 describe('theme contrast', () => {
   for (const [name, selector] of THEMES) {
@@ -170,7 +210,9 @@ describe('theme contrast', () => {
             expect(contrast(accentV!, bgV!)).toBeGreaterThanOrEqual(AA_NORMAL);
           });
         }
+      }
 
+      for (const surface of QUIET_TEXT_SURFACES) {
         it(`${QUIET_TEXT} as text on ${surface} clears AA`, () => {
           const quietV = tokens.get(QUIET_TEXT);
           const bgV = tokens.get(surface);
