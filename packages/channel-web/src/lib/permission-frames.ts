@@ -18,7 +18,11 @@
  * second renderer (a future Slack card, a plain-text digest) would need, and a
  * frame that only exists inside a JSX file is a frame that gets re-invented.
  */
-import type { CapabilityEffect, CapabilityVerdict } from './workspace-types';
+// `.js`, even though this one is type-only and therefore erased at emit:
+// this module is server-reachable, and the extension convention has to hold
+// for the whole graph or it stops being checkable. See
+// `src/__tests__/server-import-extensions.test.ts`.
+import type { CapabilityEffect, CapabilityVerdict } from './workspace-types.js';
 
 /**
  * Which mark a row wears. A NAME, not a glyph and not a colour — the renderer

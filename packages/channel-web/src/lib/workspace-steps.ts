@@ -25,10 +25,16 @@
  * chain-of-thought off this wire (invariant J4). Tool steps are additive to
  * that filter, never a relaxation of it.
  *
- * No React, no chat imports: the server route imports this too.
+ * No React, no chat imports: the server route imports this too. That is also
+ * why the relative imports below carry `.js`: this module is loaded by Node
+ * (through `server/routes-workspace.ts`) as well as by the browser bundle, and
+ * Node's ESM resolver does not guess extensions. Most of `lib/` is
+ * browser-only and gets away without them; anything the server can reach
+ * cannot. `__tests__/server-import-extensions.test.ts` checks the whole
+ * server-reachable graph rather than trusting this note.
  */
-import { fenceLine } from './fence-line';
-import { stripMcpToolPrefix } from './tool-name';
+import { fenceLine } from './fence-line.js';
+import { stripMcpToolPrefix } from './tool-name.js';
 
 /**
  * Where one tool call got to.

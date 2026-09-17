@@ -42,14 +42,14 @@ describe('shapeSteps', () => {
   it('keeps a row, named, when nothing legible survives fencing', () => {
     // A tool name made entirely of the characters that rewrite a surface. The
     // row still appears: a shorter list would disagree with what happened.
-    const panel = shapeSteps([done({ name: '‮​' })]);
+    const panel = shapeSteps([done({ name: '\u202E\u200B' })]);
     expect(panel?.steps).toEqual([UNNAMED_STEP]);
   });
 
   it('flattens a name that tries to rewrite the line it sits on', () => {
-    const panel = shapeSteps([done({ phrase: 'Reading‮gnp.dorp-eteled' })]);
+    const panel = shapeSteps([done({ phrase: 'Reading\u202Egnp.dorp-eteled' })]);
     expect(panel?.steps[0]).toBe('Reading gnp.dorp-eteled');
-    expect(panel?.steps[0]).not.toContain('‮');
+    expect(panel?.steps[0]).not.toContain('\u202E');
   });
 
   it('bounds a name that arrived without one', () => {
