@@ -112,6 +112,11 @@
 //     catch-all and the backstop prints "still running" at rc 0 -- a false NON-RED on a
 //     red main, which is worse than the unanticipated-shape case. Arm ORDER carries two
 //     properties, not one.
+//   - delete the "never RETYPE" half from ONE gate site (yolo-ship Phase 7) -> 1 red,
+//     the prose check. That check previously looked only for the length wording, which
+//     all three sites already carried, so the asymmetry it now catches was invisible to
+//     it -- which is how "never retype" came to be written at 1 site of 3 in the first
+//     place.
 //   - remove `existenceGate`'s `!isComment` filter AND add a comment quoting the command
 //     in full above the `-eq 40` guard -> 5 red at that site: the vacuity test (the
 //     extracted prelude no longer contains the run-list call) plus the fail-closed and
