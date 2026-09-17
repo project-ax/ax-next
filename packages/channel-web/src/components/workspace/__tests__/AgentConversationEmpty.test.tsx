@@ -20,6 +20,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { AgentConversation } from '../AgentConversation';
 import type { ThreadMessage, WorkspaceAgent } from '@/lib/workspace-api';
+import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
+import type { PermissionRequest } from '@/server/types';
 
 const quill: WorkspaceAgent = {
   id: 'a-quill',
@@ -29,6 +31,27 @@ const quill: WorkspaceAgent = {
   counter: null,
   startedAt: null,
   stoppedReason: null,
+};
+
+/**
+ * A grant routed into this thread. Shaped like
+ * `WorkspaceGrantPresence.test.tsx`'s, which renders this same component with
+ * an EMPTY thread and a grant — i.e. the collision below is not hypothetical,
+ * it is already a fixture somebody wrote for another reason.
+ */
+const routedGrant: WorkspaceGrant = {
+  key: 'skill:linear',
+  request: {
+    kind: 'skill',
+    skillId: 'linear',
+    description: 'File and read Linear issues',
+    hosts: ['api.linear.app'],
+    slots: [
+      { slot: 'api_key', kind: 'api-key', account: 'linear', haveExisting: true },
+    ],
+  } satisfies PermissionRequest,
+  agentId: 'a-quill',
+  conversationId: 'cnv-1',
 };
 
 const EMPTY_TITLE = 'Nothing here yet';
@@ -106,6 +129,37 @@ describe('AgentConversation — the zero-turn thread', () => {
     expect(screen.queryByText(EMPTY_DESCRIPTION)).toBeNull();
     // Nothing else crept in to fill the gap either: the pane really is blank.
     expect(document.querySelector('[data-slot="empty"]')).toBeNull();
+  });
+
+  it('stands down for a grant, because the grant is what is actually waiting', () => {
+    /*
+      THE SECOND GUARD, and the one that is easy to miss: the grants block
+      below is gated on neither `readOnly` nor the thread. Presence admits a
+      row on agent id alone, and the store is seeded at mount from
+      `GET /grants` — so a grant raised on a routine fire, or left open on a
+      past conversation, lands over a thread with no turns in it.
+
+      "Send something below — Quill picks it up from there" above a card that
+      is BLOCKING Quill until it is answered invites the reader to do the one
+      thing that will not help. The grant speaks alone, the same way the pane
+      stays blank behind a failed-excerpt alert.
+    */
+    renderConversation({ thread: [], readOnly: false, grants: [routedGrant] });
+
+    // The grant really is on screen, so the missing empty state is the gate
+    // and not a component that failed to render.
+    expect(screen.getByTestId('thread-grants')).toBeTruthy();
+    expect(screen.queryByText(EMPTY_TITLE)).toBeNull();
+    expect(document.querySelector('[data-slot="empty"]')).toBeNull();
+  });
+
+  it('comes back once that grant is answered', () => {
+    // The mirror of the test above: without this, gating on `grants` could be
+    // a permanent suppression and every assertion above would still pass.
+    renderConversation({ thread: [], readOnly: false, grants: [] });
+
+    expect(screen.queryByTestId('thread-grants')).toBeNull();
+    expect(screen.getByText(EMPTY_TITLE)).toBeTruthy();
   });
 
   it('is gone the moment the thread has anything in it', () => {

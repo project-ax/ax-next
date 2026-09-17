@@ -420,11 +420,26 @@ export function AgentConversation({
             approval is raised during a turn — so this copy does not overlap
             with the read notice below even when that read failed.
 
+            `grants.length === 0` IS THE SECOND HALF OF THAT SWEEP, and it is
+            not symmetry. The grants block below is gated on neither `readOnly`
+            nor the thread, and presence admits a row on agent id alone
+            (`grantBelongsInThread`) — no conversation id, no emptiness test
+            — while the store is seeded at mount from `GET /grants`, which is
+            how one raised while the workspace was closed arrives. So a grant
+            left open on a past conversation, or raised on a routine fire —
+            which this file's header says never appears in the thread at all —
+            lands here over an empty one. Without this condition the reader
+            gets "send something below, {name} picks it up from there"
+            directly above a card that is BLOCKING {name} until they answer
+            it: an invitation to start, over the thing actually waiting. The
+            grant card then speaks alone, which is what the blank read-only
+            pane above does for the same reason.
+
             No suggestions, no example prompts, nothing about what the agent
             can do. It names where the reader is and what the box below is
             for, and stops there.
           */}
-          {thread.length === 0 && !readOnly && (
+          {thread.length === 0 && !readOnly && grants.length === 0 && (
             <Empty>
               <EmptyHeader>
                 <EmptyMedia variant="icon">

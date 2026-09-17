@@ -271,9 +271,13 @@ Invariant 6 says compose installed primitives, and the shadcn rules say empty
 states use `Empty`; the package has **four** bespoke empty-state shapes and no
 shared one. `Empty` is pure Tailwind + `cva` + `cn` (no new dependency), and uses
 only semantic tokens. Used by T4 in this same PR — nothing half-wired. (As
-shipped it is the ONLY consumer, T3 having gone; `EmptyContent` therefore goes
-unused, which is how every CLI-vendored primitive in `components/ui/` already
-looks — 11 of them carry unused exports, `dropdown-menu.tsx` 10 of them.)
+shipped it is the ONLY consumer, T3 having gone, so `EmptyContent` goes unused.
+Left in anyway, because that is how CLI-vendored primitives here already look:
+of the 25 pre-existing files in `components/ui/`, **9 carry unused value
+exports** — 10 if a type-only export counts — led by `dropdown-menu.tsx` with
+10 of them, `select.tsx` with 5 and `sheet.tsx` with 4. Counted with a script
+over the package's own sources, after a first pass put the figure at 11 by
+counting `empty.tsx` itself and folding in type exports.)
 Existing bespoke empty states are **not** migrated (out of scope; the ones that
 are a single muted sentence read correctly as they are).
 
@@ -405,7 +409,9 @@ avoid. A past conversation with an empty thread keeps rendering nothing.
 - `const sole = agents.length === 1 ? agents[0]! : null;` and
   `const picked = sole ?? agents.find((a) => a.id === pick) ?? null;` — derived,
   so it cannot go stale if the roster arrives after mount.
-- Render the picker `DropdownMenu` only when `agents.length > 1`. With one agent
+- Render the picker `DropdownMenu` only when there is no `sole`, i.e. when
+  `agents.length !== 1`. (Not `> 1`: the zero-agent case is unreachable on this
+  surface, but a condition should say what the code does.) With one agent
   show a static `AgentTile` + name instead: it still says who you are talking
   to, without pretending there is a decision.
 - Consequence, not a separate change: `submit()` takes the `picked` branch, so
