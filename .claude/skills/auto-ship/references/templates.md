@@ -159,9 +159,9 @@ afford — heed it rather than dispatching and hoping.
 >   that checkable instead of assumed, because the usual rhythm (review → apply the
 >   findings → push the fix) leaves the fix commit as the PR head with nobody having
 >   read it. Seven PRs did exactly that across the 2026-09-16/17 runs, each under an
->   honest `reviewer: clean` — four of them (#553, #554, #556, #557) with a named
->   finding from the pass later ordered on the delta, three (#558-#560) on the
->   orchestrator's report rather than a recorded finding.
+>   honest `reviewer: clean`. Three of them (#553, #556, #557) have a named finding from
+>   the pass later ordered on the delta; #554 has the unreviewed head on record with no
+>   finding reported either way; #558-#560 rest on the orchestrator's report.
 >   If commits landed after `reviewed-sha:`, list each on its own line under it,
 >   labelled `fix:` (it answers a finding your reviewer named) or `new:` (you found it
 >   yourself, afterwards) — auto-ship's review gate routes on those labels and orders

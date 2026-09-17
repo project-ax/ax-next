@@ -12,18 +12,20 @@
 // not uniform across them -- worth separating, since this whole card is about claims
 // outrunning what was checked:
 //
-//   - #553, #554, #556, #557 are the ones with named evidence. Each arrived at the
-//     merge door carrying code no reviewer had seen, under an honest `reviewer: clean`,
-//     and the independent pass the orchestrator then ordered by hand found an
-//     **Important** on #553, a **Major** on #557 and **two Majors** on #556. On #553
-//     and #557 a wrong rule had already been committed into `.claude/memory/` -- the
-//     file every later agent reads as ground truth. (#553 and #554 were 2 of 2 in their
-//     run, which is where this card came from.)
+//   - #553, #556, #557 are the strongest: the unreviewed commit is on record AND the
+//     independent pass the orchestrator ordered on it returned a named finding -- an
+//     **Important** on #553, **two Majors** on #556, a **Major** on #557. On #553 and
+//     #557 a wrong rule had already been committed into `.claude/memory/`, the file
+//     every later agent reads as ground truth.
+//   - #554 has the unreviewed head on record (20 lines of `permission-frames.ts`) with
+//     no finding reported either way. It shows the gate let it through; it does not
+//     show harm. (#553 and #554 were 2 of 2 in their run -- that is where this card
+//     came from.)
 //   - #558, #559, #560 are the ORCHESTRATOR'S ACCOUNT, not something measured here: it
 //     reports all three had production code the reviewer never saw, and that their
 //     builders classified their own post-review deltas correctly -- but only because it
-//     asked each of them by hand. Take the count as 4 verified + 3 reported. What is
-//     not in dispute is that the asking was a habit living in whoever was driving.
+//     asked each of them by hand. What is not in dispute is that the asking was a habit
+//     living in whoever was driving.
 //
 // THE HEAD-COMMIT TEST IS NOT SUFFICIENT, and that is the expensive half of this
 // lesson. The obvious fix -- "scope-test the head commit" -- was measured to miss:
@@ -222,7 +224,7 @@ describe('auto-ship merge-queue review gate compares reviewed sha to merge head 
 
     expect(
       RANGE_FROM_REVIEWED.test(gateBlock),
-      `${SKILL_PATH}: the review gate never forms a git range from the reviewed sha, so it still asks the handoff's \`reviewer:\` field instead of the branch — the defect that walked 7 PRs up to the merge door, 4 of them with a named finding behind it`,
+      `${SKILL_PATH}: the review gate never forms a git range from the reviewed sha, so it still asks the handoff's \`reviewer:\` field instead of the branch — the defect that walked 7 PRs up to the merge door, 3 of them with a named finding behind it`,
     ).toBe(true);
 
     expect(
