@@ -12,9 +12,18 @@
 //   - No build      -> workspace packages resolve through their `exports` to
 //                      `./dist/...`, so every test file that imports a sibling
 //                      `@ax/*` dies at LOAD with `Failed to resolve entry for
-//                      package "@ax/..."`. That reads like the branch broke the
-//                      repo, and an agent can spend a long time debugging its own
-//                      innocent diff.
+//                      package "@ax/..."` -- or, for a declared SUBPATH export such
+//                      as `@ax/skills/manifest`, with the sibling spelling `Failed to
+//                      resolve import "@ax/.../..."`. Two messages, one cause, one
+//                      fix. That reads like the branch broke the repo, and an agent
+//                      can spend a long time debugging its own innocent diff.
+//
+//                      The subpath spelling is much rarer: in the probe below it is
+//                      2 occurrences of `@ax/skills/manifest` and 1 of
+//                      `@ax/validator-routine/frontmatter`, against 363 files with
+//                      the `resolve entry` spelling. So the guard pins only
+//                      `resolve entry` -- accepting both would let a bullet that
+//                      names ONLY the rare variant satisfy it.
 //
 // MEASURED (2026-09-17, probe worktree of `main` at 6bd2b280, installed but not
 // built, `pnpm -r --no-bail run test`): **363 test files across 68 packages**

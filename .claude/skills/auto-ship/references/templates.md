@@ -68,10 +68,13 @@ afford — heed it rather than dispatching and hoping.
 >   simply absent. Skipping the **build** is the expensive half, because it fails in a
 >   way that reads as *your diff broke the repo*: workspace packages resolve through
 >   their `exports` to `./dist/…`, so every test file that imports a sibling `@ax/*`
->   dies at load with **`Failed to resolve entry for package "@ax/…"`**.
->   `MEASURED-BY-PROBE` 2026-09-17, on a freshly added worktree of `main` that was
->   installed but not built: **363 test files across 68 packages** failed to load with
->   that error. A wall of load failures carrying it means *not built yet*, not *broken*
+>   dies at load with **`Failed to resolve entry for package "@ax/…"`** — or, if the
+>   import is a declared *subpath* like `@ax/skills/manifest`, with the sibling spelling
+>   **`Failed to resolve import "@ax/…/…"`**. Two messages, one cause, one fix; look
+>   for either. `MEASURED-BY-PROBE` 2026-09-17, on a freshly added worktree of `main`
+>   that was installed but not built: **363 test files across 68 packages** failed to
+>   load with the `resolve entry` spelling, and 403 test files failed in total.
+>   A wall of load failures carrying either message means *not built yet*, not *broken*
 >   — build and re-run before you debug a line of it. Both steps are cheap on a warm
 >   pnpm store: **7.6s** install and **17.1s** build, timed in a second fresh worktree
 >   of the same commit that day. Skipping the **install** is the harmless half: with no
