@@ -12,7 +12,7 @@ sqlite-vec `vec0` + FTS5), four epistemic networks, four-channel recall fused by
 Reciprocal Rank Fusion, Cohere cross-encoder reranking, single-pass grounded synthesis
 with `[DATA_ABSENT]` abstention.
 
-- **Worktree:** `/Users/vpulim/dev/ai/ax-next-dem`, branch `dem-memory`.
+- **Worktree:** `/Users/vpulim/dev/ai/ax-next/.claude/worktrees/dem-memory`, branch `dem-memory`.
 - **Never commit in `/Users/vpulim/dev/ai/ax-next`** — that is the shared main checkout.
 - It is a **standalone npm sub-project**, deliberately NOT a pnpm workspace member
   (`pnpm-workspace.yaml` doesn't cover it; root `eslint.config.mjs` ignores it via a
@@ -35,7 +35,7 @@ interpretable — see gotcha 10. Quote this one, not the n=100 ones.
 ## Run the benchmark
 
 ```bash
-cd /Users/vpulim/dev/ai/ax-next-dem/dem-memory
+cd /Users/vpulim/dev/ai/ax-next/.claude/worktrees/dem-memory/dem-memory
 set -a; source /Users/vpulim/dev/ai/ax-next/.env.walk; set +a
 export GOOGLE_CLOUD_PROJECT=canopy-ai-498321   # bench also auto-reads gcloud config
 
@@ -545,7 +545,7 @@ dem-memory/
 
 ## Where the reasoning is written down
 
-`/Users/vpulim/dev/ai/ax-next-dem/.claude/memory/decisions.md` — the 2026-09-16 entries
+`/Users/vpulim/dev/ai/ax-next/.claude/worktrees/dem-memory/.claude/memory/decisions.md` — the 2026-09-16 entries
 carry the full rationale, the rejected alternatives, and the measurements behind every
 claim here. `patterns.md` has the two reusable lessons (dump the prompt before
 theorising about retrieval; compute in code the arithmetic you'd otherwise ask a cheap
