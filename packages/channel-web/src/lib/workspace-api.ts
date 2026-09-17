@@ -424,8 +424,16 @@ export interface StreamHandlers {
   onDecisionRaised?: (raised: { decisionId: string; summary: string }) => void;
   /**
    * The agent hit a capability it does not have and is asking for it (TASK-350).
-   * NON-TERMINAL, like `onDecisionRaised` — the wall holds server-side, so the
-   * turn is parked rather than failed.
+   *
+   * NON-TERMINAL FOR THIS READER: more frames follow, and one of them is the
+   * `done` that ends the turn. That is the whole of the claim, and it used to
+   * say more — that the turn "is parked" and the rest of it follows once the
+   * person answers, like a decision. For a `skill` or `connector` that is not
+   * what happens: `request_capability` returns to the model, the model says it
+   * has asked, the turn ENDS, and answering the grant retires the warm session
+   * so the capability is there for the NEXT turn. Somebody has to start that
+   * turn — `lib/workspace-resume.ts` (TASK-374) is who, and chat's own
+   * `resumeActions` → `regenerate()` is the same admission one surface over.
    *
    * Before this existed the frame was parsed and then dropped on the floor: the
    * reader handled `done`, `error`, text and `decisionRaised`, and a
@@ -915,9 +923,13 @@ async function streamReply(
       return 'continue';
     }
     /*
-      The agent is asking for a capability. Non-terminal for the same reason a
-      decision is: the wall holds server-side and the turn parks, so the stream
-      stays open and the rest of the turn follows once the person answers.
+      The agent is asking for a capability. Non-terminal in the sense that
+      matters HERE — keep reading, there are more frames — and NOT for the
+      reason a decision is. A decision genuinely parks the turn and the rest of
+      it follows once the person answers; a `skill` or `connector` grant does
+      not, and the very next frames are the agent saying it has asked and the
+      `done` that ends the turn. Re-issuing it is `lib/workspace-resume.ts`
+      (TASK-374). See `StreamHandlers.onPermissionRequest` above.
 
       Forwarded verbatim rather than reshaped — the row renders every kind
       (`skill`, `connector`, `host`), and a reader that understood one of them

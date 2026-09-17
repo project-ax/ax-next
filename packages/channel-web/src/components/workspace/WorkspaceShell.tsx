@@ -28,9 +28,11 @@ import {
 } from '@/lib/workspace-api';
 import { useActivityFeed } from '@/lib/workspace-activity';
 import { useDecisionQueue } from '@/lib/workspace-decisions';
+import { resumeParkedTurn } from '@/lib/workspace-resume';
 import {
   useWorkspaceGrants,
   workspaceGrantActions,
+  type WorkspaceGrant,
 } from '@/lib/workspace-grant-store';
 import {
   threadGrants,
@@ -40,6 +42,7 @@ import { WorkspaceProvider, useWorkspace } from '@/lib/workspace-context';
 import { hydrateTheme } from '@/lib/theme';
 import { KICKOFF_TEXT } from '@/lib/bootstrap-kickoff';
 import { toastActions } from '@/lib/toast-store';
+import { grantResumedTitle } from '@/lib/grant-copy';
 import { isOpenDecision, type ActivityEvent } from '@/lib/workspace-types';
 import {
   parseWorkspaceRoute,
@@ -438,6 +441,91 @@ function Inner({
   );
 
   /**
+   * A capability grant was APPROVED — start the agent it stopped (TASK-374).
+   *
+   * THE ROUTE THIS SURFACE ACTUALLY HAS. Chat's is `resumeActions` →
+   * assistant-ui's `regenerate()`, registered by a runtime this branch of the
+   * app deliberately does not mount; calling it from here would be a no-op
+   * wearing the shape of wiring. So the workspace re-issues the turn over its
+   * own wire — see `lib/workspace-resume.ts` for why a re-POST and not an
+   * attach.
+   *
+   * OWNED HERE, not in `AgentView`, because a grant answered on Today belongs
+   * to an agent that may have no panel on screen — and that is the common case,
+   * since most grants are raised by an agent working unattended. This runs the
+   * same way from either render site.
+   *
+   * WHAT WE DO NOT DO IS NAVIGATE. The person answering a row in a queue may
+   * have more rows to answer, and yanking them into a thread would cost them
+   * their place. The turn runs server-side whether or not anyone is watching
+   * it, so there is nothing to follow them for.
+   *
+   * WHICH LEAVES TWO WAYS TO SAY IT HAPPENED, and the branch below picks one.
+   * If that agent's panel is already open, the reply is staged and streams in
+   * front of the reader. If it is not, a toast names the agent — because the
+   * row leaving is otherwise the only thing that changes on screen, and
+   * `refresh()` moving the tile to "working" is a read whose timing we do not
+   * control. Only one of the two ever fires: a notification about a reply
+   * somebody is already watching arrive is noise.
+   *
+   * Staging `pendingReply` unconditionally would be worse than not staging it:
+   * a finished turn's `reqId` left in state for a panel that mounts minutes
+   * later, and `GET /api/chat/stream/:reqId` answers a long-dead turn with a
+   * 404 — which `AgentView` would render as a failed reply over a conversation
+   * that completed perfectly well.
+   */
+  const resumeAfterGrant = useCallback(
+    async (grant: WorkspaceGrant): Promise<boolean> => {
+      /*
+        Unreachable from the shipped row — `GrantRow` disables Connect and says
+        `GRANT_NO_CONVERSATION` when there is no conversation — but the type
+        allows it and a resume needs one, so it is a refusal rather than a cast.
+      */
+      if (grant.conversationId === null) return false;
+      const result = await resumeParkedTurn({
+        agentId: grant.agentId,
+        conversationId: grant.conversationId,
+      });
+      if (!result.resumed) return false;
+      /*
+        IS THAT AGENT'S PANEL MOUNTED? That is the whole question, and it is a
+        different one from `grantBelongsInThread` — which asks whether the
+        THREAD should draw the grant, and additionally wants the `chat` tab and
+        a visible browser tab. Reusing it here would be a tidier-looking bug:
+        `AgentView` owns the tabs, so it is mounted on `files`/`memory`/`did`
+        too and streams the reply into state the reader sees the moment they
+        come back to `chat`; and a hidden browser tab is still a mounted panel.
+        Both are cases where we WANT the stream and the presence rule says no.
+      */
+      if (route.kind === 'agent' && route.id === grant.agentId) {
+        setPendingReply({
+          agentId: grant.agentId,
+          reqId: result.reqId,
+          text: result.text,
+          conversationId: result.conversationId,
+        });
+      } else {
+        /*
+          Nobody is looking at that agent, so nothing on this screen is about to
+          show the turn running — the row simply leaves. Say it happened.
+          `refresh()` below eventually moves the agent's tile to "working", but
+          that is a read whose timing we do not control, and a successful resume
+          that looks like nothing happened is the same silence in a smaller
+          size.
+        */
+        toastActions.show({
+          title: grantResumedTitle(
+            board?.agents.find((a) => a.id === grant.agentId)?.name ?? null,
+          ),
+        });
+      }
+      void refresh();
+      return true;
+    },
+    [route, refresh, board],
+  );
+
+  /**
    * TASK-249 — the kickoff for an agent just created from THIS surface.
    *
    * `bootstrapKickoff` (the chat runtime's module-level trigger/register
@@ -601,6 +689,7 @@ function Inner({
                   decisions={queue.decisions}
                   grants={grants.grants}
                   onGrantResolved={workspaceGrantActions.resolve}
+                  onGranted={resumeAfterGrant}
                   agents={board.agents}
                   filter={filter}
                   expandedId={expandedId}
@@ -674,6 +763,7 @@ function Inner({
               decisions={queue.decisions}
               threadGrants={grantsInThread}
               onGrantResolved={workspaceGrantActions.resolve}
+              onGranted={resumeAfterGrant}
               onApprove={queue.approve}
               onDismiss={queue.dismiss}
               onUndo={queue.undo}

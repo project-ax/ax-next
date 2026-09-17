@@ -56,6 +56,7 @@ vi.mock('@/lib/workspace-api', async () => {
       rail: vi.fn(async () => railFixture()),
       revokeGrant: vi.fn(),
       sendMessage: vi.fn(),
+      streamReply: vi.fn(async () => {}),
     },
   };
 });
@@ -65,6 +66,7 @@ const agentMock = vi.mocked(workspaceApi.agent);
 const activityMock = vi.mocked(workspaceApi.activity);
 const decisionsMock = vi.mocked(workspaceApi.decisions);
 const grantsMock = vi.mocked(workspaceApi.grants);
+const sendMock = vi.mocked(workspaceApi.sendMessage);
 
 const user = {
   id: 'u1',
@@ -157,14 +159,25 @@ beforeEach(() => {
   boardMock.mockReset();
   boardMock.mockResolvedValue({ agents: [QUILL, SCOUT] });
   agentMock.mockReset();
+  /*
+    THE THREAD IS NOT EMPTY, and since TASK-374 it cannot be. Answering a grant
+    now re-issues the turn the agent stopped on, which means reading this
+    conversation back and re-sending its last user turn; with no user turn in it
+    there is nothing to re-issue, the row stays with the "we could not start it
+    again" sentence on it, and the three ANSWERING cases below — which assert the
+    row leaves both sites — would fail for a reason that has nothing to do with
+    presence. The resume path itself is pinned in `WorkspaceGrantResume.test.tsx`.
+  */
   agentMock.mockImplementation(async (id: string) => ({
     agent: id === 'a-scout' ? SCOUT : QUILL,
     conversationId: 'cnv-1',
-    thread: [],
+    thread: [{ kind: 'user' as const, id: 't1', text: 'file my open issues' }],
     decisions: { status: 'ok' as const },
     past: [],
     memory: [],
   }));
+  sendMock.mockReset();
+  sendMock.mockResolvedValue({ conversationId: 'cnv-1', reqId: 'req-resume' });
   activityMock.mockReset();
   activityMock.mockResolvedValue({ events: [], nextBefore: null });
   decisionsMock.mockReset();
@@ -382,6 +395,7 @@ describe('the render site itself', () => {
           },
         ]}
         onGrantResolved={vi.fn()}
+        onGranted={vi.fn(async () => true)}
         {...over}
       />,
     );

@@ -120,3 +120,59 @@ export const GRANT_CONNECTING_LABEL = 'Connecting…';
 export const HOST_ALLOW_ONCE_LABEL = 'Just this once';
 export const HOST_ALLOW_ALWAYS_LABEL = 'Always for this agent';
 export const HOST_ALLOWING_LABEL = 'Allowing…';
+
+/**
+ * The grant landed and the agent did not pick up again (TASK-374).
+ *
+ * The behaviour this replaces was SILENCE: the row vanished, the capability was
+ * genuinely attached, and the agent sat stopped with nothing on screen saying
+ * so or saying what to do. A person who had just been told "connecting lets
+ * this agent do this from now on" reasonably read that as "and now it will".
+ *
+ * Three things have to be true in one sentence, and all three are load-bearing:
+ * the connection WORKED (so nobody re-enters a key that is already saved), the
+ * agent stopped BEFORE they answered (so this reads as timing rather than as
+ * the grant failing), and messaging the agent is what gets it going.
+ *
+ * ONE SENTENCE FOR EVERY `ResumeFailure`, and the wording is what makes that
+ * honest. The reasons differ in what WE could not do — read the conversation,
+ * find a turn in it, post it — and not at all in what the person should do
+ * next, so spelling the difference out would ask them to care about our
+ * plumbing at the moment they are least able to.
+ *
+ * It says "send it a message" and NOT "send your message again", which reads
+ * better and is false in one branch: `nothing-to-resume` means there was no
+ * message of theirs in that conversation to begin with, so "again" would be
+ * telling someone to repeat something they never did. The action is the same
+ * either way — say something to the agent — so the sentence says the thing that
+ * is true in both.
+ */
+export const GRANT_NOT_RESUMED =
+  'Connected. The agent had already stopped by the time you answered, though, ' +
+  'and we could not start it again from here — send it a message and it will ' +
+  'carry on with this connection in place.';
+
+/** Clears the stopped-agent row. It is an acknowledgement, not an action. */
+export const GRANT_NOT_RESUMED_DISMISS = 'Got it';
+
+/**
+ * The grant landed and the agent DID start again — said out loud, but only
+ * where the person cannot already see it happening (TASK-374).
+ *
+ * The asymmetry is deliberate. Answering a grant in the agent's own thread puts
+ * the reply on screen as it streams, and a toast on top of that would be a
+ * notification about something the reader is already watching. Answering one in
+ * the Today queue has no such view: the row disappears and the agent restarts
+ * somewhere else. Without this, the queue's successful case would look exactly
+ * like the silence this task set out to fix.
+ *
+ * The name is a parameter rather than "your agent" because Today can hold
+ * grants from several agents and the reader needs to know WHICH one just
+ * started. `null` is the fallback for the window before the roster has loaded —
+ * rare, since answering a row means the roster drew it, and still better than
+ * interpolating `undefined` into a sentence.
+ */
+export const grantResumedTitle = (agentName: string | null): string =>
+  agentName === null
+    ? 'Connected. Your agent is picking up where it left off.'
+    : `Connected. ${agentName} is picking up where it left off.`;

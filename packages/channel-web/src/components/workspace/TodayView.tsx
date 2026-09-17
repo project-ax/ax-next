@@ -80,6 +80,12 @@ interface Props {
   grants: readonly WorkspaceGrant[];
   /** A grant was answered or turned down. */
   onGrantResolved: (key: string) => void;
+  /**
+   * A grant was APPROVED — pick the stopped agent back up (TASK-374). Passed
+   * straight to `GrantRow`, which owns the difference between approving and
+   * turning down; see there for why the seam is on the row and not here.
+   */
+  onGranted: (grant: WorkspaceGrant) => Promise<boolean>;
   agents: WorkspaceAgent[];
   filter: 'needs' | 'working';
   expandedId: string | null;
@@ -138,6 +144,7 @@ export function TodayView({
   decisions,
   grants,
   onGrantResolved,
+  onGranted,
   agents,
   filter,
   expandedId,
@@ -413,7 +420,12 @@ export function TodayView({
                 unread.
               */}
               {grants.map((g) => (
-                <GrantRow key={g.key} grant={g} onResolved={onGrantResolved} />
+                <GrantRow
+                  key={g.key}
+                  grant={g}
+                  onResolved={onGrantResolved}
+                  onGranted={onGranted}
+                />
               ))}
               {open.map((d) => renderRow(d, true))}
               {justResolved.map((d) => renderRow(d, false))}
