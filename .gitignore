@@ -38,6 +38,13 @@ worktrees/
 # Brainstorming session scratch (mockups, state) — kept local
 .superpowers/
 
+# channel-web's vite mock backend seeds 6 JSON files (users/agents/teams/
+# mcp-servers/sessions/messages) into `.mock-data/`. It's now anchored to the
+# package dir via __dirname (see packages/channel-web/vite.config.ts and
+# mock/server.ts, TASK-376), but this root-level entry is cheap insurance
+# against it ever landing here again, e.g. via a differently invoked runner.
+.mock-data/
+
 # Local handoff/prompt scratch — kept out of git
 .claude/prompts/
 
