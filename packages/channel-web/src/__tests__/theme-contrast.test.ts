@@ -191,8 +191,29 @@ const QUIET_TEXT = '--muted-foreground';
  * and whatever is behind it, so the solid row bounds one end of every one of
  * them. If a fractional muted is ever layered over a surface that is NOT in
  * this list, that surface needs its own row.
+ *
+ * That argument covers fractional MUTED only, so one case sits outside every
+ * list here: `ApprovalCard`'s `bg-warning-soft/40` holds `text-muted-foreground`.
+ * Measured rather than assumed — 5.05 over white, 5.52 over dark
+ * `--background`, 4.68 over dark `--card` — so it passes and gets no row.
+ *
+ * It passes only BECAUSE it is fractional, which is the part worth writing
+ * down: quiet text on a SOLID `bg-warning-soft` would be **4.10:1** in dark
+ * mode, under the floor. Nothing renders that today — the solid `-soft`
+ * surfaces carry their own accent text, not the quiet token — so there is
+ * nothing to fix and no row to add. But a `-soft` surface is the likeliest
+ * next place this defect appears, and it is the one shape nothing in this file
+ * bounds. (For the record, solid light: warning-soft 4.81, destructive-soft
+ * 4.64, primary-soft 4.55. Dark: 4.10 / 4.63 / 4.69.)
  */
 const QUIET_TEXT_SURFACES = ['--background', '--card', '--popover', '--muted'] as const;
+
+/**
+ * One entry per `it` the quiet-text loop registers, appended at COLLECTION
+ * time. Read by the dropped-loop guard at the bottom of the file — see the
+ * comment there for why a constant-only check is not enough.
+ */
+const quietTextCasesRegistered: string[] = [];
 
 describe('theme contrast', () => {
   for (const [name, selector] of THEMES) {
@@ -222,6 +243,7 @@ describe('theme contrast', () => {
       }
 
       for (const surface of QUIET_TEXT_SURFACES) {
+        quietTextCasesRegistered.push(`${name}:${surface}`);
         it(`${QUIET_TEXT} as text on ${surface} clears AA`, () => {
           const quietV = tokens.get(QUIET_TEXT);
           const bgV = tokens.get(surface);
@@ -245,16 +267,38 @@ describe('theme contrast', () => {
 
   /**
    * `QUIET_TEXT_SURFACES`'s comment calls it a superset of `PLAIN_SURFACES`.
-   * That sentence is the kind of thing nothing checks, and this file is a
-   * known merge collision point — a clean auto-merge here has previously kept
-   * both constant lists and dropped a loop. So assert the relationship: a
-   * surface added to `PLAIN_SURFACES` alone would leave the quiet text
-   * unmeasured on it, which is TASK-380 happening again one token over.
+   * That sentence is the kind of thing nothing checks, so check it: a surface
+   * added to `PLAIN_SURFACES` alone would leave the quiet text unmeasured on
+   * it, which is TASK-380 happening again one token over.
+   *
+   * Note what this does NOT cover, because the two constants are all it reads:
+   * a merge that reverts the quiet-text loop to `PLAIN_SURFACES` and leaves
+   * `QUIET_TEXT_SURFACES` defined-but-unused passes this cleanly. That is the
+   * dropped-loop hazard, and the case below is the one that catches it.
    */
   it('measures the quiet text on every surface the accents are measured on', () => {
     for (const surface of PLAIN_SURFACES) {
       expect(QUIET_TEXT_SURFACES, `${surface} is measured for the accents but not for ${QUIET_TEXT}`)
         .toContain(surface);
     }
+  });
+
+  /**
+   * The dropped-loop guard. This file is a known auto-merge collision point,
+   * and a clean merge here has already once kept both constant lists while
+   * silently dropping a loop — which reads as green because the assertions
+   * that vanished leave no trace.
+   *
+   * So assert what the loop actually REGISTERED, not what the constants say.
+   * `quietTextCasesRegistered` is appended to at collection time, one entry
+   * per `it` the quiet-text loop creates, so this fails if that loop is
+   * removed, duplicated, or pointed at the wrong list — each of which silently
+   * un-measures a surface today.
+   */
+  it('registers one quiet-text case per theme per surface', () => {
+    const expected = THEMES.flatMap(([name]) =>
+      QUIET_TEXT_SURFACES.map((surface) => `${name}:${surface}`),
+    );
+    expect(quietTextCasesRegistered).toEqual(expected);
   });
 });
