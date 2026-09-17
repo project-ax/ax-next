@@ -134,7 +134,7 @@ describe('the phase status line', () => {
       h.onToolUse?.({ toolCallId: 'tu1', toolName: 'Bash', activityPhrase: 'Running a command' });
     });
     await waitFor(() => {
-      expect(screen.getByText('Running a command — running')).toBeTruthy();
+      expect(screen.getByText('Running a command — in progress')).toBeTruthy();
     });
     expect(screen.queryByText('Getting set up…')).toBeNull();
   });

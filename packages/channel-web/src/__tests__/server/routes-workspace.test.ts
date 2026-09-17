@@ -760,8 +760,8 @@ describe('channel-web agent-workspace BFF', () => {
       kind: 'steps',
       id: 't3',
       text: '',
-      stepsLabel: '1 step · 1 running',
-      steps: ['gmail_get — running'],
+      stepsLabel: '1 step, 1 in progress',
+      steps: ['gmail_get — in progress'],
     });
     // The scratchpad never crosses the wire.
     expect(JSON.stringify(body.thread)).not.toContain('secret scratchpad');
@@ -802,10 +802,10 @@ describe('channel-web agent-workspace BFF', () => {
     expect(body.thread).toHaveLength(1);
     expect(body.thread[0]).toMatchObject({
       kind: 'steps',
-      stepsLabel: "2 steps \u00b7 1 didn't finish",
+      stepsLabel: "2 steps, 1 didn't finish",
       steps: [
-        "Sending the email \u2014 didn't finish",
-        'Deleting the repo \u2014 waiting for you',
+        "Sending the email — didn't finish",
+        'Deleting the repo — waiting for you',
       ],
     });
   });

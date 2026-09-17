@@ -39,9 +39,12 @@ import { stripMcpToolPrefix } from './tool-name';
  * not run and has not failed, and calling a pending decision a failure tells
  * the reader the thing is over when it is in fact waiting on them.
  *
- * We restate the union rather than importing that module: it is typed around
- * assistant-ui's part shape (`status.type`, `toolCallId` into a display map),
- * which is chat's runtime and the one thing this surface does not mount.
+ * We restate the union rather than importing that module's classifier, for a
+ * concrete reason and not a stylistic one: `toolStepStatus` resolves `waiting`
+ * by looking the call id up in `tool-held.ts`'s module-global map, and the only
+ * writers to that map are `lib/transport.ts` and `lib/history-adapter.ts` —
+ * chat's two readers, neither of which runs on this surface. Reusing it here
+ * would return `waiting` never, which is the one answer that must not be wrong.
  */
 export type WorkspaceStepStatus = 'running' | 'waiting' | 'failed' | 'done';
 
@@ -94,7 +97,9 @@ export const UNNAMED_STEP = 'Unnamed step';
 
 /** Suffixes that make a row say what state it is in, rather than implying one. */
 const STATUS_SUFFIX: Record<Exclude<WorkspaceStepStatus, 'done'>, string> = {
-  running: 'running',
+  // "in progress", not "running": a program runs, a person's errand is in
+  // progress, and this surface is written for the person.
+  running: 'in progress',
   waiting: 'waiting for you',
   failed: "didn't finish",
 };
@@ -128,9 +133,12 @@ function stepsLabel(
   counts: { failed: number; waiting: number; running: number },
 ): string {
   const base = total === 1 ? '1 step' : `${total} steps`;
-  if (counts.failed > 0) return `${base} · ${counts.failed} didn't finish`;
-  if (counts.waiting > 0) return `${base} · ${counts.waiting} waiting for you`;
-  if (counts.running > 0) return `${base} · ${counts.running} running`;
+  // A comma, not an interpunct. The separator has to read as "and also" to
+  // somebody who has never thought about typography, and a `·` reads as
+  // decoration to plenty of them.
+  if (counts.failed > 0) return `${base}, ${counts.failed} didn't finish`;
+  if (counts.waiting > 0) return `${base}, ${counts.waiting} waiting for you`;
+  if (counts.running > 0) return `${base}, ${counts.running} in progress`;
   return base;
 }
 

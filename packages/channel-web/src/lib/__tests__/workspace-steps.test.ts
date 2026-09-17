@@ -61,19 +61,19 @@ describe('shapeSteps', () => {
   it('says a failed step failed, in words, not only in colour', () => {
     const panel = shapeSteps([done({ status: 'failed', phrase: 'Sending the email' })]);
     expect(panel?.steps).toEqual(["Sending the email — didn't finish"]);
-    expect(panel?.label).toBe("1 step · 1 didn't finish");
+    expect(panel?.label).toBe("1 step, 1 didn't finish");
   });
 
   it('says a held step is waiting on the reader', () => {
     const panel = shapeSteps([done({ status: 'waiting', phrase: 'Sending the email' })]);
     expect(panel?.steps).toEqual(['Sending the email — waiting for you']);
-    expect(panel?.label).toBe('1 step · 1 waiting for you');
+    expect(panel?.label).toBe('1 step, 1 waiting for you');
   });
 
-  it('says a step still in flight is running', () => {
+  it('says a step still in flight is in progress', () => {
     const panel = shapeSteps([done({ status: 'running', phrase: 'Searching the web' })]);
-    expect(panel?.steps).toEqual(['Searching the web — running']);
-    expect(panel?.label).toBe('1 step · 1 running');
+    expect(panel?.steps).toEqual(['Searching the web — in progress']);
+    expect(panel?.label).toBe('1 step, 1 in progress');
   });
 
   it('leads with the failure when a panel holds both a failure and a hold', () => {
@@ -86,7 +86,7 @@ describe('shapeSteps', () => {
       done({ id: 'a', status: 'waiting', phrase: 'Sending the email' }),
       done({ id: 'b', status: 'failed', phrase: 'Reading the calendar' }),
     ]);
-    expect(panel?.label).toBe("2 steps · 1 didn't finish");
+    expect(panel?.label).toBe("2 steps, 1 didn't finish");
     expect(panel?.steps).toEqual([
       'Sending the email — waiting for you',
       "Reading the calendar — didn't finish",
@@ -108,6 +108,7 @@ describe('shapeSteps', () => {
 
 describe('the live accumulator', () => {
   it('starts a fresh call as running — a call made is not a call finished', () => {
+    // `running` is the internal status word; the rendered row says "in progress".
     const calls = applyToolUse([], {
       toolCallId: 'tu1',
       toolName: 'Bash',
