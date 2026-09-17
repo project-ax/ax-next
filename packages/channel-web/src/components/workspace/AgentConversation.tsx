@@ -127,6 +127,12 @@ interface Props {
   grants: readonly WorkspaceGrant[];
   /** A grant here was answered or turned down. The store's `resolve`. */
   onGrantResolved: (key: string) => void;
+  /**
+   * A grant here was APPROVED — pick the stopped agent back up (TASK-374).
+   * Forwarded to the same `GrantRow` Today uses, so a grant answered in the
+   * thread and one answered in the queue do the same thing.
+   */
+  onGranted: (grant: WorkspaceGrant) => Promise<boolean>;
 }
 
 export function AgentConversation({
@@ -145,6 +151,7 @@ export function AgentConversation({
   onRetryApprovals,
   grants,
   onGrantResolved,
+  onGranted,
 }: Props) {
   const [draft, setDraft] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
@@ -480,7 +487,12 @@ export function AgentConversation({
         <div className="px-6 pt-4" data-testid="thread-grants">
           <div className="max-h-[50vh] max-w-[720px] overflow-y-auto rounded-lg border border-border bg-card shadow-sm [scrollbar-gutter:stable]">
             {grants.map((g) => (
-              <GrantRow key={g.key} grant={g} onResolved={onGrantResolved} />
+              <GrantRow
+                key={g.key}
+                grant={g}
+                onResolved={onGrantResolved}
+                onGranted={onGranted}
+              />
             ))}
           </div>
         </div>

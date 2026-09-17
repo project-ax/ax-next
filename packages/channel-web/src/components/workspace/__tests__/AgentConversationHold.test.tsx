@@ -52,6 +52,7 @@ function renderConversation(
       onRetryApprovals={vi.fn()}
       grants={[]}
       onGrantResolved={vi.fn()}
+        onGranted={vi.fn(async () => true)}
       {...over}
     />,
   );
@@ -175,6 +176,7 @@ describe('AgentConversation — composer hold while an approval is open', () => 
         onRetryApprovals={vi.fn()}
         grants={[]}
         onGrantResolved={vi.fn()}
+        onGranted={vi.fn(async () => true)}
       />,
     );
 
@@ -201,6 +203,7 @@ describe('AgentConversation — composer hold while an approval is open', () => 
         onRetryApprovals={vi.fn()}
         grants={[]}
         onGrantResolved={vi.fn()}
+        onGranted={vi.fn(async () => true)}
       />,
     );
 

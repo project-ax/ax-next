@@ -21,15 +21,25 @@ import {
 } from '@/lib/grant-copy';
 import type { PermissionRequest } from '@/server/types';
 
-function row(request: PermissionRequest, conversationId: string | null = 'cnv-1') {
+function row(
+  request: PermissionRequest,
+  conversationId: string | null = 'cnv-1',
+  /**
+   * Did the agent start again (TASK-374)? Defaults to yes, because that is the
+   * path every pre-existing case here was written against: the row resolves and
+   * disappears. The `false` case gets its own describe block.
+   */
+  onGranted = vi.fn(async () => true),
+) {
   const onResolved = vi.fn();
   render(
     <GrantRow
       grant={{ key: grantKey(request), request, conversationId, agentId: 'a-quill' }}
       onResolved={onResolved}
+      onGranted={onGranted}
     />,
   );
-  return { onResolved };
+  return { onResolved, onGranted };
 }
 
 function okFetch() {

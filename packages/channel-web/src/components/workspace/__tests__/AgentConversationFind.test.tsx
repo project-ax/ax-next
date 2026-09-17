@@ -64,6 +64,7 @@ function conversation(
       onRetryApprovals={vi.fn()}
       grants={[]}
       onGrantResolved={vi.fn()}
+        onGranted={vi.fn(async () => true)}
       {...over}
     />
   );

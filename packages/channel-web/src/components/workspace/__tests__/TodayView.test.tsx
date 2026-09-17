@@ -68,6 +68,7 @@ function renderToday(
       decisions={[]}
       grants={[]}
       onGrantResolved={vi.fn()}
+        onGranted={vi.fn(async () => true)}
       agents={[agent()]}
       filter="needs"
       expandedId={null}
