@@ -18,24 +18,19 @@ with `[DATA_ABSENT]` abstention.
   (`pnpm-workspace.yaml` doesn't cover it; root `eslint.config.mjs` ignores it via a
   scoped `dem-memory/**` entry). Use **`npm`, not `pnpm`**, inside `dem-memory/`.
 
-**Six commits on the branch, none pushed, no PR** (`git log --oneline`; HEAD's own hash is
-deliberately not written here — a commit cannot cite itself without going stale on the next
-amend):
+**Ten commits, pushed, open as PR #570** (https://github.com/project-ax/ax-next/pull/570).
+Rebased onto `main` twice on 2026-09-17; expect it to drift back to CONFLICTING within hours
+because ~15 `auto-ship/*` agents append to `.claude/memory/*.md` continuously. Resolution is
+always "keep both sides, upstream first" — they are append-only files.
 
-```
-HEAD     single-session-assistant 45.5% to 81.8%: the prompt was compressing the answer away
-bf5b5e69 docs: rewrite HANDOFF.md for a fresh session
-485f7732 n=100 vs Strata: 82.0% to its 76.0%, and the lead is one question type
-196ef6fd retain: one malformed date cost a whole batch of memories
-abc3efa1 bench: the sampler was picking the easiest questions, and the answer model was welded to the extractor
-46934d9f dem-memory: the temporal misses were prompt failures, and the question date is not an anchor
-```
+**Current state:** `npm run typecheck`, `npm run build`, `npm test` all clean —
+**103 tests** across 12 files, hermetic.
 
-**Current state:** `npm run typecheck` clean, `npm run build` clean, `npm test`
-**72/72 passing** across 8 files. LongMemEval-S **88.0% at n=100** (Sonnet arm) against the
-Strata e2e baseline's **76.0%** on the same 100 questions — but see "How much of this to
-believe" below, because the GLM arm scores 83.0% on the same change and only part of the
-gain replicates.
+**THE headline number: LongMemEval-S n=500 (the FULL corpus) = 87.4%**, against the Strata
+n=500 reference of 76.0%. SE +/-1.5pp, so +11.4pp is ~7 SE, and it reproduces EXACTLY across
+two independent answerers (sonnet-4.6 and glm-5.3-flash both 87.4%; McNemar on the answerer
+p=1.000). This is the only number on this project measured at a scale where a single arm is
+interpretable — see gotcha 10. Quote this one, not the n=100 ones.
 
 ## Run the benchmark
 
@@ -84,6 +79,35 @@ npx tsx bench/compare-strata.ts bench/results/n100-sonnet/*.jsonl
   never read again — **safe to delete whenever you want the disk back.**
 - **Timing/cost with warm caches:** n=100 answer-only ≈ 15 min, ~$0.50 of Sonnet.
   Cold extraction for a new n=100 sample ≈ 1.5 h and ~$2.20.
+
+## Against Strata at n=500 (the full corpus) — QUOTE THIS ONE
+
+`bench/results/n500-sonnet/` and `n500-glm/`. GLM extraction, 15-row evidence (the shipped
+default), grok-4.3 judge. Strata reference: its 2026-08-02 n=500 run at 76.0% (BM25-only
+retrieval + haiku extraction — an OLDER config than the n=100 orchestrator one below; both
+Strata configs land on 76.0% overall, which is what makes the headline comparable at all).
+
+| question_type | n | dem sonnet | dem GLM | Strata |
+|---|---|---|---|---|
+| temporal-reasoning | 133 | **90.2%** | **90.2%** | 59.3% |
+| single-session-assistant | 56 | 91.1% | 89.3% | 63.6% |
+| knowledge-update | 78 | 87.2% | 88.5% | 80.0% |
+| single-session-preference | 30 | 80.0% | 83.3% | 66.7% |
+| single-session-user | 70 | 95.7% | 97.1% | 100.0% |
+| multi-session | 133 | 80.5% | 78.9% | 85.2% |
+| **TOTAL** | 500 | **87.4%** | **87.4%** | **76.0%** |
+
+**The lead is two types, both with confirmed mechanisms** (temporal grounding; assistant-content
+extraction). **Two places dem is WORSE and they matter:**
+
+- `multi-session` 80.5/78.9 vs 85.2 — Strata still wins the largest stratum, in both arms.
+- **Abstention: hallucination 36.7% (sonnet) / 26.7% (GLM) vs Strata's 20.0%.** dem buys a low
+  false-refusal rate (1.9-2.3% vs 9.5%) by answering more readily, and invents an answer on a
+  quarter to a third of unanswerable questions. **For a memory product this is the worst
+  failure mode available, and it is the thing to fix before claiming dem is better.**
+
+**The answerer is worth ~nothing: McNemar 19 wins each, p=1.000**, at 30x the cost ($3.16 vs
+~$0.10 per 500). Sonnet exists in these runs only to match Strata's answerer.
 
 ## Against Strata (n=100, same questions, same judge)
 
@@ -137,7 +161,13 @@ dem-memory's ingestion holds up under a consolidation regime.
 
 ## Next work, in value order
 
-### 0. READ FIRST: evidence depth and source anchors were both measured, and both are NULL
+### 0. The question that actually decides dem's future: does 87.4% survive CONSOLIDATION?
+
+See "Can dem replace Strata inside ax?" below. dem has never been tested under a regime where
+facts must survive decay/dedup/promotion to stay recallable, and that is the whole difference
+between a benchmark win and a product. Level 1 there is ~1 day and ~$3 of local computation.
+
+### 0b. READ FIRST: evidence depth and source anchors were both measured, and both are NULL
 
 Do not re-run these. `docs/plans/2026-09-16-evidence-depth-and-source-anchors-report.md` has the
 full numbers. Same 100 questions, same judge, same extraction cache:
@@ -248,6 +278,70 @@ Nothing is lost — the old entries are still in `extraction.json` under the old
 restoring the prompt line makes them reachable again. But **the n=500 = 87.4% baseline cannot
 be reproduced without re-paying**, and any re-extracted number differs from it by extraction
 noise regardless of this change. Pair the re-extract with the next change that needs one.
+
+## Can dem replace Strata inside ax? Not as measured — and the blocker is consolidation
+
+Asked and analysed 2026-09-17. **No, and the n=500 win does not argue for it**, because the two
+are different layers and the benchmark never tested the part that matters.
+
+**What Strata is.** 8,553 LOC in which retrieval is a slice. The rest is consolidation
+(`cluster`, `dedup`, `promotion`, `rollup`, `recurrence`, decay), doc rendering, injection,
+rules, tiers, a sensitive gate, bootstrap/reindex. It registers 9 hooks (3 agent tools,
+`system-prompt:augment`, the rules hooks) and is consumed by `cli`, `channel-web` (the
+`AgentMemory` UI + workspace routes), `chat-orchestrator`, `agent-runner-core`'s prompt engine,
+and the aisdk runner's compaction. dem is `retain`/`recall`/`reflect` with no counterpart.
+
+**Storage is the hard blocker.** Strata's memory lives in the agent WORKSPACE as markdown docs
+via `workspace:*` hooks (storage-agnostic per invariant 1), with a pluggable index that already
+has sqlite AND postgres backends behind a shared contract test
+(`packages/memory-strata-index-contract`). dem is bound to a local `better-sqlite3` file —
+nothing owns that file in the multi-tenant k8s deployment. dem's native vocabulary (bi-temporal
+validity intervals, epistemic networks, RRF channels) is also exactly what invariant 1 forbids
+in hook payloads.
+
+**What "consolidation" IS** (`packages/memory-strata/src/consolidator.ts`), one ordered pass:
+**decay -> cluster -> decide -> dedup -> write -> delete**.
+1. inbox observations older than `DECAY_DAYS = 14` are dropped before anything else;
+2. `clusterBySubject` groups them and elects a doc category by majority factType vote;
+3. `decidePromotion` drops anything below `CONFIDENCE_THRESHOLD = 0.7`;
+4. `isDupe` drops anything with Jaccard token overlap **>= 0.6** against facts already in the
+   target doc;
+5. append/merge into `docs/<category>/<slug>.md`, near-dup slugs folded by `findNearDupSlug`;
+6. **the inbox file is DELETED** — invariant I12, `docs/` is the single source of truth.
+Plus quarantine, `system/recent.md` + `map.md` regeneration, a rollup pass, and
+`RECURRENCE_THRESHOLD = 2` for procedures to crystallize.
+
+So consolidation is the **lossy compaction step**: a fact is recallable later only if it
+survives. **dem has never faced it** — `retain()` writes every fact and nothing ever removes,
+merges or decays it, so at query time every fact ever extracted is present. That is why 87.4%
+is not evidence dem would win in production.
+
+**How to test it, cheapest first:**
+- **Level 0 (free, partly done):** apply each rule's predicate to dem's fact store and count
+  what would be dropped. **Already measured: the confidence gate is a no-op** (only 0.2% of
+  facts fall below 0.7 — this is also why `confidence` was deleted). **Still to measure: the
+  Jaccard >= 0.6 dedup**, which is the one likely to bite, because the assistant-content fix
+  deliberately produces long list-shaped objects under repeated subjects. A naive O(n^2) pass
+  over 130k facts times out — bound the sample.
+- **Level 1 (~1 day, ~$3):** add a post-`retain` consolidation regime to the bench (confidence
+  gate, per-subject Jaccard dedup, decay vs the question date) and re-run n=500. **No new LLM
+  calls** — all local. This yields the number that actually decides the question.
+- **Level 2 (~1 week):** run dem behind Strata's real observer -> inbox -> consolidator as a
+  `memory:index:*` backend and use Strata's own e2e bench. True answer; runs into the storage
+  blocker above. Note the contract is DOCUMENT-shaped
+  (`{docId, category, slug, summary, body, headers}` -> `{snippet, score}`), so dem would be
+  reduced to another BM25+vector index and lose the bi-temporal intervals and epistemic
+  networks that make it interesting.
+
+**The metric at every level is fact-level SURVIVAL, not aggregate accuracy**: of the
+gold-bearing facts, what fraction survive? That is the hard ceiling on post-consolidation
+accuracy and it is measurable before any answering happens.
+
+**Meanwhile, the one thing worth harvesting regardless:** Strata scores 59.3% on
+temporal-reasoning where dem scores 90.2% on 133 questions. `packages/memory-strata/src/
+inject.ts` has **no date handling at all** — no relative time, no "today is". Porting dem's
+`When` column (date + weekday + elapsed time computed in TypeScript) and `asOf`-as-grounding
+is a prompt change to Strata measured in days, not an architecture swap.
 
 ## Hard-won gotchas
 
