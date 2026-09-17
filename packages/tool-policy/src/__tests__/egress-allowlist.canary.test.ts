@@ -155,6 +155,31 @@ describe('egress allowlist canary', () => {
     expect(await verdict(h, 'system', 'https://docs.example.com/x')).toBe('hold');
   });
 
+  it('reads the global list — and only that — for an id it would never write under', async () => {
+    // A REGRESSION TEST, and the bug it pins was invisible in behaviour.
+    //
+    // The first cut asked the database for `owner_user_id = '\u0000'` when the
+    // caller's id was one this store refuses to file under, on the theory that a
+    // sentinel cannot match a row. Two things were wrong with it. Postgres
+    // REJECTS a NUL byte in a text parameter, so the read threw and the plugin's
+    // catch turned it into "we do not know what is allowed" — fail-closed, but
+    // by accident, and it would also have swallowed the operator's global list.
+    // And the escape was written into the source as a raw NUL byte, which makes
+    // the file invisible to plain grep; `scripts/__tests__/no-raw-nul-bytes` is
+    // what caught THAT half.
+    //
+    // The behaviour this asserts: the personal half of the query is dropped, the
+    // operator's half still answers, and nothing throws.
+    const h = await boot({ globalEgressHosts: ['intranet.example.com'] });
+    await h.bus.call('egress-allowlist:remember', h.ctx({ userId: 'alice' }), {
+      host: 'docs.example.com',
+    });
+    for (const notAUser of ['system', '', 'has space', '_leading']) {
+      expect(await verdict(h, notAUser, 'https://intranet.example.com/x')).toBe('allow');
+      expect(await verdict(h, notAUser, 'https://docs.example.com/x')).toBe('hold');
+    }
+  });
+
   it('leaves the rail row honest about the contingency', async () => {
     const h = await boot();
     const caps = await h.bus.call<unknown, ListCapabilitiesOutput>(

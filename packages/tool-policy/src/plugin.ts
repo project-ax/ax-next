@@ -277,7 +277,13 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
        * an empty set is how we get there without a second code path.
        */
       const allowedHosts = async (ctx: AgentContext): Promise<ReadonlySet<string>> => {
-        if (!isOwnerId(ctx.userId)) return new Set<string>();
+        // NO SHORT-CIRCUIT ON A NON-PERSON CALLER, deliberately, and it used to
+        // be here. `allowedFor` already drops the personal half of its read for
+        // an id it would never have written under, so the guard was redundant —
+        // and worse than redundant: it also threw away the OPERATOR's global
+        // list, which is not a claim about a person at all. One place owns the
+        // rule about which ids are real (`isOwnerId`, inside the store), and
+        // this is not a second one.
         try {
           return await egressStore.allowedFor(ctx.userId);
         } catch (err) {
