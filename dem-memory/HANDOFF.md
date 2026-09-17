@@ -160,10 +160,13 @@ inside the noise band. Best value: **glm-5.3-flash on both ends, fixed-15, $0.01
 ### 1. Three REPLICATED temporal-reasoning regressions from the assistant-content change
 
 `single-session-assistant` is **nearly done** — 45.5% → 81.8%, identically in both answer
-arms (5/11 → 9/11, the same four questions). See "Assistant-content extraction" below. The
-remaining 2 are real headroom, not gold noise: the original Hindsight scores **11/11 on these
-same 11 rows**, in all four of its arms, under dem's own judge — see
-`docs/plans/2026-09-16-hindsight-differential-report.md`. What the change left behind is the
+arms (5/11 → 9/11, the same four questions). See "Assistant-content extraction" below.
+Hindsight scores 11/11 on these same 11 rows under dem's own judge
+(`docs/plans/2026-09-16-hindsight-differential-report.md`), **but that is NOT a dem ceiling and
+should not be read as one** — hindsight passes RAW TRANSCRIPT CHUNKS to its answerer alongside
+each fact, so it is not answering from extracted memory the way dem is. See the addendum to
+that report. The remaining 2 may still be winnable; they are just not sized by that number.
+What the change left behind is the
 highest-value diagnosed work: three regressions that flipped in **both**
 arms, so they are real, not noise. Each is a separate lever and wants its own measured arm.
 
