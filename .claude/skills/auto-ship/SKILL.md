@@ -283,6 +283,28 @@ Process completed code PRs **one at a time**:
 git fetch origin
 HEAD_SHA=$(gh pr view <n> --json headRefOid --jq .headRefOid)
 
+# ⚠ `gh run list --commit` NEEDS THE FULL 40-CHAR SHA. Given an abbreviation it
+# matches NOTHING and exits 0 — a silent false "no run". Measured 2026-09-17, two heads:
+# `--commit 519b781a4c49845c05f918ab50bcc8ff09e86080` → 1 and `--commit 519b781a` → 0,
+# rc=0 both times; same on 3e1c0915a434e3b40ad38f4d0fddf145e6a8d4ec. That is the entire
+# cause of the "the existence check returns zero for a run that exists" report — a
+# truncating CALLER, not a `gh` defect. An earlier card blamed head_sha indexing lag on
+# a freshly created run and labelled that INFERRED; the inference is FALSE, so do not
+# add a retry loop for a race that is not there.
+# So never `${HEAD_SHA:0:8}`, never a `--short` rev-parse, never a `%h` format.
+# And never RETYPE one. A hand-reconstructed 40-char sha passes the length check below
+# and still matches nothing — the check catches truncation, not invention. (Measured the
+# hard way: the agent writing this rule pasted a made-up tail onto a short sha twice in
+# one session and got a silent empty list both times.) Bind the sha from `headRefOid` or
+# a full `rev-parse` and pass the variable; never copy the digits out of a log line.
+# The `-ge 1` halt below is what catches an invented sha — it reports the run as absent,
+# which is the ambiguous message again, so the cheap fix is upstream: do not retype.
+# `headRefOid` is already full — assert it anyway, because the two failure modes are
+# INDISTINGUISHABLE downstream: a truncated sha and a genuinely absent run both read as
+# `runs=0`, and the remedy for the absent case (rebase-push) is a wasted CI cycle and a
+# wasted builder round-trip for the other.
+[ ${#HEAD_SHA} -eq 40 ] || { echo "HALT #<n>: HEAD_SHA '$HEAD_SHA' is not a full 40-char sha — do not abbreviate"; exit 1; }
+
 # ⚠ ASSERT THE ci.yml RUN EXISTS BEFORE READING ANY CONCLUSION. A rollup can be
 # entirely SUCCESS while the build/test workflow NEVER RAN. Measured 2026-08-24 on one
 # branch, same workflow config, two shas: the original push produced 6 checks — all
@@ -466,8 +488,76 @@ two PRs concurrently.
 tests for speed (`.github/workflows/ci.yml`), so the **push-to-main full suite** is
 what catches cross-package breakage (e.g. a shared-table teardown no single package
 exercises — see `feedback_new_fk_breaks_downstream_test_teardown`). After each merge,
-check the **main** run (`gh run list --branch main --limit 1`); if it goes **red**,
-**HALT and report** — do not merge onto a broken `main`. Resume once main is green.
+read the CI run **for the merge commit**, pinned on BOTH axes — the workflow and the
+sha. Never `--limit 1`:
+
+```bash
+MAIN_SHA=$(git rev-parse HEAD)          # full 40 chars — never an abbreviated rev-parse
+# Same trap as the merge gate above: `--commit` needs the FULL 40-char sha, or it
+# matches nothing and exits 0.
+[ ${#MAIN_SHA} -eq 40 ] || { echo "HALT: MAIN_SHA '$MAIN_SHA' is not a full 40-char sha"; exit 1; }
+
+# ⚠ PIN `workflowName == "CI"`. `gh run list --branch main --limit 1` answers with
+# whichever run sorts FIRST, which is not the one you asked about. Measured 2026-09-17
+# on main head 3e1c0915: `--limit 1` returned "CodeQL - Code Quality" conclusion=success
+# while "CI" on that SAME head was conclusion=failure. Reading that first row is a false
+# GREEN on a workflow that ran no tests — the one direction this backstop exists to stop.
+# The twin trap runs along the other axis (measured 2026-09-16): `--branch main
+# --workflow ci.yml --limit 1` returned a re-run of an unrelated four-month-old commit
+# and produced a false RED. One pin is not enough; pin workflow AND commit, every time.
+# ⚠ Re-checking later will not reproduce EITHER half of that reading, and an earlier
+# version of this note got the reason wrong. `main` moves. The CodeQL-first ordering
+# reproduces only for `--commit 3e1c0915... --limit 1` — which is a DIFFERENT command,
+# the one with the pin already applied, i.e. not the trap. Run the trap itself today,
+# `gh run list --branch main --limit 1`, and you get something else again.
+#
+# Which is the point, not a weakening of it. THREE measured instances, both directions:
+#   2026-09-16  false RED   `--branch main --workflow ci.yml --limit 1` served a re-run of
+#                           an unrelated four-month-old commit (the orchestrator's
+#                           measurement, in `.claude/memory/mistakes.md`).
+#   2026-09-17  false GREEN  head 3e1c0915: "CodeQL - Code Quality" success while "CI" on
+#                           that same head was failure.
+#   2026-09-17  false RED   head 78ea6747: "Dependabot Updates" failure while "CI" on that
+#                           same head was success.
+# Three runs of one unpinned query, three different workflows, two directions of wrong.
+# The durable claim is not which workflow sorts first — it is that you do not get to know.
+# The verdict keys off `status` FIRST, and that is what makes it immune to the
+# empty-conclusion trap. An unfinished run's `conclusion` is not null, it is "" (an
+# empty STRING — measured), so the tempting `.conclusion // "pending"` does NOT fire:
+# jq's `//` falls through on null and false only. Any rule that reads the conclusion
+# before the status inherits that. Here "" can only ever reach the non-terminal arm.
+ci=$(gh run list --workflow ci.yml --commit "$MAIN_SHA" --json workflowName,status,conclusion \
+  --jq '[.[] | select(.workflowName == "CI")] | if length == 0 then "none" else "\(.[0].status) \(.[0].conclusion)" end')
+case "$ci" in
+  "completed success") echo "main green ✅" ;;
+  none|"")             echo "HALT: no CI run for $MAIN_SHA — fail-closed, do not merge onto it"; exit 1 ;;
+  completed*)          echo "HALT: main RED for $MAIN_SHA ($ci) — do not merge onto a broken main"; exit 1 ;;
+  *)                   echo "main CI still running ($ci) — wait, do not merge" ;;
+esac
+# Note the arm order — it carries TWO properties, and the second is the load-bearing one.
+# (1) `completed*` catches a completed run with ANY non-success conclusion, including an
+# empty one, so a shape nobody anticipated halts rather than spinning forever. (2) More
+# importantly, it is what makes a plain `completed failure` read as RED at all: move this
+# arm below the catch-all and a failed main prints "still running" at rc 0 — a false
+# NON-RED on a broken main, which is the direction this whole block exists to prevent.
+# Measured: moving it reddens 4 guard cases, not the 2 an earlier note here claimed.
+#
+# ⚠ THE PROCEED SIGNAL IS THE `main green` TOKEN, NOT rc 0. The green arm and the wait
+# arm BOTH exit 0, deliberately — a run still in progress is not an error. So never write
+# `<this block> && gh pr merge ...`: that reads "still running" as "go" and merges onto a
+# main whose full suite has not finished, which is the one thing this block exists to
+# stop. Same convention as `MERGE-OK #<n>` in the merge queue above: read the token.
+#
+# A `none` immediately after a merge is usually TIMING, not absence — the push-to-main
+# run can take a few seconds to register. It halts fail-closed, which is correct and is
+# strictly better than the old `--limit 1` (which could serve the PREVIOUS commit's green
+# run as a false green). But before reporting a backstop failure, re-read it a couple of
+# times the way you would a pending one; a halt on a run that simply had not appeared yet
+# is queue noise, not a broken main.
+```
+
+If it goes **red**, **HALT and report** — do not merge onto a broken `main`. Resume once
+main is green. An empty `$ci` (a `gh` failure) takes the fail-closed branch on purpose.
 
 ## Forward learning (queued cards learn from merged ones)
 
