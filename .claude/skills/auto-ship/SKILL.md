@@ -505,11 +505,22 @@ MAIN_SHA=$(git rev-parse HEAD)          # full 40 chars — never an abbreviated
 # The twin trap runs along the other axis (measured 2026-09-16): `--branch main
 # --workflow ci.yml --limit 1` returned a re-run of an unrelated four-month-old commit
 # and produced a false RED. One pin is not enough; pin workflow AND commit, every time.
-# Re-checking later will NOT reproduce the pairing: that CI run has since been re-run to
-# success, so `--limit 1` on 3e1c0915 now returns a CodeQL row that happens to agree with
-# CI. The ORDERING is the durable part and still reproduces -- `--limit 1` returns
-# "CodeQL - Code Quality", not "CI". Do not read a later green as evidence the trap is
-# gone; it only means the two rows currently agree, which is luck, not a guarantee.
+# ⚠ Re-checking later will not reproduce EITHER half of that reading, and an earlier
+# version of this note got the reason wrong. `main` moves. The CodeQL-first ordering
+# reproduces only for `--commit 3e1c0915... --limit 1` — which is a DIFFERENT command,
+# the one with the pin already applied, i.e. not the trap. Run the trap itself today,
+# `gh run list --branch main --limit 1`, and you get something else again.
+#
+# Which is the point, not a weakening of it. THREE measured instances, both directions:
+#   2026-09-16  false RED   `--branch main --workflow ci.yml --limit 1` served a re-run of
+#                           an unrelated four-month-old commit (the orchestrator's
+#                           measurement, in `.claude/memory/mistakes.md`).
+#   2026-09-17  false GREEN  head 3e1c0915: "CodeQL - Code Quality" success while "CI" on
+#                           that same head was failure.
+#   2026-09-17  false RED   head 78ea6747: "Dependabot Updates" failure while "CI" on that
+#                           same head was success.
+# Three runs of one unpinned query, three different workflows, two directions of wrong.
+# The durable claim is not which workflow sorts first — it is that you do not get to know.
 # The verdict keys off `status` FIRST, and that is what makes it immune to the
 # empty-conclusion trap. An unfinished run's `conclusion` is not null, it is "" (an
 # empty STRING — measured), so the tempting `.conclusion // "pending"` does NOT fire:
@@ -523,9 +534,13 @@ case "$ci" in
   completed*)          echo "HALT: main RED for $MAIN_SHA ($ci) — do not merge onto a broken main"; exit 1 ;;
   *)                   echo "main CI still running ($ci) — wait, do not merge" ;;
 esac
-# Note the arm order: `completed*` catches a completed run with ANY non-success
-# conclusion, including an empty one, so a shape nobody anticipated halts rather than
-# falling through to the wait arm and spinning forever.
+# Note the arm order — it carries TWO properties, and the second is the load-bearing one.
+# (1) `completed*` catches a completed run with ANY non-success conclusion, including an
+# empty one, so a shape nobody anticipated halts rather than spinning forever. (2) More
+# importantly, it is what makes a plain `completed failure` read as RED at all: move this
+# arm below the catch-all and a failed main prints "still running" at rc 0 — a false
+# NON-RED on a broken main, which is the direction this whole block exists to prevent.
+# Measured: moving it reddens 4 guard cases, not the 2 an earlier note here claimed.
 #
 # ⚠ THE PROCEED SIGNAL IS THE `main green` TOKEN, NOT rc 0. The green arm and the wait
 # arm BOTH exit 0, deliberately — a run still in progress is not an error. So never write

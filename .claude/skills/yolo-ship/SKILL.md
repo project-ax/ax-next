@@ -319,6 +319,9 @@ digraph ship {
   # anyway, because a truncated sha and a genuinely absent run are indistinguishable
   # downstream — both read `runs=0` — and the remedy for the second (rebase-push) is a
   # wasted CI cycle for the first.
+  # And never RETYPE one either: a hand-reconstructed 40-char sha passes this check and
+  # still matches nothing — it catches truncation, not invention. Bind the sha from
+  # `headRefOid` or a full `rev-parse`; never copy digits out of a log line.
   [ ${#HEAD_SHA} -eq 40 ] || { echo "⚠ HEAD_SHA '$HEAD_SHA' is not a full 40-char sha — do not abbreviate"; exit 1; }
   runs=$(gh run list --workflow ci.yml --commit "$HEAD_SHA" --json databaseId --jq 'length')
   # FATAL, not advisory. A warn-and-continue here lets you emit `CI green ✅` on a head
@@ -361,7 +364,9 @@ How this phase behaves depends on **mode**:
 # all-SUCCESS while the build/test workflow never ran.
 HEAD_SHA=$(gh pr view <n> --json headRefOid --jq .headRefOid)
 # `--commit` needs the FULL 40-char sha (see Phase 6): an abbreviation matches nothing
-# and exits 0, which reads as "no run" and sends you to rebase-push for nothing.
+# and exits 0, which reads as "no run" and sends you to rebase-push for nothing. Never
+# RETYPE one either — an invented 40-char sha passes the check below and still matches
+# nothing, because it catches truncation, not invention. Bind it, do not copy it.
 [ ${#HEAD_SHA} -eq 40 ] || { echo "HALT #<n>: HEAD_SHA '$HEAD_SHA' is not a full 40-char sha"; exit 1; }
 runs=$(gh run list --workflow ci.yml --commit "$HEAD_SHA" --json databaseId --jq 'length')
 [ "${runs:-0}" -ge 1 ] || { echo "HALT #<n>: no ci.yml run for $HEAD_SHA"; exit 1; }

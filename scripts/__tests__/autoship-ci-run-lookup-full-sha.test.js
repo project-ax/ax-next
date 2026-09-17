@@ -52,10 +52,18 @@
 // re-run to success, so the two rows now agree. The ordering is what is durable, and it
 // still reproduces: `--limit 1` on that head returns "CodeQL - Code Quality", not "CI".
 // Checked again 2026-09-17, after the re-run. A later green is not evidence the trap is
-// gone; it means the rows happen to agree. The twin, on the other axis, is already in `.claude/memory/
-// mistakes.md` (2026-09-16): `--branch main --workflow ci.yml --limit 1` returned a
-// re-run of an unrelated four-month-old commit and produced a false RED. One pin is
-// never enough -- pin workflow AND commit.
+// gone; it means the rows happen to agree.
+//
+// THREE measured instances now, on both axes:
+//   1. 2026-09-16, false RED  -- `--branch main --workflow ci.yml --limit 1` served a
+//      re-run of an unrelated four-month-old commit (the 2026-09-16 orchestrator's
+//      measurement, recorded in `.claude/memory/mistakes.md`; cited, not mine).
+//   2. 2026-09-17, false GREEN -- the CodeQL/CI pairing above.
+//   3. 2026-09-17, false RED  -- on main head 78ea6747, `--branch main --limit 1`
+//      returned `Dependabot Updates` conclusion=failure while `CI` on that same head was
+//      `success`. Found because a reviewer ran the paragraph's own command and got a
+//      different answer than the paragraph claimed.
+// One pin is never enough -- pin workflow AND commit.
 //
 // ---------------------------------------------------------------------------------
 // WHY THIS GUARD EXECUTES THE SNIPPETS RATHER THAN GREPPING THEM.
@@ -74,46 +82,59 @@
 // the implementation -- there is no second copy in a script to drift from it.
 //
 // MUTANTS RUN, NOT REASONED ABOUT (2026-09-17, against the committed text; baseline
-// 39 passed, and every mutant below still reports 39 tests, so none of them reddened by
+// 45 passed, and every mutant below still collects 45, so none of them reddened by
 // making the suite smaller).
 //
-// The counts are from a machine with zsh AND jq installed, where every gate case and
-// every backstop case runs twice (bash and zsh). On a runner missing either, those cases
-// do not exist at all, so both the baseline and the red counts are lower there -- I have
-// not measured that variant, so no number is quoted for it.
+// The counts are from a machine with zsh AND jq installed, where every gate and backstop
+// case runs twice. On a runner missing either, those cases do not exist at all, so both
+// the baseline and the red counts are lower there -- I have not measured that variant, so
+// no number is quoted for it.
 //
 //   - delete the `[ ${#HEAD_SHA} -eq 40 ]` assertion -> 6 red: the truncating-caller
 //     test at all three gate sites x both shells. The gate falls through to the NO-RUN
 //     message, which is the false diagnosis this whole card is about.
-//   - `[ "${runs:-0}" -ge 1 ]` -> `-ge 0` (fail-OPEN, guard clause still present) -> 6
-//     red, exactly the fail-closed test at every site x shell.
+//   - `[ "${runs:-0}" -ge 1 ]` -> `-ge 0` (fail-OPEN, guard clause still present) -> 12
+//     red: the fail-closed test AND the invented-sha test, at every site x shell. That
+//     the invented-sha test rides on this mutant is exactly what shows it is not
+//     decorative -- an invented sha is caught by the run check, never by the length one.
 //   - `select(.workflowName == "CI")` -> `select(true)` in the backstop filter, i.e.
-//     `--limit 1` behaviour -> 4 red (2 scenarios x 2 shells), and the pair of scenarios
-//     is the interesting part. The CodeQL-first test goes red because the block reports
-//     GREEN off a CodeQL row while CI had failed on that same head. The no-CI-run test
-//     goes red too, because with the workflow unpinned an absent CI run is no longer an
-//     empty list -- the CodeQL rows fill it, `length == 0` is false, and the fail-closed
-//     halt never fires. So the workflow pin carries TWO properties: it selects the right
-//     run, and it is what makes "no CI run at all" detectable.
+//     `--limit 1` behaviour -> 4 red (2 scenarios x 2 shells). The CodeQL-first test goes
+//     red because the block reports GREEN off a CodeQL row while CI had failed on that
+//     same head. The no-CI-run test goes red too, because with the workflow unpinned an
+//     absent CI run is no longer an empty list -- the CodeQL rows fill it, `length == 0`
+//     is false, and the fail-closed halt never fires. The pin carries TWO properties.
 //   - point the backstop's wait arm at the green message -> 2 red, exactly the
 //     in-progress test x both shells.
-//   - move the `completed*` arm below the catch-all -> 2 red, exactly the
-//     completed-with-empty-conclusion test x both shells (it spins instead of halting).
+//   - MOVE the `completed*` arm below the catch-all -> 4 red (2 scenarios x 2 shells),
+//     and again the second scenario is the one that matters. The completed-with-empty-
+//     conclusion test reddens (it spins instead of halting), AND so does the CI-failed
+//     test: with `completed*)` below `*)`, a plain `completed failure` falls into the
+//     catch-all and the backstop prints "still running" at rc 0 -- a false NON-RED on a
+//     red main, which is worse than the unanticipated-shape case. Arm ORDER carries two
+//     properties, not one.
 //   - remove `existenceGate`'s `!isComment` filter AND add a comment quoting the command
-//     in full above the `-eq 40` guard -> 3 red: the vacuity test (the extracted prelude
-//     no longer contains the run-list call) plus the fail-closed test at that site x both
-//     shells. With the filter in place the same comment is a no-op: 39 passed.
+//     in full above the `-eq 40` guard -> 5 red at that site: the vacuity test (the
+//     extracted prelude no longer contains the run-list call) plus the fail-closed and
+//     invented-sha tests x both shells. With the filter in place the same comment is a
+//     no-op: 45 passed.
 //
-// FOUR MUTANTS THAT FIRST CAME BACK WRONG, RECORDED BECAUSE EACH CHANGED THE DESIGN:
+// FIVE MUTANTS THAT FIRST CAME BACK WRONG, RECORDED BECAUSE EACH CHANGED THE DESIGN:
 //   1. Deleting the `-ge 1` halt outright did not redden the fail-closed test -- it
 //      reddened the VACUITY test, because the extractor keyed its cut on the literal
 //      `-ge 1` and so returned nothing. The fail-closed assertion never ran. A guard
 //      whose extractor depends on the line it is guarding cannot prove that line does
 //      anything. The cut is now structural (`|| {`), and the mutant above is the
 //      fail-OPEN edit, which keeps the extraction intact.
-//      The shrink figure is re-measured against this file AS COMMITTED (restore the
-//      coupled cut + delete the halt: 33 -> 15 at the time that was measured). It was
-//      32 -> 14 when first observed. Both are real; the point is the silent shrink.
+//      The stable fact is the one worth keeping: the fail-closed assertion STOPPED BEING
+//      EVALUATED, and the suite still reported green-ish. The magnitude is not stable and
+//      should not be quoted as though it were -- it is a function of the doc's prose,
+//      because the doc is the extractor's input. Measured three times on three trees:
+//      32 -> 14, 33 -> 15, and, today, 39 -> 27. That last one is 12 cases rather than
+//      the 18 a reader would predict from 3 sites x 3 tests x 2 shells, because a comment
+//      added later ("The `-ge 1` halt below is what catches an invented sha") matches
+//      `/-ge 1/`, so ONE site survives the collapse and fails loudly instead of vanishing.
+//      A reviewer proposed "18 gate cases" as the invariant; it is not one, and the reason
+//      it is not is the same coupling this entry is about.
 //   2. An earlier version of the doc computed the conclusion word with an explicit
 //      empty-string test, and an earlier version of this test asserted that word. The
 //      mutant that removed it PASSED: both spellings land in the same case arm, because
@@ -126,6 +147,15 @@
 //      passing mutant is as likely to mean "I mutated the wrong spot" as "the code is
 //      fine". I had the guard, the mutant and a green run, and that combination says
 //      nothing until the mutant is shown to bite without the guard.
+//   5. The arm-order mutant was DOCUMENTED and never run. The entry said "move the
+//      `completed*` arm below the catch-all"; the script under that name narrowed
+//      `completed*)` to `"completed failure")` instead, which keeps the red path working,
+//      so it measured 2 where the documented edit measures 4. One mutant was run and a
+//      different one was written down -- and the two extra reds are the CI-FAILED test,
+//      i.e. the property the note omitted was the more important of the two. A reviewer
+//      ran the mutant as described and caught it. Lesson beyond this file: a mutant's
+//      NAME is a claim too, and "all re-measured" (which the commit above it said) is
+//      only true of the mutants you actually re-ran.
 //   4. The delete-the-`-eq 40` mutant measured 7 red for a while, and the 7th was an
 //      accident. The documentation check below was case-SENSITIVE, and Phase 7's comment
 //      says "needs the FULL 40-char sha" -- mixed case, matching neither alternative --
@@ -491,6 +521,46 @@ describe('CI-run existence gates: `--commit` gets the full 40-char sha', () => {
         ).not.toMatch(/rebase-push/);
       });
 
+      it(`${name} (${shell}): an INVENTED 40-char sha halts, but only via the ` +
+        'fail-closed path', () => {
+        // The half of the rule the length check cannot enforce. A hand-reconstructed sha
+        // is 40 characters, so `[ ${#HEAD_SHA} -eq 40 ]` waves it through, and `gh`
+        // answers the same empty list it gives a truncated one. Twice in the session that
+        // wrote this rule.
+        //
+        // This asserts BOTH halves of the real behaviour, and the second is the point:
+        // the gate does halt (good, fail-closed), but it halts with the AMBIGUOUS "no
+        // ci.yml run" message -- the same one a genuinely missing run produces -- so it
+        // sends the reader to rebase-push a head whose run exists. That residual
+        // ambiguity is why `SKILL.md` carries a "never RETYPE" note next to the
+        // assertion that does not cover it. If someone later teaches the gate to detect
+        // invention, this test is where that shows up.
+        const INVENTED = `${SHORT_SHA}${'0'.repeat(32)}`;
+        expect(INVENTED, 'the invented sha must be 40 chars to test the gap').toHaveLength(
+          40,
+        );
+        expect(INVENTED).not.toBe(FULL_SHA);
+        const { code, out } = runBlock(shell, script, {
+          STUB_HEAD_SHA: INVENTED,
+          STUB_FULL_SHA: FULL_SHA,
+          STUB_ROW_COUNT: '1',
+        });
+        expect(
+          code,
+          `${name}: an invented sha must not pass the gate. rc=${code}\n${out}`,
+        ).not.toBe(0);
+        expect(
+          out,
+          `${name}: the length check cannot see invention, so the halt comes from the ` +
+            'fail-closed run check and says the run is missing.',
+        ).toMatch(/no ci\.yml run/i);
+        expect(
+          out,
+          `${name}: a 40-char sha must NOT be reported as a length problem -- that ` +
+            'would be a false diagnosis in the other direction.',
+        ).not.toMatch(/full 40-char sha/);
+      });
+
       it(`${name} (${shell}): a genuinely absent run still HALTS (fail-closed)`, () => {
         // The direction most easily written vacuously, so it is mutated rather than
         // assumed: deleting the `-ge 1` halt from the doc turns exactly this red.
@@ -691,7 +761,9 @@ describe('cross-package backstop: pins the CI workflow, not whichever run sorts 
       expect(code, `rc=${code}\n${out}`).not.toBe(0);
     });
 
-    jqIt(`reads GREEN on a completed, successful CI run, so the above are not vacuous (${shell})`, () => {
+    jqIt(
+      `reads GREEN on a completed, successful CI run, so the above are not vacuous (${shell})`,
+      () => {
       // Without this control a block that halted unconditionally would pass every
       // negative test in this describe.
       const { code, out } = runBackstop(
@@ -721,6 +793,21 @@ describe('the docs record the measurement, not just the rule', () => {
     // than 6. A coverage claim resting on a case mismatch is not a coverage claim. The
     // truncation tests below cover the runtime behaviour; this one covers the prose.
     const withNote = gateSites().filter(({ script }) => /full 40-char sha/i.test(script));
+
+    // The rule has two halves and only one is mechanizable, so the prose check must
+    // cover both -- otherwise the enforced half hides the unenforced one. Before this,
+    // "never retype" was written at exactly ONE of the three gate sites and the suite
+    // could not see the asymmetry, because `withNote` above only ever looked for the
+    // length wording that all three already had.
+    const withInventionNote = gateSites().filter(({ script }) =>
+      /retype|reconstruct|invent/i.test(script),
+    );
+    expect(
+      withInventionNote.map((x) => x.name),
+      'every gate site must ALSO carry the half the length assertion cannot enforce: a ' +
+        '40-char sha can be invented, and `gh` answers it with the same empty list. ' +
+        'Writing that at one site and not the others is how the gap stays invisible.',
+    ).toHaveLength(3);
     expect(
       withNote.map((s) => s.name),
       'every ci.yml existence gate must say, at the command, that `--commit` needs ' +
