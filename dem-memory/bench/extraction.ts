@@ -124,6 +124,28 @@ export function createGlmExtractor(
   return wrapper;
 }
 
+/**
+ * Place a `network` the model invented onto one of the three the schema allows.
+ *
+ * `network` never filters retrieval — `recall.ts` reads none of it and `reflect.ts` maps both
+ * `world` and `experience` onto the same "FACT" tag — so a wrong network costs a display tag
+ * while a rejected payload costs the whole session. gpt-4.1-nano emits `network: "user"` and
+ * `network: "assistant"` even after being told explicitly that network is not the speaker, and
+ * lost 2 of 4 probe sessions to it. The mappings follow the contract's own wording: assistant
+ * actions and records of user interactions are `experience`; beliefs and preferences are
+ * `opinion`; everything unplaceable is an assertion about the world.
+ */
+export function coerceNetworkValue(value: unknown): string {
+  if (value === "world" || value === "experience" || value === "opinion") return value;
+  const text = String(value).toLowerCase();
+  if (["assistant", "user", "episode", "interaction", "action"].includes(text)) return "experience";
+  if (["preference", "belief", "sentiment", "subjective"].includes(text)) return "opinion";
+  return "world";
+}
+
+/** Facts whose `network` had to be coerced, so an unusable extractor is visible as a number. */
+export const coercionStats = { network: 0 };
+
 function coerceFactStrings(raw: unknown): unknown {
   if (typeof raw !== "object" || raw === null) return raw;
   const record = raw as Record<string, unknown>;
@@ -132,7 +154,85 @@ function coerceFactStrings(raw: unknown): unknown {
     const value = coerced[field];
     if (typeof value === "boolean" || typeof value === "number") coerced[field] = String(value);
   }
+  const network = coerceNetworkValue(coerced.network);
+  if (network !== coerced.network) {
+    coercionStats.network += 1;
+    coerced.network = network;
+  }
   return coerced;
+}
+
+/** A short, safe description of a payload's shape for an error or repair message. */
+function describeShape(raw: unknown): string {
+  if (raw === null || raw === undefined) return String(raw);
+  if (Array.isArray(raw)) return `an array of ${raw.length}`;
+  if (typeof raw === "object") {
+    const keys = Object.keys(raw as Record<string, unknown>);
+    return keys.length > 0 ? `an object with keys ${keys.slice(0, 5).join(", ")}` : "an empty object";
+  }
+  return typeof raw;
+}
+
+/**
+ * A one-line-per-distinct-mistake description of why a payload failed the schema.
+ *
+ * The generic retry ("was not a valid JSON object") is enough for a model that merely wrapped
+ * its JSON in prose, and useless for one that is confidently wrong about a field.
+ * gpt-4.1-nano reads the prompt's "USER facts / ASSISTANT facts" framing as if it named the
+ * `network` enum and emits `network: "user"` on every fact; told only that something was
+ * invalid, it reproduces the same output and the session is lost. Distinct issues are
+ * collapsed with a count so one systematic mistake across 30 facts costs one line, not 30.
+ */
+export function describeValidationFailure(raw: unknown): string {
+  const facts = (raw as { facts?: unknown } | null)?.facts;
+  if (!Array.isArray(facts)) {
+    return `facts: expected an array of facts at the top level, received ${describeShape(raw)}`;
+  }
+  const parsed = IngestionPayloadSchema.safeParse({ facts: facts.map(coerceFactStrings) });
+  if (parsed.success) return "";
+
+  const counts = new Map<string, number>();
+  for (const issue of parsed.error.issues) {
+    // Collapse the array index so facts[0].network and facts[17].network are one complaint.
+    const where =
+      issue.path.reduce<string>(
+        (acc, part) =>
+          typeof part === "number" ? `${acc}[]` : acc === "" ? String(part) : `${acc}.${String(part)}`,
+        "",
+      ) || "facts";
+    const received =
+      issue.code === "invalid_enum_value" ? ` received ${JSON.stringify(issue.received)},` : "";
+    const key = `${where}:${received} ${issue.message}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([key, count]) => (count > 1 ? `${key} (${count} facts)` : key))
+    .slice(0, 5)
+    .join("\n");
+}
+
+export function buildRepairPrompt(input: {
+  dialogue: string;
+  now: string;
+  previous: string;
+  detail: string;
+}): string {
+  return [
+    buildExtractionPrompt(input.dialogue, input.now),
+    "",
+    "Your previous reply did not match the required shape. What was wrong with it:",
+    input.detail,
+    "",
+    'Note: `network` is the KIND OF KNOWLEDGE, not the speaker. It is always exactly one of',
+    '"world", "experience", or "opinion" — never "user" or "assistant". Record the speaker in',
+    "`subject` instead (use the subject `assistant` for what the assistant said or supplied).",
+    "Every fact needs network, subject, predicate, object, validStart, confidence, invalidatesPrevious.",
+    "",
+    "Your previous reply (first 600 chars):",
+    input.previous.slice(0, 600),
+    "",
+    "Reply again with ONLY the corrected JSON object.",
+  ].join("\n");
 }
 
 async function parsePayload(
@@ -142,24 +242,30 @@ async function parsePayload(
   llm: OpenRouterLlm,
   usageSink: { usage: LlmUsage },
 ): Promise<IngestionPayload> {
-  const attempt = (raw: unknown): IngestionPayload =>
-    IngestionPayloadSchema.parse({
-      facts: (raw as { facts?: unknown[] }).facts?.map(coerceFactStrings) ?? [],
-    });
+  // A missing `facts` array is MALFORMED and must reach the retry. `?? []` used to turn it
+  // into a clean empty extraction: no throw, no retry, and the empty result cached forever.
+  const attempt = (raw: unknown): IngestionPayload => {
+    const facts = (raw as { facts?: unknown } | null)?.facts;
+    if (!Array.isArray(facts)) {
+      throw new Error(`extraction payload has no "facts" array (received ${describeShape(raw)})`);
+    }
+    return IngestionPayloadSchema.parse({ facts: facts.map(coerceFactStrings) });
+  };
+  let decoded: unknown;
   try {
-    return attempt(extractJson(text));
+    decoded = extractJson(text);
+    return attempt(decoded);
   } catch {
     const retry = await llm.chat({
       system: EXTRACTION_SYSTEM_PROMPT,
-      user: [
-        buildExtractionPrompt(dialogue, now),
-        "",
-        "Your previous reply was not a valid JSON object matching the required shape. Every fact MUST include network (one of \"world\", \"experience\", \"opinion\"), subject, predicate, object, validStart, confidence, invalidatesPrevious.",
-        "Your previous reply (first 600 chars):",
-        text.slice(0, 600),
-        "",
-        "Reply again with ONLY the corrected JSON object.",
-      ].join("\n"),
+      user: buildRepairPrompt({
+        dialogue,
+        now,
+        previous: text,
+        detail:
+          describeValidationFailure(decoded) ||
+          "The reply was not a JSON object at all (it must start with { and contain a \"facts\" array).",
+      }),
       maxTokens: 4096,
     });
     usageSink.usage.in += retry.usage.in;

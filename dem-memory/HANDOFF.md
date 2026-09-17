@@ -137,11 +137,34 @@ dem-memory's ingestion holds up under a consolidation regime.
 
 ## Next work, in value order
 
+### 0. READ FIRST: evidence depth and source anchors were both measured, and both are NULL
+
+Do not re-run these. `docs/plans/2026-09-16-evidence-depth-and-source-anchors-report.md` has the
+full numbers. Same 100 questions, same judge, same extraction cache:
+
+| answerer | fixed-15 | Path A (fill the budget) | Path B (+ source excerpts) |
+|---|---|---|---|
+| glm-5.3-flash | 83.0% | 88.0% | 87.0% |
+| claude-sonnet-4.6 | 88.0% | **87.0%** | **87.0%** |
+
+Neither replicates (1 of 10 and 1 of 14 flips across the two arms), both cost ~1.9x the
+answer-prompt tokens, and `single-session-assistant` is **9/11 in all four GLM configs**. Both
+ship OPT-IN and OFF: `DEFAULT_EVIDENCE_ROWS = 15`, `sourceExcerpts: 0`. Bench flags
+`--evidence-rows 80` and `--source-excerpts 5` reproduce the arms.
+
+**Model choice, measured: the extractor is worth 57 points and the answerer ~nothing.**
+gpt-4.1-nano extraction scores 26.0% where glm-5.3-flash scores 83-88%, on identical questions
+and answerer, and nothing recovered it. Sonnet answering costs 30-50x GLM for a difference
+inside the noise band. Best value: **glm-5.3-flash on both ends, fixed-15, $0.012/100q**.
+
 ### 1. Three REPLICATED temporal-reasoning regressions from the assistant-content change
 
-`single-session-assistant` is **done** — 45.5% → 81.8%, identically in both answer arms
-(5/11 → 9/11, the same four questions). See "Assistant-content extraction" below. What it
-left behind is the highest-value diagnosed work: three regressions that flipped in **both**
+`single-session-assistant` is **nearly done** — 45.5% → 81.8%, identically in both answer
+arms (5/11 → 9/11, the same four questions). See "Assistant-content extraction" below. The
+remaining 2 are real headroom, not gold noise: the original Hindsight scores **11/11 on these
+same 11 rows**, in all four of its arms, under dem's own judge — see
+`docs/plans/2026-09-16-hindsight-differential-report.md`. What the change left behind is the
+highest-value diagnosed work: three regressions that flipped in **both**
 arms, so they are real, not noise. Each is a separate lever and wants its own measured arm.
 
 - **`gpt4_59149c77` — extraction date drift.** The new prompt attached a *different date to
@@ -162,13 +185,19 @@ Also still open, from the same type: **`7161e7e2`** now HAS the full 7×4 shift 
 evidence row and the answerer still refuses the positional lookup ("the sheet does not specify
 Admon's exact Sunday shift"). That is a synthesis failure on correct evidence — the only one
 of its kind in the set, and a cheap `diagnose-temporal.ts` dump will show you the exact row.
+**All four Hindsight arms answer it correctly** ("On Sunday, the shift rotation for Admon was
+the 8am-4pm (Day Shift)"), so the positional lookup is demonstrably answerable from these
+sessions; the lever is the reflect prompt, not retrieval.
 
 ### 2. `multi-session` — the two arms disagree by 11 points
 
 88.9% (sonnet) vs 77.8% (GLM) on the same 27 questions after the assistant-content change,
 having been 74.1% vs 81.5% before it — i.e. the arms swapped which one is ahead. Two of the
 27 are known-bad-gold. There is still no diagnosed lever here, and the arm disagreement means
-**any multi-session number from a single arm is uninterpretable**. Run a `diagnose` pass over
+**any multi-session number from a single arm is uninterpretable**. A second
+system agrees: Hindsight swings 74.1% → 92.6% across engine models on these same 27 questions,
+and its effort-and-model-matched arm ties dem-glm at **81.5% vs 81.5%** — i.e. there is no
+architectural multi-session gap to chase, only variance. Run a `diagnose` pass over
 the questions where the arms disagree (`36b9f61e` is the cleanest: WIN in sonnet, LOSS in GLM
 on identical evidence) before theorising — that set isolates synthesis from retrieval for free.
 

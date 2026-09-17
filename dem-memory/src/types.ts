@@ -9,6 +9,8 @@ export interface MemoryTuple {
   subject: string;
   predicate: string;
   object: string;
+  /** Verbatim dialogue the fact came from, when a source turn could be attributed. */
+  sourceChunk?: string;
   confidence: number;
   validStart: string;
   validEnd: string;
@@ -52,6 +54,8 @@ export interface RecallOptions {
    */
   asOf?: string;
   maxContextTokens?: number;
+  /** Append verbatim source dialogue for the top N ranked rows that carry it. */
+  sourceExcerpts?: number;
 }
 
 export interface DialogueTurn {
@@ -79,6 +83,24 @@ export const DEFAULT_DISPOSITION: DispositionProfile = {
 };
 
 export const DEFAULT_MAX_CONTEXT_TOKENS = 2000;
+
+/**
+ * Evidence rows per answer, by default.
+ *
+ * MEASURED, and the reason this is still 15: filling the 2000-token budget instead (a median
+ * 34 rows) scored 88.0% vs 83.0% on a GLM answerer but 87.0% vs 88.0% on a Sonnet answerer —
+ * i.e. it did not replicate — while costing 1.93x the answer-prompt tokens. Across 10 flips in
+ * the two arms exactly one replicated. Treat 83-88% at n=100 as one number and keep the cheap
+ * setting. Raise it per-call via `RecallOptions.limit` to fill the budget instead.
+ */
+export const DEFAULT_EVIDENCE_ROWS = 15;
+
+/**
+ * Upper bound when a caller DOES opt into filling the token budget. Not a default — see above.
+ * `compileEvidenceTable` trims by token budget in rank order; this only stops a pathologically
+ * terse bank from producing a table of hundreds of rows.
+ */
+export const DEFAULT_EVIDENCE_ROW_CAP = 80;
 
 export const DEFAULT_RRF_K = 60;
 

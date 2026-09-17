@@ -109,6 +109,10 @@ async function main(): Promise<void> {
   // compared. "shortest" reproduces the pre-2026-09-16 easy-slice runs and nothing else.
   const sampler = args.sampler ?? "spaced";
   const extractConcurrency = Number(args["extract-concurrency"] ?? 6);
+  // Path B: carry a verbatim slice of the source dialogue for the top N evidence rows.
+  const sourceExcerpts = Number(args["source-excerpts"] ?? 0);
+  // Path A: rows per answer. Default matches src (15); pass 80 to fill the token budget.
+  const evidenceRows = Number(args["evidence-rows"] ?? 0);
   const selected =
     sampler === "shortest" ? pickShortest(filtered, n, minAbs) : stratifiedSample(filtered, n);
   console.log(
@@ -146,6 +150,8 @@ async function main(): Promise<void> {
       rerank,
       extract: extractor,
       generate,
+      ...(sourceExcerpts > 0 ? { sourceExcerpts } : {}),
+      ...(evidenceRows > 0 ? { rerankPool: Math.max(40, evidenceRows) } : {}),
     });
 
     const row: BenchRow = {
@@ -192,7 +198,10 @@ async function main(): Promise<void> {
       for (const job of jobs) {
         const facts = extractionCache.get(job.key);
         if (!facts) throw new Error(`extraction cache miss for session ${job.sessionId}`);
-        const retained = await memory.retain({ facts }, { now: job.nowIso });
+        const retained = await memory.retain(
+          { facts },
+          { now: job.nowIso, ...(sourceExcerpts > 0 ? { sourceText: job.dialogue } : {}) },
+        );
         skipped += retained.skipped.length;
       }
       if (skipped > 0) {
@@ -204,7 +213,10 @@ async function main(): Promise<void> {
       // Anchoring recall to it evicted otherwise-valid records and cost us answers.
       const asOf = sample.question_date ? sessionDateToIso(sample.question_date) : undefined;
       if (asOf) row.as_of = asOf;
-      const reflected = await memory.reflect(sample.question, asOf ? { asOf } : {});
+      const reflected = await memory.reflect(sample.question, {
+        ...(asOf ? { asOf } : {}),
+        ...(evidenceRows > 0 ? { limit: evidenceRows } : {}),
+      });
       row.answer = reflected.answer;
       row.evidence_rows = reflected.evidence.length;
       row.tokens = reflected.tokens;

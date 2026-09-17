@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { findSourceChunk } from "./source-chunk.js";
 import type { MemoryRepository } from "../db/memory-repository.js";
 import type { CoOccurrenceGraph } from "../graph/co-occurrence-graph.js";
 import {
@@ -18,6 +19,14 @@ import {
 export interface RetainOptions {
   bankId?: string;
   now?: string;
+  /**
+   * Raw dialogue these facts were extracted from. When present, each stored fact carries a
+   * verbatim slice of the turn it best matches, so a detail the extractor compressed away can
+   * still reach the answerer. Attribution is heuristic — see `findSourceChunk`.
+   */
+  sourceText?: string;
+  /** Characters of source dialogue to keep per fact. */
+  sourceChunkChars?: number;
 }
 
 export interface SkippedFact {
@@ -194,6 +203,9 @@ export class RetainEngine {
       const fact = facts[i];
       const vector = vectors[i];
       if (!fact || !vector) continue;
+      const sourceChunk = options.sourceText
+        ? findSourceChunk(statements[i] ?? "", options.sourceText, options.sourceChunkChars)
+        : undefined;
       const tuple: MemoryTuple = {
         id: randomUUID(),
         bankId,
@@ -201,6 +213,7 @@ export class RetainEngine {
         subject: fact.subject,
         predicate: fact.predicate,
         object: fact.object,
+        ...(sourceChunk ? { sourceChunk } : {}),
         confidence: fact.confidence,
         validStart: normalizeTimestamp(fact.validStart, "validStart"),
         validEnd: INFINITY_SENTINEL,

@@ -1,6 +1,7 @@
 import type { RecallEngine, RecallResult } from "./recall.js";
 import {
   DEFAULT_DISPOSITION,
+  DEFAULT_EVIDENCE_ROWS,
   DEFAULT_MAX_CONTEXT_TOKENS,
   INFINITY_SENTINEL,
   estimateTokens,
@@ -144,6 +145,37 @@ export interface CompileEvidenceOptions {
    * superseded value as current.
    */
   chronological?: boolean;
+  /**
+   * Append verbatim source dialogue for the top N ranked rows that have it.
+   *
+   * Extraction is lossy and terminal — a detail the extractor compressed out of a fact cannot
+   * be recovered by any amount of retrieval depth. Measured at n=100 with a terse extractor,
+   * 30 of 56 answerable failures had the gold nowhere in the bank. Excerpts are capped at the
+   * TOP rows because they are expensive: they are charged against the same token budget as the
+   * rows, so each one costs rows.
+   */
+  sourceExcerpts?: number;
+}
+
+/**
+ * Verbatim dialogue behind the top-ranked rows, keyed by the statement so the model can tie an
+ * excerpt to its row without needing row numbers in the table.
+ */
+function buildExcerptBlock(tuples: MemoryTuple[], limit: number): string {
+  if (limit <= 0) return "";
+  const lines: string[] = [];
+  for (const tuple of tuples) {
+    if (lines.length >= limit) break;
+    if (!tuple.sourceChunk) continue;
+    const statement = memoryStatement(tuple.subject, tuple.predicate, tuple.object);
+    lines.push(`- [${statement}] "${tuple.sourceChunk}"`);
+  }
+  if (lines.length === 0) return "";
+  return [
+    "Source excerpts — the original wording behind the top rows above. A row is a summary and",
+    "may have dropped a detail its excerpt still carries; prefer the excerpt when they differ.",
+    ...lines,
+  ].join("\n");
 }
 
 export function compileEvidenceTable(
@@ -155,8 +187,16 @@ export function compileEvidenceTable(
     "| Network | When | Confidence | Statement |",
     "| :---- | :---- | :---- | :---- |",
   ];
+  // Excerpts come off the TOP of the ranked list and are fixed before rows are trimmed: they
+  // are the reason this option exists, so rows pay for them rather than the other way round.
+  const excerptBlock = buildExcerptBlock(tuples, options.sourceExcerpts ?? 0);
+
   const render = (rows: MemoryTuple[]): string =>
-    [...header, ...rows.map((tuple) => evidenceTableRow(tuple, { asOf: options.asOf }))].join("\n");
+    [
+      ...header,
+      ...rows.map((tuple) => evidenceTableRow(tuple, { asOf: options.asOf })),
+      ...(excerptBlock ? ["", excerptBlock] : []),
+    ].join("\n");
 
   // Trim by RANK: the tail of `tuples` is the least relevant. Ordering happens afterwards, so
   // that chronological presentation never costs us the top-ranked row.
@@ -276,11 +316,13 @@ export interface ReflectResult {
 export interface ReflectEngineOptions {
   disposition?: DispositionProfile;
   maxContextTokens?: number;
+  sourceExcerpts?: number;
 }
 
 export class ReflectEngine {
   private readonly disposition: DispositionProfile;
   private readonly maxContextTokens: number;
+  private readonly sourceExcerpts: number;
 
   constructor(
     private readonly recallEngine: RecallEngine,
@@ -289,19 +331,28 @@ export class ReflectEngine {
   ) {
     this.disposition = options.disposition ?? DEFAULT_DISPOSITION;
     this.maxContextTokens = options.maxContextTokens ?? DEFAULT_MAX_CONTEXT_TOKENS;
+    this.sourceExcerpts = options.sourceExcerpts ?? 0;
   }
 
   async reflect(question: string, options: RecallOptions = {}): Promise<ReflectResult> {
+    // `compileEvidenceTable` below trims by TOKEN BUDGET in rank order, so a caller can fill
+    // the budget by passing a larger `limit` (see DEFAULT_EVIDENCE_ROW_CAP). The default stays
+    // small because filling it was measured score-neutral at 1.93x the answer-prompt tokens.
     const recallResult: RecallResult = await this.recallEngine.recall(question, {
       ...options,
-      limit: options.limit ?? 15,
+      limit: options.limit ?? DEFAULT_EVIDENCE_ROWS,
     });
     // A caller who time-travels to an anchor is asking "as of then" — that instant is the
     // epistemic present, so it doubles as the reference time when no explicit asOf is given.
     const asOf = recallResult.asOf ?? recallResult.temporalAnchor;
     const evidence = compileEvidenceTable(recallResult.tuples, {
       maxTokens: options.maxContextTokens ?? this.maxContextTokens,
-      asOf,
+      ...(options.sourceExcerpts !== undefined
+        ? { sourceExcerpts: options.sourceExcerpts }
+        : this.sourceExcerpts > 0
+          ? { sourceExcerpts: this.sourceExcerpts }
+          : {}),
+      ...(asOf ? { asOf } : {}),
     });
 
     if (evidence.rows.length === 0) {

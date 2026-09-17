@@ -69,6 +69,8 @@ export class RecallEngine {
     this.rerank = options.rerank ?? null;
     this.rrfK = options.rrfK ?? DEFAULT_RRF_K;
     this.channelLimit = options.channelLimit ?? 40;
+    // Raise this alongside a raised `limit`: a table longer than the pool has its tail in raw
+    // RRF order. Cohere bills one search unit for up to 100 documents, so widening is free.
     this.rerankPool = options.rerankPool ?? 40;
   }
 

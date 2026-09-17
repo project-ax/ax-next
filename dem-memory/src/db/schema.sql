@@ -6,6 +6,10 @@ CREATE TABLE IF NOT EXISTS memories (
     subject TEXT NOT NULL,
     predicate TEXT NOT NULL,
     object TEXT NOT NULL,
+    -- Verbatim slice of the dialogue this fact was extracted from. Extraction is lossy and
+    -- terminal; this is the only way a detail the extractor compressed away can still reach
+    -- the answerer. NULL when no turn matched well enough to claim provenance.
+    source_chunk TEXT,
     confidence REAL DEFAULT 1.0 CHECK(confidence >= 0.0 AND confidence <= 1.0),
     valid_start TEXT NOT NULL,                         -- ISO-8601 UTC timestamp
     valid_end TEXT DEFAULT '9999-12-31T23:59:59.999Z',  -- ISO-8601 UTC timestamp

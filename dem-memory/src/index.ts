@@ -40,6 +40,10 @@ export interface DemMemoryOptions {
   dispositionEmpathy?: number;
   maxContextTokens?: number;
   rrfK?: number;
+  /** Rerank pool size. Raise it alongside a raised evidence-row limit. */
+  rerankPool?: number;
+  /** Append verbatim source dialogue for the top N evidence rows (0 = off). */
+  sourceExcerpts?: number;
 }
 
 export interface MemoryStats {
@@ -56,7 +60,7 @@ export interface DemMemory {
   readonly database: Database.Database;
   retain(
     input: string | DialogueTurn[] | IngestionPayload,
-    options?: { bankId?: string; now?: string },
+    options?: { bankId?: string; now?: string; sourceText?: string; sourceChunkChars?: number },
   ): Promise<RetainResult>;
   recall(query: string, options?: RecallOptions): Promise<RecallResult>;
   reflect(question: string, options?: RecallOptions): Promise<ReflectResult>;
@@ -103,10 +107,12 @@ export function createDemMemory(options: DemMemoryOptions = {}): DemMemory {
   let recallEngine = new RecallEngine(repository, graph, bankId, embed, {
     rerank,
     rrfK: options.rrfK,
+    ...(options.rerankPool !== undefined ? { rerankPool: options.rerankPool } : {}),
   });
   const retainEngine = new RetainEngine(repository, graph, embed, extract, bankId);
   const reflectEngine = new ReflectEngine(recallEngine, options.generate ?? null, {
     maxContextTokens: options.maxContextTokens,
+    sourceExcerpts: options.sourceExcerpts ?? 0,
     disposition: {
       skepticism: options.dispositionSkepticism ?? 3,
       literalism: options.dispositionLiteralism ?? 3,
@@ -123,8 +129,10 @@ export function createDemMemory(options: DemMemoryOptions = {}): DemMemory {
     },
     async retain(input, retainOptions) {
       return retainEngine.retain(input, {
-        bankId: retainOptions?.bankId,
-        now: retainOptions?.now,
+        ...(retainOptions?.bankId ? { bankId: retainOptions.bankId } : {}),
+        ...(retainOptions?.now ? { now: retainOptions.now } : {}),
+        ...(retainOptions?.sourceText ? { sourceText: retainOptions.sourceText } : {}),
+        ...(retainOptions?.sourceChunkChars ? { sourceChunkChars: retainOptions.sourceChunkChars } : {}),
       });
     },
     async recall(query, recallOptions) {
@@ -140,6 +148,7 @@ export function createDemMemory(options: DemMemoryOptions = {}): DemMemory {
       recallEngine = new RecallEngine(repository, graph, bankId, embed, {
         rerank,
         rrfK: options.rrfK,
+        ...(options.rerankPool !== undefined ? { rerankPool: options.rerankPool } : {}),
       });
     },
     stats() {
