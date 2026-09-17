@@ -249,7 +249,7 @@ describe('auto-ship merge-queue review gate compares reviewed sha to merge head 
 
     expect(
       FILE_SCAN_OVER_RANGE.test(gateBlock),
-      `${SKILL_PATH}: the gate names the reviewed sha but never lists the delta's FILES (\`--name-only <reviewed-sha>..<head>\`), so it cannot run its own scope test. A head-commit-only scan is what PR #556 defeated: its head commit was memory-only while three production files sat unreviewed one commit below`,
+      `${SKILL_PATH}: the gate names the reviewed sha but never lists the delta's FILES (\`--name-only <reviewed-sha>..<head>\`), so it cannot run its own scope test. A head-commit-only scan is what PR #556 defeated: its head commit was memory-only while three production files sat unreviewed in the two commits below it`,
     ).toBe(true);
   });
 
