@@ -16,7 +16,16 @@
     --secondary: 240 5% 96%;
     --secondary-foreground: 240 6% 10%;
     --muted: 240 5% 96%;
-    --muted-foreground: 240 4% 46%;
+    /* 46% -> 44%. Quiet text on a FILLED surface, not on the page. At 46%
+       `text-muted-foreground` on `bg-muted` measured 4.40:1 in a browser —
+       under the floor — while the same token on white measured a comfortable
+       4.83, which is why it went unnoticed: the defect only exists where the
+       surface is filled. Moving the text rather than `--muted` is the one
+       change that lifts every surface at once (muted/secondary/accent all sit
+       at this same 96% in light mode), and it leaves every background alone —
+       lightening `--muted` instead would wash the user's own chat bubble out
+       against the white page it sits on. Now 4.73:1 on muted, 5.20 on white. */
+    --muted-foreground: 240 4% 44%;
     --accent: 240 5% 96%;
     --accent-foreground: 240 6% 10%;
     /* 55% -> 50%. Light mode keeps white-on-destructive, but at 55% that
