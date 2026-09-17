@@ -242,4 +242,19 @@ describe('theme contrast', () => {
     expect(contrast('0 0% 100%', '0 0% 0%')).toBeCloseTo(21, 1);
     expect(contrast('211 100% 52%', '211 100% 52%')).toBeCloseTo(1, 5);
   });
+
+  /**
+   * `QUIET_TEXT_SURFACES`'s comment calls it a superset of `PLAIN_SURFACES`.
+   * That sentence is the kind of thing nothing checks, and this file is a
+   * known merge collision point — a clean auto-merge here has previously kept
+   * both constant lists and dropped a loop. So assert the relationship: a
+   * surface added to `PLAIN_SURFACES` alone would leave the quiet text
+   * unmeasured on it, which is TASK-380 happening again one token over.
+   */
+  it('measures the quiet text on every surface the accents are measured on', () => {
+    for (const surface of PLAIN_SURFACES) {
+      expect(QUIET_TEXT_SURFACES, `${surface} is measured for the accents but not for ${QUIET_TEXT}`)
+        .toContain(surface);
+    }
+  });
 });
