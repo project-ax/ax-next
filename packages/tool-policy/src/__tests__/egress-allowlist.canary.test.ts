@@ -180,6 +180,32 @@ describe('egress allowlist canary', () => {
     }
   });
 
+  it('denies a payload it cannot read a call out of, instead of throwing', async () => {
+    // Raised in review. `evaluate` reads `call.name`, so a missing `call` would
+    // raise a TypeError inside `@ax/decisions`' `tool:pre-call` subscriber —
+    // where `HookBus.fire` CATCHES a subscriber's throw and continues, making it
+    // a SILENT ALLOW. Unreachable through today's one caller, which always sends
+    // a well-formed call; asserted anyway, because the cost of being wrong on
+    // this path is the whole gate.
+    //
+    // `deny` and not `hold`: a hold invites a person to say yes to a call
+    // nothing could describe.
+    const h = await boot();
+    for (const bad of [{}, { call: null }, { call: {} }, { call: { name: '' } }, { call: { name: 7 } }]) {
+      const out = await h.bus.call<unknown, EvaluateResult>(
+        'tool-policy:evaluate',
+        h.ctx({ userId: 'alice' }),
+        bad,
+      );
+      expect(out, JSON.stringify(bad)).toEqual({
+        verdict: 'deny',
+        ruleId: null,
+        capability: null,
+        irreversible: false,
+      });
+    }
+  });
+
   it('leaves the rail row honest about the contingency', async () => {
     const h = await boot();
     const caps = await h.bus.call<unknown, ListCapabilitiesOutput>(

@@ -303,13 +303,30 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
         'tool-policy:evaluate',
         PLUGIN_NAME,
         async (ctx, input) => {
+          // A PAYLOAD WE CANNOT READ IS A DENY, NOT A THROW.
+          //
+          // `evaluate` reads `call.name`, so a missing `call` would raise a
+          // TypeError here — and this runs inside `@ax/decisions`' `tool:pre-call`
+          // subscriber, where `HookBus.fire` catches a subscriber's throw and
+          // CONTINUES. A throw on this path is therefore a SILENT ALLOW, which is
+          // the worst outcome the gate has. Unreachable through the one caller
+          // today, which always sends a well-formed call; guarded anyway, because
+          // the cost of being wrong is asymmetric and the guard is three lines.
+          //
+          // `deny` rather than `hold`: a hold invites a human to say yes to a
+          // call we could not describe, and `decisions` deliberately routes an
+          // unrecognised verdict down the deny branch for the same reason.
+          const call = input?.call;
+          if (typeof call?.name !== 'string' || call.name.length === 0) {
+            ctx.logger.warn('tool_policy_evaluate_malformed_call', { plugin: PLUGIN_NAME });
+            return { verdict: 'deny', ruleId: null, capability: null, irreversible: false };
+          }
           // Only an `egress`-gated tool pays for the read. Everything else gets
           // the same pure, I/O-free answer it got before this existed.
-          const opts2 =
-            input?.call !== undefined && egressTools.has(input.call.name)
-              ? { allowedHosts: await allowedHosts(ctx) }
-              : {};
-          return evaluate(rules, input.call, opts2);
+          const opts2 = egressTools.has(call.name)
+            ? { allowedHosts: await allowedHosts(ctx) }
+            : {};
+          return evaluate(rules, call, opts2);
         },
         { returns: EvaluateResultSchema },
       );

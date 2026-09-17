@@ -23,6 +23,12 @@ import type { PolicyRule } from './types.js';
 // absent is still a true statement.
 //
 // Provenance for this table: docs/plans/2026-08-21-policy-condition-inventory.md
+//
+// THAT DOC IS A DATED SNAPSHOT, NOT A MIRROR OF THIS FILE. It records what the
+// table looked like when it was written, and it has since been overtaken in at
+// least one place: it lists `web.extract` as an unconditional `allow` filed
+// under "catalog facts", which TASK-330 replaced with a host-gated `hold`. This
+// file is the source of truth; read the doc for the reasoning, not the rows.
 export const BUILTIN_RULES: readonly PolicyRule[] = [
   // -------------------------------------------------------------------------
   // Denies — rail rows for what `DISABLED_BUILTINS` already enforces (AW-1 E7).

@@ -426,6 +426,13 @@ export interface K8sPresetConfig {
    * Set from `AX_WEB_EXTRACT_ALLOWED_HOSTS` (comma-separated) by
    * `loadK8sConfigFromEnv`. A malformed entry is skipped with a warning at
    * init rather than failing the boot — one typo must not take the host down.
+   *
+   * BARE ASCII HOSTNAMES ONLY: no scheme, no port, no path, no wildcard, no
+   * trailing dot, and no non-ASCII. An internationalised domain has to be given
+   * in its punycode form (`xn--mnchen-3ya.de`, not `münchen.de`), because that
+   * is what `URL.hostname` produces at match time and matching is exact. A
+   * unicode entry is skipped with a warning, so the symptom is a host that
+   * silently "did not take" — check the init log if one seems to be ignored.
    */
   webExtractAllowedHosts?: string[];
   /**
