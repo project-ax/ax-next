@@ -69,7 +69,12 @@
 //
 // MUTANTS RUN, NOT REASONED ABOUT (2026-09-17, against the committed text; baseline
 // 33 passed, and every mutant below still reports 33 tests, so none of them reddened by
-// making the suite smaller):
+// making the suite smaller).
+//
+// The counts are from a machine with zsh installed, where every gate case runs twice
+// (bash and zsh). On a runner without zsh those zsh cases do not exist at all, so both
+// the baseline and the red counts are lower there -- I have not measured that variant,
+// so no number is quoted for it.
 //   - delete the `[ ${#HEAD_SHA} -eq 40 ]` assertion -> 7 red, and exactly the right 7:
 //     the truncating-caller test at all three gate sites x both shells, plus the
 //     doc-note test. The gate falls through to the NO-RUN message, which is the false
@@ -77,8 +82,15 @@
 //   - `[ "${runs:-0}" -ge 1 ]` -> `-ge 0` (fail-OPEN, guard clause still present) -> 6
 //     red, exactly the fail-closed test at every site x shell.
 //   - `select(.workflowName == "CI")` -> `select(true)` in the backstop filter, i.e.
-//     `--limit 1` behaviour -> the CodeQL-first test goes red: the block reports GREEN
-//     off a CodeQL row while CI had failed on that same head.
+//     `--limit 1` behaviour -> 2 red, and the pair is the interesting part. The
+//     CodeQL-first test goes red because the block reports GREEN off a CodeQL row while
+//     CI had failed on that same head. The no-CI-run test goes red too, because with the
+//     workflow unpinned an absent CI run is no longer an empty list -- the CodeQL rows
+//     fill it, `length == 0` is false, and the fail-closed halt never fires. So the
+//     workflow pin carries TWO properties: it selects the right run, and it is what
+//     makes "no CI run at all" detectable. An earlier version of this note said "the
+//     CodeQL-first test" as though it were one; that was a re-derivation from which
+//     assertion I had in mind, not from the run.
 //   - point the backstop's wait arm at the green message -> exactly the in-progress
 //     test goes red.
 //   - move the `completed*` arm below the catch-all -> exactly the completed-with-empty-
@@ -175,8 +187,9 @@ function bashBlocks(md) {
 }
 
 /**
- * The part of a merge/CI gate block that decides whether a ci.yml run exists, i.e.
- * everything up to and INCLUDING the `-ge 1` halt.
+ * The part of a merge/CI gate block that decides whether a ci.yml run exists: from the
+ * top of the block down to and INCLUDING the first `|| { … }` guard clause after the
+ * run query.
  *
  * Truncating there is not cosmetic. What follows in two of the three blocks is
  * `gh pr merge` / branch deletion; running those, even against stubs, would be
@@ -187,14 +200,14 @@ function bashBlocks(md) {
  * placeholder a reader sees. The orchestrator substitutes it for a PR number too, so
  * this runs the same text an operator would.
  *
- * The cut is found STRUCTURALLY -- the first `|| { … }` guard clause after the run
- * query -- and deliberately not by matching `-ge 1`. An earlier version keyed on the
- * literal comparison, which coupled the extractor to the very assertion the fail-closed
- * test exists to check: mutating `-ge 1` away made the extraction return nothing, so the
- * suite shrank from 32 tests to 14 and the fail-closed assertion was never evaluated at
- * all. It went red on the vacuity check instead, which looks like a pass for the wrong
- * reason. Decoupled, the fail-open mutant (`-ge 1` → `-ge 0`) now reddens exactly the
- * fail-closed test, which is what proves it is not vacuous.
+ * The cut is STRUCTURAL and deliberately does not match `-ge 1`. An earlier version
+ * keyed on that literal comparison, which coupled the extractor to the very assertion
+ * the fail-closed test exists to check: mutating `-ge 1` away made the extraction return
+ * nothing, and the fail-closed assertion was never evaluated at all. It went red on the
+ * vacuity check instead, which looks like a pass for the wrong reason. Decoupled, the
+ * fail-open mutant (`-ge 1` → `-ge 0`) reddens exactly the fail-closed test, which is
+ * what proves it is not vacuous. The file header carries the measured figures; they are
+ * quoted once, there, rather than restated here.
  */
 function existenceGate(block) {
   const lines = block.split('\n');
