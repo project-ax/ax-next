@@ -17,6 +17,19 @@
  * and then BOTH call {@link shapeSteps}; the wording, the count and the status
  * ordering have one home (invariant 4).
  *
+ * WHAT THAT DOES AND DOES NOT BUY, because "symmetry" claimed flatly would be
+ * an overclaim. It buys the SENTENCES: no step can read one way live and
+ * another way after a reload, and no second formatter exists to make it. It
+ * does NOT buy the GROUPING. The SDK splits a multi-step reply into one
+ * assistant turn per message and `@ax/agent-claude-sdk-runner-host`'s parser
+ * deliberately does not coalesce across them, while the live wire carries no
+ * message boundary at all — so reload draws one panel per assistant turn where
+ * live draws one for the whole reply. That difference predates this module (a
+ * reply already arrives live as one accumulating bubble and comes back as
+ * several) and closing it means teaching the live path about turn boundaries.
+ * `src/__tests__/workspace-steps-seam.test.tsx` pins both halves: the
+ * sentences agree, the panel counts are allowed to differ.
+ *
  * WHAT IS DELIBERATELY NOT HERE: thinking. The model's scratchpad does not
  * reach this surface on either path and this module has no branch for it. The
  * workspace route calls `conversations:get` UNFILTERED — chat gates reasoning
@@ -213,6 +226,14 @@ export function applyToolUse(
  * with no `tool-use` there is no name, and an `Unnamed step` invented from a
  * frame we are missing half of claims more than we know. The seq gap that
  * would cause it is already surfaced as a lost-stream banner.
+ *
+ * SAY THE ASYMMETRY OUT LOUD: the reload path's `toolOutcomes` is built across
+ * every turn before any of them is shaped, so it is order-independent and
+ * would show that same call as finished. This is the one input where the two
+ * normalizers can disagree. It is not reachable over a healthy wire — a result
+ * always follows its own call, and `sse-frames.ts` refuses a stream with a
+ * hole in it — so the honest reading of a result with no call is "we are
+ * missing frames", which is a banner, not a row.
  *
  * The status ordering is `tool-step-status.ts`'s, held above failed — see
  * {@link WorkspaceStepStatus}. A held result arrives with `isError` omitted,

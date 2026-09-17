@@ -178,9 +178,21 @@ symmetrically. `steps` has a producer on BOTH paths: `lib/workspace-steps.ts`
 holds the one shaping function, `server/routes-workspace.ts`'s `buildThread`
 feeds it stored `tool_use` / `tool_result` blocks, and `AgentView` feeds it
 live `tool-use` / `tool-result` frames. Neither path formats a label of its
-own, so the seam this section worried about cannot open by drift — it would
-take a second formatter to open it, and `src/__tests__/workspace-steps-seam.test.tsx`
-renders one fixture down both paths and asserts the two agree on screen.
+own, so no step can read one way live and another way after a reload — it
+would take a second formatter to make that happen, and there is not one.
+`src/__tests__/workspace-steps-seam.test.tsx` renders one fixture down both
+paths and asserts they agree on screen.
+
+**Be precise about what that covers, because the flat claim is wrong.** It
+covers the step SENTENCES. It does not cover the GROUPING: the SDK splits a
+multi-step reply into one assistant turn per message and
+`@ax/agent-claude-sdk-runner-host`'s parser deliberately does not coalesce
+across them, while the live wire carries no message boundary at all — so
+reload draws one panel per assistant turn where live draws one for the whole
+reply. That difference predates TASK-352 (a reply already arrives live as one
+accumulating bubble and comes back as several), and closing it means teaching
+the live path about turn boundaries, which is its own card. The seam test pins
+both halves: sentences equal, panel counts free to differ.
 
 **Thinking did NOT come with it, and must not.** `renderableText` still keeps
 `type === 'text'` blocks only. The workspace route calls `conversations:get`
