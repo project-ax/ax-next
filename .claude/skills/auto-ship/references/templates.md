@@ -62,6 +62,26 @@ afford — heed it rather than dispatching and hoping.
 >   `git rev-parse --show-toplevel` is NOT the primary checkout, and NEVER
 >   `git checkout -b`, commit, or `git switch` in the shared main checkout (it would
 >   clobber the orchestrator and sibling agents). Create your branch in the worktree.
+> - **A fresh worktree has no `node_modules` and no `dist/` — run
+>   `pnpm install --frozen-lockfile && pnpm build` before your first test run.** The
+>   worktree carries tracked files only, and both of those are gitignored, so they are
+>   simply absent. Skipping the **build** is the expensive half, because it fails in a
+>   way that reads as *your diff broke the repo*: workspace packages resolve through
+>   their `exports` to `./dist/…`, so every test file that imports a sibling `@ax/*`
+>   dies at load with **`Failed to resolve entry for package "@ax/…"`**.
+>   `MEASURED-BY-PROBE` 2026-09-17, on a freshly added worktree of `main` that was
+>   installed but not built: **363 test files across 68 packages** failed to load with
+>   that error. A wall of load failures carrying it means *not built yet*, not *broken*
+>   — build and re-run before you debug a line of it. Both steps are cheap on a warm
+>   pnpm store: **7.6s** install and **17.1s** build, timed in a second fresh worktree
+>   of the same commit that day. Skipping the **install** is the harmless half: with no
+>   `node_modules` at all every package fails instantly and unmistakably at spawn time
+>   (`spawn ENOENT`, measured the same day before that install; older sessions logged
+>   the same thing as `vitest: not found`).
+>   (`scripts/__tests__/autoship-dispatch-fresh-worktree-build.test.js` fails if this
+>   bullet leaves the prompt, loses either half of install-and-build, drops the
+>   `Failed to resolve entry` signature, or drifts up into the orchestrator-facing prose
+>   above.)
 > - **Put every temp file in a task-scoped scratch dir — `<your scratchpad>/<TASK-ID>/`**,
 >   your PR body included. `<your scratchpad>` is not a placeholder anyone fills in for
 >   you: it is the scratchpad directory named in your own environment, and you
