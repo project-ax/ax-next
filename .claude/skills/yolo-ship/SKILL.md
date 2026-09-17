@@ -137,12 +137,15 @@ digraph review {
     "Dispatch ax-code-reviewer (whole branch vs main)" [shape=box];
     "Actionable findings?" [shape=diamond];
     "Fix (test-first) + log any rejected" [shape=box];
+    "reviewed-sha == HEAD?" [shape=diamond];
     "Proceed to PR (Phase 6)" [shape=doublecircle];
 
     "Dispatch ax-code-reviewer (whole branch vs main)" -> "Actionable findings?";
     "Actionable findings?" -> "Fix (test-first) + log any rejected" [label="yes"];
     "Fix (test-first) + log any rejected" -> "Dispatch ax-code-reviewer (whole branch vs main)";
-    "Actionable findings?" -> "Proceed to PR (Phase 6)" [label="no"];
+    "Actionable findings?" -> "reviewed-sha == HEAD?" [label="no"];
+    "reviewed-sha == HEAD?" -> "Dispatch ax-code-reviewer (whole branch vs main)" [label="no — the fix is unreviewed"];
+    "reviewed-sha == HEAD?" -> "Proceed to PR (Phase 6)" [label="yes"];
 }
 ```
 
@@ -166,7 +169,27 @@ digraph review {
   so, and substitutes explicit structural reasoning, is being accurate. Treat an honest coverage gap
   as a prompt to order a focused second pass over exactly that gap — a builder who disclosed its
   reviewer never reached the CI figures got a second pass that found a real numeric error.
-- Only when the review is clean do you proceed to Phase 6 and open the PR.
+- **RECORD THE SHA EACH ROUND REVIEWED, and exit on `reviewed-sha == HEAD` — not on
+  "the last review had no findings".** Note the branch head (`rev-parse HEAD`) at the
+  moment you dispatch each round; the round that returns no actionable findings pins
+  that sha as your **`reviewed-sha`**. The two conditions look identical and are not:
+  the ordinary rhythm is review → apply the findings → push the fix, and *that fix
+  commit is now the head with nobody having read it*. Measured across the 2026-09-16
+  and 2026-09-17 runs: **7 PRs** (#553, #554, #556, #557, #558, #559, #560) reached the
+  merge door that way, every one of them under an honest `reviewer: clean`. The passes
+  auto-ship then ordered found a **Major** on #557, an **Important** on #553 and **two
+  Majors** on #556 — and on #553 and #557 a wrong rule had already been committed into
+  `.claude/memory/`, which every later agent reads as ground truth. So: fixed something
+  after a clean round? That round no longer counts; dispatch once more. The loop is
+  still finite — a round that changes nothing is the round that ends it.
+- Only when the review is clean **and `reviewed-sha` is the head you are about to
+  push** do you proceed to Phase 6 and open the PR. **Orchestrated mode:** report that
+  sha as the handoff's `reviewed-sha:` field, and if anything did land after it (a CI
+  fix in Phase 6, say), label each such commit `fix:` (it answers a finding your
+  reviewer named) or `new:` (you found it yourself). auto-ship's review gate routes on
+  those labels; `new:` on a production file orders an independent pass over the delta.
+  Answer honestly — one builder labelled its own commit `new:` and asked for the pass,
+  which is the expected answer, not a confession.
 - **Progress:** `⚠ review flagged <M> — addressing` when you start fixing, then `review clean` once the loop closes.
 
 #### The reviewer dispatch contract (REQUIRED — read before you dispatch)
@@ -243,9 +266,11 @@ force — it is what made the TASK-247 run fail loudly instead of silently self-
 6. **Honesty rule.** `reviewer: clean` means an `ax-code-reviewer` **returned** and its
    actionable findings are addressed — *including* when what returned it was a
    retrieval message rather than the ordinary completion path. A reviewer that never
-   produced findings at all is `reviewer: hung` — always. Log any stall (times, dispatch
-   shape, whether retrieval recovered it) in `decisions.md` so this keeps accumulating
-   evidence.
+   produced findings at all is `reviewer: hung` — always. It also means naming the sha
+   that reviewer saw: `reviewed-sha` is that sha, **not** `headSha` by default, and
+   pointing it at the head "because the fix was obviously right" is the dishonest
+   version of this field. Log any stall (times, dispatch shape, whether retrieval
+   recovered it) in `decisions.md` so this keeps accumulating evidence.
 - **Progress on a stall:** `⚠ reviewer silent — retrieving`, then
   `⚠ reviewer hung — re-dispatching` if retrieval came back empty, then
   `⚠ reviewer hung ×2 — <fallback>` if the re-dispatch also blows the deadline.
@@ -291,7 +316,7 @@ digraph ship {
   reads of specific run ids). Reporting `ci: green` off a partial set is how an untested head
   reaches the merge queue.
 - **On red**, use superpowers:systematic-debugging — fix the root cause, add a regression test (Bug Fix Policy), commit granularly ([[feedback_targeted_followup_commits]]) and push. While waiting on CI, do **not** busy-spin in context — poll with short sleeps (~270s, keeps the prompt cache warm) or use `ScheduleWakeup` (~600s+) and let the run resume.
-- A push that changes the diff materially invalidates the earlier review — if you fix more than a trivial test flake, re-run the Phase 5 review on the new diff before declaring done.
+- A push that changes the diff materially invalidates the earlier review — if you fix more than a trivial test flake, re-run the Phase 5 review on the new diff before declaring done. Either way your **`reviewed-sha` does not move** unless a review actually ran on the new head: in orchestrated mode, report the old sha and label the commits after it (Phase 5), rather than quietly re-pointing it at the head.
 - **When CI is green, proceed to Phase 7** (auto-merge standalone, or hand off under orchestration). Do not declare done at a green PR — merging (or handing off) is the terminal step now.
 - **Progress:** `PR #<n> opened` on open; `⚠ CI red — <suite>` on red; `CI green ✅` when green.
 

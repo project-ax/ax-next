@@ -152,6 +152,19 @@ afford — heed it rather than dispatching and hoping.
 >   the PR but return `reviewer: hung` — auto-ship orders an independent pass before it
 >   merges. **Never** substitute your own self-review and report `reviewer: clean`; a
 >   reviewer that produced no findings is `hung`, always.
+> - **State WHICH SHA your reviewer approved, and what landed after it.** Record the
+>   branch head (`rev-parse HEAD`) at the moment you dispatch each review round; the
+>   last round that came back with no actionable findings is your `reviewed-sha:`.
+>   Phase 5's loop already ends at "a review saw THIS head" — this field is what makes
+>   that checkable instead of assumed, because the usual rhythm (review → apply the
+>   findings → push the fix) leaves the fix commit as the PR head with nobody having
+>   read it. Measured on 7 PRs across the 2026-09-16/17 runs: every one reached the
+>   merge door carrying code no reviewer had seen, under an honest `reviewer: clean`.
+>   If commits landed after `reviewed-sha:`, list each on its own line under it,
+>   labelled `fix:` (it answers a finding your reviewer named) or `new:` (you found it
+>   yourself, afterwards) — auto-ship's review gate routes on those labels and orders
+>   an independent pass over the delta rather than guessing. Labelling your own commit
+>   `new:` is the correct, expected answer; it is not a confession.
 > - Otherwise follow yolo-ship exactly: worktree, self-answering brainstorm,
 >   written plan, subagent-driven TDD, build+test+lint gate, local review,
 >   open PR, drive CI green.
@@ -167,6 +180,13 @@ afford — heed it rather than dispatching and hoping.
 > reviewer: clean | hung | skipped-<reason>        # REQUIRED. "clean" ONLY if an
 >                                                  # ax-code-reviewer actually RETURNED
 >                                                  # and its findings are addressed.
+> reviewed-sha: <sha> | -                          # REQUIRED whenever reviewer=clean.
+>                                                  # The sha your reviewer actually
+>                                                  # APPROVED — not headSha by default.
+>                                                  # If it differs from headSha, add one
+>                                                  # indented line per commit after it:
+>   - <sha> fix: <the reviewer finding it answers>
+>   - <sha> new: <what you found yourself, after the review>
 > progress: live | FAILED-<setup|caller|transient>  # REQUIRED. Did your card heartbeat
 >                                                  # actually land? Never blocks the
 >                                                  # merge; journalled so a dead
