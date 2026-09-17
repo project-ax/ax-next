@@ -54,6 +54,8 @@ export interface RecallOptions {
   maxContextTokens?: number;
   /** Append verbatim source dialogue for the top N ranked rows that carry it. */
   sourceExcerpts?: number;
+  /** Add the grounded counting/arithmetic/coreference directives. Off by default. */
+  groundedCounting?: boolean;
 }
 
 export interface DialogueTurn {
