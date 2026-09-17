@@ -718,6 +718,24 @@ skills:
 memory:
   orchestratorModel: ""
 
+# ─── Web tools ────────────────────────────────────────────────────
+# Sites `web_extract` may read WITHOUT stopping to ask anybody — the operator's
+# half of the egress allowlist (TASK-330). Comma-separated bare hostnames:
+# no scheme, no port, no path, no wildcard, no trailing dot, and ASCII only
+# (an internationalised domain goes in as punycode, `xn--mnchen-3ya.de`,
+# because that is what the matcher compares against). A malformed entry is
+# skipped with a warning at boot rather than failing it.
+#
+# EMPTY IS THE RIGHT DEFAULT AND NOTHING BREAKS ON IT. A site nobody has
+# allowed is HELD for one approval, not refused: the first read asks, the
+# person says yes, and that site is quiet for them from then on. Please don't
+# fill this in to make the prompt go away — the prompt is the feature, and a
+# permissive list here hands every agent on the deployment a silent outbound
+# channel that nobody is asked about. Put a site here when the whole team
+# genuinely needs it silent, and not before.
+webTools:
+  extractAllowedHosts: ""
+
 # ─── Chat ─────────────────────────────────────────────────────────
 # How long ONE chat turn may run before the orchestrator gives up, in
 # milliseconds. Empty keeps the preset's own default. Raise it if agents do
