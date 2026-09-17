@@ -85,7 +85,7 @@ something it wants your OK on, it’ll wait for you here.` are honest, in voice,
 and pinned by tests. Neither is rewritten here.
 
 It also implied the footer link might be a day-one dead end. **Refuted:**
-`ActivityFeed.tsx:151-168` already has a good empty state (`Nothing recorded
+`ActivityFeed`'s own empty branch already has a good empty state (`Nothing recorded
 yet.` + `The record is empty so far. When your agents do something, every run and
 every decision shows up here.`). The link lands somewhere sensible. Left alone.
 
@@ -97,14 +97,14 @@ every decision shows up here.`). The link lands somewhere sensible. Left alone.
    the bottom is where you begin. This is the card.
 
 2. **`AgentConversation` renders literally nothing for a zero-turn thread**
-   (`AgentConversation.tsx:124-138`). The one workspace surface with no empty
+   (`AgentConversation`'s thread map). The one workspace surface with no empty
    copy at all — and the surface a day-one user reaches by clicking their only
    agent in the rail.
 
 3. **The first message costs a confirmation step that has one option.**
    `HomeComposer` defaults `pick` to `'auto'`, so a send calls
    `POST /api/workspace/route`, which for a single-agent account returns
-   (`routes-workspace.ts:3941-3949`, verbatim) `why: "it's your only agent"`,
+   (`server/routes-workspace.ts`, verbatim) `why: "it's your only agent"`,
    `confident: true`. The person is then shown:
 
    > ⚡ Auto picked **Quill** — it's your only agent. [Send to Quill] [Someone else] [Cancel]
@@ -117,21 +117,23 @@ every decision shows up here.`). The link lands somewhere sensible. Left alone.
 ## Two hard constraints this design has to respect
 
 **A. No invented suggestions.** `__tests__/no-fixtures.test.ts` is a wall against
-plausible-but-false strings on this surface, and `HomeComposer.tsx:188-193`
-records the specific lesson: the old placeholder *"try 'find me 30 minutes with
+plausible-but-false strings on this surface, and `HomeComposer`'s placeholder
+comment records the specific lesson: the old placeholder *"try 'find me 30 minutes with
 Marcus'"* was deleted because it presumed a scheduler agent, a calendar grant and
 a contact. **So: no example prompts, no capability chips, no "try asking it
 to…".** Everything the day-one panel says must be derivable from data we read.
 
 **B. An empty state is a claim (H7).** It may render only when the thing is
-provably empty, never when the read failed. Three places this bites:
+provably empty, never when the read failed. Four places this bites:
 
 - the queue: `error === null` (already in `TodayView`)
 - grants: `grantsError === null` (already in `TodayView`)
-- the activity record: a new predicate, below
+- the activity record: T2's predicate, below — **dropped; nothing reads the
+  record to make a claim any more**
 - the *past-conversation* thread: `AgentView`'s `pastThread` is `[]`
   while `pastError` is set, so an empty-thread empty state that did not check
-  `readOnly` would print "nothing here yet" over a failed excerpt read.
+  `readOnly` would print "nothing here yet" over a failed excerpt read. **This
+  is the one the shipped work actually turns on** — see T4.
 
 ---
 
@@ -268,7 +270,10 @@ turned out to be.
 Invariant 6 says compose installed primitives, and the shadcn rules say empty
 states use `Empty`; the package has **four** bespoke empty-state shapes and no
 shared one. `Empty` is pure Tailwind + `cva` + `cn` (no new dependency), and uses
-only semantic tokens. Used by T3 and T4 in this same PR — nothing half-wired.
+only semantic tokens. Used by T4 in this same PR — nothing half-wired. (As
+shipped it is the ONLY consumer, T3 having gone; `EmptyContent` therefore goes
+unused, which is how every CLI-vendored primitive in `components/ui/` already
+looks — 11 of them carry unused exports, `dropdown-menu.tsx` 10 of them.)
 Existing bespoke empty states are **not** migrated (out of scope; the ones that
 are a single muted sentence read correctly as they are).
 
