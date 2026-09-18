@@ -115,6 +115,23 @@ import type { Slot } from "../src/slots.js";
 export type Scope = "prefix" | "question" | "lifetime";
 export type Rule = "dem" | "slot";
 export type Order = "validstart" | "session";
+/**
+ * Whether DEM's rule may close rows from the SAME `retain()` call.
+ *
+ * `flat` treats the bank as one stream, which is how Appendix A.4 measured it and is why this
+ * script reproduces A.4 exactly. `batched` mirrors the product: `retain()` runs DEM's
+ * invalidation loop BEFORE inserting the batch's own rows, so a flagged fact can only close
+ * rows that were already resident — a second `lives_in` in the same session closes nothing.
+ *
+ * The difference is not small. At question scope in session order: **245 rows closed flat,
+ * against the 75 the real bench ingest produces** (`bench/closure-impact.ts`). `flat`
+ * therefore OVERSTATES DEM's closure rate roughly 3x, and A.4's figures inherit that. Neither
+ * is wrong — they answer different questions — but only `batched` describes the product.
+ *
+ * The slot rule is unaffected: it settles each statement as it lands, by design, so it has no
+ * batch boundary to respect.
+ */
+export type Batching = "flat" | "batched";
 
 const SCOPES: Scope[] = ["prefix", "question", "lifetime"];
 const SLOT_MAP_PATH = join(CACHE_DIR, "predicate-slots.json");
@@ -123,6 +140,8 @@ const SLOT_MAP_PATH = join(CACHE_DIR, "predicate-slots.json");
 const PROVENANCE_RANK: Record<string, number> = { extracted: 0, agent: 1, human: 2 };
 
 export interface ReplayFact {
+  /** The session this fact was extracted from — one `retain()` call, one batch. */
+  batch: string;
   subject: string;
   predicate: string;
   object: string;
@@ -143,6 +162,7 @@ export interface ReplayStats {
   scope: Scope;
   rule: Rule;
   order: Order;
+  batching: Batching;
   banks: number;
   ingests: number;
   /** dem only: facts carrying `invalidatesPrevious: true`. */
@@ -173,11 +193,12 @@ function percentile(values: number[], p: number): number {
   return sorted[index] ?? 0;
 }
 
-function emptyStats(scope: Scope, rule: Rule, order: Order): ReplayStats {
+function emptyStats(scope: Scope, rule: Rule, order: Order, batching: Batching): ReplayStats {
   return {
     scope,
     rule,
     order,
+    batching,
     banks: 0,
     ingests: 0,
     flagged: 0,
@@ -210,6 +231,7 @@ export function replayBank(
   rule: Rule,
   stats: ReplayStats,
   slotOf: (predicate: string) => Slot | null,
+  batching: Batching = "flat",
 ): void {
   stats.banks += 1;
   const rows: Row[] = [];
@@ -236,14 +258,29 @@ export function replayBank(
   /** Every row of a key, closed ones included — see the comment where this is called. */
   const peersOf = (key: string): Row[] => active.get(key) ?? [];
 
+  // Under `batched`, rows join the index only at the end of their batch, so DEM's rule sees
+  // exactly what `retain()` shows it: the store as it stood before this `retain()` call.
+  let pendingBatch: string | null = null;
+  let deferred: Array<{ key: string; row: Row }> = [];
+  const flushBatch = (): void => {
+    for (const entry of deferred) pushActive(active, entry.key, entry.row);
+    deferred = [];
+  };
+
   for (const fact of facts) {
+    if (batching === "batched" && rule === "dem" && fact.batch !== pendingBatch) {
+      flushBatch();
+      pendingBatch = fact.batch;
+    }
     stats.ingests += 1;
     const row: Row = { ...fact, id: rows.length, validEnd: null, closedBy: null };
     rows.push(row);
 
     if (rule === "dem") {
+      const demKey = `${fact.subject}\u0000${fact.predicate}`;
       if (!fact.invalidatesPrevious) {
-        pushActive(active, `${fact.subject}\u0000${fact.predicate}`, row);
+        if (batching === "batched") deferred.push({ key: demKey, row });
+        else pushActive(active, demKey, row);
         continue;
       }
       stats.flagged += 1;
@@ -265,7 +302,8 @@ export function replayBank(
         stats.closedPerCloser.push(closeable.length);
         bump(stats, `${fact.subject} | ${fact.predicate}`, closeable.length);
       }
-      pushActive(active, key, row);
+      if (batching === "batched") deferred.push({ key, row });
+      else pushActive(active, key, row);
       continue;
     }
 
@@ -319,6 +357,7 @@ export function replayBank(
     }
     pushActive(active, key, row);
   }
+  flushBatch();
 }
 
 function pushActive(active: Map<string, Row[]>, key: string, row: Row): void {
@@ -348,6 +387,7 @@ function toReplayFacts(
       const validStart = fact.validStart ?? "";
       if (validStart === "") continue;
       out.push({
+        batch: sessionId,
         subject: fact.subject ?? "",
         predicate: fact.predicate ?? "",
         object: fact.object ?? "",
@@ -387,7 +427,9 @@ function loadSlotMap(): { map: Map<string, Slot>; meta: SlotMapFile } {
 
 function report(stats: ReplayStats): void {
   const pct = (n: number, d: number): string => (d === 0 ? "n/a" : `${((n / d) * 100).toFixed(2)}%`);
-  console.log(`=== scope: ${stats.scope} | rule: ${stats.rule} | order: ${stats.order} ===`);
+  console.log(
+    `=== scope: ${stats.scope} | rule: ${stats.rule} | order: ${stats.order} | batching: ${stats.batching} ===`,
+  );
   console.log(`  banks                       ${stats.banks}`);
   console.log(`  fact ingests                ${stats.ingests}`);
   if (stats.rule === "dem") {
@@ -437,6 +479,9 @@ function main(): void {
   const cacheDir = args["cache-dir"] ?? CACHE_DIR;
   const rule = (args.rule ?? "dem") as Rule;
   const order = (args.order ?? "validstart") as Order;
+  // `flat` by default so this script keeps reproducing Appendix A.4; `batched` is the one
+  // that describes the product. See `Batching`.
+  const batching = (args.batch ?? "flat") as Batching;
   const scopes: Scope[] = args.scope ? [args.scope as Scope] : SCOPES;
 
   const { fingerprint, bySession, available } = loadFactsByFingerprint(cacheDir, args.fingerprint);
@@ -503,9 +548,9 @@ function main(): void {
   }
 
   for (const scope of scopes) {
-    const stats = emptyStats(scope, rule, order);
+    const stats = emptyStats(scope, rule, order, batching);
     if (scope === "lifetime") {
-      replayBank(toReplayFacts([...bySession.keys()], bySession, sessionDate, order), rule, stats, slotOf);
+      replayBank(toReplayFacts([...bySession.keys()], bySession, sessionDate, order), rule, stats, slotOf, batching);
     } else if (scope === "prefix") {
       const groups = new Map<string, string[]>();
       for (const sessionId of bySession.keys()) {
@@ -515,7 +560,7 @@ function main(): void {
         else groups.set(key, [sessionId]);
       }
       for (const sessions of groups.values()) {
-        replayBank(toReplayFacts(sessions, bySession, sessionDate, order), rule, stats, slotOf);
+        replayBank(toReplayFacts(sessions, bySession, sessionDate, order), rule, stats, slotOf, batching);
       }
     } else {
       for (const sample of corpus) {
@@ -524,6 +569,7 @@ function main(): void {
           rule,
           stats,
           slotOf,
+          batching,
         );
       }
     }

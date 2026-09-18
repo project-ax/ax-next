@@ -38,6 +38,8 @@ npx tsx bench/supersession-replay.ts    --fingerprint f4752a79   # what does inv
 npx tsx bench/supersession-replay.ts    --fingerprint f4752a79 --rule slot --order session
 npx tsx bench/normalizer-eval.ts        --fingerprint f4752a79   # can a relation be mapped to a profile slot?
 npx tsx bench/graph-ablation.ts --n 100 --fingerprint f4752a79 --stack vertex   # does the graph channel do anything?
+npx tsx bench/reproducibility-probe.ts --n 12 --fingerprint f4752a79            # is retrieval reproducible at all?
+npx tsx bench/closure-impact.ts --n 500 --fingerprint f4752a79                  # can slot supersession cost an answer?
 ```
 
 `normalizer-eval` and `graph-ablation` are not quite free — the first embeds ~84.5k relation

@@ -23,6 +23,7 @@ function stats(rule: Rule): ReplayStats {
     scope: "lifetime",
     rule,
     order: "session",
+    batching: "flat",
     banks: 0,
     ingests: 0,
     flagged: 0,
@@ -45,6 +46,9 @@ function fact(
   extra: Partial<ReplayFact> = {},
 ): ReplayFact {
   return {
+    // One batch unless a case says otherwise: these fixtures test the RULE, and batching is
+    // covered by its own case below.
+    batch: "batch-1",
     subject,
     predicate,
     object,
@@ -147,6 +151,66 @@ describe("DEM's rule, as `memory-repository.ts` codes it", () => {
     replayBank(facts, "dem", s, NONE);
     expect(s.rowsClosed).toBe(12);
     expect(s.byKey.get("assistant | recommended")?.max).toBe(12);
+  });
+});
+
+describe("batching — whether DEM's rule can close rows from its own retain() call", () => {
+  const twoInOneBatch = [
+    fact("user", "lives_in", "Boston", "2023-01-01T00:00:00.000Z", { batch: "s1" }),
+    fact("user", "lives_in", "Seattle", "2023-06-01T00:00:00.000Z", {
+      batch: "s1",
+      invalidatesPrevious: true,
+    }),
+  ];
+
+  it("flat: a flagged fact closes an earlier fact from the SAME batch", () => {
+    // Appendix A.4's method, and why this script reproduces it exactly.
+    const s = stats("dem");
+    replayBank(twoInOneBatch, "dem", s, NONE, "flat");
+    expect(s.rowsClosed).toBe(1);
+  });
+
+  it("batched: it does not — which is what the product does", () => {
+    // `retain()` runs DEM's invalidation loop BEFORE inserting the batch's own rows, so a
+    // second `lives_in` in one session has nothing resident to close.
+    const s = stats("dem");
+    replayBank(twoInOneBatch, "dem", s, NONE, "batched");
+    expect(s.rowsClosed).toBe(0);
+  });
+
+  it("batched: it still closes rows from an EARLIER batch", () => {
+    const s = stats("dem");
+    replayBank(
+      [
+        fact("user", "lives_in", "Boston", "2023-01-01T00:00:00.000Z", { batch: "s1" }),
+        fact("user", "lives_in", "Seattle", "2023-06-01T00:00:00.000Z", {
+          batch: "s2",
+          invalidatesPrevious: true,
+        }),
+      ],
+      "dem",
+      s,
+      NONE,
+      "batched",
+    );
+    expect(s.rowsClosed).toBe(1);
+  });
+
+  it("leaves the SLOT rule alone — it settles each statement as it lands, by design", () => {
+    for (const batching of ["flat", "batched"] as const) {
+      const s = stats("slot");
+      replayBank(
+        [
+          fact("user", "lives_in", "Boston", "2023-01-01T00:00:00.000Z", { batch: "s1" }),
+          fact("user", "lives_in", "Seattle", "2023-06-01T00:00:00.000Z", { batch: "s1" }),
+        ],
+        "slot",
+        s,
+        LIVES,
+        batching,
+      );
+      expect(s.rowsClosed, `batching=${batching}`).toBe(1);
+    }
   });
 });
 

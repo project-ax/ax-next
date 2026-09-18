@@ -18,6 +18,7 @@ import {
   stratifiedSample,
   runWithConcurrency,
   sessionDateToIso,
+  type LongMemEvalSample,
   type Stack,
 } from "./harness.js";
 
@@ -133,8 +134,35 @@ async function main(): Promise<void> {
   }
   // Path A: rows per answer. Default matches src (15); pass 80 to fill the token budget.
   const evidenceRows = Number(args["evidence-rows"] ?? 0);
-  const selected =
-    sampler === "shortest" ? pickShortest(filtered, n, minAbs) : stratifiedSample(filtered, n);
+  // An explicit question list, which beats every other selector. This is how a targeted arm
+  // is run: `bench/closure-impact.ts` proves that only N questions can change under a
+  // treatment, and scoring exactly those gives the EXACT delta over the whole corpus, because
+  // the rest are provably identical. Far cheaper than 8 full runs and not an approximation.
+  const idList = args.ids
+    ?.split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+  let selected: LongMemEvalSample[];
+  if (idList !== undefined && idList.length > 0) {
+    const wanted = new Set(idList);
+    selected = filtered.filter((sample) => wanted.has(sample.question_id));
+    const missing = idList.filter(
+      (id) => !selected.some((sample) => sample.question_id === id),
+    );
+    if (missing.length > 0) {
+      throw new Error(`--ids names ${missing.length} question(s) not in the corpus: ${missing.join(", ")}`);
+    }
+  } else {
+    selected =
+      sampler === "shortest" ? pickShortest(filtered, n, minAbs) : stratifiedSample(filtered, n);
+  }
+  if (idList !== undefined && idList.length > 0) {
+    console.log(
+      `\n!! --ids run: ${selected.length} hand-picked question(s). The TOTAL printed below is\n` +
+        `!! NOT a corpus accuracy and must never be quoted as one. It is only comparable to\n` +
+        `!! another run over the SAME id list.\n`,
+    );
+  }
   console.log(
     `corpus ${samples.length} samples -> selected ${selected.length} (n=${n}, sampler=${sampler}) | extract=${extractModel} | answer=${answerModel} | judge=${judgeModel} | stack=${label} | supersession=${supersession ?? "invalidates-previous (default)"} | ids=${idStrategy ?? "content (default)"} | extraction cache: ${extractionCache.size} entries`,
   );
