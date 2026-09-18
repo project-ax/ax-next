@@ -9,19 +9,27 @@
 // this backend, so this was the code actually serving production.
 //
 // A note on `workspaceRef`, because the original report named it. The agent
-// row's `workspace_ref` column is NOT consumed by any workspace backend — the
-// chat-orchestrator calls it out as a deliberate pass-through. So "every agent
-// has workspace_ref = NULL" was never the mechanism, and no amount of filling
-// that column in would have fixed anything. Partitioning here is derived from
-// the CALLER'S IDENTITY on `ctx` and nothing else. The acceptance criterion
-// "a NULL workspace_ref never resolves to a shared ref" is pinned by
-// `two agents that both have a null workspaceRef do not share a tree` below:
-// the field is absent from this backend's inputs entirely, so two such agents
-// are isolated by identity or not at all.
+// row's `workspace_ref` column is NOT consumed by any workspace backend. So
+// "every agent has workspace_ref = NULL" was never the mechanism, and filling
+// that column in would have fixed nothing. Partitioning here is derived from
+// `ctx.agentId` and nothing else. The acceptance criterion "a NULL
+// workspace_ref never resolves to a shared ref" is pinned by `two agents that
+// both have a null workspaceRef do not share a tree` below: the field is
+// absent from this backend's inputs entirely, so two such agents are isolated
+// by agentId or not at all.
 //
-// Every `it` in this file FAILS against the unpartitioned backend. The
-// direction each one fails in is written next to it, because a fail-closed
-// assertion that passes either way is worse than no assertion at all.
+// THE PARTITION IS `agentId` ALONE, matching `@ax/workspace-git-server` since
+// TASK-257 (#573). That is a policy, not an accident, and it cuts both ways —
+// so this file asserts BOTH directions: different agents must not see each
+// other's files, and two users on the SAME agent must see the SAME tree. A
+// backend that over-partitioned by (userId, agentId) would pass every
+// isolation case here and silently fragment a team agent's shared files, which
+// is why the second direction is tested rather than assumed.
+//
+// Every `it` in this file FAILS against the unpartitioned backend except the
+// two explicitly labelled anti-vacuity guards. The direction each one fails in
+// is written next to it, because a fail-closed assertion that passes either
+// way is worse than no assertion at all.
 
 import { mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -68,28 +76,34 @@ function makeCorePlugin(repoRoot: string): Plugin {
 async function setup() {
   const repoRoot = mkdtempSync(join(tmpdir(), 'ax-ws-tenant-'));
   const h = await createTestHarness({ plugins: [makeCorePlugin(repoRoot)] });
-  const owner = (userId: string, agentId: string): AgentContext =>
+  const caller = (userId: string, agentId: string): AgentContext =>
     h.ctx({ userId, agentId, sessionId: `${userId}:${agentId}` });
-  const write = (ctx: AgentContext, path: string, body: string) =>
+  const write = (
+    ctx: AgentContext,
+    path: string,
+    body: string,
+    parent: WorkspaceApplyInput['parent'] = null,
+  ) =>
     h.bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>('workspace:apply', ctx, {
       changes: [{ path, kind: 'put', content: enc.encode(body) }],
-      parent: null,
+      parent,
     });
   const list = (ctx: AgentContext) =>
     h.bus.call<WorkspaceListInput, WorkspaceListOutput>('workspace:list', ctx, {});
   const read = (ctx: AgentContext, path: string) =>
     h.bus.call<WorkspaceReadInput, WorkspaceReadOutput>('workspace:read', ctx, { path });
-  return { repoRoot, h, owner, write, list, read };
+  const bareRepos = () => readdirSync(repoRoot).filter((d) => d.endsWith('.git')).sort();
+  return { repoRoot, h, caller, write, list, read, bareRepos };
 }
 
 describe('@ax/workspace-git-core tenant isolation (TASK-396)', () => {
-  it('does not serve one user\'s file to a different user', async () => {
+  it("does not serve one user's agent's file to a different user's agent", async () => {
     // The walk, reduced to its bones: vinay's agent writes; test@'s agent
     // opens its own Files tab. FAILS on the unpartitioned backend, where
     // `list` returns ['CAVEMAN-POEM.md'] and `read` returns the bytes.
-    const { owner, write, list, read } = await setup();
-    const vinay = owner('user-vinay', 'agent-vinay');
-    const tester = owner('user-test', 'agent-test');
+    const { caller, write, list, read } = await setup();
+    const vinay = caller('user-vinay', 'agent-vinay');
+    const tester = caller('user-test', 'agent-test');
 
     await write(vinay, 'CAVEMAN-POEM.md', 'CAVEMAN POEM\nby Caveman\n');
 
@@ -99,13 +113,13 @@ describe('@ax/workspace-git-core tenant isolation (TASK-396)', () => {
 
   it('two agents that both have a null workspaceRef do not share a tree', async () => {
     // Same user, two agents — the production shape, where every agent row
-    // carries workspace_ref = NULL. Isolation must come from identity, and
-    // it must hold in BOTH directions so this cannot pass by returning
+    // carries workspace_ref = NULL. Isolation must come from `ctx.agentId`,
+    // and it must hold in BOTH directions so this cannot pass by returning
     // nothing to everyone. FAILS on the unpartitioned backend: each agent
     // sees the other's file.
-    const { owner, write, list, read } = await setup();
-    const first = owner('user-solo', 'agent-one');
-    const second = owner('user-solo', 'agent-two');
+    const { caller, write, list, read } = await setup();
+    const first = caller('user-solo', 'agent-one');
+    const second = caller('user-solo', 'agent-two');
 
     await write(first, 'one.md', 'from agent one');
     await write(second, 'two.md', 'from agent two');
@@ -117,12 +131,12 @@ describe('@ax/workspace-git-core tenant isolation (TASK-396)', () => {
   });
 
   it('still serves an owner its OWN file', async () => {
-    // The anti-vacuity guard for every assertion above. A backend that
-    // answered "not found" to everybody would satisfy the isolation tests
-    // and be completely broken; this one passes BOTH before and after the
-    // fix, on purpose, and its job is to fail if the fix over-reaches.
-    const { owner, write, list, read } = await setup();
-    const me = owner('user-vinay', 'agent-vinay');
+    // ANTI-VACUITY GUARD #1. A backend that answered "not found" to everybody
+    // would satisfy every isolation test above and be completely broken; this
+    // one passes BOTH before and after the fix, on purpose, and its job is to
+    // fail if the fix over-reaches.
+    const { caller, write, list, read } = await setup();
+    const me = caller('user-vinay', 'agent-vinay');
 
     await write(me, 'mine.md', 'hello');
 
@@ -132,42 +146,73 @@ describe('@ax/workspace-git-core tenant isolation (TASK-396)', () => {
     expect(got.found === true && new TextDecoder().decode(got.bytes)).toBe('hello');
   });
 
-  it('keeps each owner in its own repo on disk — there is no shared repo.git', async () => {
+  it('gives two users of the SAME agent the SAME tree (partition is agentId alone)', async () => {
+    // ANTI-VACUITY GUARD #2, and the TASK-257 policy stated as a test. Also
+    // passes before AND after the fix — before, because everything shared one
+    // tree; after, because both callers derive the same workspaceId. It is
+    // here to fail the *other* way: a backend keyed on (userId, agentId) —
+    // which is what the first draft of this fix did — turns a team agent's
+    // shared files into per-user fragments and diverges from
+    // `@ax/workspace-git-server`. One bare repo on disk, not two, is the
+    // structural half of that claim.
+    const { caller, write, list, read, bareRepos } = await setup();
+    const alice = caller('user-alice', 'agent-shared');
+    const bob = caller('user-bob', 'agent-shared');
+
+    await write(alice, 'team-notes.md', 'from alice');
+
+    expect((await list(bob)).paths).toEqual(['team-notes.md']);
+    const got = await read(bob, 'team-notes.md');
+    expect(got.found).toBe(true);
+    expect(got.found === true && new TextDecoder().decode(got.bytes)).toBe('from alice');
+    expect(bareRepos()).toHaveLength(1);
+  });
+
+  it('keeps each agent in its own repo on disk — there is no shared repo.git', async () => {
     // The structural half of "a null workspaceRef never resolves to a shared
     // ref": not "B could not read A's file" but "there is no single tree for
     // them to share in the first place". FAILS on the unpartitioned backend,
     // which creates exactly one directory named `repo.git`.
-    const { repoRoot, owner, write } = await setup();
-    await write(owner('user-a', 'agent-a'), 'a.md', 'a');
-    await write(owner('user-b', 'agent-b'), 'b.md', 'b');
+    const { caller, write, list, bareRepos } = await setup();
+    const a = await write(caller('user-a', 'agent-a'), 'a.md', 'a');
+    await write(caller('user-b', 'agent-b'), 'b.md', 'b');
 
-    const dirs = readdirSync(repoRoot).filter((d) => d.endsWith('.git')).sort();
-    expect(dirs).not.toContain('repo.git');
-    expect(dirs).toHaveLength(2);
-    // Same (userId, agentId) must land on the same repo, or every turn would
-    // start from an empty workspace.
-    await write(owner('user-a', 'agent-a'), 'a2.md', 'a2').catch(() => undefined);
-    expect(readdirSync(repoRoot).filter((d) => d.endsWith('.git'))).toHaveLength(2);
+    expect(bareRepos()).not.toContain('repo.git');
+    expect(bareRepos()).toHaveLength(2);
+    // The same agentId must land on the same repo, or every turn would start
+    // from an empty workspace. Passing the PARENT version returned by the
+    // first apply is the proof: a fresh repo would reject it as a mismatch.
+    const a2 = await write(caller('user-a', 'agent-a'), 'a2.md', 'a2', a.version);
+    expect(bareRepos()).toHaveLength(2);
+    // ...and a different USER on the same agent must NOT mint a third repo —
+    // it continues the same history, from the same parent.
+    await write(caller('user-z', 'agent-a'), 'a3.md', 'a3', a2.version);
+    expect(bareRepos()).toHaveLength(2);
+    expect((await list(caller('user-z', 'agent-a'))).paths).toEqual([
+      'a.md',
+      'a2.md',
+      'a3.md',
+    ]);
   });
 
-  describe('fails closed when the caller has no identity', () => {
+  describe('fails closed when the caller has no agent', () => {
     // These are the ones most at risk of being written vacuously, so each
-    // FIRST writes a file under a real identity and THEN asserts the
-    // identity-less call rejects. Against the unpartitioned backend the call
-    // does not reject at all — it succeeds and hands back that file — so
-    // "rejects" is a claim that can only be true after the fix.
+    // FIRST writes a file under a real agent and THEN asserts the agent-less
+    // call rejects. Against the unpartitioned backend the call does not reject
+    // at all — it succeeds and hands back that file — so "rejects" is a claim
+    // that can only be true after the fix.
     const blank: ReadonlyArray<readonly [string, string, string]> = [
-      ['empty userId', '', 'agent-a'],
       ['empty agentId', 'user-a', ''],
-      ['whitespace-only userId', '   ', 'agent-a'],
-      ['whitespace-only agentId', 'user-a', '\t\n'],
+      ['whitespace-only agentId', 'user-a', '   '],
+      ['tab/newline-only agentId', 'user-a', '\t\n'],
+      ['empty agentId and empty userId', '', ''],
     ];
 
     for (const [label, userId, agentId] of blank) {
       it(`rejects list/read/apply on ${label}`, async () => {
-        const { owner, write, list, read } = await setup();
-        await write(owner('user-a', 'agent-a'), 'secret.md', 'not yours');
-        const anon = owner(userId, agentId);
+        const { caller, write, list, read } = await setup();
+        await write(caller('user-a', 'agent-a'), 'secret.md', 'not yours');
+        const anon = caller(userId, agentId);
 
         await expect(list(anon)).rejects.toMatchObject({
           code: 'workspace-identity-required',
@@ -184,17 +229,20 @@ describe('@ax/workspace-git-core tenant isolation (TASK-396)', () => {
     it('rejects rather than falling back to the legacy shared repo', async () => {
       // Belt and braces on the direction that actually matters: refusing must
       // not be implemented as "resolve to some default tree and find nothing
-      // there". Nothing named `repo.git` may be created by an identity-less
-      // call, and the real owner's tree must be untouched.
-      const { repoRoot, owner, write, list } = await setup();
-      const me = owner('user-a', 'agent-a');
+      // there". Nothing named `repo.git` may be created by an agent-less call,
+      // no new bare repo may appear at all, and the real agent's tree must be
+      // untouched.
+      const { repoRoot, caller, write, list, bareRepos } = await setup();
+      const me = caller('user-a', 'agent-a');
       await write(me, 'mine.md', 'hello');
+      const before = bareRepos();
 
-      await expect(list(owner('', ''))).rejects.toMatchObject({
+      await expect(list(caller('', ''))).rejects.toMatchObject({
         code: 'workspace-identity-required',
       });
 
       expect(readdirSync(repoRoot)).not.toContain('repo.git');
+      expect(bareRepos()).toEqual(before);
       expect((await list(me)).paths).toEqual(['mine.md']);
     });
   });

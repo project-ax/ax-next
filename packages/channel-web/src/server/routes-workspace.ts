@@ -3895,20 +3895,23 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * not read, and the reader would have no way to tell the difference (H7).
      * So a throw propagates and the tab shows an error.
      *
-     * NOTE ON ISOLATION. BOTH workspace backends now partition by
-     * (userId, agentId) — `git-protocol` by shard, `local` by one bare repo
-     * per owner — so this listing is genuinely one agent's tree on either.
+     * NOTE ON ISOLATION. BOTH workspace backends now partition by `agentId`
+     * — `git-protocol` by shard (TASK-257), `local` by one bare repo per
+     * agent (TASK-396) — so this listing is genuinely one agent's tree on
+     * either, shared by every user authorized to reach that agent.
+     *
      * This comment used to say the opposite about `local`, and it was right:
      * that backend kept ONE tree for the whole deployment and this route
      * served it to whoever asked. It took a user being shown another user's
-     * file on a live deployment before anyone fixed the thing the comment had
-     * been describing (TASK-396).
+     * agent's file on a live deployment before anyone fixed the thing the
+     * comment had been describing.
      *
-     * The isolation is the BACKEND's, not this route's — there is still no
-     * per-agent prefix here to filter on. What this route owes it is an
-     * honest ctx: `agentWorkspaceCtx(agentId, userId)`, built from the
-     * session's identity and the agent `agents:resolve` just approved, never
-     * from anything the request supplied.
+     * The isolation is the BACKEND's partition plus the `agents:resolve` ACL
+     * above — not this route's filtering, of which there is none: a tree has
+     * no per-user prefix to scope by, and deliberately so. What this route
+     * owes them is an honest ctx: `agentWorkspaceCtx(agentId, userId)`, built
+     * from the session's identity and the agent `agents:resolve` just
+     * approved, never from anything the request supplied.
      */
     async agentFiles(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);

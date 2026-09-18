@@ -1,6 +1,6 @@
 # Security — `@ax/workspace-git-core`
 
-This package is the implementation behind the `workspace:*` contract. It exports one function — `registerWorkspaceGitHooks` — that registers the four service hooks (`workspace:apply`, `workspace:read`, `workspace:list`, `workspace:diff`) on a host-side bus and stores every snapshot in a bare `isomorphic-git` repository at `<repoRoot>/<workspaceId>.git`, where `workspaceId` is derived from the calling `(userId, agentId)` — one repo per owner, never one for the deployment. **Linear-history-only by construction:** every `workspace:apply` is a CAS on `refs/heads/main`. There are no branches, no merges, no rebase. The `WorkspaceVersion` opaque string happens to be a 40-hex commit SHA today, but subscribers MUST treat it as opaque (Invariant 1).
+This package is the implementation behind the `workspace:*` contract. It exports one function — `registerWorkspaceGitHooks` — that registers the four service hooks (`workspace:apply`, `workspace:read`, `workspace:list`, `workspace:diff`) on a host-side bus and stores every snapshot in a bare `isomorphic-git` repository at `<repoRoot>/<workspaceId>.git`, where `workspaceId` is derived from the calling `agentId` — one repo per agent, never one for the deployment. **Linear-history-only by construction:** every `workspace:apply` is a CAS on `refs/heads/main`. There are no branches, no merges, no rebase. The `WorkspaceVersion` opaque string happens to be a 40-hex commit SHA today, but subscribers MUST treat it as opaque (Invariant 1).
 
 Two consumers wrap this core:
 
@@ -62,26 +62,34 @@ had it too.
 
 How it works now:
 
-- Every hook resolves the caller to `ws-<16 hex>` = `sha256(JSON.stringify([userId, agentId]))`,
-  and reads/writes `<repoRoot>/<that>.git`. Different owner, different repo. The
+- Every hook resolves the caller to `ws-<16 hex>` = `sha256(JSON.stringify([agentId]))`,
+  and reads/writes `<repoRoot>/<that>.git`. Different agent, different repo. The
   derivation is a byte-for-byte copy of `@ax/workspace-git-server`'s, so the two
   backends name the same workspace the same way; both sides pin the same test
   vectors so a drift fails loudly instead of orphaning repos.
-- **It fails closed.** A caller with a blank `userId` or `agentId` gets a
+- **It fails closed.** A caller with a blank `agentId` gets a
   `workspace-identity-required` error, not a default tree. There is no shared
   fallback repo left for an unauthenticated-ish caller to land in — the
   identity check runs before path validation, before the mutex, before any
   filesystem call.
-- The identity comes from the bus `ctx`, which callers build from an
-  authenticated session plus an agent that `agents:resolve` has already
-  approved. This package trusts that and can't second-guess it: a caller that
-  mints a synthetic identity gets its own private bucket keyed on that
-  synthetic pair. That is still not any real tenant's tree, but it is why
-  "who fills in ctx" is a security-relevant question one layer up.
+- **One agent, one workspace — the partition is `agentId`, not `(userId, agentId)`.**
+  That is deliberate and it is the same rule the sharded backend adopted in
+  TASK-257: an agent's files belong to the agent, and every user authorized to
+  reach it sees the same tree. Which means **this hash is a partition, not an
+  access control**. The thing that decides whether you may reach an agent at
+  all is the `agents:resolve` ACL that `channel-web`'s workspace routes run
+  before every per-agent read (any error → 404). If that gate is ever bypassed
+  or moved after the read, nothing downstream will save you.
+- The `agentId` comes from the bus `ctx`, which callers build from an
+  authenticated session plus an agent `agents:resolve` has already approved.
+  This package trusts that and can't second-guess it: a caller that mints a
+  synthetic `agentId` gets its own private bucket keyed on that string. Still
+  not any real agent's tree — but it is why "who fills in ctx" is a
+  security-relevant question one layer up.
 
 **Upgrading an existing deployment:** the old `<repoRoot>/repo.git` is no longer
 read by anything. We do NOT migrate or delete it, because nothing in it records
-which owner wrote which file — guessing would be worse than leaving it. Operators
+which agent wrote which file — guessing would be worse than leaving it. Operators
 should treat it as what it is (a tree every user of that deployment could read)
 and delete it once they've salvaged anything they want.
 

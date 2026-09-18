@@ -37,12 +37,12 @@ import {
   type WorkspaceReadOutput,
 } from '@ax/core';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
-import { registerWorkspaceGitHooks, workspaceIdForOwner } from '../impl.js';
+import { registerWorkspaceGitHooks, workspaceIdForAgent } from '../impl.js';
 
-// TASK-396: the backend now keeps one bare repo per (userId, agentId), so a
-// fixture that pre-seeds a repo on disk has to seed it under the name the
-// harness's default ctx resolves to — not the old deployment-wide `repo.git`.
-const FIXTURE_BARE = `${workspaceIdForOwner('test-user', 'test-agent')}.git`;
+// TASK-396: the backend now keeps one bare repo per agentId, so a fixture that
+// pre-seeds a repo on disk has to seed it under the name the harness's default
+// ctx resolves to — not the old deployment-wide `repo.git`.
+const FIXTURE_BARE = `${workspaceIdForAgent('test-agent')}.git`;
 
 const ENV: NodeJS.ProcessEnv = {
   ...process.env,

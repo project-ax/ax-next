@@ -263,9 +263,9 @@ export interface K8sPresetConfig {
    *   - `local`: `@ax/workspace-git` writes bare repos on the host pod's PVC.
    *     Single-replica deploys only — two hosts mounting the same RWO PVC
    *     would race. `repoRoot` is the directory hosting one
-   *     `<repoRoot>/<workspaceId>.git` per (userId, agentId); the plugin
-   *     idempotently `git init`s each on first use. Both backends partition
-   *     per owner and name workspaces identically (TASK-396) — picking
+   *     `<repoRoot>/<workspaceId>.git` per agentId; the plugin idempotently
+   *     `git init`s each on first use. Both backends partition on `agentId`
+   *     and name workspaces identically (TASK-257 + TASK-396) — picking
    *     `local` is a scaling decision, not a tenancy one.
    *
    *   - `git-protocol`: `@ax/workspace-git-server` talks to the dedicated
