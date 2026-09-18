@@ -56,8 +56,13 @@ import {
  * Roughly one line of transcript. Large enough to survive sub-pixel rounding,
  * small enough that a reader who has scrolled up to read anything at all is
  * past it.
+ *
+ * Module-private: the tests straddle it in absolute pixels rather than
+ * importing it, on purpose. A test written in terms of this number moves with
+ * it, so widening the slack to something absurd would keep passing — which is
+ * exactly what an earlier draft of those tests did.
  */
-export const STICK_SLACK_PX = 64;
+const STICK_SLACK_PX = 64;
 
 /** How far the viewport's bottom edge sits above the end of the content. */
 function distanceFromBottom(el: HTMLElement): number {
