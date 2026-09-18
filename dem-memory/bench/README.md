@@ -27,6 +27,29 @@ npx tsx bench/run.ts --n 500                     # full run
   stack (Vertex `text-embedding-005` + Cohere `rerank-v4.0-pro`) — those scores are
   not comparable until it does.
 
+## Offline analyses (no LLM calls)
+
+These read the caches and answer a question without scoring anything. Each one's own
+header comment carries its measured numbers.
+
+```bash
+npx tsx bench/consolidation-survival.ts --fingerprint f4752a79   # would Strata's drop rules keep these facts?
+npx tsx bench/supersession-replay.ts    --fingerprint f4752a79   # what does invalidation actually close?
+npx tsx bench/supersession-replay.ts    --fingerprint f4752a79 --rule slot --order session
+npx tsx bench/normalizer-eval.ts        --fingerprint f4752a79   # can a relation be mapped to a profile slot?
+npx tsx bench/graph-ablation.ts --n 100 --fingerprint f4752a79 --stack vertex   # does the graph channel do anything?
+```
+
+`normalizer-eval` and `graph-ablation` are not quite free — the first embeds ~84.5k relation
+phrases (~$0.10, ~12 min cold, resumable), the second pays one reranker call per question per
+arm unless you use `--stack vertex`, which is free and deterministic.
+
+**Use `--stack vertex` for anything that compares two evidence tables.** `rerank-v4.0-pro` is
+not reproducible: three calls with a byte-identical query and document list gave run 1 ≡ run 2
+and run 3 differing by `maxAbsDelta` 4.26e-3 with a different ordering, and across an n=100
+ablation ~22% of top-15 tables reordered between two identical calls. A table diff on the
+production stack measures the reranker, not your change.
+
 ## What the driver does per sample
 
 1. Fresh in-memory bank (`bankId` = question id).

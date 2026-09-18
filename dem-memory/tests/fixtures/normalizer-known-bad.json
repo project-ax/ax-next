@@ -1,0 +1,112 @@
+[
+  {
+    "predicate": "born_in",
+    "mustNotMap": "lives_in",
+    "why": "A birthplace is not a residence. Measured cosine 0.7790 against the lives_in description - HIGHER than `lives in` itself at 0.7751, so no threshold that maps `lives in` by embedding can refuse this one. The synonym table is what keeps `lives in` mapped."
+  },
+  {
+    "predicate": "traveled_to",
+    "mustNotMap": "lives_in",
+    "why": "Multi-valued and transient. Measured 0.7242, above the 0.7318 that `works at` scores against its own description - so a threshold tuned to admit works_at admits this too."
+  },
+  {
+    "predicate": "visited",
+    "mustNotMap": "lives_in",
+    "why": "Multi-valued. Closing a residence on a visit deletes a true fact, and visits are the single most common travel relation in the corpus. Measured 0.6480."
+  },
+  {
+    "predicate": "vacationed_in",
+    "mustNotMap": "lives_in",
+    "why": "Multi-valued and explicitly temporary. Measured 0.6579."
+  },
+  {
+    "predicate": "moved_from",
+    "mustNotMap": "lives_in",
+    "why": "The inverse relation. Mapping it would make an origin close the destination that superseded it - a closure in the wrong direction, which two-sided closure cannot repair because both rows are about real places."
+  },
+  {
+    "predicate": "works_on",
+    "mustNotMap": "works_at",
+    "why": "A project, not an employer, and multi-valued. Measured 0.6608 with a 0.0080 margin over the runner-up."
+  },
+  {
+    "predicate": "works_with",
+    "mustNotMap": "works_at",
+    "why": "A colleague or a tool, not an employer, and multi-valued. Measured 0.6573."
+  },
+  {
+    "predicate": "volunteers_at",
+    "mustNotMap": "works_at",
+    "why": "Not employment, and a person can volunteer at several places at once. Measured 0.6963 - the highest-scoring works_at false positive."
+  },
+  {
+    "predicate": "interested_in",
+    "mustNotMap": "*",
+    "why": "Multi-valued and the 5th most common predicate in the corpus (701 facts). Nearest slot is works_at at 0.7064. Under DEM's own rule one `user | interested_in` closed 40 rows in the lifetime bank."
+  },
+  {
+    "predicate": "studies",
+    "mustNotMap": "*",
+    "why": "Multi-valued. Nearest slot role at 0.6702 with a 0.0013 margin - the ranking is arbitrary at that separation."
+  },
+  {
+    "predicate": "speaks_to",
+    "mustNotMap": "*",
+    "why": "Addressing a person, not a language. Measured 0.7608 and its nearest slot is `pronouns`, not `language` - the highest-scoring relation in the probe set, mapped to the wrong slot."
+  },
+  {
+    "predicate": "learning_language",
+    "mustNotMap": "language",
+    "why": "A language being learned is not the language the person is addressed in, and a person can learn several. Measured 0.6867."
+  },
+  {
+    "predicate": "named_pet",
+    "mustNotMap": "name",
+    "why": "The pet's name, not the person's, and multi-valued. Measured 0.7060."
+  },
+  {
+    "predicate": "anniversary",
+    "mustNotMap": "birthday",
+    "why": "A different date entirely, and a person can have several. Measured 0.6583."
+  },
+  {
+    "predicate": "scheduled_at",
+    "mustNotMap": "timezone",
+    "why": "An event time, not the person's zone. Measured 0.6903 - the weakest slot's strongest false positive."
+  },
+  {
+    "predicate": "recommended",
+    "mustNotMap": "*",
+    "why": "THE GATE CASE. The 4th most common predicate (769 facts) and the worst over-closer under DEM's rule: one statement closed 360 rows in the lifetime bank, 484 over three closures. It is not a property of anyone and must never gain a slot."
+  },
+  {
+    "predicate": "stated",
+    "mustNotMap": "*",
+    "why": "The single most common predicate (1,598 facts) and a pure speech act. Closed 1,296 rows over 7 closures under DEM's rule."
+  },
+  {
+    "predicate": "listed",
+    "mustNotMap": "*",
+    "why": "2nd most common (1,224 facts). Closed 697 rows over 3 closures under DEM's rule, 622 of them on a single statement - the corpus maximum."
+  },
+  {
+    "predicate": "provided_solution",
+    "mustNotMap": "*",
+    "why": "3rd most common (908 facts). Closed 894 rows over 40 closures under DEM's rule."
+  },
+  {
+    "predicate": "planning_trip",
+    "mustNotMap": "*",
+    "why": "Multi-valued and an intention rather than a state. One statement closed 247 rows in the lifetime bank."
+  },
+  {
+    "predicate": "owns",
+    "mustNotMap": "*",
+    "why": "Multi-valued by nature. One statement closed 199 rows in the lifetime bank."
+  },
+  {
+    "predicate": "purchased",
+    "mustNotMap": "*",
+    "why": "Multi-valued and append-only by nature - every purchase is a new true fact, never a correction of the last one. Closed 103 rows over 2 closures."
+  }
+]
