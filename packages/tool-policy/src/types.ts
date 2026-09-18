@@ -101,6 +101,12 @@ export interface PolicyRule {
    * gives the undo button something left to stop. Omitted means reversible,
    * and a reversible call is replayed at once with no grace period.
    *
+   * ON THE HOST PATH ONLY. An ATTENDED decision — one whose agent is still
+   * warm — is re-issued by that agent the moment the fingerprint gate lets it
+   * through, and nothing host-side can hold it for ten seconds. So an
+   * irreversible rule whose calls need the grace period must be raised
+   * unattended. That is a recorded limit, not an oversight (`plugin.ts`).
+   *
    * THIS COMMENT USED TO SAY THE OPPOSITE — that AW-5 "must NOT offer the
    * 10-second undo window" on an irreversible call. Corrected against the
    * shipped behaviour in TASK-384: `plugin.ts` sets

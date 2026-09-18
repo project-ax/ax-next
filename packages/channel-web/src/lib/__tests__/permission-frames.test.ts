@@ -277,11 +277,43 @@ describe('effectDisclosure (TASK-329)', () => {
     // promising a grace period would contradict `decision-copy.ts` the moment
     // a rule left `irreversible` unset, which is every rule shipping today.
     const control = /undo window|grace period|\d+ seconds|ten seconds|stop it before|cancel it|change your mind/i;
+
+    // The named-mechanism list above is not enough on its own, and this is the
+    // one place the re-scope is weaker than the single regex it replaced.
+    // Test 1 now REQUIRES the word "undo" on the outward copy, so a future edit
+    // to "you can still take it back" would satisfy test 1, skip test 2 (wrong
+    // effect) and miss every phrase in `control` — shipping an affirmative
+    // grace-period promise this surface cannot keep. So the SHAPE is denied as
+    // well as the vocabulary: a modal of ABILITY governing a reversal verb.
+    //
+    // CLAUSE-BOUNDED, and that bound is load-bearing rather than tidy. The
+    // obvious `[^.]*` between the two halves reaches across punctuation and
+    // reds the correct copy on "Two things **can** follow: … may not be
+    // possible to **undo**" — two unrelated clauses, no promise made. Stopping
+    // at `.,;:—` keeps the modal and the verb inside one clause, which is the
+    // only place one can actually govern the other.
+    const promise =
+      /\b(can|could|able to|still|chance to|moment to|time to|opportunity to)\b[^.,;:—]{0,24}\b(undo|undone|take it back|reverse|reversed|stop)\b/i;
+
+    // ARM THE GUARD BEFORE TRUSTING IT. A denylist that matches nothing passes
+    // every string, including the one it exists to stop, and this repo has
+    // shipped a mechanism that was armed-but-never-firing twice this week.
+    // These are the phrases that must red it.
+    for (const hazard of [
+      'You can still take it back.',
+      'You have a moment to undo this after approving.',
+      'There is a chance to stop it.',
+      'You are able to reverse this.',
+    ]) {
+      expect(hazard).toMatch(promise);
+    }
+
     for (const effect of ['spends', 'outward'] as const) {
       const d = effectDisclosure(effect);
-      expect(d.detail).not.toMatch(control);
-      expect(d.srLabel).not.toMatch(control);
-      expect(d.label).not.toMatch(control);
+      for (const field of [d.detail, d.srLabel, d.label]) {
+        expect(field).not.toMatch(control);
+        expect(field).not.toMatch(promise);
+      }
     }
   });
 });
