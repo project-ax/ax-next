@@ -117,7 +117,10 @@ describe('tool-policy canary', () => {
       );
       // The VALUE crossed too, not just the key — this is the assertion that
       // reddens if `effect` is dropped from `CapabilityRowSchema`.
-      expect(row.effect, row.source).toBe(effect);
+      // `toEqual` since TASK-330 made `effect` a SET — `toBe` on two arrays
+      // compares references and fails even when the values match, which is how
+      // this line read when the change landed.
+      expect(row.effect, row.source).toEqual(effect);
     }
     /*
       NON-VACUITY GUARD. Everything above passes identically against a schema

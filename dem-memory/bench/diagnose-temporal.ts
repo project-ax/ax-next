@@ -6,6 +6,7 @@
  * Runs recall only: no answer or judge calls, so with warm caches it is nearly free.
  *
  *   npx tsx bench/diagnose-temporal.ts --ids d01c6aa8,5e1b23de --stack production
+ *   npx tsx bench/diagnose-temporal.ts --ids 51c32626 --fingerprint f4752a79   # past generation
  */
 import { createDemMemory } from "../src/index.js";
 import { compileEvidenceTable } from "../src/engine/reflect.js";
@@ -27,6 +28,11 @@ async function main(): Promise<void> {
   const stack = (args.stack ?? "production") as Stack;
   const { embed, rerank, label, flushEmbed } = resolveStack(stack);
   const extractionCache = new ExtractionCache(args["cache-dir"] ?? CACHE_DIR);
+
+  // Without this, a prompt edit that re-keys the fact cache silently turns every diagnosis
+  // into an empty bank — the sessions are all "missing-from-cache" and the evidence table
+  // is blank, which reads like a retrieval failure rather than a stale key.
+  const fingerprint = args.fingerprint;
 
   const corpus = loadCorpus();
   const idFilter = args.ids?.split(",").map((id) => id.trim());
@@ -70,7 +76,9 @@ async function main(): Promise<void> {
       const date = sample.haystack_dates?.[i];
       const nowIso = date ? sessionDateToIso(date) : new Date().toISOString();
       const dialogue = flattenDialogue(turns as DialogueTurn[]);
-      const facts = extractionCache.get(sessionCacheKey(sessionId, dialogue, DEFAULT_EXTRACT_MODEL));
+      const facts = extractionCache.get(
+        sessionCacheKey(sessionId, dialogue, DEFAULT_EXTRACT_MODEL, fingerprint),
+      );
       if (!facts) {
         missing += 1;
         continue;

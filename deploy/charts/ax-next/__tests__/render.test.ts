@@ -1394,4 +1394,21 @@ describeIfHelm('ax-next chart: previously unstampable env (TASK-347)', () => {
     // provider, and a prefixed id would be routed twice.
     expect(found?.value).toBe('anthropic/claude-haiku-4.5');
   });
+
+  it('webTools.extractAllowedHosts is unset by default and stamped verbatim when given', () => {
+    // TASK-330. UNSET IS THE SHIPPING DEFAULT and the first assertion is the
+    // one that matters: nobody is pre-approved on a fresh install, which is
+    // safe only because a site nobody allowed is HELD for one approval rather
+    // than refused. A chart that quietly stamped a default here would hand
+    // every agent on the deployment a silent outbound channel.
+    expect(hostEnv([]).map((e) => e.name)).not.toContain('AX_WEB_EXTRACT_ALLOWED_HOSTS');
+
+    // Verbatim, comma-separated: the preset splits and trims, and the plugin
+    // validates each host. Nothing in between reshapes it, so a host an
+    // operator typed is the host that gets matched.
+    const found = hostEnv([
+      '--set', 'webTools.extractAllowedHosts=docs.example.com\\,intranet.example.com',
+    ]).find((e) => e.name === 'AX_WEB_EXTRACT_ALLOWED_HOSTS');
+    expect(found?.value).toBe('docs.example.com,intranet.example.com');
+  });
 });

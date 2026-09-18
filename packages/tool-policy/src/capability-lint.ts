@@ -108,7 +108,17 @@ export function lintCapability(clause: string): string[] {
 }
 
 /**
- * The rule-shape half of the lint: an `outward` rule may not be `allow`.
+ * The rule-shape half of the lint: a rule whose effects include `outward` may
+ * not be `allow`.
+ *
+ * STRICTEST MEMBER WINS (TASK-330). `effect` is a SET, and the set's verdict
+ * requirement is the harshest one any member asks for — one `outward` anywhere
+ * forces `hold` or `deny` no matter how many `spends` sit beside it. The
+ * alternative readings are both wrong in the same direction: "the first member
+ * decides" makes the constraint depend on authoring order, and "the majority
+ * decides" lets a second `spends` outvote the exfiltration channel. This is
+ * exactly how `web_extract` shipped as a bare `spends` — the field had room for
+ * only one of two true things, and the convenient one won.
  *
  * Why this is a lint and not a type. Making it unrepresentable would need
  * `PolicyRule` to become a discriminated union over the verdict, which every
@@ -123,16 +133,44 @@ export function lintCapability(clause: string): string[] {
  * one.
  */
 export function lintRuleEffect(rule: {
-  effect?: ToolEffect;
+  effect?: ToolEffect[];
   verdict: string;
 }): string[] {
-  if (rule.effect === 'outward' && rule.verdict === 'allow') {
-    return [
-      'declares effect: "outward" but verdict: "allow" — a call a third party ' +
-        'sees, or that cannot be taken back, must be held or denied. Change the ' +
-        'verdict, or if it is only metered spend with no outward effect, declare ' +
-        'effect: "spends" instead.',
-    ];
+  const { effect } = rule;
+  if (effect === undefined) return [];
+
+  const errs: string[] = [];
+
+  // An empty array and an absent field would mean the same thing, and two
+  // spellings of one meaning is how a reader comes to believe they differ.
+  if (effect.length === 0) {
+    errs.push(
+      'declares an empty effect array — omit the field instead. Absent already ' +
+        'means unclassified, and a second way to say it invites someone to read ' +
+        'one of them as "classified, and harmless".',
+    );
   }
-  return [];
+
+  if (new Set(effect).size !== effect.length) {
+    errs.push(
+      `declares a duplicate effect (${JSON.stringify(effect)}) — the field is a ` +
+        'set of claims, not a tally, and nothing downstream counts them.',
+    );
+  }
+
+  // The rule this whole function exists for. Deliberately `.includes` and not
+  // an equality check on a single member: the whole point of the array is that
+  // an outward call can also be something else, and it must not buy its way to
+  // `allow` by declaring the something else as well.
+  if (effect.includes('outward') && rule.verdict === 'allow') {
+    errs.push(
+      `declares effect: ${JSON.stringify(effect)} (which includes "outward") but ` +
+        'verdict: "allow" — a call a third party sees, or that cannot be taken ' +
+        'back, must be held or denied, and the strictest member of the set wins. ' +
+        'Change the verdict, or if it is only metered spend with no outward ' +
+        'effect, drop "outward" from the set.',
+    );
+  }
+
+  return errs;
 }

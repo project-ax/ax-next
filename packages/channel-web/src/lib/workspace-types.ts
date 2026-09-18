@@ -261,23 +261,27 @@ export type CapabilityProvenance = 'rule' | 'catalog' | 'grant' | 'mcp' | 'unmap
  *
  *   - `spends`  — the call costs money, on EVERY use, not just the first.
  *     THIS IS A MONEY-ONLY CLAIM. It does not say the call is safe, and it
- *     does not say the call is not also `outward` — `web.extract` is filed
- *     `spends` even though reading a page is also an exfiltration channel,
- *     because classifying it `outward` would force a hold on every page read,
- *     and that is a live-deployment decision for a human (TASK-330), not
- *     something this rail gets to decide by picking a label. Do not let a
- *     reader, or a future renderer, read `spends` as "harmless" or
- *     "contained" — it says nothing about either.
+ *     says nothing at all about whether the same call is also `outward`.
+ *     `web.extract` is the tool that proved why: it spends AND it hands the
+ *     URL (and anything encoded in it) to a third party that sees the
+ *     request, so it declares BOTH, and the rail shows both (TASK-330). Do
+ *     not let a reader, or a future renderer, read `spends` as "harmless" or
+ *     "contained" — a row that carries it may well carry `outward` too.
  *   - `outward` — a third party sees the call, or it cannot be taken back: a
  *     message sent, something posted where others can see it, a payment
- *     made. `lintRuleEffect` in `@ax/tool-policy` enforces that an `outward`
- *     rule can never be `allow`, so on the wire an `outward` row is always
- *     `hold` or `deny` — never `allow`.
+ *     made. `lintRuleEffect` in `@ax/tool-policy` reads the declared SET with
+ *     STRICTEST MEMBER WINS: an `outward` anywhere in it forbids `allow`, and
+ *     a rule cannot buy its way back to `allow` by declaring something milder
+ *     alongside it. So on the wire a row whose effects INCLUDE `outward` is
+ *     always `hold` or `deny` — never `allow`.
  *
- * `null` on a row means UNCLASSIFIED — nobody has declared an effect for this
- * tool. It is not a claim that the call is free or contained; it is the
+ * A row declares the whole SET of true things about its call, not one of
+ * them. AN EMPTY SET MEANS UNCLASSIFIED — nobody has declared an effect for
+ * this tool. It is not a claim that the call is free or contained; it is the
  * honest gap for a rule that predates TASK-263, or a catalog/MCP/grant row
- * with no rule behind it at all.
+ * with no rule behind it at all. There is exactly ONE spelling of that gap:
+ * `[]`. Nothing here is nullable, because two spellings of "we don't know" is
+ * how somebody comes to read one of them as "we checked, and it's fine".
  */
 export type CapabilityEffect = 'outward' | 'spends';
 
@@ -325,12 +329,21 @@ export interface PermissionRow {
    * call happens at all, and this is a separate claim about what happens
    * when it does. A row is routinely `allow` AND `spends` at the same time
    * (that is `web_search`): the call goes through, and it costs money every
-   * time it does. `null` means nobody classified this tool's effect, which
-   * is the honest answer for a rule that predates TASK-263 or a catalog/MCP
-   * row with no rule behind it — it is NOT a claim that the call is free or
-   * has no effect beyond AX.
+   * time it does.
+   *
+   * EVERY declared effect, not the first one. A single-valued field made the
+   * row pick which true thing to say, and `web_extract` is the call that made
+   * that a lie — it spends money AND it hands data to a third party, and the
+   * outward half went undisclosed because the field had room for only the
+   * convenient truth (TASK-330). A renderer draws each member; dropping one
+   * is understating reach, which is the one direction design H4 forbids.
+   *
+   * `[]` means nobody classified this tool's effect, which is the honest
+   * answer for a rule that predates TASK-263 or a catalog/MCP row with no
+   * rule behind it — it is NOT a claim that the call is free or has no effect
+   * beyond AX. Never null: the empty array is the only spelling of the gap.
    */
-  effect: CapabilityEffect | null;
+  effect: CapabilityEffect[];
   /** `described: false` only — what we DO control: the tool's own name. */
   mechanicalLabel: string | null;
   /** `described: false` only — the third party's words, fenced and attributed. */

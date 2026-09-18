@@ -33,6 +33,24 @@ export function createWebToolsPlugin(cfg: WebToolsConfig = {}): Plugin {
       version: PLUGIN_VERSION,
       registers: enabled ? ['tool:execute:web_search', 'tool:execute:web_extract'] : [],
       calls: enabled ? ['tool:register'] : [],
+      // OPTIONAL, not required, and the distinction is the whole reason this
+      // is an `optionalCalls` entry rather than a `calls` one: the CLI preset
+      // loads @ax/web-tools without @ax/tool-policy, and it should keep
+      // booting. Where the hook IS present, the producer is @ax/tool-policy
+      // and the gate it feeds lives there too — a host we fail to record is
+      // simply a host the gate asks about again.
+      optionalCalls: enabled
+        ? [
+            {
+              hook: 'egress-allowlist:remember',
+              degradation:
+                'A page read succeeds but the site it came from is not remembered, ' +
+                'so the next read from that same site is held for approval again. ' +
+                'Absent entirely in a preset with no policy plugin, where nothing ' +
+                'holds page reads in the first place. Never a silent grant.',
+            },
+          ]
+        : [],
       subscribes: [],
     },
     async init({ bus }) {

@@ -144,7 +144,7 @@ const EFFECT_RULES = {
       verdict: 'allow',
       capability: 'search the web',
       subject: 'agent',
-      effect: 'spends',
+      effect: ['spends'],
     } satisfies PolicyRule,
   ],
   // `outward` may not be `allow` (`lintRuleEffect`, enforced in CI) — a fixture
@@ -157,7 +157,7 @@ const EFFECT_RULES = {
       verdict: 'hold',
       capability: 'post where others can see it',
       subject: 'agent',
-      effect: 'outward',
+      effect: ['outward'],
     } satisfies PolicyRule,
   ],
   none: [
@@ -174,12 +174,12 @@ const EFFECT_RULES = {
 describe('capabilityRows — effect (TASK-329)', () => {
   it('a rule declaring spends produces a row carrying effect: spends', () => {
     const [row] = capabilityRows(EFFECT_RULES.spends);
-    expect(row!.effect).toBe('spends');
+    expect(row!.effect).toEqual(['spends']);
   });
 
   it('a rule declaring outward produces a row carrying effect: outward', () => {
     const [row] = capabilityRows(EFFECT_RULES.outward);
-    expect(row!.effect).toBe('outward');
+    expect(row!.effect).toEqual(['outward']);
   });
 
   it('a rule declaring no effect produces a row with NO effect key at all', () => {
@@ -199,7 +199,7 @@ describe('capabilityRows — effect (TASK-329)', () => {
     // re-parse, and this is the one test in the file that actually calls
     // `.parse()` rather than inspecting the plain object.
     const [row] = capabilityRows(EFFECT_RULES.spends);
-    expect(CapabilityRowSchema.parse(row).effect).toBe('spends');
+    expect(CapabilityRowSchema.parse(row).effect).toEqual(['spends']);
   });
 });
 

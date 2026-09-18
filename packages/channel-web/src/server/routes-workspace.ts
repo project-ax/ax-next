@@ -130,6 +130,7 @@ import type {
   ActivityEvent,
   AgentRailData,
   AgentRunState,
+  CapabilityEffect,
   CapabilityProvenance,
   CapabilityVerdict,
   Decision,
@@ -220,15 +221,23 @@ interface PolicyCapabilityRow {
   theirDescription?: string;
   mechanicalLabel?: string;
   /**
-   * The hook's unvalidated answer for the rule's declared effect. Typed
-   * `string`, NOT `CapabilityEffect`, because that is exactly what it is at
-   * this point: an unvalidated answer from a duck-typed hook (I2), crossing a
-   * trust boundary. Declaring it as the union here would assert the
-   * guarantee that `toWirePermission`'s allow-list exists to provide —
-   * anything that survives to `PermissionRow.effect` has to earn that
-   * narrower type by passing through the check, not by being cast into it.
+   * The hook's unvalidated answer for the rule's declared effects — a SET of
+   * them since TASK-330, because a call can be more than one true thing at
+   * once.
+   *
+   * Typed `unknown`, NOT `CapabilityEffect[]` and not even `string[]`,
+   * because that is exactly what it is at this point: an unvalidated answer
+   * from a duck-typed hook (I2), crossing a trust boundary. An impl can
+   * answer a bare string, a number, an object, or an array with junk in it,
+   * and TypeScript here is describing the wire, not policing it. Declaring
+   * it as the union's array would assert the guarantee that
+   * `toWirePermission`'s allow-list exists to provide — anything that
+   * survives to `PermissionRow.effect` has to earn that narrower type by
+   * passing through the check, not by being cast into it. `unknown` is what
+   * forces that check to exist: nothing can read this field without first
+   * establishing what it is.
    */
-  effect?: string;
+  effect?: unknown;
 }
 interface ToolPolicyListCapabilitiesInput {
   agentId: string;
@@ -2998,22 +3007,35 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         // the one claim here that has no condition on it.
         conditional: false,
         // A third-party tool we cannot describe in our own words is also one
-        // whose effect nobody has classified — the row's mechanical shape
+        // whose effects nobody has classified — the row's mechanical shape
         // already tells the reader we cannot say what this tool does, and
-        // `effect` is no exception. Never invent one from the tool's name.
+        // `effect` is no exception. `[]` is the unclassified spelling, and it
+        // is the honest one here. Never invent a member from the tool's name.
         //
-        // ONE CASE THIS HARDCODED `null` WOULD GET WRONG, and it is guarded
-        // rather than merely noted. A tool named only by `when`-predicated
-        // rules ALSO lands here — as its base row, the unconditional
-        // fall-through half — and that row has no rule to read an effect off,
-        // because it is built from `evaluate`'s answer and `EvaluateResult`
-        // carries no `effect`. Were such a rule to declare `spends` or
-        // `outward`, this row would render with no marker while the call still
-        // spent the money, i.e. it would UNDERSTATE reach. No shipped rule is
-        // both conditional and effect-bearing, and @ax/tool-policy's
-        // `rules.test.ts` has a tripwire asserting exactly that, naming this
-        // site and `EvaluateResult.effect` as the fix. Do not relax it here.
-        effect: null,
+        // ONE CASE THIS HARDCODED `[]` WOULD GET WRONG, and it is a real gap,
+        // not a hypothetical. A tool named only by `when`-predicated rules
+        // ALSO lands here — as its base row, the unconditional fall-through
+        // half — and that row has no rule to read effects off, because it is
+        // built from `evaluate`'s answer and `EvaluateResult` carries no
+        // `effect`. Were such a rule to declare `spends` or `outward`, this
+        // row would render with no marker while the call still spent the money
+        // or acted outward, i.e. it would UNDERSTATE reach.
+        //
+        // A SHIPPED RULE IS NOW BOTH CONDITIONAL AND EFFECT-BEARING —
+        // `web.extract` is `conditional` with `effect: ['spends', 'outward']`
+        // (TASK-330) — so the old blanket "no shipped rule is both" no longer
+        // holds and must not be repeated here. This site is still not reached
+        // by it, for a narrower and checkable reason: `fullyDescribedTools` is
+        // computed from `rule.match.when === undefined`, and `web.extract` has
+        // no `when` predicate (its conditionality comes from `egress`, which
+        // `evaluate` resolves per host). `web_extract` is therefore fully
+        // described, gets no mechanical base row at all, and its effects reach
+        // the wire through `toWirePermission` off the described row.
+        //
+        // The gap re-opens the day a rule carries BOTH a `when` predicate and
+        // an `effect`. The fix then is to carry `effect` onto `EvaluateResult`
+        // and read it here — not to widen this comment again.
+        effect: [],
         mechanicalLabel: label,
         // The vendor's own prose, for MCP tools only, and only as attributed
         // evidence. A native tool's `description` is written to steer an LLM
@@ -4630,6 +4652,53 @@ export async function registerWorkspaceRoutes(
 // --- rail projections (module-level: pure, and unit-testable on their own) ---
 
 /**
+ * The two members this surface has authored copy for. A `Set`, so the check
+ * below is a membership test against a list that exists in one place rather
+ * than a chain of `===` somebody has to remember to extend.
+ */
+const KNOWN_EFFECTS: ReadonlySet<string> = new Set<CapabilityEffect>([
+  'outward',
+  'spends',
+]);
+
+/**
+ * A duck-typed hook's `effect` answer → the wire row's declared effects.
+ *
+ * The allow-list half of `toWirePermission`, pulled out because it is the one
+ * piece of that function that has to be reasoned about on its own: it is where
+ * an unvalidated `unknown` earns the type `CapabilityEffect[]`.
+ *
+ * Three refusals, all deliberate:
+ *
+ *   - NOT AN ARRAY → `[]`. A bare `'spends'`, a number, `null`, `undefined`,
+ *     an object: none of them is a set of claims we can read, and guessing at
+ *     one (wrapping a lone string, say) would invent a claim the impl did not
+ *     make in the shape we asked for.
+ *   - AN UNKNOWN MEMBER → dropped, and only that member. `['spends',
+ *     'harmless']` becomes `['spends']`: the true half survives, because
+ *     dropping the whole set over one invented member would understate a real
+ *     effect (design H4), and copying the invented member through would put a
+ *     claim on the wire that no authored copy can render.
+ *   - A DUPLICATE → collapsed to its first appearance. The field is a set of
+ *     claims, not a tally; nothing downstream counts them, and two identical
+ *     badges on one row read as a rendering bug rather than as emphasis.
+ *
+ * Order is the RULE'S order, preserved. It is the only ordering information we
+ * have, and re-sorting it here would be this module deciding which of a rule's
+ * disclosures a reader sees first.
+ */
+function toWireEffects(raw: unknown): CapabilityEffect[] {
+  if (!Array.isArray(raw)) return [];
+  const out: CapabilityEffect[] = [];
+  for (const member of raw) {
+    if (typeof member !== 'string' || !KNOWN_EFFECTS.has(member)) continue;
+    const known = member as CapabilityEffect;
+    if (!out.includes(known)) out.push(known);
+  }
+  return out;
+}
+
+/**
  * `@ax/tool-policy`'s row → the wire row.
  *
  * Two jobs. It FENCES every string that survives — a capability clause is
@@ -4659,19 +4728,29 @@ export function toWirePermission(row: PolicyCapabilityRow): PermissionRow {
     // sometimes allows. `=== true` because the field is optional on a
     // duck-typed row and `undefined` must not render as a claim either way.
     conditional: row.conditional === true,
-    // An ALLOW-LIST, not a cast. The renderer picks authored copy KEYED on
-    // this value, so an impl answering `effect: 'harmless'` (or anything else
-    // it invents) must land as `null` — no claim — rather than as a value
-    // that is present on the wire and silently unrendered because the
-    // renderer's `Record` doesn't have an entry for it. Two members in, two
-    // members out; everything else is `null`.
+    // An ALLOW-LIST FILTER, not a cast, and the filter is per MEMBER. The
+    // renderer picks authored copy KEYED on each value, so an impl answering
+    // `effect: ['spends', 'harmless']` must land as `['spends']` — the true
+    // half kept, the invented half dropped — rather than as a value that is
+    // present on the wire and silently unrendered because the renderer's
+    // `Record` doesn't have an entry for it. Known members in, known members
+    // out, in the order the rule declared them; everything else falls on the
+    // floor. An answer that is not an array at all (a bare `'spends'`, a
+    // number, `null`) is not a set of claims we can read, so it lands as `[]`
+    // — unclassified — rather than being coerced into one.
+    //
+    // WHY A FILTER AND NOT A CAST, spelled out because a cast would compile
+    // and look tidier: `row.effect as CapabilityEffect[]` would put whatever
+    // an alternate policy impl invented straight onto a security surface,
+    // where the renderer would skip it silently and the row would understate
+    // its own reach. The type has to be EARNED here, once, at the boundary.
     //
     // Survives the clause-fence demotion above for the same reason
     // `conditional` does: losing OUR SENTENCE when `capability` fences to
     // nothing does not unspend the money or un-happen the outward action —
-    // the row still describes a real call with a real declared effect, it
-    // has just lost the words we had for it. Not gated on `described`.
-    effect: row.effect === 'outward' || row.effect === 'spends' ? row.effect : null,
+    // the row still describes a real call with real declared effects, it has
+    // just lost the words we had for it. Not gated on `described`.
+    effect: toWireEffects(row.effect),
     mechanicalLabel: described ? null : mechanicalLabel,
     theirDescription: described
       ? null

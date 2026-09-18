@@ -16,14 +16,15 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover';
 import {
+  disclosedEffects,
   effectDisclosure,
   frameCapability,
-  shouldDiscloseEffect,
   verdictFrame,
 } from '@/lib/permission-frames';
 import { cn } from '@/lib/utils';
 import type {
   AgentRunState,
+  CapabilityEffect,
   CapabilityVerdict,
   GrantRow,
   PermissionRow,
@@ -181,7 +182,14 @@ function TheirDescription({ row }: { row: PermissionRow }) {
 }
 
 /**
- * The declared-`effect` disclosure — TASK-329.
+ * ONE declared effect's disclosure — TASK-329.
+ *
+ * One badge per member, never a merged one. A row declares a SET (TASK-330)
+ * and `web_extract` is the first to carry two: it spends money AND it hands
+ * data to a third party. Those are different risks with separately authored
+ * copy — see `EFFECT_DISCLOSURES` — so they get separate badges, and the row
+ * reads as two facts because it IS two facts. A single badge summarising both
+ * would be the collapse `ToolEffect`'s split exists to prevent.
  *
  * `Popover`, not `Tooltip` (D5): `Tooltip` needs a `TooltipProvider` this rail
  * does not have, is hover-only, and auto-dismisses — unreliable on touch and
@@ -211,7 +219,7 @@ function TheirDescription({ row }: { row: PermissionRow }) {
  * "Costs money", reads as a floating fragment to a screen reader that has not
  * also seen the row's icon and clause).
  */
-function EffectMark({ effect }: { effect: NonNullable<PermissionRow['effect']> }) {
+function EffectMark({ effect }: { effect: CapabilityEffect }) {
   const d = effectDisclosure(effect);
   return (
     <Popover>
@@ -282,18 +290,26 @@ export function PermissionLine({ row }: { row: PermissionRow }) {
         )}
         {frame.suffix !== null && <span> — {frame.suffix}</span>}
         {/*
-          The suppression rule is `shouldDiscloseEffect`, NOT a condition
-          written out here — it carries the reasoning, and it lives beside the
-          copy in `permission-frames.ts` so a second renderer that takes
+          EVERY declared effect, one badge each, in the rule's order — a row
+          that draws only the first of two understates its own reach, which is
+          the one direction design H4 forbids, and it is exactly how
+          `web_extract`'s outward half stayed invisible before TASK-330.
+
+          The suppression rule is `disclosedEffects`, NOT a condition written
+          out here — it carries the reasoning, and it lives beside the copy in
+          `permission-frames.ts` so a second renderer that takes
           `effectDisclosure` takes the rule with it rather than printing
-          "Cannot pay an invoice — Costs money". It is a type predicate, so it
-          is also what narrows `row.effect` for the prop — there is deliberately
-          no second `!== null` here, because a call site re-testing half the
-          rule is a copy of the rule that nothing tests.
+          "Cannot pay an invoice — Costs money". It also does the filtering, so
+          there is deliberately no `.filter()` or emptiness check at this call
+          site: a render site re-testing half the rule is a copy of the rule
+          that nothing tests. An empty list maps to nothing and needs no guard.
+
+          `key` is the effect name because the set is deduped at the wire
+          boundary (`toWireEffects`), so a member appears at most once per row.
         */}
-        {shouldDiscloseEffect(row.verdict, row.effect) && (
-          <EffectMark effect={row.effect} />
-        )}
+        {disclosedEffects(row.verdict, row.effect).map((effect) => (
+          <EffectMark key={effect} effect={effect} />
+        ))}
         {/*
           THE TRUST LINE, and it is its own line on purpose.
 

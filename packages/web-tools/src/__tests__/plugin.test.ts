@@ -24,6 +24,20 @@ describe('createWebToolsPlugin', () => {
     expect(p.manifest.calls).toContain('tool:register');
   });
 
+  it('declares egress-allowlist:remember as an optional call with a degradation', () => {
+    const p = createWebToolsPlugin({ apiKey: 'sk-ant-x', clientFactory: fakeFactory });
+    // OPTIONAL, not required: the CLI preset loads this plugin without
+    // @ax/tool-policy and must still boot.
+    expect(p.manifest.calls).not.toContain('egress-allowlist:remember');
+    const oc = p.manifest.optionalCalls?.find((e) => e.hook === 'egress-allowlist:remember');
+    expect(oc?.degradation).toEqual(expect.any(String));
+    expect(oc?.degradation.length).toBeGreaterThan(0);
+  });
+
+  it('enabled:false declares no optional calls either', () => {
+    expect(createWebToolsPlugin({ enabled: false }).manifest.optionalCalls).toEqual([]);
+  });
+
   it('registers both descriptors on init', async () => {
     const { bus, registered } = busWithDispatcher();
     await createWebToolsPlugin({ apiKey: 'sk-ant-x', clientFactory: fakeFactory }).init({ bus, config: {} as never });
