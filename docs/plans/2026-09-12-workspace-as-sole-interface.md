@@ -349,8 +349,8 @@ those 3 was.
 non-attachment items landed at +723, +737 and +766 production insertions —
 a spread of under 6% between the largest and the smallest. The item the
 forecast singled out as *not* chat-runtime-shaped produced the **largest** of
-those three. Whatever made these items cost what they cost, "does it touch the
-chat runtime" did not measure it.
+those three. Whatever separates these items, "does it touch the
+chat runtime" did not track even the diff size.
 
 **What the two false positives cost instead**, both named in their own PRs and
 neither nameable from the workspace's component tree:
@@ -387,7 +387,9 @@ proxy for it.
    retrospective wearing a forecast's clothes, and they are scored here as
    one.
 3. **Test insertions are not evidence of anything here.** They exceed the
-   production diff on every row but TASK-354's — at most 2.2×, on TASK-355 —
+   production diff on every row but TASK-354's — at most 2.2×, on TASK-355
+   among the four scored rows (the TASK-249 baseline's 494/224 rounds to the
+   same 2.2× and is fractionally higher) —
    and they track this repo's Bug Fix Policy, not the item's difficulty. They
    are in the table so the production column can be checked against the
    published totals, not so the ratio can be read.
