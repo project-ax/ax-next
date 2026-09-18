@@ -133,9 +133,13 @@ export function workspaceIdForAgent(agentId: string): string {
  * The fix belongs in the listener (refuse `workspace:*` for an owner-less
  * session), not in a backend blocklist -- and that fix already exists
  * elsewhere for the same fallback: `ipc-core`'s `skill-propose` handler and
- * `@ax/tool-connector-propose` both refuse the placeholder owner rather than
- * serve it. This is a known pattern with one unconverted caller, not an
- * unexamined hole.
+ * `@ax/tool-connector-propose` both refuse rather than write under the
+ * placeholder. Note precisely what they check, because it is less than it
+ * sounds: both test for `'ipc-server'` ONLY, so neither yet refuses the
+ * `'ipc-http'` placeholder named above. That makes this a known pattern with
+ * an unconverted caller AND an incomplete implementation in the converted
+ * ones -- which strengthens the case for fixing it at the listener, where
+ * there is one place to get the set right.
  *
  * `userId` is deliberately NOT required here. Since TASK-257 it is not part of
  * the partition on either backend, so demanding it would gate on a field that
@@ -155,6 +159,50 @@ function requireAgent(ctx: AgentContext, hookName: string): string {
     });
   }
   return workspaceIdForAgent(agentId);
+}
+
+/**
+ * A `WorkspaceVersion` as THIS backend mints them: a full 40-hex commit OID.
+ *
+ * Why this exists, given `WorkspaceVersion` is deliberately opaque: because
+ * every version a caller hands us ends up as the leading characters of an
+ * argument to the `git` binary -- standalone in
+ * `ls-tree -r -z --name-only <version>`, and as the prefix of
+ * `<version>^{commit}` and `<version>:<path>`. An argument that starts with a
+ * dash is read by git as an OPTION, and none of our call sites pass `--`.
+ *
+ * `asWorkspaceVersion` in `@ax/core` is a bare cast with no validation, and it
+ * must stay that way -- the version's SHAPE is a backend's business, and
+ * `MockWorkspace` deliberately mints non-SHA `mock-N` strings to prove the
+ * contract is storage-agnostic (Invariant 1). So a `[0-9a-f]{40}` check does
+ * NOT belong in core. It belongs exactly here, in the backend that mints SHAs
+ * and is therefore entitled to demand them.
+ *
+ * This replaces a caller-discipline argument with a structural one. The
+ * previous reasoning -- "no untrusted caller can reach a version parameter" --
+ * required a census of every plugin that forwards a version, and that census
+ * was already wrong once: `@ax/validator-identity` forwards the runner's
+ * `parent` into `workspace:read` from a `workspace:pre-apply` subscriber,
+ * reaching `cat-file blob <version>:<path>`. A multi-plugin census is not a
+ * security boundary; a regex at the entry point is.
+ */
+const OID_RE = /^[0-9a-f]{40}$/;
+
+function requireOid(
+  version: WorkspaceVersion | string,
+  hookName: string,
+  field: string,
+): string {
+  const v = version as string;
+  if (typeof v !== 'string' || !OID_RE.test(v)) {
+    throw new PluginError({
+      code: 'invalid-version',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `${field} must be a 40-character hex commit id`,
+    });
+  }
+  return v;
 }
 
 // Bot identity. INTENTIONALLY hard-coded — the agent never gets to choose
@@ -928,9 +976,13 @@ export function registerWorkspaceGitHooks(
   async function resolveVersion(
     gitdir: string,
     version: WorkspaceVersion | undefined,
+    hookName: string,
   ): Promise<string | null> {
     await ensureRepo(gitdir);
-    if (version !== undefined) return version as string;
+    // A caller-supplied version becomes an argv token for `git`. Validate the
+    // shape HERE, at the single choke point both read and list go through,
+    // rather than trusting that no caller ever forwards an odd string.
+    if (version !== undefined) return requireOid(version, hookName, 'version');
     return resolveHead(gitdir);
   }
 
@@ -1042,7 +1094,7 @@ export function registerWorkspaceGitHooks(
     PLUGIN_NAME,
     async (ctx, input) => {
       const { gitdir } = agentRepo(ctx, 'workspace:read');
-      const commitOid = await resolveVersion(gitdir, input.version);
+      const commitOid = await resolveVersion(gitdir, input.version, 'workspace:read');
       if (commitOid === null) return { found: false };
       // Read via real `git cat-file blob`, NOT isomorphic-git's git.readBlob —
       // iso-git's `fs.read` adapter coalesces transient read errors (EAGAIN /
@@ -1073,7 +1125,7 @@ export function registerWorkspaceGitHooks(
     PLUGIN_NAME,
     async (ctx, input) => {
       const { gitdir } = agentRepo(ctx, 'workspace:list');
-      const commitOid = await resolveVersion(gitdir, input.version);
+      const commitOid = await resolveVersion(gitdir, input.version, 'workspace:list');
       if (commitOid === null) return { paths: [] };
       // List via real `git ls-tree`, NOT isomorphic-git's git.listFiles —
       // listFiles walks the tree through the same readObjectPacked path that
@@ -1107,6 +1159,9 @@ export function registerWorkspaceGitHooks(
     PLUGIN_NAME,
     async (ctx, input) => {
       const { gitdir } = agentRepo(ctx, 'workspace:diff');
+      // Both versions become argv tokens for `git`; validate before use.
+      if (input.from !== null) requireOid(input.from, 'workspace:diff', 'from');
+      requireOid(input.to, 'workspace:diff', 'to');
       await ensureRepo(gitdir);
       let fromSnapshot: Snapshot;
       let fromCommitOid: string | null = null;
@@ -1172,6 +1227,11 @@ export function registerWorkspaceGitHooks(
       // caller would hand out a usable baseline OID to someone the other
       // hooks refuse to serve — and the next step in that flow is an apply.
       const { gitdir, mutex } = agentRepo(ctx, 'workspace:export-baseline-bundle');
+      // A concrete version reaches `rev-parse --verify <v>^{commit}` as an
+      // argv token. `null` (seed) and `undefined` (HEAD) name no oid at all.
+      if (input.version !== null && input.version !== undefined) {
+        requireOid(input.version, 'workspace:export-baseline-bundle', 'version');
+      }
       // version=null: explicit seed condition — ALWAYS deterministic
       // empty baseline, regardless of current state. No mutex needed
       // (built from a temp scratch repo).
@@ -1218,6 +1278,12 @@ export function registerWorkspaceGitHooks(
     PLUGIN_NAME,
     async (ctx, input) => {
       const { gitdir, mutex } = agentRepo(ctx, 'workspace:apply-bundle');
+      // `baselineCommit` reaches `merge-base --is-ancestor` and the seed path
+      // as an argv token. (`parent` does NOT — it is only ever string-compared
+      // against the current head — so it is deliberately left unvalidated:
+      // narrowing it would turn a garbage parent's `parent-mismatch` into a
+      // different code, and @ax/attachments keys its retry on that one.)
+      requireOid(input.baselineCommit, 'workspace:apply-bundle', 'baselineCommit');
       return mutex.run(async () => {
         await ensureRepo(gitdir);
         const currentOid = await resolveHead(gitdir);

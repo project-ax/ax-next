@@ -31,7 +31,7 @@ For the writes that DO touch caller-supplied filenames (the path inside the tree
 - Empty segments, `.`, and `..` (which would otherwise traverse out of the repo if a future backend resolved them naively).
 - Any segment named `.git` (defense-in-depth; we don't currently materialize the working tree, but if a future backend does, this prevents writing into the metadata dir).
 
-Reads, lists, and diffs take a `path` parameter that is resolved **inside the git object database**, never against the host filesystem. Since TASK-73 these go through the git binary as `git cat-file blob <oid>:<path>` and `git ls-tree -r -z --name-only <oid>` (not iso-git's `readBlob`/`listFiles`, whose `fs.read` adapter could coalesce a transient short read into a silently wrong answer — see `__tests__/null-slice-race.test.ts`). Either way the lookup is a tree-entry lookup: `..` in that position asks for an entry literally *named* `..` inside the tree, which does not exist, and you get a not-found. There is no host-FS traversal vector on the read side even without `validatePath`. What the read paths DO depend on is the identity gate — `<oid>` and the gitdir are chosen by `requireAgent`, not by the caller.
+Reads, lists, and diffs take a `path` parameter that is resolved **inside the git object database**, never against the host filesystem. Since TASK-73 these go through the git binary as `git cat-file blob <oid>:<path>` and `git ls-tree -r -z --name-only <oid>` (not iso-git's `readBlob`/`listFiles`, whose `fs.read` adapter could coalesce a transient short read into a silently wrong answer — see `__tests__/null-slice-race.test.ts`). Either way the lookup is a tree-entry lookup: `..` in that position asks for an entry literally *named* `..` inside the tree, which does not exist, and you get a not-found. There is no host-FS traversal vector on the read side even without `validatePath`. Be precise about who picks what, because an earlier draft of this line got it backwards: the **gitdir** is `requireAgent`'s (derived from `ctx.agentId`, never from the payload), while the **oid** IS caller-supplied. So a caller chooses which object to address, and the identity gate chooses which repo it may address it in. The oid's SHAPE is constrained separately — see **Argv injection**.
 
 ### Process spawn
 
@@ -42,7 +42,7 @@ It read: *"None. We confirmed by inspection that `impl.ts` imports only `node:fs
 What actually spawns, and why:
 
 - **The bundle hooks** (`workspace:apply-bundle`, `workspace:export-baseline-bundle`). `isomorphic-git` has no bundle support at all — not create, not verify, not fetch-from-bundle. The bundle wire is the contract with the runner, so short of reimplementing the pack format, real `git` is the only option.
-- **The read paths** (`workspace:read`, `workspace:list`, and `diff`'s snapshot reads) use `git cat-file blob` and `git ls-tree` rather than `git.readBlob` / `git.listFiles`, because iso-git's `fs.read` adapter coalesces transient short reads into a silent wrong answer (the null-slice race — see `__tests__/null-slice-race.test.ts`). We took a spawn over a backend that can quietly return the wrong bytes.
+- **The read paths** use `git cat-file blob` and `git ls-tree` rather than `git.readBlob` / `git.listFiles`, because iso-git's `fs.read` adapter coalesces transient short reads into a silent wrong answer (the null-slice race — see `__tests__/null-slice-race.test.ts`). We took a spawn over a backend that can quietly return the wrong bytes. That covers `workspace:read`, `workspace:list`, `diff`'s snapshots — **and `workspace:apply`**, which reads the parent snapshot (`readSnapshotAt`) and lazily fetches before/after bytes for the delta (`readBlobBytes`). So: all six hooks can spawn `git`. An earlier version of this section said five, which was the count before anyone noticed apply reads its own parent.
 
 Why it's safe, all of which is real code in `runGit` / `runGitBinary`:
 
@@ -59,15 +59,13 @@ Caller-influenced values that reach argv: `input.baselineCommit`, resolved commi
 
 The one shape worth naming: an argument that *starts with a dash* is read by `git` as a flag rather than a value, and none of our call sites use a `--` separator.
 
-Being precise about this, because the easy version of this paragraph is an overclaim. **`WorkspaceVersion` is not validated.** `asWorkspaceVersion` in `@ax/core` is a bare cast — no regex, no length check — and `resolveVersion` passes `input.version` straight through. So a `version` DOES become the leading characters of an argv token: on its own in `git ls-tree -r -z --name-only <version>`, and as the prefix of `<version>^{commit}` and `<version>:<path>`.
+**This is now enforced structurally, not argued.** `requireOid` rejects any version that is not `[0-9a-f]{40}` before it reaches a `git` argument — on `read`, `list`, `diff` (`from` and `to`), `export-baseline-bundle` (`version`), and `apply-bundle` (`baselineCommit`). `__tests__/version-argv.test.ts` pins it with option-shaped values (`--name-only`, `-z`, `--upload-pack=...`, `--`, `-`) plus near-misses that prove it is a real regex rather than a `startsWith('-')` check.
 
-What keeps that from being a hole today is the set of callers, not a check:
+Why the check lives HERE and not in `@ax/core`: `asWorkspaceVersion` is a bare cast with no validation, and it has to stay that way. A version's shape is a backend's business, and `MockWorkspace` deliberately mints non-SHA `mock-N` strings to prove the contract is storage-agnostic (Invariant 1). A `[0-9a-f]{40}` rule in core would be git vocabulary in the transport-agnostic layer. This backend mints SHAs, so this backend gets to demand them.
 
-- `version`/`from`/`to` on `read`, `list` and `diff` are supplied by **host-side** plugins, which pass back a version this backend previously minted. `workspace:diff` has no production caller at all.
-- The **runner** — the one semi-trusted caller — cannot reach them. The `workspace.read` IPC handler forwards only `path`, never a version. Its one version-shaped input is `parentVersion` on `workspace.commit-notify`, and that lands in `git rev-parse --verify <v>^{commit}`, whose non-zero exit throws **before** anything is written to the gitdir. `baselineCommit` is re-derived host-side and never taken from the wire.
-- Worst case for a malformed value is therefore a failed `git` invocation, not a write or a disclosure.
+What this replaced is worth recording, because it is the more interesting half. The previous version of this section argued from CALLER DISCIPLINE — "no untrusted caller can reach a version parameter" — and that argument required a census of every plugin that forwards a version. The census was wrong: `@ax/validator-identity`, from a `workspace:pre-apply` subscriber, forwards the runner's `parent` into `workspace:read`, reaching `cat-file blob <version>:<path>`. Nothing was exploitable (git errors on a bad ref, and the ordering happened to save us), but a claim that depends on enumerating every current subscriber is not a boundary — it is a snapshot that the next plugin invalidates. A regex at the entry point is true regardless of who calls.
 
-That is a caller-discipline argument, which is weaker than a validated input. Validating `WorkspaceVersion` at the `@ax/core` boundary (or passing `--` at these call sites) would turn it into a structural one, and is filed as a follow-up. If a future change ever routes a free-form caller string into a positional argument, do that first.
+One field is deliberately NOT validated: `parent` on `apply` / `apply-bundle`. It never becomes an argv token — it is only string-compared against the current head — and narrowing it would turn a garbage parent's `parent-mismatch` into a different error code, which `@ax/attachments` keys its retry logic on.
 
 ### Env vars
 
@@ -154,7 +152,7 @@ Two runtime deps. Both pinned to exact versions in `package.json` (no `^` or `~`
 - **Pin:** Exact (`"isomorphic-git": "1.37.5"`).
 - **Maintainers:** `wmhilton` (William Hilton, project lead since 2017), `mojavelinux` (Dan Allen), `jcubic` (Jakub Jankiewicz). Established maintainer set, ~6+ years of releases, project is the de facto pure-JS git library on npm.
 - **Install hooks:** None that fire on consumer install. `npm view isomorphic-git@1.37.5 scripts` returns `start`, `format`, `build`, `test`, `publish-website`, `prepublishOnly`, `semantic-release`, `add-contributor`. The only lifecycle script that npm/pnpm runs automatically is `prepublishOnly`, and that fires when the maintainer publishes the package, not when we install it. There is no `preinstall`, `install`, `postinstall`, or `prepare` script — confirmed.
-- **Why pure-JS matters here:** the entire reason this code can claim "no process spawn" is that `isomorphic-git` doesn't spawn `git`. It implements the git object format, pack format, and ref handling in JavaScript. That's a much larger code surface than shelling out — but it's a code surface we can read, audit, and pin a hash of, instead of inheriting whatever `/usr/bin/git` happens to be on the host.
+- **Why pure-JS matters here (with an honest correction):** this bullet used to say that "the entire reason this code can claim 'no process spawn' is that `isomorphic-git` doesn't spawn `git`", and that we therefore avoid "inheriting whatever `/usr/bin/git` happens to be on the host". Neither half survives contact with the code: we **do** spawn `git`, and our pinned `PATH` **includes** `/usr/bin`. What pure-JS still buys us is real but narrower — the write path (blob/tree/commit construction, ref CAS) stays in auditable, version-pinned JavaScript, so the git binary is reached only for bundles and for the reads that TASK-73 moved (see **Process spawn**). The binary itself is an unpinned host dependency; see the `git` bullet below.
 - **Transitive surface (notable entries from `npm view ... dependencies`):**
   - `clean-git-ref@^2.0.1` — ref-name validation. Tiny, pure JS.
   - `crc-32@^1.2.0` — checksums. Pure JS, pinned widely across the ecosystem.
@@ -163,7 +161,15 @@ Two runtime deps. Both pinned to exact versions in `package.json` (no `^` or `~`
   - `async-lock@^1.4.1`, `pify@^4.0.1`, `readable-stream@^4.0.0`, `minimisted@^2.0.0`, `ignore@^5.1.4`, `diff3@0.0.3` — utility/plumbing.
   - `simple-get@^4.0.1` — HTTP client. **Network-capable, but only reached from the `isomorphic-git/http/node` sub-export**, which this package does not import. We're paying the disk-space cost without granting the capability to our code paths.
 
-  None of the above have install hooks at the versions resolved. The transitive set is consistent with a "pure-JS git plumbing" claim; nothing here phones home, reads env vars at import, or shells out.
+  None of the above have install hooks at the versions resolved. The transitive set is consistent with a "pure-JS git plumbing" claim; none of these *packages* phones home, reads env vars at import, or shells out. (This package's own code does shell out to `git` — that is our call site, not theirs. See **Process spawn**.)
+
+### The `git` binary — an unpinned dependency we should name
+
+Not an npm package, so it never shows up in a lockfile diff or an audit — which is exactly why it belongs here. Since TASK-73 this package needs a working `git` on the host, and it is the one dependency we cannot pin a hash of.
+
+What bounds it: `PATH` is a fixed list (`/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:/opt/local/bin`), not the ambient one, so we pick `git` from known locations rather than from whatever the operator's shell happens to have first. `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null` stop a system or user gitconfig from steering that binary (no `core.pager`, no `core.fsmonitor`, no alias expansion). We do not verify the binary itself.
+
+Practically: in the container this is the distro `git` from the image, which is pinned by the image digest. On a developer laptop it is whatever they have. If we ever need a stronger claim, the move is to pin an absolute path per deployment rather than to search a list.
 
 ### `picomatch@4.0.4`
 
@@ -176,8 +182,10 @@ Two runtime deps. Both pinned to exact versions in `package.json` (no `^` or `~`
 
 ## Boundary review
 
-- **Alternate impl this hook could have:** `@ax/workspace-postgres` — same four service hooks, but storing snapshots as content-addressed blobs in Postgres (path → bytes per version, with parent pointers). The `WorkspaceVersion` would be a UUID or a hash-of-rows, not a SHA. Service hook signatures don't change; the implementation behind them does.
-- **Payload field names that might leak:** none. `WorkspaceVersion` is opaque (the fact that it's a SHA today is documented as an implementation detail). `FileChange` uses `path` / `kind` / `content`. `WorkspaceDelta` uses `before` / `after` / `changes` / `reason` / `author`. No `commit`, `sha`, `oid`, `tree`, `ref`, `gitdir`, or other git-specific vocabulary leaks across the hook surface. The `repoRoot` config is plugin-local, not on any payload.
+- **Alternate impl this hook could have:** `@ax/workspace-postgres` — same four base service hooks, but storing snapshots as content-addressed blobs in Postgres (path → bytes per version, with parent pointers). The `WorkspaceVersion` would be a UUID or a hash-of-rows, not a SHA. Service hook signatures don't change; the implementation behind them does.
+- **Payload field names that might leak:** on the four BASE hooks, none. `WorkspaceVersion` is opaque (that it is a SHA today is an implementation detail). `FileChange` uses `path` / `kind` / `content`; `WorkspaceDelta` uses `before` / `after` / `changes` / `reason` / `author`. No `commit`, `sha`, `oid`, `tree`, `ref` or `gitdir` crosses those. `repoRoot` is plugin-local, not on any payload.
+
+  **On the two BUNDLE hooks, yes — and it is a known, accepted trade-off, not an oversight.** `workspace:apply-bundle` and `workspace:export-baseline-bundle` carry `bundleBytes` and `baselineCommit`; the second word is literally "commit". This is the I1 trade-off recorded in `@ax/core`'s `workspace.ts` and restated at the bundle section of `impl.ts`: the bundle wire is how a runner ships a turn's commits home, and there is no storage-agnostic spelling of a git bundle. They are OPTIONAL service hooks precisely so a non-git backend can decline to register them rather than pretend. Saying "none" here, as this bullet used to, hid the one real leak behind a clean answer about the other four.
 - **Subscriber risk:** subscribers MUST treat `before` / `after` as opaque strings — if a subscriber tries to parse them as 40-hex SHAs, they break the day a Postgres-backed alternate impl ships.
 - **Wire surface (IPC):** none. The only consumer (`@ax/workspace-git`) runs in-process and has no wire surface. (The multi-replica backend, `@ax/workspace-git-server`, has one — but it does not use this code, so it is reviewed in its own SECURITY.md, not here.)
 
