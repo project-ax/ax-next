@@ -295,17 +295,33 @@ describe('effectDisclosure (TASK-329)', () => {
     const promise =
       /\b(can|could|able to|still|chance to|moment to|time to|opportunity to)\b[^.,;:—]{0,24}\b(undo|undone|take it back|reverse|reversed|stop)\b/i;
 
-    // ARM THE GUARD BEFORE TRUSTING IT. A denylist that matches nothing passes
-    // every string, including the one it exists to stop, and this repo has
-    // shipped a mechanism that was armed-but-never-firing twice this week.
-    // These are the phrases that must red it.
+    // `promise` is scoped to a VERB shape, so the same promise phrased as a
+    // NOUN walks straight past it — "You have a window to undo this", "There
+    // is a way to undo it", "A brief period lets you undo". Each names an
+    // affordance this surface cannot promise, each satisfies test 1's "contains
+    // undo", and none is a modal of ability. Closed rather than merely
+    // recorded: a noun of OPPORTUNITY reaching a reversal verb, same clause
+    // bound and for the same reason.
+    const affordance =
+      /\b(window|way|means|option|period|opportunity|chance|moment)\b[^.,;:—]{0,24}\b(undo|undone|take it back|reverse|reversed|stop)\b/i;
+
+    // ARM EVERY PATTERN BEFORE TRUSTING ANY OF THEM. A denylist that matches
+    // nothing passes every string, including the one it exists to stop, and
+    // this board has twice shipped a mechanism that was armed-but-never-firing.
+    // Each phrase below must be caught by at least one of the three.
     for (const hazard of [
       'You can still take it back.',
       'You have a moment to undo this after approving.',
       'There is a chance to stop it.',
       'You are able to reverse this.',
+      'You have a window to undo this.',
+      'There is a way to undo it.',
+      'A brief period lets you undo.',
+      'You get a ten seconds head start.',
     ]) {
-      expect(hazard).toMatch(promise);
+      expect(
+        control.test(hazard) || promise.test(hazard) || affordance.test(hazard),
+      ).toBe(true);
     }
 
     for (const effect of ['spends', 'outward'] as const) {
@@ -313,6 +329,7 @@ describe('effectDisclosure (TASK-329)', () => {
       for (const field of [d.detail, d.srLabel, d.label]) {
         expect(field).not.toMatch(control);
         expect(field).not.toMatch(promise);
+        expect(field).not.toMatch(affordance);
       }
     }
   });

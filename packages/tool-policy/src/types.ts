@@ -105,11 +105,12 @@ export interface PolicyRule {
    * warm — is re-issued by that agent the moment the fingerprint gate lets it
    * through, and nothing host-side can hold it for ten seconds. So an
    * irreversible rule whose calls need the grace period must be raised
-   * unattended. That is a recorded limit, not an oversight (`plugin.ts`).
+   * unattended. That is a recorded limit, not an oversight, recorded in
+   * `@ax/decisions`'s own `packages/decisions/src/plugin.ts`.
    *
    * THIS COMMENT USED TO SAY THE OPPOSITE — that AW-5 "must NOT offer the
    * 10-second undo window" on an irreversible call. Corrected against the
-   * shipped behaviour in TASK-384: `plugin.ts` sets
+   * shipped behaviour in TASK-384: `packages/decisions/src/plugin.ts` sets
    * `deferred = !attended && hasExecutor && current.irreversible`, and only a
    * deferred decision gets a `replayDueAt`. The window exists FOR the
    * irreversible case, not in spite of it.
