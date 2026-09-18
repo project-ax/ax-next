@@ -117,3 +117,9 @@ Behaviors (not project facts). Name a behavior, name the better alternative. Tag
   is ~306 per dispatch round against a 5000/hr budget shared with the poller, the heartbeats and the
   merge queue. Session 5 exhausted it within a minute of dispatching three builders and had to redirect
   all three mid-flight. **Hand builders their card body as a local file path.** Never a board query.
+
+## 2026-09-18 — design sessions: run the "what replaces this, exactly" pass BEFORE presenting a section, not after being asked to review it
+
+- **My first draft of a design section contains rhetorical rows.** In the DEM-first spec, §1's tier row, §3's `at` parameter and §2's `replaces` threshold each read well and each fell to a single question — "what is the mechanism, where does it run, what data would measure it." The user had to ask "review this design" and "review §3" to trigger that pass; it should be the last step of writing each section. `active`.
+- **A user's one-line "what if X?" on a design is usually pointing at something I copied without deriving.** "What if the tenant key is just agentId?" opened onto a routing accident, a precedent plugin, and a capability the composite key made impossible. Treat such questions as "go read how it actually works" prompts, not as preference polls — and check the repo (three greps, five minutes) before answering.
+- **Measured numbers first, then the design.** The one $0 replay (supersession closures over the cache) moved §2 from a footnote to the centre and cut two proposed mechanisms. On this project a design section that rests on an un-run measurement over data we already hold should not be presented until the measurement is run.
