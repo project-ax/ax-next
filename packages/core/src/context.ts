@@ -209,6 +209,26 @@ export function makeAgentContext(opts: MakeAgentContextOptions): AgentContext {
 // is not thereby authorized to reach that agent — the `agents:resolve` ACL
 // the workspace routes run before every per-agent read is the barrier that
 // decides that, and it stays load-bearing.
+//
+// ⚠ WHO ACTUALLY REFUSES, as of TASK-411 — because "owner-less gets nothing"
+// is true of the workspace tier and NOT of everything:
+//
+//   - REFUSE: `@ax/workspace-git-core` (`requireAgent`) and
+//     `@ax/workspace-git-server` (`resolveWorkspaceId`), plus `skill.propose`
+//     and `connector_propose`.
+//   - MERELY PARTITION: both `@ax/memory-strata-index-*` backends hash
+//     `agentId` the same way with no gate of their own. An owner-less caller
+//     gets a private, per-session key there rather than an error.
+//
+// Partitioning is enough to stop POOLING, which is what this helper's
+// uniqueness buys and why it holds in stores nobody edited. It is not enough
+// to stop an owner-less caller from accumulating rows. One caveat worth
+// stating rather than discovering: uniqueness is only as good as the
+// sessionId, and `ax serve` lets a client CHOOSE one — two owner-less callers
+// inside that one trust domain who pick the same sessionId get the same key.
+// Strictly better than the single deployment-wide bucket this replaced, and
+// the workspace tier fails closed regardless, but it is the reason the
+// memory-index gate is a live follow-up and not a decoration.
 // ---------------------------------------------------------------------------
 
 /**

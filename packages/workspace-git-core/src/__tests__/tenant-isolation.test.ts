@@ -273,8 +273,22 @@ describe('@ax/workspace-git-core tenant isolation (TASK-396)', () => {
   // -------------------------------------------------------------------------
   describe('fails closed when the caller has no OWNER (TASK-411)', () => {
     it('refuses list/read/apply for an owner-less caller', async () => {
-      // Against unfixed code every one of these SUCCEEDS: the listener's
-      // constant hashed to a real repo and the call was served from it.
+      // Load-bearing: against this backend without the `isOwnerlessId` gate,
+      // every one of these SUCCEEDS rather than rejecting — a marked id is a
+      // non-empty string, so the blank check above hashes it like any other and
+      // hands back a tree. Measured: 3 of this block's 4 cases fail with the
+      // gate forced false.
+      //
+      // Be precise about what this pins, because the obvious overstatement is
+      // wrong: these ids are DISTINCT, so what the ungated backend serves here
+      // is an EMPTY private repo, not another session's file. The pooling
+      // itself — two sessions arriving under the SAME id — is not reachable
+      // from this unit, because the shared constant was minted by the
+      // listener, which is not in this test. That half lives in
+      // `@ax/ipc-{http,server}`'s `ownerless-tenant-isolation.test.ts`, where a
+      // real request goes through the real listener. This block pins the other
+      // half: owner-less gets NOTHING, so there is no private tree to
+      // accumulate one in either.
       const { caller, write, list, read } = await setup();
       await write(caller('user-a', 'agent-a'), 'secret.md', 'not yours');
       const anon = caller(
@@ -293,10 +307,14 @@ describe('@ax/workspace-git-core tenant isolation (TASK-396)', () => {
       });
     });
 
-    it('two owner-less sessions cannot reach one shared tree', async () => {
-      // The bug itself. Against unfixed code, session 1's write and session 2's
-      // list both resolve to ws-sha256(["ipc-server"]) and the second call
-      // returns the first session's file.
+    it('neither of two owner-less sessions gets a tree to share', async () => {
+      // Both are refused, so the question "do they share one?" cannot arise
+      // here. Do NOT read this as a pooling repro: the two ids are distinct, so
+      // against the ungated backend session two's `list` returns `{ paths: [] }`
+      // — an empty private repo — and never session one's file. (That is
+      // verbatim what the mutant run printed: `promise resolved "{ paths: [] }"
+      // instead of rejecting`.) The pooling repro needs the listener, and lives
+      // in the two `ownerless-tenant-isolation.test.ts` files.
       const { caller, write, list } = await setup();
       const one = caller(ownerlessIdFor('s-1'), ownerlessIdFor('s-1'));
       const two = caller(ownerlessIdFor('s-2'), ownerlessIdFor('s-2'));

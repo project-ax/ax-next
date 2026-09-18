@@ -164,11 +164,13 @@ export async function createHttpListener(
     //
     // Without this stamping the runner's `/conversation.store-runner-session`
     // landed at `bus.call('conversations:store-runner-session', ctx, ...)`
-    // with `ctx.userId === 'ipc-http'`. The store does a userId-scoped
-    // UPDATE keyed off the conversation owner, so `'ipc-http'` never
-    // matched any real row → 404 not-found → runner threw → resume on
+    // with a stand-in `ctx.userId` (at the time, the constant `'ipc-http'` —
+    // named here only as history; nothing stamps it any more). The store does a
+    // userId-scoped UPDATE keyed off the conversation owner, so a stand-in
+    // never matches a real row → 404 not-found → runner threw → resume on
     // turn 2 silently lost the transcript (regression:
-    // runner-owned-sessions-k8s-gap.test.ts:156).
+    // runner-owned-sessions-k8s-gap.test.ts:156). That a stand-in matches no
+    // real row is still true, and now by design.
     //
     // TASK-181: stamp the resolved session's HOST-DERIVED origin too, same as
     // @ax/ipc-server. This TCP listener is the runner↔host transport for the
