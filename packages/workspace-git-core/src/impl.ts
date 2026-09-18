@@ -1282,7 +1282,11 @@ export function registerWorkspaceGitHooks(
       // as an argv token. (`parent` does NOT — it is only ever string-compared
       // against the current head — so it is deliberately left unvalidated:
       // narrowing it would turn a garbage parent's `parent-mismatch` into a
-      // different code, and @ax/attachments keys its retry on that one.)
+      // different code, and that code is the workspace-CAS rebase-retry
+      // contract: @ax/memory-strata's agent-tier-sync, channel-web's
+      // workspace-cas, @ax/routines-admin-routes and ipc-core's commit-notify
+      // all key on it. NOT @ax/attachments, which an earlier draft of this
+      // comment credited — TASK-68 moved it to blob:put and off this path.)
       requireOid(input.baselineCommit, 'workspace:apply-bundle', 'baselineCommit');
       return mutex.run(async () => {
         await ensureRepo(gitdir);
