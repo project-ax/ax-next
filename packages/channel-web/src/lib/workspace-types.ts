@@ -579,6 +579,33 @@ export interface MemoryDoc {
 }
 
 /**
+ * How the Memory tab's two reads went — status first, rows second.
+ *
+ * `MemoryDoc[]` on its own could not carry this, and the gap was a live bug
+ * (TASK-417). On a deployment with no memory plugin loaded at all, the server
+ * answered `[]` and the tab drew two different lies out of it: the agent's half
+ * rendered "Nothing yet", which is a claim about the agent, and the human's
+ * half offered "try again in a moment", which is a promise nothing can keep —
+ * there is no backend to come back. An empty array is a CLAIM on this surface;
+ * see `WorkspaceReadStatus` for the same argument made once for the rail.
+ *
+ * The two tiers carry their own status rather than sharing one because they are
+ * two different service hooks (`memory:rules:read`, `memory:learned:read`) and
+ * either can be absent or fail on its own. One status for both would have to
+ * pick a winner, and the loser's section would then word itself off a fact that
+ * is not about it.
+ *
+ * `rules.doc` is non-null exactly when `rules.status === 'ok'` — the editor
+ * appears only over storage we actually read. `learned.docs` is meaningful
+ * only when `learned.status === 'ok'`; on any other status it is empty and
+ * means nothing.
+ */
+export interface AgentMemoryRead {
+  rules: { status: WorkspaceReadStatus; doc: MemoryDoc | null };
+  learned: { status: WorkspaceReadStatus; docs: MemoryDoc[] };
+}
+
+/**
  * One row in the Files tab's list.
  *
  * What the prototype's `WorkspaceFile` had and this does not: `meta`

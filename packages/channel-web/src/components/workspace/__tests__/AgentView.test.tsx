@@ -87,7 +87,7 @@ function detail(over: Partial<AgentDetail> = {}): AgentDetail {
     thread: [{ kind: 'user', id: 't1', text: 'what is on today' }],
     decisions: { status: 'ok' },
     past: [],
-    memory: [],
+    memory: { rules: { status: 'unavailable', doc: null }, learned: { status: 'unavailable', docs: [] } },
     ...over,
   };
 }

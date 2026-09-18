@@ -11,6 +11,17 @@
  * to write, because it is folded and dropped as the strata consolidates. That
  * sentence is a deliverable, not a disclaimer — a test asserts it renders, so a
  * later copy edit that quietly drops it fails.
+ *
+ * THE THIRD THING EACH HALF HAS TO SAY (TASK-417). Not every deployment runs a
+ * memory backend at all — `@ax/memory-strata` is loaded only where the preset
+ * turns it on, and a deployment without it registers neither `memory:rules:read`
+ * nor `memory:learned:read`. The tab used to receive a bare `MemoryDoc[]` from
+ * the server and could not tell that apart from "the read broke" or from "there
+ * is genuinely nothing here", so it said the most confident thing available:
+ * "Nothing yet", a claim about the agent, and "try again in a moment", a promise
+ * nothing can keep. Each half now takes a `WorkspaceReadStatus` and writes the
+ * sentence that is actually true. The retry appears only where retrying can
+ * work.
  */
 import { useEffect, useRef, useState } from 'react';
 import { Lock, Sparkles } from 'lucide-react';
@@ -18,8 +29,8 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { userFacingMessage } from '@/lib/http';
-import type { MemoryDoc } from '@/lib/workspace-api';
-import { SectionLabel } from './bits';
+import type { AgentMemoryRead, MemoryDoc } from '@/lib/workspace-api';
+import { ReadFailure, SectionLabel } from './bits';
 
 /**
  * The sentence the agent's own section owes the reader. Exported so the test
@@ -33,11 +44,12 @@ const RULES_PLACEHOLDER =
   'Always cc Priya on customer email.\nNever touch the billing spreadsheet without asking.';
 
 export function AgentMemory({
-  docs,
+  memory,
   agentName,
   onSaveRules,
+  onRetry,
 }: {
-  docs: MemoryDoc[];
+  memory: AgentMemoryRead;
   agentName: string;
   /**
    * Save the human tier, resolving to what is STORED afterwards.
@@ -53,37 +65,79 @@ export function AgentMemory({
    * read-only; the shell always passes it.
    */
   onSaveRules?: (body: string) => Promise<string>;
+  /**
+   * Re-read the agent detail, which is what both halves of this tab ride on.
+   *
+   * Optional, and the optionality is load-bearing rather than defensive: the
+   * "Try again" button exists only when there is something for it to run. A
+   * button that cannot do anything is the failure TASK-417 is about, one
+   * component further down.
+   */
+  onRetry?: () => void;
 }) {
-  const rules = docs.find((d) => d.scope === 'rules');
-  const learned = docs.filter((d) => d.scope === 'learned');
+  const { rules, learned } = memory;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-8 overflow-y-auto px-6 py-6">
-      {rules === undefined ? (
-        <RulesUnreadable />
-      ) : (
+      {rules.status === 'ok' && rules.doc !== null ? (
         <RulesEditor
           agentName={agentName}
-          initial={rules.body}
+          initial={rules.doc.body}
           {...(onSaveRules ? { onSave: onSaveRules } : {})}
         />
+      ) : (
+        <RulesWithoutEditor
+          agentName={agentName}
+          status={rules.status === 'ok' ? 'failed' : rules.status}
+          {...(onRetry ? { onRetry } : {})}
+        />
       )}
-      <LearnedSection docs={learned} agentName={agentName} />
+      <LearnedSection
+        status={learned.status}
+        docs={learned.docs}
+        agentName={agentName}
+      />
     </div>
   );
 }
 
 /**
- * No rules row came back — the server could not read them, or nothing on this
- * deployment keeps them.
+ * The rules tier with no editor over it, and WHY there is no editor.
  *
  * We show this instead of an empty editor ON PURPOSE. A blank box over storage
  * we could not read invites someone to type a rule, press Save, and overwrite
  * the rules they still have. "We do not know" must never render as "there is
  * nothing here" — least of all on the one tab whose promise is that what you
  * write down stays written down.
+ *
+ * TWO REASONS LAND HERE AND THEY GET DIFFERENT SENTENCES.
+ *
+ *   `failed`      — we have somewhere to keep rules and could not read it. The
+ *                   rules are still on disk; this is a blip. A retry can clear
+ *                   it, so there is a button when the caller gave us one.
+ *   `unavailable` — this deployment runs no memory backend. There is nothing to
+ *                   come back to, so "try again in a moment" would be a promise
+ *                   we cannot keep — the exact bug TASK-417 fixes. No button,
+ *                   and we say plainly that it is how the server is set up
+ *                   rather than anything the reader did.
+ *
+ * These sentences are local rather than `bits.tsx`'s shared `ReadFailure`
+ * because this section has to explain a WITHHELD CONTROL, not just a missing
+ * list. "There's nothing to show" would be the wrong sentence over a tab whose
+ * whole job is an editor.
+ *
+ * The register stays neutral in both cases — see `lib/read-register.ts`'s third
+ * clause, which cites this component by name.
  */
-function RulesUnreadable() {
+function RulesWithoutEditor({
+  agentName,
+  status,
+  onRetry,
+}: {
+  agentName: string;
+  status: 'unavailable' | 'failed';
+  onRetry?: () => void;
+}) {
   return (
     <section className="flex flex-col gap-2.5">
       <SectionLabel>
@@ -93,10 +147,26 @@ function RulesUnreadable() {
         </span>
       </SectionLabel>
       <Alert>
-        <AlertDescription>
-          We could not read your rules just now. Rather than show you an empty
-          box you might save over the top of, we are leaving the editor out —
-          try again in a moment.
+        <AlertDescription className="flex flex-col items-start gap-2">
+          {status === 'unavailable' ? (
+            <span>
+              This copy of AX isn&apos;t set up to keep rules for {agentName}, so
+              there&apos;s nowhere for us to put them. Nothing is broken and
+              nothing of yours is missing — whoever runs this server can switch
+              memory on, and the editor turns up here when they do.
+            </span>
+          ) : (
+            <span>
+              We could not read your rules just now. Rather than show you an
+              empty box you might save over the top of, we are leaving the
+              editor out. Your rules are still where you left them.
+            </span>
+          )}
+          {status === 'failed' && onRetry !== undefined && (
+            <Button type="button" variant="secondary" size="sm" onClick={onRetry}>
+              Try again
+            </Button>
+          )}
         </AlertDescription>
       </Alert>
     </section>
@@ -217,10 +287,30 @@ function RulesEditor({
   );
 }
 
+/**
+ * The agent's own tier — and, when there is nothing to list, WHY.
+ *
+ * Three answers, three sentences, and the reason this component takes a status
+ * at all (TASK-417):
+ *
+ *   `ok` + no docs   — genuinely empty. The agent has not written anything yet.
+ *                      This is the only case where we get to say that, because
+ *                      it is the only case where we know it.
+ *   `failed`         — the read broke. Unknown, not empty.
+ *   `unavailable`    — this deployment keeps no agent memory at all. The
+ *                      compaction blurb goes away with it: describing how we
+ *                      fold notes together is describing machinery that is not
+ *                      running here.
+ *
+ * The last two borrow `bits.tsx`'s `ReadFailure` rather than writing a third
+ * and fourth wording of the same two facts.
+ */
 function LearnedSection({
+  status,
   docs,
   agentName,
 }: {
+  status: AgentMemoryRead['learned']['status'];
   docs: MemoryDoc[];
   agentName: string;
 }) {
@@ -236,11 +326,19 @@ function LearnedSection({
         </span>
       </SectionLabel>
 
-      <p className="max-w-[62ch] text-[12.5px] leading-relaxed text-muted-foreground">
-        {agentName} wrote these itself. {COMPACTION_NOTICE}
-      </p>
+      {status !== 'unavailable' && (
+        <p className="max-w-[62ch] text-[12.5px] leading-relaxed text-muted-foreground">
+          {agentName} wrote these itself. {COMPACTION_NOTICE}
+        </p>
+      )}
 
-      {doc === undefined ? (
+      {status !== 'ok' ? (
+        <ReadFailure
+          status={status}
+          what={`what ${agentName} works out on its own`}
+          className="max-w-[62ch] text-[12.5px]"
+        />
+      ) : doc === undefined ? (
         <p className="text-[12.5px] text-muted-foreground">
           Nothing yet — {agentName} writes this down as it works.
         </p>

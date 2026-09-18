@@ -995,8 +995,15 @@ export function AgentView({
 
           {tab === 'memory' && (
             <AgentMemory
-              docs={detail.memory}
+              memory={detail.memory}
               agentName={agent.name}
+              /*
+                The "Try again" behind a FAILED memory read. `onChanged` re-pulls
+                the detail response, which is where both halves of the tab come
+                from, so the button can actually clear what put it on screen.
+                The tab shows it for `failed` only — see `RulesWithoutEditor`.
+              */
+              onRetry={onChanged}
               onSaveRules={async (body) => {
                 const saved = await workspaceApi.saveRules(agent.id, body);
                 // Re-read so what the tab shows is what the server stored, not

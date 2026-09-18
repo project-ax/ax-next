@@ -349,7 +349,7 @@ describe('WorkspaceShell', () => {
       thread: [],
       decisions: { status: 'ok' },
       past: [],
-      memory: [],
+      memory: { rules: { status: 'unavailable', doc: null }, learned: { status: 'unavailable', docs: [] } },
     });
 
     renderShell();
@@ -398,7 +398,7 @@ describe('WorkspaceShell', () => {
       ],
       decisions: { status: 'ok' },
       past: [],
-      memory: [],
+      memory: { rules: { status: 'unavailable', doc: null }, learned: { status: 'unavailable', docs: [] } },
     });
 
     renderShell();
@@ -453,7 +453,7 @@ describe('WorkspaceShell', () => {
       ],
       decisions: { status: 'ok' },
       past: [],
-      memory: [],
+      memory: { rules: { status: 'unavailable', doc: null }, learned: { status: 'unavailable', docs: [] } },
     });
 
     renderShell();
