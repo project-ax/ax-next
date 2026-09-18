@@ -157,6 +157,45 @@ export interface PolicyRule {
    * row and the hold would lose its sentence.
    */
   egress?: { urlField: string };
+  /**
+   * WHO REGISTERS THE TOOL — which is what makes its ABSENCE readable, and the
+   * only reason this field exists (TASK-416).
+   *
+   *   - `'host'`    — a host plugin registers it through `tool:register`, so it
+   *                   appears in `tool:list`. A deployment that does not load
+   *                   that plugin has no such tool AT ALL, and the catalog
+   *                   proves it: absence there is absence, full stop.
+   *   - `'sandbox'` — the RUNNER hands it to the agent inside its own
+   *                   workspace. It never passes through `tool:register`, so
+   *                   the host catalog is silent about it and its absence
+   *                   proves NOTHING.
+   *
+   * THE BUG THIS CLOSES. The rail used to establish "this agent cannot reach
+   * that tool" by walking the catalog and keeping what the agent's scope
+   * excluded — so it could only ever name tools that were IN the catalog. A
+   * rule naming a tool whose plugin never loaded had nothing to be subtracted
+   * from and rendered as a live ALLOW, under a heading that promises to
+   * describe what is installed today. The TASK-357 walk caught the rail
+   * advertising `memory_search` and `web_search` on a deployment that loads
+   * neither plugin, with the agent contradicting it in conversation.
+   *
+   * AND THE MIRROR-IMAGE MISTAKE IT AVOIDS, which is why this is a declaration
+   * rather than a catalog check. Reading absence-from-the-catalog as
+   * "uninstalled" for EVERY rule would silence the sandbox six — `Bash`,
+   * `Read`, `Write`, `Edit`, `Glob`, `Grep` are registered by the runner and
+   * are never in the host catalog — and a row that is not there reads as "it
+   * cannot do that". That is understating reach on a blast-radius surface,
+   * the one direction design H4 forbids, about the largest thing an agent can
+   * do. Overstating survives; guessing the sandbox away does not.
+   *
+   * OMITTED MEANS "NOBODY HAS SAID", and is treated as `'sandbox'` is —
+   * nothing is subtracted, which is the overstating direction. The type keeps
+   * it optional so a third-party table is not broken by a field it has never
+   * heard of; `rules.test.ts` requires every BUILTIN rule to declare it, the
+   * same way it requires `provenance`, because a silent default on a claim
+   * about whether a capability EXISTS is not a default worth having.
+   */
+  providedBy?: 'host' | 'sandbox';
 }
 
 /**
@@ -420,6 +459,30 @@ export interface ListCapabilitiesOutput {
    * eventually print, and it would print as a capability nobody authored.
    */
   fullyDescribedTools: string[];
+  /**
+   * Tools this table names that a HOST PLUGIN registers — see
+   * `PolicyRule.providedBy`, which carries the reasoning.
+   *
+   * COVERAGE, NOT DISPLAY, like `fullyDescribedTools` beside it, and it exists
+   * for the half of the reach question this table cannot answer alone. The
+   * table says what the product enforces; whether a given deployment LOADED
+   * the plugin that provides a tool is the tool catalog's business, and the
+   * catalog lives on the other side of the bus. So the caller — which holds
+   * both — checks these names against `tool:list` and sends back the misses in
+   * `outOfReach`. A name absent from the catalog is a tool this deployment
+   * cannot run, and a row claiming it is a false ALLOW (TASK-416).
+   *
+   * ONLY HOST-PROVIDED NAMES RIDE OUT, and the omission is the safety
+   * property. A sandbox built-in is registered by the runner, never appears in
+   * `tool:list`, and would therefore be "proved" uninstalled by the very check
+   * this field feeds — silencing the six largest capabilities an agent has.
+   * A caller cannot make that mistake with a list that never names them.
+   *
+   * Deliberately NOT filtered by `outOfReach`, for the same reason
+   * `fullyDescribedTools` is not: this is a fact about the TABLE, and it is an
+   * input to the caller's subtraction rather than an answer shaped by it.
+   */
+  hostProvidedTools: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -527,4 +590,10 @@ export const ListCapabilitiesOutputSchema = z.object({
   // read this" rather than silently re-listing every described tool as an
   // undescribed one.
   fullyDescribedTools: z.array(z.string()),
+  // Required for the same reason, pointing the other way: an impl that omits
+  // this answers "no tool in this table comes from a host plugin", which reads
+  // as "nothing here can be proved uninstalled" and restores the false ALLOW
+  // of TASK-416. Failing the parse makes the caller say it could not read the
+  // rules instead of quietly claiming reach the deployment does not have.
+  hostProvidedTools: z.array(z.string()),
 });

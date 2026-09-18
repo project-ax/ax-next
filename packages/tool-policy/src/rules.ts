@@ -17,10 +17,21 @@ import type { PolicyRule } from './types.js';
 // already stripped (`agent-runner-core/src/tool-policy.ts:54`, sent as
 // `call.name` at `:64`).
 //
-// A rule matching a tool that is not registered in a given deployment is INERT,
-// not an error. Several rules below are exactly that, deliberately: they are
-// rail rows describing what the agent may not do, and a row for a tool that is
-// absent is still a true statement.
+// A rule matching a tool that is not registered in a given deployment is INERT
+// in the EVALUATOR, not an error: nothing ever calls that tool, so the rule
+// never fires. Several rules below are exactly that, deliberately.
+//
+// THAT USED TO BE THE WHOLE PARAGRAPH, AND THE REST OF IT WAS FALSE. It went on
+// to say such a row "is still a true statement", which holds for a DENY (the
+// agent indeed may not do it) and is a lie for an ALLOW: the rail renders it
+// under a heading promising what is installed today, and the TASK-357 walk
+// caught it advertising `memory_search`, `memory_note`, `web_search` and
+// `web_extract` on a deployment that loads neither @ax/memory-strata nor
+// @ax/web-tools — with the agent contradicting its own rail in conversation.
+//
+// So every rule now declares `providedBy` (see `PolicyRule`), and the rail
+// subtracts the host-provided ones its tool catalog does not hold. A row is
+// inert here; it was never inert on the consent surface.
 //
 // Provenance for this table: docs/plans/2026-08-21-policy-condition-inventory.md
 //
@@ -57,6 +68,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   {
     id: 'builtins.web-fetch',
     match: { tool: 'WebFetch' },
+    providedBy: 'sandbox',
     verdict: 'deny',
     capability: 'reach websites outside the recorded connection',
     subject: 'agent',
@@ -65,6 +77,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   {
     id: 'builtins.web-search',
     match: { tool: 'WebSearch' },
+    providedBy: 'sandbox',
     verdict: 'deny',
     capability: 'search the web outside the recorded connection',
     subject: 'agent',
@@ -73,6 +86,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   {
     id: 'builtins.task',
     match: { tool: 'Task' },
+    providedBy: 'sandbox',
     verdict: 'deny',
     capability: 'start a hidden helper agent',
     subject: 'agent',
@@ -81,6 +95,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   {
     id: 'builtins.ask-user-question',
     match: { tool: 'AskUserQuestion' },
+    providedBy: 'sandbox',
     verdict: 'deny',
     // AW-1 seeded this as "ask you a multiple-choice question". That clause
     // fails our own lint: `ask` is a verdict word, because "asks you first" is
@@ -119,6 +134,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     // host-executed and therefore replayable by AW-5.
     id: 'skills.request-capability',
     match: { tool: 'request_capability' },
+    providedBy: 'host',
     verdict: 'hold',
     capability: 'gain access to a new service or key',
     subject: 'agent',
@@ -130,6 +146,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     // canary on either.
     id: 'connectors.propose',
     match: { tool: 'connector_propose' },
+    providedBy: 'host',
     verdict: 'hold',
     capability: 'set up a new connection for you',
     subject: 'agent',
@@ -138,6 +155,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   {
     id: 'skills.propose',
     match: { tool: 'skill_propose' },
+    providedBy: 'host',
     verdict: 'hold',
     capability: 'install a skill it wrote for itself',
     subject: 'agent',
@@ -155,7 +173,9 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   // sentences live.
   //
   // `web_search` / `web_extract` need a provider API key; the memory tools need
-  // @ax/memory-strata. Inert where absent.
+  // @ax/memory-strata. All five are `providedBy: 'host'`, which is what lets
+  // the rail DROP these rows where the plugin never loaded instead of
+  // advertising a capability the deployment does not have (TASK-416).
   //
   // The two web tools carry `spends` (TASK-263). They are not merely reads:
   // @ax/web-tools implements them by making a BILLED Anthropic Messages call
@@ -205,6 +225,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   {
     id: 'web.search',
     match: { tool: 'web_search' },
+    providedBy: 'host',
     verdict: 'allow',
     capability: 'search the web',
     subject: 'agent',
@@ -214,6 +235,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   {
     id: 'web.extract',
     match: { tool: 'web_extract' },
+    providedBy: 'host',
     verdict: 'hold',
     capability: 'read a web page, and remember the site it came from',
     subject: 'agent',
@@ -224,6 +246,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   {
     id: 'memory.search',
     match: { tool: 'memory_search' },
+    providedBy: 'host',
     verdict: 'allow',
     capability: 'look things up in its own memory',
     subject: 'agent',
@@ -232,6 +255,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   {
     id: 'memory.read-section',
     match: { tool: 'memory_read_section' },
+    providedBy: 'host',
     verdict: 'allow',
     capability: 'read a section of its own memory',
     subject: 'agent',
@@ -240,6 +264,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   {
     id: 'memory.note',
     match: { tool: 'memory_note' },
+    providedBy: 'host',
     verdict: 'allow',
     capability: 'write a note to its own memory',
     subject: 'agent',
@@ -248,6 +273,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   {
     id: 'skills.search-catalog',
     match: { tool: 'search_catalog' },
+    providedBy: 'host',
     verdict: 'allow',
     capability: 'look through the skill catalog',
     subject: 'agent',
@@ -256,6 +282,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   {
     id: 'artifacts.publish',
     match: { tool: 'artifact_publish' },
+    providedBy: 'host',
     verdict: 'allow',
     capability: 'publish a file for you to open',
     subject: 'agent',
@@ -284,14 +311,21 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   // Why these six and not the claude-sdk runner's fuller list: these are the
   // ones BOTH runners have (@ax/agent-aisdk-runner's `tools/builtins.ts`
   // registers exactly Bash, Read, Write, Edit, Glob, Grep; the claude-sdk
-  // runner passes through the SDK's own set, which is a superset). A row for a
-  // tool a given deployment does not register is INERT, not wrong — see the
-  // header. The claude-sdk extras are covered by the rail's own
+  // runner passes through the SDK's own set, which is a superset).
+  //
+  // ALL SIX ARE `providedBy: 'sandbox'`, and that is load-bearing rather than
+  // bookkeeping. They are registered by the RUNNER, so they never appear in the
+  // host tool catalog — and the rail's not-installed subtraction reads absence
+  // from that catalog as proof. Mark one of these `'host'` and its row
+  // disappears from every deployment at once, which is silence about the
+  // largest thing an agent can do: understating reach, the one direction design
+  // H4 forbids. The claude-sdk extras are covered by the rail's own
   // unrestricted-scope row rather than by a hand-copied list that would drift
   // against an SDK we do not version here.
   {
     id: 'sandbox.bash',
     match: { tool: 'Bash' },
+    providedBy: 'sandbox',
     verdict: 'allow',
     capability: 'run commands inside its own private workspace',
     subject: 'agent',
@@ -300,6 +334,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   {
     id: 'sandbox.read',
     match: { tool: 'Read' },
+    providedBy: 'sandbox',
     verdict: 'allow',
     capability: 'read files in its own workspace',
     subject: 'agent',
@@ -308,6 +343,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   {
     id: 'sandbox.write',
     match: { tool: 'Write' },
+    providedBy: 'sandbox',
     verdict: 'allow',
     capability: 'create files in its own workspace',
     subject: 'agent',
@@ -316,6 +352,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   {
     id: 'sandbox.edit',
     match: { tool: 'Edit' },
+    providedBy: 'sandbox',
     verdict: 'allow',
     capability: 'change files in its own workspace',
     subject: 'agent',
@@ -324,6 +361,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   {
     id: 'sandbox.glob',
     match: { tool: 'Glob' },
+    providedBy: 'sandbox',
     verdict: 'allow',
     capability: 'find files by name in its own workspace',
     subject: 'agent',
@@ -332,6 +370,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   {
     id: 'sandbox.grep',
     match: { tool: 'Grep' },
+    providedBy: 'sandbox',
     verdict: 'allow',
     capability: 'search inside files in its own workspace',
     subject: 'agent',

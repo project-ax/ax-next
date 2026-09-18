@@ -93,6 +93,19 @@ const RULE_TOOL: Record<string, string> = {
   'rule:builtins.task': 'Task',
 };
 
+/**
+ * The tools in `RULE_TOOL` a HOST PLUGIN registers into the tool catalog, so
+ * their absence from `tool:list` proves the deployment cannot run them.
+ *
+ * `Read` and `Task` are deliberately NOT here: the runner hands those to the
+ * agent inside its own sandbox, they never pass through `tool:register`, and
+ * reading their absence from the host catalog as "not installed" would silence
+ * the single largest thing an agent can do. That asymmetry is the whole reason
+ * the rule table declares `providedBy` instead of the rail guessing from the
+ * catalog alone.
+ */
+const HOST_PROVIDED: readonly string[] = ['web_search', 'request_capability'];
+
 interface AgentRecord {
   id: string;
   displayName: string;
@@ -127,6 +140,16 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
    * can state the coverage answer directly instead of implying it.
    */
   let policyFullyDescribes: Set<string>;
+  /**
+   * What the mock rule table says it names in HOST-PROVIDED tools — see
+   * `ListCapabilitiesOutput.hostProvidedTools`.
+   *
+   * EMPTY BY DEFAULT, which is the "subtract nothing new" identity: most tests
+   * in this file are about other axes and an empty set leaves their worlds
+   * exactly as they were. The tests that are about an uninstalled plugin set it
+   * to `HOST_PROVIDED` and then decide what the catalog does or does not hold.
+   */
+  let policyHostTools: Set<string>;
   /** 1-based call number of `list-capabilities` that throws, for a TRANSIENT read. */
   let policyThrowsOnCall: number | null;
   let policyCalls: number;
@@ -228,6 +251,13 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
             ...policyFullyDescribes,
           ]),
         ],
+        /*
+          Which of the tools this table names come from a host plugin. Not
+          filtered by `outOfReach` either, and for the same reason
+          `fullyDescribedTools` is not: it is a fact about the TABLE, and the
+          caller is the one holding the catalog it has to be checked against.
+        */
+        hostProvidedTools: [...policyHostTools],
       };
     });
     bus.registerService('tool-policy:evaluate', 'policy', async (_c, i: unknown) => {
@@ -334,6 +364,7 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     policyRows = [];
     policyThrows = null;
     policyFullyDescribes = new Set();
+    policyHostTools = new Set();
     policyThrowsOnCall = null;
     policyCalls = 0;
     evaluateThrowsFor = new Set();
@@ -888,6 +919,136 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     agents.set('a1', agent({ id: 'a1', allowedTools: ['web_search'], mcpConfigIds: [] }));
     await railFor();
     expect(lastOutOfReach).toEqual(['memory_search']);
+  });
+
+  it('never claims reach through a plugin this deployment never loaded', async () => {
+    /*
+      TASK-416, found by the TASK-357 walk against the live deployment: the rail
+      advertised `memory.search`, `memory.note`, `web.search` and `web.extract`
+      on a host that loads neither @ax/memory-strata nor @ax/web-tools (both are
+      gated on a provider key). The agent contradicted its own rail in
+      conversation — "I don't have a standalone 'save to memory' tool."
+
+      WHY THE SCOPE SUBTRACTION DID NOT ALREADY CATCH IT. `outOfReach` was built
+      by walking the CATALOG and keeping what the agent's scope excluded, so it
+      could only ever name tools that are IN the catalog. A rule naming a tool
+      whose plugin never registered anything had nothing to be subtracted from,
+      fell through untouched, and rendered as ALLOW under a heading that
+      promises to describe what is installed today.
+
+      THE PRESENTATION QUESTION, decided here rather than in a comment on the
+      fix: the row is OMITTED, not shown greyed as "unavailable". This surface's
+      own rule is that a missing row reads as "it cannot do that" — which for an
+      uninstalled tool is exactly TRUE, so omission cannot mislead in the
+      direction design H4 forbids. A greyed row would instead put a
+      non-capability inside the capability list, where a skim-reader collects it
+      as reach, and it would cut across the verdict grouping the list is read
+      by. The section still never renders a bare empty list: `status` separates
+      "no producer" from "the read failed", and a zero-row `ok` says "we can't
+      tell you — not that there isn't any".
+    */
+    registerPolicy();
+    registerCatalog();
+    policyRows = [
+      { verdict: 'allow', capability: 'search the web', source: 'rule:web.search', provenance: 'catalog', described: true },
+      { verdict: 'allow', capability: 'read files in its own workspace', source: 'rule:sandbox.read', provenance: 'catalog', described: true },
+      { verdict: 'hold', capability: 'gain access to a new service or key', source: 'rule:skills.request-capability', provenance: 'rule', described: true },
+      { verdict: 'deny', capability: 'start a hidden helper agent', source: 'rule:builtins.task', provenance: 'rule', described: true },
+    ];
+    policyHostTools = new Set(HOST_PROVIDED);
+    /*
+      Every one of those rules is unconditional, so the real table reports all
+      four tools as fully described — INCLUDING the two the host catalog never
+      holds. Stated explicitly because it is what arms the sandbox assertion
+      below: a fix that subtracted every ruled tool the catalog lacks would find
+      `Read` here and delete its row, and a mock that left `Read` out of the
+      coverage answer could not tell that fix from this one.
+    */
+    policyFullyDescribes = new Set(['web_search', 'Read', 'Task', 'request_capability']);
+    // @ax/skill-broker loaded and registered its tool. @ax/web-tools did not
+    // load at all, so nothing in this deployment answers to `web_search`.
+    catalog = [{ name: 'request_capability', executesIn: 'host' }];
+    ruledTools.set('request_capability', {
+      verdict: 'hold',
+      ruleId: 'skills.request-capability',
+    });
+
+    const body = (await railFor()).body as AgentRailData;
+    const sources = body.permissions.rows.map((r) => r.source);
+
+    // THE BUG: a reach claim for a tool this deployment cannot run.
+    expect(sources).not.toContain('rule:web.search');
+    // Proved unreachable through the same channel the scope subtraction uses,
+    // so the policy plugin drops the row rather than the rail hiding it.
+    expect(lastOutOfReach).toContain('web_search');
+
+    // THE MIRROR-IMAGE MISTAKE, guarded. `Read` is registered by the RUNNER
+    // inside the sandbox and never appears in the host catalog, so its absence
+    // proves nothing. A fix keying on catalog membership alone would silence
+    // the sandbox six — understating reach, which is worse.
+    expect(sources).toContain('rule:sandbox.read');
+    expect(lastOutOfReach).not.toContain('Read');
+    expect(lastOutOfReach).not.toContain('Task');
+
+    // The installed host tool keeps its row, and so does the deny: a deny for
+    // a tool nobody can reach is reassurance, not a reach claim.
+    expect(sources).toContain('rule:skills.request-capability');
+    expect(sources).toContain('rule:builtins.task');
+
+    // Not a partial read. Nothing failed here — the catalog answered, and it
+    // answered that the tool is not installed. Saying "this list may be missing
+    // something" would turn a complete answer into a hedge.
+    expect(body.permissions.status).toBe('ok');
+    expect(body.permissions.incomplete).toBe(false);
+  });
+
+  it('proves nothing about an uninstalled tool when the catalog itself failed', async () => {
+    /*
+      The proof is the catalog read, so a catalog that threw proves NOTHING —
+      not even about a host-provided tool the table names. Subtracting on a
+      failed read would drop a reach claim on the strength of a read that never
+      happened, and the section already has an honest answer for that case.
+    */
+    registerPolicy();
+    bus.registerService('tool:list', 'catalog', async () => {
+      throw new Error('catalog down');
+    });
+    policyHostTools = new Set(HOST_PROVIDED);
+    policyRows = [
+      { verdict: 'allow', capability: 'search the web', source: 'rule:web.search', provenance: 'catalog', described: true },
+    ];
+
+    const body = (await railFor()).body as AgentRailData;
+    expect(lastOutOfReach).toEqual([]);
+    expect(body.permissions.status).toBe('failed');
+  });
+
+  it('fails the section when the rule table will not say which tools are host-provided', async () => {
+    /*
+      Same posture as the `fullyDescribedTools` re-check beside it. The field
+      arrives duck-typed across the bus, and an impl registered without a
+      `returns` schema can simply not send it. Reading that silence as "the
+      table names no host tools" would restore the exact claim this file now
+      forbids — quietly, and on the surface whose only job is to be right about
+      reach. So it is a failed read instead.
+    */
+    registerCatalog();
+    bus.registerService('tool-policy:evaluate', 'policy', async () => ({
+      verdict: 'allow',
+      ruleId: null,
+      capability: null,
+      irreversible: false,
+      effect: [],
+    }));
+    bus.registerService('tool-policy:list-capabilities', 'policy', async () => ({
+      rows: [
+        { verdict: 'allow', capability: 'search the web', source: 'rule:web.search', provenance: 'catalog', described: true },
+      ],
+      fullyDescribedTools: [],
+    }));
+
+    const body = (await railFor()).body as AgentRailData;
+    expect(body.permissions).toMatchObject({ status: 'failed', rows: [] });
   });
 
   it('drops nothing for an unrestricted agent', async () => {
