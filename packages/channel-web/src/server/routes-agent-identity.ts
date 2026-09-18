@@ -183,9 +183,11 @@ export function makeAgentIdentityHandlers(deps: AgentIdentityRoutesDeps) {
     }
   }
 
-  /** Build the owner-routed ctx so `workspace:read`/`workspace:apply` land in
-   * THIS agent's `/agent` (ctx carries (userId, agentId); userId is the
-   * agent's REAL owner — never a synthetic actor). */
+  /** Build the ctx so `workspace:read`/`workspace:apply` land in THIS
+   * agent's `/agent` (routed by ctx.agentId alone — TASK-257). ctx.userId no
+   * longer selects the repo, but it still must be the agent's REAL owner
+   * (never a synthetic actor) — it is the attribution recorded in
+   * `delta.author`. */
   function workspaceCtx(agentId: string, ownerUserId: string): AgentContext {
     return makeAgentContext({
       reqId: makeReqId(),

@@ -10,9 +10,10 @@ import type { Database as BetterSqliteDb } from 'better-sqlite3';
 
 export interface MemoryStrataIndexRow {
   // Per-agent scope key (TASK-186). Derived from the calling ctx
-  // (sha256([userId, agentId])) so every row is owned by exactly one agent;
-  // search/delete/clear filter on it. UNINDEXED in FTS5 — it's an exact-match
-  // filter column, never full-text-searched.
+  // (sha256([agentId]) as of TASK-257 — previously sha256([userId, agentId]))
+  // so every row is owned by exactly one agent; search/delete/clear filter on
+  // it. UNINDEXED in FTS5 — it's an exact-match filter column, never
+  // full-text-searched.
   agent_key: string;
   doc_id: string;
   category: string;

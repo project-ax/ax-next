@@ -20,10 +20,11 @@
 //   reaches the agent by injection, like every other memory file.
 //
 // WHY `agentId` IS IN THE PAYLOAD WHEN `ctx` ALREADY CARRIES ONE. Because the
-// write routes by `(userId, agentId)` from the ctx, and the established
-// regression here is a caller that fires with the WRONG ctx and lands a write
-// in another agent's workspace. Carrying the id the caller BELIEVES it is
-// writing lets us reject the mismatch loudly instead of writing it quietly.
+// write routes by `agentId` from the ctx (TASK-257 dropped `userId` from the
+// key — see `workspace-id.ts`), and the established regression here is a
+// caller that fires with the WRONG ctx and lands a write in another agent's
+// workspace. Carrying the id the caller BELIEVES it is writing lets us reject
+// the mismatch loudly instead of writing it quietly.
 // ---------------------------------------------------------------------------
 
 import { PluginError, type AgentContext, type HookBus } from '@ax/core';
@@ -76,7 +77,7 @@ export interface MemoryLearnedReadOutput {
 /**
  * The caller must be asking about the agent its ctx routes to.
  *
- * `workspace:apply` routes by `(userId, agentId)` off the ctx, and a subscriber
+ * `workspace:apply` routes by `agentId` off the ctx (TASK-257), and a subscriber
  * that reuses somebody else's ctx lands the write in the wrong workspace — a
  * bug this repo has shipped before. A mismatch is a programming error, so it
  * throws rather than degrading.

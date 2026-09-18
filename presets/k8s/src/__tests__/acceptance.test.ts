@@ -752,7 +752,10 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         // mirror cache only). `workspaceIdFor` is the same derivation the
         // production plugin uses (no override path in this preset), so the
         // path here matches what the chart's storage tier would see.
-        const expectedWorkspaceId = workspaceIdFor({ userId, agentId });
+        // Since TASK-257 the derivation is `agentId` alone — passing the
+        // whole ctx here would be an excess-property error, and would also
+        // imply a per-user repo that no longer exists.
+        const expectedWorkspaceId = workspaceIdFor({ agentId });
         const bareRepoPath = path.join(
           serverRepoRoot,
           `${expectedWorkspaceId}.git`,
@@ -972,7 +975,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         userId,
         workspace: { rootPath: tmp },
       });
-      const workspaceId = workspaceIdFor({ userId, agentId });
+      const workspaceId = workspaceIdFor({ agentId });
       const bareRepoPath = path.join(serverRepoRoot, `${workspaceId}.git`);
       // Capture for the closure — TS can't narrow handle/server inside
       // an async closure since they're outer let-bindings.

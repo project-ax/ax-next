@@ -48,9 +48,9 @@ export interface ReplayOutcome {
  * Built from the DECISION's `(ownerUserId, agentId, conversationId)` — never
  * from the approving request's context. They are usually the same person, but
  * "usually" is not a security property: hooks downstream of a host tool route
- * by `(userId, agentId)`, and firing with the wrong one lands the work in
- * somebody else's workspace. This repo has been bitten by exactly that on
- * `workspace:apply`.
+ * by `agentId` (TASK-257 — `workspace:apply` no longer keys on `userId` too),
+ * and firing with the wrong one lands the work in somebody else's workspace.
+ * This repo has been bitten by exactly that on `workspace:apply`.
  *
  * `sessionId` is derived from the decision id, which is host-generated
  * (`dec_<32 hex>`) and never derived from anything the model wrote — so nothing
@@ -64,8 +64,8 @@ export interface ReplayOutcome {
  * `process.cwd()` is the same value host-side plugins already see on their
  * host-initiated paths (see @ax/memory-strata's agent-tier-sync note). A host
  * executor that needs a PER-AGENT workspace must resolve it through the
- * `workspace:*` hooks, which route on `(userId, agentId)` — both of which are
- * correct here.
+ * `workspace:*` hooks, which route on ctx.agentId (TASK-257) — set correctly
+ * here; `ownerUserId` is still carried for attribution.
  */
 export function replayContext(decision: Decision): AgentContext {
   return makeAgentContext({

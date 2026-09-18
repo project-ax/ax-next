@@ -21,8 +21,11 @@
 // `workspaceIdFor` is overridable so tests can collide ids deliberately
 // (e.g., multi-replica concurrency tests where two host plugins must operate
 // on the SAME workspaceId from different ctxs). Production callers always
-// leave it unset and let the deterministic sha256(userId/agentId)
-// derivation pick the id.
+// leave it unset and let the deterministic sha256([agentId]) derivation pick
+// the id. Note the override takes `{ agentId }` ONLY, not the whole ctx: an
+// agent's workspace is partitioned on agentId alone (TASK-257), and the
+// narrow parameter type is what keeps a future override from quietly
+// reintroducing a per-caller shard.
 //
 // Token discipline (belt-and-suspenders): the lifecycle client and the git
 // binary already shouldn't leak the bearer token in their error messages.
@@ -88,7 +91,7 @@ export interface CreateWorkspaceGitServerPluginOptions {
   /** Optional retry tuning for REST calls. Default attempts=5, backoffBaseMs=100. */
   retry?: RetryOptions;
   /** Optional injection point for tests. Production callers leave unset. */
-  workspaceIdFor?: (ctx: { userId: string; agentId: string }) => string;
+  workspaceIdFor?: (ctx: { agentId: string }) => string;
 }
 
 interface PluginState {
@@ -184,10 +187,7 @@ export function createWorkspaceGitServerPlugin(
   // init) is a safe no-op.
   let state: PluginState | null = null;
 
-  const resolveWorkspaceId = (ctx: {
-    userId: string;
-    agentId: string;
-  }): string => {
+  const resolveWorkspaceId = (ctx: { agentId: string }): string => {
     const fn = opts.workspaceIdFor ?? defaultWorkspaceIdFor;
     return fn(ctx);
   };

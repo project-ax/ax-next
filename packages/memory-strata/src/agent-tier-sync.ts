@@ -15,9 +15,11 @@
 //      no-ops (the TASK-180 walk failure).
 //
 // THE FIX. The per-agent `/agent` git tier is the single durable home for
-// consolidated memory. The git tier is keyed per-(userId, agentId) — the same
-// keying the runner's `/agent` materialize bundle uses — so writing through it
-// is BOTH per-agent-isolated AND visible to that agent's reflection runner.
+// consolidated memory. The git tier is keyed by agentId alone (TASK-257) — the
+// same keying the runner's `/agent` materialize bundle uses — so writing
+// through it is BOTH per-agent-isolated AND visible to that agent's
+// reflection runner. (It is no longer per-caller: every user authorized to
+// reach the agent shares the same repo — see `workspace-id.ts`.)
 //
 // Mechanism (mirrors @ax/channel-web's routes-agent-identity, the established
 // pattern for host→/agent writes):
@@ -108,9 +110,10 @@ export interface HydratedTier {
  * laid out as `permanent/memory/**`. The returned `scratchRoot` is what the
  * caller hands to the unchanged observer / consolidator / bootstrap pipeline.
  *
- * Reads are owner-routed by `ctx` (userId, agentId) — the git tier confines
- * each read to that agent's repo, so the scratch can never contain another
- * agent's memory.
+ * Reads are routed by `ctx.agentId` — the git tier confines each read to
+ * that agent's repo, so the scratch can never contain another agent's
+ * memory. (The repo is shared by every user authorized to reach that agent;
+ * `ctx.userId` no longer selects a distinct repo — see `workspace-id.ts`.)
  */
 export async function hydrateAgentTier(
   bus: HookBus,

@@ -126,9 +126,11 @@ export function createMemoryStrataIndexPostgresPlugin(): Plugin {
       await runIndexMigration(db);
 
       // Every handler derives the per-agent scope key from the calling ctx
-      // (TASK-186) so the single shared postgres table is partitioned per
-      // (userId, agentId). The hook I/O payloads stay unchanged — the key is
-      // ambient (from ctx), never a wire field.
+      // (TASK-186) so the single shared postgres table is partitioned by
+      // agentId (TASK-257 — the key was (userId, agentId) before that; it is
+      // now agentId alone, so the partition is shared across every user
+      // authorized to reach the agent). The hook I/O payloads stay unchanged
+      // — the key is ambient (from ctx), never a wire field.
       bus.registerService<UpsertInput, void>(
         'memory:index:upsert',
         PLUGIN_NAME,

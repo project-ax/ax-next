@@ -468,6 +468,15 @@ export function runIndexContract(label: string, factory: IndexBackendFactory): v
     // calling agent (derived from ctx). This case FAILS on the pre-fix pooled
     // behavior: A's search would surface B's doc, and a same-docId write from B
     // would clobber A's row.
+    //
+    // ⚠ SCOPE OF THIS CASE — it proves rows are NOT POOLED. It does not, and
+    // never did, pin HOW the key is derived: ctxA and ctxB below differ in
+    // userId AND agentId, so the case passes under any partition containing
+    // either field. The backends' `agent-scope-key.ts` docstrings used to
+    // claim this case caught derivation drift between them; measured under
+    // TASK-257, replacing one backend's derivation wholesale left every test
+    // green. Drift is pinned by each package's own `agent-scope-key.test.ts`
+    // vectors; WHICH field partitions is pinned by Test 11 below.
     describe('per-agent isolation (TASK-186)', () => {
       const ctxA = makeCtx('agent-a', 'user-a');
       const ctxB = makeCtx('agent-b', 'user-b');
@@ -583,6 +592,83 @@ export function runIndexContract(label: string, factory: IndexBackendFactory): v
         const outB = await search({ query: 'general note', topK: 10 }, ctxB);
         expect(outB.results).toHaveLength(1);
         expect(outB.results[0]!.summary).toBe('B note');
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // Test 11: THE PARTITION IS `agentId` ALONE (TASK-257)
+    // -----------------------------------------------------------------------
+    // Test 10 proves rows are not pooled. This one proves WHICH field does the
+    // partitioning, which is the part that has to match the file tier: an
+    // agent's memory index and its `@ax/workspace-git-server` repo must cover
+    // the same set of callers, or the Memory tab and the Files tab show two
+    // different agents.
+    //
+    // Before TASK-257 the key was `sha256([userId, agentId])`, so on a team
+    // agent every teammate got a private, empty shard. MEASURED against that
+    // derivation, the first THREE cases below go red and the fourth stays
+    // green — which is the point of writing the fourth: it is the guard for
+    // the opposite over-correction (a partition on `userId` alone), and a
+    // guard is supposed to pass against the mutant it is not aimed at. Do not
+    // "fix" it into failing; check instead that cases 1-3 still do.
+    //
+    // ⚠ This is NOT an access-control test. Nothing here says a caller MAY
+    // reach an agent; that is the `agents:resolve` ACL's job, and since
+    // TASK-257 it is the only barrier. This pins that two AUTHORIZED callers
+    // see one shared memory.
+    describe('partition is agentId alone (TASK-257)', () => {
+      const alice = makeCtx('shared-agent', 'user-alice');
+      const bob = makeCtx('shared-agent', 'user-bob');
+      const otherAgent = makeCtx('other-agent', 'user-alice');
+
+      const doc = (summary: string, body: string): UpsertInput => ({
+        docId: 'preference/editor',
+        category: 'preference',
+        slug: 'editor',
+        summary,
+        factType: 'preference',
+        body,
+        headers: '',
+      });
+
+      it("a second user on the SAME agent reads the first user's doc", async () => {
+        await upsert(doc('Alice wrote this', 'The team standup is on Tuesday.'), alice);
+
+        // Pre-TASK-257 this returned 0 results: bob hashed into his own shard.
+        const out = await search({ query: 'standup Tuesday', topK: 10 }, bob);
+        expect(out.results).toHaveLength(1);
+        expect(out.results[0]!.summary).toBe('Alice wrote this');
+      });
+
+      it('two users on the same agent share ONE row, not two', async () => {
+        await upsert(doc('Alice wrote this', 'The standup is on Tuesday.'), alice);
+        await upsert(doc('Bob wrote this', 'The standup is on Wednesday.'), bob);
+
+        // One agent, one memory: bob's write UPDATES the row alice created
+        // rather than creating a sibling in a private shard. Pre-TASK-257
+        // alice still saw her own 'Alice wrote this'.
+        const out = await search({ query: 'standup', topK: 10 }, alice);
+        expect(out.results).toHaveLength(1);
+        expect(out.results[0]!.summary).toBe('Bob wrote this');
+      });
+
+      it("a delete by one user removes the other user's doc on the same agent", async () => {
+        await upsert(doc('Alice wrote this', 'Delete me from the shared index.'), alice);
+
+        await del('preference/editor', bob);
+
+        // The write domain is shared too, not just the read view.
+        const out = await search({ query: 'shared index delete', topK: 10 }, alice);
+        expect(out.results).toHaveLength(0);
+      });
+
+      it('the SAME user on a DIFFERENT agent is still isolated', async () => {
+        await upsert(doc('Alice wrote this', 'Only this agent should know.'), alice);
+
+        // Guards the other direction: had we partitioned on userId, this
+        // would leak one agent's memory into another's.
+        const out = await search({ query: 'agent should know', topK: 10 }, otherAgent);
+        expect(out.results).toHaveLength(0);
       });
     });
   });

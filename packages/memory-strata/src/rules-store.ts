@@ -110,10 +110,11 @@ export async function readRules(
  *     to a rules write today (the runner re-materializes `/agent` when it
  *     spawns), so we deliberately do not fire it. A future subscriber must fire
  *     it explicitly HERE rather than assume apply did.
- *   - `workspace:apply` routes by `(userId, agentId)` from the CALLER's ctx.
- *     A caller that hands us the wrong ctx lands this write in the wrong
- *     agent's workspace, which is why the `memory:rules:write` hook checks the
- *     payload's `agentId` against `ctx.agentId` before it gets here.
+ *   - `workspace:apply` routes by `agentId` from the CALLER's ctx (TASK-257 —
+ *     `userId` no longer selects a distinct repo). A caller that hands us the
+ *     wrong ctx lands this write in the wrong agent's workspace, which is why
+ *     the `memory:rules:write` hook checks the payload's `agentId` against
+ *     `ctx.agentId` before it gets here.
  *
  * Errors propagate. A Save that failed must not report success.
  */

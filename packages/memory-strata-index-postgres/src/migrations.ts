@@ -13,8 +13,11 @@ import { sql, type Kysely } from 'kysely';
  */
 // Table is versioned (v2 ← v1, TASK-186). The v2 table adds a per-agent
 // `agent_key` column and a composite PRIMARY KEY (agent_key, doc_id) so the
-// single shared table is partitioned per (userId, agentId) — without it, agent
-// A's `memory_search` could return agent B's facts (a multi-tenant leak). A
+// single shared table is partitioned by agent — without it, agent A's
+// `memory_search` could return agent B's facts (a multi-tenant leak). Since
+// TASK-257, `agent_key` derives from agentId alone (previously (userId,
+// agentId)), so the partition is per-agent only, shared by every user
+// authorized to reach that agent. A
 // fresh table is created rather than ALTERing v1 in place; the old pooled v1
 // rows are orphaned and the index rebuilds from each agent's own docs on the
 // next consolidation pass (no row migration — see the TASK-186 decision log).

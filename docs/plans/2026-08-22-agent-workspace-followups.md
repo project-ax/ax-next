@@ -166,8 +166,8 @@ reachability only. Rebuild the agent image first (`--no-cache`, or grep the comp
 |---|---|
 | **TASK-249** | **No create-agent entry point from `/workspace`.** The nav row was removed rather than left dead, so the surface has no way to create an agent. Route the shipped conversational-identity flow in. |
 | **TASK-250** | Day-one empty state for a user with one fresh agent and no history. |
-| **TASK-258** | `local` workspace backend ignores ctx → Files listing is **deployment-wide** there. Pre-existing and shared with the identity editor and routines list; production uses the sharded `git-protocol` backend where reads are per-`sha256(userId/agentId)`. Acceptable only while the flag is off. |
-| **TASK-257** | Workspace ctx uses the **caller's** `userId`, not the agent's `ownerId`. **Fails closed** (a non-owner reads their own empty shard — no leak), but a team agent's Files/Memory shows empty. TASK-234 has the identical property — **fix both together**. |
+| **TASK-258** | `local` workspace backend ignores ctx → Files listing is **deployment-wide** there. Pre-existing and shared with the identity editor and routines list; production uses the sharded `git-protocol` backend, which at the time this row was written keyed reads per-`sha256(userId/agentId)` — since TASK-257 (2026-09-17) it keys per-`sha256(agentId)` alone, so this row's "no leak, just empty" framing is stale; see TASK-257's row below, now shipped. Acceptable only while the flag is off. |
+| **TASK-257** | ~~Workspace ctx uses the **caller's** `userId`, not the agent's `ownerId`. **Fails closed** (a non-owner reads their own empty shard — no leak), but a team agent's Files/Memory shows empty.~~ **Shipped 2026-09-17:** the fix taken was to drop `userId` from the workspace/memory partition key entirely — `workspaceIdFor`/`agentScopeKey` now hash `agentId` alone, so the repo/index partition is shared by every user authorized to reach the agent, and `agents:resolve` is the sole isolation barrier (see `workspace-id.ts`). TASK-234 had the identical property. |
 
 ### Wave 7 — deferred design questions (need a human decision, not code)
 

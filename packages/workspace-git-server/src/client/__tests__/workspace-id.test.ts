@@ -5,6 +5,11 @@ import { WORKSPACE_ID_REGEX } from '../../shared/workspace-id.js';
 // 100 hand-chosen (userId, agentId) pairs covering ASCII, unicode, very long,
 // empty-ish, and adversarial-looking inputs. All must produce a workspaceId
 // that satisfies WORKSPACE_ID_REGEX.
+//
+// Since TASK-257 only the agentId is hashed, so what these mainly exercise is
+// 100 adversarial AGENT ids. The userId column is retained because it keeps
+// the userId-invariance cases below honest: every pair is also a case where a
+// wildly different userId must not move the answer.
 const REGEX_CASES: Array<readonly [string, string]> = [
   ['', ''],
   ['a', ''],
@@ -110,9 +115,9 @@ const REGEX_CASES: Array<readonly [string, string]> = [
 
 describe('workspaceIdFor — determinism', () => {
   it('returns the same value across 1000 calls', () => {
-    const first = workspaceIdFor({ userId: 'u', agentId: 'a' });
+    const first = workspaceIdFor({ agentId: 'a' });
     for (let i = 0; i < 1000; i++) {
-      expect(workspaceIdFor({ userId: 'u', agentId: 'a' })).toBe(first);
+      expect(workspaceIdFor({ agentId: 'a' })).toBe(first);
     }
   });
 });
@@ -121,68 +126,97 @@ describe('workspaceIdFor — regex match', () => {
   it('all 100 hand-chosen pairs produce a value matching WORKSPACE_ID_REGEX', () => {
     expect(REGEX_CASES.length).toBe(100);
     for (const [userId, agentId] of REGEX_CASES) {
-      const id = workspaceIdFor({ userId, agentId });
+      const id = workspaceIdFor({ agentId, userId } as { agentId: string });
       expect(WORKSPACE_ID_REGEX.test(id)).toBe(true);
     }
   });
 });
 
-describe('workspaceIdFor — distinct', () => {
-  it('different userId with same agentId yields different workspaceIds', () => {
-    expect(workspaceIdFor({ userId: 'u1', agentId: 'a' })).not.toBe(
-      workspaceIdFor({ userId: 'u2', agentId: 'a' }),
+// ---------------------------------------------------------------------------
+// TASK-257: the workspaceId partitions on agentId ALONE.
+//
+// This block replaces a case that asserted the OPPOSITE — "different userId
+// with same agentId yields different workspaceIds". That was the bug: a team
+// agent's files were invisible to every teammate, because each caller hashed
+// into their own empty shard. One agent, one workspace.
+//
+// Every assertion here FAILS against the pre-TASK-257 derivation
+// `sha256(JSON.stringify([userId, agentId]))`, which is what makes them worth
+// having.
+// ---------------------------------------------------------------------------
+describe('workspaceIdFor — partitions on agentId alone', () => {
+  it('two different users on the same agent get the SAME workspaceId', () => {
+    expect(workspaceIdFor({ agentId: 'a', userId: 'u1' } as { agentId: string })).toBe(
+      workspaceIdFor({ agentId: 'a', userId: 'u2' } as { agentId: string }),
     );
   });
 
-  it('different agentId with same userId yields different workspaceIds', () => {
-    expect(workspaceIdFor({ userId: 'u', agentId: 'a1' })).not.toBe(
-      workspaceIdFor({ userId: 'u', agentId: 'a2' }),
+  it('the userId field is unread, not merely collided', () => {
+    // Same answer as a ctx that has no userId property at all — so the field
+    // is not participating in the digest by any route.
+    const bare = workspaceIdFor({ agentId: 'a' });
+    expect(workspaceIdFor({ agentId: 'a', userId: 'u1' } as { agentId: string })).toBe(bare);
+  });
+
+  it('a hostile userId cannot steer a caller to another workspace', () => {
+    // Under the old derivation each of these produced a DIFFERENT repo.
+    const expected = workspaceIdFor({ agentId: 'agent-1' });
+    for (const userId of ['', '../../etc/passwd', 'a","b', '🦀', 'x'.repeat(10_000)]) {
+      expect(workspaceIdFor({ agentId: 'agent-1', userId } as { agentId: string })).toBe(expected);
+    }
+  });
+
+  it('every one of the 100 adversarial pairs is userId-invariant', () => {
+    for (const [userId, agentId] of REGEX_CASES) {
+      expect(workspaceIdFor({ agentId, userId } as { agentId: string })).toBe(
+        workspaceIdFor({ agentId }),
+      );
+    }
+  });
+});
+
+describe('workspaceIdFor — distinct', () => {
+  it('different agentId yields different workspaceIds', () => {
+    expect(workspaceIdFor({ agentId: 'a1' })).not.toBe(workspaceIdFor({ agentId: 'a2' }));
+  });
+
+  it('agentIds differing only by a separator-shaped character do not collide', () => {
+    // The old two-field encoding needed JSON.stringify to stop (a, b/c) and
+    // (a/b, c) hashing alike. With one field there is no pair to confuse, but
+    // distinct agentIds must still land in distinct repos — including ones
+    // whose difference is entirely punctuation.
+    const ids = ['a/b', 'a//b', 'a\\b', 'a"b', 'a","b', 'a', 'ab'].map((agentId) =>
+      workspaceIdFor({ agentId }),
     );
+    expect(new Set(ids).size).toBe(ids.length);
   });
 });
 
 describe('workspaceIdFor — pinned outputs', () => {
   // These are the load-bearing test cases. They pin the exact derivation:
-  //   ws- + first 16 hex chars of sha256(JSON.stringify([userId, agentId]))
+  //   ws- + first 16 hex chars of sha256(JSON.stringify([agentId]))
   // If SHA-256 ever changes, or the encoding changes, or the prefix/length
   // changes, these will fail loudly. That's the point — silent drift would
-  // orphan every existing workspace's bare repo on the storage tier.
+  // orphan every existing workspace's bare repo on the storage tier. (The
+  // TASK-257 repartition orphaned them ON PURPOSE, once, on 2026-09-17; see
+  // the docstring on `workspaceIdFor`. Stability is load-bearing again now.)
   //
-  // The encoding via `JSON.stringify([userId, agentId])` is unambiguous:
-  // the array brackets and quote-escaping ensure the two fields cannot bleed
-  // into each other regardless of separator-shaped characters in either
-  // field. The collision-resolution test below pins this property directly.
+  // ⚠ LOCKSTEP: the 16 hex chars after `ws-` are the SAME strings, over the
+  // same agentIds, as the pins in
+  //   packages/memory-strata-index-sqlite/src/__tests__/agent-scope-key.test.ts
+  //   packages/memory-strata-index-postgres/src/__tests__/agent-scope-key.test.ts
+  // because the memory index must partition exactly like the file tier and
+  // Invariant 2 forbids sharing the code. Editing any one of the three copies
+  // fails that copy's pins, which is the only thing that actually keeps them
+  // together.
   it.each([
-    ['alice', 'agent-1', 'ws-b52f388c1eeab23a'],
-    ['bob', 'agent-1', 'ws-caa39e8797572264'],
-    ['alice', 'agent-2', 'ws-aed0e26a737ff75c'],
-    ['', '', 'ws-439083f38956ba51'],
-    ['user-with-/-slash', 'agent-x', 'ws-c9dfda14c01efcac'],
-  ])('workspaceIdFor({userId: %j, agentId: %j}) === %j', (userId, agentId, expected) => {
-    expect(workspaceIdFor({ userId, agentId })).toBe(expected);
-  });
-});
-
-describe('workspaceIdFor — separator-shaped characters do not collide pairs', () => {
-  // Regression pin for the prior derivation `sha256(userId + '/' + agentId)`,
-  // which collided pairs like (a, b/c) and (a/b, c) to the same hash. The
-  // current encoding via JSON.stringify is unambiguous; this test pins that
-  // distinction so the derivation can't silently regress to an ambiguous
-  // form.
-  it('(a, b/c) and (a/b, c) produce DIFFERENT workspaceIds', () => {
-    const left = workspaceIdFor({ userId: 'a', agentId: 'b/c' });
-    const right = workspaceIdFor({ userId: 'a/b', agentId: 'c' });
-    expect(left).not.toBe(right);
-  });
-
-  it('(quote-shaped fields) do not collide via JSON-encoding tricks', () => {
-    // Defense-in-depth: a userId containing a literal `","` could in
-    // principle smuggle field-separator-shaped bytes into the hashed
-    // string. JSON.stringify escapes the `"` inside the field, so the
-    // encoded form is `["a\\\",\\\"b","c"]` for the first pair and
-    // `["a","b\\\",\\\"c"]` for the second — distinct, as expected.
-    const left = workspaceIdFor({ userId: 'a","b', agentId: 'c' });
-    const right = workspaceIdFor({ userId: 'a', agentId: 'b","c' });
-    expect(left).not.toBe(right);
+    ['agent-1', 'ws-e2dfc6a213659c6f'],
+    ['agent-2', 'ws-98cfa09d216999cc'],
+    ['', 'ws-055539df4a0b804c'],
+    ['agent-x', 'ws-f5a359a686fb6b08'],
+    ['agent/with/slash', 'ws-5aea3d88f975c33b'],
+    ['a","b', 'ws-3cd4f3fa4db91d4b'],
+  ])('workspaceIdFor({agentId: %j}) === %j', (agentId, expected) => {
+    expect(workspaceIdFor({ agentId })).toBe(expected);
   });
 });

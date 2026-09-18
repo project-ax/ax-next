@@ -300,6 +300,156 @@ describe('createWorkspaceGitServerPlugin — distinct ctxs isolate to distinct w
 });
 
 // ---------------------------------------------------------------------------
+// 3b. TASK-257: workspaceId is derived from agentId ALONE. Two ctxs sharing
+// an agentId must land on the SAME repo (the team-agent guarantee); two ctxs
+// sharing a userId but differing in agentId must still be isolated. Neither
+// block below injects `workspaceIdFor` — the whole point is to exercise the
+// real derivation in `workspace-id.ts` through the plugin's real hooks.
+// ---------------------------------------------------------------------------
+
+describe('createWorkspaceGitServerPlugin — workspaceId derives from agentId alone (TASK-257)', () => {
+  let harness: TestHarness | null = null;
+
+  afterEach(async () => {
+    if (harness !== null) {
+      await harness.close();
+      harness = null;
+    }
+  });
+
+  it('same agentId, different userId -> ONE shared repo (bob reads alice\'s file)', async () => {
+    const booted = await bootServer();
+    harness = await createTestHarness({
+      plugins: [
+        createWorkspaceGitServerPlugin({
+          baseUrl: booted.baseUrl,
+          token: TOKEN,
+          cacheRoot: freshCacheRoot(),
+        }),
+      ],
+    });
+
+    const ctxAlice = harness.ctx({ userId: 'alice', agentId: 'team-agent' });
+    const ctxBob = harness.ctx({ userId: 'bob', agentId: 'team-agent' });
+
+    await harness.bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
+      'workspace:apply',
+      ctxAlice,
+      {
+        changes: [
+          {
+            path: 'shared.txt',
+            kind: 'put',
+            content: new TextEncoder().encode('alice was here'),
+          },
+        ],
+        parent: null,
+      },
+    );
+
+    // Bob (different userId, same agentId) reads the same repo and sees
+    // alice's bytes.
+    const readByBob = await harness.bus.call<
+      WorkspaceReadInput,
+      WorkspaceReadOutput
+    >('workspace:read', ctxBob, { path: 'shared.txt' });
+    expect(readByBob.found).toBe(true);
+    if (readByBob.found) {
+      expect(new TextDecoder().decode(readByBob.bytes)).toBe(
+        'alice was here',
+      );
+    }
+
+    const listedByBob = await harness.bus.call<
+      WorkspaceListInput,
+      WorkspaceListOutput
+    >('workspace:list', ctxBob, {});
+    expect(listedByBob.paths).toContain('shared.txt');
+
+    // Only ONE bare repo backs both ctxs.
+    const entries = readdirSync(booted.repoRoot).filter((e) =>
+      e.endsWith('.git'),
+    );
+    expect(entries.length).toBe(1);
+  });
+
+  it('same userId, different agentId -> still isolated (B does not see A\'s file)', async () => {
+    const booted = await bootServer();
+    harness = await createTestHarness({
+      plugins: [
+        createWorkspaceGitServerPlugin({
+          baseUrl: booted.baseUrl,
+          token: TOKEN,
+          cacheRoot: freshCacheRoot(),
+        }),
+      ],
+    });
+
+    const ctxA = harness.ctx({ userId: 'carol', agentId: 'agent-x' });
+    const ctxB = harness.ctx({ userId: 'carol', agentId: 'agent-y' });
+
+    await harness.bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
+      'workspace:apply',
+      ctxA,
+      {
+        changes: [
+          {
+            path: 'only-a.txt',
+            kind: 'put',
+            content: new TextEncoder().encode('A'),
+          },
+        ],
+        parent: null,
+      },
+    );
+
+    // ctxB applies its own file so its repo actually gets created (a pure
+    // read/list against a not-yet-materialized workspace legitimately
+    // creates no repo, which would make an entries-count assertion below
+    // meaningless).
+    await harness.bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
+      'workspace:apply',
+      ctxB,
+      {
+        changes: [
+          {
+            path: 'only-b.txt',
+            kind: 'put',
+            content: new TextEncoder().encode('B'),
+          },
+        ],
+        parent: null,
+      },
+    );
+
+    const readByB = await harness.bus.call<
+      WorkspaceReadInput,
+      WorkspaceReadOutput
+    >('workspace:read', ctxB, { path: 'only-a.txt' });
+    expect(readByB.found).toBe(false);
+
+    const listedByB = await harness.bus.call<
+      WorkspaceListInput,
+      WorkspaceListOutput
+    >('workspace:list', ctxB, {});
+    expect(listedByB.paths).not.toContain('only-a.txt');
+    expect(listedByB.paths).toContain('only-b.txt');
+
+    const readByA = await harness.bus.call<
+      WorkspaceReadInput,
+      WorkspaceReadOutput
+    >('workspace:read', ctxA, { path: 'only-b.txt' });
+    expect(readByA.found).toBe(false);
+
+    // Two distinct bare repos back the two agentIds.
+    const entries = readdirSync(booted.repoRoot).filter((e) =>
+      e.endsWith('.git'),
+    );
+    expect(entries.length).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 4. Custom workspaceIdFor injection
 // ---------------------------------------------------------------------------
 

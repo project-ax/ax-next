@@ -208,9 +208,9 @@ describe('the hooks refuse a ctx that routes somewhere else', () => {
   it('rejects a payload agentId that disagrees with the calling context', async () => {
     const { bus, applied } = tierBus();
     const ctx = makeCtx('atlas');
-    // `workspace:apply` routes by (userId, agentId) off the CTX. A caller that
-    // asks about zephyr while holding atlas's ctx would silently write atlas's
-    // workspace — the exact regression this check exists for.
+    // `workspace:apply` routes by agentId off the CTX (TASK-257). A caller
+    // that asks about zephyr while holding atlas's ctx would silently write
+    // atlas's workspace — the exact regression this check exists for.
     await expect(write(bus, ctx, { agentId: 'zephyr', body: 'x' })).rejects.toThrow(
       PluginError,
     );
