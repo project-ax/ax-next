@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createDemMemory, type SupersessionMode } from "../src/index.js";
+import { createDemMemory, type IdStrategy, type SupersessionMode } from "../src/index.js";
 import { flattenDialogue, type DialogueTurn } from "../src/types.js";
 import { OpenRouterLlm, type LlmUsage } from "./llm.js";
 import {
@@ -120,6 +120,14 @@ async function main(): Promise<void> {
   // Which rule retires a statement. Unset means the shipped default (`invalidates-previous`),
   // which is what the 87.4% baseline was measured with; `--supersession slot` is the arm.
   const supersession = args.supersession as SupersessionMode | undefined;
+  // Row ids, and therefore how retrieval breaks ranking ties. `random` is the shipped default
+  // and is not reproducible; see `IdStrategy`. This is the arm.
+  // Unset means "whatever src defaults to", so the bench cannot silently measure a different
+  // build from the one that ships.
+  const idStrategy = args["id-strategy"] as IdStrategy | undefined;
+  if (idStrategy !== undefined && idStrategy !== "random" && idStrategy !== "content") {
+    throw new Error(`--id-strategy must be \`random\` or \`content\`, got ${idStrategy}`);
+  }
   if (supersession !== undefined && supersession !== "slot" && supersession !== "invalidates-previous") {
     throw new Error(`--supersession must be \`slot\` or \`invalidates-previous\`, got ${supersession}`);
   }
@@ -128,7 +136,7 @@ async function main(): Promise<void> {
   const selected =
     sampler === "shortest" ? pickShortest(filtered, n, minAbs) : stratifiedSample(filtered, n);
   console.log(
-    `corpus ${samples.length} samples -> selected ${selected.length} (n=${n}, sampler=${sampler}) | extract=${extractModel} | answer=${answerModel} | judge=${judgeModel} | stack=${label} | supersession=${supersession ?? "invalidates-previous (default)"} | extraction cache: ${extractionCache.size} entries`,
+    `corpus ${samples.length} samples -> selected ${selected.length} (n=${n}, sampler=${sampler}) | extract=${extractModel} | answer=${answerModel} | judge=${judgeModel} | stack=${label} | supersession=${supersession ?? "invalidates-previous (default)"} | ids=${idStrategy ?? "content (default)"} | extraction cache: ${extractionCache.size} entries`,
   );
 
   mkdirSync(outDir, { recursive: true });
@@ -163,6 +171,7 @@ async function main(): Promise<void> {
       extract: extractor,
       generate,
       ...(supersession !== undefined ? { supersession } : {}),
+      ...(idStrategy !== undefined ? { idStrategy } : {}),
       ...(sourceExcerpts > 0 ? { sourceExcerpts } : {}),
       ...(evidenceRows > 0 ? { rerankPool: Math.max(40, evidenceRows) } : {}),
     });

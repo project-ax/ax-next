@@ -25,22 +25,21 @@
  * 0 row positions moved**. Nothing else was changed.
  *
  * WHY IT MATTERS BEYOND THE BENCH. Two consecutive asks of the same question can be answered
- * from different evidence. And every accuracy number this project has measured contains this
- * as an unattributed noise component: the n=100 "+/-4-6pp on identical code" and n=500 "1.6pp"
- * floors were recorded as answerer + judge variance, and `HANDOFF.md` already warns that
- * figure is a LOWER BOUND. This is a concrete, removable part of the gap.
+ * from different evidence. That is a product property, and it is the whole reason to care.
  *
- * THE FIX IS ONE LINE AND IS NOT TAKEN HERE, deliberately. Deriving the id from content makes
- * retrieval reproducible for free, but it also changes which rows reach the answerer, so it
- * moves every score by an unknown amount and needs its own measured arm. Landing it inside a
- * measurement change would be two changes at once — see the counting-directives report for
- * what that costs. Rung 1's normalizer arm should run against the CURRENT build so it stays
- * comparable to the stored 87.4% baseline and the 1.6pp floor, which were both measured with
- * this noise in them.
+ * It is NOT, as an earlier version of this comment claimed, a measurable part of the bench's
+ * noise floor. That was a guess and it was MEASURED AND FAILED: 4 runs per arm at n=500 with
+ * deterministic ids gave sd 0.91pp against the random arm's 0.50pp — wider, not tighter, and
+ * the mean moved -0.30pp (p = 0.59). So retrieval nondeterminism is large at the TABLE level
+ * and still does not detectably move TOTAL accuracy variance; the floor is dominated by the
+ * answerer and the judge, which is what the published 1.6pp figure always described.
+ * `docs/plans/2026-09-18-dem-deterministic-ids-report.md` has the arms.
  *
- * When the fix does land, this probe is its regression test: it must read 0/N.
+ * THE FIX LANDED 2026-09-18 after its own measured arms, and `content` is now the default.
+ * This probe is its regression test: with no flag it must read 0/N, and
+ * `--id-strategy random` reproduces the old behaviour and still reads 12/12.
  */
-import { createDemMemory } from "../src/index.js";
+import { createDemMemory, type IdStrategy } from "../src/index.js";
 import { lexicalReranker } from "../src/models/reranker.js";
 import { flattenDialogue, type DialogueTurn } from "../src/types.js";
 import { DEFAULT_EXTRACT_MODEL, ExtractionCache, sessionCacheKey } from "./extraction.js";
@@ -59,6 +58,9 @@ async function main(): Promise<void> {
   const fingerprint = args.fingerprint;
   const limit = Number(args.limit ?? 15);
   const n = Number(args.n ?? 12);
+  // The variable under test. `content` is the default since 2026-09-18 and must read 0/N;
+  // `--id-strategy random` reproduces the old behaviour and still reads 12/12.
+  const idStrategy = (args["id-strategy"] ?? "content") as IdStrategy;
 
   // `vertex` on purpose, never `production`: `rerank-v4.0-pro` is itself non-reproducible
   // (~22% of top-15 tables reorder between two identical calls), which would confound the
@@ -68,12 +70,18 @@ async function main(): Promise<void> {
   const cache = new ExtractionCache(args["cache-dir"] ?? CACHE_DIR);
   const samples = stratifiedSample(loadCorpus(), 100).slice(0, n);
 
-  const tableFor = async (sample: LongMemEvalSample, tag: string): Promise<string[]> => {
+  const tableFor = async (sample: LongMemEvalSample, _tag: string): Promise<string[]> => {
     const memory = createDemMemory({
       path: ":memory:",
-      bankId: `${sample.question_id}-${tag}`,
+      // The SAME bankId both times, in two separate in-memory databases. `:memory:` gives
+      // each `createDemMemory` its own private database, so these are two independent stores
+      // of one bank rather than two banks — which matters because a content-derived id
+      // includes the bank (`id` is the primary key of a table every bank shares), so tagging
+      // the banks apart would make the ids differ for a reason that is not the one under test.
+      bankId: sample.question_id,
       embed,
       rerank,
+      idStrategy,
       extract: async () => {
         throw new Error("reproducibility-probe runs cache-only; warm the cache with bench/run.ts");
       },
@@ -105,7 +113,9 @@ async function main(): Promise<void> {
     return result.tuples.map((tuple) => `${tuple.subject}|${tuple.predicate}|${tuple.object}`);
   };
 
-  console.log(`${samples.length} question(s), evidence rows=${limit}, deterministic stack\n`);
+  console.log(
+    `${samples.length} question(s), evidence rows=${limit}, deterministic stack, idStrategy=${idStrategy}\n`,
+  );
   let differing = 0;
   let setsDiffer = 0;
   let rowsMoved = 0;

@@ -8,6 +8,7 @@ import {
   RetainEngine,
   createOpenAIExtractor,
   type RetainResult,
+  type IdStrategy,
   type SupersessionMode,
   type SupersessionOptions,
 } from "./engine/retain.js";
@@ -59,6 +60,19 @@ export interface DemMemoryOptions {
    * precision, which is why it is not the default.
    */
   slotNormalizer?: SupersessionOptions["normalizer"];
+  /**
+   * How a stored row gets its id, and therefore how retrieval breaks ranking ties.
+   *
+   * Defaults to `content`, which makes retrieval reproducible. `random` is what DEM shipped
+   * until 2026-09-18 and is retained only so the old behaviour can be reproduced: it is
+   * measurably NOT reproducible — the same question ingested twice gives a different top-15
+   * on 12 of 12 questions. See `IdStrategy` and `bench/reproducibility-probe.ts`.
+   *
+   * A store written before the flip keeps its uuids; new rows get content ids. The two sort
+   * against each other deterministically, so a mixed store is reproducible from the moment of
+   * the flip onward, just not identical to either pure one.
+   */
+  idStrategy?: IdStrategy;
 }
 
 export interface MemoryStats {
@@ -137,7 +151,15 @@ export function createDemMemory(options: DemMemoryOptions = {}): DemMemory {
     ...(options.supersession !== undefined ? { mode: options.supersession } : {}),
     ...(options.slotNormalizer !== undefined ? { normalizer: options.slotNormalizer } : {}),
   };
-  const retainEngine = new RetainEngine(repository, graph, embed, extract, bankId, supersession);
+  const retainEngine = new RetainEngine(
+    repository,
+    graph,
+    embed,
+    extract,
+    bankId,
+    supersession,
+    options.idStrategy ?? "content",
+  );
   const reflectEngine = new ReflectEngine(recallEngine, options.generate ?? null, {
     maxContextTokens: options.maxContextTokens,
     sourceExcerpts: options.sourceExcerpts ?? 0,
@@ -241,6 +263,7 @@ export {
   createOpenAIExtractor,
   type RetainResult,
   type SkippedFact,
+  type IdStrategy,
   type SupersessionMode,
   type SupersessionOptions,
 } from "./engine/retain.js";

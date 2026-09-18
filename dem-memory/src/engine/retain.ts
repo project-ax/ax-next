@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { findSourceChunk } from "./source-chunk.js";
 import type { MemoryRepository } from "../db/memory-repository.js";
 import type { CoOccurrenceGraph } from "../graph/co-occurrence-graph.js";
@@ -36,6 +36,59 @@ export type SupersessionMode = "invalidates-previous" | "slot";
 
 /** One instance, because it holds no state and is called once per statement. */
 const DEFAULT_NORMALIZER: SlotNormalizer = synonymNormalizer();
+
+/**
+ * How a stored row gets its id — and, because every ranking tie-break in `recall.ts` is
+ * `id.localeCompare(id)`, how the retrieval order breaks ties.
+ *
+ * `random` is `randomUUID()`, what DEM has always done. MEASURED, and it is not a detail:
+ * ingest the same question twice in one process on a stack with no model call in it and
+ * **12 of 12 questions produce a different top-15, with a different SET of rows** — because
+ * RRF scores are sums of a few discrete `1/(k + rank)` terms, so exact ties are common and
+ * the tie groups straddle both the 40-row rerank-pool boundary and the 15-row evidence
+ * boundary. A random string decides which rows the answerer sees.
+ * `bench/reproducibility-probe.ts` is the measurement.
+ *
+ * `content` derives the id from the statement, so the same ingest sequence produces the same
+ * store and therefore the same evidence table. Ties then break by content rather than by
+ * chance — arbitrary, but *stably* arbitrary, which is the whole property.
+ *
+ * `content` IS THE DEFAULT as of 2026-09-18, after its own measured arms: n=500, 4 runs per
+ * arm, GLM answerer, production stack. Control (`random`) 87.45% mean, treatment (`content`)
+ * 87.60% mean — a +0.15pp delta against a measured 1.6pp noise floor, i.e. no detectable
+ * cost. `docs/plans/2026-09-18-dem-deterministic-ids-report.md` has the run-by-run numbers
+ * and is explicit that the tighter treatment spread is NOT claimed as evidence.
+ */
+export type IdStrategy = "random" | "content";
+
+/**
+ * A content-derived row id.
+ *
+ * `transactionTime` and `ordinal` are in the digest for uniqueness, not for identity: a batch
+ * can legitimately carry the same statement twice (13 exact duplicates in the n=100 sample),
+ * and two rows cannot share a primary key. Everything in the digest is fixed by the ingest
+ * sequence, so a replay of that sequence reproduces every id exactly.
+ *
+ * The one collision left is re-retaining a byte-identical batch at the same `transactionTime`
+ * into the same bank, which raises a PRIMARY KEY error rather than silently storing the facts
+ * twice. That is the duplicate-ingest case the design handles upstream with a batch key, and
+ * a loud failure is the right behaviour for it.
+ */
+function contentId(
+  bankId: string,
+  fact: { subject: string; predicate: string; object: string },
+  validStart: string,
+  transactionTime: string,
+  ordinal: number,
+): string {
+  return createHash("sha1")
+    .update(
+      [bankId, fact.subject, fact.predicate, fact.object, validStart, transactionTime, ordinal].join(
+        "\u0000",
+      ),
+    )
+    .digest("hex");
+}
 
 export interface SupersessionOptions {
   mode?: SupersessionMode;
@@ -189,6 +242,7 @@ export class RetainEngine {
     private readonly extract: ExtractFn,
     private readonly defaultBankId: string,
     private readonly supersession: SupersessionOptions = {},
+    private readonly idStrategy: IdStrategy = "content",
   ) {}
 
   private get mode(): SupersessionMode {
@@ -269,15 +323,19 @@ export class RetainEngine {
       // Derived post-extraction and from the relation alone, so the extraction prompt stays
       // pinned and the normalizer's effect is measurable in isolation.
       const slot = slotMode ? this.normalizer(fact.predicate) : null;
+      const validStart = normalizeTimestamp(fact.validStart, "validStart");
       const tuple: MemoryTuple = {
-        id: randomUUID(),
+        id:
+          this.idStrategy === "content"
+            ? contentId(bankId, fact, validStart, transactionTime, i)
+            : randomUUID(),
         bankId,
         network: fact.network,
         subject: fact.subject,
         predicate: fact.predicate,
         object: fact.object,
         ...(sourceChunk ? { sourceChunk } : {}),
-        validStart: normalizeTimestamp(fact.validStart, "validStart"),
+        validStart,
         validEnd: INFINITY_SENTINEL,
         transactionTime,
         ...(slot ? { slot } : {}),
