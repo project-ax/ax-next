@@ -372,6 +372,55 @@ describe('AgentRail — "What it may do alone"', () => {
       expect(await screen.findByText('Affects the outside world')).toBeTruthy();
     });
 
+    it('TASK-383: draws the marker on an UNDESCRIBED row that declares an effect', async () => {
+      /*
+        A row shape nothing rendered before this card, because nothing could
+        produce it. The mechanical base row's `effect` was hardcoded `[]`, so
+        "we cannot describe this tool" and "nobody classified its effects" were
+        the same row in practice, and every effect test above uses
+        `describedRow`. Now the base row reads `EvaluateResult.effect` — a
+        `when`-only tool's fall-through carries the union of its rules' effects
+        — and `described: false` with `['spends']` is a real, shippable row.
+
+        It is not a contradiction: we cannot say what the tool does IN OUR
+        WORDS, and the table can still say the call costs money. The renderer
+        already handles it — the badge map sits OUTSIDE both `described`
+        branches in `PermissionLine` — so this test changes no component code.
+        It exists because "already handles it" is a claim, and an unasserted
+        claim about a shape that was previously unreachable is exactly the kind
+        of thing that quietly stops being true.
+
+        Both halves are asserted on purpose: the trust line proves the row
+        really did take the undescribed path (a test that only found the badge
+        would pass against a row that rendered as described), and the badge
+        proves disclosure survived it.
+      */
+      railMock.mockResolvedValue(
+        rail({
+          permissions: {
+            status: 'ok',
+            incomplete: false,
+            unrestrictedTools: false,
+            rows: [
+              mcpRow({
+                verdict: 'hold',
+                effect: ['spends'],
+                theirDescription: null,
+                theirName: null,
+                source: 'tool:delete_file',
+                provenance: 'unmapped',
+                mechanicalLabel: 'delete_file',
+              }),
+            ],
+          },
+        }),
+      );
+      renderRail();
+
+      expect(await screen.findByText(/We haven't described this one/)).toBeTruthy();
+      expect(await screen.findByText('Costs money')).toBeTruthy();
+    });
+
     it('suppresses the marker on a deny row that still declares an effect (D3)', async () => {
       // A `deny` row says "Cannot X" — the call never happens, so there is no
       // spend to disclose. "Cannot pay an invoice — Costs money" would read as

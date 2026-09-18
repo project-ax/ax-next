@@ -178,6 +178,57 @@ export interface EvaluateResult {
    * irreversibility when a reviewed rule says so.
    */
   irreversible: boolean;
+  /**
+   * What this call does in the world, for DISCLOSURE only — `effect` gates
+   * nothing, `verdict` already decided whether the call happens.
+   *
+   * REQUIRED, and `[]` is the whole of "the table declares nothing about this
+   * call". Two answers, one principle — NEVER ANSWER SILENCE WHERE THE TABLE
+   * HAS SPOKEN ABOUT THIS TOOL:
+   *
+   *   - A RULE MATCHED -> that rule's declared set (`[]` when it declared
+   *     none). The rule that answered the verdict is the thing speaking, same
+   *     as `ruleId` / `capability` / `irreversible`.
+   *   - NO RULE MATCHED -> the UNION, in table order, of the effects declared
+   *     by every rule whose `match.tool` is this call's tool.
+   *
+   * THE UNION IS THE LOAD-BEARING HALF (TASK-383), and without it this field
+   * would be `[]` at the one call site it exists to fix. The rail gives a tool
+   * a mechanical base row exactly when EVERY rule naming it carries a `when`
+   * predicate, and it builds that row by asking us about `input: {}` — the one
+   * input no `PredicateSpec` can match, by construction. So for precisely the
+   * tools that get a base row, no rule matches and "the matched rule's effect"
+   * is empty. A predicate gates the VERDICT, not what the call does in the
+   * world: a call that slips past `when: { field: 'url', equals: … }` still
+   * spends the money and still hands the URL to its owner. Design H4 forbids
+   * understating reach, and the union is the non-understating answer.
+   *
+   * It is scoped exactly to that gap and cannot leak wider. A tool with an
+   * unconditional rule never reaches the union (the unconditional rule always
+   * matches); a tool with no rules at all unions nothing. So it cannot mark a
+   * benign `Bash` call outward on the strength of a `curl`-predicated sibling —
+   * such a tool also has a broad rule, which matches.
+   *
+   * WHY `irreversible` DOES NOT GET THE SAME TREATMENT, since it is the obvious
+   * next question. `irreversible` changes BEHAVIOUR: AW-5 defers the replay of
+   * an approval by the undo window. Claiming it off a rule that did not answer
+   * would alter approval timing on the strength of a rule that said nothing
+   * about this call. `effect` changes nothing. Different risk, different
+   * default.
+   *
+   * NOTE THE CONTRAST WITH `CapabilityRow.effect`, which is ABSENT when
+   * unclassified and never present-and-empty. Both spellings are deliberate.
+   * That row has no `ruleId`, so absence is the only way it can say "there was
+   * never a rule"; here `ruleId: null` already carries that, so `[]` needs no
+   * second spelling — and this repo has spent two cards on absent-vs-empty
+   * ambiguity in this exact field. Required also means the `returns` schema
+   * rejects a non-conforming impl loudly instead of under-disclosing quietly.
+   *
+   * OMITTED IS NOT EXPRESSIBLE AND EMPTY IS NOT "SAFE": `[]` says nobody
+   * classified this call, not that it is harmless. See `ToolEffect`, including
+   * the `spends`-is-money-only caveat, which applies here unchanged.
+   */
+  effect: ToolEffect[];
 }
 
 /** One row of "What it may do alone". */
@@ -236,6 +287,14 @@ export interface CapabilityRow {
    * handed only the first it would drop the `outward` disclosure, which is the
    * understating direction design H4 forbids. Absent when the rule declares
    * nothing; never present and empty.
+   *
+   * DELIBERATELY SPELLED DIFFERENTLY FROM `EvaluateResult.effect`, which is
+   * REQUIRED and uses `[]` for "nothing declared" (TASK-383). Not an
+   * inconsistency somebody should tidy up: a row carries no `ruleId`, so
+   * absence is the only way it can say "there was never a rule to declare
+   * one", while an evaluate answer says that with `ruleId: null` and would
+   * gain nothing from a second spelling. Read both comments before changing
+   * either.
    */
   effect?: ToolEffect[] | undefined;
   /** Only set when `described` is false: the third party's own words, attributed. */
@@ -407,6 +466,16 @@ export const EvaluateResultSchema = z.object({
   ruleId: z.string().nullable(),
   capability: z.string().nullable(),
   irreversible: z.boolean(),
+  // Per the block comment above: a `z.object` STRIPS keys it does not declare.
+  // Delete this line and `effect` vanishes on the way out of the bus while
+  // every unit test on the object `evaluate()` RETURNS (built before the bus
+  // re-parse) stays green — the rail then draws no disclosure on a call that
+  // spends money or acts outward, which is the understating direction design
+  // H4 forbids. `tool-policy.canary.test.ts` runs that mutant deliberately.
+  //
+  // REQUIRED, matching the interface: a producer that omits it fails the parse
+  // loudly instead of under-disclosing quietly.
+  effect: z.array(ToolEffectSchema),
 });
 
 export const CapabilityRowSchema = z.object({

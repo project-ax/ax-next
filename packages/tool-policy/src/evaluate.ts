@@ -1,4 +1,4 @@
-import type { EvaluateResult, PolicyRule, PredicateSpec } from './types.js';
+import type { EvaluateResult, PolicyRule, PredicateSpec, ToolEffect } from './types.js';
 
 /**
  * The target host of an egress-gated call, or `null` when there isn't one we
@@ -68,6 +68,44 @@ function matches(when: PredicateSpec | undefined, input: unknown): boolean {
     return false;
   }
   return actual === when.equals;
+}
+
+/**
+ * Every effect the table declares about a TOOL, in table order, deduped.
+ *
+ * THE FALL-THROUGH ANSWER FOR `EvaluateResult.effect`, and the reason TASK-383
+ * is not a one-line field copy. The rail gives a tool a mechanical base row
+ * exactly when EVERY rule naming it carries a `when`, and it builds that row by
+ * asking about `input: {}` — the input no `PredicateSpec` can match, by
+ * construction. So on the one path this field exists to serve, no rule matches
+ * and "the matched rule's effect" is `[]`: we would have shipped a field that
+ * is empty precisely where the disclosure was missing.
+ *
+ * A predicate gates the VERDICT, not what the call does in the world. A call
+ * that slips past `when: { field: 'url', equals: … }` still spends the money
+ * and still hands the URL to its owner, so answering silence there understates
+ * reach, which design H4 forbids.
+ *
+ * IT CANNOT WIDEN PAST THAT GAP, which is the objection to answer before this
+ * looks like guilt by association. A tool with an unconditional rule never
+ * reaches here (the unconditional rule always matches); a tool with no rules
+ * unions nothing. So a benign `Bash` call cannot be marked outward on the
+ * strength of a `curl`-predicated sibling — such a tool also has a broad rule.
+ *
+ * Dedupe is by value and order is the table's, not sorted: the order a human
+ * wrote in `rules.ts` is the order the disclosure reads in, and a set-shaped
+ * answer that reordered itself would make the rail's copy drift from the rule
+ * for no reason anybody could see in a diff.
+ */
+function declaredEffectsFor(rules: readonly PolicyRule[], tool: string): ToolEffect[] {
+  const union: ToolEffect[] = [];
+  for (const rule of rules) {
+    if (rule.match.tool !== tool) continue;
+    for (const effect of rule.effect ?? []) {
+      if (!union.includes(effect)) union.push(effect);
+    }
+  }
+  return union;
 }
 
 /**
@@ -142,9 +180,32 @@ export function evaluate(
       ruleId: rule.id,
       capability: rule.capability,
       irreversible: rule.irreversible === true,
+      // The matched rule's own set, `[]` when it declared none — same source as
+      // `ruleId` / `capability`, because the rule that answered the verdict is
+      // the thing speaking. Note the relaxation above does NOT clear this: an
+      // allowed host changes whether we ask, not whether the fetch costs money
+      // or reaches a third party.
+      //
+      // COPIED, not handed out by reference. `rules` is a module-level constant
+      // shared by every later call and `readonly` only in the type system, so a
+      // caller that sorted or appended to this array would silently rewrite a
+      // security claim for everybody after it — and `evaluate` would have
+      // stopped being pure in the one way nothing here would notice.
+      effect: rule.effect === undefined ? [] : [...rule.effect],
     };
   }
-  return { verdict: 'allow', ruleId: null, capability: null, irreversible: false };
+  // NO RULE SPOKE TO THE VERDICT — `ruleId: null` says so and we do not pretend
+  // otherwise. `effect` is the one field that reads wider than the match: see
+  // `declaredEffectsFor` for why silence here would be the understating answer,
+  // and why `irreversible` deliberately does NOT get the same treatment (it
+  // changes approval timing; this changes only what we disclose).
+  return {
+    verdict: 'allow',
+    ruleId: null,
+    capability: null,
+    irreversible: false,
+    effect: declaredEffectsFor(rules, call.name),
+  };
 }
 
 /**

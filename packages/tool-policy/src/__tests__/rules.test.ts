@@ -213,44 +213,59 @@ describe('BUILTIN_RULES', () => {
     expect('effect' in memorySearch!).toBe(false);
   });
 
-  it('TASK-329: no CONDITIONAL rule declares an effect — the rail cannot disclose one yet', () => {
+  it('TASK-383: an outward rule pairs with irreversible: true — except the one deferral', () => {
     /*
-      A TRIPWIRE for a gap that is real but not reachable today. Found in
-      review; it is cheaper to fail here than to under-disclose on the rail.
+      THIS SLOT USED TO HOLD "no CONDITIONAL rule declares an effect", TASK-329's
+      tripwire for a gap that is now CLOSED, and it is reworked rather than
+      deleted because the reasoning is worth more than the assertion was.
 
-      The rail emits two kinds of row. Described rows come from
-      `tool-policy:list-capabilities` and now carry `effect`. But a tool named
-      ONLY by `when`-predicated rules also gets a MECHANICAL BASE ROW, built
-      by the caller from `evaluate`'s fall-through verdict — and `evaluate`
-      answers `EvaluateResult`, which has no `effect` (deliberately: adding it
-      is a second hook-surface change). So that base row hardcodes no effect
-      and has no rule to read one from.
+      THE GAP IT GUARDED. A tool named only by `when`-predicated rules gets a
+      MECHANICAL BASE ROW, built by the caller from `evaluate`'s fall-through —
+      and `EvaluateResult` carried no `effect`, so that row could not disclose
+      one. TASK-383 carries it: a matched rule answers its own set, and a
+      fall-through answers the UNION of every rule naming the tool, which is
+      precisely the base-row case. Now covered by `evaluate.test.ts`'s
+      "unions the declared effects when NO rule matched — the base-row case"
+      and "dedupes the union and keeps table order", by
+      `tool-policy.canary.test.ts`'s "unions a when-only tool ACROSS THE BUS",
+      and end to end by channel-web's rail tests. The old assertion would now
+      forbid the very rule shape the fix exists to serve.
 
-      Harmless while every effect-bearing rule is unconditional, which is why
-      this is a guard and not a fix: `web.search` and `web.extract` are both
-      unconditional, so they are fully described and never take the mechanical
-      path. The day a CONDITIONAL rule declares `spends` or `outward`, its base
-      row — the one covering every call the predicate misses — would render
-      with no marker while the call still spends the money or acts outward.
-      Understating reach is the one direction design H4 forbids.
+      IT ALSO EXECUTED ZERO ASSERTIONS, which its own comment admitted: no
+      builtin rule carries a `when`, so the loop body never ran. A green that
+      proves nothing is worse than no test, because it reads like coverage in a
+      diff. Its replacement runs against real rules today.
 
-      If you are here because this test just went red: you have added exactly
-      that rule, and the fix is to carry `effect` on `EvaluateResult` (and
-      through the caller's base-row builder) rather than to relax this
-      assertion.
-
-      IT EXECUTES ZERO ASSERTIONS TODAY, and that is stated rather than left for
-      the next reader to discover. `BUILTIN_RULES` contains no `when`-predicated
-      rules at all (`grep -c 'when:' rules.ts` → 0), so the `continue` skips
-      every rule and the loop body never runs. Its green is therefore NOT
-      evidence of active coverage — it is a guard armed for a rule shape that
-      does not exist yet. Unlike the canary's key-list loop, this one cannot be
-      made non-vacuous without planting a fake conditional rule in the shipping
-      table, which would be worse: the table is the thing under test.
+      WHAT THE NEW ASSERTION IS ARMED FOR: the SECOND outward rule. #574 decided
+      deliberately that `web.extract` would NOT set `irreversible` — that flag
+      is a claim about approval TIMING (AW-5 defers the replay by the undo
+      window), not about classification, and flipping it was left for a
+      follow-up rather than smuggled into a classification patch. That decision
+      is one rule wide, and it is spelled here as an allow-list of one so the
+      next `outward` rule cannot inherit it silently. An outward call is
+      normally irreversible — you cannot unsend a message — and a rule that
+      declares `outward` while offering a 10-second undo is promising something
+      the system cannot honour (design H1). When this reds, the question is
+      whether AW-5 can honour undo for THAT rule, not whether the allow-list
+      has room for one more.
     */
-    for (const rule of BUILTIN_RULES) {
-      if (rule.match.when === undefined) continue;
-      expect(rule.effect, rule.id).toBeUndefined();
+    const IRREVERSIBLE_DEFERRED = new Set(['web.extract']);
+    const outward = BUILTIN_RULES.filter((r) => r.effect?.includes('outward') === true);
+    // NON-VACUITY, stated as an assertion rather than as a hope. The loop below
+    // is the whole test, and it runs zero times the moment nothing declares
+    // `outward` — the exact way its predecessor went quiet. The count is NOT
+    // pinned here (the test above owns the exact list); this only insists the
+    // loop has something to say.
+    expect(outward.length, 'nothing declares outward — this test went vacuous').toBeGreaterThan(0);
+    for (const rule of outward) {
+      if (IRREVERSIBLE_DEFERRED.has(rule.id)) {
+        // The deferral, pinned where somebody would trip over it. If this reds
+        // because `web.extract` now sets the flag, that is the follow-up
+        // landing: delete the id from the set rather than the assertion.
+        expect(rule.irreversible, `${rule.id} is the documented deferral`).toBeUndefined();
+        continue;
+      }
+      expect(rule.irreversible, `${rule.id} declares outward`).toBe(true);
     }
   });
 

@@ -202,6 +202,17 @@ describe('egress allowlist canary', () => {
         ruleId: null,
         capability: null,
         irreversible: false,
+        // `[]` and not a missing key (TASK-383): `effect` is REQUIRED on
+        // `EvaluateResult`, so a deny that omitted it would fail the bus's
+        // `returns` parse and this deliberated refusal would leave as an
+        // exception instead — `@ax/decisions` would swap it for its generic
+        // gate-failure sentence, and the rail would drop the row entirely.
+        // This assertion is what noticed: it reddens with a ZodError, not with
+        // a diff, which is worth knowing before you read the failure.
+        //
+        // The VALUE is `[]` because there is nothing to disclose about a call
+        // we could not read — no tool name means nothing to union.
+        effect: [],
       });
     }
   });

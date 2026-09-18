@@ -65,10 +65,18 @@ describe('evaluate — egress contingency', () => {
     ).toBe('hold');
   });
 
-  it('keeps the rule identity when it relaxes the verdict', () => {
+  it('keeps the rule identity AND its effect when it relaxes the verdict', () => {
     // A silent allow that reported `ruleId: null` would look to the rail like a
     // tool no rule describes, and the row would lose both its sentence and its
     // effect disclosure.
+    //
+    // `effect` is part of that identity (TASK-383) and the relaxation must not
+    // touch it. An allowed host changes whether we ASK — it does not make the
+    // fetch stop costing money or stop handing the URL to its owner, and an
+    // `allow` that dropped the disclosure would mean the calls we stopped
+    // asking about are exactly the ones nobody is told anything about. That is
+    // the understating direction design H4 forbids, reached by the one path
+    // where the person never sees a prompt to read.
     const out = evaluate(
       RULES,
       { name: 'web_extract', input: { url: 'https://docs.example.com/' } },
@@ -79,6 +87,7 @@ describe('evaluate — egress contingency', () => {
       ruleId: 'web.extract',
       capability: EXTRACT.capability,
       irreversible: false,
+      effect: ['spends', 'outward'],
     });
   });
 
