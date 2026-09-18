@@ -95,10 +95,23 @@ export interface PolicyRule {
   /** See `CapabilityProvenance`. Defaults to `'rule'` when omitted. */
   provenance?: RuleProvenance;
   /**
-   * True when approving this call cannot be taken back, so AW-5/TASK-226 must
-   * NOT offer the 10-second undo window on it. Omitted means reversible —
-   * which is the honest default only because every rule seeded today IS
-   * reversible; a new irreversible rule must set this explicitly.
+   * True when the call itself cannot be taken back once it has run, so
+   * AW-5/TASK-226 must DEFER it: `@ax/decisions` claims the approval
+   * immediately and schedules the replay one undo window later, which is what
+   * gives the undo button something left to stop. Omitted means reversible,
+   * and a reversible call is replayed at once with no grace period.
+   *
+   * THIS COMMENT USED TO SAY THE OPPOSITE — that AW-5 "must NOT offer the
+   * 10-second undo window" on an irreversible call. Corrected against the
+   * shipped behaviour in TASK-384: `plugin.ts` sets
+   * `deferred = !attended && hasExecutor && current.irreversible`, and only a
+   * deferred decision gets a `replayDueAt`. The window exists FOR the
+   * irreversible case, not in spite of it.
+   *
+   * Omitted is the honest default only because every rule seeded today is
+   * treated as reversible; a new irreversible rule must set this explicitly.
+   * Whether `web.extract` — which declares `outward` and leaves this unset —
+   * ought to set it is TASK-409, deliberately still open.
    *
    * Related to but NOT the same as `effect`: `irreversible` is about whether an
    * APPROVAL can be withdrawn during the undo window, `effect` is about what
