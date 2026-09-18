@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import * as fs from 'node:fs';
 import { readFile, rm, writeFile } from 'node:fs/promises';
@@ -8,6 +9,7 @@ import git from 'isomorphic-git';
 import picomatch from 'picomatch';
 import {
   PluginError,
+  type AgentContext,
   asWorkspaceVersion,
   registerWorkspaceApplyFacade,
   WorkspaceDiffOutputSchema,
@@ -36,8 +38,15 @@ import type {
 } from '@ax/workspace-bundle-protocol';
 /**
  * Config for `registerWorkspaceGitHooks`. `repoRoot` is the absolute path to
- * the bare git repo's parent directory; `<repoRoot>/repo.git` is materialized
- * lazily on first use.
+ * the directory that holds this deployment's bare repos. Each caller identity
+ * gets its OWN bare repo at `<repoRoot>/<workspaceId>.git`, materialized
+ * lazily on first use — see `workspaceIdForOwner`.
+ *
+ * Before TASK-396 this was a single `<repoRoot>/repo.git` shared by every
+ * user and agent in the deployment. That is why the layout is described here
+ * rather than left implicit: a reader upgrading an existing deployment will
+ * find an orphaned `repo.git` sitting next to the new per-owner repos, and it
+ * is no longer read by anything.
  */
 export interface WorkspaceGitCoreConfig {
   repoRoot: string;
@@ -45,6 +54,67 @@ export interface WorkspaceGitCoreConfig {
 
 const PLUGIN_NAME = '@ax/workspace-git-core';
 const MAIN_REF = 'refs/heads/main';
+
+/**
+ * Derives the per-owner workspace id from the caller's identity.
+ *
+ * Output shape: `ws-` + the first 16 hex chars of
+ * `sha256(JSON.stringify([userId, agentId]))` — filesystem-safe by
+ * construction, so it can be used directly as a directory name.
+ *
+ * DELIBERATELY DUPLICATED from `@ax/workspace-git-server`'s `workspaceIdFor`,
+ * byte for byte, for the same reason `BASELINE_ENV` is duplicated above:
+ * Invariant 2 forbids importing across plugins, and a deployment that
+ * migrates from the `local` backend to `git-protocol` should find its
+ * workspaces under the same names on both sides. If one derivation ever
+ * changes, the other must change with it; `__tests__/workspace-id.test.ts`
+ * pins the output so silent drift fails loudly.
+ *
+ * The `JSON.stringify([userId, agentId])` encoding is what keeps distinct
+ * pairs from colliding no matter what characters either field contains — a
+ * naive `userId + '/' + agentId` maps `(a, b/c)` and `(a/b, c)` to the same
+ * key, and on this backend that collision is two tenants sharing a tree.
+ */
+export function workspaceIdForOwner(userId: string, agentId: string): string {
+  const keyMaterial = JSON.stringify([userId, agentId]);
+  return `ws-${createHash('sha256').update(keyMaterial).digest('hex').slice(0, 16)}`;
+}
+
+/**
+ * FAIL-CLOSED identity gate. Every workspace hook runs through this before it
+ * touches a byte of storage.
+ *
+ * A caller with no usable identity gets an error, NOT a fallback tree. That
+ * is the whole point: the bug this replaced served a deployment-wide shared
+ * repo to anyone who asked, so "no identity" must never resolve to anything.
+ * An empty Files tab is a correct answer; another user's file is not.
+ *
+ * Note what this does NOT try to do: it does not know which ids are "real".
+ * A caller that mints a synthetic identity (e.g. an owner-less IPC session
+ * falling back to a placeholder) gets its own private bucket keyed on that
+ * placeholder — not a real user's tree, and not a shared one. That is still
+ * fail-closed with respect to every actual tenant.
+ */
+function requireOwner(ctx: AgentContext, hookName: string): string {
+  const userId = ctx.userId;
+  const agentId = ctx.agentId;
+  if (
+    typeof userId !== 'string' ||
+    userId.trim().length === 0 ||
+    typeof agentId !== 'string' ||
+    agentId.trim().length === 0
+  ) {
+    throw new PluginError({
+      code: 'workspace-identity-required',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message:
+        'workspace access requires a caller identity (userId + agentId); ' +
+        'refusing to serve an unpartitioned workspace',
+    });
+  }
+  return workspaceIdForOwner(userId, agentId);
+}
 
 // Bot identity. INTENTIONALLY hard-coded — the agent never gets to choose
 // who the commit appears to be from. (The agent-supplied `reason` flows
@@ -787,12 +857,35 @@ export function registerWorkspaceGitHooks(
   bus: HookBus,
   config: WorkspaceGitCoreConfig,
 ): void {
-  const gitdir = join(config.repoRoot, 'repo.git');
-  const mutex = new Mutex();
+  // One bare repo AND one write mutex per owner. The mutex map is keyed by
+  // workspaceId rather than shared across the deployment: two different
+  // owners write to two different repos, so serializing them against each
+  // other buys nothing. Growth is bounded by the number of (userId, agentId)
+  // pairs this host process has served, and each entry is a two-field object.
+  const mutexes = new Map<string, Mutex>();
+
+  /**
+   * Resolves the caller to `{ gitdir, mutex }`, or THROWS if it has no
+   * identity. Every hook below starts here — there is deliberately no way to
+   * reach a gitdir without passing through `requireOwner` first.
+   */
+  function ownerRepo(
+    ctx: AgentContext,
+    hookName: string,
+  ): { gitdir: string; mutex: Mutex } {
+    const workspaceId = requireOwner(ctx, hookName);
+    let mutex = mutexes.get(workspaceId);
+    if (mutex === undefined) {
+      mutex = new Mutex();
+      mutexes.set(workspaceId, mutex);
+    }
+    return { gitdir: join(config.repoRoot, `${workspaceId}.git`), mutex };
+  }
 
   // Resolve a version that callers may pass. `version` undefined → HEAD.
   // Returns null if there is no HEAD yet (empty repo).
   async function resolveVersion(
+    gitdir: string,
     version: WorkspaceVersion | undefined,
   ): Promise<string | null> {
     await ensureRepo(gitdir);
@@ -809,6 +902,11 @@ export function registerWorkspaceGitHooks(
     'workspace:apply-internal',
     PLUGIN_NAME,
     async (ctx, input) => {
+      // Identity FIRST — before path validation, before the mutex, before any
+      // storage. An identity-less caller must not even learn whether its
+      // paths were well-formed.
+      const { gitdir, mutex } = ownerRepo(ctx, 'workspace:apply-internal');
+
       // Validate paths up-front, BEFORE taking the mutex, so a bad input
       // doesn't deadlock other writers.
       for (const change of input.changes) {
@@ -901,8 +999,9 @@ export function registerWorkspaceGitHooks(
   bus.registerService<WorkspaceReadInput, WorkspaceReadOutput>(
     'workspace:read',
     PLUGIN_NAME,
-    async (_ctx, input) => {
-      const commitOid = await resolveVersion(input.version);
+    async (ctx, input) => {
+      const { gitdir } = ownerRepo(ctx, 'workspace:read');
+      const commitOid = await resolveVersion(gitdir, input.version);
       if (commitOid === null) return { found: false };
       // Read via real `git cat-file blob`, NOT isomorphic-git's git.readBlob —
       // iso-git's `fs.read` adapter coalesces transient read errors (EAGAIN /
@@ -931,8 +1030,9 @@ export function registerWorkspaceGitHooks(
   bus.registerService<WorkspaceListInput, WorkspaceListOutput>(
     'workspace:list',
     PLUGIN_NAME,
-    async (_ctx, input) => {
-      const commitOid = await resolveVersion(input.version);
+    async (ctx, input) => {
+      const { gitdir } = ownerRepo(ctx, 'workspace:list');
+      const commitOid = await resolveVersion(gitdir, input.version);
       if (commitOid === null) return { paths: [] };
       // List via real `git ls-tree`, NOT isomorphic-git's git.listFiles —
       // listFiles walks the tree through the same readObjectPacked path that
@@ -964,7 +1064,8 @@ export function registerWorkspaceGitHooks(
   bus.registerService<WorkspaceDiffInput, WorkspaceDiffOutput>(
     'workspace:diff',
     PLUGIN_NAME,
-    async (_ctx, input) => {
+    async (ctx, input) => {
+      const { gitdir } = ownerRepo(ctx, 'workspace:diff');
       await ensureRepo(gitdir);
       let fromSnapshot: Snapshot;
       let fromCommitOid: string | null = null;
@@ -1024,7 +1125,12 @@ export function registerWorkspaceGitHooks(
   >(
     'workspace:export-baseline-bundle',
     PLUGIN_NAME,
-    async (_ctx, input) => {
+    async (ctx, input) => {
+      // Identity gate runs even on the version=null seed path. That path
+      // never reads storage, but letting it answer for an identity-less
+      // caller would hand out a usable baseline OID to someone the other
+      // hooks refuse to serve — and the next step in that flow is an apply.
+      const { gitdir, mutex } = ownerRepo(ctx, 'workspace:export-baseline-bundle');
       // version=null: explicit seed condition — ALWAYS deterministic
       // empty baseline, regardless of current state. No mutex needed
       // (built from a temp scratch repo).
@@ -1070,6 +1176,7 @@ export function registerWorkspaceGitHooks(
     'workspace:apply-bundle',
     PLUGIN_NAME,
     async (ctx, input) => {
+      const { gitdir, mutex } = ownerRepo(ctx, 'workspace:apply-bundle');
       return mutex.run(async () => {
         await ensureRepo(gitdir);
         const currentOid = await resolveHead(gitdir);

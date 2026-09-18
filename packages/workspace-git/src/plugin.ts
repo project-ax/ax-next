@@ -5,17 +5,20 @@ const PLUGIN_NAME = '@ax/workspace-git';
 
 export interface WorkspaceGitConfig {
   /**
-   * Absolute path to the directory that will host the bare repository at
-   * `<repoRoot>/repo.git`. The plugin will idempotently `git.init` it on
-   * first use. Capabilities are scoped to this directory only — nothing
-   * outside `repoRoot` is read or written.
+   * Absolute path to the directory that will host the bare repositories,
+   * one per `(userId, agentId)` at `<repoRoot>/<workspaceId>.git`. The plugin
+   * idempotently `git.init`s each on first use. Capabilities are scoped to
+   * this directory only — nothing outside `repoRoot` is read or written.
    */
   repoRoot: string;
 }
 
 /**
- * Single-replica workspace plugin backed by a bare `isomorphic-git`
- * repository on disk. Thin wrapper over `@ax/workspace-git-core` —
+ * Single-replica workspace plugin backed by bare `isomorphic-git`
+ * repositories on disk — one per (userId, agentId), so the tree this
+ * deployment serves a user is that user's agent's tree and nobody else's
+ * (TASK-396; it was one shared repo before). Thin wrapper over
+ * `@ax/workspace-git-core` —
  * registers the four base `workspace:*` service hooks plus the two
  * Phase 3 bundle hooks (`workspace:apply-bundle` +
  * `workspace:export-baseline-bundle`) against a local repoRoot. Use

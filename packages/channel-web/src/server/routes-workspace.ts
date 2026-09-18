@@ -3895,17 +3895,20 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * not read, and the reader would have no way to tell the difference (H7).
      * So a throw propagates and the tab shows an error.
      *
-     * NOTE ON ISOLATION. The `git-protocol` workspace backend shards by
-     * agentId (TASK-257 — previously (userId, agentId)), so this listing is
-     * genuinely one agent's tree, shared by every user authorized to reach
-     * it. The
-     * `local` single-repo backend — the CLI and the chart's default — ignores
-     * ctx entirely and keeps ONE tree for the whole deployment; there, this
-     * lists that shared tree, exactly as the identity editor and the routines
-     * list already read it. That is a property of the backend, not something
-     * this route can filter its way out of: a shared tree has no per-agent
-     * prefix to scope by. It is called out here rather than left for someone
-     * to discover, and a per-agent `local` backend is the fix.
+     * NOTE ON ISOLATION. BOTH workspace backends now partition by
+     * (userId, agentId) — `git-protocol` by shard, `local` by one bare repo
+     * per owner — so this listing is genuinely one agent's tree on either.
+     * This comment used to say the opposite about `local`, and it was right:
+     * that backend kept ONE tree for the whole deployment and this route
+     * served it to whoever asked. It took a user being shown another user's
+     * file on a live deployment before anyone fixed the thing the comment had
+     * been describing (TASK-396).
+     *
+     * The isolation is the BACKEND's, not this route's — there is still no
+     * per-agent prefix here to filter on. What this route owes it is an
+     * honest ctx: `agentWorkspaceCtx(agentId, userId)`, built from the
+     * session's identity and the agent `agents:resolve` just approved, never
+     * from anything the request supplied.
      */
     async agentFiles(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);

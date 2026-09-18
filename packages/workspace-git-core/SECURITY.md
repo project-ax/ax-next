@@ -1,6 +1,6 @@
 # Security — `@ax/workspace-git-core`
 
-This package is the implementation behind the `workspace:*` contract. It exports one function — `registerWorkspaceGitHooks` — that registers the four service hooks (`workspace:apply`, `workspace:read`, `workspace:list`, `workspace:diff`) on a host-side bus and stores every snapshot in a bare `isomorphic-git` repository at `<repoRoot>/repo.git`. **Linear-history-only by construction:** every `workspace:apply` is a CAS on `refs/heads/main`. There are no branches, no merges, no rebase. The `WorkspaceVersion` opaque string happens to be a 40-hex commit SHA today, but subscribers MUST treat it as opaque (Invariant 1).
+This package is the implementation behind the `workspace:*` contract. It exports one function — `registerWorkspaceGitHooks` — that registers the four service hooks (`workspace:apply`, `workspace:read`, `workspace:list`, `workspace:diff`) on a host-side bus and stores every snapshot in a bare `isomorphic-git` repository at `<repoRoot>/<workspaceId>.git`, where `workspaceId` is derived from the calling `(userId, agentId)` — one repo per owner, never one for the deployment. **Linear-history-only by construction:** every `workspace:apply` is a CAS on `refs/heads/main`. There are no branches, no merges, no rebase. The `WorkspaceVersion` opaque string happens to be a 40-hex commit SHA today, but subscribers MUST treat it as opaque (Invariant 1).
 
 Two consumers wrap this core:
 
@@ -11,7 +11,7 @@ Both consumers share the same security profile because the code is the same; wha
 
 ## Security review (workspace-git-core)
 
-- **Sandbox:** Filesystem reach is fenced to `<repoRoot>/repo.git`; every write goes through `isomorphic-git`'s object-db (no caller-supplied path ever reaches `fs.writeFile` directly), and `validatePath` rejects `..`, absolute, NUL, backslash, and `.git` segments before any blob is written. No process spawn, no env reads, no network — `isomorphic-git` is pure JS and we don't ship the `http` variant.
+- **Sandbox:** Filesystem reach is fenced to `<repoRoot>/<workspaceId>.git`, and `workspaceId` is a `ws-` prefix plus 16 hex chars — a caller cannot steer it at a directory of their choosing; every write goes through `isomorphic-git`'s object-db (no caller-supplied path ever reaches `fs.writeFile` directly), and `validatePath` rejects `..`, absolute, NUL, backslash, and `.git` segments before any blob is written. No process spawn, no env reads, no network — `isomorphic-git` is pure JS and we don't ship the `http` variant.
 - **Injection:** `FileChange.content` is opaque `Uint8Array` written via `git.writeBlob` — never interpolated into a shell, path, SQL, or URL. Agent-supplied `reason` lands in the commit message only; agent-supplied `agentId`/`userId`/`sessionId` land in `WorkspaceDelta.author` only and are never used as the git author/email (those are hard-coded `ax-runner`).
 - **Supply chain:** Two runtime deps, both pinned exact: `isomorphic-git@1.37.5` (MIT, established maintainer set, no install hooks) and `picomatch@4.0.4` (MIT, Jon Schlinkert / micromatch org, no install hooks). Transitive surface is mostly self-contained pure-JS git plumbing; one entry (`simple-get`) is network-capable but unreachable from the code paths we use.
 
@@ -21,7 +21,7 @@ The capability budget for this code is one directory and zero of everything else
 
 ### Filesystem reach
 
-`repoRoot` comes from caller config and never from a hook payload — it's set once when `registerWorkspaceGitHooks` is called. Everything we write goes under `<repoRoot>/repo.git/` via `isomorphic-git`'s `gitdir` parameter (`impl.ts:348`). The library writes loose objects into `objects/`, refs into `refs/`, packs into `objects/pack/`, and that's it. No part of this code path ever calls `fs.writeFile` with a caller-supplied path string — paths from `FileChange` go to `git.writeBlob` as content, not as filenames, and the resulting OID is the only thing that hits the FS.
+`repoRoot` comes from caller config and never from a hook payload — it's set once when `registerWorkspaceGitHooks` is called. Everything we write goes under `<repoRoot>/<workspaceId>.git/` via `isomorphic-git`'s `gitdir` parameter, and the only input to `workspaceId` is the bus-supplied caller identity, hashed. The library writes loose objects into `objects/`, refs into `refs/`, packs into `objects/pack/`, and that's it. No part of this code path ever calls `fs.writeFile` with a caller-supplied path string — paths from `FileChange` go to `git.writeBlob` as content, not as filenames, and the resulting OID is the only thing that hits the FS.
 
 For the writes that DO touch caller-supplied filenames (the path inside the tree object), `validatePath` (`impl.ts:91-143`) runs BEFORE the mutex is taken so a bad input fails fast and can't deadlock. It rejects:
 
@@ -49,6 +49,41 @@ None. We import `isomorphic-git`, NOT `isomorphic-git/http/node` — the network
 ### Argv injection
 
 Not applicable. There's no shell command construction, no argv array, nothing to inject into.
+
+## Tenant isolation
+
+This is the section we should have written the first time. Until TASK-396 this
+package kept **one** bare repo for the whole deployment and ignored the caller's
+identity on every read. Two users on the same host shared a tree. One of them
+opened their own Files tab and got the other's file. We are not going to dress
+that up: it was a cross-tenant read on a live deployment, and it shipped because
+the isolation story lived in the *other* backend and nobody checked that this one
+had it too.
+
+How it works now:
+
+- Every hook resolves the caller to `ws-<16 hex>` = `sha256(JSON.stringify([userId, agentId]))`,
+  and reads/writes `<repoRoot>/<that>.git`. Different owner, different repo. The
+  derivation is a byte-for-byte copy of `@ax/workspace-git-server`'s, so the two
+  backends name the same workspace the same way; both sides pin the same test
+  vectors so a drift fails loudly instead of orphaning repos.
+- **It fails closed.** A caller with a blank `userId` or `agentId` gets a
+  `workspace-identity-required` error, not a default tree. There is no shared
+  fallback repo left for an unauthenticated-ish caller to land in — the
+  identity check runs before path validation, before the mutex, before any
+  filesystem call.
+- The identity comes from the bus `ctx`, which callers build from an
+  authenticated session plus an agent that `agents:resolve` has already
+  approved. This package trusts that and can't second-guess it: a caller that
+  mints a synthetic identity gets its own private bucket keyed on that
+  synthetic pair. That is still not any real tenant's tree, but it is why
+  "who fills in ctx" is a security-relevant question one layer up.
+
+**Upgrading an existing deployment:** the old `<repoRoot>/repo.git` is no longer
+read by anything. We do NOT migrate or delete it, because nothing in it records
+which owner wrote which file — guessing would be worse than leaving it. Operators
+should treat it as what it is (a tree every user of that deployment could read)
+and delete it once they've salvaged anything they want.
 
 ## Prompt injection / untrusted content
 
@@ -115,7 +150,7 @@ Two runtime deps. Both pinned to exact versions in `package.json` (no `^` or `~`
 
 - **Unique writer per `gitdir`.** The per-repo `Mutex` (`impl.ts:55-70`) serializes apply within one process. Both consumers maintain the "single writer per `gitdir`" property by construction — `@ax/workspace-git` runs in the host process and there's only one host; `@ax/workspace-git-http` runs in a server pod that the chart pins to one replica. If a future deployment shape ever runs two `registerWorkspaceGitHooks` callers against the same `gitdir`, the in-process mutex stops being enough and we need an external lock (advisory lock in Postgres, or a real ref-update CAS).
 - **No GC.** Failed applies leave dangling blobs and trees in `objects/`. `isomorphic-git` doesn't ship a `git gc` equivalent, and we don't run one. Disk usage grows monotonically with churn; for the MVP this is fine, but a long-lived repo will eventually want a sweeper.
-- **No working-tree materialization.** This code is bare-repo only. Tools that need a checkout (e.g., a build that compiles a project) get bytes via `workspace:read` and write to a scratch dir themselves. That's a deliberate capability minimization — checkouts mean filesystem reach beyond `repoRoot/repo.git`, which would expand the sandbox story.
+- **No working-tree materialization.** This code is bare-repo only. Tools that need a checkout (e.g., a build that compiles a project) get bytes via `workspace:read` and write to a scratch dir themselves. That's a deliberate capability minimization — checkouts mean filesystem reach beyond the owner's bare repo, which would expand the sandbox story.
 - **No commit signing.** All commits are unsigned. If we ever need to prove provenance from the git history alone (rather than from the bus audit log), we'll need to plumb a signing key. Not on the roadmap; the bus audit log is the source of truth for provenance.
 - **`reason` length and content are unchecked.** A 10MB commit message would be silently accepted. Practical exploit surface is low (it ends up in the commit body, not a shell), but if storage costs matter we may add a length cap.
 
