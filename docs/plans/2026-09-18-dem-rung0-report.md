@@ -372,11 +372,17 @@ with a content-derived id (`subject|predicate|object|validStart`) and re-running
 **0/12 differing and 0 row positions moved**, with nothing else changed.
 
 **Why it matters past the bench.** Two consecutive asks of the same question can be answered
-from different evidence — that is a product property, not a harness artifact. And every accuracy
-number this project has recorded contains this as an unattributed component: the n=100
-"±4–6pp on identical code" and n=500 "1.6pp" floors are written down as *answerer and judge*
-variance, and `HANDOFF.md` already flags that figure as a lower bound. This is a concrete,
-removable part of the gap.
+from different evidence — that is a product property, not a harness artifact.
+
+> **Corrected 2026-09-18.** This paragraph originally went on to claim that the same
+> nondeterminism is "a concrete, removable part" of the bench's 1.6pp noise floor. That was a
+> guess, it was measured, and **it failed**: four n=500 runs with deterministic ids gave sd
+> 0.91pp against the random arm's 0.50pp — wider, not tighter — with the mean moving −0.30pp
+> (p = 0.59). Retrieval nondeterminism is large at the TABLE level and still does not detectably
+> move TOTAL accuracy variance; the floor is dominated by the answerer and the judge, exactly as
+> the published figure always said. See `docs/plans/2026-09-18-dem-deterministic-ids-report.md`.
+> The determinism finding below is unaffected — it is a property of the store, not a statistic
+> about scores.
 
 **The fix is one line and rung 0 deliberately does not take it.** Deriving the id from content
 makes retrieval reproducible for free, but it also changes which rows reach the answerer, so it

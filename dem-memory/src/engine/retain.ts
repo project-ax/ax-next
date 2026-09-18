@@ -53,9 +53,11 @@ const DEFAULT_NORMALIZER: SlotNormalizer = synonymNormalizer();
  * store and therefore the same evidence table. Ties then break by content rather than by
  * chance — arbitrary, but *stably* arbitrary, which is the whole property.
  *
- * Still the non-default while its accuracy arms run: it changes which rows reach the
- * answerer, so it moves every score by an unknown amount, and landing that inside another
- * change would be two changes at once.
+ * `content` IS THE DEFAULT as of 2026-09-18, after its own measured arms: n=500, 4 runs per
+ * arm, GLM answerer, production stack. Control (`random`) 87.45% mean, treatment (`content`)
+ * 87.60% mean — a +0.15pp delta against a measured 1.6pp noise floor, i.e. no detectable
+ * cost. `docs/plans/2026-09-18-dem-deterministic-ids-report.md` has the run-by-run numbers
+ * and is explicit that the tighter treatment spread is NOT claimed as evidence.
  */
 export type IdStrategy = "random" | "content";
 
@@ -240,7 +242,7 @@ export class RetainEngine {
     private readonly extract: ExtractFn,
     private readonly defaultBankId: string,
     private readonly supersession: SupersessionOptions = {},
-    private readonly idStrategy: IdStrategy = "random",
+    private readonly idStrategy: IdStrategy = "content",
   ) {}
 
   private get mode(): SupersessionMode {

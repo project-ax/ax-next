@@ -124,15 +124,14 @@ describe("idStrategy: content", () => {
   });
 });
 
-describe("idStrategy: random — the shipped default, and why it is the thing being replaced", () => {
+describe("idStrategy: random — what DEM shipped until 2026-09-18", () => {
   it("gives different ids for the same ingest sequence", async () => {
     const a = await ingestAndRecall("random");
     const b = await ingestAndRecall("random");
     expect(a.ids).not.toEqual(b.ids);
   });
 
-
-  it("is still the DEFAULT, so this change is inert until an arm says otherwise", async () => {
+  it("is no longer the default — `content` is, after its measured arms", async () => {
     const memory = createDemMemory({
       path: ":memory:",
       bankId: "bank",
@@ -150,8 +149,9 @@ describe("idStrategy: random — the shipped default, and why it is the thing be
       { now: "2024-01-01T00:00:00.000Z" },
     );
     const { id } = memory.database.prepare(`SELECT id FROM memories`).get() as { id: string };
-    // A uuid, not a sha1 hex digest.
-    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    // A sha1 hex digest, not a uuid. This is the line that reddens if the default moves, which
+    // is the whole reason it is asserted rather than assumed.
+    expect(id).toMatch(/^[0-9a-f]{40}$/);
     memory.close();
   });
 });
