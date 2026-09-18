@@ -113,6 +113,19 @@ export function workspaceIdForAgent(agentId: string): string {
  * (Invariant 1); the right place to refuse an owner-less session is the
  * listener that mints it.
  *
+ * ⚠ THE KNOWN GAP THAT LEAVES, STATED SO NOBODY HAS TO REDISCOVER IT.
+ * `@ax/ipc-http` and `@ax/ipc-server` substitute a NON-BLANK placeholder
+ * (`'ipc-http'` / `'ipc-server'`) when a session row has no owner, so such a
+ * caller sails past this gate and lands in one bucket shared by every
+ * owner-less session in the deployment. That is a smaller instance of exactly
+ * the bug this function exists to close. It is deferred rather than patched
+ * here, and the deferral rests on ONE assumption that is worth writing down
+ * because nothing else asserts it: **no real user-facing session is ever
+ * owner-less** -- the `??` fallback is reached only by canary and system
+ * sessions. If that stops being true, this becomes a live cross-tenant read
+ * again. The fix belongs in the listener (refuse `workspace:*` for an
+ * owner-less session), not in a backend blocklist.
+ *
  * `userId` is deliberately NOT required here. Since TASK-257 it is not part of
  * the partition on either backend, so demanding it would gate on a field that
  * does not affect which bytes are served -- and would diverge from
