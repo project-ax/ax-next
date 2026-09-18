@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { findSourceChunk } from "./source-chunk.js";
 import type { MemoryRepository } from "../db/memory-repository.js";
 import type { CoOccurrenceGraph } from "../graph/co-occurrence-graph.js";
+import { synonymNormalizer, type SlotNormalizer } from "../slots.js";
 import {
   INFINITY_SENTINEL,
   IngestionPayloadSchema,
@@ -14,7 +15,33 @@ import {
   type ExtractFn,
   type IngestionPayload,
   type MemoryTuple,
+  type Provenance,
 } from "../types.js";
+
+/**
+ * Which rule decides when a stored statement stops being active.
+ *
+ * `invalidates-previous` is DEM as shipped: close on the extractor's `invalidatesPrevious`
+ * flag, matching `(subject, predicate)` exactly. MEASURED over 130,779 facts, it fails in
+ * both directions — 91.8% of flags find no prior at all because `predicate` is free text with
+ * 84,561 distinct values, and the ones that DO match close up to 622 rows on a single
+ * statement (`assistant | recommended` closed 360). It is the default only because it is what
+ * the 87.4% baseline was measured with.
+ *
+ * `slot` is §3.4: ignore the flag entirely and close within a derived, closed-vocabulary
+ * `(subject, slot)` key instead. Same corpus, same normalizer: the maximum rows closed by one
+ * statement is 1, everywhere.
+ */
+export type SupersessionMode = "invalidates-previous" | "slot";
+
+/** One instance, because it holds no state and is called once per statement. */
+const DEFAULT_NORMALIZER: SlotNormalizer = synonymNormalizer();
+
+export interface SupersessionOptions {
+  mode?: SupersessionMode;
+  /** Defaults to the exact-synonym table. See `src/slots.ts` for why it is not the embedder. */
+  normalizer?: SlotNormalizer;
+}
 
 export interface RetainOptions {
   bankId?: string;
@@ -27,6 +54,12 @@ export interface RetainOptions {
   sourceText?: string;
   /** Characters of source dialogue to keep per fact. */
   sourceChunkChars?: number;
+  /**
+   * Who is asserting these statements. Defaults to `extracted`, because `retain` is the
+   * observer's door — a human or agent write is a different caller, and provenance is
+   * decided by WHICH PATH wrote the row, never by a field the model can fill in.
+   */
+  provenance?: Provenance;
 }
 
 export interface SkippedFact {
@@ -38,7 +71,13 @@ export interface RetainResult {
   bankId: string;
   transactionTime: string;
   tuples: MemoryTuple[];
+  /** Rows closed by this batch, under whichever supersession mode is configured. */
   invalidatedCount: number;
+  /**
+   * Rows in THIS batch that arrived already closed, because an active row carried a later
+   * `validStart` (§3.4 rule 2). Zero under `invalidates-previous`, which has no such rule.
+   */
+  selfClosedCount: number;
   /**
    * Facts the extractor produced that could not be stored, with the reason. Surfaced rather
    * than thrown: extractor output is model output, and one unusable fact must not cost the
@@ -149,7 +188,16 @@ export class RetainEngine {
     private readonly embed: EmbeddingFn,
     private readonly extract: ExtractFn,
     private readonly defaultBankId: string,
+    private readonly supersession: SupersessionOptions = {},
   ) {}
+
+  private get mode(): SupersessionMode {
+    return this.supersession.mode ?? "invalidates-previous";
+  }
+
+  private get normalizer(): SlotNormalizer {
+    return this.supersession.normalizer ?? DEFAULT_NORMALIZER;
+  }
 
   async retain(
     input: string | DialogueTurn[] | IngestionPayload,
@@ -180,15 +228,27 @@ export class RetainEngine {
       }
     }
 
+    const slotMode = this.mode === "slot";
+    const provenance: Provenance = options.provenance ?? "extracted";
+
     let invalidatedCount = 0;
-    for (const fact of facts) {
-      if (fact.invalidatesPrevious) {
-        invalidatedCount += this.repository.invalidateMemory(
-          bankId,
-          fact.subject,
-          fact.predicate,
-          normalizeTimestamp(fact.validStart, "validStart"),
-        );
+    let selfClosedCount = 0;
+
+    // DEM's rule runs BEFORE any insert, deliberately preserved: it matches on
+    // `(subject, predicate)` against rows already resident, and a batch's own facts were
+    // never candidates for each other. The slot rule cannot work that way — it settles each
+    // statement against the live set as that statement lands — so it runs inside the write
+    // loop below instead.
+    if (!slotMode) {
+      for (const fact of facts) {
+        if (fact.invalidatesPrevious) {
+          invalidatedCount += this.repository.invalidateMemory(
+            bankId,
+            fact.subject,
+            fact.predicate,
+            normalizeTimestamp(fact.validStart, "validStart"),
+          );
+        }
       }
     }
 
@@ -206,6 +266,9 @@ export class RetainEngine {
       const sourceChunk = options.sourceText
         ? findSourceChunk(statements[i] ?? "", options.sourceText, options.sourceChunkChars)
         : undefined;
+      // Derived post-extraction and from the relation alone, so the extraction prompt stays
+      // pinned and the normalizer's effect is measurable in isolation.
+      const slot = slotMode ? this.normalizer(fact.predicate) : null;
       const tuple: MemoryTuple = {
         id: randomUUID(),
         bankId,
@@ -217,13 +280,27 @@ export class RetainEngine {
         validStart: normalizeTimestamp(fact.validStart, "validStart"),
         validEnd: INFINITY_SENTINEL,
         transactionTime,
+        ...(slot ? { slot } : {}),
+        provenance,
       };
-      this.repository.insertMemory(tuple, vector);
+      if (slotMode) {
+        const settled = this.repository.insertWithSlotClosure(tuple, vector);
+        invalidatedCount += settled.closed.length;
+        if (settled.selfClosedBy !== null && settled.selfClosedAt !== null) {
+          selfClosedCount += 1;
+          // Keep the returned tuple honest: this row is in the store CLOSED, and a caller
+          // reading `validEnd` off the result would otherwise be told it is still active.
+          tuple.validEnd = settled.selfClosedAt;
+          tuple.closedBy = settled.selfClosedBy;
+        }
+      } else {
+        this.repository.insertMemory(tuple, vector);
+      }
       tuples.push(tuple);
     }
 
     this.graph.coOccur(facts.map((fact) => fact.subject));
 
-    return { bankId, transactionTime, tuples, invalidatedCount, skipped };
+    return { bankId, transactionTime, tuples, invalidatedCount, selfClosedCount, skipped };
   }
 }

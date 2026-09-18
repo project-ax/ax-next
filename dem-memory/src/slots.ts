@@ -7,6 +7,15 @@
  * So the design splits the two jobs — `relation` stays the free-text label retrieval reads,
  * and `slot` is a derived, closed, single-valued key.
  *
+ * ---------------------------------------------------------------------------------------
+ * THE SHIPPING NORMALIZER IS `synonymNormalizer` — THE EXACT TABLE, NOTHING ELSE.
+ *
+ * §3.3 also proposed an embedding nearest-neighbour behind the table, to catch relations the
+ * table does not spell. That stage was measured at rung 0 and it does not work; it is kept
+ * here, exported and OFF, so nobody rebuilds it in a month without the numbers. See
+ * `embeddingNormalizer` for what it costs and `docs/plans/2026-09-18-dem-rung0-report.md` §2
+ * for the whole measurement.
+ *
  * Every entry here is SINGLE-VALUED by construction: a person has one current home, one
  * current employer, one birthday. That is what makes "close the previous one" a sound rule.
  * A multi-valued relation (`likes_artist`, `has_sibling`) must never gain a slot, because
@@ -234,4 +243,64 @@ export function slotSignature(task: string): string {
     h2 = Math.imul(h2 + code, 2246822519) >>> 0;
   }
   return (h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0")).slice(0, 12);
+}
+
+/**
+ * Derive a slot from a relation. `null` means "no slot", which means "closes nothing".
+ *
+ * The write path calls exactly one of these per statement. It is a plain function rather
+ * than a class so a caller can substitute its own without dragging an embedder, a cache or
+ * a network call into `retain`.
+ */
+export type SlotNormalizer = (relation: string) => Slot | null;
+
+/**
+ * THE DEFAULT. The exact-synonym table and nothing else.
+ *
+ * MEASURED over the 130,779 facts of extraction generation `f4752a79`: it maps 22 of 84,561
+ * distinct predicates, carrying **442 facts, 0.34% of the corpus**, at **100% precision by
+ * construction** — every mapping is a line somebody wrote and a reviewer can read.
+ *
+ * That rate looks small and is the right one. The error here is ASYMMETRIC: a false positive
+ * CLOSES A TRUE FACT and no read path can recover it, while a false negative leaves the row
+ * with no slot — which is exactly the state the 87.4% baseline was measured in, because DEM's
+ * supersession fired on 0.11% of rows. Under-closing is the measured status quo; over-closing
+ * is a new way to lose data.
+ */
+export function synonymNormalizer(): SlotNormalizer {
+  return (relation) => SLOT_SYNONYMS[relationToWords(relation)] ?? null;
+}
+
+/**
+ * OPT-IN AND OFF: embedding nearest-neighbour against the slot descriptions.
+ *
+ * MEASURED AT RUNG 0 AND IT DOES NOT WORK. Precision is **13.2%** on a uniform random sample
+ * of the predicates it maps (7 of 53) and 20.9% on the top 60 by fact volume. The decisive
+ * check needed no hand-labelling: run it over `SLOT_SYNONYMS`' own keys, which ARE canonical
+ * spellings of their slot, and it agrees on only **26 of 32** —
+ *
+ *     first name -> birthday (0.834)     full name -> birthday (0.815)
+ *     last name  -> birthday (0.816)     born on   -> name     (0.719)
+ *     goes by    -> timezone (0.658)     works as  -> name     (0.647)
+ *
+ * — and those errors score HIGHER than almost every true positive, so no threshold separates
+ * them. The failure is structural rather than a wording accident: eight descriptions
+ * partition the whole relation space into eight nearest-neighbour cells and the threshold
+ * only decides how much of each cell to admit, so `birthday` became the cell for anything
+ * date- or number-shaped about a person (home_address 0.811, death_date 0.813,
+ * annual_gross_income 0.799, country_of_birth 0.796) and `pronouns` the cell for anything
+ * about identity. Above threshold 0.88 it maps nothing at all.
+ *
+ * Kept, exported and unused because a deleted negative result gets rebuilt. If you are about
+ * to enable this, the number to beat is 13.2%, and `bench/normalizer-eval.ts` will re-measure
+ * it for you in about twelve minutes.
+ */
+export function embeddingNormalizer(
+  slotVectors: ReadonlyMap<Slot, readonly number[]>,
+  relationVectors: ReadonlyMap<string, readonly number[]>,
+  threshold: number,
+): SlotNormalizer {
+  return (relation) =>
+    assignSlot(relation, relationVectors.get(relationToWords(relation)), slotVectors, threshold)
+      .slot;
 }

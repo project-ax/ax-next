@@ -6,7 +6,7 @@ import {
   type ReplayStats,
   type Rule,
 } from "../bench/supersession-replay.js";
-import type { Slot } from "../bench/slots.js";
+import type { Slot } from "../src/slots.js";
 
 /**
  * Hermetic pins on the two invalidation rules the replay compares.
@@ -234,6 +234,31 @@ describe("the slot rule (§3.3-3.4)", () => {
     // and neither closes anything ahead of it.
     expect(s.selfClosed).toBe(2);
     expect(s.rowsClosed).toBe(0);
+  });
+
+  it("shortens a row something lands INSIDE, not just an active one", () => {
+    // The case an "active rows only" reading of rule 2 gets wrong, and the reason this
+    // replay and `insertWithSlotClosure` both consider superseded rows. Denver arrives
+    // first, so Boston is bounded at Denver; Seattle then lands inside Boston's interval and
+    // must shorten it. Without this, Boston [Jan, Sep) and Seattle [Jun, Sep) both claim
+    // July.
+    const s = stats("slot");
+    replayBank(
+      [
+        fact("user", "lives_in", "Denver", "2023-09-01T00:00:00.000Z"),
+        fact("user", "lives_in", "Boston", "2023-01-01T00:00:00.000Z"),
+        fact("user", "lives_in", "Seattle", "2023-06-01T00:00:00.000Z"),
+      ],
+      "slot",
+      s,
+      LIVES,
+    );
+    // Boston is bounded by Denver on arrival, then re-ended by Seattle: one self-close for
+    // Boston, one for Seattle, and one row closed (Boston, by Seattle).
+    expect(s.selfClosed).toBe(2);
+    expect(s.rowsClosed).toBe(1);
+    // Still one row at a time — the property the whole design change is for.
+    expect(s.byKey.get("user | lives_in")?.max).toBe(1);
   });
 
   it("gives PROVENANCE IMMUNITY: an extracted row cannot close a human one", () => {

@@ -8,6 +8,8 @@ import {
   RetainEngine,
   createOpenAIExtractor,
   type RetainResult,
+  type SupersessionMode,
+  type SupersessionOptions,
 } from "./engine/retain.js";
 import {
   createVertexEmbedder,
@@ -21,6 +23,7 @@ import type {
   ExtractFn,
   GenerateFn,
   IngestionPayload,
+  Provenance,
   RecallOptions,
   RerankFn,
 } from "./types.js";
@@ -44,6 +47,18 @@ export interface DemMemoryOptions {
   rerankPool?: number;
   /** Append verbatim source dialogue for the top N evidence rows (0 = off). */
   sourceExcerpts?: number;
+  /**
+   * Which rule retires a statement. Defaults to `invalidates-previous`, which is DEM as
+   * shipped and what the 87.4% baseline was measured with — NOT because it is the better
+   * rule. See `SupersessionMode` for the measurement that says it is not.
+   */
+  supersession?: SupersessionMode;
+  /**
+   * How a relation becomes a slot under `supersession: 'slot'`. Defaults to the exact-synonym
+   * table; the embedding alternative is exported from `./slots.js` and measured at 13.2%
+   * precision, which is why it is not the default.
+   */
+  slotNormalizer?: SupersessionOptions["normalizer"];
 }
 
 export interface MemoryStats {
@@ -60,8 +75,17 @@ export interface DemMemory {
   readonly database: Database.Database;
   retain(
     input: string | DialogueTurn[] | IngestionPayload,
-    options?: { bankId?: string; now?: string; sourceText?: string; sourceChunkChars?: number },
+    options?: {
+      bankId?: string;
+      now?: string;
+      sourceText?: string;
+      sourceChunkChars?: number;
+      /** Who is asserting these. Decided by the CALLER's path, never by a model-filled field. */
+      provenance?: Provenance;
+    },
   ): Promise<RetainResult>;
+  /** Close statements explicitly — the UI's delete. Returns the ids actually closed. */
+  forget(ids: readonly string[], at?: string): string[];
   recall(query: string, options?: RecallOptions): Promise<RecallResult>;
   reflect(question: string, options?: RecallOptions): Promise<ReflectResult>;
   setBank(bankId: string): void;
@@ -109,7 +133,11 @@ export function createDemMemory(options: DemMemoryOptions = {}): DemMemory {
     rrfK: options.rrfK,
     ...(options.rerankPool !== undefined ? { rerankPool: options.rerankPool } : {}),
   });
-  const retainEngine = new RetainEngine(repository, graph, embed, extract, bankId);
+  const supersession: SupersessionOptions = {
+    ...(options.supersession !== undefined ? { mode: options.supersession } : {}),
+    ...(options.slotNormalizer !== undefined ? { normalizer: options.slotNormalizer } : {}),
+  };
+  const retainEngine = new RetainEngine(repository, graph, embed, extract, bankId, supersession);
   const reflectEngine = new ReflectEngine(recallEngine, options.generate ?? null, {
     maxContextTokens: options.maxContextTokens,
     sourceExcerpts: options.sourceExcerpts ?? 0,
@@ -133,6 +161,7 @@ export function createDemMemory(options: DemMemoryOptions = {}): DemMemory {
         ...(retainOptions?.now ? { now: retainOptions.now } : {}),
         ...(retainOptions?.sourceText ? { sourceText: retainOptions.sourceText } : {}),
         ...(retainOptions?.sourceChunkChars ? { sourceChunkChars: retainOptions.sourceChunkChars } : {}),
+        ...(retainOptions?.provenance ? { provenance: retainOptions.provenance } : {}),
       });
     },
     async recall(query, recallOptions) {
@@ -140,6 +169,9 @@ export function createDemMemory(options: DemMemoryOptions = {}): DemMemory {
     },
     async reflect(question, reflectOptions) {
       return reflectEngine.reflect(question, reflectOptions);
+    },
+    forget(ids, at) {
+      return repository.supersede(bankId, ids, at ?? new Date().toISOString());
     },
     setBank(nextBank: string) {
       bankId = nextBank;
@@ -179,6 +211,7 @@ export {
   type GenerateFn,
   type IngestionPayload,
   type MemoryTuple,
+  type Provenance,
   type RecallOptions,
   type RerankFn,
 } from "./types.js";
@@ -208,6 +241,23 @@ export {
   createOpenAIExtractor,
   type RetainResult,
   type SkippedFact,
+  type SupersessionMode,
+  type SupersessionOptions,
 } from "./engine/retain.js";
+export {
+  SLOTS,
+  SLOT_DESCRIPTIONS,
+  SLOT_SYNONYMS,
+  assignSlot,
+  assignSlotFromScores,
+  cosine,
+  embeddingNormalizer,
+  relationToWords,
+  slotSignature,
+  synonymNormalizer,
+  type Slot,
+  type SlotAssignment,
+  type SlotNormalizer,
+} from "./slots.js";
 export { createVertexEmbedder, hashEmbedder } from "./models/embeddings.js";
 export { createCohereReranker, lexicalReranker } from "./models/reranker.js";

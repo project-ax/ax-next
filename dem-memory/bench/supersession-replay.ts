@@ -110,7 +110,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadFactsByFingerprint } from "./consolidation-survival.js";
 import { CACHE_DIR, loadCorpus, parseArgs, sessionDateToIso } from "./harness.js";
-import type { Slot } from "./slots.js";
+import type { Slot } from "../src/slots.js";
 
 export type Scope = "prefix" | "question" | "lifetime";
 export type Rule = "dem" | "slot";
@@ -219,6 +219,9 @@ export function replayBank(
   // Prune closed rows out of the index as they are found, rather than filtering a
   // never-shrinking list on every lookup. Without this the lifetime bank is quadratic in the
   // hottest key — `assistant | recommended` alone reaches the thousands.
+  //
+  // Only the DEM rule may use this: that rule matches `valid_end = infinity` in SQL, so a
+  // closed row is genuinely out of its reach forever. The slot rule needs `peersOf`.
   const activeOf = (key: string): Row[] => {
     const list = active.get(key);
     if (!list) return [];
@@ -229,6 +232,9 @@ export function replayBank(
     }
     return list;
   };
+
+  /** Every row of a key, closed ones included — see the comment where this is called. */
+  const peersOf = (key: string): Row[] => active.get(key) ?? [];
 
   for (const fact of facts) {
     stats.ingests += 1;
@@ -272,28 +278,36 @@ export function replayBank(
     }
     stats.slotted += 1;
     const key = `${fact.subject}\u0000${slot}`;
-    const priors = activeOf(key);
+    // EVERY row of this key, not only the active ones. A row already bounded by a later
+    // successor can still span the instant this statement claims, and leaving it alone puts
+    // two overlapping assertions in the history. See `insertWithSlotClosure` in
+    // `src/db/memory-repository.ts`, which this mirrors.
+    const priors = peersOf(key);
 
     const rank = PROVENANCE_RANK[fact.provenance] ?? 0;
-    // Rule 3: only rows of EQUAL-OR-LOWER provenance can be closed by this one.
+    // Rule 3: only rows of EQUAL-OR-LOWER provenance interact with this one, in either
+    // direction — it cannot close them and they cannot bound it.
     const reachable = priors.filter((prior) => (PROVENANCE_RANK[prior.provenance] ?? 0) <= rank);
 
-    // Rule 1 + rule 4: close every active prior at or before this `when`. Equal `when` is
-    // closed too, because the later transaction time (this row) wins.
-    const older = reachable.filter((prior) => prior.validStart <= fact.validStart);
-    for (const prior of older) {
+    // Rules 1 + 4: end every row still OPEN AT this statement's start.
+    const spanning = reachable.filter(
+      (prior) =>
+        prior.validStart <= fact.validStart &&
+        (prior.validEnd === null || prior.validEnd > fact.validStart),
+    );
+    for (const prior of spanning) {
       prior.validEnd = fact.validStart;
       prior.closedBy = row.id;
     }
-    if (older.length > 0) {
+    if (spanning.length > 0) {
       stats.closers += 1;
-      stats.rowsClosed += older.length;
-      stats.closedPerCloser.push(older.length);
-      bump(stats, `${fact.subject} | ${slot}`, older.length);
+      stats.rowsClosed += spanning.length;
+      stats.closedPerCloser.push(spanning.length);
+      bump(stats, `${fact.subject} | ${slot}`, spanning.length);
     }
 
-    // Rule 2, two-sided: an active row dated LATER than this one bounds it. Close S at the
-    // EARLIEST such instant. Under `--order validstart` this set is always empty.
+    // Rule 2, two-sided: a row dated LATER than this one bounds it, at the EARLIEST such
+    // instant. Under `--order validstart` this set is always empty.
     const newer = reachable
       .filter((prior) => prior.validStart > fact.validStart)
       .sort((a, b) => a.validStart.localeCompare(b.validStart));

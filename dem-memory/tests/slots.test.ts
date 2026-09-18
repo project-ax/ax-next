@@ -7,7 +7,7 @@ import {
   cosine,
   relationToWords,
   type Slot,
-} from "../bench/slots.js";
+} from "../src/slots.js";
 
 /**
  * Hermetic: no embedder, no network. Vectors are hand-built so the threshold behaviour is

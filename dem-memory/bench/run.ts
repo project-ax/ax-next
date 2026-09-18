@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createDemMemory } from "../src/index.js";
+import { createDemMemory, type SupersessionMode } from "../src/index.js";
 import { flattenDialogue, type DialogueTurn } from "../src/types.js";
 import { OpenRouterLlm, type LlmUsage } from "./llm.js";
 import {
@@ -117,12 +117,18 @@ async function main(): Promise<void> {
   const fingerprint = args.fingerprint;
   // Path B: carry a verbatim slice of the source dialogue for the top N evidence rows.
   const sourceExcerpts = Number(args["source-excerpts"] ?? 0);
+  // Which rule retires a statement. Unset means the shipped default (`invalidates-previous`),
+  // which is what the 87.4% baseline was measured with; `--supersession slot` is the arm.
+  const supersession = args.supersession as SupersessionMode | undefined;
+  if (supersession !== undefined && supersession !== "slot" && supersession !== "invalidates-previous") {
+    throw new Error(`--supersession must be \`slot\` or \`invalidates-previous\`, got ${supersession}`);
+  }
   // Path A: rows per answer. Default matches src (15); pass 80 to fill the token budget.
   const evidenceRows = Number(args["evidence-rows"] ?? 0);
   const selected =
     sampler === "shortest" ? pickShortest(filtered, n, minAbs) : stratifiedSample(filtered, n);
   console.log(
-    `corpus ${samples.length} samples -> selected ${selected.length} (n=${n}, sampler=${sampler}) | extract=${extractModel} | answer=${answerModel} | judge=${judgeModel} | stack=${label} | extraction cache: ${extractionCache.size} entries`,
+    `corpus ${samples.length} samples -> selected ${selected.length} (n=${n}, sampler=${sampler}) | extract=${extractModel} | answer=${answerModel} | judge=${judgeModel} | stack=${label} | supersession=${supersession ?? "invalidates-previous (default)"} | extraction cache: ${extractionCache.size} entries`,
   );
 
   mkdirSync(outDir, { recursive: true });
@@ -156,6 +162,7 @@ async function main(): Promise<void> {
       rerank,
       extract: extractor,
       generate,
+      ...(supersession !== undefined ? { supersession } : {}),
       ...(sourceExcerpts > 0 ? { sourceExcerpts } : {}),
       ...(evidenceRows > 0 ? { rerankPool: Math.max(40, evidenceRows) } : {}),
     });

@@ -90,7 +90,7 @@ import {
   relationToWords,
   slotSignature,
   type Slot,
-} from "./slots.js";
+} from "../src/slots.js";
 
 /**
  * Relation scores get their OWN cache directory, away from `bench/cache/embeddings.ndjson`.

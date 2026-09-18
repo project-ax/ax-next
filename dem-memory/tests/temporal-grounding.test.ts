@@ -17,6 +17,7 @@ function tuple(overrides: Partial<MemoryTuple> & Pick<MemoryTuple, "id" | "valid
     object: "a thing happened",
     validEnd: INFINITY_SENTINEL,
     transactionTime: overrides.validStart,
+    provenance: "extracted",
     ...overrides,
   };
 }
