@@ -1250,7 +1250,16 @@ export function createOrchestrator(
     _event: SkillsProposedLike,
   ): Promise<void> {
     const sid = ctx.sessionId;
-    if (sid !== undefined && sid.length > 0 && sid !== 'ipc-server') {
+    // TASK-411: the third arm used to be `sid !== 'ipc-server'`. It never
+    // matched anything — 'ipc-server' was one IPC listener's placeholder
+    // AGENT id, never a sessionId (@ax/ipc-server's pre-auth ctx carries the
+    // listener's real owning sessionId), and @ax/ipc-http's sibling literal
+    // 'ipc-http' was not covered either way. Dropped rather than "fixed":
+    // guarding a session id against an agent-id literal is the same
+    // one-transport census that let the real pooling bug through. An
+    // owner-less session is refused upstream, at the handlers that need an
+    // owner; a harmless re-spawn mark is not one of them.
+    if (sid !== undefined && sid.length > 0) {
       respawnSessions.add(sid);
     }
     // TASK-100 — a proposed skill no longer fires a per-skill capability card

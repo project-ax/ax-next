@@ -3,7 +3,7 @@ import {
   SkillProposeResponseSchema,
 } from '@ax/ipc-protocol';
 import { internalError, logInternalError, mapPluginError, validationError } from '../errors.js';
-import { PluginError } from '@ax/core';
+import { isOwnerlessId, PluginError } from '@ax/core';
 import type { ActionHandler } from './types.js';
 
 // Structural-validation PluginError codes the skills:propose hook throws when
@@ -63,10 +63,19 @@ export const skillProposeHandler: ActionHandler = async (rawPayload, ctx, bus) =
   if (!parsed.success) {
     return validationError(`skill.propose: ${parsed.error.message}`);
   }
-  // A runner with an unbound session (placeholder owner — canary / pre-9.5)
-  // can't author a skill: the (user, agent) scope is required. Reject cleanly
-  // rather than write a row under the 'ipc-server' placeholder.
-  if (ctx.userId === 'ipc-server' || ctx.agentId === 'ipc-server') {
+  // A runner on an OWNER-LESS session (canary / `serve` / pre-9.5) can't
+  // author a skill: the (user, agent) scope is required. Reject cleanly rather
+  // than write a row under a stand-in owner.
+  //
+  // TASK-411: this used to read `ctx.userId === 'ipc-server' || ctx.agentId
+  // === 'ipc-server'` — one transport's literal. @ax/ipc-http substituted
+  // `'ipc-http'` and this guard never saw it, so the k8s transport (the one
+  // serving production) could author a skill under a placeholder owner while
+  // the subprocess transport could not. A guard spelled as a literal is a
+  // census of the callers that mint it, and this one had been stale since
+  // @ax/ipc-http shipped. `isOwnerlessId` is the kernel's single spelling of
+  // "this caller has no owner", so there is no per-transport set to keep.
+  if (isOwnerlessId(ctx.userId) || isOwnerlessId(ctx.agentId)) {
     return validationError('skill.propose: session is not bound to a user+agent');
   }
 

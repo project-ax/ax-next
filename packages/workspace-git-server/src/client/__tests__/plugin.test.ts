@@ -29,6 +29,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  OWNERLESS_ID_PREFIX,
+  ownerlessIdFor,
   PluginError,
   type WorkspaceApplyInput,
   type WorkspaceApplyOutput,
@@ -513,6 +515,166 @@ describe('createWorkspaceGitServerPlugin — custom workspaceIdFor', () => {
 
     const entries = readdirSync(booted.repoRoot).filter((e) => e.endsWith('.git'));
     expect(entries).toEqual(['ws-fixed-test.git']);
+  });
+
+  it('refuses an OWNER-LESS caller even with an injected workspaceIdFor (TASK-411)', async () => {
+    // The gate runs BEFORE the (overridable) derivation, so a test double —
+    // or any future override — cannot reopen the door it closes. Without that
+    // ordering, this case would pass through to 'ws-fixed-test' and succeed.
+    const booted = await bootServer();
+    harness = await createTestHarness({
+      plugins: [
+        createWorkspaceGitServerPlugin({
+          baseUrl: booted.baseUrl,
+          token: TOKEN,
+          cacheRoot: freshCacheRoot(),
+          workspaceIdFor: () => 'ws-fixed-test',
+        }),
+      ],
+    });
+
+    const anon = harness.ctx({
+      userId: ownerlessIdFor('s-canary'),
+      agentId: ownerlessIdFor('s-canary'),
+    });
+    await expect(
+      harness.bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
+        'workspace:apply',
+        anon,
+        {
+          changes: [
+            {
+              path: 'theirs.txt',
+              kind: 'put',
+              content: new TextEncoder().encode('x'),
+            },
+          ],
+          parent: null,
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'workspace-identity-required' });
+
+    // Nothing was created on the storage tier either.
+    expect(
+      readdirSync(booted.repoRoot).filter((e) => e.endsWith('.git')),
+    ).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4b. TASK-411 — owner-less callers get NOTHING, on this backend too
+//
+// The two IPC listeners used to stamp a per-transport CONSTANT ('ipc-http' /
+// 'ipc-server') for a session that resolved with no owner. `workspaceIdFor`
+// hashes whatever it is given, so one constant meant ONE shard shared by every
+// owner-less session in the deployment — the same pooling #583 fixed in the
+// single-replica backend, in the sharded one.
+//
+// The listener now stamps a per-session MARKED id, which already stops the
+// pooling. These cases pin the stronger half: a marked caller is refused
+// outright rather than handed a private, empty shard. Direction stated on
+// purpose — an error is a correct answer for a session with no owner; another
+// session's file is not.
+// ---------------------------------------------------------------------------
+
+describe('createWorkspaceGitServerPlugin — owner-less callers are refused (TASK-411)', () => {
+  let harness: TestHarness | null = null;
+
+  afterEach(async () => {
+    if (harness !== null) {
+      await harness.close();
+      harness = null;
+    }
+  });
+
+  it('two owner-less sessions cannot reach one shared shard', async () => {
+    const booted = await bootServer();
+    harness = await createTestHarness({
+      plugins: [
+        createWorkspaceGitServerPlugin({
+          baseUrl: booted.baseUrl,
+          token: TOKEN,
+          cacheRoot: freshCacheRoot(),
+        }),
+      ],
+    });
+    const one = harness.ctx({
+      userId: ownerlessIdFor('s-1'),
+      agentId: ownerlessIdFor('s-1'),
+    });
+    const two = harness.ctx({
+      userId: ownerlessIdFor('s-2'),
+      agentId: ownerlessIdFor('s-2'),
+    });
+
+    for (const ctx of [one, two]) {
+      await expect(
+        harness.bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
+          'workspace:apply',
+          ctx,
+          {
+            changes: [
+              {
+                path: 'pooled.txt',
+                kind: 'put',
+                content: new TextEncoder().encode('x'),
+              },
+            ],
+            parent: null,
+          },
+        ),
+      ).rejects.toMatchObject({ code: 'workspace-identity-required' });
+    }
+    await expect(
+      harness.bus.call<WorkspaceListInput, WorkspaceListOutput>(
+        'workspace:list',
+        two,
+        {},
+      ),
+    ).rejects.toMatchObject({ code: 'workspace-identity-required' });
+  });
+
+  it('ANTI-VACUITY: a real agent whose id merely CONTAINS the marker still works', async () => {
+    // Passes before and after the fix, deliberately: the refusal is a PREFIX
+    // test on a reserved namespace, not a substring search, and the gate has
+    // not degenerated into "refuse everything".
+    const booted = await bootServer();
+    harness = await createTestHarness({
+      plugins: [
+        createWorkspaceGitServerPlugin({
+          baseUrl: booted.baseUrl,
+          token: TOKEN,
+          cacheRoot: freshCacheRoot(),
+        }),
+      ],
+    });
+    const odd = harness.ctx({
+      userId: 'alice',
+      agentId: `agt_x-${OWNERLESS_ID_PREFIX}suffix`,
+    });
+    const applied = await harness.bus.call<
+      WorkspaceApplyInput,
+      WorkspaceApplyOutput
+    >('workspace:apply', odd, {
+      changes: [
+        {
+          path: 'fine.txt',
+          kind: 'put',
+          content: new TextEncoder().encode('served'),
+        },
+      ],
+      parent: null,
+    });
+    expect(applied.version).toBeTruthy();
+    expect(
+      (
+        await harness.bus.call<WorkspaceListInput, WorkspaceListOutput>(
+          'workspace:list',
+          odd,
+          {},
+        )
+      ).paths,
+    ).toEqual(['fine.txt']);
   });
 });
 

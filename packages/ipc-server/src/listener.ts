@@ -1,6 +1,6 @@
 import * as http from 'node:http';
 import { promises as fs } from 'node:fs';
-import { makeAgentContext, type HookBus } from '@ax/core';
+import { makeAgentContext, ownerlessIdFor, type HookBus } from '@ax/core';
 import { authenticate, checkContentType, dispatch, writeJsonError } from '@ax/ipc-core';
 
 // ---------------------------------------------------------------------------
@@ -101,8 +101,12 @@ export async function createListener(opts: CreateListenerOptions): Promise<Liste
     //    workspace. The 4xx error paths below run on THIS pre-auth ctx.
     const preAuthCtx = makeAgentContext({
       sessionId: opts.sessionId,
-      agentId: 'ipc-server',
-      userId: 'ipc-server',
+      // TASK-411: an OWNER-LESS marker, not a transport-named constant. The
+      // bearer token has not resolved yet, so we do not know this caller's
+      // owner — and `'ipc-server'` reads like an id to anything partitioning
+      // on one. See the per-request ctx below for the full reasoning.
+      agentId: ownerlessIdFor(opts.sessionId),
+      userId: ownerlessIdFor(opts.sessionId),
       workspace: { rootPath: '/' },
     });
     const auth = await authenticate(req.headers.authorization, opts.bus, preAuthCtx);
@@ -128,11 +132,30 @@ export async function createListener(opts: CreateListenerOptions): Promise<Liste
     // Week 9.5: stamp the resolved userId/agentId onto ctx so downstream
     // handlers (notably tool-dispatcher's per-agent filter and the
     // session:get-config handler) can read them. Pre-9.5 sessions resolve
-    // with nulls — we substitute placeholder strings to preserve the
-    // AgentContext invariant that agentId/userId are non-empty strings.
-    // The session:get-config handler treats the placeholders as a
-    // distinct case from "real owner" and rejects with `owner-missing`
-    // (the session store's `get` returns null for these fields).
+    // with nulls. AgentContext requires non-empty agentId/userId, so
+    // something must go there — and TASK-411 is about WHAT.
+    //
+    // This used to substitute the constant `'ipc-server'` (and @ax/ipc-http
+    // the constant `'ipc-http'`). Because every agent-partitioned store keys
+    // on `sha256(JSON.stringify([agentId]))`, one constant meant ONE bucket
+    // shared by every owner-less session in the deployment, across every
+    // user — the same cross-tenant pooling #583 fixed for an ABSENT agent
+    // scope, reached instead through a value that looks like an id and so
+    // answers "yes" to any null check.
+    //
+    // `ownerlessIdFor(sessionId)` is per-session, so two owner-less sessions
+    // can never share a partition anywhere — including in stores that have
+    // never heard of the helper — and `isOwnerlessId` lets the stores that
+    // need a REAL owner (both workspace backends, skill.propose,
+    // connector_propose) refuse outright. The substitution happens HERE, at
+    // the one boundary that mints these contexts, rather than at each
+    // consumer: a boundary is auditable, while a set of consumers is a census
+    // that goes stale — which is exactly how #583 happened, and how the
+    // `'ipc-server'`-only guards ended up not covering `'ipc-http'`.
+    //
+    // The session:get-config handler still rejects an owner-less session with
+    // `owner-missing`, and it always did so from the session store's null
+    // columns rather than from the substituted string.
     //
     // Week 10–12 final review: also stamp the resolved conversationId so
     // runner-fired `chat:turn-end` events flow with the conversation
@@ -156,8 +179,8 @@ export async function createListener(opts: CreateListenerOptions): Promise<Liste
     // result leaves the field off entirely (treated as a user turn).
     const ctx = makeAgentContext({
       sessionId: auth.sessionId,
-      agentId: auth.agentId ?? 'ipc-server',
-      userId: auth.userId ?? 'ipc-server',
+      agentId: auth.agentId ?? ownerlessIdFor(auth.sessionId),
+      userId: auth.userId ?? ownerlessIdFor(auth.sessionId),
       workspace: { rootPath: auth.workspaceRoot },
       // exactOptionalPropertyTypes: only set the field when we have a value;
       // a literal `undefined` would tighten the type incompatibly. The
