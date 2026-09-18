@@ -42,6 +42,7 @@ import {
   findFieldKey,
   threadFindFields,
 } from '@/lib/thread-find';
+import { useStickToBottom } from '@/lib/use-stick-to-bottom';
 import {
   composerSendBlock,
   useWorkspaceAttachments,
@@ -81,6 +82,41 @@ import { WorkspaceAttachmentChip } from './WorkspaceAttachmentChip';
  * would leave one surface pointing at a button that cannot work.
  */
 export type ApprovalRead = WorkspaceReadStatus | 'expired';
+
+/**
+ * What the transcript amounts to right now, as one string — TASK-418's growth
+ * signal for the stick-to-bottom rule.
+ *
+ * TEXT LENGTHS, NOT THE TEXT. This runs on every render of a thread that can be
+ * hundreds of turns long, and the question it answers is only "did anything get
+ * bigger or change shape". A length is enough for that and costs nothing;
+ * joining the whole transcript would allocate the conversation twice a token
+ * during streaming.
+ *
+ * The switch is exhaustive on purpose rather than falling back to `m.id`: the
+ * variants that grow (a streaming `agent` text, a `steps` row gaining steps)
+ * are exactly the ones a default clause would silently stop tracking, and
+ * `ThreadMessage` is a list this file's own header says gains producers.
+ */
+function threadGrowthKey(thread: readonly ThreadMessage[]): string {
+  return thread
+    .map((m) => {
+      switch (m.kind) {
+        // No text of its own — it renders whatever the decision row says, and
+        // the row's own change re-renders the card without moving the thread.
+        case 'approval':
+          return `approval:${m.id}`;
+        case 'steps':
+          return `steps:${m.id}:${m.text.length}:${m.steps.length}`;
+        case 'agent':
+        case 'user':
+        case 'status':
+        case 'fold':
+          return `${m.kind}:${m.id}:${m.text.length}`;
+      }
+    })
+    .join('|');
+}
 
 interface Props {
   agent: WorkspaceAgent;
@@ -321,6 +357,34 @@ export function AgentConversation({
     }
   }, [finding, findActive, findQuery]);
 
+  /*
+    TASK-418 — the transcript follows the newest line.
+
+    It did not, and the walk measured the cost: after a send, `scrollTop` was 0
+    with the reply 471px below the fold. The reply was there and correct; it was
+    off-screen, which reads to a person as "the agent didn't respond".
+
+    THE RULE: stick to the bottom only when the reader was already at (or within
+    a line of) it — `useStickToBottom` owns it and explains why. Someone who has
+    scrolled up to read earlier history is left exactly where they are, because
+    dragging them back down on every streamed token is the worse bug.
+
+    `contentKey` is the growth signal, and it is deliberately not `thread`
+    itself: `AgentView` rebuilds `liveThread` (`[...detail.thread]` plus the
+    in-flight turn) on EVERY render, so an identity dep would re-pin on
+    keystrokes in the composer. It is also deliberately not `thread.length`: a
+    streaming reply is one message whose text lengthens, so a length key would
+    pin on the first token and let the rest run off the bottom.
+
+    `approvalRead` is in it because the alert at the foot of the scroller
+    appears and disappears with it, and that is content growing too.
+  */
+  const contentKey = useMemo(
+    () => `${approvalRead}#${threadGrowthKey(thread)}`,
+    [approvalRead, thread],
+  );
+  const onThreadScroll = useStickToBottom(scrollRef, contentKey);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/*
@@ -368,6 +432,7 @@ export function AgentConversation({
       */}
       <div
         ref={scrollRef}
+        onScroll={onThreadScroll}
         tabIndex={-1}
         role="region"
         aria-label={`Conversation with ${agent.name}`}
