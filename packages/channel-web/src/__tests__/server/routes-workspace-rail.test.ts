@@ -665,8 +665,11 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
       `[...described, ...catalog.rows]`, so two rows with the SAME verdict keep
       that arrival order and the DESCRIBED row wins [0]. The mechanical row only
       comes first because `allow` precedes `hold` in `VERDICT_ORDER`, and it is
-      `allow` only because no rule matches the empty input this row is built
-      from.
+      `allow` for TWO reasons, not one: no rule matches the empty input this row
+      is built from, and the evaluator's no-match answer is `allow` (@ax/tool-
+      policy's `evaluate` is default-allow on a fall-through). The empty input
+      explains why nothing matched; the DEFAULT supplies the verdict. Either one
+      changing flips this row.
 
       So the positional assertions below rest entirely on the two verdicts being
       different. Pin them, and a change to the evaluator's fall-through verdict
@@ -674,6 +677,14 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
       missing `mechanicalLabel` and a `described` that flipped, which reads like
       the base row lost its effect. A test that goes red for the wrong reason
       costs more than the bug it was guarding.
+
+      THE NEXT LINE IS THE LOAD-BEARING ONE, and it is first on purpose: vitest
+      reports the FIRST failing `expect`, so ordering it ahead of the per-row
+      blocks is the whole reason the failure names the verdict and nothing else.
+      The `verdict` keys inside those blocks cannot fail without this line
+      failing first — they carry no extra regression coverage, and they are kept
+      only so each row states its own verdict beside its identity if this line is
+      ever removed. Do not reorder them.
     */
     expect(body.permissions.rows.map((r) => r.verdict)).toEqual(['allow', 'hold']);
     expect(body.permissions.rows[0]).toMatchObject({
