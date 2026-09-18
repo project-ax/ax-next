@@ -29,7 +29,6 @@ import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { AgentConversation } from '../AgentConversation';
-import { STICK_SLACK_PX } from '@/lib/use-stick-to-bottom';
 import type { ThreadMessage, WorkspaceAgent } from '@/lib/workspace-api';
 
 const quill: WorkspaceAgent = {
@@ -46,6 +45,10 @@ const quill: WorkspaceAgent = {
 const FOLD_PX = 500;
 /** What the walk measured after the send — the reply, 471px below the fold. */
 const BELOW_FOLD_PX = 471;
+/** Rounding, not intent: nobody scrolls by six pixels on purpose. */
+const A_HAIR_PX = 6;
+/** Intent, not rounding: this reader went back to look at something. */
+const SCROLLED_UP_PX = 300;
 
 const asked: ThreadMessage = {
   kind: 'user',
@@ -178,7 +181,7 @@ describe('the agent conversation follows the newest line', () => {
     expect(pane.fromBottom).toBe(0);
   });
 
-  it('still follows when the reader is a line short of the bottom', () => {
+  it('still follows when the reader is a few pixels short of the bottom', () => {
     const { rerender } = render(conversation({ thread: [asked] }));
     const pane = viewport(scroller(), {
       contentHeight: 2_000,
@@ -188,12 +191,34 @@ describe('the agent conversation follows the newest line', () => {
     // Sub-pixel rounding and a scrollbar gutter leave a pinned viewport a few
     // pixels short of the end. Someone who never scrolled must not lose the
     // stick to that.
-    pane.readerScrollsTo(2_000 - FOLD_PX - (STICK_SLACK_PX - 1));
+    pane.readerScrollsTo(2_000 - FOLD_PX - A_HAIR_PX);
 
     pane.grow(BELOW_FOLD_PX);
     rerender(conversation({ thread: [asked, replied('deploy finished')] }));
 
     expect(newestIsVisible(scroller())).toBe(true);
+  });
+
+  it('drops the stick once the reader is a screenful-ish above the end', () => {
+    const { rerender } = render(conversation({ thread: [asked] }));
+    const pane = viewport(scroller(), {
+      contentHeight: 2_000,
+      foldHeight: FOLD_PX,
+    });
+
+    // DELIBERATELY AN ABSOLUTE DISTANCE, not one expressed in terms of
+    // `STICK_SLACK_PX`. A test written against the constant moves with it, so
+    // widening the slack to something enormous — a real way to get this wrong —
+    // would keep passing. With this pair straddling a fixed gap, a slack large
+    // enough to swallow `SCROLLED_UP_PX` reddens here and a slack of 0 reddens
+    // the test above, so the value is pinned from both sides.
+    pane.readerScrollsTo(2_000 - FOLD_PX - SCROLLED_UP_PX);
+    const wasAt = pane.scrollTop;
+
+    pane.grow(BELOW_FOLD_PX);
+    rerender(conversation({ thread: [asked, replied('deploy finished')] }));
+
+    expect(pane.scrollTop).toBe(wasAt);
   });
 
   it('leaves a reader who scrolled up to read history exactly where they are', () => {
@@ -242,5 +267,62 @@ describe('the agent conversation follows the newest line', () => {
 
     expect(newestIsVisible(scroller())).toBe(true);
     expect(pane.fromBottom).toBe(0);
+  });
+
+  it('opens a different conversation at its own newest line, not the last one’s offset', () => {
+    // `AgentView` swaps `thread` under a component that is mounted ONCE and
+    // un-keyed, so the scroller is the same DOM element across the swap and its
+    // `scrollTop` is a raw pixel offset with no meaning in the new content.
+    const { rerender } = render(
+      conversation({ thread: [asked], conversationKey: 'live:a-quill' }),
+    );
+    const pane = viewport(scroller(), {
+      contentHeight: 2_000,
+      foldHeight: FOLD_PX,
+    });
+
+    // Scrolled up reading the live thread — the case where the stick is off and
+    // nothing would otherwise move the scroller at all.
+    pane.readerScrollsTo(300);
+
+    // They click a past conversation in the rail. Different content entirely.
+    rerender(
+      conversation({
+        thread: [asked, replied('that was last week')],
+        readOnly: true,
+        conversationKey: 'past:a-quill:c-17',
+      }),
+    );
+
+    expect(newestIsVisible(scroller())).toBe(true);
+    expect(pane.scrollTop).not.toBe(300);
+  });
+
+  it('re-arms the stick for the conversation it just opened', () => {
+    const { rerender } = render(
+      conversation({ thread: [asked], conversationKey: 'live:a-quill' }),
+    );
+    const pane = viewport(scroller(), {
+      contentHeight: 2_000,
+      foldHeight: FOLD_PX,
+    });
+
+    pane.readerScrollsTo(0);
+    rerender(
+      conversation({ thread: [asked], conversationKey: 'live:a-scribe' }),
+    );
+
+    // Having landed at the end of the new conversation, it must FOLLOW it —
+    // otherwise switching agents mid-reply resurrects the original bug for the
+    // whole of that conversation.
+    pane.grow(BELOW_FOLD_PX);
+    rerender(
+      conversation({
+        thread: [asked, replied('deploy finished')],
+        conversationKey: 'live:a-scribe',
+      }),
+    );
+
+    expect(newestIsVisible(scroller())).toBe(true);
   });
 });

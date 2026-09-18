@@ -102,8 +102,12 @@ function threadGrowthKey(thread: readonly ThreadMessage[]): string {
   return thread
     .map((m) => {
       switch (m.kind) {
-        // No text of its own — it renders whatever the decision row says, and
-        // the row's own change re-renders the card without moving the thread.
+        /*
+          No text of its own: the card is drawn from the `decisions` prop, so
+          its height changes without this key changing — a resolving approval
+          swaps buttons for an undo row. That growth is the `ResizeObserver`'s
+          to catch, not this key's, which is exactly why the hook has one.
+        */
         case 'approval':
           return `approval:${m.id}`;
         case 'steps':
@@ -113,6 +117,18 @@ function threadGrowthKey(thread: readonly ThreadMessage[]): string {
         case 'status':
         case 'fold':
           return `${m.kind}:${m.id}:${m.text.length}`;
+        /*
+          THE EXHAUSTIVENESS IS ENFORCED, not merely intended. `tsconfig.base`
+          does not set `noImplicitReturns`, so without this a seventh
+          `ThreadMessage` kind would quietly return `undefined` here and stop
+          being tracked — silently, which is the failure this key exists to
+          prevent. `workspace-types.ts` says the union is meant to gain
+          producers, so make the next one a compile error.
+        */
+        default: {
+          const unreached: never = m;
+          return unreached;
+        }
       }
     })
     .join('|');
@@ -183,6 +199,27 @@ interface Props {
    * thread and one answered in the queue do the same thing.
    */
   onGranted: (grant: WorkspaceGrant) => Promise<boolean>;
+  /**
+   * WHICH conversation the `thread` above is (TASK-418) — scroll position is
+   * meaningless across a change of it.
+   *
+   * This component is mounted ONCE and un-keyed: `AgentView` swaps `thread`
+   * between the live conversation and a read-only past excerpt under it (the
+   * same fact `closeFind` below has to account for). The scroller is therefore
+   * the same DOM element across that swap, and a raw `scrollTop` from the
+   * previous conversation carried onto a different one lands wherever it
+   * happens to land. Changing this lands the new conversation on its newest
+   * line instead.
+   *
+   * OPTIONAL, and the default is not a guess: absent means "the thread on
+   * screen is one continuous conversation", which is true of every caller that
+   * never swaps it — the surface behaves exactly as it did before TASK-418.
+   * `AgentView` is the one caller that does swap, and it passes this. (Compare
+   * `approvalRead`, which is required precisely because ITS default would make
+   * a claim about data — "nothing is waiting on you" — rather than describe the
+   * caller's own shape.)
+   */
+  conversationKey?: string;
 }
 
 export function AgentConversation({
@@ -202,6 +239,7 @@ export function AgentConversation({
   grants,
   onGrantResolved,
   onGranted,
+  conversationKey = 'one-conversation',
 }: Props) {
   const [draft, setDraft] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
@@ -280,6 +318,9 @@ export function AgentConversation({
   const [findStep, setFindStep] = useState(0);
   const findToggleRef = useRef<HTMLButtonElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // The column inside the scroller — the box whose height IS the transcript's.
+  // See `useStickToBottom`, which observes it for growth React cannot predict.
+  const contentRef = useRef<HTMLDivElement>(null);
 
   // No control over a thread with nothing in it to find. An empty thread's
   // find bar can only ever answer "No matches", which is a true sentence about
@@ -378,12 +419,23 @@ export function AgentConversation({
 
     `approvalRead` is in it because the alert at the foot of the scroller
     appears and disappears with it, and that is content growing too.
+
+    NOT WRAPPED IN `useMemo`, deliberately. The dep would have to be `thread`,
+    which is a fresh array every render, so the memo would never hit — it would
+    only look like it did. The join is over string lengths and runs in the same
+    pass as `threadFindFields` above it.
+
+    Everything that grows the scroller WITHOUT changing this string — an image
+    decoding, a font swapping, an approval card resolving — is the hook's
+    `ResizeObserver`'s job, which is why this key does not chase `decisions`.
   */
-  const contentKey = useMemo(
-    () => `${approvalRead}#${threadGrowthKey(thread)}`,
-    [approvalRead, thread],
-  );
-  const onThreadScroll = useStickToBottom(scrollRef, contentKey);
+  const contentKey = `${approvalRead}#${threadGrowthKey(thread)}`;
+  const onThreadScroll = useStickToBottom({
+    viewportRef: scrollRef,
+    contentRef,
+    contentKey,
+    conversationKey,
+  });
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -438,7 +490,7 @@ export function AgentConversation({
         aria-label={`Conversation with ${agent.name}`}
         className="flex-1 overflow-y-auto px-6 py-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
-        <div className="flex max-w-[720px] flex-col gap-5">
+        <div ref={contentRef} className="flex max-w-[720px] flex-col gap-5">
           {thread.map((m, i) => {
             /*
               ONE KEY, not two. React's key and the find index's field key are
