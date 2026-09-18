@@ -72,7 +72,7 @@ const CONFIG_PATH = join(SCRIPTS_ROOT, 'vitest.config.mjs');
 // demanding that the COMMENT be raised to 120_000. Loud, and merely wrong.
 //
 // Draft 2 stripped comments first — `/*...*\/` then `//...` — and that was
-// silently fail-OPEN, which is the mode `container-test-timeouts.test.js`'s
+// silently fail-OPEN, which is the mode `out-of-process-test-timeouts.test.js`'s
 // header warns about at length. Several guards here discuss ESLint globs in
 // line comments, e.g. "`**/worktrees/**` does cross dot-segments". That text
 // contains `/*`, so the block-comment pass treated it as a comment OPENER and
@@ -122,11 +122,15 @@ const CONFIG_PATH = join(SCRIPTS_ROOT, 'vitest.config.mjs');
  * Returns `undefined` when the key is absent — which is the failure this guard
  * is chiefly looking for, so absent and zero must stay distinguishable.
  *
- * Mirrors the helper in `container-test-timeouts.test.js` rather than importing
- * it: these guard files are deliberately self-contained, so one can be deleted
- * with its subject without breaking another. NOTE that the sibling is NOT
- * anchored, so for the 21 container packages it covers a number in a config
- * comment still outranks the setting — worth closing, but not from here.
+ * The sibling guard (`out-of-process-test-timeouts.test.js`) used to carry a
+ * copy of this helper, unanchored, and this comment used to say so and call it
+ * "worth closing, but not from here". TASK-400 closed it differently: that guard
+ * now IMPORTS each package's `vitest.config.ts` and reads the resolved object,
+ * which removes the comments-vs-code question rather than answering it. Doing
+ * the same here would mean importing `scripts/vitest.config.mjs` — possible, and
+ * left alone deliberately, because this file's fail-open residue is already shut
+ * by `noBlockCommentsInConfig` below on the one 37-line file it owns, and text
+ * scanning keeps this guard readable without a hook.
  */
 function readTimeout(configText, key) {
   const m = new RegExp(`^[ \\t]*${key}\\s*:\\s*(\\d[\\d_]*)`, 'm').exec(configText);
@@ -136,7 +140,7 @@ function readTimeout(configText, key) {
 /**
  * A hook that declares its own timeout: `beforeAll(async () => { ... }, 60_000);`
  *
- * Same pattern and same caveats as `container-test-timeouts.test.js`: the body
+ * Same pattern and same caveats as `out-of-process-test-timeouts.test.js`: the body
  * match is non-greedy, so in a file where a bare hook precedes a timed one the
  * argument can be attributed to the wrong hook. That is harmless here for the
  * same reason — the assertion below consumes the MAXIMUM over the suite, and
