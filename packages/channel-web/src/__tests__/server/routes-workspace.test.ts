@@ -508,10 +508,15 @@ describe('channel-web agent-workspace BFF', () => {
     // stop making. Each is its own route now.
     expect(body).not.toHaveProperty('permissions');
     expect(body).not.toHaveProperty('files');
-    // No memory plugin registered in this bus → no rows at all. NOT an empty
-    // rules row: an editor over storage that does not exist is the promise
-    // AW-13 exists to stop making.
-    expect(body.memory).toEqual([]);
+    // No memory plugin registered in this bus → both tiers report
+    // `unavailable`. NOT an empty rules doc, which would draw an editor over
+    // storage that does not exist (the promise AW-13 stops us making), and
+    // NOT a bare `[]`, which the tab used to read as "nothing here yet"
+    // (TASK-417).
+    expect(body.memory).toEqual({
+      rules: { status: 'unavailable', doc: null },
+      learned: { status: 'unavailable', docs: [] },
+    });
     // A zero is a claim. We are not counting anything yet, so there is no
     // place on the wire to put one.
     expect(Object.keys(body)).not.toContain('stats');
@@ -578,10 +583,16 @@ describe('channel-web agent-workspace BFF', () => {
     await h.agentDetail(mkReq({ agentId: 'a1' }), res);
 
     expect(captured.statusCode).toBe(200);
-    expect((captured.body as { memory: unknown }).memory).toEqual([
-      { name: 'Your rules', scope: 'rules', body: '- Always cc Priya' },
-      { name: 'What it knows about you', scope: 'learned', body: '# User\n' },
-    ]);
+    expect((captured.body as { memory: unknown }).memory).toEqual({
+      rules: {
+        status: 'ok',
+        doc: { name: 'Your rules', scope: 'rules', body: '- Always cc Priya' },
+      },
+      learned: {
+        status: 'ok',
+        docs: [{ name: 'What it knows about you', scope: 'learned', body: '# User\n' }],
+      },
+    });
     // Every call carried the agent + the authenticated caller — never
     // initCtx's `@ax/channel-web` / `system` identity, which would route a
     // later write into the wrong workspace.
@@ -591,7 +602,7 @@ describe('channel-web agent-workspace BFF', () => {
     ]);
   });
 
-  it('omits the rules row when the read failed, rather than shipping an empty one', async () => {
+  it('ships no rules doc when the read failed, and says the read FAILED', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerMemory({
       rules: '- Always cc Priya',
@@ -605,12 +616,46 @@ describe('channel-web agent-workspace BFF', () => {
 
     expect(captured.statusCode).toBe(200);
     /*
-      An empty rules row would render as a blank editor over rules the user
+      An empty rules doc would render as a blank editor over rules the user
       still has — one Save away from destroying them. "We could not read it"
       and "you wrote nothing" are different answers and this surface must not
       confuse them.
+
+      `failed`, specifically, and not `unavailable`: this deployment HAS a
+      memory tier, so a retry is a real offer. TASK-417 is the other half of
+      that sentence.
     */
-    expect((captured.body as { memory: unknown }).memory).toEqual([]);
+    expect((captured.body as { memory: unknown }).memory).toMatchObject({
+      rules: { status: 'failed', doc: null },
+    });
+  });
+
+  it('reads the learned tier even when the RULES read blew up', async () => {
+    /*
+      It used to `return []` on a failed rules read and never call the learned
+      hook at all, so one broken tier erased the other (TASK-417). They are two
+      service hooks; half an answer beats none.
+    */
+    registerAuth({ id: 'u1', isAdmin: false });
+    const state = {
+      rules: '- Always cc Priya',
+      learned: [{ name: 'What it knows about you', body: '# User\n' }],
+      calls: [] as Array<{ hook: string; agentId: string; userId: string }>,
+      readThrows: true,
+    };
+    registerMemory(state);
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+
+    expect(state.calls.map((c) => c.hook)).toEqual(['read', 'learned']);
+    expect((captured.body as { memory: unknown }).memory).toEqual({
+      rules: { status: 'failed', doc: null },
+      learned: {
+        status: 'ok',
+        docs: [{ name: 'What it knows about you', scope: 'learned', body: '# User\n' }],
+      },
+    });
   });
 
   it('keeps the editor when only the LEARNED read fails, and invents no learned doc', async () => {
@@ -626,11 +671,42 @@ describe('channel-web agent-workspace BFF', () => {
     await h.agentDetail(mkReq({ agentId: 'a1' }), res);
 
     expect(captured.statusCode).toBe(200);
-    // The worst a dropped learned row can cost is a section that says the
-    // agent has written nothing yet — so it degrades, and the editor stays.
-    expect((captured.body as { memory: unknown }).memory).toEqual([
-      { name: 'Your rules', scope: 'rules', body: '- Always cc Priya' },
-    ]);
+    // The editor stays, and the agent's half reports the failure instead of
+    // passing for "nothing written yet".
+    expect((captured.body as { memory: unknown }).memory).toEqual({
+      rules: {
+        status: 'ok',
+        doc: { name: 'Your rules', scope: 'rules', body: '- Always cc Priya' },
+      },
+      learned: { status: 'failed', docs: [] },
+    });
+  });
+
+  /*
+    THE TASK-417 CASE, and the one a live deployment is actually in.
+
+    `@ax/memory-strata` is loaded only where the preset switches it on — on the
+    k8s preset that is `cfg.hostLlmTools`, which is set iff `ANTHROPIC_API_KEY`
+    is in the boot env (`presets/k8s/src/index.ts`). Without it NEITHER memory
+    hook is registered, and the route used to answer `[]` — byte-identical to
+    "this user has written no rules and this agent has learned nothing". The tab
+    then said "Nothing yet" and offered a retry against a backend that does not
+    exist.
+
+    Against this file before the fix, this expectation reads `[]`.
+  */
+  it('reports unavailable — not empty — when NO memory plugin is loaded', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    // Deliberately no registerMemory(): this is a deployment without the plugin.
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+
+    expect(captured.statusCode).toBe(200);
+    expect((captured.body as { memory: unknown }).memory).toEqual({
+      rules: { status: 'unavailable', doc: null },
+      learned: { status: 'unavailable', docs: [] },
+    });
   });
 
   it('saveRules writes through the hook and never touches storage itself', async () => {

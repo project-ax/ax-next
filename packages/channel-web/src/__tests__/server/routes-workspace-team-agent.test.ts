@@ -273,9 +273,9 @@ describe('team-agent workspace isolation (TASK-257)', () => {
 
     expect(captured.statusCode).toBe(200);
     const body = captured.body as AgentDetail;
-    const rulesDoc = body.memory.find((d) => d.scope === 'rules');
-    expect(rulesDoc).toBeDefined();
-    expect(rulesDoc?.body).toBe('Always cite the source spreadsheet.');
+    expect(body.memory.rules.status).toBe('ok');
+    expect(body.memory.rules.doc?.scope).toBe('rules');
+    expect(body.memory.rules.doc?.body).toBe('Always cite the source spreadsheet.');
   });
 
   // ---------------------------------------------------------------------

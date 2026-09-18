@@ -128,6 +128,7 @@ import {
 } from '@ax/core';
 import type {
   ActivityEvent,
+  AgentMemoryRead,
   AgentRailData,
   AgentRunState,
   CapabilityEffect,
@@ -947,15 +948,16 @@ export interface AgentDetail {
   /** Older conversations, newest first, excluding the current one. */
   past: PastConversation[];
   /**
-   * The Memory tab, split by WHO OWNS IT (AW-13).
+   * The Memory tab, split by WHO OWNS IT (AW-13), each half carrying how its
+   * read went.
    *
-   * The `rules` doc is ALWAYS present, even when the user has written nothing:
-   * it is the editor, and an editor that only appears once you have already
-   * typed in it is not an editor. The `learned` docs are whatever the agent
-   * has actually written — an absent one is omitted rather than shipped as an
-   * empty heading.
+   * The `rules` doc is present whenever we READ the tier, even when the user
+   * has written nothing: it is the editor, and an editor that only appears
+   * once you have already typed in it is not an editor. It is absent only when
+   * we could not read, or when this deployment keeps no rules at all — and
+   * `status` says which, because the two need different sentences (TASK-417).
    */
-  memory: MemoryDoc[];
+  memory: AgentMemoryRead;
 }
 
 /**
@@ -2397,18 +2399,28 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   }
 
   /**
-   * The Memory tab's rows.
+   * The Memory tab's two reads, each carrying HOW IT WENT.
    *
-   * A FAILED rules read omits the rules row entirely rather than shipping an
-   * empty one. This is the difference between "you have written no rules" and
-   * "we could not read your rules", and getting it wrong is destructive: an
-   * empty editor over unreadable storage invites the user to type something,
-   * press Save, and overwrite rules they still have. The UI renders the
-   * missing row as "we are not showing the editor right now", not as a blank
-   * box. Same discipline the rest of this surface uses — a zero is a claim.
+   * A FAILED rules read ships no rules doc rather than an empty one. This is
+   * the difference between "you have written no rules" and "we could not read
+   * your rules", and getting it wrong is destructive: an empty editor over
+   * unreadable storage invites the user to type something, press Save, and
+   * overwrite rules they still have. The UI renders the absent doc as "we are
+   * not showing the editor right now", not as a blank box. Same discipline the
+   * rest of this surface uses — a zero is a claim.
    *
-   * A failed LEARNED read is different: it drops those rows, because the worst
-   * it can cost is a section that says the agent has written nothing yet.
+   * IT USED TO RETURN A BARE `MemoryDoc[]`, and that shape could not say which
+   * of three things had happened (TASK-417). `return []` covered both "no
+   * memory plugin is loaded on this deployment" and "the read broke", and the
+   * tab drew the same two sentences over either — "Nothing yet" about the
+   * agent's half, which is a claim, and "try again in a moment" about the
+   * human's, which on a deployment with no memory plugin is a promise nothing
+   * can keep. `unavailable` and `failed` are now different answers on the wire,
+   * so the UI can stop guessing.
+   *
+   * The tiers are read INDEPENDENTLY, and a failed rules read no longer skips
+   * the learned one. They are two service hooks; either can be absent or
+   * broken on its own, and a reader is better served by the half we have.
    *
    * ⚠ Takes the RESOLVED agent, not a bare `agentId`, and that is the whole
    * point of the signature. Since TASK-257 an agent's memory is shared by
@@ -2420,49 +2432,58 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * `readActivity`, which still takes a string because `/state` legitimately
    * fans out over an already-ACL'd roster — see its own warning.)
    */
-  async function readMemory(agent: ResolvedAgent, userId: string): Promise<MemoryDoc[]> {
-    if (!bus.hasService('memory:rules:read')) return [];
+  async function readMemory(agent: ResolvedAgent, userId: string): Promise<AgentMemoryRead> {
     const agentId = agent.id;
     const ctx = agentWorkspaceCtx(agentId, userId);
-    let rules: string | null = null;
-    try {
-      const out = await bus.call<MemoryAgentInput, MemoryRulesReadOutput>(
-        'memory:rules:read',
-        ctx,
-        { agentId },
-      );
-      rules = out.body;
-    } catch (err) {
-      initCtx.logger.warn('workspace_memory_rules_read_failed', {
-        agentId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return [];
+
+    let rules: AgentMemoryRead['rules'] = { status: 'unavailable', doc: null };
+    if (bus.hasService('memory:rules:read')) {
+      try {
+        const out = await bus.call<MemoryAgentInput, MemoryRulesReadOutput>(
+          'memory:rules:read',
+          ctx,
+          { agentId },
+        );
+        rules = {
+          status: 'ok',
+          doc: { name: RULES_DOC_NAME, scope: 'rules', body: out.body },
+        };
+      } catch (err) {
+        initCtx.logger.warn('workspace_memory_rules_read_failed', {
+          agentId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        rules = { status: 'failed', doc: null };
+      }
     }
 
-    let learned: MemoryLearnedReadOutput['docs'] = [];
+    let learned: AgentMemoryRead['learned'] = { status: 'unavailable', docs: [] };
     if (bus.hasService('memory:learned:read')) {
       try {
-        learned = (
-          await bus.call<MemoryAgentInput, MemoryLearnedReadOutput>(
-            'memory:learned:read',
-            ctx,
-            { agentId },
-          )
-        ).docs;
+        const out = await bus.call<MemoryAgentInput, MemoryLearnedReadOutput>(
+          'memory:learned:read',
+          ctx,
+          { agentId },
+        );
+        learned = {
+          status: 'ok',
+          // Model output. It rides as a plain string and React renders it as text.
+          docs: out.docs.map((d): MemoryDoc => ({
+            name: d.name,
+            scope: 'learned',
+            body: d.body,
+          })),
+        };
       } catch (err) {
         initCtx.logger.warn('workspace_memory_learned_read_failed', {
           agentId,
           error: err instanceof Error ? err.message : String(err),
         });
+        learned = { status: 'failed', docs: [] };
       }
     }
 
-    return [
-      { name: RULES_DOC_NAME, scope: 'rules', body: rules },
-      // Model output. It rides as a plain string and React renders it as text.
-      ...learned.map((d): MemoryDoc => ({ name: d.name, scope: 'learned', body: d.body })),
-    ];
+    return { rules, learned };
   }
 
   async function listAgents(userId: string): Promise<AgentsListForUserOutput['agents']> {

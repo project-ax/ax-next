@@ -47,7 +47,10 @@ const detail = (thread: ThreadMessage[]) => ({
   thread,
   decisions: { status: 'ok' as const },
   past: [],
-  memory: [],
+  memory: {
+    rules: { status: 'unavailable' as const, doc: null },
+    learned: { status: 'unavailable' as const, docs: [] },
+  },
 });
 
 afterEach(() => {

@@ -82,7 +82,10 @@ function agentDetailFixture(id: string) {
     thread: [],
     decisions: { status: 'ok' as const },
     past: [],
-    memory: [],
+    memory: {
+      rules: { status: 'unavailable' as const, doc: null },
+      learned: { status: 'unavailable' as const, docs: [] },
+    },
   };
 }
 

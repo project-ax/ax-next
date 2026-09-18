@@ -64,6 +64,7 @@ import type { PermissionRequest, PhaseKind, SseFrame } from '../server/types';
 import type { PostMessageResponse } from '@/wire/chat';
 import type {
   ActivityEvent,
+  AgentMemoryRead,
   AgentRailData,
   CounterRow,
   Decision,
@@ -84,6 +85,7 @@ import type {
 
 export type {
   ActivityEvent,
+  AgentMemoryRead,
   AgentRailData,
   CounterRow,
   Decision,
@@ -261,10 +263,13 @@ export interface AgentDetail {
   /** Older conversations, newest first. Pointers only — see `PastConversation`. */
   past: PastConversation[];
   /**
-   * The Memory tab, split by owner. The `rules` doc is always present — it is
-   * the editor — and the `learned` docs are whatever the agent actually wrote.
+   * The Memory tab, split by owner, each half carrying how its read went.
+   *
+   * Not a bare `MemoryDoc[]` any more (TASK-417): that shape could not tell
+   * "this deployment keeps no memory" from "the read broke" from "there is
+   * genuinely nothing", and the tab wrote a confident sentence over all three.
    */
-  memory: MemoryDoc[];
+  memory: AgentMemoryRead;
 }
 
 /** CSRF: the host's guard accepts the literal `ax-admin` (see @ax/http-server). */

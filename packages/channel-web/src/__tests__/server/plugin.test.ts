@@ -5,6 +5,7 @@ import { PluginError, type Plugin } from '@ax/core';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createChannelWebServerPlugin } from '../../server/plugin';
+import type { AgentMemoryRead } from '../../lib/workspace-types';
 
 // ---------------------------------------------------------------------------
 // Integration test for the channel-web server plugin shell.
@@ -932,11 +933,11 @@ describe('@ax/channel-web server plugin (integration)', () => {
 
       // Before: the editor is present and empty, and the agent's own doc is
       // listed separately. An absent rules row would mean no editor at all.
-      const before = (await (await fetch(base)).json()) as {
-        memory: Array<{ name: string; scope: string; body: string }>;
-      };
-      expect(before.memory.map((d) => d.scope)).toEqual(['rules', 'learned']);
-      expect(before.memory[0]!.body).toBe('');
+      const before = (await (await fetch(base)).json()) as { memory: AgentMemoryRead };
+      expect(before.memory.rules.status).toBe('ok');
+      expect(before.memory.rules.doc?.body).toBe('');
+      expect(before.memory.learned.status).toBe('ok');
+      expect(before.memory.learned.docs.map((d) => d.scope)).toEqual(['learned']);
 
       const put = await fetch(`${base}/memory/rules`, {
         method: 'PUT',
@@ -952,13 +953,10 @@ describe('@ax/channel-web server plugin (integration)', () => {
         { agentId: 'agt_test', userId: 'userA', payloadAgentId: 'agt_test' },
       ]);
 
-      const after = (await (await fetch(base)).json()) as {
-        memory: Array<{ scope: string; body: string }>;
-      };
-      expect(after.memory[0]).toEqual({
-        name: 'Your rules',
-        scope: 'rules',
-        body: '- Always cc Priya',
+      const after = (await (await fetch(base)).json()) as { memory: AgentMemoryRead };
+      expect(after.memory.rules).toEqual({
+        status: 'ok',
+        doc: { name: 'Your rules', scope: 'rules', body: '- Always cc Priya' },
       });
     });
 
@@ -1007,11 +1005,20 @@ describe('@ax/channel-web server plugin (integration)', () => {
       expect(put.status).toBe(503);
       expect(await put.json()).toEqual({ error: 'memory-unavailable' });
 
-      // And the tab still opens, with no invented rows.
+      /*
+        And the tab still opens — saying the tier is UNAVAILABLE rather than
+        empty. `[]` was the old answer, and it is the same lie the 503 above
+        refuses to tell, one response later: it let the tab draw "Nothing yet"
+        and a "try again in a moment" over a deployment that has no memory
+        backend to come back (TASK-417).
+      */
       const detail = (await (
         await fetch(`http://127.0.0.1:${booted.port}/api/workspace/agents/agt_test`)
-      ).json()) as { memory: unknown[] };
-      expect(detail.memory).toEqual([]);
+      ).json()) as { memory: AgentMemoryRead };
+      expect(detail.memory).toEqual({
+        rules: { status: 'unavailable', doc: null },
+        learned: { status: 'unavailable', docs: [] },
+      });
     });
 
     it('404s a rules write for an agent the caller cannot reach', async () => {

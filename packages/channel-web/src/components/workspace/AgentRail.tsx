@@ -39,9 +39,14 @@ import type {
   AgentRailData,
   AgentDetail,
   GrantRow,
-  WorkspaceReadStatus,
 } from '@/lib/workspace-api';
-import { Elapsed, GrantLine, PermissionLine, SectionLabel } from './bits';
+import {
+  Elapsed,
+  GrantLine,
+  PermissionLine,
+  ReadFailure,
+  SectionLabel,
+} from './bits';
 
 interface Props {
   detail: AgentDetail;
@@ -63,24 +68,12 @@ function Note({ children }: { children: React.ReactNode }) {
   );
 }
 
-/**
- * What a block says when its read did not come back.
- *
- * Two different sentences for two different facts, because a reader can act on
- * the difference: nothing to read from, versus something that would not answer.
- * Neither is ever rendered as an empty list.
- */
-function ReadFailure({ status, what }: { status: WorkspaceReadStatus; what: string }) {
-  if (status === 'unavailable') {
-    return <Note>This deployment doesn&apos;t keep {what}, so there&apos;s nothing to show.</Note>;
-  }
-  return (
-    <Note>
-      We couldn&apos;t read {what} just now. Treat this as unknown rather than
-      empty, and try reloading.
-    </Note>
-  );
-}
+/*
+  `ReadFailure` used to live here. It moved to `./bits` verbatim when the Memory
+  tab needed the same two sentences (TASK-417) — see its docstring there for why
+  these two surfaces may share strings when `decision-copy.ts` says surfaces
+  generally may not.
+*/
 
 export function AgentRail({ detail, openPastId, onOpenPast }: Props) {
   const { agent, past } = detail;

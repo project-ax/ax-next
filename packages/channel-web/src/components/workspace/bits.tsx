@@ -29,6 +29,7 @@ import type {
   GrantRow,
   PermissionRow,
   WorkspaceAgent,
+  WorkspaceReadStatus,
 } from '@/lib/workspace-types';
 
 /**
@@ -412,5 +413,51 @@ export function SectionLabel({ children }: { children: React.ReactNode }) {
     <div className="mb-2.5 mt-6 text-[11.5px] font-medium text-muted-foreground first:mt-0">
       {children}
     </div>
+  );
+}
+
+/**
+ * What a surface says when a read came back with no rows to show.
+ *
+ * TWO sentences for two different facts, because a reader can act on the
+ * difference: nothing to read FROM, versus something that would not answer.
+ * Neither is ever drawn as an empty list — on this surface an empty list is a
+ * claim, and a claim we cannot support is the bug (`WorkspaceReadStatus`).
+ *
+ * IT LIVES HERE, SHARED, ON PURPOSE. It started local to `AgentRail`; the
+ * Memory tab then needed the same two facts and TASK-417 nearly wrote a third
+ * wording for them. `decision-copy.ts` argues at length against sharing strings
+ * between surfaces that know DIFFERENT things, and that argument stands — but
+ * these two surfaces know the SAME thing, and `what` is the only part that
+ * varies. Three phrasings of one fact teaches a reader that the difference
+ * between them means something.
+ *
+ * `status: 'ok'` cannot reach here: a caller with rows renders rows.
+ */
+export function ReadFailure({
+  status,
+  what,
+  className = 'text-[13px]',
+}: {
+  status: Exclude<WorkspaceReadStatus, 'ok'>;
+  /** The thing we cannot show, as a noun phrase: "what Quill works out". */
+  what: string;
+  /** The caller's own type scale. The words are shared; the size is not. */
+  className?: string;
+}) {
+  return (
+    <p className={cn('leading-relaxed text-muted-foreground', className)}>
+      {status === 'unavailable' ? (
+        <>
+          This deployment doesn&apos;t keep {what}, so there&apos;s nothing to
+          show.
+        </>
+      ) : (
+        <>
+          We couldn&apos;t read {what} just now. Treat this as unknown rather
+          than empty, and try reloading.
+        </>
+      )}
+    </p>
   );
 }

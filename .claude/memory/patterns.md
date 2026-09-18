@@ -1232,3 +1232,49 @@ Uniqueness is what makes the fix non-vacuous across backends you did not audit; 
 Why the kernel and not the plugin: a backend refusing another plugin's constant is a cross-plugin coupling (Invariant 1/2) and `@ax/workspace-git-core` correctly declined to do it. "Ownerless" is ownership vocabulary, not transport or storage vocabulary, so it belongs beside `AgentContext` and every package may import it.
 
 Test it as a PREFIX on a reserved namespace, never a substring — and pin that with an anti-vacuity case using an id that merely CONTAINS the marker, or a later refactor to `includes()` strands a real tenant with nothing red.
+
+## An empty collection is a claim — give every read a `WorkspaceReadStatus` (TASK-417)
+
+The third repeat of the systemic swallowed-error finding (2026-05-23 QA sweep;
+TASK-403's `/user-files` 404 behind "no files here"; this one on the Memory tab).
+Same shape every time: a read that could not happen returns `[]`, the UI renders
+`[]` as "there is nothing", and the user cannot tell that apart from the truth.
+
+**Three states, not two.** `lib/workspace-types.ts` already had the union and it
+is the one to reuse — do not invent a fourth vocabulary:
+
+```ts
+export type WorkspaceReadStatus = 'ok' | 'unavailable' | 'failed';
+```
+
+- `ok` + no rows → **genuinely empty.** The only state that earns a sentence
+  about the agent ("Nothing yet — Quill writes this down as it works").
+- `failed` → **retryable.** A retry affordance is honest, and it must be wired
+  to something that actually re-runs the read.
+- `unavailable` → **not retryable.** No producer exists in this deployment.
+  "Try again in a moment" here is a promise nothing can keep. No button, and no
+  prose retry either — the wording was the whole bug.
+
+**The wording already exists**: `components/workspace/bits.tsx`'s `ReadFailure`
+(moved there from `AgentRail`, where it started). Import it rather than writing a
+third phrasing. A surface may write its own sentences when it has to explain a
+**withheld control** rather than a missing list — `AgentMemory`'s rules tier does,
+because "there's nothing to show" is wrong over a tab whose job is an editor.
+
+**Where `unavailable` comes from, concretely.** A host-side plugin is loaded by
+the preset, so "is it loaded?" is `bus.hasService('<its:hook>')` at the BFF, not
+a config read: `!bus.hasService(h)` → `unavailable`; `bus.call(h)` threw →
+`failed`. On the k8s preset `@ax/memory-strata` is gated on `cfg.hostLlmTools`,
+set iff `ANTHROPIC_API_KEY` is non-empty in the boot env (`presets/k8s/src/index.ts`),
+so production deployments without a shared host key run with NO memory hooks at all.
+`@ax/web-tools` rides the same flag — expect the same class of bug wherever a
+surface advertises something from that bundle.
+
+**Read tiers independently.** `readMemory` used to `return []` when the rules read
+threw, skipping the learned read entirely, so one broken tier erased the other.
+Two hooks, two statuses, two `try`s. Half an answer beats none.
+
+**Mutants that must fail** (run them, do not reason about them): absent service
+reporting `ok`; `unavailable` falling through to the genuinely-empty copy; the
+retry rendered for `unavailable`; and the pre-fix wording restored. All four were
+run against this change and all four went red.
