@@ -4,5 +4,8 @@ dist/
 *.db-shm
 *.db-wal
 *.tsbuildinfo
-bench/cache/
+# No trailing slash: the 1.5 GB embedding cache is most easily shared between worktrees by
+# SYMLINKING this path at the one copy that holds it, and `bench/cache/` matches a directory
+# but not a symlink — which would offer the whole cache up as an untracked file to commit.
+bench/cache
 bench/results/
