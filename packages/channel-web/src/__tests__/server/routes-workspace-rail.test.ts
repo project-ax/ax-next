@@ -656,8 +656,39 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
 
     const body = (await railFor()).body as AgentRailData;
     expect(body.permissions.rows).toHaveLength(2);
-    // Reading order is allow-then-hold, so the mechanical base row comes first.
+    /*
+      ASSERTED, not assumed — this used to be a comment saying "reading order is
+      allow-then-hold" and nothing checked it.
+
+      Which row lands at [0] is decided by `byVerdict`, and it is decided by the
+      VERDICTS ALONE: the sort is stable and the route merges
+      `[...described, ...catalog.rows]`, so two rows with the SAME verdict keep
+      that arrival order and the DESCRIBED row wins [0]. The mechanical row only
+      comes first because `allow` precedes `hold` in `VERDICT_ORDER`, and it is
+      `allow` for TWO reasons, not one: no rule matches the empty input this row
+      is built from, and the evaluator's no-match answer is `allow` (@ax/tool-
+      policy's `evaluate` is default-allow on a fall-through). The empty input
+      explains why nothing matched; the DEFAULT supplies the verdict. Either one
+      changing flips this row.
+
+      So the positional assertions below rest entirely on the two verdicts being
+      different. Pin them, and a change to the evaluator's fall-through verdict
+      fails HERE, naming the verdict — instead of surfacing two rows down as a
+      missing `mechanicalLabel` and a `described` that flipped, which reads like
+      the base row lost its effect. A test that goes red for the wrong reason
+      costs more than the bug it was guarding.
+
+      THE NEXT LINE IS THE LOAD-BEARING ONE, and it is first on purpose: vitest
+      reports the FIRST failing `expect`, so ordering it ahead of the per-row
+      blocks is the whole reason the failure names the verdict and nothing else.
+      The `verdict` keys inside those blocks cannot fail without this line
+      failing first — they carry no extra regression coverage, and they are kept
+      only so each row states its own verdict beside its identity if this line is
+      ever removed. Do not reorder them.
+    */
+    expect(body.permissions.rows.map((r) => r.verdict)).toEqual(['allow', 'hold']);
     expect(body.permissions.rows[0]).toMatchObject({
+      verdict: 'allow',
       described: false,
       mechanicalLabel: 'delete_file',
     });
@@ -667,6 +698,7 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     // against anything. This is the assertion that has to distinguish them.
     expect(body.permissions.rows[0]?.effect).toEqual(['spends']);
     expect(body.permissions.rows[1]).toMatchObject({
+      verdict: 'hold',
       described: true,
       source: 'rule:files.delete-recursive',
     });
