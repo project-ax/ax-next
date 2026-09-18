@@ -10,5 +10,11 @@ export default defineConfig({
     // only when the runner is saturated). 30 s gives ample headroom
     // without masking a genuinely hung fast test.
     testTimeout: 30_000,
+    // The half that was missing until TASK-400. A timeout ARGUMENT on a hook
+    // overrides this value, so what it governs is the BARE hooks — in practice
+    // the teardowns, which here shut down real listeners and real `git`
+    // children. Individual cases in this package already declare 15-20s for the
+    // same work; a bare `afterEach` was still inheriting vitest's 10s default.
+    hookTimeout: 60_000,
   },
 });
