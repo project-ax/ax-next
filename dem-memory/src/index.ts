@@ -8,6 +8,7 @@ import {
   RetainEngine,
   createOpenAIExtractor,
   type RetainResult,
+  type IdStrategy,
   type SupersessionMode,
   type SupersessionOptions,
 } from "./engine/retain.js";
@@ -59,6 +60,12 @@ export interface DemMemoryOptions {
    * precision, which is why it is not the default.
    */
   slotNormalizer?: SupersessionOptions["normalizer"];
+  /**
+   * How a stored row gets its id, and therefore how retrieval breaks ranking ties. Defaults
+   * to `random`, which is what DEM has always done and is measurably NOT reproducible — see
+   * `IdStrategy` and `bench/reproducibility-probe.ts`.
+   */
+  idStrategy?: IdStrategy;
 }
 
 export interface MemoryStats {
@@ -137,7 +144,15 @@ export function createDemMemory(options: DemMemoryOptions = {}): DemMemory {
     ...(options.supersession !== undefined ? { mode: options.supersession } : {}),
     ...(options.slotNormalizer !== undefined ? { normalizer: options.slotNormalizer } : {}),
   };
-  const retainEngine = new RetainEngine(repository, graph, embed, extract, bankId, supersession);
+  const retainEngine = new RetainEngine(
+    repository,
+    graph,
+    embed,
+    extract,
+    bankId,
+    supersession,
+    options.idStrategy ?? "random",
+  );
   const reflectEngine = new ReflectEngine(recallEngine, options.generate ?? null, {
     maxContextTokens: options.maxContextTokens,
     sourceExcerpts: options.sourceExcerpts ?? 0,
@@ -241,6 +256,7 @@ export {
   createOpenAIExtractor,
   type RetainResult,
   type SkippedFact,
+  type IdStrategy,
   type SupersessionMode,
   type SupersessionOptions,
 } from "./engine/retain.js";

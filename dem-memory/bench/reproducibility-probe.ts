@@ -40,7 +40,7 @@
  *
  * When the fix does land, this probe is its regression test: it must read 0/N.
  */
-import { createDemMemory } from "../src/index.js";
+import { createDemMemory, type IdStrategy } from "../src/index.js";
 import { lexicalReranker } from "../src/models/reranker.js";
 import { flattenDialogue, type DialogueTurn } from "../src/types.js";
 import { DEFAULT_EXTRACT_MODEL, ExtractionCache, sessionCacheKey } from "./extraction.js";
@@ -59,6 +59,9 @@ async function main(): Promise<void> {
   const fingerprint = args.fingerprint;
   const limit = Number(args.limit ?? 15);
   const n = Number(args.n ?? 12);
+  // The variable under test. `random` is the shipped default and reads 12/12 NOT
+  // reproducible; `content` is the fix and must read 0/N.
+  const idStrategy = (args["id-strategy"] ?? "random") as IdStrategy;
 
   // `vertex` on purpose, never `production`: `rerank-v4.0-pro` is itself non-reproducible
   // (~22% of top-15 tables reorder between two identical calls), which would confound the
@@ -68,12 +71,18 @@ async function main(): Promise<void> {
   const cache = new ExtractionCache(args["cache-dir"] ?? CACHE_DIR);
   const samples = stratifiedSample(loadCorpus(), 100).slice(0, n);
 
-  const tableFor = async (sample: LongMemEvalSample, tag: string): Promise<string[]> => {
+  const tableFor = async (sample: LongMemEvalSample, _tag: string): Promise<string[]> => {
     const memory = createDemMemory({
       path: ":memory:",
-      bankId: `${sample.question_id}-${tag}`,
+      // The SAME bankId both times, in two separate in-memory databases. `:memory:` gives
+      // each `createDemMemory` its own private database, so these are two independent stores
+      // of one bank rather than two banks — which matters because a content-derived id
+      // includes the bank (`id` is the primary key of a table every bank shares), so tagging
+      // the banks apart would make the ids differ for a reason that is not the one under test.
+      bankId: sample.question_id,
       embed,
       rerank,
+      idStrategy,
       extract: async () => {
         throw new Error("reproducibility-probe runs cache-only; warm the cache with bench/run.ts");
       },
@@ -105,7 +114,9 @@ async function main(): Promise<void> {
     return result.tuples.map((tuple) => `${tuple.subject}|${tuple.predicate}|${tuple.object}`);
   };
 
-  console.log(`${samples.length} question(s), evidence rows=${limit}, deterministic stack\n`);
+  console.log(
+    `${samples.length} question(s), evidence rows=${limit}, deterministic stack, idStrategy=${idStrategy}\n`,
+  );
   let differing = 0;
   let setsDiffer = 0;
   let rowsMoved = 0;
