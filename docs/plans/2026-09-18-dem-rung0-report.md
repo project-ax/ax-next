@@ -253,9 +253,20 @@ Replaying §3.4's rules over the synonym-only map — this is gate 1:
 | scope / order | slotted ingests | rows closed | **rows per closer p50 / p90 / max** | two-sided self-closes |
 |---|---|---|---|---|
 | question, validStart | 565 (0.35%) | 70 (0.04%) | 1 / 1 / **1** | 0 (vacuous by construction) |
-| question, session | 565 (0.35%) | 61 (0.04%) | 1 / 1 / **1** | **9** |
+| question, session | 565 (0.35%) | 62 (0.04%) | 1 / 1 / **1** | **9** |
 | lifetime, validStart | 442 (0.34%) | 348 (0.27%) | 1 / 1 / **1** | 0 (vacuous) |
-| lifetime, session | 442 (0.34%) | 44 (0.03%) | 1 / 1 / **1** | **304** |
+| lifetime, session | 442 (0.34%) | 345 (0.26%) | 1 / 1 / **1** | **304** |
+
+> **Corrected 2026-09-18, after implementing §3.4 in `src`.** These two session-order figures
+> were first measured as 61 and 44, against the design's rule 2 *as literally written* — "if
+> an **active** row has `R'.when > S.when`". Building it showed that reading is wrong: a row
+> already bounded by a later successor can still SPAN the instant a new statement claims, and
+> skipping it leaves two rows asserting the same slot over the same interval. Write Denver
+> (Sep), then Boston (Jan), then Seattle (Jun), and an active-only rule leaves Boston claiming
+> January-to-September beside Seattle's June-to-September; a query for July returns both.
+> Both implementations now end every row whose interval is open at the new statement's start,
+> which keeps the history a chain. **The rows-per-closer maximum — the number this section is
+> about — is 1 either way.**
 
 **`assistant | recommended` closes 0 rows in every scope and every ordering** — it does not
 appear in the key table at all, because it has no slot. The keys that do close are

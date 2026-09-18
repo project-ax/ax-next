@@ -16,6 +16,7 @@ function tuple(i: number, sourceChunk?: string): MemoryTuple {
     validStart: NOW,
     validEnd: INFINITY_SENTINEL,
     transactionTime: NOW,
+    provenance: "extracted",
   };
 }
 

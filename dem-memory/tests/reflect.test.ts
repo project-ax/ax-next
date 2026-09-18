@@ -16,6 +16,7 @@ function syntheticTuple(index: number): MemoryTuple {
     validStart: "2025-01-01T00:00:00.000Z",
     validEnd: INFINITY_SENTINEL,
     transactionTime: "2025-01-01T00:00:00.000Z",
+    provenance: "extracted",
   };
 }
 

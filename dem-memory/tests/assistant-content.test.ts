@@ -17,6 +17,7 @@ function tuple(overrides: Partial<MemoryTuple> = {}): MemoryTuple {
     validStart: NOW,
     validEnd: INFINITY_SENTINEL,
     transactionTime: NOW,
+    provenance: "extracted",
     ...overrides,
   };
 }

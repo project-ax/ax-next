@@ -2,6 +2,19 @@ import { z } from "zod";
 
 export type EpistemicNetwork = "world" | "experience" | "observation" | "opinion";
 
+/**
+ * Who asserted a statement. Ordered: a row is only ever closed by a row of equal-or-higher
+ * provenance, so a person's correction survives the next time the extractor meets the old
+ * value in a transcript.
+ */
+export type Provenance = "extracted" | "agent" | "human";
+
+export const PROVENANCE_RANK: Readonly<Record<Provenance, number>> = {
+  extracted: 0,
+  agent: 1,
+  human: 2,
+};
+
 export interface MemoryTuple {
   id: string;
   bankId: string;
@@ -14,6 +27,14 @@ export interface MemoryTuple {
   validStart: string;
   validEnd: string;
   transactionTime: string;
+  /**
+   * DERIVED from `predicate`; the key slot supersession matches on. Absent means "no slot",
+   * which means this row closes nothing and no slot rule closes it.
+   */
+  slot?: string;
+  provenance: Provenance;
+  /** The id of the row that closed this one. Absent on an active row AND on an explicit delete. */
+  closedBy?: string;
 }
 
 export const ExtractedFactSchema = z.object({
