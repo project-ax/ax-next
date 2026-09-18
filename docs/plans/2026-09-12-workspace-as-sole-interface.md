@@ -25,6 +25,14 @@ postmortem against the four diffs that actually shipped. Read that before
 trusting any sizing sentence in this document, including this one. Open tiers
 are 4 (the walk — TASK-356/357/358) and 5 (the cutover — TASK-359).
 
+**Also 2026-09-18 (TASK-381).** Tier 4's first-run bullet is struck. Since
+TASK-249 (#553) a first run ends in the new agent's chat tab rather than on
+Today, and "no agents" is not a state an account can reach at all — see
+"First run is no longer a Today question" at the end of Tier 4, which says what
+the walk should ask instead. Unlike the sizing sentence above, neither claim
+was a forecast that went wrong: the work shipped and the bullet was never
+re-read.
+
 **How this document was produced.** By reading the code, and — for the first
 time — by turning the flag on against the `ax-next-dev` kind cluster and
 driving the workspace in a browser. Where a claim below is from the source
@@ -415,10 +423,28 @@ treatment the chat track got:
   every contrast defect so far was found, and none of them were visible in a
   screenshot.
 - Every failure branch exercised: API down, stream lost, decision expired,
-  agent errored mid-turn, no agents, empty Today, empty Activity.
+  agent errored mid-turn, ~~no agents~~, empty Today, empty Activity.
+  **"No agents" is not a state an account can be in** (TASK-381, measured):
+  `shouldShowAgentBootstrap`'s `noAgents` arm is `agentsStatus === 'ready' &&
+  agentCount === 0`, so an empty roster is held in the create dialog and never
+  reaches the workspace — note the `'ready'`, which is load-bearing: an
+  agent-list read that **errors** keeps the gate shut and the shell renders,
+  deliberately, so that a blip does not shove an existing user into the create
+  flow. Today's roster is a *different* read from the gate's anyway —
+  `GET /api/workspace/state` (`workspaceApi.board()`) against
+  `GET /api/chat/agents` (`lib/hydrate-agents.ts`) — so an empty roster on
+  Today is a fact about those two reads disagreeing, not about a new user. Walk
+  it by making `/api/workspace/state` answer with no agents. The only copy in
+  the workspace tree that **names** an empty roster is `WorkspaceSidebar`'s "No
+  agents yet."; Today has no roster-empty branch at all and just falls through
+  its ordinary ones ("Nobody is mid-task right now."), and `HomeComposer`
+  renders an agent menu with nothing in it. Whether that reads as a bug or as
+  an empty app is the walk's call.
 - Keyboard paths: focus order, focus restore, Escape, tab traps.
-- First-run: a brand-new user lands on Today with one agent and nothing done
-  yet. What does that page say to them?
+- First-run: ~~a brand-new user lands on Today with one agent and nothing done
+  yet. What does that page say to them?~~ **No first run passes through that
+  page.** See "First run is no longer a Today question" below — including
+  the one reader who does meet an empty Today, who is not this one.
 
 Surfaces with no walk coverage at all: Today, Activity, the agent view, the
 rail, `AgentFiles`, `AgentMemory`, `ApprovalCard`, `DecisionRow`,
@@ -439,6 +465,76 @@ One observation already, from turning it on: Today's empty state reads well —
 "Nothing is waiting on you." over "When an agent hits something it wants your
 OK on, it'll wait for you here." That is the right voice. It is one screen of
 many.
+
+### First run is no longer a Today question (TASK-381, 2026-09-18)
+
+The struck bullet was written on 2026-09-12 with the rest of this document and
+has not been touched since. TASK-249 (#553) falsified it four days later — and
+did so **in this file**, adding the Tier 1 #3 postmortem — "`FirstRunAutoCreate`
+discarded its own `onDone` on the **first-run** arm" — higher up the same page
+while leaving the bullet standing. Three PRs have edited this document since
+(#556, #567, #577) and none of them was about Tier 4. That is TASK-379's lesson
+landing a second time, one tier down: touching the doc is not re-reading the
+tier your change contradicts.
+
+What a first run actually is, read out of `App.tsx`,
+`components/onboard/FirstRunAutoCreate.tsx` and
+`components/workspace/WorkspaceShell.tsx` on 2026-09-18, with the flag on:
+
+1. `BootScreen` — "Loading your agents…" while the roster read is in flight.
+2. `NewAgentDialog`, non-dismissible (`dismissible={!isFirstRun}` — TASK-340 /
+   audit B4). It already answers the question the struck bullet was asking:
+   "An agent is your personal assistant in ax. Give it a name to get started —
+   it'll introduce itself in a moment." (audit B5).
+3. `FirstRunAutoCreate` → `SetupShell` — "Setting up your agent…" over
+   "Bringing your agent online…".
+4. `onDone(agentId)` → on the workspace path `App` sets `kickoffAgentId`, and
+   `WorkspaceShell`'s kickoff effect calls `startTurn`, which POSTs the `'hi'`
+   and then `navigate({ kind: 'agent', id, tab: 'chat' })`. **A first run ends
+   in the new agent's chat tab** — watching it introduce itself, when the
+   POST and the board read both land.
+
+There are **three** end-states, not one, and only the first has an agent
+talking in it. The POST can fail (the `.catch` toasts and lands on the same
+chat tab with no turns in it), and the board read can fail independently —
+the kickoff effect sits above the shell's early returns on purpose, so the
+`'hi'` is sent and the route moves **under the error screen** ("We could not
+load your workspace."), with a turn that is real, server-side, and not being
+streamed to anyone. `WorkspaceShell`'s own comment accepts that trade
+deliberately; it is named here because a walk that only exercises the happy
+path will report the first-run flow as one screen when it is three.
+
+What is common to all three is that none of them is Today. So there is no
+first-run visit to Today to write copy for, and the walk should stop looking
+for one. Three questions replace it, none of them the one the bullet asked:
+
+- **Does Today flash on the way past?** `startTurn` navigates only after
+  `workspaceApi.sendMessage` resolves, and the kickoff effect deliberately sits
+  above the shell's `error` / `loading` / `!board` early returns. Whether Today
+  paints at all is a race between the board read and that POST. If it paints it
+  paints for one round-trip and then yanks the reader elsewhere, which is
+  exactly the kind of thing only a browser finds.
+- **What does a FAILED kickoff leave behind?** The `.catch` raises "Your agent
+  is ready, but we could not say hello for you." and navigates to the same chat
+  tab, now with no turns in it. An empty agent chat tab — which is a
+  different screen from the Today the struck bullet imagined, and has never
+  been walked either. Reachable by failing one POST.
+- **What does Today say on the SECOND visit?** That is the Today a new person
+  actually meets, and there are two of them. If the kickoff landed, the
+  kickoff turn is already in the thread, so "nothing done yet" is not the
+  state. If it did not, the second visit **is** the empty-handed one the
+  struck bullet was reaching for — which makes that page worth writing copy
+  for after all, just for a much rarer reader than the bullet thought. Nobody
+  has looked at either. TASK-250 (#565) already
+  fixed one control on it without the walk: a one-agent account — which is
+  every new account — was being asked to confirm a routing choice that had one
+  possible answer ("Auto picked … — it's your only agent"), and `HomeComposer`
+  now renders the sole agent as a label instead. One control, one screen.
+
+Not stale, and worth stating so nobody re-derives it: `NewAgentDialog` and
+`FirstRunAutoCreate` are mounted **above** the `rendersWorkspace` branch in
+`App.tsx` and are shared by both shells, so walking them is not work that Tier
+5 #4's deletion takes back.
 
 ---
 
