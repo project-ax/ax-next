@@ -160,11 +160,36 @@ export function byVerdict<T extends { verdict: CapabilityVerdict }>(rows: readon
  * viewing the rail is not necessarily the account holder — and naming a price
  * would be a number this surface does not have and cannot make up.
  *
- * Neither entry claims irreversibility. `irreversible` is a separate field on
- * the approval surface with its own UI (the undo window on approvals);
- * saying "can't be undone" here as well would duplicate that claim and, the
- * day the two disagree, contradict it. This disclosure's only job is the
- * effect, not the reversibility of it.
+ * THE `outward` ENTRY NOW SAYS THE ACTION MAY NOT BE UNDOABLE, and the older
+ * rule forbidding that was retired deliberately (TASK-384). It rested on the
+ * premise that this and `PolicyRule.irreversible` are ONE claim said twice, so
+ * that the day they disagreed one would contradict the other. They are two
+ * claims about two different things:
+ *
+ *   - `irreversible` is about THE APPROVAL CONTROL — whether AW-5 holds the
+ *     call back for a grace period after you say yes, so the undo button has
+ *     something left to stop. It is a promise about what AX does.
+ *   - This disclosure is about THE CALL'S CONSEQUENCE — what is true out in
+ *     the world once the call has actually run. It is a statement about what
+ *     AX cannot control.
+ *
+ * `web.extract` is the proof they can differ without either being wrong. It
+ * declares `outward` and leaves `irreversible` unset, so AW-5 replays it
+ * immediately — and the fetch still cannot be un-made, because the URL's owner
+ * has already seen the request. "No grace period" and "cannot be taken back"
+ * are both true of that one call. (Whether that rule SHOULD also set
+ * `irreversible` is TASK-409, and deliberately not settled here — this card
+ * changes description, never approval timing.)
+ *
+ * What the guard still forbids, and now forbids for a stated reason, is either
+ * entry making a claim about THE CONTROL: the undo window, the grace period,
+ * whether you can still stop this after approving. That is `irreversible`'s
+ * claim, it is rendered on the approval surface by `decision-copy.ts`, and it
+ * is the one place where a second copy really could contradict the first.
+ *
+ * The `spends` entry still says nothing about reversibility at all. Money is
+ * its whole subject; a metered call is not withdrawable and not outward, and
+ * the entry that exists to name the cost should not start hinting at either.
  */
 export interface EffectDisclosure {
   /** The badge's visible words. Short, scannable. */
@@ -190,35 +215,38 @@ const EFFECT_DISCLOSURES: Record<CapabilityEffect, EffectDisclosure> = {
       "Every time the agent does this, it makes a paid request on this AX deployment's account — so it costs money on each use, not just the first. Whoever set up this deployment pays the bill; we can't tell you the amount from here.",
   },
   /*
-    STILL KNOWN NARROWER THAN THE TYPE, and now it is on screen.
-    `CapabilityEffect`'s `outward` means "a third party sees the call **OR**
-    it cannot be taken back", and this detail only spells out the first
-    disjunct. An irreversible action nobody else observes would be slightly
-    misstated by the last sentence.
+    NOW AS WIDE AS THE TYPE (TASK-384). `CapabilityEffect`'s `outward` is a
+    DISJUNCTION — "a third party sees the call **OR** it cannot be taken back"
+    — and this detail used to spell out only the first half, so a reader facing
+    an irreversible action nobody observes was told the narrower thing and
+    under-estimated what they were approving. On a consent surface that is the
+    dangerous direction: design H4 forbids understating reach, and copy
+    narrower than the type it describes understates it.
 
-    THE FORCING FUNCTION HAS FIRED. The first outward rule shipped —
-    `web.extract` declares `['spends', 'outward']` (TASK-330) — so this string
-    IS rendered today, on the rail, beside the "Costs money" badge on the same
-    row. It is no longer a string nobody reads.
+    NOTHING ON THE ROW SAYS WHICH DISJUNCT APPLIES, and that is why the wording
+    is "may … and may", not a choice between them. The rail row carries
+    `effect: CapabilityEffect[]` and nothing else about reversibility — no
+    per-row `irreversible`, by design (see the module comment above, and
+    `EvaluateResult.effect` in `@ax/tool-policy`, which refuses to claim
+    `irreversible` off a rule that did not answer). So the strongest TRUE thing
+    this surface can say is that both halves are live and it cannot tell you
+    which. Picking one for the reader would be guessing on a consent surface.
 
-    Left alone in THIS change anyway, deliberately and narrowly. It errs in
-    the OVERSTATING direction, which is the one design H4 permits, and
-    `web.extract` happens to fit the disjunct it does spell out: a page fetch
-    is precisely a third party seeing the request. Broadening it to "…or it
-    can't be undone" would also red `permission-frames.test.ts`' assertion
-    that neither detail claims irreversibility — a rule that exists because
-    `PolicyRule.irreversible` owns that claim on the approval surface, and
-    resolving that tension is a copy decision, not a plumbing one.
-
-    TASK-384 OWNS BROADENING THIS COPY. If you are here to widen the wording,
-    that is the card; do not do it as a drive-by, and do not re-add "no
-    outward rule ships yet" — it has not been true since TASK-330.
+    THE ALTERNATIVE WAS NARROWING THE TYPE, and it was rejected on security
+    grounds, not taste. `outward` is the member `lintRuleEffect` reads to
+    FORBID `allow` (strictest member wins), and its own error text already
+    names both disjuncts: "a call a third party sees, or that cannot be taken
+    back, must be held or denied". Narrowing `outward` to third-party
+    visibility alone would leave an irreversible-but-unobserved action with no
+    member that forbids a quiet one-line `allow` — which is the exact failure
+    the gate exists to stop. The copy moved to meet the type, not the reverse.
   */
   outward: {
     label: 'Affects the outside world',
-    srLabel: 'Affects the outside world.',
+    srLabel:
+      'Affects the outside world — other people may see it, and it may not be possible to undo.',
     detail:
-      'This does something out in the world beyond AX — like sending a message, posting where others can see it, or making a payment. Other people see the result, not just the agent.',
+      "This does something out in the world beyond AX — like sending a message, posting where others can see it, or making a payment. Two things can follow: other people may see the result, and once it has run it may not be possible to undo. We can't tell you which from here, so treat it as both.",
   },
 };
 

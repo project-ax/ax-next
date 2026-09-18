@@ -226,14 +226,111 @@ describe('effectDisclosure (TASK-329)', () => {
     expect(effects).toEqual(['spends', 'outward']);
   });
 
-  it('never claims irreversibility — that is a separate field with its own UI', () => {
-    // `irreversible` has its own UI on the approval surface. Duplicating the
-    // claim here risks contradicting it the day the two disagree.
-    expect(effectDisclosure('spends').detail).not.toMatch(
-      /undo|undone|take it back|permanent/i,
-    );
-    expect(effectDisclosure('outward').detail).not.toMatch(
-      /undo|undone|take it back|permanent/i,
-    );
+  /*
+    RE-SCOPED IN TASK-384, and the reason is written down because the rule it
+    replaces was load-bearing and looked right.
+
+    The old guard asserted that NEITHER detail may say the action cannot be
+    undone, on the premise that `PolicyRule.irreversible` already owns that
+    claim and a second copy of it would contradict the first the day they
+    disagreed. The premise is false, because the two are not one claim:
+
+      - `irreversible` is about THE APPROVAL CONTROL — whether AW-5 defers the
+        call after you say yes so the undo window has something to stop.
+      - the `outward` disclosure is about THE CALL'S CONSEQUENCE once it has
+        actually run, which AX does not control at all.
+
+    `web.extract` is the live proof they differ without contradicting:
+    `irreversible` unset (AW-5 replays it at once, no grace period) and the
+    fetch still cannot be un-made, because the URL's owner has seen it.
+
+    So the boundary moved rather than vanished. The effect copy may describe
+    the CONSEQUENCE, and `outward` must — `CapabilityEffect` defines it as a
+    disjunction and copy narrower than the type understates reach, which is the
+    one direction design H4 forbids. What it still may not do is describe the
+    CONTROL: the undo window, the grace period, whether you can stop this after
+    approving. That is `irreversible`'s claim, it is rendered by
+    `decision-copy.ts` on the approval surface, and that IS where two copies
+    could genuinely disagree.
+  */
+  it('the outward copy covers BOTH disjuncts of the type, not just visibility', () => {
+    // `CapabilityEffect.outward` is "a third party sees it OR it cannot be
+    // taken back". Copy spelling out only the first half tells a person
+    // approving an irreversible action less than they agreed to.
+    const outward = effectDisclosure('outward');
+    expect(outward.detail).toMatch(/\bsee\b|\bsees\b|\bseen\b/i);
+    expect(outward.detail).toMatch(/undo|undone|take it back|reverse/i);
+    expect(outward.srLabel).toMatch(/undo|undone|take it back|reverse/i);
+  });
+
+  it('the spends copy still says nothing about reversibility — money is its whole subject', () => {
+    // A metered call is not withdrawable and not outward. The entry that
+    // exists to name the cost must not start hinting at either, or `spends`
+    // and `outward` drift back into one generic "has an effect" string.
+    const spends = effectDisclosure('spends');
+    expect(spends.detail).not.toMatch(/undo|undone|take it back|permanent|reverse/i);
+    expect(spends.srLabel).not.toMatch(/undo|undone|take it back|permanent|reverse/i);
+  });
+
+  it('neither entry claims anything about the undo WINDOW — that is `irreversible`', () => {
+    // The consequence is ours to describe; the control is not. A disclosure
+    // promising a grace period would contradict `decision-copy.ts` the moment
+    // a rule left `irreversible` unset, which is every rule shipping today.
+    const control = /undo window|grace period|\d+ seconds|ten seconds|stop it before|cancel it|change your mind/i;
+
+    // The named-mechanism list above is not enough on its own, and this is the
+    // one place the re-scope is weaker than the single regex it replaced.
+    // Test 1 now REQUIRES the word "undo" on the outward copy, so a future edit
+    // to "you can still take it back" would satisfy test 1, skip test 2 (wrong
+    // effect) and miss every phrase in `control` — shipping an affirmative
+    // grace-period promise this surface cannot keep. So the SHAPE is denied as
+    // well as the vocabulary: a modal of ABILITY governing a reversal verb.
+    //
+    // CLAUSE-BOUNDED, and that bound is load-bearing rather than tidy. The
+    // obvious `[^.]*` between the two halves reaches across punctuation and
+    // reds the correct copy on "Two things **can** follow: … may not be
+    // possible to **undo**" — two unrelated clauses, no promise made. Stopping
+    // at `.,;:—` keeps the modal and the verb inside one clause, which is the
+    // only place one can actually govern the other.
+    const promise =
+      /\b(can|could|able to|still|chance to|moment to|time to|opportunity to)\b[^.,;:—]{0,24}\b(undo|undone|take it back|reverse|reversed|stop)\b/i;
+
+    // `promise` is scoped to a VERB shape, so the same promise phrased as a
+    // NOUN walks straight past it — "You have a window to undo this", "There
+    // is a way to undo it", "A brief period lets you undo". Each names an
+    // affordance this surface cannot promise, each satisfies test 1's "contains
+    // undo", and none is a modal of ability. Closed rather than merely
+    // recorded: a noun of OPPORTUNITY reaching a reversal verb, same clause
+    // bound and for the same reason.
+    const affordance =
+      /\b(window|way|means|option|period|opportunity|chance|moment)\b[^.,;:—]{0,24}\b(undo|undone|take it back|reverse|reversed|stop)\b/i;
+
+    // ARM EVERY PATTERN BEFORE TRUSTING ANY OF THEM. A denylist that matches
+    // nothing passes every string, including the one it exists to stop, and
+    // this board has twice shipped a mechanism that was armed-but-never-firing.
+    // Each phrase below must be caught by at least one of the three.
+    for (const hazard of [
+      'You can still take it back.',
+      'You have a moment to undo this after approving.',
+      'There is a chance to stop it.',
+      'You are able to reverse this.',
+      'You have a window to undo this.',
+      'There is a way to undo it.',
+      'A brief period lets you undo.',
+      'You get a ten seconds head start.',
+    ]) {
+      expect(
+        control.test(hazard) || promise.test(hazard) || affordance.test(hazard),
+      ).toBe(true);
+    }
+
+    for (const effect of ['spends', 'outward'] as const) {
+      const d = effectDisclosure(effect);
+      for (const field of [d.detail, d.srLabel, d.label]) {
+        expect(field).not.toMatch(control);
+        expect(field).not.toMatch(promise);
+        expect(field).not.toMatch(affordance);
+      }
+    }
   });
 });
