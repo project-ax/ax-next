@@ -96,6 +96,22 @@ question**, membership read from `haystack_session_ids` — which is what `bench
 builds (`bankId: sample.question_id`). It says the same thing more precisely: **0.16% of rows
 closed, p90 3, max 6.** Quote this column; treat A.4's per-conversation figures as superseded.
 
+> **Amended 2026-09-18, after running the rule inside the product.** This replay — like A.4 —
+> treats a bank as one flat stream, so a flagged fact can close a fact from its own session.
+> `retain()` does not: it runs DEM's invalidation loop BEFORE inserting the batch's own rows,
+> so a second `lives_in` in one session closes nothing. The gap is not small. At question
+> scope in session order the flat replay closes **245** rows where the real bench ingest closes
+> **75** (`bench/closure-impact.ts`) — so **A.4's method overstates DEM's closure rate about
+> 3.4x at conversation scope.** Adding `--batch batched`, which mirrors `retain()`, brings the
+> replay to **71** and reconciles the two.
+>
+> **The lifetime column is unaffected**, and that is where this report's argument lives: its
+> closures come from facts accumulated across many earlier sessions, which no batch boundary
+> hides. Batched, it reads 5,519 rows and **max 622** against flat's 5,587 and 622 — the
+> headline is the same number. So read the question-scope figures as an upper bound on DEM's
+> closure rate, the lifetime figures as sound, and `--batch batched` as the one to quote about
+> the product.
+
 ### 1.3 A new number: the one-directional miss is real, and `validStart` ordering hides it
 
 DEM's SQL closes priors with `valid_start <= ?` only. A prior dated *later* than the incoming
