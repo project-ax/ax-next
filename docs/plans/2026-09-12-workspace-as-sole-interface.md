@@ -10,8 +10,20 @@ is unstarted.
 
 **Status 2026-09-16.** Tier 1 is closed: #1 (Settings route), #2 (capability
 grants — TASK-350 raise + TASK-373 read-back) and #3 (create-an-agent
-entry — TASK-249) are all done. Note #3's postmortem below before sizing
-anything in Tier 3 off this document's estimates.
+entry — TASK-249) are all done. ~~Note #3's postmortem below before sizing
+anything in Tier 3 off this document's estimates.~~
+
+**Status 2026-09-18 (TASK-379).** Tier 3 is closed too, and that struck
+sentence is why this line exists. TASK-352 (#567), TASK-353 (#558), TASK-354
+(#556) and TASK-355 (#559) all merged on 2026-09-16/17 — three of them within
+nine hours of the postmortem that was supposed to inform them. So "before
+sizing anything in Tier 3" was advice that arrived alongside the work rather
+than before it, and TASK-379, which was filed to *re-estimate* Tier 3, found
+no Tier 3 left to estimate. What it did instead is a retrospective:
+**"Re-measuring the Tier 3 prediction"** at the end of Tier 3 scores #3's
+postmortem against the four diffs that actually shipped. Read that before
+trusting any sizing sentence in this document, including this one. Open tiers
+are 4 (the walk — TASK-356/357/358) and 5 (the cutover — TASK-359).
 
 **How this document was produced.** By reading the code, and — for the first
 time — by turning the flag on against the `ax-next-dev` kind cluster and
@@ -137,10 +149,21 @@ the card mentioned:
 **The transferable lesson for Tier 2 and Tier 3:** "the callback thread exists"
 sizes the *wiring*, not the *flow*. Every remaining Tier 3 item ("chat has it,
 the workspace does not") should be sized by asking what the feature's last step
-depends on, not by whether a prop can reach the surface — three of the four
+depends on, not by whether a prop can reach the surface — ~~three of the four
 (tool steps, attachments, artifacts) have a chat-runtime-shaped dependency of
-exactly the kind that bit this one. See
+exactly the kind that bit this one.~~ See
 `docs/plans/2026-09-16-workspace-create-agent-entry.md`.
+
+**That struck clause was INFERRED, and it is now measured wrong.** One of the
+three named items had a chat-runtime-shaped dependency, not three. The other
+two were expensive for reasons this sentence could not have named: Node's ESM
+resolver and the sandbox mount protocol. Worse for the sentence, the one item
+it left off the list turned out to be the **largest** of the three
+non-attachment diffs. Keep the first half of this lesson — "size it by what
+the last step depends on" held 4/4, in that no Tier 3 item's last step lived
+in the workspace's own component tree — and stop using "chat-runtime-shaped"
+as the test for it. See "Re-measuring the Tier 3 prediction" at the end of
+Tier 3.
 
 ---
 
@@ -240,17 +263,34 @@ is genuinely different, and should be. Concretely:
 
 ---
 
-## Tier 3 — fidelity, once the parser question is settled
+## Tier 3 — fidelity, once the parser question is settled — CLOSED 2026-09-17
 
 Each of these is "chat has it, the workspace does not, and the workspace model
 still wants it":
 
-- **Tool steps and thinking in live turns.** Follows directly from Tier 2.
-- **Attachments.** No attach affordance in `HomeComposer` or
+- **Tool steps and thinking in live turns.** ~~Follows directly from Tier
+  2.~~ **SHIPPED as tool steps only (TASK-352, #567), and it did not follow
+  from Tier 2.** TASK-349's parser handed over the frames; it did not hand
+  over a producer. `steps` had a renderer and a type and zero producers, so
+  the card had to build one for BOTH paths — `lib/workspace-steps.ts` shapes
+  them, `server/routes-workspace.ts`'s `buildThread` feeds it stored blocks
+  and `AgentView` feeds it live frames. **Thinking did not ship and must not**
+  (invariant J4): the workspace route calls `conversations:get` unfiltered, so
+  `renderableText`'s text-only filter is the only thing keeping
+  chain-of-thought off this wire. Detail in Tier 2 above.
+- **Attachments.** ~~No attach affordance in `HomeComposer` or
   `AgentConversation`; `AttachmentChip`, `AttachmentComposerChip` and
-  `ArtifactChip` are chat-only. A user cannot give an agent a file.
+  `ArtifactChip` are chat-only. A user cannot give an agent a file.~~
+  **SHIPPED (TASK-353, #558).** The premise was true and it was also the only
+  Tier 3 item whose cost actually sat where the Tier 1 #3 postmortem
+  predicted: chat's chips are shaped around assistant-ui's `AttachmentAdapter`
+  and the workspace mounts no `AssistantRuntimeProvider`, so the chips were
+  rebuilt on plain React state. What was shared instead of forked is the
+  uploader — `lib/attachment-upload.ts` came out of `AxAttachmentAdapter`, and
+  `attachmentRefBlock()` is now the single spelling of the wire block, which
+  chat's `lib/transport.ts` builds through too.
 - **Search.** ~~`SearchBar` is used only by `Thread.tsx`.~~ **SHIPPED as
-  in-conversation find (TASK-354), and it was not a port.** Chat's `SearchBar`
+  in-conversation find (TASK-354, #556), and it was not a port.** Chat's `SearchBar`
   never filtered anything — `search-store.ts` says so in its own header — so
   porting it would have moved an affordance that lies. The workspace instead
   has a find control over the thread on screen: highlight, count, next/previous,
@@ -258,12 +298,104 @@ still wants it":
   cross-conversation search, which needs a backend decision (route? index?
   embeddings?) rather than a wider client-side loop.
 - **Artifact/download affordances.** Chat has `ArtifactChip`; the workspace has
-  `AgentFiles` (a real two-tier file browser), so this may already be covered
-  by a better mechanism. Verify before building.
+  `AgentFiles` (a real two-tier file browser), ~~so this may already be covered
+  by a better mechanism. Verify before building.~~ **SHIPPED (TASK-355, #559),
+  and it was not covered.** `AgentFiles` could show you a file and never hand
+  it to you: both read routes answer with TEXT, so a PDF an agent wrote
+  rendered as the word "binary" and a long file rendered as its first 128 KiB.
+  Two download routes now exist, one per tier. The expensive part was three
+  packages away from any UI — the durable tier's read hook bounded a read at
+  1 MiB and returned a **silent prefix**, which a preview survives and a
+  download does not, so `sandbox-mount-protocol`, `sandbox-k8s` and
+  `user-files-read` all had to learn to report `truncated`. This is the one
+  Tier 3 item that left `packages/channel-web` at all.
 
 Explicitly NOT a gap — do not port: the conversation list, `NewSessionButton`,
 conversation rename, `SessionRow`/`SessionList`. The roster replaces them by
 design.
+
+### Re-measuring the Tier 3 prediction (TASK-379, 2026-09-18)
+
+Tier 1 #3's postmortem made one falsifiable forecast about this tier: that
+**three of the four** items (tool steps, attachments, artifacts) "have a
+chat-runtime-shaped dependency of exactly the kind that bit this one". All
+four have now shipped, so it can be scored instead of believed.
+
+**What was measured, and how.** MEASURED-BY-PROBE, from the five merge commits
+on `main` (`74c5b984`, `169d9020`, `bf894fbd`, `7ac7bc85`, `4bd9afcb`).
+"Production insertions" is `--numstat` over `packages/` with any path matching
+`__tests__` or `.test.` excluded; "chat-runtime file" means a file that exists
+only to serve the assistant-ui runtime.
+
+| item | card / PR | prod ins. | test ins. | pkgs | chat-runtime file edited | predicted? |
+|---|---|---|---|---|---|---|
+| create-an-agent *(the baseline)* | TASK-249 / #553 | +224 | +494 | 1 | no | — |
+| tool steps | TASK-352 / #567 | +723 | +1297 | 1 | **no** | yes → **wrong** |
+| attachments | TASK-353 / #558 | +1011 | +2057 | 1 | **yes** (`transport.ts`, `ax-attachment-adapter.ts`) | yes → **right** |
+| find-in-thread | TASK-354 / #556 | +766 | +675 | 1 | **no** | no → **right** |
+| artifact download | TASK-355 / #559 | +737 | +1603 | **4** | **no** | yes → **wrong** |
+
+Everything down to and including that table is MEASURED-BY-PROBE. Everything
+after it is INFERRED from those numbers — interpretation, not measurement. If
+you disagree with a sentence below, the table is the thing to re-derive it
+from.
+
+**The forecast scored 2 of 4** — one true positive (attachments), one true
+negative (find), two false positives (tool steps, artifacts). Recomputed from
+the row above rather than restated: 3 items were predicted positive, 1 of
+those 3 was.
+
+**The sharper failure is that it had no discriminating power.** The three
+non-attachment items landed at +723, +737 and +766 production insertions —
+a spread of under 6% between the largest and the smallest. The item the
+forecast singled out as *not* chat-runtime-shaped produced the **largest** of
+those three. Whatever separates these items, "does it touch the
+chat runtime" did not track even the diff size.
+
+**What the two false positives cost instead**, both named in their own PRs and
+neither nameable from the workspace's component tree:
+
+- **TASK-352** — `lib/workspace-steps.ts` was the first `src/lib/` module the
+  *server* imports that has relative imports of its own, written extensionless
+  the way nearly all of `lib/` is. Vite and Vitest guess; Node does not. Every
+  channel-web test, `tsc` and `vite build` all passed, and `@ax/cli`'s
+  end-to-end test three packages away reported exit 1 with
+  `ERR_MODULE_NOT_FOUND`. Guarded now by
+  `src/__tests__/server-import-extensions.test.ts`.
+- **TASK-355** — the durable tier's 1 MiB silent-prefix read, above.
+
+**What did hold, 4/4:** not one of these shipped as a change to
+`components/workspace/` alone. Every one added or changed `src/lib/` or
+`src/server/` code, and one changed three other packages. That is the measured
+form of "size it by what the last step depends on, not by whether a prop can
+reach the surface" — the heuristic survives; "chat-runtime-shaped" was a bad
+proxy for it.
+
+**Three things this section deliberately does NOT claim.**
+
+1. **It is not a cost measurement.** Insertion counts are the size of a diff
+   that shipped, not the effort it took, and this repo has already watched a
+   "+15 min" estimate get "corrected" to "+4–8 min" and measure at ~+9. Nobody
+   timed these four cards, so the honest answer to "how much work was Tier 3"
+   is **unmeasured**, and a better-sounding number would not change that.
+2. **For three of the four it is barely a forecast at all.** The postmortem
+   merged at 10:28 on 2026-09-16; TASK-354, TASK-353 and TASK-355 merged at
+   17:56, 18:36 and 18:50 **the same day** — seven and a half to eight and a
+   half hours later. Only TASK-352 (2026-09-17) had a full day of forecasting
+   distance, and it is one
+   of the two the forecast got wrong. Three of these four rows are a
+   retrospective wearing a forecast's clothes, and they are scored here as
+   one.
+3. **Test insertions are not evidence of anything here.** They exceed the
+   production diff on every row but TASK-354's — at most 2.2×, on TASK-355
+   among the four scored rows (the TASK-249 baseline's 494/224 rounds to the
+   same 2.2× and is fractionally higher) —
+   and they track this repo's Bug Fix Policy, not the item's difficulty. They
+   are in the table so the production column can be checked against the
+   published totals, not so the ratio can be read.
+
+**For the tiers still open (4 and 5):** this document contains no size estimate
+for either that survived contact with anything. Do not derive one from here.
 
 ---
 
@@ -291,6 +423,17 @@ treatment the chat track got:
 Surfaces with no walk coverage at all: Today, Activity, the agent view, the
 rail, `AgentFiles`, `AgentMemory`, `ApprovalCard`, `DecisionRow`,
 `HomeComposer`.
+
+**Four more, added 2026-09-18 (TASK-379), because Tier 3 shipped before this
+tier rather than after it** — the list above predates them and TASK-356/357/358
+would otherwise walk a workspace that has grown since their cards were
+written: the live/reload **step panels** (`lib/workspace-steps.ts` rendering in
+`AgentConversation` and `AgentView`, including the failed and held rows and the
+`sandbox-starting` status line), the **attach chips**
+(`WorkspaceAttachmentChip`, plus the held-send states and the Resend path),
+the **find control** (`ThreadFind`), and `AgentFiles`' **download** affordance
+— which has a fifth failure state that borrows none of the other four, and a
+refusal path for a file the durable tier cannot serve whole.
 
 One observation already, from turning it on: Today's empty state reads well —
 "Nothing is waiting on you." over "When an agent hits something it wants your
@@ -336,14 +479,23 @@ Only after 1–4.
 ## Suggested order
 
 1. ~~Workspace Settings route~~ — done.
-2. Create-an-agent from the workspace. Small, same mechanism, removes a second
-   dead end.
-3. **Extract the shared frame parser** (Tier 2, option (a)).
-   Behaviour-preserving on the chat side; unblocks 4 and 6.
-4. Capability grants in the workspace. Functional hole, security-relevant.
-5. Walk the workspace (Tier 4). Fix what it finds, each with a regression test.
-6. Fidelity (Tier 3).
-7. Cutover (Tier 5), deletion last.
+2. ~~Create-an-agent from the workspace. Small, same mechanism, removes a
+   second dead end.~~ — done (TASK-249, #553). It was not small; see the
+   postmortem above.
+3. ~~**Extract the shared frame parser** (Tier 2, option (a)).
+   Behaviour-preserving on the chat side; unblocks 4 and 6.~~ — done
+   (TASK-349, #548).
+4. ~~Capability grants in the workspace. Functional hole,
+   security-relevant.~~ — done (TASK-350 raise, TASK-351 presence routing,
+   TASK-373 read-back).
+5. Walk the workspace (Tier 4). Fix what it finds, each with a regression
+   test. **Still open** — TASK-356/357/358.
+6. ~~Fidelity (Tier 3).~~ — done (TASK-352/353/354/355), **and it ran before
+   step 5, not after**. Worth knowing rather than quietly re-ordering: the
+   walk cards now face four surfaces that did not exist when this order was
+   written (live step panels, attach chips, the find control, the download
+   affordance), so their coverage lists are wider than Tier 4 below describes.
+7. Cutover (Tier 5), deletion last. **Still open** — TASK-359.
 
 Steps 2–4 are prerequisites for flipping the default for anyone. Step 5 is the
 prerequisite for calling it good.
