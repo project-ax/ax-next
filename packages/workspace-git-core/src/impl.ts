@@ -120,11 +120,22 @@ export function workspaceIdForAgent(agentId: string): string {
  * owner-less session in the deployment. That is a smaller instance of exactly
  * the bug this function exists to close. It is deferred rather than patched
  * here, and the deferral rests on ONE assumption that is worth writing down
- * because nothing else asserts it: **no real user-facing session is ever
- * owner-less** -- the `??` fallback is reached only by canary and system
- * sessions. If that stops being true, this becomes a live cross-tenant read
- * again. The fix belongs in the listener (refuse `workspace:*` for an
- * owner-less session), not in a backend blocklist.
+ * because nothing else asserts it: **every owner-less session is either
+ * synthetic (canary / `serve`) or pre-9.5** -- so no owner-less session's
+ * bytes belong to a tenant that another owner-less session could read.
+ * ("canary / pre-9.5" is the same phrasing `ipc-core/src/auth.ts` and the
+ * listeners already use for this fallback.) Note it is NOT "system sessions":
+ * routine fires are fully owned -- the orchestrator stamps an `agentId` on
+ * them and `ctx.source === 'routine'` is orthogonal to ownership. If a real
+ * tenant session ever reaches the `??`, this is a live cross-tenant read
+ * again.
+ *
+ * The fix belongs in the listener (refuse `workspace:*` for an owner-less
+ * session), not in a backend blocklist -- and that fix already exists
+ * elsewhere for the same fallback: `ipc-core`'s `skill-propose` handler and
+ * `@ax/tool-connector-propose` both refuse the placeholder owner rather than
+ * serve it. This is a known pattern with one unconverted caller, not an
+ * unexamined hole.
  *
  * `userId` is deliberately NOT required here. Since TASK-257 it is not part of
  * the partition on either backend, so demanding it would gate on a field that

