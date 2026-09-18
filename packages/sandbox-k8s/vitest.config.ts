@@ -7,8 +7,9 @@ export default defineConfig({
     // pods — and the comment here used to stop at that and keep the 5s default
     // on those grounds. It was wrong about one file.
     // `src/__tests__/read-command-shell.test.ts` runs the generated read command
-    // through `execFileSync('/bin/sh', ...)` in ~20 cases, which is real
-    // out-of-process work on the same 5s budget that turned
+    // through `execFileSync('/bin/sh', ...)` — 12 of its 20 cases do, via the
+    // file's `read()` helper — which is real out-of-process work on the same 5s
+    // budget that turned
     // `packages/test-harness` into a merge-queue stoppage (TASK-400). 30s /
     // 60s, matching this repo's other subprocess-touching suites.
     testTimeout: 30_000,
