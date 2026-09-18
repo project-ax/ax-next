@@ -3051,6 +3051,23 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       `applyReach`, which subtracts only `allow` and `hold`. "Cannot start a
       hidden helper agent" stays true for a tool nobody installed, and it is
       reassurance rather than reach.
+
+      THIS SUBTRACTION NEEDS THE UNFILTERED CATALOG, and that is a real
+      dependency rather than a stylistic note — it is the one place on this
+      surface where a SHORT `tool:list` would cost the reader a true row.
+      Everything else here treats a short catalog as "we proved less", the
+      overstating direction; this reads a missing name as "not installed" and
+      DROPS the row, so a narrowed list would understate reach.
+
+      It holds because of who is asking. `tool:list` narrows per session (see
+      @ax/mcp-client's dispatcher), and the caller here is `initCtx` — a system
+      context whose `sessionId` is `'init'` and belongs to no session, so
+      `session:get-config` rejects `unknown-session` and the dispatcher passes
+      the whole catalog through. That pass-through is pinned by
+      `@ax/mcp-client`'s `list-with-agent-scope.test.ts` ("passes everything
+      through on unknown-session reject"), not by this file. If the rail ever
+      asks `tool:list` from a real session's context, this loop has to be
+      re-examined before that change lands.
     */
     for (const name of hostProvided) {
       if (!registered.has(name)) outOfReach.push(name);
