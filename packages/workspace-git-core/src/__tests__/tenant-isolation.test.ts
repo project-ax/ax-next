@@ -46,6 +46,7 @@ import type {
   WorkspaceReadInput,
   WorkspaceReadOutput,
 } from '@ax/core';
+import { OWNERLESS_ID_PREFIX, ownerlessIdFor } from '@ax/core';
 import { registerWorkspaceGitHooks } from '../impl.js';
 
 const enc = new TextEncoder();
@@ -244,6 +245,114 @@ describe('@ax/workspace-git-core tenant isolation (TASK-396)', () => {
       expect(readdirSync(repoRoot)).not.toContain('repo.git');
       expect(bareRepos()).toEqual(before);
       expect((await list(me)).paths).toEqual(['mine.md']);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // TASK-411 — the second instance of the class this file closed.
+  //
+  // #583 (this file's first eight cases) closed the path where an ABSENT agent
+  // scope pooled everyone. The blank check above is what closes it. But the
+  // two IPC listeners never sent a blank agentId: they substituted a CONSTANT
+  // that looks like a real id — `'ipc-http'` / `'ipc-server'` — whenever a
+  // session resolved with no owner. `requireAgent` waved it straight through,
+  // hashed it, and handed every owner-less session in the deployment the SAME
+  // bare repo. A null check cannot catch that, which is exactly why it
+  // survived #583.
+  //
+  // The substitution is now `ownerlessIdFor(sessionId)` (per-session, and
+  // MARKED). This block asserts the fail-closed half: a marked caller gets
+  // NOTHING here. The direction matters and is stated deliberately — an empty
+  // workspace, or an error, is a correct answer for a session with no owner;
+  // another session's file never is.
+  //
+  // Why this belongs in the backend at all, given the listener was fixed: the
+  // per-session id already stops the POOLING everywhere. This turns "your own
+  // private, pointless repo" into "no repo", so an owner-less caller cannot
+  // accumulate a tree at all. Both halves, because either alone is weaker.
+  // -------------------------------------------------------------------------
+  describe('fails closed when the caller has no OWNER (TASK-411)', () => {
+    it('refuses list/read/apply for an owner-less caller', async () => {
+      // Load-bearing: against this backend without the `isOwnerlessId` gate,
+      // every one of these SUCCEEDS rather than rejecting — a marked id is a
+      // non-empty string, so the blank check above hashes it like any other and
+      // hands back a tree. Measured: 3 of this block's 4 cases fail with the
+      // gate forced false.
+      //
+      // Be precise about what this pins, because the obvious overstatement is
+      // wrong: these ids are DISTINCT, so what the ungated backend serves here
+      // is an EMPTY private repo, not another session's file. The pooling
+      // itself — two sessions arriving under the SAME id — is not reachable
+      // from this unit, because the shared constant was minted by the
+      // listener, which is not in this test. That half lives in
+      // `@ax/ipc-{http,server}`'s `ownerless-tenant-isolation.test.ts`, where a
+      // real request goes through the real listener. This block pins the other
+      // half: owner-less gets NOTHING, so there is no private tree to
+      // accumulate one in either.
+      const { caller, write, list, read } = await setup();
+      await write(caller('user-a', 'agent-a'), 'secret.md', 'not yours');
+      const anon = caller(
+        ownerlessIdFor('s-canary-1'),
+        ownerlessIdFor('s-canary-1'),
+      );
+
+      await expect(list(anon)).rejects.toMatchObject({
+        code: 'workspace-identity-required',
+      });
+      await expect(read(anon, 'secret.md')).rejects.toMatchObject({
+        code: 'workspace-identity-required',
+      });
+      await expect(write(anon, 'theirs.md', 'x')).rejects.toMatchObject({
+        code: 'workspace-identity-required',
+      });
+    });
+
+    it('neither of two owner-less sessions gets a tree to share', async () => {
+      // Both are refused, so the question "do they share one?" cannot arise
+      // here. Do NOT read this as a pooling repro: the two ids are distinct, so
+      // against the ungated backend session two's `list` returns `{ paths: [] }`
+      // — an empty private repo — and never session one's file. (That is
+      // verbatim what the mutant run printed: `promise resolved "{ paths: [] }"
+      // instead of rejecting`.) The pooling repro needs the listener, and lives
+      // in the two `ownerless-tenant-isolation.test.ts` files.
+      const { caller, write, list } = await setup();
+      const one = caller(ownerlessIdFor('s-1'), ownerlessIdFor('s-1'));
+      const two = caller(ownerlessIdFor('s-2'), ownerlessIdFor('s-2'));
+
+      await expect(write(one, 'pooled.md', 'session one')).rejects.toMatchObject({
+        code: 'workspace-identity-required',
+      });
+      await expect(list(two)).rejects.toMatchObject({
+        code: 'workspace-identity-required',
+      });
+    });
+
+    it('creates no bare repo, and leaves the real agent untouched', async () => {
+      const { repoRoot, caller, write, list, bareRepos } = await setup();
+      const me = caller('user-a', 'agent-a');
+      await write(me, 'mine.md', 'hello');
+      const before = bareRepos();
+
+      const anon = caller(ownerlessIdFor('s-x'), ownerlessIdFor('s-x'));
+      await expect(write(anon, 'theirs.md', 'x')).rejects.toMatchObject({
+        code: 'workspace-identity-required',
+      });
+
+      expect(readdirSync(repoRoot)).not.toContain('repo.git');
+      expect(bareRepos()).toEqual(before);
+      expect((await list(me)).paths).toEqual(['mine.md']);
+    });
+
+    it('ANTI-VACUITY: a real agent whose id merely CONTAINS the marker still works', async () => {
+      // Passes before and after the fix, on purpose. It pins that the refusal
+      // is a PREFIX test on a reserved namespace, not a substring search that
+      // would strand a real agent, and that the gate has not simply become
+      // "refuse everything" — the failure mode a fail-closed patch is most
+      // likely to ship by accident.
+      const { caller, write, list } = await setup();
+      const odd = caller('user-a', `agt_x-${OWNERLESS_ID_PREFIX}suffix`);
+      await write(odd, 'fine.md', 'served');
+      expect((await list(odd)).paths).toEqual(['fine.md']);
     });
   });
 });

@@ -4,6 +4,7 @@ import {
   PluginError,
   bootstrap,
   makeAgentContext,
+  ownerlessIdFor,
   type AgentContext,
 } from '@ax/core';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
@@ -107,8 +108,15 @@ async function makeEnv(metadata?: MetadataMock): Promise<Env> {
   }
   return {
     bus,
+    // An owner-less caller ctx: this handler derives the owner from the
+    // SESSION STORE, never from ctx, so the stand-in ids here are inert —
+    // which is the property being relied on, not a coincidence.
     ctx: (sessionId: string) =>
-      makeAgentContext({ sessionId, agentId: 'ipc-server', userId: 'ipc-server' }),
+      makeAgentContext({
+        sessionId,
+        agentId: ownerlessIdFor(sessionId),
+        userId: ownerlessIdFor(sessionId),
+      }),
   };
 }
 

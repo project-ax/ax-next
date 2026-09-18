@@ -11,6 +11,7 @@ import {
   PluginError,
   type AgentContext,
   asWorkspaceVersion,
+  isOwnerlessId,
   registerWorkspaceApplyFacade,
   WorkspaceDiffOutputSchema,
   WorkspaceListOutputSchema,
@@ -108,38 +109,39 @@ export function workspaceIdForAgent(agentId: string): string {
  * Note what this does NOT try to do: it does not know which ids are "real". A
  * caller that mints a synthetic agentId gets its own private bucket keyed on
  * that string -- not a real agent's tree, and not a shared one. That is still
- * fail-closed with respect to every actual agent. Blocklisting particular
- * placeholder literals would couple this backend to another plugin's constants
- * (Invariant 1); the right place to refuse an owner-less session is the
- * listener that mints it.
+ * fail-closed with respect to every actual agent.
  *
- * ⚠ THE KNOWN GAP THAT LEAVES, STATED SO NOBODY HAS TO REDISCOVER IT.
- * `@ax/ipc-http` and `@ax/ipc-server` substitute a NON-BLANK placeholder
- * (`'ipc-http'` / `'ipc-server'`) when a session row has no owner, so such a
- * caller sails past this gate and lands in one bucket shared by every
- * owner-less session in the deployment. That is a smaller instance of exactly
- * the bug this function exists to close. It is deferred rather than patched
- * here, and the deferral rests on ONE assumption that is worth writing down
- * because nothing else asserts it: **every owner-less session is either
- * synthetic (canary / `serve`) or pre-9.5** -- so no owner-less session's
- * bytes belong to a tenant that another owner-less session could read.
- * ("canary / pre-9.5" is the same phrasing `ipc-core/src/auth.ts` and the
- * listeners already use for this fallback.) Note it is NOT "system sessions":
- * routine fires are fully owned -- the orchestrator stamps an `agentId` on
- * them and `ctx.source === 'routine'` is orthogonal to ownership. If a real
- * tenant session ever reaches the `??`, this is a live cross-tenant read
- * again.
+ * TWO REFUSALS, for two different failure modes:
  *
- * The fix belongs in the listener (refuse `workspace:*` for an owner-less
- * session), not in a backend blocklist -- and that fix already exists
- * elsewhere for the same fallback: `ipc-core`'s `skill-propose` handler and
- * `@ax/tool-connector-propose` both refuse rather than write under the
- * placeholder. Note precisely what they check, because it is less than it
- * sounds: both test for `'ipc-server'` ONLY, so neither yet refuses the
- * `'ipc-http'` placeholder named above. That makes this a known pattern with
- * an unconverted caller AND an incomplete implementation in the converted
- * ones -- which strengthens the case for fixing it at the listener, where
- * there is one place to get the set right.
+ *   1. A BLANK agentId -- no identity at all. The original gate.
+ *   2. An OWNER-LESS agentId (`isOwnerlessId`) -- the stand-in the kernel
+ *      mints for a session that resolved with no (user, agent) pair. It is a
+ *      perfectly good non-empty string, so refusal 1 sails straight past it.
+ *
+ * Refusal 2 is TASK-411, and the history is the argument for it. This
+ * docstring used to say blocklisting placeholder literals "would couple this
+ * backend to another plugin's constants (Invariant 1)" and deferred the whole
+ * thing to the listener. Right about the coupling, wrong about the
+ * conclusion: the listeners each substituted their OWN literal (`'ipc-http'` /
+ * `'ipc-server'`), so every owner-less session in the deployment -- across
+ * every user -- landed in ONE bucket here. That is precisely the bug this
+ * function exists to close, reached by a value that answers "yes" to any null
+ * check. The guards elsewhere that did check spelled out `'ipc-server'` and
+ * missed `'ipc-http'`, which is what a literal census always does.
+ *
+ * `isOwnerlessId` is a KERNEL concept (`@ax/core`), not another plugin's
+ * constant, so there is no cross-plugin coupling to object to. The listener
+ * still owns the substitution -- it happens once, at the boundary that mints
+ * these contexts -- and this gate is the other half: a marked owner-less
+ * caller gets an error here rather than a private-but-pointless tree. An
+ * owner-less session is by construction synthetic (canary / `serve`) or
+ * pre-9.5, and none of them own files.
+ *
+ * ⚠ WHAT THIS STILL DOES NOT DO. It does not decide WHO MAY REACH a given
+ * agent. A caller presenting agent B's id gets agent B's tree; the hash is a
+ * PARTITION, not an access control. The barrier is the `agents:resolve` ACL
+ * that `routes-workspace.ts` runs before every per-agent read. Still
+ * load-bearing, still must not be moved after the read.
  *
  * `userId` is deliberately NOT required here. Since TASK-257 it is not part of
  * the partition on either backend, so demanding it would gate on a field that
@@ -156,6 +158,19 @@ function requireAgent(ctx: AgentContext, hookName: string): string {
       message:
         'workspace access requires a caller agentId; ' +
         'refusing to serve an unpartitioned workspace',
+    });
+  }
+  // TASK-411 -- an owner-less stand-in is a non-empty string, so the blank
+  // check above waves it through. Refuse it explicitly: an owner-less session
+  // gets NOTHING, not a bucket, shared or private.
+  if (isOwnerlessId(agentId)) {
+    throw new PluginError({
+      code: 'workspace-identity-required',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message:
+        'workspace access requires a caller agentId; ' +
+        'this session has no owner',
     });
   }
   return workspaceIdForAgent(agentId);

@@ -166,3 +166,94 @@ export function makeAgentContext(opts: MakeAgentContextOptions): AgentContext {
     workspace,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Owner-less sessions (TASK-411)
+//
+// `AgentContext.agentId` / `.userId` are required non-empty strings, but a
+// session does not always have an owner: the canary and `ax serve` mint
+// sessions with no (user, agent) pair, and pre-9.5 rows predate the column.
+// Something still has to go in those two fields.
+//
+// What used to go in them was a per-transport CONSTANT — `'ipc-http'` /
+// `'ipc-server'`, substituted by each listener. That is the bug this section
+// exists to make unrepeatable. Agent-partitioned stores key on `agentId`
+// (`sha256(JSON.stringify([agentId]))` in @ax/workspace-git-core,
+// @ax/workspace-git-server and both memory-strata index backends), so ONE
+// literal means ONE partition shared by every owner-less session in the
+// deployment, across every user. A null check does not catch it: the value is
+// a perfectly good non-empty string. It just isn't anybody's.
+//
+// Two properties, and the reason both are needed:
+//
+//   1. UNIQUENESS — `ownerlessIdFor(sessionId)` is derived from the session,
+//      so two owner-less sessions never collide in ANY store that partitions
+//      on the id, including stores that have never heard of this helper. That
+//      is the part that does not depend on a census of gates.
+//   2. RECOGNISABILITY — `isOwnerlessId` lets a store that requires a real
+//      owner refuse outright rather than mint a private-but-pointless
+//      partition. Both workspace backends do exactly that.
+//
+// This lives in the kernel on purpose. It was previously impossible to check
+// for without hard-coding another plugin's constant (Invariant 2), which is
+// why @ax/workspace-git-core declined to and why two of the three guards that
+// did check named `'ipc-server'` and not `'ipc-http'`. A kernel concept has
+// one spelling and every package may import it.
+//
+// VOCABULARY: `ownerless` is ownership vocabulary, not transport or storage
+// vocabulary — it says nothing about sockets, HTTP, git or SQL, so it does
+// not leak a backend into the hook surface (Invariant 1).
+//
+// ⚠ NOT AN ACCESS CONTROL. This marks the ABSENCE of an owner; it does not
+// establish the presence of one. A caller carrying a real-looking `agentId`
+// is not thereby authorized to reach that agent — the `agents:resolve` ACL
+// the workspace routes run before every per-agent read is the barrier that
+// decides that, and it stays load-bearing.
+//
+// ⚠ WHO ACTUALLY REFUSES, as of TASK-411 — because "owner-less gets nothing"
+// is true of the workspace tier and NOT of everything:
+//
+//   - REFUSE: `@ax/workspace-git-core` (`requireAgent`) and
+//     `@ax/workspace-git-server` (`resolveWorkspaceId`), plus `skill.propose`
+//     and `connector_propose`.
+//   - MERELY PARTITION: both `@ax/memory-strata-index-*` backends hash
+//     `agentId` the same way with no gate of their own. An owner-less caller
+//     gets a private, per-session key there rather than an error.
+//
+// Partitioning is enough to stop POOLING, which is what this helper's
+// uniqueness buys and why it holds in stores nobody edited. It is not enough
+// to stop an owner-less caller from accumulating rows. One caveat worth
+// stating rather than discovering: uniqueness is only as good as the
+// sessionId, and `ax serve` lets a client CHOOSE one — two owner-less callers
+// inside that one trust domain who pick the same sessionId get the same key.
+// Strictly better than the single deployment-wide bucket this replaced, and
+// the workspace tier fails closed regardless, but it is the reason the
+// memory-index gate is a live follow-up and not a decoration.
+// ---------------------------------------------------------------------------
+
+/**
+ * Reserved prefix marking an id that stands in for an owner that does not
+ * exist. Minted ids never start with it: agents are `agt_<base64url>`
+ * (`mintAgentId`) and users come from the auth provider, so the namespaces
+ * cannot collide.
+ */
+export const OWNERLESS_ID_PREFIX = 'ownerless:';
+
+/**
+ * The `agentId` / `userId` to stamp on a context whose session resolved with
+ * no owner. Derived from the sessionId so it is stable for the life of the
+ * session (a session's own writes and reads must land in the same place) and
+ * distinct between sessions (no two owner-less sessions share a partition).
+ */
+export function ownerlessIdFor(sessionId: string): string {
+  return `${OWNERLESS_ID_PREFIX}${sessionId}`;
+}
+
+/**
+ * True when `id` is a stand-in minted by `ownerlessIdFor` — i.e. the caller
+ * has no owner at all. Stores that need a real owner should refuse; stores
+ * that merely partition may treat it as an ordinary (private, empty) key.
+ */
+export function isOwnerlessId(id: string): boolean {
+  return id.startsWith(OWNERLESS_ID_PREFIX);
+}

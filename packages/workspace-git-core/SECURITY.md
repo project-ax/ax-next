@@ -94,11 +94,30 @@ How it works now:
   derivation is a byte-for-byte copy of `@ax/workspace-git-server`'s, so the two
   backends name the same workspace the same way; both sides pin the same test
   vectors so a drift fails loudly instead of orphaning repos.
-- **It fails closed.** A caller with a blank `agentId` gets a
-  `workspace-identity-required` error, not a default tree. There is no shared
-  fallback repo left for an unauthenticated-ish caller to land in — the
-  identity check runs before path validation, before the mutex, before any
-  filesystem call.
+- **It fails closed, on TWO shapes of missing identity.** A caller with a blank
+  `agentId` gets a `workspace-identity-required` error, not a default tree; so
+  does a caller whose `agentId` is an OWNER-LESS stand-in (`isOwnerlessId`, from
+  `@ax/core`). There is no shared fallback repo left for an
+  unauthenticated-ish caller to land in — the identity check runs before path
+  validation, before the mutex, before any filesystem call.
+
+  The second refusal is TASK-411 and it is worth spelling out, because the
+  first one alone was not enough and this document said it was. The two IPC
+  listeners substitute a stand-in when a session resolves with no owner, and
+  until TASK-411 each substituted its own CONSTANT — `'ipc-http'` /
+  `'ipc-server'`. A constant is a perfectly good non-empty string, so the blank
+  check waved it through and hashed it, and every owner-less session in the
+  deployment — across every user — shared one bare repo. That is the same
+  cross-tenant read this section opens by describing, reached through a value
+  that answers "yes" to any presence check.
+
+  The listeners now stamp `ownerlessIdFor(sessionId)`: per-session, so nothing
+  pools even in stores that do not know about the marker (the two
+  `@ax/memory-strata-index-*` backends hash `agentId` the same way and have no
+  gate), and marked, so we can refuse it here. Note what changed our mind about
+  refusing: this used to say blocklisting the placeholders would couple the
+  backend to another plugin's constants, which was correct. `isOwnerlessId` is
+  a KERNEL concept, so there is nothing to couple to.
 - **One agent, one workspace — the partition is `agentId`, not `(userId, agentId)`.**
   That is deliberate and it is the same rule the sharded backend adopted in
   TASK-257: an agent's files belong to the agent, and every user authorized to
@@ -112,7 +131,9 @@ How it works now:
   This package trusts that and can't second-guess it: a caller that mints a
   synthetic `agentId` gets its own private bucket keyed on that string. Still
   not any real agent's tree — but it is why "who fills in ctx" is a
-  security-relevant question one layer up.
+  security-relevant question one layer up. TASK-411 is what happens when the
+  answer is "a constant": the bucket is private with respect to real agents and
+  SHARED with respect to everyone else who got the same constant.
 
 **Upgrading an existing deployment:** the old `<repoRoot>/repo.git` is no longer
 read by anything. We do NOT migrate or delete it, because nothing in it records

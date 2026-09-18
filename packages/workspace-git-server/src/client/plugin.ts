@@ -43,6 +43,8 @@
 // ---------------------------------------------------------------------------
 
 import {
+  isOwnerlessId,
+  PluginError,
   registerWorkspaceApplyFacade,
   WorkspaceDiffOutputSchema,
   WorkspaceListOutputSchema,
@@ -187,7 +189,45 @@ export function createWorkspaceGitServerPlugin(
   // init) is a safe no-op.
   let state: PluginState | null = null;
 
+  // FAIL-CLOSED identity gate (TASK-411), the sharded backend's copy of
+  // `@ax/workspace-git-core`'s `requireAgent`. Two refusals:
+  //
+  //   1. A BLANK agentId -- no identity at all.
+  //   2. An OWNER-LESS agentId -- the stand-in `@ax/core` mints for a session
+  //      that resolved with no (user, agent) pair. It is a non-empty string,
+  //      so check 1 waves it through, and `workspaceIdFor` would happily hash
+  //      it into a real-looking shard.
+  //
+  // Why 2 matters HERE and not only in the local backend: the two IPC
+  // listeners used to substitute a per-transport CONSTANT (`'ipc-http'` /
+  // `'ipc-server'`) for an owner-less session, so a single hash pooled every
+  // such session in the deployment into one shard, across every user. The
+  // substitution is now per-session, which already stops the pooling; this
+  // gate is the stronger half -- an owner-less session gets NOTHING, not a
+  // private-but-pointless shard, on BOTH backends rather than just the one.
+  //
+  // The gate runs BEFORE the (overridable) `workspaceIdFor`, so a test double
+  // cannot accidentally open the door it closes.
   const resolveWorkspaceId = (ctx: { agentId: string }): string => {
+    const agentId = ctx.agentId;
+    if (typeof agentId !== 'string' || agentId.trim().length === 0) {
+      throw new PluginError({
+        code: 'workspace-identity-required',
+        plugin: PLUGIN_NAME,
+        message:
+          'workspace access requires a caller agentId; ' +
+          'refusing to serve an unpartitioned workspace',
+      });
+    }
+    if (isOwnerlessId(agentId)) {
+      throw new PluginError({
+        code: 'workspace-identity-required',
+        plugin: PLUGIN_NAME,
+        message:
+          'workspace access requires a caller agentId; ' +
+          'this session has no owner',
+      });
+    }
     const fn = opts.workspaceIdFor ?? defaultWorkspaceIdFor;
     return fn(ctx);
   };

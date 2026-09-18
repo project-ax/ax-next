@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { HookBus, makeAgentContext, PluginError } from '@ax/core';
+import { HookBus, makeAgentContext, ownerlessIdFor, PluginError } from '@ax/core';
 import { createToolConnectorProposePlugin } from '../plugin.js';
 import { CONNECTOR_PROPOSE_TOOL_NAME } from '../descriptor.js';
 
@@ -132,11 +132,16 @@ describe('@ax/tool-connector-propose — plugin', () => {
     ).rejects.not.toThrow(/SECRET-DETAIL/);
   });
 
-  it('rejects an UNBOUND session (ipc-server placeholder owner) before calling the hook', async () => {
+  it('rejects an UNBOUND (owner-less) session before calling the hook', async () => {
+    // TASK-411: this guard used to test the literal 'ipc-server', which
+    // @ax/ipc-http never stamps — so an owner-less session over the TCP
+    // transport (the one k8s runs on) sailed past it. The ids below are
+    // owner-less stand-ins, not a transport's constant, so there is no
+    // per-transport set left to get half-right.
     const { bus, installCalls } = busWithStubs();
     await init(bus);
-    const unboundUser = makeAgentContext({ sessionId: 's', agentId: 'agent_1', userId: 'ipc-server' });
-    const unboundAgent = makeAgentContext({ sessionId: 's', agentId: 'ipc-server', userId: 'user_1' });
+    const unboundUser = makeAgentContext({ sessionId: 's', agentId: 'agent_1', userId: ownerlessIdFor('s') });
+    const unboundAgent = makeAgentContext({ sessionId: 's', agentId: ownerlessIdFor('s'), userId: 'user_1' });
     const valid = { connectorId: 'salesforce', name: 'Salesforce', keyMode: 'workspace' };
     await expect(
       bus.call(EXECUTE_HOOK, unboundUser, { id: 't', name: CONNECTOR_PROPOSE_TOOL_NAME, input: valid }),

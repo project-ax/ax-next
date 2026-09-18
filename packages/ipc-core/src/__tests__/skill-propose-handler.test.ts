@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { HookBus, makeAgentContext, PluginError, type AgentContext } from '@ax/core';
+import { HookBus, makeAgentContext, ownerlessIdFor, PluginError, type AgentContext } from '@ax/core';
 import { skillProposeHandler } from '../handlers/skill-propose.js';
 
 const emptyCaps = { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } };
@@ -73,11 +73,55 @@ describe('skill.propose handler (TASK-74)', () => {
     expect(r.status).toBe(400);
   });
 
-  it('rejects an unbound (placeholder-owner) session — cannot author into a foreign scope', async () => {
+  it('rejects an unbound (owner-less) session — cannot author into a foreign scope', async () => {
     const bus = busWithPropose(async () => ({ skillId: 'x', status: 'active' }));
-    const unbound = makeAgentContext({ sessionId: 's', agentId: 'ipc-server', userId: 'ipc-server' });
+    const unbound = makeAgentContext({
+      sessionId: 's',
+      agentId: ownerlessIdFor('s'),
+      userId: ownerlessIdFor('s'),
+    });
     const r = await skillProposeHandler(validPayload, unbound, bus);
     expect(r.status).toBe(400);
+  });
+
+  it('rejects an owner-less session whatever transport minted it (TASK-411)', async () => {
+    // This guard used to read `ctx.userId === 'ipc-server' || ctx.agentId ===
+    // 'ipc-server'` — ONE transport's literal. @ax/ipc-http stamped
+    // 'ipc-http' and walked straight through, on the transport that serves
+    // production. The ids below stand for two different owner-less sessions;
+    // neither is a literal the guard could be enumerating.
+    const bus = busWithPropose(async () => ({ skillId: 'x', status: 'active' }));
+    for (const sessionId of ['sess-unix-1', 'sess-tcp-1']) {
+      const ctx = makeAgentContext({
+        sessionId,
+        agentId: ownerlessIdFor(sessionId),
+        userId: ownerlessIdFor(sessionId),
+      });
+      const r = await skillProposeHandler(validPayload, ctx, bus);
+      expect(r.status).toBe(400);
+      expect(JSON.stringify(r.body)).toContain('not bound to a user+agent');
+    }
+  });
+
+  it('ANTI-VACUITY: a half-owner-less ctx is still refused, a fully owned one is not', async () => {
+    const bus = busWithPropose(async () => ({ skillId: 'x', status: 'active' }));
+    // Only the user is owner-less (the agent looks real) — still refused.
+    const halfUser = makeAgentContext({
+      sessionId: 's',
+      agentId: 'agt_real',
+      userId: ownerlessIdFor('s'),
+    });
+    expect((await skillProposeHandler(validPayload, halfUser, bus)).status).toBe(400);
+    // Only the agent is owner-less — still refused.
+    const halfAgent = makeAgentContext({
+      sessionId: 's',
+      agentId: ownerlessIdFor('s'),
+      userId: 'usr_real',
+    });
+    expect((await skillProposeHandler(validPayload, halfAgent, bus)).status).toBe(400);
+    // A fully owned session reaches the hook — proving the guard is about the
+    // scope and not about rejecting every proposal.
+    expect((await skillProposeHandler(validPayload, boundCtx(), bus)).status).toBe(200);
   });
 
   it('maps a PluginError from the hook (invalid manifest) to its HTTP status', async () => {

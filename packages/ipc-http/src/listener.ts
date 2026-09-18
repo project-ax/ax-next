@@ -1,6 +1,6 @@
 import * as http from 'node:http';
 import { authenticate, checkContentType, dispatch, writeJsonError } from '@ax/ipc-core';
-import { makeAgentContext, type HookBus } from '@ax/core';
+import { makeAgentContext, ownerlessIdFor, type HookBus } from '@ax/core';
 
 // ---------------------------------------------------------------------------
 // HTTP listener — TCP analogue of @ax/ipc-server's unix-socket listener.
@@ -37,6 +37,11 @@ import { makeAgentContext, type HookBus } from '@ax/core';
 // ---------------------------------------------------------------------------
 
 const IDLE_TIMEOUT_MS = 130_000;
+
+// Synthetic sessionId for the pre-auth context. Not a real session — the
+// bearer token has not been resolved yet, so we do not know which session
+// (if any) is calling.
+const PRE_AUTH_SESSION_ID = 'ipc-http-pre-auth';
 
 export interface HttpListener {
   close(): Promise<void>;
@@ -113,9 +118,13 @@ export async function createHttpListener(
     //    The 4xx error paths below run on THIS pre-auth ctx — but only auth
     //    errors are emitted here, and `authenticate` never echoes tokens.
     const preAuthCtx = makeAgentContext({
-      sessionId: 'ipc-http-pre-auth',
-      agentId: 'ipc-http',
-      userId: 'ipc-http',
+      sessionId: PRE_AUTH_SESSION_ID,
+      // TASK-411: an OWNER-LESS marker, not a transport-named constant. This
+      // ctx reaches only `session:resolve-token`, which keys on the token and
+      // not on the caller — but the two fields still have to hold something,
+      // and `'ipc-http'` reads like an id to anything that partitions on one.
+      agentId: ownerlessIdFor(PRE_AUTH_SESSION_ID),
+      userId: ownerlessIdFor(PRE_AUTH_SESSION_ID),
       workspace: { rootPath: '/' },
     });
     const auth = await authenticate(req.headers.authorization, opts.bus, preAuthCtx);
@@ -134,17 +143,34 @@ export async function createHttpListener(
     //
     // Stamp the resolved userId/agentId/conversationId onto ctx so downstream
     // handlers can read them — same posture as @ax/ipc-server's listener.
-    // Pre-9.5 / canary sessions resolve with nulls; we substitute placeholder
-    // strings to preserve the AgentContext invariant that agentId/userId
-    // are non-empty strings, and leave conversationId off (canary path).
+    // Pre-9.5 / canary sessions resolve with nulls. AgentContext requires
+    // non-empty agentId/userId, so something must go there — and TASK-411 is
+    // about WHAT. This used to substitute the constant `'ipc-http'`. Because
+    // every agent-partitioned store keys on `sha256(JSON.stringify([agentId]))`,
+    // one constant meant one bucket shared by EVERY owner-less session in the
+    // deployment, across every user — the same cross-tenant pooling #583 fixed
+    // for an absent agent scope, reached instead through a value that looks
+    // like an id and so answers "yes" to any null check.
+    //
+    // `ownerlessIdFor(sessionId)` is per-session, so two owner-less sessions
+    // can never share a partition anywhere, and `isOwnerlessId` lets the
+    // stores that need a REAL owner (both workspace backends, skill.propose,
+    // connector_propose) refuse instead. The substitution happens HERE, at the
+    // one boundary that mints these contexts, rather than at each consumer —
+    // a boundary is auditable; a set of consumers is a census that goes stale
+    // (which is how #583 happened).
+    //
+    // conversationId is left off entirely on this path (canary).
     //
     // Without this stamping the runner's `/conversation.store-runner-session`
     // landed at `bus.call('conversations:store-runner-session', ctx, ...)`
-    // with `ctx.userId === 'ipc-http'`. The store does a userId-scoped
-    // UPDATE keyed off the conversation owner, so `'ipc-http'` never
-    // matched any real row → 404 not-found → runner threw → resume on
+    // with a stand-in `ctx.userId` (at the time, the constant `'ipc-http'` —
+    // named here only as history; nothing stamps it any more). The store does a
+    // userId-scoped UPDATE keyed off the conversation owner, so a stand-in
+    // never matches a real row → 404 not-found → runner threw → resume on
     // turn 2 silently lost the transcript (regression:
-    // runner-owned-sessions-k8s-gap.test.ts:156).
+    // runner-owned-sessions-k8s-gap.test.ts:156). That a stand-in matches no
+    // real row is still true, and now by design.
     //
     // TASK-181: stamp the resolved session's HOST-DERIVED origin too, same as
     // @ax/ipc-server. This TCP listener is the runner↔host transport for the
@@ -156,8 +182,8 @@ export async function createHttpListener(
     // never read off the inbound payload. Null ⇒ field off (user turn).
     const ctx = makeAgentContext({
       sessionId: auth.sessionId,
-      agentId: auth.agentId ?? 'ipc-http',
-      userId: auth.userId ?? 'ipc-http',
+      agentId: auth.agentId ?? ownerlessIdFor(auth.sessionId),
+      userId: auth.userId ?? ownerlessIdFor(auth.sessionId),
       workspace: { rootPath: auth.workspaceRoot },
       // exactOptionalPropertyTypes: only set when we have a value. Canary
       // sessions resolve with conversationId=null and leave the field off.

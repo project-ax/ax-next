@@ -1,6 +1,6 @@
 import * as http from 'node:http';
 import { describe, it, expect, afterEach } from 'vitest';
-import type { AgentContext } from '@ax/core';
+import { isOwnerlessId, ownerlessIdFor, type AgentContext } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import type {
@@ -178,7 +178,7 @@ describe('@ax/ipc-http: auth-resolved ids propagate onto per-request ctx', () =>
     expect(ctx?.sessionId).toBe('s-http-prop');
   });
 
-  it('falls back to ipc-http placeholder when session has no owner (canary path)', async () => {
+  it('falls back to an OWNER-LESS marker when session has no owner (canary path)', async () => {
     let capturedCtx: AgentContext | null = null;
     let resolveFire: (() => void) | null = null;
     const fired = new Promise<void>((resolve) => {
@@ -187,7 +187,11 @@ describe('@ax/ipc-http: auth-resolved ids propagate onto per-request ctx', () =>
     // Owner-less session: simulates the pre-9.5 / canary path where
     // session:resolve-token returns userId/agentId=null. The listener
     // must still build a valid ctx (userId/agentId are non-empty in
-    // AgentContext) by substituting the 'ipc-http' placeholder.
+    // AgentContext) by substituting a stand-in. TASK-411 changed WHAT it
+    // substitutes: the constant 'ipc-http' pooled every owner-less session
+    // in the deployment into one agent-keyed partition. It is now
+    // ownerlessIdFor(sessionId) — per-session and marked. See
+    // ownerless-tenant-isolation.test.ts for the isolation assertions.
     const harness = await createTestHarness({
       plugins: [createSessionInmemoryPlugin()],
     });
@@ -244,10 +248,11 @@ describe('@ax/ipc-http: auth-resolved ids propagate onto per-request ctx', () =>
     await fired;
     expect(capturedCtx).not.toBeNull();
     const got = capturedCtx as AgentContext | null;
-    // Canary sessions: userId/agentId fall back to placeholder, and
-    // conversationId is left off entirely (not stamped as null).
-    expect(got?.userId).toBe('ipc-http');
-    expect(got?.agentId).toBe('ipc-http');
+    // Canary sessions: userId/agentId fall back to the owner-less stand-in,
+    // and conversationId is left off entirely (not stamped as null).
+    expect(got?.userId).toBe(ownerlessIdFor('s-http-canary'));
+    expect(got?.agentId).toBe(ownerlessIdFor('s-http-canary'));
+    expect(isOwnerlessId(got?.agentId as string)).toBe(true);
     expect(got?.conversationId).toBeUndefined();
   });
 

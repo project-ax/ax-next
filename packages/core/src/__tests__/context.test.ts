@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { makeReqId, createLogger, makeAgentContext } from '../context.js';
+import {
+  makeReqId,
+  createLogger,
+  makeAgentContext,
+  isOwnerlessId,
+  ownerlessIdFor,
+  OWNERLESS_ID_PREFIX,
+} from '../context.js';
 
 describe('makeReqId', () => {
   it('generates a unique, readable id', () => {
@@ -168,5 +175,49 @@ describe('makeAgentContext', () => {
     // Conditional-spread: the key is never set to a literal `undefined`, so
     // `triggerLabel` should not even be an own property when omitted.
     expect(Object.prototype.hasOwnProperty.call(ctx, 'triggerLabel')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-411 — the owner-less stand-in.
+//
+// `agentId` / `userId` are required non-empty strings, but a canary / `serve` /
+// pre-9.5 session has no owner, so the IPC listeners have to put SOMETHING
+// there. They used to put a per-transport constant ('ipc-http' / 'ipc-server'),
+// and since every agent-partitioned store keys on the agent id, one constant
+// meant one partition shared by every owner-less session in the deployment.
+//
+// Two properties are load-bearing, and they are separate: uniqueness (nothing
+// pools, in ANY store, whether or not it knows about this helper) and
+// recognisability (a store that needs a real owner can refuse).
+// ---------------------------------------------------------------------------
+describe('owner-less ids', () => {
+  it('is distinct per session — the property that stops pooling', () => {
+    expect(ownerlessIdFor('s-1')).not.toBe(ownerlessIdFor('s-2'));
+  });
+
+  it('is stable for one session — a session reads back what it wrote', () => {
+    // Not cosmetic: a per-REQUEST id would give the same session a different
+    // partition on every call.
+    expect(ownerlessIdFor('s-1')).toBe(ownerlessIdFor('s-1'));
+  });
+
+  it('is recognisable — the property that lets a store fail closed', () => {
+    expect(isOwnerlessId(ownerlessIdFor('s-1'))).toBe(true);
+  });
+
+  it('never matches a minted id, and never the old transport constants', () => {
+    // `mintAgentId` produces `agt_<base64url>`; user ids come from the auth
+    // provider. Neither namespace can collide with the reserved prefix.
+    for (const id of ['agt_AAAA', 'usr_1', 'agent-1', 'ipc-http', 'ipc-server', '']) {
+      expect(isOwnerlessId(id)).toBe(false);
+    }
+  });
+
+  it('is a PREFIX test, not a substring search', () => {
+    // A real agent whose id happens to contain the marker later in the string
+    // must not be locked out of its own workspace.
+    expect(isOwnerlessId(`agt_x-${OWNERLESS_ID_PREFIX}suffix`)).toBe(false);
+    expect(isOwnerlessId(` ${OWNERLESS_ID_PREFIX}s-1`)).toBe(false);
   });
 });

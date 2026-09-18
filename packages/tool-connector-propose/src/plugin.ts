@@ -1,4 +1,5 @@
 import {
+  isOwnerlessId,
   makeAgentContext,
   PluginError,
   type AgentContext,
@@ -185,14 +186,19 @@ export function createToolConnectorProposePlugin(): Plugin {
         EXECUTE_HOOK,
         PLUGIN_NAME,
         async (toolCtx, call) => {
-          // An unbound session carries the IPC server's placeholder owner
-          // (`ipc-server`, stamped when the bearer token resolved to no
-          // user+agent — canary / pre-bind). It must NOT be able to author a
-          // connector into the placeholder namespace; reject cleanly, exactly as
-          // the skill.propose IPC handler does for the same case. Checked BEFORE
-          // input normalization so a malformed draft on an unbound session still
-          // fails on the scope, not a field error.
-          if (toolCtx.userId === 'ipc-server' || toolCtx.agentId === 'ipc-server') {
+          // An unbound session carries an OWNER-LESS stand-in id, stamped by
+          // whichever IPC listener took the call when the bearer token resolved
+          // to no user+agent (canary / `serve` / pre-bind). It must NOT be able
+          // to author a connector into that namespace; reject cleanly, exactly
+          // as the skill.propose IPC handler does for the same case. Checked
+          // BEFORE input normalization so a malformed draft on an unbound
+          // session still fails on the scope, not a field error.
+          //
+          // TASK-411: this used to test the literal `'ipc-server'`, which
+          // @ax/ipc-http never stamps — so the TCP transport walked straight
+          // past it. `isOwnerlessId` is the kernel's single spelling, so there
+          // is no per-transport literal left to get half-right.
+          if (isOwnerlessId(toolCtx.userId) || isOwnerlessId(toolCtx.agentId)) {
             rejectInput('connector_propose: session is not bound to a user+agent');
           }
 
