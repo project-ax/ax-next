@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { capabilityRows, fullyDescribedTools } from '../plugin.js';
+import { capabilityRows, fullyDescribedTools, hostProvidedTools } from '../plugin.js';
 import { CapabilityRowSchema } from '../types.js';
 import type { PolicyRule } from '../types.js';
 
@@ -336,5 +336,54 @@ describe('fullyDescribedTools', () => {
 
   it('is empty for an empty table', () => {
     expect(fullyDescribedTools([])).toEqual([]);
+  });
+});
+
+describe('hostProvidedTools', () => {
+  const rule = (
+    tool: string,
+    providedBy?: 'host' | 'sandbox',
+  ): PolicyRule => ({
+    id: `r.${tool}`,
+    match: { tool },
+    verdict: 'allow',
+    capability: 'do a thing',
+    subject: 'agent',
+    provenance: 'catalog',
+    ...(providedBy === undefined ? {} : { providedBy }),
+  });
+
+  it('names the host-provided tools, in table order, deduped', () => {
+    expect(
+      hostProvidedTools([
+        rule('web_search', 'host'),
+        rule('Bash', 'sandbox'),
+        rule('memory_note', 'host'),
+      ]),
+    ).toEqual(['web_search', 'memory_note']);
+  });
+
+  it('leaves out a sandbox tool — its absence from the catalog proves nothing', () => {
+    // The mirror-image mistake this list exists to make unexpressible: a
+    // caller proves "not installed" by missing the catalog, and the runner's
+    // tools are never IN the catalog.
+    expect(hostProvidedTools([rule('Bash', 'sandbox'), rule('Read', 'sandbox')])).toEqual([]);
+  });
+
+  it('leaves out a rule that declares nothing — "nobody said" is not "host"', () => {
+    // Undeclared means unclassified, and the only safe reading of unclassified
+    // is the one that subtracts no row. A `!== 'sandbox'` test here would
+    // enroll every third-party rule in a check that can DELETE its row.
+    expect(hostProvidedTools([rule('mystery_tool')])).toEqual([]);
+  });
+
+  it('dedupes two rules over one tool', () => {
+    const narrow: PolicyRule = {
+      ...rule('web_extract', 'host'),
+      id: 'r.narrow',
+      match: { tool: 'web_extract', when: { field: 'url', equals: 'x' } },
+      verdict: 'hold',
+    };
+    expect(hostProvidedTools([narrow, rule('web_extract', 'host')])).toEqual(['web_extract']);
   });
 });

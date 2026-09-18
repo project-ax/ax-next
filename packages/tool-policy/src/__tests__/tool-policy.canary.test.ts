@@ -171,6 +171,39 @@ describe('tool-policy canary', () => {
     );
   });
 
+  it('TASK-416: carries hostProvidedTools ACROSS THE BUS, and never a sandbox tool', async () => {
+    /*
+      THE SAME SCHEMA-STRIP HAZARD, and the consequence here is the bug the
+      field exists to fix. `ListCapabilitiesOutputSchema` is a `z.object`, so a
+      field the handler returns and the schema forgets vanishes on the way out —
+      silently, with every unit test on the handler's return VALUE still green.
+      The rail then proves nothing uninstalled and goes back to advertising
+      `memory_search` and `web_search` on a deployment that loads neither
+      plugin, which is what the TASK-357 walk found.
+
+      Asserted against the LIVE table, both ways: the host list is what the
+      table declares, and NO sandbox built-in is in it. The second half is the
+      one with teeth — a sandbox tool here would be "proved" absent on every
+      deployment, deleting the rows for the six largest things an agent can do.
+    */
+    const h = await boot();
+    const caps = await h.bus.call<unknown, ListCapabilitiesOutput>(
+      'tool-policy:list-capabilities',
+      h.ctx(),
+      { agentId: 'a1' },
+    );
+    expect(new Set(caps.hostProvidedTools)).toEqual(
+      new Set(
+        BUILTIN_RULES.filter((r) => r.providedBy === 'host').map((r) => r.match.tool),
+      ),
+    );
+    // Non-vacuous, and specific: the field survived with content in it.
+    expect(caps.hostProvidedTools).toContain('memory_search');
+    for (const tool of ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep']) {
+      expect(caps.hostProvidedTools, tool).not.toContain(tool);
+    }
+  });
+
   it('hands each caller its own rows — one caller cannot rewrite another’s', async () => {
     // The rows carry a security claim and the plugin caches them. If a caller
     // could edit one in place, every later reader would be told something a

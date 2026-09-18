@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { lintCapability } from '../capability-lint.js';
 import { BUILTIN_RULES } from '../rules.js';
-import { capabilityRows } from '../plugin.js';
+import { capabilityRows, hostProvidedTools } from '../plugin.js';
 
 describe('BUILTIN_RULES', () => {
   it('every rule has a lint-clean capability clause', () => {
@@ -267,6 +267,86 @@ describe('BUILTIN_RULES', () => {
       }
       expect(rule.irreversible, `${rule.id} declares outward`).toBe(true);
     }
+  });
+
+  it('TASK-416: every rule says who registers its tool, and the split is exact', () => {
+    /*
+      `providedBy` is what makes a rule's ABSENCE readable, and it only works if
+      every rule declares it. The rail proves "this deployment cannot run that
+      tool" by looking the HOST-provided names up in the tool catalog; a rule
+      that declares nothing is never subtracted, so an undeclared `allow` goes
+      back to advertising a plugin that was never loaded (the TASK-357 walk).
+
+      Not enforced by the TYPE — it is optional there so a third-party table is
+      not broken by a field it has never heard of — so it is enforced here, the
+      same way `provenance` is.
+    */
+    for (const rule of BUILTIN_RULES) {
+      expect(rule.providedBy, rule.id).toBeDefined();
+    }
+
+    /*
+      THE SPLIT, PINNED BOTH WAYS, because the two mistakes are not symmetric.
+
+      Marking a sandbox tool `'host'` DELETES its row from every deployment at
+      once: the runner registers those six, they are never in the host catalog,
+      so the subtraction would "prove" them uninstalled. That is silence about
+      the largest thing an agent can do — understating reach, which design H4
+      forbids.
+
+      Marking a host tool `'sandbox'` is the quieter failure and the one the
+      walk found: the row survives on a deployment that cannot run the tool.
+
+      So the list is spelled out rather than derived. A new rule must be added
+      here deliberately, with somebody having answered "who registers this?".
+    */
+    const by = (who: 'host' | 'sandbox') =>
+      BUILTIN_RULES.filter((r) => r.providedBy === who)
+        .map((r) => r.match.tool)
+        .sort();
+    expect(by('host')).toEqual(
+      [
+        'artifact_publish',
+        'connector_propose',
+        'memory_note',
+        'memory_read_section',
+        'memory_search',
+        'request_capability',
+        'search_catalog',
+        'skill_propose',
+        'web_extract',
+        'web_search',
+      ].sort(),
+    );
+    expect(by('sandbox')).toEqual(
+      [
+        'AskUserQuestion',
+        'Bash',
+        'Edit',
+        'Glob',
+        'Grep',
+        'Read',
+        'Task',
+        'WebFetch',
+        'WebSearch',
+        'Write',
+      ].sort(),
+    );
+  });
+
+  it('TASK-416: the sandbox six are never offered up as host-provided', () => {
+    // The mirror-image mistake, asserted through the function the rail actually
+    // reads rather than through the table. `hostProvidedTools` is the only list
+    // the rail is allowed to prove absence with, so a sandbox built-in leaking
+    // into it is the whole failure in one step.
+    const offered = new Set(hostProvidedTools(BUILTIN_RULES));
+    for (const tool of ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep']) {
+      expect(offered.has(tool), `${tool} must not be provable-absent`).toBe(false);
+    }
+    // Non-vacuity: the list has something in it, and it has the two tools the
+    // walk caught the rail advertising.
+    expect(offered.has('memory_search')).toBe(true);
+    expect(offered.has('web_search')).toBe(true);
   });
 
   it('every rule names an agent subject — there is no other subject yet', () => {

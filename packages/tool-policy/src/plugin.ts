@@ -123,6 +123,26 @@ export function fullyDescribedTools(rules: readonly PolicyRule[]): string[] {
   ];
 }
 
+/**
+ * Tools some rule names that a HOST PLUGIN registers — see
+ * `ListCapabilitiesOutput.hostProvidedTools` and `PolicyRule.providedBy`.
+ *
+ * `=== 'host'` and not `!== 'sandbox'`: a rule that declares nothing is one
+ * nobody has classified, and the only safe reading of "nobody has said" is the
+ * one that subtracts nothing. Inverting the test would quietly enroll every
+ * undeclared rule in a check that can DROP its row.
+ *
+ * Order follows the table so the answer is stable across calls; the `Set` is
+ * for the dedupe two rules over one tool imply.
+ */
+export function hostProvidedTools(rules: readonly PolicyRule[]): string[] {
+  return [
+    ...new Set(
+      rules.filter((rule) => rule.providedBy === 'host').map((rule) => rule.match.tool),
+    ),
+  ];
+}
+
 export interface CapabilityRowsOptions {
   /** See `ListCapabilitiesInput.outOfReach`. */
   outOfReach?: readonly string[] | undefined;
@@ -404,9 +424,16 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
         // next to `indexed` only because it is a filter over an immutable table
         // of a few dozen rules, and a second frozen module-level cache to keep
         // in step with the first is the kind of thing that drifts.
+        //
+        // `hostProvidedTools` is the other half of the reach question and is
+        // not filtered either: it is what lets the caller prove a tool is not
+        // installed AT ALL, which the scope subtraction could never establish
+        // because it only ever walked tools the catalog already held
+        // (TASK-416).
         async (_ctx, input) => ({
           rows: applyReach(indexed, input?.outOfReach),
           fullyDescribedTools: fullyDescribedTools(rules),
+          hostProvidedTools: hostProvidedTools(rules),
         }),
         { returns: ListCapabilitiesOutputSchema },
       );

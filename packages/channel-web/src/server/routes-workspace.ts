@@ -259,6 +259,16 @@ interface ToolPolicyListCapabilitiesOutput {
    * second, mechanical row beside every rule the table does describe.
    */
   fullyDescribedTools?: unknown;
+  /**
+   * Tools the rule table names that a HOST PLUGIN registers — @ax/tool-policy's
+   * `hostProvidedTools`, whose doc carries the reasoning.
+   *
+   * `unknown` for the same reason as the field above, and checked in the same
+   * place. The direction of the mistake is the opposite one: reading a missing
+   * field as "no host-provided tools" would leave every row for an uninstalled
+   * plugin's tool standing as a live ALLOW, which is TASK-416.
+   */
+  hostProvidedTools?: unknown;
 }
 
 /**
@@ -341,9 +351,15 @@ interface ToolListOutput {
 /**
  * What the catalog half of "What it may do alone" produced.
  *
- * `outOfReach` is the interesting one: the host-catalog tools this agent's
- * scope excludes. It is not rendered — it is subtracted from the GLOBAL rule
- * table so a rule cannot assert reach this particular agent does not have.
+ * `outOfReach` is the interesting one: everything we have PROVED this agent
+ * cannot call. It is not rendered — it is subtracted from the GLOBAL rule table
+ * so a rule cannot assert reach this particular agent does not have.
+ *
+ * Two proofs feed it, and they answer different questions:
+ *   - the tool is in the catalog and this agent's SCOPE excludes it;
+ *   - the tool is host-provided and the catalog does not hold it AT ALL, so the
+ *     plugin that would provide it never loaded (TASK-416).
+ * Both need a catalog read that SUCCEEDED; neither is guessed when it did not.
  */
 interface CatalogPermissions {
   rows: PermissionRow[];
@@ -2912,9 +2928,17 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     */
     const inScope: Array<{ tool: ToolCatalogEntry; name: string }> = [];
     const outOfReach: string[] = [];
+    /*
+      Every name the catalog holds, in or out of this agent's scope. The
+      not-installed subtraction below needs "does this deployment have that tool
+      AT ALL", which is a different question from `inScope` and has a different
+      answer for a host tool the agent is not allowed to call.
+    */
+    const registered = new Set<string>();
     for (const tool of tools) {
       const name = typeof tool?.name === 'string' ? tool.name : '';
       if (name.length === 0) continue;
+      registered.add(name);
       if (!inAgentScope(name, scope)) {
         /*
           PROVED unreachable: the host registers this tool and this agent's
@@ -2945,6 +2969,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     // ARE proved unreachable, and it is the caller's business what it does with
     // a proof from a half that failed elsewhere.
     let fullyDescribed: Set<string>;
+    let hostProvided: string[];
     try {
       const out = await bus.call<
         ToolPolicyListCapabilitiesInput,
@@ -2960,8 +2985,21 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           'tool-policy:list-capabilities answered without fullyDescribedTools',
         );
       }
+      // Same posture, pointing the other way. A missing `hostProvidedTools`
+      // reads as "no rule in this table names a tool a plugin provides", which
+      // makes the subtraction below a no-op and puts the TASK-416 false ALLOW
+      // back on the surface — quietly, and under a green test suite. Fail the
+      // read instead.
+      if (!Array.isArray(out.hostProvidedTools)) {
+        throw new Error(
+          'tool-policy:list-capabilities answered without hostProvidedTools',
+        );
+      }
       fullyDescribed = new Set(
         out.fullyDescribedTools.filter((name): name is string => typeof name === 'string'),
+      );
+      hostProvided = out.hostProvidedTools.filter(
+        (name): name is string => typeof name === 'string',
       );
     } catch (err) {
       initCtx.logger.warn('workspace_rail_coverage_failed', {
@@ -2969,6 +3007,53 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         error: err instanceof Error ? err.message : String(err),
       });
       return { rows: [], failed: true, incomplete: true, outOfReach };
+    }
+
+    /*
+      THE NOT-INSTALLED SUBTRACTION — the second half of `outOfReach`, and it
+      sits between the two passes because it needs both halves: the catalog
+      (which tools exist here) and the table (which of the tools it names come
+      from a host plugin).
+
+      THE BUG THIS CLOSES (TASK-416, off the TASK-357 walk). PASS 1 can only
+      ever name tools it WALKED, and it walks the catalog — so a rule naming a
+      tool whose plugin never loaded had nothing to be subtracted from. Its row
+      sailed through and rendered as a live ALLOW under a heading that promises
+      to describe what is installed today. The walk found the rail advertising
+      `memory_search`, `memory_note`, `web_search` and `web_extract` on a
+      deployment that loads neither @ax/memory-strata nor @ax/web-tools, with
+      the agent contradicting its own rail in conversation.
+
+      WHY THE TABLE HAS TO SAY WHICH TOOLS ARE HOST-PROVIDED, rather than this
+      pass simply subtracting every ruled tool the catalog lacks. That would
+      silence the SANDBOX SIX — `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`
+      are registered by the RUNNER and never appear in this catalog, so their
+      absence proves nothing. A row that is not there reads as "it cannot do
+      that", and saying that about `Bash` understates reach on the blast-radius
+      surface, which is the one direction design H4 forbids. `hostProvidedTools`
+      names only the tools whose absence is decisive, so the mistake is not
+      expressible here.
+
+      OMIT, NOT "SHOW AS UNAVAILABLE" — the presentation decision, recorded
+      where it is enforced. Both are honest; they say different things. This
+      list's own rule is that a missing row reads as "it cannot do that", which
+      for an uninstalled tool is exactly TRUE — so omission cannot mislead in
+      the forbidden direction, and it is what the identical scope subtraction
+      above already does with a proof of the same strength. A greyed
+      "not installed here" row would instead seat a NON-capability inside the
+      capability list, where a skim-reader collects it as reach, and it would
+      cut across the verdict grouping the list is read by. The section still
+      cannot render as a bare empty list: `status` separates "no producer" from
+      "the read failed", and a zero-row `ok` says "we can't tell you — not that
+      there isn't any" rather than "there is nothing".
+
+      A DENY ROW SURVIVES THIS, because the drop happens in @ax/tool-policy's
+      `applyReach`, which subtracts only `allow` and `hold`. "Cannot start a
+      hidden helper agent" stays true for a tool nobody installed, and it is
+      reassurance rather than reach.
+    */
+    for (const name of hostProvided) {
+      if (!registered.has(name)) outOfReach.push(name);
     }
 
     /*
