@@ -1,2 +1,2 @@
-export { registerWorkspaceGitHooks } from './impl.js';
+export { registerWorkspaceGitHooks, workspaceIdForAgent } from './impl.js';
 export type { WorkspaceGitCoreConfig } from './impl.js';

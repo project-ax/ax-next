@@ -33,7 +33,16 @@ import type {
   WorkspaceExportBaselineBundleOutput,
 } from '@ax/workspace-bundle-protocol';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
+import { workspaceIdForAgent } from '@ax/workspace-git-core';
 import { createWorkspaceGitPlugin } from '../plugin.js';
+
+// TASK-396: the backend keeps one bare repo per agentId, not one
+// deployment-wide `repo.git`. Tests that poke the bare repo directly have to
+// address it by the name the harness's default ctx resolves to. `'test-agent'`
+// is `createTestHarness`'s default `ctx().agentId`; if that default ever
+// changes, these lookups miss and the assertions below go red rather than
+// silently inspecting a directory that does not exist.
+const BARE_DIR = `${workspaceIdForAgent('test-agent')}.git`;
 
 // Determinism env shape — must match BASELINE_ENV in
 // @ax/workspace-git-server (and the materialize handler in @ax/ipc-core).
@@ -466,7 +475,7 @@ describe('@ax/workspace-git bundle hooks (Phase 3)', () => {
 
     // The bare repo's HEAD must still be unset — a retry with the right
     // baseline + parent:null is what unwedges the workspace.
-    const headFile = path.join(repoRoot, 'repo.git', 'refs', 'heads', 'main');
+    const headFile = path.join(repoRoot, BARE_DIR, 'refs', 'heads', 'main');
     let headExists = true;
     try {
       await fs.stat(headFile);
@@ -504,7 +513,7 @@ describe('@ax/workspace-git bundle hooks (Phase 3)', () => {
       turnPath: 'agent/test1.txt',
       turnContent: 'hello-agent',
     });
-    const bareGitDir = path.join(repoRoot, 'repo.git');
+    const bareGitDir = path.join(repoRoot, BARE_DIR);
     await run(['init', '--bare', '-b', 'main', bareGitDir]);
     // Plant the stale ref by writing the loose ref file directly. We use
     // the empty-tree OID (a fixed 40-hex git knows about); update-ref

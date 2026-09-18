@@ -1172,3 +1172,26 @@ bump in place rather than a new entry.
 - `2026-09-18` (TASK-400) — **Local load testing does not reproduce CI contention, and saying so is better than quoting a number that bounds nothing.** The queue-halting test costs **64ms** idle and CI cut it off at 5373ms — ~84x, and since a timeout is censored from above its true requirement is unknown. Neighbours that COMPLETED in the same CI run show 14-21x. Under 32 busy workers on a 14-core Mac the worst case moved 95ms → 253ms: **~2.5x**. So pick the budget from the CI evidence plus the repo's own precedent for the class (30s for subprocess-heavy: `workspace-git*` TASK-73/#146, the `scripts` root TASK-331) — not from a local run, and not from the round number one step up. 60s is the CONTAINER figure; using it for a subprocess suite buys hang-masking, not headroom.
 - `2026-09-18` (TASK-400) — **Commit the guard ALONE first, run it, and keep the red output — a guard for "a config key exists" passes vacuously the moment any file anywhere declares the key.** The red run is also the survey: it named 12 findings across 7 packages, including two the card never mentioned (`sandbox-k8s`, whose config comment claimed "no real pods, 5s is plenty" while `read-command-shell.test.ts` runs `execFileSync('/bin/sh')` in 12 of its 20 cases, and `workspace-git-server`, declaring `testTimeout` but no `hookTimeout`). **Widening a scope predicate surfaces the blind spots the OLD scope was hiding** — expect the diff to be bigger than the card, and budget for it.
 - `2026-09-18` (TASK-384) — **A "do not duplicate that claim" guard is only right while the two claims are the same claim. Check that they are before obeying it.** `permission-frames.test.ts` asserted that neither effect disclosure may match `/undo|undone|take it back|permanent/i`, on the stated ground that `PolicyRule.irreversible` already owns reversibility and a second copy would contradict it. That premise is false, and the counter-example is the only rule that declares `outward` today: `web.extract` leaves `irreversible` unset — so `@ax/decisions` replays it at once with **no** grace period — and the fetch still cannot be un-made, because the URL's owner has already seen the request. The two fields are about different objects: `irreversible` is about **the approval control** (does AW-5 defer the call so the undo button has something to stop), the effect copy is about **the call's consequence** once it has run, which AX does not control at all. So the guard was re-scoped, not deleted: the copy MAY describe the consequence (and `outward` must, because `CapabilityEffect` defines it as a disjunction and copy narrower than the type understates reach — the one direction design H4 forbids), and still MAY NOT describe the control (the undo window, the grace period, "you can still stop this"), which is where two copies really could disagree. **Generalisation: when a test's comment asserts "X already says this", go read X and confirm it says the same thing about the same object. A guard resting on a false identity reads as discipline and ships an understatement.**
+
+## Verifying a SECURITY.md (or any capability claim in prose)
+
+Established TASK-396, after three false claims in one file across three review passes.
+
+A capability claim is an **executable assertion**. Do not read it — run it:
+
+| Claim in prose | The command that settles it |
+|---|---|
+| "No process spawn" / "no shell" | `grep -n 'spawn\|exec\|child_process' <pkg>/src/*.ts` |
+| "Imports only X, Y, Z" | `head -20 <file>` |
+| "No network" | grep the http/fetch/undici sub-imports, not just the package name |
+| "No env reads" | `grep -n 'process\.env' <pkg>/src` |
+| "Package P wraps / consumes us" | `ls packages/P` + `grep <ourExport> packages/P/src` + its `package.json` deps |
+| "Pinned exact" | read the `package.json` range, not the lockfile |
+| "Both backends do X" | check the OTHER backend; this is the one people skip |
+
+Two rules that did the work:
+
+1. **Verify the whole file, not the diff.** A false claim in a file you edit does not show up in `git diff`. Two of TASK-396's three findings sat outside the changed hunks, and two review passes missed them for exactly that reason.
+2. **Quote the wrong claim in place when you fix it.** Silently swapping the sentence loses the finding. "This section used to say X; here is why that was false" tells the next reader that this file has a history of lying, which is the useful signal.
+
+Cite **symbols, not line numbers** (`validatePath` (`impl.ts`), never `impl.ts:91-143`) — line refs rot invisibly.

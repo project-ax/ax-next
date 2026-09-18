@@ -14,7 +14,7 @@ The only thing this wrapper "owns" from a security standpoint is the manifest â€
 
 ## Known limits
 
-- **Unique writer per `gitdir`.** This wrapper assumes the host process is the unique writer to `<repoRoot>/repo.git`. That's trivially true for the local-CLI case (one process, one repo). If you point two host processes at the same `repoRoot`, the in-process mutex inside the core stops being sufficient and you'll get races. Use `@ax/workspace-git-http` (multi-replica deployments) instead.
+- **Unique writer per `gitdir`.** This wrapper assumes the host process is the unique writer to every `<repoRoot>/<workspaceId>.git` under it. That's trivially true for the local-CLI case (one process, one repo). If you point two host processes at the same `repoRoot`, the in-process mutex inside the core stops being sufficient and you'll get races. Use `@ax/workspace-git-server` (multi-replica deployments) instead â€” a separate backend, not a transport wrapper around this one.
 - All other limits live with the implementation. See the core's SECURITY.md.
 
 ## Security contact

@@ -110,10 +110,16 @@ path to a chat-capable state on a fresh cluster.
       Returns `count > 0`.
 - [ ] A workspace version was minted:
       ```bash
+      # Since TASK-396 the `local` backend keeps ONE BARE REPO PER AGENT, named
+      # ws-<16 hex> from the agentId — there is no deployment-wide `repo.git`
+      # any more. So glob, don't guess the name.
       kubectl exec -n ax-next deploy/ax-next-host -- \
-        ls /workspace-data/repo.git/refs/heads/main
+        sh -c 'ls -d /workspace-data/ws-*.git/refs/heads/main'
       ```
-      File exists.
+      At least one file exists. If you see a `/workspace-data/repo.git`, that's
+      the pre-TASK-396 shared tree — nothing reads it any more, and it was
+      readable by every user of the deployment. Salvage anything you want from
+      it and delete it.
 
 ### Logs / hygiene
 - [ ] No `level >= warn` lines in `kubectl logs -n ax-next deploy/ax-next-host`

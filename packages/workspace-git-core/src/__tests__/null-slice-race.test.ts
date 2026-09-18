@@ -37,7 +37,12 @@ import {
   type WorkspaceReadOutput,
 } from '@ax/core';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
-import { registerWorkspaceGitHooks } from '../impl.js';
+import { registerWorkspaceGitHooks, workspaceIdForAgent } from '../impl.js';
+
+// TASK-396: the backend now keeps one bare repo per agentId, so a fixture that
+// pre-seeds a repo on disk has to seed it under the name the harness's default
+// ctx resolves to — not the old deployment-wide `repo.git`.
+const FIXTURE_BARE = `${workspaceIdForAgent('test-agent')}.git`;
 
 const ENV: NodeJS.ProcessEnv = {
   ...process.env,
@@ -90,7 +95,7 @@ async function buildPackedBare(repoRoot: string): Promise<{ head: string }> {
     const bundlePath = join(scratch, 'turn.bundle');
     await run(['-C', wt, 'bundle', 'create', '-q', bundlePath, 'main']);
 
-    const bare = join(repoRoot, 'repo.git');
+    const bare = join(repoRoot, FIXTURE_BARE);
     await run(['init', '-q', '--bare', '-b', 'main', bare]);
     // fetch the bundle: lands objects as a packfile under objects/pack/.
     await run([
