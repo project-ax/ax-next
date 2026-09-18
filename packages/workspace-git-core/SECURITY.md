@@ -57,7 +57,17 @@ The argv arrays are built from OIDs and validated paths, never from raw caller t
 
 Caller-influenced values that reach argv: `input.baselineCommit`, resolved commit OIDs, the bundle's new tip, and `FileChange.path`. The OIDs are either produced by `git` itself or, for `baselineCommit`, checked against a locally-computed baseline before anything is written (a mismatch throws before `gitdir` is touched). Paths have already been through `validatePath`.
 
-The one shape worth naming: an argument that *starts with a dash* would be read by `git` as a flag rather than a value. Our argv positions are fixed and the values that land in them are OIDs (`[0-9a-f]{40}`) and `<oid>:<path>` pairs, so a leading `-` is not reachable today. If a future change ever passes a free-form caller string as a positional argument, it needs a `--` separator and its own review.
+The one shape worth naming: an argument that *starts with a dash* is read by `git` as a flag rather than a value, and none of our call sites use a `--` separator.
+
+Being precise about this, because the easy version of this paragraph is an overclaim. **`WorkspaceVersion` is not validated.** `asWorkspaceVersion` in `@ax/core` is a bare cast — no regex, no length check — and `resolveVersion` passes `input.version` straight through. So a `version` DOES become the leading characters of an argv token: on its own in `git ls-tree -r -z --name-only <version>`, and as the prefix of `<version>^{commit}` and `<version>:<path>`.
+
+What keeps that from being a hole today is the set of callers, not a check:
+
+- `version`/`from`/`to` on `read`, `list` and `diff` are supplied by **host-side** plugins, which pass back a version this backend previously minted. `workspace:diff` has no production caller at all.
+- The **runner** — the one semi-trusted caller — cannot reach them. The `workspace.read` IPC handler forwards only `path`, never a version. Its one version-shaped input is `parentVersion` on `workspace.commit-notify`, and that lands in `git rev-parse --verify <v>^{commit}`, whose non-zero exit throws **before** anything is written to the gitdir. `baselineCommit` is re-derived host-side and never taken from the wire.
+- Worst case for a malformed value is therefore a failed `git` invocation, not a write or a disclosure.
+
+That is a caller-discipline argument, which is weaker than a validated input. Validating `WorkspaceVersion` at the `@ax/core` boundary (or passing `--` at these call sites) would turn it into a structural one, and is filed as a follow-up. If a future change ever routes a free-form caller string into a positional argument, do that first.
 
 ### Env vars
 
