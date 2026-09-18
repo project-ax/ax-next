@@ -302,6 +302,38 @@ Two kinds of dir, both in tempdir, none persistent:
 
 No persistent disk. The mirror cache is rebuildable on pod restart — cold-start cost is one `git fetch` per active workspace, which is normally seconds. We pay that to avoid having to think about persistent state lifecycle.
 
+### Tenant partitioning, and the two shapes of missing identity (TASK-411)
+
+Every hook in `src/client/plugin.ts` resolves the caller to a shard through
+`resolveWorkspaceId`, which is `sha256(JSON.stringify([agentId]))` prefixed
+`ws-`. One agent, one shard. The hash is a PARTITION, not an access control —
+the barrier deciding whether you may reach an agent at all is the
+`agents:resolve` ACL `channel-web`'s workspace routes run before every
+per-agent read.
+
+`resolveWorkspaceId` refuses two shapes of caller before it hashes anything:
+
+- a **blank** `agentId` (empty or whitespace), and
+- an **owner-less** `agentId` — `isOwnerlessId`, the `@ax/core` marker the IPC
+  listeners stamp when a session resolves with no (user, agent) pair.
+
+Both get `workspace-identity-required` and touch no storage. The gate runs
+BEFORE the overridable `workspaceIdFor` option, so a test double cannot reopen
+it.
+
+The second refusal exists because the first one alone did not cover the case
+that actually happened. Until TASK-411 the two IPC listeners each substituted
+their own CONSTANT for an owner-less session — `'ipc-http'` / `'ipc-server'` —
+and a constant is a perfectly good non-empty string. It hashed to a real-looking
+shard, and every owner-less session in the deployment landed in it, across every
+user. A null check cannot see that; a marker can.
+
+The listeners now stamp `ownerlessIdFor(sessionId)`, which is per-session, so
+nothing pools even in the agent-partitioned stores that have no gate of their own
+(both `@ax/memory-strata-index-*` backends derive the same key and would
+otherwise have inherited the same bucket). This gate is the stronger half: an
+owner-less caller gets nothing at all rather than a private, pointless shard.
+
 ### Bearer token discipline
 
 The token is the only thing standing between a NetworkPolicy bypass and the storage tier. We treat it accordingly.
