@@ -319,7 +319,27 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
           const call = input?.call;
           if (typeof call?.name !== 'string' || call.name.length === 0) {
             ctx.logger.warn('tool_policy_evaluate_malformed_call', { plugin: PLUGIN_NAME });
-            return { verdict: 'deny', ruleId: null, capability: null, irreversible: false };
+            // `effect: []` is REQUIRED here (TASK-383), and it is not
+            // decoration. The field is required on `EvaluateResult`, so
+            // omitting it fails the bus's `returns` parse and this careful deny
+            // becomes a THROW at the call site instead. Traced, because the
+            // consequence differs per caller and only one of them is safe:
+            // `@ax/decisions` wraps the call in a fail-closed catch and would
+            // still refuse, but with the generic gate-failure sentence rather
+            // than this deliberated one; the rail catches per tool and loses
+            // the ROW, which understates reach — the direction design H4
+            // forbids. Neither is a silent allow, and neither is what we meant.
+            //
+            // `[]` is also the honest value: we could not read a tool name, so
+            // there is nothing to union and nothing the table has said about
+            // this call.
+            return {
+              verdict: 'deny',
+              ruleId: null,
+              capability: null,
+              irreversible: false,
+              effect: [],
+            };
           }
           // Only an `egress`-gated tool pays for the read. Everything else gets
           // the same pure, I/O-free answer it got before this existed.

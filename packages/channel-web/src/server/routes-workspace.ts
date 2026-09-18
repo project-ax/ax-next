@@ -262,10 +262,13 @@ interface ToolPolicyListCapabilitiesOutput {
 }
 
 /**
- * `tool-policy:evaluate`, asked here for ONE fact: the verdict a tool gets when
- * no rule's predicate catches the call. The rail's verdict is the enforced
- * verdict or it is decoration. See `catalogPermissions` for what it is NOT
- * asked — coverage — and why that mattered (TASK-267).
+ * `tool-policy:evaluate`, asked here about the call no rule's predicate catches.
+ * TWO facts come back that this surface renders: the verdict such a call gets,
+ * and what it DOES in the world. The rail's verdict is the enforced verdict or
+ * it is decoration, and since TASK-383 the same is true of its disclosure — both
+ * now come from the thing that enforces them rather than from a local guess. See
+ * `catalogPermissions` for what this hook is NOT asked — coverage — and why that
+ * mattered (TASK-267).
  */
 interface ToolPolicyEvaluateInput {
   call: { name: string; input: unknown };
@@ -276,6 +279,39 @@ interface ToolPolicyEvaluateOutput {
   ruleId: string | null;
   capability: string | null;
   irreversible: boolean;
+  /**
+   * The hook's unvalidated answer for what this call does in the world —
+   * `EvaluateResult.effect`, a SET since TASK-383: the matched rule's declared
+   * effects, or, when no rule matched, the union over every rule naming this
+   * tool. The base-row builder in `catalogPermissions` is the only reader, and
+   * its comment carries why a fall-through union is the honest thing to render
+   * there rather than silence.
+   *
+   * Typed `unknown`, NOT `CapabilityEffect[]` and emphatically not `string` —
+   * same reasoning as `PolicyCapabilityRow.effect` above, and the same scar
+   * behind it. #574's regression was a duck-typed mirror on this very surface
+   * typed `string`: `tsc` stayed green end to end while every array-valued
+   * answer failed the `=== 'spends'` test, fell into the null branch, and the
+   * rail quietly stopped disclosing that `web_extract` spends money. A mirror
+   * that names a shape it cannot enforce buys nothing and costs exactly that.
+   * Invariant 2 forbids importing the union from `@ax/tool-policy` anyway, so
+   * the real choice is between an unchecked assertion and an honest `unknown`,
+   * and only the honest one makes `toWireEffects` mandatory rather than
+   * decorative: nothing can read this field without first establishing what it
+   * is.
+   *
+   * OPTIONAL, unlike the plugin-side field it mirrors, which is required and
+   * pinned by the registrar's `returns` schema. The `?` is not a hedge about
+   * the shipped impl — it is this surface admitting an impl registered with no
+   * schema at all can answer without the key, and `undefined` is a shape
+   * `toWireEffects` already maps to `[]`. Deliberately NOT the
+   * `fullyDescribedTools` treatment two interfaces up, which throws on a
+   * missing field: there, reading silence as an answer adds a second row
+   * asserting reach, so failing loud is the cheaper mistake; here, throwing
+   * costs the whole row (see the `catch` below it), and a row that discloses no
+   * effect still discloses more than a row that is not there.
+   */
+  effect?: unknown;
 }
 
 /** @ax/agent-activity's `AgentActivity`, duck-typed (I2). */
@@ -2952,6 +2988,11 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       if (fullyDescribed.has(name)) continue;
 
       let verdict: CapabilityVerdict;
+      // Hoisted out of the `try` for the same reason `verdict` is: `ev` dies
+      // with the block, and the `catch` below abandons the row rather than
+      // falling through, so there is no path that reads either one unassigned.
+      // Held RAW — it earns its type at the row, where the allow-list runs.
+      let rawEffect: unknown;
       try {
         const ev = await bus.call<ToolPolicyEvaluateInput, ToolPolicyEvaluateOutput>(
           'tool-policy:evaluate',
@@ -2965,6 +3006,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           { call: { name, input: {} }, agentId: agent.id },
         );
         verdict = ev.verdict;
+        rawEffect = ev.effect;
       } catch (err) {
         // One unreadable tool costs us that row, and the list says so. It never
         // costs us the other rows, and it is never quietly dropped.
@@ -3006,36 +3048,53 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         // the predicates miss — and marking it "in some cases" would qualify
         // the one claim here that has no condition on it.
         conditional: false,
-        // A third-party tool we cannot describe in our own words is also one
-        // whose effects nobody has classified — the row's mechanical shape
-        // already tells the reader we cannot say what this tool does, and
-        // `effect` is no exception. `[]` is the unclassified spelling, and it
-        // is the honest one here. Never invent a member from the tool's name.
+        // WHAT THE TABLE SAYS THIS CALL DOES IN THE WORLD — the evaluator's
+        // answer for the fall-through call, filtered per member. Read off the
+        // hook since TASK-383; it was hardcoded `[]` before, and that hardcode
+        // was a claim this site had no standing to make.
         //
-        // ONE CASE THIS HARDCODED `[]` WOULD GET WRONG, and it is a real gap,
-        // not a hypothetical. A tool named only by `when`-predicated rules
-        // ALSO lands here — as its base row, the unconditional fall-through
-        // half — and that row has no rule to read effects off, because it is
-        // built from `evaluate`'s answer and `EvaluateResult` carries no
-        // `effect`. Were such a rule to declare `spends` or `outward`, this
-        // row would render with no marker while the call still spent the money
-        // or acted outward, i.e. it would UNDERSTATE reach.
+        // The row covers two kinds of tool and the field means a different
+        // thing for each, which is why it cannot be a constant:
         //
-        // A SHIPPED RULE IS NOW BOTH CONDITIONAL AND EFFECT-BEARING —
-        // `web.extract` is `conditional` with `effect: ['spends', 'outward']`
-        // (TASK-330) — so the old blanket "no shipped rule is both" no longer
-        // holds and must not be repeated here. This site is still not reached
-        // by it, for a narrower and checkable reason: `fullyDescribedTools` is
-        // computed from `rule.match.when === undefined`, and `web.extract` has
-        // no `when` predicate (its conditionality comes from `egress`, which
-        // `evaluate` resolves per host). `web_extract` is therefore fully
-        // described, gets no mechanical base row at all, and its effects reach
-        // the wire through `toWirePermission` off the described row.
+        //   - A TOOL NO RULE NAMES (unmapped, MCP, a third party's). Nobody has
+        //     classified its effects, so there is nothing to union and this
+        //     stays `[]` — the unclassified spelling, and the honest one: the
+        //     row's mechanical shape already says we cannot tell the reader
+        //     what this tool does. We never invent a member from the tool's
+        //     name. `send_email` is a string, not evidence.
+        //   - A TOOL NAMED ONLY BY `when`-PREDICATED RULES. This is its base
+        //     row — the unconditional half, covering every call the predicates
+        //     miss — and it is where the hardcode lied. `evaluate` is asked
+        //     with `{}`, which by construction no `PredicateSpec` matches, so
+        //     no rule answers and the fall-through hands back the UNION, in
+        //     table order, of the effects every rule naming this tool declared.
         //
-        // The gap re-opens the day a rule carries BOTH a `when` predicate and
-        // an `effect`. The fix then is to carry `effect` onto `EvaluateResult`
-        // and read it here — not to widen this comment again.
-        effect: [],
+        // The union is the right thing to render because a predicate gates the
+        // VERDICT, not what the call does in the world: a call that slips past
+        // `when: { field: 'url', equals: … }` still spends the money and still
+        // hands the URL to somebody else. Rendering silence beside it would
+        // UNDERSTATE reach, the one direction design H4 forbids — which is
+        // precisely the failure the old comment here described as a live gap.
+        //
+        // It cannot over-claim either, because the union branch only fires
+        // where a rule exists and none spoke. A tool with a broad rule is
+        // matched by it, is therefore fully described, and never reaches this
+        // loop at all — so `Bash` cannot be marked outward on the strength of a
+        // `curl`-predicated sibling.
+        //
+        // `described: false` beside a NON-EMPTY set is not a contradiction. We
+        // cannot say what this tool does in OUR words; the table can still say
+        // it costs money. `PermissionLine` draws the badges outside both of its
+        // `described` branches for exactly that reason.
+        //
+        // Still filtered, because this is still the trust boundary: the answer
+        // arrives as a duck-typed `unknown`, and `toWireEffects` is what turns
+        // it into claims this surface can render — a non-array lands as `[]`
+        // rather than being coerced (a bare `'spends'` is iterable, and
+        // spreading it would put six invented members on the wire), an unknown
+        // member falls on the floor while its true siblings survive, and the
+        // rule's declared order is preserved.
+        effect: toWireEffects(rawEffect),
         mechanicalLabel: label,
         // The vendor's own prose, for MCP tools only, and only as attributed
         // evidence. A native tool's `description` is written to steer an LLM

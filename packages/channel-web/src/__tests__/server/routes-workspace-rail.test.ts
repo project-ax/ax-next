@@ -132,6 +132,23 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
   let policyCalls: number;
   /** Tool names whose `tool-policy:evaluate` throws. One row's worth of loss. */
   let evaluateThrowsFor: Set<string>;
+  /**
+   * What `tool-policy:evaluate` answers for `effect`, keyed by tool name.
+   *
+   * ITS OWN MAP rather than a field on `ruledTools`, and the split is the whole
+   * point of the case this exists for. A tool named only by `when` rules is
+   * ABSENT from `ruledTools` — that absence is how this file writes "no rule
+   * matches the empty input" — and it is exactly that tool which gets a
+   * mechanical base row with effects to disclose, because `EvaluateResult.effect`
+   * on a no-match is the UNION over the rules naming the tool (TASK-383).
+   * Hanging the field off `ruledTools` would make the one case the fix exists
+   * for unwritable, and the fake would quietly only ever exercise the easy half.
+   *
+   * `unknown`, not `string[]`: some tests answer junk on purpose, because the
+   * route is the thing on trial here — whether it still refuses a shape the
+   * hook had no business sending.
+   */
+  let evaluateEffect: Map<string, unknown>;
   /** What the route last told the policy plugin this agent cannot reach. */
   let lastOutOfReach: string[] | null;
   let ruledTools: Map<string, { verdict: string; ruleId: string }>;
@@ -217,9 +234,19 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
       const { call } = i as { call: { name: string } };
       if (evaluateThrowsFor.has(call.name)) throw new Error('evaluator down');
       const ruled = ruledTools.get(call.name);
+      /*
+        `effect` is answered on BOTH branches, and defaults to `[]` on neither
+        more nor less than the real plugin does. The real `evaluate` returns the
+        matched rule's set when a rule matched and the union over the rules
+        naming the tool when none did (TASK-383) — two computations, one field,
+        always present. A stub that answered it only on the matched branch would
+        let a route that read `effect` off nothing but described rows pass, which
+        is the pre-TASK-383 behaviour this test file now exists to forbid.
+      */
+      const effect = evaluateEffect.get(call.name) ?? [];
       return ruled === undefined
-        ? { verdict: 'allow', ruleId: null, capability: null, irreversible: false }
-        : { ...ruled, capability: 'x', irreversible: false };
+        ? { verdict: 'allow', ruleId: null, capability: null, irreversible: false, effect }
+        : { ...ruled, capability: 'x', irreversible: false, effect };
     });
   }
 
@@ -310,6 +337,7 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     policyThrowsOnCall = null;
     policyCalls = 0;
     evaluateThrowsFor = new Set();
+    evaluateEffect = new Map();
     lastOutOfReach = null;
     ruledTools = new Map();
     siteGrants = new Map();
@@ -569,7 +597,7 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     });
   });
 
-  it('TASK-329: carries a declared effect through the REAL route, and shows the base-row gap', async () => {
+  it('TASK-383: carries a declared effect through the REAL route, base row included', async () => {
     /*
       The end-to-end seam, which the projection unit tests below do not cover:
       `toWirePermission`'s allow-list is tested directly, and the canary proves
@@ -578,24 +606,35 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
 
       This stages the SAME two-row shape as the conditional-rule test above — a
       `when`-predicated rule plus the mechanical base row covering the calls its
-      predicate misses — because that shape proves both halves at once:
+      predicate misses — because that shape proves both halves at once, and the
+      second half is the one TASK-383 closed:
 
         - the described row carries the declared effects all the way to the wire;
-        - the base row does NOT, and cannot, because it is built from
-          `tool-policy:evaluate` and `EvaluateResult` has no `effect` field.
+        - SO DOES THE BASE ROW, which is built from `tool-policy:evaluate` and
+          now reads `EvaluateResult.effect` instead of hardcoding `[]`.
 
-      The second assertion PINS A KNOWN GAP rather than blessing it, and the
-      gap is narrower than this comment used to claim. It said no shipped rule
-      was conditional at all; `web.extract` now is (TASK-330, `effect:
-      ['spends', 'outward']`). It does not reach the base-row site: its
+      This assertion USED TO PIN THE GAP: it expected `[]` on the base row and
+      said in so many words that the fix was to carry `effect` onto
+      `EvaluateResult` and read it here, and that whoever did that should update
+      the expectation deliberately rather than revert. That is what happened.
+
+      What makes the base row's `['spends']` correct rather than invented: on a
+      `when`-only tool NO rule matches the empty input the route sends — a
+      `PredicateSpec` needs an own property holding a primitive and `{}` has
+      none — so `evaluate` falls through, and its fall-through answers the UNION
+      of the effects declared by every rule naming this tool. A predicate gates
+      the VERDICT, not what the call does in the world: a call that slips past
+      `when: { field: 'recursive', equals: true }` still spends the money. The
+      fake mirrors that by answering `effect` off its own map, keyed by tool,
+      for a tool deliberately absent from `ruledTools`.
+
+      Note which rule shapes this is and is not about. `web.extract` is
+      conditional AND effect-bearing (TASK-330, `['spends', 'outward']`) but its
       conditionality comes from `egress`, not from a `when` predicate, and
-      `fullyDescribedTools` filters on `when === undefined` — so `web_extract`
-      is fully described, gets no mechanical base row, and its effects arrive
-      on the described row. The live gap is specifically a rule carrying BOTH a
-      `when` predicate and an effect. If you are here because this test went
-      red, you have probably carried `effect` onto `EvaluateResult` and through
-      the base-row builder — that is the fix, so update the second assertion to
-      expect the declared set deliberately rather than reverting anything.
+      `fullyDescribedTools` filters on `when === undefined` — so it is fully
+      described, gets no mechanical base row at all, and reaches the wire
+      through the described row the next test pins. The row here is the other
+      shape: a rule carrying BOTH a `when` predicate and an effect.
     */
     registerPolicy();
     registerCatalog();
@@ -611,6 +650,9 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
       },
     ];
     catalog = [{ name: 'delete_file', executesIn: 'host' }];
+    // `delete_file` stays out of `ruledTools` — nothing matches `{}` — so this
+    // is `evaluate`'s FALL-THROUGH answer, the union over the `when` rule.
+    evaluateEffect.set('delete_file', ['spends']);
 
     const body = (await railFor()).body as AgentRailData;
     expect(body.permissions.rows).toHaveLength(2);
@@ -618,13 +660,60 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     expect(body.permissions.rows[0]).toMatchObject({
       described: false,
       mechanicalLabel: 'delete_file',
-      effect: [],
     });
+    // `toEqual` on the array itself, never `toMatchObject` with a one-member
+    // array and never a `.not.toBe()`: an array-valued field makes an identity
+    // assertion vacuous — it passes against `[]`, against `['s','p','e','n','d','s']`,
+    // against anything. This is the assertion that has to distinguish them.
+    expect(body.permissions.rows[0]?.effect).toEqual(['spends']);
     expect(body.permissions.rows[1]).toMatchObject({
       described: true,
       source: 'rule:files.delete-recursive',
-      effect: ['spends'],
     });
+    expect(body.permissions.rows[1]?.effect).toEqual(['spends']);
+  });
+
+  it('TASK-383: refuses a junk evaluate effect on the base row, end to end', async () => {
+    /*
+      The mirror is typed `unknown` and the base row filters it per member. This
+      is that boundary asked THROUGH THE REAL ROUTE rather than through
+      `toWireEffects` directly, because the unit test of the filter cannot tell
+      you the filter is still WIRED IN — #574's regression was exactly a
+      duck-typed mirror that stayed `tsc`-green while the value took a path
+      nobody checked.
+
+      Two junk shapes, both plausible from an impl written against an older
+      spelling of this field:
+
+        - A BARE STRING. `'spends'` is what `EvaluateResult.effect` looked like
+          before TASK-330 made it a set, so it is the shape a stale impl sends.
+          It is not a set of claims we can read, and wrapping it would invent
+          the claim in the shape we asked for, so it lands as `[]`.
+          Mind the trap when asserting: a string is ITERABLE, so a spread or a
+          `[...raw]` coercion would yield `['s','p','e','n','d','s']` — six
+          nonsense members that `toHaveLength(0)` catches but that a laxer
+          assertion would wave through. `toEqual([])` is the one that separates
+          "refused" from "shredded".
+        - AN ARRAY WITH AN INVENTED MEMBER. `['spends', 'harmless']` keeps its
+          true half: dropping the whole set over one bad member would UNDERSTATE
+          a real effect (design H4), and passing the bad member through would put
+          a claim on the wire that no authored copy can render.
+    */
+    registerPolicy();
+    registerCatalog();
+    catalog = [
+      { name: 'bare_string_tool', executesIn: 'host' },
+      { name: 'junk_member_tool', executesIn: 'host' },
+    ];
+    evaluateEffect.set('bare_string_tool', 'spends');
+    evaluateEffect.set('junk_member_tool', ['spends', 'harmless']);
+
+    const body = (await railFor()).body as AgentRailData;
+    const byLabel = new Map(
+      body.permissions.rows.map((r) => [r.mechanicalLabel, r.effect] as const),
+    );
+    expect(byLabel.get('bare_string_tool')).toEqual([]);
+    expect(byLabel.get('junk_member_tool')).toEqual(['spends']);
   });
 
   it('TASK-330: carries BOTH declared effects of a web.extract-shaped rule onto the wire', async () => {

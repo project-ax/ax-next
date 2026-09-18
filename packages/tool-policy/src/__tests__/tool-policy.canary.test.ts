@@ -41,6 +41,12 @@ describe('tool-policy canary', () => {
       ruleId: holdRule.id,
       capability: holdRule.capability,
       irreversible: holdRule.irreversible === true,
+      // Derived, not hard-coded: the hold rule this picks up is whichever one
+      // `rules.ts` lists first, and today it declares no effect. `?? []`
+      // because `EvaluateResult.effect` is REQUIRED and spells "nothing
+      // declared" `[]`, while a rule spells it by omission — the two spellings
+      // are deliberate and documented on both types.
+      effect: holdRule.effect ?? [],
     });
 
     const caps = await h.bus.call<unknown, ListCapabilitiesOutput>(
@@ -203,6 +209,10 @@ describe('tool-policy canary', () => {
       ruleId: null,
       capability: null,
       irreversible: false,
+      // Nothing to union: no rule names this tool, so the table has said
+      // nothing about it. Contrast the when-only tool below, where rules DO
+      // name the tool and none of them matched.
+      effect: [],
     });
   });
 
@@ -269,5 +279,103 @@ describe('tool-policy canary', () => {
       },
     ]);
     expect(caps.fullyDescribedTools).toEqual(['only']);
+  });
+
+  it('carries effect ACROSS THE BUS, key and value intact (TASK-383)', async () => {
+    /*
+      `list-capabilities` has had a key-shape guard against the `z.object`
+      strip since TASK-329; `evaluate` had none, and it is the surface the rail
+      builds its MECHANICAL rows from. Same hazard, worse blast radius: a field
+      on the interface that the schema forgets vanishes silently on the way out
+      of the bus, the rail draws no disclosure, and every unit test on the
+      object `evaluate()` RETURNS stays green because they run before the parse.
+
+      Mutant to re-run if you touch this: delete the `effect` line from
+      `EvaluateResultSchema` and both assertions below must red.
+    */
+    const h = await boot();
+    const extract = BUILTIN_RULES.find((r) => r.id === 'web.extract')!;
+    // NON-VACUITY. Everything below would pass against a schema with no
+    // `effect` line if the rule it reads declared nothing — `undefined` on both
+    // sides, agreeing about nothing. Pinned here rather than hard-coded so the
+    // assertion cannot outlive the rule that makes it meaningful.
+    expect(extract.effect?.length ?? 0).toBeGreaterThan(0);
+
+    const out = await h.bus.call<unknown, EvaluateResult>(
+      'tool-policy:evaluate',
+      h.ctx(),
+      { call: { name: extract.match.tool, input: { url: 'https://example.test/' } }, agentId: 'a1' },
+    );
+    expect(Object.keys(out).sort()).toEqual(
+      ['capability', 'effect', 'irreversible', 'ruleId', 'verdict'].sort(),
+    );
+    // The VALUE crossed, not just the key, and `toEqual` because it is a SET:
+    // `toBe` compares array references and `not.toBe('outward')` on an array is
+    // vacuously true, which is how a disclosure guard stops being one.
+    expect(out.effect).toEqual(extract.effect);
+  });
+
+  it('unions a when-only tool ACROSS THE BUS — the base row the card is about', async () => {
+    /*
+      The shipped table has no conditional rule (`rules.ts` says so and
+      `fullyDescribedTools` proves it), so the case this field exists for cannot
+      be reached through `BUILTIN_RULES`. Planting a fake conditional rule in
+      the shipping table to make it reachable would be worse — the table is a
+      reviewed security document, not a fixture — so this uses the same
+      own-rule-table seam AW-4's canaries use.
+
+      What it proves that the unit test cannot: the union survives the `returns`
+      parse. That matters because the union is the ONLY branch the rail's
+      mechanical base row ever takes, and an empty array is exactly what a
+      silently-stripped field looks like from the other side.
+    */
+    const h = await createTestHarness({
+      plugins: [
+        createToolPolicyPlugin({
+          rules: [
+            {
+              id: 'test.charge.usd',
+              match: { tool: 'charge', when: { field: 'currency', equals: 'usd' } },
+              verdict: 'hold',
+              capability: 'charge a card in dollars',
+              subject: 'agent',
+              effect: ['spends'],
+            },
+            {
+              id: 'test.charge.eur',
+              match: { tool: 'charge', when: { field: 'currency', equals: 'eur' } },
+              verdict: 'hold',
+              capability: 'charge a card in euros',
+              subject: 'agent',
+              effect: ['spends', 'outward'],
+            },
+          ],
+        }),
+      ],
+    });
+    harnesses.push(h);
+
+    const caps = await h.bus.call<unknown, ListCapabilitiesOutput>(
+      'tool-policy:list-capabilities',
+      h.ctx(),
+      { agentId: 'a1' },
+    );
+    // The precondition the base row is built on, asserted rather than assumed:
+    // `charge` is named by the table and NOT fully described, which is what
+    // makes the caller ask `evaluate` about an empty input in the first place.
+    expect(caps.fullyDescribedTools).toEqual([]);
+
+    const out = await h.bus.call<unknown, EvaluateResult>(
+      'tool-policy:evaluate',
+      h.ctx(),
+      { call: { name: 'charge', input: {} }, agentId: 'a1' },
+    );
+    expect(out).toEqual({
+      verdict: 'allow',
+      ruleId: null,
+      capability: null,
+      irreversible: false,
+      effect: ['spends', 'outward'],
+    });
   });
 });
