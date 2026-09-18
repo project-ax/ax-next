@@ -205,8 +205,9 @@ describe('AgentMemory', () => {
     control. The editor is removed so nobody types into a blank box and saves
     over rules that are still safely on disk; nothing the reader holds is at
     risk, no obligation of theirs is going unmet, and the next read may work.
-    Contrast `:192`, a failed WRITE, which IS red — and which the first two
-    clauses predict correctly.
+    Contrast `RulesEditor`'s save error, a failed WRITE, which IS red — and
+    which the first two clauses predict correctly. (It was cited here by line
+    number until TASK-417 moved it; symbols survive edits, line numbers do not.)
   */
   it('does not dress a withheld editor up as something having gone wrong', () => {
     render(<AgentMemory agentName="Quill" memory={failed()} onSaveRules={vi.fn()} />);
@@ -309,6 +310,44 @@ describe('AgentMemory', () => {
         screen.getByText(/Treat this as unknown rather than empty/u),
       ).toBeInTheDocument();
     });
+  });
+
+  it('lets the two halves be in different states at once', () => {
+    /*
+      The headline behaviour, and the one the helpers above cannot express
+      because they set both tiers alike. `memory:rules:read` and
+      `memory:learned:read` are separate hooks and either can break alone — the
+      server reads them independently for exactly this reason — so the tab has
+      to word each half off its OWN status rather than off whichever it checked
+      first.
+    */
+    render(
+      <AgentMemory
+        agentName="Quill"
+        memory={{
+          rules: {
+            status: 'ok',
+            doc: { name: 'Your rules', scope: 'rules', body: '- cc Priya' },
+          },
+          learned: { status: 'failed', docs: [] },
+        }}
+        onSaveRules={vi.fn()}
+        onRetry={vi.fn()}
+      />,
+    );
+
+    // The human's half is fine, so the editor is there with their text in it.
+    expect(screen.getByLabelText('Rules you gave me')).toHaveValue('- cc Priya');
+    // ...and the agent's half does not borrow that good news.
+    expect(screen.queryByText(/Nothing yet/u)).toBeNull();
+    expect(
+      screen.getByText(/Treat this as unknown rather than empty/u),
+    ).toBeInTheDocument();
+    // No withheld-editor notice: nothing was withheld.
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    // And the "we fold these together" blurb goes with the list it describes —
+    // it introduces notes we have just said we could not read.
+    expect(screen.queryByText(new RegExp(escapeRe(COMPACTION_NOTICE)))).toBeNull();
   });
 
   it('keeps the three states in three different words', () => {

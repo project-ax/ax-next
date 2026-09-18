@@ -595,10 +595,20 @@ export interface MemoryDoc {
  * pick a winner, and the loser's section would then word itself off a fact that
  * is not about it.
  *
- * `rules.doc` is non-null exactly when `rules.status === 'ok'` — the editor
- * appears only over storage we actually read. `learned.docs` is meaningful
- * only when `learned.status === 'ok'`; on any other status it is empty and
- * means nothing.
+ * THE SHAPE IS `{ status, payload }`, FLAT, and deliberately not a
+ * discriminated union. A union would make `ok`-with-no-doc unrepresentable,
+ * which is tempting — but every other read on this surface (`activity`,
+ * `permissions`, `grants`, `counters` on `AgentRailData`) is flat, and one
+ * union in the middle of four flat siblings costs more in surprise than it
+ * buys in precision. `readMemory` sets `doc` on every `ok`, so the impossible
+ * pair is a contract the producer keeps rather than one the type enforces, and
+ * `AgentMemory` still handles it defensively — see the comment at that call
+ * site for which of the three it picks and why.
+ *
+ * So: `rules.doc` is non-null whenever `rules.status === 'ok'`, and the editor
+ * appears only over storage we actually read. `learned.docs` is meaningful only
+ * when `learned.status === 'ok'`; on any other status it is empty and means
+ * nothing.
  */
 export interface AgentMemoryRead {
   rules: { status: WorkspaceReadStatus; doc: MemoryDoc | null };

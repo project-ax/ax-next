@@ -535,3 +535,32 @@ extraction factory, named for the provider `DEFAULT_MEMORY_OPS_MODEL` routes to.
 - `2026-09-18` (TASK-411) — **A guard that asks "is there an id?" cannot see a sentinel that IS an id, and the codebase had three such guards, two of which named only one of the two sentinels.** `@ax/ipc-http` and `@ax/ipc-server` each substituted their own constant (`'ipc-http'` / `'ipc-server'`) into `ctx.agentId` for an owner-less session. Every agent-partitioned store keys on `sha256(JSON.stringify([agentId]))`, so ONE constant is ONE bucket shared by every owner-less session in the deployment — the exact bug #583 had closed the day before, surviving it because #583's fix is a BLANK check and these values are not blank. The tell was visible in #583's own prose: `skill-propose` and `tool-connector-propose` "both refuse this placeholder" — they tested `'ipc-server'` and neither tested `'ipc-http'`, so the protection was half-missing on the transport that serves production (k8s is TCP). **The lesson is not "add the second literal": a guard spelled as a literal is a census of the callers that mint it, and it goes stale the next time someone mints one.** Represent ABSENCE (a kernel-owned marker every caller derives) instead of NAMING the placeholders, and the set disappears. **PREVENTION: when you write `x === '<some constant>'` as a security check, grep for every site that ASSIGNS that field and count them** — if the count is greater than one, you are maintaining a list, and the list is already wrong.
 - `2026-09-18` (TASK-411) — **I wrote a false claim about a mutant while that mutant's own contradicting output was on my screen.** The comment on `two owner-less sessions cannot reach one shared tree` said that against unfixed code "the second call returns the first session's file". The two ids in that test are DISTINCT, so the ungated backend returns an empty private repo — and the mutant run I had just executed printed exactly that: `promise resolved "{ paths: [] }" instead of rejecting`. I had quoted that line verbatim into the PR body as evidence the test was load-bearing, then wrote a comment asserting the opposite outcome, and shipped both. A reviewer caught it. **This is a sharper form of the standing "prose claims need verification" rule: running the mutant is not the check — READING ITS OUTPUT AGAINST THE SENTENCE is.** The failure mode is specific and worth recognising: a mutant that reddens feels like confirmation, so the narrative I had already composed ("cross-tenant read reproduced") got attached to whichever test failed, rather than to the one whose output actually showed it. The pooling repro needed the LISTENER (that is where the shared constant was minted) and only the `@ax/ipc-{http,server}` tests demonstrate it — their output reads `+ "text": "tenant A private data"`, which is a different sentence about a different file. **PREVENTION: for each red case in a mutant run, paste its actual failure line next to the claim it is supposed to support, and check the two describe the same outcome.** A mutant tells you a test is load-bearing; only its message tells you WHAT it bears.
 - `2026-09-18` (TASK-411) — **A fail-closed gate in one backend is theatre when its siblings hash anything they are handed.** The obvious fix here was to substitute a BLANK id for an owner-less session, because `@ax/workspace-git-core`'s `requireAgent` refuses blank — and I nearly built that. It would have been VACUOUS: `@ax/workspace-git-server`'s `workspaceIdFor` and both `@ax/memory-strata-index-*` `agentScopeKey`s have no gate at all, so blank would merely have moved the shared bucket from `'ipc-server'` to `''` on every backend except the one I happened to be reading. Same shape as TASK-396's brief, which told a builder to guard a field no backend reads. **PREVENTION: before choosing a sentinel value, enumerate EVERY store that keys on that field and check what each one does with the value — `grep` for the derivation, not for the gate.** The general rule: make the fix structural where you cannot audit the consumers (a per-session id cannot pool ANYWHERE, including in packages you never open) and add refusal on top where you can.
+
+## Renaming a component silently falsifies the rationale files that cite it (TASK-417)
+
+`packages/channel-web/src/lib/read-register.ts` cites the surfaces its rule is
+derived from — and it cited them by **symbol name plus line number**. Renaming
+`RulesUnreadable` → `RulesWithoutEditor` and growing `AgentMemory.tsx` by ninety
+lines broke four citations at once, and nothing went red: `read-register.test.ts`
+tests the register LOGIC, not the pointers.
+
+Worse, the same change *added* a docstring saying "see `read-register.ts`'s third
+clause, **which cites this component by name**" — an assertion the rename had just
+made false. That is the "prose claims need verification too" trap with the twist
+that the claim was about a file the PR did not open.
+
+Three rules that fall out:
+
+1. **Rename → `grep -rn '<OldName>'` across the package before committing.** A
+   rationale file that cites you is not in your diff.
+2. **Cite symbols, never line numbers.** Line numbers rot on every edit above
+   them and a stale pointer is worse than none, because it reads as verified.
+   All the citations in `read-register.ts` are symbol-named now.
+3. **Adding a claim about another file means opening that file.** "X says Y" is
+   a grep away. Don't write it from memory of what you read an hour ago.
+
+Also worth knowing: when a rationale file states a RULE with conditions, adding a
+new state can quietly fall outside it. `read-register.ts`'s third clause required
+the read to be "still retryable"; `unavailable` never is, so the clause had to be
+widened rather than merely given a new example. Check the rule's *conditions*
+against your new case, not just its verdict.

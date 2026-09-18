@@ -70,12 +70,40 @@
  *
  * This clause is not a hedge added to make the rule unfalsifiable. It is here
  * because a surface already in the tree contradicts the two clauses above, and
- * it is not the surface in the wrong: `AgentMemory.tsx:95` draws a failed read
- * of the rules editor NEUTRAL, with no retry armed. `RulesUnreadable`'s own
- * docstring (`AgentMemory.tsx:76-84`) gives the reason — the editor is withheld
- * so nobody types into a blank box and saves over rules that are still safely
- * on disk. The same file draws a failed WRITE `destructive` at `:192`, which
- * the first two clauses predict correctly. So the neutral one is deliberate.
+ * it is not the surface in the wrong: `AgentMemory.tsx`'s `RulesWithoutEditor`
+ * draws a failed read of the rules editor NEUTRAL. Its own docstring gives the
+ * reason — the editor is withheld so nobody types into a blank box and saves
+ * over rules that are still safely on disk. The same file draws a failed WRITE
+ * `destructive` (`RulesEditor`'s save error). So the neutral one is deliberate.
+ *
+ * (Those two used to be cited by line number, and the citations rotted twice —
+ * once when `RulesUnreadable` was renamed to `RulesWithoutEditor`, and again
+ * when TASK-417 grew the file by ninety lines. Symbol names survive an edit;
+ * line numbers do not, and a stale pointer in a rationale file is worse than
+ * no pointer because it reads as verified. Same reason the two surfaces at the
+ * bottom of this docstring are named rather than numbered.)
+ *
+ * A FOURTH STATE, added by TASK-417, and the reason the third clause needed
+ * widening rather than just a new example.
+ *
+ *   `unavailable` → `default`, and NO retry affordance. This deployment has no
+ *   producer for the read at all.
+ *
+ * Read literally, the third clause did not cover it: it requires the read to be
+ * "still retryable", and this one never will be. But `destructive` would be
+ * wrong for the same reason it is wrong for `expired` — nothing malfunctioned,
+ * nothing of the reader's is at risk, and no action of theirs repairs it,
+ * because there is nothing to repair. It is a deployment that does not do this
+ * thing. So the clause now reads: still retryable, OR never retryable because
+ * there is no producer. What it still excludes is the middle case the clause
+ * was written to exclude — a read that COULD have worked, failed, and has no
+ * way back. That is `gone`, and it stays red.
+ *
+ * The no-retry half is not decoration. `AgentMemory`'s `unavailable` branch
+ * suppresses both the button and the words "try again", because TASK-417 was
+ * filed against a tab that offered a retry over a deployment with no memory
+ * backend to come back to. A control that cannot work is the failure mode; a
+ * SENTENCE that cannot come true is the same failure mode without the button.
  *
  * THE LINE BETWEEN THAT AND THE IN-THREAD CARD is an unmet OBLIGATION, and it
  * is what keeps this clause from swallowing the ruling above. The spent-budget
@@ -87,12 +115,12 @@
  * obligation left unmet. Miss any one of those and it is a failure report.
  *
  * TWO MORE SURFACES SIT OUTSIDE THIS FILE ALTOGETHER, noted so the next reader
- * does not mistake them for drift. `WorkspaceShell.tsx:168` is the only
- * full-page error state and is not an `<Alert>` at all — a bare `div` + `h1`,
- * so it has no variant to agree or disagree with. `AgentRail.tsx:298` is
- * neutral-with-an-icon for a capability WARNING (nothing limits this agent's
- * tools), which is not a failed read and has nowhere else to go: `ui/alert.tsx`
- * offers no warning tier.
+ * does not mistake them for drift. `WorkspaceShell.tsx`'s whole-page error is
+ * the only full-page error state and is not an `<Alert>` at all — a bare `div`
+ * + `h1`, so it has no variant to agree or disagree with. `AgentRail.tsx`'s
+ * `unrestrictedTools` notice is neutral-with-an-icon for a capability WARNING
+ * (nothing limits this agent's tools), which is not a failed read and has
+ * nowhere else to go: `ui/alert.tsx` offers no warning tier.
  *
  * THE HONEST COUNTERARGUMENT, recorded because it nearly won. Painting the
  * in-thread card red turns its heading — 'Your assistant is waiting on you' —

@@ -83,9 +83,9 @@ function agentDetailFixture(id: string) {
     decisions: { status: 'ok' as const },
     past: [],
     memory: {
-    rules: { status: 'unavailable' as const, doc: null },
-    learned: { status: 'unavailable' as const, docs: [] },
-  },
+      rules: { status: 'unavailable' as const, doc: null },
+      learned: { status: 'unavailable' as const, docs: [] },
+    },
   };
 }
 

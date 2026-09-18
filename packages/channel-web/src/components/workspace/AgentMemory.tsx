@@ -88,6 +88,15 @@ export function AgentMemory({
       ) : (
         <RulesWithoutEditor
           agentName={agentName}
+          /*
+            `ok` with no doc is a server-contract violation, not a state the
+            route can produce (`readMemory` sets the doc on every `ok`). If it
+            ever does happen, `failed` is the only safe reading of the three:
+            `ok` would draw an editor over storage we cannot vouch for — the
+            destructive case this whole section exists to prevent — and
+            `unavailable` would tell the reader their rules are gone when we
+            simply do not know.
+          */
           status={rules.status === 'ok' ? 'failed' : rules.status}
           {...(onRetry ? { onRetry } : {})}
         />
@@ -126,8 +135,12 @@ export function AgentMemory({
  * list. "There's nothing to show" would be the wrong sentence over a tab whose
  * whole job is an editor.
  *
- * The register stays neutral in both cases — see `lib/read-register.ts`'s third
- * clause, which cites this component by name.
+ * The register stays neutral in both cases. `lib/read-register.ts`'s third
+ * clause is the ruling, and it had to be WIDENED for the `unavailable` half:
+ * as written it covered only reads that were still retryable, and this one
+ * never will be. Neutral is still right — nothing malfunctioned and nothing of
+ * the reader's is at risk — but that is now argued there rather than assumed
+ * here.
  */
 function RulesWithoutEditor({
   agentName,
@@ -326,7 +339,15 @@ function LearnedSection({
         </span>
       </SectionLabel>
 
-      {status !== 'unavailable' && (
+      {/*
+        The blurb is about THESE — the notes below it. With nothing below it,
+        "{agentName} wrote these itself" points at an empty room: on
+        `unavailable` it describes machinery that is not running here at all,
+        and on `failed` it introduces a list we then admit we could not read.
+        An `ok` read with zero docs is different and keeps it, because there the
+        sentence is explaining the rules of a section that really is empty.
+      */}
+      {status === 'ok' && (
         <p className="max-w-[62ch] text-[12.5px] leading-relaxed text-muted-foreground">
           {agentName} wrote these itself. {COMPACTION_NOTICE}
         </p>
