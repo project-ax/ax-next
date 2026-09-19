@@ -43,6 +43,7 @@ import type {
 import { ATTACHMENT_ACCEPT } from '@/lib/attachment-upload';
 import { signInWithGoogle } from '@/lib/auth';
 import { readAlertVariant } from '@/lib/read-register';
+import { getDraft, setDraft as saveDraft } from '@/lib/workspace-draft-store';
 import {
   activeMatch,
   buildFindIndex,
@@ -282,7 +283,19 @@ export function AgentConversation({
   onGranted,
   conversationKey = 'one-conversation',
 }: Props) {
-  const [draft, setDraft] = useState('');
+  /*
+    TASK-393 — seeded from, and mirrored into, `workspace-draft-store.ts`, so
+    an unsent draft survives this component's own remount rather than being
+    silently dropped. `AgentView` is `key`ed by `agentId` (see its render
+    site in `WorkspaceShell`), so switching agents unmounts this component;
+    without the seed, a half-typed message would vanish on every switch
+    rather than only when it is actually sent.
+  */
+  const [draft, setDraftState] = useState(() => getDraft(agent.id));
+  const setDraft = (value: string) => {
+    setDraftState(value);
+    saveDraft(agent.id, value);
+  };
   const fileInput = useRef<HTMLInputElement>(null);
   const { attachments, add, remove, retry, clear, sendable, sendBlock } =
     useWorkspaceAttachments();
@@ -327,6 +340,9 @@ export function AgentConversation({
   const send = () => {
     const v = draft.trim();
     if (!v || busy || held || attachBlock !== null) return;
+    // `setDraft('')` mirrors the empty string into the store too (its own
+    // `''` branch deletes the entry), so this is the one place a send needs
+    // to clear it.
     setDraft('');
     const files = sendable;
     // One argument when nothing is attached — see the prop doc. An empty list
