@@ -158,9 +158,25 @@ export function makeAgentIdentityHandlers(deps: AgentIdentityRoutesDeps) {
         initCtx,
         { agentId, userId },
       );
-      // Team agents have no single personal-owner ctx to route the workspace
-      // apply/read under — the editor is for personal agents (mirrors the
-      // backfill / bootstrap policy). Refuse rather than guess a shard.
+      // Team agents are refused. The reason is NOT routing — that reason was
+      // true once and is not any more. `workspaceCtx` below routes by
+      // `ctx.agentId` alone (TASK-257), so there is no shard to guess and no
+      // per-owner repo to pick.
+      //
+      // What still blocks it is ATTRIBUTION. For `ownerType: 'team'`,
+      // `agent.ownerId` is a **teamId**, not a userId (`@ax/agents`
+      // `plugin.ts` sets `ownerId = validated.teamId` on the team branch).
+      // `ctx.userId` is what lands in `delta.author.userId` on every write,
+      // and it has to be a real user — putting a teamId there mints a
+      // synthetic actor in the audit trail.
+      //
+      // Lifting this is a product decision, not a code cleanup, and it has
+      // two halves nobody has answered: (a) whom do we attribute a team
+      // agent's identity edit to — presumably the acting member, `userId`
+      // above, which agents:resolve has already proven is a member — and
+      // (b) may ANY team member rewrite a shared agent's identity, or does
+      // that need its own grant? Until both have an answer, refuse. See
+      // TASK-414.
       if (out.agent.ownerType !== 'user') {
         res.status(403).json({ error: 'forbidden' });
         return null;

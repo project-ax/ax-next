@@ -2,7 +2,9 @@
 
 This package replaces the storage tier of `@ax/workspace-git-http` with a sharded, container-shipped, native-`git`-binary backend. The shape is structurally similar to the sibling — one HTTP listener per pod, bearer auth via `crypto.timingSafeEqual`, a NetworkPolicy perimeter, single-writer per shard — but the threat model is meaningfully different in three places, and they're the three places this note spends most of its time on:
 
-1. We **spawn the `git` binary**. The sibling uses pure-JS `isomorphic-git` and never touches `child_process`. This is the biggest new capability.
+1. We **spawn the `git` binary** from the *storage tier* — a pod of our own, with its own PVC, its own NetworkPolicy, and a process-spawn capability the host does not need. That deployment shape is the new thing.
+
+   **Correction (TASK-414).** This line used to read "The sibling uses pure-JS `isomorphic-git` and never touches `child_process`." That was false when it was written. `packages/workspace-git-core/src/impl.ts` line 1 is `import { spawn } from 'node:child_process'`, and it shells out to real `git ls-tree` and `git cat-file` on purpose (see its own comments at `impl.ts:730` and `:910` — isomorphic-git's `fs.read` adapter coalesced error codes it needed to tell apart). Both backends spawn git. If you are here deciding whether a mitigation from one applies to the other, do not use this document's word for it — read the imports. A claim that a neighbouring package lacks a capability is exactly the claim that let a cross-tenant read survive months in #583.
 2. We deploy as a **`StatefulSet` with `replicas: <gitServer.shards>`** (per-shard PVC, headless `Service` for stable DNS), not a single `Deployment`. Within a shard, single-writer; across shards, no contention. Blast radius is now per-shard.
 3. We expose a small **lifecycle REST API** (`POST /repos`, `GET /repos/<id>`, `DELETE /repos/<id>`) on top of standard git smart-HTTP. The sibling has only the four `workspace:*` actions.
 
@@ -75,11 +77,13 @@ There's no session boundary at the workspace layer. A workspace is owned by the 
 
 #### Process spawn — yes, scoped to `git`
 
-This is the section that's a sharp departure from the sibling, which has no spawn at all. Here, we spawn the `git` binary; everywhere we do, the discipline is the same.
+This section used to open "a sharp departure from the sibling, which has no spawn at all." `@ax/workspace-git-core` spawns git too (see the correction at the top of this file), so the departure is the *deployment* — a separate pod whose whole job is to hold repos — not the capability. Everywhere we spawn, the discipline below is the same.
+
+Everything in this subsection is about the **server** (`src/server/`). The host-side client engine (`src/client/git-engine.ts`) spawns git as well and has its own rules; see *Caller-derived argv on the client side* below.
 
 - **Argv0 is always the literal string `'git'`.** Never caller-influenced. No `git/git`, no resolved-from-PATH-at-call-time tricks; the `PATH=/usr/bin:/bin` env constraint pins where the binary comes from, but the argv0 is a constant in our source.
 - **Subcommand and flags are constants** from the route handler. The handler decides whether this is `init --bare --initial-branch=main`, `config <key> <value>`, `rev-parse --quiet --verify refs/heads/main`, `upload-pack --stateless-rpc`, or `receive-pack --stateless-rpc`. The caller (the HTTP request) doesn't pick the subcommand — the route does.
-- **The only caller-derived element of argv is the resolved repo path**, and it's not really caller-derived: it's `repoPathFor(repoRoot, id)` where `id` has already been validated against the regex and the result has been checked with `path.resolve` startsWith. By the time it reaches `spawn`, the path is provably under `repoRoot`. We don't need a `--` argv terminator because no argv element after the path is caller-influenced.
+- **The only caller-derived element of argv is the resolved repo path**, and it's not really caller-derived: it's `repoPathFor(repoRoot, id)` where `id` has already been validated against the regex and the result has been checked with `path.resolve` startsWith. By the time it reaches `spawn`, the path is provably under `repoRoot`. We don't need a `--` argv terminator because no argv element after the path is caller-influenced — **on the server**. That sentence used to be stated without the qualifier, and on the client engine it was not true; see below.
 - **`PARANOID_GIT_ENV` is the full env**, not a merge over `process.env`. The constant is the entire environment the child sees. (We're not using `Object.freeze` on the constant for runtime mutation defense; the test in Task 6 verifies no caller mutation occurs, and the constant is `as const` to keep TypeScript honest about it.)
 - **No shell.** Node's `child_process.spawn` with an argv array doesn't go through `/bin/sh` unless `shell: true`, which we never pass. Lint bans `shell: true` and bans the string-form spawn API.
 - **stdio is wired carefully.** `git upload-pack --stateless-rpc` reads its capability list / haves / wants from stdin and writes pack bytes to stdout; we pipe the request body to stdin and stream stdout to the response. We never `pipe` git's stdout into another process or shell. The bytes are opaque to us — pack format from a trusted git on the wire.
@@ -259,7 +263,20 @@ The only caller-derived elements that ever land in argv are:
 
 - **`workspaceId`** — produced upstream by `workspaceIdFor` (sha256-of-`agentId`, prefixed `ws-`; TASK-257 dropped `userId` from the hash input). Output always matches the regex `^[a-z0-9][a-z0-9_-]{0,62}$` by construction. No way for a caller to inject a `..`, a slash, or anything shell-special.
 - **`path`** — the file path inside the workspace, used in `git cat-file blob <oid>:<path>`. Lives under the workspace's bare-repo working tree. Subscribers don't pick it; the wire schema does.
-- **`oid`** — a 40-hex SHA from git's own object database (we never accept a caller-supplied oid as authoritative — we read it back from `rev-parse`).
+- **`oid`** — a 40-hex SHA. **Now** enforced; it used to be merely asserted.
+
+  ### Caller-derived argv on the client side
+
+  This bullet used to read "we never accept a caller-supplied oid as authoritative — we read it back from `rev-parse`." That was not true of three hooks. `workspace:read` (`git-engine.ts` `read`), `workspace:list` (`list`) and `workspace:diff` (`diff`) each took the caller's `version` / `from` / `to` **instead of** the `rev-parse` value, through a bare `as string` cast, and handed it to git: standalone in `ls-tree -r --name-only <version>` and `diff-tree … <from> <to>`, and as the prefix of `<version>:<path>` in `cat-file -e` / `cat-file blob`. A value starting with a dash is read by git as an *option*, and no call site passes `--`.
+
+  That is the identical hole PR #583 closed in `@ax/workspace-git-core`, and the fix never crossed the package boundary — plausibly because *this file* said the sibling was pure-JS, so nobody went looking. TASK-414 ports it: `requireOid` (`/^[0-9a-f]{40}$/`) runs at all three entry points before any mirror or network work, and `src/client/__tests__/version-argv.test.ts` pins it with option-shaped values plus near-misses that prove it is a real regex rather than a `startsWith('-')` check. Every hostile case in that file fails against the pre-fix engine.
+
+  Two sibling fields were already safe, structurally rather than by validation, and are left alone:
+
+  - `workspace:export-baseline-bundle`'s `version` must string-equal the freshly-read mirror head or the deterministic empty-baseline OID — both git-minted — or it throws before any spawn.
+  - `workspace:apply-bundle`'s `baselineCommit` must string-equal `seededOid` or `mirrorHead`, same argument.
+
+  One field is deliberately **not** run through `requireOid`: `parent`. Narrowing it would turn a garbage parent's `parent-mismatch` into a different error code, and that code is the workspace-CAS rebase-retry contract — `@ax/memory-strata`'s `agent-tier-sync`, `channel-web`'s `workspace-cas` (plus the agent bootstrap and identity routes), `@ax/routines-admin-routes`, and `ipc-core`'s `workspace.commit-notify` all key on it. But `parent` is *not* inert here the way it is in the sibling: on an empty mirror it was passed to `buildDelta`, which makes it the `<from>` argv token of `git diff-tree`. So it is closed the other way — by enforcing the invariant the code already documented in prose, that on an empty mirror `parent` must be null or equal the declared `baselineCommit`. `baselineCommit` is itself pinned to a git-minted OID, so `parent` ends up a real OID and the error code is untouched.
 - **`remoteUrl`** — composed from a chart-stamped `baseUrl` (e.g. `http://<release>-ax-next-git-server-experimental.<ns>.svc.cluster.local:7780`) plus the regex-validated `workspaceId`. Both halves are regex-safe; there's no place to slip a shell metacharacter in.
 
 The child env is locked down to a constant — `HOST_GIT_ENV` in `git-engine.ts` is a **full env replacement**, never `{ ...process.env, ... }`:

@@ -113,13 +113,18 @@ path to a chat-capable state on a fresh cluster.
       # Since TASK-396 the `local` backend keeps ONE BARE REPO PER AGENT, named
       # ws-<16 hex> from the agentId — there is no deployment-wide `repo.git`
       # any more. So glob, don't guess the name.
+      #
+      # The root is AX_WORKSPACE_ROOT, which the chart stamps from
+      # `workspace.mountPath` (values.yaml) = /var/lib/ax-next/workspaces.
+      # This line used to say /workspace-data/, which no chart has ever
+      # mounted; TASK-412 measured the real path on a live cluster.
       kubectl exec -n ax-next deploy/ax-next-host -- \
-        sh -c 'ls -d /workspace-data/ws-*.git/refs/heads/main'
+        sh -c 'ls -d /var/lib/ax-next/workspaces/ws-*.git/refs/heads/main'
       ```
-      At least one file exists. If you see a `/workspace-data/repo.git`, that's
-      the pre-TASK-396 shared tree — nothing reads it any more, and it was
-      readable by every user of the deployment. Salvage anything you want from
-      it and delete it.
+      At least one file exists. If you see a
+      `/var/lib/ax-next/workspaces/repo.git`, that's the pre-TASK-396 shared
+      tree — nothing reads it any more, and it was readable by every user of
+      the deployment. Salvage anything you want from it and delete it.
 
 ### Logs / hygiene
 - [ ] No `level >= warn` lines in `kubectl logs -n ax-next deploy/ax-next-host`
@@ -554,8 +559,10 @@ small HTTP front door:
    kubectl -n ax-next get pods -w
    ```
 
-   Expected: 2 host pods (`ax-next-host-...`), 1 git-server pod
-   (`ax-next-git-server-...`), and the postgres pod, all `1/1 Running`.
+   Expected: 2 host pods (`ax-next-host-...`), `gitServer.shards` git-server
+   pods (`ax-next-git-server-experimental-<ordinal>` — a StatefulSet, so the
+   suffix is an ordinal, not a ReplicaSet hash), and the postgres pod, all
+   `1/1 Running`.
 
 3. Port-forward into the host's public-http port from the local shell.
    `/chat` + `/health` live here (issue #39); the Service's :80 port is
@@ -597,28 +604,62 @@ small HTTP front door:
 5. Verify both writes landed in the git-server's PVC. Two probes,
    either is fine:
 
+   Both probes below were wrong until TASK-414 and are worth reading the
+   corrections for, because each was wrong in a different way:
+
+   - Probe A named `/var/lib/ax-next/repo/repo.git`. The root is right
+     (`gitServer.mountPath` → `AX_GIT_SERVER_REPO_ROOT`), but there is no
+     deployment-wide `repo.git`: `repoPathFor` puts one bare repo per
+     workspace at `<root>/<workspaceId>.git`, and workspace ids are
+     `ws-<16 hex>`. It also `require`d `isomorphic-git`, which this package
+     does not depend on — the git-server is the one backend that uses the
+     real `git` binary, so use that.
+   - Probe B POSTed `/workspace.list`, which has never existed. The
+     listener serves `GET /healthz`, `POST /repos`, `GET|DELETE /repos/<id>`,
+     and the three smart-HTTP routes; everything else returns 503
+     `not_implemented`, so the old probe "failed" identically whether the
+     writes had landed or not.
+
+   The git-server is a **StatefulSet**, not a Deployment, and the chart names
+   it `<release>-<chart>-git-server-experimental` (see
+   `ax-next.gitServerExperimentalComponentName` in `_helpers.tpl`). Don't type
+   the name — select on the label, which is stable across release names:
+
    ```bash
-   # Probe A: count commits directly from the git-server pod.
-   kubectl -n ax-next exec deploy/ax-next-git-server -- node -e \
-     "const git = require('isomorphic-git'); const fs = require('fs'); \
-      git.log({fs, gitdir: '/var/lib/ax-next/repo/repo.git', ref: 'refs/heads/main'}) \
-        .then(commits => console.log(commits.length))"
+   GS=-lapp.kubernetes.io/component=git-server-experimental
    ```
 
-   Expected: at least 2 commits past whatever seed commit the chart's
-   first boot may have created.
-
    ```bash
-   # Probe B: ask the git-server's HTTP API directly.
-   kubectl -n ax-next port-forward svc/ax-next-git-server 7780:7780 &
-   curl -X POST http://localhost:7780/workspace.list \
-     -H "Authorization: Bearer $(kubectl -n ax-next get secret ax-next-git-server-auth \
-        -o jsonpath='{.data.token}' | base64 -d)" \
-     -H 'Content-Type: application/json' \
-     -d '{}' | jq .paths
+   # Probe A: count commits directly from the git-server pod, per workspace.
+   # The pod ships the real `git` binary — that is the whole point of this
+   # tier — so use it rather than a JS git library.
+   kubectl -n ax-next get pods $GS -o name | head -1 | xargs -I{} \
+     kubectl -n ax-next exec {} -- sh -c \
+       'for d in /var/lib/ax-next/repo/ws-*.git; do \
+          printf "%s %s\n" "$d" "$(git --git-dir="$d" rev-list --count refs/heads/main)"; \
+        done'
    ```
 
-   Expected: a list of paths reflecting both sessions' workspace state.
+   Expected: at least one `ws-*.git` listed, with a commit count at least 2
+   past whatever seed commit the chart's first boot may have created. With
+   `gitServer.shards > 1` a given workspace lives on exactly one ordinal, so
+   check each pod if the first comes up empty.
+
+   ```bash
+   # Probe B: ask the git-server's REST API for that workspace's head.
+   # `GET /repos/<workspaceId>` → {workspaceId, exists, headOid}.
+   # The token Secret is `<release>-<chart>-git-server-auth`; on a default
+   # `helm install ax-next` that is `ax-next-git-server-auth`.
+   SECRET=$(kubectl -n ax-next get secret -o name | grep git-server-auth | head -1)
+   kubectl -n ax-next port-forward $(kubectl -n ax-next get svc $GS -o name | head -1) 7780:7780 &
+   curl http://localhost:7780/repos/<workspaceId> \
+     -H "Authorization: Bearer $(kubectl -n ax-next get $SECRET \
+        -o jsonpath='{.data.token}' | base64 -d)" | jq .
+   ```
+
+   Expected: `exists: true` and a non-null 40-hex `headOid`. Take the
+   `<workspaceId>` from Probe A's output (strip the directory and the
+   `.git` suffix).
 
 ### Acceptance criteria
 
@@ -642,7 +683,12 @@ doesn't take the workspace history with it. Delete them by hand if a
 clean slate is wanted:
 
 ```bash
-kubectl -n ax-next delete pvc ax-next-git-server-repo
+# One PVC per shard. The StatefulSet's volumeClaimTemplate is named `repo`,
+# so Kubernetes names the claims `repo-<sts-name>-<ordinal>` — NOT
+# `ax-next-git-server-repo`, which this line used to say and which never
+# existed. List before you delete.
+kubectl -n ax-next get pvc | grep git-server
+kubectl -n ax-next delete pvc repo-ax-next-git-server-experimental-0
 kubectl -n ax-next delete secret ax-next-git-server-auth
 ```
 
