@@ -30,8 +30,17 @@
  * card is not that case: it is fired by `chat:permission-request` from
  * @ax/skill-broker and the egress wall, mid-turn, with the agent still warm. It
  * is not migrated, and it should not be.
+ *
+ * ANSWERING IT REMOVES IT, SO FOCUS HAS TO GO SOMEWHERE (TASK-427). "Not now"
+ * and a successful Connect both unmount this card, and a focused element that
+ * disappears leaves the browser pointing at `<body>` — the top of the document,
+ * a long blind crawl from anything on this screen. `close()` hands focus up to
+ * the `data-consent-region` the composer puts around its card stack first, while
+ * this node is still in the document. `lib/consent-focus.ts` carries the
+ * argument, and the sibling `workspace/GrantRow.tsx` does the same thing on the
+ * surface that outlives this one.
  */
-import { useState, type ReactElement } from 'react';
+import { useRef, useState, type ReactElement } from 'react';
 import { TriangleAlert } from 'lucide-react';
 import {
   Card,
@@ -46,6 +55,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
+import { returnFocusToConsentRegion } from '@/lib/consent-focus';
 import { grantHost, setDestinationCredential } from '@/lib/credentials';
 import {
   AUTHORED_CONNECTOR_WARNING,
@@ -118,6 +128,9 @@ export function PermissionCard() {
   const [values, setValues] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The card's own node, read while it is still mounted: `closest` cannot walk
+  // up from a node React has already detached.
+  const cardRef = useRef<HTMLDivElement | null>(null);
 
   // Every declared slot must have a non-empty value before Connect is enabled
   // (a slotless skill/connector is immediately connectable). `request === null`
@@ -135,6 +148,9 @@ export function PermissionCard() {
   if (!request) return null;
 
   function close(): void {
+    // BEFORE the dismiss, not after: the store update unmounts this card, and
+    // a detached node has no region above it to find.
+    returnFocusToConsentRegion(cardRef.current);
     setValues({});
     setError(null);
     permissionCardActions.dismiss();
@@ -364,7 +380,7 @@ export function PermissionCard() {
 
   if (request.kind === 'connector') {
     return (
-      <Card className="mb-3" data-testid="permission-card-connector">
+      <Card ref={cardRef} className="mb-3" data-testid="permission-card-connector">
         <CardHeader>
           <CardTitle>Connect {request.name}</CardTitle>
         </CardHeader>
@@ -405,7 +421,7 @@ export function PermissionCard() {
 
   if (request.kind === 'host') {
     return (
-      <Card className="mb-3" data-testid="permission-card-host">
+      <Card ref={cardRef} className="mb-3" data-testid="permission-card-host">
         <CardHeader>
           <CardTitle>Allow access to {request.host}?</CardTitle>
           <CardDescription>{HOST_WALL_EXPLANATION}</CardDescription>
@@ -436,7 +452,7 @@ export function PermissionCard() {
   }
 
   return (
-    <Card className="mb-3" data-testid="permission-card">
+    <Card ref={cardRef} className="mb-3" data-testid="permission-card">
       <CardHeader>
         {/* (A2) The title read `Connect linear-issues` — the id the producer
             uses, not the name a person would. Humanized, with the raw id as its

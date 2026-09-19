@@ -17,14 +17,31 @@
  * action with a verbatim call and a freshness guard. Two types, two rows, one
  * list. Sharing a queue is not collapsing them, which is why this is its own
  * component and not a `kind` branch inside `DecisionRow`.
+ *
+ * WHERE FOCUS GOES WHEN IT IS ANSWERED (TASK-427). Two different answers,
+ * because this row has two different endings.
+ *
+ *   - It says something back — the grant landed and the agent did not restart,
+ *     or the POST failed — and that sentence takes focus, exactly as a
+ *     decision's receipt does.
+ *   - It simply GOES. "Not now" on a host grant, and every successful resolve,
+ *     remove the row outright; there is nothing left inside it to focus, and
+ *     the browser's answer to that is `<body>`. So focus goes up to the
+ *     surface's `data-consent-region` first, while this node is still in the
+ *     document. `lib/consent-focus.ts` carries the argument.
  */
-import { useState, type ReactElement } from 'react';
+import { useRef, useState, type ReactElement } from 'react';
 import { TriangleAlert } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+  RESOLUTION_FOCUS_RING,
+  returnFocusToConsentRegion,
+  useResolutionFocus,
+} from '@/lib/consent-focus';
 import { grantHost, setDestinationCredential } from '@/lib/credentials';
 import {
   AUTHORED_CONNECTOR_WARNING,
@@ -108,6 +125,24 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
    * decision for a capability the person already owns.
    */
   const [stalled, setStalled] = useState(false);
+  /*
+    The row's own node, read while it is still mounted so `closest` can find
+    the consent region above it. Every branch below hangs it on its root.
+  */
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  // The two endings that leave a sentence behind rather than an empty space.
+  const { answerRef, armForResolution } = useResolutionFocus(
+    stalled || error !== null,
+  );
+
+  /**
+   * The row is about to be removed. Hand focus to the region that outlives it
+   * BEFORE saying so, because `closest` cannot walk up from a detached node.
+   */
+  function resolveAndReturnFocus(): void {
+    returnFocusToConsentRegion(rowRef.current);
+    onResolved(grant.key);
+  }
 
   const slots = request.kind === 'host' ? [] : request.slots;
   const needed = blankSlots(slots);
@@ -119,7 +154,7 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
    * that was never given needs no revoking.
    */
   function reject(): void {
-    onResolved(grant.key);
+    resolveAndReturnFocus();
   }
 
   /** Write each freshly-typed key to the host credential store, then decide. */
@@ -183,7 +218,7 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
         console.warn('[workspace] the resume after a grant threw', e);
       }
       if (resumed) {
-        onResolved(grant.key);
+        resolveAndReturnFocus();
         return;
       }
       setStalled(true);
@@ -201,7 +236,7 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
     setError(null);
     try {
       await grantHost({ sessionId: request.sessionId, host: request.host, persist });
-      onResolved(grant.key);
+      resolveAndReturnFocus();
     } catch (err) {
       setError(userFacingMessage(err, 'grant-row'));
     } finally {
@@ -211,7 +246,12 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
 
   const failure =
     error === null ? null : (
-      <Alert variant="destructive" className="mt-3 max-w-[660px]">
+      <Alert
+        ref={answerRef}
+        tabIndex={-1}
+        variant="destructive"
+        className={`mt-3 max-w-[660px] ${RESOLUTION_FOCUS_RING}`}
+      >
         <AlertDescription className="text-[13px] leading-relaxed">
           {error}
         </AlertDescription>
@@ -221,6 +261,7 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
   if (request.kind === 'host') {
     return (
       <div
+        ref={rowRef}
         className="border-b border-rule-soft p-4 last:border-b-0"
         data-testid={`grant-${grant.key}`}
       >
@@ -233,14 +274,24 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
         </div>
         {failure}
         <div className="mt-4 flex flex-wrap items-center gap-2">
-          <Button size="sm" disabled={busy} onClick={() => void allow(false)}>
+          <Button
+            size="sm"
+            disabled={busy}
+            onClick={() => {
+              armForResolution();
+              void allow(false);
+            }}
+          >
             {busy ? HOST_ALLOWING_LABEL : HOST_ALLOW_ONCE_LABEL}
           </Button>
           <Button
             size="sm"
             variant="secondary"
             disabled={busy}
-            onClick={() => void allow(true)}
+            onClick={() => {
+              armForResolution();
+              void allow(true);
+            }}
           >
             {HOST_ALLOW_ALWAYS_LABEL}
           </Button>
@@ -328,22 +379,21 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
   if (stalled) {
     return (
       <div
+        ref={rowRef}
         className="border-b border-rule-soft p-4 last:border-b-0"
         data-testid={`grant-${grant.key}`}
       >
         <p className="text-[14px] font-medium">{title}</p>
         <p
-          className="mt-1 max-w-[660px] text-[13px] leading-relaxed text-muted-foreground"
+          ref={answerRef}
+          tabIndex={-1}
+          className={`mt-1 max-w-[660px] text-[13px] leading-relaxed text-muted-foreground ${RESOLUTION_FOCUS_RING}`}
           data-testid="grant-not-resumed"
         >
           {GRANT_NOT_RESUMED}
         </p>
         <div className="mt-4 flex flex-wrap items-center gap-2">
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => onResolved(grant.key)}
-          >
+          <Button size="sm" variant="secondary" onClick={resolveAndReturnFocus}>
             {GRANT_NOT_RESUMED_DISMISS}
           </Button>
         </div>
@@ -353,6 +403,7 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
 
   return (
     <div
+      ref={rowRef}
       className="border-b border-rule-soft p-4 last:border-b-0"
       data-testid={`grant-${grant.key}`}
     >
@@ -435,7 +486,10 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
         <Button
           size="sm"
           disabled={busy || !allSlotsFilled || conversationId === null}
-          onClick={() => void connect()}
+          onClick={() => {
+            armForResolution();
+            void connect();
+          }}
         >
           {busy ? GRANT_CONNECTING_LABEL : GRANT_CONNECT_LABEL}
         </Button>

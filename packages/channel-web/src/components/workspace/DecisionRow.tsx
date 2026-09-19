@@ -24,10 +24,20 @@
  *     one click. The button appears ONLY while the server says the row can
  *     still be taken back; a dead Undo on something already sent would promise
  *     a person something we cannot do.
+ *
+ * IT MOVES FOCUS ONTO ITS OWN ANSWER (TASK-427), for the reason
+ * `lib/consent-focus.ts` spells out: the receipt replaces the controls, so
+ * without this the browser drops focus on `<body>` and the ten-second Undo is
+ * a blind crawl away. The row also declares no consent region of its own —
+ * `TodayView` owns that, because the node has to outlive the row.
  */
 import { ArrowRight, ChevronDown, ChevronUp, RotateCcw } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import {
+  RESOLUTION_FOCUS_RING,
+  useResolutionFocus,
+} from '@/lib/consent-focus';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import { StateDot } from './bits';
 import {
@@ -102,6 +112,11 @@ export function DecisionRow({
   const outcome = decisionOutcome(d, now);
   const undoLeft = undoSecondsLeft(d, now);
   const expiry = expiresSoonNote(d, now);
+  // Focus follows whatever the row says back: the receipt when the resolve
+  // landed, the alert when it did not.
+  const { answerRef, armForResolution } = useResolutionFocus(
+    outcome !== null || notice !== null,
+  );
 
   if (outcome !== null) {
     return (
@@ -110,7 +125,18 @@ export function DecisionRow({
         data-testid={`decision-${d.id}`}
         data-status={d.status}
       >
-        <div className="flex items-center gap-3">
+        {/*
+          THE FOCUS TARGET. Undo sits INSIDE it so that the first tabbable
+          thing from here is Undo itself — one Tab, well inside the ten
+          seconds the window lasts. `tabIndex={-1}` keeps it a destination
+          rather than an extra stop in everyone else's Tab order.
+        */}
+        <div
+          ref={answerRef}
+          tabIndex={-1}
+          data-testid={`decision-outcome-${d.id}`}
+          className={`flex items-center gap-3 ${RESOLUTION_FOCUS_RING}`}
+        >
           <StateDot state={TONE_DOT[outcome.tone]} />
           <span className="min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground">
             {outcome.line}
@@ -229,8 +255,19 @@ export function DecisionRow({
             <p className="mt-1.5 text-[11.5px] text-muted-foreground">{expiry}</p>
           )}
 
+          {/*
+            The row stayed open because the resolve did not land. Focus comes
+            here for the same reason it goes to the receipt — the person
+            pressed something and this is the answer. Without it they are on
+            `<body>` with an unread error behind them.
+          */}
           {notice !== null && (
-            <Alert variant="destructive" className="mt-3 max-w-[660px]">
+            <Alert
+              ref={answerRef}
+              tabIndex={-1}
+              variant="destructive"
+              className={`mt-3 max-w-[660px] ${RESOLUTION_FOCUS_RING}`}
+            >
               <AlertDescription className="text-[13px] leading-relaxed">
                 {notice}
               </AlertDescription>
@@ -238,7 +275,14 @@ export function DecisionRow({
           )}
 
           <div className="mt-4 flex flex-wrap items-center gap-2">
-            <Button size="sm" onClick={onApprove} disabled={busy}>
+            <Button
+              size="sm"
+              onClick={() => {
+                armForResolution();
+                onApprove();
+              }}
+              disabled={busy}
+            >
               {stale ? `${d.primaryLabel} anyway` : d.primaryLabel}
             </Button>
             <Button
@@ -249,7 +293,15 @@ export function DecisionRow({
             >
               {d.secondaryLabel}
             </Button>
-            <Button size="sm" variant="ghost" onClick={onDismiss} disabled={busy}>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                armForResolution();
+                onDismiss();
+              }}
+              disabled={busy}
+            >
               {d.ghostLabel}
             </Button>
             <span className="ml-1 text-[11.5px] text-muted-foreground">

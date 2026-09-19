@@ -22,10 +22,20 @@
  * `DecisionRow`, and a test renders both from one fixture and compares what
  * they say. Two components deciding separately what "approved but not yet done"
  * means is how one of them ends up saying "Sent".
+ *
+ * IT MOVES FOCUS ONTO ITS OWN ANSWER (TASK-427). The controls are replaced by
+ * the receipt, so without this the browser drops focus on `<body>` and the
+ * ten-second Undo in that receipt is ten blind Tabs away. `lib/consent-focus.ts`
+ * carries the argument for landing on the outcome line rather than on Undo
+ * itself.
  */
 import { RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import {
+  RESOLUTION_FOCUS_RING,
+  useResolutionFocus,
+} from '@/lib/consent-focus';
 import type { Decision } from '@/lib/workspace-api';
 import {
   DECISION_STALE_ADVICE,
@@ -61,6 +71,14 @@ export function ApprovalCard({
   // the server would refuse.
   const now = useDecisionClock(d);
   const outcome = decisionOutcome(d, now);
+  /*
+    Focus follows whatever the card says back — the receipt when the resolve
+    landed, the notice when it did not. Both replace or join the controls the
+    person was standing in, and both are the sentence they are waiting to read.
+  */
+  const { answerRef, armForResolution } = useResolutionFocus(
+    outcome !== null || notice !== null,
+  );
 
   if (outcome !== null) {
     const undoLeft = undoSecondsLeft(d, now);
@@ -70,7 +88,19 @@ export function ApprovalCard({
         data-testid={`approval-${d.id}`}
         data-status={d.status}
       >
-        <div className="flex items-center gap-2">
+        {/*
+          THE FOCUS TARGET, and the reason Undo lives inside it rather than
+          beside it: the first tabbable thing after this node has to BE Undo,
+          or the ten-second window is not one Tab away and the landing is
+          decoration. `tabIndex={-1}` keeps it out of everyone else's Tab
+          order — it is a destination, not a stop.
+        */}
+        <div
+          ref={answerRef}
+          tabIndex={-1}
+          data-testid={`approval-outcome-${d.id}`}
+          className={`flex items-center gap-2 ${RESOLUTION_FOCUS_RING}`}
+        >
           <span>{outcome.line}</span>
           {undoLeft > 0 && (
             <Button
@@ -142,16 +172,41 @@ export function ApprovalCard({
             <div className="text-[13px] leading-relaxed">{d.preview.body}</div>
           </div>
         )}
+        {/*
+          The row stayed open because the resolve did not land. Focus comes
+          here for the same reason it goes to the receipt: the person pressed
+          something, and this is the answer. Without it they are on `<body>`
+          with an unread error behind them — the same bug, minus the receipt.
+        */}
         {notice !== null && (
-          <p className="mt-3 text-[12.5px] leading-relaxed text-destructive">
+          <p
+            ref={answerRef}
+            tabIndex={-1}
+            className={`mt-3 text-[12.5px] leading-relaxed text-destructive ${RESOLUTION_FOCUS_RING}`}
+          >
             {notice}
           </p>
         )}
         <div className="mt-3.5 flex flex-wrap items-center gap-2">
-          <Button size="sm" onClick={onApprove} disabled={busy}>
+          <Button
+            size="sm"
+            onClick={() => {
+              armForResolution();
+              onApprove();
+            }}
+            disabled={busy}
+          >
             {stale ? `${d.primaryLabel} anyway` : d.primaryLabel}
           </Button>
-          <Button size="sm" variant="ghost" onClick={onDismiss} disabled={busy}>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              armForResolution();
+              onDismiss();
+            }}
+            disabled={busy}
+          >
             {d.ghostLabel}
           </Button>
         </div>
