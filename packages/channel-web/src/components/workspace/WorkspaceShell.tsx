@@ -729,11 +729,10 @@ function Inner({
     `compact` guard: the hook re-renders on the `change` event, and this makes
     sure a trigger can never be painted next to a rail that is also on screen.
 
-    NOT ON THE AGENT ROUTE, yet. `AgentView` draws its own header and does not
-    take a `leading` slot, so its trigger has to be added there — it lands with
-    T5, which is putting the same treatment on `AgentRail`. Until then that
-    route reaches the nav in two taps via its own Back button (→ Today → this
-    trigger), so it is a longer road, not a dead end.
+    THE AGENT ROUTE DOES NOT USE THIS ONE. `AgentView` draws its own header and
+    takes no `leading` slot, so it renders its own trigger and we hand it
+    `onOpenNav` below instead. Same sheet, same state — two render sites,
+    because two headers.
   */
   const navTrigger = compact ? (
     <Button
@@ -908,6 +907,17 @@ function Inner({
               activityError={feed.error}
               agents={board.agents}
               onBack={() => navigate({ kind: 'today' })}
+              {...(compact
+                ? /*
+                    The roster, reachable from inside a thread below `md`. The
+                    sheet is already mounted on this route; this just gives
+                    `AgentView`'s own header a way to open it. Spread rather
+                    than passed straight, so above `md` the prop is ABSENT
+                    (`exactOptionalPropertyTypes`) and the trigger can never
+                    paint next to a sidebar that is also on screen.
+                  */
+                  { onOpenNav: () => setNavOpen(true) }
+                : {})}
               version={version}
               pendingReply={
                 pendingReply && pendingReply.agentId === route.id

@@ -76,7 +76,7 @@ const grantsMock = vi.mocked(workspaceApi.grants);
  * `theme.ts`'s `prefers-color-scheme`) gets a flat `false`, so widening the
  * viewport in a test cannot accidentally flip the palette as a side effect.
  */
-const COMPACT_QUERY = '(max-width: 767.98px)';
+const COMPACT_QUERY = 'not all and (min-width: 768px)';
 
 function setViewport(compact: boolean): void {
   window.matchMedia = ((query: string) => ({
@@ -108,7 +108,7 @@ const user = {
   role: 'user' as const,
 };
 
-function detail(): AgentDetail {
+function detail(over: Partial<AgentDetail> = {}): AgentDetail {
   return {
     agent: quill,
     conversationId: 'c-now',
@@ -119,6 +119,7 @@ function detail(): AgentDetail {
       rules: { status: 'unavailable', doc: null },
       learned: { status: 'unavailable', docs: [] },
     },
+    ...over,
   };
 }
 
@@ -130,10 +131,11 @@ function renderShell() {
   );
 }
 
-function renderAgentView() {
+function renderAgentView(over: { onOpenNav?: () => void } = {}) {
   return render(
     <UserProvider value={user}>
       <AgentView
+        {...(over.onOpenNav ? { onOpenNav: over.onOpenNav } : {})}
         agentId="a-quill"
         tab="chat"
         onTab={() => {}}
@@ -250,14 +252,61 @@ describe('the agent pane below md', () => {
     expect(await screen.findByText('What it may do alone')).toBeTruthy();
   });
 
+  it('closes the rail when you open a past conversation from it', async () => {
+    /*
+      The rail sheet covers the thread it just changed. Tapping a row under
+      "Previous conversations" swaps the conversation BEHIND the overlay, so a
+      sheet left open reads as a tap that did nothing. Same rule the nav sheet
+      follows; it was missed here on the first pass (review finding 1).
+    */
+    setViewport(true);
+    agentMock.mockResolvedValue(
+      detail({ past: [{ id: 'c-old', title: 'March', meta: 'last week' }] }),
+    );
+    renderAgentView();
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Agent details' }),
+    );
+    const panel = await screen.findByText('What it may do alone');
+
+    fireEvent.click(screen.getByRole('button', { name: /March/ }));
+
+    await waitFor(() => expect(panel.isConnected).toBe(false));
+  });
+
+  it('offers the roster from inside a thread, without going Back first', async () => {
+    /*
+      Below `md` the sidebar is off-canvas and this pane owns the screen. With
+      no trigger here the only route to another agent was Back to Today, which
+      costs the reader their place in the thread (review finding 2).
+    */
+    setViewport(true);
+    const onOpenNav = vi.fn();
+    renderAgentView({ onOpenNav });
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Open navigation' }),
+    );
+    expect(onOpenNav).toHaveBeenCalledTimes(1);
+  });
+
   it('above md the rail is still the inline column it always was', async () => {
     setViewport(false);
-    renderAgentView();
+    renderAgentView({ onOpenNav: () => {} });
 
     expect(
       await screen.findByRole('tab', { name: 'Conversation' }),
     ).toBeTruthy();
     expect(await screen.findByText('What it may do alone')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Agent details' })).toBeNull();
+    /*
+      Even handed `onOpenNav`, the nav trigger stays off above `md` — the
+      sidebar is a column on screen, and a second door to it would be two
+      controls for one thing.
+    */
+    expect(
+      screen.queryByRole('button', { name: 'Open navigation' }),
+    ).toBeNull();
   });
 });

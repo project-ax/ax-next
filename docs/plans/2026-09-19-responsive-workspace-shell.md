@@ -92,12 +92,25 @@ precedent.
 ## Tasks
 
 ### T1 — `useIsCompact()` hook
-`src/lib/use-media-query.ts`. `matchMedia('(max-width: 767px)')`, subscribed via
-`change`, `useSyncExternalStore`-free (plain `useState` + effect is enough and matches
-`theme.ts`). **Returns `false` when `window.matchMedia` is absent** — jsdom ships none
-(`theme.ts:64` already guards for exactly this), so every one of the ~40 existing
-workspace tests keeps rendering the desktop tree unchanged. Load-bearing: yes — T2 and
-T5 both branch on it.
+`src/lib/use-compact.ts`. **Returns `false` when `window.matchMedia` is absent** — jsdom
+ships none (`theme.ts:64` already guards for exactly this), so every one of the ~40
+existing workspace tests keeps rendering the desktop tree unchanged. Load-bearing: yes —
+T2 and T5 both branch on it.
+
+Two things landed differently from the first draft of this plan, both deliberately:
+
+- **The query is `not all and (min-width: 768px)`, not a `max-width`.** A `max-width`
+  spelling cannot express the complement of `md`: `767px` leaves a pixel unclaimed and
+  even `767.98px` leaves the open band `(767.98, 768)` matching neither query, which
+  would put a viewport there on the desktop JS tree with the compact header CSS.
+  Negating the real breakpoint — what Tailwind's own `max-md` compiles to — is gap-free
+  by construction.
+- **It uses `useSyncExternalStore`, not `useState` + effect.** The draft said
+  "`useSyncExternalStore`-free"; that was wrong. A `useState` initialised to `false` plus
+  an effect renders the DESKTOP tree on the first paint of every phone load and corrects
+  it a frame later — a 236px sidebar that flashes in and out. `useSyncExternalStore`
+  reads the right value before the first paint, and it is what `theme.ts` already uses
+  for the same class of problem.
 
 ### T2 — `WorkspaceSidebar` → inline aside (desktop) / `Sheet` (compact)
 Extract the existing body into a `SidebarNav` used by both. Desktop keeps

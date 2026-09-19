@@ -17,7 +17,7 @@
  * turn ends we re-read the detail so the server's durable thread replaces it.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Archive, ArrowRight, ChevronLeft, PanelRight } from 'lucide-react';
+import { Archive, ArrowRight, ChevronLeft, Menu, PanelRight } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
@@ -102,6 +102,18 @@ interface Props {
   activityError?: string | null;
   agents: WorkspaceAgent[];
   onBack: () => void;
+  /**
+   * Opens the shell's off-canvas nav (TASK-404). Only ever passed — and only
+   * ever rendered — below `md`, where the sidebar is a `Sheet` and this pane
+   * fills the screen. Without it the agent route could reach the roster only
+   * by going Back to Today first, which costs the reader their place in a
+   * thread to do something as ordinary as switching agent.
+   *
+   * Optional because `AgentView` is rendered directly by several tests that
+   * have no shell around them, and a required prop there would be ceremony
+   * rather than safety. The trigger simply does not render without it.
+   */
+  onOpenNav?: (() => void) | undefined;
   /**
    * The three ways out of a decision. REQUIRED — see `AgentConversation` for
    * why they are not optional-with-a-default.
@@ -227,6 +239,7 @@ export function AgentView({
   activityError,
   agents,
   onBack,
+  onOpenNav,
   onApprove,
   onDismiss,
   onUndo,
@@ -858,6 +871,33 @@ export function AgentView({
           separately chasing clamped text that has no `title` to recover it.
         */}
         <div className="flex flex-wrap items-center gap-3">
+          {/*
+            DELIBERATELY NOT `md:`-GATED, unlike `WorkspaceHeader`'s wrap. That
+            one is gated because its desktop layout was fine and only the phone
+            needed changing. This row was never fine: with no wrap and no
+            `min-w-0`, an agent name long enough to fill the pane pushed the
+            state label out and `main`'s `overflow-hidden` clipped it — at ANY
+            width, desktop included. Wrapping fixes that everywhere, so gating
+            it would mean deliberately keeping the clipped version on desktop.
+            The cost is that a very long name now takes two lines there instead
+            of losing its label; that is the trade, taken knowingly.
+          */}
+          {/*
+            The door to the roster from inside a thread (TASK-404). Below `md`
+            the sidebar is off-canvas and this pane owns the whole screen, so
+            without this the only way to another agent is Back to Today — which
+            throws away where you were reading.
+          */}
+          {compact && onOpenNav && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onOpenNav}
+              aria-label="Open navigation"
+            >
+              <Menu size={16} />
+            </Button>
+          )}
           <Button variant="ghost" size="icon" onClick={onBack} aria-label="Back">
             <ChevronLeft size={16} />
           </Button>
@@ -1192,7 +1232,18 @@ export function AgentView({
                 <AgentRailContent
                   detail={detail}
                   openPastId={pastId}
-                  onOpenPast={setPastId}
+                  /*
+                    CLOSE ON PICK, same rule the nav sheet follows. Opening a
+                    past conversation swaps the thread BEHIND this panel; left
+                    open, the sheet covers the only thing that changed and the
+                    tap reads as having done nothing. The desktop rail is a
+                    column with the thread beside it, so it has nothing to
+                    close and keeps the bare setter.
+                  */
+                  onOpenPast={(id) => {
+                    setPastId(id);
+                    setRailOpen(false);
+                  }}
                 />
               </SheetContent>
             </Sheet>

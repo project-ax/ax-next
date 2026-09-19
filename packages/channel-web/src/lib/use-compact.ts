@@ -14,16 +14,25 @@
  * class — the header wrapping, the tab strip's scroll rail — stays a class and
  * does not come through here.
  *
- * 767.98px rather than 767px: `max-width: 767px` leaves a dead band on
- * fractional viewport widths (a 767.5px window matches neither it nor
- * `min-width: 768px`), which browser zoom and some Android devices really do
- * produce. Tailwind's own `md` is `min-width: 768px`, so this is its exact
- * complement and the two can never both be true or both be false.
+ * THE QUERY IS A NEGATION, NOT A `max-width`. Tailwind's `md` is
+ * `min-width: 768px`, and the complement of that is `not all and
+ * (min-width: 768px)` — which is exactly what Tailwind's own `max-md` variant
+ * compiles to. A `max-width` spelling cannot express it: `767px` leaves a whole
+ * pixel unclaimed, and even `767.98px` leaves the open band
+ * `(767.98, 768)` matching NEITHER query, so a viewport in it would take the
+ * desktop JS tree (both 236px and 296px columns) while the CSS still applied
+ * the compact header. A 0.02px band is only reachable from zoom or a
+ * fractional DPR, but it is reachable, and "the two can never disagree" is the
+ * property this hook is for. Negating the real breakpoint makes that true by
+ * construction rather than by a rounding margin.
  */
 import { useSyncExternalStore } from 'react';
 
-/** The complement of Tailwind's `md` (`min-width: 768px`). Keep them in step. */
-const COMPACT_QUERY = '(max-width: 767.98px)';
+/**
+ * The exact complement of Tailwind's `md` (`min-width: 768px`) — gap-free by
+ * construction. If the `md` breakpoint ever moves, move this with it.
+ */
+const COMPACT_QUERY = 'not all and (min-width: 768px)';
 
 /**
  * Guarded for jsdom, which ships no `matchMedia` at all — the same guard
