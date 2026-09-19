@@ -190,6 +190,53 @@ describe('memory-write-target.sh', () => {
       expect(r.stderr).toContain(taskId);
     });
 
+    it.each([
+      ['decisions patterns', 'two ADJACENT allowlist words'],
+      ['context decisions patterns mistakes meta', 'the whole allowlist as one string'],
+      ['decisions\npatterns', 'allowlist words separated by a newline'],
+      [' decisions', 'a leading space'],
+      ['decisions ', 'a trailing space'],
+    ])('rejects a kind that is not exactly one allowlist word: %j (%s)', (kind) => {
+      // Regression, and another live hole: the membership test was
+      // `case " $VALID_KINDS " in *" $1 "*)`, which reads like set membership
+      // and is a SUBSTRING test on the joined list. `decisions patterns` sat
+      // inside `context decisions patterns mistakes meta`, so it was accepted
+      // and named a directory. No `/` and no `..`, so nothing escaped — but a
+      // membership check that is not one is exactly what a later change comes
+      // to rely on.
+      //
+      // Vacuity: exit 1 alone holds against the unfixed script too, so the
+      // weight is on EMPTY STDOUT — the substring version printed a real path
+      // and exited 0.
+      const r = run(root, ['--shard', kind, 'TASK-415']);
+      expect(r.status).toBe(1);
+      expect(r.stdout).toBe('');
+      expect(r.stderr).toMatch(/invalid kind/);
+    });
+
+    it.each([
+      ['evil/../../escape\nTASK-415', 'traversal on the FIRST line, valid id on the second'],
+      ['TASK-415\nevil/../../escape', 'valid id first, traversal on the second line'],
+      ['TASK-415\n', 'a plain trailing newline'],
+    ])('rejects a TASK-ID containing a newline: %j (%s)', (taskId) => {
+      // Regression, and it was a live hole rather than a hypothetical: `grep`
+      // matches LINE BY LINE, so `^…$` bounds a line and not the argument.
+      // The first case here was ACCEPTED — exit 0, with the printed path
+      // containing `evil/../../escape` — until a `case` guard rejecting any
+      // character outside `[A-Za-z0-9-]` went in ahead of the regex. `case`
+      // matches the whole argument, newlines included, which is precisely the
+      // property grep lacks.
+      //
+      // Vacuity: exit 1 alone would also hold against the unfixed script (it
+      // has no --shard mode), so the load-bearing assertion is the EMPTY
+      // STDOUT paired with `invalid TASK-ID` — the regex-only version printed
+      // a real, escaped path on stdout and exited 0.
+      const r = run(root, ['--shard', 'decisions', taskId]);
+      expect(r.status).toBe(1);
+      expect(r.stdout).toBe('');
+      expect(r.stderr).toMatch(/invalid TASK-ID/);
+    });
+
     it('too few args: usage message on stderr, exit 1, empty stdout', () => {
       // Distinguishing signal vs the unfixed script: this message is the
       // literal "--shard <kind> <TASK-ID>" usage string, which the unfixed

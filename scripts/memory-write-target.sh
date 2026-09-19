@@ -41,16 +41,37 @@ set -euo pipefail
 VALID_KINDS="context decisions patterns mistakes meta"
 
 is_valid_kind() {
-  case " $VALID_KINDS " in
-    *" $1 "*) return 0 ;;
-    *) return 1 ;;
-  esac
+  # Exact equality against each word, NOT a substring test on the joined list.
+  # `case " $VALID_KINDS " in *" $1 "*)` reads like a set-membership check and
+  # is not one: it accepted any contiguous RUN of the allowlist, so
+  # `--shard 'decisions patterns' TASK-415` came back exit 0 with a directory
+  # of that name. Measured, not theorised. Harmless in isolation — no `/`, no
+  # `..` — but a membership test that is not one is the kind of thing somebody
+  # later relies on.
+  kind_candidate="$1"
+  for valid_kind in $VALID_KINDS; do
+    if [ "$kind_candidate" = "$valid_kind" ]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 is_valid_task_id() {
-  # Anchored, and every character class below is alnum-only — neither `.` nor
-  # `/` can ever appear in a string that matches, so `..` and `/` (and thus
-  # any path escape) are unrepresentable here, not just rejected downstream.
+  # TWO checks, because the anchored regex alone is NOT enough and that is not
+  # obvious. `grep` matches LINE BY LINE, so `^…$` bounds a line, not the
+  # argument: an id of `evil/../../escape<newline>TASK-415` matched on its
+  # second line and sailed through, and the printed path really did contain
+  # `evil/../../escape`. Measured, not theorised.
+  #
+  # So first reject any character outside `[A-Za-z0-9-]` — that covers the
+  # newline, and with it `/`, `.`, spaces, shell metacharacters and everything
+  # else. `case` matches the WHOLE argument, newlines included, which is
+  # exactly the property grep lacks here. Only then does the regex enforce the
+  # shape (`TASK-415`, `ARCH-2`, `FAULTA-1`).
+  case "$1" in
+    '' | *[!A-Za-z0-9-]*) return 1 ;;
+  esac
   printf '%s' "$1" | grep -Eq '^[A-Za-z][A-Za-z0-9]*-[0-9]+$'
 }
 
