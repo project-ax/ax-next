@@ -146,7 +146,10 @@ export function createSandboxK8sPlugin(
       // §11 host-read. Read-only end to end (the one-shot reader pod mounts the
       // export `readOnly: true` and the resolver realization is read-only); a
       // caller-supplied path is confined to the agent's own subtree. No durable
-      // resolver loaded → `{ kind: 'absent' }`. The timeout is sized for the
+      // resolver loaded → `{ kind: 'unavailable' }` (a fact about the deployment,
+      // NOT the same answer as a path that is not there — TASK-403); a read that
+      // FAILED throws, so the host can say 'we could not look'. The timeout is
+      // sized for the
       // POD realization, which can take seconds (pull + mount + read); the
       // host-mounted realization returns in milliseconds and never approaches
       // it.
