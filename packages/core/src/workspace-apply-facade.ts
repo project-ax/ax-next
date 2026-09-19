@@ -17,9 +17,13 @@ import type {
 // hook. The policy chokepoint — `workspace:pre-apply` (veto) and
 // `workspace:applied` (notify) — fired only inside the host's IPC commit
 // path (`@ax/ipc-core`'s `workspace-commit-notify.ts`). Any in-process
-// `bus.call('workspace:apply', …)` (e.g. `@ax/conversations` drop-turn,
-// `@ax/attachments` commit) landed changes WITHOUT firing either hook, so
-// the chokepoint was bypassable.
+// `bus.call('workspace:apply', …)` landed changes WITHOUT firing either
+// hook, so the chokepoint was bypassable. `@ax/conversations` drop-turn is
+// still such a caller; `attachments:commit` was one when this was written
+// and is not any more — TASK-68 moved attachment bytes to `blob:put`, and
+// `@ax/attachments`'s manifest no longer declares `workspace:apply` at all.
+// That changes the EXAMPLE, not the reason: any in-process caller would
+// still bypass the chokepoint without this facade.
 //
 // The fix is a backend-agnostic facade. Every workspace backend renames its
 // raw implementation to the INTERNAL service hook `workspace:apply-internal`
@@ -93,9 +97,15 @@ export function registerWorkspaceApplyFacade(
       }
 
       // 2. apply via the backend's internal hook with the FULL change set.
-      //    Errors (e.g. parent-mismatch) propagate UNCHANGED so callers like
-      //    @ax/attachments can key off `code: 'parent-mismatch'` + the
-      //    error's `cause.actualParent` and retry.
+      //    Errors (e.g. parent-mismatch) propagate UNCHANGED so a caller can
+      //    key off `code: 'parent-mismatch'` + the error's
+      //    `cause.actualParent` and retry. The callers that do:
+      //    `@ax/memory-strata` (agent-tier-sync), `channel-web`
+      //    (workspace-cas, used by the agent bootstrap and identity routes),
+      //    `@ax/routines-admin-routes`, and `@ax/ipc-core`'s
+      //    workspace.commit-notify. NOT `@ax/attachments`, which an earlier
+      //    version of this comment named — TASK-68 moved it to `blob:put`
+      //    and off this path entirely.
       const applied = await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
         'workspace:apply-internal',
         ctx,

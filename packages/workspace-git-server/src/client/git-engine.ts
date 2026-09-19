@@ -65,6 +65,7 @@ import {
   type WorkspaceListOutput,
   type WorkspaceReadInput,
   type WorkspaceReadOutput,
+  type WorkspaceVersion,
 } from '@ax/core';
 import type {
   WorkspaceApplyBundleInput,
@@ -76,6 +77,49 @@ import type { MirrorCache } from './mirror-cache.js';
 import type { RepoLifecycleClient } from './repo-lifecycle.js';
 
 const PLUGIN_NAME = '@ax/workspace-git-server';
+
+/**
+ * A `WorkspaceVersion` as THIS backend mints them: a full 40-hex commit OID.
+ *
+ * Why this exists, given `WorkspaceVersion` is deliberately opaque: this
+ * engine spawns the real `git` binary (`runGit`, `readBlobBytes` below), and
+ * every version a caller hands us ends up as the leading characters of an
+ * argument to it — standalone in `ls-tree -r --name-only <version>` and in
+ * `diff-tree ... <from> <to>`, and as the prefix of `<version>:<path>` in
+ * `cat-file -e` / `cat-file blob`. An argument that starts with a dash is read
+ * by git as an OPTION, and none of our call sites pass `--`.
+ *
+ * `asWorkspaceVersion` in `@ax/core` is a bare cast with no validation, and it
+ * must stay that way — the version's SHAPE is a backend's business, and
+ * `MockWorkspace` deliberately mints non-SHA `mock-N` strings to prove the
+ * contract is storage-agnostic (Invariant 1). So a `[0-9a-f]{40}` check does
+ * NOT belong in core. It belongs here, in a backend that mints SHAs.
+ *
+ * This is the same hole PR #583 closed in `@ax/workspace-git-core`, reached
+ * through a different package. The fix is deliberately the same shape: a
+ * regex at the entry point, not a census of which plugins forward a version.
+ * A census is a snapshot the next plugin invalidates — `@ax/validator-identity`
+ * already falsified one, forwarding the runner's `parent` into `workspace:read`
+ * from a `workspace:pre-apply` subscriber.
+ */
+const OID_RE = /^[0-9a-f]{40}$/;
+
+function requireOid(
+  version: WorkspaceVersion | string,
+  hookName: string,
+  field: string,
+): string {
+  const v = version as string;
+  if (typeof v !== 'string' || !OID_RE.test(v)) {
+    throw new PluginError({
+      code: 'invalid-version',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `${field} must be a 40-character hex commit id`,
+    });
+  }
+  return v;
+}
 
 // Author env for commits made by the engine. Production callers (Task 11+)
 // will route the agent identity through here; for now a fixed identity keeps
@@ -891,8 +935,9 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
 
   // `parentMismatch` carries the storage tier's actual head as
   // `cause.actualParent` so callers (test harnesses, host-side retry loops)
-  // can rebase without re-querying. The contract is the same as
-  // `@ax/workspace-git-http`'s 409 envelope: `actualParent` is the server's
+  // can rebase without re-querying. The contract was inherited from the
+  // 409 envelope of `@ax/workspace-git-http` (retired 2026-05-04; this
+  // StatefulSet is the only storage tier now): `actualParent` is the server's
   // current head (a `WorkspaceVersion` string, or `null` for an empty repo).
   // Subscribers MUST treat the value as opaque — it's a brand-typed string
   // and the only legal use is to feed it back into a follow-up
@@ -1084,6 +1129,33 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
         //     thinks workspace is empty but it isn't.
         //   - mirror non-null + callerParent non-null + mismatch:
         //     rejected — concurrent-writer race.
+        //
+        // The "mirror empty + callerParent non-null" case above is now
+        // ENFORCED, not just described. It used to rest on the `seededOid`
+        // check below, which compares `seededOid` against `baselineCommit`
+        // — never against `parent`. That gap had teeth HERE in a way it does
+        // not in `@ax/workspace-git-core`: on this backend `callerParent` is
+        // not merely string-compared, it is handed to `buildDelta` at step 9
+        // and becomes the `<from>` argv token of `git diff-tree`. So an
+        // option-shaped `parent` from a runner could reach a `git` argument.
+        // Requiring equality with `baselineCommit` closes that structurally
+        // AND keeps the error code intact: `baselineCommit` is itself pinned
+        // to a git-minted OID by the checks below, so `parent` ends up a real
+        // OID without narrowing `parent-mismatch` into a different code. That
+        // code is the workspace-CAS rebase-retry contract — `@ax/memory-strata`,
+        // `channel-web`, `@ax/routines-admin-routes` and `ipc-core`'s
+        // commit-notify all key on it — which is why running `requireOid`
+        // over `parent` would have been the wrong fix.
+        if (
+          mirrorHead === null &&
+          callerParent !== null &&
+          callerParent !== input.baselineCommit
+        ) {
+          throw parentMismatch(
+            'mirror is empty; caller parent must be null or the declared baseline',
+            null,
+          );
+        }
         if (mirrorHead !== null && callerParent === null) {
           throw parentMismatch(
             'mirror has commits; caller passed parent: null',
@@ -1345,15 +1417,21 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
     input: WorkspaceReadInput,
   ): Promise<WorkspaceReadOutput> => {
     guardClosed();
+    // Validate BEFORE the queue, the mirror lease and the storage-tier fetch.
+    // The security property only needs the check to precede the argv token,
+    // but a caller version does not depend on mirror state, so there is no
+    // reason to buy a network round-trip and a mirror sync for a string we
+    // are about to reject.
+    const pinned =
+      input.version === undefined
+        ? undefined
+        : requireOid(input.version, 'workspace:read', 'version');
     return enqueue(workspaceId, async () => {
       guardClosed();
       const remoteUrl = remoteUrlFor(opts.baseUrl, workspaceId);
       return opts.mirrorCache.withMirror(workspaceId, async (handle) => {
         await fetchMirror(remoteUrl, opts.token, handle.dir);
-        const target =
-          input.version !== undefined
-            ? (input.version as string)
-            : await currentMirrorOid(handle.dir);
+        const target = pinned ?? (await currentMirrorOid(handle.dir));
         if (target === null) return { found: false };
         const exists = await runGit([
           '-C',
@@ -1374,15 +1452,17 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
     input: WorkspaceListInput,
   ): Promise<WorkspaceListOutput> => {
     guardClosed();
+    // Same fail-fast placement as `read` above.
+    const pinned =
+      input.version === undefined
+        ? undefined
+        : requireOid(input.version, 'workspace:list', 'version');
     return enqueue(workspaceId, async () => {
       guardClosed();
       const remoteUrl = remoteUrlFor(opts.baseUrl, workspaceId);
       return opts.mirrorCache.withMirror(workspaceId, async (handle) => {
         await fetchMirror(remoteUrl, opts.token, handle.dir);
-        const target =
-          input.version !== undefined
-            ? (input.version as string)
-            : await currentMirrorOid(handle.dir);
+        const target = pinned ?? (await currentMirrorOid(handle.dir));
         if (target === null) return { paths: [] };
         const r = await runGit([
           '-C',
@@ -1413,13 +1493,18 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
     input: WorkspaceDiffInput,
   ): Promise<WorkspaceDiffOutput> => {
     guardClosed();
+    // Same fail-fast placement as `read` above. Neither endpoint depends on
+    // mirror state, so both are validated before the fetch.
+    const from =
+      input.from === null
+        ? null
+        : requireOid(input.from, 'workspace:diff', 'from');
+    const to = requireOid(input.to, 'workspace:diff', 'to');
     return enqueue(workspaceId, async () => {
       guardClosed();
       const remoteUrl = remoteUrlFor(opts.baseUrl, workspaceId);
       return opts.mirrorCache.withMirror(workspaceId, async (handle) => {
         await fetchMirror(remoteUrl, opts.token, handle.dir);
-        const from = input.from === null ? null : (input.from as string);
-        const to = input.to as string;
         // diff() is read-only — no author (no actor performed the diff).
         const delta = await buildDelta(handle.dir, from, to, undefined, undefined);
         return { delta };

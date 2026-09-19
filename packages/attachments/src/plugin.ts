@@ -30,15 +30,20 @@ const PLUGIN_NAME = '@ax/attachments';
 //   - attachments:commit       (caller: POST /api/chat/messages handler, Phase 3)
 //   - attachments:download     (callers: GET /api/files, Phase 3; future Slack plugin)
 //
-// Half-wired window OPEN through Phase 3 — no callers in Phase 1. The hooks
-// are reachable via the bus (and exercised by the contract test in Task 11),
-// but no production code path invokes them yet.
+// Half-wired window CLOSED by Phase 3 (PR #97). `channel-web` drives all
+// three: `routes-attachments.ts` calls store-temp and download,
+// `routes-chat.ts` calls attachments:commit.
 //
-// Manifest decisions:
-//   - calls: database:get-instance (own table + migration), workspace:apply
-//     (for attachments:commit), workspace:read (for attachments:download),
+// Manifest decisions (the authoritative list is the `calls:` array below —
+// this prose is a summary and has already drifted once):
+//   - calls: database:get-instance (own table + migration), blob:put (for
+//     attachments:commit), blob:get (for attachments:download),
 //     conversations:get (owner gate in attachments:download).
-//   - subscribes: none. Phase 1 is service-hook-only.
+//   - This used to name `workspace:apply` and `workspace:read` instead of the
+//     blob hooks. TASK-68 moved attachment bytes out of git and into the
+//     content-addressed blob store; the `calls:` array was updated, this
+//     paragraph was not.
+//   - subscribes: none. Still service-hook-only.
 // ---------------------------------------------------------------------------
 
 export function createAttachmentsPlugin(

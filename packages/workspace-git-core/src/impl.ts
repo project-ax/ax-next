@@ -1036,8 +1036,13 @@ export function registerWorkspaceGitHooks(
             hookName: 'workspace:apply-internal',
             message: `expected parent ${currentVersion === null ? 'null' : currentVersion}, got ${input.parent === null ? 'null' : input.parent}`,
             // The freshly-read mirror head so a rebase-on-mismatch consumer
-            // (attachments:commit, which starts parent:null then retries with
-            // the echoed actualParent) can recover — mirrors the apply-bundle
+            // can recover — `@ax/memory-strata`'s agent-tier-sync,
+            // `channel-web`'s workspace-cas (agent bootstrap + identity
+            // routes), `@ax/routines-admin-routes`, and ipc-core's
+            // commit-notify, each of which reads `cause.actualParent` and
+            // retries once with it. (NOT attachments:commit, which an earlier
+            // version of this comment named — TASK-68 moved it to blob:put and
+            // off this path.) Mirrors the apply-bundle
             // parent-CAS (Site 1, below) and the multi-replica backend's
             // `parentMismatch` contract. The `workspace:apply` facade forwards
             // this error UNCHANGED, so the cause must originate here.
