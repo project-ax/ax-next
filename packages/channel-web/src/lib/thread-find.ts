@@ -26,14 +26,7 @@
  * a reader told "4 matches" who can only see three has been lied to twice.
  */
 import { isOpenDecision, type Decision, type ThreadMessage } from '@/lib/workspace-types';
-import {
-  GRANT_REASSURANCE,
-  HOST_WALL_EXPLANATION,
-  PACKAGES_LINE,
-  grantDescription,
-  grantPackagesVisible,
-  grantTitle,
-} from '@/lib/grant-copy';
+import { HOST_WALL_EXPLANATION, grantTitle } from '@/lib/grant-copy';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 
 /** Half-open `[start, end)` offsets into the string that was searched. */
@@ -166,16 +159,33 @@ export function grantFieldKeyBase(grantKey: string): string {
  * band. They are appended here in the same position: last, because that is
  * where `AgentConversation` draws them.
  *
- * TITLE / DESCRIPTION / PACKAGES-VISIBLE come from `lib/grant-copy.ts`, the
- * SAME functions `GrantRow.tsx` calls to decide what to render — one
- * computation, not two copies that could drift (invariant 4).
+ * TITLE comes from `lib/grant-copy.ts`'s `grantTitle`, the SAME function
+ * `GrantRow.tsx` calls to decide what to render — one computation, not two
+ * copies that could drift (invariant 4).
  *
- * DELIBERATELY NOT INDEXED: the `stalled` sentence (`GrantRow`'s own local
- * React state — "the agent did not resume" — is not part of `WorkspaceGrant`
- * and this function only ever sees the store's data), slot labels/hints,
- * badges, the authored-warning banner, and `REACH_LEAD_IN` + host badges.
- * Real prose, still uncovered — same kind of accepted gap as the collapsible
- * `steps` panel below, not silently dropped.
+ * ONLY THE TITLE, EVEN THOUGH THE MAIN RENDER SHOWS MORE (description, the
+ * packages line, the reassurance line). This function sees `WorkspaceGrant` —
+ * the STORE's data — and the store has no `stalled` field: that flag is
+ * `GrantRow`'s own local React state, set after a `connect()` whose resume
+ * failed (TASK-374), and the row STAYS ON SCREEN wearing only its title and
+ * `GRANT_NOT_RESUMED` — "drops everything else — the reach badges, the key
+ * field, the reassurance line" (`GrantRow.tsx`'s own comment). An earlier
+ * version of this function indexed description/packages/reassurance
+ * unconditionally: while a grant sat stalled, that indexed a reassurance- or
+ * packages-line word with no `<mark>` on screen to match it — count > marks,
+ * the exact lie this file exists to prevent, and newly introduced by TASK-390
+ * rather than inherited. Title survives every render arm (host, main,
+ * stalled), so it is the only field safe to index without also threading
+ * stalled-ness up into the store. If description/packages/reassurance start
+ * to matter, the fix is to make `stalled` visible to the indexer (lift it
+ * into the store, or pass a stalled-keys set into `buildFindIndex`), not to
+ * index them and hope the state never diverges.
+ *
+ * DELIBERATELY NOT INDEXED, for the same or a smaller reason: description,
+ * the packages line, the reassurance line (see above), the `stalled` sentence
+ * itself, slot labels/hints, badges, the authored-warning banner, and
+ * `REACH_LEAD_IN` + host badges. Real prose, still uncovered — same kind of
+ * accepted gap as the collapsible `steps` panel below, not silently dropped.
  */
 function grantFindFields(grants: readonly WorkspaceGrant[]): FindField[] {
   const out: FindField[] = [];
@@ -185,16 +195,7 @@ function grantFindFields(grants: readonly WorkspaceGrant[]): FindField[] {
     out.push({ key: `${base}:title`, text: grantTitle(request) });
     if (request.kind === 'host') {
       out.push({ key: `${base}:explanation`, text: HOST_WALL_EXPLANATION });
-      continue;
     }
-    const description = grantDescription(request);
-    if (description.length > 0) {
-      out.push({ key: `${base}:description`, text: description });
-    }
-    if (grantPackagesVisible(request)) {
-      out.push({ key: `${base}:packages`, text: PACKAGES_LINE });
-    }
-    out.push({ key: `${base}:reassurance`, text: GRANT_REASSURANCE });
   }
   return out;
 }

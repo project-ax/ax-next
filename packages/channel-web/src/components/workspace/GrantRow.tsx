@@ -465,9 +465,17 @@ export function GrantRow({
       <p className="text-[14px] font-medium">
         <FindHighlight fieldKey={keyOf('title')} text={title} find={find} />
       </p>
+      {/*
+        NOT `FindHighlight` (TASK-390 review finding). `description` is not in
+        the find index — see `grantFindFields`'s comment on why only `title`
+        is indexed for a non-host grant: this paragraph is absent from the
+        `stalled` render arm below, and a field that is sometimes on screen
+        and sometimes not cannot safely be indexed without also making
+        `stalled` visible to the indexer.
+      */}
       {description.length > 0 && (
         <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
-          <FindHighlight fieldKey={keyOf('description')} text={description} find={find} />
+          {description}
         </p>
       )}
 
@@ -536,14 +544,16 @@ export function GrantRow({
         handler was already reading them as `packages?.npm ?? []`; this is
         the render site catching up with it.
       */}
+      {/* Not indexed — same reasoning as `description` above. */}
       {showPackagesLine && (
         <p className="mt-3 text-[13px] text-muted-foreground" data-testid="grant-packages">
-          <FindHighlight fieldKey={keyOf('packages')} text={PACKAGES_LINE} find={find} />
+          {PACKAGES_LINE}
         </p>
       )}
 
+      {/* Not indexed — same reasoning as `description` above. */}
       <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
-        <FindHighlight fieldKey={keyOf('reassurance')} text={GRANT_REASSURANCE} find={find} />
+        {GRANT_REASSURANCE}
       </p>
 
       {failure}

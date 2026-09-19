@@ -17,11 +17,7 @@ import {
 } from '@/lib/thread-find';
 import type { ThreadMessage } from '@/lib/workspace-api';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
-import {
-  GRANT_REASSURANCE,
-  HOST_WALL_EXPLANATION,
-  PACKAGES_LINE,
-} from '@/lib/grant-copy';
+import { HOST_WALL_EXPLANATION } from '@/lib/grant-copy';
 import {
   decisionFixture,
   resolvedFixture,
@@ -205,7 +201,20 @@ describe('threadFindFields', () => {
   });
 
   describe('TASK-390 — a grant row’s visible prose', () => {
-    it('indexes the title, description, packages line, and reassurance line', () => {
+    it('indexes only the title for a skill/connector grant', () => {
+      /*
+        Review finding (TASK-390): description/packages/reassurance are NOT
+        indexed, even though `GrantRow`'s main render arm shows them. The
+        `stalled` arm (TASK-374 — the grant landed, the agent did not resume)
+        keeps only the title and drops "the reach badges, the key field, the
+        reassurance line" — and `stalled` is component-local React state this
+        function's `WorkspaceGrant` input cannot see. Indexing those fields
+        unconditionally would report a match with no `<mark>` on screen the
+        moment a grant went stalled — count > marks, caught by review before
+        it shipped. Title is the one field every render arm keeps, so it is
+        the only one safe to index without also threading `stalled` into the
+        store.
+      */
       const g = grantFixture({
         key: 'skill:writer',
         request: {
@@ -218,21 +227,10 @@ describe('threadFindFields', () => {
         },
       });
       const base = grantFieldKeyBase('skill:writer');
-      expect(threadFindFields([], [], [g])).toEqual([
-        { key: `${base}:title`, text: 'Connect Writer' },
-        { key: `${base}:description`, text: 'Draft outbound emails on your behalf' },
-        { key: `${base}:packages`, text: PACKAGES_LINE },
-        { key: `${base}:reassurance`, text: GRANT_REASSURANCE },
-      ]);
+      expect(threadFindFields([], [], [g])).toEqual([{ key: `${base}:title`, text: 'Connect Writer' }]);
     });
 
-    it('omits the packages line when the grant declares none', () => {
-      const g = grantFixture();
-      const base = grantFieldKeyBase(g.key);
-      expect(threadFindFields([], [], [g]).some((f) => f.key === `${base}:packages`)).toBe(false);
-    });
-
-    it('indexes a host grant’s title and wall explanation, not the reassurance line', () => {
+    it('indexes a host grant’s title and wall explanation — a host grant never goes stalled', () => {
       const g = grantFixture({
         key: 'host:evil.example',
         request: { kind: 'host', host: 'evil.example', sessionId: 's1' },

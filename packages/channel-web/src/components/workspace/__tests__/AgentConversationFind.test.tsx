@@ -21,7 +21,7 @@
  */
 import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { AgentConversation } from '../AgentConversation';
 import { ANNOUNCE_DELAY_MS } from '../ThreadFind';
 import type { ThreadMessage, WorkspaceAgent } from '@/lib/workspace-api';
@@ -517,12 +517,54 @@ describe('finding something in an agent thread', () => {
       expect(container.querySelectorAll('mark')).toHaveLength(1);
     });
 
-    it('the reported total and the painted marks are two readings of one result, thread + grant combined', () => {
-      // 'deploy' matches 3x in the thread (see the first test in this file)
-      // plus the grant's reassurance line: "Nothing happens until you choose".
+    it('does not index the reassurance line — it disappears from the STALLED render', () => {
+      // Regression pin for an Important review finding: an earlier draft
+      // indexed the reassurance line unconditionally. `GrantRow`'s `stalled`
+      // arm (TASK-374 — connected, but the agent did not resume) drops the
+      // reassurance paragraph entirely, and `WorkspaceGrant` (what this
+      // function sees) carries no `stalled` flag to react to. Indexing it
+      // anyway meant: type a reassurance word, get "1 of 1" reported, watch
+      // the grant stall, and the mark vanishes while the count does not move
+      // — count > marks, painted count lying to the reader. Not indexing it
+      // is the fix; this proves the count stays at zero, not just that it
+      // stays consistent.
+      renderConversation({ grants: [grant] });
+      openFind();
+      type('happens'); // a word from GRANT_REASSURANCE
+
+      expect(count()).toHaveTextContent('No matches');
+    });
+
+    it('a stalled grant never lets the reported count outrun the painted marks', async () => {
+      const onGranted = vi.fn(async () => false);
+      const fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      try {
+        const { container } = renderConversation({ grants: [grant], onGranted });
+        openFind();
+        type('happens');
+        expect(count()).toHaveTextContent('No matches');
+        expect(container.querySelectorAll('mark')).toHaveLength(0);
+
+        // Drive the grant into `stalled` (TASK-374): the POST succeeds, the
+        // resume does not.
+        fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+        await waitFor(() => expect(onGranted).toHaveBeenCalled());
+        await screen.findByTestId('grant-not-resumed');
+
+        // Still nothing reported and nothing painted — never `count > marks`.
+        expect(count()).toHaveTextContent('No matches');
+        expect(container.querySelectorAll('mark')).toHaveLength(0);
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
+    it('the reported total and the painted marks are two readings of one result — the title, thread + grant combined', () => {
       const { container } = renderConversation({ grants: [grant] });
       openFind();
-      type('happens');
+      type('Writer'); // the grant's title; absent from `thread`
 
       const marks = container.querySelectorAll('mark');
       const reported = Number(count().textContent?.match(/of (\d+)/)?.[1]);
