@@ -59,8 +59,33 @@
     --destructive-foreground: 0 0% 100%;
     --destructive-soft: 0 60% 96%;
     /* Held-for-you. A third semantic state the surface genuinely needs:
-       "waiting on a human" is neither an error nor business as usual. */
-    --warning: 32 81% 36%;
+       "waiting on a human" is neither an error nor business as usual.
+
+       36% -> 35%. `text-warning` on `bg-warning-soft` measured 4.45:1 here —
+       under the AA floor — on the rail count badge in `WorkspaceSidebar` and
+       the "Waiting on you" badge in `bits.tsx`. Both paint the tint SOLID, no
+       alpha, so that number is the pixel and not merely the token; TASK-428 is
+       the cautionary tale one card over, where the same reading was taken off a
+       token whose painted class was `bg-warning-soft/40` and the defect
+       evaporated once it was composited. This one did not. Dark was never in
+       question at 8.47:1, so only this block moves.
+
+       Same asymmetry as `--primary` above, and more lopsided. To fix from the
+       tint's side, `--warning-soft` would have to get LIGHTER, not darker —
+       darkening walks the tint toward the accent and makes the text ratio WORSE
+       (4.45 -> 4.08 at 85%). Lighter clears the floor only at 94%, and matching
+       the headroom below takes ~97%, by which point the tint measures 1.04:1
+       against the white page it sits on: a "held" badge nobody can see is not a
+       held badge. `--warning` has the opposite property — white sits on it, and
+       it sits on the page, the card and its own tint, so every role is on the
+       far side and one move lifts them all. Measured: the defect pair
+       4.45 -> 4.66, white on `bg-warning` 4.84 -> 5.07, and `text-warning` on
+       the page and the card 4.84 -> 5.07. Nothing was traded away.
+
+       The roles that carry no text ride along rather than pay: the `bits.tsx`
+       state dot, `ThreadFind`'s match underline, and the hold glyphs in
+       `ActivityFeed`, `ToolUse` and `AgentConversation` all gain contrast. */
+    --warning: 32 81% 35%;
     --warning-foreground: 0 0% 100%;
     --warning-soft: 45 93% 93%;
     --border: 240 6% 91%;
