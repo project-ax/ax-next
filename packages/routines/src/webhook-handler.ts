@@ -56,7 +56,25 @@ export function makeWebhookHandler(deps: WebhookHandlerDeps): HttpRouteHandler {
           'credentials:get', ctx,
           { ref: trigger.hmac.secretRef, userId: row.ownerUserId },
         );
-      } catch {
+      } catch (err) {
+        // Reviewer finding. The 401 is right — we cannot verify a signature
+        // without the secret, so the request does not get in. But it used to
+        // be SILENT, which made two very different situations look identical
+        // from the outside: an attacker sending a bad signature, and our own
+        // `secretRef` pointing at a credential that was never set (or a
+        // credential backend having a bad day). One of those is the system
+        // working; the other is a webhook that will never fire again and
+        // nobody knowing why.
+        //
+        // The log names the ref, never the secret — a ref is a lookup key the
+        // person typed into the routine themselves, and the whole point of
+        // this branch is that we did not get a value back.
+        ctx.logger.warn('routines_webhook_secret_fetch_failed', {
+          agentId: deps.agentId,
+          path: deps.routinePath,
+          secretRef: trigger.hmac.secretRef,
+          err: err instanceof Error ? err.message : String(err),
+        });
         res.status(401).end();
         return;
       }

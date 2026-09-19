@@ -134,6 +134,18 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
   // directions: on a fresh DB the CREATE above already made
   // `owner_user_id`, so the lookup finds nothing and this no-ops.
   //
+  // Reviewer nit, recorded because it is the condition this depends on:
+  // this is the repo's first NON-ADDITIVE migration — every other schema
+  // change here is `ADD COLUMN IF NOT EXISTS`, which is both rolling-deploy
+  // safe and natively atomic. A rename is neither, and it is safe today only
+  // because the host runs single-replica with `strategy: Recreate`
+  // (deploy/charts/ax-next/templates/host/deployment.yaml:20-22, with
+  // `ax-next.validateHostReplicas` failing the template outright for
+  // replicas > 1). So no old pod is still reading `author_user_id` while the
+  // new one runs, and no two pods race between the existence check and the
+  // RENAME — the check does not hold the table lock. Multi-replica host work
+  // has to revisit both halves of that.
+  //
   // DATA: values are carried across as-is — no backfill here. Every stored
   // value is already inside the set `agents:resolve` authorises for that
   // agent, so nothing widens at migration time; the first tick after deploy
