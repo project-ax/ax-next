@@ -23,7 +23,7 @@
  * bypass the gate. Only `App.tsx` is gated; downstream tests don't need
  * to mock the bootstrap or auth wire.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AssistantRuntimeProvider } from '@assistant-ui/react';
 import { useAxChatRuntime } from './lib/runtime';
 import { getSession, type AuthUser } from './lib/auth';
@@ -48,6 +48,7 @@ import { BootScreen } from './components/BootScreen';
 import { LoginPage } from './components/LoginPage';
 import { WorkspaceShell } from './components/workspace/WorkspaceShell';
 import { fetchFeatures, DEFAULT_FEATURES, type Features } from './lib/features';
+import { focusSettingsOpenerWhenReady } from './lib/settings-return-focus';
 import { Sidebar } from './components/Sidebar';
 import { SessionHeader } from './components/SessionHeader';
 import { Thread } from './components/Thread';
@@ -254,6 +255,47 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
   // `adminSettingsOpen` is set by the user menu's "Settings" entry
   // (admin-gated). AdminSettings renders in the main pane when true.
   const [adminSettingsOpen, setAdminSettingsOpen] = useState(false);
+  // TASK-443 — closing Settings must not drop the keyboard on `<body>`.
+  //
+  // Settings is a PANE SWAP, not an overlay: the branches below render either
+  // `AdminShell` or the surface it was opened from, never both. So the control
+  // that opened it is destroyed on open and a NEW one is created on close, and
+  // neither `components/ui/use-opener-restore.ts` (Dialog/Sheet) nor
+  // `lib/consent-focus.ts` (#599) can help — both restore a captured NODE, and
+  // both correctly refuse to focus a detached one. The restore has to be by
+  // identity, after the remount.
+  //
+  // This is also why it lives here rather than in either shell: App is the only
+  // component that knows the swap happened, threading a prop down through two
+  // sidebars to a menu would put the knowledge in three more places, and doing
+  // it once here gives the chat shell the same fix — same state, same
+  // `onClose`, same marked trigger inside `UserMenu`.
+  //
+  // ARMED AS A REF, FIRED FROM AN EFFECT ON `adminSettingsOpen`. The same shape
+  // `lib/consent-focus.ts`'s `useResolutionFocus` uses, for the same reason:
+  // arming must not cause a render (the close already does one), and the flag
+  // must survive that render. Keying the effect on `adminSettingsOpen` rather
+  // than on the flag also puts the effect's CLEANUP on exactly the right
+  // events — re-opening Settings, or unmounting — so a restore nobody wants
+  // any more is called off instead of landing later.
+  //
+  // The ref is what distinguishes "Settings just closed" from "Settings has
+  // never been open", which is every other time this effect runs, first mount
+  // included. Without it the app would steal focus to the user menu on load.
+  const settingsCloseArmed = useRef(false);
+  const closeAdminSettings = useCallback(() => {
+    setAdminSettingsOpen(false);
+    settingsCloseArmed.current = true;
+  }, []);
+  useEffect(() => {
+    if (adminSettingsOpen || !settingsCloseArmed.current) return;
+    settingsCloseArmed.current = false;
+    // Not a plain `focusSettingsOpener()` — measured, the opener is NOT in the
+    // document yet at this point. The surface coming back re-reads its data and
+    // paints a loading state with no sidebar in it first. See
+    // `lib/settings-return-focus.ts`.
+    return focusSettingsOpenerWhenReady();
+  }, [adminSettingsOpen]);
   // `createAgentOpen` drives the explicit "+ New agent" entry into the
   // bootstrap flow (the first-run gate below uses the empty-list signal).
   const [createAgentOpen, setCreateAgentOpen] = useState(false);
@@ -426,7 +468,7 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
             <div className="flex h-screen bg-background font-sans text-foreground">
               <AdminShell
                 isAdmin={user.role === 'admin'}
-                onClose={() => setAdminSettingsOpen(false)}
+                onClose={closeAdminSettings}
                 backLabel="workspace"
               />
             </div>
@@ -458,7 +500,7 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
             {adminSettingsOpen ? (
               <AdminShell
                 isAdmin={user.role === 'admin'}
-                onClose={() => setAdminSettingsOpen(false)}
+                onClose={closeAdminSettings}
               />
             ) : (
               <>

@@ -21,6 +21,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { SETTINGS_OPENER_ATTR } from '../lib/settings-return-focus';
 import { useUser } from '../lib/user-context';
 import { signOut } from '../lib/auth';
 import { useTheme, setTheme, type Theme } from '../lib/theme';
@@ -55,6 +56,21 @@ export function UserMenu({
         <DropdownMenuTrigger asChild>
       <button
         type="button"
+        // TASK-443 — where focus comes back to when Settings closes.
+        //
+        // Settings is a pane swap, not an overlay: opening it unmounts this
+        // whole sidebar, so there is no surviving node for a captured-ref
+        // restore to aim at, and a detached-node restore silently lands on
+        // `<body>`. `focusSettingsOpener` finds THIS control's successor in the
+        // re-mounted tree by this attribute instead. See
+        // `lib/settings-return-focus.ts`.
+        //
+        // Conditional on purpose: only a menu that can really open Settings
+        // claims to be the door to it. `UserMenu` renders the item either way
+        // (that was TASK-340's dead-control bug), and marking a menu whose
+        // `onOpenAdminSettings` is undefined would hand focus to a control
+        // that goes nowhere.
+        {...(onOpenAdminSettings ? { [SETTINGS_OPENER_ATTR]: '' } : {})}
         // Keep `user-row` as a structural test hook — no CSS targets it.
         // The wrap (`user-row-wrap`) already has `p-2`, so the trigger
         // takes `w-full` and fills the wrap's content area exactly —
