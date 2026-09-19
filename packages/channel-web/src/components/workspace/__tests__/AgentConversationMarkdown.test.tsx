@@ -232,6 +232,49 @@ describe('find still agrees with itself over rendered markdown', () => {
     expect(container.querySelector('strong mark')?.textContent).toBe('green');
   });
 
+  it('gives a markdown mark the same attributes and classes as a plain one', () => {
+    /*
+      The two renderers build their marks by different routes — one writes JSX,
+      the other writes hast properties a rehype plugin hands to react-markdown —
+      and only one of them was ever checked. The classes are the contrast pairs
+      measured in `ThreadFind.tsx`'s header against both the agent pane and the
+      user bubble; `aria-current` is how a screen reader is told which match is
+      the current one. A markdown mark that quietly lost either would be a
+      regression nobody could see in a diff.
+    */
+    const { container } = render(
+      conversation({
+        thread: [
+          { kind: 'user', id: 'u1', text: 'deploy' },
+          agentTurn('**deploy**'),
+        ],
+      }),
+    );
+
+    search(container, 'deploy');
+
+    const [plain, md] = [...container.querySelectorAll('mark')];
+    // The first match is the active one, so the plain mark carries the active
+    // pair and the markdown mark the inactive pair.
+    expect(plain?.getAttribute('data-find-field')).toBe('0:u1');
+    expect(md?.getAttribute('data-find-field')).toBe('1:a1');
+    expect(plain?.getAttribute('data-find-active')).toBe('true');
+    expect(plain?.getAttribute('aria-current')).toBe('true');
+    expect(md?.getAttribute('data-find-active')).toBeNull();
+    expect(md?.getAttribute('class')).toBe(
+      'rounded-[3px] border-b border-warning bg-warning-soft px-0.5 text-foreground',
+    );
+
+    // Now walk to the markdown one and check the ACTIVE pair crosses too.
+    fireEvent.click(screen.getByRole('button', { name: 'Next match' }));
+    const nowActive = container.querySelector('mark[data-find-active="true"]');
+    expect(nowActive?.closest('strong')).not.toBeNull();
+    expect(nowActive?.getAttribute('aria-current')).toBe('true');
+    expect(nowActive?.getAttribute('class')).toBe(
+      'rounded-[3px] bg-foreground px-0.5 text-background',
+    );
+  });
+
   it('paints a match inside a table cell', () => {
     const { container } = render(
       conversation({
