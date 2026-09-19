@@ -27,6 +27,7 @@ import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import type { DecisionReadError } from '@/lib/workspace-decisions';
 import { readAlertVariant } from '@/lib/read-register';
 import { isOpenDecision } from '@/lib/workspace-types';
+import { RESOLUTION_FOCUS_RING } from '@/lib/consent-focus';
 import { DecisionRow } from './DecisionRow';
 import { GrantRow } from './GrantRow';
 import {
@@ -407,6 +408,27 @@ export function TodayView({
         the alert above says so; the headline refuses the empty sentence, and
         this list simply shows whatever rows we do have.
       */}
+      {/*
+        THE CONSENT REGION (TASK-427), OUTSIDE the gate below on purpose.
+        Answering a grant removes its row, and answering the last one can take
+        the whole list card with it — so a region drawn inside the gate would
+        unmount along with the thing it exists to catch, and focus would land
+        on `<body>` at the top of the document. This wrapper carries no
+        classes, so an empty one costs nothing in layout.
+
+        `role="group"` rather than `region` so an empty queue does not add a
+        permanent landmark, and the name stays true when it is empty: it is
+        still your queue when there is nothing in it. `DecisionRow` needs none
+        of this — its receipt replaces its controls in place, so it focuses its
+        own outcome line and Undo is one Tab from there.
+      */}
+      <div
+        data-consent-region=""
+        tabIndex={-1}
+        role="group"
+        aria-label="Your queue"
+        className={RESOLUTION_FOCUS_RING}
+      >
       {(readable || filter === 'working' || (filter === 'needs' && grants.length > 0)) && (
         <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
           {filter === 'needs' ? (
@@ -485,6 +507,7 @@ export function TodayView({
           )}
         </div>
       )}
+      </div>
 
       <div className="flex items-center gap-3 px-1 pt-3.5 text-[12.5px] text-muted-foreground">
         {hint !== null && <span>{hint}</span>}

@@ -34,6 +34,7 @@ import { AgentStatus } from './AgentStatus';
 import { AttachmentComposerChip } from './AttachmentComposerChip';
 import { InThreadApprovals } from './InThreadApprovals';
 import { PermissionCard } from './PermissionCard';
+import { RESOLUTION_FOCUS_RING } from '@/lib/consent-focus';
 
 function AttachMenu({ disabled = false }: { disabled?: boolean }) {
   const [open, setOpen] = useState(false);
@@ -176,9 +177,26 @@ export function Composer() {
           without deciding it — and the [L] unified queue the audit rejected
           stays unbuilt.
         */}
+        {/*
+          IT IS ALSO THE CONSENT REGION (TASK-427). Answering a permission card
+          removes it, and a focused element that disappears leaves the browser
+          pointing at `<body>` — the top of the document, a blind crawl from
+          anything here. This node outlives every card inside it, so it is what
+          `returnFocusToConsentRegion` finds and focuses on the way out.
+
+          `role="group"`, not `region`: it is a container that should announce
+          its name when focus lands in it, not a landmark that shows up in
+          every screen reader's landmark list whether or not anything is
+          waiting. The label is true in both states — an empty group of
+          approvals is still the group of approvals.
+        */}
         <div
           data-approval-stack=""
-          className="max-h-[50vh] overflow-y-auto [scrollbar-gutter:stable]"
+          data-consent-region=""
+          tabIndex={-1}
+          role="group"
+          aria-label="Approvals and permission requests"
+          className={`max-h-[50vh] overflow-y-auto [scrollbar-gutter:stable] ${RESOLUTION_FOCUS_RING}`}
         >
           <InThreadApprovals />
           <PermissionCard />

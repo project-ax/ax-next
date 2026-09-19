@@ -46,6 +46,7 @@
     "@ax/tool-artifact-publish": "workspace:*",
     "@ax/llm-anthropic": "workspace:*",
     "@ax/llm-openrouter": "workspace:*",
+    "@ax/memory-facts-sqlite": "workspace:*",
     "@ax/memory-strata": "workspace:*",
     "@ax/memory-strata-index-sqlite": "workspace:*",
     "@ax/web-tools": "workspace:*",

@@ -299,6 +299,12 @@ Neither the shipped number nor the 3-id bad-gold list moves. One row shifts from
 "winnable-but-scored-wrong" to "real", which makes the addressable bucket
 slightly *larger*.
 
+**(TASK-394, 2026-09-19): applied at source.** This correction is now folded directly
+into `docs/plans/2026-09-15-task-368-gold-quality-audit.md` itself — its headline,
+ceiling table, and "gold and lost anyway" section now read 3/3/18 and 82.0%/~18 of 24.
+Quote that doc going forward; this section is left as the historical record of how the
+discrepancy was found.
+
 ```bash
 python3 - <<'PY'
 import re

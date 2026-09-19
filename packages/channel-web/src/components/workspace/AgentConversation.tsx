@@ -43,10 +43,12 @@ import type {
 import { ATTACHMENT_ACCEPT } from '@/lib/attachment-upload';
 import { signInWithGoogle } from '@/lib/auth';
 import { readAlertVariant } from '@/lib/read-register';
+import { getDraft, setDraft as saveDraft } from '@/lib/workspace-draft-store';
 import {
   activeMatch,
   buildFindIndex,
   findFieldKey,
+  grantFieldKeyBase,
   threadFindFields,
 } from '@/lib/thread-find';
 import { useStickToBottom } from '@/lib/use-stick-to-bottom';
@@ -64,6 +66,7 @@ import type {
 } from '@/lib/workspace-api';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 import { AgentTile } from './bits';
+import { RESOLUTION_FOCUS_RING } from '@/lib/consent-focus';
 import { ApprovalCard } from './ApprovalCard';
 import { GrantRow } from './GrantRow';
 import {
@@ -281,7 +284,19 @@ export function AgentConversation({
   onGranted,
   conversationKey = 'one-conversation',
 }: Props) {
-  const [draft, setDraft] = useState('');
+  /*
+    TASK-393 — seeded from, and mirrored into, `workspace-draft-store.ts`, so
+    an unsent draft survives this component's own remount rather than being
+    silently dropped. `AgentView` is `key`ed by `agentId` (see its render
+    site in `WorkspaceShell`), so switching agents unmounts this component;
+    without the seed, a half-typed message would vanish on every switch
+    rather than only when it is actually sent.
+  */
+  const [draft, setDraftState] = useState(() => getDraft(agent.id));
+  const setDraft = (value: string) => {
+    setDraftState(value);
+    saveDraft(agent.id, value);
+  };
   const fileInput = useRef<HTMLInputElement>(null);
   const { attachments, add, remove, retry, clear, sendable, sendBlock } =
     useWorkspaceAttachments();
@@ -326,6 +341,9 @@ export function AgentConversation({
   const send = () => {
     const v = draft.trim();
     if (!v || busy || held || attachBlock !== null) return;
+    // `setDraft('')` mirrors the empty string into the store too (its own
+    // `''` branch deletes the entry), so this is the one place a send needs
+    // to clear it.
     setDraft('');
     const files = sendable;
     // One argument when nothing is attached — see the prop doc. An empty list
@@ -366,12 +384,12 @@ export function AgentConversation({
   // find bar can only ever answer "No matches", which is a true sentence about
   // a question the reader was invited to ask for no reason.
   const searchable = useMemo(
-    () => threadFindFields(thread).length > 0,
-    [thread],
+    () => threadFindFields(thread, decisions, grants).length > 0,
+    [thread, decisions, grants],
   );
   const findIndex = useMemo(
-    () => buildFindIndex(thread, findOpen ? findQuery : ''),
-    [thread, findOpen, findQuery],
+    () => buildFindIndex(thread, decisions, grants, findOpen ? findQuery : ''),
+    [thread, decisions, grants, findOpen, findQuery],
   );
   const findActive = activeMatch(findStep, findIndex.total);
   const finding = findOpen && findQuery.trim().length > 0;
@@ -702,30 +720,52 @@ export function AgentConversation({
         asking for a key are tall enough to push the composer off screen, and a
         composer you cannot reach is a worse bug than a card you must scroll.
 
-        KNOWN WRINKLE of presence being continuous: switching browser tabs
-        unmounts this region, so a half-typed key in it is gone on return. It
-        is the flow where that hurts — people leave to fetch the key from a
-        password manager — but they leave BEFORE pasting far more often than
-        after, the field is never the only copy of anything, and the grant
-        itself is never lost (the queue still has it). Keeping the draft would
-        mean lifting per-row input state out of `GrantRow` and into something
-        that outlives both render sites, which is a second piece of shared
-        grant state — the thing invariant 4 is about. Filed rather than fixed.
+        WRINKLE FIXED (TASK-389). Presence being continuous means switching
+        browser tabs (or navigating away from this thread) unmounts this
+        region, and a plain `useState` in `GrantRow` used to lose whatever was
+        half-typed when that happened. `workspace-grant-drafts.ts` now holds
+        that draft outside the component, keyed by the grant, so a value typed
+        here survives the unmount and reappears — in this thread, or in
+        Today's copy of the same row — until the grant is answered or
+        withdrawn. It is not a second copy of the GRANT (invariant 4 still
+        holds: `workspace-grant-store.ts` is the only place a grant's own
+        state lives) — only of what was typed and not yet submitted anywhere.
       */}
-      {grants.length > 0 && (
-        <div className="px-6 pt-4" data-testid="thread-grants">
-          <div className="max-h-[50vh] max-w-[720px] overflow-y-auto rounded-lg border border-border bg-card shadow-sm [scrollbar-gutter:stable]">
-            {grants.map((g) => (
-              <GrantRow
-                key={g.key}
-                grant={g}
-                onResolved={onGrantResolved}
-                onGranted={onGranted}
-              />
-            ))}
+      {/*
+        THE CONSENT REGION (TASK-427), and it is deliberately OUTSIDE the
+        `grants.length > 0` gate. Answering the last grant removes the row AND
+        the box around it, so a region drawn inside the gate would unmount
+        along with the thing it was supposed to catch — handing focus straight
+        back to `<body>`, which is the bug. This wrapper carries no classes, so
+        an empty one costs nothing in layout.
+
+        `role="group"` rather than `region` so an empty grants area does not
+        add a permanent landmark to every agent thread.
+      */}
+      <div
+        data-consent-region=""
+        tabIndex={-1}
+        role="group"
+        aria-label={`Permission requests for ${agent.name}`}
+        className={RESOLUTION_FOCUS_RING}
+      >
+        {grants.length > 0 && (
+          <div className="px-6 pt-4" data-testid="thread-grants">
+            <div className="max-h-[50vh] max-w-[720px] overflow-y-auto rounded-lg border border-border bg-card shadow-sm [scrollbar-gutter:stable]">
+              {grants.map((g) => (
+                <GrantRow
+                  key={g.key}
+                  grant={g}
+                  onResolved={onGrantResolved}
+                  onGranted={onGranted}
+                  find={find}
+                  fieldKeyBase={grantFieldKeyBase(g.key)}
+                />
+              ))}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {!readOnly && (
         <div className="border-t border-border px-6 py-4">
@@ -1019,6 +1059,8 @@ function Message({
           onUndo={() => onUndo(d.id)}
           busy={busyIds?.has(d.id) === true}
           notice={notices?.get(d.id) ?? null}
+          find={find}
+          fieldKey={fieldKey}
         />
       </div>
     );

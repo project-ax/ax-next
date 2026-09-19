@@ -24,10 +24,20 @@
  *     one click. The button appears ONLY while the server says the row can
  *     still be taken back; a dead Undo on something already sent would promise
  *     a person something we cannot do.
+ *
+ * IT MOVES FOCUS ONTO ITS OWN ANSWER (TASK-427), for the reason
+ * `lib/consent-focus.ts` spells out: the receipt replaces the controls, so
+ * without this the browser drops focus on `<body>` and the ten-second Undo is
+ * a blind crawl away. The row also declares no consent region of its own —
+ * `TodayView` owns that, because the node has to outlive the row.
  */
 import { ArrowRight, ChevronDown, ChevronUp, RotateCcw } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import {
+  RESOLUTION_FOCUS_RING,
+  useResolutionFocus,
+} from '@/lib/consent-focus';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import { StateDot } from './bits';
 import {
@@ -102,6 +112,37 @@ export function DecisionRow({
   const outcome = decisionOutcome(d, now);
   const undoLeft = undoSecondsLeft(d, now);
   const expiry = expiresSoonNote(d, now);
+  const stale = d.status === 'stale';
+  /*
+    Focus follows whatever the row says back, and there are THREE answers, not
+    two. Approving a row whose freshness guard trips does not resolve it: the
+    machine hands back `status: 'stale'`, the row re-opens as a question with a
+    new sentence at the top, and there is no receipt to land on. Ordered to
+    match document order below — the last of these to mount owns the ref.
+  */
+  const answerKey =
+    /*
+      NOTICE FIRST, and this order is load-bearing. A REFUSED undo
+      (`DECISION_UNDO_TOO_LATE` — the window shut between the click and the
+      server) is the one case where a notice lands on a row that is already
+      RESOLVED: the outcome stays exactly as it was, so an outcome-first key
+      never changes, nothing fires, and the person is on `<body>` while a red
+      line they cannot see says the thing cannot be taken back after all. The
+      freshest thing the card has to say always wins — and the nodes below are
+      hung in the same order, because the last `answerRef` in document order
+      is the one that gets it.
+    */
+    notice !== null
+      ? `notice:${notice}`
+      : outcome !== null
+        ? `outcome:${d.status}:${d.resolvedAt ?? ''}`
+        : stale && d.staleReason !== null
+          ? `stale:${d.freshness?.value ?? ''}:${d.staleReason}`
+          : // Back to being a QUESTION — Undo returns the row to `pending`
+            // (`decisions/machine.ts`), so the receipt and its Undo button
+            // both unmount and there is no resolution left to land on.
+            `open:${d.status}:${d.resolvedAt ?? ''}`;
+  const { answerRef, armForResolution } = useResolutionFocus(answerKey);
 
   if (outcome !== null) {
     return (
@@ -110,7 +151,18 @@ export function DecisionRow({
         data-testid={`decision-${d.id}`}
         data-status={d.status}
       >
-        <div className="flex items-center gap-3">
+        {/*
+          THE FOCUS TARGET. Undo sits INSIDE it so that the first tabbable
+          thing from here is Undo itself — one Tab, well inside the ten
+          seconds the window lasts. `tabIndex={-1}` keeps it a destination
+          rather than an extra stop in everyone else's Tab order.
+        */}
+        <div
+          ref={answerRef}
+          tabIndex={-1}
+          data-testid={`decision-outcome-${d.id}`}
+          className={`flex items-center gap-3 ${RESOLUTION_FOCUS_RING}`}
+        >
           <StateDot state={TONE_DOT[outcome.tone]} />
           <span className="min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground">
             {outcome.line}
@@ -119,7 +171,10 @@ export function DecisionRow({
             <Button
               variant="ghost"
               size="sm"
-              onClick={onUndo}
+              onClick={() => {
+                armForResolution();
+                onUndo();
+              }}
               disabled={busy}
               className="h-7 gap-1.5 text-[12px] text-primary"
             >
@@ -133,8 +188,17 @@ export function DecisionRow({
             {outcome.note}
           </p>
         )}
+        {/*
+          A REFUSED UNDO lands here (TASK-427) — the row is still resolved, the
+          Undo button has gone, and this line is the only thing that changed.
+          Last among this branch's `answerRef` holders, so it wins the ref.
+        */}
         {notice !== null && (
-          <p className="pl-[22px] text-[12px] leading-relaxed text-destructive">
+          <p
+            ref={answerRef}
+            tabIndex={-1}
+            className={`pl-[22px] text-[12px] leading-relaxed text-destructive ${RESOLUTION_FOCUS_RING}`}
+          >
             {notice}
           </p>
         )}
@@ -142,18 +206,26 @@ export function DecisionRow({
     );
   }
 
-  const stale = d.status === 'stale';
-
   return (
     <div
       className={cnRow(stale)}
       data-testid={`decision-${d.id}`}
       data-status={d.status}
     >
+      {/*
+        THE QUESTION, and therefore where Undo puts you (TASK-427): undoing
+        re-opens the row, unmounting the receipt the person was standing on.
+        This button's accessible name IS the question — agent, summary, age —
+        so landing here reads it back. NO `tabIndex={-1}`: it is a real control
+        and taking it out of the Tab order would be a regression. Pressing it
+        only opens or closes the row, which is the one thing on this card that
+        cannot cost anybody anything.
+      */}
       <button
+        ref={answerRef}
         type="button"
         onClick={onToggle}
-        className="flex w-full items-center gap-3 px-5 py-3.5 text-left"
+        className={`flex w-full items-center gap-3 px-5 py-3.5 text-left ${RESOLUTION_FOCUS_RING}`}
       >
         <StateDot state={stale ? 'stopped' : 'held'} />
         <span className="shrink-0 text-[13px] font-medium">{agent.name}</span>
@@ -178,8 +250,19 @@ export function DecisionRow({
 
       {expanded && (
         <div className="px-5 pb-5 pl-[46px]">
+          {/*
+            A FOCUS TARGET, because this is an ANSWER (TASK-427) — approving a
+            row the guard trips re-opens it rather than resolving it, so there
+            is no receipt to land on and the person would otherwise be left on
+            `<body>` in front of a row that looks unchanged.
+          */}
           {stale && d.staleReason && (
-            <Alert variant="destructive" className="mb-4">
+            <Alert
+              ref={answerRef}
+              tabIndex={-1}
+              variant="destructive"
+              className={`mb-4 ${RESOLUTION_FOCUS_RING}`}
+            >
               <AlertDescription className="text-[13px] leading-relaxed">
                 <strong className="font-medium">{DECISION_STALE_LEAD}</strong>{' '}
                 {d.staleReason} {DECISION_STALE_ADVICE}
@@ -229,8 +312,19 @@ export function DecisionRow({
             <p className="mt-1.5 text-[11.5px] text-muted-foreground">{expiry}</p>
           )}
 
+          {/*
+            The row stayed open because the resolve did not land. Focus comes
+            here for the same reason it goes to the receipt — the person
+            pressed something and this is the answer. Without it they are on
+            `<body>` with an unread error behind them.
+          */}
           {notice !== null && (
-            <Alert variant="destructive" className="mt-3 max-w-[660px]">
+            <Alert
+              ref={answerRef}
+              tabIndex={-1}
+              variant="destructive"
+              className={`mt-3 max-w-[660px] ${RESOLUTION_FOCUS_RING}`}
+            >
               <AlertDescription className="text-[13px] leading-relaxed">
                 {notice}
               </AlertDescription>
@@ -238,7 +332,14 @@ export function DecisionRow({
           )}
 
           <div className="mt-4 flex flex-wrap items-center gap-2">
-            <Button size="sm" onClick={onApprove} disabled={busy}>
+            <Button
+              size="sm"
+              onClick={() => {
+                armForResolution();
+                onApprove();
+              }}
+              disabled={busy}
+            >
               {stale ? `${d.primaryLabel} anyway` : d.primaryLabel}
             </Button>
             <Button
@@ -249,7 +350,15 @@ export function DecisionRow({
             >
               {d.secondaryLabel}
             </Button>
-            <Button size="sm" variant="ghost" onClick={onDismiss} disabled={busy}>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                armForResolution();
+                onDismiss();
+              }}
+              disabled={busy}
+            >
               {d.ghostLabel}
             </Button>
             <span className="ml-1 text-[11.5px] text-muted-foreground">

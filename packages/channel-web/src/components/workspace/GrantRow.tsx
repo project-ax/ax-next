@@ -17,14 +17,31 @@
  * action with a verbatim call and a freshness guard. Two types, two rows, one
  * list. Sharing a queue is not collapsing them, which is why this is its own
  * component and not a `kind` branch inside `DecisionRow`.
+ *
+ * WHERE FOCUS GOES WHEN IT IS ANSWERED (TASK-427). Two different answers,
+ * because this row has two different endings.
+ *
+ *   - It says something back — the grant landed and the agent did not restart,
+ *     or the POST failed — and that sentence takes focus, exactly as a
+ *     decision's receipt does.
+ *   - It simply GOES. "Not now" on a host grant, and every successful resolve,
+ *     remove the row outright; there is nothing left inside it to focus, and
+ *     the browser's answer to that is `<body>`. So focus goes up to the
+ *     surface's `data-consent-region` first, while this node is still in the
+ *     document. `lib/consent-focus.ts` carries the argument.
  */
-import { useState, type ReactElement } from 'react';
+import { useRef, useState, type ReactElement } from 'react';
 import { TriangleAlert } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+  RESOLUTION_FOCUS_RING,
+  returnFocusToConsentRegion,
+  useResolutionFocus,
+} from '@/lib/consent-focus';
 import { grantHost, setDestinationCredential } from '@/lib/credentials';
 import {
   AUTHORED_CONNECTOR_WARNING,
@@ -44,7 +61,11 @@ import {
   PACKAGES_LINE,
   REACH_LEAD_IN,
   SLOT_HINT,
+  grantDescription,
+  grantPackagesVisible,
+  grantTitle,
 } from '@/lib/grant-copy';
+import { FindHighlight, type FindView } from './ThreadFind';
 import {
   accountDestinationForConnectorSlot,
   accountOrSkillDestination,
@@ -52,8 +73,12 @@ import {
 import { slotAccount } from '@/lib/grant-shape';
 import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
 import { HttpError, httpFetch, userFacingMessage } from '@/lib/http';
-import type { PermissionRequest } from '@/server/types';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
+import {
+  clearGrantDraft,
+  getGrantDraft,
+  setGrantDraftValue,
+} from '@/lib/workspace-grant-drafts';
 
 interface Props {
   grant: WorkspaceGrant;
@@ -85,6 +110,19 @@ interface Props {
    * and the agent never stopped, so there is nothing to pick up.
    */
   onGranted: (grant: WorkspaceGrant) => Promise<boolean>;
+  /**
+   * The find bar's current search, or `null`/omitted when there is none to
+   * paint (TASK-390) — `TodayView` renders this same row with no find bar at
+   * all, so both are optional and default to "no highlight" rather than a
+   * required prop every non-thread caller would have to fake.
+   */
+  find?: FindView | null;
+  /**
+   * This grant's field-key prefix in `lib/thread-find.ts`'s index — see
+   * `grantFieldKeyBase`. Only meaningful together with `find`; a caller that
+   * passes one and not the other gets no highlight, not a crash.
+   */
+  fieldKeyBase?: string;
 }
 
 /** Slots the person still has to fill — the vaulted ones need no input. */
@@ -92,11 +130,31 @@ function blankSlots(slots: readonly { slot: string; haveExisting?: boolean }[]):
   return slots.filter((s) => s.haveExisting !== true).map((s) => s.slot);
 }
 
-export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement {
+export function GrantRow({
+  grant,
+  onResolved,
+  onGranted,
+  find = null,
+  fieldKeyBase,
+}: Props): ReactElement {
   // The conversation is recorded on the grant when the frame arrives: Today can
   // hold grants from several agents, so the row cannot work it out from context.
   const { request, conversationId } = grant;
-  const [values, setValues] = useState<Record<string, string>>({});
+  // See `find`'s doc above — a `fieldKeyBase` with no `find` (or vice versa)
+  // still renders plain text, because `FindHighlight` itself no-ops on a null
+  // `find` and this key is never looked up in that case.
+  const keyOf = (suffix: string) => `${fieldKeyBase ?? ''}:${suffix}`;
+  /**
+   * Seeded from the durable draft (TASK-389), not blank — a half-typed key must
+   * survive this component unmounting and a fresh instance taking its place,
+   * which is exactly what happens on a tab switch or a route change (see
+   * `workspace-grant-drafts.ts` for which of those actually reproduce). `values`
+   * itself stays local `useState`: it is the fast path for this render, and
+   * `workspace-grant-drafts.ts` is what outlives it.
+   */
+  const [values, setValues] = useState<Record<string, string>>(() =>
+    getGrantDraft(grant.key),
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /**
@@ -109,6 +167,26 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
    * decision for a capability the person already owns.
    */
   const [stalled, setStalled] = useState(false);
+  /*
+    The row's own node, read while it is still mounted so `closest` can find
+    the consent region above it. Every branch below hangs it on its root.
+  */
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  // The two endings that leave a sentence behind rather than an empty space.
+  // Keyed on the text so a SECOND failure after a retry lands too, rather than
+  // only the first — see `useResolutionFocus`.
+  const { answerRef, armForResolution } = useResolutionFocus(
+    stalled ? 'stalled' : error !== null ? `error:${error}` : null,
+  );
+
+  /**
+   * The row is about to be removed. Hand focus to the region that outlives it
+   * BEFORE saying so, because `closest` cannot walk up from a detached node.
+   */
+  function resolveAndReturnFocus(): void {
+    returnFocusToConsentRegion(rowRef.current);
+    onResolved(grant.key);
+  }
 
   const slots = request.kind === 'host' ? [] : request.slots;
   const needed = blankSlots(slots);
@@ -120,7 +198,9 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
    * that was never given needs no revoking.
    */
   function reject(): void {
-    onResolved(grant.key);
+    // Withdrawn — the draft must not outlive a prompt that is now gone.
+    clearGrantDraft(grant.key);
+    resolveAndReturnFocus();
   }
 
   /** Write each freshly-typed key to the host credential store, then decide. */
@@ -166,6 +246,12 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
         ),
       });
       if (!resp.ok) throw new HttpError('/api/chat/permission-decision', resp.status);
+      // Answered — clear the draft here, not only in `onResolved`'s caller:
+      // the `stalled` branch below never calls `onResolved` (the row stays on
+      // screen to say the agent didn't restart), but the key has already been
+      // written to the credential vault by `writeKeys` above, so it must not
+      // linger here too.
+      clearGrantDraft(grant.key);
       /*
         THE GRANT IS APPLIED FROM HERE DOWN, and nothing below may report
         otherwise. The skill is attached and the warm session retired; the only
@@ -184,7 +270,7 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
         console.warn('[workspace] the resume after a grant threw', e);
       }
       if (resumed) {
-        onResolved(grant.key);
+        resolveAndReturnFocus();
         return;
       }
       setStalled(true);
@@ -202,7 +288,7 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
     setError(null);
     try {
       await grantHost({ sessionId: request.sessionId, host: request.host, persist });
-      onResolved(grant.key);
+      resolveAndReturnFocus();
     } catch (err) {
       setError(userFacingMessage(err, 'grant-row'));
     } finally {
@@ -212,7 +298,12 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
 
   const failure =
     error === null ? null : (
-      <Alert variant="destructive" className="mt-3 max-w-[660px]">
+      <Alert
+        ref={answerRef}
+        tabIndex={-1}
+        variant="destructive"
+        className={`mt-3 max-w-[660px] ${RESOLUTION_FOCUS_RING}`}
+      >
         <AlertDescription className="text-[13px] leading-relaxed">
           {error}
         </AlertDescription>
@@ -222,26 +313,43 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
   if (request.kind === 'host') {
     return (
       <div
+        ref={rowRef}
         className="border-b border-rule-soft p-4 last:border-b-0"
         data-testid={`grant-${grant.key}`}
       >
-        <p className="text-[14px] font-medium">Allow access to {request.host}?</p>
+        <p className="text-[14px] font-medium">
+          <FindHighlight fieldKey={keyOf('title')} text={grantTitle(request)} find={find} />
+        </p>
         <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
-          {HOST_WALL_EXPLANATION}
+          <FindHighlight
+            fieldKey={keyOf('explanation')}
+            text={HOST_WALL_EXPLANATION}
+            find={find}
+          />
         </p>
         <div className="mt-3 flex flex-wrap gap-1.5">
           <Badge variant="secondary">{request.host}</Badge>
         </div>
         {failure}
         <div className="mt-4 flex flex-wrap items-center gap-2">
-          <Button size="sm" disabled={busy} onClick={() => void allow(false)}>
+          <Button
+            size="sm"
+            disabled={busy}
+            onClick={() => {
+              armForResolution();
+              void allow(false);
+            }}
+          >
             {busy ? HOST_ALLOWING_LABEL : HOST_ALLOW_ONCE_LABEL}
           </Button>
           <Button
             size="sm"
             variant="secondary"
             disabled={busy}
-            onClick={() => void allow(true)}
+            onClick={() => {
+              armForResolution();
+              void allow(true);
+            }}
           >
             {HOST_ALLOW_ALWAYS_LABEL}
           </Button>
@@ -272,15 +380,13 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
     `connectorId` IS guarded, so it is always there to fall back on, and
     `humanizeId` is already how the skill arm below builds its title. An empty
     string counts as missing for the same reason `undefined` does.
+
+    BUILT BY `grantTitle` (`lib/grant-copy.ts`), not inline, since TASK-390:
+    `lib/thread-find.ts` needs this exact string to index, and a second copy of
+    this logic there is how the index and the card end up naming the grant
+    differently.
   */
-  const connectorTitle = (r: Extract<PermissionRequest, { kind: 'connector' }>) =>
-    typeof r.name === 'string' && r.name.trim().length > 0
-      ? r.name
-      : humanizeId(r.connectorId);
-  const title =
-    request.kind === 'connector'
-      ? `Connect ${connectorTitle(request)}`
-      : `Connect ${humanizeId(request.skillId)}`;
+  const title = grantTitle(request);
   const authoredWarning =
     request.kind === 'connector' ? AUTHORED_CONNECTOR_WARNING : AUTHORED_SKILL_WARNING;
   /*
@@ -301,11 +407,9 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
     is also rendered as a React child, and an object with a truthy `.length`
     would throw again one line further down.
   */
-  const description =
-    request.kind === 'skill' && typeof request.description === 'string'
-      ? request.description
-      : '';
-  const packages = request.packages;
+  // Both derived by `lib/grant-copy.ts` — see the note on `title` above.
+  const description = grantDescription(request);
+  const showPackagesLine = grantPackagesVisible(request);
 
   /*
     THE GRANT LANDED AND THE AGENT DID NOT (TASK-374).
@@ -329,22 +433,23 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
   if (stalled) {
     return (
       <div
+        ref={rowRef}
         className="border-b border-rule-soft p-4 last:border-b-0"
         data-testid={`grant-${grant.key}`}
       >
-        <p className="text-[14px] font-medium">{title}</p>
+        <p className="text-[14px] font-medium">
+          <FindHighlight fieldKey={keyOf('title')} text={title} find={find} />
+        </p>
         <p
-          className="mt-1 max-w-[660px] text-[13px] leading-relaxed text-muted-foreground"
+          ref={answerRef}
+          tabIndex={-1}
+          className={`mt-1 max-w-[660px] text-[13px] leading-relaxed text-muted-foreground ${RESOLUTION_FOCUS_RING}`}
           data-testid="grant-not-resumed"
         >
           {GRANT_NOT_RESUMED}
         </p>
         <div className="mt-4 flex flex-wrap items-center gap-2">
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => onResolved(grant.key)}
-          >
+          <Button size="sm" variant="secondary" onClick={resolveAndReturnFocus}>
             {GRANT_NOT_RESUMED_DISMISS}
           </Button>
         </div>
@@ -354,10 +459,21 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
 
   return (
     <div
+      ref={rowRef}
       className="border-b border-rule-soft p-4 last:border-b-0"
       data-testid={`grant-${grant.key}`}
     >
-      <p className="text-[14px] font-medium">{title}</p>
+      <p className="text-[14px] font-medium">
+        <FindHighlight fieldKey={keyOf('title')} text={title} find={find} />
+      </p>
+      {/*
+        NOT `FindHighlight` (TASK-390 review finding). `description` is not in
+        the find index — see `grantFindFields`'s comment on why only `title`
+        is indexed for a non-host grant: this paragraph is absent from the
+        `stalled` render arm below, and a field that is sometimes on screen
+        and sometimes not cannot safely be indexed without also making
+        `stalled` visible to the indexer.
+      */}
       {description.length > 0 && (
         <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
           {description}
@@ -420,7 +536,17 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
               type="password"
               autoComplete="off"
               value={values[s.slot] ?? ''}
-              onChange={(e) => setValues((v) => ({ ...v, [s.slot]: e.target.value }))}
+              onChange={(e) => {
+                const value = e.target.value;
+                setValues((v) => ({ ...v, [s.slot]: value }));
+                // Written through immediately, not merely on unmount: an
+                // unmount from a tab switch or route change gives this
+                // component no chance to run a cleanup effect first (the
+                // parent has already decided to stop rendering it), so the
+                // draft has to be current after every keystroke, not just at
+                // the end.
+                setGrantDraftValue(grant.key, s.slot, value);
+              }}
             />
           </div>
         );
@@ -433,13 +559,14 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
         handler was already reading them as `packages?.npm ?? []`; this is
         the render site catching up with it.
       */}
-      {packages != null &&
-        ((packages.npm?.length ?? 0) > 0 || (packages.pypi?.length ?? 0) > 0) && (
-          <p className="mt-3 text-[13px] text-muted-foreground" data-testid="grant-packages">
-            {PACKAGES_LINE}
-          </p>
-        )}
+      {/* Not indexed — same reasoning as `description` above. */}
+      {showPackagesLine && (
+        <p className="mt-3 text-[13px] text-muted-foreground" data-testid="grant-packages">
+          {PACKAGES_LINE}
+        </p>
+      )}
 
+      {/* Not indexed — same reasoning as `description` above. */}
       <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
         {GRANT_REASSURANCE}
       </p>
@@ -450,7 +577,10 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
         <Button
           size="sm"
           disabled={busy || !allSlotsFilled || conversationId === null}
-          onClick={() => void connect()}
+          onClick={() => {
+            armForResolution();
+            void connect();
+          }}
         >
           {busy ? GRANT_CONNECTING_LABEL : GRANT_CONNECT_LABEL}
         </Button>

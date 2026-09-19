@@ -20,7 +20,59 @@
  * deciding whether to widen what software may do on their behalf, and two of
  * them are read while they are holding a secret. CLAUDE.md's voice guidance
  * says to drop the humour when the subject is security; this is that.
+ *
+ * THREE DERIVATION FUNCTIONS LIVE HERE TOO (TASK-390), not just constants.
+ * `grantTitle` / `grantDescription` / `grantPackagesVisible` used to be
+ * computed inline inside `GrantRow.tsx`. `lib/thread-find.ts` needs the exact
+ * same answers to decide what a grant's find-index entry says — and "the exact
+ * same answers" has to mean one function, not two copies that happen to agree
+ * today. A title-format tweak in one and not the other is a search result that
+ * quotes text nobody can see, or a card whose visible words find cannot find —
+ * the invariant-4 bug this repo's memory keeps re-discovering. So the render
+ * site and the index both call these, and neither hand-builds the string.
  */
+import { humanizeId } from './humanize';
+import type { PermissionRequest } from '@/server/types';
+
+/**
+ * THE TITLE IS THE SUBJECT OF THE CONSENT (see `GrantRow.tsx`'s own note on
+ * why an empty/undefined connector name must fall back rather than render
+ * "Connect undefined"). Pulled out here so `thread-find.ts` cannot compute a
+ * different title for the same grant.
+ */
+export function grantTitle(request: PermissionRequest): string {
+  if (request.kind === 'host') return `Allow access to ${request.host}?`;
+  if (request.kind === 'connector') {
+    const name =
+      typeof request.name === 'string' && request.name.trim().length > 0
+        ? request.name
+        : humanizeId(request.connectorId);
+    return `Connect ${name}`;
+  }
+  return `Connect ${humanizeId(request.skillId)}`;
+}
+
+/**
+ * Skill grants only — connectors and hosts have no free-text description
+ * field. Coalesced to `''` rather than validated, same reasoning as
+ * `GrantRow.tsx`'s own comment: a missing description is still an answerable
+ * row, just a plainer-looking one.
+ */
+export function grantDescription(request: PermissionRequest): string {
+  return request.kind === 'skill' && typeof request.description === 'string'
+    ? request.description
+    : '';
+}
+
+/** Whether the packages line is shown at all — host grants never show it. */
+export function grantPackagesVisible(request: PermissionRequest): boolean {
+  if (request.kind === 'host') return false;
+  const packages = request.packages;
+  return (
+    packages != null &&
+    ((packages.npm?.length ?? 0) > 0 || (packages.pypi?.length ?? 0) > 0)
+  );
+}
 
 /**
  * The reassurance line, shared by the skill and connector cards.
