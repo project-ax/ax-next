@@ -45,6 +45,20 @@ function isNonEmptyString(v: unknown): v is string {
 // timezone — a correctness bug that varies by deployment, not just a loose
 // message. Rejecting it here keeps the normalized value deployment-
 // independent.
+//
+// The accepted grammar is narrower than "any ISO-8601 UTC instant" (the
+// contract's doc comment on `FactStatementInput.when`): a colon-less offset
+// (`+0530`), an hour-only offset (`+05`), and a no-seconds instant
+// (`2023-06-01T12:00Z`) are all valid ISO-8601 but rejected here. Deliberate
+// narrowing for a trust-boundary check, not an oversight — widen the regex
+// if a real caller needs one of those forms.
+//
+// Residual, NOT closed by this check: `Date.parse` accepts (and this
+// forwards) calendar-overflow instants like `2023-02-29T00:00:00Z` in a
+// non-leap year or `...T24:00:00Z`, silently rolling them to the next valid
+// date. That is deployment-independent (same result everywhere), unlike the
+// TZ-shift bug this check exists for, so it's left as a known gap rather
+// than adding full calendar validation here.
 const EXPLICIT_OFFSET_ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
 
 function normalizeIsoInstant(field: string, value: string): string {

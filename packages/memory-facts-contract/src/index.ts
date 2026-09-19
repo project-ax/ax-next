@@ -42,7 +42,13 @@ export interface FactStatementInput {
   relation: string;
   /** The asserted value (dem-memory's `object`). */
   value: string;
-  /** ISO-8601 UTC instant the statement became true (dem-memory's `validStart`). */
+  /**
+   * ISO-8601 instant the statement became true (dem-memory's `validStart`),
+   * with an EXPLICIT `Z` or `+HH:MM`/`-HH:MM` offset — a backend rejects an
+   * offsetless local-time string rather than guess a timezone. Seconds are
+   * required (no `2023-06-01T12:00Z`); a colon-less or hour-only offset
+   * (`+0530`, `+05`) is also rejected even though both are valid ISO-8601.
+   */
   when: string;
   /**
    * The slot-supersession key. Derivation lives OUTSIDE this engine (in
@@ -836,6 +842,45 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
             ],
           });
           throw new Error('expected memory:facts:record to reject an unparseable `when`');
+        } catch (err) {
+          expect(err).toBeInstanceOf(Error);
+          expect((err as { code?: string }).code).toBe('invalid-payload');
+        }
+      });
+
+      it('rejects a `when` with no explicit Z/offset — bare local time is a TZ-shift footgun', async () => {
+        // Regression guard: `Date.parse` alone ACCEPTS this (as host-local
+        // time), which would silently shift the stored instant by the
+        // server's timezone. A test asserting only 'not a date' rejects
+        // does not exercise this branch — Date.parse already rejects that
+        // string on its own, so it passes with or without the offset check.
+        try {
+          await bus.call('memory:facts:record', makeCtx(), {
+            statements: [
+              { about: 'user', relation: 'lives_in', value: 'Boston', when: '2023-06-01T12:00:00' },
+            ],
+          });
+          throw new Error('expected memory:facts:record to reject an offsetless `when`');
+        } catch (err) {
+          expect(err).toBeInstanceOf(Error);
+          expect((err as { code?: string }).code).toBe('invalid-payload');
+        }
+      });
+
+      it('accepts a `when` with an explicit non-Z offset, normalized to the equivalent UTC instant', async () => {
+        const recorded = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Boston',
+          when: '2023-06-01T12:00:00+05:30',
+        });
+        expect(recorded.when).toBe('2023-06-01T06:30:00.000Z');
+      });
+
+      it('recall rejects a non-boolean `activeOnly`', async () => {
+        try {
+          await recall({ activeOnly: 'true' as unknown as boolean, limit: 10 });
+          throw new Error('expected memory:facts:recall to reject a non-boolean activeOnly');
         } catch (err) {
           expect(err).toBeInstanceOf(Error);
           expect((err as { code?: string }).code).toBe('invalid-payload');
