@@ -111,8 +111,20 @@ function rgbOf(c: Colour): Rgb {
  * ratio, which is why the numbers written down here read 5.03 where an
  * unrounded pass reads 5.05.
  *
- * `under` must be OPAQUE. Nothing here composites a stack, because nothing in
- * the tree paints one fractional surface directly on another.
+ * `under` must be OPAQUE — one fractional layer over a solid one. That is a
+ * limit of this helper, NOT a claim about the tree, and the difference matters
+ * because the tree does stack: `ApprovalCard`'s action preview is
+ * `bg-background/70` painted directly on the card's own `bg-warning-soft/40`,
+ * with `text-muted-foreground` on top of it.
+ *
+ * That stack gets no row, and the reason is a margin rather than an absence.
+ * Both layers push the surface AWAY from mid-grey `--muted-foreground` — the
+ * tint toward the page, then the page 70% of the rest of the way back — so it
+ * lands further from the quiet text than the single-layer surface measured
+ * below, at 5.15 light / 5.95 dark on `--background` / 5.78 dark on `--card`.
+ * The rows below are the tighter bound, and a stacked surface that ever moves
+ * the other way needs its own row and a `composite()` that takes a resolved
+ * `Rgb` as `under`, which it already does.
  */
 function composite(fg: Colour, alpha: number, under: Colour): Rgb {
   const f = rgbOf(fg);
@@ -747,8 +759,9 @@ describe('--ink-ghost is a fill, never ink', () => {
  * `bg-warning-soft` — the number the note on `QUIET_TEXT_SURFACES` records
  * precisely because nothing renders it. The probe read the declared token and
  * not the composited pixel. A re-walk of the same surface got 5.03 light /
- * 5.50 dark, which is this section's answer to two decimal places, so the
- * instrument agrees once it composites.
+ * 5.50 dark against this section's 5.03 / 5.51 — inside the ±0.02
+ * browser-versus-formula gap this file budgets elsewhere, so the instrument
+ * agrees once it composites.
  *
  * What ships here is therefore not a fix. It is the measurement, enforced:
  *
@@ -800,10 +813,22 @@ interface Tint {
  * Comments are stripped first (`stripComments`, with its own fixtures above),
  * because this file's block comments discuss `bg-warning-soft` in prose and a
  * raw scan would count those as paint.
+ *
+ * A VARIANT PREFIX IS MATCHED AND THEN REJECTED, rather than not matched. That
+ * looks like a long way round to the same place and it is not: a regex that
+ * simply could not see `dark:bg-warning-soft/60` would keep measuring the
+ * unprefixed class and apply its alpha to the dark rows, which is a silent
+ * wrong answer in exactly the theme this whole section is about. Matching the
+ * prefix and throwing turns a conditional surface into a loud "give this its
+ * own rows" instead. Every other mutation already fails loud: two classes hit
+ * the count check, an interpolated class or an arbitrary `/[0.4]` opacity
+ * yields no percentage and trips the fractional assertion.
  */
-function approvalCardTint(): Tint {
-  const src = stripComments(readFileSync(join(SRC_ROOT, APPROVAL_CARD), 'utf8'));
-  const hits = [...src.matchAll(/(?<![\w-])bg-(warning-soft)(?:\/(\d{1,3}))?(?![\w-])/g)];
+function parseTint(source: string): Tint {
+  const src = stripComments(source);
+  const hits = [
+    ...src.matchAll(/(?<![\w-])(?:([a-z-]+):)?bg-(warning-soft)(?:\/(\d{1,3}))?(?![\w-])/g),
+  ];
   if (hits.length !== 1) {
     const found = hits.length === 0 ? 'none' : hits.map((h) => h[0]).join(', ');
     throw new Error(
@@ -812,8 +837,19 @@ function approvalCardTint(): Tint {
         `the note above and give the new surface its own rows — do not delete these.`,
     );
   }
-  const [cls, name, pct] = hits[0]!;
+  const [cls, variant, name, pct] = hits[0]!;
+  if (variant !== undefined) {
+    throw new Error(
+      `${APPROVAL_CARD} paints \`${cls}\` — a variant-prefixed surface, so the card ` +
+        `no longer has one tint for every theme. Measure each branch on its own rows ` +
+        `rather than letting this one stand in for both.`,
+    );
+  }
   return { token: `--${name!}`, alpha: pct === undefined ? 1 : Number(pct) / 100, cls: cls! };
+}
+
+function approvalCardTint(): Tint {
+  return parseTint(readFileSync(join(SRC_ROOT, APPROVAL_CARD), 'utf8'));
 }
 
 /**
@@ -885,6 +921,42 @@ describe("ApprovalCard's tinted surface", () => {
     const ws = dark.get('--warning-soft')!;
     const mf = dark.get('--muted-foreground')!;
     expect(contrast(mf, composite(ws, 1, '0 0% 100%'))).toBeCloseTo(contrast(mf, ws), 10);
+  });
+
+  /**
+   * Anti-vacuity for the parser, which is the one piece here that can be wrong
+   * QUIETLY. Everything else fails with a ratio; a parser that reads the wrong
+   * alpha just measures a different surface and reports it as fine.
+   *
+   * The `dark:` case is the one review found. A regex that could not see a
+   * variant prefix would keep reading the unprefixed class and apply its alpha
+   * to the dark rows — a wrong answer in exactly the theme this section is
+   * about, and a silent one. So it is matched and rejected, and that is pinned
+   * here rather than left to the comment above.
+   */
+  it('reads the alpha off a class, and refuses the shapes it cannot stand in for', () => {
+    expect(parseTint('<Card className="bg-warning-soft/40" />')).toMatchObject({
+      token: '--warning-soft',
+      alpha: 0.4,
+      cls: 'bg-warning-soft/40',
+    });
+    // No percentage suffix is opaque, not "unknown".
+    expect(parseTint('<Card className="bg-warning-soft" />').alpha).toBe(1);
+
+    // A theme-conditional surface cannot be measured by one row per theme.
+    expect(() => parseTint('<Card className="dark:bg-warning-soft/60" />')).toThrow(
+      /variant-prefixed/,
+    );
+    expect(() =>
+      parseTint('<Card className="bg-warning-soft/40 dark:bg-warning-soft/60" />'),
+    ).toThrow(/paints 2 warning-soft classes/);
+
+    // Gone entirely, or hidden behind interpolation: loud, not green.
+    expect(() => parseTint('<Card className="bg-card" />')).toThrow(/paints 0/);
+
+    // Prose about the class is not paint — this file's own comments say
+    // `bg-warning-soft` repeatedly, and so does the component's.
+    expect(() => parseTint('  /* bg-warning-soft is the tint */')).toThrow(/paints 0/);
   });
 
   it('registers one case per theme per backdrop per text token', () => {
