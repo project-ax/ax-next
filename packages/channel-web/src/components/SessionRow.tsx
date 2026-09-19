@@ -335,7 +335,7 @@ export function SessionRow({
         className="
           session-row-more shrink-0 h-[18px] w-[18px] mt-px
           inline-flex items-center justify-center rounded-sm
-          text-ink-ghost hover:bg-background hover:text-foreground
+          text-muted-foreground hover:bg-background hover:text-foreground
           opacity-0 group-hover:opacity-100 [.active>&]:opacity-100
           transition-opacity transition-colors cursor-pointer
         "

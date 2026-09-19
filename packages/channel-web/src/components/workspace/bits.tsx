@@ -332,7 +332,7 @@ export function PermissionLine({ row }: { row: PermissionRow }) {
             </span>
           </span>
         )}
-        <span className="ml-1.5 break-all font-mono text-[10.5px] text-ink-ghost">
+        <span className="ml-1.5 break-all font-mono text-[10.5px] text-muted-foreground">
           {row.source}
         </span>
       </span>
@@ -380,7 +380,7 @@ export function GrantLine({
           </span>
         )}
         {row.grantedAt !== null && (
-          <span className="ml-1.5 text-[11px] text-ink-ghost">
+          <span className="ml-1.5 text-[11px] text-muted-foreground">
             {grantedDay(row.grantedAt)}
           </span>
         )}

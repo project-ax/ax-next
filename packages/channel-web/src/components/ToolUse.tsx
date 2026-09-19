@@ -52,7 +52,7 @@ const stepStatus = (p: ToolCallMessagePartProps): ToolStepStatus =>
   toolStepStatus(p);
 
 const STEP_LABEL_CLASS =
-  'uppercase text-[9.5px] tracking-[0.14em] text-ink-ghost mt-1.5 mb-0.5';
+  'uppercase text-[9.5px] tracking-[0.14em] text-muted-foreground mt-1.5 mb-0.5';
 
 /**
  * The settled state has NO word (TASK-260).

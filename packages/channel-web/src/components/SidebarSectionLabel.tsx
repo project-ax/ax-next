@@ -10,7 +10,7 @@
  *   - "switch agent"     — chat agent menu header.
  *   - "AX V0.3"          — chat user menu footer.
  *
- * 10.5px, 0.12em tracking, uppercase, ink-ghost, font-medium. The
+ * 10.5px, 0.12em tracking, uppercase, muted-foreground, font-medium. The
  * `AdminPaneHeader` eyebrow uses a different scale (11px / 0.06em /
  * muted-foreground) and stays separate.
  */
@@ -29,7 +29,7 @@ export function SidebarSectionLabel({
   return (
     <div
       className={cn(
-        'text-[10.5px] tracking-[0.12em] uppercase font-medium text-ink-ghost',
+        'text-[10.5px] tracking-[0.12em] uppercase font-medium text-muted-foreground',
         className,
       )}
       {...props}

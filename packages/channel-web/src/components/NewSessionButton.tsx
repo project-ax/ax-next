@@ -63,7 +63,7 @@ export function NewSessionButton() {
       <span className="flex-1 min-w-0 text-left [body.sidebar-collapsed_&]:hidden">New chat</span>
       <span
         className="
-          font-mono text-[10.5px] tracking-[0.02em] text-ink-ghost
+          font-mono text-[10.5px] tracking-[0.02em] text-muted-foreground
           opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100
           transition-opacity
           [body.sidebar-collapsed_&]:hidden
