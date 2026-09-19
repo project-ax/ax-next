@@ -23,11 +23,25 @@
 // in a colon with the next `##` heading welded to it) — and EVERY ONE of them
 // reported a `git diff --numstat` deletions column of 0.
 //
-// That last part is what decided it. The deletions column is the sharpest
-// check we have that no row was silently dropped, and union defeats it: the
-// loss happens *during the merge*, so relative to the base nothing was ever
-// deleted. A fix that blinds the check that catches the real risk is not a
-// fix.
+// Calibrating that, because the frequency matters and overstating it would be
+// the same sin: the shared LEADING blank is lost in every case and that one is
+// cosmetic (CommonMark still reads `##` after a paragraph line as a heading).
+// Content loss needs a shared TRAILING line, and in the real decisions.md that
+// is rare — measured, entries almost never end on a line another entry also
+// ends on (only `---`, twice). The lines that ARE mass-duplicated are interior
+// and therefore safe: `| Date | Decision | Rationale | Alternatives |` appears
+// 203 times and `|---|---|---|---|` 185, and every one of them sits between
+// unique lines rather than at a block edge.
+//
+// So union's corruption is low-frequency, not routine. It is still
+// disqualifying, and the reason is the deletions column rather than the line
+// count. That column is the sharpest check we have that no row was silently
+// dropped, and union defeats it: the loss happens *during the merge*, so
+// relative to the base nothing was ever deleted. Given two options costing
+// about the same to adopt — one `.gitattributes` line versus one helper and a
+// rule — the tiebreak is that only one of them has a silent-loss mode at all.
+// A rare silent corruption in the log we use to reconstruct why we did things
+// is worse than a frequent visible one.
 //
 // Shards have no such failure mode because there is no merge at all: two
 // branches write two different paths, git takes both, and there is nothing for
