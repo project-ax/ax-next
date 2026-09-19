@@ -892,6 +892,8 @@ export function AgentView({
             <Button
               variant="ghost"
               size="icon"
+              /* Same one-frame cover as the shell's own trigger — see there. */
+              className="md:hidden"
               onClick={onOpenNav}
               aria-label="Open navigation"
             >
@@ -1239,6 +1241,23 @@ export function AgentView({
                     tap reads as having done nothing. The desktop rail is a
                     column with the thread beside it, so it has nothing to
                     close and keeps the bare setter.
+
+                    WHAT CLOSING COSTS, stated plainly: `AgentRailContent` owns
+                    the notice a revoke leaves behind ("Revoked…", "already
+                    gone", "we couldn't take that back"), so unmounting it
+                    drops that line. This is the SAME loss as crossing `md`
+                    mid-revoke, but it is reachable by one ordinary tap rather
+                    than by resizing during a sub-second POST — so it is the
+                    common path, not the rare one, and the review note that
+                    called this rare was counting only the resize.
+
+                    Still not worth hoisting the notice into `AgentView`: the
+                    revoke itself always lands server-side, and reopening the
+                    rail re-reads the list, so what is lost is an
+                    acknowledgement of something the next read already shows.
+                    Hoisting would put rail state in the pane that mounts the
+                    rail, which is how the two shapes start disagreeing — the
+                    exact thing extracting `AgentRailContent` avoided.
                   */
                   onOpenPast={(id) => {
                     setPastId(id);

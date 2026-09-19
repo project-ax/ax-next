@@ -725,9 +725,16 @@ function Inner({
 
   /*
     The only door to the nav once the rail is off-canvas, so it is rendered
-    wherever a header is. `md:hidden` is belt and braces on top of the
-    `compact` guard: the hook re-renders on the `change` event, and this makes
-    sure a trigger can never be painted next to a rail that is also on screen.
+    wherever a header is.
+
+    `md:hidden` COVERS ONE FRAME, and it is worth saying which — an earlier
+    version of this comment claimed it stopped the trigger appearing beside the
+    rail, which the `compact` guard alone already does (a `false` there renders
+    `null`, and the same `false` is what puts the sidebar back as a column).
+    What CSS adds is the gap between a viewport crossing `md` and React
+    re-rendering off the `change` event: for that one paint the old tree is
+    still mounted, and the class hides the button rather than letting it flash
+    next to the column. `AgentView`'s trigger carries it for the same reason.
 
     THE AGENT ROUTE DOES NOT USE THIS ONE. `AgentView` draws its own header and
     takes no `leading` slot, so it renders its own trigger and we hand it
