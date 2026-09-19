@@ -2,6 +2,17 @@
 
 Architectural / process decisions. Never deleted — strikethrough if reversed.
 
+## 2026-09-18 — TASK-388 fix the render site, port the #557 pattern verbatim
+
+| Date | Decision | Rationale | Alternatives |
+|---|---|---|---|
+| 2026-09-18 | Fixed both unguarded reads in `PermissionCard.tsx` (`request.description.length`, `packages.npm.length`/`pypi.length`) at the RENDER SITE — a local `typeof` fallback for `description` and optional-chained `?.length ?? 0` for `packages.npm`/`pypi` — rather than adding a shape guard on the producer (`transport.ts`'s `permissionCardActions.show()` call site) or widening any existing check. | Matches TASK-351/PR #557's settled trade-off on the identical payload shape: these two fields decide how the card READS, not whether the grant can be ANSWERED, so refusing/hiding the card over a missing `description` would cost the person an answerable question — worse than the crash it replaces. Confirmed both bugs were live (not merely theoretical) by reverting the fix and running the new test file: 4/6 tests went RED with the exact `TypeError`s #557 reported, 6/6 GREEN after. | Add an `isRenderableGrant`-style shape guard at `transport.ts:851` before `permissionCardActions.show()` — considered and rejected for THIS card: TASK-360 already retires the whole chat tree (`PermissionCard.tsx` + `transport.ts` among the deleted files per TASK-372's confirmed deletion boundary), so a new producer-side guard is dead code on a fixed horizon. The render-site fix is the same shape whether the tree lives or dies, so it isn't wasted either way. |
+
+Updated `.claude/memory/patterns.md`'s TASK-351 pattern row so it no longer reads
+"still open elsewhere" — that clause was accurate when written and stayed in the file
+after this card closed it, which is exactly the stale-line hazard CLAUDE.md's
+"fix the code AND the line that generated the card" rule exists for.
+
 ## 2026-09-17 — TASK-382 the review gate asks the handoff, not the branch
 
 | Date | Decision | Rationale | Alternatives |

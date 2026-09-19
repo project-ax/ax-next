@@ -348,8 +348,15 @@ export function PermissionCard() {
             </div>
           ),
         )}
+        {/*
+          (TASK-388) Same hole TASK-351 found and fixed in the workspace's
+          `GrantRow` — `npm`/`pypi` are both required when `packages` is
+          present, so a wire payload carrying only one of them threw here.
+          `connect()`/`approveConnector()` above already read them as
+          `packages?.npm ?? []`; this is the render site catching up.
+        */}
         {packages != null &&
-          (packages.npm.length > 0 || packages.pypi.length > 0) && (
+          ((packages.npm?.length ?? 0) > 0 || (packages.pypi?.length ?? 0) > 0) && (
             // (A5) "Installs npm packages → reaches registry.npmjs.org" is a
             // true sentence that means nothing to most people. What they need
             // to know is that something gets downloaded — the registry
@@ -435,6 +442,16 @@ export function PermissionCard() {
     );
   }
 
+  // (TASK-388) Same hole TASK-351 found and fixed in the workspace's
+  // `GrantRow`: `description` is typed `string` and required, and the JSX
+  // below asked it for `.length` unguarded — a wire payload that omitted it
+  // threw `TypeError: Cannot read properties of undefined (reading 'length')`
+  // here too. `typeof` rather than a bare `??` so a non-string (which would
+  // also survive a `??`) can't reach `.length` and throw one line further
+  // down, and can't render as a React child either.
+  const skillDescription =
+    typeof request.description === 'string' ? request.description : '';
+
   return (
     <Card className="mb-3" data-testid="permission-card">
       <CardHeader>
@@ -442,8 +459,8 @@ export function PermissionCard() {
             uses, not the name a person would. Humanized, with the raw id as its
             own fallback for anything we can't read. */}
         <CardTitle>Connect {humanizeId(request.skillId)}</CardTitle>
-        {request.description.length > 0 && (
-          <CardDescription>{request.description}</CardDescription>
+        {skillDescription.length > 0 && (
+          <CardDescription>{skillDescription}</CardDescription>
         )}
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
