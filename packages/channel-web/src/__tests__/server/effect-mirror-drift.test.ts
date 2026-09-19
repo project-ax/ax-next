@@ -15,13 +15,37 @@
  * compiled green while every array answer fell into a `null` branch and the rail
  * stopped disclosing that `web_extract` spends money and acts outward.
  *
- * `tsc` CANNOT SEE IT, which is the whole reason a test has to. The hop from
- * `@ax/tool-policy` to here is duck-typed on purpose (invariant 2 forbids the
- * import), so `PolicyCapabilityRow.effect` is `unknown` and the mirror is a bare
- * string literal. The compiler catches exactly one of the four drift directions
- * — a member added to `CapabilityEffect` alone breaks `EFFECT_DISCLOSURES`'s
- * `Record<CapabilityEffect, …>` exhaustiveness in `lib/permission-frames.ts` —
- * and nothing at all about the other three.
+ * `tsc` CANNOT SEE THE DROP, which is the whole reason a test has to. The hop
+ * from `@ax/tool-policy` to here is duck-typed on purpose (invariant 2 forbids
+ * the import), so `PolicyCapabilityRow.effect` is `unknown` and the mirror is a
+ * bare string literal.
+ *
+ * Be precise about what the compiler does and does not cover here, because the
+ * first draft of this comment got it wrong and a reviewer had to measure it.
+ * `tsc` is good at PHANTOM members — a name that exists downstream and nowhere
+ * upstream — and it is blind to MISSING ones, which is the direction that
+ * matters. Measured, one edit per mutant:
+ *
+ *   PHANTOM (caught at three of the four sites)
+ *     + `KNOWN_EFFECTS` alone      TS2769 — `new Set<CapabilityEffect>` rejects
+ *                                  a literal outside the union
+ *     + `CapabilityEffect` alone   TS2741 — `EFFECT_DISCLOSURES`'s
+ *                                  `Record<CapabilityEffect, …>` loses exhaustiveness
+ *     + `ToolEffectSchema` alone   TS2322 ×2 — `plugin.ts`'s `returns` schemas
+ *                                  stop matching the interfaces they pin
+ *     + `ToolEffect` alone         GREEN. Nothing type-checked depends on this
+ *                                  union's width across the boundary.
+ *
+ *   MISSING (caught at none of them — every one of these is silent)
+ *     + `ToolEffect` alone, with the rules declaring it
+ *     + `ToolEffect` AND `ToolEffectSchema` together, `channel-web` untouched —
+ *       the REALISTIC half-edit, and the one this guard is really for
+ *     - `'spends'` removed from `KNOWN_EFFECTS` alone
+ *
+ * So the compiler's coverage sits entirely on the harmless side of this mirror
+ * and entirely absent from the dangerous one. A phantom member downstream
+ * discloses nothing false; a member the rail cannot render understates a real
+ * tool's reach.
  *
  * WHY A SOURCE SCAN RATHER THAN A SHARED TYPE. Invariant 2 forbids the
  * cross-plugin import, so the mirror is the architecture, not an oversight: the
@@ -64,11 +88,16 @@ const ROUTES_WORKSPACE = join(REPO_ROOT, 'packages/channel-web/src/server/routes
 /**
  * Comments out, THEN members out — in that order, and the order is the point.
  * TASK-454 is a sibling guard that joined `\`-continuations BEFORE dropping
- * comments and so failed OPEN: a comment hid a live line from every scan. Here
- * the equivalent hazard is a doc comment mentioning `'outward'` in quotes right
- * above the declaration it documents — which both of the union declarations
- * below actually do — so a naive quote scan over the raw chunk would invent
- * members that are not in the type.
+ * comments and so failed OPEN: a comment hid a live line from every scan.
+ *
+ * WHAT THIS ACTUALLY PROTECTS AGAINST, stated narrowly because a reviewer
+ * caught the first draft overstating it. The hazard is an INLINE comment inside
+ * the region being scanned — a `// plus 'destroys' once the rules declare it`
+ * parked in the middle of the `KNOWN_EFFECTS` array, say, which a raw quote
+ * scan would read as a member that is not there. The doc comments ABOVE the two
+ * union declarations are not the hazard and never were: `capture()` starts at
+ * the `=`, so the chunk handed to this function is only ever the right-hand
+ * side. (They also use backticks, not single quotes.)
  *
  * Block comments first, then line comments: a `//` inside an already-removed
  * block comment must not survive to eat the line after it. The one input that
@@ -124,9 +153,13 @@ function toolEffectUnion(): string[] {
 
 /**
  * `@ax/tool-policy`: the `z.enum` the hook bus re-parses every answer against.
- * A member in the union but not here fails the bus parse LOUDLY, which is the
- * one drift direction that is already safe — it is pinned anyway because a
- * member here but not in the union is the reverse, and it is silent.
+ *
+ * Both directions of drift between this and `ToolEffect` are already caught,
+ * which is why this site is the least interesting of the four: a member in the
+ * union but not here fails the bus parse loudly at runtime, and a member here
+ * but not in the union fails `tsc` at `plugin.ts`'s `returns` schemas (TS2322
+ * ×2, measured). It is pinned anyway so that the guard's list is the whole
+ * mirror rather than the parts somebody remembered.
  */
 function toolEffectSchemaEnum(): string[] {
   const site = '`export const ToolEffectSchema = z.enum([…])`';
@@ -218,10 +251,19 @@ describe('declared-effect mirror — ToolEffect vs CapabilityEffect drift (TASK-
 
   it('every member the producer can declare SURVIVES the wire projection', () => {
     // The half that catches the DROP rather than the divergence. `toWireEffects`
-    // is module-private, so this asks through the real exported projection —
-    // which is also the honest question, because a filter that is no longer
-    // WIRED IN is #574's regression and a unit test of the filter alone cannot
+    // is module-private, so this asks through the real exported projection,
+    // which is also the honest question: a filter that is correct but no longer
+    // WIRED IN is #574's regression, and a unit test of the filter alone cannot
     // see it.
+    //
+    // HOW MUCH UNWIRING THIS ACTUALLY CATCHES, measured rather than assumed
+    // after a reviewer pushed on it. Deleting the `effect:` line entirely →
+    // caught (`undefined`). Replacing `toWireEffects(row.effect)` with the cast
+    // `row.effect as CapabilityEffect[]` → NOT caught by the loop below, because
+    // with the four lists in sync every real member survives a cast too. That
+    // mutant is what the junk probe at the end of this test is for: a cast puts
+    // the invented member straight onto the security surface, where the renderer
+    // has no entry for it and drops it silently.
     for (const member of toolEffect) {
       const wire = toWirePermission({
         verdict: 'hold',
@@ -241,6 +283,29 @@ describe('declared-effect mirror — ToolEffect vs CapabilityEffect drift (TASK-
           'copy in `EFFECT_DISCLOSURES`).',
       ).toEqual([member]);
     }
+
+    // The junk probe. Not a duplicate of the end-to-end refusal test in
+    // `routes-workspace-rail.test.ts` (TASK-383) — that one proves the ROUTE
+    // refuses junk; this one proves the projection is still a FILTER and not a
+    // cast, which is the mutant the loop above cannot see. A member that no
+    // authored copy can render must not reach the wire, and the true half of
+    // the set must survive alongside it (dropping the whole set over one bad
+    // member would understate a real effect, design H4).
+    const probe = toWirePermission({
+      verdict: 'hold',
+      capability: 'do the thing this member describes',
+      source: 'rule:mirror.probe',
+      provenance: 'rule',
+      described: true,
+      effect: [...toolEffect, 'not-a-real-effect'],
+    });
+    expect(
+      probe.effect,
+      'An invented effect member reached the wire. `toWirePermission` must FILTER ' +
+        '`row.effect` per member (`toWireEffects`), never cast it: a cast puts ' +
+        "whatever an alternate policy impl invented onto the rail, where the " +
+        'renderer has no entry for it and drops it without a word.',
+    ).toEqual(toolEffect);
   });
 
   it('every member the producer can declare has authored disclosure copy', () => {

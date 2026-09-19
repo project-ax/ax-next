@@ -81,8 +81,13 @@ export interface PredicateSpec {
  * cannot import this union (invariant 2), so it is hand-copied: here, in
  * `ToolEffectSchema` below, and twice over there as `CapabilityEffect` and the
  * `KNOWN_EFFECTS` allow-list `toWireEffects` filters against — plus authored
- * copy in `EFFECT_DISCLOSURES`. Add it here alone and `tsc` stays GREEN while
- * the rail DROPS it, claiming less reach than the tool has.
+ * copy in `EFFECT_DISCLOSURES`.
+ *
+ * Do the tool-policy half and stop, and `tsc` stays GREEN while the rail DROPS
+ * the new member, claiming less reach than the tool has. Measured both ways:
+ * widening this union alone compiles clean, and so does widening it together
+ * with `ToolEffectSchema` — which is the likelier half-edit, since those two
+ * live in this file and the other two do not.
  * `packages/channel-web/src/__tests__/server/effect-mirror-drift.test.ts` is
  * what notices; it reads all four as text.
  */
