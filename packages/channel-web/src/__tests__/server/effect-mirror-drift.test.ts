@@ -100,11 +100,24 @@ const ROUTES_WORKSPACE = join(REPO_ROOT, 'packages/channel-web/src/server/routes
  * side. (They also use backticks, not single quotes.)
  *
  * Block comments first, then line comments: a `//` inside an already-removed
- * block comment must not survive to eat the line after it. The one input that
- * could over-eat is a `//` inside a string literal (a URL), which would swallow
- * the rest of that line; none of the four declarations contains one, and if a
- * future edit introduced one the parse would come back EMPTY and every extractor
- * below throws on empty. Fail-closed, not fail-open.
+ * block comment must not survive to eat the line after it. The
+ * `strips comments BEFORE extracting, and in the right order` test below pins
+ * that ordering rather than asserting it here in prose.
+ *
+ * THE LIMIT, stated rather than dressed up as a guarantee — an earlier draft of
+ * this paragraph claimed "an unparseable declaration comes back EMPTY and every
+ * extractor throws, so this is fail-CLOSED", and a reviewer disproved it by
+ * measurement. A `//` inside a string literal swallows the rest of THAT LINE
+ * only: given `'outward'`, `'spends'` and `'we//ird'` on separate lines the scan
+ * returns `['outward', 'spends']` — non-empty, so nothing throws, and the third
+ * token is simply invisible. Emptiness is the failure mode only when the `//`
+ * precedes every member.
+ *
+ * What makes that acceptable is the DOMAIN, not the parser: an effect member is
+ * a slug (the parse-sanity test pins `^[a-z][a-z0-9-]*$`), so a `//` cannot
+ * legitimately appear inside one. If somebody ever writes a member that
+ * contains one, this guard will quietly not see it. Known, narrow, and written
+ * down here so the next reader does not have to re-derive it.
  */
 function stripComments(chunk: string): string {
   return chunk.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
@@ -202,6 +215,41 @@ describe('declared-effect mirror — ToolEffect vs CapabilityEffect drift (TASK-
   const toolEffectSchema = toolEffectSchemaEnum();
   const capabilityEffect = capabilityEffectUnion();
   const knownEffects = knownEffectsSet();
+
+  it('strips comments BEFORE extracting, and in the right order', () => {
+    /*
+      `stripComments` is the identity on all four chunks as they stand today —
+      none contains a comment — so nothing else in this file exercises it and
+      deleting it would fail no test. That is precisely the shape this branch
+      already rejected once: a protection asserted only in prose does not fail
+      when the thing it warns about happens.
+
+      What it protects is a FALSE POSITIVE, not a real drift: a future inline
+      comment in one of the member lists would otherwise be read as a member,
+      and the guard would report a mirror mismatch that does not exist.
+    */
+    const parse = (chunk: string) => quotedMembers(chunk, 'a test probe');
+
+    // A comment inside the list must not contribute a member. Both spellings.
+    expect(
+      parse("\n  'outward',\n  /* 'destroys' when a rule declares it */\n  'spends',\n"),
+    ).toEqual(['outward', 'spends']);
+    expect(parse("\n  'outward',\n  // 'destroys' when a rule declares it\n  'spends',\n")).toEqual([
+      'outward',
+      'spends',
+    ]);
+
+    // THE ORDERING, which is the half TASK-454's siblings got wrong. Block
+    // comments must go first: strip line comments first and the `//` INSIDE
+    // this block comment eats the rest of the line — both members with it —
+    // leaving an unterminated `/*` and an empty parse, which throws. Measured:
+    // swapping the two `.replace` calls takes this test from green to red.
+    expect(parse("/* // */ 'outward', 'spends'")).toEqual(['outward', 'spends']);
+
+    // An empty parse throws rather than returning `[]`. An empty member list
+    // would make every set-equality below pass while comparing nothing.
+    expect(() => parse("\n  // 'outward', 'spends'\n")).toThrow(/Parsed NO members/);
+  });
 
   it('parsed real members out of all four sites', () => {
     // A floor plus both current anchors, not an exact list: this proves the
