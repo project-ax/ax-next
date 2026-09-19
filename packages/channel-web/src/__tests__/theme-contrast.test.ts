@@ -29,8 +29,8 @@
  * fails on any future token edit that drops a pair below the floor.
  */
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, relative } from 'node:path';
 
 const CSS = readFileSync(join(__dirname, '..', 'index.css'), 'utf8');
 
@@ -300,5 +300,186 @@ describe('theme contrast', () => {
       QUIET_TEXT_SURFACES.map((surface) => `${name}:${surface}`),
     );
     expect(quietTextCasesRegistered).toEqual(expected);
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * `--ink-ghost` — a fill, never ink.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * The one palette token that does not clear the text floor, and must not try.
+ *
+ * Four independent browser probes measured it as text: 1.72:1 in light, 2.04:1
+ * in dark — roughly a THIRD of the AA floor, on copy people are meant to read.
+ * Against the surfaces the page actually paints it on it is worse still: 1.57:1
+ * on light `--muted`, 1.67:1 on dark `--card`. Those two never showed up in a
+ * probe because the probes measured the page background.
+ *
+ * The obvious fix does not work, and it is worth writing down why so nobody
+ * spends another afternoon on it. To clear 4.5:1 on every surface it lands on,
+ * `--ink-ghost` would have to become ~46% lightness in light mode and ~53% in
+ * dark. `--muted-foreground` is already 44% and 56%. Two tokens, two or three
+ * percentage points apart, one colour — which is invariant 4 with a paint
+ * swatch on it.
+ *
+ * And it would break the token's OTHER job. `--ink-ghost` is also a fill:
+ *
+ *   - `Composer.tsx` — the send circle's INACTIVE state. A `:has()` rule flips
+ *     it to `bg-primary` the moment the field has content, so the faintness is
+ *     the affordance: it is how the button says "nothing to send yet".
+ *   - `bits.tsx` `StateDot` — the `resting` dot.
+ *   - `StatusDot.tsx` — the admin `empty` and `pending` dots.
+ *
+ * A mid-grey send circle reads as enabled. A mid-grey `resting` dot reads as
+ * active sitting next to `bg-primary` "working". Moving the value satisfies the
+ * text role by destroying the fill role.
+ *
+ * That tension is not new here — it is the same one this file already documents
+ * for `--primary` and `--destructive`, where an accent is also a foreground and
+ * moving it fixes one role and breaks the other. The resolution there was to
+ * split the roles rather than average them, and it is the resolution here:
+ * `--ink-ghost` keeps its value and becomes background-only. Quiet text is
+ * `--muted-foreground`, which is measured above and clears AA everywhere.
+ *
+ * `AgentMenu.tsx` had already reached this conclusion for one component, with a
+ * comment saying so. This generalises it, and enforces it, because Tailwind
+ * generates `text-ink-ghost` from the same colour entry as `bg-ink-ghost` and
+ * there is no way to publish one without the other.
+ *
+ * NOT covered here, deliberately: the fill sites themselves. `bits.tsx` says
+ * "colour is the state", which makes the `resting` dot an information-bearing
+ * non-text element owing 3:1 under WCAG 1.4.11 — and at 1.72:1 light / 1.67:1
+ * dark it does not clear that either. That is a real defect with a different
+ * fix, tracked on its own card. This file bounds the TEXT floor.
+ */
+const INK_GHOST = '--ink-ghost';
+
+/** The Tailwind class the token publishes as text. */
+const INK_GHOST_TEXT_CLASS = 'text-ink-ghost';
+
+const SRC_ROOT = join(__dirname, '..');
+
+/**
+ * Comments are not rendered classes. `AgentMenu.tsx` names
+ * `text-ink-ghost` in prose precisely to explain why it does not use it, and
+ * that sentence is worth more than the false positive it would otherwise cost.
+ *
+ * Stripping can only ever HIDE a usage, never invent one, so it is the half of
+ * this scanner that can fail silently — which is why `reads code and ignores
+ * comments` below pins the behaviour both ways on a fixture.
+ */
+function stripComments(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .filter((line) => !/^\s*(\/\/|\*)/.test(line))
+    .join('\n');
+}
+
+/** Does this source file paint `cls`, ignoring anything said about it in prose? */
+function paints(src: string, cls: string): boolean {
+  return new RegExp(`(?<![\\w-])${cls}(?![\\w-])`).test(stripComments(src));
+}
+
+/**
+ * Every shipped source file. Tests are excluded on purpose: `AgentMenu.test.tsx`
+ * asserts the class is ABSENT, so scanning it would make the guard trip on its
+ * own enforcement. Nothing under `__tests__` renders production UI.
+ */
+function sourceFiles(dir = SRC_ROOT): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === '__tests__' || entry.name === 'node_modules') continue;
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...sourceFiles(path));
+    else if (/\.(tsx?|css)$/.test(entry.name)) out.push(path);
+  }
+  return out;
+}
+
+/** Relative paths of every shipped file painting `cls`, sorted. */
+function filesPainting(cls: string): string[] {
+  return sourceFiles()
+    .filter((path) => paints(readFileSync(path, 'utf8'), cls))
+    .map((path) => relative(SRC_ROOT, path))
+    .sort();
+}
+
+const INK_GHOST_TEXT_SITES = filesPainting(INK_GHOST_TEXT_CLASS);
+
+describe('--ink-ghost is a fill, never ink', () => {
+  for (const [name, selector] of THEMES) {
+    it(`${name}: measures under the text floor, so nothing may paint it as text`, () => {
+      const tokens = tokensAfter(selector);
+      const ghost = tokens.get(INK_GHOST);
+      expect(ghost, `${INK_GHOST} missing from ${selector}`).toBeDefined();
+
+      const measured = QUIET_TEXT_SURFACES.map((surface) => {
+        const bg = tokens.get(surface);
+        expect(bg, `${surface} missing from ${selector}`).toBeDefined();
+        return [surface, contrast(ghost!, bg!)] as const;
+      });
+      const readout = measured.map(([s, c]) => `${s} ${c.toFixed(2)}:1`).join(', ');
+      const worst = Math.min(...measured.map(([, c]) => c));
+
+      // Pins the premise. If someone later lifts `--ink-ghost` to AA, this trips
+      // and they have to come back and re-read the fill-vs-ink argument above —
+      // rather than inherit a usage ban whose entire justification has quietly
+      // evaporated underneath it.
+      expect(
+        worst,
+        `${INK_GHOST} now clears AA in ${name} (${readout}) — re-read the fill-vs-ink note above before relaxing anything`,
+      ).toBeLessThan(AA_NORMAL);
+
+      expect(
+        INK_GHOST_TEXT_SITES,
+        `${INK_GHOST} is ${readout} in ${name} — AA needs ${AA_NORMAL}:1. ` +
+          `Use \`text-muted-foreground\` for quiet copy. These files paint it as text:\n  ` +
+          INK_GHOST_TEXT_SITES.join('\n  '),
+      ).toEqual([]);
+    });
+  }
+
+  /**
+   * Anti-vacuity, part one. The assertion above is `toEqual([])`, which is also
+   * exactly what a scanner that walked the wrong directory, matched nothing, or
+   * stripped the whole file would produce. An empty result is the SAME shape as
+   * a clean result, so prove the scanner can see real classes in the real tree
+   * before believing it about the absent one.
+   */
+  it('the source scan can see the tree it is asserting about', () => {
+    const files = sourceFiles();
+    expect(files.length).toBeGreaterThan(50);
+    expect(files.some((f) => f.endsWith('index.css'))).toBe(true);
+
+    // The replacement token, in the same `text-*` shape the guard looks for.
+    // If the matcher or the walk is broken, this reads 0 and fails here rather
+    // than passing silently one assertion up.
+    expect(filesPainting('text-muted-foreground').length).toBeGreaterThan(10);
+
+    // And the fill sites are still there — the guard bans the token as TEXT,
+    // not as a background. A sweep that deleted `--ink-ghost` outright would
+    // satisfy the ban and lose the affordance; this notices.
+    expect(filesPainting('bg-ink-ghost').length).toBeGreaterThanOrEqual(3);
+  });
+
+  /**
+   * Anti-vacuity, part two: pin `paints` on a fixture, both directions. The
+   * comment-stripping is the part that can only ever hide a real usage, so a
+   * silent over-strip would make the guard permanently green. Assert it keeps
+   * code AND drops prose — and that it does not match a longer class that
+   * merely starts the same way.
+   */
+  it('reads code and ignores comments', () => {
+    expect(paints('<span className="text-ink-ghost" />', INK_GHOST_TEXT_CLASS)).toBe(true);
+    expect(paints("  'uppercase text-ink-ghost mt-1.5';", INK_GHOST_TEXT_CLASS)).toBe(true);
+    expect(paints('{/* not `text-ink-ghost`, which is too faint */}', INK_GHOST_TEXT_CLASS)).toBe(
+      false,
+    );
+    expect(paints('// avoid text-ink-ghost here', INK_GHOST_TEXT_CLASS)).toBe(false);
+    expect(paints(' * uses text-ink-ghost for the label', INK_GHOST_TEXT_CLASS)).toBe(false);
+    expect(paints('<span className="bg-ink-ghost" />', INK_GHOST_TEXT_CLASS)).toBe(false);
+    expect(paints('<span className="text-ink-ghostly" />', INK_GHOST_TEXT_CLASS)).toBe(false);
   });
 });

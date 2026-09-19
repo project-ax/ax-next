@@ -46,6 +46,17 @@
     --ring: 211 100% 44%;
     --radius: 0.5rem;
     --rule-soft: 240 6% 95%;
+    /* A FILL, never ink. Value unchanged on purpose — read this before nudging it.
+       As text it measures 1.72:1 on the page and 1.57:1 on `--muted`, about a
+       third of the AA floor, which is why nothing paints `text-ink-ghost` any
+       more; quiet copy is `--muted-foreground`. Lifting it to AA would need
+       ~46% here and ~53% in dark, and `--muted-foreground` is already 44/56 —
+       the same colour under a second name. It would also wreck the fill role
+       this token exists for: the send circle's inactive state (faintness is how
+       it says "nothing to send yet"), and the resting/empty state dots, which
+       have to stay quiet beside a `bg-primary` "working". Same accent-vs-
+       foreground tension documented above for primary/destructive, same fix —
+       split the roles. `theme-contrast.test.ts` measures this and enforces it. */
     --ink-ghost: 240 4% 78%;
   }
 
@@ -98,6 +109,7 @@
       --input: 240 4% 17%;
       --ring: 211 100% 52%;
       --rule-soft: 240 4% 13%;
+      /* A fill, never ink — 2.04:1 on the page, 1.67:1 on a card. See the light block. */
       --ink-ghost: 240 4% 26%;
       color-scheme: dark;
     }
@@ -128,6 +140,7 @@
     --input: 240 4% 17%;
     --ring: 211 100% 52%;
     --rule-soft: 240 4% 13%;
+    /* A fill, never ink — 2.04:1 on the page, 1.67:1 on a card. See the light block. */
     --ink-ghost: 240 4% 26%;
     color-scheme: dark;
   }

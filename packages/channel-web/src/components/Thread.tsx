@@ -252,7 +252,7 @@ const UserMessage: FC = () => (
       <ActionBarPrimitive.Root
         className="
           msg-actions justify-end flex items-center gap-2 mt-1
-          font-mono text-[11px] tracking-[0.02em] text-ink-ghost whitespace-nowrap
+          font-mono text-[11px] tracking-[0.02em] text-muted-foreground whitespace-nowrap
           opacity-0 transition-opacity duration-150
           [.msg:hover_&]:opacity-100 has-[:focus-visible]:opacity-100
         "
@@ -315,7 +315,7 @@ const AssistantMessage: FC = () => (
       <ActionBarPrimitive.Root
         className="
           msg-actions flex items-center gap-2 mt-1
-          font-mono text-[11px] tracking-[0.02em] text-ink-ghost whitespace-nowrap
+          font-mono text-[11px] tracking-[0.02em] text-muted-foreground whitespace-nowrap
           opacity-0 transition-opacity duration-150
           [.msg:hover_&]:opacity-100 has-[:focus-visible]:opacity-100
         "

@@ -97,7 +97,7 @@ const ToastItem = ({ toast }: { toast: ToastModel }) => {
         type="button"
         className="
           inline-flex items-center justify-center shrink-0
-          h-[18px] w-[18px] rounded text-ink-ghost transition-colors
+          h-[18px] w-[18px] rounded text-muted-foreground transition-colors
           hover:text-foreground hover:bg-muted
           focus-visible:text-foreground focus-visible:bg-muted
           focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary focus-visible:outline-offset-2

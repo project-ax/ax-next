@@ -105,7 +105,7 @@ export const AgentStatus = () => {
             type="button"
             className={cn(
               'agent-status-cancel ml-1 px-1.5 py-px rounded-sm',
-              'text-[11px] tracking-[0.02em] text-ink-ghost',
+              'text-[11px] tracking-[0.02em] text-muted-foreground',
               'transition-[opacity,color,background-color] duration-150',
               'hover:text-foreground hover:bg-muted',
               'focus-visible:opacity-100 focus-visible:text-foreground focus-visible:bg-muted',

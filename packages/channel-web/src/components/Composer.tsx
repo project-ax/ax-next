@@ -298,7 +298,7 @@ export function Composer() {
         </ComposerPrimitive.AttachmentDropzone>
         <div
           className="
-            mt-2 text-center text-[10.5px] tracking-[0.04em] text-ink-ghost pointer-events-none
+            mt-2 text-center text-[10.5px] tracking-[0.04em] text-muted-foreground pointer-events-none
             opacity-0 transition-opacity duration-150
             group-hover/composer:opacity-100 group-focus-within/composer:opacity-100
           "

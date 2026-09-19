@@ -140,7 +140,7 @@ export function SessionHeader({ onCreateAgent }: { onCreateAgent?: (() => void) 
             'whitespace-nowrap max-w-[360px] self-center ml-auto -mr-2 px-2 py-1 rounded-sm text-[10.5px] uppercase tracking-[0.08em]',
             isRenaming
               ? 'cursor-text outline outline-1 outline-border bg-background text-foreground overflow-visible focus:outline-primary'
-              : 'overflow-hidden text-ellipsis text-ink-ghost',
+              : 'overflow-hidden text-ellipsis text-muted-foreground',
             // (C2) The hover highlight and the text cursor are the only things
             // that ever advertised this title as editable. With the rename
             // gated off they would promise something that cannot happen, so
