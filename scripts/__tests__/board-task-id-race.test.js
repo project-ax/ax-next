@@ -844,6 +844,15 @@ describe('board-task-id.sh — Task-ID allocation under concurrency', () => {
       // So: default CHECKED, opt out on purpose and in writing. A doc that genuinely
       // lists the CLI says so in the fence, and the marker is greppable, reviewable, and
       // impossible to arrive at by deletion.
+      //
+      // THE RESIDUAL, MEASURED RATHER THAN REASONED. An opt-out opts out: adding a real
+      // board write inside the MARKED block is 0 red, and removing the marker from that
+      // same block is 1 red. So the marker can still hide a call site — what changed is
+      // the direction of the mistake. Under the shape rule you became exempt by DELETING
+      // the lines that made you safe, silently, while shrinking a block. Here you become
+      // exempt only by ADDING a line that says "this is not a call site", in a diff, next
+      // to a comment telling you to delete it if that stops being true. A wrong marker is
+      // a visible claim someone can disagree with; the old rule made no claim at all.
       // Tested against the RAW block, not `code` — the marker IS a comment, and `code`
       // has already dropped every comment line.
       if (/#\s*board-task-id:\s*reference listing\b/.test(block)) continue;
