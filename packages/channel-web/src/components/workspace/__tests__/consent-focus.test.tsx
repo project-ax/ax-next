@@ -20,6 +20,13 @@
  *      TASK-360 retires). Fixing only the named one would have left the live
  *      surface broken.
  *
+ * AND THE ANSWER THAT IS NOT A RESOLUTION. Approving a row whose freshness
+ * guard trips does NOT resolve it: `decisions/machine.ts` hands back a row that
+ * is still open, `status: 'stale'`, and the card re-opens as a question with a
+ * new sentence at the top. No receipt, no Undo, controls still on screen — and
+ * it is the PRIMARY action of a consent surface. Covered here for
+ * `ApprovalCard` and `DecisionRow`, including twice in a row.
+ *
  * THE DECOYS ARE THE POINT. Every harness here puts a handful of tabbable
  * elements BEFORE the card, the way a real page has a nav above its content.
  * Without them `<body>` and the right answer are indistinguishable — the card
@@ -278,6 +285,91 @@ describe('ApprovalCard — in-thread (sites 1 and 2)', () => {
     );
   });
 
+  it('approving into a STALE re-open focuses the sentence that says so', () => {
+    // The guard tripped: nothing was executed, the row is still open, the
+    // buttons are still there, and the only thing that changed is a line at
+    // the top. There is no receipt to land on — and without this the person is
+    // on `<body>` in front of a card that looks unchanged.
+    render(
+      <ThreadHarness
+        resolved={decisionFixture({
+          status: 'stale',
+          staleReason: 'Thursday 9:30 is no longer free.',
+          freshness: {
+            kind: 'slot-etag',
+            value: 'etag-moved',
+            label: null,
+          },
+        })}
+      />,
+    );
+
+    const yes = screen.getByRole('button', { name: 'Move it' });
+    yes.focus();
+    fireEvent.click(yes);
+
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement?.textContent).toContain(
+      'Thursday 9:30 is no longer free.',
+    );
+    // Still a question, not a receipt — the controls are the proof.
+    expect(screen.getByRole('button', { name: 'Move it anyway' })).toBeTruthy();
+  });
+
+  it('lands AGAIN when a second approve comes back stale a second time', () => {
+    /*
+      The case a boolean "does it have an answer yet" flag cannot serve: it
+      only fires on the false-to-true edge, so the second stale answer in a row
+      gets no landing at all. `useResolutionFocus` keys on the answer's TEXT
+      instead, and the machine re-captures `freshness.value` on every trip of
+      the guard (it has to, or approving again would bounce forever), so two
+      consecutive stale answers can never carry the same key.
+    */
+    function TwiceStaleHarness() {
+      const [d, setD] = useState<Decision>(decisionFixture());
+      const staleAs = (value: string, why: string) =>
+        decisionFixture({
+          status: 'stale',
+          staleReason: why,
+          freshness: { kind: 'slot-etag', value, label: null },
+        });
+      return (
+        <div>
+          <Decoys />
+          <ApprovalCard
+            decision={d}
+            onApprove={() =>
+              setD(
+                d.status === 'stale'
+                  ? staleAs('etag-3', 'It moved again while you were reading.')
+                  : staleAs('etag-2', 'Thursday 9:30 is no longer free.'),
+              )
+            }
+            onDismiss={vi.fn()}
+            onUndo={vi.fn()}
+          />
+        </div>
+      );
+    }
+    render(<TwiceStaleHarness />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Move it' }));
+    expect(document.activeElement?.textContent).toContain(
+      'Thursday 9:30 is no longer free.',
+    );
+
+    // Second go. Blur first, so a landing that never happens reads as `<body>`
+    // rather than as the previous one still being in place.
+    (document.activeElement as HTMLElement).blur();
+    expect(document.activeElement).toBe(document.body);
+    fireEvent.click(screen.getByRole('button', { name: 'Move it anyway' }));
+
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement?.textContent).toContain(
+      'It moved again while you were reading.',
+    );
+  });
+
   it('a receipt drawn on page load does NOT steal focus', () => {
     // `InThreadApprovals` renders the last ten seconds of settled rows above
     // the composer on every load. Grabbing focus for one nobody just acted on
@@ -372,6 +464,29 @@ describe('DecisionRow — the Today queue (site 3)', () => {
 
     expect(document.activeElement).toBe(screen.getByRole('alert'));
     expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it('approving into a STALE re-open focuses the row\u2019s stale Alert', () => {
+    // Same answer-that-is-not-a-resolution as the in-thread card, on the queue
+    // row, where the sentence is an `Alert` rather than a paragraph.
+    render(
+      <QueueHarness
+        resolved={decisionFixture({
+          status: 'stale',
+          staleReason: 'Thursday 9:30 is no longer free.',
+          freshness: { kind: 'slot-etag', value: 'etag-moved', label: null },
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Move it' }));
+
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(screen.getByRole('alert'));
+    expect(document.activeElement?.textContent).toContain(
+      'Thursday 9:30 is no longer free.',
+    );
+    expect(screen.getByRole('button', { name: 'Move it anyway' })).toBeTruthy();
   });
 
   it('saying no lands focus on the receipt as well', () => {

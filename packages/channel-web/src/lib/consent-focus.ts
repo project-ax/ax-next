@@ -101,10 +101,21 @@ export function returnFocusToConsentRegion(
  * where the receipt (or, if the POST failed, the notice saying so) replaces the
  * controls in the same node the person was standing in.
  *
- * `hasAnswer` is "the card now says something back": an outcome line, or a
- * notice. Put `ref` on whichever of those is currently rendered, and call
- * `armForResolution` from the click handler of every control that asks a
- * question of the server.
+ * `answerKey` is "what the card says back, right now, as a string" — and `null`
+ * while it is still an unanswered question. A receipt, a notice, a stale
+ * re-open: any of those is an answer. Put `answerRef` on whichever of them is
+ * currently rendered, and call `armForResolution` from the click handler of
+ * every control that asks a question of the server.
+ *
+ * WHY A KEY AND NOT A BOOLEAN. A boolean only fires on the false → true edge,
+ * so a card that answers TWICE in a row — approve a stale row, the world moves
+ * again, it comes back stale a second time — never gets its second landing, and
+ * the person is left on `<body>` staring at a page that looks unchanged. A key
+ * that changes with the answer fires every time the answer does. The values to
+ * build it from are the ones the server varies: `decisions/machine.ts`
+ * re-captures `freshness.value` on every trip of the guard (it has to, or
+ * approving again would bounce forever), so two consecutive stale answers
+ * cannot carry the same key.
  *
  * THE ARMING IS WHAT KEEPS THIS HONEST. A settled receipt drawn on page load
  * has an answer too — `InThreadApprovals` renders the last ten seconds of them
@@ -116,19 +127,18 @@ export function returnFocusToConsentRegion(
  * already does), and it must survive the re-render the resolve causes. It
  * disarms when it fires, so it can never move focus twice for one click.
  *
- * A RETRY RE-FIRES, and the reason is worth naming because it lives in another
- * file. `hasAnswer` stays `true` across a second attempt at a row that already
- * has a notice, so the effect would not run again — except
- * `workspace-decisions.ts` clears the notice at the START of every action, which
- * drives it true → false → true and re-arms the effect. If that clear ever goes,
- * focus after a retry goes with it, quietly.
+ * A RETRY RE-FIRES on its own now: `workspace-decisions.ts` clears the notice
+ * at the start of every action, so the key goes to `null` and back, and even if
+ * that clear ever went away the key would still change with the answer.
  *
- * `answerRef` is a CALLBACK ref, and stable across renders, because the two
- * nodes it has to attach to are different element types — a `div` for the
- * receipt, a `p` for the notice — and one object ref cannot be handed to both
- * without widening it to something neither JSX site will accept.
+ * `answerRef` is a CALLBACK ref, and stable across renders, because the nodes
+ * it has to attach to are different element types — a `div` for the receipt, a
+ * `p` for a stale reason, an `Alert` for a notice — and one object ref cannot
+ * be handed to all of them without widening it to something no JSX site will
+ * accept. Where two of them are on screen at once, the LAST in document order
+ * wins the ref, so build `answerKey` in the same order of precedence.
  */
-export function useResolutionFocus(hasAnswer: boolean): {
+export function useResolutionFocus(answerKey: string | null): {
   answerRef: (node: HTMLElement | null) => void;
   armForResolution: () => void;
 } {
@@ -138,10 +148,10 @@ export function useResolutionFocus(hasAnswer: boolean): {
     answer.current = node;
   }, []);
   useEffect(() => {
-    if (!armed.current || !hasAnswer) return;
+    if (!armed.current || answerKey === null) return;
     armed.current = false;
     takeResolutionFocus(answer.current);
-  }, [hasAnswer]);
+  }, [answerKey]);
   return {
     answerRef,
     armForResolution: () => {

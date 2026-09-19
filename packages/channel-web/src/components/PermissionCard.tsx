@@ -152,7 +152,9 @@ export function PermissionCard() {
     early when there is no card to draw, and a hook after that point would run
     on some renders and not others.
   */
-  const { answerRef, armForResolution } = useResolutionFocus(error !== null);
+  const { answerRef, armForResolution } = useResolutionFocus(
+    error === null ? null : `error:${error}`,
+  );
 
   // Every declared slot must have a non-empty value before Connect is enabled
   // (a slotless skill/connector is immediately connectable). `request === null`

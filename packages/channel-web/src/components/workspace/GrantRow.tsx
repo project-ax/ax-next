@@ -131,8 +131,10 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
   */
   const rowRef = useRef<HTMLDivElement | null>(null);
   // The two endings that leave a sentence behind rather than an empty space.
+  // Keyed on the text so a SECOND failure after a retry lands too, rather than
+  // only the first — see `useResolutionFocus`.
   const { answerRef, armForResolution } = useResolutionFocus(
-    stalled || error !== null,
+    stalled ? 'stalled' : error !== null ? `error:${error}` : null,
   );
 
   /**

@@ -112,11 +112,23 @@ export function DecisionRow({
   const outcome = decisionOutcome(d, now);
   const undoLeft = undoSecondsLeft(d, now);
   const expiry = expiresSoonNote(d, now);
-  // Focus follows whatever the row says back: the receipt when the resolve
-  // landed, the alert when it did not.
-  const { answerRef, armForResolution } = useResolutionFocus(
-    outcome !== null || notice !== null,
-  );
+  const stale = d.status === 'stale';
+  /*
+    Focus follows whatever the row says back, and there are THREE answers, not
+    two. Approving a row whose freshness guard trips does not resolve it: the
+    machine hands back `status: 'stale'`, the row re-opens as a question with a
+    new sentence at the top, and there is no receipt to land on. Ordered to
+    match document order below — the last of these to mount owns the ref.
+  */
+  const answerKey =
+    outcome !== null
+      ? `outcome:${d.status}:${d.resolvedAt ?? ''}`
+      : notice !== null
+        ? `notice:${notice}`
+        : stale && d.staleReason !== null
+          ? `stale:${d.freshness?.value ?? ''}:${d.staleReason}`
+          : null;
+  const { answerRef, armForResolution } = useResolutionFocus(answerKey);
 
   if (outcome !== null) {
     return (
@@ -168,8 +180,6 @@ export function DecisionRow({
     );
   }
 
-  const stale = d.status === 'stale';
-
   return (
     <div
       className={cnRow(stale)}
@@ -204,8 +214,19 @@ export function DecisionRow({
 
       {expanded && (
         <div className="px-5 pb-5 pl-[46px]">
+          {/*
+            A FOCUS TARGET, because this is an ANSWER (TASK-427) — approving a
+            row the guard trips re-opens it rather than resolving it, so there
+            is no receipt to land on and the person would otherwise be left on
+            `<body>` in front of a row that looks unchanged.
+          */}
           {stale && d.staleReason && (
-            <Alert variant="destructive" className="mb-4">
+            <Alert
+              ref={answerRef}
+              tabIndex={-1}
+              variant="destructive"
+              className={`mb-4 ${RESOLUTION_FOCUS_RING}`}
+            >
               <AlertDescription className="text-[13px] leading-relaxed">
                 <strong className="font-medium">{DECISION_STALE_LEAD}</strong>{' '}
                 {d.staleReason} {DECISION_STALE_ADVICE}

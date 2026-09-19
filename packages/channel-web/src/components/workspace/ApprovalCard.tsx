@@ -71,14 +71,28 @@ export function ApprovalCard({
   // the server would refuse.
   const now = useDecisionClock(d);
   const outcome = decisionOutcome(d, now);
+  const stale = d.status === 'stale';
   /*
-    Focus follows whatever the card says back — the receipt when the resolve
-    landed, the notice when it did not. Both replace or join the controls the
-    person was standing in, and both are the sentence they are waiting to read.
+    Focus follows whatever the card says back. THREE things can be that answer,
+    and the third is the one that is easy to miss: approving a row whose
+    freshness guard trips does not resolve it — the machine hands back a row
+    that is still `pending`-shaped, `status: 'stale'`, and the card RE-OPENS as
+    a question with a new sentence at the top of it. No receipt, no notice, and
+    on the primary action of a consent surface. Without it in here the person
+    is on `<body>` in front of a page that looks like nothing happened.
+
+    Ordered to match document order below, because when two of these are on
+    screen at once the last one mounted owns the ref.
   */
-  const { answerRef, armForResolution } = useResolutionFocus(
-    outcome !== null || notice !== null,
-  );
+  const answerKey =
+    outcome !== null
+      ? `outcome:${d.status}:${d.resolvedAt ?? ''}`
+      : notice !== null
+        ? `notice:${notice}`
+        : stale && d.staleReason !== null
+          ? `stale:${d.freshness?.value ?? ''}:${d.staleReason}`
+          : null;
+  const { answerRef, armForResolution } = useResolutionFocus(answerKey);
 
   if (outcome !== null) {
     const undoLeft = undoSecondsLeft(d, now);
@@ -123,8 +137,6 @@ export function ApprovalCard({
     );
   }
 
-  const stale = d.status === 'stale';
-
   return (
     <Card
       className="max-w-[560px] border-warning/40 bg-warning-soft/40"
@@ -158,8 +170,21 @@ export function ApprovalCard({
           and a card that quietly acted on the new situation would be the worst
           version of this surface. Same sentence the queue row leads with.
         */}
+        {/*
+          A FOCUS TARGET, because this is an ANSWER (TASK-427). Approving a row
+          the guard trips re-opens it rather than resolving it, so there is no
+          receipt to land on and the controls the person was standing in are
+          still here — just re-worded. Focusing it is also what gets it read
+          out: unlike the queue row's version this is a plain paragraph rather
+          than an `Alert`, matching the compact in-thread treatment the rest of
+          this card uses, so nothing announces it on its own.
+        */}
         {stale && d.staleReason && (
-          <p className="mt-2 text-[12.5px] leading-relaxed text-destructive">
+          <p
+            ref={answerRef}
+            tabIndex={-1}
+            className={`mt-2 text-[12.5px] leading-relaxed text-destructive ${RESOLUTION_FOCUS_RING}`}
+          >
             <strong className="font-medium">{DECISION_STALE_LEAD}</strong>{' '}
             {d.staleReason} {DECISION_STALE_ADVICE}
           </p>
