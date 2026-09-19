@@ -37,7 +37,7 @@ import { runAgent, makeAnthropicAgentClient, MAX_INJECTED_BODY_CHARS, type Agent
 import { judgeAnswer, makeOpenRouterJudgeClient, type JudgeClient } from './judge.js';
 import { renderReport } from './report.js';
 import { renderFairRerankReport } from './fair-reranker-report.js';
-import { runE2EMode } from './e2e-cli.js';
+import { runE2EMode, type RunE2EOptions } from './e2e-cli.js';
 import { parseCsvFlag } from './e2e-select.js';
 import { stratifiedSample, describeMix } from './stratify.js';
 import {
@@ -244,6 +244,36 @@ export function parseCliArgs(argv: string[]): CliArgs {
   return base;
 }
 
+/**
+ * Map parsed CLI args onto `runE2EMode`'s options. Exported and pure so the
+ * FORWARDING itself is testable without keys, network, or spend.
+ *
+ * TASK-395: this seam is where `--out` went missing. `parseCliArgs` populated
+ * `args.out` correctly and `runE2EMode` would have honored an `out` it was
+ * given — but `main()` never carried the value from one to the other, so the
+ * flag was accepted and silently dropped. A test that calls `runE2EMode`
+ * directly cannot see that class of bug, and neither can one that only asserts
+ * `parseCliArgs(...).out`: both sides were always fine in isolation. Only a
+ * test of this function fails when the forwarding is removed.
+ */
+export function buildE2EOptions(args: CliArgs, repoRoot: string = REPO_ROOT): RunE2EOptions {
+  return {
+    repoRoot,
+    sample: args.first ?? args.sample ?? (args.full ? 500 : 100),
+    selection: args.first !== undefined ? 'first' : 'stratified',
+    ...(args.orchestratorModelExplicit ? { orchestratorModel: args.orchestratorModel } : {}),
+    ...(args.concurrency !== undefined ? { concurrency: args.concurrency } : {}),
+    cap: args.cap ?? 25,
+    fixture: args.fixture,
+    ...(args.resume !== undefined ? { resumeId: args.resume } : {}),
+    ...(args.types !== undefined ? { types: args.types } : {}),
+    ...(args.ids !== undefined ? { ids: args.ids } : {}),
+    answerScaffold: args.answerScaffold === true,
+    ...(args.answerEffort !== undefined ? { answerEffort: args.answerEffort } : {}),
+    ...(args.out !== undefined ? { out: args.out } : {}),
+  };
+}
+
 async function main(): Promise<number> {
   const args = parseCliArgs(process.argv.slice(2));
 
@@ -251,21 +281,7 @@ async function main(): Promise<number> {
     // E2E mode (TASK-189): run LongMemEval-S through the REAL shipped plugin.
     // Needs only ANTHROPIC (answer + extraction) + OPENROUTER (judge) — no
     // zeroentropy. The default is the n=100 sample; --full opts into n=500.
-    return runE2EMode({
-      repoRoot: REPO_ROOT,
-      sample: args.first ?? args.sample ?? (args.full ? 500 : 100),
-      selection: args.first !== undefined ? 'first' : 'stratified',
-      ...(args.orchestratorModelExplicit ? { orchestratorModel: args.orchestratorModel } : {}),
-      ...(args.concurrency !== undefined ? { concurrency: args.concurrency } : {}),
-      cap: args.cap ?? 25,
-      fixture: args.fixture,
-      ...(args.resume !== undefined ? { resumeId: args.resume } : {}),
-      ...(args.types !== undefined ? { types: args.types } : {}),
-      ...(args.ids !== undefined ? { ids: args.ids } : {}),
-      answerScaffold: args.answerScaffold === true,
-      ...(args.answerEffort !== undefined ? { answerEffort: args.answerEffort } : {}),
-      ...(args.out !== undefined ? { out: args.out } : {}),
-    });
+    return runE2EMode(buildE2EOptions(args));
   }
 
   if (args.smoke) {

@@ -104,7 +104,12 @@ export interface RunE2EOptions {
  * honor `--out` the same way.
  */
 function resolveE2EOutPath(opts: Pick<RunE2EOptions, 'repoRoot' | 'out'>, runDate: Date): string {
-  return opts.out
+  // `!== undefined`, not truthiness: the CLI already drops an empty `--out` at
+  // parse time, so a programmatic `out: ''` is a caller bug. Resolving it (to
+  // `repoRoot`, a directory) makes writeFileSync throw EISDIR — loud — whereas
+  // falling through to the default would silently write somewhere the caller
+  // did not ask for, which is the exact failure this task exists to remove.
+  return opts.out !== undefined
     ? resolve(opts.repoRoot, opts.out)
     : join(opts.repoRoot, 'docs/plans', `${runDate.toISOString().slice(0, 10)}-memory-strata-e2e-report.md`);
 }
