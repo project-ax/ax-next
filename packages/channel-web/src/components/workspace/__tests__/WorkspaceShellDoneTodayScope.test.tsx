@@ -21,7 +21,7 @@
  * called this counter out by name as the consumer that still existed.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { workspaceApi } from '@/lib/workspace-api';
 import { UserProvider } from '@/lib/user-context';
 import { WorkspaceShell } from '../WorkspaceShell';
@@ -186,6 +186,15 @@ describe('Today’s "done today" count across an agent switch', () => {
     await waitFor(() =>
       expect(activityMock).toHaveBeenCalledWith({ agentId: 'a-quill' }),
     );
+    /*
+      The `waitFor` above only proves the agent's page was REQUESTED. If we
+      navigated back before it was APPLIED, the feed would still hold the empty
+      list the re-scope reset it to, there would be no agent count to leak, and
+      the assertion at the end would pass for a reason that has nothing to do
+      with the fix. Flushing here makes Quill's rows provably in hand before
+      the return trip — the state the bug needs.
+    */
+    await act(async () => {});
 
     /*
       From here on, every recorded value is one Today actually rendered —
