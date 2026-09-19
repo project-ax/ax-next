@@ -307,6 +307,32 @@ describe('stepDetail', () => {
     expect(long.endsWith('…')).toBe(true);
   });
 
+  it('never lets an argument that names a secret qualify the row', () => {
+    /*
+      Review finding on this card. The fallback takes the first string an
+      unknown tool carries, and MCP servers name their arguments whatever they
+      like — so `{ token: 'sk-live-…' }` drew a row that was the first 60
+      characters of a live token. The guard is on the NAME, matched word by
+      word, and a skipped key hands the choice to the next candidate.
+    */
+    expect(stepDetail({ token: 'sk-live-abcdef', resource: 'issues' })).toBe('issues');
+    expect(stepDetail({ apiKey: 'sk-live-abcdef', project: 'ax' })).toBe('ax');
+    expect(stepDetail({ API_KEY: 'sk-live-abcdef', project: 'ax' })).toBe('ax');
+    expect(stepDetail({ 'x-auth-token': 'sk-live-abcdef', q: 'ax' })).toBe('ax');
+    // Nothing else to fall back to: the row keeps its bare name rather than
+    // showing the secret, which is where it was before this card.
+    expect(stepDetail({ password: 'hunter2' })).toBeUndefined();
+  });
+
+  it('does not mistake an ordinary word for a secret', () => {
+    // Word by word, not substring: these are all legitimate qualifiers, and a
+    // guard that ate them would quietly take rows back to saying nothing.
+    expect(stepDetail({ keyword: 'invoice' })).toBe('invoice');
+    expect(stepDetail({ passenger: 'Ada' })).toBe('Ada');
+    expect(stepDetail({ authored: 'yes' })).toBe('yes');
+    expect(stepDetail({ monkey: 'Bobo' })).toBe('Bobo');
+  });
+
   it('skips a key whose value fences down to nothing', () => {
     // An all-invisible command is the same absence as a missing one, so the
     // next candidate gets its turn rather than the row ending in a colon.

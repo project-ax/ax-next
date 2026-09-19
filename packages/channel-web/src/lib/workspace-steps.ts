@@ -186,6 +186,66 @@ const DETAIL_KEYS = [
 ] as const;
 
 /**
+ * Key NAMES that must never choose a row's qualifier, whatever they hold.
+ *
+ * The ordered list above is safe by construction — nothing in it is a secret —
+ * but the fallback takes the first string an UNKNOWN tool carries, and MCP
+ * servers name their arguments whatever they like. A tool called as
+ * `{ token: 'sk-live-…', resource: 'issues' }` would have drawn its row as the
+ * first 60 characters of the token. That is a 60-character prefix of a secret
+ * on screen, which is a worse worst case than "a less useful string".
+ *
+ * Matched WORD BY WORD rather than as substrings, so `apiKey`, `api_key` and
+ * `AUTH_TOKEN` are all caught while `keyword`, `passenger` and `authored` are
+ * not. A skipped key simply hands the choice to the next candidate; the row
+ * falls back to its bare name if nothing else qualifies, which is where it was
+ * before this card and is never worse than showing the secret.
+ *
+ * WHAT THIS DOES NOT DO, said out loud so nobody reads more into it: it filters
+ * argument NAMES, not values. A secret pasted into a `Bash` command still
+ * reaches the row, because `command` is exactly the thing a step row exists to
+ * show and no heuristic can tell a password from an argument inside it. That is
+ * the same exposure chat's tool panel has always had, to the same reader — the
+ * signed-in owner of the agent, looking at their own agent's work.
+ */
+const SECRET_WORDS = new Set([
+  'auth',
+  'authorization',
+  'bearer',
+  'cookie',
+  'credential',
+  'credentials',
+  'jwt',
+  'key',
+  'keys',
+  'otp',
+  'passphrase',
+  'passwd',
+  'password',
+  'pin',
+  'secret',
+  'secrets',
+  'session',
+  'signature',
+  'token',
+  'tokens',
+]);
+
+/**
+ * Does this argument name announce a secret?
+ *
+ * Splits on separators AND on camel humps — `apiKey` becomes `api` + `Key` —
+ * without a lookbehind, which is not something to rely on across every browser
+ * this bundle runs in.
+ */
+function namesASecret(key: string): boolean {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[^A-Za-z0-9]+/)
+    .some((word) => SECRET_WORDS.has(word.toLowerCase()));
+}
+
+/**
  * One tool call's input → the short line that tells it apart, or `undefined`.
  *
  * FENCED HERE, at the edge both paths share. The value is model-authored — it
@@ -201,26 +261,32 @@ const DETAIL_KEYS = [
  * that is correct: there is no "which one" to show.
  *
  * The fallback past {@link DETAIL_KEYS} is the first string-valued key the
- * object carries, in its own order. MCP servers name their arguments whatever
- * they like, and `create_issue` called on `{ title: … }` is exactly the case a
- * fixed list cannot enumerate. It is bounded and fenced like any other, so the
- * worst case is a row qualified by a less useful string — not by an unbounded
- * one.
+ * object carries, in its own order, SKIPPING any key that names a secret (see
+ * {@link SECRET_WORDS}). MCP servers name their arguments whatever they like,
+ * and `create_issue` called on `{ title: … }` is exactly the case a fixed list
+ * cannot enumerate. Every candidate is bounded and fenced, so the worst case is
+ * a row qualified by a less useful string — or by nothing at all.
  */
 export function stepDetail(input: unknown): string | undefined {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) {
     return undefined;
   }
   const args = input as Record<string, unknown>;
-  for (const key of DETAIL_KEYS) {
+  const candidate = (key: string): string | null => {
     const value = args[key];
-    if (typeof value !== 'string') continue;
-    const fenced = fenceLine(value, STEP_DETAIL_MAX_CHARS);
+    if (typeof value !== 'string') return null;
+    // The guard runs on the ordered pass too. Nothing in DETAIL_KEYS trips it
+    // today; asking here rather than only in the fallback means a key added to
+    // that list later cannot quietly opt out of it.
+    if (namesASecret(key)) return null;
+    return fenceLine(value, STEP_DETAIL_MAX_CHARS);
+  };
+  for (const key of DETAIL_KEYS) {
+    const fenced = candidate(key);
     if (fenced !== null) return fenced;
   }
-  for (const value of Object.values(args)) {
-    if (typeof value !== 'string') continue;
-    const fenced = fenceLine(value, STEP_DETAIL_MAX_CHARS);
+  for (const key of Object.keys(args)) {
+    const fenced = candidate(key);
     if (fenced !== null) return fenced;
   }
   return undefined;
