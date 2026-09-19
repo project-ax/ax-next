@@ -124,6 +124,13 @@ export function openDatabase(databasePath: string): OpenDatabaseResult {
     `CREATE INDEX IF NOT EXISTS idx_facts_batch ON ${TABLE}(agent_key, batch_key);`,
   );
 
+  // `(agent_key, slot)` — the pending probe. `memory:facts:recall` asks "does
+  // this tenant hold any `slot = 'pending'` row?" on EVERY read to build its
+  // `degraded` flag, and idx_facts_slot cannot serve that: `about` sits
+  // between `agent_key` and `slot` in its key, so the question would degrade
+  // to a full scan of the tenant on the hot read path.
+  driver.exec(`CREATE INDEX IF NOT EXISTS idx_facts_pending ON ${TABLE}(agent_key, slot);`);
+
   return { driver };
 }
 

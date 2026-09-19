@@ -289,6 +289,10 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
       await bus.call<ClearInput, void>('memory:facts:clear', ctx, {});
     }
 
+    async function reindex(input: ReindexInput = {}, ctx = makeCtx()): Promise<ReindexOutput> {
+      return bus.call<ReindexInput, ReindexOutput>('memory:facts:reindex', ctx, input);
+    }
+
     /**
      * Assert a hook call rejects with a specific `PluginError.code`. Written
      * as an explicit resolve-then-throw rather than `rejects.toThrow` so a
@@ -1104,6 +1108,35 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         expect((caught as { code?: string }).code).toBe('store-unavailable');
       });
 
+      // `reindex` has the same problem `recall` does: `{ resolved: 0,
+      // reclosed: [], pending: 0, degraded: [] }` is a perfectly plausible
+      // answer for a clean tenant, so a store outage that came back as that
+      // would read as "nothing left to drain" — and the drain would stop.
+      it('rejects reindex with store-unavailable rather than reporting an empty drain', async () => {
+        const rec = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Boston',
+          when: JAN,
+          slot: PENDING_SLOT,
+        });
+        await closeTheStore();
+
+        let resolvedTo: ReindexOutput | undefined;
+        let caught: unknown;
+        try {
+          resolvedTo = await reindex();
+        } catch (err) {
+          caught = err;
+        }
+        expect(resolvedTo).toBeUndefined();
+        expect((caught as { code?: string }).code).toBe('store-unavailable');
+
+        await expectCode('store-unavailable', () =>
+          reindex({ slots: [{ id: rec.id, slot: 'lives_in' }] }),
+        );
+      });
+
       // Validation has to run BEFORE the store is touched, or a caller with a
       // malformed payload gets told to go investigate an outage that isn't
       // theirs. `invalid-payload` outranks `store-unavailable`.
@@ -1114,6 +1147,7 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         await expectCode('invalid-payload', () =>
           record({ statements: [{ about: '', relation: 'r', value: 'v', when: JAN }] }),
         );
+        await expectCode('invalid-payload', () => reindex({ slots: [{ id: '', slot: 'lives_in' }] }));
       });
     });
 
@@ -1234,6 +1268,611 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         const retry = await record({ batchKey: 'turn-doomed', statements: [KHALID, RAMEN] });
         expect(retry.records).toHaveLength(2);
         expect(await activeCount()).toBe(2);
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // The `pending` slot is INERT — it closes nothing and nothing closes it
+    // (design §3.5, task 4)
+    // -----------------------------------------------------------------------
+    describe('pending slot', () => {
+      // The failure this exists to prevent: if `pending` were treated as an
+      // ordinary slot string, every undrained fact about the same subject
+      // would share one `(about, 'pending')` chain and close the one before
+      // it — a `lives_in` guess ending a `works_at` guess purely because
+      // neither had been normalized yet. That is MIS-closing, the exact
+      // opposite of "pending = under-closing, the safe direction".
+      it('lets two pending rows about the same subject coexist, whatever their relations', async () => {
+        const lives = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Boston',
+          when: JAN,
+          slot: PENDING_SLOT,
+        });
+        const works = await recordOne({
+          about: 'user',
+          relation: 'works_at',
+          value: 'Acme',
+          when: JUN,
+          slot: PENDING_SLOT,
+        });
+
+        expect(lives.closes).toEqual([]);
+        expect(works.closes).toEqual([]);
+        expect(lives.until).toBeUndefined();
+        expect(lives.closedBy).toBeUndefined();
+        expect(works.until).toBeUndefined();
+        expect(works.closedBy).toBeUndefined();
+
+        const out = await recall({ about: 'user', limit: 10 });
+        expect(out.statements.map((s) => s.value).sort()).toEqual(['Acme', 'Boston']);
+      });
+
+      // Same subject, same relation, so the ONLY thing keeping them apart is
+      // that `pending` is inert. Both arrival orders, because rule 1 and
+      // rule 2 are different code paths and only one of them fires per order.
+      for (const pendingFirst of [true, false]) {
+        it(`neither closes the other when a pending row meets a real-slot row (pending ${
+          pendingFirst ? 'first' : 'second'
+        })`, async () => {
+          const pendingStatement: FactStatementInput = {
+            about: 'user',
+            relation: 'lives_in',
+            value: 'Boston',
+            when: pendingFirst ? JAN : SEP,
+            slot: PENDING_SLOT,
+          };
+          const realStatement: FactStatementInput = {
+            about: 'user',
+            relation: 'lives_in',
+            value: 'Seattle',
+            when: pendingFirst ? SEP : JAN,
+            slot: 'lives_in',
+          };
+
+          const first = await recordOne(pendingFirst ? pendingStatement : realStatement);
+          const second = await recordOne(pendingFirst ? realStatement : pendingStatement);
+
+          expect(first.closes).toEqual([]);
+          expect(second.closes).toEqual([]);
+          expect(first.until).toBeUndefined();
+          expect(first.closedBy).toBeUndefined();
+          expect(second.until).toBeUndefined();
+          expect(second.closedBy).toBeUndefined();
+
+          const out = await recall({ about: 'user', limit: 10 });
+          expect(out.statements.map((s) => s.value).sort()).toEqual(['Boston', 'Seattle']);
+        });
+      }
+
+      // Inert is not the same as invisible. A pending row is a perfectly good
+      // fact that simply has not been slotted yet — it must read back and be
+      // forgettable like any other. Two rows, so an implementation that let
+      // the second pending row close the first would fail here too rather
+      // than quietly satisfying a one-row case.
+      it('returns a pending row from recall and lets supersede close it', async () => {
+        const boston = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Boston',
+          when: JAN,
+          slot: PENDING_SLOT,
+        });
+        const acme = await recordOne({
+          about: 'user',
+          relation: 'works_at',
+          value: 'Acme',
+          when: JUN,
+          slot: PENDING_SLOT,
+        });
+
+        const before = await recall({ about: 'user', limit: 10 });
+        expect(before.statements.map((s) => s.id).sort()).toEqual([boston.id, acme.id].sort());
+
+        expect((await supersede([boston.id])).closed).toEqual([boston.id]);
+
+        const after = await recall({ about: 'user', limit: 10 });
+        expect(after.statements.map((s) => s.value)).toEqual(['Acme']);
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // memory:facts:reindex — draining pending back into the closure rules
+    // (design §3.5, §2.2, task 5)
+    // -----------------------------------------------------------------------
+    describe('memory:facts:reindex', () => {
+      const LIVES_IN = 'lives_in';
+
+      /**
+       * Read a stored row back as it stands NOW, including `until`/`closedBy`
+       * on a CLOSED row — which plain `recall` cannot show, since it filters
+       * to active rows. A `batchKey` replay rebuilds every row of that batch
+       * from the stored rows and writes nothing, so recording the fixture
+       * under a key gives a read-only inspector for the whole chain.
+       */
+      async function reread(
+        batchKey: string,
+        statements: FactStatementInput[],
+        ctx = makeCtx(),
+      ): Promise<RecordedStatement[]> {
+        return (await record({ batchKey, statements }, ctx)).records;
+      }
+
+      it('closes the older row of the slot it is resolved into, and names it in reclosed', async () => {
+        const boston = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Boston',
+          when: JAN,
+          slot: LIVES_IN,
+        });
+        const seattle = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JUN,
+          slot: PENDING_SLOT,
+        });
+        // Inert on arrival — this is the state reindex is asked to repair.
+        expect(seattle.closes).toEqual([]);
+
+        const out = await reindex({ slots: [{ id: seattle.id, slot: LIVES_IN }] });
+        expect(out.resolved).toBe(1);
+        expect(out.reclosed).toEqual([boston.id]);
+        expect(out.pending).toBe(0);
+        expect(out.degraded).toEqual([]);
+
+        const active = await recall({ about: 'user', limit: 10 });
+        expect(active.statements.map((s) => s.value)).toEqual(['Seattle']);
+      });
+
+      it('leaves a row resolved to null inert forever — and says it resolved it', async () => {
+        const boston = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Boston',
+          when: JAN,
+          slot: LIVES_IN,
+        });
+        const seattle = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JUN,
+          slot: PENDING_SLOT,
+        });
+
+        const out = await reindex({ slots: [{ id: seattle.id, slot: null }] });
+        // `resolved: 1` next to `reclosed: []` is the pairing that matters:
+        // an implementation that silently did nothing would satisfy the empty
+        // list but not the count, and it would still be reported as pending.
+        expect(out.resolved).toBe(1);
+        expect(out.reclosed).toEqual([]);
+        expect(out.pending).toBe(0);
+        expect(out.degraded).toEqual([]);
+
+        expect((await recall({ about: 'user', limit: 10 })).statements.map((s) => s.value).sort()).toEqual(
+          ['Boston', 'Seattle'],
+        );
+
+        // "No slot after all" is permanent: a later real `lives_in` row closes
+        // Boston and walks straight past the resolved-to-null row.
+        const denver = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Denver',
+          when: SEP,
+          slot: LIVES_IN,
+        });
+        expect(denver.closes).toEqual([boston.id]);
+        expect((await recall({ about: 'user', limit: 10 })).statements.map((s) => s.value).sort()).toEqual(
+          ['Denver', 'Seattle'],
+        );
+      });
+
+      // The case that catches a patch-in-place implementation: the resolved
+      // row lands BETWEEN two rows that already settled with each other, so
+      // it has to close the one before it (rule 1) AND be bounded by the one
+      // after it (rule 2) in the same pass, while the later row's own closure
+      // is re-derived away.
+      //
+      // The three rows go in ONE batch on purpose. Re-derivation replays in
+      // arrival order, `record` stamps one `transaction_time` per call, and
+      // `batch_seq` is what orders rows inside it — so a single batch pins the
+      // replay order exactly rather than leaving it to whether two separate
+      // calls happened to land in different milliseconds.
+      it('re-derives the whole chain when a resolved row is backdated into the middle of it', async () => {
+        const KEY = 'chain';
+        const statements: FactStatementInput[] = [
+          { about: 'user', relation: 'lives_in', value: 'Boston', when: JAN, slot: LIVES_IN },
+          { about: 'user', relation: 'lives_in', value: 'Denver', when: SEP, slot: LIVES_IN },
+          { about: 'user', relation: 'lives_in', value: 'Seattle', when: JUN, slot: PENDING_SLOT },
+        ];
+        const [boston, denver, seattle] = (await record({ batchKey: KEY, statements })).records as [
+          RecordedStatement,
+          RecordedStatement,
+          RecordedStatement,
+        ];
+        expect(denver.closes).toEqual([boston.id]);
+        expect(seattle.closes).toEqual([]);
+
+        const out = await reindex({ slots: [{ id: seattle.id, slot: LIVES_IN }] });
+        expect(out.resolved).toBe(1);
+        expect(out.reclosed).toEqual([boston.id, seattle.id]);
+        expect(out.pending).toBe(0);
+
+        const [bostonNow, denverNow, seattleNow] = (await reread(KEY, statements)) as [
+          RecordedStatement,
+          RecordedStatement,
+          RecordedStatement,
+        ];
+        // Boston no longer ends at Denver — Seattle took that job.
+        expect(bostonNow.until).toBe(JUN);
+        expect(bostonNow.closedBy).toBe(seattle.id);
+        // ...and Seattle is itself bounded at Denver, per rule 2.
+        expect(seattleNow.until).toBe(SEP);
+        expect(seattleNow.closedBy).toBe(denver.id);
+        // Denver is the one active winner, untouched.
+        expect(denverNow.until).toBeUndefined();
+        expect(denverNow.closedBy).toBeUndefined();
+
+        const active = await recall({ about: 'user', limit: 10 });
+        expect(active.statements.map((s) => s.value)).toEqual(['Denver']);
+      });
+
+      // Rule 3 is not suspended just because the row took the scenic route in.
+      // Two subjects, so the two directions cannot interfere: under `user` the
+      // resolved extracted row is dated BEFORE the human one (rule 2 would
+      // bound it at JUN without immunity), and under `partner` it is dated
+      // AFTER (rule 1 would close the human row without immunity).
+      //
+      // One batch, so the human row provably arrives first: re-derivation
+      // replays arrivals, and "a human row recorded first is never closed by
+      // an extracted one that shows up later" is exactly what is being pinned.
+      it('keeps provenance immunity through a reindex, in both directions', async () => {
+        const human = (about: string): FactStatementInput => ({
+          about,
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JUN,
+          slot: LIVES_IN,
+          provenance: 'human',
+        });
+        const [userHuman, backdated, partnerHuman, later] = (
+          await record({
+            statements: [
+              human('user'),
+              {
+                about: 'user',
+                relation: 'lives_in',
+                value: 'Boston',
+                when: JAN,
+                slot: PENDING_SLOT,
+              },
+              human('partner'),
+              {
+                about: 'partner',
+                relation: 'lives_in',
+                value: 'Denver',
+                when: SEP,
+                slot: PENDING_SLOT,
+              },
+            ],
+          })
+        ).records as [
+          RecordedStatement,
+          RecordedStatement,
+          RecordedStatement,
+          RecordedStatement,
+        ];
+
+        const out = await reindex({
+          slots: [
+            { id: backdated.id, slot: LIVES_IN },
+            { id: later.id, slot: LIVES_IN },
+          ],
+        });
+        // Two rows really were resolved — the empty `reclosed` below is a
+        // statement about the rules, not about the drain having skipped them.
+        expect(out.resolved).toBe(2);
+        expect(out.reclosed).toEqual([]);
+        expect(out.pending).toBe(0);
+        expect(out.degraded).toEqual([]);
+
+        const forUser = await recall({ about: 'user', limit: 10 });
+        expect(forUser.statements.map((s) => s.id).sort()).toEqual(
+          [userHuman.id, backdated.id].sort(),
+        );
+        const forPartner = await recall({ about: 'partner', limit: 10 });
+        expect(forPartner.statements.map((s) => s.id).sort()).toEqual(
+          [partnerHuman.id, later.id].sort(),
+        );
+      });
+
+      // The worst bug available here is un-forgetting something a person asked
+      // us to forget. A retracted row (`closed_by IS NULL`, finite `valid_end`)
+      // asserts nothing: the re-derivation must leave its own columns alone AND
+      // keep it out of the peer set, so it cannot bound the arriving row.
+      it('does not resurrect or consult a retracted row dated AFTER the resolved one', async () => {
+        const KEY = 'retracted-later';
+        const denverStatement: FactStatementInput = {
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Denver',
+          when: SEP,
+          slot: LIVES_IN,
+        };
+        const [denver] = (await record({ batchKey: KEY, statements: [denverStatement] }))
+          .records as [RecordedStatement];
+        expect((await supersede([denver.id])).closed).toEqual([denver.id]);
+
+        const [retracted] = (await reread(KEY, [denverStatement])) as [RecordedStatement];
+        expect(retracted.closedBy).toBeUndefined();
+        expect(retracted.until).toBeDefined();
+
+        const SEATTLE_KEY = 'resolved-earlier';
+        const seattleStatement: FactStatementInput = {
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JUN,
+          slot: PENDING_SLOT,
+        };
+        const [seattle] = (await record({ batchKey: SEATTLE_KEY, statements: [seattleStatement] }))
+          .records as [RecordedStatement];
+
+        const out = await reindex({ slots: [{ id: seattle.id, slot: LIVES_IN }] });
+        expect(out.resolved).toBe(1);
+        expect(out.reclosed).toEqual([]);
+        expect(out.pending).toBe(0);
+
+        // The retraction is byte-for-byte what supersede left behind.
+        const [retractedNow] = (await reread(KEY, [denverStatement])) as [RecordedStatement];
+        expect(retractedNow.closedBy).toBeUndefined();
+        expect(retractedNow.until).toBe(retracted.until);
+
+        // ...and it did not bound the row that arrived after it (rule 2 would
+        // have ended Seattle at SEP had Denver still been a peer).
+        const [seattleNow] = (await reread(SEATTLE_KEY, [seattleStatement])) as [RecordedStatement];
+        expect(seattleNow.until).toBeUndefined();
+        expect(seattleNow.closedBy).toBeUndefined();
+        expect((await recall({ about: 'user', limit: 10 })).statements.map((s) => s.value)).toEqual(
+          ['Seattle'],
+        );
+      });
+
+      it('does not re-close a retracted row dated BEFORE the resolved one', async () => {
+        const KEY = 'retracted-earlier';
+        const bostonStatement: FactStatementInput = {
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Boston',
+          when: JAN,
+          slot: LIVES_IN,
+        };
+        const [boston] = (await record({ batchKey: KEY, statements: [bostonStatement] }))
+          .records as [RecordedStatement];
+        expect((await supersede([boston.id])).closed).toEqual([boston.id]);
+        const [retracted] = (await reread(KEY, [bostonStatement])) as [RecordedStatement];
+
+        const seattle = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JUN,
+          slot: PENDING_SLOT,
+        });
+        const out = await reindex({ slots: [{ id: seattle.id, slot: LIVES_IN }] });
+        expect(out.resolved).toBe(1);
+        // Rule 1 WOULD have closed Boston (JAN <= JUN, and its retraction
+        // stamp is later than JUN) if a retracted row were still a peer.
+        expect(out.reclosed).toEqual([]);
+
+        const [retractedNow] = (await reread(KEY, [bostonStatement])) as [RecordedStatement];
+        expect(retractedNow.closedBy).toBeUndefined();
+        expect(retractedNow.until).toBe(retracted.until);
+      });
+
+      it('ignores an id belonging to another agent, and leaves that agent\'s row pending', async () => {
+        const ctxA = makeCtx('agent-a', 'user-a');
+        const ctxB = makeCtx('agent-b', 'user-b');
+
+        const boston = await recordOne(
+          { about: 'user', relation: 'lives_in', value: 'Boston', when: JAN, slot: LIVES_IN },
+          ctxA,
+        );
+        const seattle = await recordOne(
+          { about: 'user', relation: 'lives_in', value: 'Seattle', when: JUN, slot: PENDING_SLOT },
+          ctxA,
+        );
+
+        const stolen = await reindex({ slots: [{ id: seattle.id, slot: LIVES_IN }] }, ctxB);
+        expect(stolen.resolved).toBe(0);
+        expect(stolen.reclosed).toEqual([]);
+        expect(stolen.pending).toBe(0);
+        expect(stolen.degraded).toEqual([]);
+
+        // A's row is untouched — still pending, still flagged...
+        const statusA = await reindex({}, ctxA);
+        expect(statusA.pending).toBe(1);
+        expect(statusA.degraded).toEqual(['pending']);
+
+        // ...and still resolvable BY A, which proves B did not write the slot.
+        const drained = await reindex({ slots: [{ id: seattle.id, slot: LIVES_IN }] }, ctxA);
+        expect(drained.resolved).toBe(1);
+        expect(drained.reclosed).toEqual([boston.id]);
+      });
+
+      it('ignores an id that is no longer pending, and does not move its slot', async () => {
+        const seattle = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JUN,
+          slot: PENDING_SLOT,
+        });
+        expect((await reindex({ slots: [{ id: seattle.id, slot: LIVES_IN }] })).resolved).toBe(1);
+
+        const again = await reindex({ slots: [{ id: seattle.id, slot: 'works_at' }] });
+        expect(again.resolved).toBe(0);
+        expect(again.reclosed).toEqual([]);
+
+        // If the second call HAD moved the row into `works_at`, this later
+        // `works_at` row would have closed it.
+        const acme = await recordOne({
+          about: 'user',
+          relation: 'works_at',
+          value: 'Acme',
+          when: SEP,
+          slot: 'works_at',
+        });
+        expect(acme.closes).toEqual([]);
+        expect((await recall({ about: 'user', limit: 10 })).statements.map((s) => s.value).sort()).toEqual(
+          ['Acme', 'Seattle'],
+        );
+      });
+
+      it('counts pending down and drops the degraded flag when the last one drains', async () => {
+        const first = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Boston',
+          when: JAN,
+          slot: PENDING_SLOT,
+        });
+        const second = await recordOne({
+          about: 'user',
+          relation: 'works_at',
+          value: 'Acme',
+          when: JUN,
+          slot: PENDING_SLOT,
+        });
+
+        const status = await reindex();
+        expect(status).toEqual({ resolved: 0, reclosed: [], pending: 2, degraded: ['pending'] });
+
+        const half = await reindex({ slots: [{ id: first.id, slot: LIVES_IN }] });
+        expect(half.resolved).toBe(1);
+        expect(half.pending).toBe(1);
+        expect(half.degraded).toEqual(['pending']);
+
+        // Even a resolve to `null` drains — the row's slot was derived; the
+        // answer was "none".
+        const done = await reindex({ slots: [{ id: second.id, slot: null }] });
+        expect(done.resolved).toBe(1);
+        expect(done.pending).toBe(0);
+        expect(done.degraded).toEqual([]);
+      });
+
+      it('is a pure status read with no slots — it resolves nothing and changes nothing', async () => {
+        const KEY = 'status-read';
+        const statements: FactStatementInput[] = [
+          { about: 'user', relation: 'lives_in', value: 'Boston', when: JAN, slot: LIVES_IN },
+          { about: 'user', relation: 'lives_in', value: 'Seattle', when: JUN, slot: PENDING_SLOT },
+        ];
+        const [boston, seattle] = (await record({ batchKey: KEY, statements })).records as [
+          RecordedStatement,
+          RecordedStatement,
+        ];
+
+        for (const input of [{}, { slots: [] }] as ReindexInput[]) {
+          const out = await reindex(input);
+          expect(out).toEqual({ resolved: 0, reclosed: [], pending: 1, degraded: ['pending'] });
+        }
+
+        // Nothing moved: both rows still active, neither carrying a closure.
+        const [bostonNow, seattleNow] = (await reread(KEY, statements)) as [
+          RecordedStatement,
+          RecordedStatement,
+        ];
+        expect(bostonNow.until).toBeUndefined();
+        expect(bostonNow.closedBy).toBeUndefined();
+        expect(seattleNow.until).toBeUndefined();
+        expect(seattleNow.closedBy).toBeUndefined();
+
+        // And the pending row is still pending — a status read did not quietly
+        // consume it, so the real drain still has work to do.
+        const drained = await reindex({ slots: [{ id: seattle.id, slot: LIVES_IN }] });
+        expect(drained.resolved).toBe(1);
+        expect(drained.reclosed).toEqual([boston.id]);
+      });
+
+      it('is a complete no-op the second time the same drain runs', async () => {
+        const KEY = 'idempotent';
+        const statements: FactStatementInput[] = [
+          { about: 'user', relation: 'lives_in', value: 'Boston', when: JAN, slot: LIVES_IN },
+          { about: 'user', relation: 'lives_in', value: 'Seattle', when: JUN, slot: PENDING_SLOT },
+        ];
+        const [boston, seattle] = (await record({ batchKey: KEY, statements })).records as [
+          RecordedStatement,
+          RecordedStatement,
+        ];
+
+        const first = await reindex({ slots: [{ id: seattle.id, slot: LIVES_IN }] });
+        expect(first).toEqual({
+          resolved: 1,
+          reclosed: [boston.id],
+          pending: 0,
+          degraded: [],
+        });
+        const afterFirst = await reread(KEY, statements);
+
+        const second = await reindex({ slots: [{ id: seattle.id, slot: LIVES_IN }] });
+        expect(second).toEqual({ resolved: 0, reclosed: [], pending: 0, degraded: [] });
+        // Same rows, same closures, same everything.
+        expect(await reread(KEY, statements)).toEqual(afterFirst);
+      });
+
+      describe('invalid-payload rejection', () => {
+        it('rejects a non-array slots', async () => {
+          await expectCode('invalid-payload', () =>
+            reindex({ slots: 'lives_in' as unknown as ResolvedSlot[] }),
+          );
+        });
+
+        it('rejects an empty id', async () => {
+          await expectCode('invalid-payload', () => reindex({ slots: [{ id: '', slot: LIVES_IN }] }));
+        });
+
+        it('rejects an empty slot — null is how you say "no slot"', async () => {
+          await expectCode('invalid-payload', () => reindex({ slots: [{ id: 'x', slot: '' }] }));
+        });
+
+        // Resolving a pending row to "pending" is a caller bug (most likely
+        // echoing the row back unchanged), not a no-op: accepting it would
+        // report `resolved: 1` for a row that is still undrained.
+        it('rejects PENDING_SLOT as a resolved slot', async () => {
+          await expectCode('invalid-payload', () =>
+            reindex({ slots: [{ id: 'x', slot: PENDING_SLOT }] }),
+          );
+        });
+
+        // Validation runs before a single slot is written, so a bad entry at
+        // position 2 cannot leave position 1 applied.
+        it('applies nothing at all when a later entry is invalid', async () => {
+          const seattle = await recordOne({
+            about: 'user',
+            relation: 'lives_in',
+            value: 'Seattle',
+            when: JUN,
+            slot: PENDING_SLOT,
+          });
+          await expectCode('invalid-payload', () =>
+            reindex({
+              slots: [
+                { id: seattle.id, slot: LIVES_IN },
+                { id: '', slot: LIVES_IN },
+              ],
+            }),
+          );
+          expect(await reindex()).toEqual({
+            resolved: 0,
+            reclosed: [],
+            pending: 1,
+            degraded: ['pending'],
+          });
+        });
       });
     });
   });

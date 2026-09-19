@@ -12,9 +12,18 @@ import type {
   SupersedeOutput,
   ClearInput,
   Provenance,
+  ReindexInput,
+  ReindexOutput,
+  ResolvedSlot,
 } from '@ax/memory-facts-contract';
 import { openDatabase, TABLE, INFINITY_SENTINEL, type FactRow } from './schema.js';
-import { insertWithSlotClosure, supersedeIds } from './closure.js';
+import {
+  insertWithSlotClosure,
+  resettleSlotGroups,
+  supersedeIds,
+  type SlotGroup,
+} from './closure.js';
+import { PENDING_SLOT, pendingStatus } from './pending.js';
 import { agentScopeKey } from './agent-scope-key.js';
 import type { Database as BetterSqliteDb } from 'better-sqlite3';
 
@@ -204,6 +213,73 @@ function validateRecallInput(input: RecallInput): { about?: string; limit: numbe
   };
 }
 
+/**
+ * `memory:facts:reindex`'s payload check. Runs BEFORE the store region for
+ * the same reason every other hook's does — a malformed payload is the
+ * caller's bug and must keep saying `invalid-payload` even when the store is
+ * also down — and it is also what makes the drain all-or-nothing: every entry
+ * is known-good before a single slot is written, so the only way to fail
+ * partway is a store failure, which the transaction rolls back.
+ *
+ * `slot: null` is legal and means "no slot after all" — a real outcome of the
+ * caller's normalizer, and the row stays inert forever.
+ *
+ * `slot: PENDING_SLOT` is REJECTED rather than treated as a no-op. Resolving
+ * a pending row to "pending" cannot be anything but a caller bug (most likely
+ * echoing the row back unchanged), and silently accepting it would report
+ * `resolved: 1` for a row that is still undrained — a lie in the one number
+ * this hook exists to make trustworthy.
+ */
+function validateReindexInput(input: ReindexInput): ResolvedSlot[] {
+  if (typeof input !== 'object' || input === null) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'reindex input must be an object',
+    });
+  }
+  if (input.slots === undefined) return [];
+  if (!Array.isArray(input.slots)) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'slots must be an array when set',
+    });
+  }
+  return input.slots.map((entry): ResolvedSlot => {
+    if (typeof entry !== 'object' || entry === null) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        message: 'each slots entry must be an object',
+      });
+    }
+    const e = entry as unknown as Record<string, unknown>;
+    if (!isNonEmptyString(e.id)) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        message: 'slots[].id must be a non-empty string',
+      });
+    }
+    if (e.slot !== null && !isNonEmptyString(e.slot)) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        message: 'slots[].slot must be a non-empty string, or null for "no slot after all"',
+      });
+    }
+    if (e.slot === PENDING_SLOT) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        message: `slots[].slot cannot be '${PENDING_SLOT}' — that is the unresolved sentinel, not a slot`,
+      });
+    }
+    return { id: e.id, slot: e.slot as string | null };
+  });
+}
+
 function rowToFactRecord(row: FactRow): FactRecord {
   return {
     id: row.id,
@@ -335,6 +411,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
         'memory:facts:recall',
         'memory:facts:supersede',
         'memory:facts:clear',
+        'memory:facts:reindex',
       ],
       calls: [],
       subscribes: [],
@@ -507,6 +584,80 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           // for a "forget this" operation.
           inStore('memory:facts:clear', () => {
             requireDriver().prepare(`DELETE FROM ${TABLE} WHERE agent_key = ?`).run(agentKey);
+          });
+        },
+      );
+
+      bus.registerService<ReindexInput, ReindexOutput>(
+        'memory:facts:reindex',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          // Validation before the store region — see `record`.
+          const slots = validateReindexInput(input);
+          const agentKey = agentScopeKey(ctx);
+
+          return inStore('memory:facts:reindex', () => {
+            const db = requireDriver();
+
+            // ONE transaction for the whole drain. Writing a resolved slot and
+            // re-settling the chain that row just joined are halves of the
+            // same operation: a crash between them would leave a real-slot row
+            // sitting in a chain that had never been re-derived, which reads
+            // as two simultaneously-active values for one slot — the exact
+            // corruption pending exists to avoid. It is also what makes the
+            // reported `resolved`/`reclosed`/`pending` numbers describe one
+            // consistent snapshot rather than three moments.
+            const drain = db.transaction((): ReindexOutput => {
+              // Tenant-scoped AND still-pending, in one predicate: a foreign
+              // id, a missing id, and an already-resolved id are all just "no
+              // row", and all three are silently ignored — the same forgiving
+              // shape `supersede` has, because the caller is draining a list
+              // it built earlier and a racing second drain is normal.
+              const findPending = db.prepare(
+                `SELECT about FROM ${TABLE} WHERE id = ? AND agent_key = ? AND slot = ?`,
+              );
+              const resolveSlot = db.prepare(
+                `UPDATE ${TABLE} SET slot = ? WHERE id = ? AND agent_key = ? AND slot = ?`,
+              );
+
+              let resolved = 0;
+              // Deduped by `(about, slot)`: two rows resolved into the same
+              // chain re-derive it once, not twice. A Map keyed on a
+              // NUL-joined pair, because `about` and `slot` are both free
+              // text and a `${a}:${b}` key could collide across the boundary.
+              const groups = new Map<string, SlotGroup>();
+
+              for (const entry of slots) {
+                const row = findPending.get(entry.id, agentKey, PENDING_SLOT) as
+                  | { about: string }
+                  | undefined;
+                if (row === undefined) continue;
+                // A repeated id in one call therefore resolves ONCE: the
+                // second occurrence no longer finds a pending row. First
+                // entry wins, deterministically.
+                const { changes } = resolveSlot.run(entry.slot, entry.id, agentKey, PENDING_SLOT);
+                if (changes === 0) continue;
+                resolved += changes;
+                // `slot: null` is "no slot after all" — the row is inert
+                // forever, joins no chain, and so touches nothing to re-settle.
+                if (entry.slot !== null) {
+                  groups.set(`${row.about}\u0000${entry.slot}`, {
+                    about: row.about,
+                    slot: entry.slot,
+                  });
+                }
+              }
+
+              const reclosed = resettleSlotGroups(db, agentKey, [...groups.values()]);
+              // Counted AFTER the writes, inside the same transaction, so the
+              // number is the state this call left behind — not the one it
+              // found. Called with no `slots` this is the whole hook: a status
+              // read (design §2.2). A whole-tenant repair sweep is deliberately
+              // NOT built — it has no caller (plan §6).
+              return { resolved, reclosed, ...pendingStatus(db, agentKey) };
+            });
+
+            return drain();
           });
         },
       );
