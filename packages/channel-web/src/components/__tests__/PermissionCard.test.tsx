@@ -23,7 +23,7 @@ import {
   type PermissionRequest,
 } from '@/lib/permission-card-store';
 import { setActiveConversationId } from '@/lib/use-conversation-id';
-import { GRANT_REASSURANCE, KEY_SAFETY, SLOT_HINT } from '@/lib/grant-copy';
+import { GRANT_REASSURANCE, KEY_SAFETY, REACH_LEAD_IN, SLOT_HINT } from '@/lib/grant-copy';
 
 const skillReq: PermissionRequest = {
   kind: 'skill',
@@ -303,5 +303,96 @@ describe('a payload the producer lets through with no shape guard at all', () =>
     show({ kind: 'host', host: 'example.org', sessionId: 'sess-9' });
 
     expect(screen.getByText('Allow access to example.org?')).toBeTruthy();
+  });
+
+  /*
+    THE FINDING FROM THE THIRD REVIEW ROUND, and the reason this block keeps
+    growing: each round's guard covered the field it was looking at and left
+    its NEIGHBOUR on the same throw path. `usableSlots` vouches for `s.slot`
+    and says nothing about `s.account`, which `s.account ?? s.slot` then hands
+    to `humanizeId` — and `??` only falls back on null/undefined, so every
+    other wrong type goes straight through to `tokenize(...).replace`. Same
+    story for `hosts`: `?? []` catches an absent list and not a string one
+    (truthy `.length`, no `.map`) nor a list with a non-string in it.
+  */
+  test('a non-string account on a haveExisting slot does not crash the card', () => {
+    const objectAccount = {
+      ...skillReq,
+      slots: [{ slot: 'api_key', kind: 'api-key', haveExisting: true, account: {} }],
+    } as unknown as PermissionRequest;
+
+    show(objectAccount);
+
+    // The slot is still OFFERED — `account` is a label detail, so it falls
+    // back to the slot id rather than costing the person the row.
+    expect(screen.getByText(/you already saved/)).toBeTruthy();
+    expect(screen.queryByText('undefined')).toBeNull();
+  });
+
+  test('an array account on an input slot does not crash the card', () => {
+    // The OTHER branch, and a different throw: `humanizeSlotLabel` only
+    // reaches `tokenize(service)` when the service is non-empty, so an array
+    // gets there where a number would have been stringified earlier.
+    const arrayAccount = {
+      ...skillReq,
+      slots: [{ slot: 'api_key', kind: 'api-key', account: ['linear'] }],
+    } as unknown as PermissionRequest;
+
+    show(arrayAccount);
+
+    expect(screen.getByLabelText(/api key/i)).toBeTruthy();
+  });
+
+  test('a blank account falls back to the slot id rather than an empty badge', () => {
+    const blankAccount = {
+      ...skillReq,
+      slots: [{ slot: 'api_key', kind: 'api-key', haveExisting: true, account: '   ' }],
+    } as unknown as PermissionRequest;
+
+    show(blankAccount);
+
+    // `humanizeId('api_key')` — the slot id, humanized — rather than the empty
+    // badge a bare `?? ` fallback would have left behind.
+    expect(screen.getByText('API key')).toBeTruthy();
+  });
+
+  test('a real account still labels the slot with its service', () => {
+    // Positive control for all three above: the guard must not have flattened
+    // every slot down to its raw id.
+    show({
+      ...skillReq,
+      slots: [{ slot: 'api_key', kind: 'api-key', haveExisting: true, account: 'linear' }],
+    });
+
+    expect(screen.getByText('Linear')).toBeTruthy();
+  });
+
+  test('a string-typed hosts list does not crash the card', () => {
+    // `"api.linear.app".length` is truthy, so `?? []` passes it through and
+    // `.map` is not a function.
+    const stringHosts = {
+      ...skillReq,
+      hosts: 'api.linear.app',
+    } as unknown as PermissionRequest;
+
+    show(stringHosts);
+
+    expect(screen.getByText('Connect Linear issues')).toBeTruthy();
+    // Nothing legible to list, so the reach line is dropped rather than
+    // rendering the string character by character as badges.
+    expect(screen.queryByText(REACH_LEAD_IN)).toBeNull();
+  });
+
+  test('a hosts list carrying a non-string drops that entry and keeps the rest', () => {
+    const mixedHosts = {
+      ...skillReq,
+      hosts: ['api.linear.app', { hostname: 'evil.example' }],
+    } as unknown as PermissionRequest;
+
+    show(mixedHosts);
+
+    expect(screen.getByText(REACH_LEAD_IN)).toBeTruthy();
+    expect(screen.getByText('api.linear.app')).toBeTruthy();
+    expect(screen.queryByText(/evil.example/)).toBeNull();
   });
 });

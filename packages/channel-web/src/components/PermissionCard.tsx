@@ -75,6 +75,10 @@ import {
   accountDestinationForConnectorSlot,
   accountOrSkillDestination,
 } from '@/lib/grant-destinations';
+// (TASK-388) The reach-shape answers this card and the workspace's `GrantRow`
+// both need. Shared because the hole they close was in both renderers, not
+// because the two happen to look alike — see the module header.
+import { slotAccount, usableHosts, usableSlots } from '@/lib/grant-shape';
 
 // (TASK-350) The grant copy moved to `@/lib/grant-copy` so the agent
 // workspace's own grant renderer reads the same strings rather than repeating
@@ -94,35 +98,6 @@ import {
  */
 function humanizedTitleOrFallback(id: unknown, fallback: string): string {
   return typeof id === 'string' && id.trim().length > 0 ? humanizeId(id) : fallback;
-}
-
-/**
- * (TASK-388) The slot ELEMENTS need the same treatment as the slots array —
- * one level deeper than the fields this card's brief named, and the level
- * where porting `GrantRow`'s render-site fix is NOT sufficient on its own:
- * `GrantRow` reads `s.slot` unguarded too, and is safe only because its
- * producer (`isRenderableGrant` -> `hasIterableReach`) already requires every
- * element to carry a string `slot`. This card's producer requires nothing, so
- * `humanizeId(s.account ?? s.slot)` / `humanizeSlotLabel(s.slot, ...)` reach
- * `tokenize(undefined)` -> `undefined.replace(...)` -> `TypeError`, thrown
- * inside render.
- *
- * ONE list, used by the renderer AND `allSlotsFilled` AND the two click
- * handlers, because filtering only the renderer is a trap: `allSlotsFilled`
- * would still count a slot nobody can see, leaving Connect disabled forever
- * behind a hint pointing at no field — an unanswerable card, which is the
- * failure this whole task is avoiding.
- *
- * Dropping such a slot is safe: its key has nowhere to go (every vault
- * destination is derived from the slot id), and the server re-resolves the
- * real proposal and intersects it with `shown`, so a slot missing from
- * `shown` can only ever grant LESS, never more.
- */
-function usableSlots<S extends { slot: string }>(slots: readonly S[] | undefined): S[] {
-  return (slots ?? []).filter(
-    (s) =>
-      typeof s === 'object' && s !== null && typeof s.slot === 'string' && s.slot.trim().length > 0,
-  );
 }
 
 /**
@@ -240,7 +215,7 @@ export function PermissionCard() {
       // current proposalDelta so an agent that widens its draft between card
       // render and user click can never grant caps the user never saw.
       const shown = {
-        hosts: request.hosts ?? [],
+        hosts: usableHosts(request.hosts),
         slots: usableSlots(request.slots).map((s) => s.slot),
         npm: request.packages?.npm ?? [],
         pypi: request.packages?.pypi ?? [],
@@ -301,7 +276,7 @@ export function PermissionCard() {
       // intersects this with the re-resolved current proposal so a draft widened
       // between render and click can never grant caps the user never saw.
       const shown = {
-        hosts: request.hosts ?? [],
+        hosts: usableHosts(request.hosts),
         slots: usableSlots(request.slots).map((s) => s.slot),
         npm: request.packages?.npm ?? [],
         pypi: request.packages?.pypi ?? [],
@@ -370,16 +345,24 @@ export function PermissionCard() {
             </div>
           </div>
         )}
-        {slots.map((s) =>
-          s.haveExisting === true ? (
+        {slots.map((s) => {
+          // (TASK-388) `usableSlots` vouches for `s.slot` and says nothing
+          // about its sibling `account`, which is the next operand of the same
+          // throw path: `s.account ?? s.slot` only falls back on null and
+          // undefined, so a number/object/array `account` reaches `humanizeId`
+          // -> `tokenize` -> `.replace(...)` and throws inside render. Coalesced
+          // rather than dropped, because an absent `account` is legitimate —
+          // it just means "no service prefix", which both labels handle.
+          const account = slotAccount(s);
+          return s.haveExisting === true ? (
             // (JIT P2) the user already has this service key in their shared
             // vault — offer it with one tap, no re-entry. No input, no POST.
             <div
               key={s.slot}
               className="flex items-center gap-2 text-sm text-muted-foreground"
             >
-              <Badge variant="secondary">{humanizeId(s.account ?? s.slot)}</Badge>
-              <span>Using the {humanizeSlotLabel(s.slot, s.account)} you already saved.</span>
+              <Badge variant="secondary">{humanizeId(account ?? s.slot)}</Badge>
+              <span>Using the {humanizeSlotLabel(s.slot, account)} you already saved.</span>
             </div>
           ) : (
             <div key={s.slot} className="grid gap-1.5">
@@ -391,7 +374,7 @@ export function PermissionCard() {
                   the value posts straight to the host credential store and
                   never reaches the model or the transcript (§10, TASK-35). */}
               <Label htmlFor={`perm-cred-${s.slot}`}>
-                {humanizeSlotLabel(s.slot, s.account)}
+                {humanizeSlotLabel(s.slot, account)}
               </Label>
               <p className="text-xs text-muted-foreground">{KEY_SAFETY}</p>
               <Input
@@ -404,8 +387,8 @@ export function PermissionCard() {
                 }
               />
             </div>
-          ),
-        )}
+          );
+        })}
         {/*
           (TASK-388) Same hole TASK-351 found and fixed in the workspace's
           `GrantRow` — `npm`/`pypi` are both required when `packages` is
@@ -448,7 +431,7 @@ export function PermissionCard() {
               <AlertDescription>{AUTHORED_CONNECTOR_WARNING}</AlertDescription>
             </Alert>
           )}
-          {renderReach(request.hosts ?? [], usableSlots(request.slots), request.packages)}
+          {renderReach(usableHosts(request.hosts), usableSlots(request.slots), request.packages)}
           <p className="text-sm text-muted-foreground">{GRANT_REASSURANCE}</p>
           {error !== null && (
             <Alert variant="destructive">
@@ -552,7 +535,7 @@ export function PermissionCard() {
             <AlertDescription>{AUTHORED_SKILL_WARNING}</AlertDescription>
           </Alert>
         )}
-        {renderReach(request.hosts ?? [], usableSlots(request.slots), request.packages)}
+        {renderReach(usableHosts(request.hosts), usableSlots(request.slots), request.packages)}
         <p className="text-sm text-muted-foreground">{GRANT_REASSURANCE}</p>
         {error !== null && (
           <Alert variant="destructive">

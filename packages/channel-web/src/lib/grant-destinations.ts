@@ -25,6 +25,25 @@ export interface CardSlot {
 }
 
 /**
+ * (TASK-388) These tags are typed `string` and arrive off the wire, where
+ * neither grant surface's producer checks them: chat's validates nothing at
+ * all, and the workspace's `isRenderableGrant` checks `slot` and stops there.
+ * So "typed `string`" means "the producer promised", not "we looked".
+ *
+ * A non-string tag matters HERE more than in a renderer, because these
+ * functions decide which vault row a secret lands in — getting it wrong is the
+ * failure this module's header already warns about, and `{service: {}}` would
+ * be carried straight into the write. Treating a non-string as ABSENT is what
+ * makes that safe: every branch below already has a defined fallback for an
+ * absent tag (the collapsed `account` route, then `skill-slot`/`connectorId`),
+ * so a malformed frame degrades onto the id the caller passed in rather than
+ * onto a row nobody can name.
+ */
+function tag(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+}
+
+/**
  * TASK-124 — build the account destination for a CONNECTOR slot. Prefer the
  * resolved `service`/`slotTag` (so a multi-slot connector hits its distinct
  * per-slot `account:<service>:<slot>` row); fall back to the legacy
@@ -34,11 +53,12 @@ export function accountDestinationForConnectorSlot(
   s: CardSlot,
   connectorId: string,
 ): Destination {
-  const service = s.service ?? s.account ?? connectorId;
+  const service = tag(s.service) ?? tag(s.account) ?? connectorId;
+  const slotTag = tag(s.slotTag);
   return {
     kind: 'account',
     service,
-    ...(s.slotTag !== undefined ? { slot: s.slotTag } : {}),
+    ...(slotTag !== undefined ? { slot: slotTag } : {}),
   };
 }
 
@@ -50,15 +70,18 @@ export function accountDestinationForConnectorSlot(
  * destination.
  */
 export function accountOrSkillDestination(s: CardSlot, skillId: string): Destination {
-  if (s.service !== undefined) {
+  const service = tag(s.service);
+  if (service !== undefined) {
+    const slotTag = tag(s.slotTag);
     return {
       kind: 'account',
-      service: s.service,
-      ...(s.slotTag !== undefined ? { slot: s.slotTag } : {}),
+      service,
+      ...(slotTag !== undefined ? { slot: slotTag } : {}),
     };
   }
-  if (s.account !== undefined) {
-    return { kind: 'account', service: s.account };
+  const account = tag(s.account);
+  if (account !== undefined) {
+    return { kind: 'account', service: account };
   }
   return { kind: 'skill-slot', skillId, slot: s.slot };
 }

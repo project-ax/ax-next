@@ -49,6 +49,7 @@ import {
   accountDestinationForConnectorSlot,
   accountOrSkillDestination,
 } from '@/lib/grant-destinations';
+import { slotAccount } from '@/lib/grant-shape';
 import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
 import { HttpError, httpFetch, userFacingMessage } from '@/lib/http';
 import type { PermissionRequest } from '@/server/types';
@@ -385,19 +386,33 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
         </div>
       )}
 
-      {request.slots.map((s) =>
-        s.haveExisting === true ? (
+      {request.slots.map((s) => {
+        /*
+          (TASK-388) `isRenderableGrant` vouches for `s.slot` — `hasIterableReach`
+          requires a string one on every element — and says NOTHING about its
+          sibling `account`. `s.account ?? s.slot` only falls back on null and
+          undefined, so a number/object/array `account` sails past both and
+          reaches `humanizeId` -> `tokenize` -> `.replace(...)`, which throws
+          inside render and hands the whole surface to the `ErrorBoundary`.
+
+          That is the same hole chat's `PermissionCard` had, which is why the
+          answer is shared (`lib/grant-shape.ts`) rather than written twice —
+          and it is why "our producer validates the slots" was not the
+          reassurance it sounded like: it validates ONE field of them.
+        */
+        const account = slotAccount(s);
+        return s.haveExisting === true ? (
           <div
             key={s.slot}
             className="mt-3 flex items-center gap-2 text-[13px] text-muted-foreground"
           >
-            <Badge variant="secondary">{humanizeId(s.account ?? s.slot)}</Badge>
-            <span>Using the {humanizeSlotLabel(s.slot, s.account)} you already saved.</span>
+            <Badge variant="secondary">{humanizeId(account ?? s.slot)}</Badge>
+            <span>Using the {humanizeSlotLabel(s.slot, account)} you already saved.</span>
           </div>
         ) : (
           <div key={s.slot} className="mt-3 grid max-w-[420px] gap-1.5">
             <Label htmlFor={`grant-cred-${grant.key}-${s.slot}`}>
-              {humanizeSlotLabel(s.slot, s.account)}
+              {humanizeSlotLabel(s.slot, account)}
             </Label>
             <p className="text-xs text-muted-foreground">{KEY_SAFETY}</p>
             <Input
@@ -408,8 +423,8 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
               onChange={(e) => setValues((v) => ({ ...v, [s.slot]: e.target.value }))}
             />
           </div>
-        ),
-      )}
+        );
+      })}
 
       {/*
         Same shape of bug as `description` above, one field over: `npm` and
