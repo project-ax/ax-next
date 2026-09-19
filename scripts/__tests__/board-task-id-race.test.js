@@ -53,9 +53,11 @@
 //
 // MUTANTS RUN, NOT REASONED ABOUT (2026-09-19; each applied to the committed script and
 // executed, then restored with `git checkout --`). Counts below are the RE-MEASURED ones
-// against the post-review script: baseline 25 collected, 25 passed, and every mutant
-// still COLLECTS 25 — the number to distrust is a red count that arrives with a shrunken
-// total.
+// against the post-review script: baseline 25 collected, 25 passed at the time of that
+// battery, and every mutant still COLLECTED 25 — the number to distrust is a red count
+// that arrives with a shrunken total. The file has grown since (the doc-branching guard
+// and the cross-prefix case landed after), so a rerun today collects MORE than 25; the
+// per-mutant red counts below are the ones that were measured, not re-derived.
 //
 // A WARNING THAT COST ME AN HOUR, AND IS NOT ABOUT MUTANTS AT ALL. Restoring a mutant
 // with `git checkout -- scripts/board-task-id.sh` is correct for whoever is running the
@@ -778,14 +780,25 @@ describe('board-task-id.sh — Task-ID allocation under concurrency', () => {
     // guard read `github-project.md` alone — the rule was enforced where I had already
     // looked, which is the least useful place to enforce a rule.
     //
-    // WHAT THIS STILL DOES NOT COVER, said plainly rather than implied away. The guard
-    // reads ```bash FENCES. SKILL.md's triage step states its allocator call in PROSE,
-    // and prose is deliberately out of scope here — scanning it is what made an earlier
-    // version fail on a paragraph that merely named the script in backticks. So adding
-    // SKILL.md and templates.md to this list buys coverage for any FUTURE fenced block
-    // in them; it does not pin the prose instruction that a reviewer had to catch by
-    // reading. A text check for the right words there would be the TASK-392 mistake
-    // again: satisfied by a sentence that says them and branches on nothing.
+    // THE FENCE IS THE ENFORCEMENT SURFACE, and that is why SKILL.md's triage call now
+    // lives in one. This list was widened first and the call was left in prose, which
+    // read as coverage and was not: a reviewer reverted the prose to the bare form and
+    // the whole suite stayed GREEN — 0 red across 26. The widening bought nothing for
+    // the file it shipped with.
+    //
+    // The two obvious answers were both wrong. Scanning prose is what made an earlier
+    // version of this test fail on a paragraph that merely named the script in
+    // backticks. Grepping the prose for the right words is the TASK-392 mistake:
+    // satisfied by a sentence that says them and branches on nothing. The third option
+    // is to stop asking the guard to read prose and put the canonical call in a fence,
+    // where it is both the instruction an orchestrator executes AND a thing a machine
+    // can check. Documented behaviour with no test is a preference; a fenced block is a
+    // property.
+    //
+    // It also fixes a concentration: before this, SKILL.md and templates.md contributed
+    // ZERO fenced allocator calls, so the `>= 2` vacuity floor below rested entirely on
+    // github-project.md — one file's refactor away from this whole test passing on an
+    // empty list.
     const DOCS = [
       ['.claude', 'skills', 'auto-ship', 'SKILL.md'],
       ['.claude', 'skills', 'auto-ship', 'references', 'github-project.md'],
