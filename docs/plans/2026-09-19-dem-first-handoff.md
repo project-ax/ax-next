@@ -228,7 +228,7 @@ changed. New, for the `@ax/memory-facts-*` packages (ordinary pnpm workspace pac
 part of `dem-memory`):
 
 ```bash
-pnpm --filter @ax/memory-facts-sqlite test       # 95 tests as of TASK-422 (48 at PR #603)
+pnpm --filter @ax/memory-facts-sqlite test       # 98 tests as of TASK-422 (48 at PR #603)
 pnpm --filter @ax/memory-facts-contract build
 pnpm build                                       # root tsc --build; both packages are in
                                                   # root tsconfig.json's references
