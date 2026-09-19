@@ -28,6 +28,7 @@ function renderThread(
   const props: ComponentProps<typeof AgentConversation> = {
     agent: quill,
     thread,
+    conversationId: 'c1',
     decisions: [],
     readOnly: false,
     onSend: vi.fn(),

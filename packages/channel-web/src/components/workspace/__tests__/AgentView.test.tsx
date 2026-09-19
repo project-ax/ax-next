@@ -794,7 +794,12 @@ describe('a grant raised on a pending reply', () => {
     );
 
     renderView({
-      pendingReply: { reqId: 'r-1', text: 'go', conversationId: 'c-from-send' },
+      pendingReply: {
+        reqId: 'r-1',
+        text: 'go',
+        conversationId: 'c-from-send',
+        attachments: [],
+      },
     });
 
     await waitFor(() =>

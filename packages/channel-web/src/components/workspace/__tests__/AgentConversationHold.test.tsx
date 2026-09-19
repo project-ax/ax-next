@@ -42,6 +42,7 @@ function renderConversation(
     <AgentConversation
       agent={quill}
       thread={[]}
+      conversationId="c1"
       decisions={[]}
       readOnly={false}
       onSend={vi.fn()}
@@ -166,6 +167,7 @@ describe('AgentConversation — composer hold while an approval is open', () => 
       <AgentConversation
         agent={quill}
         thread={[...threadFor('d-marcus')]}
+        conversationId="c1"
         decisions={[resolvedFixture('dismissed', { id: 'd-marcus' })]}
         readOnly={false}
         onSend={onSend}
@@ -193,6 +195,7 @@ describe('AgentConversation — composer hold while an approval is open', () => 
       <AgentConversation
         agent={quill}
         thread={[...threadFor('d-marcus')]}
+        conversationId="c1"
         decisions={[decisionFixture()]}
         readOnly={false}
         onSend={vi.fn()}
