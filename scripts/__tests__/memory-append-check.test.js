@@ -235,6 +235,13 @@ describe('memory-append-check.sh', () => {
     // documenting it, reverting a waived commit, or arriving from another
     // branch — would waive real violations. Git's own trailer parser reads
     // only the trailer block.
+    //
+    // Honest about which case does the work: only the FIRST discriminates
+    // against the old body-grep (measured — swapping the trailer parser back
+    // reddens that one and not this pair). The indented case would have passed
+    // either way, because `^Memory-Rewrite:` is line-anchored and the quote is
+    // indented. It is kept as a correct assertion about indentation, not
+    // claimed as proof of this fix.
     const dir = makeRepo();
     writeFileSync(archivePath(dir), ARCHIVE.replace('## 2026-09-02', '## 2026-09-03'));
     commit(dir, message);
@@ -245,6 +252,44 @@ describe('memory-append-check.sh', () => {
 
     const r = run(dir, ['main']);
     expect(r.status).toBe(1);
+    expect(r.stderr).not.toMatch(/WAIVED/);
+  });
+
+  it('a git too old to expand %(trailers:key=...) waives NOTHING, loudly', () => {
+    // Direction matters here and nowhere else in this script. Git emits an
+    // UNSUPPORTED pretty placeholder LITERALLY rather than failing, so on a
+    // git before 2.22 the expansion is the format string itself — non-empty
+    // for every commit, i.e. a waiver on everything. A waiver that silently
+    // stops working is a nuisance; one that silently starts working deletes
+    // the guard.
+    //
+    // Simulated with a `git` shim earlier on PATH that answers any
+    // `%(trailers:` format with the literal placeholder and delegates
+    // everything else to the real git — which is what an old git does.
+    const dir = makeRepo();
+    writeFileSync(archivePath(dir), ARCHIVE.replace('## 2026-09-02', '## 2026-09-03'));
+    commit(dir, 'hygiene pass\n\nMemory-Rewrite: a genuine reason\n');
+
+    // Control: with the real git, this commit DOES waive. Without this the
+    // test could pass because the fixture never waived in the first place.
+    expect(run(dir, ['main']).status, 'fixture must waive under a modern git').toBe(0);
+
+    const shimDir = mkdtempSync(join(tmpdir(), 'oldgit-'));
+    trash.push(shimDir);
+    const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+    writeFileSync(
+      join(shimDir, 'git'),
+      `#!/bin/sh\nfor a in "$@"; do\n  case "$a" in\n    *'%(trailers:'*) echo '%(trailers:key=Memory-Rewrite,valueonly)'; exit 0 ;;\n  esac\ndone\nexec ${realGit} "$@"\n`,
+      { mode: 0o755 },
+    );
+
+    const r = spawnSync('bash', [SCRIPT, 'main'], {
+      cwd: dir,
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}` },
+    });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/does not expand %\(trailers:key=\.\.\.\)/);
     expect(r.stderr).not.toMatch(/WAIVED/);
   });
 

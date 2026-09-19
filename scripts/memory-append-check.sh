@@ -170,8 +170,23 @@ fi
 # reverting a waived commit, or arriving from another branch — would waive real
 # violations. Git's own trailer parser only looks at the trailer block, so
 # prose cannot waive.
-waiver=$(git log --format='%(trailers:key=Memory-Rewrite,valueonly,separator=%x0A)' \
-  "${merge_base}..HEAD" | grep -E '[^[:space:]]' | head -n 1 || true)
+#
+# Probe first, with a key no commit can carry. Git emits an UNSUPPORTED pretty
+# placeholder LITERALLY rather than failing, so on a git too old for
+# `%(trailers:key=…)` (before 2.22) the expansion would be the format string
+# itself — non-empty for every commit, i.e. a waiver on everything. That is
+# fail-OPEN, and this is the one place in the script where that direction
+# matters: a waiver that silently stops working is a nuisance, a waiver that
+# silently starts working removes the guard. So an unexpanded probe disables
+# the waiver loudly instead.
+if [ -n "$(git log --format='%(trailers:key=Ax-Unused-Probe,valueonly)' -1 HEAD 2>/dev/null)" ]; then
+  echo "memory-append-check.sh: this git does not expand %(trailers:key=...) — it needs 2.22+." >&2
+  echo "  Not honouring any Memory-Rewrite waiver, because it cannot be told from prose here." >&2
+  waiver=''
+else
+  waiver=$(git log --format='%(trailers:key=Memory-Rewrite,valueonly,separator=%x0A)' \
+    "${merge_base}..HEAD" | grep -E '[^[:space:]]' | head -n 1 || true)
+fi
 
 printf 'memory-append-check.sh: %d issue(s) in %s between %s and HEAD:\n' \
   "${#violations[@]}" "$MEMORY_PREFIX" "${merge_base:0:12}" >&2
