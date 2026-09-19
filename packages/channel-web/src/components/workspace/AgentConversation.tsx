@@ -125,11 +125,18 @@ function threadGrowthKey(thread: readonly ThreadMessage[]): string {
         case 'steps':
           return `steps:${m.id}:${m.text.length}:${m.steps.length}`;
         /*
-          A user message grows when its files are drawn (TASK-424), and the
-          live frame's name-only chip is a different HEIGHT from the reloaded
-          frame's thumbnail. Counting them here is what tells the re-pin hook
-          the bubble changed size; `text.length` alone cannot see it, and a
-          caption-less attachment does not move it at all.
+          A user message grows when its files are drawn (TASK-424), and
+          `text.length` cannot see that: a caption-less attachment has an empty
+          text and a bubble taller than nothing.
+
+          WHAT THIS TERM DOES NOT COVER, said plainly because the first draft of
+          this comment got it wrong. It is NOT what catches the live name-only
+          chip becoming a reloaded thumbnail — that count is 1 on both sides.
+          What catches THAT is the `m.id` term: the transient turn is
+          `pending-user` and the re-read turn is a real `turnId`, so the key
+          changes anyway. And the image decoding after layout is caught by
+          neither; that is the `ResizeObserver`'s job (TASK-418's own note says
+          so, and it is why the hook has one).
         */
         case 'user':
           return `user:${m.id}:${m.text.length}:${(m.attachments ?? []).length}`;

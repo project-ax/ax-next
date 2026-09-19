@@ -398,6 +398,59 @@ describe('a message the person attached a file to', () => {
     unmount();
   });
 
+  it('scopes a past excerpt to the past conversation, not the current one', async () => {
+    /*
+      The one branch that can 404 an image SILENTLY, driven through `AgentView`
+      rather than by handing `AgentConversation` an id — the thing worth pinning
+      is WHICH id the view reaches for, and a direct render pins only that the
+      renderer uses whatever it was given.
+
+      A file path is scoped to a conversation (`attachments:download` checks
+      both), so the current conversation's id against a past conversation's path
+      answers 404 and the reader gets a broken image with nothing saying why.
+      `AgentView` passes `pastDetail?.conversationId`; swap it for
+      `detail.conversationId` and this goes red.
+    */
+    const PAST_PATH = '.ax/uploads/c-old/t1/roof-damage.png';
+    vi.mocked(workspaceApi.agent).mockImplementation(
+      async (_id: string, conversationId?: string) =>
+        conversationId === 'c-old'
+          ? ({
+              ...liveDetail(),
+              conversationId: 'c-old',
+              thread: [
+                {
+                  kind: 'user',
+                  id: 'o1',
+                  text: 'the March question',
+                  attachments: [
+                    {
+                      path: PAST_PATH,
+                      displayName: FILE_NAME,
+                      mediaType: FILE_TYPE,
+                    },
+                  ],
+                },
+              ],
+            } as unknown as AgentDetail)
+          : ({
+              ...liveDetail(),
+              conversationId: 'c1',
+              past: [{ id: 'c-old', title: 'March', meta: 'last week' }],
+            } as unknown as AgentDetail),
+    );
+
+    const view = renderLiveView();
+    fireEvent.click(await screen.findByRole('button', { name: 'March' }));
+    await screen.findByText('the March question');
+
+    const src = view.container.querySelector('img')?.getAttribute('src') ?? '';
+    expect(src).toContain(encodeURIComponent(PAST_PATH));
+    expect(src).toContain('conversationId=c-old');
+    expect(src).not.toContain('conversationId=c1');
+    view.unmount();
+  });
+
   it('names the file in the live frame, before any re-read', async () => {
     vi.mocked(workspaceApi.agent).mockResolvedValue(liveDetail());
     vi.mocked(workspaceApi.sendMessage).mockResolvedValue({
