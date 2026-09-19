@@ -296,10 +296,16 @@ export async function main(opts: MainOptions): Promise<number> {
   // design.md §2.1-2.2): registers memory:facts:record|recall|supersede|clear —
   // the storage/closure engine only. Postgres-free (owns its own sqlite table,
   // no collision with storage-sqlite's), so it loads unconditionally here like
-  // the other no-external-dep plugins above. This OPENS a half-wired window,
-  // same shape as validator-service just above: the engine is registered,
-  // contract-tested, and reachable from a real running host, but @ax/memory
-  // (the product-layer consumer — observer, tools, export) does not exist yet.
+  // the other no-external-dep plugins above. This OPENS TWO half-wired windows,
+  // both tracked, neither closed by this plugin alone:
+  //  (a) no CONSUMER yet — @ax/memory (observer, tools, export) doesn't exist.
+  //  (b) no K8S BACKEND yet — @ax/memory-facts-postgres doesn't exist, so
+  //      presets/k8s does NOT load a facts engine at all; memory:facts:* is
+  //      unreachable in production until TASK-423 ships + wires it into
+  //      presets/k8s/src/index.ts with its own preset.test.ts canary (the
+  //      same two-preset shape memory-strata-index-{sqlite,postgres} already
+  //      has). Do not wire a `memory:facts` consumer into presets/k8s before
+  //      TASK-423 lands, or it will boot against a missing service hook.
   // See .claude/memory/decisions.md's TASK-421 entries.
   plugins.push(
     createMemoryFactsSqlitePlugin({ databasePath: opts.sqlitePath ?? DEFAULT_SQLITE_PATH }),

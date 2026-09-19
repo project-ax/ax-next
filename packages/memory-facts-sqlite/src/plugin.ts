@@ -33,20 +33,27 @@ function isNonEmptyString(v: unknown): v is string {
 
 // Every closure decision (rules 1-4, closure.ts) and recall's ORDER BY compare
 // `when` lexicographically, which equals chronological order ONLY for a
-// normalized ISO-8601 Z-suffixed instant — a non-`Z` offset, an unpadded
-// date, or epoch millis would silently mis-bound the (about, slot) chain
-// with no error. `record` is the observer's door (default provenance
-// `extracted` = model output), so this is a real trust-boundary check
-// (Invariant 5), not decoration: reject anything Date.parse can't read, and
-// normalize what it can so a caller-supplied non-Z offset still sorts
-// correctly against every other row.
+// normalized ISO-8601 Z-suffixed instant — an unpadded date or epoch millis
+// would silently mis-bound the (about, slot) chain with no error. `record`
+// is the observer's door (default provenance `extracted` = model output),
+// so this is a real trust-boundary check (Invariant 5), not decoration.
+//
+// The offset must be EXPLICIT (`Z` or `+HH:MM`/`-HH:MM`) rather than just
+// "whatever Date.parse accepts": a bare local-time string like
+// `2023-06-01T12:00:00` (no offset) parses as HOST-LOCAL time, so
+// `.toISOString()` would silently shift the stored instant by the server's
+// timezone — a correctness bug that varies by deployment, not just a loose
+// message. Rejecting it here keeps the normalized value deployment-
+// independent.
+const EXPLICIT_OFFSET_ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
 function normalizeIsoInstant(field: string, value: string): string {
   const ms = Date.parse(value);
-  if (!Number.isFinite(ms)) {
+  if (!EXPLICIT_OFFSET_ISO.test(value) || !Number.isFinite(ms)) {
     throw new PluginError({
       code: 'invalid-payload',
       plugin: PLUGIN_NAME,
-      message: `statement.${field} must be a valid ISO-8601 instant`,
+      message: `statement.${field} must be an ISO-8601 instant with an explicit Z or +/-HH:MM offset`,
     });
   }
   return new Date(ms).toISOString();
@@ -141,6 +148,13 @@ function validateRecallInput(input: RecallInput): { about?: string; limit: numbe
       code: 'invalid-payload',
       plugin: PLUGIN_NAME,
       message: 'query is not implemented yet (TASK-424) — omit it',
+    });
+  }
+  if (input.activeOnly !== undefined && typeof input.activeOnly !== 'boolean') {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'activeOnly must be a boolean when set',
     });
   }
   if (input.activeOnly === false) {
