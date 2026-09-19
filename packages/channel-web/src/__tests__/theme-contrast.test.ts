@@ -382,10 +382,13 @@ const SRC_ROOT = join(__dirname, '..');
  * is by KEEPING comment text, which trips the guard loudly instead of
  * silencing it. Wrong in the safe direction, on purpose.
  *
- * Residual gap, stated rather than hidden: a line-start `/` + `*` inside a
- * multi-line template literal would still be read as a comment. Nothing in the
- * tree does that, and `mentions every file that names the class` below is the
- * backstop that would catch it anyway.
+ * Residual gap, stated rather than hidden, and wider than the obvious one.
+ * This is line-oriented, so it cannot tell that a line is inside a multi-line
+ * STRING. Any line whose first non-whitespace is `/`+`*`, `*`, or `//` is
+ * treated as comment syntax even when it is string content — all three were
+ * demonstrated in review, and all three hide a usage rather than surfacing it.
+ * Nothing in the tree has that shape, and `mentions every file that names the
+ * class` below is the backstop that would catch it anyway.
  */
 function stripComments(src: string): string {
   const kept: string[] = [];
@@ -601,6 +604,20 @@ describe('--ink-ghost is a fill, never ink', () => {
    * `AgentMenu` note that reached this conclusion first, and the token's own
    * comment in the stylesheet. If you are adding to this list, you are almost
    * certainly meant to be deleting a usage instead.
+   *
+   * The mutual coverage has one bounded blind spot, named here so it is not
+   * mistaken for total: a usage that is BOTH hidden by one of `stripComments`'
+   * residual gaps AND located in one of the two allow-listed files would
+   * escape both checks — stripped out of the first, and forgiven by the second
+   * because the file is expected. It needs a multi-line string of exactly the
+   * wrong shape inside `AgentMenu.tsx` or `index.css`; neither has one. Every
+   * other file in the tree is covered by one check or the other.
+   *
+   * Note the scope this trades against: `walk()` matches only `ts`/`tsx`/`css`
+   * plus `index.html`, so design docs and `.md` files are exempt and do not
+   * trip this. Inside those file types a future prose mention WILL fail the
+   * suite. That friction is deliberate for a hard-banned token — it forces the
+   * mention to be a decision rather than a drive-by.
    */
   it('mentions every file that names the class, prose included', () => {
     expect(filesMentioning(INK_GHOST_TEXT_CLASS)).toEqual([
