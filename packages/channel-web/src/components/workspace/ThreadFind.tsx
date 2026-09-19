@@ -30,8 +30,10 @@ import {
 import { ChevronDown, ChevronUp, Search, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { findRanges } from '@/lib/thread-find';
-import type { FindIndex } from '@/lib/thread-find';
+import { Markdown } from '@/components/Markdown';
+import { markdownHighlight } from '@/lib/markdown-find';
+import { fieldRanges } from '@/lib/thread-find';
+import type { FindField, FindIndex } from '@/lib/thread-find';
 
 /** The id the toggle's `aria-controls` points at. One bar per conversation. */
 export const THREAD_FIND_BAR_ID = 'thread-find-bar';
@@ -272,10 +274,18 @@ export function ThreadFindToggle({
 /**
  * One run of message text, with the matches painted.
  *
- * It re-derives the ranges from the SAME `findRanges` the count came from, so
- * the number in the bar and the marks on the screen are two readings of one
+ * It re-derives the ranges from the SAME matcher the count came from, so the
+ * number in the bar and the marks on the screen are two readings of one
  * calculation. Anything cleverer here — a second matcher, a memoized range list
  * that drifts — is how a find bar starts lying.
+ *
+ * TWO RENDERERS NOW, ONE MATCHER (TASK-405). An agent turn is markdown and is
+ * parsed before it is drawn, so its marks are placed by a rehype plugin into
+ * the text nodes react-markdown produced; a user bubble is a plain string and
+ * its marks are placed by slicing. Both ask `fieldRanges` — which, for a
+ * markdown field, is `findRanges` filtered to the matches that survive
+ * rendering. A match that cannot be painted is therefore not counted either,
+ * on both sides, rather than counted here and lost there.
  *
  * COLOURS, MEASURED (WCAG 2.1, computed from the token values in `index.css`,
  * light / dark). A mark sits on two different backgrounds in this thread: the
@@ -295,20 +305,70 @@ export function ThreadFindToggle({
  * and Tailwind's preflight does not reset it, so a mark with only a background
  * class would keep a hardcoded colour underneath.
  */
+const MARK_ACTIVE_CLASS = 'rounded-[3px] bg-foreground px-0.5 text-background';
+const MARK_INACTIVE_CLASS =
+  'rounded-[3px] border-b border-warning bg-warning-soft px-0.5 text-foreground';
+
 export function FindHighlight({
   fieldKey,
   text,
   find,
+  markdown = false,
 }: {
   fieldKey: string;
   text: string;
   find: FindView | null;
+  /**
+   * Render `text` as markdown (TASK-405). The agent bubble does; a user bubble
+   * and a fold marker do not. It has to agree with what `threadFindFields`
+   * recorded for the same field — see `field` below, which is how the count and
+   * the marks stay one calculation rather than two that happen to match.
+   */
+  markdown?: boolean;
 }) {
-  if (find === null) return <>{text}</>;
-  const base = find.index.firstMatch.get(fieldKey);
-  if (base === undefined) return <>{text}</>;
+  /*
+    The SAME shape the index counted, rebuilt here, so `fieldRanges` makes the
+    same choice for the same field on both sides. Passing `markdown` down as a
+    bare boolean and re-deriving the matcher from it locally would work exactly
+    until the two call sites disagreed about one message kind.
+  */
+  const field: FindField = markdown ? { key: fieldKey, text, markdown } : { key: fieldKey, text };
 
-  const ranges = findRanges(text, find.query);
+  if (find === null) {
+    return markdown ? <Markdown text={text} /> : <>{text}</>;
+  }
+  const base = find.index.firstMatch.get(fieldKey);
+  if (base === undefined) {
+    return markdown ? <Markdown text={text} /> : <>{text}</>;
+  }
+
+  const ranges = fieldRanges(field, find.query);
+
+  if (markdown) {
+    /*
+      The marks are put in BETWEEN remark-rehype and React, by splitting the
+      text nodes react-markdown had already decided to render. That is the only
+      seam where a highlight can land inside a table cell or a bold run without
+      anybody building markup out of the message. See `markdown-find.ts`.
+    */
+    return (
+      <Markdown
+        text={text}
+        rehypePlugins={[
+          markdownHighlight({
+            source: text,
+            ranges,
+            fieldKey,
+            base,
+            active: find.active,
+            activeClassName: MARK_ACTIVE_CLASS,
+            inactiveClassName: MARK_INACTIVE_CLASS,
+          }),
+        ]}
+      />
+    );
+  }
+
   const out: ReactNode[] = [];
   let cursor = 0;
   ranges.forEach((range, n) => {
@@ -319,11 +379,7 @@ export function FindHighlight({
         key={`${fieldKey}:${range.start}`}
         data-find-field={fieldKey}
         {...(isActive ? { 'data-find-active': 'true', 'aria-current': true as const } : {})}
-        className={
-          isActive
-            ? 'rounded-[3px] bg-foreground px-0.5 text-background'
-            : 'rounded-[3px] border-b border-warning bg-warning-soft px-0.5 text-foreground'
-        }
+        className={isActive ? MARK_ACTIVE_CLASS : MARK_INACTIVE_CLASS}
       >
         {text.slice(range.start, range.end)}
       </mark>,
