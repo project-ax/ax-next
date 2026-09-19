@@ -116,6 +116,13 @@ export function returnFocusToConsentRegion(
  * already does), and it must survive the re-render the resolve causes. It
  * disarms when it fires, so it can never move focus twice for one click.
  *
+ * A RETRY RE-FIRES, and the reason is worth naming because it lives in another
+ * file. `hasAnswer` stays `true` across a second attempt at a row that already
+ * has a notice, so the effect would not run again — except
+ * `workspace-decisions.ts` clears the notice at the START of every action, which
+ * drives it true → false → true and re-arms the effect. If that clear ever goes,
+ * focus after a retry goes with it, quietly.
+ *
  * `answerRef` is a CALLBACK ref, and stable across renders, because the two
  * nodes it has to attach to are different element types — a `div` for the
  * receipt, a `p` for the notice — and one object ref cannot be handed to both

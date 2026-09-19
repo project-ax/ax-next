@@ -39,6 +39,14 @@
  * this node is still in the document. `lib/consent-focus.ts` carries the
  * argument, and the sibling `workspace/GrantRow.tsx` does the same thing on the
  * surface that outlives this one.
+ *
+ * AND WHEN IT DOES NOT GO — a Connect or an Allow that comes back 401, or never
+ * reaches the server at all — the card STAYS, the button comes back, and the
+ * focus that the browser took away when the button went `disabled` does not
+ * come back with it. That is the same `<body>` landing with the error left
+ * unread behind it, and this file is the live `/` surface until TASK-360, so it
+ * is fixed here rather than waited out. The error `Alert` is the answer, and it
+ * takes the focus — exactly as `GrantRow` does with its own.
  */
 import { useRef, useState, type ReactElement } from 'react';
 import { TriangleAlert } from 'lucide-react';
@@ -55,7 +63,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
-import { returnFocusToConsentRegion } from '@/lib/consent-focus';
+import {
+  RESOLUTION_FOCUS_RING,
+  returnFocusToConsentRegion,
+  useResolutionFocus,
+} from '@/lib/consent-focus';
 import { grantHost, setDestinationCredential } from '@/lib/credentials';
 import {
   AUTHORED_CONNECTOR_WARNING,
@@ -131,6 +143,16 @@ export function PermissionCard() {
   // The card's own node, read while it is still mounted: `closest` cannot walk
   // up from a node React has already detached.
   const cardRef = useRef<HTMLDivElement | null>(null);
+  /*
+    The one ending that leaves the card on screen. A success unmounts it and
+    `close()` hands focus up to the region; a failure has to be caught here or
+    the person is standing on `<body>` with an unread Alert behind them.
+
+    Above the `if (!request)` return, with the other hooks — this file bails out
+    early when there is no card to draw, and a hook after that point would run
+    on some renders and not others.
+  */
+  const { answerRef, armForResolution } = useResolutionFocus(error !== null);
 
   // Every declared slot must have a non-empty value before Connect is enabled
   // (a slotless skill/connector is immediately connectable). `request === null`
@@ -394,7 +416,12 @@ export function PermissionCard() {
           {renderReach(request.hosts, request.slots, request.packages)}
           <p className="text-sm text-muted-foreground">{GRANT_REASSURANCE}</p>
           {error !== null && (
-            <Alert variant="destructive">
+            <Alert
+              ref={answerRef}
+              tabIndex={-1}
+              variant="destructive"
+              className={RESOLUTION_FOCUS_RING}
+            >
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}
@@ -410,7 +437,10 @@ export function PermissionCard() {
           </Button>
           <Button
             disabled={busy || !allSlotsFilled || conversationId === null}
-            onClick={() => void approveConnector()}
+            onClick={() => {
+              armForResolution();
+              void approveConnector();
+            }}
           >
             {busy ? GRANT_CONNECTING_LABEL : GRANT_CONNECT_LABEL}
           </Button>
@@ -431,7 +461,12 @@ export function PermissionCard() {
             <Badge variant="secondary">{request.host}</Badge>
           </div>
           {error !== null && (
-            <Alert variant="destructive">
+            <Alert
+              ref={answerRef}
+              tabIndex={-1}
+              variant="destructive"
+              className={RESOLUTION_FOCUS_RING}
+            >
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}
@@ -440,10 +475,23 @@ export function PermissionCard() {
           <Button variant="ghost" disabled={busy} onClick={close}>
             {GRANT_REJECT_LABEL}
           </Button>
-          <Button variant="outline" disabled={busy} onClick={() => void allow(true)}>
+          <Button
+            variant="outline"
+            disabled={busy}
+            onClick={() => {
+              armForResolution();
+              void allow(true);
+            }}
+          >
             {HOST_ALLOW_ALWAYS_LABEL}
           </Button>
-          <Button disabled={busy} onClick={() => void allow(false)}>
+          <Button
+            disabled={busy}
+            onClick={() => {
+              armForResolution();
+              void allow(false);
+            }}
+          >
             {busy ? HOST_ALLOWING_LABEL : HOST_ALLOW_ONCE_LABEL}
           </Button>
         </CardFooter>
@@ -472,7 +520,12 @@ export function PermissionCard() {
         {renderReach(request.hosts, request.slots, request.packages)}
         <p className="text-sm text-muted-foreground">{GRANT_REASSURANCE}</p>
         {error !== null && (
-          <Alert variant="destructive">
+          <Alert
+            ref={answerRef}
+            tabIndex={-1}
+            variant="destructive"
+            className={RESOLUTION_FOCUS_RING}
+          >
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
@@ -486,7 +539,10 @@ export function PermissionCard() {
         </Button>
         <Button
           disabled={busy || !allSlotsFilled || conversationId === null}
-          onClick={() => void connect()}
+          onClick={() => {
+            armForResolution();
+            void connect();
+          }}
         >
           {busy ? GRANT_CONNECTING_LABEL : GRANT_CONNECT_LABEL}
         </Button>

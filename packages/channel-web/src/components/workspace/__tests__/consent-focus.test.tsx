@@ -25,6 +25,17 @@
  * Without them `<body>` and the right answer are indistinguishable — the card
  * is the only thing in the document, so Undo is one Tab from anywhere — and the
  * test would pass against the bug.
+ *
+ * WHAT THESE TESTS CANNOT SEE, stated so the coverage is not overread. In a
+ * real browser, disabling the element that currently has focus blurs it to
+ * `<body>` — which is how a `disabled={busy}` button loses focus the instant it
+ * is clicked, before any receipt renders. jsdom does not model that (measured:
+ * focus stays on the button across a `busy` re-render), so these harnesses
+ * resolve synchronously and cannot distinguish "focus was restored after a trip
+ * through `<body>`" from "focus never left". The END STATE is what is asserted,
+ * and it is the same either way — but a failure path that restores nothing is
+ * invisible here, which is why every branch that leaves a card on screen gets
+ * an explicit case below rather than being argued about.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useState, type ReactNode } from 'react';
@@ -42,7 +53,12 @@ import { Composer } from '@/components/Composer';
 import { decisionFixture, resolvedFixture } from './decision-fixture';
 import { grantKey } from '@/lib/workspace-grant-store';
 import { permissionCardActions } from '@/lib/permission-card-store';
-import { GRANT_REJECT_LABEL } from '@/lib/grant-copy';
+import {
+  GRANT_CONNECT_LABEL,
+  GRANT_NOT_RESUMED,
+  GRANT_REJECT_LABEL,
+  HOST_ALLOW_ONCE_LABEL,
+} from '@/lib/grant-copy';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import type { PermissionRequest } from '@/server/types';
 
@@ -72,10 +88,12 @@ function tabbables(root: ParentNode = document.body): HTMLElement[] {
  * every tabbable on the page that precedes the control; from the receipt it is
  * 1. `Infinity` when the target is not ahead of focus at all.
  *
- * A node that CONTAINS the focused element also counts as following it —
- * `DOCUMENT_POSITION_CONTAINED_BY` is OR'd with `FOLLOWING` — which is exactly
- * right here: tabbing out of a `tabIndex={-1}` container goes into its own
- * children first, and that is how Undo ends up one Tab from the outcome line.
+ * A DESCENDANT of the focused element reports `FOLLOWING` too, so checking that
+ * one bit is enough to catch Undo INSIDE the outcome container. (The DOM sets
+ * `CONTAINED_BY` alongside it; this filter does not need to ask for it, and
+ * deliberately does not.) That is exactly the tab order being measured: moving
+ * on from a `tabIndex={-1}` container goes into its own children first, which
+ * is how Undo ends up one Tab from the outcome line.
  */
 function tabsToReach(target: HTMLElement): number {
   const active = document.activeElement;
@@ -125,6 +143,28 @@ const hostReq: PermissionRequest = {
   host: 'api.linear.app',
   sessionId: 's-1',
 };
+
+const skillReq: PermissionRequest = {
+  kind: 'skill',
+  skillId: 'linear-issues',
+  description: 'File and read Linear issues',
+  hosts: ['api.linear.app'],
+  slots: [{ slot: 'api_key', kind: 'api-key' }],
+};
+
+/** `Composer` draws assistant-ui primitives, which want a runtime in context. */
+function ChatStub({ children }: { children: ReactNode }) {
+  const runtime = useLocalRuntime({
+    async run() {
+      return { content: [{ type: 'text' as const, text: 'ok' }] };
+    },
+  });
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      {children}
+    </AssistantRuntimeProvider>
+  );
+}
 
 /** The in-thread card, driven the way `useConversationDecisions` drives it. */
 function ThreadHarness({ resolved }: { resolved: Decision }) {
@@ -304,6 +344,36 @@ describe('DecisionRow — the Today queue (site 3)', () => {
     expect(tabsToReach(undoButton())).toBe(1);
   });
 
+  it('a resolve that did NOT land focuses the row\u2019s notice Alert', () => {
+    // `DecisionRow` renders its notice as an `Alert`, not a `<p>` as
+    // `ApprovalCard` does, so the ref lands on a different node and needs its
+    // own case — dropping it there would otherwise pass on the card's test.
+    function FailQueueHarness() {
+      const [notice, setNotice] = useState<string | null>(null);
+      return (
+        <div>
+          <Decoys />
+          <DecisionRow
+            decision={decisionFixture()}
+            agent={quill}
+            expanded
+            onToggle={vi.fn()}
+            onOpenAgent={vi.fn()}
+            onApprove={() => setNotice('We could not reach the server.')}
+            onDismiss={vi.fn()}
+            onUndo={vi.fn()}
+            notice={notice}
+          />
+        </div>
+      );
+    }
+    render(<FailQueueHarness />);
+    fireEvent.click(screen.getByRole('button', { name: 'Move it' }));
+
+    expect(document.activeElement).toBe(screen.getByRole('alert'));
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
   it('saying no lands focus on the receipt as well', () => {
     render(<QueueHarness resolved={resolvedFixture('dismissed')} />);
     const no = screen.getByRole('button', { name: 'Leave it' });
@@ -466,29 +536,113 @@ describe('the host grant turned down (site 4)', () => {
     expect(document.activeElement).not.toBe(document.body);
   });
 
+  it('GrantRow focuses its failure Alert when the grant does NOT land', async () => {
+    // The row stays, the button comes back, and in a real browser the focus the
+    // `disabled` took is gone. `GrantRow` says something back here, so the
+    // thing it says takes the focus.
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline'));
+    render(
+      <div>
+        <Decoys />
+        <div data-consent-region="" tabIndex={-1} role="group" aria-label="Your queue">
+          <GrantRow
+            grant={{
+              key: grantKey(hostReq),
+              request: hostReq,
+              conversationId: 'c1',
+              agentId: 'scheduler',
+            }}
+            onResolved={vi.fn()}
+            onGranted={vi.fn(async () => true)}
+          />
+        </div>
+      </div>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: HOST_ALLOW_ONCE_LABEL }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    expect(document.activeElement).toBe(screen.getByRole('alert'));
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it('GrantRow focuses the line saying the agent did not start again', async () => {
+    // The THIRD ending (TASK-374): the capability landed, the agent did not
+    // pick up, and the row turns into one sentence about exactly that. It is
+    // still an answer, so it still takes the focus.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+    );
+    render(
+      <div>
+        <Decoys />
+        <div data-consent-region="" tabIndex={-1} role="group" aria-label="Your queue">
+          <GrantRow
+            grant={{
+              key: grantKey(skillReq),
+              request: skillReq,
+              conversationId: 'c1',
+              agentId: 'scheduler',
+            }}
+            onResolved={vi.fn()}
+            onGranted={vi.fn(async () => false)}
+          />
+        </div>
+      </div>,
+    );
+
+    fireEvent.change(screen.getByLabelText(/API key/i), {
+      target: { value: 'sk-test' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: GRANT_CONNECT_LABEL }));
+
+    const line = await screen.findByTestId('grant-not-resumed');
+    expect(line.textContent).toBe(GRANT_NOT_RESUMED);
+    expect(document.activeElement).toBe(line);
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it('PermissionCard focuses its failure Alert when the grant does NOT land', async () => {
+    // The finding a reviewer caught: success unmounts the card and `close()`
+    // hands focus up, but a FAILED Allow leaves the card on screen with the
+    // person on `<body>` and the Alert unread behind them. Same bug, quieter.
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline'));
+    render(
+      <ChatStub>
+        <Decoys />
+        <Composer />
+      </ChatStub>,
+    );
+    permissionCardActions.show(hostReq);
+
+    const allow = await screen.findByRole('button', {
+      name: HOST_ALLOW_ONCE_LABEL,
+    });
+    allow.focus();
+    fireEvent.click(allow);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    // The card is still up — this is the failure path, not the dismiss path.
+    expect(screen.getByTestId('permission-card-host')).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByRole('alert'));
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
   it('PermissionCard hands focus to the composer stack on the `/` surface', async () => {
     // The OTHER renderer of the same question. `PermissionCard` is the one the
     // card body names; `GrantRow` above is the one the walk's surface draws.
     // Both had the hole, so both are pinned — and this one goes through the
     // real `Composer`, so the region is the shipped markup rather than the
     // test's own.
-    function Stub({ children }: { children: ReactNode }) {
-      const runtime = useLocalRuntime({
-        async run() {
-          return { content: [{ type: 'text' as const, text: 'ok' }] };
-        },
-      });
-      return (
-        <AssistantRuntimeProvider runtime={runtime}>
-          {children}
-        </AssistantRuntimeProvider>
-      );
-    }
     const { container } = render(
-      <Stub>
+      <ChatStub>
         <Decoys />
         <Composer />
-      </Stub>,
+      </ChatStub>,
     );
     permissionCardActions.show(hostReq);
 
