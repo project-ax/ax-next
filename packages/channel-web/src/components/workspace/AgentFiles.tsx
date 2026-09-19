@@ -254,7 +254,14 @@ export function AgentFiles({
         <div className="flex flex-col">
           <SectionLabel>Files</SectionLabel>
 
-          {durable.dirPath !== '' && (
+          {/*
+            Hidden when the root read came back missing. `dirPath` is the last
+            SUCCESSFUL listing, so a root read that 404s from inside a folder
+            would leave a trail reading "Files / reports" over a note saying
+            this agent has put nothing anywhere — two true sentences that
+            cannot both be describing the same screen.
+          */}
+          {durable.dirPath !== '' && !durableRootEmpty && (
             <Breadcrumb className="mb-1.5 px-2.5">
               <BreadcrumbList className="text-[12px]">
                 {crumbs.map((c, i) => (

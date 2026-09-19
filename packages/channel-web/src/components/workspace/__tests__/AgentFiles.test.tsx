@@ -446,6 +446,51 @@ describe('AgentFiles: the durable user-files tier', () => {
     expect(screen.getByRole('button', { name: /try again/i })).toBeTruthy();
   });
 
+  it('drops the breadcrumb when the ROOT read comes back missing', async () => {
+    /*
+      `dirPath` is the last SUCCESSFUL listing, so walking back to the root and
+      having THAT 404 leaves the trail pointing into a folder while the note
+      says the agent has put nothing anywhere. Two true sentences that cannot
+      both be describing the same screen.
+    */
+    const root: UserFilesAnswer = {
+      kind: 'dir',
+      path: '',
+      name: '',
+      entries: [{ path: 'reports', name: 'reports', kind: 'dir' }],
+      truncated: false,
+    };
+    let rootGone = false;
+    userFilesMock.mockImplementation(async (_a: string, relPath: string) => {
+      if (relPath === 'reports') {
+        return {
+          kind: 'dir',
+          path: 'reports',
+          name: 'reports',
+          entries: [],
+          truncated: false,
+        } satisfies UserFilesAnswer;
+      }
+      if (rootGone) {
+        throw new WorkspaceApiError('/agents/a-quill/user-files', 404);
+      }
+      return root;
+    });
+    renderTab();
+    fireEvent.click(await screen.findByText('reports'));
+    // We are inside the folder: the trail is showing.
+    expect(await screen.findByText(/this folder is empty/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Files' })).toBeTruthy();
+
+    rootGone = true;
+    fireEvent.click(screen.getByRole('button', { name: 'Files' }));
+    expect(
+      await screen.findByText(/Quill hasn’t put any files here yet/i),
+    ).toBeTruthy();
+    // No trail left pointing into a folder we are no longer claiming to be in.
+    expect(screen.queryByRole('button', { name: 'Files' })).toBeNull();
+  });
+
   it('REGRESSION: a 404 walking INTO a folder is not the root being empty', async () => {
     /*
       `dirPath` only moves on a SUCCESSFUL listing, so after a failed step into
