@@ -8,11 +8,17 @@
  * fenced block, and a paragraph containing a backslash escape or a character
  * reference (where the whole paragraph's value differs from its slice).
  *
- * `markdownTextRuns` and the highlight plugin apply the SAME predicate to two
- * different trees — mdast here, hast in the renderer — so the render tests in
- * `AgentConversationMarkdown.test.tsx` are the other half of this file: these
- * pin what is counted, those pin what is painted, and the pair is what makes
- * "two readings of one result" a measured claim rather than a comment.
+ * `markdownTextRuns` and the highlight plugin apply the same predicate to the
+ * same tree — **hast both sides**, because `markdownTextRuns` runs
+ * react-markdown's own pipeline — so there is nothing left to prove equal. An
+ * earlier draft of this header said "mdast here, hast in the renderer", which
+ * described the design that shipped in this branch's first commit and was
+ * wrong: see the footnote test below for the over-count it produced.
+ *
+ * The render tests in `AgentConversationMarkdown.test.tsx` are the other half
+ * of this file: these pin what is counted, those pin what is painted, and the
+ * pair is what makes "two readings of one result" a measured claim rather than
+ * a comment.
  */
 import { describe, expect, it } from 'vitest';
 import { isRenderedRange, markdownTextRuns } from '@/lib/markdown-find';
@@ -92,14 +98,38 @@ describe('markdownTextRuns', () => {
   });
 
   it('returns runs in source order even when the document reorders them', () => {
-    // `remark-rehype` lifts footnote definitions into a section at the end, so
-    // the walk's document order is not source order. `isRenderedRange`'s early
-    // exit and the mark ordinals both depend on the sort.
-    const src = '[^a]: defined early\n\nlater the body[^a] ends';
-    const runs = markdownTextRuns(src);
-    expect(runs.map((r) => r.start)).toEqual(
-      [...runs.map((r) => r.start)].sort((a, b) => a - b),
-    );
+    /*
+      `remark-rehype` lifts footnote definitions into a section at the END of
+      the document, so the walk's order is not source order. `isRenderedRange`
+      stops at the first run starting past the range, and the mark ordinals are
+      positions in a source-ordered list, so both depend on the sort.
+
+      THE BODY MUST BE FORMATTED, and an earlier version of this test got that
+      wrong (caught in review). A PLAIN footnote body is one text node, which
+      gains the backref's trailing space and is dropped entirely — so the only
+      reordering construct never reached the run list, document order came out
+      already sorted, and the assertion held with the sort line deleted. With
+      inline emphasis the body splits, and only the LAST node touches the
+      backref: 'alpha ' and 'beta' survive with offsets 6-12 and 14-18 while
+      the main paragraph's are 28-39 and 43-48. Document order puts the small
+      offsets last, so the sort is the only thing standing between this and a
+      silent false negative.
+    */
+    const src = '[^a]: alpha **beta** gamma\n\nmain citing[^a] here';
+    expect(runsOf(src)).toEqual(['alpha ', 'beta', 'main citing', ' here']);
+    expect(markdownTextRuns(src).map((r) => r.start)).toEqual([6, 14, 28, 43]);
+  });
+
+  it('still finds a match inside a formatted footnote body', () => {
+    // The consequence of the sort, said as behaviour rather than as ordering:
+    // without it `isRenderedRange`'s early exit rejects the reordered runs and
+    // these matches vanish from the count.
+    const src = '[^a]: alpha **beta** gamma\n\nmain citing[^a] here';
+    expect(markdownFindRanges(src, 'beta')).toHaveLength(1);
+    expect(markdownFindRanges(src, 'alpha')).toHaveLength(1);
+    // 'gamma' is in the node that absorbed the backref's space, so it is
+    // dropped — visible, not findable, and the same on both sides.
+    expect(markdownFindRanges(src, 'gamma')).toHaveLength(0);
   });
 
   it('returns the same array for the same source, so the cache cannot drift', () => {

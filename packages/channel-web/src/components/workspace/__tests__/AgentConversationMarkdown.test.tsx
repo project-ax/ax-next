@@ -392,6 +392,102 @@ describe('find still agrees with itself over rendered markdown', () => {
     expect(container.textContent).toContain('the footnote body');
   });
 
+  /*
+    THE COUPLING THIS GUARDS (review finding 3).
+
+    `markdown-find.ts` builds its own `unified()` processor and asserts it is
+    react-markdown's. Today it is — `remark-rehype@11.1.2` is what
+    `react-markdown@10`'s `^11.0.0` resolves to, and `remark-parse`,
+    `remark-gfm` and `unified` are single deduped copies — but that is a
+    LOCKFILE fact, not a code one. A future react-markdown bump that moves its
+    remark-rehype while the direct dep stays pinned (or the reverse) would make
+    the counting pipeline and the painting pipeline different documents, and
+    every hand-picked test above would keep passing because none of them uses
+    the construct that diverged.
+
+    So this asks the question generically, through the REAL render: for a corpus
+    of constructs, is the number in the bar the number of marks on the screen?
+    It is the one test that a dependency drift cannot dodge by being about a
+    construct nobody thought of — as long as the corpus keeps growing when
+    somebody meets a new one.
+
+    EACH CASE PINS ITS EXPECTED TOTAL, and that is not decoration. "count ===
+    marks" alone is satisfied by a renderer that finds NOTHING and paints
+    nothing, which is exactly what a drifted pipeline would look like — every
+    node's value stops matching its slice, everything is dropped, and a
+    both-are-zero assertion sails through. The third number is what makes the
+    case fail instead.
+
+    The totals also double as the readable spec for the accepted gap. Where the
+    expected total is below the number of literal occurrences, the difference is
+    text that renders but is not a source-mapped node: an alt text, a code
+    span's insides, a footnote body that absorbed the backref's space, a
+    paragraph unescaped by the parser, or a multi-line blockquote whose value
+    has lost its `> ` prefixes. Always fewer, never more.
+  */
+  describe('the bar and the screen agree across the construct corpus', () => {
+    const corpus: ReadonlyArray<
+      readonly [name: string, markdown: string, query: string, expected: number]
+    > = [
+      ['plain prose', 'the deploy finished cleanly', 'deploy', 1],
+      ['bold', 'the **deploy** finished', 'deploy', 1],
+      ['nested emphasis', 'a **bold *deploy* run** b', 'deploy', 1],
+      ['heading', '## deploy report\n\nthe deploy is green', 'deploy', 2],
+      ['gfm table', '| env | deploy |\n| --- | --- |\n| prod | deploy ok |', 'deploy', 2],
+      // The escaped cell is unescaped in its value, so it drops: 1 of 2.
+      ['table, escaped pipe', '| a \\| deploy | c |\n| --- | --- |\n| deploy | 2 |', 'deploy', 1],
+      ['list', '- deploy one\n- deploy two', 'deploy', 2],
+      ['task list', '- [x] deploy done\n- [ ] deploy open', 'deploy', 2],
+      // A multi-line blockquote paragraph's value has lost its `> ` prefixes,
+      // so that node drops; the single-line bold run inside it survives.
+      ['blockquote', '> the **deploy** went\n> deploy again', 'deploy', 1],
+      ['nested blockquote list', '> - **deploy `x` here**\n>   - deploy', 'deploy', 2],
+      ['inline code', 'run `deploy --now` then deploy', 'deploy', 1],
+      ['fenced code', '```sh\ndeploy --now\n```\n\nthen deploy', 'deploy', 1],
+      ['link label', 'see [the deploy](https://x.test/deploy) now', 'deploy', 1],
+      ['reference link', 'see [the deploy][r]\n\n[r]: https://x.test/deploy', 'deploy', 1],
+      ['image alt', '![a deploy chart](https://x.test/p.png) and deploy', 'deploy', 1],
+      ['reference image', '![deploy][i]\n\n[i]: https://x.test/deploy.png', 'deploy', 0],
+      ['autolink, angle', 'visit <https://x.test/deploy> now', 'deploy', 1],
+      ['autolink, gfm literal', 'visit https://x.test/deploy now', 'deploy', 1],
+      ['strikethrough', 'the ~~deploy~~ deploy', 'deploy', 2],
+      ['footnote, plain body', 'the deploy[^1]\n\n[^1]: deploy notes', 'deploy', 1],
+      ['footnote, formatted body', 'the deploy[^1]\n\n[^1]: **deploy** notes', 'deploy', 2],
+      // THE SORT CASE: remark-rehype puts the definition's section last, so
+      // document order here is 28-39, 43-48, 6-12, 14-18.
+      ['footnote, defined first', '[^1]: **deploy** notes\n\nthe deploy[^1]', 'deploy', 2],
+      ['setext heading', 'deploy report\n=====\n\nthe deploy', 'deploy', 2],
+      ['hard break', 'deploy one  \ndeploy two', 'deploy', 2],
+      ['soft break', 'deploy one\ndeploy two', 'deploy', 2],
+      ['crlf paragraphs', 'deploy one\r\n\r\n**deploy** two', 'deploy', 2],
+      ['entity', 'deploy &amp; deploy', 'deploy', 0],
+      ['escaped asterisk', 'deploy \\*not bold\\* deploy', 'deploy', 0],
+      ['inert html', '<div>deploy</div>\n\nthen **deploy**', 'deploy', 1],
+      ['thematic break', 'deploy\n\n***\n\ndeploy', 'deploy', 2],
+      ['query that is only markup', 'the **deploy** ran', '**', 0],
+      ['query straddling markup', 'the **deploy** ran', 'e **d', 0],
+      ['query with no match at all', 'the deploy ran', 'zzz', 0],
+    ];
+
+    it.each(corpus)('%s', (_name, markdown, query, expected) => {
+      const { container } = render(
+        conversation({ thread: [agentTurn(markdown)] }),
+      );
+      const bar = search(container, query);
+      const reported = reportedTotal(bar);
+      expect(reported).toBe(expected);
+      expect(container.querySelectorAll('mark')).toHaveLength(reported);
+    });
+
+    it('the corpus is not all zeroes — a renderer that found nothing would pass', () => {
+      // The guard on the guard. If the pipeline ever drifts so far that every
+      // node's value stops matching its slice, every case above would expect 0
+      // and agree; this is the line that notices the corpus stopped asserting.
+      const nonZero = corpus.filter(([, , , n]) => n > 0);
+      expect(nonZero.length).toBeGreaterThanOrEqual(24);
+    });
+  });
+
   it('keeps the markdown rendered while a search is running', () => {
     /*
       A tempting shortcut — "fall back to the plain renderer whenever this
