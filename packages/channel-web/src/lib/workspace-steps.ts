@@ -201,6 +201,26 @@ const DETAIL_KEYS = [
  * falls back to its bare name if nothing else qualifies, which is where it was
  * before this card and is never worse than showing the secret.
  *
+ * THE SMUSHED FORMS ARE ENUMERATED, and they have to be. `namesASecret` can
+ * only find a boundary at a separator or a camel hump, so a delimiter-free
+ * compound in one case — `apikey`, `APIKEY`, `authtoken` — stays a single
+ * token and has to be in this set by name. The first review of this guard
+ * caught it leaking on `apikey`: the smushed spelling of its OWN motivating
+ * example, while `apiKey`, `api_key` and `API_KEY` were all handled. Measured
+ * against ~50 names.
+ *
+ * And no, this cannot be a suffix rule instead. "Ends with `key`" would catch
+ * `apikey` and also `monkey`, `donkey`, `turkey`, `hockey` and `whiskey` — the
+ * `monkey` case is pinned in the tests. Enumeration is incomplete by nature
+ * and a name nobody listed will get through; it is still the only rule here
+ * that does not blank rows at random. **If you meet a spelling this misses,
+ * add it — do not "generalise" it into a substring or suffix match.**
+ *
+ * ABBREVIATIONS BELONG HERE TOO. `pwd`, `pass`, `pat`, `creds` and `sig` are
+ * among the commonest secret field names in the wild, and whole-word matching
+ * means `pass` does NOT eat `passenger` any more than `key` eats `keyword` —
+ * so the anti-substring reasoning never justified leaving them out.
+ *
  * WHAT THIS DOES NOT DO, said out loud so nobody reads more into it: it filters
  * argument NAMES, not values. A secret pasted into a `Bash` command still
  * reaches the row, because `command` is exactly the thing a step row exists to
@@ -209,27 +229,60 @@ const DETAIL_KEYS = [
  * signed-in owner of the agent, looking at their own agent's work.
  */
 const SECRET_WORDS = new Set([
+  // Whole words, found either alone or between separators / camel humps.
   'auth',
   'authorization',
   'bearer',
-  'cookie',
+  'cred',
   'credential',
   'credentials',
+  'creds',
   'jwt',
   'key',
   'keys',
   'otp',
+  'pass',
   'passphrase',
   'passwd',
   'password',
+  'pat',
   'pin',
+  'pwd',
   'secret',
   'secrets',
-  'session',
+  'sig',
   'signature',
   'token',
   'tokens',
+  // Delimiter-free compounds, which the splitter cannot break apart. Spelled
+  // in lower case because the comparison lowercases, so each of these also
+  // covers its all-caps twin (`APIKEY`, `APITOKEN`).
+  'accesskey',
+  'accesstoken',
+  'apikey',
+  'apisecret',
+  'apitoken',
+  'authtoken',
+  'bearertoken',
+  'clientsecret',
+  'idtoken',
+  'privatekey',
+  'refreshtoken',
+  'secretkey',
+  'sessiontoken',
 ]);
+
+/*
+  `session` IS DELIBERATELY ABSENT, and that is a decision rather than an
+  oversight. A session *token* is already covered by `token` in every spelling
+  that has a boundary (`sessionToken`, `session_token`) and by `sessiontoken`
+  in the one that does not. What `session` on its own would blank is
+  `sessionId` / `session_id` / `sessionName` — a correlation handle, not a
+  credential — and blanking those costs a real qualifier on the one surface
+  whose entire job is to say which call this was. `key` and `pin` are kept
+  despite the same shape (`keyName`, `pinBoard`) because the secrets they
+  cover are far commoner than those two names.
+*/
 
 /**
  * Does this argument name announce a secret?

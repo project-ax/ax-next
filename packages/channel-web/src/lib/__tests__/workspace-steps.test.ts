@@ -324,13 +324,72 @@ describe('stepDetail', () => {
     expect(stepDetail({ password: 'hunter2' })).toBeUndefined();
   });
 
+  it.each([
+    // The smushed spellings. The splitter cannot break these apart, so they
+    // have to be in the set by name — and the first version of this guard
+    // leaked on every one of them while catching `apiKey` / `api_key` /
+    // `API_KEY`. `apikey` is the smushed form of the guard's own motivating
+    // example, which is the part that made this worth a second pass.
+    'apikey',
+    'APIKEY',
+    'apitoken',
+    'APITOKEN',
+    'authtoken',
+    'accesskey',
+    'accesstoken',
+    'secretkey',
+    'privatekey',
+    'sessiontoken',
+    'clientsecret',
+    'refreshtoken',
+    // The abbreviations. Whole-word matching means `pass` does not eat
+    // `passenger` any more than `key` eats `keyword`, so leaving these out was
+    // never required by the anti-substring rule — and `pwd` and `pass` are
+    // among the commonest secret field names there are.
+    'pwd',
+    'pass',
+    'pat',
+    'creds',
+    'cred',
+    'sig',
+  ])('refuses to qualify a row from an argument named %s', (key) => {
+    expect(stepDetail({ [key]: 'sk-live-abcdef', resource: 'issues' })).toBe('issues');
+    // With nothing else to fall back to the row keeps its bare name. It must
+    // never be the secret, and it must never be a PREFIX of the secret.
+    expect(stepDetail({ [key]: 'sk-live-abcdef' })).toBeUndefined();
+  });
+
+  it('still shows a session id, which is a handle and not a credential', () => {
+    /*
+      Deliberate: `session` is NOT in the set. A session TOKEN is covered by
+      `token` in every spelling with a boundary and by `sessiontoken` in the
+      one without, while `session` on its own would blank `sessionId` — a
+      correlation handle, and a genuinely useful qualifier on the one surface
+      whose job is to say which call this was.
+    */
+    expect(stepDetail({ sessionId: 'sess_9f2a' })).toBe('sess_9f2a');
+    expect(stepDetail({ sessionToken: 'sk-live-abcdef', q: 'ax' })).toBe('ax');
+    expect(stepDetail({ session_token: 'sk-live-abcdef', q: 'ax' })).toBe('ax');
+    expect(stepDetail({ sessiontoken: 'sk-live-abcdef', q: 'ax' })).toBe('ax');
+  });
+
   it('does not mistake an ordinary word for a secret', () => {
-    // Word by word, not substring: these are all legitimate qualifiers, and a
-    // guard that ate them would quietly take rows back to saying nothing.
+    /*
+      Word by word, not substring: these are all legitimate qualifiers, and a
+      guard that ate them would quietly take rows back to saying nothing.
+
+      This case passes whether or not `namesASecret` runs, so it does not
+      exercise the guard — it is kept deliberately, as the thing that fails if
+      somebody ever "generalises" the rule into a substring or suffix match.
+      `monkey` is the one that matters: "ends with `key`" would catch `apikey`
+      and `monkey` alike, which is why the smushed forms are enumerated instead.
+    */
     expect(stepDetail({ keyword: 'invoice' })).toBe('invoice');
     expect(stepDetail({ passenger: 'Ada' })).toBe('Ada');
     expect(stepDetail({ authored: 'yes' })).toBe('yes');
     expect(stepDetail({ monkey: 'Bobo' })).toBe('Bobo');
+    expect(stepDetail({ path: '/tmp/x' })).toBe('/tmp/x');
+    expect(stepDetail({ sigma: '3' })).toBe('3');
   });
 
   it('skips a key whose value fences down to nothing', () => {
