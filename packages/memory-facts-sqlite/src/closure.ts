@@ -395,6 +395,24 @@ export function resettleSlotGroups(
  * stays NULL, which is what distinguishes "superseded by that row" from
  * "somebody retracted this". Returns the ids it actually closed, so a caller
  * handed a foreign or already-closed id learns that rather than assuming.
+ *
+ * ## Known gap: closures this row AUTHORED elsewhere are not repaired
+ *
+ * This is a single-row write. It ends the named rows and stops. Closures the
+ * retracted row had itself authored — neighbours carrying `closed_by = <this
+ * id>` — are left exactly as they are, still ended on the authority of a row
+ * that now asserts nothing.
+ *
+ * The only thing that repairs them is a later {@link resettleSlotGroups} over
+ * the same `(about, slot)` group, and nothing here schedules one: `reindex`
+ * re-settles only the groups a newly-resolved PENDING row joined, so a group
+ * with no pending row is never revisited. A victim of a retracted closer can
+ * therefore stay wrongly closed indefinitely, and a `recall` of that slot
+ * returns neither it (closed) nor its retracted closer (retracted).
+ *
+ * Deliberately left alone here (TASK-422): fixing it changes the semantics of
+ * a shipped hook and probably `SupersedeOutput`'s shape, so it wants its own
+ * card and boundary review rather than a drive-by.
  */
 export function supersedeIds(
   driver: BetterSqliteDb,

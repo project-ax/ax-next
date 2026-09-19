@@ -250,11 +250,18 @@ export interface ReindexOutput {
    * closure has no basis left, and A is re-opened and listed in `resettled`.
    *
    * That is the intended behaviour, not a wart: nothing should stay closed on
-   * the authority of a statement a person asked us to forget. Plain
-   * `supersede` does not do it because it is a single-row write that never
-   * re-settles a chain; `reindex` is the operation that re-derives. A consumer
+   * the authority of a statement a person asked us to forget. A consumer
    * reading this list must therefore treat it as "go re-read these rows",
    * never as "these rows are now closed".
+   *
+   * It is not, however, a repair guarantee. The re-open happens WHEN a
+   * `reindex` re-settles that `(about, slot)` group, and nothing schedules
+   * one: `supersede` is a single-row write that never re-settles, and
+   * `reindex` re-settles only the groups a newly-resolved pending row joined.
+   * A group with no pending row is never revisited, so `A` above can stay
+   * wrongly closed indefinitely — and a `recall` of that slot then returns
+   * neither `A` (closed) nor `B` (retracted). Known gap, left for its own
+   * card; see `supersedeIds` in the sqlite backend.
    */
   resettled: string[];
   /** Rows still pending in this tenant AFTER the call. */
@@ -1966,6 +1973,90 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         const [retractedNow] = (await reread(KEY, [bostonStatement])) as [RecordedStatement];
         expect(retractedNow.closedBy).toBeUndefined();
         expect(retractedNow.until).toBe(retracted.until);
+      });
+
+      // The two cases above each retract a row that had closed NOTHING, so
+      // both assert `resettled: []`. This one is the RE-OPEN the field was
+      // renamed for, and the scenario `ReindexOutput.resettled`'s doc comment
+      // headlines: B closed A, B was then retracted, and re-settling the chain
+      // finds A still ended on the authority of a row that asserts nothing.
+      // A comes back ACTIVE and is named in `resettled`.
+      //
+      // Only this case can catch a "resettled means closed" simplification —
+      // reporting just the rows whose `valid_end` moved to a FINITE value.
+      // That passes every other case here while silently dropping re-opened
+      // rows, and a consumer honouring the doc comment would go on showing a
+      // stale-closed row as closed.
+      //
+      // One batch, so `batch_seq` pins the replay order: Boston, then Seattle,
+      // then the pending row. That ordering is what decides where the pending
+      // row lands once Seattle is out of the peer set.
+      it('re-OPENS a row whose closer was retracted, and names it in resettled', async () => {
+        const KEY = 'reopened-by-drain';
+        const statements: FactStatementInput[] = [
+          { about: 'user', relation: 'lives_in', value: 'Boston', when: JUN, slot: LIVES_IN },
+          { about: 'user', relation: 'lives_in', value: 'Seattle', when: SEP, slot: LIVES_IN },
+          { about: 'user', relation: 'lives_in', value: 'Austin', when: JAN, slot: PENDING_SLOT },
+        ];
+        const [boston, seattle, austin] = (await record({ batchKey: KEY, statements })).records as [
+          RecordedStatement,
+          RecordedStatement,
+          RecordedStatement,
+        ];
+        // Seattle closed Boston on arrival (rule 1); the pending row is inert.
+        expect(seattle.closes).toEqual([boston.id]);
+        expect(austin.closes).toEqual([]);
+
+        // Retract the CLOSER. `supersede` is a single-row write that never
+        // re-settles, so Boston is left ended at SEP by a row that now asserts
+        // nothing — a closure with no authority behind it.
+        expect((await supersede([seattle.id])).closed).toEqual([seattle.id]);
+        const afterRetraction = (await reread(KEY, statements)) as [
+          RecordedStatement,
+          RecordedStatement,
+          RecordedStatement,
+        ];
+        expect(afterRetraction[0].until).toBe(SEP);
+        expect(afterRetraction[0].closedBy).toBe(seattle.id);
+        // A retraction, not a rule-closure: finite `until`, no `closedBy`.
+        expect(afterRetraction[1].until).toBeDefined();
+        expect(afterRetraction[1].closedBy).toBeUndefined();
+
+        const out = await reindex({ slots: [{ id: austin.id, slot: LIVES_IN }] });
+        // The positive half: a drain that silently did nothing would leave
+        // Boston exactly as it is and could never be told apart otherwise.
+        expect(out.resolved).toBe(1);
+        expect(out.pending).toBe(0);
+        expect(out.degraded).toEqual([]);
+        // Replay order — and Boston is in this list because it was RE-OPENED,
+        // which is the assertion no other case in this suite makes.
+        expect(out.resettled).toEqual([boston.id, austin.id]);
+
+        const [bostonNow, seattleNow, austinNow] = (await reread(KEY, statements)) as [
+          RecordedStatement,
+          RecordedStatement,
+          RecordedStatement,
+        ];
+        // Genuinely active again: BOTH columns cleared, not merely re-pointed
+        // at some other closer.
+        expect(bostonNow.until).toBeUndefined();
+        expect(bostonNow.closedBy).toBeUndefined();
+
+        // Where the resolved row lands, with Seattle dropped from the peer
+        // set: Austin (JAN) is now the EARLIEST row in the chain, so rule 1
+        // closes nothing — Boston starts after it — and rule 2 bounds Austin
+        // at the earliest later peer, Boston. The backdated row becomes
+        // Boston's predecessor rather than its successor.
+        expect(austinNow.until).toBe(JUN);
+        expect(austinNow.closedBy).toBe(boston.id);
+
+        // ...and the retraction is byte-for-byte what `supersede` left behind.
+        expect(seattleNow.until).toBe(afterRetraction[1].until);
+        expect(seattleNow.closedBy).toBeUndefined();
+
+        // The user-visible half: Boston is back in the active set, alone.
+        const active = await recall({ about: 'user', limit: 10 });
+        expect(active.statements.map((s) => s.value)).toEqual(['Boston']);
       });
 
       // The two cases above put the retraction on a NEIGHBOUR of the resolved

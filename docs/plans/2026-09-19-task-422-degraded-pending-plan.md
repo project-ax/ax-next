@@ -58,6 +58,11 @@ retried under the same `batchKey` would be permanently half-written.
   computes one.
 - `at` / `temporalAnchor` time travel — not built anywhere (§3.3, §4.2).
 - The postgres backend and the `presets/k8s` canary — **TASK-423**.
+- Repairing closures a RETRACTED row authored. `supersede` never re-settles, and
+  `reindex` only re-settles groups a resolved pending row joined — so a victim of
+  a retracted closer stays wrongly closed unless some later drain happens to touch
+  that `(about, slot)` group. Pre-existing (TASK-421); its own card and boundary
+  review, since fixing it changes a shipped hook's semantics.
 
 ---
 
