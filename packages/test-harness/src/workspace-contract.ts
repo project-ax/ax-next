@@ -253,12 +253,15 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
     //
     // THE PARTITION IS `agentId` ALONE. That is the policy `@ax/workspace-git-
     // server`'s `workspaceIdFor`, `@ax/workspace-git-core`'s
-    // `workspaceIdForAgent` and both memory-index `agentScopeKey`s already
+    // `workspaceIdForAgent` and the memory-index `agentScopeKey`s already
     // implement (TASK-257 / TASK-396), and it has to be asserted in BOTH
     // directions or the assertion is satisfied by the wrong key:
     //
-    //   - different agentId  ⇒ ISOLATED (cases 1, 2, 3, 5)
+    //   - different agentId ⇒ ISOLATED (cases 1, 3, 5)
     //   - same agentId, different userId ⇒ SHARED (case 4)
+    //
+    // Case 2 is neither: it is a single-agent guard, and case 4 doubles as
+    // one. Both pass before AND after any partitioning fix, deliberately.
     //
     // Either direction alone passes under a partition on the pair
     // `(userId, agentId)`, which silently fragments a team agent's shared
@@ -327,9 +330,10 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
         expect(await read(asB, 'CAVEMAN-POEM.md')).toMatchObject({ found: false });
       });
 
-      it('each agent still reads back its OWN file (anti-vacuity guard)', async () => {
+      it('an agent still reads back its OWN file (anti-vacuity guard)', async () => {
         // A backend that answered "not found" to everybody satisfies every
-        // isolation assertion above and is completely broken. This case passes
+        // isolation assertion in this block and is completely broken. It uses
+        // ONE agent for that reason — it is not an isolation case. It passes
         // BEFORE and AFTER any partitioning fix, on purpose: it exists to fail
         // if a fix over-reaches. Do not "fix" it into failing against a pooled
         // backend — check instead that the others still do.
@@ -370,7 +374,7 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
       it('two users of the SAME agent share ONE tree', async () => {
         // Direction 2, and the other anti-vacuity guard. The two ctxs differ
         // in userId ONLY — same agentId. A backend keyed on `(userId,
-        // agentId)` passes every isolation case above and fails here, which is
+        // agentId)` passes every isolation case here and fails this one, which is
         // the whole reason both directions are asserted: it would turn a team
         // agent's shared files into per-user fragments and diverge from the
         // memory index, which partitions on agentId alone.
