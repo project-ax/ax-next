@@ -20,10 +20,24 @@
 //
 //     `<repo-relative path>` blob `<sha>…`
 //
-// The sha may be abbreviated (7+ hex chars); a trailing `…` is optional. The
-// path must be a real tracked file. Anything not in that shape is ordinary
-// prose and is ignored — this guard has no opinion about memory that does not
-// claim a blob.
+// The sha may be abbreviated (7+ hex chars); a trailing ellipsis is optional
+// and may be written `…` or `...`. The path must be a real tracked file.
+//
+// WHAT THIS DOES NOT COVER, stated plainly so nobody reads a green run as more
+// than it is:
+//
+//   - It is an accident-catcher, not an adversarial control. Anything not in
+//     the shape above is ordinary prose and is ignored, so rewording a row
+//     stops it being checked — and the "at least one claim" floor below is
+//     GLOBAL, so another row keeping the count above zero hides that. Closing
+//     it properly needs either a near-miss detector (false positives on
+//     ordinary prose) or a registry of must-check rows, which is the
+//     allowlist rot `memory-cited-paths-exist.test.js` explicitly refuses.
+//     Someone evading this guard could equally just delete the row.
+//   - It only sees `.claude/memory/`. The same class of unguarded measurement
+//     lives in ordinary code comments, where nothing checks it — a comment in
+//     `packages/memory-strata/test/bench/corpora/internal.ts` picked up two
+//     such numbers in the very commit that added this guard.
 //
 // WHEN THIS GOES RED: do NOT just edit the sha to match. The sha is a label on
 // a MEASUREMENT. If the file changed, the measurement is stale too — re-run
@@ -41,8 +55,14 @@ import { describe, expect, it } from 'vitest';
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const MEMORY_DIR = join(REPO_ROOT, '.claude', 'memory');
 
-/** `path` + blob sha, e.g. ``  `scripts/x.sh` blob `a1b2c3d4…`  `` */
-const BLOB_CLAIM = /`([^`\n]+?)`\s+blob\s+`([0-9a-f]{7,40})…?`/g;
+/**
+ * `path` + blob sha, e.g. ``  `scripts/x.sh` blob `a1b2c3d4…`  ``
+ *
+ * Both ellipsis spellings, because `…?` alone silently skipped a row written
+ * with three ASCII dots — a false NEGATIVE, i.e. the one failure direction a
+ * staleness guard must not have.
+ */
+const BLOB_CLAIM = /`([^`\n]+?)`\s+blob\s+`([0-9a-f]{7,40})(?:…|\.\.\.)?`/g;
 
 /** Every memory `.md`: the root archives plus one level of per-task shards. */
 function memoryMarkdownFiles() {
@@ -95,6 +115,12 @@ describe('blob shas quoted in .claude/memory are current', () => {
   // this assertion is the thing that says so rather than the suite quietly
   // checking nothing.
   it('found at least one blob claim to check', () => {
+    // Known limit, accepted deliberately: this floor is GLOBAL. It says the
+    // convention is still in use somewhere, not that any particular row is
+    // still checked. It also means that if the last blob claim in the repo is
+    // ever legitimately retired, this goes red with nothing actually wrong —
+    // at which point delete this file rather than inventing a row to satisfy
+    // it. The guard exists to serve the claims, not the other way round.
     expect(
       claims.length,
       'blob claims in .claude/memory (pattern: `path` blob `sha…`)',

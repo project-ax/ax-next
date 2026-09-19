@@ -107,7 +107,7 @@ When `.claude/memory/` does not exist:
 
    Don't hand-create the shard directories: git doesn't track empty ones anyway, and each appears the first time `scripts/memory-write-target.sh --shard <kind> <TASK-ID>` names a file in it (that mode prints a path and creates nothing, so `mkdir -p "$(dirname "$path")"` is on you).
 
-   **On a greenfield project this seed commit trips R2**, because creating the five archives *is* touching them — measured, exit 1 with two violations. That is the guard being right rather than the bootstrap being wrong: the archives predate it everywhere else. Land the guard in a later PR than the seed, or put a `Memory-Rewrite: seeding .claude/memory/` trailer on the seed commit.
+   **On a greenfield project this seed commit trips R2**, because creating the five archives *is* touching them — measured on a throwaway repo: exit 1, **five** R2 violations, one per archive, and R1 stays silent because a pure creation deletes nothing. That is the guard being right rather than the bootstrap being wrong: the archives predate it everywhere else. Land the guard in a later PR than the seed, or put a `Memory-Rewrite: seeding .claude/memory/` trailer on the seed commit.
 
    This is the **one** exception to "agents shipping a card do not add that trailer" (Hygiene, below), and it is narrow: it applies only to the commit that *creates* `.claude/memory/` on a project that has none. If the directory already exists — as it does here — the rule below applies with no exception, and the answer is a shard. Prefer the later-PR route anyway; it needs no exception at all.
 

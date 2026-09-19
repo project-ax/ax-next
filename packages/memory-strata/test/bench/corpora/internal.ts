@@ -50,17 +50,18 @@ const SOURCE_GLOBS = [
   // Since TASK-415 every new memory row lands in a per-task shard at
   // `.claude/memory/<kind>/<date>-<TASK-ID>.md`, so this glob does miss them.
   // Adding `.claude/memory/*/*.md` was tried and reverted, because it makes
-  // the corpus WORSE rather than more representative. Measured: SOURCE_GLOBS
-  // matches 180 files against `MAX_DOCS_FOR_REGEN = 60`, so the cap binds
-  // hard — and `collectSources` sorts for determinism, where `.claude/memory/`
-  // sorts ahead of `docs/plans/` and `README`/`CLAUDE`. One shard per task
-  // means the front of that sorted list grows without bound, evicting the
-  // design docs from the back of the top-60. Today that is 6 memory files of
-  // 60; it would not stay there.
+  // the corpus WORSE rather than more representative. The durable fact is
+  // that SOURCE_GLOBS matches FAR more than `MAX_DOCS_FOR_REGEN = 60`, so the
+  // cap binds hard (measured: 179 archive-only, 180 with shards — either way
+  // triple the cap), and `collectSources` sorts for determinism, where
+  // `.claude/memory/` sorts ahead of `docs/plans/`, `README` and `CLAUDE`.
+  // One shard per task means the front of that sorted list grows without
+  // bound, evicting the design docs from the back of the top-60.
   //
   // So the corpus keeps the five archives, which are a bounded, curated
-  // sample of the same material. Including shards needs the selection to stop
-  // being "first 60 after a lexical sort" first — see the follow-up card.
+  // sample of the same material. Including shards would first need the
+  // selection to stop being "first 60 after a lexical sort" — e.g. a per-glob
+  // quota. Nothing here depends on that happening.
   '.claude/memory/*.md',
   'README.md',
   'CLAUDE.md',
