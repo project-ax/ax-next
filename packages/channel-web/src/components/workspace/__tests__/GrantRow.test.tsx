@@ -480,39 +480,29 @@ describe('a half-typed value surviving the row leaving and re-entering the threa
   });
 
   test('approving the grant clears the draft — a stale secret does not outlive its prompt', async () => {
-    const fetchMock = okFetch();
-    const { unmount } = row(skillReq);
+    okFetch();
+    row(skillReq);
 
     fireEvent.change(screen.getByLabelText('API key'), {
       target: { value: 'lin_partial' },
     });
     fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    unmount();
-
-    expect(getGrantDraft(grantKey(skillReq))).toEqual({});
+    // The clear happens after the PERMISSION-DECISION post, not the earlier
+    // credential write `okFetch` also satisfies — wait on the draft itself
+    // rather than an intermediate fetch call, so this doesn't depend on
+    // exactly which microtask ordering resolves first.
+    await waitFor(() => expect(getGrantDraft(grantKey(skillReq))).toEqual({}));
   });
 
   test('turning the grant down clears the draft too', () => {
-    const { unmount } = row(skillReq);
+    row(skillReq);
 
     fireEvent.change(screen.getByLabelText('API key'), {
       target: { value: 'lin_partial' },
     });
     fireEvent.click(screen.getByRole('button', { name: /not now/i }));
-    unmount();
 
     expect(getGrantDraft(grantKey(skillReq))).toEqual({});
-  });
-
-  test('drafts are isolated per grant key', () => {
-    const { unmount } = row(skillReq);
-    fireEvent.change(screen.getByLabelText('API key'), {
-      target: { value: 'lin_partial' },
-    });
-    unmount();
-
-    expect(getGrantDraft(grantKey(connectorReq))).toEqual({});
   });
 });

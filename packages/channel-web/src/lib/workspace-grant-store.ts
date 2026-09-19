@@ -30,6 +30,7 @@
  * `permission-card-store.ts`.
  */
 import { useSyncExternalStore } from 'react';
+import { clearAllGrantDrafts, clearGrantDraft } from './workspace-grant-drafts';
 import type { PermissionRequest } from '../server/types';
 
 /**
@@ -295,6 +296,12 @@ export const workspaceGrantActions = {
 
   /** The grant was answered (or turned down). Drop the row. */
   resolve(key: string): void {
+    // Backstop, not the primary path (TASK-389 review) — `GrantRow` already
+    // clears its own draft at every exit it drives. This covers a grant
+    // resolved some OTHER way (a future bulk-resolve, a server push) with no
+    // `GrantRow` in the loop, unconditionally and before the early return
+    // below, so a key this store never held a row for still gets swept.
+    clearGrantDraft(key);
     const next = state.grants.filter((g) => g.key !== key);
     // Skip the notify when nothing changed. This is an optimisation, not a
     // correctness guard: React keeps each row's state across a parent re-render
@@ -307,6 +314,9 @@ export const workspaceGrantActions = {
 
   /** Back to empty. Evidence that something is waiting cannot outlive its context. */
   reset(): void {
+    // Same backstop reasoning as `resolve` — nothing should still be holding
+    // typed input for a queue that no longer exists.
+    clearAllGrantDrafts();
     set(initial);
   },
 

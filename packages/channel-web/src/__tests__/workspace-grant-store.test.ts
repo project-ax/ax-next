@@ -7,13 +7,18 @@
  * all about identity: one grant must be one row, however many times the frame
  * arrives.
  */
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   getWorkspaceGrantSnapshot,
   grantKey,
   isRenderableGrant,
   workspaceGrantActions,
 } from '../lib/workspace-grant-store';
+import {
+  getGrantDraft,
+  resetGrantDraftsForTest,
+  setGrantDraftValue,
+} from '../lib/workspace-grant-drafts';
 import type { PermissionRequest } from '../server/types';
 
 const skill = (skillId = 'linear'): PermissionRequest => ({
@@ -46,6 +51,10 @@ const host = (h = 'example.org', sessionId = 's-1'): PermissionRequest => ({
 const from = (agentId = 'a-quill', conversationId: string | null = 'cnv-1') => ({
   conversationId,
   agentId,
+});
+
+afterEach(() => {
+  resetGrantDraftsForTest();
 });
 
 beforeEach(() => {
@@ -369,6 +378,31 @@ describe('resolve and reset', () => {
     workspaceGrantActions.reset();
 
     expect(getWorkspaceGrantSnapshot().grants).toEqual([]);
+  });
+
+  /*
+    BACKSTOP (TASK-389 review). `GrantRow` already clears its own draft at every
+    exit it drives — these two tests are for a grant resolved SOME OTHER WAY,
+    with no `GrantRow` in the loop: a future bulk-resolve, a server push. Without
+    this, a typed-but-unsubmitted secret could sit in `workspace-grant-drafts.ts`
+    indefinitely after the grant it belonged to is gone.
+  */
+  test('resolve clears the draft too, even for a key this snapshot never held', () => {
+    setGrantDraftValue('skill:nope', 'api_key', 'lin_ghost');
+
+    workspaceGrantActions.resolve('skill:nope');
+
+    expect(getGrantDraft('skill:nope')).toEqual({});
+  });
+
+  test('reset clears every draft, not just the grants', () => {
+    setGrantDraftValue('skill:linear', 'api_key', 'lin_1');
+    setGrantDraftValue('skill:github', 'api_key', 'gh_1');
+
+    workspaceGrantActions.reset();
+
+    expect(getGrantDraft('skill:linear')).toEqual({});
+    expect(getGrantDraft('skill:github')).toEqual({});
   });
 
   test('subscribers are notified on a change and released on unsubscribe', () => {

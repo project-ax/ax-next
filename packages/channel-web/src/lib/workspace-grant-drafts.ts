@@ -26,18 +26,28 @@
  * re-render this module needs to trigger; a plain `Map` is the whole job.
  *
  * LIFETIME. A draft for a key is written as the person types and deleted the moment
- * that grant is answered or withdrawn (`GrantRow` calls `clearGrantDraft` at every
- * exit — approve, reject, and the POST landing while the agent restart fails). A
- * stale secret must not outlive its prompt: once the row is gone for good, so is
- * whatever was typed into it. A draft is NOT deleted merely because the row
- * unmounts — that is the whole point of keeping it here instead of in `useState`.
+ * that grant is answered or withdrawn — `GrantRow` clears it at every exit it drives
+ * (approve, reject, and the POST landing while the agent restart fails), and
+ * `workspace-grant-store.ts`'s `resolve`/`reset` ALSO clear it, as a backstop for a
+ * grant that leaves the store some other way (a future bulk-resolve, a server push)
+ * without a mounted `GrantRow` in the loop. A stale secret must not outlive its
+ * prompt: once the grant is gone for good, so is whatever was typed for it. A draft
+ * is NOT deleted merely because the row unmounts — that is the whole point of
+ * keeping it here instead of in `useState`.
  */
 
 const drafts = new Map<string, Record<string, string>>();
 
-/** What was typed for this grant so far. `{}` if nothing was, or ever was. */
+/**
+ * What was typed for this grant so far. `{}` if nothing was, or ever was.
+ *
+ * Returns a COPY, not the live entry: the caller (`GrantRow`) stores this as
+ * `useState`'s initial value, and handing back the same object `setGrantDraftValue`
+ * later mutates-in-place-free would let a future in-place write silently change
+ * React state with no re-render.
+ */
 export function getGrantDraft(key: string): Record<string, string> {
-  return drafts.get(key) ?? {};
+  return { ...(drafts.get(key) ?? {}) };
 }
 
 /** Record one slot's value as the person types it. */
@@ -49,6 +59,15 @@ export function setGrantDraftValue(key: string, slot: string, value: string): vo
 /** The grant this draft belonged to is answered or withdrawn — forget it. */
 export function clearGrantDraft(key: string): void {
   drafts.delete(key);
+}
+
+/**
+ * Forget every draft. Called from `workspace-grant-store.ts`'s `reset()` — the
+ * queue going back to empty means nothing is waiting for an answer, so nothing
+ * should still be holding typed input either.
+ */
+export function clearAllGrantDrafts(): void {
+  drafts.clear();
 }
 
 /** Test seam — reset between tests. */
