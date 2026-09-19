@@ -11,12 +11,14 @@
  *
  * Security: identity is the AUTHENTICATED user (auth:require-user → 401).
  * Both `egress-allowlist:list` and `egress-allowlist:revoke` derive the owner
- * from `ctx.userId` and carry NO owner field on the payload — that is a
- * deliberate property of the hook surface: an `ownerId` on the wire would let
- * an in-process plugin read or delete another person's allowlist. This route
- * therefore builds a per-request AgentContext carrying the AUTHENTICATED
- * user id (never `initCtx`, whose `userId` is `'system'`) and never invents
- * an owner field on the call input.
+ * from `ctx.userId` and carry NO owner field on the payload. THIS ROUTE IS
+ * WHERE THAT PROPERTY IS ACTUALLY WORTH SOMETHING: a trusted in-process plugin
+ * could forge a ctx for anybody, but a browser cannot — it only ever reaches
+ * the allowlist through here, and here the identity comes from the auth cookie.
+ * So this route builds a per-request AgentContext carrying the AUTHENTICATED
+ * user id (never `initCtx`, whose `userId` is `'system'`) and never invents an
+ * owner field on the call input. Nothing the client sends names an owner,
+ * because there is no field in which to name one.
  *
  * No per-agent ACL here (unlike routes-connections.ts's allowed-sites
  * surface): this store has no agent axis at all. The hook only ever returns

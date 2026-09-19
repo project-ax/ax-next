@@ -100,4 +100,30 @@ describe('RememberedSitesPanel', () => {
     // The row is gone; the notice must not be.
     expect(screen.getByText('We’ll ask about that one next time.')).toBeInTheDocument();
   });
+
+  it('does not collide on React keys if the server ever sends one host twice', async () => {
+    // `@ax/tool-policy` dedupes this away (one row per host, global wins) and
+    // that is where the rule lives — the panel deliberately does NOT
+    // re-implement it, because two copies of "global wins" is two things to
+    // keep in step. What the panel owns is its own keys: keyed on the host
+    // alone, two rows for one host are siblings with the same key, and React
+    // reconciliation is then undefined. Keyed on scope+host they cannot be.
+    const errors: unknown[][] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      errors.push(args);
+    });
+    vi.spyOn(sitesLib, 'listRememberedSites').mockResolvedValue([
+      { host: 'dup.example.com', scope: 'global', rememberedAt: '2026-01-06T00:00:00.000Z' },
+      { host: 'dup.example.com', scope: 'user', rememberedAt: '2026-01-05T00:00:00.000Z' },
+    ]);
+    render(<RememberedSitesPanel />);
+
+    await screen.findAllByTestId('remembered-site-dup.example.com');
+    expect(screen.getAllByTestId('remembered-site-dup.example.com')).toHaveLength(2);
+    expect(
+      errors.some((a) => String(a[0] ?? '').toLowerCase().includes('same key')),
+      JSON.stringify(errors),
+    ).toBe(false);
+    spy.mockRestore();
+  });
 });

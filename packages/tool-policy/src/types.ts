@@ -555,12 +555,20 @@ export interface EgressAllowlistSite {
  * `egress-allowlist:list` — "which sites do we read without asking me first?"
  *
  * DELIBERATELY EMPTY, and it is the same decision `EgressRememberInput`
- * documents above. The payload carries no owner and no scope, and that is the
- * point: an `ownerId` on the wire would let any in-process plugin read another
- * person's allowlist — the same privilege escalation the missing `agent` tier
- * exists to prevent, through a different door. The answer is assembled for
- * `ctx.userId`: the operator's global entries unioned with that person's own,
- * and never anybody else's.
+ * documents above. The payload carries no owner and no scope: the answer is
+ * assembled for `ctx.userId` — the operator's global entries unioned with that
+ * person's own, and never anybody else's.
+ *
+ * BE PRECISE ABOUT WHAT THE MISSING FIELD BUYS, because an overstated security
+ * comment is how a later reader comes to rely on a guarantee that was never
+ * there. It does NOT make another person's list unreachable from inside the
+ * host: an in-process plugin can call `makeAgentContext({ userId: 'someone' })`
+ * and pass that ctx, and host plugins are trusted precisely because they can.
+ * What it does buy is two real things. At the NETWORK boundary it is the whole
+ * story — the BFF derives `ctx.userId` from the auth cookie and sends no owner,
+ * so a browser cannot name one however it shapes the request. And in-process it
+ * removes a field every future caller could get wrong by accident, which is a
+ * different and more likely failure than a malicious plugin.
  *
  * It is an interface rather than `void` so a later filter (a search box, a
  * cursor) can be added without breaking every caller.
@@ -576,10 +584,15 @@ export interface EgressListOutput {
 /**
  * `egress-allowlist:revoke` — "stop reading this one without asking me."
  *
- * NO OWNER AND NO SCOPE ON THE PAYLOAD, for the reason `EgressListInput` gives:
- * an `ownerId` here would be strictly worse than on a read, because it would be
- * a DELETE on another person's list. The row removed is always
- * (`scope: 'user'`, `ctx.userId`, `host`).
+ * NO OWNER AND NO SCOPE ON THE PAYLOAD, for the reason `EgressListInput` gives
+ * — read its note on what that does and does not buy, because it applies here
+ * unchanged, only with a DELETE at the end of it instead of a read. The row
+ * removed is always (`scope: 'user'`, `ctx.userId`, `host`).
+ *
+ * The missing `scope` is the stronger of the two, and it is NOT merely a
+ * convention: the store's `revoke` takes no scope either, so a caller holding
+ * any ctx it likes still cannot phrase a request to delete an operator's
+ * global entry. That one survives a forged ctx; the missing `ownerId` does not.
  *
  * A `global` entry is an operator decision and no bus caller can mint one or
  * remove one — `remember` only ever writes `user`, and this only ever deletes

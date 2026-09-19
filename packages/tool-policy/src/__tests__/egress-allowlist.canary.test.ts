@@ -260,6 +260,30 @@ describe('egress allowlist canary', () => {
     ).toEqual({ revoked: false });
   });
 
+  it('reports a host on BOTH lists once, as global, against a real database (TASK-406)', async () => {
+    // The in-memory version of this lives next door; it is here as well
+    // because the db store answers it with a UNION over two exact keys and a
+    // dedupe in TypeScript, and "did the SQL really return both rows" is not
+    // a question the memory store can be asked. The overlap itself is routine:
+    // `web_extract` remembers every successful fetch, the silent ones
+    // included, so the first read of an operator-seeded host writes a personal
+    // row beside the global one.
+    const h = await boot({ globalEgressHosts: ['example.com'] });
+    expect(await verdict(h, 'alice', 'https://example.com/x')).toBe('allow');
+    expect(
+      await h.bus.call('egress-allowlist:remember', h.ctx({ userId: 'alice' }), {
+        host: 'example.com',
+      }),
+    ).toEqual({ remembered: true });
+
+    const out = await h.bus.call<unknown, EgressListOutput>(
+      'egress-allowlist:list',
+      h.ctx({ userId: 'alice' }),
+      {},
+    );
+    expect(out.sites.map((s) => [s.host, s.scope])).toEqual([['example.com', 'global']]);
+  });
+
   it('leaves the rail row honest about the contingency', async () => {
     const h = await boot();
     const caps = await h.bus.call<unknown, ListCapabilitiesOutput>(

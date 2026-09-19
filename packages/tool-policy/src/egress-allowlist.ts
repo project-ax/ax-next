@@ -103,6 +103,9 @@ export interface EgressAllowlistStore {
    * carrying the two facts a reader needs that a bare host does not: which list
    * it is on, and when it got there.
    *
+   * ONE ROW PER HOST, and a host on both lists reports as `global`. See
+   * `dedupeByHost` for why that is the honest answer and not a tidy-up.
+   *
    * Sorted by host ascending, so the order is a property of the data rather
    * than of whatever the storage handed back.
    */
@@ -134,6 +137,43 @@ export interface EgressAllowlistStore {
  */
 function byHost(a: EgressAllowlistSite, b: EgressAllowlistSite): number {
   return a.host < b.host ? -1 : a.host > b.host ? 1 : 0;
+}
+
+/**
+ * One row per host, and a host on BOTH lists reports as `global`.
+ *
+ * THIS IS ROUTINE, not a corner case. `web_extract`'s executor calls
+ * `egress-allowlist:remember` after every successful fetch — including one that
+ * never prompted anybody because an operator's global entry already allowed it
+ * — and `remember`'s existence check keys on `(scope, owner, host)`, so the
+ * global row does not match and a personal row is written beside it. Any
+ * deployment that sets `globalEgressHosts` accumulates these from the first
+ * read onwards.
+ *
+ * Two rows for one host is not merely untidy. The panel keys its rows on the
+ * host, so it collides; and the personal duplicate renders a revoke control
+ * that deletes a row which was not the reason the site is silent. The person
+ * is told "we'll ask about that one next time" and then we do not ask, which
+ * is a false statement in the one surface whose whole job is to tell them what
+ * they have agreed to.
+ *
+ * `global` WINS, deliberately. The question this list answers is "can this be
+ * read without asking me, and can I stop that?" — and while a global entry
+ * stands, the answer is yes and no, whatever else also happens to be stored.
+ * Preferring `user` would keep exactly the lie above. The personal row is not
+ * lost: it stays in the table, `revoke` still finds it by host, and if the
+ * operator ever drops the global entry the host reappears here as `user` with
+ * its control back — correct at every point in time rather than only now.
+ */
+function dedupeByHost(sites: EgressAllowlistSite[]): EgressAllowlistSite[] {
+  const best = new Map<string, EgressAllowlistSite>();
+  for (const site of sites) {
+    const seen = best.get(site.host);
+    if (seen === undefined || (seen.scope !== 'global' && site.scope === 'global')) {
+      best.set(site.host, site);
+    }
+  }
+  return [...best.values()].sort(byHost);
 }
 
 function ownerKey(entry: EgressAllowlistEntry): string | null {
@@ -213,8 +253,8 @@ export function createDbEgressAllowlistStore(
           ]);
         })
         .execute();
-      return rows
-        .map((r: Pick<EgressAllowlistRow, 'host' | 'scope' | 'created_at'>): EgressAllowlistSite => ({
+      const sites = rows.map(
+        (r: Pick<EgressAllowlistRow, 'host' | 'scope' | 'created_at'>): EgressAllowlistSite => ({
           host: r.host,
           // The column is TEXT, so the row's scope is whatever was written.
           // Narrowed rather than asserted: only this store writes the table,
@@ -224,8 +264,12 @@ export function createDbEgressAllowlistStore(
           // than one that shows the row as the personal entry it is.
           scope: r.scope === 'global' ? 'global' : 'user',
           rememberedAt: r.created_at.toISOString(),
-        }))
-        .sort(byHost);
+        }),
+      );
+      // Deduped here rather than in SQL: the rule ("global wins") is one both
+      // stores have to obey identically, and a `DISTINCT ON` the memory store
+      // cannot express is a rule that only one of them enforces.
+      return dedupeByHost(sites);
     },
 
     async revoke({ ownerId, host: rawHost }) {
@@ -325,7 +369,10 @@ export function createMemoryEgressAllowlistStore(): EgressAllowlistStore {
       };
       push('global', '');
       if (isOwnerId(userId)) push('user', userId);
-      return sites.sort(byHost);
+      // Same "global wins, one row per host" rule as the db store, through the
+      // same function — a duplicate a person can see must not depend on which
+      // backend this deployment happens to have.
+      return dedupeByHost(sites);
     },
     async revoke({ ownerId, host: rawHost }) {
       const host = normalizeHost(rawHost);

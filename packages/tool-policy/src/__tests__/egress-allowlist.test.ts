@@ -214,6 +214,69 @@ describe('the in-memory store: listFor', () => {
       [...(await store.allowedFor('alice'))].sort(),
     );
   });
+
+  it('shows a host on BOTH lists once, as global — the row that says "you cannot take this back"', async () => {
+    // Reachable on the first read of a globally-allowed site, not in a corner
+    // case: `web_extract`'s executor remembers every successful fetch, the
+    // silent ones included, and `remember` keys its existence check on
+    // (scope, owner, host) — so the global row does not match and a personal
+    // row lands beside it.
+    const store = createMemoryEgressAllowlistStore();
+    await store.remember({ scope: 'global', ownerId: null, host: 'example.test' });
+    expect(
+      await store.remember({ scope: 'user', ownerId: 'alice', host: 'example.test' }),
+    ).toBe(true);
+
+    const sites = await store.listFor('alice');
+    // ONE row. Two would collide on the panel's host key, and the personal
+    // duplicate would render a revoke control that deletes a row which is not
+    // why the site is silent — telling the person we will ask next time when
+    // we will not.
+    expect(sites).toHaveLength(1);
+    expect(sites[0]!.host).toBe('example.test');
+    // `global` and not `user`: while the operator's entry stands, this host
+    // cannot be taken back, and that is the answer the panel has to give.
+    expect(sites[0]!.scope).toBe('global');
+    // Still enforced, obviously — dedupe is a reporting rule, not a grant one.
+    expect(await store.allowedFor('alice')).toEqual(new Set(['example.test']));
+  });
+
+  it('hands the row back with its control once the operator drops the global entry', async () => {
+    // The other half of "global wins": the personal row is hidden, never lost.
+    // Modelled by seeding the global list into a SEPARATE store, which is what
+    // an operator removing a host from `globalEgressHosts` and restarting
+    // actually produces.
+    const withGlobal = createMemoryEgressAllowlistStore();
+    await withGlobal.remember({ scope: 'global', ownerId: null, host: 'example.test' });
+    await withGlobal.remember({ scope: 'user', ownerId: 'alice', host: 'example.test' });
+    expect((await withGlobal.listFor('alice'))[0]!.scope).toBe('global');
+
+    const withoutGlobal = createMemoryEgressAllowlistStore();
+    await withoutGlobal.remember({ scope: 'user', ownerId: 'alice', host: 'example.test' });
+    const sites = await withoutGlobal.listFor('alice');
+    expect(sites).toHaveLength(1);
+    expect(sites[0]!.scope).toBe('user');
+    // And it is revocable again, by host — `revoke` never needed the row the
+    // list chose to show.
+    expect(await withoutGlobal.revoke({ ownerId: 'alice', host: 'example.test' })).toBe(true);
+  });
+
+  it('still revokes the hidden personal row while the global entry stands', async () => {
+    // Deleting it changes nothing a person can observe (the global entry still
+    // allows the host), so the panel does not offer the control — but `revoke`
+    // keys on the host, not on what the list rendered, and must not silently
+    // become a no-op just because the row is not on screen.
+    const store = createMemoryEgressAllowlistStore();
+    await store.remember({ scope: 'global', ownerId: null, host: 'example.test' });
+    await store.remember({ scope: 'user', ownerId: 'alice', host: 'example.test' });
+
+    expect(await store.revoke({ ownerId: 'alice', host: 'example.test' })).toBe(true);
+    // The global row is untouched — the host is still listed, still allowed.
+    expect((await store.listFor('alice')).map((s) => [s.host, s.scope])).toEqual([
+      ['example.test', 'global'],
+    ]);
+    expect(await store.allowedFor('alice')).toEqual(new Set(['example.test']));
+  });
 });
 
 describe('the in-memory store: revoke', () => {

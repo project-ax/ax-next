@@ -116,7 +116,12 @@ export function RememberedSitesPanel() {
           const date = rememberedDate(site.rememberedAt);
           return (
             <div
-              key={site.host}
+              // scope+host, not host alone. @ax/tool-policy dedupes this list
+              // to one row per host (global wins) and that rule lives there,
+              // not here — but a key that CANNOT collide costs one word, and
+              // the failure it rules out is undefined React reconciliation
+              // rather than a visibly wrong row.
+              key={`${site.scope}:${site.host}`}
               data-testid={`remembered-site-${site.host}`}
               className="flex items-center gap-3 px-4 py-2.5"
             >

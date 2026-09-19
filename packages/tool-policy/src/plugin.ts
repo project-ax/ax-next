@@ -422,7 +422,11 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
        * and cannot take back.
        *
        * THE OWNER IS `ctx.userId`, same as the write. No owner field on the
-       * payload, so no caller can read another person's list — and the store
+       * payload, so a caller has to hold a ctx for the person whose list it
+       * wants — which is the whole guarantee at the network boundary (the BFF
+       * mints that ctx from the auth cookie) and a smaller one in-process,
+       * where a trusted plugin could forge the ctx anyway. See
+       * `EgressListInput` for the honest version of that claim. The store also
        * drops the personal half of its read for an id that names nobody, so a
        * `system` context sees the operator's list and nothing else.
        *

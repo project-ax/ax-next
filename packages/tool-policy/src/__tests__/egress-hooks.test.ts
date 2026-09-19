@@ -116,6 +116,25 @@ describe('egress-allowlist:list', () => {
     expect(sites.find((s) => s.host === 'intranet.example.com')!.scope).toBe('global');
   });
 
+  it('shows a host the operator ALSO allows exactly once, as global', async () => {
+    // The shape a real deployment produces, walked over the bus. `web_extract`
+    // remembers every successful fetch — including the silent one the global
+    // entry permitted — so `remember` returning `true` here is the bug's
+    // starting condition, not a test artefact.
+    const h = await boot(['example.com']);
+    expect(await verdict(h, 'alice', 'https://example.com/x')).toBe('allow');
+    await remember(h, 'alice', 'example.com');
+
+    const sites = await list(h, 'alice');
+    // One row, and the one that tells the truth: while the operator's entry
+    // stands, alice cannot take this host back, so the panel must not offer to.
+    expect(sites.map((s) => [s.host, s.scope])).toEqual([['example.com', 'global']]);
+    // And the revoke she is no longer offered would indeed not have helped —
+    // proof the row we hid was the one that could not deliver on its label.
+    await revoke(h, 'alice', 'example.com');
+    expect(await verdict(h, 'alice', 'https://example.com/x')).toBe('allow');
+  });
+
   it('gives a context with no real user the operator list and nothing personal', async () => {
     const h = await boot(['intranet.example.com']);
     await remember(h, 'alice', 'docs.example.com');
