@@ -41,6 +41,27 @@ export interface ActivityFeedState {
    * `server/routes-workspace.ts`.
    */
   nextBefore: string | null;
+  /**
+   * WHICH collection `events` and `nextBefore` currently describe: an agent's
+   * id, or `undefined` for the whole workspace. Not the same as the `agentId`
+   * the caller passed in — and the gap between them is the point.
+   *
+   * The reset below lives in an EFFECT, and effects run after the commit. So
+   * on the render where the reader switches tabs, this hook returns the
+   * PREVIOUS scope's rows under the NEW scope's argument, and a consumer that
+   * turns those rows into a number states it about the wrong collection.
+   * Today's "N done today" did exactly that for one frame after leaving an
+   * agent's tab (TASK-402). Compare this against the scope you asked for
+   * before making any claim from `events`; they differ for exactly one render.
+   *
+   * Deliberately not fixed by blanking `events` while stale: "we hold nothing"
+   * and "we hold the wrong thing" are different facts, and a consumer that
+   * only wants rows on screen (the Activity page, an agent's "What it did"
+   * tab) is better served by one frame of the old list than by a flicker to
+   * empty. This field lets the consumers that DO need the distinction — the
+   * ones making a counted claim — ask for it.
+   */
+  scope: string | undefined;
   loadMore: () => void;
 }
 
@@ -49,6 +70,13 @@ export function useActivityFeed(agentId?: string): ActivityFeedState {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [nextBefore, setNextBefore] = useState<string | null>(null);
+  /**
+   * Set in the reset effect, NOT during render — that one-render lag is the
+   * whole mechanism. A ref would update too early to be useful here, and
+   * deriving it during render would make it agree with `agentId` on exactly
+   * the frame where the disagreement is what a caller needs to see.
+   */
+  const [scope, setScope] = useState<string | undefined>(agentId);
 
   /**
    * Bumped on every scope change and every fetch kicked off. A response is
@@ -90,10 +118,15 @@ export function useActivityFeed(agentId?: string): ActivityFeedState {
     setEvents([]);
     setNextBefore(null);
     setError(null);
+    // Moves with the rows it describes, in the same batch — so `scope` is
+    // never a name for a list it does not belong to.
+    setScope(agentId);
     fetchPage(undefined, true);
     // `fetchPage` is recreated only when `agentId` changes, so this also
-    // covers the mount fetch without a separate effect.
-  }, [fetchPage]);
+    // covers the mount fetch without a separate effect. `agentId` is listed
+    // alongside it for the `setScope` above; it changes on exactly the same
+    // renders, so it adds no runs.
+  }, [fetchPage, agentId]);
 
   const loadMore = useCallback(() => {
     if (nextBefore === null) return;
@@ -110,6 +143,7 @@ export function useActivityFeed(agentId?: string): ActivityFeedState {
     error,
     hasMore: nextBefore !== null,
     nextBefore,
+    scope,
     loadMore,
   };
 }
