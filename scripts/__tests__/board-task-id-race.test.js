@@ -755,6 +755,81 @@ describe('board-task-id.sh — Task-ID allocation under concurrency', () => {
   // Wiring (CLAUDE.md invariant 3 — a guard nobody calls is not wired in).
   // -------------------------------------------------------------------------------
 
+  it('every documented allocator call BRANCHES on failure, never `|| echo` and onward', () => {
+    // This one exists because the same mistake landed TWICE in this file, thirty lines
+    // apart, and a reviewer caught both. The shape:
+    //
+    //     TASK_ID=$(scripts/board-task-id.sh settle --item "$ITEM_ID") \
+    //       || echo "FATAL: … do not write deps for $ITEM_ID" >&2
+    //     gh project item-edit … --field-id "$DEPS_FIELD_ID" --text "$DEPS"
+    //
+    // `|| echo` captures the status correctly and then falls straight through, so the
+    // FATAL line announces the corruption and the next line performs it. `settle` exits
+    // non-zero precisely when the id is STILL a duplicate, so routing anyway wires a
+    // duplicate-numbered card into `Depends on` and into readiness — exactly what this
+    // card was filed to stop. A FATAL followed by carrying on is not a guard, it is a
+    // comment.
+    //
+    // So: every call to the allocator in the doc must sit in an `if`, where the failure
+    // path is a branch rather than a line of prose. Checked on LOGICAL lines, with
+    // `\`-continuations joined, because both real call sites wrap.
+    const doc = readFileSync(
+      join(REPO_ROOT, '.claude', 'skills', 'auto-ship', 'references', 'github-project.md'),
+      'utf8',
+    );
+    // Only ```bash FENCES, not "everything between fences" — a naive split enrols the
+    // prose paragraphs too, and a sentence that merely names `scripts/board-task-id.sh`
+    // in backticks then reads as an unguarded call site. (Measured: my first version of
+    // this test failed on §4's design-intake PARAGRAPH.)
+    const blocks = [];
+    {
+      const lines = doc.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (!/^\s*```bash\s*$/.test(lines[i])) continue;
+        const body = [];
+        let j = i + 1;
+        for (; j < lines.length && !/^\s*```\s*$/.test(lines[j]); j++) body.push(lines[j]);
+        blocks.push(body.join('\n'));
+        i = j;
+      }
+    }
+
+    const calls = [];
+    for (const block of blocks) {
+      const code = block
+        .replace(/\\\n/g, ' ')
+        .split('\n')
+        .filter((l) => l.trim() && !/^\s*#/.test(l));
+      // A pure CLI-reference listing — every line is a bare `scripts/board-task-id.sh …`
+      // invocation with nothing depending on it — documents the subcommands rather than
+      // calling them, so there is no later work for a failure to corrupt. Any block that
+      // mixes the allocator with other statements IS a call site.
+      if (code.length > 0 && code.every((l) => l.trim().startsWith('scripts/board-task-id.sh'))) {
+        continue;
+      }
+      for (const line of code) {
+        if (/scripts\/board-task-id\.sh\s+(claim|settle)\b/.test(line)) calls.push(line.trim());
+      }
+    }
+    // Vacuity guard: if the extractor stops matching, every assertion below passes by
+    // iterating nothing — the precise way a doc-scanning test goes quietly useless.
+    expect(
+      calls.length,
+      'found no `scripts/board-task-id.sh claim|settle` call in github-project.md — ' +
+        'either the wiring was removed or this extractor stopped matching it',
+    ).toBeGreaterThanOrEqual(2);
+
+    for (const line of calls) {
+      expect(
+        line.startsWith('if '),
+        `this allocator call does not branch on failure:\n    ${line}\n` +
+          'Put the writes that depend on it inside `if …; then … else <FATAL> fi`. A ' +
+          '`|| echo "FATAL…"` prints and then continues, which is how a duplicate id ' +
+          'gets routed into `Depends on` one line after being told not to.',
+      ).toBe(true);
+    }
+  });
+
   it('is called from every documented card-creation path', () => {
     const doc = readFileSync(
       join(REPO_ROOT, '.claude', 'skills', 'auto-ship', 'references', 'github-project.md'),

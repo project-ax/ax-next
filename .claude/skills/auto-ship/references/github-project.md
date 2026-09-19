@@ -314,21 +314,33 @@ ITEM_ID=$(printf '%s' "$ITEMS" | jq -r --arg p "[$TASK_ID] " \
 # `$TASK_ID` here is one you ALREADY hold, so this path allocates nothing -- but another
 # session may have taken the number between your snapshot and this write, so confirm
 # before anything starts referencing the card (§8.2a).
+#
 # TAKE THE ANSWER BACK. If this card turns out not to be the keeper, `settle` renames
 # YOUR card and the surviving id is no longer the `$TASK_ID` you came in with -- and
 # every later use of it (dispatch prompt, journal row, `Depends on`) would then name a
 # number this card does not carry. settle prints the surviving id on stdout for exactly
 # this reason, and its prose goes to stderr so the capture stays clean.
-TASK_ID=$(scripts/board-task-id.sh settle --item "$ITEM_ID") \
-  || echo "FATAL: $TASK_ID is NOT confirmed unique — do not dispatch or write deps for $ITEM_ID" >&2
+#
+# AND THE ROUTING IS INSIDE THE `then`, for the same reason it is in the follow-up block
+# below. settle exits non-zero precisely when the id is STILL a duplicate, so routing a
+# card anyway would wire a duplicate-numbered card into `Depends on` and into readiness
+# -- the corruption this whole section exists to prevent, performed immediately after
+# printing a line telling you not to. An earlier version of this block did exactly that.
+# Capture into SETTLED, not straight into TASK_ID: on failure the substitution empties
+# whatever it assigns to, and the FATAL needs the original id to name the card.
+if SETTLED=$(scripts/board-task-id.sh settle --item "$ITEM_ID"); then
+  TASK_ID="$SETTLED"
 
-# move a card to a lane (OPT_ID from the §2 map):
-gh project item-edit --id "$ITEM_ID" --project-id "$PROJ_ID" \
-  --field-id "$STATUS_FIELD_ID" --single-select-option-id "$OPT_ID"
+  # move a card to a lane (OPT_ID from the §2 map):
+  gh project item-edit --id "$ITEM_ID" --project-id "$PROJ_ID" \
+    --field-id "$STATUS_FIELD_ID" --single-select-option-id "$OPT_ID"
 
-# set / rewrite its deps:
-gh project item-edit --id "$ITEM_ID" --project-id "$PROJ_ID" \
-  --field-id "$DEPS_FIELD_ID" --text "$DEPS"      # e.g. "ARCH-4 ARCH-5"  or  "none"
+  # set / rewrite its deps:
+  gh project item-edit --id "$ITEM_ID" --project-id "$PROJ_ID" \
+    --field-id "$DEPS_FIELD_ID" --text "$DEPS"    # e.g. "ARCH-4 ARCH-5"  or  "none"
+else
+  echo "FATAL: [$TASK_ID] on $ITEM_ID is NOT confirmed unique — NOT routed (no lane move, no deps, do not dispatch)" >&2
+fi
 ```
 
 **Batch multi-writes into ONE GraphQL request.** Each `gh project item-edit` is its own
@@ -989,10 +1001,16 @@ of the other. A human who pre-tagged `(walk)` keeps it.
 
 ### 8.2a Confirming the number survived — `scripts/board-task-id.sh`
 
-Run this immediately after the stamp above, for every card you just numbered:
+Run this immediately after the stamp above, for every card you just numbered — and
+**branch on it**, because a card whose number is not confirmed must not be journalled as
+tagged or dispatched. `settle` exits non-zero exactly when the id is still a duplicate:
 
 ```bash
-scripts/board-task-id.sh settle --item "$ITEM_ID"
+if TASK_ID=$(scripts/board-task-id.sh settle --item "$ITEM_ID"); then
+  echo "id-assigned [$TASK_ID]"   # journal it under the id that SURVIVED, not the one you stamped
+else
+  echo "FATAL: $ITEM_ID is NOT confirmed unique — leave it untriaged and retry next pass" >&2
+fi
 ```
 
 **Why.** Allocating a Task ID is a read-modify-write, and several sessions write this

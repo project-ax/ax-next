@@ -256,7 +256,10 @@ cmd_check() {
     echo "  any 'Depends on' entry that pointed at it. Title edits need the DI_ content id." >&2
     return 1
   fi
-  echo "board-task-id.sh: every [PREFIX-n] on the board is held by exactly one card — ok."
+  # stderr, like every other prose line here. `check`'s answer is its exit code, and
+  # keeping stdout empty on success means the invariant "stdout is data" is total rather
+  # than almost-total — which is worth more than the one line it costs.
+  echo "board-task-id.sh: every [PREFIX-n] on the board is held by exactly one card — ok." >&2
   return 0
 }
 
