@@ -107,8 +107,16 @@ function unrealizable(kind: string, pluginName: string): PluginError {
 /**
  * Realize `sandbox:read-user-files` for the subprocess provider: resolve the
  * agent's `localDir` user-files mount READ-ONLY and read one path under it.
- * Returns `{ kind: 'absent' }` when there's no mount or the path doesn't exist;
- * a regular file's bytes for a file; the immediate children for a directory.
+ * Returns `{ kind: 'unavailable' }` when this deployment has no durable tier
+ * for the owner at all, `{ kind: 'absent' }` when it has one and the path is
+ * not in it, a regular file's bytes for a file, the immediate children for a
+ * directory — and THROWS when the storage is there and would not answer.
+ *
+ * The first two used to be one answer (TASK-403), which left the Files tab
+ * unable to tell "this deployment keeps nothing" from "your agent has written
+ * nothing" and hedging out loud between them on every deployment, working ones
+ * included. The mount resolves before any path is looked at, so telling them
+ * apart costs no secrecy about which paths exist.
  *
  * The read itself — the LEXICAL guard on the caller's relPath, the realpath
  * confinement that catches an intermediate agent-planted symlink, the
@@ -136,7 +144,7 @@ export async function readUserFiles(
     pluginName,
     /* readOnly */ true,
   );
-  if (root === undefined) return { kind: 'absent' };
+  if (root === undefined) return { kind: 'unavailable' };
   return readConfinedUserFiles(root, input.relPath);
 }
 

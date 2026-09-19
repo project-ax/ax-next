@@ -86,11 +86,11 @@ interface InspectablePod {
 
 /** Drive the one-shot pod to a terminal Succeeded phase so watchPodExit
  *  resolves immediately. Optionally stub the read pod's log output. */
-function primeTerminal(api: MockK8sApi, log?: string) {
+function primeTerminal(api: MockK8sApi, log?: string, exitCode = 0) {
   api.setReadResponses({
     status: {
-      phase: 'Succeeded',
-      containerStatuses: [{ name: 'userfiles', state: { terminated: { exitCode: 0 } } }],
+      phase: exitCode === 0 ? 'Succeeded' : 'Failed',
+      containerStatuses: [{ name: 'userfiles', state: { terminated: { exitCode } } }],
     },
   });
   if (log !== undefined) api.setLogResponse('userfiles', log);
@@ -257,13 +257,51 @@ describe('readUserFiles (k8s one-shot read pod)', () => {
     expect(Buffer.from(out.contents).toString('utf-8')).toBe('hi');
   });
 
-  it('returns absent when no resolver is loaded', async () => {
+  it('returns UNAVAILABLE (not absent) when no resolver is loaded', async () => {
+    /*
+      TASK-403. No resolver means this deployment keeps no durable files for
+      the agent AT ALL, which is a fact about the deployment. It used to answer
+      `absent` — the same word a path that is simply not there gets — and the
+      Files tab could then only hedge: "either your agent wrote nothing or this
+      server isn't keeping them, we can't tell which", on every deployment,
+      working ones included.
+    */
     const api = makeMockK8sApi();
     const out = await readUserFiles(ctx(), new HookBus(), api, CONFIG, log, {
       owner: ownerFromAgentId('agent-abc', 'u1'),
     });
-    expect(out).toEqual({ kind: 'absent' });
+    expect(out).toEqual({ kind: 'unavailable' });
     expect(api.creates).toHaveLength(0);
+  });
+
+  it('REGRESSION: a non-zero pod exit is a failure even when its log PARSES', async () => {
+    /*
+      TASK-403. The exit code was not checked at all, and an empty log alone
+      does not cover the gap: the script runs under `set -eu`, so it can print
+      `FILE ` and then die when `head` fails. That parses cleanly as a
+      zero-byte file — an EMPTY FILE served over a read that did not finish,
+      which is the same class of lie as an empty tier. The guard's whole value
+      is this case, so this is the case the test drives.
+    */
+    const api = makeMockK8sApi();
+    primeTerminal(api, 'FILE ', 137);
+    const { bus } = busWithNfs();
+    await expect(
+      readUserFiles(ctx(), bus, api, CONFIG, log, {
+        owner: ownerFromAgentId('agent-abc', 'u1'),
+        relPath: 'report.md',
+      }),
+    ).rejects.toBeInstanceOf(PluginError);
+    // The pod is still cleaned up — a failed read must not leak a pod.
+    expect(api.deletes.length).toBeGreaterThan(0);
+  });
+
+  it('parses a FAILED line from the reader as a failure', async () => {
+    // The script's own word for "I could not resolve this agent's subtree
+    // although the export still lists it". Two guards, deliberately: the
+    // non-zero exit AND the token, because the day one is bypassed is the day
+    // the answer silently becomes "this agent wrote nothing".
+    expect(() => parseReadOutput('FAILED')).toThrow(PluginError);
   });
 
   it('SECURITY: rejects a traversal relPath before creating a pod', async () => {
@@ -395,13 +433,13 @@ describe('readUserFiles (host-mounted realization)', () => {
     ).toEqual({ kind: 'absent' });
   });
 
-  it('returns absent when the resolver has no mount (no pod either)', async () => {
+  it('returns UNAVAILABLE when the resolver has no mount (no pod either)', async () => {
     const api = makeMockK8sApi();
     expect(
       await readUserFiles(ctx(), new HookBus(), api, hostReadConfig(), log, {
         owner: ownerFromAgentId('agent-abc', 'u1'),
       }),
-    ).toEqual({ kind: 'absent' });
+    ).toEqual({ kind: 'unavailable' });
     expect(api.creates).toHaveLength(0);
   });
 
@@ -534,15 +572,32 @@ describe('parseReadOutput (one-shot pod log → ReadUserFilesOutput)', () => {
     expect(out.truncated).toBe(true);
   });
 
-  it('maps ABSENT, empty, and any unrecognized token to absent', () => {
+  it('maps ONLY the ABSENT token to absent', () => {
     expect(parseReadOutput('ABSENT')).toEqual({ kind: 'absent' });
-    // `BIG` was the retired over-cap marker: the script now emits the file's
-    // first READ_MAX_FILE_BYTES bytes as a normal FILE line, matching what
-    // @ax/user-files-read does. Kept here because an unknown token from an
-    // older image must still land on absent rather than on a crash.
-    expect(parseReadOutput('BIG')).toEqual({ kind: 'absent' });
-    expect(parseReadOutput('')).toEqual({ kind: 'absent' });
-    expect(parseReadOutput('unexpected noise')).toEqual({ kind: 'absent' });
+  });
+
+  it('REGRESSION: a silent reader pod is a failure, not an empty tier', () => {
+    /*
+      TASK-403. The read script runs under `set -eu`, so any failing command in
+      it kills the pod with nothing on stdout. That empty log used to parse as
+      `ABSENT`, and the Files tab drew it as "your agent hasn't put any files
+      here yet" — a confident claim about the agent manufactured out of our own
+      reader falling over. A throw becomes a 5xx and the tab offers a retry.
+    */
+    expect(() => parseReadOutput('')).toThrow(PluginError);
+    expect(() => parseReadOutput('   \n  \n')).toThrow(PluginError);
+  });
+
+  it('REGRESSION: output this host cannot parse is a failure, not an absence', () => {
+    /*
+      `BIG` was the retired over-cap marker, so this is also the rolling-deploy
+      case: a new host reading an old image's output. "I do not understand what
+      the reader said" and "the agent has no such file" are different answers,
+      and guessing the second is guessing in the one direction the reader
+      cannot tell is a guess.
+    */
+    expect(() => parseReadOutput('BIG')).toThrow(PluginError);
+    expect(() => parseReadOutput('unexpected noise')).toThrow(PluginError);
   });
 
   it('REGRESSION: a bare DIR is an EMPTY directory, not an absence', () => {

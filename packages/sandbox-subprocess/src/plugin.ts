@@ -71,7 +71,8 @@ export function createSandboxSubprocessPlugin(): Plugin {
           hook: 'sandbox:resolve-mounts',
           degradation:
             'no durable per-agent user-files mount; AX_USERFILES_ROOT unset; ' +
-            'host-read returns absent and agent-delete cleanup is a no-op',
+            'host-read returns unavailable (this deployment keeps no durable ' +
+            'files) and agent-delete cleanup is a no-op',
         },
       ],
       // filestore-user-files §11 cleanup: when an agent is deleted, reclaim its
@@ -90,7 +91,10 @@ export function createSandboxSubprocessPlugin(): Plugin {
 
       // §11 host-read. Read-only by construction (the realization never opens a
       // writable handle); caller-supplied paths are confined to the resolved
-      // mount subtree. No durable resolver loaded → `{ kind: 'absent' }`.
+      // mount subtree. No durable resolver loaded → `{ kind: 'unavailable' }` (a
+      // fact about the deployment, NOT the same answer as a path that is not
+      // there — TASK-403); a read that FAILED throws rather than answering an
+      // absence.
       bus.registerService<ReadUserFilesInput, ReadUserFilesOutput>(
         'sandbox:read-user-files',
         PLUGIN_NAME,

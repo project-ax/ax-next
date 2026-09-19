@@ -46,9 +46,64 @@ import type {
 // oracle for mapping someone else's subtree, and "absent" is also simply true
 // from the caller's side: this surface does not have that file.
 //
+// A BROKEN READ IS NOT AN ABSENCE (TASK-403). `absent` used to swallow the
+// storage failing too: a `readdir` that came back `EIO` or `ESTALE` — the
+// ordinary way an NFS export tells you it is having a bad day — answered
+// exactly like a directory the agent never created, and the Files tab told the
+// reader their agent had written nothing. So the two are now separated, and
+// the line is drawn where it costs no secrecy: confinement runs FIRST, and
+// only once it has proved the path is a real file or directory inside the
+// caller's own root does an errno get looked at. Past that point the path's
+// existence is already established, so distinguishing "it vanished underneath
+// us" (still `absent`) from "the filesystem refused" (a thrown
+// `UserFilesReadError`) tells a prober nothing it did not already have.
+//
 // READ-ONLY, structurally: nothing here opens a writable handle, and there is
 // no write/delete entry point to reach for by mistake.
 // ---------------------------------------------------------------------------
+
+/**
+ * The storage was there and would not answer.
+ *
+ * Thrown only from the post-confinement reads, so it can never be the first
+ * thing a caller learns about a path — by the time one of these is possible,
+ * the path has already been proved to exist inside the caller's own root.
+ *
+ * `code` is the raw errno (`EIO`, `ESTALE`, `EACCES`, …) when the filesystem
+ * gave us one. It is for an operator reading a log: nothing user-facing should
+ * repeat it, because "ESTALE" is not a sentence anybody can act on.
+ *
+ * A plain `Error` subclass rather than a `PluginError` on purpose — this
+ * package is a dependency-free library with no `@ax/core` import, and the
+ * realizations that call it wrap or re-throw as their own plugin sees fit.
+ */
+export class UserFilesReadError extends Error {
+  readonly code: string | undefined;
+  constructor(message: string, options?: { cause?: unknown; code?: string }) {
+    super(message, options?.cause === undefined ? undefined : { cause: options.cause });
+    this.name = 'UserFilesReadError';
+    this.code = options?.code;
+  }
+}
+
+/**
+ * Errnos that mean the path stopped existing between our check and our read —
+ * an ordinary race against an agent that is still working, and still an
+ * absence. Everything else at that point is the storage failing.
+ *
+ * `ELOOP` is in here for a different reason and is worth naming: it is what
+ * `O_NOFOLLOW` raises when the final component was swapped for a symlink after
+ * confinement passed. That is the TOCTOU guard doing its job, and its answer
+ * has always been `absent` — a path we refuse to follow is a path this surface
+ * does not have.
+ */
+const VANISHED_ERRNOS = new Set(['ENOENT', 'ENOTDIR', 'ELOOP']);
+
+/** The errno a Node fs rejection carries, when it carries one. */
+function errnoOf(err: unknown): string | undefined {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === 'string' ? code : undefined;
+}
 
 /**
  * Bounds on somebody else's filesystem.
@@ -139,15 +194,36 @@ export function safeJoinUnderRoot(
  * `undefined` (→ the caller serves `absent`). A missing path or a dangling
  * link also yields `undefined`: realpath fails, and "we could not resolve it"
  * and "it is not there" are the same answer to a reader.
+ *
+ * THE ROOT IS RESOLVED SEPARATELY FROM THE TARGET, and that split is the whole
+ * point of the two `try`s below. The root is the caller's own subtree — the
+ * same directory for every `relPath` — so what happens to it is not a fact
+ * about any requested path, and it is the one place a mount that is simply
+ * DOWN shows up first. `ENOENT` on the root is the honest, ordinary case: the
+ * agent has never written anything, so its subtree was never created. Any
+ * other errno there (`EIO`, `ESTALE`, `EACCES`, `ETIMEDOUT` — an NFS export
+ * having a bad day) is the storage failing, and it throws rather than
+ * pretending the agent's output is empty. The TARGET's resolution keeps
+ * answering `undefined` for everything, because that one IS path-dependent and
+ * a distinguishing answer there would be an oracle.
  */
 export async function confineByRealpath(
   root: string,
   target: string,
 ): Promise<string | undefined> {
   let realRoot: string;
-  let realTarget: string;
   try {
     realRoot = await fs.realpath(root);
+  } catch (err) {
+    const code = errnoOf(err);
+    if (code !== undefined && VANISHED_ERRNOS.has(code)) return undefined;
+    throw new UserFilesReadError(
+      `could not reach the user-files root${code === undefined ? '' : ` (${code})`}`,
+      { cause: err, ...(code === undefined ? {} : { code }) },
+    );
+  }
+  let realTarget: string;
+  try {
     realTarget = await fs.realpath(target);
   } catch {
     return undefined;
@@ -172,9 +248,11 @@ export async function confineByRealpath(
  * else — missing, outside the root, a socket, a device, a dangling link — with
  * `{ kind: 'absent' }`.
  *
- * Throws only for a relPath that is malformed enough to be OUR bug (absolute,
- * or containing `..`). Everything the filesystem has an opinion about is
- * `absent`, deliberately: see the oracle note in the header.
+ * Throws for a relPath malformed enough to be OUR bug (absolute, or containing
+ * `..`), and `UserFilesReadError` when the storage is there and will not answer
+ * — an unreachable root, a listing or a read that failed for any reason other
+ * than the path having vanished underneath us. Everything path-dependent stays
+ * `absent`: see the oracle note in the header.
  */
 export async function readConfinedUserFiles(
   root: string,
@@ -191,8 +269,13 @@ export async function readConfinedUserFiles(
   let stat;
   try {
     stat = await fs.lstat(target);
-  } catch {
-    return { kind: 'absent' };
+  } catch (err) {
+    const code = errnoOf(err);
+    if (code !== undefined && VANISHED_ERRNOS.has(code)) return { kind: 'absent' };
+    throw new UserFilesReadError(
+      `could not stat a confined user-files path${code === undefined ? '' : ` (${code})`}`,
+      { cause: err, ...(code === undefined ? {} : { code }) },
+    );
   }
   // Belt: unreachable after realpath, which is exactly why it is handled
   // rather than assumed.
@@ -218,8 +301,17 @@ async function listDir(
   let dirents;
   try {
     dirents = await fs.readdir(target, { withFileTypes: true });
-  } catch {
-    return { kind: 'absent' };
+  } catch (err) {
+    // Confinement + `lstat` already said this is a directory inside the root,
+    // so an ENOENT here is a race with the agent deleting it and anything else
+    // is the storage refusing. Reporting the second as an empty tier is the
+    // TASK-403 lie: "your agent wrote nothing" over a mount we could not read.
+    const code = errnoOf(err);
+    if (code !== undefined && VANISHED_ERRNOS.has(code)) return { kind: 'absent' };
+    throw new UserFilesReadError(
+      `could not list a confined user-files directory${code === undefined ? '' : ` (${code})`}`,
+      { cause: err, ...(code === undefined ? {} : { code }) },
+    );
   }
   const entries: UserFileDirEntry[] = [];
   for (const d of dirents) {
@@ -280,8 +372,18 @@ async function readFilePrefix(
       contents: new Uint8Array(buf.subarray(0, kept)),
       truncated,
     };
-  } catch {
-    return { kind: 'absent' };
+  } catch (err) {
+    // Same split as `listDir`, plus the one that is load-bearing for security:
+    // `ELOOP` is `O_NOFOLLOW` catching a final component swapped for a symlink
+    // after confinement passed, and a path we refuse to follow stays `absent`.
+    // An `EIO` mid-read is not that — it is half a file we cannot finish, and
+    // handing back "no such file" would be a claim about the agent's output.
+    const code = errnoOf(err);
+    if (code !== undefined && VANISHED_ERRNOS.has(code)) return { kind: 'absent' };
+    throw new UserFilesReadError(
+      `could not read a confined user-files file${code === undefined ? '' : ` (${code})`}`,
+      { cause: err, ...(code === undefined ? {} : { code }) },
+    );
   } finally {
     await fh?.close().catch(() => undefined);
   }

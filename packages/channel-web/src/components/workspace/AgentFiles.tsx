@@ -38,11 +38,13 @@
  * unreadable is not a reason to blank the other, which is a different backend
  * that may be perfectly fine.
  *
- * The durable tier has one case its sibling does not, and it is worth reading
- * the header of `lib/user-files.ts` for the full reason: at the tier root we
- * cannot tell "the agent wrote nothing" from "this deployment stores nothing".
- * So we say both and say we cannot tell. Asserting the nicer half would be
- * exactly the H7 failure this file exists to prevent.
+ * The durable tier used to have a fifth case, and it was a hedge: at the tier
+ * root it could not tell "the agent wrote nothing" from "this deployment
+ * stores nothing", so it said both out loud and said it could not tell which.
+ * That was the honest thing to draw over a hook that answered one word for
+ * both. The hook now answers them separately (TASK-403 — see the header of
+ * `lib/user-files.ts`), so the hedge is gone and each half gets the plain
+ * sentence it always deserved.
  *
  * Everything on screen here is AGENT-AUTHORED. Filenames arrive already fenced
  * by the server (`name`), the raw `path` is a key we never render, and bodies
@@ -70,7 +72,7 @@ import {
 import { Markdown } from '@/components/Markdown';
 import { useFileDownload } from '@/lib/file-download';
 import { useAgentFiles } from '@/lib/workspace-files';
-import { useAgentUserFiles, type UserFileBody } from '@/lib/user-files';
+import { parentDirOf, useAgentUserFiles, type UserFileBody } from '@/lib/user-files';
 import type { FileTier, WorkspaceFileBody } from '@/lib/workspace-api';
 import { cn } from '@/lib/utils';
 import { SectionLabel } from './bits';
@@ -213,6 +215,26 @@ export function AgentFiles({
   const governedSelected =
     governed.files.find((f) => f.path === governed.openPath) ?? null;
 
+  /*
+    A `missing` on the TIER ROOT is not an error any more, it is the empty
+    state. The hook only reports `missing` once the tier itself resolved
+    (`unavailable` is the answer when it did not), so at the root it means one
+    thing: this agent has not written anything yet. Drawing that in a red alert
+    next to a separate, identically-meant "hasn't put any files here yet" would
+    be two spellings of one fact for the reader to reconcile.
+
+    It is keyed off `error.path`, NOT off `dirPath`. `dirPath` only moves on a
+    SUCCESSFUL listing, so after a failed step into `reports/` it still reads
+    `''` — and this would then call that failure the root's and tell somebody
+    their agent has written nothing while the root listing they are looking at
+    lists files.
+  */
+  const durableRootEmpty =
+    durable.error !== null &&
+    durable.error.kind === 'missing' &&
+    durable.error.path === '';
+  const durableError = durableRootEmpty ? null : durable.error;
+
   /* The breadcrumb trail for wherever we are in the durable tier. */
   const crumbs: Array<{ label: string; path: string }> = [
     { label: 'Files', path: '' },
@@ -232,7 +254,14 @@ export function AgentFiles({
         <div className="flex flex-col">
           <SectionLabel>Files</SectionLabel>
 
-          {durable.dirPath !== '' && (
+          {/*
+            Hidden when the root read came back missing. `dirPath` is the last
+            SUCCESSFUL listing, so a root read that 404s from inside a folder
+            would leave a trail reading "Files / reports" over a note saying
+            this agent has put nothing anywhere — two true sentences that
+            cannot both be describing the same screen.
+          */}
+          {durable.dirPath !== '' && !durableRootEmpty && (
             <Breadcrumb className="mb-1.5 px-2.5">
               <BreadcrumbList className="text-[12px]">
                 {crumbs.map((c, i) => (
@@ -257,45 +286,76 @@ export function AgentFiles({
             </Breadcrumb>
           )}
 
-          {durable.error !== null ? (
+          {durableError !== null ? (
             <div className="px-1.5">
               <Alert variant="destructive">
                 <AlertDescription className="flex flex-col items-start gap-2 text-[12.5px]">
                   <span>
-                    {durable.error.kind === 'unavailable'
-                      ? `This server isn’t set up to keep ${agentName}’s files, so there’s nothing for us to open.`
-                      : durable.error.kind === 'missing'
+                    {durableError.kind === 'unavailable'
+                      ? /*
+                          Now a fact, not a guess: the tier did not resolve at
+                          all in this deployment. There is nothing to come back
+                          for, so no button — an offer to retry would send
+                          somebody hunting for something that was never there.
+                        */
+                        `This server isn’t set up to keep ${agentName}’s files, so there’s nothing for us to open.`
+                      : durableError.kind === 'missing'
                         ? /*
-                            The honest sentence for the ambiguous case. See
-                            lib/user-files.ts — `absent` covers both readings on
-                            purpose, and picking one would be a claim we cannot
-                            support. Naming both is not a hedge, it is the
-                            actual state of our knowledge.
+                            A `missing` that got this far is about a folder we
+                            walked into, not about the tier. The root's version
+                            is the empty state and never reaches here.
                           */
-                          `We couldn’t find any files here. Either ${agentName} hasn’t written any yet, or this server isn’t keeping them — we can’t tell which from here.`
+                          `That folder isn’t here any more. It may have been renamed or deleted since we drew this list.`
                         : `We could not read ${agentName}’s files. Nothing was lost; we just could not look right now.`}
                   </span>
-                  {durable.error.kind === 'failed' && (
+                  {durableError.kind !== 'unavailable' && (
+                    /*
+                      The two buttons do DIFFERENT things, which is why they
+                      are not one handler with two labels.
+
+                      "Try again" re-reads where we are, because the read is
+                      what failed. "Go back" leaves — and it has to leave to
+                      the missing path's PARENT, not to `dirPath`. `dirPath` is
+                      the last successful listing, so when a folder we were
+                      already standing in vanishes and we re-request it, they
+                      are the same path: a reload would re-fetch the folder
+                      that just 404'd and land on its own error, a button that
+                      loops on the thing it offers to escape.
+                    */
                     <Button
                       variant="secondary"
                       size="sm"
-                      onClick={durable.reload}
+                      onClick={
+                        durableError.kind === 'missing'
+                          ? () => durable.openDir(parentDirOf(durableError.path) ?? '')
+                          : durable.reload
+                      }
                       disabled={durable.loading}
                     >
-                      {durable.loading ? 'Trying…' : 'Try again'}
+                      {durable.loading
+                        ? 'Trying…'
+                        : durableError.kind === 'missing'
+                          ? 'Go back'
+                          : 'Try again'}
                     </Button>
                   )}
                 </AlertDescription>
               </Alert>
             </div>
+          ) : durableRootEmpty ? (
+            /*
+              A 404 on the tier root. Same sentence as a root listing that came
+              back empty, because it is the same fact — and `entries` is NOT
+              consulted here, since a failed listing leaves the previous
+              folder's rows in it.
+            */
+            <SectionNote>{agentName} hasn’t put any files here yet.</SectionNote>
           ) : durable.loading && durable.entries.length === 0 ? (
             <SectionNote>Loading&hellip;</SectionNote>
           ) : durable.entries.length === 0 ? (
             /*
               Reachable only after a listing that actually succeeded, which is
-              what makes it safe to say something about the agent here. An empty
-              SUBDIRECTORY is unambiguous in a way the root is not — the root's
-              ambiguous case is a 404 and is handled above.
+              what makes it safe to say something about the agent here.
             */
             <SectionNote>
               {durable.dirPath === ''

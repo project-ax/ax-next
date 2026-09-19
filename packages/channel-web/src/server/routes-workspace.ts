@@ -2478,11 +2478,23 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       { owner: userFilesOwner(agent, userId), ...(relPath === '' ? {} : { relPath }) },
     );
 
+    if (out.kind === 'unavailable') {
+      // There is no durable tier for this agent ANYWHERE in this deployment —
+      // decided before any path was looked at, so it is the same answer for
+      // every path and reports nothing about which ones exist. It used to
+      // arrive as `absent` and leave the tab hedging "either your agent wrote
+      // nothing or this server keeps nothing, we can't tell which" (TASK-403);
+      // now it is the same 503 the missing-service check above returns, which
+      // the tab already has an honest sentence for.
+      res.status(503).json({ error: 'user-files-unavailable' });
+      return;
+    }
+
     if (out.kind === 'absent') {
-      // `absent` covers both "no durable mount in this deployment" and "that
-      // path is not there". They are the same answer to a reader asking for a
-      // file, and keeping them the same answer is also what stops the response
-      // code from reporting on paths in someone else's subtree.
+      // The tier exists and this path is not in it. Still ONE answer for
+      // "never written", "since deleted" and "resolved outside your subtree" —
+      // that collapse is deliberate, and it is what stops the response code
+      // from reporting on paths in someone else's subtree.
       res.status(404).json({ error: 'file-not-found' });
       return;
     }
@@ -4459,6 +4471,12 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         { owner: userFilesOwner(agent, userId), relPath },
       );
 
+      if (out.kind === 'unavailable') {
+        // Same split as the listing route: no durable tier in this deployment
+        // is a 503, not a 404. Path-independent, so it is not an oracle.
+        res.status(503).json({ error: 'user-files-unavailable' });
+        return;
+      }
       if (out.kind === 'absent') {
         res.status(404).json({ error: 'file-not-found' });
         return;

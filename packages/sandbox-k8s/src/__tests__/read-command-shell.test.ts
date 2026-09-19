@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -45,14 +45,30 @@ afterEach(async () => {
 });
 
 /** Run the shipped script for `relPath` and parse its output the way the host does. */
-function read(relPath: string) {
+function read(relPath: string, subPath: string = SUBPATH) {
   const script = buildReadCommand().split(EXPORT_MOUNT).join(root);
   const raw = execFileSync('/bin/sh', ['-c', script], {
-    env: { SUBPATH, RELPATH: relPath, PATH: process.env.PATH ?? '' },
+    env: { SUBPATH: subPath, RELPATH: relPath, PATH: process.env.PATH ?? '' },
     encoding: 'utf-8',
     maxBuffer: 8 * 1024 * 1024,
   });
   return parseReadOutput(raw);
+}
+
+/** The script's raw stdout + exit code, for the cases where BOTH matter.
+ *  `exportPath` is where `/export` is rewritten to — its own parameter because
+ *  one test needs the EXPORT ITSELF to be unresolvable. */
+function runRaw(
+  relPath: string,
+  subPath: string,
+  exportPath: string = root,
+): { out: string; code: number } {
+  const script = buildReadCommand().split(EXPORT_MOUNT).join(exportPath);
+  const r = spawnSync('/bin/sh', ['-c', script], {
+    env: { SUBPATH: subPath, RELPATH: relPath, PATH: process.env.PATH ?? '' },
+    encoding: 'utf-8',
+  });
+  return { out: r.stdout ?? '', code: r.status ?? -1 };
 }
 
 /** The listing as a name→kind map, for assertions that do not care about order. */
@@ -63,6 +79,74 @@ function listing(relPath: string): Map<string, string> {
 }
 
 describe('the reader script, through a real shell', () => {
+  it('an agent that never ran is an ABSENCE — its subtree was never created', async () => {
+    /*
+      TASK-403, the honest half. The export answers and simply has no entry for
+      this agent, which is exactly "it has written nothing" — the one claim
+      this surface is allowed to make about an agent.
+    */
+    const { out, code } = runRaw('.', 'agent-who-never-ran');
+    expect(out.trim()).toBe('ABSENT');
+    expect(code).toBe(0);
+    expect(read('.', 'agent-who-never-ran')).toEqual({ kind: 'absent' });
+  });
+
+  it('REGRESSION: an unresolvable subtree the export still LISTS is a failure', async () => {
+    /*
+      TASK-403, the half that was still broken after the first pass. `realpath
+      ... || true` swallows the errno, so a subtree the export would not answer
+      for — a stale NFS handle, a permission change under us — printed ABSENT
+      and exited 0, and the tab drew "this agent has written nothing" over it.
+      The host-mounted realization of the SAME hook throws for that condition,
+      and two realizations disagreeing about whether a read failed is a browser
+      nobody can reason about.
+
+      A `stat`-free POSIX shell cannot read an errno, so the script asks the
+      EXPORT instead: a glob is a `readdir` and never stats our subtree, so the
+      NAME survives when the subtree itself does not. Simulated here with a
+      directory the export lists and `realpath` cannot resolve — a symlink
+      pointing at itself, which is an ELOOP rather than an ENOENT and is the
+      closest a portable test gets to a stale handle.
+    */
+    const looping = path.join(root, 'agent-loop');
+    await fs.symlink(looping, looping);
+    const { out, code } = runRaw('.', 'agent-loop');
+    expect(out.trim()).toBe('FAILED');
+    expect(code).not.toBe(0);
+    // …and the host turns that into a throw, never an absence.
+    expect(() => read('.', 'agent-loop')).toThrow();
+  });
+
+  it('REGRESSION: an EXPORT that will not resolve is a failure, not an absence', async () => {
+    /*
+      The whole mount being down, rather than one subtree. The export's own
+      listing is what the fallback above leans on to call a missing subtree an
+      absence — and a glob over a directory that is not there expands to its
+      own literal text, which looks exactly like an empty export. So the export
+      is checked first: if IT will not resolve, nothing below it can be called
+      absent, because we never got to look.
+    */
+    const brokenExport = path.join(root, 'loop-export');
+    await fs.symlink(brokenExport, brokenExport);
+    const { out, code } = runRaw('.', SUBPATH, brokenExport);
+    expect(out.trim()).toBe('FAILED');
+    expect(code).not.toBe(0);
+  });
+
+  it('SECURITY: the failure path never names a sibling subtree', async () => {
+    // The export listing is walked to decide our own segment's fate. Nothing
+    // it sees about anybody else may leave the script.
+    await fs.mkdir(path.join(root, 'agent-someone-else'), { recursive: true });
+    await fs.writeFile(path.join(root, 'agent-someone-else', 'secret.txt'), 'nope');
+    const looping = path.join(root, 'agent-loop');
+    await fs.symlink(looping, looping);
+    const { out } = runRaw('.', 'agent-loop');
+    expect(out).not.toContain('agent-someone-else');
+    expect(out).not.toContain('secret');
+    const absent = runRaw('.', 'agent-who-never-ran');
+    expect(absent.out).not.toContain('agent-someone-else');
+  });
+
   it('lists the agent subtree root', async () => {
     await fs.writeFile(path.join(agentDir, 'hello.txt'), 'hi');
     await fs.mkdir(path.join(agentDir, 'reports'));

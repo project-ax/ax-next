@@ -368,11 +368,36 @@ export function buildReadCommand(): string {
     'set -eu',
     `base="${EXPORT_MOUNT}/$SUBPATH"`,
     'if [ "$RELPATH" = "." ]; then target="$base"; else target="$base/$RELPATH"; fi',
+    // THE AGENT'S OWN SUBTREE ROOT IS RESOLVED FIRST, and a failure here is not
+    // allowed to become an absence by default (TASK-403). It used to: `realpath
+    // ... || true` swallows the errno, so a subtree the export would not answer
+    // for — a stale NFS handle, a permission change — printed ABSENT and exited
+    // 0, and the Files tab drew "this agent has written nothing" over it. The
+    // host-mounted realization of this same hook throws in that case, and two
+    // realizations of one hook disagreeing about whether a read failed is a
+    // browser nobody can reason about.
+    //
+    // A `stat`-free POSIX shell cannot read an errno, so the discrimination
+    // comes from the EXPORT's directory listing instead: a glob is a `readdir`
+    // of the export and never stats our subtree, so the NAME is still there
+    // when the subtree itself has gone stale, and is absent when the agent
+    // simply never ran. Only our own `$SUBPATH` is ever compared or emitted —
+    // no sibling's name leaves this script.
+    'if ! realbase=$(realpath -- "$base" 2>/dev/null); then',
+    `  if ! realpath -- "${EXPORT_MOUNT}" >/dev/null 2>&1; then echo FAILED; exit 1; fi`,
+    '  found=0',
+    `  for e in "${EXPORT_MOUNT}"/*; do`,
+    '    if [ "$(basename -- "$e")" = "$SUBPATH" ]; then found=1; fi',
+    '  done',
+    '  if [ "$found" = 1 ]; then echo FAILED; exit 1; fi',
+    '  echo ABSENT',
+    '  exit 0',
+    'fi',
     // Resolve ALL symlinks; bail to ABSENT if it can't resolve (missing/dangling).
+    // This one stays an absence whatever the errno: it is the PATH-dependent
+    // half, and a distinguishing answer there would be an oracle.
     'real=$(realpath -- "$target" 2>/dev/null || true)',
     'if [ -z "$real" ]; then echo ABSENT; exit 0; fi',
-    'realbase=$(realpath -- "$base" 2>/dev/null || true)',
-    'if [ -z "$realbase" ]; then echo ABSENT; exit 0; fi',
     // Confine: the resolved target MUST be the agent subtree root or strictly
     // under it. A symlink that escaped (to a sibling subPath or absolute path)
     // fails this case and yields ABSENT — never discloses foreign contents.
@@ -469,9 +494,14 @@ function safeRelPath(relPath: string | undefined): string {
  *   - UNSET → a one-shot pod that mounts the export READ-ONLY and emits one
  *             bounded line for `relPath`, read back from `pods/log`.
  *
- * Returns `{ kind: 'absent' }` when there's no mount or the path is
- * missing/non-file-or-dir. NEVER grants write, on either path: the volumeMount
- * is `readOnly: true`, the resolver realization is read-only, and
+ * Returns `{ kind: 'unavailable' }` when this deployment resolves no durable
+ * tier for the owner at all, `{ kind: 'absent' }` when it has one and the path
+ * is missing/non-file-or-dir, and THROWS when the storage is there and would
+ * not answer (the reader pod died, its output was unreadable). Those three
+ * used to be one `absent` (TASK-403), so a Files tab over a broken export said
+ * "nothing here" — a claim about the agent, made out of an infrastructure
+ * failure. NEVER grants write, on either path: the volumeMount is
+ * `readOnly: true`, the resolver realization is read-only, and
  * `@ax/user-files-read` has no write entry point.
  */
 export async function readUserFiles(
@@ -483,7 +513,7 @@ export async function readUserFiles(
   input: ReadUserFilesInput,
 ): Promise<ReadUserFilesOutput> {
   const mount = await resolveNfsUserFilesMount(ctx, bus, input.owner, /* readOnly */ true);
-  if (mount === undefined) return { kind: 'absent' };
+  if (mount === undefined) return { kind: 'unavailable' };
   assertSafeSubPath(mount.subPath);
   const rel = safeRelPath(input.relPath);
 
@@ -525,13 +555,25 @@ export async function readUserFiles(
 
   await api.createNamespacedPod({ namespace: config.namespace, body: pod });
   try {
-    await watchPodExit({
+    // THE EXIT CODE IS CHECKED, and it was not before. The reader script runs
+    // under `set -eu`, so a failing `realpath`/`base64`/`head` kills the pod
+    // with an empty log — which `parseReadOutput` then read as `ABSENT`. A
+    // dead reader answering "this agent has no files" is the TASK-403 lie with
+    // a pod in front of it.
+    const exit = await watchPodExit({
       api,
       podName,
       namespace: config.namespace,
       pollIntervalMs: ONESHOT_POLL_MS,
       podLog: readLog,
     });
+    if (exit.code !== null && exit.code !== 0) {
+      throw new PluginError({
+        code: 'userfiles-read-failed',
+        plugin: PLUGIN_NAME,
+        message: `user-files read pod ${podName} exited code=${exit.code} reason=${exit.reason}`,
+      });
+    }
     const raw = await api.readNamespacedPodLog({
       name: podName,
       namespace: config.namespace,
@@ -545,7 +587,17 @@ export async function readUserFiles(
   }
 }
 
-/** Parse the one-shot read pod's single output line into a ReadUserFilesOutput. */
+/**
+ * Parse the one-shot read pod's single output line into a ReadUserFilesOutput.
+ *
+ * `ABSENT` is the script's own word for "not there", and it is the ONLY thing
+ * that becomes an absence here. Silence is not: an empty log means the reader
+ * produced nothing, which is a failure of ours, and it used to be reported as
+ * the agent having no files (TASK-403). Same for a line in a shape this
+ * function does not recognise — that is a reader and a parser that disagree,
+ * and guessing "absent" is guessing in the one direction the reader cannot
+ * tell is a guess.
+ */
 export function parseReadOutput(raw: string): ReadUserFilesOutput {
   // The script emits exactly one meaningful line; take the last non-empty one
   // (defensive against any leading container noise).
@@ -555,8 +607,26 @@ export function parseReadOutput(raw: string): ReadUserFilesOutput {
       .map((l) => l.trim())
       .filter((l) => l.length > 0)
       .pop() ?? '';
-  if (line === 'ABSENT' || line === '') {
+  if (line === 'ABSENT') {
     return { kind: 'absent' };
+  }
+  if (line === 'FAILED') {
+    // The script could not resolve the agent's own subtree root even though
+    // the export still lists it. It also exits non-zero, so this is the second
+    // of two guards; both exist because the day one of them is bypassed is the
+    // day the answer silently becomes "this agent wrote nothing".
+    throw new PluginError({
+      code: 'userfiles-read-failed',
+      plugin: PLUGIN_NAME,
+      message: "user-files reader could not resolve the agent's own subtree",
+    });
+  }
+  if (line === '') {
+    throw new PluginError({
+      code: 'userfiles-read-no-output',
+      plugin: PLUGIN_NAME,
+      message: 'user-files read pod produced no output',
+    });
   }
   // A bare `DIR` / `FILE` with nothing after it is an EMPTY directory or an
   // EMPTY file: base64 of no bytes is the empty string, the trailing space is
@@ -607,7 +677,11 @@ export function parseReadOutput(raw: string): ReadUserFilesOutput {
       truncated,
     };
   }
-  return { kind: 'absent' };
+  throw new PluginError({
+    code: 'userfiles-read-unparseable',
+    plugin: PLUGIN_NAME,
+    message: 'user-files read pod emitted output this host could not parse',
+  });
 }
 
 /**

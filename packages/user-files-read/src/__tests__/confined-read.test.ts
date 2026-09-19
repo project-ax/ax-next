@@ -1,9 +1,10 @@
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_CONFINED_READ_LIMITS,
+  UserFilesReadError,
   confineByRealpath,
   readConfinedUserFiles,
   safeJoinUnderRoot,
@@ -314,5 +315,129 @@ describe('readConfinedUserFiles', () => {
     } finally {
       await fs.chmod(root, 0o755);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A BROKEN READ IS NOT AN ABSENCE (TASK-403).
+//
+// `absent` used to swallow the storage failing as well as the path being
+// missing, and the two travel to completely different places: an absence is
+// drawn as "this agent has not written anything here", an error as "we could
+// not look, try again". Getting them the same way round is a confident, false
+// claim about somebody's agent, manufactured out of an NFS export having a bad
+// day.
+//
+// The errno is injected rather than provoked. A real `EIO` is not something a
+// test can arrange, and the alternatives that ARE arrangeable — `chmod 000` —
+// do nothing when the suite runs as root in a container, which is how this
+// would quietly stop testing anything.
+// ---------------------------------------------------------------------------
+
+/** A rejection shaped like the ones Node's fs hands back. */
+function errno(code: string): NodeJS.ErrnoException {
+  const err: NodeJS.ErrnoException = new Error(`simulated ${code}`);
+  err.code = code;
+  return err;
+}
+
+describe('a read that FAILED is never reported as an absence', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('a listing that raises EIO throws rather than answering an empty dir', async () => {
+    vi.spyOn(fs, 'readdir').mockRejectedValue(errno('EIO'));
+    const out = readConfinedUserFiles(root, undefined);
+    await expect(out).rejects.toBeInstanceOf(UserFilesReadError);
+    await expect(out).rejects.toMatchObject({ code: 'EIO' });
+  });
+
+  it('a listing that raises EACCES throws too', async () => {
+    vi.spyOn(fs, 'readdir').mockRejectedValue(errno('EACCES'));
+    await expect(readConfinedUserFiles(root, 'docs')).rejects.toBeInstanceOf(
+      UserFilesReadError,
+    );
+  });
+
+  it('but a directory that VANISHED mid-read is still an absence', async () => {
+    // The agent deleting its own folder between our stat and our listing is an
+    // ordinary race, not a failure, and it has always been `absent`.
+    vi.spyOn(fs, 'readdir').mockRejectedValue(errno('ENOENT'));
+    expect(await readConfinedUserFiles(root, 'docs')).toEqual({ kind: 'absent' });
+  });
+
+  it('a file read that raises EIO throws rather than answering absent', async () => {
+    vi.spyOn(fs, 'open').mockRejectedValue(errno('EIO'));
+    await expect(readConfinedUserFiles(root, 'hello.txt')).rejects.toBeInstanceOf(
+      UserFilesReadError,
+    );
+  });
+
+  it('SECURITY: ELOOP stays an absence — that is O_NOFOLLOW doing its job', async () => {
+    /*
+      The final component swapped for a symlink after confinement passed. We
+      refuse to follow it, and a path we refuse to follow is a path this
+      surface does not have. Turning THIS into an error would hand a prober a
+      way to tell "I planted a link here" from "nothing is here".
+    */
+    vi.spyOn(fs, 'open').mockRejectedValue(errno('ELOOP'));
+    expect(await readConfinedUserFiles(root, 'hello.txt')).toEqual({
+      kind: 'absent',
+    });
+  });
+
+  it('an unreachable ROOT throws — the whole mount being down is not an empty agent', async () => {
+    /*
+      The production shape of this bug. The export goes away, `realpath` on the
+      agent's own subtree fails with `ESTALE`, and every read answers `absent`
+      — so the Files tab tells everyone their agents have written nothing.
+    */
+    vi.spyOn(fs, 'realpath').mockRejectedValue(errno('ESTALE'));
+    await expect(readConfinedUserFiles(root, undefined)).rejects.toBeInstanceOf(
+      UserFilesReadError,
+    );
+  });
+
+  it('but a root that was never CREATED is an absence, not an error', async () => {
+    /*
+      The other half, and the common one: an agent that has never run has no
+      subtree on the export yet. `ENOENT` on the root is exactly "this agent
+      has written nothing", which is the one claim this surface is allowed to
+      make about an agent.
+    */
+    const neverWritten = path.join(tmp, 'agent-who-never-ran');
+    expect(await readConfinedUserFiles(neverWritten, undefined)).toEqual({
+      kind: 'absent',
+    });
+    expect(await confineByRealpath(neverWritten, neverWritten)).toBeUndefined();
+  });
+
+  it('a stat that raises EIO throws; one that raises ENOENT does not', async () => {
+    const lstat = vi.spyOn(fs, 'lstat');
+    lstat.mockRejectedValueOnce(errno('EIO'));
+    await expect(readConfinedUserFiles(root, 'hello.txt')).rejects.toBeInstanceOf(
+      UserFilesReadError,
+    );
+    lstat.mockRejectedValueOnce(errno('ENOENT'));
+    expect(await readConfinedUserFiles(root, 'hello.txt')).toEqual({
+      kind: 'absent',
+    });
+  });
+
+  it('SECURITY: a path outside the root is still a plain absence, never an error', async () => {
+    /*
+      Unchanged, and load-bearing. Confinement failures are the path-dependent
+      answers, and a distinguishing one there is a free oracle for mapping
+      another tenant's subtree. Only failures AFTER confinement has proved the
+      path is ours are allowed to be loud.
+    */
+    const sibling = path.join(tmp, 'agent-b');
+    await fs.mkdir(sibling, { recursive: true });
+    await fs.writeFile(path.join(sibling, 'secret.txt'), 'nope');
+    await fs.symlink(sibling, path.join(root, 'escape'));
+    expect(await readConfinedUserFiles(root, 'escape/secret.txt')).toEqual({
+      kind: 'absent',
+    });
   });
 });
