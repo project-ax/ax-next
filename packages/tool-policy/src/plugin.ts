@@ -11,12 +11,18 @@ import { evaluate } from './evaluate.js';
 import { runToolPolicyMigration, type ToolPolicyDatabase } from './migrations.js';
 import { BUILTIN_RULES } from './rules.js';
 import {
+  EgressListOutputSchema,
   EgressRememberOutputSchema,
+  EgressRevokeOutputSchema,
   EvaluateResultSchema,
   ListCapabilitiesOutputSchema,
   type CapabilityRow,
+  type EgressListInput,
+  type EgressListOutput,
   type EgressRememberInput,
   type EgressRememberOutput,
+  type EgressRevokeInput,
+  type EgressRevokeOutput,
   type EvaluateInput,
   type EvaluateResult,
   type ListCapabilitiesInput,
@@ -226,6 +232,8 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
         'tool-policy:evaluate',
         'tool-policy:list-capabilities',
         'egress-allowlist:remember',
+        'egress-allowlist:list',
+        'egress-allowlist:revoke',
       ],
       // The rule TABLE is still in-repo and still consulted with no I/O. What
       // needs storage is the egress ALLOWLIST (TASK-330) — per-person data a
@@ -404,6 +412,80 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
           }
         },
         { returns: EgressRememberOutputSchema },
+      );
+
+      /**
+       * "Which sites do we read without asking me first?"
+       *
+       * The counterpart to `remember`, and the half TASK-330 shipped without:
+       * a list somebody can accumulate but never see is one they cannot audit
+       * and cannot take back.
+       *
+       * THE OWNER IS `ctx.userId`, same as the write. No owner field on the
+       * payload, so no caller can read another person's list — and the store
+       * drops the personal half of its read for an id that names nobody, so a
+       * `system` context sees the operator's list and nothing else.
+       *
+       * FAILS SOFT, unlike `evaluate`'s read. An empty list GRANTS NOTHING —
+       * the enforcement path has its own read and its own fail-closed catch —
+       * so the worst outcome here is a panel that says "no sites yet" when we
+       * could not reach the database. The route in front of this has its own
+       * error path for the failure that matters; throwing at a UI caller would
+       * only turn a degraded panel into a broken one.
+       */
+      bus.registerService<EgressListInput, EgressListOutput>(
+        'egress-allowlist:list',
+        PLUGIN_NAME,
+        async (ctx) => {
+          try {
+            return { sites: await egressStore.listFor(ctx.userId) };
+          } catch (err) {
+            ctx.logger.error('tool_policy_egress_allowlist_list_failed', {
+              plugin: PLUGIN_NAME,
+              err: err instanceof Error ? err : new Error(String(err)),
+            });
+            return { sites: [] };
+          }
+        },
+        { returns: EgressListOutputSchema },
+      );
+
+      /**
+       * "Stop reading this one without asking me."
+       *
+       * DELETES ONE ROW AND ONLY EVER A `user` ONE — the store hard-codes the
+       * scope, so this hook has no way to ask for an operator's global entry
+       * even if a caller sent `scope: 'global'` in the payload. The owner is
+       * `ctx.userId` for the same reason the write's is: the person taking the
+       * grant back has to be the person who gave it.
+       *
+       * Never throws. `revoked: false` covers malformed, not-a-person, not
+       * yours, and nothing-to-delete alike — see `EgressRevokeOutput` for why
+       * those are deliberately one answer. Note the direction differs from
+       * `remember`: a failed revoke leaves a site ALLOWED, so the caller must
+       * keep showing the row rather than assume it went away.
+       */
+      bus.registerService<EgressRevokeInput, EgressRevokeOutput>(
+        'egress-allowlist:revoke',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const host = normalizeHost(input?.host);
+          if (host === null || !isOwnerId(ctx.userId)) return { revoked: false };
+          try {
+            return { revoked: await egressStore.revoke({ ownerId: ctx.userId, host }) };
+          } catch (err) {
+            ctx.logger.warn('tool_policy_egress_revoke_failed', {
+              plugin: PLUGIN_NAME,
+              // Safe to name: it passed `normalizeHost`, so it is a hostname
+              // and not a model-authored URL — no query string, nothing to
+              // leak into a log line.
+              host,
+              err: err instanceof Error ? err : new Error(String(err)),
+            });
+            return { revoked: false };
+          }
+        },
+        { returns: EgressRevokeOutputSchema },
       );
 
       bus.registerService<ListCapabilitiesInput, ListCapabilitiesOutput>(

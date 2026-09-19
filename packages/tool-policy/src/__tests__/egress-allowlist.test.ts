@@ -157,3 +157,129 @@ describe('the in-memory egress allowlist store', () => {
     expect([...(await store.allowedFor(''))]).toEqual(['g.test']);
   });
 });
+
+/**
+ * TASK-406 — the read + revoke half.
+ *
+ * `allowedFor` answers the ENFORCEMENT question ("may this call go through")
+ * and a bare host is enough for it. These two answer the PERSON's question
+ * ("what did I allow, and how do I take it back"), which needs one more fact:
+ * whose list an entry is on. Getting that wrong in either direction is a real
+ * failure — hide the scope and the panel offers a revoke button that can only
+ * ever answer `false`; let `revoke` reach a `global` row and one person quietly
+ * edits the operator's deployment-wide list.
+ */
+describe('the in-memory store: listFor', () => {
+  it('returns the operator list and the caller list, tagged and sorted by host', async () => {
+    const store = createMemoryEgressAllowlistStore();
+    await store.remember({ scope: 'global', ownerId: null, host: 'zeta.test' });
+    await store.remember({ scope: 'user', ownerId: 'alice', host: 'mid.test' });
+    await store.remember({ scope: 'user', ownerId: 'alice', host: 'alpha.test' });
+    await store.remember({ scope: 'user', ownerId: 'bob', host: 'bobs.test' });
+
+    const sites = await store.listFor('alice');
+    // Sorted by host and NOT by insertion or by scope: the order is a property
+    // of the data, so the renderer never has to invent one.
+    expect(sites.map((s) => s.host)).toEqual(['alpha.test', 'mid.test', 'zeta.test']);
+    // The tag is the load-bearing field. Without it these three rows look
+    // identical and the operator's entry looks like something alice can drop.
+    expect(sites.map((s) => s.scope)).toEqual(['user', 'user', 'global']);
+    // An instant, as a string, because a Date does not survive JSON.
+    for (const site of sites) {
+      expect(typeof site.rememberedAt).toBe('string');
+      expect(Number.isNaN(Date.parse(site.rememberedAt))).toBe(false);
+    }
+    // And never another person's — same isolation `allowedFor` promises.
+    expect(sites.some((s) => s.host === 'bobs.test')).toBe(false);
+  });
+
+  it('gives an id that names no person the operator list and nothing else', async () => {
+    const store = createMemoryEgressAllowlistStore();
+    await store.remember({ scope: 'global', ownerId: null, host: 'g.test' });
+    await store.remember({ scope: 'user', ownerId: 'alice', host: 'docs.test' });
+    for (const notAUser of ['system', '', 'has space', '_leading']) {
+      const sites = await store.listFor(notAUser);
+      expect(sites.map((s) => s.host), notAUser).toEqual(['g.test']);
+      expect(sites[0]!.scope).toBe('global');
+    }
+  });
+
+  it('agrees with allowedFor about what the caller may reach', async () => {
+    // Two methods, one answer. If they ever disagree, the panel is showing a
+    // list that is not the list being enforced.
+    const store = createMemoryEgressAllowlistStore();
+    await store.remember({ scope: 'global', ownerId: null, host: 'g.test' });
+    await store.remember({ scope: 'user', ownerId: 'alice', host: 'docs.test' });
+    expect((await store.listFor('alice')).map((s) => s.host).sort()).toEqual(
+      [...(await store.allowedFor('alice'))].sort(),
+    );
+  });
+});
+
+describe('the in-memory store: revoke', () => {
+  it("removes the caller's own entry and nobody else's", async () => {
+    const store = createMemoryEgressAllowlistStore();
+    await store.remember({ scope: 'user', ownerId: 'alice', host: 'docs.test' });
+    await store.remember({ scope: 'user', ownerId: 'bob', host: 'docs.test' });
+
+    expect(await store.revoke({ ownerId: 'alice', host: 'docs.test' })).toBe(true);
+    expect(await store.listFor('alice')).toEqual([]);
+    // Bob remembered the SAME host independently. A revoke that matched on the
+    // host alone would have taken his grant away too.
+    expect((await store.listFor('bob')).map((s) => s.host)).toEqual(['docs.test']);
+  });
+
+  it('refuses a global entry and leaves it in place', async () => {
+    const store = createMemoryEgressAllowlistStore();
+    await store.remember({ scope: 'global', ownerId: null, host: 'intranet.test' });
+    // The scope is hard-coded to `user` inside the store precisely so this can
+    // never succeed: a global entry is the operator's list for the whole
+    // deployment, and one person must not be able to edit it from a panel.
+    expect(await store.revoke({ ownerId: 'alice', host: 'intranet.test' })).toBe(false);
+    expect((await store.listFor('alice')).map((s) => s.host)).toEqual(['intranet.test']);
+    expect(await store.allowedFor('alice')).toContain('intranet.test');
+  });
+
+  it('answers false for a host that was never there', async () => {
+    const store = createMemoryEgressAllowlistStore();
+    expect(await store.revoke({ ownerId: 'alice', host: 'never.test' })).toBe(false);
+    await store.remember({ scope: 'user', ownerId: 'alice', host: 'docs.test' });
+    expect(await store.revoke({ ownerId: 'alice', host: 'other.test' })).toBe(false);
+    expect((await store.listFor('alice')).map((s) => s.host)).toEqual(['docs.test']);
+  });
+
+  it('refuses a malformed host or a caller who is not a person, without throwing', async () => {
+    const store = createMemoryEgressAllowlistStore();
+    await store.remember({ scope: 'user', ownerId: 'alice', host: 'docs.test' });
+    for (const bad of ['https://docs.test/x', '*.test', '', 'a b', 'docs.test.']) {
+      expect(await store.revoke({ ownerId: 'alice', host: bad }), JSON.stringify(bad)).toBe(false);
+    }
+    // `system` passes the id shape check and names nobody — the store never
+    // wrote under it, so it cannot delete under it either.
+    for (const notAUser of ['system', '', '_leading']) {
+      expect(await store.revoke({ ownerId: notAUser, host: 'docs.test' }), notAUser).toBe(false);
+    }
+    expect((await store.listFor('alice')).map((s) => s.host)).toEqual(['docs.test']);
+  });
+
+  it('normalises the host on the way in, so the casing somebody typed still matches', async () => {
+    const store = createMemoryEgressAllowlistStore();
+    await store.remember({ scope: 'user', ownerId: 'alice', host: 'docs.test' });
+    expect(await store.revoke({ ownerId: 'alice', host: '  DOCS.Test ' })).toBe(true);
+    expect(await store.listFor('alice')).toEqual([]);
+  });
+
+  it('actually stops the enforcement path allowing it — not just the list showing it', async () => {
+    // THE ONE THAT MATTERS. A revoke that only changed what `listFor` returns
+    // would look completely correct in a UI while the site stayed silently
+    // reachable forever.
+    const store = createMemoryEgressAllowlistStore();
+    await store.remember({ scope: 'user', ownerId: 'alice', host: 'docs.test' });
+    expect(await store.allowedFor('alice')).toContain('docs.test');
+    expect(await store.revoke({ ownerId: 'alice', host: 'docs.test' })).toBe(true);
+    expect(await store.allowedFor('alice')).not.toContain('docs.test');
+    // And it can be remembered again afterwards — a revoke is a deletion, not
+    // a tombstone that would make the next approval a silent no-op.
+    expect(await store.remember({ scope: 'user', ownerId: 'alice', host: 'docs.test' })).toBe(true);
+  });
+});

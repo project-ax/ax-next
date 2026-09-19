@@ -683,6 +683,22 @@ describe('@ax/channel-web server plugin (integration)', () => {
           degradation:
             'the rail renders no "This week" counters (nothing records decisions here)',
         },
+        // TASK-406. Both halves of the Settings "Remembered sites" panel — the
+        // @ax/tool-policy web_extract allowlist, NOT the host-grants
+        // allowed-sites surface a few entries above. They are optional
+        // together: a preset without @ax/tool-policy has nothing holding page
+        // reads in the first place, so an empty panel is the honest answer
+        // rather than a swallowed error.
+        {
+          hook: 'egress-allowlist:list',
+          degradation:
+            'the Settings "Remembered sites" panel shows no remembered hosts (this deployment does not hold a web_extract allowlist)',
+        },
+        {
+          hook: 'egress-allowlist:revoke',
+          degradation:
+            'the Settings "Remembered sites" Revoke control answers "already gone" (no allowlist to remove from)',
+        },
         {
           hook: 'conversations:get-metadata',
           degradation:

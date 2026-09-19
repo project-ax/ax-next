@@ -43,6 +43,11 @@ public host that clears the guard:
   decides.
 - **Approved** → we remember that host for *that person* (scope `user`), so the
   next read from it doesn't ask again.
+- **Changed your mind?** Settings → Connectors → **Sites we read without asking**
+  lists every site you've allowed, plus any your admin pre-approved for everyone.
+  Press **Ask again** on one and we go back to asking. A permission you can't find
+  and can't take back isn't really a permission, so this list is part of the
+  feature rather than a nicety bolted on later.
 
 That last step is the only part `@ax/web-tools` implements. After a fetch
 succeeds — never before it, never when it fails — we call
@@ -72,7 +77,10 @@ Being honest about the edges:
 - **The allowlist is per-host, not per-URL.** Once a person approves
   `example.com`, every later read from `example.com` is silent — including one
   with an attacker-chosen query string. If a site can be made to log arbitrary
-  paths, approving it approves that too.
+  paths, approving it approves that too. The list above is how you undo it: press
+  **Ask again** and the next read from that host is held for approval. Undoing it
+  doesn't retroactively un-send anything that already went out, and we're not
+  going to pretend otherwise.
 - **The first read is the one that matters, and a human is in that loop.** An
   approval prompt is only as good as the attention behind it. That's exactly why
   the rule holds on *new hosts* rather than on every page read: a prompt on every
