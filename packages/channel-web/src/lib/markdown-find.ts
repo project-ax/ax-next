@@ -188,7 +188,10 @@ export function markdownTextRuns(source: string): readonly FindRange[] {
     silently wrong.
   */
   out.sort((a, b) => a.start - b.start);
-  const frozen: readonly FindRange[] = out;
+  // Actually frozen, not merely typed `readonly`: this array is handed to every
+  // caller that asks about this source, so a reorder or a splice anywhere would
+  // silently break `isRenderedRange`'s ordering assumption for everyone else.
+  const frozen: readonly FindRange[] = Object.freeze(out);
 
   if (runsCache.size >= RUNS_CACHE_LIMIT) {
     const oldest = runsCache.keys().next();
