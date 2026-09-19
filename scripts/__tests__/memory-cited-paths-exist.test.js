@@ -81,6 +81,17 @@
 // read as a live file reference. Do not add an allowlist: the moment this grows
 // an exceptions list, the exceptions list becomes the next thing that rots.
 //
+// This guard also descends one level into `.claude/memory/`'s immediate
+// subdirectories (`decisions/`, `patterns/`, `mistakes/`, `context/`, `meta/`),
+// which hold per-task shard files (`decisions/2026-09-19-TASK-415.md`) split out
+// of the five root logs so concurrent auto-ship branches stop colliding on the
+// same append point. A shard is exactly as much a citation source as a root
+// file -- it is prose written by the same agents, about the same code, read by
+// the same next session -- so scanning only the root would silently exempt
+// every shard the moment they exist: a citation that escaped the guard is a
+// citation nobody checks, which is precisely the failure mode this file exists
+// to catch. One level is enough; shards are not expected to nest further.
+//
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally --
 // no network, no build. Same pattern as the sibling guards in this directory.
 
@@ -153,7 +164,27 @@ function gitIgnored(paths) {
   }
 }
 
-const memoryFiles = readdirSync(MEMORY_DIR).filter((name) => name.endsWith('.md'));
+/**
+ * Every memory `.md` file: the five root logs plus `.md` files one level into
+ * each immediate subdirectory (the per-task shards). Returned paths are
+ * relative to MEMORY_DIR (e.g. `decisions/2026-09-19-TASK-415.md`), not bare
+ * basenames, so a failure naming `.claude/memory/${file}:${line}` points at a
+ * real path. One level deep only -- see the header comment for why.
+ */
+function memoryMarkdownFiles() {
+  const entries = readdirSync(MEMORY_DIR, { withFileTypes: true });
+  const rootFiles = entries.filter((e) => e.isFile() && e.name.endsWith('.md')).map((e) => e.name);
+  const subdirFiles = entries
+    .filter((e) => e.isDirectory())
+    .flatMap((dir) =>
+      readdirSync(join(MEMORY_DIR, dir.name), { withFileTypes: true })
+        .filter((e) => e.isFile() && e.name.endsWith('.md'))
+        .map((e) => join(dir.name, e.name)),
+    );
+  return [...rootFiles, ...subdirFiles];
+}
+
+const memoryFiles = memoryMarkdownFiles();
 const tracked = trackedPaths();
 
 /** Every path-shaped citation, before the gates, so the gates can be asserted. */
@@ -180,6 +211,14 @@ describe('.claude/memory citations point at files that exist', () => {
   // path-shaped tokens, 150 checkable.
   it('parsed real data out of the memory files', () => {
     expect(memoryFiles.length, 'memory .md files').toBeGreaterThanOrEqual(5);
+    // The five root archives would satisfy the line above on their own, which
+    // is exactly how a reverted `memoryMarkdownFiles()` would slip past: every
+    // per-task shard, i.e. every row written since TASK-415, would silently
+    // stop being checked while the count still looked healthy.
+    expect(
+      memoryFiles.filter((name) => name.includes('/')),
+      'per-task shard files (memory written since TASK-415 lives here)',
+    ).not.toHaveLength(0);
     expect(tracked.files.size, 'git-tracked files').toBeGreaterThan(1000);
     expect(allCitations.length, 'path-shaped citations').toBeGreaterThan(200);
     expect(checkable.length, 'citations surviving both gates').toBeGreaterThan(100);

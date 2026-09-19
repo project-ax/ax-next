@@ -131,6 +131,100 @@ describe('memory-write-target.sh', () => {
     }
   });
 
+  describe('--shard <kind> <TASK-ID>', () => {
+    const todayStr = () => {
+      const d = new Date();
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `${yyyy}-${mm}-${dd}`;
+    };
+
+    it('happy path in the primary tree', () => {
+      const r = run(root, ['--shard', 'decisions', 'TASK-415']);
+      expect(r.status).toBe(0);
+      expect(r.stdout).toBe(join(primary, '.claude', 'memory', 'decisions', `${todayStr()}-TASK-415.md`));
+    });
+
+    it('happy path in a linked worktree resolves to ITS OWN toplevel', () => {
+      const wtReal = realpathSync(worktree);
+      const r = run(worktree, ['--shard', 'decisions', 'TASK-415']);
+      expect(r.status).toBe(0);
+      expect(r.stdout).toBe(join(wtReal, '.claude', 'memory', 'decisions', `${todayStr()}-TASK-415.md`));
+    });
+
+    it.each(['context', 'decisions', 'patterns', 'mistakes', 'meta'])('accepts kind %s', (kind) => {
+      const r = run(root, ['--shard', kind, 'TASK-1']);
+      expect(r.status).toBe(0);
+      expect(r.stdout).toBe(join(primary, '.claude', 'memory', kind, `${todayStr()}-TASK-1.md`));
+    });
+
+    it('rejects an invalid kind: names the allowed set, exit 1, empty stdout', () => {
+      // Distinguishing signal vs the unfixed script (which would say "unknown
+      // argument '--shard'" and never reach kind validation at all): this
+      // message names 'bogus' and lists the five valid kinds.
+      const r = run(root, ['--shard', 'bogus', 'TASK-415']);
+      expect(r.status).toBe(1);
+      expect(r.stdout).toBe('');
+      expect(r.stderr).toMatch(/invalid kind 'bogus'/);
+      expect(r.stderr).toMatch(/context.*decisions.*patterns.*mistakes.*meta/);
+    });
+
+    it.each([
+      ['', 'empty'],
+      ['TASK-', 'no digits'],
+      ['-415', 'no leading letters'],
+      ['task 415', 'space, not a dash'],
+      ['../escape-1', 'path traversal via ..'],
+      ['TASK-415/../../etc', 'embedded slash traversal'],
+    ])('rejects invalid TASK-ID %j (%s): exit 1, empty stdout, names the id', (taskId) => {
+      // Distinguishing signal vs the unfixed script: that script exits 1 with
+      // "unknown argument '--shard'" and NEVER quotes the task id back, since
+      // it never parses a --shard mode at all. Asserting the id appears in
+      // the "invalid TASK-ID" message proves this script actually validated
+      // it, not merely that some unrelated --shard rejection fired.
+      const r = run(root, ['--shard', 'decisions', taskId]);
+      expect(r.status).toBe(1);
+      expect(r.stdout).toBe('');
+      expect(r.stderr).toMatch(/invalid TASK-ID/);
+      expect(r.stderr).toContain(taskId);
+    });
+
+    it('too few args: usage message on stderr, exit 1, empty stdout', () => {
+      // Distinguishing signal vs the unfixed script: this message is the
+      // literal "--shard <kind> <TASK-ID>" usage string, which the unfixed
+      // script (generic "unknown argument" path) never emits.
+      const r = run(root, ['--shard', 'decisions']);
+      expect(r.status).toBe(1);
+      expect(r.stdout).toBe('');
+      expect(r.stderr).toMatch(/usage: memory-write-target\.sh --shard <kind> <TASK-ID>/);
+    });
+
+    it('too many args: usage message on stderr, exit 1, empty stdout', () => {
+      const r = run(root, ['--shard', 'decisions', 'TASK-415', 'extra']);
+      expect(r.status).toBe(1);
+      expect(r.stdout).toBe('');
+      expect(r.stderr).toMatch(/usage: memory-write-target\.sh --shard <kind> <TASK-ID>/);
+    });
+
+    it('creates nothing — no mkdir, no touch', () => {
+      const r = run(root, ['--shard', 'decisions', 'TASK-999']);
+      expect(r.status).toBe(0);
+      expect(existsSync(join(primary, '.claude', 'memory', 'decisions'))).toBe(false);
+    });
+
+    it('in the primary tree while a linked worktree exists: still exits 0, but warns on stderr', () => {
+      // Distinguishing signal vs a naive "combine with --check" implementation
+      // (which the spec explicitly forbids): status must be 0 even though the
+      // hazard fires, and the warning text is the same TASK-7 hazard wording
+      // used by the bare/--check modes.
+      const r = run(root, ['--shard', 'decisions', 'TASK-415']);
+      expect(r.status).toBe(0);
+      expect(r.stdout).toBe(join(primary, '.claude', 'memory', 'decisions', `${todayStr()}-TASK-415.md`));
+      expect(r.stderr).toMatch(/worktree/i);
+    });
+  });
+
   // Regression guards for a leak this file used to have. The linked worktree was
   // created at `join(root, '..', …)` — a sibling of `root` but OUTSIDE it — so the
   // suite's `rmSync(root)` could not reach it, and its only cleanup was a
