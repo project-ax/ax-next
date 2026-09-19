@@ -68,29 +68,45 @@ fences, or link destinations).
 One function, `markdownFindRanges`, decides that, and both the index and the
 renderer call it. Nothing else is allowed to compute ranges for a markdown field.
 
-### Why the two sides provably agree
+### Why the two sides agree — the second answer, not the first
 
-The index parses to **mdast** and takes every `text` node whose
-`source.slice(start, end) === node.value`. The renderer's rehype plugin sees
-**hast** and takes every `text` node with the same predicate. Measured (probe over
-a document with bold, a GFM table, a list, inline code, a link, an image, a fenced
-block, backslash escapes and an entity):
+**First attempt (wrong, and it shipped in the first commit on this branch).** The
+index parsed to **mdast** and took every `text` node whose
+`source.slice(start, end) === node.value`; the renderer's rehype plugin applied the
+same predicate to **hast**. Over a probe document with bold, a GFM table, a list,
+inline code, a link, an image, a fenced block, backslash escapes and an entity, the
+two sets were byte-identical. Over a wider probe of twenty-two constructs, they were
+not:
 
 ```
-mdast-ok: 0-8,10-14,16-22,26-27,30-31,46-47,50-51,57-65,68-76,78-85,96-103,104-108,125-131,159-160
-hast-ok : 0-8,10-14,16-22,26-27,30-31,46-47,50-51,57-65,68-76,78-85,96-103,104-108,125-131,159-160
-MATCH: true
+'Body text[^1] here.\n\n[^1]: the footnote body'
+  mdast: 0-9, 13-19, 27-44      ← the definition's text
+  hast : 0-9, 13-19             ← …which is not there
 ```
 
-The slice-equality guard is what makes it hold: inline code, fenced code and
-anything containing a backslash escape or a character reference have
-`value !== slice`, so **both** sides drop them together. They are never counted and
-never marked.
+`mdast-util-to-hast` appends a space before a footnote's backref link, so the hast
+value is `'the footnote body '` and the slice is `'the footnote body'`. mdast keeps
+the node, hast drops it, and a search for `footnote` would report 1 with nothing
+highlighted — count > marks, inside the argument meant to prevent it.
+
+**What ships.** The index runs `react-markdown@10`'s own pipeline —
+`remark-parse` → `remark-gfm` → `remark-rehype({allowDangerousHtml: true})` — and
+applies the predicate to the tree the renderer's plugin will walk. Not a provably
+equivalent transform; the same one. Nothing left to argue about.
+
+The slice-equality guard still carries its weight: inline code, fenced code, a
+footnote body, and anything containing a backslash escape or a character reference
+have `value !== slice`, so both sides drop them together.
+
+Runs are sorted by source offset after the walk, because `remark-rehype` lifts
+footnote definitions into a trailing section and document order stops being source
+order.
 
 ### The accepted gap, stated plainly
 
-Text that is rendered but is not an mdast `text` node — an image's alt text, the
-inside of a code span or fence, a paragraph containing `\*` or `&amp;` — is
+Text that is rendered but is not a source-mapped `text` node — an image's alt
+text, the inside of a code span or fence, a footnote body, a paragraph
+containing `\*` or `&amp;` — is
 **visible but not findable**. That is an under-count, never an over-count: the bar
 can never name a match the reader cannot see. Same class of accepted gap as the
 collapsible `steps` panel and a grant's description, and documented in the same
@@ -133,7 +149,8 @@ No hook surface changes. No IPC. Client-only rendering. N/A.
 
 ## Dependencies
 
-`unified@^11.0.5` and `remark-parse@^11.0.0` become **direct** devDependencies of
+`unified@^11.0.5`, `remark-parse@^11.0.0` and `remark-rehype@^11.1.2` become
+**direct** devDependencies of
 `@ax/channel-web`. Both are already in the lockfile at those exact versions as
 transitive dependencies of `react-markdown@10.1.0`, which is what resolves them
 today; nothing new enters the tree. See the security note in the PR.

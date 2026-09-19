@@ -321,6 +321,34 @@ describe('find still agrees with itself over rendered markdown', () => {
     expect(bar.querySelector('[data-find-count]')?.textContent).toBe('3 of 3');
   });
 
+  it('does not count a match in a footnote body it cannot paint', () => {
+    /*
+      A real drift found by probing, not by reasoning — and it survived the
+      first design, which parsed to mdast here and walked hast in the renderer
+      on the argument that the two agree. `mdast-util-to-hast` appends a space
+      before a footnote's backref link, so the rendered node's value is not its
+      source slice and the renderer drops it. mdast-only kept it, and
+      'footnote' reported 1 with nothing highlighted.
+
+      The whole-thread reading is the point: the bar and the DOM, not two calls
+      to the same function.
+    */
+    const { container } = render(
+      conversation({
+        thread: [agentTurn('Body text[^1] here.\n\n[^1]: the footnote body')],
+      }),
+    );
+
+    const bar = search(container, 'footnote');
+
+    expect(container.querySelectorAll('mark')).toHaveLength(
+      reportedTotal(bar),
+    );
+    // The body IS on screen — this is an under-count, which is the direction
+    // that cannot lie to a reader, not a claim that nothing rendered.
+    expect(container.textContent).toContain('the footnote body');
+  });
+
   it('keeps the markdown rendered while a search is running', () => {
     /*
       A tempting shortcut — "fall back to the plain renderer whenever this

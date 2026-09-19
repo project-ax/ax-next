@@ -75,6 +75,33 @@ describe('markdownTextRuns', () => {
     expect(runsOf('AT&amp;T shipped')).toEqual([]);
   });
 
+  it('drops a footnote body — hast appends a space to it, so its slice is not its value', () => {
+    /*
+      THE CASE THAT BROKE THE FIRST DESIGN, and the reason this module runs
+      react-markdown's own pipeline instead of reasoning about an equivalent
+      one. `mdast-util-to-hast` puts a space before the backref link, so the
+      rendered node holds 'the footnote body ' while `slice(27,44)` is 'the
+      footnote body'. An mdast-only reading kept the node, the renderer's
+      hast-level plugin dropped it, and a search for 'footnote' was counted
+      once and painted zero times — count > marks.
+    */
+    expect(runsOf('Body text[^1] here.\n\n[^1]: the footnote body')).toEqual([
+      'Body text',
+      ' here.',
+    ]);
+  });
+
+  it('returns runs in source order even when the document reorders them', () => {
+    // `remark-rehype` lifts footnote definitions into a section at the end, so
+    // the walk's document order is not source order. `isRenderedRange`'s early
+    // exit and the mark ordinals both depend on the sort.
+    const src = '[^a]: defined early\n\nlater the body[^a] ends';
+    const runs = markdownTextRuns(src);
+    expect(runs.map((r) => r.start)).toEqual(
+      [...runs.map((r) => r.start)].sort((a, b) => a - b),
+    );
+  });
+
   it('returns the same array for the same source, so the cache cannot drift', () => {
     const src = 'a **b** c';
     expect(markdownTextRuns(src)).toBe(markdownTextRuns(src));

@@ -16,36 +16,52 @@
  * it (through the same filtered range list) to decide what gets a MARK. Neither
  * computes it independently.
  *
- * WHY THE TWO SIDES PROVABLY AGREE. This module parses to **mdast** and keeps
- * every `text` node whose `source.slice(start, end) === node.value`. The
- * renderer's plugin below sees **hast** — the tree after `remark-rehype`, which
- * is what `react-markdown` hands its `rehypePlugins` — and applies the SAME
- * predicate. Those two node sets were measured to be identical over a document
- * containing bold, a GFM table, a list, inline code, a link, an image, a fenced
- * block, a backslash escape and a character reference:
+ * WHY THE TWO SIDES AGREE: THEY RUN THE SAME PIPELINE, and this is the second
+ * answer, not the first. The first version parsed to **mdast** here while the
+ * renderer's plugin walked **hast**, on the argument that the two `text` node
+ * sets are identical under the slice-equality predicate below. Measured over
+ * bold, a GFM table, a list, inline code, a link, an image, a fenced block, a
+ * backslash escape and a character reference, they were. Measured over
+ * twenty-two constructs, they were not:
  *
- *   mdast: 0-8,10-14,16-22,26-27,30-31,46-47,50-51,57-65,68-76,78-85,…
- *   hast : 0-8,10-14,16-22,26-27,30-31,46-47,50-51,57-65,68-76,78-85,…
+ *   'Body text[^1] here.\n\n[^1]: the footnote body'
+ *     mdast: 0-9, 13-19, 27-44      ← the definition's text
+ *     hast : 0-9, 13-19             ← …which is not there
  *
- * The slice-equality guard is the load-bearing half, not a nicety. A fenced
- * block's hast text node holds `const x = 1\n` while its position spans the
- * fences; an inline code span holds `foo` while its position spans the
- * backticks; a paragraph containing `\*` or `&amp;` holds the UNescaped text.
- * In every one of those cases `value !== slice`, so both sides drop the node
- * together and offsets are never used where they would point at the wrong
- * characters.
+ * `mdast-util-to-hast` appends a space to a footnote definition's last
+ * paragraph before the backref link, so its hast value is `'the footnote body '`
+ * while `slice(27,44)` is `'the footnote body'`. mdast keeps the node, hast
+ * drops it, and a match in a footnote would have been COUNTED and never
+ * PAINTED — count > marks, the precise lie this whole design exists to prevent,
+ * hiding inside the argument that was supposed to prevent it.
+ *
+ * So this module no longer reasons about equivalence: it runs `remark-parse` →
+ * `remark-gfm` → `remark-rehype({allowDangerousHtml: true})`, which is
+ * `react-markdown@10`'s own pipeline (`lib/index.js`, `createProcessor`) with
+ * the same plugins `Markdown.tsx` passes it, and applies the predicate to the
+ * tree the renderer's plugin will see. Same transform, same tree shape, same
+ * answer — nothing left to be provably-equal about.
+ *
+ * The slice-equality guard is still load-bearing. A fenced block's hast text
+ * node holds `const x = 1\n` while its position spans the fences; an inline
+ * code span holds `foo` while its position spans the backticks; a paragraph
+ * containing `\*` or `&amp;` holds the UNescaped text; a footnote body gains a
+ * trailing space. In every case `value !== slice`, so the node is dropped and
+ * an offset is never used where it would point at the wrong characters.
  *
  * THE GAP THIS LEAVES, stated rather than hidden: text that is rendered but is
- * not an mdast `text` node — an image's alt text, the inside of a code span or
- * fence, a paragraph carrying an escape or an entity — is VISIBLE BUT NOT
- * FINDABLE. That is an under-count and never an over-count, which is the
- * direction that cannot lie to a reader: the bar can never name a match that is
- * not on the screen. Same class of accepted gap as the collapsible `steps`
- * panel and a grant's description, both documented in `thread-find.ts`.
+ * not a source-mapped `text` node — an image's alt text, the inside of a code
+ * span or fence, a paragraph carrying an escape or an entity, a footnote body —
+ * is VISIBLE BUT NOT FINDABLE. That is an under-count and never an over-count,
+ * which is the direction that cannot lie to a reader: the bar can never name a
+ * match that is not on the screen. Same class of accepted gap as the
+ * collapsible `steps` panel and a grant's description, both documented in
+ * `thread-find.ts`.
  */
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
+import remarkRehype from 'remark-rehype';
 import type { FindRange } from '@/lib/thread-find';
 
 /**
@@ -71,18 +87,31 @@ interface TreeNode {
 }
 
 /**
- * The processor, built ONCE.
+ * `react-markdown`'s pipeline, up to the point its `rehypePlugins` run.
  *
- * `remark-gfm` is not optional here: it changes what the tokenizer considers a
- * table cell, a strikethrough or an autolink, and therefore where text nodes
- * begin and end. The renderer runs `remark-gfm` (see `Markdown.tsx`), so an
- * index built without it would disagree about offsets on exactly the documents
- * this card is about.
+ * Every stage has to match `Markdown.tsx`'s render or the offsets describe a
+ * different document:
+ *
+ *   - `remark-gfm` decides what a table cell, a strikethrough and an autolink
+ *     ARE, and therefore where text nodes begin and end.
+ *   - `remark-rehype` is where a footnote body gains its trailing space, a
+ *     table head splits from its body, and generated text (`'\n'`,
+ *     `'Footnotes'`, `'↩'`) appears with no position at all. Skipping it is
+ *     what made the first version of this module wrong.
+ *   - `allowDangerousHtml: true` is react-markdown's own setting
+ *     (`emptyRemarkRehypeOptions` in its `lib/index.js`). It turns an html node
+ *     into a `raw` node rather than dropping it — and since `rehype-raw` is not
+ *     installed, `raw` is inert and is not a `text` node either way. Matched
+ *     anyway, because "the same pipeline" is the entire argument.
  *
  * `.freeze()` because a unified processor that has been used cannot take
  * another `.use()`; freezing makes that explicit and makes reuse safe.
  */
-const parser = unified().use(remarkParse).use(remarkGfm).freeze();
+const pipeline = unified()
+  .use(remarkParse)
+  .use(remarkGfm)
+  .use(remarkRehype, { allowDangerousHtml: true })
+  .freeze();
 
 /**
  * Text runs are a pure function of the source, and the source is re-searched on
@@ -114,7 +143,7 @@ function isOffsetMapped(node: TreeNode, source: string): node is TreeNode & {
   return source.slice(start, end) === node.value;
 }
 
-/** Depth-first, in document order. */
+/** Depth-first, in document order — the caller sorts into source order. */
 function collectTextRuns(
   node: TreeNode,
   source: string,
@@ -131,15 +160,34 @@ function collectTextRuns(
  * Every slice of `source` that `react-markdown` will render as visible text,
  * in source order.
  *
- * Returned ranges never overlap and never touch: mdast text nodes are disjoint
- * by construction, and everything between two of them is markup.
+ * Returned ranges never overlap: each comes from a distinct text node, and two
+ * text nodes cannot span the same source characters. They CAN be adjacent —
+ * `remark-gfm` splits a paragraph around an autolink into runs that touch —
+ * which is harmless here, because containment is asked of one run at a time.
  */
 export function markdownTextRuns(source: string): readonly FindRange[] {
   const hit = runsCache.get(source);
   if (hit !== undefined) return hit;
 
   const out: FindRange[] = [];
-  collectTextRuns(parser.parse(source) as unknown as TreeNode, source, out);
+  /*
+    `runSync`, not `run`: every transformer in `pipeline` is synchronous, and a
+    find index that had to be awaited would have to be cached somewhere React
+    could read it mid-render, which is a much worse problem than this one.
+  */
+  const tree = pipeline.runSync(pipeline.parse(source));
+  collectTextRuns(tree as unknown as TreeNode, source, out);
+  /*
+    SORTED, because the walk is in DOCUMENT order and that is not always source
+    order: `remark-rehype` lifts footnote definitions into a section at the end
+    of the document, so a definition written before the paragraph that cites it
+    comes out last with the smallest offsets. `isRenderedRange` stops early on
+    the first run that starts past the range, and the mark ordinals are the
+    positions in a source-ordered range list, so both want this sort. Almost
+    always a no-op, and the one case where it is not is the one that would be
+    silently wrong.
+  */
+  out.sort((a, b) => a.start - b.start);
   const frozen: readonly FindRange[] = out;
 
   if (runsCache.size >= RUNS_CACHE_LIMIT) {
@@ -158,6 +206,10 @@ export function markdownTextRuns(source: string): readonly FindRange[] {
  * marks, and two marks for one counted match is the drift in the other
  * direction. Such a match is not counted and not painted, on both sides,
  * because both sides ask this same question.
+ *
+ * `runs` must be sorted by `start` — `markdownTextRuns` guarantees it — which
+ * is what lets this stop at the first run that begins past the range instead of
+ * scanning a long document for every match.
  */
 export function isRenderedRange(
   range: FindRange,
