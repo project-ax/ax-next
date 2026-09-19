@@ -17,7 +17,7 @@ New package `packages/memory-facts-contract`, modeled on
   ownerUserId, conversationId?}]}`), `RecallInput`/`RecallOutput`
   (`{about?, activeOnly?, limit} → {statements: [{id, about, relation, value, when,
   until?, provenance, closedBy?}], degraded: string[]}` — `query` accepted on the
-  input type for forward-compat with TASK-424 but this contract never exercises it),
+  input type for forward-compat with TASK-434 but this contract never exercises it),
   `SupersedeInput` (`{ids}`), `ClearInput` (`{}`).
 - `FactsBackendFactory` (mirrors `IndexBackendFactory`): `(bus: HookBus) =>
   Promise<{plugin: Plugin; teardown: () => Promise<void>}>`.
@@ -116,13 +116,13 @@ needed since recall doesn't search).
 - `pnpm build && pnpm --filter @ax/memory-facts-sqlite test && pnpm --filter @ax/memory-facts-contract build`
 - Whole-repo `pnpm -r --no-bail run test && pnpm test:eslint-rules && pnpm test:scripts` +
   `pnpm lint` (Phase 4 gate — full command per CLAUDE.md, not the bail-prone short form).
-- File the TASK-424 follow-up card (full RRF/dense/rerank recall + embedder config
+- File the TASK-434 follow-up card (full RRF/dense/rerank recall + embedder config
   seam) on the board in Phase 4/6, per decisions.md.
 
 ## YAGNI pass
 
 - Postgres backend: explicitly out (TASK-423, gated in Backlog).
-- `query`/dense/sparse/RRF/rerank recall: out (new TASK-424 follow-up).
+- `query`/dense/sparse/RRF/rerank recall: out (new TASK-434 follow-up).
 - `memory:facts:reindex`, pending-row handling, degraded flags: out (TASK-422).
 - `batchKey` idempotency: out (TASK-422) — accepted on the payload but unused this
   task, which is safe (no dedup ≠ wrong dedup).

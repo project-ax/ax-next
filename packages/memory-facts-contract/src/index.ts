@@ -7,7 +7,7 @@
 //  - `memory:facts:recall` here is a simple filtered listing (tenant scope +
 //    optional `about` + activeOnly), sorted by `when` desc, capped at
 //    `limit`. No FTS, no dense/vector search, no RRF fusion, no rerank —
-//    those are TASK-424.
+//    those are TASK-434.
 //  - No `temporalAnchor`/`at` time-travel — DEM's `invalidatesPrevious` mode
 //    and temporal-anchor recall are explicitly not built here (see
 //    decisions.md; `dem-memory/tests/temporal-invalidation.test.ts` is NOT
@@ -116,7 +116,7 @@ export interface RecallInput {
   activeOnly?: boolean;
   limit: number;
   /**
-   * Accepted for forward-compat with TASK-424's fusion recall (FTS/dense/
+   * Accepted for forward-compat with TASK-434's fusion recall (FTS/dense/
    * RRF/rerank). This contract never exercises it, and a backend rejects
    * any non-`undefined` value with `invalid-payload` rather than silently
    * returning an unfiltered result set.
@@ -887,7 +887,7 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         }
       });
 
-      it('recall rejects `query` — not implemented yet (TASK-424)', async () => {
+      it('recall rejects `query` — not implemented yet (TASK-434)', async () => {
         try {
           await recall({ query: 'anything', limit: 10 });
           throw new Error('expected memory:facts:recall to reject a `query`');

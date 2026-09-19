@@ -154,14 +154,14 @@ function validateRecallInput(input: RecallInput): { about?: string; limit: numbe
     });
   }
   // `query` (free-text search) and `activeOnly: false` (history) are on the
-  // contract's type for forward-compat (TASK-424, TASK-422) but this engine
+  // contract's type for forward-compat (TASK-434, TASK-422) but this engine
   // doesn't implement either yet. Rejecting them loudly beats silently
   // returning fewer/more rows than a caller who read the type asked for.
   if (input.query !== undefined) {
     throw new PluginError({
       code: 'invalid-payload',
       plugin: PLUGIN_NAME,
-      message: 'query is not implemented yet (TASK-424) — omit it',
+      message: 'query is not implemented yet (TASK-434) — omit it',
     });
   }
   if (input.activeOnly !== undefined && typeof input.activeOnly !== 'boolean') {
@@ -281,7 +281,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           // The activeOnly-only cut (TASK-421 scope decision): always
           // filters to currently-active rows regardless of `input.
           // activeOnly`'s value, and never consults `input.query` — no
-          // FTS/dense/RRF/rerank here (TASK-424).
+          // FTS/dense/RRF/rerank here (TASK-434).
           const rows = about !== undefined
             ? (driver!
                 .prepare(
