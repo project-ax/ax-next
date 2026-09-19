@@ -273,12 +273,20 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
     //
     // "By construction" is a TYPE claim, and it is the only reason this
     // round's completeness claim is safer than the last three. Case 7's
-    // overrides are `Required<Omit<…>>` over `makeAgentContext`'s options, so
-    // a field added to `AgentContext` breaks the BUILD until a human decides
-    // whether it is identity. Without that, a new field is simply `undefined`
-    // for both callers, equal, and therefore unpinned — which is precisely
-    // how `(agentId, conversationId)` and then `(agentId, source)` each
-    // shipped green.
+    // overrides are `Required<Omit<…>>` over `MakeAgentContextOptions`, so a
+    // field added THERE breaks the BUILD until a human decides whether it is
+    // identity. Without that, a new field is simply `undefined` for both
+    // callers, equal, and therefore unpinned — which is precisely how
+    // `(agentId, conversationId)` and then `(agentId, source)` each shipped
+    // green.
+    //
+    // The guard tracks `MakeAgentContextOptions`, NOT `AgentContext`, and the
+    // two differ: `state` is on the context with no constructor option.
+    // MEASURED both ways — adding an option reddens the build at case 7's two
+    // literals; adding a context-only field does not. That is the correct
+    // boundary rather than a gap, because a field no caller can SET cannot
+    // vary between two callers, so no partition can use it to tell them
+    // apart. Identity a caller controls arrives through the options.
     //
     // Cases 4 and 6 are the same property stated one field at a time
     // (`userId` alone, `sessionId` alone). They are kept because a one-field
@@ -577,8 +585,8 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
         // `(agentId, source)` green at 18/18 for the identical reason. An
         // unset optional field is not a pinned field.
         //
-        // So when the build breaks here because `AgentContext` grew a field:
-        // add it to both literals with different values, and run the
+        // So when the build breaks here because `MakeAgentContextOptions`
+        // grew a field: set it in both literals to different values, run the
         // `(agentId, <newField>)` mutant to prove the pin landed. If you
         // instead judge it non-identity, add it to the `Omit` exclusion list
         // and say why.
