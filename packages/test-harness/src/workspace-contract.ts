@@ -257,25 +257,45 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
     // implement (TASK-257 / TASK-396), and it has to be asserted in BOTH
     // directions or the assertion is satisfied by the wrong key:
     //
-    //   - different agentId  ⇒ ISOLATED (cases 1, 3, 5)
-    //   - different userId   ⇒ SHARED   (case 4)
-    //   - different sessionId ⇒ SHARED  (case 6)
+    // The space this block closes is `agentId` vs. NOT-`agentId`, and it is
+    // closed by construction rather than by naming fields:
     //
-    // `ctx` carries exactly three identity fields, so those three axes are
-    // the whole space: together they reject all seven wrong subsets of
-    // {userId, agentId, sessionId}. MEASURED, one mutant per subset — the
-    // isolation axis catches {}, {userId}, {sessionId}, {userId, sessionId};
-    // the userId axis catches {userId, agentId}; the sessionId axis catches
-    // {agentId, sessionId} and {userId, agentId, sessionId}.
+    //   - different agentId                ⇒ ISOLATED (cases 1, 3, 5)
+    //   - SAME agentId, everything else
+    //     different                        ⇒ SHARED   (case 7)
     //
-    // Case 6 exists because a round of review measured its absence. With
-    // case 6 missing, a backend keyed on `(agentId, sessionId)` — "a fresh
-    // workspace per conversation", an easy and plausible mistake — passed
-    // all sixteen. Enumerating every FIELD is not enough; the completeness
-    // claim is only as good as the subset you actually mutated.
+    // Case 7 is the load-bearing one. Two callers that agree on `agentId`
+    // and differ on EVERY other field `makeAgentContext` accepts — `userId`,
+    // `sessionId`, `conversationId`, `source`, `triggerLabel`,
+    // `workspace.rootPath`, and `reqId`, which is re-minted per call anyway
+    // — must see ONE tree. Any partition keyed on anything but `agentId`
+    // separates those two callers and reddens, including a field nobody has
+    // added yet. The case asserts the inequalities themselves, so it fails
+    // loudly rather than silently weakening if one stops holding.
     //
-    // Case 2 is neither direction: it is a single-agent guard, and cases 4
-    // and 6 double as guards. All pass before AND after any partitioning
+    // Cases 4 and 6 are the same property stated one field at a time
+    // (`userId` alone, `sessionId` alone). They are kept because a one-field
+    // failure names the culprit and case 7 does not — but they are
+    // documentation, not the proof, and the two earlier attempts to make
+    // per-field enumeration BE the proof are why:
+    //
+    //   Round 1 — the ctx pairs derived `sessionId` from the other two, so
+    //   every pair varied two fields and a `sessionId`-keyed backend passed
+    //   the isolation cases. MEASURED 1 red / 15 green.
+    //   Round 2 — pinning `sessionId` to a constant fixed that and opened
+    //   the reverse hole: nothing varied it, so nothing pinned it out, and
+    //   `(agentId, sessionId)` passed everything. MEASURED 0 red / 16.
+    //   Round 3 — with all seven subsets of {userId, agentId, sessionId}
+    //   rejected, `(agentId, conversationId)` still passed, because
+    //   `AgentContext` has more identity than those three and the contract
+    //   never set the rest. MEASURED 0 red / 17.
+    //
+    // Each round's fix was rigorous within the set of fields it had in mind
+    // and wrong about the set. So: do not add a fourth per-field case for
+    // the next field someone notices. Add the field to case 7.
+    //
+    // Case 2 is neither direction: it is a single-agent guard, and cases 4,
+    // 6 and 7 double as guards. All pass before AND after any partitioning
     // fix, deliberately.
     //
     // Either direction alone passes under a partition on the pair
@@ -301,13 +321,26 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
         // one red being case 4). With the default pinned, that same mutant
         // scores 3 red / 13 green: the direction cases catch it themselves.
         //
-        // Case 6 then varies it EXPLICITLY, because a constant everywhere
-        // pins nothing at all about `sessionId` — see the header.
+        // Cases 6 and 7 then vary it EXPLICITLY, because a constant
+        // everywhere pins nothing at all about `sessionId` — see the header.
+        // The same trap applies to every OPTIONAL field: one left `undefined`
+        // for every caller collapses `(agentId, thatField)` onto `agentId`
+        // inside the test, while it splits for real in production. Case 7
+        // therefore sets all of them.
         const caller = (
           userId: string,
           agentId: string,
-          sessionId = 'contract-isolation',
-        ) => h.ctx({ userId, agentId, sessionId });
+          rest: Omit<
+            NonNullable<Parameters<typeof h.ctx>[0]>,
+            'userId' | 'agentId'
+          > = {},
+        ) =>
+          h.ctx({
+            sessionId: 'contract-isolation',
+            ...rest,
+            userId,
+            agentId,
+          });
         const write = (
           ctx: ReturnType<typeof caller>,
           path: string,
@@ -474,8 +507,8 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
         //
         // Like the other guards this passes against a fully pooled backend.
         const { caller, write, list, read, SHARED } = await tenants();
-        const first = caller('user-shared', SHARED, 'session-one');
-        const second = caller('user-shared', SHARED, 'session-two');
+        const first = caller('user-shared', SHARED, { sessionId: 'session-one' });
+        const second = caller('user-shared', SHARED, { sessionId: 'session-two' });
 
         const v1 = await write(first, 'across-sessions.md', 'written in session one');
 
@@ -488,6 +521,72 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
 
         // One history, not two: the second session continues the first's.
         const v2 = await write(second, 'reply.md', 'written in session two', v1.version);
+        expect(v2.delta.before).toBe(v1.version);
+      });
+
+      it('callers that agree on agentId and NOTHING ELSE share ONE tree', async () => {
+        // THE COMPLETENESS CASE. Cases 4 and 6 pin one named field each out
+        // of the key; this one pins out every field at once, including ones
+        // nobody has thought of. The two callers agree on `agentId` and
+        // differ on every other field `makeAgentContext` accepts. A backend
+        // keyed on any of them, alone or with `agentId`, gives these two
+        // callers different trees and reddens.
+        //
+        // It exists because per-field enumeration was measured wrong twice
+        // in review. With all seven subsets of {userId, agentId, sessionId}
+        // rejected, `(agentId, conversationId)` still passed 17/17 — "a fresh
+        // workspace per conversation", and `conversationId` is if anything a
+        // more tempting wrong key than `sessionId`. It passed because the
+        // contract left the field unset for every caller, so the partition
+        // collapsed onto `agentId` inside the test while splitting per-chat
+        // in production. Adding only `conversationId` then left
+        // `(agentId, source)` green at 18/18 for the identical reason. An
+        // unset optional field is not a pinned field.
+        //
+        // When `AgentContext` grows another field, add it HERE, and re-run
+        // the `(agentId, <newField>)` mutant to prove it landed.
+        const { caller, write, list, read, SHARED } = await tenants();
+        const one = caller('user-alpha', SHARED, {
+          sessionId: 'session-alpha',
+          conversationId: 'conversation-alpha',
+          source: 'user',
+          triggerLabel: 'Alpha trigger',
+          workspace: { rootPath: '/tmp/contract-alpha' },
+        });
+        const two = caller('user-beta', SHARED, {
+          sessionId: 'session-beta',
+          conversationId: 'conversation-beta',
+          source: 'routine',
+          triggerLabel: 'Beta trigger',
+          workspace: { rootPath: '/tmp/contract-beta' },
+        });
+        // Nothing but `agentId` is equal. If that ever stops being true
+        // because `AgentContext` grew a field, this is the assertion that
+        // should have been updated.
+        expect(one.reqId).not.toBe(two.reqId);
+        for (const k of [
+          'userId',
+          'sessionId',
+          'conversationId',
+          'source',
+          'triggerLabel',
+        ] as const) {
+          expect(one[k]).not.toBe(two[k]);
+        }
+        expect(one.workspace.rootPath).not.toBe(two.workspace.rootPath);
+        expect(one.agentId).toBe(two.agentId);
+
+        const v1 = await write(one, 'only-agentid-matters.md', 'from caller one');
+
+        expect((await list(two)).paths).toEqual(['only-agentid-matters.md']);
+        const got = await read(two, 'only-agentid-matters.md');
+        expect(got.found).toBe(true);
+        expect(got.found === true && new TextDecoder().decode(got.bytes)).toBe(
+          'from caller one',
+        );
+
+        // Shared write domain too, not just the read view.
+        const v2 = await write(two, 'from-two.md', 'from caller two', v1.version);
         expect(v2.delta.before).toBe(v1.version);
       });
     });
