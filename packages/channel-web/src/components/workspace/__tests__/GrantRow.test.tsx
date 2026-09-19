@@ -12,6 +12,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { GrantRow } from '../GrantRow';
 import { grantKey } from '@/lib/workspace-grant-store';
+import { getGrantDraft, resetGrantDraftsForTest } from '@/lib/workspace-grant-drafts';
 import { HTTP_SERVER_ERROR } from '@/lib/http';
 import {
   GRANT_NO_CONVERSATION,
@@ -32,14 +33,14 @@ function row(
   onGranted = vi.fn(async () => true),
 ) {
   const onResolved = vi.fn();
-  render(
+  const { unmount } = render(
     <GrantRow
       grant={{ key: grantKey(request), request, conversationId, agentId: 'a-quill' }}
       onResolved={onResolved}
       onGranted={onGranted}
     />,
   );
-  return { onResolved, onGranted };
+  return { onResolved, onGranted, unmount };
 }
 
 function okFetch() {
@@ -72,6 +73,7 @@ const hostReq: PermissionRequest = {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  resetGrantDraftsForTest();
 });
 
 describe('a payload the guard lets through but the row must survive', () => {
@@ -436,5 +438,81 @@ describe('without a conversation', () => {
 
     expect(screen.getByRole('button', { name: /^connect$/i })).toBeDisabled();
     expect(screen.getByText(GRANT_NO_CONVERSATION)).toBeInTheDocument();
+  });
+});
+
+describe('a half-typed value surviving the row leaving and re-entering the thread (TASK-389)', () => {
+  /*
+    THIS IS THE CORE ACCEPTANCE TEST, and it FAILS against pre-fix code: `values`
+    was `useState<Record<string,string>>({})`, seeded fresh on every mount, so a
+    row that unmounts (tab switch, route change — see `workspace-grant-drafts.ts`
+    and TASK-389's plan for which of the card's three named paths actually
+    reproduce) and remounts starts blank. Simulated here as unmount + a FRESH
+    `GrantRow` instance for the same grant key, which is exactly what both real
+    render sites (`TodayView`, `AgentConversation`) do: they don't keep the old
+    component around, they stop rendering it and later render a brand new one.
+  */
+  test('a partially-typed key survives unmount and remount', () => {
+    const { unmount } = render(
+      <GrantRow
+        grant={{ key: grantKey(skillReq), request: skillReq, conversationId: 'cnv-1', agentId: 'a-quill' }}
+        onResolved={vi.fn()}
+        onGranted={vi.fn(async () => true)}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText('API key'), {
+      target: { value: 'lin_partial' },
+    });
+    expect(screen.getByLabelText('API key')).toHaveValue('lin_partial');
+
+    unmount();
+
+    render(
+      <GrantRow
+        grant={{ key: grantKey(skillReq), request: skillReq, conversationId: 'cnv-1', agentId: 'a-quill' }}
+        onResolved={vi.fn()}
+        onGranted={vi.fn(async () => true)}
+      />,
+    );
+
+    expect(screen.getByLabelText('API key')).toHaveValue('lin_partial');
+  });
+
+  test('approving the grant clears the draft — a stale secret does not outlive its prompt', async () => {
+    const fetchMock = okFetch();
+    const { unmount } = row(skillReq);
+
+    fireEvent.change(screen.getByLabelText('API key'), {
+      target: { value: 'lin_partial' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    unmount();
+
+    expect(getGrantDraft(grantKey(skillReq))).toEqual({});
+  });
+
+  test('turning the grant down clears the draft too', () => {
+    const { unmount } = row(skillReq);
+
+    fireEvent.change(screen.getByLabelText('API key'), {
+      target: { value: 'lin_partial' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /not now/i }));
+    unmount();
+
+    expect(getGrantDraft(grantKey(skillReq))).toEqual({});
+  });
+
+  test('drafts are isolated per grant key', () => {
+    const { unmount } = row(skillReq);
+    fireEvent.change(screen.getByLabelText('API key'), {
+      target: { value: 'lin_partial' },
+    });
+    unmount();
+
+    expect(getGrantDraft(grantKey(connectorReq))).toEqual({});
   });
 });

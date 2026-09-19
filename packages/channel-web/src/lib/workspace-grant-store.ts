@@ -273,19 +273,21 @@ export const workspaceGrantActions = {
     // newer origin. The subject is the identity, so the same connector asked
     // for by a second agent updates this row rather than adding one.
     //
-    // A NOTE FOR THE NEXT PRODUCER (TASK-351 review). Replacing the origin is
-    // what lets presence re-route a row, and it has a cost: a re-raise by agent
-    // B while the person is reading agent A's thread takes the card OUT of that
-    // thread, and `GrantRow` keeps its half-typed key in local state, so the
-    // typing goes with it. Unreachable today — the only live producer is the
-    // stream of the agent you are looking at, and the read-back runs once at
-    // mount — so this is written down rather than guarded, because the guard
-    // would mean lifting per-row input state somewhere both render sites can
-    // reach, which is the shared-state tangle invariant 4 is about. A producer
-    // that raises grants GLOBALLY (a workspace-wide SSE feed, a poll) makes it
-    // reachable and owes it a real answer. That answer is NOT keying the agent
-    // into `grantKey`: identity is the subject, and keying the pair turns one
-    // question into two rows on two surfaces.
+    // A NOTE FOR THE NEXT PRODUCER (TASK-351 review, updated by TASK-389).
+    // Replacing the origin is what lets presence re-route a row, and it has a
+    // cost: a re-raise by agent B while the person is reading agent A's
+    // thread takes the card OUT of that thread. As of TASK-389 a half-typed
+    // key no longer goes with it — `GrantRow` seeds and writes through to
+    // `workspace-grant-drafts.ts`, which outlives the unmount — but the ROW
+    // still moves out of A's thread, which is presence working as designed
+    // (the question follows the agent that's asking). This transition is
+    // UNREACHABLE today regardless: the only live producer is the stream of
+    // the agent you are looking at (which can only ever attribute a grant to
+    // itself), and the mount read-back runs once. A producer that raises
+    // grants GLOBALLY (a workspace-wide SSE feed, a poll) makes it reachable.
+    // That answer is NOT keying the agent into `grantKey`: identity is the
+    // subject, and keying the pair turns one question into two rows on two
+    // surfaces.
     const grants = state.grants.slice();
     grants[at] = row;
     set({ grants });
