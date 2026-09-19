@@ -31,11 +31,18 @@
 // A CORRECTION TO THE CARD, since a brief is a hypothesis. The card implies a `git fetch`
 // is needed for correctness. It is not: `A...B` resolves through the merge-base, and your
 // branch point cannot be newer than the `origin/main` already on disk, so the range is
-// right with or without one. Measured both ways in `stale` below — the fetch moves
-// `origin/main` forward by a commit and the answer stays 2 files. The fetch earns its
-// place only by keeping the printed range in parity with the surface GitHub shows on the
-// PR, and the block says exactly that and no more. Hence `fetch failure is a note, not a
-// fatal` below: a failed fetch leaves a range that is still correct.
+// right with or without one.
+//
+// What the tests below actually PROVE about that is fetch-INDEPENDENCE, and the difference
+// is worth stating rather than blurring: `stale` (a working fetch) and `brokenRemote` (a
+// fetch that fails outright) both answer 2 files. That the fetch moves the ref at all is a
+// separate fact, measured by hand on git 2.52.0 — `refs/remotes/origin/main` advanced by
+// one commit — and independently re-measured during review. It is NOT asserted anywhere
+// here, and nothing in this file would notice if a future git stopped doing it.
+//
+// So the fetch earns its place only by keeping the printed range in parity with the surface
+// GitHub shows on the PR, the block says exactly that and no more, and that is why a failed
+// fetch is a note rather than a fatal: the range it leaves behind is still correct.
 //
 // ---------------------------------------------------------------------------------
 // WHY THIS GUARD EXECUTES THE SNIPPET RATHER THAN GREPPING THE PROSE.
@@ -62,8 +69,8 @@
 // runs.
 //
 // MUTANTS RUN, NOT REASONED ABOUT (2026-09-19; each applied to the committed text and
-// executed, then restored; baseline 17 passed on a machine with zsh, git 2.52.0). Every
-// mutant still COLLECTS 17 — the number to distrust is a red count that arrives with a
+// executed, then restored; baseline 19 passed on a machine with zsh, git 2.52.0). Every
+// mutant still COLLECTS 19 — the number to distrust is a red count that arrives with a
 // shrunken total.
 //
 // The sibling card #610 got burned on exactly this: it reported a 3-red mutant that was
@@ -74,21 +81,22 @@
 //   M1. RESTORED VERBATIM — `git show origin/main:.claude/skills/yolo-ship/SKILL.md >`
 //       the file, i.e. the pre-fix text exactly as it stands on `main`, which has no
 //       fenced block at all and only prose saying `git diff main...HEAD`
-//       -> **16 red of 17**. `BLOCK` is undefined, `runBlock` throws by design naming the
-//       reason, and the 12 behavioural cases red out with the extraction guard, both
+//       -> **18 red of 19**. `BLOCK` is undefined, `runBlock` throws by design naming the
+//       reason, and the 14 behavioural cases red out with the extraction guard, both
 //       block-structure checks, and the text-consistency check (on the literal
 //       `git diff main...HEAD`). The single survivor is `states its shell coverage`,
 //       which reads no doc. This is the mutant the card asks for: the guard fails against
-//       the skill text as it stands on `main`.
+//       the skill text as it stands on `main`. (Independently re-derived during review
+//       from `rangeBlocks` against the pre-fix text: 0 blocks found, head 1.)
 //   M2. CONSTRUCTED, one token: keep the whole block, change `RANGE="origin/main...HEAD"`
-//       to `RANGE="main...HEAD"` -> **9 red of 17**. The plausible future regression —
+//       to `RANGE="main...HEAD"` -> **11 red of 19**. The plausible future regression —
 //       someone "simplifies" the range while every word of the surrounding prose argues
-//       against them. 8 behavioural (`excludes PRs merged after the branch point`,
-//       `prints a --stat and the exact range`, `flags an oversized range`, `failed fetch`
-//       x 2 shells) plus the `no bare-main range endpoint` structure check.
-//       `lists the commits in range` stays GREEN, because the commit list is a separate
-//       `origin/main..HEAD` that M2 does not touch — which is precisely why it is a
-//       separate test rather than another assertion in the first one.
+//       against them. 10 behavioural (`excludes PRs merged after the branch point`,
+//       `prints a --stat and the exact range`, `flags an oversized range`, `failed
+//       fetch`, `empty range` x 2 shells) plus the `no bare-main range endpoint`
+//       structure check. `lists the commits in range` stays GREEN, because the commit
+//       list is a separate `origin/main..HEAD` that M2 does not touch — which is
+//       precisely why it is a separate test rather than another assertion in the first.
 //   M3. CONSTRUCTED: delete the `git rev-parse --verify --quiet origin/main` guard
 //       -> **2 red**, `missing origin/main is FATAL` x 2 shells. Without it the block
 //       computes a range against a ref that does not exist, and the reader gets git's
@@ -101,13 +109,22 @@
 //       held shut by the `mine.txt` presence assertion beside them, which is the
 //       fail-CLOSED direction. (This mutant first measured 15 red, because the block
 //       extractor was keyed on `git diff --stat`; see `rangeBlocks`.)
-//   M5. CONSTRUCTED: pipe the file list, `FILES=$(git diff --name-only "$RANGE" | cat)`
-//       -> **1 red**, the `not piped` structure check, and nothing else. Deliberately the
-//       shape no behavioural test here can see: a pipe launders git's exit status, so a
-//       FAILED diff reports "0 files", which is a plausible-looking number. #610 shipped
-//       this exact defect one line under the comment forbidding it.
+//   M5. CONSTRUCTED: pipe the binding, `FILES=$(git diff --name-only "$RANGE" | cat)`
+//       -> **1 red**, the `pipes no git invocation` structure check, and nothing else.
+//       Deliberately the shape no behavioural test here can see: a pipe launders git's
+//       exit status, so a FAILED diff reports "0 files", which is a plausible-looking
+//       number. #610 shipped this exact defect one line under the comment forbidding it.
 //   M6. CONSTRUCTED: raise the oversize threshold from 25 to 1000 -> **2 red**, `flags an
 //       oversized range` x 2 shells.
+//   M7. CONSTRUCTED, and it SURVIVED the first version of this file — replace the
+//       `printf | grep -c` count with a second, piped `N=$(git diff --name-only "$RANGE"
+//       | wc -l | tr -d " ")` -> **19/19 GREEN**, then **1 red** once the structure check
+//       was fixed. The check used `.find()` on `git diff --name-only`, so it pinned the
+//       block's first (correct, unpiped) binding and never looked at the piped line added
+//       below it. Behaviourally the two counts agree whenever git succeeds, so nothing
+//       else could see it either. The lesson generalises past this file: **a structural
+//       check that inspects one occurrence is a check on that occurrence, not on the
+//       property.** It now scans every `git` line in the block.
 //
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally — no
 // network, no Docker, no build. Every git repository it touches is created under a
@@ -255,8 +272,10 @@ function git(cwd, ...args) {
  * own delta; `main...HEAD` additionally sweeps in PRs a/b/c.
  *
  * `extraFiles` inflates the branch's own commit, for the oversize-warning case.
+ * `ownCommit: false` leaves the branch sitting exactly on `origin/main`, for the
+ * empty-range case.
  */
-function makeFixture(name, { extraFiles = 0 } = {}) {
+function makeFixture(name, { extraFiles = 0, ownCommit = true } = {}) {
   const dir = join(FIXTURE_ROOT, name);
   const upstream = join(dir, 'upstream');
   const work = join(dir, 'work');
@@ -278,17 +297,21 @@ function makeFixture(name, { extraFiles = 0 } = {}) {
   git(work, 'fetch', '-q', 'origin');
 
   git(work, 'switch', '-q', '-c', 'feature', 'origin/main');
-  writeFileSync(join(work, 'mine.txt'), 'mine\n');
-  writeFileSync(join(work, 'base.txt'), 'base\nchanged\n');
-  for (let i = 0; i < extraFiles; i++) {
-    writeFileSync(join(work, `mine-${String(i).padStart(2, '0')}.txt`), `${i}\n`);
+  if (ownCommit) {
+    writeFileSync(join(work, 'mine.txt'), 'mine\n');
+    writeFileSync(join(work, 'base.txt'), 'base\nchanged\n');
+    for (let i = 0; i < extraFiles; i++) {
+      writeFileSync(join(work, `mine-${String(i).padStart(2, '0')}.txt`), `${i}\n`);
+    }
+    git(work, 'add', '-A');
+    git(work, 'commit', '-qm', 'mine: the only commit this card wrote');
   }
-  git(work, 'add', '-A');
-  git(work, 'commit', '-qm', 'mine: the only commit this card wrote');
 
-  // One more PR lands upstream AFTER the branch was cut and is NOT fetched. The block's
-  // own fetch is what picks it up, which is how the "fetch moved origin/main and the
-  // answer did not change" claim in the header is measured rather than assumed.
+  // One more PR lands upstream AFTER the branch was cut and is NOT fetched, so the block's
+  // own fetch has something real to pick up. Note what this does and does not establish:
+  // the tests assert the ANSWER, which is the same whether the fetch runs or fails, so
+  // they prove fetch-independence. That the fetch advances the ref is measured by hand
+  // (see the header) and is not asserted here.
   writeFileSync(join(upstream, 'merged-d.txt'), 'd\n');
   git(upstream, 'add', '-A');
   git(upstream, 'commit', '-qm', 'upstream: PR d');
@@ -305,6 +328,8 @@ const FX = {
   brokenRemote: makeFixture('broken-remote'),
   /** A repo with a local `main` and no `origin/main` at all. */
   noOrigin: makeFixture('no-origin'),
+  /** A branch sitting exactly on `origin/main`: the range is legitimately empty. */
+  empty: makeFixture('empty', { ownCommit: false }),
 };
 
 git(FX.brokenRemote, 'remote', 'set-url', 'origin', join(FIXTURE_ROOT, 'does-not-exist'));
@@ -371,21 +396,28 @@ describe('yolo-ship Phase 5 scopes the reviewer range with origin/main (TASK-452
     ).toEqual([]);
   });
 
-  it('does not pipe the diff whose exit status it depends on', () => {
+  it('pipes no git invocation in the block, so every exit status is git\'s own', () => {
     // Not this card's bug; it is the one the sibling card #610 introduced one line under
     // its own comment forbidding it, and it rides in this very block. `git diff
     // --name-only … | wc -l` answers "0 files" for a diff that FAILED, and 0 is a
-    // plausible-looking number that no behavioural test here can distinguish from a
-    // genuinely empty range.
+    // plausible-looking number no behavioural test here can tell apart from a genuinely
+    // empty range.
+    //
+    // EVERY git line, not the first one that matches. The earlier version of this check
+    // used `.find()` on `git diff --name-only`, which pinned the block's first (correct,
+    // unpiped) binding and never looked further — a mutant that ADDED a piped
+    // `git diff --name-only … | wc -l` count below it passed the whole suite, 19/19.
+    // A structural check that inspects one occurrence is a check on that occurrence, not
+    // on the property.
     expect(BLOCK, 'no block to scan').toBeTruthy();
-    const line = logicalLines(BLOCK).find((l) => /git diff\s+--name-only/.test(l));
-    expect(line, 'the block no longer binds a file list from `git diff --name-only`')
-      .toBeTruthy();
+    const gitLines = logicalLines(BLOCK).filter((l) => /\bgit\s/.test(l));
+    expect(gitLines.length, 'the block runs no git at all').toBeGreaterThanOrEqual(4);
     expect(
-      line.replace(/\|\|/g, ''),
-      'the `git diff --name-only` call is piped, so `$?` belongs to the pipeline tail ' +
-        'and a failed diff reports an empty range instead of failing.',
-    ).not.toMatch(/\|/);
+      gitLines.filter((l) => /\|/.test(l.replace(/\|\|/g, ''))),
+      'a git call in the block is piped, so `$?` belongs to the pipeline tail rather ' +
+        'than to git — a failed call then reports a plausible-looking answer instead of ' +
+        'failing.',
+    ).toEqual([]);
   });
 
   it('states its shell coverage out loud rather than skipping silently', () => {
@@ -472,6 +504,25 @@ describe('yolo-ship Phase 5 scopes the reviewer range with origin/main (TASK-452
           'have computed correctly from the origin/main already on disk.',
       ).toMatch(/files in range: 2$/m);
       expect(out).not.toMatch(/merged-a\.txt/);
+    });
+
+    it(`${shell}: an empty range reports 0 files rather than tripping over grep`, () => {
+      // `grep -c` EXITS 1 when it matches nothing. The block consumes its stdout, not its
+      // status, so an empty range must come out as a plain `files in range: 0` — no FATAL,
+      // no spurious oversize warning, and a zero exit. Worth pinning because the obvious
+      // "improvements" here (an `|| exit`, a `set -e`, counting with `wc -l` on a piped
+      // diff) each turn a legitimately empty range into a failure or a lie.
+      const { out, code } = runBlock(shell, FX.empty);
+      expect(out, 'an empty range was not reported as empty').toMatch(
+        /files in range: 0$/m,
+      );
+      expect(out, 'an empty range produced a FATAL').not.toMatch(/FATAL/);
+      expect(out, 'an empty range was flagged as oversized').not.toMatch(
+        /is large for one card/,
+      );
+      expect(code, 'grep -c exiting 1 on zero matches leaked into the block\'s status').toBe(
+        0,
+      );
     });
 
     it(`${shell}: a missing origin/main is FATAL, never a quiet fall back to main`, () => {

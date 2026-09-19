@@ -331,8 +331,11 @@ gh pr view <n> --json mergeable,statusCheckRollup     # confirm green + mergeabl
 # directions for 15+ min, with stale watchers reporting green for a SUPERSEDED head —
 # settle with several consecutive reads of specific run ids, and re-verify that
 # `headRefOid` still equals the head the handoff named.
-# if NOT mergeable (main moved): check out the branch, rebase onto main,
-#   resolve conflicts, push, wait for CI to re-green, then continue.
+# if NOT mergeable (main moved): check out the branch, rebase onto ORIGIN/main
+#   (`git fetch origin main && git rebase origin/main`) — a bare local `main` is a
+#   snapshot from whenever this checkout last pulled, so rebasing onto it can leave the
+#   branch still behind and still unmergeable. Then resolve conflicts, push, wait for CI
+#   to re-green, and continue.
 # `gh`'s `mergeable` field has been observed STALE and even UNKNOWN when a real
 # conflict existed — `git merge-tree --write-tree origin/main <branch>` (rc=0) is the
 # authority. It was right and `gh` wrong 3x in the 2026-08-24 run.
@@ -364,7 +367,9 @@ second one is the one that has actually been failing.**
 anything other than `clean` — `hung`, `skipped-…`, or **missing entirely** — the card
 never got its deep review, and CI does not substitute for one (the three worst bugs of
 the agent-workspace run were invisible to CI). Order an independent pass over the whole
-branch diff (`git fetch origin <branch>` first, then `git diff origin/main...origin/<branch>`
+branch diff (`git fetch origin main <branch>` first — **both** endpoints, so the pass is
+self-sufficient rather than trusting that this checkout's `origin/main` is current — then
+`git diff origin/main...origin/<branch>`
 — **never a bare local `main`**: it is a snapshot from whenever this checkout last pulled,
 and under parallel drain it is routinely several merged PRs behind, which sweeps those PRs
 into the range as though they were the card's. Same rule, same reason, as yolo-ship Phase 5's
