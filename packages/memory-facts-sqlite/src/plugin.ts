@@ -548,11 +548,21 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
             }
             params.push(limit);
 
+            // `, id DESC` is a tiebreak the postgres twin needed and this one
+            // gets for parity (Invariant 4 — two backends behind one contract
+            // must not differ in ways the contract cannot see). SQLite has no
+            // documented promise about row order for rows tied on
+            // `valid_start` either; it is only STABLE by rowid in practice,
+            // which is an implementation detail, not a guarantee. Under a
+            // `LIMIT` a nondeterministic order is a nondeterministic result
+            // SET, not merely a nondeterministic order, so this closes the
+            // same gap postgres's `.orderBy('id', 'desc')` does — no contract
+            // case can observe it (see the sibling comment there).
             const rows = db
               .prepare(
                 `SELECT * FROM ${TABLE}
                 WHERE ${conditions.join(' AND ')}
-                ORDER BY valid_start DESC LIMIT ?`,
+                ORDER BY valid_start DESC, id DESC LIMIT ?`,
               )
               .all(...params) as FactRow[];
 
