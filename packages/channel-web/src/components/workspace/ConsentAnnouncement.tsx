@@ -63,10 +63,25 @@
  * without making the announcement conditional on a focus move that may not have
  * carried the words anyway (see the `outcome.note` hole above).
  *
- * THE OPEN BRANCH IS DELIBERATELY SILENT HERE. While a card is still a QUESTION
- * it has an announcer of its own: `DecisionRow` renders a tripped freshness
- * guard and a failed-POST notice inside shadcn's `Alert`, which is already
- * `role="alert"`. Repeating those would be two voices for one sentence.
+ * THE OPEN BRANCH IS DELIBERATELY SILENT HERE, and the two renderers reach that
+ * silence by different roads — worth saying, because one of them is weaker.
+ * `DecisionRow` draws a tripped freshness guard and a failed-POST notice inside
+ * shadcn's `Alert`, which is already `role="alert"`; repeating those would be
+ * two voices for one sentence. `ApprovalCard` draws the same two as plain
+ * paragraphs and leans entirely on the TASK-427 focus landing, which only fires
+ * for the person's own click. A card that ARRIVES stale on a passive load —
+ * rare, not never, by its own note — therefore says nothing. That gap predates
+ * this component and is left where it is rather than widened into the branch
+ * this card is scoped to; it is filed as a follow-up.
+ *
+ * ONE REGION PER CARD, not one per surface, and that is the opposite of where
+ * `TodayView` keeps the FOCUS region (`data-consent-region`, which has to
+ * outlive the row that is disappearing). A region that only has to survive a
+ * card's own open-to-resolved swap has no such requirement, and keeping it
+ * local is what lets both renderers share one component instead of asking
+ * every surface to provide one. An empty assertive region is silent, so N rows
+ * cost nothing to a reader. Do not "fix" this into a page-level region: that
+ * would hand the announcement back to the surfaces and re-open the coupling.
  */
 import { useState } from 'react';
 import type { DecisionOutcome } from './decision-copy';
@@ -75,10 +90,15 @@ import type { DecisionOutcome } from './decision-copy';
  * The one sentence the card would have a reader hear, or `null` for "nothing
  * to say".
  *
- * NOTICE FIRST, matching `answerKey` in both renderers: a refused undo
- * (`DECISION_UNDO_TOO_LATE`) lands on a row that is ALREADY resolved, so the
- * receipt beside it is unchanged and stale news. The freshest thing the card
- * has to say wins.
+ * NOTICE FIRST — on a RESOLVED row, where it matches `answerKey` in both
+ * renderers: a refused undo (`DECISION_UNDO_TOO_LATE`) lands on a row that is
+ * already resolved, so the receipt beside it is unchanged and stale news, and
+ * the freshest thing the card has to say wins.
+ *
+ * The match stops there, deliberately. `answerKey` puts a notice first
+ * UNCONDITIONALLY, because focus must land on one wherever it appears; this
+ * returns `null` for an open row whatever its notice says, because that branch
+ * has its own voice (see the header). Same order, narrower scope.
  */
 function announcedAnswer(
   outcome: DecisionOutcome | null,
