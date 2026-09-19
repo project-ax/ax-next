@@ -117,14 +117,23 @@ function rgbOf(c: Colour): Rgb {
  * `bg-background/70` painted directly on the card's own `bg-warning-soft/40`,
  * with `text-muted-foreground` on top of it.
  *
- * That stack gets no row, and the reason is a margin rather than an absence.
- * Both layers push the surface AWAY from mid-grey `--muted-foreground` — the
- * tint toward the page, then the page 70% of the rest of the way back — so it
- * lands further from the quiet text than the single-layer surface measured
- * below, at 5.15 light / 5.95 dark on `--background` / 5.78 dark on `--card`.
- * The rows below are the tighter bound, and a stacked surface that ever moves
- * the other way needs its own row and a `composite()` that takes a resolved
- * `Rgb` as `under`, which it already does.
+ * That stack gets no row, and the reason is a margin rather than an absence —
+ * but NOT because the layers agree. They pull opposite ways, and getting that
+ * backwards is how someone talks themselves into trusting the wrong one.
+ * Measured for `--muted-foreground` at each layer, bare -> tinted -> preview:
+ *
+ *   light                5.20 -> 5.03 -> 5.15
+ *   dark on --background 6.14 -> 5.51 -> 5.95
+ *   dark on --card       5.03 -> 4.66 -> 5.78
+ *
+ * The TINT LOWERS contrast every time — it drags the surface toward mid-grey,
+ * which is the entire reason this section exists. What rescues the preview is
+ * the layer on top of it: `bg-background/70` pulls 70% of the way back to the
+ * page, an extreme, and overshoots past where the tint alone sat. So the
+ * single-layer rows below are the tighter bound and the stack rides on their
+ * margin. A stacked surface whose top layer is NOT an extreme could land the
+ * other way and would need its own row — `composite()` already accepts a
+ * resolved `Rgb` as `under`, so measuring one is a call, not a rewrite.
  */
 function composite(fg: Colour, alpha: number, under: Colour): Rgb {
   const f = rgbOf(fg);
@@ -823,11 +832,22 @@ interface Tint {
  * own rows" instead. Every other mutation already fails loud: two classes hit
  * the count check, an interpolated class or an arbitrary `/[0.4]` opacity
  * yields no percentage and trips the fractional assertion.
+ *
+ * The prefix class is deliberately wider than `dark:`/`light:`. A first pass
+ * matched `[a-z-]+`, which reads as "a variant" and is not — `2xl:` and
+ * `data-[state=open]:` both start with something else, so they slipped through
+ * as UNCONDITIONAL tints, which is the silent case again one character over.
+ * Residual gap, named rather than implied: a prefix built by interpolation
+ * (`` `${v}:bg-warning-soft` ``) still reads as unprefixed. Nothing in this
+ * tree builds a class that way, and the count check catches it the moment it
+ * appears beside the plain one.
  */
 function parseTint(source: string): Tint {
   const src = stripComments(source);
   const hits = [
-    ...src.matchAll(/(?<![\w-])(?:([a-z-]+):)?bg-(warning-soft)(?:\/(\d{1,3}))?(?![\w-])/g),
+    ...src.matchAll(
+      /(?<![\w-])(?:([\w.:[\]=&>~*-]+):)?bg-(warning-soft)(?:\/(\d{1,3}))?(?![\w-])/g,
+    ),
   ];
   if (hits.length !== 1) {
     const found = hits.length === 0 ? 'none' : hits.map((h) => h[0]).join(', ');
@@ -947,6 +967,21 @@ describe("ApprovalCard's tinted surface", () => {
     expect(() => parseTint('<Card className="dark:bg-warning-soft/60" />')).toThrow(
       /variant-prefixed/,
     );
+    // Not every variant starts with a letter, and one that slips through reads
+    // as an UNCONDITIONAL tint — the silent case the prefix check exists for.
+    expect(() => parseTint('<Card className="2xl:bg-warning-soft/40" />')).toThrow(
+      /variant-prefixed/,
+    );
+    expect(() => parseTint('<Card className="data-[state=open]:bg-warning-soft/40" />')).toThrow(
+      /variant-prefixed/,
+    );
+    expect(() => parseTint('<Card className="md:hover:bg-warning-soft/40" />')).toThrow(
+      /variant-prefixed/,
+    );
+
+    // The lookbehind still protects both ends: neither of these is the class.
+    expect(() => parseTint('<Card className="flex-bg-warning-soft" />')).toThrow(/paints 0/);
+    expect(() => parseTint('<Card className="bg-warning-softer" />')).toThrow(/paints 0/);
     expect(() =>
       parseTint('<Card className="bg-warning-soft/40 dark:bg-warning-soft/60" />'),
     ).toThrow(/paints 2 warning-soft classes/);
