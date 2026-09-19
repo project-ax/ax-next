@@ -289,6 +289,24 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
       await bus.call<ClearInput, void>('memory:facts:clear', ctx, {});
     }
 
+    /**
+     * Assert a hook call rejects with a specific `PluginError.code`. Written
+     * as an explicit resolve-then-throw rather than `rejects.toThrow` so a
+     * call that RESOLVES fails loudly — several cases below exist precisely
+     * because resolving is the bug.
+     */
+    async function expectCode(code: string, run: () => Promise<unknown>): Promise<void> {
+      let threw = false;
+      try {
+        await run();
+      } catch (err) {
+        threw = true;
+        expect(err).toBeInstanceOf(Error);
+        expect((err as { code?: string }).code).toBe(code);
+      }
+      expect(threw).toBe(true);
+    }
+
     // One statement, one call — the common case used by most cases below.
     async function recordOne(
       statement: FactStatementInput,
@@ -1005,6 +1023,217 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
           expect(err).toBeInstanceOf(Error);
           expect((err as { code?: string }).code).toBe('invalid-payload');
         }
+      });
+
+      it('record rejects a non-string batchKey', async () => {
+        await expectCode('invalid-payload', () =>
+          bus.call('memory:facts:record', makeCtx(), {
+            batchKey: 7,
+            statements: [{ about: 'user', relation: 'likes_artist', value: 'Khalid', when: JAN }],
+          }),
+        );
+      });
+
+      // An empty key is NOT "no key": it is a perfectly storable value that
+      // would pool every accidentally-empty-keyed batch into one dedup bucket,
+      // so the second such call would silently record nothing.
+      it('record rejects an EMPTY batchKey rather than treating it as absent', async () => {
+        await expectCode('invalid-payload', () =>
+          record({
+            batchKey: '',
+            statements: [{ about: 'user', relation: 'likes_artist', value: 'Khalid', when: JAN }],
+          }),
+        );
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // A failed store is an ERROR, never a quiet empty answer (design §4.4)
+    // -----------------------------------------------------------------------
+    describe('store unavailable', () => {
+      // Each case tears the store down MID-TEST, so the shared afterEach must
+      // not run the backend's teardown a second time — not every backend
+      // promises that is safe. Disarm it here; the store is already gone.
+      async function closeTheStore(): Promise<void> {
+        const close = teardown;
+        teardown = async () => {};
+        await close();
+      }
+
+      it('rejects record / supersede / clear with store-unavailable once the store is closed', async () => {
+        // Prove the store WAS working first, so a failure below is about the
+        // closure and not about a backend that never came up.
+        const rec = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Khalid',
+          when: JAN,
+        });
+        await closeTheStore();
+
+        await expectCode('store-unavailable', () =>
+          record({
+            statements: [{ about: 'user', relation: 'lives_in', value: 'Boston', when: JAN }],
+          }),
+        );
+        await expectCode('store-unavailable', () => supersede([rec.id]));
+        await expectCode('store-unavailable', () => clear());
+      });
+
+      // The whole point of the case: `{ statements: [] }` and "the memory was
+      // unreachable" render identically to a model, and one of them is a lie.
+      // An empty table is a valid answer; a failed store is not.
+      it('makes recall REJECT rather than resolve to an empty result set', async () => {
+        await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Khalid',
+          when: JAN,
+        });
+        await closeTheStore();
+
+        let resolvedTo: RecallOutput | undefined;
+        let caught: unknown;
+        try {
+          resolvedTo = await recall({ about: 'user', limit: 10 });
+        } catch (err) {
+          caught = err;
+        }
+        expect(resolvedTo).toBeUndefined();
+        expect(caught).toBeInstanceOf(Error);
+        expect((caught as { code?: string }).code).toBe('store-unavailable');
+      });
+
+      // Validation has to run BEFORE the store is touched, or a caller with a
+      // malformed payload gets told to go investigate an outage that isn't
+      // theirs. `invalid-payload` outranks `store-unavailable`.
+      it('still reports a malformed payload as invalid-payload, not as store-unavailable', async () => {
+        await closeTheStore();
+
+        await expectCode('invalid-payload', () => recall({ about: 'user', limit: 0 }));
+        await expectCode('invalid-payload', () =>
+          record({ statements: [{ about: '', relation: 'r', value: 'v', when: JAN }] }),
+        );
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // batchKey idempotency + all-or-nothing batches (design §3.5)
+    // -----------------------------------------------------------------------
+    describe('batch idempotency', () => {
+      // Slot-less statements: nothing closes anything, so "how many rows are
+      // there" is exactly "how many active rows does recall return".
+      const KHALID: FactStatementInput = {
+        about: 'user',
+        relation: 'likes_artist',
+        value: 'Khalid',
+        when: JAN,
+      };
+      const RAMEN: FactStatementInput = {
+        about: 'user',
+        relation: 'likes_food',
+        value: 'ramen',
+        when: JAN,
+      };
+
+      async function activeCount(ctx = makeCtx()): Promise<number> {
+        const out = await recall({ about: 'user', limit: 200 }, ctx);
+        return out.statements.length;
+      }
+
+      // `chat:end` can fire twice on one conversation (§3.5). Row count alone
+      // is a weak assertion — a second call that happened to be a no-op for an
+      // unrelated reason satisfies it — so the ids are what is pinned here.
+      it('writes nothing and returns the FIRST call\'s ids when a batchKey repeats', async () => {
+        const first = await record({ batchKey: 'turn-1', statements: [KHALID, RAMEN] });
+        const second = await record({ batchKey: 'turn-1', statements: [KHALID, RAMEN] });
+
+        expect(second.records.map((r) => r.id)).toEqual(first.records.map((r) => r.id));
+        expect(await activeCount()).toBe(2);
+      });
+
+      // The replay describes the rows that EXIST, in the order they were
+      // written — not the order this call happened to pass them in.
+      it('replays in the ORIGINAL insertion order even when the retry reorders its statements', async () => {
+        const first = await record({ batchKey: 'turn-2', statements: [KHALID, RAMEN] });
+        const second = await record({ batchKey: 'turn-2', statements: [RAMEN, KHALID] });
+
+        expect(second.records.map((r) => r.value)).toEqual(['Khalid', 'ramen']);
+        expect(second.records.map((r) => r.id)).toEqual(first.records.map((r) => r.id));
+        expect(await activeCount()).toBe(2);
+      });
+
+      it('rebuilds closes/until/closedBy from the stored rows on a replay', async () => {
+        const statements: FactStatementInput[] = [
+          { about: 'user', relation: 'lives_in', value: 'Boston', when: JAN, slot: 'lives_in' },
+          { about: 'user', relation: 'lives_in', value: 'Seattle', when: JUN, slot: 'lives_in' },
+        ];
+        const first = await record({ batchKey: 'turn-3', statements });
+        expect(first.records[1]!.closes).toEqual([first.records[0]!.id]);
+
+        const replay = await record({ batchKey: 'turn-3', statements });
+        expect(replay.records.map((r) => r.id)).toEqual(first.records.map((r) => r.id));
+        expect(replay.records[1]!.closes).toEqual([first.records[0]!.id]);
+        // Honest difference from the first response: a replay reports the rows
+        // as they stand NOW. Boston was closed by Seattle AFTER the first call
+        // had already described it, so only the replay can say so.
+        expect(replay.records[0]!.until).toBe(JUN);
+        expect(replay.records[0]!.closedBy).toBe(first.records[1]!.id);
+
+        const out = await recall({ about: 'user', limit: 200 });
+        expect(out.statements.map((s) => s.value)).toEqual(['Seattle']);
+      });
+
+      it('does NOT dedup across different batchKeys, identical statements or not', async () => {
+        await record({ batchKey: 'turn-a', statements: [KHALID] });
+        await record({ batchKey: 'turn-b', statements: [KHALID] });
+        expect(await activeCount()).toBe(2);
+      });
+
+      it('does NOT dedup when no batchKey is given — every call is a fresh batch', async () => {
+        await record({ statements: [KHALID] });
+        await record({ statements: [KHALID] });
+        expect(await activeCount()).toBe(2);
+      });
+
+      it('scopes dedup per tenant — one agent\'s key never consumes another\'s', async () => {
+        const ctxA = makeCtx('agent-a', 'user-a');
+        const ctxB = makeCtx('agent-b', 'user-b');
+
+        const a1 = await record({ batchKey: 'shared', statements: [KHALID] }, ctxA);
+        const b1 = await record({ batchKey: 'shared', statements: [KHALID] }, ctxB);
+
+        // B's write is its own row, not a replay of A's.
+        expect(b1.records[0]!.id).not.toBe(a1.records[0]!.id);
+        expect(await activeCount(ctxA)).toBe(1);
+        expect(await activeCount(ctxB)).toBe(1);
+
+        // ...and B using the key did not consume it for A: A's own retry still
+        // dedups to A's original row.
+        const a2 = await record({ batchKey: 'shared', statements: [KHALID] }, ctxA);
+        expect(a2.records.map((r) => r.id)).toEqual(a1.records.map((r) => r.id));
+        expect(await activeCount(ctxA)).toBe(1);
+      });
+
+      // All-or-nothing, the payload-validation half: every statement is
+      // checked before ANY of them is written, so a bad statement at position
+      // 2 cannot leave position 1 behind. (The store-failure half — a batch
+      // that dies mid-WRITE — is backend-specific and lives in the backend's
+      // own tests, since it takes a forced store fault to reach.)
+      it('writes NOTHING when a later statement in the batch is invalid', async () => {
+        await expectCode('invalid-payload', () =>
+          record({
+            batchKey: 'turn-doomed',
+            statements: [KHALID, { about: 'user', relation: 'likes_food', value: '', when: JAN }],
+          }),
+        );
+        expect(await activeCount()).toBe(0);
+
+        // And the failed key is not poisoned — a corrected retry under the
+        // same key records for real rather than replaying an empty batch.
+        const retry = await record({ batchKey: 'turn-doomed', statements: [KHALID, RAMEN] });
+        expect(retry.records).toHaveLength(2);
+        expect(await activeCount()).toBe(2);
       });
     });
   });

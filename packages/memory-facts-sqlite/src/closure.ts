@@ -25,6 +25,10 @@ export interface StatementToInsert {
   ownerUserId?: string;
   conversationId?: string;
   transactionTime: string;
+  /** The batch's idempotency key, or absent when the caller passed none. */
+  batchKey?: string;
+  /** 0-based position within the batch — the only stable ordering (see `FactRow.batch_seq`). */
+  batchSeq: number;
 }
 
 /** What one slot settlement did, so the caller can report it without re-reading the row. */
@@ -46,6 +50,14 @@ export interface SlotClosure {
  * engine's job — a statement arrives with `slot` already set, or absent.
  *
  * A statement with no slot skips all of it: stored, retrievable, and inert.
+ *
+ * The `driver.transaction(...)` here stays even though `record` now wraps the
+ * WHOLE batch in an outer transaction: better-sqlite3 implements a nested
+ * transaction function as a SAVEPOINT, so this one degrades to a savepoint
+ * inside the batch's transaction and the batch still commits or rolls back as
+ * one unit. Keeping it means a caller that settles a single statement outside
+ * a batch (a future one — `record` is the only caller today) is still atomic
+ * by itself, rather than silently depending on someone else's transaction.
  */
 export function insertWithSlotClosure(
   driver: BetterSqliteDb,
@@ -57,8 +69,9 @@ export function insertWithSlotClosure(
       .prepare(
         `INSERT INTO ${TABLE}
            (id, agent_key, about, relation, value, slot, provenance, owner_user_id,
-            conversation_id, valid_start, valid_end, transaction_time, closed_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            conversation_id, valid_start, valid_end, transaction_time, closed_by,
+            batch_key, batch_seq)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         statement.id,
@@ -74,6 +87,8 @@ export function insertWithSlotClosure(
         INFINITY_SENTINEL,
         statement.transactionTime,
         null,
+        statement.batchKey ?? null,
+        statement.batchSeq,
       );
 
     if (statement.slot === undefined) {

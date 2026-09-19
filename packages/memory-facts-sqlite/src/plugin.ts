@@ -123,7 +123,12 @@ function validateStatement(input: unknown): FactStatementInput {
   return { ...s, when } as unknown as FactStatementInput;
 }
 
-function validateRecordInput(input: RecordInput): FactStatementInput[] {
+interface ValidatedRecordInput {
+  statements: FactStatementInput[];
+  batchKey?: string;
+}
+
+function validateRecordInput(input: RecordInput): ValidatedRecordInput {
   if (typeof input !== 'object' || input === null || !Array.isArray(input.statements)) {
     throw new PluginError({
       code: 'invalid-payload',
@@ -131,7 +136,22 @@ function validateRecordInput(input: RecordInput): FactStatementInput[] {
       message: 'statements must be an array',
     });
   }
-  return input.statements.map(validateStatement);
+  // Same shape as every other optional string on the payload. An EMPTY
+  // batchKey is rejected rather than treated as absent: `''` is falsy in JS
+  // but a perfectly good TEXT value in SQLite, so letting it through would
+  // silently pool every accidentally-empty-keyed batch in a tenant into one
+  // dedup bucket and make the second such call a no-op.
+  if (input.batchKey !== undefined && !isNonEmptyString(input.batchKey)) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'batchKey must be a non-empty string when set',
+    });
+  }
+  return {
+    statements: input.statements.map(validateStatement),
+    ...(input.batchKey !== undefined ? { batchKey: input.batchKey } : {}),
+  };
 }
 
 function validateRecallInput(input: RecallInput): { about?: string; limit: number } {
@@ -197,12 +217,114 @@ function rowToFactRecord(row: FactRow): FactRecord {
   };
 }
 
+/**
+ * Run a STORE-ACCESS region and make sure any failure inside it leaves the
+ * caller holding an error, never a plausible-looking empty answer (design
+ * §4.4: "an empty table is a valid answer; a failed store is not"). Without
+ * this, a `SELECT` that throws mid-handler would propagate a raw
+ * `SqliteError`/`TypeError` that nothing downstream recognises as "the memory
+ * was unreachable" — and the temptation on the calling side is always to
+ * catch-and-continue with zero facts, which silently rewrites the user's
+ * memory to empty.
+ *
+ * Two deliberate choices:
+ *
+ *  - An already-thrown `PluginError` passes through UNTOUCHED. Payload
+ *    validation runs BEFORE every wrapped region for the same reason, so an
+ *    `invalid-payload` can never come back relabelled as a store outage and
+ *    send the caller chasing the wrong problem. The `instanceof` re-throw is
+ *    the belt to that braces.
+ *  - Every non-`PluginError` failure gets ONE code, `store-unavailable`,
+ *    even a constraint violation that is technically "the store is fine, your
+ *    row isn't". The distinction has no caller today, and collapsing it keeps
+ *    the promise simple: if `record`/`recall` returns, it touched the store.
+ *    The original error is preserved on `cause` for whoever is debugging.
+ */
+function inStore<T>(hookName: string, run: () => T): T {
+  try {
+    return run();
+  } catch (err) {
+    if (err instanceof PluginError) throw err;
+    throw new PluginError({
+      code: 'store-unavailable',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `${hookName} could not reach the fact store`,
+      cause: err,
+    });
+  }
+}
+
+/**
+ * Rebuild a previously-stored batch's `RecordedStatement[]` from the rows
+ * themselves — the idempotent-replay path (design §3.5). Nothing is written.
+ *
+ * Order is `batch_seq`, which is the ORIGINAL insertion order of the first
+ * call and is deliberately NOT the retrying call's argument order: a retry
+ * that happens to shuffle its statements must still describe the rows that
+ * exist, in the order they were written. `transaction_time` cannot do this
+ * job — `record` stamps one `now` across the whole batch — and `id` is a
+ * random UUID, so `batch_seq` is the tiebreak that makes this deterministic.
+ * See `FactRow.batch_seq`.
+ *
+ * One honest difference from the first call's response: these are the rows as
+ * they stand NOW, not a recording of what was returned then. A row that a
+ * LATER statement closed comes back carrying `until`/`closedBy`, and `closes`
+ * is whatever currently points at it. That is the more truthful answer — and
+ * it is the only one available, since the original response was never stored.
+ */
+function rebuildBatch(
+  db: BetterSqliteDb,
+  agentKey: string,
+  batchKey: string,
+): RecordedStatement[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM ${TABLE}
+        WHERE agent_key = ? AND batch_key = ?
+        ORDER BY batch_seq`,
+    )
+    .all(agentKey, batchKey) as FactRow[];
+
+  // `closes` is not a stored column — it is the inverse of `closed_by`,
+  // re-derived per row and tenant-scoped like every other read here.
+  const closesOf = db.prepare(
+    `SELECT id FROM ${TABLE} WHERE agent_key = ? AND closed_by = ?`,
+  );
+
+  return rows.map((row) => ({
+    ...rowToFactRecord(row),
+    closes: (closesOf.all(agentKey, row.id) as Array<{ id: string }>).map((r) => r.id),
+  }));
+}
+
 export interface MemoryFactsSqliteConfig {
   databasePath: string;
 }
 
 export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): Plugin {
   let driver: BetterSqliteDb | undefined;
+
+  /**
+   * The one legal way to reach the driver from a handler.
+   *
+   * `driver` is `undefined` before `init` and after `shutdown`, and a
+   * better-sqlite3 handle can also be closed underneath us (`.open === false`)
+   * — the previous `driver!.prepare(...)` turned both into a bare
+   * `TypeError: Cannot read properties of undefined`, which carries no code,
+   * no plugin name, and nothing to tell a caller apart from a genuine bug in
+   * the handler. This is the same outage, said out loud.
+   */
+  function requireDriver(): BetterSqliteDb {
+    if (driver === undefined || !driver.open) {
+      throw new PluginError({
+        code: 'store-unavailable',
+        plugin: PLUGIN_NAME,
+        message: 'the fact store is not open (plugin not initialised, or already shut down)',
+      });
+    }
+    return driver;
+  }
 
   return {
     manifest: {
@@ -231,40 +353,81 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
         'memory:facts:record',
         PLUGIN_NAME,
         async (ctx, input) => {
-          const statements = validateRecordInput(input);
+          // Validation FIRST, outside the store region: a malformed payload is
+          // the caller's bug and must keep saying `invalid-payload` even when
+          // the store is also down. It is also what makes the batch
+          // all-or-nothing cheap — every statement is known-good before a
+          // single row is written, so the only way to fail partway is a store
+          // failure, which the transaction below rolls back.
+          const { statements, batchKey } = validateRecordInput(input);
           const agentKey = agentScopeKey(ctx);
+          // ONE timestamp for the whole batch, which is why `batch_seq` has to
+          // exist: `transaction_time` cannot order rows that all share it.
           const now = new Date().toISOString();
 
-          const records: RecordedStatement[] = statements.map((statement) => {
-            const id = randomUUID();
-            const closure = insertWithSlotClosure(driver!, agentKey, {
-              id,
-              about: statement.about,
-              relation: statement.relation,
-              value: statement.value,
-              when: statement.when,
-              provenance: statement.provenance ?? 'extracted',
-              transactionTime: now,
-              ...(statement.slot !== undefined ? { slot: statement.slot } : {}),
-              ...(statement.ownerUserId !== undefined
-                ? { ownerUserId: statement.ownerUserId }
-                : {}),
-              ...(statement.conversationId !== undefined
-                ? { conversationId: statement.conversationId }
-                : {}),
+          const records = inStore('memory:facts:record', () => {
+            const db = requireDriver();
+
+            // The WHOLE batch settles in ONE transaction (design §3.5).
+            // Previously each statement got its own, so a batch that died on
+            // statement 3 left 1 and 2 committed — and a retry under the same
+            // `batchKey` would then see "already recorded" and return a
+            // permanently half-written batch. Atomicity is what makes the
+            // idempotency key safe, not a separate nicety.
+            //
+            // `insertWithSlotClosure` opens its own transaction inside this
+            // one; better-sqlite3 renders a nested transaction function as a
+            // SAVEPOINT, so the outer BEGIN/COMMIT still bounds the batch.
+            const settleBatch = db.transaction((): RecordedStatement[] => {
+              // The dedup read lives INSIDE the transaction so the
+              // check-then-write is not a race: two concurrent replays of the
+              // same key cannot both decide the batch is new.
+              //
+              // "Rows exist for this key" IS the have-we-seen-it test. An
+              // empty `statements` array therefore leaves no trace and stays
+              // re-runnable forever — correct, because it stored nothing, so
+              // there is nothing to be idempotent about.
+              if (batchKey !== undefined) {
+                const existing = rebuildBatch(db, agentKey, batchKey);
+                if (existing.length > 0) return existing;
+              }
+
+              return statements.map((statement, index) => {
+                const id = randomUUID();
+                const closure = insertWithSlotClosure(db, agentKey, {
+                  id,
+                  about: statement.about,
+                  relation: statement.relation,
+                  value: statement.value,
+                  when: statement.when,
+                  provenance: statement.provenance ?? 'extracted',
+                  transactionTime: now,
+                  batchSeq: index,
+                  ...(batchKey !== undefined ? { batchKey } : {}),
+                  ...(statement.slot !== undefined ? { slot: statement.slot } : {}),
+                  ...(statement.ownerUserId !== undefined
+                    ? { ownerUserId: statement.ownerUserId }
+                    : {}),
+                  ...(statement.conversationId !== undefined
+                    ? { conversationId: statement.conversationId }
+                    : {}),
+                });
+
+                return {
+                  id,
+                  about: statement.about,
+                  relation: statement.relation,
+                  value: statement.value,
+                  when: statement.when,
+                  provenance: statement.provenance ?? 'extracted',
+                  closes: closure.closed,
+                  ...(closure.selfClosedAt !== null ? { until: closure.selfClosedAt } : {}),
+                  ...(closure.selfClosedBy !== null ? { closedBy: closure.selfClosedBy } : {}),
+                };
+              });
             });
 
-            return {
-              id,
-              about: statement.about,
-              relation: statement.relation,
-              value: statement.value,
-              when: statement.when,
-              provenance: statement.provenance ?? 'extracted',
-              closes: closure.closed,
-              ...(closure.selfClosedAt !== null ? { until: closure.selfClosedAt } : {}),
-              ...(closure.selfClosedBy !== null ? { closedBy: closure.selfClosedBy } : {}),
-            };
+            return settleBatch();
           });
 
           return { records };
@@ -275,6 +438,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
         'memory:facts:recall',
         PLUGIN_NAME,
         async (ctx, input) => {
+          // Validation before the store region — see `record`.
           const { about, limit } = validateRecallInput(input);
           const agentKey = agentScopeKey(ctx);
 
@@ -282,21 +446,28 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           // filters to currently-active rows regardless of `input.
           // activeOnly`'s value, and never consults `input.query` — no
           // FTS/dense/RRF/rerank here (TASK-434).
-          const rows = about !== undefined
-            ? (driver!
-                .prepare(
-                  `SELECT * FROM ${TABLE}
+          //
+          // Recall is the handler where swallowing a store failure would be
+          // most tempting and most harmful: "no facts" and "could not read the
+          // facts" render identically to the model, and one of them is a lie.
+          const rows = inStore('memory:facts:recall', () => {
+            const db = requireDriver();
+            return about !== undefined
+              ? (db
+                  .prepare(
+                    `SELECT * FROM ${TABLE}
                     WHERE agent_key = ? AND about = ? AND valid_end = ?
                     ORDER BY valid_start DESC LIMIT ?`,
-                )
-                .all(agentKey, about, INFINITY_SENTINEL, limit) as FactRow[])
-            : (driver!
-                .prepare(
-                  `SELECT * FROM ${TABLE}
+                  )
+                  .all(agentKey, about, INFINITY_SENTINEL, limit) as FactRow[])
+              : (db
+                  .prepare(
+                    `SELECT * FROM ${TABLE}
                     WHERE agent_key = ? AND valid_end = ?
                     ORDER BY valid_start DESC LIMIT ?`,
-                )
-                .all(agentKey, INFINITY_SENTINEL, limit) as FactRow[]);
+                  )
+                  .all(agentKey, INFINITY_SENTINEL, limit) as FactRow[]);
+          });
 
           return { statements: rows.map(rowToFactRecord), degraded: [] };
         },
@@ -306,6 +477,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
         'memory:facts:supersede',
         PLUGIN_NAME,
         async (ctx, input) => {
+          // Validation before the store region — see `record`.
           if (!Array.isArray(input.ids)) {
             throw new PluginError({
               code: 'invalid-payload',
@@ -315,7 +487,12 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           }
           const agentKey = agentScopeKey(ctx);
           const at = new Date().toISOString();
-          const closed = supersedeIds(driver!, agentKey, input.ids, at);
+          // A supersede that silently did nothing is indistinguishable from
+          // one whose ids were all foreign — `closed: []` is a legitimate
+          // answer here, so a store failure MUST be an error instead.
+          const closed = inStore('memory:facts:supersede', () =>
+            supersedeIds(requireDriver(), agentKey, input.ids, at),
+          );
           return { closed };
         },
       );
@@ -325,7 +502,12 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
         PLUGIN_NAME,
         async (ctx, _input) => {
           const agentKey = agentScopeKey(ctx);
-          driver!.prepare(`DELETE FROM ${TABLE} WHERE agent_key = ?`).run(agentKey);
+          // `clear` returns void, so a swallowed failure would report success
+          // for a tenant whose data is still there — the worst possible lie
+          // for a "forget this" operation.
+          inStore('memory:facts:clear', () => {
+            requireDriver().prepare(`DELETE FROM ${TABLE} WHERE agent_key = ?`).run(agentKey);
+          });
         },
       );
     },
