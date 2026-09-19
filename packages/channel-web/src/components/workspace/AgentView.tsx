@@ -17,10 +17,12 @@
  * turn ends we re-read the detail so the server's durable thread replaces it.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Archive, ArrowRight, ChevronLeft } from 'lucide-react';
+import { Archive, ArrowRight, ChevronLeft, Menu, PanelRight } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useIsCompact } from '@/lib/use-compact';
 import { HTTP_SESSION_ENDED, logRequestFailure } from '@/lib/http';
 import {
   readAlertVariant,
@@ -48,7 +50,7 @@ import { ActivityFeed } from './ActivityFeed';
 import { AgentConversation, type ApprovalRead } from './AgentConversation';
 import { AgentFiles } from './AgentFiles';
 import { AgentMemory } from './AgentMemory';
-import { AgentRail } from './AgentRail';
+import { AgentRail, AgentRailContent } from './AgentRail';
 import { AgentStateLabel, AgentTile } from './bits';
 import type {
   ActivityEvent,
@@ -100,6 +102,18 @@ interface Props {
   activityError?: string | null;
   agents: WorkspaceAgent[];
   onBack: () => void;
+  /**
+   * Opens the shell's off-canvas nav (TASK-404). Only ever passed — and only
+   * ever rendered — below `md`, where the sidebar is a `Sheet` and this pane
+   * fills the screen. Without it the agent route could reach the roster only
+   * by going Back to Today first, which costs the reader their place in a
+   * thread to do something as ordinary as switching agent.
+   *
+   * Optional because `AgentView` is rendered directly by several tests that
+   * have no shell around them, and a required prop there would be ceremony
+   * rather than safety. The trigger simply does not render without it.
+   */
+  onOpenNav?: (() => void) | undefined;
   /**
    * The three ways out of a decision. REQUIRED — see `AgentConversation` for
    * why they are not optional-with-a-default.
@@ -225,6 +239,7 @@ export function AgentView({
   activityError,
   agents,
   onBack,
+  onOpenNav,
   onApprove,
   onDismiss,
   onUndo,
@@ -251,6 +266,15 @@ export function AgentView({
     `if (pastError)` away from being false.
   */
   const [loadError, setLoadError] = useState<ReadOutcome | null>(null);
+  /**
+   * Below `md` the rail is an off-canvas panel rather than a column, and this
+   * is whether it is open (TASK-404). It is not reset when the viewport widens
+   * — above `md` the `Sheet` is not mounted at all, so the flag is inert, and a
+   * rotation back to portrait reopening the panel the person last had open is
+   * the behaviour they would expect rather than a bug.
+   */
+  const compact = useIsCompact();
+  const [railOpen, setRailOpen] = useState(false);
   const [pastId, setPastId] = useState<string | null>(null);
   /**
    * The excerpt for the past conversation the rail has open, fetched on demand
@@ -838,15 +862,69 @@ export function AgentView({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="border-b border-border px-6 pt-4">
-        <div className="flex items-center gap-3">
+        {/*
+          `flex-wrap` + `min-w-0`, not `truncate`. A long agent name in a narrow
+          header used to push the state label off the right edge — the label
+          that says whether the thing is working or stopped, which is the one
+          word on this row nobody can afford to lose. Wrapping keeps both whole;
+          clamping would trade a lost label for clipped text, and TASK-436 is
+          separately chasing clamped text that has no `title` to recover it.
+        */}
+        <div className="flex flex-wrap items-center gap-3">
+          {/*
+            DELIBERATELY NOT `md:`-GATED, unlike `WorkspaceHeader`'s wrap. That
+            one is gated because its desktop layout was fine and only the phone
+            needed changing. This row was never fine: with no wrap and no
+            `min-w-0`, an agent name long enough to fill the pane pushed the
+            state label out and `main`'s `overflow-hidden` clipped it — at ANY
+            width, desktop included. Wrapping fixes that everywhere, so gating
+            it would mean deliberately keeping the clipped version on desktop.
+            The cost is that a very long name now takes two lines there instead
+            of losing its label; that is the trade, taken knowingly.
+          */}
+          {/*
+            The door to the roster from inside a thread (TASK-404). Below `md`
+            the sidebar is off-canvas and this pane owns the whole screen, so
+            without this the only way to another agent is Back to Today — which
+            throws away where you were reading.
+          */}
+          {compact && onOpenNav && (
+            <Button
+              variant="ghost"
+              size="icon"
+              /* Same one-frame cover as the shell's own trigger — see there. */
+              className="md:hidden"
+              onClick={onOpenNav}
+              aria-label="Open navigation"
+            >
+              <Menu size={16} />
+            </Button>
+          )}
           <Button variant="ghost" size="icon" onClick={onBack} aria-label="Back">
             <ChevronLeft size={16} />
           </Button>
           <AgentTile agent={agent} size={30} />
-          <div className="flex items-center gap-2.5">
+          <div className="flex min-w-0 items-center gap-2.5">
             <span className="text-[15px] font-medium">{agent.name}</span>
             <AgentStateLabel agent={agent} />
           </div>
+          {/*
+            The only way to the rail below `md`, where it is no longer a column
+            on the page. Chat tab only, because that is the only tab that
+            renders a rail at all — a button that opens a panel the current tab
+            does not have is worse than no button.
+          */}
+          {compact && tab === 'chat' && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="ml-auto"
+              onClick={() => setRailOpen(true)}
+              aria-label="Agent details"
+            >
+              <PanelRight size={16} />
+            </Button>
+          )}
         </div>
 
         <Tabs
@@ -854,24 +932,42 @@ export function AgentView({
           onValueChange={(v) => onTab(v as AgentTab)}
           className="mt-3"
         >
-          <TabsList className="h-auto bg-transparent p-0">
-            {(
+          {/*
+            The four triggers are ~309px of intrinsic width and they do not
+            shrink, so on a narrow header the last of them is simply unreachable
+            — the bug the TASK-356 walk measured. The negative margin cancels
+            the header's `px-6` so the rail scrolls edge to edge rather than
+            inside a 24px inset, and the padding puts the inset back on the
+            content; without the pair, the first and last tab sit flush against
+            the viewport when scrolled.
+
+            Scrollbar hidden both ways because Firefox honours only the first
+            and WebKit/Blink only the second. This is a strip of four words that
+            fits on any real desktop — a permanent horizontal bar under it would
+            be visible chrome bought for a case that mostly does not happen.
+          */}
+          <div className="-mx-6 overflow-x-auto px-6 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {/* `w-max` so the list keeps its intrinsic width and overflows into
+                the scroller above, instead of shrinking to fit and clipping. */}
+            <TabsList className="h-auto w-max bg-transparent p-0">
+              {(
               [
-                ['chat', 'Conversation'],
-                ['did', 'What it did'],
-                ['files', 'Files'],
-                ['memory', 'Memory'],
-              ] as const
-            ).map(([v, label]) => (
-              <TabsTrigger
-                key={v}
-                value={v}
-                className="rounded-none border-b-2 border-transparent bg-transparent px-0 pb-3 pt-0 text-[13px] text-muted-foreground shadow-none data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none [&:not(:first-child)]:ml-6"
-              >
-                {label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
+                  ['chat', 'Conversation'],
+                  ['did', 'What it did'],
+                  ['files', 'Files'],
+                  ['memory', 'Memory'],
+                ] as const
+              ).map(([v, label]) => (
+                <TabsTrigger
+                  key={v}
+                  value={v}
+                  className="rounded-none border-b-2 border-transparent bg-transparent px-0 pb-3 pt-0 text-[13px] text-muted-foreground shadow-none data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none [&:not(:first-child)]:ml-6"
+                >
+                  {label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </div>
         </Tabs>
       </header>
 
@@ -1113,13 +1209,70 @@ export function AgentView({
           )}
         </div>
 
-        {tab === 'chat' && (
-          <AgentRail
-            detail={detail}
-            openPastId={pastId}
-            onOpenPast={setPastId}
-          />
-        )}
+        {/*
+          Above `md` the rail is a column. Below it the rail is a `Sheet` and
+          there is no column — see `AgentRail`'s own note for the 532px of
+          chrome that forced the split, and `use-compact.ts` for why the branch
+          is in JS rather than a `md:` class.
+        */}
+        {tab === 'chat' &&
+          (compact ? (
+            <Sheet open={railOpen} onOpenChange={setRailOpen}>
+              {/*
+                Radix warns when a dialog has no description; say that is
+                deliberate rather than inventing one. The title is `sr-only`
+                because the panel's contents announce themselves — but shadcn
+                requires one to exist, and a dialog with no accessible name is
+                unusable with a screen reader regardless.
+              */}
+              <SheetContent
+                side="right"
+                aria-describedby={undefined}
+                className="w-[85vw] max-w-sm overflow-y-auto"
+              >
+                <SheetTitle className="sr-only">Agent details</SheetTitle>
+                <AgentRailContent
+                  detail={detail}
+                  openPastId={pastId}
+                  /*
+                    CLOSE ON PICK, same rule the nav sheet follows. Opening a
+                    past conversation swaps the thread BEHIND this panel; left
+                    open, the sheet covers the only thing that changed and the
+                    tap reads as having done nothing. The desktop rail is a
+                    column with the thread beside it, so it has nothing to
+                    close and keeps the bare setter.
+
+                    WHAT CLOSING COSTS, stated plainly: `AgentRailContent` owns
+                    the notice a revoke leaves behind ("Revoked…", "already
+                    gone", "we couldn't take that back"), so unmounting it
+                    drops that line. This is the SAME loss as crossing `md`
+                    mid-revoke, but it is reachable by one ordinary tap rather
+                    than by resizing during a sub-second POST — so it is the
+                    common path, not the rare one, and the review note that
+                    called this rare was counting only the resize.
+
+                    Still not worth hoisting the notice into `AgentView`: the
+                    revoke itself always lands server-side, and reopening the
+                    rail re-reads the list, so what is lost is an
+                    acknowledgement of something the next read already shows.
+                    Hoisting would put rail state in the pane that mounts the
+                    rail, which is how the two shapes start disagreeing — the
+                    exact thing extracting `AgentRailContent` avoided.
+                  */
+                  onOpenPast={(id) => {
+                    setPastId(id);
+                    setRailOpen(false);
+                  }}
+                />
+              </SheetContent>
+            </Sheet>
+          ) : (
+            <AgentRail
+              detail={detail}
+              openPastId={pastId}
+              onOpenPast={setPastId}
+            />
+          ))}
       </div>
     </div>
   );

@@ -16,20 +16,51 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 export function WorkspaceHeader({
   title,
   subtitle,
+  leading,
   children,
 }: {
   title: string;
   subtitle?: string;
+  /**
+   * Rendered before the title, bare — no wrapper element, so when nothing is
+   * passed the header's children are byte-for-byte what they always were.
+   * Below `md` the shell puts its nav trigger here, because that is the only
+   * door to a sidebar that has gone off-canvas (TASK-404).
+   */
+  leading?: React.ReactNode;
   /** Page-level controls, rendered at the right end. */
   children?: React.ReactNode;
 }) {
   return (
-    <header className="flex h-14 shrink-0 items-center gap-3 px-6">
+    /*
+      WHY THIS WRAPS BELOW `md` (TASK-404). `h-14` is a hard 56px and
+      `ml-auto` pushes the controls at whatever the title and date leave —
+      which on a phone is past the right edge of a viewport that cannot scroll
+      sideways, so the filter chips were measured off-screen and unreachable.
+      `min-h-14` keeps the desktop metric exactly (56px, nothing here is
+      taller) while letting a second line exist at all; `w-full` on the control
+      block claims its own wrapped line starting at the left padding edge,
+      rather than trailing a title that has already used up the row.
+
+      Deliberately NOT truncation. Clamping the title would hide the one thing
+      that says where you are, and TASK-436 is separately putting `title`
+      attributes back on text this app already clamps — adding another clamp
+      here would be work in the opposite direction. Wrapping costs a line and
+      loses nothing.
+
+      At `md` and up every compact class is cancelled (`md:h-14`,
+      `md:flex-nowrap`, `md:py-0`, `md:ml-auto`, `md:w-auto`), so the desktop
+      layout is the one that shipped.
+    */
+    <header className="flex min-h-14 shrink-0 flex-wrap items-center gap-x-3 gap-y-2 px-6 py-2 md:h-14 md:flex-nowrap md:py-0">
+      {leading}
       <h1 className="text-[15px] font-medium tracking-[-0.01em]">{title}</h1>
       {subtitle && (
         <span className="text-[13px] text-muted-foreground">{subtitle}</span>
       )}
-      <div className="ml-auto flex items-center gap-2">{children}</div>
+      <div className="flex w-full items-center gap-2 md:ml-auto md:w-auto">
+        {children}
+      </div>
     </header>
   );
 }

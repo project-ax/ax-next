@@ -38,7 +38,27 @@ interface Props {
   onCreateAgent?: (() => void) | undefined;
 }
 
-export function WorkspaceSidebar({
+interface NavProps extends Props {
+  /**
+   * Fired after a destination is chosen. The off-canvas copy of this nav
+   * (below `md` — see `WorkspaceShell`) uses it to close itself, because a
+   * sheet that stays open over the thing you just asked for is a second tap
+   * for no reason. Optional and unused on the desktop path, where the rail is
+   * always on screen and there is nothing to close.
+   */
+  onNavigate?: (() => void) | undefined;
+}
+
+/**
+ * The rail, minus the rail.
+ *
+ * Extracted so the same nav can be rendered in two frames: the fixed `<aside>`
+ * below, and — below `md`, where 236px of a 390px viewport is most of the
+ * screen — a `Sheet` the shell owns (TASK-404). It returns a FRAGMENT rather
+ * than a container on purpose: the `<aside>`'s children stay exactly the flex
+ * children they were, so the desktop layout does not change shape at all.
+ */
+export function WorkspaceSidebarNav({
   agents,
   route,
   activeAgentId,
@@ -50,21 +70,32 @@ export function WorkspaceSidebar({
   onAgent,
   onOpenAdminSettings,
   onCreateAgent,
-}: Props) {
+  onNavigate,
+}: NavProps) {
   const row = (active: boolean) =>
     cn(
       'flex h-9 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-[13.5px]',
       active ? 'bg-muted font-medium text-foreground' : 'text-muted-foreground hover:bg-muted/60',
     );
 
+  /*
+    Every row that MOVES you reports it; the Agents disclosure does not. Opening
+    the roster is a step on the way to picking an agent, so closing the sheet on
+    it would shut the panel in the middle of the gesture it exists for.
+  */
+  const go = (act: () => void) => () => {
+    act();
+    onNavigate?.();
+  };
+
   return (
-    <aside className="flex w-[236px] shrink-0 flex-col border-r border-border">
+    <>
       <div className="flex h-14 items-center px-4">
         <BrandMark size="md" />
       </div>
 
       <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-2">
-        <button type="button" onClick={onToday} className={row(route === 'today')}>
+        <button type="button" onClick={go(onToday)} className={row(route === 'today')}>
           <Inbox size={14} className="shrink-0" />
           Today
           {pendingCount > 0 && (
@@ -76,7 +107,7 @@ export function WorkspaceSidebar({
 
         <button
           type="button"
-          onClick={onActivity}
+          onClick={go(onActivity)}
           className={row(route === 'activity')}
         >
           <Activity size={14} className="shrink-0" />
@@ -105,7 +136,7 @@ export function WorkspaceSidebar({
             <button
               key={a.id}
               type="button"
-              onClick={() => onAgent(a.id)}
+              onClick={go(() => onAgent(a.id))}
               className={cn(
                 'flex h-8 w-full items-center gap-2.5 rounded-md pl-8 pr-2.5 text-left text-[13px]',
                 route === 'agent' && activeAgentId === a.id
@@ -129,7 +160,7 @@ export function WorkspaceSidebar({
           create door, since reachability is the whole point of this row.
         */}
         {onCreateAgent && (
-          <button type="button" onClick={onCreateAgent} className={row(false)}>
+          <button type="button" onClick={go(onCreateAgent)} className={row(false)}>
             <Plus size={14} className="shrink-0" />
             New agent…
           </button>
@@ -152,6 +183,21 @@ export function WorkspaceSidebar({
         the workspace grew a Settings route.
       */}
       <UserMenu onOpenAdminSettings={onOpenAdminSettings} />
+    </>
+  );
+}
+
+/**
+ * The rail itself — the desktop frame around `WorkspaceSidebarNav`.
+ *
+ * Rendered only at `md` and up now (`WorkspaceShell` branches on
+ * `useIsCompact`), which is why `w-[236px] shrink-0` can stay unconditional:
+ * the width is only ever asked of a viewport that has room for it.
+ */
+export function WorkspaceSidebar(props: Props) {
+  return (
+    <aside className="flex w-[236px] shrink-0 flex-col border-r border-border">
+      <WorkspaceSidebarNav {...props} />
     </aside>
   );
 }
