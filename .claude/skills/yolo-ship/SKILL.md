@@ -134,27 +134,89 @@ This replaces waiting on a hosted reviewer. Review the **whole branch** locally 
 
 ```dot
 digraph review {
-    "Dispatch ax-code-reviewer (whole branch vs main)" [shape=box];
+    "Scope the range (origin/main...HEAD) + --stat" [shape=box];
+    "Dispatch ax-code-reviewer (whole branch vs origin/main)" [shape=box];
     "Actionable findings?" [shape=diamond];
     "Fix (test-first) + log any rejected" [shape=box];
     "reviewed-sha == HEAD?" [shape=diamond];
     "Unreviewed delta touches production code?" [shape=diamond];
     "Proceed to PR (Phase 6)" [shape=doublecircle];
 
-    "Dispatch ax-code-reviewer (whole branch vs main)" -> "Actionable findings?";
+    "Scope the range (origin/main...HEAD) + --stat" -> "Dispatch ax-code-reviewer (whole branch vs origin/main)";
+    "Dispatch ax-code-reviewer (whole branch vs origin/main)" -> "Actionable findings?";
     "Actionable findings?" -> "Fix (test-first) + log any rejected" [label="yes"];
-    "Fix (test-first) + log any rejected" -> "Dispatch ax-code-reviewer (whole branch vs main)";
+    "Fix (test-first) + log any rejected" -> "Scope the range (origin/main...HEAD) + --stat";
     "Actionable findings?" -> "reviewed-sha == HEAD?" [label="no"];
     "reviewed-sha == HEAD?" -> "Proceed to PR (Phase 6)" [label="yes"];
     "reviewed-sha == HEAD?" -> "Unreviewed delta touches production code?" [label="no"];
-    "Unreviewed delta touches production code?" -> "Dispatch ax-code-reviewer (whole branch vs main)" [label="yes — the fix is unreviewed"];
+    "Unreviewed delta touches production code?" -> "Scope the range (origin/main...HEAD) + --stat" [label="yes — the fix is unreviewed"];
     "Unreviewed delta touches production code?" -> "Proceed to PR (Phase 6)" [label="no — report the older reviewed-sha"];
 }
 ```
 
-- **REQUIRED:** Dispatch the **`ax-code-reviewer`** subagent (the Agent/`Task` tool with `subagent_type: ax-code-reviewer`) to review the **whole-branch diff against `main`** (merge-base `main...HEAD`) — the surface CI and a human reviewer see, not just the last task. In the dispatch prompt, name the diff range explicitly (`git diff main...HEAD`) and the worktree it runs in; for a diff that needs AX-invariant / boundary-specific framing or a challenge to the chosen *approach*, add that focus to the prompt and note the choice in `decisions.md`. The agent pins its own model + effort (Opus 4.8, `effort: max` in its definition) and runs read-only, so there's no model/effort to tier and nothing to pre-authorize. **Dispatch it in the plain shape — see the dispatch contract below. An apparently hung reviewer is usually a DELIVERY problem, not a liveness one.**
+#### Before you dispatch: scope the range (REQUIRED)
+
+**In a dispatched worktree, `main` is a snapshot and nothing in this skill ever moves it.**
+`git worktree add … -b <branch> origin/main` bases your branch on `origin/main` and leaves
+the shared checkout's `main` ref exactly where it stood. Under parallel drain `main`
+advances several times an hour, so by review time yours is typically several PRs behind —
+and `main...HEAD` resolves its merge-base to that stale commit, which hands the reviewer
+every PR merged since as though it were part of your diff.
+
+This was hit **six times on 2026-09-19 alone**, and the numbers are measured, not
+estimated. On **TASK-402** local `main` was 4 PRs stale: `main...HEAD` read **16 files /
+1300 lines** against a real delta of **5 files / 262**. On **PR #599** it swept in **5
+already-merged PRs, ~50 files**, against a real delta of **10** — that reviewer happened to
+notice and re-scope itself. **TASK-399's did not**, and spent a partial pass on 4 unrelated
+merged PRs before anyone caught it. Wasted budget is the cheap half of the cost; the
+expensive half is that a finding reported against already-merged code reads as *"this PR
+broke it"*.
+
+So the range is **`origin/main...HEAD`** — and you look at it before you dispatch, because
+an oversized range is worth seeing now rather than discovering mid-review:
+
+```bash
+# Run from your worktree. Paste the `reviewer range:` line into the reviewer prompt.
+
+# Best-effort, and honest about what it buys: `origin/main...HEAD` is ALREADY correct
+# without it, because `...` resolves through the merge-base and your branch point cannot
+# be newer than the `origin/main` on disk. The fetch only keeps the range you print in
+# parity with the surface GitHub will show on the PR.
+git fetch --quiet origin main ||
+  echo "note: fetch failed — using the origin/main already on disk (still not stale the way local main is)"
+
+git rev-parse --verify --quiet origin/main >/dev/null || {
+  echo "FATAL: no origin/main ref — cannot scope the review range. Do NOT fall back to main."
+  exit 1
+}
+
+RANGE="origin/main...HEAD"
+
+# Bind the list and keep git's own status. `git diff --name-only … | wc -l` would answer
+# "0 files" for a diff that FAILED, and 0 is a plausible-looking number.
+FILES=$(git diff --name-only "$RANGE") || {
+  echo "FATAL: git diff $RANGE failed"
+  exit 1
+}
+N=$(printf '%s\n' "$FILES" | grep -c '[^[:space:]]')
+
+echo "reviewer range: $RANGE"
+git diff --stat "$RANGE"
+echo "commits in range:"
+git log --oneline origin/main..HEAD
+echo "files in range: $N"
+
+# The sanity check is you reading those two lists. A commit subject you did not write, or
+# a file you never opened, means the range is wrong — stop and fix it, do not dispatch.
+# 25 is a prompt to look, not a rule: the measured real deltas were 5 and 10 files, the
+# measured bad ranges 16 and ~50.
+[ "$N" -le 25 ] ||
+  echo "⚠ $N files is large for one card — confirm every one is yours before dispatching."
+```
+
+- **REQUIRED:** Dispatch the **`ax-code-reviewer`** subagent (the Agent/`Task` tool with `subagent_type: ax-code-reviewer`) to review the **whole-branch diff against `origin/main`** — the surface CI and a human reviewer see, not just the last task. In the dispatch prompt, name the diff range explicitly — **copy the `reviewer range:` line the block above printed**, rather than retyping a range from memory — and name the worktree it runs in; for a diff that needs AX-invariant / boundary-specific framing or a challenge to the chosen *approach*, add that focus to the prompt and note the choice in `decisions.md`. The agent pins its own model + effort (Opus 4.8, `effort: max` in its definition) and runs read-only, so there's no model/effort to tier and nothing to pre-authorize. **Dispatch it in the plain shape — see the dispatch contract below. An apparently hung reviewer is usually a DELIVERY problem, not a liveness one.**
 - **When to skip:** docs/comment/config-only or other non-code diffs — the PR's CodeRabbit + CodeQL + semgrep + gitleaks already cover those. Log the skip in `decisions.md`. Any code change gets reviewed.
-- **Address findings with receiving-code-review discipline** — verify each one; fix the real issues with targeted commits (test-first for bugs, per Bug Fix Policy [[feedback_targeted_followup_commits]]), and log in `decisions.md` any finding you deliberately reject and why (silent dismissal isn't allowed). Then **re-dispatch the reviewer** on the updated branch — each run re-reads the current `main...HEAD` diff — until it returns `APPROVE` / no actionable findings.
+- **Address findings with receiving-code-review discipline** — verify each one; fix the real issues with targeted commits (test-first for bugs, per Bug Fix Policy [[feedback_targeted_followup_commits]]), and log in `decisions.md` any finding you deliberately reject and why (silent dismissal isn't allowed). Then **re-scope the range and re-dispatch the reviewer** on the updated branch — re-run the block above, because each round re-reads the current `origin/main...HEAD` diff — until it returns `APPROVE` / no actionable findings.
 - **ASK THE VACUITY QUESTION IN EVERY REVIEW DISPATCH.** Add, verbatim: *"For each new or changed
   test, work out what it would do against the UNFIXED code. A test that passes either way is a
   finding."* This is one sentence and it has already paid for itself. A PR hardened
@@ -422,7 +484,7 @@ reporting), then report the merge. Then you are done.
 | Design | superpowers:writing-plans, ax-conventions, security-checklist |
 | Implement | superpowers:subagent-driven-development, superpowers:test-driven-development |
 | Verify | superpowers:verification-before-completion, superpowers:requesting-code-review |
-| Review (pre-PR) | `ax-code-reviewer` subagent (`subagent_type: ax-code-reviewer`; Opus 4.8, max effort, whole branch vs `main`), superpowers:receiving-code-review. **Dispatch with NO `name`** — a named teammate cannot hand its findings back, which is what every past "hang" actually was. If it does go silent: retrieve via `SendMessage` FIRST, re-dispatch second, then fail loudly (`reviewer: hung`); never self-review and call it clean. |
+| Review (pre-PR) | `ax-code-reviewer` subagent (`subagent_type: ax-code-reviewer`; Opus 4.8, max effort, whole branch vs `origin/main` — scope the range with Phase 5's pre-dispatch block first; local `main` in a worktree is stale), superpowers:receiving-code-review. **Dispatch with NO `name`** — a named teammate cannot hand its findings back, which is what every past "hang" actually was. If it does go silent: retrieve via `SendMessage` FIRST, re-dispatch second, then fail loudly (`reviewer: hung`); never self-review and call it clean. |
 | Ship | commit-commands:commit-push-pr, superpowers:systematic-debugging, `gh`, `ScheduleWakeup` |
 | Merge (Phase 7) | `gh pr merge --squash`, `git pull --ff-only` (standalone); hand off to auto-ship (orchestrated) |
 | Progress (every phase) | **Orchestrated: CALL `<ABS-PATH>/.claude/auto-ship-hb.sh "<ITEM-ID>" "<line>"`** — never `source` the raw helper, it is gitignored and absent from your worktree (127). Standalone: `append_progress` per auto-ship `references/github-project.md` §6. Best-effort, shell-side, own card only; report the result in `progress:`. |
