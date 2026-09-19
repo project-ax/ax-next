@@ -64,6 +64,7 @@ import type {
 } from '@/lib/workspace-api';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 import { AgentTile } from './bits';
+import { RESOLUTION_FOCUS_RING } from '@/lib/consent-focus';
 import { ApprovalCard } from './ApprovalCard';
 import { GrantRow } from './GrantRow';
 import {
@@ -713,20 +714,39 @@ export function AgentConversation({
         holds: `workspace-grant-store.ts` is the only place a grant's own
         state lives) — only of what was typed and not yet submitted anywhere.
       */}
-      {grants.length > 0 && (
-        <div className="px-6 pt-4" data-testid="thread-grants">
-          <div className="max-h-[50vh] max-w-[720px] overflow-y-auto rounded-lg border border-border bg-card shadow-sm [scrollbar-gutter:stable]">
-            {grants.map((g) => (
-              <GrantRow
-                key={g.key}
-                grant={g}
-                onResolved={onGrantResolved}
-                onGranted={onGranted}
-              />
-            ))}
+      {/*
+        THE CONSENT REGION (TASK-427), and it is deliberately OUTSIDE the
+        `grants.length > 0` gate. Answering the last grant removes the row AND
+        the box around it, so a region drawn inside the gate would unmount
+        along with the thing it was supposed to catch — handing focus straight
+        back to `<body>`, which is the bug. This wrapper carries no classes, so
+        an empty one costs nothing in layout.
+
+        `role="group"` rather than `region` so an empty grants area does not
+        add a permanent landmark to every agent thread.
+      */}
+      <div
+        data-consent-region=""
+        tabIndex={-1}
+        role="group"
+        aria-label={`Permission requests for ${agent.name}`}
+        className={RESOLUTION_FOCUS_RING}
+      >
+        {grants.length > 0 && (
+          <div className="px-6 pt-4" data-testid="thread-grants">
+            <div className="max-h-[50vh] max-w-[720px] overflow-y-auto rounded-lg border border-border bg-card shadow-sm [scrollbar-gutter:stable]">
+              {grants.map((g) => (
+                <GrantRow
+                  key={g.key}
+                  grant={g}
+                  onResolved={onGrantResolved}
+                  onGranted={onGranted}
+                />
+              ))}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {!readOnly && (
         <div className="border-t border-border px-6 py-4">

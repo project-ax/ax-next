@@ -30,8 +30,25 @@
  * card is not that case: it is fired by `chat:permission-request` from
  * @ax/skill-broker and the egress wall, mid-turn, with the agent still warm. It
  * is not migrated, and it should not be.
+ *
+ * ANSWERING IT REMOVES IT, SO FOCUS HAS TO GO SOMEWHERE (TASK-427). "Not now"
+ * and a successful Connect both unmount this card, and a focused element that
+ * disappears leaves the browser pointing at `<body>` — the top of the document,
+ * a long blind crawl from anything on this screen. `close()` hands focus up to
+ * the `data-consent-region` the composer puts around its card stack first, while
+ * this node is still in the document. `lib/consent-focus.ts` carries the
+ * argument, and the sibling `workspace/GrantRow.tsx` does the same thing on the
+ * surface that outlives this one.
+ *
+ * AND WHEN IT DOES NOT GO — a Connect or an Allow that comes back 401, or never
+ * reaches the server at all — the card STAYS, the button comes back, and the
+ * focus that the browser took away when the button went `disabled` does not
+ * come back with it. That is the same `<body>` landing with the error left
+ * unread behind it, and this file is the live `/` surface until TASK-360, so it
+ * is fixed here rather than waited out. The error `Alert` is the answer, and it
+ * takes the focus — exactly as `GrantRow` does with its own.
  */
-import { useState, type ReactElement } from 'react';
+import { useRef, useState, type ReactElement } from 'react';
 import { TriangleAlert } from 'lucide-react';
 import {
   Card,
@@ -46,6 +63,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
+import {
+  RESOLUTION_FOCUS_RING,
+  returnFocusToConsentRegion,
+  useResolutionFocus,
+} from '@/lib/consent-focus';
 import { grantHost, setDestinationCredential } from '@/lib/credentials';
 import {
   AUTHORED_CONNECTOR_WARNING,
@@ -118,6 +140,21 @@ export function PermissionCard() {
   const [values, setValues] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The card's own node, read while it is still mounted: `closest` cannot walk
+  // up from a node React has already detached.
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  /*
+    The one ending that leaves the card on screen. A success unmounts it and
+    `close()` hands focus up to the region; a failure has to be caught here or
+    the person is standing on `<body>` with an unread Alert behind them.
+
+    Above the `if (!request)` return, with the other hooks — this file bails out
+    early when there is no card to draw, and a hook after that point would run
+    on some renders and not others.
+  */
+  const { answerRef, armForResolution } = useResolutionFocus(
+    error === null ? null : `error:${error}`,
+  );
 
   // Every declared slot must have a non-empty value before Connect is enabled
   // (a slotless skill/connector is immediately connectable). `request === null`
@@ -135,6 +172,9 @@ export function PermissionCard() {
   if (!request) return null;
 
   function close(): void {
+    // BEFORE the dismiss, not after: the store update unmounts this card, and
+    // a detached node has no region above it to find.
+    returnFocusToConsentRegion(cardRef.current);
     setValues({});
     setError(null);
     permissionCardActions.dismiss();
@@ -364,7 +404,7 @@ export function PermissionCard() {
 
   if (request.kind === 'connector') {
     return (
-      <Card className="mb-3" data-testid="permission-card-connector">
+      <Card ref={cardRef} className="mb-3" data-testid="permission-card-connector">
         <CardHeader>
           <CardTitle>Connect {request.name}</CardTitle>
         </CardHeader>
@@ -378,7 +418,12 @@ export function PermissionCard() {
           {renderReach(request.hosts, request.slots, request.packages)}
           <p className="text-sm text-muted-foreground">{GRANT_REASSURANCE}</p>
           {error !== null && (
-            <Alert variant="destructive">
+            <Alert
+              ref={answerRef}
+              tabIndex={-1}
+              variant="destructive"
+              className={RESOLUTION_FOCUS_RING}
+            >
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}
@@ -394,7 +439,10 @@ export function PermissionCard() {
           </Button>
           <Button
             disabled={busy || !allSlotsFilled || conversationId === null}
-            onClick={() => void approveConnector()}
+            onClick={() => {
+              armForResolution();
+              void approveConnector();
+            }}
           >
             {busy ? GRANT_CONNECTING_LABEL : GRANT_CONNECT_LABEL}
           </Button>
@@ -405,7 +453,7 @@ export function PermissionCard() {
 
   if (request.kind === 'host') {
     return (
-      <Card className="mb-3" data-testid="permission-card-host">
+      <Card ref={cardRef} className="mb-3" data-testid="permission-card-host">
         <CardHeader>
           <CardTitle>Allow access to {request.host}?</CardTitle>
           <CardDescription>{HOST_WALL_EXPLANATION}</CardDescription>
@@ -415,7 +463,12 @@ export function PermissionCard() {
             <Badge variant="secondary">{request.host}</Badge>
           </div>
           {error !== null && (
-            <Alert variant="destructive">
+            <Alert
+              ref={answerRef}
+              tabIndex={-1}
+              variant="destructive"
+              className={RESOLUTION_FOCUS_RING}
+            >
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}
@@ -424,10 +477,23 @@ export function PermissionCard() {
           <Button variant="ghost" disabled={busy} onClick={close}>
             {GRANT_REJECT_LABEL}
           </Button>
-          <Button variant="outline" disabled={busy} onClick={() => void allow(true)}>
+          <Button
+            variant="outline"
+            disabled={busy}
+            onClick={() => {
+              armForResolution();
+              void allow(true);
+            }}
+          >
             {HOST_ALLOW_ALWAYS_LABEL}
           </Button>
-          <Button disabled={busy} onClick={() => void allow(false)}>
+          <Button
+            disabled={busy}
+            onClick={() => {
+              armForResolution();
+              void allow(false);
+            }}
+          >
             {busy ? HOST_ALLOWING_LABEL : HOST_ALLOW_ONCE_LABEL}
           </Button>
         </CardFooter>
@@ -436,7 +502,7 @@ export function PermissionCard() {
   }
 
   return (
-    <Card className="mb-3" data-testid="permission-card">
+    <Card ref={cardRef} className="mb-3" data-testid="permission-card">
       <CardHeader>
         {/* (A2) The title read `Connect linear-issues` — the id the producer
             uses, not the name a person would. Humanized, with the raw id as its
@@ -456,7 +522,12 @@ export function PermissionCard() {
         {renderReach(request.hosts, request.slots, request.packages)}
         <p className="text-sm text-muted-foreground">{GRANT_REASSURANCE}</p>
         {error !== null && (
-          <Alert variant="destructive">
+          <Alert
+            ref={answerRef}
+            tabIndex={-1}
+            variant="destructive"
+            className={RESOLUTION_FOCUS_RING}
+          >
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
@@ -470,7 +541,10 @@ export function PermissionCard() {
         </Button>
         <Button
           disabled={busy || !allSlotsFilled || conversationId === null}
-          onClick={() => void connect()}
+          onClick={() => {
+            armForResolution();
+            void connect();
+          }}
         >
           {busy ? GRANT_CONNECTING_LABEL : GRANT_CONNECT_LABEL}
         </Button>
