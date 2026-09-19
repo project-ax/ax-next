@@ -32,11 +32,11 @@
     "@ax/ipc-protocol": "workspace:*",
     "@ax/skills-parser": "workspace:*",
     "ai": "7.0.70",
-    "undici": "^6.28.0"
+    "undici": "^8.10.2"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.1"
   }
 }
