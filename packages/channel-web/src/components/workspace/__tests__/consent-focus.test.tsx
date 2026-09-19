@@ -224,6 +224,28 @@ function QueueHarness({ resolved }: { resolved: Decision }) {
 
 const undoButton = () => screen.getByRole('button', { name: /Undo/ });
 
+/**
+ * The alert the PERSON sees on this row.
+ *
+ * Since TASK-442 a decision card also mounts a permanently-present, empty
+ * `sr-only` live region carrying `role="alert"` — that is what makes an answer
+ * audible, and keeping it EMPTY until something changes is what makes it
+ * audible safely (a live region inserted already holding its message is not
+ * reliably announced). So "the alert on this card" stopped being a unique
+ * query, while the thing these two cases are about — the shadcn `Alert` the
+ * notice and the stale reason are drawn in — did not change at all.
+ *
+ * It still pins uniqueness: two VISIBLE alerts on one row would mean focus had
+ * a choice it could get wrong, which is the bug this file is for.
+ */
+function visibleAlert(): HTMLElement {
+  const visible = screen
+    .getAllByRole('alert')
+    .filter((el) => !el.hasAttribute('data-consent-said'));
+  expect(visible).toHaveLength(1);
+  return visible[0]!;
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   permissionCardActions.dismiss();
@@ -559,7 +581,7 @@ describe('DecisionRow — the Today queue (site 3)', () => {
     render(<FailQueueHarness />);
     fireEvent.click(screen.getByRole('button', { name: 'Move it' }));
 
-    expect(document.activeElement).toBe(screen.getByRole('alert'));
+    expect(document.activeElement).toBe(visibleAlert());
     expect(document.activeElement).not.toBe(document.body);
   });
 
@@ -656,7 +678,7 @@ describe('DecisionRow — the Today queue (site 3)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Move it' }));
 
     expect(document.activeElement).not.toBe(document.body);
-    expect(document.activeElement).toBe(screen.getByRole('alert'));
+    expect(document.activeElement).toBe(visibleAlert());
     expect(document.activeElement?.textContent).toContain(
       'Thursday 9:30 is no longer free.',
     );
