@@ -15,7 +15,7 @@ This skill orchestrates other skills. It does not re-explain them — it sequenc
 ## The autonomy contract (hard rules)
 
 1. **Don't ask the user.** Make a recommendation and proceed. Escalate via `AskUserQuestion` ONLY when a decision is high-stakes **and** ambiguous **and** not inferable from code, memory, or conventions. "I want to be safe" is not a reason to ask — it's a reason to document.
-2. **Every non-trivial decision is logged** to `.claude/memory/decisions.md` (Date | Decision | Rationale | Alternatives). If you'd have asked the user, write the recommendation there instead.
+2. **Every non-trivial decision is logged** to your task's **decisions shard** (Date | Decision | Rationale | Alternatives). Get the path from `scripts/memory-write-target.sh --shard decisions <TASK-ID>` — it prints `.claude/memory/decisions/<YYYY-MM-DD>-<TASK-ID>.md` and creates nothing, so `mkdir -p "$(dirname "$path")"` first. **Never append to the root `.claude/memory/decisions.md` archive:** while every branch appended there, eight branches hit an append-collision in one day's runs — each one a rebase, a force-push and a fresh ~10-minute CI run. `scripts/memory-append-check.sh` runs in CI and fails the PR if an archive is touched or any memory line is deleted. If you'd have asked the user, write the recommendation in the shard instead.
 3. **Follow-up work is tracked, never silently dropped.** Anything you deliberately defer becomes a card on the **"TO DO"** project board (To Do, or Backlog if it's gated) — not a memory. **Orchestrated mode:** don't touch the board's **routing** (`Status`, `Depends on`) or other cards — auto-ship owns those; return follow-ups in your handoff so auto-ship creates the cards. The one thing you *do* write is the **progress block of your own card** (see Progress reporting). Likewise, **surface what you learned that changes assumptions for *other* tasks** — a changed interface, an established pattern, a decision, a gotcha, or a sibling card whose premise your work invalidated — in the handoff's `learnings:` field (and commit durable ones to `.claude/memory/`); auto-ship feeds them forward to the still-queued same-epic cards (auto-ship › Forward learning).
 4. **Pre-PR gate is `pnpm build` + `pnpm test` + lint** — not just build+test (see [[feedback_run_lint_before_pr]], [[feedback_run_tsc_alongside_vitest]]).
 5. **If a stale doc or memory line generated this card, fixing that line is part of the card.** Not a follow-up, not a nice-to-have — it ships in the same PR. Measured: three cards in one session were filed from a stale `.claude/memory/` line rather than from the code, and one of them ([[feedback_dont_conflate_generic_infra]]'s sibling, TASK-241) would have **deleted a live hook** on the strength of a prose claim that had been false for a day. Fixing the code and leaving the line means a later session re-files the same card off the same sentence. Ask it explicitly at Phase 2: *what did I read that made this card look true?* If the answer is a doc, a comment, or a memory row, correct it here. And **grep the prose spellings too**, not just the symbol — a false comment hid as "the old tool-group" after `ToolGroup` was deleted.
@@ -97,12 +97,14 @@ Per-phase line catalogue (prefix exceptions with `⚠`):
   - **Guard before the first commit:** `git rev-parse --show-toplevel` MUST NOT be the
     primary checkout root. If it is, STOP and make the worktree — never `git checkout -b`,
     commit, or `git switch` in the main checkout under any circumstance.
-- **REQUIRED:** Use claude-memory — read `.claude/memory/` so prior decisions/mistakes/patterns
-  inform the work. Commit memory updates to YOUR worktree/branch copy only, never the
-  main checkout (TASK-7 convention; `scripts/memory-write-target.sh` resolves the right dir).
+- **REQUIRED:** Use claude-memory — read `.claude/memory/`, both the root archives and the
+  `<kind>/` shards (the shards hold everything recent), so prior decisions/mistakes/patterns
+  inform the work. Write new rows as shards, and commit memory updates to YOUR
+  worktree/branch copy only, never the main checkout (TASK-7 convention;
+  `scripts/memory-write-target.sh` resolves the right dir).
 
 ### Phase 1 — Brainstorm (run it autonomously)
-- **REQUIRED:** Use superpowers:brainstorming — but in self-answering mode. Generate the questions it would ask the user, then answer each one yourself from the codebase, `.claude/memory/`, CLAUDE.md, and architecture docs. Log each material answer to `decisions.md`.
+- **REQUIRED:** Use superpowers:brainstorming — but in self-answering mode. Generate the questions it would ask the user, then answer each one yourself from the codebase, `.claude/memory/`, CLAUDE.md, and architecture docs. Log each material answer to your decisions shard (rule 2).
 - **Predecessor learnings (orchestrated / epic cards):** if your card body carries a `Predecessor learnings` block — lessons from same-epic cards merged before you — read it first and fold it into your approach. If a learning **invalidates this card's premise** (the design was built differently than this card assumed), don't guess: return `outcome: blocked` with the scope question so auto-ship routes it to Needs Input. If the card body cites a `design:` doc, read that for the full picture.
 - Use `Explore` subagents for any "how does X currently work?" question so the exploration doesn't bloat your context.
 - Output: a tight problem statement + chosen approach (a few paragraphs), not a transcript.
@@ -214,9 +216,9 @@ echo "files in range: $N"
   echo "⚠ $N files is large for one card — confirm every one is yours before dispatching."
 ```
 
-- **REQUIRED:** Dispatch the **`ax-code-reviewer`** subagent (the Agent/`Task` tool with `subagent_type: ax-code-reviewer`) to review the **whole-branch diff against `origin/main`** — the surface CI and a human reviewer see, not just the last task. In the dispatch prompt, name the diff range explicitly — **copy the `reviewer range:` line the block above printed**, rather than retyping a range from memory — and name the worktree it runs in; for a diff that needs AX-invariant / boundary-specific framing or a challenge to the chosen *approach*, add that focus to the prompt and note the choice in `decisions.md`. The agent pins its own model + effort (Opus 4.8, `effort: max` in its definition) and runs read-only, so there's no model/effort to tier and nothing to pre-authorize. **Dispatch it in the plain shape — see the dispatch contract below. An apparently hung reviewer is usually a DELIVERY problem, not a liveness one.**
-- **When to skip:** docs/comment/config-only or other non-code diffs — the PR's CodeRabbit + CodeQL + semgrep + gitleaks already cover those. Log the skip in `decisions.md`. Any code change gets reviewed.
-- **Address findings with receiving-code-review discipline** — verify each one; fix the real issues with targeted commits (test-first for bugs, per Bug Fix Policy [[feedback_targeted_followup_commits]]), and log in `decisions.md` any finding you deliberately reject and why (silent dismissal isn't allowed). Then **re-scope the range and re-dispatch the reviewer** on the updated branch — re-run the block above, because each round re-reads the current `origin/main...HEAD` diff — until it returns `APPROVE` / no actionable findings.
+- **REQUIRED:** Dispatch the **`ax-code-reviewer`** subagent (the Agent/`Task` tool with `subagent_type: ax-code-reviewer`) to review the **whole-branch diff against `origin/main`** — the surface CI and a human reviewer see, not just the last task. In the dispatch prompt, name the diff range explicitly — **copy the `reviewer range:` line the block above printed**, rather than retyping a range from memory — and name the worktree it runs in; for a diff that needs AX-invariant / boundary-specific framing or a challenge to the chosen *approach*, add that focus to the prompt and note the choice in your decisions shard (rule 2). The agent pins its own model + effort (Opus 4.8, `effort: max` in its definition) and runs read-only, so there's no model/effort to tier and nothing to pre-authorize. **Dispatch it in the plain shape — see the dispatch contract below. An apparently hung reviewer is usually a DELIVERY problem, not a liveness one.**
+- **When to skip:** docs/comment/config-only or other non-code diffs — the PR's CodeRabbit + CodeQL + semgrep + gitleaks already cover those. Log the skip in your decisions shard (rule 2). Any code change gets reviewed.
+- **Address findings with receiving-code-review discipline** — verify each one; fix the real issues with targeted commits (test-first for bugs, per Bug Fix Policy [[feedback_targeted_followup_commits]]), and log in your decisions shard (rule 2) any finding you deliberately reject and why (silent dismissal isn't allowed). Then **re-scope the range and re-dispatch the reviewer** on the updated branch — re-run the block above, because each round re-reads the current `origin/main...HEAD` diff — until it returns `APPROVE` / no actionable findings.
 - **ASK THE VACUITY QUESTION IN EVERY REVIEW DISPATCH.** Add, verbatim: *"For each new or changed
   test, work out what it would do against the UNFIXED code. A test that passes either way is a
   finding."* This is one sentence and it has already paid for itself. A PR hardened
@@ -347,7 +349,7 @@ force — it is what made the TASK-247 run fail loudly instead of silently self-
    that reviewer saw: `reviewed-sha` is that sha, **not** `headSha` by default, and
    pointing it at the head "because the fix was obviously right" is the dishonest
    version of this field. Log any stall (times, dispatch shape, whether retrieval
-   recovered it) in `decisions.md` so this keeps accumulating evidence.
+   recovered it) in your decisions shard (rule 2) so this keeps accumulating evidence.
 - **Progress on a stall:** `⚠ reviewer silent — retrieving`, then
   `⚠ reviewer hung — re-dispatching` if retrieval came back empty, then
   `⚠ reviewer hung ×2 — <fallback>` if the re-dispatch also blows the deadline.
@@ -460,7 +462,7 @@ reporting), then report the merge. Then you are done.
 
 | Thought | Reality |
 |---|---|
-| "I'll ask the user to be safe" | Document a recommendation in `decisions.md` and proceed. Asking is the exception, not the default. |
+| "I'll ask the user to be safe" | Document a recommendation in your decisions shard (rule 2) and proceed. Asking is the exception, not the default. |
 | "I'll skip lint, build+test passed" | The gate is build+test+**lint**. tsc/lint catch what vitest tolerates. |
 | "I'll defer this but it's obvious" | Obvious-to-you ≠ tracked. File a board card (or hand it off) or it's lost. |
 | "CI will probably pass, I'll wrap up" | Not done until the **`ci.yml` run EXISTS for the head** *and* is green (Phase 6). `gh pr checks` alone answers green on a head where the build and tests never ran. Verify, don't assume. |
@@ -469,7 +471,7 @@ reporting), then report the merge. Then you are done.
 | "The reviewer is hung, I'll re-dispatch" | Ask it for its findings first. A silent subagent is a **delivery** question before it is a **liveness** one — the review is usually already written. Re-dispatching first duplicates it and doubles the stall. |
 | "I'll give the reviewer a `name` so I can talk to it" | A `name` makes it a teammate whose final text is never delivered to you. That is the whole bug. Dispatch with no `name`; if you truly need one, you must also send it a message so it has an address to reply to. |
 | "Docs-only tweak, but I'll run the full review to be safe" | Skip the review for docs/comment/config-only diffs (CodeRabbit/CodeQL/semgrep/gitleaks cover those) and log the skip. The reviewer is fixed at Opus 4.8 / max effort — there's no tier to pad, just don't review non-code. |
-| "The review flagged it but I think it's fine" | Verify each finding (receiving-code-review). Fix real ones; log rejected ones in `decisions.md` with the reason. Silent dismissal isn't allowed. |
+| "The review flagged it but I think it's fine" | Verify each finding (receiving-code-review). Fix real ones; log rejected ones in your decisions shard (rule 2) with the reason. Silent dismissal isn't allowed. |
 | "I'll review locally after I open the PR" | The review is the gate *before* the PR. Open it only once the review is clean. |
 | "auto-ship dispatched me but I'll merge anyway" | Orchestrated mode = stop at a green PR + hand off. Self-merging races the other agents and corrupts the serialized queue. |
 | "I'll implement inline, subagents are overhead" | Inline implementation blows the context budget. Dispatch per task. |

@@ -40,6 +40,26 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0 # needed for affected-package detection (pnpm "...[base-sha]") on PRs
+      # `.claude/memory/` is append-only working memory that every parallel
+      # auto-ship branch writes to. It used to be five files everybody appended
+      # to, which made it a serialization point — eight append-collisions in one
+      # day's runs, on files no product code reads. New rows now go in per-task
+      # shard files, and this asserts the branch kept to that: shard-only, zero
+      # deletions. Runs before `pnpm install` because it needs nothing but git,
+      # so a memory-only mistake fails in seconds instead of after the suite.
+      #
+      # PR events only: on a push to `main` the range is empty and there is
+      # nothing to say. `github.base_ref` goes through `env:` rather than into
+      # the shell text — a branch name is attacker-influenced on a fork PR, and
+      # `${{ }}` interpolation into a `run:` block is how that becomes command
+      # injection.
+      - name: Memory is append-only (shard-only, zero deletions)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --quiet --no-tags origin "$BASE_REF"
+          scripts/memory-append-check.sh FETCH_HEAD
       - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:

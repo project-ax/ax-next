@@ -56,29 +56,56 @@ Note these two traps point in **opposite** directions and are both quiet: the
 Project-local memory lives in `.claude/memory/`. For any substantial Codex task,
 inspect that directory first and load only the memory needed for the task.
 
+It has two layers, and reading only the first misses every row written since the shard
+cutover: the five root files (`context.md`, `decisions.md`, `patterns.md`,
+`mistakes.md`, `meta.md`) are frozen **archives** — still read, no longer appended to —
+and every new row lands in a **shard**,
+`.claude/memory/<kind>/<YYYY-MM-DD>-<TASK-ID>.md`, one small file per task per kind.
+
 Default approach:
 
-- Read small repo-local memory files directly when they are relevant:
-  `context.md`, `patterns.md`, `mistakes.md`, and `meta.md`.
-- Search `decisions.md` for task-relevant terms before reading large sections.
+- Read the small root archives directly when they are relevant — `context.md`,
+  `patterns.md`, `mistakes.md`, `meta.md` — and read each one's shard directory
+  alongside it.
+- Search `decisions.md` for task-relevant terms before reading large sections; the
+  `decisions/` shards are small enough to read whole.
 - Treat `/Users/vpulim/.claude/projects/-Users-vpulim-dev-ai-ax-next/memory/MEMORY.md`
   as an index. Follow linked notes selectively instead of loading the whole
   directory.
-- Update `.claude/memory/` as you work and **commit those changes** — these files are tracked in the repo, not gitignored. Fold a memory update into the same commit as the work that produced it (or a small follow-up commit on the branch).
+- Write new rows to a shard, never to an archive, and commit it with the work that
+  produced it — these files are tracked in the repo, not gitignored.
+
+  ```bash
+  path=$(scripts/memory-write-target.sh --shard decisions TASK-415)
+  mkdir -p "$(dirname "$path")"   # --shard only prints the path; it creates nothing
+  ```
 
 **Parallel-agent rule (read this if auto-ship dispatched you).** Write + commit
 `.claude/memory/` **only in your own worktree/branch copy — never the shared main
-checkout** (`/home/vpulim/dev/ai/ax-next`). auto-ship runs several `yolo-ship` agents
-at once; they have at times all operated on the same main checkout, and a concurrent
-write there **silently dropped another agent's appended rows** (the bug TASK-7 fixes).
-Your branch copy is the safe target: it's tracked, so `git worktree add` carries it in,
-your rows land on PR merge through the serialized queue, and a genuine clash surfaces as
-a normal git merge conflict instead of a silent overwrite. (A solo human editing memory
-on `main` with no agents running is fine — the hazard is specifically the shared
-checkout under parallelism.) Unsure where you are? Run
+checkout** (`/home/vpulim/dev/ai/ax-next`), and write it as a shard. auto-ship runs
+several `yolo-ship` agents at once, and while they all appended to the same five root
+files those files were the serialization point: eight append-collisions in one day's
+runs, two of them on branches that hit a *second* one while merely waiting in the merge
+queue — every one of them just "both sides appended at EOF", and every one costing a
+rebase, a force-push and a fresh ~10-minute CI run. Shards remove the collision instead
+of resolving it: two branches never write the same bytes, so there is nothing to merge.
+(A solo human editing memory on `main` with no agents running is fine — the hazard is
+the shared checkout under parallelism.) Unsure where you are? Run
 `scripts/memory-write-target.sh` — it prints the right `.claude/memory` dir for your
 current tree and warns (with `--check`, exits nonzero) if you're in the shared main
 checkout while linked worktrees exist.
+
+`scripts/memory-append-check.sh` enforces this, and CI runs it on every PR:
+
+- **R1** — no line under `.claude/memory/` may be **deleted** (deliberately stronger
+  than "my rows survived"; the `claude-memory` skill has the incident that earned it).
+- **R2** — a root `.claude/memory/<name>.md` archive may not be touched at all.
+
+A deliberate hygiene pass does need to edit an archive: put a `Memory-Rewrite: <reason>`
+trailer on a commit in the range and the guard waives both rules. It has to be a real
+trailer, in the trailer block — prose that merely quotes the line does not waive.
+**Agents shipping a card do not add it.** Tripping the guard means the rows went to the
+wrong place, and the fix is a shard; hygiene is a human call on a branch of its own.
 
 If the task touches architecture, hooks, plugins, security boundaries, CI/PR
 workflow, UI conventions, manual acceptance, or prior regressions, bias toward

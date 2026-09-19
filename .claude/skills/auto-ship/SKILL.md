@@ -591,9 +591,10 @@ established pattern, a decision, a gotcha, or "this sibling card's premise is no
   accumulated learnings, and either adapts (logging the decision) or returns `blocked →
   Needs Input` if a learning invalidates the card's premise (a human-owned scope change).
 - **Channel B — repo memory (passive, global, already there).** yolo-ship commits
-  decisions/patterns/mistakes to `.claude/memory/` on its branch; on merge those land on
-  `main`, and every *later*-dispatched card branches a fresh worktree from the updated
-  `main`, inheriting both the merged code and memory. Channel A is the in-your-face,
+  decisions/patterns/mistakes as per-task shards under `.claude/memory/<kind>/` on its
+  branch; on merge those land on `main`, and every *later*-dispatched card branches a
+  fresh worktree from the updated `main`, inheriting both the merged code and memory.
+  Channel A is the in-your-face,
   epic-scoped boost; Channel B is the durable global substrate.
 
 This step runs inside the **merge queue** (below the merge, above the next dispatch), so a
