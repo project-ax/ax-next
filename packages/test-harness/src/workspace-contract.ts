@@ -28,9 +28,23 @@ import type {
 
 export function runWorkspaceContract(label: string, makePlugin: () => Plugin): void {
   describe(`workspace contract: ${label}`, () => {
+    // Every scenario gets its own agentId. Backends that keep one process-
+    // wide store (a shared git server, say) are then isolated scenario-from-
+    // scenario by the very partition the isolation block below asserts,
+    // instead of by a test-only override that switches the partition off.
+    // That override is exactly how a ctx-ignoring backend used to slip
+    // through this suite.
+    let scenario = 0;
     async function load() {
       const h = await createTestHarness({ plugins: [makePlugin()] });
-      return h;
+      const agentId = `contract-agent-${++scenario}`;
+      return {
+        ...h,
+        /** This scenario's agent. Isolation cases derive siblings off it. */
+        agentId,
+        ctx: (overrides?: Parameters<typeof h.ctx>[0]) =>
+          h.ctx({ agentId, ...overrides }),
+      };
     }
     const enc = new TextEncoder();
 
@@ -224,6 +238,189 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
       // someday, they're violating the contract. This test asserts only that the
       // value is a string — nothing about its shape.
       expect(typeof r.version).toBe('string');
+    });
+
+    // -----------------------------------------------------------------------
+    // TENANT ISOLATION (TASK-413)
+    // -----------------------------------------------------------------------
+    // Isolation is a property EVERY workspace backend owes its callers, and
+    // until this block existed no shared assertion made any of them prove it.
+    // That is how #583 happened: `@ax/workspace-git-server` partitioned
+    // correctly, `@ax/workspace-git-core` never had, the chart's default
+    // (`workspace.backend: local`) selects the core — and one user's Files tab
+    // served another user's agent's file on a live deployment. Both backends
+    // passed this same contract, start to finish, the whole time.
+    //
+    // THE PARTITION IS `agentId` ALONE. That is the policy `@ax/workspace-git-
+    // server`'s `workspaceIdFor`, `@ax/workspace-git-core`'s
+    // `workspaceIdForAgent` and both memory-index `agentScopeKey`s already
+    // implement (TASK-257 / TASK-396), and it has to be asserted in BOTH
+    // directions or the assertion is satisfied by the wrong key:
+    //
+    //   - different agentId  ⇒ ISOLATED (cases 1, 2, 3, 5)
+    //   - same agentId, different userId ⇒ SHARED (case 4)
+    //
+    // Either direction alone passes under a partition on the pair
+    // `(userId, agentId)`, which silently fragments a team agent's shared
+    // files per-user. The sibling `runIndexContract` learned this the
+    // expensive way: its original isolation case varied userId AND agentId
+    // together, so it held under any partition containing either field. It
+    // looked rigorous for months and pinned nothing about which key. Do not
+    // reintroduce that shape — every ctx pair below varies EXACTLY ONE field.
+    //
+    // ⚠ NOT an access-control test. Nothing here says a caller MAY reach an
+    // agent; that is the `agents:resolve` ACL's job, and since TASK-257 it is
+    // the only barrier. This pins that two AUTHORIZED callers of one agent see
+    // one workspace, and that two agents see two.
+    describe('tenant isolation: the partition is agentId alone', () => {
+      async function tenants() {
+        const h = await load();
+        const caller = (userId: string, agentId: string) =>
+          h.ctx({ userId, agentId, sessionId: `${userId}:${agentId}` });
+        const write = (
+          ctx: ReturnType<typeof caller>,
+          path: string,
+          body: string,
+          parent: WorkspaceApplyInput['parent'] = null,
+        ) =>
+          h.bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
+            'workspace:apply',
+            ctx,
+            { changes: [{ path, kind: 'put', content: enc.encode(body) }], parent },
+          );
+        const list = (ctx: ReturnType<typeof caller>) =>
+          h.bus.call<WorkspaceListInput, WorkspaceListOutput>(
+            'workspace:list',
+            ctx,
+            {},
+          );
+        const read = (
+          ctx: ReturnType<typeof caller>,
+          path: string,
+          version?: WorkspaceVersion,
+        ) =>
+          h.bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
+            'workspace:read',
+            ctx,
+            version === undefined ? { path } : { path, version },
+          );
+        // Agent ids are suffixed off this scenario's base id, so two `it`s
+        // never collide on a backend whose store outlives one plugin
+        // instance (the git server's, for one).
+        const A = `${h.agentId}-a`;
+        const B = `${h.agentId}-b`;
+        const SHARED = `${h.agentId}-shared`;
+        return { h, caller, write, list, read, A, B, SHARED };
+      }
+
+      it("one agent's tree is invisible to a different agent", async () => {
+        // Direction 1, the #583 walk reduced to its bones. The two ctxs differ
+        // in agentId ONLY — same userId — so this cannot be satisfied by a
+        // partition on userId.
+        const { caller, write, list, read, A, B } = await tenants();
+        const asA = caller('user-shared', A);
+        const asB = caller('user-shared', B);
+
+        await write(asA, 'CAVEMAN-POEM.md', 'CAVEMAN POEM\nby Caveman\n');
+
+        expect((await list(asB)).paths).toEqual([]);
+        expect(await read(asB, 'CAVEMAN-POEM.md')).toMatchObject({ found: false });
+      });
+
+      it('each agent still reads back its OWN file (anti-vacuity guard)', async () => {
+        // A backend that answered "not found" to everybody satisfies every
+        // isolation assertion above and is completely broken. This case passes
+        // BEFORE and AFTER any partitioning fix, on purpose: it exists to fail
+        // if a fix over-reaches. Do not "fix" it into failing against a pooled
+        // backend — check instead that the others still do.
+        const { caller, write, list, read, A } = await tenants();
+        const asA = caller('user-shared', A);
+
+        await write(asA, 'mine.md', 'hello');
+
+        expect((await list(asA)).paths).toEqual(['mine.md']);
+        const got = await read(asA, 'mine.md');
+        expect(got.found).toBe(true);
+        expect(got.found === true && new TextDecoder().decode(got.bytes)).toBe(
+          'hello',
+        );
+      });
+
+      it('a second agent starts from an empty history — its first apply passes parent: null', async () => {
+        // The structural half of isolation: not "B could not read A's file"
+        // but "there is no single history for them to share". Against a pooled
+        // backend A's apply advances the one head, so B's `parent: null`
+        // raises `parent-mismatch` instead of succeeding.
+        const { caller, write, list, A, B } = await tenants();
+        const asA = caller('user-shared', A);
+        const asB = caller('user-shared', B);
+
+        const a1 = await write(asA, 'a.md', 'a');
+        const b1 = await write(asB, 'b.md', 'b');
+        expect(b1.delta.before).toBeNull();
+
+        // ...and each history then continues independently from its OWN head.
+        await write(asA, 'a2.md', 'a2', a1.version);
+        await write(asB, 'b2.md', 'b2', b1.version);
+
+        expect([...(await list(asA)).paths].sort()).toEqual(['a.md', 'a2.md']);
+        expect([...(await list(asB)).paths].sort()).toEqual(['b.md', 'b2.md']);
+      });
+
+      it('two users of the SAME agent share ONE tree', async () => {
+        // Direction 2, and the other anti-vacuity guard. The two ctxs differ
+        // in userId ONLY — same agentId. A backend keyed on `(userId,
+        // agentId)` passes every isolation case above and fails here, which is
+        // the whole reason both directions are asserted: it would turn a team
+        // agent's shared files into per-user fragments and diverge from the
+        // memory index, which partitions on agentId alone.
+        //
+        // Like the guard above, this passes against a fully pooled backend
+        // too. That is correct — a guard is supposed to pass against the
+        // mutant it is not aimed at.
+        const { caller, write, list, read, SHARED } = await tenants();
+        const alice = caller('user-alice', SHARED);
+        const bob = caller('user-bob', SHARED);
+
+        const first = await write(alice, 'team-notes.md', 'from alice');
+
+        expect((await list(bob)).paths).toEqual(['team-notes.md']);
+        const got = await read(bob, 'team-notes.md');
+        expect(got.found).toBe(true);
+        expect(got.found === true && new TextDecoder().decode(got.bytes)).toBe(
+          'from alice',
+        );
+
+        // The WRITE domain is shared too, not just the read view: bob
+        // continues alice's history rather than forking a private one.
+        const second = await write(bob, 'bob-notes.md', 'from bob', first.version);
+        expect(second.delta.before).toBe(first.version);
+        expect([...(await list(alice)).paths].sort()).toEqual([
+          'bob-notes.md',
+          'team-notes.md',
+        ]);
+      });
+
+      it("an explicit version from one agent does not hand another agent the bytes", async () => {
+        // `{ version }` is the one input that names a point in history
+        // directly, so it is the obvious way around a partition enforced only
+        // on the implicit head. Backends differ in HOW they refuse — a
+        // storage-agnostic contract cannot demand `found: false` over a
+        // thrown `unknown-version`, and both are honest refusals — so this
+        // asserts the part that actually matters: agent B never receives
+        // agent A's bytes. Against a pooled backend the read resolves and
+        // hands them over.
+        const { caller, write, read, A, B } = await tenants();
+        const asA = caller('user-shared', A);
+        const asB = caller('user-shared', B);
+
+        const a1 = await write(asA, 'secret.md', 'agent A only');
+
+        const out = await read(asB, 'secret.md', a1.version).catch(
+          () => ({ found: false }) as WorkspaceReadOutput,
+        );
+        expect(out.found).toBe(false);
+      });
     });
   });
 }
