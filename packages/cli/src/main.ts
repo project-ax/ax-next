@@ -35,6 +35,7 @@ import {
   DEFAULT_ORCHESTRATOR_MODEL,
 } from '@ax/memory-strata';
 import { createMemoryStrataIndexSqlitePlugin } from '@ax/memory-strata-index-sqlite';
+import { createMemoryFactsSqlitePlugin } from '@ax/memory-facts-sqlite';
 import { createWebToolsPlugin } from '@ax/web-tools';
 import { createDevAgentsStubPlugin } from './dev-agents-stub.js';
 import { AxConfigSchema, type AxConfig, type AxConfigInput } from './config/schema.js';
@@ -290,6 +291,25 @@ export async function main(opts: MainOptions): Promise<number> {
   // half-wired window: the validator + the `services` schema field exist, but
   // nothing folds a service descriptor onto a session yet.
   plugins.push(createValidatorServicePlugin());
+
+  // TASK-421 (DEM-first memory design, docs/plans/2026-09-18-dem-first-memory-
+  // design.md §2.1-2.2): registers memory:facts:record|recall|supersede|clear —
+  // the storage/closure engine only. Postgres-free (owns its own sqlite table,
+  // no collision with storage-sqlite's), so it loads unconditionally here like
+  // the other no-external-dep plugins above. This OPENS TWO half-wired windows,
+  // both tracked, neither closed by this plugin alone:
+  //  (a) no CONSUMER yet — @ax/memory (observer, tools, export) doesn't exist.
+  //  (b) no K8S BACKEND yet — @ax/memory-facts-postgres doesn't exist, so
+  //      presets/k8s does NOT load a facts engine at all; memory:facts:* is
+  //      unreachable in production until TASK-423 ships + wires it into
+  //      presets/k8s/src/index.ts with its own preset.test.ts canary (the
+  //      same two-preset shape memory-strata-index-{sqlite,postgres} already
+  //      has). Do not wire a `memory:facts` consumer into presets/k8s before
+  //      TASK-423 lands, or it will boot against a missing service hook.
+  // See .claude/memory/decisions.md's TASK-421 entries.
+  plugins.push(
+    createMemoryFactsSqlitePlugin({ databasePath: opts.sqlitePath ?? DEFAULT_SQLITE_PATH }),
+  );
 
   // Sandbox. Config only admits 'subprocess' today; the switch is future-
   // proofing for when alternate sandbox providers land.
