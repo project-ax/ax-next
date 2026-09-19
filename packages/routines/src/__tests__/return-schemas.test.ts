@@ -33,7 +33,7 @@ import {
 const routineRow: RoutineRow = {
   agentId: 'ag1',
   path: 'notify',
-  authorUserId: 'u1',
+  ownerUserId: 'u1',
   name: 'Notify',
   description: 'pings on event',
   specHash: 'abc123',
@@ -83,9 +83,28 @@ const defaultDetail: DefaultRoutineDetail = {
 };
 
 describe('routines return schemas', () => {
-  it('routines:list round-trips a fully-populated RoutineRow (Dates intact)', () => {
-    const full: ListOutput = { routines: [routineRow] };
-    expect(ListOutputSchema.parse(full)).toEqual(full);
+  it('routines:list round-trips a fully-populated RoutineRow minus the owner (Dates intact)', () => {
+    // Deliberately fed the wider domain row — same posture as the two
+    // recent-fires cases below: the store hands the handler a `RoutineRow`
+    // and the `returns` schema is what narrows at the bus edge.
+    const out: ListOutput = ListOutputSchema.parse({ routines: [routineRow] });
+    const { ownerUserId: _owner, ...withoutOwner } = routineRow;
+    expect(out).toEqual({ routines: [withoutOwner] });
+  });
+
+  // TASK-397. Same shape of guarantee as the `id` pair below, for the same
+  // reason: nothing in tsc catches a re-widened wire row, because the HTTP hop
+  // that carries it is an untyped `get<T>` plus a cast.
+  //
+  // `ownerUserId` is the identity a routine FIRES AS. It is real state the
+  // store needs, but it is not the browser's business — it was rendered
+  // nowhere in `channel-web`, and `routines-admin-routes` only forwards the
+  // array it receives. Shipping it anyway is reach nobody asked for
+  // (invariant 5), and it is also the field most likely to be stale, since it
+  // is re-derived from the agent on every tick.
+  it('routines:list DROPS ownerUserId (the identity a routine fires as)', () => {
+    const out: ListOutput = ListOutputSchema.parse({ routines: [routineRow] });
+    expect('ownerUserId' in out.routines[0]!).toBe(false);
   });
 
   // This pair is load-bearing and must stay a pair (TASK-251, then TASK-312).

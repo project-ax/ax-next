@@ -32,7 +32,7 @@ afterAll(async () => {
 const baseUpsert = {
   agentId: 'agt_a',
   path: '.ax/routines/r.md',
-  authorUserId: 'u1',
+  ownerUserId: 'u1',
   name: 'r',
   description: 'd',
   specHash: 'sha-1',
@@ -94,7 +94,7 @@ describe('routines store', () => {
   it('claimDue skips webhook rows', async () => {
     const store = createRoutinesStore(db);
     await db.insertInto('routines_v1_definitions').values({
-      agent_id: 'agt_b', path: '.ax/routines/w.md', author_user_id: 'u1',
+      agent_id: 'agt_b', path: '.ax/routines/w.md', owner_user_id: 'u1',
       name: 'w', description: 'd', spec_hash: 'h',
       trigger_kind: 'webhook', trigger_spec: { kind: 'webhook', path: '/x' },
       active_hours: null, silence_token: null, silence_max: 300,

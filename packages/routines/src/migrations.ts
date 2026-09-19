@@ -20,7 +20,7 @@ const HEARTBEAT_SEED_MD: string = [
 export interface RoutinesDefinitionsRow {
   agent_id: string;
   path: string;
-  author_user_id: string;
+  owner_user_id: string;
   name: string;
   description: string;
   spec_hash: string;
@@ -98,7 +98,7 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
     CREATE TABLE IF NOT EXISTS routines_v1_definitions (
       agent_id        TEXT        NOT NULL,
       path            TEXT        NOT NULL,
-      author_user_id  TEXT        NOT NULL,
+      owner_user_id   TEXT        NOT NULL,
       name            TEXT        NOT NULL,
       description     TEXT        NOT NULL,
       spec_hash       TEXT        NOT NULL,
@@ -117,6 +117,41 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
       updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
       PRIMARY KEY (agent_id, path)
     )
+  `.execute(db);
+
+  // TASK-397: `author_user_id` → `owner_user_id`.
+  //
+  // The old name is the bug it carried. "author" invited the sync path to
+  // write whoever last touched the file, so on a shared (team) workspace the
+  // second authorised editor silently took over the schedule — and with it
+  // the credential scope every fire runs under. The column now holds the
+  // routine's OWNER identity, which is derived from the agent
+  // (`agents:list-personal-owners`) and re-asserted on every tick, never
+  // from a file writer.
+  //
+  // Guarded rather than `IF EXISTS` because postgres has no
+  // `ALTER TABLE ... RENAME COLUMN IF EXISTS`. Idempotent in both
+  // directions: on a fresh DB the CREATE above already made
+  // `owner_user_id`, so the lookup finds nothing and this no-ops.
+  //
+  // DATA: values are carried across as-is — no backfill here. Every stored
+  // value is already inside the set `agents:resolve` authorises for that
+  // agent, so nothing widens at migration time; the first tick after deploy
+  // re-derives user-owned agents' rows via `reconcileOwners` (store.ts),
+  // which is where a row that had drifted to a later editor is corrected.
+  await sql`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = 'routines_v1_definitions'
+           AND column_name = 'author_user_id'
+      ) THEN
+        ALTER TABLE routines_v1_definitions
+          RENAME COLUMN author_user_id TO owner_user_id;
+      END IF;
+    END $$;
   `.execute(db);
 
   await sql`
@@ -288,14 +323,14 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
   `.execute(db);
 
   // PR #105 backfill: drop default-sourced rows materialized with the
-  // synthetic system-actor string. fire.ts passes author_user_id to
+  // synthetic system-actor string. fire.ts passes owner_user_id to
   // agents:resolve's ACL gate, which rejects '@ax/routines/defaults'
   // as forbidden. Targeted DELETE is safe because routines_v1_fires
   // has no FK to definitions, and the next tick re-materializes each
   // row with the real owner via agents:list-personal-owners.
   await sql`
     DELETE FROM routines_v1_definitions
-     WHERE author_user_id = '@ax/routines/defaults'
+     WHERE owner_user_id = '@ax/routines/defaults'
        AND definition_id IS NOT NULL
   `.execute(db);
 }

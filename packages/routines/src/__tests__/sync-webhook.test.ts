@@ -273,7 +273,7 @@ describe('rebindWebhooksForAgent — Finding #5 rotation re-bind', () => {
 
     // Seed a webhook routine in the store.
     await store.upsert({
-      agentId: 'agt_a', path: '.ax/routines/r.md', authorUserId: 'u1',
+      agentId: 'agt_a', path: '.ax/routines/r.md', ownerUserId: 'u1',
       name: 'r', description: 'd', specHash: 'h1',
       trigger: { kind: 'webhook', path: '/r/x' },
       activeHours: null, silenceToken: null, silenceMax: 0,
@@ -315,7 +315,7 @@ describe('rebindWebhooksForAgent — Finding #5 rotation re-bind', () => {
 
     // Seed an interval routine — should be skipped.
     await store.upsert({
-      agentId: 'agt_a', path: '.ax/routines/cron.md', authorUserId: 'u1',
+      agentId: 'agt_a', path: '.ax/routines/cron.md', ownerUserId: 'u1',
       name: 'c', description: 'd', specHash: 'h2',
       trigger: { kind: 'interval', every: '60s' },
       activeHours: null, silenceToken: null, silenceMax: 0,
@@ -341,14 +341,14 @@ describe('rebindWebhooksForAgent — Finding #5 rotation re-bind', () => {
 
     // Two webhook routines.
     await store.upsert({
-      agentId: 'agt_a', path: '.ax/routines/a.md', authorUserId: 'u1',
+      agentId: 'agt_a', path: '.ax/routines/a.md', ownerUserId: 'u1',
       name: 'a', description: 'd', specHash: 'ha',
       trigger: { kind: 'webhook', path: '/r/a' },
       activeHours: null, silenceToken: null, silenceMax: 0,
       conversation: 'per-fire', promptBody: 'hi', nextRunAt: null,
     });
     await store.upsert({
-      agentId: 'agt_a', path: '.ax/routines/b.md', authorUserId: 'u1',
+      agentId: 'agt_a', path: '.ax/routines/b.md', ownerUserId: 'u1',
       name: 'b', description: 'd', specHash: 'hb',
       trigger: { kind: 'webhook', path: '/r/b' },
       activeHours: null, silenceToken: null, silenceMax: 0,

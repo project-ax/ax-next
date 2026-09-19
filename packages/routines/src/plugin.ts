@@ -171,7 +171,7 @@ export function createRoutinesPlugin(
               try {
                 await bus.call('conversations:drop-turn', ctx, {
                   conversationId: pf.conversationId,
-                  userId: pf.row.authorUserId,
+                  userId: pf.row.ownerUserId,
                   turnId,
                 });
               } catch (err) {
@@ -193,7 +193,7 @@ export function createRoutinesPlugin(
               try {
                 await bus.call('conversations:hide', ctx, {
                   conversationId: pf.conversationId,
-                  userId: pf.row.authorUserId,
+                  userId: pf.row.ownerUserId,
                 });
               } catch (err) {
                 ctx.logger.warn('routines_hide_failed', {

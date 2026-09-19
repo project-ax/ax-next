@@ -89,7 +89,7 @@ describe('routines:list', () => {
       dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString }) }),
     });
     await k.insertInto('routines_v1_definitions').values({
-      agent_id: 'agt_a', path: '.ax/routines/r.md', author_user_id: 'u1',
+      agent_id: 'agt_a', path: '.ax/routines/r.md', owner_user_id: 'u1',
       name: 'r', description: 'd', spec_hash: 'h',
       trigger_kind: 'interval', trigger_spec: { kind: 'interval', every: '60s' },
       active_hours: null, silence_token: null, silence_max: 300,
@@ -111,7 +111,7 @@ describe('routines:fire-now', () => {
     // Seed next_run_at far in the future so the harness's tick loop
     // can't race fire-now. fire-now ignores next_run_at; tick honors it.
     await k.insertInto('routines_v1_definitions').values({
-      agent_id: 'agt_a', path: '.ax/routines/r.md', author_user_id: 'u1',
+      agent_id: 'agt_a', path: '.ax/routines/r.md', owner_user_id: 'u1',
       name: 'r', description: 'd', spec_hash: 'h',
       trigger_kind: 'interval', trigger_spec: { kind: 'interval', every: '60s' },
       active_hours: null, silence_token: null, silence_max: 300,
@@ -181,7 +181,7 @@ describe('routines:set-agent-default-enabled', () => {
 
     // Pre-materialize the heartbeat for this agent so disable has a row to drop.
     await k.insertInto('routines_v1_definitions').values({
-      agent_id: 'agt_owned', path: `default:${HEARTBEAT_ID}`, author_user_id: 'owner-1',
+      agent_id: 'agt_owned', path: `default:${HEARTBEAT_ID}`, owner_user_id: 'owner-1',
       name: 'heartbeat', description: 'd', spec_hash: 'seed-2026-05-19',
       trigger_kind: 'interval', trigger_spec: { kind: 'interval', every: '24h' },
       active_hours: null, silence_token: 'HEARTBEAT_OK', silence_max: 300,
@@ -211,7 +211,7 @@ describe('routines:set-agent-default-enabled', () => {
     const afterReEnable = await k.selectFrom('routines_v1_definitions').selectAll()
       .where('agent_id', '=', 'agt_owned').where('definition_id', '=', HEARTBEAT_ID).execute();
     expect(afterReEnable).toHaveLength(1);
-    expect(afterReEnable[0]!.author_user_id).toBe('owner-1');
+    expect(afterReEnable[0]!.owner_user_id).toBe('owner-1');
 
     const listEnabled = await h.bus.call('routines:list-agent-defaults', h.ctx({ userId: 'owner-1' }), {
       agentId: 'agt_owned',

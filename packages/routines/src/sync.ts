@@ -97,7 +97,19 @@ export async function handleWorkspaceApplied(
       const upsertResult = await deps.store.upsert({
         agentId,
         path: change.path,
-        authorUserId: userId,
+        // TASK-397 — INSERT-ONLY. `store.upsert` does not carry this field
+        // into its ON CONFLICT SET, so an apply against an EXISTING routine
+        // cannot change who it runs as. That is the whole fix: a routine is
+        // owned by its agent, and editing the file transfers nothing.
+        //
+        // The delta author is used only to seed a brand-new row, because it
+        // is the only identity this subscriber has (a `workspace:applied`
+        // delta carries no agent record). It is a bootstrap value, not the
+        // ownership model: for a user-owned agent the very next tick replaces
+        // it with the agent's owner via `reconcileOwners` — and for a
+        // PERSONAL agent the writer already IS that owner, since the owner is
+        // the only identity `agents:resolve` authorises.
+        ownerUserId: userId,
         name: parsed.fields.name,
         description: parsed.fields.description,
         specHash: parsed.specHash,
@@ -205,7 +217,7 @@ async function bindWebhookRouteFor(
       { actor: { userId: string; isAdmin: boolean }; agentId: string },
       { token: string }
     >('agents:ensure-webhook-token', ctx,
-      { actor: { userId: row.authorUserId, isAdmin: false }, agentId: row.agentId });
+      { actor: { userId: row.ownerUserId, isAdmin: false }, agentId: row.agentId });
     const out = await deps.bus.call<
       { method: 'POST'; path: string; handler: unknown; bypassCsrf: boolean },
       { unregister: () => void }

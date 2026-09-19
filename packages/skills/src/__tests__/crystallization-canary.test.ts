@@ -144,7 +144,7 @@ function reflectionRow(over: Partial<RoutineRow> = {}): RoutineRow {
   return {
     agentId: 'a1',
     path: 'default:skill-reflection',
-    authorUserId: 'u1',
+    ownerUserId: 'u1',
     name: 'skill-reflection',
     description: 'crystallization',
     specHash: 'h',

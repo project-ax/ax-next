@@ -8,7 +8,7 @@ import type { RoutinesStore } from '../store.js';
 
 function makeRow(over: Partial<RoutineRow> = {}): RoutineRow {
   return {
-    agentId: 'agt_a', path: '.ax/routines/r.md', authorUserId: 'u1',
+    agentId: 'agt_a', path: '.ax/routines/r.md', ownerUserId: 'u1',
     name: 'r', description: 'd', specHash: 'h',
     trigger: { kind: 'webhook', path: '/r' },
     activeHours: null, silenceToken: null, silenceMaxChars: 300,

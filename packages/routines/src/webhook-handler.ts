@@ -54,7 +54,7 @@ export function makeWebhookHandler(deps: WebhookHandlerDeps): HttpRouteHandler {
       try {
         secret = await deps.bus.call<CredentialsGetInput, CredentialsGetOutput>(
           'credentials:get', ctx,
-          { ref: trigger.hmac.secretRef, userId: row.authorUserId },
+          { ref: trigger.hmac.secretRef, userId: row.ownerUserId },
         );
       } catch {
         res.status(401).end();
