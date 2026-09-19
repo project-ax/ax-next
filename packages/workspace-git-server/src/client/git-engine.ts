@@ -1417,15 +1417,21 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
     input: WorkspaceReadInput,
   ): Promise<WorkspaceReadOutput> => {
     guardClosed();
+    // Validate BEFORE the queue, the mirror lease and the storage-tier fetch.
+    // The security property only needs the check to precede the argv token,
+    // but a caller version does not depend on mirror state, so there is no
+    // reason to buy a network round-trip and a mirror sync for a string we
+    // are about to reject.
+    const pinned =
+      input.version === undefined
+        ? undefined
+        : requireOid(input.version, 'workspace:read', 'version');
     return enqueue(workspaceId, async () => {
       guardClosed();
       const remoteUrl = remoteUrlFor(opts.baseUrl, workspaceId);
       return opts.mirrorCache.withMirror(workspaceId, async (handle) => {
         await fetchMirror(remoteUrl, opts.token, handle.dir);
-        const target =
-          input.version !== undefined
-            ? requireOid(input.version, 'workspace:read', 'version')
-            : await currentMirrorOid(handle.dir);
+        const target = pinned ?? (await currentMirrorOid(handle.dir));
         if (target === null) return { found: false };
         const exists = await runGit([
           '-C',
@@ -1446,15 +1452,17 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
     input: WorkspaceListInput,
   ): Promise<WorkspaceListOutput> => {
     guardClosed();
+    // Same fail-fast placement as `read` above.
+    const pinned =
+      input.version === undefined
+        ? undefined
+        : requireOid(input.version, 'workspace:list', 'version');
     return enqueue(workspaceId, async () => {
       guardClosed();
       const remoteUrl = remoteUrlFor(opts.baseUrl, workspaceId);
       return opts.mirrorCache.withMirror(workspaceId, async (handle) => {
         await fetchMirror(remoteUrl, opts.token, handle.dir);
-        const target =
-          input.version !== undefined
-            ? requireOid(input.version, 'workspace:list', 'version')
-            : await currentMirrorOid(handle.dir);
+        const target = pinned ?? (await currentMirrorOid(handle.dir));
         if (target === null) return { paths: [] };
         const r = await runGit([
           '-C',
@@ -1485,16 +1493,18 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
     input: WorkspaceDiffInput,
   ): Promise<WorkspaceDiffOutput> => {
     guardClosed();
+    // Same fail-fast placement as `read` above. Neither endpoint depends on
+    // mirror state, so both are validated before the fetch.
+    const from =
+      input.from === null
+        ? null
+        : requireOid(input.from, 'workspace:diff', 'from');
+    const to = requireOid(input.to, 'workspace:diff', 'to');
     return enqueue(workspaceId, async () => {
       guardClosed();
       const remoteUrl = remoteUrlFor(opts.baseUrl, workspaceId);
       return opts.mirrorCache.withMirror(workspaceId, async (handle) => {
         await fetchMirror(remoteUrl, opts.token, handle.dir);
-        const from =
-          input.from === null
-            ? null
-            : requireOid(input.from, 'workspace:diff', 'from');
-        const to = requireOid(input.to, 'workspace:diff', 'to');
         // diff() is read-only — no author (no actor performed the diff).
         const delta = await buildDelta(handle.dir, from, to, undefined, undefined);
         return { delta };
