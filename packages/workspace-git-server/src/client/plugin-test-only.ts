@@ -85,8 +85,14 @@ interface PluginState {
  *
  * Same partition policy as production (`workspaceIdFor`): `agentId` ALONE,
  * never `userId` and never the pair. Two users of one agent land on one
- * repo; two agents never do. The digest keeps the result inside
- * `WORKSPACE_ID_REGEX` no matter what an agentId contains.
+ * repo; two agents never do.
+ *
+ * The digest contributes only `[0-9a-f]`, so no `agentId` — however hostile —
+ * can steer the result. Whether the whole id satisfies `WORKSPACE_ID_REGEX`
+ * also depends on `namespace`, which is neither hashed nor validated here: a
+ * fixture passing `Foo` or `-x` gets an id the server rejects. That is the
+ * fixture's problem, not a caller-reachable one, since `namespace` comes from
+ * test code and never from a request.
  */
 export function namespacedWorkspaceId(namespace: string, agentId: string): string {
   const h = createHash('sha256').update(JSON.stringify([agentId])).digest('hex');
