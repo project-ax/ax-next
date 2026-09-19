@@ -38,37 +38,53 @@
 // piped into `head` and `$?` was `head`'s status. A guard that asserted on a piped exit
 // code would pass against the broken form. The stub therefore records what the title
 // BECAME, in a file, and the tests read that -- an outcome no pipeline can launder. (The
-// one place an exit status is asserted, `refusal is loud`, keys off the FATAL line the
-// doc prints, which is itself only reachable because the doc's `||` is unpiped.)
+// two places an exit status matters, `refusal is loud` and `transient lookup failure`,
+// key off the FATAL lines the doc prints, which are themselves only reachable because
+// the doc's `||`s are unpiped.)
+//
+// The trap has TWO sites, which is not obvious and was a review finding. The first is
+// the edit. The second is the LOOKUP: `DI=$(gh api graphql … | jq …)` throws gh's status
+// away just as thoroughly, and the symptom is subtler -- an API blip arrives as an empty
+// `$DI`, indistinguishable from a card that genuinely has no draft issue. Those have
+// opposite remedies (retry next pass vs. stop trying), so §8.2 keeps the lookup's rc too
+// and says which happened. The sibling helper `append_progress` (§6) has always done
+// this for its own read; the first version of this fix did not, and the prose claimed
+// parity with it.
 //
 // MUTANTS RUN, NOT REASONED ABOUT (2026-09-19, each applied to the committed text and
-// executed; baseline 12 passed on a machine with zsh and jq). Every mutant below still
-// COLLECTS 12, so none of them reddened by making the suite smaller -- the number to
-// distrust is a red count that arrives with a shrunken total.
+// executed, then restored; baseline 15 passed on a machine with zsh and jq). Every
+// mutant below still COLLECTS 15, so none of them reddened by making the suite smaller
+// -- the number to distrust is a red count that arrives with a shrunken total.
 //
 //   - Revert §8.2 to the exact pre-fix line, `--id "$ITEM_ID"` with no resolution and no
-//     guards, while LEAVING the surrounding prose in place -> 9 red. That is the vacuity
+//     guards, while LEAVING the surrounding prose in place -> 12 red. That is the vacuity
 //     scenario stated as a mutant: the section still says "DI_" four times and explains
-//     the measurement, and the guard reddens anyway. `assigns the new title`, `preserves
-//     the human's title`, `linked-issue card` and `refusal is loud` x both shells, plus
-//     the `gh api graphql` structural check. The title file still holds the untagged
-//     title -- the production symptom verbatim.
+//     the measurement, and the guard reddens anyway. The 10 behavioural cases (5
+//     scenarios x 2 shells) plus both structural checks, since the reverted line contains
+//     no `gh api graphql` at all. The title file still holds the untagged title -- the
+//     production symptom verbatim.
 //   - Keep the resolution but pass `--id "$ITEM_ID"` to the edit anyway -> 4 red:
 //     `assigns the new title` and `preserves the human's title` x both shells, while the
 //     `gh api graphql` structural check PASSES. A scan would call this fixed. This is the
 //     whole argument for executing over grepping, in one mutant.
-//   - Delete only the `[ -n "$ok" ] ||` FATAL line -> 2 red, `linked-issue card` x both
-//     shells: the block goes quiet on a card it cannot stamp.
+//   - Delete only the `no draft-issue content` FATAL line -> 2 red, `linked-issue card`
+//     x both shells: the block goes quiet on a card it cannot stamp.
 //   - Delete only the trailing `|| echo "FATAL: item-edit refused …"` -> 2 red,
-//     `refusal is loud` x both shells. This is the arm the pipe trap would hide.
+//     `refusal is loud` x both shells. This is the arm the edit-site pipe trap hides.
 //   - Swap `sort -n` for a plain `sort` in the NEXT computation -> 4 red, `assigns the
 //     new title` and `preserves the human's title` x both shells. The fixture's TASK-99
 //     sorts above TASK-401 lexically, so NEXT comes out 100 -- a COLLISION with a live
 //     card, not merely a wrong number. Not this card's bug, but it rides in the same
 //     block and the guard now holds it.
-//   - Pipe the edit (`… --title "…" | head -1 || echo FATAL`) -> 3 red: the structural
-//     `is not piped` check, plus `refusal is loud` x both shells, because `$?` is now
-//     `head`'s and the FATAL arm never fires. Both halves of the trap, from one edit.
+//   - Pipe the EDIT (`… --title "…" | head -1 || echo FATAL`) -> 3 red: the
+//     `gh project item-edit … is not piped` check, plus `refusal is loud` x both shells,
+//     because `$?` is now `head`'s and the FATAL arm never fires.
+//   - Pipe the LOOKUP back into jq, i.e. the shape the first version of this fix shipped
+//     with -> 3 red, and the names are worth quoting because they are the finding:
+//     `the gh api graphql draft-issue lookup call is not piped, so its status is its
+//     own`, plus `a transient lookup failure is NOT reported as "no draft issue"` x both
+//     shells. The four title-related scenarios all stay GREEN under this mutant, which is
+//     exactly why the first version passed its own guard.
 //
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally -- no
 // network and no build. The `gh` on PATH is a stub, so nothing here reaches GitHub.
@@ -206,6 +222,11 @@ writeFileSync(
   join(STUB_DIR, 'gh'),
   `#!/bin/sh
 if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
+  if [ "$STUB_GRAPHQL_FAILS" = "1" ]; then
+    # A transient API failure: gh exits non-zero and prints nothing usable on stdout.
+    echo "gh: Post \\"https://api.github.com/graphql\\": dial tcp: i/o timeout" >&2
+    exit 1
+  fi
   id=""
   while [ "$#" -gt 0 ]; do
     if [ "$1" = "-f" ]; then
@@ -273,7 +294,7 @@ afterAll(() => {
  * doc's guards print and continue, and a helper that threw would turn "the block
  * refused loudly" into something hard to tell apart from "the test crashed".
  */
-function runBlock(shell, { hasDraft = true, editFails = false } = {}) {
+function runBlock(shell, { hasDraft = true, editFails = false, lookupFails = false } = {}) {
   writeFileSync(TITLE_FILE, ORIGINAL_TITLE);
   const r = spawnSync(shell, ['-c', BLOCK], {
     encoding: 'utf8',
@@ -288,6 +309,7 @@ function runBlock(shell, { hasDraft = true, editFails = false } = {}) {
       STUB_TITLE_FILE: TITLE_FILE,
       STUB_HAS_DRAFT: hasDraft ? '1' : '0',
       STUB_EDIT_FAILS: editFails ? '1' : '0',
+      STUB_GRAPHQL_FAILS: lookupFails ? '1' : '0',
     },
     cwd: REPO_ROOT,
   });
@@ -317,21 +339,27 @@ describe('auto-ship triage: `item-edit --title` gets the DI_ draft-issue content
     expect(BLOCK, '§8.2 no longer computes the next TASK-n').toMatch(/TASK-\$NEXT/);
   });
 
-  it('the item-edit call is not piped, so its `||` can see gh’s own status', () => {
-    // Structural, and the one thing execution cannot show: with a pipe, the stub's
-    // rc 1 would be laundered into the tail's rc 0 and the FATAL arm would never run --
-    // but the *title* assertions would still fail, so the reader would be sent after
-    // the wrong bug. This names it directly. (Checked on the logical line, with
-    // continuations joined, because the call is wrapped.)
-    const editLine = logicalLines(BLOCK).find((l) => /gh project item-edit/.test(l));
-    expect(editLine, 'no uncommented `gh project item-edit` line found').toBeTruthy();
-    expect(
-      editLine.replace(/\|\|/g, ''),
-      'the `gh project item-edit` call is piped. `$?` then belongs to the pipeline ' +
-        'tail, not to gh -- which is exactly how the 2026-09-18 probe first read rc 0 ' +
-        'off a refusal.',
-    ).not.toMatch(/\|/);
-  });
+  // BOTH gh calls in §8.2 must keep their own exit status. The execution tests below
+  // cover the consequences, but they cannot name the CAUSE: a piped call's title
+  // assertion fails too, and a reader chasing it would go looking for a wrong id rather
+  // than a discarded `$?`. These two name it directly. (Checked on the logical line,
+  // with continuations joined, because both calls are wrapped.)
+  for (const [what, needle] of [
+    ['gh project item-edit', /gh project item-edit/],
+    ['gh api graphql draft-issue lookup', /gh api graphql/],
+  ]) {
+    it(`the ${what} call is not piped, so its status is its own`, () => {
+      const line = logicalLines(BLOCK).find((l) => needle.test(l));
+      expect(line, `no uncommented \`${what}\` line found`).toBeTruthy();
+      expect(
+        line.replace(/\|\|/g, ''),
+        `the \`${what}\` call is piped. \`$?\` then belongs to the pipeline tail, not ` +
+          'to gh -- which is exactly how the 2026-09-18 probe first read rc 0 off a ' +
+          'refusal, and how a transient API blip would be reported as "this card has ' +
+          'no draft issue".',
+      ).not.toMatch(/\|/);
+    });
+  }
 
   it('resolves the draft-issue id from $ITEM_ID rather than hardcoding one', () => {
     expect(
@@ -386,7 +414,26 @@ describe('auto-ship triage: `item-edit --title` gets the DI_ draft-issue content
       expect(
         out,
         'the block went quiet on a card it could not resolve a DI_ id for',
-      ).toMatch(/FATAL: no draft-issue id/);
+      ).toMatch(/FATAL: no draft-issue content/);
+    });
+
+    it.runIf(HAS_JQ)(`${shell}: a transient lookup failure is NOT reported as "no draft issue"`, () => {
+      // The second pipe trap, and the one a reviewer caught: `DI=$(gh api graphql … |
+      // jq …)` throws gh's status away, so an API blip arrives as an empty `$DI` and is
+      // indistinguishable from a card that genuinely has no draft issue. Those have
+      // different remedies -- retry next pass vs. stop trying -- so the block must say
+      // which happened. Same discipline `append_progress` keeps for its own read (§6).
+      const { out, title } = runBlock(shell, { lookupFails: true });
+      expect(title, 'stamped a card whose id never resolved').toBe(ORIGINAL_TITLE);
+      expect(
+        out,
+        'a failed lookup was not reported as a lookup failure -- almost certainly ' +
+          'because gh was piped into jq and its non-zero status was discarded',
+      ).toMatch(/FATAL: draft-issue lookup FAILED/);
+      expect(
+        out,
+        'a transient failure was misdiagnosed as "this card has no draft issue"',
+      ).not.toMatch(/no draft-issue content/);
     });
 
     it.runIf(HAS_JQ)(`${shell}: a refused item-edit is loud, not swallowed`, () => {

@@ -897,13 +897,16 @@ NEXT=$(printf '%s' "$ITEMS" | jq -r '.items[].title | capture("\\[TASK-(?<n>[0-9
 # `--title` edits the card's DRAFT-ISSUE CONTENT, so `--id` wants the `DI_` content id --
 # NOT the `PVTI_` project-item id that $ITEM_ID holds and that everything else in this
 # doc passes. Resolve it first (same hop `append_progress` / `set_needs_input` make).
-DI=$(gh api graphql -f query='query($i:ID!){node(id:$i){... on ProjectV2Item{content{... on DraftIssue{id}}}}}' \
-       -f i="$ITEM_ID" | jq -r '.data.node.content.id // empty')
+# NOTHING HERE IS PIPED INTO ANYTHING, at either call. `$?` after a pipeline belongs to
+# the pipeline TAIL, so `gh … | jq` would silently convert a transient API failure into
+# "this card has no draft issue" -- a different diagnosis with a different remedy (retry
+# vs. give up on the card). Same reason `append_progress` keeps its read rc (§6).
+json=$(gh api graphql -f query='query($i:ID!){node(id:$i){... on ProjectV2Item{content{... on DraftIssue{id}}}}}' \
+         -f i="$ITEM_ID") \
+  || { json=; echo "FATAL: draft-issue lookup FAILED for $ITEM_ID (transient? it retries next pass) — [TASK-$NEXT] NOT assigned"; }
+DI=; [ -n "$json" ] && DI=$(printf '%s' "$json" | jq -r '.data.node.content.id // empty')
 ok=; case "$DI" in DI_*) ok=1 ;; esac
-[ -n "$ok" ] || echo "FATAL: no draft-issue id for $ITEM_ID (got '${DI:-<empty>}') — [TASK-$NEXT] NOT assigned"
-# The `||` binds gh's OWN status because nothing is piped. Pipe this call and `$?`
-# becomes the pipeline tail's -- which is how the probe below first read rc 0 off a
-# refusal.
+[ -n "$json" ] && [ -z "$ok" ] && echo "FATAL: no draft-issue content on $ITEM_ID (got '${DI:-<empty>}' — a linked issue/PR?) — [TASK-$NEXT] NOT assigned"
 [ -n "$ok" ] && { gh project item-edit --id "$DI" --title "[TASK-$NEXT] $ORIGINAL_TITLE" \
   || echo "FATAL: item-edit refused $DI — [TASK-$NEXT] NOT assigned"; }
 ```
@@ -917,6 +920,11 @@ mutation addresses the **content** node:
   did **not** change.
 - `gh project item-edit --id <DI_…> --title …` → succeeded.
 
+That probe **first measured the bug backwards**: its `rc` read **0 on the refusal**,
+because the command was piped into `head` and `$?` was `head`'s. Hence the no-pipe rule
+above — and hence the guard below asserting on the resulting **title**, never on a status
+that a pipeline could have laundered.
+
 **The `PVTI_`/`DI_` split is per-flag, not per-command.** §4's `--field-id` writes
 (`Status`, `Depends on`) take the **`PVTI_` item id** and are correct as written — the
 *item* is what carries field values. Only the content-editing flags need `DI_`. Don't
@@ -925,7 +933,8 @@ mutation addresses the **content** node:
 A card whose content is a linked real issue/PR has no draft issue, so `$DI` comes back
 empty and the guard above refuses rather than stamping the wrong node. Triage only ever
 sees auto-ship's own draft-issue cards, but the untagged-card path is exactly the one
-that went four weeks without an exerciser, so it fails loudly instead of quietly.
+that went **~4 months** without an exerciser — the broken line landed in `af774cc3`
+(2026-05-25) and was corrected on 2026-09-19 — so it fails loudly instead of quietly.
 
 An **executing** guard pins this: `scripts/__tests__/autoship-triage-title-draft-id.test.js`
 extracts the block above and runs it under bash *and* zsh against a `gh` stub that

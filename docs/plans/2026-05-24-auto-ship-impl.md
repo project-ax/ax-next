@@ -485,6 +485,11 @@ fi
 gh project item-edit --id "$ITEM_ID" --project-id "$PROJ_ID" \
   --field-id "$STATUS_FIELD_ID" --single-select-option-id "$OPT_ID"
 # on PR open, append the PR link to the draft body:
+# ⚠ SUPERSEDED AND WRONG AS WRITTEN — do not copy. `--body` (like `--title`) edits the
+# card's DRAFT-ISSUE CONTENT, so `--id` needs the `DI_` content id, not the `PVTI_`
+# project-item id `$ITEM_ID` holds; gh refuses the line below outright. The shipped
+# procedure resolves `DI_` first and writes the body through `append_progress` --
+# see `.claude/skills/auto-ship/references/github-project.md` §6 and §8.2.
 gh project item-edit --id "$ITEM_ID" --body "[$TASK_ID] $TASK_TITLE — PR: $PR_URL"
 ```
 
