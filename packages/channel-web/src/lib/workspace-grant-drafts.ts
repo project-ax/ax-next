@@ -42,9 +42,8 @@ const drafts = new Map<string, Record<string, string>>();
  * What was typed for this grant so far. `{}` if nothing was, or ever was.
  *
  * Returns a COPY, not the live entry: the caller (`GrantRow`) stores this as
- * `useState`'s initial value, and handing back the same object `setGrantDraftValue`
- * later mutates-in-place-free would let a future in-place write silently change
- * React state with no re-render.
+ * `useState`'s initial value, and handing back the same object would let a future
+ * in-place mutation of it silently diverge from React state with no re-render.
  */
 export function getGrantDraft(key: string): Record<string, string> {
   return { ...(drafts.get(key) ?? {}) };
