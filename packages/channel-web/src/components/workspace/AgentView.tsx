@@ -964,6 +964,17 @@ export function AgentView({
                 grants={threadGrants}
                 onGrantResolved={onGrantResolved}
                 onGranted={onGranted}
+                /*
+                  WHICH conversation that `thread` is (TASK-418). This panel
+                  swaps it under a component that is mounted once and un-keyed,
+                  so without this the scroller keeps the previous conversation's
+                  pixel offset and the excerpt opens at an arbitrary point. The
+                  agent id is in it because the panel outlives an agent switch
+                  too.
+                */
+                conversationKey={
+                  past ? `past:${agent.id}:${past.id}` : `live:${agent.id}`
+                }
               />
             </>
           )}

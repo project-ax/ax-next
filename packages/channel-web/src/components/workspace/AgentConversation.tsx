@@ -42,6 +42,7 @@ import {
   findFieldKey,
   threadFindFields,
 } from '@/lib/thread-find';
+import { useStickToBottom } from '@/lib/use-stick-to-bottom';
 import {
   composerSendBlock,
   useWorkspaceAttachments,
@@ -81,6 +82,57 @@ import { WorkspaceAttachmentChip } from './WorkspaceAttachmentChip';
  * would leave one surface pointing at a button that cannot work.
  */
 export type ApprovalRead = WorkspaceReadStatus | 'expired';
+
+/**
+ * What the transcript amounts to right now, as one string — TASK-418's growth
+ * signal for the stick-to-bottom rule.
+ *
+ * TEXT LENGTHS, NOT THE TEXT. This runs on every render of a thread that can be
+ * hundreds of turns long, and the question it answers is only "did anything get
+ * bigger or change shape". A length is enough for that and costs nothing;
+ * joining the whole transcript would allocate the conversation twice a token
+ * during streaming.
+ *
+ * The switch is exhaustive on purpose rather than falling back to `m.id`: the
+ * variants that grow (a streaming `agent` text, a `steps` row gaining steps)
+ * are exactly the ones a default clause would silently stop tracking, and
+ * `ThreadMessage` is a list this file's own header says gains producers.
+ */
+function threadGrowthKey(thread: readonly ThreadMessage[]): string {
+  return thread
+    .map((m) => {
+      switch (m.kind) {
+        /*
+          No text of its own: the card is drawn from the `decisions` prop, so
+          its height changes without this key changing — a resolving approval
+          swaps buttons for an undo row. That growth is the `ResizeObserver`'s
+          to catch, not this key's, which is exactly why the hook has one.
+        */
+        case 'approval':
+          return `approval:${m.id}`;
+        case 'steps':
+          return `steps:${m.id}:${m.text.length}:${m.steps.length}`;
+        case 'agent':
+        case 'user':
+        case 'status':
+        case 'fold':
+          return `${m.kind}:${m.id}:${m.text.length}`;
+        /*
+          THE EXHAUSTIVENESS IS ENFORCED, not merely intended. `tsconfig.base`
+          does not set `noImplicitReturns`, so without this a seventh
+          `ThreadMessage` kind would quietly return `undefined` here and stop
+          being tracked — silently, which is the failure this key exists to
+          prevent. `workspace-types.ts` says the union is meant to gain
+          producers, so make the next one a compile error.
+        */
+        default: {
+          const unreached: never = m;
+          return unreached;
+        }
+      }
+    })
+    .join('|');
+}
 
 interface Props {
   agent: WorkspaceAgent;
@@ -147,6 +199,27 @@ interface Props {
    * thread and one answered in the queue do the same thing.
    */
   onGranted: (grant: WorkspaceGrant) => Promise<boolean>;
+  /**
+   * WHICH conversation the `thread` above is (TASK-418) — scroll position is
+   * meaningless across a change of it.
+   *
+   * This component is mounted ONCE and un-keyed: `AgentView` swaps `thread`
+   * between the live conversation and a read-only past excerpt under it (the
+   * same fact `closeFind` below has to account for). The scroller is therefore
+   * the same DOM element across that swap, and a raw `scrollTop` from the
+   * previous conversation carried onto a different one lands wherever it
+   * happens to land. Changing this lands the new conversation on its newest
+   * line instead.
+   *
+   * OPTIONAL, and the default is not a guess: absent means "the thread on
+   * screen is one continuous conversation", which is true of every caller that
+   * never swaps it — the surface behaves exactly as it did before TASK-418.
+   * `AgentView` is the one caller that does swap, and it passes this. (Compare
+   * `approvalRead`, which is required precisely because ITS default would make
+   * a claim about data — "nothing is waiting on you" — rather than describe the
+   * caller's own shape.)
+   */
+  conversationKey?: string;
 }
 
 export function AgentConversation({
@@ -166,6 +239,7 @@ export function AgentConversation({
   grants,
   onGrantResolved,
   onGranted,
+  conversationKey = 'one-conversation',
 }: Props) {
   const [draft, setDraft] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
@@ -244,6 +318,9 @@ export function AgentConversation({
   const [findStep, setFindStep] = useState(0);
   const findToggleRef = useRef<HTMLButtonElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // The column inside the scroller — the box whose height IS the transcript's.
+  // See `useStickToBottom`, which observes it for growth React cannot predict.
+  const contentRef = useRef<HTMLDivElement>(null);
 
   // No control over a thread with nothing in it to find. An empty thread's
   // find bar can only ever answer "No matches", which is a true sentence about
@@ -321,6 +398,45 @@ export function AgentConversation({
     }
   }, [finding, findActive, findQuery]);
 
+  /*
+    TASK-418 — the transcript follows the newest line.
+
+    It did not, and the walk measured the cost: after a send, `scrollTop` was 0
+    with the reply 471px below the fold. The reply was there and correct; it was
+    off-screen, which reads to a person as "the agent didn't respond".
+
+    THE RULE: stick to the bottom only when the reader was already at (or within
+    a line of) it — `useStickToBottom` owns it and explains why. Someone who has
+    scrolled up to read earlier history is left exactly where they are, because
+    dragging them back down on every streamed token is the worse bug.
+
+    `contentKey` is the growth signal, and it is deliberately not `thread`
+    itself: `AgentView` rebuilds `liveThread` (`[...detail.thread]` plus the
+    in-flight turn) on EVERY render, so an identity dep would re-pin on
+    keystrokes in the composer. It is also deliberately not `thread.length`: a
+    streaming reply is one message whose text lengthens, so a length key would
+    pin on the first token and let the rest run off the bottom.
+
+    `approvalRead` is in it because the alert at the foot of the scroller
+    appears and disappears with it, and that is content growing too.
+
+    NOT WRAPPED IN `useMemo`, deliberately. The dep would have to be `thread`,
+    which is a fresh array every render, so the memo would never hit — it would
+    only look like it did. The join is over string lengths and runs in the same
+    pass as `threadFindFields` above it.
+
+    Everything that grows the scroller WITHOUT changing this string — an image
+    decoding, a font swapping, an approval card resolving — is the hook's
+    `ResizeObserver`'s job, which is why this key does not chase `decisions`.
+  */
+  const contentKey = `${approvalRead}#${threadGrowthKey(thread)}`;
+  const onThreadScroll = useStickToBottom({
+    viewportRef: scrollRef,
+    contentRef,
+    contentKey,
+    conversationKey,
+  });
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/*
@@ -368,12 +484,13 @@ export function AgentConversation({
       */}
       <div
         ref={scrollRef}
+        onScroll={onThreadScroll}
         tabIndex={-1}
         role="region"
         aria-label={`Conversation with ${agent.name}`}
         className="flex-1 overflow-y-auto px-6 py-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
-        <div className="flex max-w-[720px] flex-col gap-5">
+        <div ref={contentRef} className="flex max-w-[720px] flex-col gap-5">
           {thread.map((m, i) => {
             /*
               ONE KEY, not two. React's key and the find index's field key are
