@@ -31,19 +31,23 @@ export interface TickOnceInput {
   store: RoutinesStore;
   fire: FireRoutineFn;
   /**
-   * Returns each personal agent the tick loop should consider for
-   * lazy materialization of default-sourced rows, paired with its
-   * owner user id. The owner id lands in `author_user_id` on the
-   * materialized row, so `fire.ts:51` can pass a real user id to
-   * `agents:resolve` (whose ACL gate has no concept of a system
-   * actor). Optional so existing callers can omit it; when absent,
-   * materialize/refresh is skipped and only pre-existing rows are
-   * claimed.
+   * Returns each personal agent the tick loop should consider, paired with
+   * its owner user id. That pairing does two jobs:
+   *
+   *   1. lazy materialization of default-sourced rows, and
+   *   2. TASK-397 — `reconcileOwners`, which re-asserts the owner on EVERY
+   *      routine of a user-owned agent, workspace-authored ones included.
+   *
+   * The owner id is what `fire.ts` passes to `agents:resolve` (whose ACL gate
+   * has no concept of a system actor), so it has to be a real user. Optional
+   * so existing callers can omit it; when absent, materialize / reconcile /
+   * refresh are all skipped and only pre-existing rows are claimed.
    *
    * Plugin wiring is in plugin.ts — it adapts the
    * `agents:list-personal-owners` service hook into this callback
    * shape so tick.ts stays free of HookBus imports. Team agents are
-   * excluded upstream pending a fire-under-team policy decision.
+   * excluded upstream pending a fire-under-team policy decision, which
+   * is also why `reconcileOwners` leaves their rows untouched.
    */
   getAgents?: () => Promise<Array<{ agentId: string; ownerUserId: string }>>;
   now: Date;
@@ -68,6 +72,11 @@ export async function runTickOnce(input: TickOnceInput): Promise<void> {
       // (packages/database-postgres/src/plugin.ts).
       const agents = await input.getAgents();
       await input.store.materializeMissing({ agents, now: input.now });
+      // TASK-397: re-assert agent ownership BEFORE the claim below, so a row
+      // whose stored identity has drifted (created by a teammate, or written
+      // before this became agent-derived) fires under the agent's owner in
+      // THIS tick rather than the next one.
+      await input.store.reconcileOwners({ agents });
       await input.store.refreshStale({ now: input.now });
     } catch (err) {
       process.stderr.write(

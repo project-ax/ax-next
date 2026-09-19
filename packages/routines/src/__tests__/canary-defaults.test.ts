@@ -133,7 +133,7 @@ describe('canary — defaults materialize → claim → fire → override → ad
     await store.upsert({
       agentId: 'agt_x',
       path: '.ax/routines/heartbeat.md',
-      authorUserId: 'u_test',
+      ownerUserId: 'u_test',
       name: 'heartbeat',
       description: 'workspace override',
       specHash: 'ws-hash',
@@ -227,12 +227,12 @@ describe('canary — defaults materialize → claim → fire → override → ad
 });
 
 // PR #105 regression: materialize previously hardcoded
-// author_user_id='@ax/routines/defaults', and fire.ts:51 passes that to
+// owner_user_id='@ax/routines/defaults', and fire.ts:51 passes that to
 // agents:resolve which rejects 'forbidden' (no concept of system actor).
 // The PR #105 canary above mocks fire() with a spy, so the auth path
 // was never exercised. This test wires a real HookBus with a stub
 // agents:resolve that mimics the real ACL gate — passing materialize
-// the per-agent owner makes the row's authorUserId resolvable, and
+// the per-agent owner makes the row's ownerUserId resolvable, and
 // the resulting fire records status='ok'.
 describe('canary — default-sourced fire passes agents:resolve under real bus', () => {
   it('materialize writes per-agent owner; fire records ok, not forbidden', async () => {
@@ -285,7 +285,7 @@ describe('canary — default-sourced fire passes agents:resolve under real bus',
       .where('agent_id', '=', 'agt_x')
       .where('definition_id', 'is not', null)
       .executeTakeFirstOrThrow();
-    expect(materialized.author_user_id).toBe('u_owner_of_agt_x');
+    expect(materialized.owner_user_id).toBe('u_owner_of_agt_x');
 
     // 2) Make the row due, then tick again to drive a real fire.
     await sql`
@@ -315,7 +315,7 @@ describe('canary — default-sourced fire passes agents:resolve under real bus',
 
   it('materializeMissing on the store writes a.owner_user_id per row', async () => {
     // Store-level coverage for the same regression: two agents, two
-    // owners, one row each — author_user_id matches each agent's owner.
+    // owners, one row each — owner_user_id matches each agent's owner.
     const store = createRoutinesStore(db);
     await store.materializeMissing({
       agents: [
@@ -329,7 +329,7 @@ describe('canary — default-sourced fire passes agents:resolve under real bus',
       .selectAll()
       .where('definition_id', 'is not', null)
       .execute();
-    const byAgent = new Map(rows.map((r) => [r.agent_id, r.author_user_id]));
+    const byAgent = new Map(rows.map((r) => [r.agent_id, r.owner_user_id]));
     expect(byAgent.get('agt_alice')).toBe('u_alice');
     expect(byAgent.get('agt_bob')).toBe('u_bob');
   });

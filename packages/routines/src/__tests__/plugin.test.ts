@@ -304,7 +304,7 @@ describe('routines:delete-default', () => {
     try {
       await k.insertInto('routines_v1_definitions').values({
         agent_id: 'agt_cascade', path: `default:${defaultRoutineId}`,
-        author_user_id: '@ax/routines/defaults',
+        owner_user_id: '@ax/routines/defaults',
         name: 'cascade', description: 'cascade target',
         spec_hash: 'h', trigger_kind: 'interval',
         trigger_spec: { kind: 'interval', every: '60s' },

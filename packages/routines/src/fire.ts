@@ -35,20 +35,27 @@ export function createFireRoutine(deps: FireDeps) {
     // downstream. Mint reqId first and fold it into sessionId — keeps the
     // routine-scoped prefix for log readability while guaranteeing
     // uniqueness. See #86.
+    // TASK-397 — the identity every step below runs as is `row.ownerUserId`:
+    // the routine's OWNER, derived from the agent, NOT the author of the last
+    // edit to `.ax/routines/<name>.md`. The bound is unchanged from when this
+    // read `row.authorUserId`: `agents:resolve` still gates the fire, so
+    // execution stays inside the set already authorised for this agent. What
+    // changed is which member of that set is used, and that it no longer
+    // moves when a different authorised person writes the file.
     const reqId = makeReqId();
     const sessionId = `routine-${row.agentId}-${row.path}-${reqId}`;
     const baseCtx = makeAgentContext({
       reqId,
       sessionId,
       agentId: row.agentId,
-      userId: row.authorUserId,
+      userId: row.ownerUserId,
     });
 
     try {
       await deps.bus.call<
         { agentId: string; userId: string },
         { agent: { id: string; ownerId?: string; workspaceRef?: string | null } }
-      >('agents:resolve', baseCtx, { agentId: row.agentId, userId: row.authorUserId });
+      >('agents:resolve', baseCtx, { agentId: row.agentId, userId: row.ownerUserId });
     } catch (err) {
       if (err instanceof PluginError) {
         return {
@@ -68,7 +75,7 @@ export function createFireRoutine(deps: FireDeps) {
           unknown,
           { conversation: { conversationId: string }; created: boolean }
         >('conversations:find-or-create', baseCtx, {
-          userId: row.authorUserId,
+          userId: row.ownerUserId,
           agentId: row.agentId,
           externalKey: row.path,
           // AW-6: `origin: 'routine'` is what makes a tool call held inside a
@@ -84,7 +91,7 @@ export function createFireRoutine(deps: FireDeps) {
           unknown,
           { conversationId: string }
         >('conversations:create', baseCtx, {
-          userId: row.authorUserId,
+          userId: row.ownerUserId,
           agentId: row.agentId,
           title: `${row.name} @ ${new Date().toISOString()}`,
           hidden: true,
@@ -109,7 +116,7 @@ export function createFireRoutine(deps: FireDeps) {
       reqId,
       sessionId,
       agentId: row.agentId,
-      userId: row.authorUserId,
+      userId: row.ownerUserId,
       conversationId,
       // Mark this as a routine-originated (non-user) turn. Subscribers that
       // must not act on internally-generated turns key off ctx.source — notably

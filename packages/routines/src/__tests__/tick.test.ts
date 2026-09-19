@@ -54,7 +54,7 @@ afterAll(async () => {
 
 async function seedInterval(store: RoutinesStore, agentId: string, every: string, nextAt: Date) {
   await store.upsert({
-    agentId, path: '.ax/routines/r.md', authorUserId: 'u1',
+    agentId, path: '.ax/routines/r.md', ownerUserId: 'u1',
     name: 'r', description: 'd', specHash: agentId + every,
     trigger: { kind: 'interval', every },
     activeHours: null, silenceToken: null, silenceMax: 300,
@@ -98,7 +98,7 @@ describe('runTickOnce', () => {
   it('skips outside active hours and shifts to next valid window', async () => {
     const store = createRoutinesStore(db);
     await store.upsert({
-      agentId: 'agt_a', path: '.ax/routines/r.md', authorUserId: 'u1',
+      agentId: 'agt_a', path: '.ax/routines/r.md', ownerUserId: 'u1',
       name: 'r', description: 'd', specHash: 'h',
       trigger: { kind: 'interval', every: '30m' },
       activeHours: { start: '08:00', end: '24:00', tz: 'America/New_York' },
@@ -291,6 +291,35 @@ describe('runTickOnce', () => {
       .where('definition_id', 'is not', null)
       .executeTakeFirstOrThrow();
     expect(refreshed.prompt_body).toBe('REFRESHED');
+  });
+
+  it('runTickOnce re-asserts agent ownership on WORKSPACE rows before firing them (TASK-397)', async () => {
+    // The wiring guard for `store.reconcileOwners`. Without the call in
+    // tick.ts the store method is half-wired code: a row whose owner drifted
+    // — a routine created by a teammate, or one carried over from before
+    // ownership became agent-derived — would keep firing under that user's
+    // credential scope forever, because the apply path deliberately never
+    // rewrites the column.
+    const store = createRoutinesStore(db);
+    // Seeded as 'u1'; the agent's actual owner is 'u_owner_a'. Due now, so
+    // the same tick both reconciles it and fires it.
+    await seedInterval(store, 'agt_a', '30m', new Date('2026-05-14T12:00:00Z'));
+
+    const firedAs: string[] = [];
+    const fire: FireRoutineFn = async (row) => {
+      firedAs.push(row.ownerUserId);
+      return { status: 'ok', error: null, renderedPrompt: 'p' };
+    };
+    await runTickOnce({
+      store, fire, now: new Date('2026-05-14T12:00:00Z'),
+      claimBatchSize: 50, claimWindowMinutes: 5,
+      getAgents: async () => [{ agentId: 'agt_a', ownerUserId: 'u_owner_a' }],
+    });
+
+    // Reconciled BEFORE the claim, so this very tick fires as the owner.
+    expect(firedAs).toEqual(['u_owner_a']);
+    const row = await store.findOne({ agentId: 'agt_a', path: '.ax/routines/r.md' });
+    expect(row?.ownerUserId).toBe('u_owner_a');
   });
 
   it('runTickOnce continues claiming workspace rows when getAgents throws (I-R10)', async () => {

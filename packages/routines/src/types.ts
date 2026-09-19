@@ -9,7 +9,25 @@ export type FireStatus = 'ok' | 'silenced' | 'error';
 export interface RoutineRow {
   agentId: string;
   path: string;
-  authorUserId: string;
+  /**
+   * The identity this routine FIRES AS — the routine's owner, derived from
+   * the agent, never from whoever last edited the file (TASK-397).
+   *
+   * Was `authorUserId`, and the old name described what the code did: the
+   * sync path wrote the author of every `workspace:applied` delta, so on a
+   * shared team workspace the second authorised editor silently inherited the
+   * schedule and ran it under their own credential scope.
+   *
+   * Now: written once when the row is created, re-asserted from
+   * `agents:list-personal-owners` on each tick (`store.reconcileOwners`), and
+   * never touched by an apply. For a user-owned agent it converges on the
+   * agent's owner; for a team-owned agent it stays pinned at the creator,
+   * because a team id is not a user and `agents:resolve` needs a real one.
+   *
+   * Below-the-bus only — `routines:list` returns `WireRoutineRow`, which
+   * omits it.
+   */
+  ownerUserId: string;
   name: string;
   description: string;
   specHash: string;
@@ -71,8 +89,29 @@ export interface ListInput {
   agentId?: string;
 }
 export interface ListOutput {
-  routines: RoutineRow[];
+  routines: WireRoutineRow[];
 }
+/**
+ * A routine as it crosses the hook bus on `routines:list`: `RoutineRow` minus
+ * `ownerUserId`.
+ *
+ * TASK-397 dropped the owner from the wire rather than renaming it there.
+ * It was a per-user identity that NOTHING above the bus read — zero
+ * references in `channel-web`, and `routines-admin-routes` only forwards the
+ * array it gets — so shipping it to a browser was reach nobody asked for
+ * (invariant 5). It is also the one field on this row that stops being true
+ * the moment an agent's ownership transfers, which makes it exactly the kind
+ * of value a subscriber should re-derive rather than cache.
+ *
+ * The domain `RoutineRow` keeps it: it is the store's own row type, living
+ * below the bus, and `fire.ts` needs it to mint the fire context. Only the
+ * `returns` schema narrows — derived from `RoutineRowSchema` so the two
+ * cannot drift, mirroring `WireFireRow`. A consumer that starts reading
+ * `ownerUserId` off this hook will read `undefined` in silence, because
+ * `HookBus.call` returns the `returns` schema's parse output and a zod object
+ * strips undeclared keys.
+ */
+export type WireRoutineRow = Omit<RoutineRow, 'ownerUserId'>;
 export interface RecentFiresInput {
   agentId: string;
   path: string;
@@ -234,7 +273,7 @@ const ConversationModeSchema = z.union([z.literal('per-fire'), z.literal('shared
 const RoutineRowSchema = z.object({
   agentId: z.string(),
   path: z.string(),
-  authorUserId: z.string(),
+  ownerUserId: z.string(),
   name: z.string(),
   description: z.string(),
   specHash: z.string(),
@@ -294,8 +333,11 @@ const DefaultRoutineDetailSchema = DefaultRoutineSummarySchema.extend({
   promptBody: z.string(),
 });
 
+/** The narrowed row `routines:list` returns (see `WireRoutineRow`). */
+const WireRoutineRowSchema = RoutineRowSchema.omit({ ownerUserId: true });
+
 export const ListOutputSchema = z.object({
-  routines: z.array(RoutineRowSchema),
+  routines: z.array(WireRoutineRowSchema),
 }) as unknown as ZodType<ListOutput>;
 
 export const RecentFiresOutputSchema = z.object({

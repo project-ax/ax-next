@@ -39,7 +39,7 @@ describe('runRoutinesMigration', () => {
   it('creates routines_v1_definitions with primary key (agent_id, path)', async () => {
     await runRoutinesMigration(db);
     await db.insertInto('routines_v1_definitions').values({
-      agent_id: 'agt_a', path: '.ax/routines/r.md', author_user_id: 'u1',
+      agent_id: 'agt_a', path: '.ax/routines/r.md', owner_user_id: 'u1',
       name: 'r', description: 'd', spec_hash: 'h',
       trigger_kind: 'interval', trigger_spec: { kind: 'interval', every: '60s' },
       active_hours: null, silence_token: null, silence_max: 300,
@@ -48,7 +48,7 @@ describe('runRoutinesMigration', () => {
     }).execute();
     await expect(
       db.insertInto('routines_v1_definitions').values({
-        agent_id: 'agt_a', path: '.ax/routines/r.md', author_user_id: 'u1',
+        agent_id: 'agt_a', path: '.ax/routines/r.md', owner_user_id: 'u1',
         name: 'r2', description: 'd', spec_hash: 'h',
         trigger_kind: 'interval', trigger_spec: { kind: 'interval', every: '60s' },
         active_hours: null, silence_token: null, silence_max: 300,
@@ -153,7 +153,7 @@ describe('runRoutinesMigration', () => {
     try {
       await sql`
         INSERT INTO routines_v1_definitions
-          (agent_id, path, author_user_id, name, description, spec_hash,
+          (agent_id, path, owner_user_id, name, description, spec_hash,
            trigger_kind, trigger_spec, silence_max, conversation, prompt_body,
            definition_id, next_run_at)
         VALUES

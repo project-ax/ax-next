@@ -8,7 +8,7 @@ import type { RoutinesStore } from '../store.js';
 
 function makeRow(over: Partial<RoutineRow> = {}): RoutineRow {
   return {
-    agentId: 'agt_a', path: '.ax/routines/r.md', authorUserId: 'u1',
+    agentId: 'agt_a', path: '.ax/routines/r.md', ownerUserId: 'u1',
     name: 'r', description: 'd', specHash: 'h',
     trigger: { kind: 'webhook', path: '/r' },
     activeHours: null, silenceToken: null, silenceMaxChars: 300,
@@ -146,24 +146,45 @@ describe('makeWebhookHandler', () => {
     expect(fire).not.toHaveBeenCalled();
   });
 
-  it('returns 401 when credentials:get rejects (missing secret)', async () => {
-    const fire = vi.fn();
-    const row = makeRow({
-      trigger: { kind: 'webhook', path: '/r',
-        hmac: { secretRef: 's', header: 'X-Sig', algorithm: 'sha256' } },
+  it('returns 401 when credentials:get rejects (missing secret) — and SAYS SO', async () => {
+    // The 401 is correct; the silence was not. A `secretRef` pointing at a
+    // credential nobody ever set looked exactly like an attacker sending a
+    // bad signature, so a webhook that could never fire again left no trace.
+    // The handler mints its own context, so the assertion goes through the
+    // logger's sink.
+    const lines: string[] = [];
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      lines.push(String(chunk));
+      return true;
     });
-    const store = { findOne: async () => row };
-    const handler = makeWebhookHandler({
-      bus: makeBus(async () => { throw new Error('no'); }),
-      store: store as Pick<RoutinesStore, 'findOne'>, agentId: 'agt_a', routinePath: row.path, fire,
-    });
-    const res = makeRes();
-    await handler(makeReq({
-      headers: { 'content-type': 'application/json', 'x-sig': 'whatever' },
-      body: Buffer.from('{}'),
-    }), res);
-    expect(res._calls.status).toBe(401);
-    expect(fire).not.toHaveBeenCalled();
+    try {
+      const fire = vi.fn();
+      const row = makeRow({
+        trigger: { kind: 'webhook', path: '/r',
+          hmac: { secretRef: 's', header: 'X-Sig', algorithm: 'sha256' } },
+      });
+      const store = { findOne: async () => row };
+      const handler = makeWebhookHandler({
+        bus: makeBus(async () => { throw new Error('no'); }),
+        store: store as Pick<RoutinesStore, 'findOne'>, agentId: 'agt_a', routinePath: row.path, fire,
+      });
+      const res = makeRes();
+      await handler(makeReq({
+        headers: { 'content-type': 'application/json', 'x-sig': 'whatever' },
+        body: Buffer.from('{}'),
+      }), res);
+      expect(res._calls.status).toBe(401);
+      expect(fire).not.toHaveBeenCalled();
+
+      const logged = lines.join('');
+      expect(logged).toContain('routines_webhook_secret_fetch_failed');
+      // Names the ref the person typed, so the misconfiguration is findable…
+      expect(logged).toContain('"secretRef":"s"');
+      // …and never a secret value, because there wasn't one to begin with.
+      expect(logged).not.toContain('whatever');
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('accepts a valid HMAC over the raw body and fires', async () => {

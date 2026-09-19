@@ -171,7 +171,7 @@ export function createRoutinesPlugin(
               try {
                 await bus.call('conversations:drop-turn', ctx, {
                   conversationId: pf.conversationId,
-                  userId: pf.row.authorUserId,
+                  userId: pf.row.ownerUserId,
                   turnId,
                 });
               } catch (err) {
@@ -193,7 +193,7 @@ export function createRoutinesPlugin(
               try {
                 await bus.call('conversations:hide', ctx, {
                   conversationId: pf.conversationId,
-                  userId: pf.row.authorUserId,
+                  userId: pf.row.ownerUserId,
                 });
               } catch (err) {
                 ctx.logger.warn('routines_hide_failed', {
@@ -522,9 +522,14 @@ export function createRoutinesPlugin(
       };
 
       // Adapt agents:list-personal-owners → getAgents callback so
-      // tick.ts stays free of HookBus imports. The owner id stamped
-      // on each materialized row is what fire.ts:51 passes to
-      // agents:resolve's ACL gate. Failures inside the bus call
+      // tick.ts stays free of HookBus imports. The owner id is what
+      // fire.ts passes to agents:resolve's ACL gate, and the tick now
+      // uses this list for TWO things: stamping newly materialized
+      // default rows, and (TASK-397) re-asserting the owner on EVERY
+      // routine of a user-owned agent via store.reconcileOwners — so
+      // this callback is also what makes routine ownership follow the
+      // agent instead of the last person to edit the file.
+      // Failures inside the bus call
       // surface as a thrown promise inside runTickOnce, where the
       // I-R10 try/catch logs and continues (workspace claims still
       // fire).

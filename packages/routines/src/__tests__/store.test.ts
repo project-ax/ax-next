@@ -53,7 +53,7 @@ function baseInput(over: Partial<Parameters<ReturnType<typeof createRoutinesStor
   return {
     agentId: 'agt_a',
     path: '.ax/routines/r.md',
-    authorUserId: 'u1',
+    ownerUserId: 'u1',
     name: 'r',
     description: 'd',
     specHash: 'h1',
@@ -686,7 +686,7 @@ describe('RoutinesStore default-routine CRUD', () => {
     await db.insertInto('routines_v1_definitions').values({
       agent_id: 'agent-x',
       path: `default:${defaultRoutineId}`,
-      author_user_id: '@ax/routines/defaults',
+      owner_user_id: '@ax/routines/defaults',
       name: 'cascade-test',
       description: 'd',
       spec_hash: 'h',

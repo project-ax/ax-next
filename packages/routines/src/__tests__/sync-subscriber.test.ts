@@ -81,7 +81,7 @@ describe('handleWorkspaceApplied', () => {
   it('deletes on deleted', async () => {
     const store = createRoutinesStore(db);
     await store.upsert({
-      agentId: 'agt_a', path: '.ax/routines/r.md', authorUserId: 'u1',
+      agentId: 'agt_a', path: '.ax/routines/r.md', ownerUserId: 'u1',
       name: 'r', description: 'd', specHash: 'h',
       trigger: { kind: 'interval', every: '60s' }, activeHours: null,
       silenceToken: null, silenceMax: 300, conversation: 'per-fire',
@@ -137,7 +137,7 @@ describe('handleWorkspaceApplied', () => {
 
     // Seed a routine row so the deleted branch has something to remove.
     await store.upsert({
-      agentId: 'agt-1', path: '.ax/routines/gh.md', authorUserId: 'u1',
+      agentId: 'agt-1', path: '.ax/routines/gh.md', ownerUserId: 'u1',
       name: 'gh', description: 'd', specHash: 'h',
       trigger: { kind: 'interval', every: '60s' }, activeHours: null,
       silenceToken: null, silenceMax: 300, conversation: 'per-fire',
@@ -188,7 +188,7 @@ describe('handleWorkspaceApplied', () => {
     const store = createRoutinesStore(db);
 
     await store.upsert({
-      agentId: 'agt-1', path: '.ax/routines/gh.md', authorUserId: 'u1',
+      agentId: 'agt-1', path: '.ax/routines/gh.md', ownerUserId: 'u1',
       name: 'gh', description: 'd', specHash: 'h',
       trigger: { kind: 'interval', every: '60s' }, activeHours: null,
       silenceToken: null, silenceMax: 300, conversation: 'per-fire',
@@ -227,7 +227,7 @@ describe('handleWorkspaceApplied', () => {
     const store = createRoutinesStore(db);
 
     await store.upsert({
-      agentId: 'agt-1', path: '.ax/routines/gh.md', authorUserId: 'u1',
+      agentId: 'agt-1', path: '.ax/routines/gh.md', ownerUserId: 'u1',
       name: 'gh', description: 'd', specHash: 'h',
       trigger: { kind: 'interval', every: '60s' }, activeHours: null,
       silenceToken: null, silenceMax: 300, conversation: 'per-fire',

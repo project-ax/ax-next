@@ -6,7 +6,7 @@ import type { FireRow, FireSource, FireStatus, RoutineRow } from './types.js';
 export interface UpsertInput {
   agentId: string;
   path: string;
-  authorUserId: string;
+  ownerUserId: string;
   name: string;
   description: string;
   specHash: string;
@@ -103,7 +103,7 @@ export interface RoutinesStore {
   deleteDefault(defaultRoutineId: string): Promise<void>;
   /**
    * Materialize one row per (agent, enabled default) pair, stamping
-   * `author_user_id = ownerUserId` per agent. The owner id is the
+   * `owner_user_id = ownerUserId` per agent. The owner id is the
    * identity that `fire.ts` passes to `agents:resolve`'s ACL gate —
    * the gate has no concept of a system actor, so a synthetic
    * '@ax/routines/defaults' string here would fail every fire as
@@ -116,6 +116,32 @@ export interface RoutinesStore {
     now: Date;
   }): Promise<void>;
   refreshStale(input: { now: Date }): Promise<void>;
+  /**
+   * TASK-397 — re-assert that every routine of a USER-OWNED agent is owned by
+   * that agent's owner, whatever is currently stored.
+   *
+   * This is the half of "routines are agent-owned" that the INSERT path
+   * cannot do by itself. `handleWorkspaceApplied` stamps the writer at
+   * creation (the only identity it has) and never rewrites the column
+   * afterwards, so a row created before this change — or created by a
+   * teammate — would otherwise keep firing as whoever happened to write the
+   * file. Running this on the tick makes the agent the source of truth
+   * continuously, so an ownership transfer on the agent moves its routines
+   * with it and a stale row heals itself within one tick instead of needing a
+   * data migration.
+   *
+   * Reach only ever NARROWS: `agents` comes from
+   * `agents:list-personal-owners`, so every row this touches belongs to a
+   * user-owned agent, whose owner is the ONLY identity `agents:resolve`
+   * authorises for it. Team-owned agents are absent from that list and their
+   * rows are left exactly as they are — a team id is not a user, and
+   * inventing a user for it is the thing this card forbids.
+   *
+   * Returns the number of rows corrected (0 on the steady-state tick).
+   */
+  reconcileOwners(input: {
+    agents: ReadonlyArray<{ agentId: string; ownerUserId: string }>;
+  }): Promise<number>;
   /**
    * Set whether `defaultRoutineId` is enabled for `agentId`. The override
    * table stores only explicit DISABLES — `enabled=true` DELETEs any disable
@@ -172,7 +198,7 @@ function truncateUtf8(value: string, maxBytes: number): string {
 }
 
 function rowToRoutine(row: {
-  agent_id: string; path: string; author_user_id: string;
+  agent_id: string; path: string; owner_user_id: string;
   name: string; description: string; spec_hash: string;
   trigger_kind: string; trigger_spec: unknown;
   active_hours: unknown | null;
@@ -186,7 +212,7 @@ function rowToRoutine(row: {
   return {
     agentId: row.agent_id,
     path: row.path,
-    authorUserId: row.author_user_id,
+    ownerUserId: row.owner_user_id,
     name: row.name,
     description: row.description,
     specHash: row.spec_hash,
@@ -238,7 +264,7 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
         await trx.insertInto('routines_v1_definitions').values({
           agent_id: input.agentId,
           path: input.path,
-          author_user_id: input.authorUserId,
+          owner_user_id: input.ownerUserId,
           name: input.name,
           description: input.description,
           spec_hash: input.specHash,
@@ -253,7 +279,19 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
         }).onConflict((oc) => oc
           .columns(['agent_id', 'path'])
           .doUpdateSet((eb) => ({
-            author_user_id: eb.ref('excluded.author_user_id'),
+            // TASK-397: `owner_user_id` is DELIBERATELY absent from this SET.
+            //
+            // It used to be here, taking `excluded.owner_user_id` — i.e. the
+            // author of whatever `workspace:applied` delta carried this edit.
+            // On a shared (team) agent workspace that meant the second
+            // authorised person to touch `.ax/routines/<name>.md` silently
+            // became the identity every subsequent fire ran as, inheriting
+            // their credential scope. Nothing in the UI showed it.
+            //
+            // Ownership is a property of the routine, not of an edit, so an
+            // apply carries the routine's CONTENT and nothing else. The
+            // column is written once at INSERT and thereafter only by
+            // `reconcileOwners`, which derives it from the agent.
             name: eb.ref('excluded.name'),
             description: eb.ref('excluded.description'),
             trigger_kind: eb.ref('excluded.trigger_kind'),
@@ -304,7 +342,7 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
       // branch); only workspace rows advance their next_run_at by the
       // claim window.
       const rows = await sql<{
-        agent_id: string; path: string; author_user_id: string;
+        agent_id: string; path: string; owner_user_id: string;
         name: string; description: string; spec_hash: string;
         trigger_kind: string; trigger_spec: unknown;
         active_hours: unknown | null;
@@ -528,7 +566,7 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
       // default id, so two materializers racing on the same agent will
       // not duplicate.
       //
-      // author_user_id is the owner user id (a.owner_user_id), not a
+      // owner_user_id is the owner user id (a.owner_user_id), not a
       // synthetic system actor: fire.ts:51 passes this through to
       // agents:resolve, whose ACL gate requires a real user id. See
       // bug write-up in 2026-05-19 MANUAL-ACCEPTANCE walk.
@@ -541,7 +579,7 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
       const ownerIds = input.agents.map((a) => a.ownerUserId);
       await sql`
         INSERT INTO routines_v1_definitions
-          (agent_id, path, author_user_id, name, description, spec_hash,
+          (agent_id, path, owner_user_id, name, description, spec_hash,
            trigger_kind, trigger_spec, active_hours, silence_token, silence_max,
            conversation, prompt_body, next_run_at, definition_id, definition_updated_at,
            created_at, updated_at)
@@ -599,6 +637,26 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
            AND (r.definition_updated_at IS NULL
                 OR r.definition_updated_at < d.updated_at)
       `.execute(db);
+    },
+
+    async reconcileOwners(input) {
+      if (input.agents.length === 0) return 0;
+      // `IS DISTINCT FROM` rather than `<>` so the predicate is still a
+      // no-op-filter if the column ever becomes nullable. `updated_at` is
+      // left alone on purpose: this corrects an identity, it does not edit
+      // the routine, and bumping it would make an untouched routine look
+      // freshly edited in the admin list.
+      const agentIds = input.agents.map((a) => a.agentId);
+      const ownerIds = input.agents.map((a) => a.ownerUserId);
+      const res = await sql`
+        UPDATE routines_v1_definitions r
+           SET owner_user_id = a.owner_user_id
+          FROM unnest(${agentIds}::text[], ${ownerIds}::text[])
+            AS a(agent_id, owner_user_id)
+         WHERE r.agent_id = a.agent_id
+           AND r.owner_user_id IS DISTINCT FROM a.owner_user_id
+      `.execute(db);
+      return Number(res.numAffectedRows ?? 0);
     },
 
     async setAgentDefaultEnabled(input) {
