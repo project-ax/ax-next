@@ -26,6 +26,9 @@ import {
   DECISION_RECEIPT_MAX_CHARS,
   DECISION_SUMMARY_MAX_CHARS,
   DECISION_RECEIPT_TAG,
+  FIRE_NO_SUMMARY,
+  FIRE_UNNAMED_SENTENCE,
+  fireLabel,
   fireToActivityEvent,
   makeWorkspaceHandlers,
   receiptToActivityEvent,
@@ -828,7 +831,7 @@ describe('channel-web agent-workspace BFF', () => {
       text: 'Four things need you.',
       stepsLabel: '1 step',
       // The host-authored phrase, not `mcp__gmail__gmail_list`.
-      steps: ['Checking your inbox'],
+      steps: [{ text: 'Checking your inbox', status: 'done' }],
     });
     expect(String(body.thread[1]!.time)).toMatch(/^\d{1,2}:\d{2}\s?(AM|PM)$/);
     // No result row for tu2, so it is honestly still running rather than done.
@@ -837,7 +840,7 @@ describe('channel-web agent-workspace BFF', () => {
       id: 't3',
       text: '',
       stepsLabel: '1 step, 1 in progress',
-      steps: ['gmail_get — in progress'],
+      steps: [{ text: 'gmail_get — in progress', status: 'running' }],
     });
     // The scratchpad never crosses the wire.
     expect(JSON.stringify(body.thread)).not.toContain('secret scratchpad');
@@ -879,11 +882,72 @@ describe('channel-web agent-workspace BFF', () => {
     expect(body.thread[0]).toMatchObject({
       kind: 'steps',
       stepsLabel: "2 steps, 1 didn't finish",
+      // The STATUS rides on the wire beside the words (TASK-419): the renderer
+      // marks a failure in the destructive token, and it must not have to
+      // recover that by matching our own copy back out of the sentence.
       steps: [
-        "Sending the email — didn't finish",
-        'Deleting the repo — waiting for you',
+        { text: "Sending the email — didn't finish", status: 'failed' },
+        { text: 'Deleting the repo — waiting for you', status: 'waiting' },
       ],
     });
+  });
+
+  it('tells two calls to the same tool apart on the reload path too', async () => {
+    /*
+      TASK-419's other half. The live path is
+      `src/lib/__tests__/workspace-api-stream-tools.test.ts`; that the two agree
+      ON SCREEN is `src/__tests__/workspace-steps-seam.test.tsx`. Here it is the
+      real route handler over a stored transcript: three calls, two of them the
+      same tool, and three rows that are not interchangeable.
+    */
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
+    turnsByConversation.set('c1', [
+      {
+        turnId: 't1',
+        turnIndex: 0,
+        role: 'assistant',
+        contentBlocks: [
+          {
+            type: 'tool_use',
+            id: 'w1',
+            name: 'Write',
+            // The file BODY is in here too, and must not be what the row says.
+            input: { file_path: 'src/app.ts', content: 'x'.repeat(4000) },
+          },
+          { type: 'tool_use', id: 'b1', name: 'Bash', input: { command: 'pnpm build' } },
+          { type: 'tool_use', id: 'b2', name: 'Bash', input: { command: 'pnpm test' } },
+        ],
+        createdAt: '2026-08-01T10:00:00.000Z',
+      },
+      {
+        turnId: 't2',
+        turnIndex: 1,
+        role: 'tool',
+        contentBlocks: [
+          { type: 'tool_result', tool_use_id: 'w1', content: 'ok' },
+          { type: 'tool_result', tool_use_id: 'b1', content: 'ok' },
+          { type: 'tool_result', tool_use_id: 'b2', content: 'ok' },
+        ],
+        createdAt: '2026-08-01T10:00:01.000Z',
+      },
+    ]);
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    const body = captured.body as { thread: Array<Record<string, unknown>> };
+    const rows = (body.thread[0]!.steps as Array<{ text: string }>).map((r) => r.text);
+    expect(rows).toEqual([
+      'Write: src/app.ts',
+      'Bash: pnpm build',
+      'Bash: pnpm test',
+    ]);
+    // What the walk actually saw — `Write`, `Bash`, `Bash` — was three rows a
+    // reader could not tell apart.
+    expect(new Set(rows).size).toBe(3);
+    // The arguments themselves do not go on the wire; one bounded line does.
+    expect(JSON.stringify(body.thread)).not.toContain('x'.repeat(200));
   });
 
   it('splits current vs past conversations, newest first', async () => {
@@ -1378,12 +1442,15 @@ describe('channel-web agent-workspace BFF', () => {
     const body = captured.body as ActivityBody;
     expect(body.events[0]).toMatchObject({
       kind: 'stopped',
-      text: 'Morning digest',
+      text: `Ran Morning digest. ${FIRE_NO_SUMMARY}`,
       detail: 'gmail refused the connection',
     });
     // The routine is gone but its fires survive — the path is a real
     // identifier, so it stands in for the name rather than a guessed label.
-    expect(body.events[1]).toMatchObject({ kind: 'stopped', text: 'sweep.md' });
+    expect(body.events[1]).toMatchObject({
+      kind: 'stopped',
+      text: `Ran sweep.md. ${FIRE_NO_SUMMARY}`,
+    });
     expect(body.events[1]!.detail).toBe('It failed, and no reason was recorded.');
     expect(body.events[2]!.detail).toBe('It failed, and no reason was recorded.');
   });
@@ -1452,9 +1519,9 @@ describe('channel-web agent-workspace BFF', () => {
     // agentId returns every agent's rows, so a mixed-up name here would mean
     // the fan-out forgot to scope the call.
     expect(body.events.map((e) => e.text)).toEqual([
-      'Morning digest',
-      'Paper scan',
-      'Morning digest',
+      `Ran Morning digest. ${FIRE_NO_SUMMARY}`,
+      `Ran Paper scan. ${FIRE_NO_SUMMARY}`,
+      `Ran Morning digest. ${FIRE_NO_SUMMARY}`,
     ]);
   });
 
@@ -1627,7 +1694,9 @@ describe('channel-web agent-workspace BFF', () => {
     await h.activity(activityReq(), res);
     // No authored name to be had — the path is the honest stand-in. Dropping
     // the row would claim the agent did nothing, which is the bigger lie.
-    expect((captured.body as ActivityBody).events[0]!.text).toBe('daily.md');
+    expect((captured.body as ActivityBody).events[0]!.text).toBe(
+      `Ran daily.md. ${FIRE_NO_SUMMARY}`,
+    );
   });
 
   // --- the pure mapping ----------------------------------------------------
@@ -1831,7 +1900,7 @@ describe('channel-web agent-workspace BFF', () => {
     await h.activity(activityReq(), res);
     expect(captured.statusCode).toBe(200);
     expect((captured.body as ActivityBody).events.map((e) => e.text)).toEqual([
-      'Morning digest',
+      `Ran Morning digest. ${FIRE_NO_SUMMARY}`,
     ]);
   });
 
@@ -1950,8 +2019,15 @@ describe('channel-web agent-workspace BFF', () => {
     /[\u0000-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/;
 
   const at = '2026-08-20T12:00:00.000Z';
-  const rowFor = (name: string) =>
-    fireToActivityEvent(fire({ id: 1, firedAt: at }), new Map([['daily.md', name]]))!;
+  /*
+    The fence lives on the LABEL — the routine's own words — and the row's
+    sentence is built around whatever comes back (TASK-419). Asserting on the
+    label directly keeps these cases about fencing rather than about the
+    surrounding copy; `the "What it did" row` block below pins the sentence.
+  */
+  const labelFor = (name: string) =>
+    fireLabel(fire({ id: 1, firedAt: at }), new Map([['daily.md', name]]))!;
+  const rowFor = (name: string) => ({ text: labelFor(name) });
 
   it.each([
     ['a right-to-left override', '\u202EMorning digest'],
@@ -2025,6 +2101,60 @@ describe('channel-web agent-workspace BFF', () => {
     // Same fall-through an absent name gets: the path is the truest thing still
     // known about the row, and the row is never dropped.
     expect(rowFor('\u200B\u202E').text).toBe('daily.md');
+  });
+
+  // --- the "What it did" row, TASK-419 -------------------------------------
+  //
+  // A walk against the live deployment read the whole row as `heartbeat`: the
+  // routine's name, alone, where a sentence about the agent's work belongs.
+  // A fire records THAT it ran and nothing about what came out of it, so the
+  // row cannot carry a summary — and the fix for that is to say so, not to
+  // print a bare identifier and let it pass for an answer.
+
+  it('does not present the routine name as the answer to "what it did"', () => {
+    const ev = fireToActivityEvent(
+      fire({ id: 1, firedAt: at, path: 'heartbeat.md' }),
+      new Map([['heartbeat.md', 'heartbeat']]),
+    )!;
+    // The regression, stated as the walk found it: the row WAS this string.
+    expect(ev.text).not.toBe('heartbeat');
+    // It still names what ran — that part was never the problem.
+    expect(ev.text).toContain('heartbeat');
+    // And it says the part we cannot say, rather than leaving the reader to
+    // work out that a lone word was all they were getting.
+    expect(ev.text).toBe(`Ran heartbeat. ${FIRE_NO_SUMMARY}`);
+  });
+
+  it('admits the gap in plain words, with no machinery in it', () => {
+    // The sentence a person reads. No identifiers, no status token, no
+    // storage vocabulary — this surface's whole job is to be readable.
+    expect(FIRE_NO_SUMMARY).toBe("We don't have a summary of what it did.");
+    expect(FIRE_NO_SUMMARY).not.toMatch(/heartbeat|\.md|null|undefined|ok|fire/i);
+  });
+
+  it('says both halves out loud when even the name is unreadable', () => {
+    // Nothing legible anywhere: the name fences to nothing AND the path does.
+    const nameless = fire({ id: 1, firedAt: at });
+    (nameless as { path: string }).path = '\u200B\u202E';
+    const ev = fireToActivityEvent(nameless, new Map())!;
+    expect(ev.text).toBe(FIRE_UNNAMED_SENTENCE);
+    // The old copy stopped at "A routine with no readable name", which answers
+    // a question nobody on this tab asked.
+    expect(ev.text).toContain('summary');
+  });
+
+  it('keeps the sentence honest on a fire that failed', () => {
+    // "We don't have a summary" and "it failed, and here is why" are two
+    // different statements, and the row makes both without contradicting
+    // itself: the headline never claims the run went well.
+    const ev = fireToActivityEvent(
+      fire({ id: 1, firedAt: at, status: 'error', error: 'gmail refused' }),
+      new Map([['daily.md', 'Morning digest']]),
+    )!;
+    expect(ev.kind).toBe('stopped');
+    expect(ev.text).toBe(`Ran Morning digest. ${FIRE_NO_SUMMARY}`);
+    expect(ev.detail).toBe('gmail refused');
+    expect(ev.text).not.toMatch(/succe|done|finished/i);
   });
 
   // -------------------------------------------------------------------------

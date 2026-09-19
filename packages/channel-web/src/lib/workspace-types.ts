@@ -35,6 +35,15 @@
  * the same row either way, which is why the Today queue needs no special case
  * for "the user walked away mid-approval".
  */
+/*
+  The step row's shape has ONE home, and it is the module that builds rows
+  (invariant 4). Mirroring it here would put the status vocabulary in two
+  places, which is how a renderer ends up drawing a state the shaper stopped
+  producing. The `.js` is deliberate: this file is reachable from the server
+  (`server/routes-workspace.ts`), and Node's ESM resolver does not guess.
+*/
+import type { WorkspaceStep } from './workspace-steps.js';
+
 export type Attendance = 'attended' | 'unattended';
 
 export type DecisionKind = 'action' | 'grant';
@@ -536,7 +545,7 @@ export type ThreadMessage =
       text: string;
       time: string;
       stepsLabel: string;
-      steps: string[];
+      steps: WorkspaceStep[];
     }
   | { kind: 'approval'; id: string; decisionId: string }
   | { kind: 'status'; id: string; text: string }

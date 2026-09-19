@@ -56,6 +56,9 @@ import {
   MAX_DETAIL_CHARS,
 } from './turn-error-labels';
 import { readSseFrames } from './sse-frames';
+// The ONE producer of a step row's qualifier, shared with the reload path so
+// the same call cannot read two ways (TASK-419).
+import { stepDetail } from './workspace-steps';
 // The store owns "can this build draw it?", because `grantKey` is the function
 // that breaks without it. Read, not re-declared: a second copy of the same
 // three kinds is a drift waiting to happen.
@@ -417,17 +420,23 @@ export interface StreamHandlers {
   /**
    * The agent called a tool (TASK-352). NON-TERMINAL — the turn carries on.
    *
-   * Forwarded as the three fields a step row is built from and NOT as the
-   * frame: `input` is model-authored and the panel never renders it, so
-   * handing it on would be reach nothing on this surface needs (invariant 5).
+   * Forwarded as the fields a step row is built from and NOT as the frame:
+   * `input` is model-authored and the panel has no renderer for it, so handing
+   * it on would be reach nothing on this surface needs (invariant 5).
    * `activityPhrase` is the host-authored label; the caller falls back to the
    * stripped tool name when it is absent, which `lib/workspace-steps.ts` does
    * for both paths at once.
+   *
+   * `detail` is the ONE bounded line derived from that input (TASK-419) —
+   * `stepDetail` runs HERE, at the edge, so the raw arguments stop at this
+   * function exactly as they always have. Without it two `Bash` calls in a
+   * turn draw two rows reading `Bash`.
    */
   onToolUse?: (call: {
     toolCallId: string;
     toolName: string;
     activityPhrase?: string | undefined;
+    detail?: string | undefined;
   }) => void;
   /**
    * A tool call came back (TASK-352). NON-TERMINAL.
@@ -981,7 +990,10 @@ async function streamReply(
       Only the fields a step row needs are forwarded. `input` and `output` are
       untrusted model/tool content with no renderer on this surface, and
       handing them to a caller that cannot draw them is reach for nothing
-      (invariant 5).
+      (invariant 5). `input` is READ here — `stepDetail` reduces it to one
+      fenced line so two calls to the same tool can be told apart — and is
+      still not forwarded: what leaves this function is that line, not the
+      arguments it came from.
     */
     if (onToolUse && 'kind' in frame && frame.kind === 'tool-use') {
       if (typeof frame.toolCallId === 'string' && typeof frame.toolName === 'string') {
@@ -989,6 +1001,7 @@ async function streamReply(
           toolCallId: frame.toolCallId,
           toolName: frame.toolName,
           activityPhrase: frame.activityPhrase,
+          detail: stepDetail(frame.input),
         });
       }
       return 'continue';

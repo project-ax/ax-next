@@ -84,6 +84,40 @@ export interface WorkspaceToolCall {
    * row and the reloaded row end up reading differently.
    */
   phrase?: string | undefined;
+  /**
+   * The short "which one" of this call — the command a `Bash` ran, the file a
+   * `Write` wrote — already derived and fenced by {@link stepDetail}.
+   *
+   * ALREADY DERIVED is the point, and it is a capability decision (invariant
+   * 5), not a style one. A tool's raw input is model-authored and this surface
+   * has no renderer for it, so neither path hands the input itself to a step
+   * row: each normalizer calls `stepDetail` at its own edge and passes on the
+   * one bounded line that comes back. The live path keeps dropping `input` at
+   * `workspace-api.ts` exactly as it did before.
+   */
+  detail?: string | undefined;
+  status: WorkspaceStepStatus;
+}
+
+/**
+ * One row in the panel: the sentence, and the state that sentence is in.
+ *
+ * WHY THE STATUS RIDES ALONG rather than being baked into the sentence and
+ * thrown away. Until TASK-419 a row was a bare string, so a failed step and a
+ * finished one reached the renderer as the same kind of thing and were drawn
+ * the same way — same colour, same weight, no mark — with the difference
+ * carried entirely by three trailing words in identical grey. A walk against
+ * the live deployment read a step that had failed as one that had worked,
+ * which is worse than an uninformative row: it is a false one.
+ *
+ * Everywhere else in the product a failure is `text-destructive` and a hold is
+ * `text-warning` (the activity feed, chat's tool panel). The renderer cannot
+ * apply those from a string without matching our own copy back out of it,
+ * which would put two modules in charge of one sentence. So it gets the state.
+ */
+export interface WorkspaceStep {
+  /** What the row says. Already named, qualified and fenced. */
+  text: string;
   status: WorkspaceStepStatus;
 }
 
@@ -91,8 +125,8 @@ export interface WorkspaceToolCall {
 export interface WorkspaceStepPanel {
   /** The disclosure header. Always opens with the step COUNT — see below. */
   label: string;
-  /** One line per call, in call order. `label`'s count is `steps.length`. */
-  steps: string[];
+  /** One row per call, in call order. `label`'s count is `steps.length`. */
+  steps: WorkspaceStep[];
 }
 
 /**
@@ -114,6 +148,84 @@ export const STEP_NAME_MAX_CHARS = 80;
  */
 export const UNNAMED_STEP = 'Unnamed step';
 
+/**
+ * How much of a call's input reaches the row beside the tool name.
+ *
+ * Shorter than {@link STEP_NAME_MAX_CHARS} on purpose: this rides AFTER the
+ * name on one line, and a detail that can outrun the thing it qualifies turns
+ * a list of steps back into a wall of text.
+ */
+export const STEP_DETAIL_MAX_CHARS = 60;
+
+/**
+ * The input keys that answer "which one", in preference order.
+ *
+ * WHY A LIST AND NOT THE WHOLE OBJECT. A step row had no detail at all until
+ * TASK-419, which is how a turn that ran `Bash` three times drew three rows
+ * reading `Bash`, `Bash`, `Bash` — a list that reports a count and tells the
+ * reader nothing else. The fix is the smallest thing that distinguishes one
+ * call from the next, not the argument blob: `Write`'s input carries the whole
+ * file it is writing, and a row is a line.
+ *
+ * The order is the order a person would ask in: what was run, then what it was
+ * run on, then what was searched for or fetched. `content`-shaped keys are
+ * deliberately absent — they are never the answer to "which one", and every
+ * tool that has one also has a path or a command above it here.
+ */
+const DETAIL_KEYS = [
+  'command',
+  'file_path',
+  'path',
+  'notebook_path',
+  'pattern',
+  'query',
+  'url',
+  'title',
+  'description',
+  'prompt',
+] as const;
+
+/**
+ * One tool call's input → the short line that tells it apart, or `undefined`.
+ *
+ * FENCED HERE, at the edge both paths share. The value is model-authored — it
+ * is whatever the model decided to put in the tool's arguments — so it gets
+ * the same treatment every other untrusted string on this surface gets: one
+ * line, bounded, control and bidi characters neutralised. React escapes
+ * markup, so the risk was never script; it is a row that reorders or hides
+ * what the reader sees, in our voice (see `fence-line.ts`).
+ *
+ * `undefined` rather than an empty string when nothing legible survives, so a
+ * row falls back to its bare name instead of ending in a dangling separator.
+ * An unnamed-key tool (`TodoWrite`, whose input is a list) lands here too, and
+ * that is correct: there is no "which one" to show.
+ *
+ * The fallback past {@link DETAIL_KEYS} is the first string-valued key the
+ * object carries, in its own order. MCP servers name their arguments whatever
+ * they like, and `create_issue` called on `{ title: … }` is exactly the case a
+ * fixed list cannot enumerate. It is bounded and fenced like any other, so the
+ * worst case is a row qualified by a less useful string — not by an unbounded
+ * one.
+ */
+export function stepDetail(input: unknown): string | undefined {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    return undefined;
+  }
+  const args = input as Record<string, unknown>;
+  for (const key of DETAIL_KEYS) {
+    const value = args[key];
+    if (typeof value !== 'string') continue;
+    const fenced = fenceLine(value, STEP_DETAIL_MAX_CHARS);
+    if (fenced !== null) return fenced;
+  }
+  for (const value of Object.values(args)) {
+    if (typeof value !== 'string') continue;
+    const fenced = fenceLine(value, STEP_DETAIL_MAX_CHARS);
+    if (fenced !== null) return fenced;
+  }
+  return undefined;
+}
+
 /** Suffixes that make a row say what state it is in, rather than implying one. */
 const STATUS_SUFFIX: Record<Exclude<WorkspaceStepStatus, 'done'>, string> = {
   // "in progress", not "running": a program runs, a person's errand is in
@@ -130,6 +242,21 @@ function stepName(call: WorkspaceToolCall): string {
     fenceLine(stripMcpToolPrefix(call.name), STEP_NAME_MAX_CHARS) ??
     UNNAMED_STEP
   );
+}
+
+/**
+ * One call's row: what ran, and — when we can say it — which one.
+ *
+ * A COLON, not the em dash. The dash is already spoken for by the status
+ * suffix below, and `Bash — ls -la — in progress` makes the reader work out
+ * which half is the machine's and which is ours. `Bash: ls -la — in progress`
+ * reads in one pass.
+ */
+function stepRow(call: WorkspaceToolCall): string {
+  const name = stepName(call);
+  return call.detail === undefined || call.detail.length === 0
+    ? name
+    : `${name}: ${call.detail}`;
 }
 
 /**
@@ -173,16 +300,22 @@ export function shapeSteps(
   calls: readonly WorkspaceToolCall[],
 ): WorkspaceStepPanel | null {
   if (calls.length === 0) return null;
-  const steps: string[] = [];
+  const steps: WorkspaceStep[] = [];
   const counts = { failed: 0, waiting: 0, running: 0 };
   for (const call of calls) {
-    const name = stepName(call);
+    const row = stepRow(call);
     if (call.status === 'done') {
-      steps.push(name);
+      steps.push({ text: row, status: 'done' });
       continue;
     }
     counts[call.status] += 1;
-    steps.push(`${name} — ${STATUS_SUFFIX[call.status]}`);
+    // The words stay, ALONGSIDE the status — a colour is not a sentence, and a
+    // reader who cannot see the difference between two greys still has to be
+    // told what happened.
+    steps.push({
+      text: `${row} — ${STATUS_SUFFIX[call.status]}`,
+      status: call.status,
+    });
   }
   return { label: stepsLabel(steps.length, counts), steps };
 }
@@ -202,12 +335,19 @@ export function shapeSteps(
  */
 export function applyToolUse(
   calls: readonly WorkspaceToolCall[],
-  frame: { toolCallId: string; toolName: string; activityPhrase?: string | undefined },
+  frame: {
+    toolCallId: string;
+    toolName: string;
+    activityPhrase?: string | undefined;
+    /** Already through {@link stepDetail} — see {@link WorkspaceToolCall.detail}. */
+    detail?: string | undefined;
+  },
 ): WorkspaceToolCall[] {
   const next: WorkspaceToolCall = {
     id: frame.toolCallId,
     name: frame.toolName,
     phrase: frame.activityPhrase,
+    detail: frame.detail,
     status: 'running',
   };
   const at = calls.findIndex((c) => c.id === frame.toolCallId);

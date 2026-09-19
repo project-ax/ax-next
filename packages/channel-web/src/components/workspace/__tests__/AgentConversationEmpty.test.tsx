@@ -189,7 +189,10 @@ describe('AgentConversation — the zero-turn thread', () => {
         text: '',
         time: '09:20',
         stepsLabel: 'Read 2 files',
-        steps: ['Read roof-quote.pdf', 'Read notes.md'],
+        steps: [
+          { text: 'Read roof-quote.pdf', status: 'done' },
+          { text: 'Read notes.md', status: 'done' },
+        ],
       },
     ];
     renderConversation({ thread, readOnly: false });

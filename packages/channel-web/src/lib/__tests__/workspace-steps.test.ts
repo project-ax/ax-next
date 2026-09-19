@@ -8,10 +8,12 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  STEP_DETAIL_MAX_CHARS,
   UNNAMED_STEP,
   applyToolResult,
   applyToolUse,
   shapeSteps,
+  stepDetail,
   type WorkspaceToolCall,
 } from '../workspace-steps';
 
@@ -22,6 +24,17 @@ const done = (over: Partial<WorkspaceToolCall> = {}): WorkspaceToolCall => ({
   ...over,
 });
 
+/**
+ * The SENTENCES a panel draws.
+ *
+ * A row is `{ text, status }` since TASK-419 — the status is what lets the
+ * renderer mark a failure in the destructive token instead of leaving it the
+ * same grey as a success. Most cases here are about the wording, so they read
+ * the wording; the ones about the status say so and read `.steps` directly.
+ */
+const texts = (panel: { steps: Array<{ text: string }> } | null): string[] =>
+  (panel?.steps ?? []).map((s) => s.text);
+
 describe('shapeSteps', () => {
   it('is null for a turn that ran nothing, so no empty disclosure appears', () => {
     expect(shapeSteps([])).toBeNull();
@@ -31,48 +44,48 @@ describe('shapeSteps', () => {
     const panel = shapeSteps([
       done({ name: 'mcp__linear__create_issue', phrase: 'Filing a Linear issue' }),
     ]);
-    expect(panel?.steps).toEqual(['Filing a Linear issue']);
+    expect(texts(panel)).toEqual(['Filing a Linear issue']);
   });
 
   it('falls back to the STRIPPED tool name when there is no phrase', () => {
     const panel = shapeSteps([done({ name: 'mcp__ax-sandbox-tools__artifact_publish' })]);
-    expect(panel?.steps).toEqual(['artifact_publish']);
+    expect(texts(panel)).toEqual(['artifact_publish']);
   });
 
   it('keeps a row, named, when nothing legible survives fencing', () => {
     // A tool name made entirely of the characters that rewrite a surface. The
     // row still appears: a shorter list would disagree with what happened.
     const panel = shapeSteps([done({ name: '\u202E\u200B' })]);
-    expect(panel?.steps).toEqual([UNNAMED_STEP]);
+    expect(texts(panel)).toEqual([UNNAMED_STEP]);
   });
 
   it('flattens a name that tries to rewrite the line it sits on', () => {
     const panel = shapeSteps([done({ phrase: 'Reading\u202Egnp.dorp-eteled' })]);
-    expect(panel?.steps[0]).toBe('Reading gnp.dorp-eteled');
-    expect(panel?.steps[0]).not.toContain('\u202E');
+    expect(texts(panel)[0]).toBe('Reading gnp.dorp-eteled');
+    expect(texts(panel)[0]).not.toContain('\u202E');
   });
 
   it('bounds a name that arrived without one', () => {
     const panel = shapeSteps([done({ phrase: 'x'.repeat(500) })]);
-    expect(panel?.steps[0]?.length).toBeLessThanOrEqual(80);
-    expect(panel?.steps[0]?.endsWith('…')).toBe(true);
+    expect(texts(panel)[0]?.length).toBeLessThanOrEqual(80);
+    expect(texts(panel)[0]?.endsWith('…')).toBe(true);
   });
 
   it('says a failed step failed, in words, not only in colour', () => {
     const panel = shapeSteps([done({ status: 'failed', phrase: 'Sending the email' })]);
-    expect(panel?.steps).toEqual(["Sending the email — didn't finish"]);
+    expect(texts(panel)).toEqual(["Sending the email — didn't finish"]);
     expect(panel?.label).toBe("1 step, 1 didn't finish");
   });
 
   it('says a held step is waiting on the reader', () => {
     const panel = shapeSteps([done({ status: 'waiting', phrase: 'Sending the email' })]);
-    expect(panel?.steps).toEqual(['Sending the email — waiting for you']);
+    expect(texts(panel)).toEqual(['Sending the email — waiting for you']);
     expect(panel?.label).toBe('1 step, 1 waiting for you');
   });
 
   it('says a step still in flight is in progress', () => {
     const panel = shapeSteps([done({ status: 'running', phrase: 'Searching the web' })]);
-    expect(panel?.steps).toEqual(['Searching the web — in progress']);
+    expect(texts(panel)).toEqual(['Searching the web — in progress']);
     expect(panel?.label).toBe('1 step, 1 in progress');
   });
 
@@ -87,7 +100,7 @@ describe('shapeSteps', () => {
       done({ id: 'b', status: 'failed', phrase: 'Reading the calendar' }),
     ]);
     expect(panel?.label).toBe("2 steps, 1 didn't finish");
-    expect(panel?.steps).toEqual([
+    expect(texts(panel)).toEqual([
       'Sending the email — waiting for you',
       "Reading the calendar — didn't finish",
     ]);
@@ -164,6 +177,141 @@ describe('the live accumulator', () => {
     calls = applyToolUse(calls, { toolCallId: 'b', toolName: 'Second' });
     calls = applyToolResult(calls, { toolCallId: 'b' });
     calls = applyToolResult(calls, { toolCallId: 'a' });
-    expect(shapeSteps(calls)?.steps).toEqual(['First', 'Second']);
+    expect(texts(shapeSteps(calls))).toEqual(['First', 'Second']);
+  });
+});
+
+/**
+ * TASK-419: the rows have to tell two calls to the SAME tool apart.
+ *
+ * The walk found a panel reading `Write`, `Bash`, `Bash` — a list that reports
+ * a count and nothing else. The count was right and the rows were useless, so
+ * the defect is in what a row SAYS, not in whether it appears.
+ */
+describe('telling one call from the next', () => {
+  it('draws two Bash calls as two DIFFERENT rows', () => {
+    const rows = shapeSteps([
+      done({ id: 'a', detail: stepDetail({ command: 'pnpm build' }) }),
+      done({ id: 'b', detail: stepDetail({ command: 'pnpm test' }) }),
+    ])!.steps.map((step) => step.text);
+    expect(rows).toEqual(['Bash: pnpm build', 'Bash: pnpm test']);
+    // The assertion the card is actually about: not "they read nicely", but
+    // "they do not read the same".
+    expect(rows[0]).not.toBe(rows[1]);
+  });
+
+  it('still says which one when the call is mid-flight or failed', () => {
+    // The status suffix keeps its em dash, and the detail keeps its colon, so
+    // the two halves cannot be mistaken for each other.
+    const panel = shapeSteps([
+      { id: 'a', name: 'Bash', detail: 'pnpm build', status: 'running' },
+      { id: 'b', name: 'Bash', detail: 'pnpm test', status: 'failed' },
+    ]);
+    expect(texts(panel)).toEqual([
+      'Bash: pnpm build — in progress',
+      'Bash: pnpm test — didn\'t finish',
+    ]);
+  });
+
+  it('leaves a row bare rather than ending it in a dangling separator', () => {
+    // A tool whose input has no string in it at all (`TodoWrite` takes a list).
+    // There is no "which one" to show, so the row is just the name.
+    expect(stepDetail({ todos: [] })).toBeUndefined();
+    expect(texts(shapeSteps([done({ detail: stepDetail({ todos: [] }) })]))).toEqual([
+      'Bash',
+    ]);
+  });
+
+  it('hands the renderer the STATE of each row, not just its words', () => {
+    /*
+      TASK-419 again, the third half of it. A failed step used to arrive as a
+      plain string, so the renderer had nothing to mark it with and drew it in
+      the same grey as a success — the difference lived entirely in three
+      trailing words. Anything that wanted to colour the row would have had to
+      match our own copy back out of it, which is two modules owning one
+      sentence. The status rides along instead.
+    */
+    const panel = shapeSteps([
+      done({ id: 'a' }),
+      { id: 'b', name: 'Bash', status: 'failed' },
+      { id: 'c', name: 'Bash', status: 'waiting' },
+      { id: 'd', name: 'Bash', status: 'running' },
+    ]);
+    expect(panel?.steps.map((s) => s.status)).toEqual([
+      'done',
+      'failed',
+      'waiting',
+      'running',
+    ]);
+  });
+
+  it('qualifies a host-authored phrase too, not only a bare tool name', () => {
+    const panel = shapeSteps([
+      done({
+        name: 'mcp__linear__create_issue',
+        phrase: 'Filing a Linear issue',
+        detail: stepDetail({ title: 'Login is broken' }),
+      }),
+    ]);
+    expect(texts(panel)).toEqual(['Filing a Linear issue: Login is broken']);
+  });
+});
+
+describe('stepDetail', () => {
+  it('picks the argument a person would ask about first', () => {
+    // `command` over everything, then the path, then what was searched for.
+    expect(stepDetail({ description: 'run the build', command: 'pnpm build' })).toBe(
+      'pnpm build',
+    );
+    expect(stepDetail({ content: 'the whole file', file_path: 'src/app.ts' })).toBe(
+      'src/app.ts',
+    );
+    expect(stepDetail({ pattern: 'TODO', output_mode: 'files' })).toBe('TODO');
+    expect(stepDetail({ url: 'https://example.com/x' })).toBe('https://example.com/x');
+  });
+
+  it('never picks the file BODY over the file path', () => {
+    // The one mistake that would turn a step list back into a wall of text.
+    expect(stepDetail({ file_path: 'src/app.ts', content: 'x'.repeat(5000) })).toBe(
+      'src/app.ts',
+    );
+  });
+
+  it('falls back to the first string an unknown tool carries', () => {
+    // MCP servers name their arguments whatever they like; a fixed list cannot
+    // enumerate them, and a row with no qualifier at all is the thing we are
+    // fixing.
+    expect(stepDetail({ issueId: 'LIN-4', teamKey: 'ENG' })).toBe('LIN-4');
+  });
+
+  it('has nothing to say about an input that is not an object of arguments', () => {
+    expect(stepDetail(undefined)).toBeUndefined();
+    expect(stepDetail(null)).toBeUndefined();
+    expect(stepDetail('pnpm build')).toBeUndefined();
+    expect(stepDetail(['pnpm build'])).toBeUndefined();
+    expect(stepDetail({ limit: 5, deep: true })).toBeUndefined();
+  });
+
+  it('fences the model\'s own words before they reach a row', () => {
+    // This string is authored by the MODEL — it is whatever it decided to put
+    // in the tool's arguments. React escapes markup, so the risk was never
+    // script; it is a row that reorders what the reader sees (`fence-line.ts`).
+    const fenced = stepDetail({ command: 'rm\u202Egnp.dorp-eteled' })!;
+    expect(fenced).not.toContain('\u202E');
+    expect(fenced).toBe('rm gnp.dorp-eteled');
+  });
+
+  it('bounds a detail that arrived without a bound, and marks the cut', () => {
+    const long = stepDetail({ command: 'x'.repeat(5000) })!;
+    expect([...long]).toHaveLength(STEP_DETAIL_MAX_CHARS);
+    expect(long.endsWith('…')).toBe(true);
+  });
+
+  it('skips a key whose value fences down to nothing', () => {
+    // An all-invisible command is the same absence as a missing one, so the
+    // next candidate gets its turn rather than the row ending in a colon.
+    expect(stepDetail({ command: '\u200B\u202E', file_path: 'src/app.ts' })).toBe(
+      'src/app.ts',
+    );
   });
 });
