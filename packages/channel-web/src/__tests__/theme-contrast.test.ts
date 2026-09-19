@@ -4,9 +4,12 @@
  * A browser walk found two buttons below it: "Just this once" on the permission
  * card at 3.75:1 and "Turn it off anyway" on the sign-in lockout dialog at
  * 3.40:1 — the two most consequential buttons in the product. Both were white
- * text on an accent that dark mode had deliberately LIGHTENED (primary 44% ->
- * 52%, destructive 55% -> 62%), which moves the accent toward white and
- * squeezes the text on top of it.
+ * text on an accent that dark mode deliberately LIGHTENS (primary 42% -> 56%,
+ * destructive 50% -> 62%), which moves the accent toward white and squeezes
+ * the text on top of it. (Those are today's values. When the bug was found
+ * they read 44% -> 52% and 55% -> 62%; #537 darkened light-mode destructive
+ * and TASK-425 moved primary. The direction of travel is what matters here,
+ * and it has not changed.)
  *
  * A screenshot will not tell you that, and neither will a reviewer — 3.4:1 red
  * with white text looks fine until you measure it. So this measures, the same
@@ -123,6 +126,61 @@ const ACCENT_PAIRS = [
 const ACCENTS_USED_AS_TEXT = ['--primary', '--destructive', '--warning'] as const;
 
 /**
+ * An accent painted as text on its OWN tinted surface — `text-primary` on
+ * `bg-primary-soft`, `text-destructive` on `bg-destructive-soft`.
+ *
+ * This is a THIRD direction, and nothing above measured it. `ACCENT_PAIRS`
+ * measures the accent as a background under its `*-foreground`;
+ * `ACCENTS_USED_AS_TEXT` measures it as text on a plain page or card. Neither
+ * covers the accent as text on the *tint derived from itself*, which is the
+ * lowest-contrast combination of the three by construction — both sides are the
+ * same hue, so only the lightness gap does any work.
+ *
+ * TASK-425 is what surfaced it: `text-primary` on `bg-primary-soft` measured
+ * **4.35:1 light / 4.28:1 dark**, under the floor, at four render sites — the
+ * selected row in `WorkspaceSidebar`, `AgentFiles` and `AgentRail`, plus the
+ * added-line row in `BundleDiffView`.
+ *
+ * Those two are this file's own formula. A browser probe read the light one as
+ * 4.36; the gap is rounding, not disagreement, and it is worth keeping straight
+ * about which number came from where.
+ *
+ * The fix was to move `--primary` (see the note in `index.css`), NOT
+ * `--primary-soft`. That asymmetry is the part worth writing down, because the
+ * soft token looks like the tempting thing to move and is the one that breaks:
+ *
+ *   - `--primary-soft`'s job is to be a VISIBLE selection tint, distinguishable
+ *     from `--card` (the resting row) and `--muted` (the hover row). To fix the
+ *     contrast from that side, light mode would need it at ~96.5% — LIGHTER
+ *     than `--muted` at 96%, so the selected row would read as less emphasised
+ *     than the merely-hovered one. Dark mode would need ~12%, within a point of
+ *     `--card` at 11%, so the selected row would all but vanish on a card.
+ *   - `--primary` has the opposite property: every one of its roles sits on the
+ *     far side of it, so moving it AWAY from the surfaces lifts them all at
+ *     once. Measured, 44% -> 42% light and 52% -> 56% dark: the defect pair
+ *     4.35 -> 4.65 and 4.28 -> 4.73, and the three pairs that already passed
+ *     improved too (`--primary-foreground` on `bg-primary` 4.97 -> 5.31 light
+ *     and 4.72 -> 5.23 dark; `text-primary` on `--card` 4.97 -> 5.31 and
+ *     4.58 -> 5.07). No role was traded away, so no role had to be split off.
+ *
+ * That is the opposite outcome to `--ink-ghost` below, where the roles pulled
+ * against each other and the resolution WAS to split them. Which way a token
+ * goes is a question to be measured, not assumed.
+ *
+ * `--warning` is deliberately NOT in this list yet. It belongs here — and it
+ * FAILS: `text-warning` on `bg-warning-soft` measures **4.45:1 in light mode**
+ * (dark is fine at 8.47), on the `WorkspaceSidebar` count badge and the
+ * `bits.tsx` status badge. That is a real AA miss and it is TASK-445's card,
+ * not this one's, so the row is withheld rather than added-and-excluded. Add
+ * `['--warning', '--warning-soft']` here as part of that fix; the number above
+ * is the measurement, so nobody has to take it again.
+ */
+const ACCENT_SOFT_PAIRS = [
+  ['--primary', '--primary-soft'],
+  ['--destructive', '--destructive-soft'],
+] as const;
+
+/**
  * The plain surfaces those accents land on. `--card` is a SECOND surface, not
  * a synonym for `--background`: in light mode they happen to be the same white,
  * but dark mode lifts the card to `240 3% 11%` off a pure-black page. Anything
@@ -227,6 +285,16 @@ describe('theme contrast', () => {
           expect(bgv, `${bg} missing from ${selector}`).toBeDefined();
           expect(fgv, `${fg} missing from ${selector}`).toBeDefined();
           expect(contrast(bgv!, fgv!)).toBeGreaterThanOrEqual(AA_NORMAL);
+        });
+      }
+
+      for (const [accent, soft] of ACCENT_SOFT_PAIRS) {
+        it(`${accent} as text on ${soft} clears AA`, () => {
+          const accentV = tokens.get(accent);
+          const softV = tokens.get(soft);
+          expect(accentV, `${accent} missing from ${selector}`).toBeDefined();
+          expect(softV, `${soft} missing from ${selector}`).toBeDefined();
+          expect(contrast(accentV!, softV!)).toBeGreaterThanOrEqual(AA_NORMAL);
         });
       }
 

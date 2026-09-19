@@ -10,7 +10,29 @@
     --card-foreground: 240 6% 10%;
     --popover: 0 0% 100%;
     --popover-foreground: 240 6% 10%;
-    --primary: 211 100% 44%;
+    /* 44% -> 42%. `text-primary` on `bg-primary-soft` measured 4.35:1 here and
+       4.28:1 in dark — under the AA floor — on the selected row in
+       WorkspaceSidebar, AgentFiles and AgentRail, and on the added-line row in
+       BundleDiffView.
+
+       The accent moved, NOT the tint, and the asymmetry is the whole point.
+       `--primary-soft` has to stay a VISIBLE selection tint: fixing the ratio
+       from that side needs ~96.5% here, lighter than `--muted` at 96%, so the
+       selected row would read as quieter than the hovered one — and ~12% in
+       dark, within a point of `--card` at 11%, so it would all but disappear on
+       a card. `--primary` has the opposite property: every role of it that
+       carries text puts the foreground on the far side of the accent, so moving
+       it away from the surfaces lifts them all together. The defect pair goes
+       4.35 -> 4.65, and the pairs that already passed improved as well — white
+       on `bg-primary` 4.97 -> 5.31, and `text-primary` on the page 4.97 -> 5.31.
+       The roles that carry no text are unaffected either way: the state dots,
+       progress fills and switch tracks, and `AvatarTile`'s decorative gradient,
+       which mixes the accent at 22-26% behind an `aria-hidden` tile.
+
+       Compare `--ink-ghost` below, where the roles genuinely fought and the fix
+       was to split them. Same question, opposite answer; measure, don't assume.
+       `--ring` tracks this value in every block and moves with it. */
+    --primary: 211 100% 42%;
     --primary-foreground: 0 0% 100%;
     --primary-soft: 214 100% 95%;
     --secondary: 240 5% 96%;
@@ -43,7 +65,8 @@
     --warning-soft: 45 93% 93%;
     --border: 240 6% 91%;
     --input: 240 6% 91%;
-    --ring: 211 100% 44%;
+    /* Tracks `--primary` (see its note above). */
+    --ring: 211 100% 42%;
     --radius: 0.5rem;
     --rule-soft: 240 6% 95%;
     /* A FILL, never ink. Value unchanged on purpose — read this before nudging it.
@@ -63,8 +86,8 @@
   /* Dark tokens scoped to existing data-theme mechanism + system fallback.
    *
    * On `--primary-foreground` and `--destructive-foreground` being near-black
-   * here rather than white: dark mode LIGHTENS both accents (primary 44% ->
-   * 52%, destructive 55% -> 62%), which moves them toward white and takes the
+   * here rather than white: dark mode LIGHTENS both accents (primary 42% ->
+   * 56%, destructive 50% -> 62%), which moves them toward white and takes the
    * white text on top of them below the WCAG AA floor. Measured in a browser:
    * "Just this once" on the permission card 3.75:1, "Turn it off anyway" on the
    * sign-in lockout dialog 3.40:1 — the two most consequential buttons in the
@@ -79,7 +102,7 @@
    *
    * This is not a new idea — `--warning-foreground` below has been `240 6% 10%`
    * in dark mode all along. Primary and destructive simply never got the same
-   * treatment. Now: primary 4.71:1, destructive 5.20:1.
+   * treatment. Now: primary 5.23:1, destructive 5.21:1.
    */
   :root[data-theme='dark'],
   :root:not([data-theme='light']) {
@@ -90,7 +113,10 @@
       --card-foreground: 240 5% 96%;
       --popover: 240 3% 11%;
       --popover-foreground: 240 5% 96%;
-      --primary: 211 100% 52%;
+      /* 52% -> 56%. Dark half of the same fix; see the light block's note. On
+         `--primary-soft` this goes 4.28 -> 4.73, and near-black on `bg-primary`
+         4.72 -> 5.23. */
+      --primary: 211 100% 56%;
       --primary-foreground: 240 6% 10%;
       --primary-soft: 212 100% 14%;
       --secondary: 240 3% 9%;
@@ -107,7 +133,8 @@
       --warning-soft: 38 60% 14%;
       --border: 240 4% 17%;
       --input: 240 4% 17%;
-      --ring: 211 100% 52%;
+      /* Tracks `--primary`. */
+      --ring: 211 100% 56%;
       --rule-soft: 240 4% 13%;
       /* A fill, never ink — 2.04:1 on the page, 1.67:1 on a card. See the light block. */
       --ink-ghost: 240 4% 26%;
@@ -121,7 +148,8 @@
     --card-foreground: 240 5% 96%;
     --popover: 240 3% 11%;
     --popover-foreground: 240 5% 96%;
-    --primary: 211 100% 52%;
+    /* 52% -> 56%. Dark half of the same fix; see the light block's note. */
+    --primary: 211 100% 56%;
     --primary-foreground: 240 6% 10%;
     --primary-soft: 212 100% 14%;
     --secondary: 240 3% 9%;
@@ -138,7 +166,8 @@
     --warning-soft: 38 60% 14%;
     --border: 240 4% 17%;
     --input: 240 4% 17%;
-    --ring: 211 100% 52%;
+    /* Tracks `--primary`. */
+    --ring: 211 100% 56%;
     --rule-soft: 240 4% 13%;
     /* A fill, never ink — 2.04:1 on the page, 1.67:1 on a card. See the light block. */
     --ink-ghost: 240 4% 26%;
