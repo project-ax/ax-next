@@ -264,6 +264,7 @@ async function main(): Promise<number> {
       ...(args.ids !== undefined ? { ids: args.ids } : {}),
       answerScaffold: args.answerScaffold === true,
       ...(args.answerEffort !== undefined ? { answerEffort: args.answerEffort } : {}),
+      ...(args.out !== undefined ? { out: args.out } : {}),
     });
   }
 

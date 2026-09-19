@@ -4,7 +4,7 @@
 // testable module and the bench A–E path stays untouched.
 
 import { writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import OpenAI from 'openai';
 import type { LlmCallInput, LlmCallOutput } from '@ax/core';
@@ -88,6 +88,25 @@ export interface RunE2EOptions {
   answerScaffold?: boolean;
   /** Answer-stage arm: adaptive thinking at this effort (TASK-371). */
   answerEffort?: 'low' | 'medium' | 'high' | 'max';
+  /**
+   * Report output path, overriding the date-stamped default. Relative paths
+   * resolve against `repoRoot` — same convention as bench mode's `--out`
+   * (see `cli.ts`). TASK-395: this used to be parsed by the CLI and silently
+   * dropped before reaching here, so `--out` in `--mode e2e` was a no-op.
+   */
+  out?: string;
+}
+
+/**
+ * Where the e2e report gets written: `opts.out` (resolved against
+ * `repoRoot`) when given, else the historical date-stamped default under
+ * `docs/plans`. Shared by the live run and the `--fixture` path so both
+ * honor `--out` the same way.
+ */
+function resolveE2EOutPath(opts: Pick<RunE2EOptions, 'repoRoot' | 'out'>, runDate: Date): string {
+  return opts.out
+    ? resolve(opts.repoRoot, opts.out)
+    : join(opts.repoRoot, 'docs/plans', `${runDate.toISOString().slice(0, 10)}-memory-strata-e2e-report.md`);
 }
 
 /**
@@ -404,11 +423,7 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
     retrievalMode,
     ...(orchestratorModelId ? { orchestratorModel: orchestratorModelId } : {}),
   });
-  const outPath = join(
-    opts.repoRoot,
-    'docs/plans',
-    `${runDate.toISOString().slice(0, 10)}-memory-strata-e2e-report.md`,
-  );
+  const outPath = resolveE2EOutPath(opts, runDate);
   writeFileSync(outPath, md);
   console.log(`E2E report written to ${outPath}. Total spend: $${meter.totalDollars().toFixed(2)}.`);
   return capExceeded || abortError ? 1 : 0;
@@ -580,11 +595,7 @@ async function runFixtureReport(opts: RunE2EOptions): Promise<number> {
     fixtureMode: true,
     retrievalMode: 'bm25',
   });
-  const outPath = join(
-    opts.repoRoot,
-    'docs/plans',
-    `${runDate.toISOString().slice(0, 10)}-memory-strata-e2e-report.md`,
-  );
+  const outPath = resolveE2EOutPath(opts, runDate);
   writeFileSync(outPath, md);
   console.log(`E2E representative (fixture) report written to ${outPath}.`);
   return 0;
