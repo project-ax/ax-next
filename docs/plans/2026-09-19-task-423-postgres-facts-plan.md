@@ -1,5 +1,8 @@
 # TASK-423 — `@ax/memory-facts-postgres` + `presets/k8s` wiring
 
+**Status:** EXECUTED 2026-09-19 — Tasks A, B and C all shipped. `presets/k8s` now pushes
+`@ax/memory-facts-postgres` unconditionally, so the "loads no facts backend today" framing
+below is historical.
 **Card:** `[TASK-423]` · **Spike:** `docs/plans/2026-09-19-task-423-postgres-facts-spike.md`
 **Design:** `docs/plans/2026-09-18-dem-first-memory-design.md` §2.1, §3.4, §3.5, §4.2, §4.4, §6.1
 
