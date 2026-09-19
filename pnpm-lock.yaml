@@ -2776,6 +2776,9 @@ importers:
       '@ax/mcp-oauth':
         specifier: workspace:*
         version: link:../../packages/mcp-oauth
+      '@ax/memory-facts-postgres':
+        specifier: workspace:*
+        version: link:../../packages/memory-facts-postgres
       '@ax/memory-strata':
         specifier: workspace:*
         version: link:../../packages/memory-strata

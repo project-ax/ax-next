@@ -34,6 +34,7 @@
     { "path": "../../packages/llm-openrouter" },
     { "path": "../../packages/mcp-client" },
     { "path": "../../packages/mcp-oauth" },
+    { "path": "../../packages/memory-facts-postgres" },
     { "path": "../../packages/memory-strata" },
     { "path": "../../packages/memory-strata-index-postgres" },
     { "path": "../../packages/credential-proxy" },

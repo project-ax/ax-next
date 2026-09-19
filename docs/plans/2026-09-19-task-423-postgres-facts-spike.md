@@ -1,6 +1,11 @@
 # TASK-423 spike — what `@ax/memory-facts-postgres` actually needs decided
 
-**Date:** 2026-09-19 · **Status:** spike complete; TASK-423 recommended **un-gated**.
+**Date:** 2026-09-19 · **Status:** spike complete; TASK-423 recommended **un-gated** —
+**recommendation EXECUTED 2026-09-19**. The card was un-gated, built, and merged:
+`@ax/memory-facts-postgres` exists and `presets/k8s` loads it unconditionally. The
+sparse/dense channels went to **TASK-457** exactly as §5 recommends. Implementation plan:
+`docs/plans/2026-09-19-task-423-postgres-facts-plan.md`. Everything below is the spike as
+written, kept for its reasoning — read §0's tense as historical.
 **Card:** `[TASK-423] memory-facts-postgres engine (gated — needs FTS/vector design spike)`
 **Reads:** `docs/plans/2026-09-18-dem-first-memory-design.md`, `docs/plans/2026-09-19-dem-first-handoff.md`
 
@@ -31,10 +36,13 @@ from its scope**, and let the card that ports TASK-434's channels to postgres ow
 that decision, when there is a sqlite implementation to match. That card does not
 exist yet and is filed as part of this spike (§5).
 
-This matters beyond tidiness: `presets/k8s` loads **no facts backend at all**, so
-`memory:facts:*` is unreachable in production. TASK-423 is the only card that
-closes that window, and it has been blocked on a question it does not need to
-answer.
+This matters beyond tidiness: at the time of this spike `presets/k8s` loaded **no
+facts backend at all**, so `memory:facts:*` was unreachable in production. TASK-423
+was the only card that closed that window, and it had been blocked on a question it
+does not need to answer. *(Closed: the preset now pushes `@ax/memory-facts-postgres`
+unconditionally — not behind `config.hostLlmTools`, which gates the memory-strata
+bundle because that bundle needs an `ANTHROPIC_API_KEY` and a facts engine needs no
+LLM at all.)*
 
 ## 1. What TASK-423 *does* need decided
 
@@ -179,8 +187,9 @@ parameter parsing has already bitten once on 16.
 ## 5. Cards this spike produces
 
 - **TASK-423** — un-gate to To Do, FTS/vector removed from scope, canary corrected to
-  five hooks, §1's decisions folded into the body.
+  five hooks, §1's decisions folded into the body. **DONE** — un-gated, built and
+  merged 2026-09-19; the canary asserts all five hooks.
 - **New** — port TASK-434's sparse + dense channels to postgres. Gated on TASK-434,
-  and *that* is where the `tsvector`/pgvector decision belongs.
+  and *that* is where the `tsvector`/pgvector decision belongs. **Filed as TASK-457.**
 - **New** — prove or disprove pgvector on the embedded image, and stop the init Job
   swallowing the answer (§4).

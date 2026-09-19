@@ -298,17 +298,27 @@ export async function main(opts: MainOptions): Promise<number> {
   // manifest declares is pinned by memory-facts-wiring.test.ts; keep this list
   // and that one in step. Postgres-free (owns its own sqlite table,
   // no collision with storage-sqlite's), so it loads unconditionally here like
-  // the other no-external-dep plugins above. This OPENS TWO half-wired windows,
-  // both tracked, neither closed by this plugin alone:
-  //  (a) no CONSUMER yet — @ax/memory (observer, tools, export) doesn't exist.
-  //  (b) no K8S BACKEND yet — @ax/memory-facts-postgres doesn't exist, so
-  //      presets/k8s does NOT load a facts engine at all; memory:facts:* is
-  //      unreachable in production until TASK-423 ships + wires it into
-  //      presets/k8s/src/index.ts with its own preset.test.ts canary (the
-  //      same two-preset shape memory-strata-index-{sqlite,postgres} already
-  //      has). Do not wire a `memory:facts` consumer into presets/k8s before
-  //      TASK-423 lands, or it will boot against a missing service hook.
-  // See .claude/memory/decisions.md's TASK-421 and TASK-422 entries.
+  // the other no-external-dep plugins above.
+  //
+  // TASK-423 CLOSED the backend half of what this used to open: @ax/memory-
+  // facts-postgres now exists and presets/k8s pushes it UNCONDITIONALLY too,
+  // so `memory:facts:*` is reachable on every deployment rather than only
+  // where a CLI runs. The two engines are the same five hooks over the same
+  // shared contract (`runFactsContract` runs against both) — the two-preset
+  // shape memory-strata-index-{sqlite,postgres} already had. The k8s side is
+  // pinned by presets/k8s/src/__tests__/preset.test.ts (all five hooks, with
+  // NO hostLlmTools set) and boots for real against a postgres testcontainer
+  // in prod-bootstrap.test.ts.
+  //
+  // ONE half-wired window is still open, and it is the CONSUMER half:
+  // @ax/memory (observer, speaker rewrite, memory_recall/memory_note, export
+  // materializer) does not exist and has no card yet, so nothing in either
+  // preset CALLS these hooks. Both engine pushes buy the same thing — a
+  // consumer can land without also having to wire an engine underneath it on
+  // a deployment that happens not to have one. See
+  // docs/plans/2026-09-19-dem-first-handoff.md §3.4.
+  // See .claude/memory/decisions.md's TASK-421/TASK-422 archive rows and the
+  // .claude/memory/decisions/2026-09-19-TASK-423.md shard.
   plugins.push(
     createMemoryFactsSqlitePlugin({ databasePath: opts.sqlitePath ?? DEFAULT_SQLITE_PATH }),
   );
