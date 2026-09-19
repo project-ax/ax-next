@@ -291,6 +291,12 @@ export type CapabilityProvenance = 'rule' | 'catalog' | 'grant' | 'mcp' | 'unmap
  * with no rule behind it at all. There is exactly ONE spelling of that gap:
  * `[]`. Nothing here is nullable, because two spellings of "we don't know" is
  * how somebody comes to read one of them as "we checked, and it's fine".
+ *
+ * ONE OF FOUR HAND-COPIES (TASK-408). Widening this union alone is the one
+ * drift direction `tsc` already catches, via `EFFECT_DISCLOSURES`'s
+ * `Record<CapabilityEffect, …>`. The other three are silent, so
+ * `__tests__/server/effect-mirror-drift.test.ts` pins all four as text and
+ * round-trips every member through the real wire projection.
  */
 export type CapabilityEffect = 'outward' | 'spends';
 

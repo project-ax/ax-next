@@ -4977,6 +4977,16 @@ export async function registerWorkspaceRoutes(
  * The two members this surface has authored copy for. A `Set`, so the check
  * below is a membership test against a list that exists in one place rather
  * than a chain of `===` somebody has to remember to extend.
+ *
+ * ONE PLACE ON THIS SIDE, FOUR ACROSS THE MIRROR (TASK-408), and this is the
+ * copy that does the DROPPING: a member `@ax/tool-policy` can declare but that
+ * is missing here is filtered out by `toWireEffects` without a word, and the
+ * rail then claims less reach than the tool has — the understating direction
+ * design H4 forbids. Nothing in the type system notices, because the hop is
+ * duck-typed (invariant 2). `__tests__/server/effect-mirror-drift.test.ts`
+ * does: it reads `ToolEffect` and `ToolEffectSchema` out of
+ * `packages/tool-policy/src/types.ts` as text and runs every member they allow
+ * through `toWirePermission`.
  */
 const KNOWN_EFFECTS: ReadonlySet<string> = new Set<CapabilityEffect>([
   'outward',
