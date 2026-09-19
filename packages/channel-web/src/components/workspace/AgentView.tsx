@@ -274,18 +274,25 @@ export function AgentView({
   /**
    * The turn in flight: what we sent, what has streamed back, how it ended.
    *
-   * `attachmentIds` is not decoration — it is what makes "Resend" honest.
+   * `attachments` is not decoration — it is what makes "Resend" honest, and
+   * since TASK-424 it is also the only thing that can DRAW the person's file.
    * The composer clears its chips the moment it hands the message over, so
    * after a failed send the ONLY record that a file was part of this message
    * is right here. A resend that read the text alone would quietly deliver
    * less than the person wrote, which is the exact failure TASK-353 exists to
    * prevent, reintroduced on the error path.
    *
-   * IT EMPTIES THE INSTANT THE POST LANDS, and that is the other half of the
-   * rule. `attachments:commit` consumes each temp upload into that turn, so a
+   * `resendable` FLIPS THE INSTANT THE POST LANDS, and that is the other half
+   * of the rule. `attachments:commit` consumes each temp upload into that turn
+   * (`server/routes-chat.ts` calls it once per `attachment_ref` block), so a
    * second message naming the same ids gets `attachment-not-found` — a resend
    * that could never work. Once the POST has returned, the file is already in
    * the conversation and the only thing left worth retrying is the reply.
+   *
+   * The LIST itself no longer empties there, which is the TASK-424 half: the
+   * turn is on screen for as long as it runs, and a bubble that forgets the
+   * file the moment the POST succeeds is the bug this card fixed, in a
+   * smaller window.
    *
    * WHAT THE REJECTED CASE DOES *NOT* GUARANTEE, so nobody reads more into
    * this than it says: a rejected POST does not mean nothing was committed.

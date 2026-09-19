@@ -80,7 +80,7 @@ export const ATTACHMENT_NEEDS_MESSAGE = 'Add a message to go with your file.';
  *
  * `sendBlock` wins because it is the more consequential of the two: a file
  * that failed, or is still on its way up, is the one whose id would drop out
- * of `attachmentIds` and take the person's file out of the message without
+ * of `sendable` and take the person's file out of the message without
  * saying so. A missing message is the milder problem — the file is fine.
  */
 export function composerSendBlock(
