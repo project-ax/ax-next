@@ -768,6 +768,15 @@ describe('the scan catches a NEW package, and the config read is a read (TASK-40
     // here to catch a bug; it is here so that an edit which makes the
     // misattribution LOWER the maximum (an "exemption" for `it`, a first-wins
     // resolver, a narrower fold) reddens instead of quietly opening the guard.
+    //
+    // Be clear about its breadth, because it is wider than that sentence: ANY
+    // change to the attribution reddens this, including a legitimate one. If
+    // someone correctly anchors UNREADABLE_HOOK_TIMEOUT to its own hook so `it`
+    // budgets stop being folded in at all, this fixture drops 90_000 -> 0 and
+    // fails — and that would be a GOOD change. So this is a tripwire, not a
+    // verdict: when it reddens, decide which direction the edit moved the
+    // maximum. Down-and-silent is the bug; down-because-the-fold-was-removed is
+    // the fix, and then this test should be rewritten rather than restored.
     makePackage('it-budget-misattributed', {
       testSource: [
         "import { spawn } from 'node:child_process';",
