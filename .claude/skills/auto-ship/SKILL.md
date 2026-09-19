@@ -179,7 +179,26 @@ runs **synchronously** at the top of the pass and **doesn't consume a code slot*
 
 1. **Assign IDs (shell-side, no body read).** Any candidate whose title doesn't match
    `^\[(ARCH|CLI|SYNC|FAULTA|TASK)-[0-9]+\] ` is untagged → give it the next
-   `[TASK-n]` (max `[TASK-<num>]` on the board + 1) and rewrite the title.
+   `[TASK-n]` (max `[TASK-<num>]` on the board + 1) and rewrite the title, then **confirm
+   the number is yours** — run this, not a bare call:
+
+   ```bash
+   # After stamping [TASK-$NEXT] onto $ITEM_ID (§8.2). Other sessions allocate ids from
+   # this board too, and two of them took the same number on 2026-09-19.
+   if TASK_ID=$(scripts/board-task-id.sh settle --item "$ITEM_ID"); then
+     # settle prints the id that SURVIVED on stdout, and it is not always the one you
+     # stamped: a card that is not the keeper renumbers ITSELF. Journal and dispatch
+     # under THIS id -- the dispatch prompt, the journal row and `Depends on` all key
+     # on it, so carrying the stamped one forward is silent id drift.
+     echo "id-assigned [$TASK_ID]"
+   else
+     # Non-zero means the number is STILL a duplicate. The card is not triaged, not
+     # journalled and not dispatched this pass -- leave it and retry next pass.
+     echo "FATAL: $ITEM_ID is NOT confirmed unique — left untriaged" >&2
+   fi
+   ```
+
+   Mechanics and the deterministic yield rule: `references/github-project.md` §8.2/§8.2a.
 2. **Dispatch the triage agent** (`references/templates.md` › Triage dispatch prompt) —
    one lightweight `general-purpose` agent, **no worktree**, passed only the candidate
    **item-ids + TASK-IDs**. It fetches bodies itself (bodies never enter your context),

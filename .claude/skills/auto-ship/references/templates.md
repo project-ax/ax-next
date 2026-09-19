@@ -308,8 +308,15 @@ design doc), `<EPIC-SLUG>` (derive from the doc filename, e.g. `2026-05-30-foo-d
 >    boundary in a way that strands a half-wired plugin).
 > 2. **If dry-run = no:** for each slice i (1..N), in dependency order, create a
 >    draft-issue card —
->    `gh project item-create <PNUM> --owner <OWNER> --title "[TASK-<n>] <title>" --body "<body>"`
->    where `<n>` = <BASE-N>+i. Capture each returned item id. The **body** must be
+>    `scripts/board-task-id.sh claim --title "<title>" --body-file <file>`
+>    which allocates the `[TASK-n]`, creates the card, and confirms the number survived,
+>    all in one process. It prints `<TASK-ID> <item-id>`; capture BOTH, and use the
+>    TASK-ID it gives you in the manifest — **not** a number you computed from
+>    `<BASE-N>`. (`<BASE-N>` is only a hint for ordering your plan. Numbering from it
+>    directly is a read-modify-write against a board several sessions are writing, and
+>    the prompt you were handed is the stalest read on it: see `references/github-project.md`
+>    §8.2a. Two sessions did exactly that on 2026-09-19 and both created a TASK-420.)
+>    The **body** must be
 >    self-contained and specified enough to ship without a human decision, and MUST begin
 >    with these two marker lines, then the spec:
 >    ```
