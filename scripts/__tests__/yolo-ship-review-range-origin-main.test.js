@@ -69,8 +69,8 @@
 // runs.
 //
 // MUTANTS RUN, NOT REASONED ABOUT (2026-09-19; each applied to the committed text and
-// executed, then restored; baseline 19 passed on a machine with zsh, git 2.52.0). Every
-// mutant still COLLECTS 19 — the number to distrust is a red count that arrives with a
+// executed, then restored; baseline 20 passed on a machine with zsh, git 2.52.0). Every
+// mutant still COLLECTS 20 — the number to distrust is a red count that arrives with a
 // shrunken total.
 //
 // The sibling card #610 got burned on exactly this: it reported a 3-red mutant that was
@@ -79,17 +79,18 @@
 // is, so each one below says which kind it is.
 //
 //   M1. RESTORED VERBATIM — `git show origin/main:.claude/skills/yolo-ship/SKILL.md >`
-//       the file, i.e. the pre-fix text exactly as it stands on `main`, which has no
-//       fenced block at all and only prose saying `git diff main...HEAD`
-//       -> **18 red of 19**. `BLOCK` is undefined, `runBlock` throws by design naming the
+//       the file, i.e. the pre-fix text exactly as it stands on `main`, where the range is
+//       prose saying `git diff main...HEAD` and `rangeBlocks` finds NO block (that file
+//       does carry two bash blocks, in Phases 6 and 7; neither runs `git diff`)
+//       -> **18 red of 20**. `BLOCK` is undefined, `runBlock` throws by design naming the
 //       reason, and the 14 behavioural cases red out with the extraction guard, both
 //       block-structure checks, and the text-consistency check (on the literal
-//       `git diff main...HEAD`). The single survivor is `states its shell coverage`,
-//       which reads no doc. This is the mutant the card asks for: the guard fails against
+//       `git diff main...HEAD`). The two survivors are `states its shell coverage` and
+//       `logicalLines keeps a command a comment tried to swallow` — neither reads the doc. This is the mutant the card asks for: the guard fails against
 //       the skill text as it stands on `main`. (Independently re-derived during review
 //       from `rangeBlocks` against the pre-fix text: 0 blocks found, head 1.)
 //   M2. CONSTRUCTED, one token: keep the whole block, change `RANGE="origin/main...HEAD"`
-//       to `RANGE="main...HEAD"` -> **11 red of 19**. The plausible future regression —
+//       to `RANGE="main...HEAD"` -> **11 red of 20**. The plausible future regression —
 //       someone "simplifies" the range while every word of the surrounding prose argues
 //       against them. 10 behavioural (`excludes PRs merged after the branch point`,
 //       `prints a --stat and the exact range`, `flags an oversized range`, `failed
@@ -118,13 +119,19 @@
 //       oversized range` x 2 shells.
 //   M7. CONSTRUCTED, and it SURVIVED the first version of this file — replace the
 //       `printf | grep -c` count with a second, piped `N=$(git diff --name-only "$RANGE"
-//       | wc -l | tr -d " ")` -> **19/19 GREEN**, then **1 red** once the structure check
-//       was fixed. The check used `.find()` on `git diff --name-only`, so it pinned the
+//       | wc -l | tr -d " ")` -> **GREEN on every test**, then **1 red** once the
+//       structure check was fixed. The check used `.find()` on `git diff --name-only`, so it pinned the
 //       block's first (correct, unpiped) binding and never looked at the piped line added
 //       below it. Behaviourally the two counts agree whenever git succeeds, so nothing
 //       else could see it either. The lesson generalises past this file: **a structural
 //       check that inspects one occurrence is a check on that occurrence, not on the
 //       property.** It now scans every `git` line in the block.
+//   M8. CONSTRUCTED, and it is a mutant of this FILE rather than of the doc: put
+//       `logicalLines` back to join-continuations-then-filter-comments, the order the two
+//       sibling guards use -> **1 red**, `logicalLines keeps a command a comment tried to
+//       swallow`. Found in review, and the same lesson as M7 one layer down: the helper
+//       every structural check reads through could DELETE a command line before the check
+//       ever saw it. See `logicalLines` for the measured shape.
 //
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally — no
 // network, no Docker, no build. Every git repository it touches is created under a
@@ -187,12 +194,32 @@ function bashBlocks(md) {
   return out;
 }
 
-/** A block's lines with `\`-continuations joined and whole-line comments dropped. */
+/**
+ * A block's lines with whole-line comments dropped and `\`-continuations joined.
+ *
+ * **In that order, which is a deliberate divergence from the two sibling guards.** They
+ * join continuations first and filter comments second, and that is fail-OPEN here: a
+ * comment line ending in a backslash absorbs the line below it, and the joined result then
+ * starts with `#` and is dropped — so a real command DISAPPEARS from the scan. Measured
+ * during review on exactly the shape that matters:
+ *
+ *     # a note \
+ *     N=$(git diff --name-only "$R" | wc -l)
+ *
+ * The old order returned NEITHER line, so the piped `git` was invisible to the check —
+ * while both bash and zsh happily RUN it, because a `#` comment does not continue across a
+ * backslash. Filtering first cannot lose code that way: a dropped comment takes nothing
+ * with it, and a genuine `\`-continuation between two code lines still joins.
+ *
+ * Pinned by `logicalLines keeps a command a comment tried to swallow` below.
+ */
 function logicalLines(block) {
   return block
-    .replace(/\\\n/g, ' ')
     .split('\n')
-    .filter((l) => !/^\s*#/.test(l));
+    .filter((l) => !/^\s*#/.test(l))
+    .join('\n')
+    .replace(/\\\n/g, ' ')
+    .split('\n');
 }
 
 /**
@@ -396,6 +423,29 @@ describe('yolo-ship Phase 5 scopes the reviewer range with origin/main (TASK-452
     ).toEqual([]);
   });
 
+  it('logicalLines keeps a command a comment tried to swallow', () => {
+    // Regression test for the helper's own bug, found in review. The two sibling guards
+    // join `\`-continuations BEFORE dropping comments, so a comment line ending in a
+    // backslash absorbs the command below it and the joined line is then thrown away as a
+    // comment. Both shells run that command — `#` does not continue across a backslash —
+    // so the pipe check above would scan a block it had silently shortened.
+    //
+    // Against the old order this returns neither line and both assertions fail.
+    const lines = logicalLines('# a note \\\nN=$(git diff --name-only "$R" | wc -l)\nx=1');
+    expect(
+      lines.some((l) => /git diff --name-only/.test(l)),
+      'a comment ending in a backslash swallowed the command under it, so the scans ' +
+        'below would never see that line — while bash and zsh both execute it.',
+    ).toBe(true);
+    // The genuine continuation case still has to work, or the fix trades one hole for
+    // another: two CODE lines joined by a backslash must come back as one logical line.
+    // Whitespace-insensitive on purpose: how many spaces the join leaves behind is an
+    // artifact, and pinning it would make this test fail for a reason nobody cares about.
+    const joined = logicalLines('git diff \\\n  --stat "$R"');
+    expect(joined).toHaveLength(1);
+    expect(joined[0].replace(/\s+/g, ' ')).toBe('git diff --stat "$R"');
+  });
+
   it('pipes no git invocation in the block, so every exit status is git\'s own', () => {
     // Not this card's bug; it is the one the sibling card #610 introduced one line under
     // its own comment forbidding it, and it rides in this very block. `git diff
@@ -509,9 +559,14 @@ describe('yolo-ship Phase 5 scopes the reviewer range with origin/main (TASK-452
     it(`${shell}: an empty range reports 0 files rather than tripping over grep`, () => {
       // `grep -c` EXITS 1 when it matches nothing. The block consumes its stdout, not its
       // status, so an empty range must come out as a plain `files in range: 0` — no FATAL,
-      // no spurious oversize warning, and a zero exit. Worth pinning because the obvious
-      // "improvements" here (an `|| exit`, a `set -e`, counting with `wc -l` on a piped
-      // diff) each turn a legitimately empty range into a failure or a lie.
+      // no spurious oversize warning, and a zero exit. Worth pinning because an `|| exit`
+      // on the count, or a `set -e` at the top, each turns a legitimately empty range into
+      // a failure — and this is the ONLY fixture that can see either, since every other
+      // one has a non-empty range where `grep -c` exits 0 and the mutation stays invisible.
+      //
+      // It does NOT cover swapping the count for `git diff --name-only | wc -l`: for a
+      // genuinely empty range that answers 0 too, which is correct. That variant only lies
+      // when the diff FAILS, and it is the structural pipe check above that catches it.
       const { out, code } = runBlock(shell, FX.empty);
       expect(out, 'an empty range was not reported as empty').toMatch(
         /files in range: 0$/m,
