@@ -340,10 +340,46 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
         id,
         () => workspaceApi.undoDecision(id),
         (out) => ({
-          decision: out.decision,
-          // `undone: false` with a row attached is the server refusing, not
-          // failing: the call had already gone out. Saying nothing here would
-          // leave the button looking broken; saying "undone" would be a lie.
+          /*
+            A REFUSAL RETIRES THE AFFORDANCE (TASK-441).
+
+            `undone: false` with a row attached is the server refusing, not
+            failing: there was nothing left to take back. The row it hands back
+            on that path is the stored row UNCHANGED — a refusal writes
+            nothing, which is right — so when the refusal is the ten seconds
+            running out server-side, `undoable` is still whatever it was before
+            the click: true. Applying that row verbatim is what left the button
+            on screen, counting down the rest of the window and pressable
+            again, against a decision that can no longer be undone (measured on
+            the TASK-358 walk).
+
+            So we record the server's own verdict on the row we keep. This is
+            not the decision machine rebuilt on the client — nothing is
+            re-derived, and no clock is consulted. It is the one fact this
+            response carries, written where `undoSecondsLeft` will read it, so
+            the Undo control unmounts in every renderer at once.
+
+            The server narrows the same field on the same condition
+            (`undoDecision` in `server/routes-workspace.ts`). Two enforcement
+            points on purpose, in the shape `@ax/decisions` already uses for
+            the consumed/replayed guard: this one also holds against a host
+            that predates that fix, which is exactly the host the walk ran on.
+
+            Which direction it fails in: CLOSED. It only ever turns `undoable`
+            from true to false, only on `undone: false`, and it cannot turn it
+            back on — `applyPolledRow` then refuses every later poll for this
+            row, because a row with no undo left is no longer watched.
+
+            `isRecord` first so the narrowing cannot manufacture a row: the
+            guard in `act` rejects a non-record body, and spreading `42` into
+            an object would sneak `{ undoable: false }` past it.
+          */
+          decision:
+            !out.undone && isRecord(out.decision)
+              ? { ...out.decision, undoable: false }
+              : out.decision,
+          // Saying nothing here would leave the button looking broken; saying
+          // "undone" would be a lie.
           notice: out.undone ? null : DECISION_UNDO_TOO_LATE,
         }),
       ),

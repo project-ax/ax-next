@@ -2863,6 +2863,51 @@ describe('channel-web agent-workspace BFF', () => {
       expect(body.decision.undoable).toBe(false);
     });
 
+    /*
+      TASK-441 — a REFUSED undo must not answer a row that still offers undo.
+
+      The plugin refuses a late undo by returning the stored row UNCHANGED
+      (`undoDecision` in `@ax/decisions`' `machine.ts`: the time-window branch
+      returns `{ decision: d, undone: false }` and writes nothing, which is
+      right — a refusal must not mutate stored state). `toWireDecision` derives
+      `undoable` from `consumedAt` / `replayedAt` / `replayClaimedAt` and
+      carries no clock, and all three are null on this row: the refusal here is
+      the ten seconds running out server-side, not the call having gone out. So
+      the projection on its own answers `undoable: true` about a row this very
+      response has just refused — which is what left the Undo button offered
+      and pressable on the TASK-358 walk.
+
+      Measured: delete the narrowing in `undoDecision` below and this assertion
+      reads `true`.
+    */
+    it('a refused undo answers a row that no longer offers undo', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      seed(decision({ id: 'd1', status: 'executed', resolvedAt: RESOLVED_AT }));
+      registerReads();
+      bus.registerService('decisions:undo', 'decisions', async (_c, i: unknown) => {
+        const { decisionId } = i as { decisionId: string };
+        // The refusal shape, verbatim: the stored row, untouched.
+        return { decision: store.get(decisionId)!, undone: false };
+      });
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.undoDecision(mkReq({ decisionId: 'd1' }), res);
+      expect(captured.statusCode).toBe(200);
+      const body = captured.body as {
+        decision: { status: string; resolvedAt: string | null; undoable: boolean };
+        undone: boolean;
+      };
+      expect(body.undone).toBe(false);
+      // The receipt is untouched. The refusal explains itself; it does not
+      // rewrite what happened, and this fix must not swallow the outcome.
+      expect(body.decision.status).toBe('executed');
+      expect(body.decision.resolvedAt).toBe(RESOLVED_AT);
+      // ...but the affordance is withdrawn.
+      expect(body.decision.undoable).toBe(false);
+      // Still the same wire row — nothing added, nothing dropped.
+      expect(Object.keys(body.decision).sort()).toEqual(WIRE_KEYS);
+    });
+
     // --- the projection itself ---------------------------------------------
 
     describe('toWireDecision', () => {

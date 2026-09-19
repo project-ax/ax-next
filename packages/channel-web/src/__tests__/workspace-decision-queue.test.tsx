@@ -16,10 +16,21 @@
  * the signal.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, renderHook } from '@testing-library/react';
-import type { Decision } from '@/lib/workspace-types';
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+} from '@testing-library/react';
+import type { Decision, WorkspaceAgent } from '@/lib/workspace-types';
 import { UNDO_WINDOW_MS } from '@/lib/workspace-types';
-import { undoSecondsLeft } from '@/components/workspace/decision-copy';
+import {
+  DECISION_UNDO_TOO_LATE,
+  undoSecondsLeft,
+} from '@/components/workspace/decision-copy';
+import { DecisionRow } from '@/components/workspace/DecisionRow';
 
 const listDecisions = vi.fn();
 const readDecision = vi.fn();
@@ -271,5 +282,116 @@ describe('useDecisionQueue — the undo window is closed by the server, not the 
     expect(result.current.decisions[0]).toEqual(before);
     expect(result.current.error).toBeNull();
     expect(result.current.notices.size).toBe(0);
+  });
+
+  /*
+    TASK-441 — a server-REFUSED undo must stop being offered.
+
+    The seam under test is the whole one: the response the SERVER actually
+    sends on a refusal goes in, and what a person can press comes out. So the
+    mock below answers the unchanged row — `undoable: true`, resolved a moment
+    ago — which is what `@ax/decisions` returns when the ten seconds have run
+    out server-side (`machine.ts`: the time-window branch hands back `d`
+    untouched) and what the host on the TASK-358 walk sent. Nothing in this
+    test hands the hook a pre-narrowed row; if the hook applied the response
+    verbatim the button would still be there, which is the defect.
+
+    It is deliberately NOT a `screen.*` assertion about one render. The button
+    either exists as a pressable control after the refusal or it does not, and
+    the clock is advanced afterwards to prove it does not come back — a
+    clock-driven implementation would still be counting down at +3s.
+  */
+  const AGENT: WorkspaceAgent = {
+    id: 'scheduler',
+    name: 'Scheduler',
+    state: 'waiting',
+    now: 'Waiting on your decision',
+    counter: null,
+    startedAt: null,
+    stoppedReason: null,
+  };
+
+  /** The queue wired to the real row renderer, exactly as `TodayView` wires it. */
+  function Queue() {
+    const q = useDecisionQueue();
+    return (
+      <>
+        {q.decisions.map((d) => (
+          <DecisionRow
+            key={d.id}
+            decision={d}
+            agent={AGENT}
+            expanded
+            onToggle={() => {}}
+            onOpenAgent={() => {}}
+            onApprove={() => q.approve(d.id)}
+            onDismiss={() => q.dismiss(d.id)}
+            onUndo={() => q.undo(d.id)}
+            busy={q.busyIds.has(d.id)}
+            notice={q.notices.get(d.id) ?? null}
+          />
+        ))}
+      </>
+    );
+  }
+
+  /** Every Undo control on screen, hidden ones included. */
+  function undoControls(): HTMLElement[] {
+    return screen.queryAllByRole('button', { name: /undo/i, hidden: true });
+  }
+
+  it('stops offering Undo once the server has refused one', async () => {
+    const open = decisionFixture();
+    listDecisions.mockResolvedValue({ decisions: [open] });
+    render(<Queue />);
+    await settle();
+
+    const justApproved = resolvedFixture('executed');
+    approveDecision.mockResolvedValue({
+      decision: justApproved,
+      executed: true,
+      path: null,
+      error: null,
+      pendingUntil: null,
+    });
+    fireEvent.click(screen.getByRole('button', { name: open.primaryLabel }));
+    await settle();
+
+    // The window is open and the affordance is real.
+    expect(undoControls()).toHaveLength(1);
+
+    // The server refuses: the window shut between the click and the POST. The
+    // row comes back exactly as it was — nothing consumed it, nothing replayed
+    // it, so nothing about it has changed. The re-read says the same.
+    const refused = { ...justApproved };
+    undoDecision.mockResolvedValue({ decision: refused, undone: false });
+    readDecision.mockResolvedValue({ decision: refused });
+
+    fireEvent.click(undoControls()[0]!);
+    await settle();
+
+    expect(undoDecision).toHaveBeenCalledTimes(1);
+    // THE AFFORDANCE IS GONE — not hidden, not disabled. There is no control
+    // to click and none to reach with a Tab, so a second request cannot be
+    // sent from this surface at all.
+    expect(undoControls()).toHaveLength(0);
+    // ...and the explanation stayed. Withdrawing the button must not also
+    // swallow the reason it went.
+    expect(screen.getByText(DECISION_UNDO_TOO_LATE)).toBeTruthy();
+    // The receipt itself is untouched.
+    expect(screen.getByTestId(`decision-${open.id}`).dataset.status).toBe('executed');
+
+    // Still well inside the ten seconds a clock-driven implementation would be
+    // counting down, and the once-a-second re-read keeps answering the same
+    // unchanged row. Neither brings the button back, and nothing else has
+    // asked the server to undo anything.
+    await tick(POLL_MS * 3);
+    expect(Date.now() - Date.parse(justApproved.resolvedAt!)).toBeLessThan(
+      UNDO_WINDOW_MS,
+    );
+    expect(undoControls()).toHaveLength(0);
+    expect(undoDecision).toHaveBeenCalledTimes(1);
+
+    cleanup();
   });
 });
