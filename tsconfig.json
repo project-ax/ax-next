@@ -56,6 +56,8 @@
     { "path": "packages/memory-strata-index-contract" },
     { "path": "packages/memory-strata-index-sqlite" },
     { "path": "packages/memory-strata-index-postgres" },
+    { "path": "packages/memory-facts-contract" },
+    { "path": "packages/memory-facts-sqlite" },
     { "path": "packages/validator-routine" },
     { "path": "packages/validator-service" },
     { "path": "packages/routines" },
