@@ -302,9 +302,10 @@ How to use it:
   file is untouched; this audit is read-only.
 
 The list is deliberately short. I did **not** add the 3 strict-scored rows to it,
-because those are winnable: two of them turn on answer *style* (hedging, ranges),
-and the third is helpfulness after a correct refusal, which is a prompt-level thing we control, not a
-property of the benchmark. If we ever want those points, the fix is on our side.
+because all three are winnable on our side: two turn on answer *style* (hedging,
+ranges), and the third is helpfulness after a correct refusal. All three are
+prompt-level things we control, not properties of the benchmark. If we ever want
+those points, the fix is on our side.
 
 ---
 
@@ -343,9 +344,9 @@ computed first as an automatic screen for "we said the gold and still failed". I
 unreliable in both directions — it scored `c9f37c46` at 100% because "months" matched
 while the agent said 3 and gold said 2, and it scored `eaca4986` at 0% because the gold
 is single letters. It is not in this report. The four "gold present verbatim" rows
-above (three strict-scored, plus `eaca4986` which is bad gold) are backed by **exact
-substring match** against the scored answer text instead, which is the check that
-actually means what it says.
+verified against the scored run (three strict-scored, plus `eaca4986` which is bad
+gold) are backed by **exact substring match** against the scored answer text instead,
+which is the check that actually means what it says.
 
 The verdicts themselves are judgments from reading the source. Where a judgment is
 close — `32260d93`, `a2f3aa27` — the report says so and counts it against us.
