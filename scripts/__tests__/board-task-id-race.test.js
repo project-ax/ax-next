@@ -52,26 +52,42 @@
 // already taken.
 //
 // MUTANTS RUN, NOT REASONED ABOUT (2026-09-19; each applied to the committed script and
-// executed, then restored with `git checkout --`; baseline 24 passed). Counts are in the
-// PR body; each mutant below reddens at least the test named.
+// executed, then restored with `git checkout --`; baseline 20 collected, 20 passed).
+// Every mutant still COLLECTS 20 — the number to distrust is a red count that arrives
+// with a shrunken total.
 //
-//   M1. `check`: drop the fail-closed branch for an unreadable board (`|| return 1` ->
-//       `|| true`) -> `a failed board read is not a pass` goes red. This is the direction
-//       that matters: a guard that exits 0 when it could not look is worse than no guard.
-//   M2. `check`: treat a zero-item board as clean -> `an empty board is not a pass` red.
-//   M3. `settle`: yield to `max+1` without re-verifying (exit after one rename) ->
-//       `two concurrent claimers` red, because both racers rename to the same number.
-//   M4. `settle`: replace the deterministic keeper with "always yield" -> `two concurrent
-//       claimers` still passes (both move, ids stay distinct) but `the keeper keeps its
-//       number` goes red — a correct-looking fix that burns an id every collision.
-//   M5. `settle`: rename through the `PVTI_` item id instead of the `DI_` content id ->
-//       `renames through the draft-issue content id` red, and the stub refuses exactly as
-//       real `gh` was measured to in TASK-401.
-//   M6. `next`: `sort` instead of numeric comparison -> `next is numeric, not lexical`
-//       red (TASK-99 would sort above TASK-401 and hand back a live number).
-//   M7. `read_board`: stop paginating after the first page -> `pagination reaches the
-//       last page` red. The board is past 300 items; a lone `first:100` computes the max
-//       from the OLDEST cards and hands back a number that is already taken many times.
+//   M1. `board_or_die` reduced to a bare `read_board` — the naive version anyone writes
+//       first, with no guards at all -> 3 red: `a failed board read is not a pass`,
+//       `a malformed board read is not a pass`, `an empty board is not a pass`. This is
+//       the direction that matters: a guard that exits 0 because it could not look is
+//       worse than no guard, and all three of those exit 0 without it.
+//   M2. Keep the read-failure guard, drop only the empty-board check -> 1 red,
+//       `an empty board is not a pass`. The subtler half: `gh` exits 0, the JSON parses,
+//       and the answer is `[]`. A `length > 0` test is the only thing between that and
+//       "no cards, therefore no duplicates".
+//   M3. `settle` exits as soon as its rename succeeds, instead of looping to re-verify.
+//       THIS ONE SURVIVED THE FIRST VERSION OF THIS FILE — 0 red across every other test
+//       here, because with TWO parties it is genuinely enough: the deterministic keeper
+//       means only one of them renames, and it renames to a free number. It is wrong only
+//       with three, where two non-keepers compute the same `max+1` and swap one duplicate
+//       for another. `a three-way collision resolves` was written for exactly that and
+//       reddens it. A suite that stops at the headline scenario grades the easy case.
+//   M4. `settle` always yields (the deterministic keeper branch removed) -> 3 red:
+//       `the keeper keeps its number`, `two concurrent claimers` and `a three-way
+//       collision resolves`. Note the middle one: both parties move, both land on the
+//       same `max+1`, and they collide AGAIN. A randomized backoff is what this mutant
+//       amounts to, and it is why the keeper rule is deterministic instead.
+//   M5. `settle` renames through the `PVTI_` item id instead of the `DI_` content id ->
+//       4 red: `the loser renames only its own card`, `renames through the draft-issue
+//       content id`, `two concurrent claimers`, `a three-way collision resolves`. The
+//       stub refuses exactly as real `gh` was measured to in TASK-401.
+//   M6. `next_num` compares lexically instead of numerically -> 1 red, `next is numeric,
+//       not lexical`. The fixture's TASK-99 sorts above TASK-401 as a string, so the
+//       answer becomes 100 — a number a live card already holds. Not a wrong number, a
+//       COLLISION, manufactured by the allocator itself.
+//   M7. `read_board` stops after the first page -> 1 red, `pagination reaches the last
+//       page`. The board passed 300 items in Aug 2026 and Done cards never leave, so a
+//       lone `first:100` computes the max from the OLDEST cards.
 //
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally — no
 // network, no build.
@@ -542,6 +558,63 @@ describe('board-task-id.sh — Task-ID allocation under concurrency', () => {
       // And the pre-existing cards were not touched by either claimer.
       expect(titles).toContain('[TASK-420] a card that already exists');
       expect(titles).toContain('[TASK-421] and another');
+    },
+    30_000,
+  );
+
+  it.runIf(HAS_JQ)(
+    'a three-way collision resolves: two yielders that pick the same number re-verify',
+    async () => {
+      // This is the case that makes the re-verify LOOP load-bearing rather than
+      // decorative, and it is here because a mutant proved the point: "exit as soon as
+      // the rename succeeds" passed every other test in this file. With two parties it
+      // is genuinely enough — only one of them renames. With three it is not.
+      //
+      // All three cards hold TASK-420. PVTI_a is the keeper and is not settling (its
+      // session has already moved on). The other two settle at once, rendezvoused so
+      // both compute the same `max+1`, so both rename themselves to TASK-421 — and a
+      // settle that stopped there would have swapped one duplicate for another.
+      seed('PVTI_a', '[TASK-420] the keeper, whose session has moved on');
+      seed('PVTI_b', '[TASK-420] second');
+      seed('PVTI_c', '[TASK-420] third');
+
+      const barrierFile = join(boardDir, '..', `barrier3-${process.pid}-${Date.now()}`);
+      writeFileSync(barrierFile, '');
+
+      const party = (name, item) =>
+        new Promise((resolve) => {
+          const p = spawn(SCRIPT, ['settle', '--item', item], {
+            env: {
+              ...process.env,
+              PATH: `${STUB_DIR}:${process.env.PATH}`,
+              STUB_BOARD_DIR: boardDir,
+              STUB_BARRIER: barrierFile,
+              STUB_BARRIER_N: '2',
+              STUB_PARTY: name,
+              BOARD_TASK_ID_BACKOFF_MS: '50',
+            },
+            cwd: REPO_ROOT,
+          });
+          let out = '';
+          p.stdout.on('data', (d) => (out += d));
+          p.stderr.on('data', (d) => (out += d));
+          p.on('close', (code) => resolve({ code, out }));
+        });
+
+      const [b, c] = await Promise.all([party('b', 'PVTI_b'), party('c', 'PVTI_c')]);
+      expect(b.code, `settle on PVTI_b failed:\n${b.out}`).toBe(0);
+      expect(c.code, `settle on PVTI_c failed:\n${c.out}`).toBe(0);
+
+      const titles = boardTitles();
+      const ids = titles.map((t) => /^\[(TASK-\d+)\]/.exec(t)?.[1]);
+      expect(ids.filter(Boolean).length, `a card lost its id: ${JSON.stringify(titles)}`).toBe(3);
+      expect(
+        new Set(ids).size,
+        `two cards still share an id after settling: ${JSON.stringify(titles)}`,
+      ).toBe(3);
+      // The keeper never moved: it holds the lowest item id and nobody renames another
+      // session's card.
+      expect(titles).toContain('[TASK-420] the keeper, whose session has moved on');
     },
     30_000,
   );
