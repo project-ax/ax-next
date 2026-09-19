@@ -125,6 +125,24 @@ describe('threadFindFields', () => {
     ]);
   });
 
+  it('marks exactly the fields the conversation draws as markdown (TASK-405)', () => {
+    /*
+      The flag decides which matcher counts the field, and `FindHighlight`
+      decides which renderer paints it. They have to name the same kinds: an
+      agent turn counted as plain text would report matches on `**` that no
+      mark can carry, and a user bubble counted as markdown would silently drop
+      matches the reader can see. Enumerated here so a new `ThreadMessage` kind
+      cannot pick a default by accident.
+    */
+    expect(
+      threadFindFields(thread, [], []).map((f) => [f.key, f.markdown === true]),
+    ).toEqual([
+      [findFieldKey(0, 'u1'), false],
+      [findFieldKey(1, 'a1'), true],
+      [findFieldKey(4, 'f1'), false],
+    ]);
+  });
+
   it('skips the transient status placeholder', () => {
     // Counting 'Thinking…' would make the total tick up mid-stream and back
     // down when the turn lands — a number that moves on its own.
@@ -153,8 +171,10 @@ describe('threadFindFields', () => {
         ],
       },
     ];
+    // `markdown: true` because a steps turn's bubble is drawn by the same arm
+    // as an agent turn, through `<Markdown>` (TASK-405).
     expect(threadFindFields(withSteps, [], [])).toEqual([
-      { key: findFieldKey(0, 's1'), text: 'here is what I did' },
+      { key: findFieldKey(0, 's1'), text: 'here is what I did', markdown: true },
     ]);
   });
 

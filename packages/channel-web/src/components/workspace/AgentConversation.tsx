@@ -1075,9 +1075,25 @@ function Message({
           reply. The empty bubble is dropped rather than drawn, so the reader
           is not left with a blank line they cannot account for.
         */}
+        {/*
+          MARKDOWN, not a raw string (TASK-405). What the model writes IS
+          markdown — tables, lists, `**bold**`, blank-line paragraphs — and this
+          bubble used to draw it verbatim, so a reply whose meaning lived in its
+          structure arrived as one run-on line of pipes and asterisks. `/chat`
+          has always parsed it (`MarkdownText`); this is the same pipeline,
+          reached through `components/Markdown.tsx` because
+          `MarkdownTextPrimitive` only works inside a mounted assistant-ui
+          thread and there isn't one here.
+
+          Two differences from `/chat`, both inherited from `Markdown.tsx` and
+          both deliberate: an `![](…)` renders as its ALT TEXT rather than
+          fetching a remote image (model output must not make the reader's
+          browser call out), and `ax://artifact/` is not widened into a chip
+          (that needs a thread in scope to resolve against).
+        */}
         {m.text.length > 0 && (
           <div className="max-w-[600px] text-[13.5px] leading-relaxed text-pretty">
-            <FindHighlight fieldKey={fieldKey} text={m.text} find={find} />
+            <FindHighlight fieldKey={fieldKey} text={m.text} find={find} markdown />
           </div>
         )}
         {m.kind === 'steps' && <Steps label={m.stepsLabel} steps={m.steps} />}

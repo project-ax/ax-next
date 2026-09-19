@@ -22,11 +22,18 @@
  * here implying one exists.
  *
  * ONE MATCHER, TWO READERS. The bar prints a count and the renderer paints
- * marks. Both call `findRanges`, so they cannot disagree about what matched —
+ * marks. Both call `fieldRanges`, so they cannot disagree about what matched —
  * a reader told "4 matches" who can only see three has been lied to twice.
+ *
+ * `fieldRanges` is `findRanges` for a field drawn as a plain string, and
+ * `markdownFindRanges` for one drawn through `<Markdown>` (TASK-405 — an agent
+ * turn is parsed before it is drawn, so only the matches that survive parsing
+ * can carry a `<mark>`). The choice is made ONCE, from `field.markdown`, which
+ * is written in one place and read in two.
  */
 import { isOpenDecision, type Decision, type ThreadMessage } from '@/lib/workspace-types';
 import { HOST_WALL_EXPLANATION, grantTitle } from '@/lib/grant-copy';
+import { isRenderedRange, markdownTextRuns } from '@/lib/markdown-find';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 
 /** Half-open `[start, end)` offsets into the string that was searched. */
@@ -90,10 +97,40 @@ export function findRanges(haystack: string, needle: string): FindRange[] {
   }
 }
 
+/**
+ * Every match in `markdown` that will survive into the rendered output
+ * (TASK-405).
+ *
+ * The same `findRanges` result, filtered to the matches that lie wholly inside
+ * one rendered text run. That filter is what keeps the count and the marks two
+ * readings of one calculation now that an agent turn is PARSED before it is
+ * drawn: `**` is a real match in the source and can never carry a `<mark>`, and
+ * a match straddling `**` could only carry two. `markdown-find.ts` explains the
+ * mapping and the gap it leaves.
+ *
+ * Lives here rather than in `markdown-find.ts` for one reason: this module owns
+ * matching ("ONE MATCHER, TWO READERS", above), and a second file exporting a
+ * second range function is how a third one appears.
+ */
+export function markdownFindRanges(markdown: string, needle: string): FindRange[] {
+  const all = findRanges(markdown, needle);
+  if (all.length === 0) return all;
+  const runs = markdownTextRuns(markdown);
+  return all.filter((range) => isRenderedRange(range, runs));
+}
+
 /** One searchable run of text, keyed by the node that renders it. */
 export interface FindField {
   key: string;
   text: string;
+  /**
+   * True when the node that renders this field renders it as MARKDOWN, so the
+   * field's matches go through `markdownFindRanges` rather than `findRanges`.
+   * Set by `threadFindFields` for the kinds `AgentConversation` draws through
+   * `<Markdown>`; every other field is drawn as a plain string and is matched
+   * as one.
+   */
+  markdown?: boolean;
 }
 
 /**
@@ -243,9 +280,21 @@ export function threadFindFields(
   const out: FindField[] = [];
   thread.forEach((m, index) => {
     switch (m.kind) {
-      case 'user':
+      /*
+        MARKDOWN vs PLAIN, and the split is not cosmetic (TASK-405). An `agent`
+        turn — and a `steps` turn's bubble, which is the same renderer arm —
+        goes through `<Markdown>`, so only the slices of it that survive
+        parsing can carry a mark. A `user` bubble and a `fold` marker are still
+        drawn as plain strings, so every match in them is paintable and the
+        original matcher is the right one. Getting this backwards in either
+        direction reintroduces count-vs-marks drift, which is why the kinds are
+        enumerated here instead of inferred at the render site.
+      */
       case 'agent':
       case 'steps':
+        out.push({ key: findFieldKey(index, m.id), text: m.text, markdown: true });
+        break;
+      case 'user':
       case 'fold':
         out.push({ key: findFieldKey(index, m.id), text: m.text });
         break;
@@ -264,6 +313,20 @@ export function threadFindFields(
   });
   out.push(...grantFindFields(grants));
   return out;
+}
+
+/**
+ * The matcher a field is entitled to, picked from the field itself.
+ *
+ * Exported so `FindHighlight` paints with the SAME choice the count was taken
+ * with rather than deciding for itself from a prop that could disagree —
+ * `field.markdown` is written in exactly one place (`threadFindFields`) and
+ * read in exactly two.
+ */
+export function fieldRanges(field: FindField, query: string): FindRange[] {
+  return field.markdown === true
+    ? markdownFindRanges(field.text, query)
+    : findRanges(field.text, query);
 }
 
 export interface FindIndex {
@@ -297,7 +360,7 @@ export function buildFindIndex(
 
   let total = 0;
   for (const field of threadFindFields(thread, decisions, grants)) {
-    const hits = findRanges(field.text, query).length;
+    const hits = fieldRanges(field, query).length;
     if (hits === 0) continue;
     firstMatch.set(field.key, total);
     total += hits;

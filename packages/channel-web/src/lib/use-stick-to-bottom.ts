@@ -38,9 +38,16 @@
  * swapping, a code block being highlighted, an approval card changing height
  * because the decision behind it resolved. That is what the `ResizeObserver` is
  * for, and it is why the growth key does not have to enumerate every prop that
- * can change a row's height. jsdom cannot exercise the observer (no layout, and
- * the suite installs a no-op stub), so the tests cover the key path and this
- * paragraph covers the other one.
+ * can change a row's height.
+ *
+ * That second trigger was untested when it was written, on the grounds that
+ * jsdom has no layout and `test-setup.ts` installs a no-op observer stub —
+ * true of the stub, but not a reason the BRANCH cannot be run. TASK-405 gave it
+ * a reason to exist that is hard to argue with (the agent bubble now renders
+ * markdown, so a table or a list laying out is exactly the post-commit growth
+ * React cannot predict) and a way to exercise it: the autoscroll suite swaps in
+ * an observer whose callback the test fires by hand, so the branch's own
+ * arithmetic runs for real against the same stubbed viewport the key path uses.
  */
 import {
   useCallback,

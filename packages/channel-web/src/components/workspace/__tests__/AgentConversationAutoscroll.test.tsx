@@ -142,6 +142,47 @@ function viewport(
 const newestIsVisible = (el: HTMLElement): boolean =>
   el.scrollTop + el.clientHeight >= el.scrollHeight;
 
+/**
+ * A `ResizeObserver` whose callback the test can fire (TASK-405).
+ *
+ * `test-setup.ts` installs a global stub that never calls anything back, so the
+ * hook's SECOND trigger — the one that catches growth happening after the
+ * commit, outside React — had never been executed by any test. Its own header
+ * said so. That branch got a great deal more load-bearing when the agent bubble
+ * started rendering markdown: a table, a list or a long code block finishing
+ * layout is precisely the growth `contentKey` cannot see.
+ *
+ * This does not simulate layout. It stands in for the browser's "that box got
+ * taller" notification and lets the hook's real arithmetic run against the same
+ * stubbed viewport every other test here uses.
+ */
+function observableResize() {
+  const callbacks: Array<() => void> = [];
+  const prior = globalThis.ResizeObserver;
+  class Stub {
+    constructor(cb: () => void) {
+      callbacks.push(cb);
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  globalThis.ResizeObserver = Stub as unknown as typeof ResizeObserver;
+  return {
+    /** How many observers subscribed — 0 means the branch never ran at all. */
+    get subscribers() {
+      return callbacks.length;
+    },
+    /** The box got taller and React was not involved. */
+    fire() {
+      for (const cb of callbacks) cb();
+    },
+    restore() {
+      globalThis.ResizeObserver = prior;
+    },
+  };
+}
+
 describe('the agent conversation follows the newest line', () => {
   it('after a send, the reply is inside the viewport rather than below the fold', () => {
     const { rerender } = render(conversation({ thread: [asked] }));
@@ -325,5 +366,71 @@ describe('the agent conversation follows the newest line', () => {
     );
 
     expect(newestIsVisible(scroller())).toBe(true);
+  });
+
+  /*
+    TASK-405 — the trigger nothing had ever run.
+
+    These two are the same pair as the `contentKey` tests above (follows when
+    pinned, stays put when not), driven through the observer instead of through
+    a re-render. Both are needed: a "re-pin on any resize" implementation
+    passes the first and fails the second, and it is the second that makes
+    reading back through a conversation possible.
+  */
+  describe('growth React cannot predict', () => {
+    it('re-pins when content grows after the commit — a rendered table, a decoded image', () => {
+      const ro = observableResize();
+      try {
+        const { rerender } = render(conversation({ thread: [asked] }));
+        const pane = viewport(scroller(), {
+          contentHeight: FOLD_PX,
+          foldHeight: FOLD_PX,
+        });
+
+        // A reply lands and is followed, the ordinary way.
+        pane.grow(120);
+        rerender(conversation({ thread: [asked, replied('deploy finished')] }));
+        expect(newestIsVisible(scroller())).toBe(true);
+
+        // The observer is actually subscribed. Asserted rather than assumed:
+        // if `contentRef` were ever null when the effect ran, everything below
+        // would pass vacuously with the pane already at the bottom.
+        expect(ro.subscribers).toBeGreaterThan(0);
+
+        // NOW the box gets taller with no React commit at all — the markdown
+        // table finished laying out. Nothing re-renders; only the observer can
+        // notice.
+        pane.grow(BELOW_FOLD_PX);
+        expect(newestIsVisible(scroller())).toBe(false);
+
+        ro.fire();
+
+        expect(newestIsVisible(scroller())).toBe(true);
+        expect(pane.fromBottom).toBe(0);
+      } finally {
+        ro.restore();
+      }
+    });
+
+    it('leaves a reader who scrolled up where they are when it fires', () => {
+      const ro = observableResize();
+      try {
+        render(conversation({ thread: [asked] }));
+        const pane = viewport(scroller(), {
+          contentHeight: 2_000,
+          foldHeight: FOLD_PX,
+        });
+
+        pane.readerScrollsTo(0);
+        pane.grow(BELOW_FOLD_PX);
+
+        ro.fire();
+
+        expect(pane.scrollTop).toBe(0);
+        expect(newestIsVisible(scroller())).toBe(false);
+      } finally {
+        ro.restore();
+      }
+    });
   });
 });
