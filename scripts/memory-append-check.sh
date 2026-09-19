@@ -51,6 +51,12 @@
 set -uo pipefail
 
 MEMORY_PREFIX='.claude/memory/'
+# `:(top)` anchors the pathspec to the repository root. A bare
+# `.claude/memory/` is resolved relative to the CURRENT DIRECTORY, so running
+# this from `scripts/` matched nothing and reported "nothing changed — ok" on a
+# branch that had rewritten every archive. `--numstat` prints repo-relative
+# paths either way, so only the pathspec needed anchoring.
+MEMORY_PATHSPEC=":(top)${MEMORY_PREFIX}"
 
 case "${1:-}" in
   -h | --help)
@@ -109,7 +115,7 @@ numstat_file=$(mktemp "${TMPDIR:-/tmp}/memory-append-check.XXXXXX") || {
 trap 'rm -f "$numstat_file"' EXIT
 
 if ! git -c core.quotePath=false diff --numstat -z --no-renames \
-  "$merge_base" HEAD -- "$MEMORY_PREFIX" >"$numstat_file"; then
+  "$merge_base" HEAD -- "$MEMORY_PATHSPEC" >"$numstat_file"; then
   echo "memory-append-check.sh: git diff failed for ${merge_base}..HEAD" >&2
   exit 2
 fi

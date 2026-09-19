@@ -270,6 +270,30 @@ describe('memory-append-check.sh', () => {
     expect(r.stderr).toMatch(/wéird note\.md/);
   });
 
+  it('sees the same violations when run from a subdirectory', () => {
+    // Regression, measured on this branch. A bare `.claude/memory/` pathspec
+    // is resolved relative to the CURRENT DIRECTORY, so `cd scripts && bash
+    // ../scripts/memory-append-check.sh` matched nothing and reported
+    // "nothing under .claude/memory/ changed — ok" on a branch that had
+    // rewritten an archive. A guard that passes depending on where you stand
+    // is worse than no guard: it is a green tick with no subject.
+    const dir = makeRepo();
+    mkdirSync(join(dir, 'scripts'), { recursive: true });
+    writeFileSync(join(dir, 'scripts', 'placeholder.txt'), 'x\n');
+    writeFileSync(archivePath(dir), ARCHIVE.replace('## 2026-09-02', '## 2026-09-03'));
+    commit(dir, 'rewrite an archive');
+
+    const fromRoot = run(dir, ['main']);
+    const fromSubdir = run(join(dir, 'scripts'), ['main']);
+
+    expect(fromRoot.status).toBe(1);
+    expect(fromSubdir.status, fromSubdir.stdout + fromSubdir.stderr).toBe(1);
+    // Same verdict AND the same paths, which are repo-relative either way.
+    expect(fromSubdir.stderr).toMatch(/\.claude\/memory\/decisions\.md/);
+    expect(fromSubdir.stderr).toMatch(/R1/);
+    expect(fromSubdir.stderr).toMatch(/R2/);
+  });
+
   it('exits 2 on an unresolvable base ref — a check that did not run is not a pass', () => {
     const dir = makeRepo();
     writeShard(dir, 'TASK-415');
