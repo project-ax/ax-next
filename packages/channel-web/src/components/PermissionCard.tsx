@@ -97,10 +97,30 @@ import {
   accountDestinationForConnectorSlot,
   accountOrSkillDestination,
 } from '@/lib/grant-destinations';
+// (TASK-388) The reach-shape answers this card and the workspace's `GrantRow`
+// both need. Shared because the hole they close was in both renderers, not
+// because the two happen to look alike — see the module header.
+import { slotAccount, usableHosts, usableSlots } from '@/lib/grant-shape';
 
 // (TASK-350) The grant copy moved to `@/lib/grant-copy` so the agent
 // workspace's own grant renderer reads the same strings rather than repeating
 // them. This file is deleted by TASK-360; the copy must outlive it.
+
+/**
+ * (TASK-388) Neither `skillId` nor a connector's `name`/`connectorId` is
+ * guaranteed present on this frame — unlike the workspace's `GrantRow`,
+ * whose producer (`isRenderableGrant`) refuses to create a row unless
+ * `skillId`/`connectorId` is a string (TASK-351), this card's producer
+ * (`transport.ts`) does no shape validation at all before calling
+ * `permissionCardActions.show()`. A missing id must not reach `humanizeId`,
+ * which does `id.replace(...)` and throws `TypeError` on `undefined` — and
+ * a bare template-string fallback (`` `Connect ${undefined}` ``) is worse
+ * than the crash it replaces: it prints the literal words "Connect
+ * undefined" above a password field, per TASK-351/#557's round-two finding.
+ */
+function humanizedTitleOrFallback(id: unknown, fallback: string): string {
+  return typeof id === 'string' && id.trim().length > 0 ? humanizeId(id) : fallback;
+}
 
 /**
  * The ONE bundled approval card (JIT design §11.3/§6B, decision #6) — the
@@ -162,10 +182,16 @@ export function PermissionCard() {
   // The skill AND connector variants carry slots; the host variant is always
   // "fillable". A slot already in the user's shared vault (haveExisting) needs no
   // input — it counts as filled (JIT P2). Otherwise the user must type a value.
+  // (TASK-388) `slots` is typed required, but this producer validates
+  // nothing on the wire (see `humanizedTitleOrFallback` above for why) — a
+  // frame that omits it threw here too. `usableSlots` treats "no slots", "not
+  // an array" and "slots we cannot draw a field for" alike: a grant with
+  // nothing fillable is immediately connectable, which is the existing,
+  // intended behavior for the slotless case.
   const allSlotsFilled =
     request === null ||
     (request.kind !== 'skill' && request.kind !== 'connector') ||
-    request.slots.every(
+    usableSlots(request.slots).every(
       (s) => s.haveExisting === true || (values[s.slot] ?? '').trim().length > 0,
     );
 
@@ -202,7 +228,14 @@ export function PermissionCard() {
       // `account:<service>` route; an untagged slot keeps the per-skill
       // `skill-slot` destination. A slot already in the vault (haveExisting) writes
       // nothing — the key is already there.
-      for (const s of request.slots) {
+      //
+      // (TASK-388) `usableSlots` on every read below: `allSlotsFilled` now
+      // treats a missing or undrawable `slots` as vacuously filled (see its
+      // comment above), so this click path can run with `request.slots`
+      // absent — guard it the same way here, or an undefined-iteration throw
+      // replaces the request-shape one this task exists to fix. Same list the
+      // renderer used, so `shown` reports exactly what the person saw.
+      for (const s of usableSlots(request.slots)) {
         if (s.haveExisting === true) continue; // already in the vault — nothing to write
         const payload = (values[s.slot] ?? '').trim();
         if (payload.length === 0) continue;
@@ -222,8 +255,8 @@ export function PermissionCard() {
       // current proposalDelta so an agent that widens its draft between card
       // render and user click can never grant caps the user never saw.
       const shown = {
-        hosts: request.hosts,
-        slots: request.slots.map((s) => s.slot),
+        hosts: usableHosts(request.hosts),
+        slots: usableSlots(request.slots).map((s) => s.slot),
         npm: request.packages?.npm ?? [],
         pypi: request.packages?.pypi ?? [],
       };
@@ -265,8 +298,8 @@ export function PermissionCard() {
       // so the key lands on the SAME per-slot row the connector resolver / fold
       // reads (no collision). A slot already in the vault (haveExisting) writes
       // nothing — the key is already there. No secret crosses the decision POST
-      // below (§10).
-      for (const s of request.slots) {
+      // below (§10). (TASK-388) `?? []` — same reasoning as `connect()` above.
+      for (const s of usableSlots(request.slots)) {
         if (s.haveExisting === true) continue;
         const payload = (values[s.slot] ?? '').trim();
         if (payload.length === 0) continue;
@@ -283,8 +316,8 @@ export function PermissionCard() {
       // intersects this with the re-resolved current proposal so a draft widened
       // between render and click can never grant caps the user never saw.
       const shown = {
-        hosts: request.hosts,
-        slots: request.slots.map((s) => s.slot),
+        hosts: usableHosts(request.hosts),
+        slots: usableSlots(request.slots).map((s) => s.slot),
         npm: request.packages?.npm ?? [],
         pypi: request.packages?.pypi ?? [],
       };
@@ -352,16 +385,24 @@ export function PermissionCard() {
             </div>
           </div>
         )}
-        {slots.map((s) =>
-          s.haveExisting === true ? (
+        {slots.map((s) => {
+          // (TASK-388) `usableSlots` vouches for `s.slot` and says nothing
+          // about its sibling `account`, which is the next operand of the same
+          // throw path: `s.account ?? s.slot` only falls back on null and
+          // undefined, so a number/object/array `account` reaches `humanizeId`
+          // -> `tokenize` -> `.replace(...)` and throws inside render. Coalesced
+          // rather than dropped, because an absent `account` is legitimate —
+          // it just means "no service prefix", which both labels handle.
+          const account = slotAccount(s);
+          return s.haveExisting === true ? (
             // (JIT P2) the user already has this service key in their shared
             // vault — offer it with one tap, no re-entry. No input, no POST.
             <div
               key={s.slot}
               className="flex items-center gap-2 text-sm text-muted-foreground"
             >
-              <Badge variant="secondary">{humanizeId(s.account ?? s.slot)}</Badge>
-              <span>Using the {humanizeSlotLabel(s.slot, s.account)} you already saved.</span>
+              <Badge variant="secondary">{humanizeId(account ?? s.slot)}</Badge>
+              <span>Using the {humanizeSlotLabel(s.slot, account)} you already saved.</span>
             </div>
           ) : (
             <div key={s.slot} className="grid gap-1.5">
@@ -373,7 +414,7 @@ export function PermissionCard() {
                   the value posts straight to the host credential store and
                   never reaches the model or the transcript (§10, TASK-35). */}
               <Label htmlFor={`perm-cred-${s.slot}`}>
-                {humanizeSlotLabel(s.slot, s.account)}
+                {humanizeSlotLabel(s.slot, account)}
               </Label>
               <p className="text-xs text-muted-foreground">{KEY_SAFETY}</p>
               <Input
@@ -386,10 +427,17 @@ export function PermissionCard() {
                 }
               />
             </div>
-          ),
-        )}
+          );
+        })}
+        {/*
+          (TASK-388) Same hole TASK-351 found and fixed in the workspace's
+          `GrantRow` — `npm`/`pypi` are both required when `packages` is
+          present, so a wire payload carrying only one of them threw here.
+          `connect()`/`approveConnector()` above already read them as
+          `packages?.npm ?? []`; this is the render site catching up.
+        */}
         {packages != null &&
-          (packages.npm.length > 0 || packages.pypi.length > 0) && (
+          ((packages.npm?.length ?? 0) > 0 || (packages.pypi?.length ?? 0) > 0) && (
             // (A5) "Installs npm packages → reaches registry.npmjs.org" is a
             // true sentence that means nothing to most people. What they need
             // to know is that something gets downloaded — the registry
@@ -403,10 +451,18 @@ export function PermissionCard() {
   }
 
   if (request.kind === 'connector') {
+    // (TASK-388) See `humanizedTitleOrFallback` above: `name` is not
+    // guaranteed, and neither is `connectorId` behind it (unlike `GrantRow`,
+    // where `isRenderableGrant` requires `connectorId`). Falls through to a
+    // plain English noun rather than a raw id or a crash.
+    const connectorTitle =
+      typeof request.name === 'string' && request.name.trim().length > 0
+        ? request.name
+        : humanizedTitleOrFallback(request.connectorId, 'this connector');
     return (
       <Card ref={cardRef} className="mb-3" data-testid="permission-card-connector">
         <CardHeader>
-          <CardTitle>Connect {request.name}</CardTitle>
+          <CardTitle>Connect {connectorTitle}</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           {request.authored === true && (
@@ -415,7 +471,7 @@ export function PermissionCard() {
               <AlertDescription>{AUTHORED_CONNECTOR_WARNING}</AlertDescription>
             </Alert>
           )}
-          {renderReach(request.hosts, request.slots, request.packages)}
+          {renderReach(usableHosts(request.hosts), usableSlots(request.slots), request.packages)}
           <p className="text-sm text-muted-foreground">{GRANT_REASSURANCE}</p>
           {error !== null && (
             <Alert
@@ -452,15 +508,26 @@ export function PermissionCard() {
   }
 
   if (request.kind === 'host') {
+    // (TASK-388) The host arm's turn. An absent `host` degrades quietly on its
+    // own — React drops the child and the title reads "Allow access to ?" —
+    // but an OBJECT-typed one throws React's "Objects are not valid as a React
+    // child", and the workspace guards this at its producer
+    // (`isRenderableGrant` requires `typeof r.host === 'string'`) where this
+    // card cannot. NOT humanized: a hostname is already the thing we want the
+    // person to read, and `humanizeId('api.linear.app')` would dress it up.
+    const hostLabel =
+      typeof request.host === 'string' && request.host.trim().length > 0
+        ? request.host
+        : 'this site';
     return (
       <Card ref={cardRef} className="mb-3" data-testid="permission-card-host">
         <CardHeader>
-          <CardTitle>Allow access to {request.host}?</CardTitle>
+          <CardTitle>Allow access to {hostLabel}?</CardTitle>
           <CardDescription>{HOST_WALL_EXPLANATION}</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <div className="flex flex-wrap gap-1.5">
-            <Badge variant="secondary">{request.host}</Badge>
+            <Badge variant="secondary">{hostLabel}</Badge>
           </div>
           {error !== null && (
             <Alert
@@ -501,15 +568,30 @@ export function PermissionCard() {
     );
   }
 
+  // (TASK-388) Same hole TASK-351 found and fixed in the workspace's
+  // `GrantRow`: `description` is typed `string` and required, and the JSX
+  // below asked it for `.length` unguarded — a wire payload that omitted it
+  // threw `TypeError: Cannot read properties of undefined (reading 'length')`
+  // here too. `typeof` rather than a bare `??` so a non-string (which would
+  // also survive a `??`) can't reach `.length` and throw one line further
+  // down, and can't render as a React child either.
+  const skillDescription =
+    typeof request.description === 'string' ? request.description : '';
+  // (TASK-388) `skillId` is likewise not guaranteed on this unvalidated
+  // frame (unlike `GrantRow`, where `isRenderableGrant` requires it) —
+  // `humanizeId(undefined)` throws inside it (`id.replace(...)`). Falls
+  // through to plain English rather than a raw id or a crash.
+  const skillTitle = humanizedTitleOrFallback(request.skillId, 'this skill');
+
   return (
     <Card ref={cardRef} className="mb-3" data-testid="permission-card">
       <CardHeader>
         {/* (A2) The title read `Connect linear-issues` — the id the producer
             uses, not the name a person would. Humanized, with the raw id as its
             own fallback for anything we can't read. */}
-        <CardTitle>Connect {humanizeId(request.skillId)}</CardTitle>
-        {request.description.length > 0 && (
-          <CardDescription>{request.description}</CardDescription>
+        <CardTitle>Connect {skillTitle}</CardTitle>
+        {skillDescription.length > 0 && (
+          <CardDescription>{skillDescription}</CardDescription>
         )}
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
@@ -519,7 +601,7 @@ export function PermissionCard() {
             <AlertDescription>{AUTHORED_SKILL_WARNING}</AlertDescription>
           </Alert>
         )}
-        {renderReach(request.hosts, request.slots, request.packages)}
+        {renderReach(usableHosts(request.hosts), usableSlots(request.slots), request.packages)}
         <p className="text-sm text-muted-foreground">{GRANT_REASSURANCE}</p>
         {error !== null && (
           <Alert

@@ -231,6 +231,43 @@ describe('a payload the guard lets through but the row must survive', () => {
     expect(screen.queryByTestId('grant-packages')).toBeNull();
   });
 
+  test('a non-string account does not crash the row (TASK-388)', () => {
+    /*
+      FOUND WHILE FIXING THE CHAT CARD, AND LIVE HERE TOO. `isRenderableGrant`
+      requires a string `slot` on every element and says nothing about its
+      sibling `account` — and `s.account ?? s.slot` only falls back on null and
+      undefined, so an object/number/array `account` reached `humanizeId` ->
+      `tokenize` -> `.replace(...)` and threw inside render, taking the whole
+      surface down through the `ErrorBoundary` exactly as the two holes above
+      did.
+
+      "Our producer validates the slots" was the reassurance that hid this: it
+      validates ONE FIELD of them. The fallback now lives in
+      `lib/grant-shape.ts` so both renderers share it.
+    */
+    const objectAccount = {
+      ...skillReq,
+      slots: [{ slot: 'api_key', kind: 'api-key', haveExisting: true, account: {} }],
+    } as unknown as PermissionRequest;
+
+    row(objectAccount);
+
+    // The slot is still offered, labelled off its own id — `account` decides
+    // how the row READS, so it falls back rather than costing the person a row.
+    expect(screen.getByText(/you already saved/)).toBeTruthy();
+    expect(screen.queryByText('undefined')).toBeNull();
+  });
+
+  test('a real account still labels the slot with its service (TASK-388)', () => {
+    // Positive control: the guard must not have flattened every slot to its id.
+    row({
+      ...skillReq,
+      slots: [{ slot: 'api_key', kind: 'api-key', haveExisting: true, account: 'linear' }],
+    } as PermissionRequest);
+
+    expect(screen.getByText('Linear')).toBeTruthy();
+  });
+
   test('an empty packages list still draws no packages line', () => {
     // The positive control for the case above: `(x?.length ?? 0) > 0` must not
     // become "packages is present, so say so".

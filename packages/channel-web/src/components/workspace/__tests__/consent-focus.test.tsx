@@ -906,10 +906,21 @@ describe('the host grant turned down (site 4)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: HOST_ALLOW_ONCE_LABEL }));
 
+    /*
+      WAIT FOR THE FOCUS, NOT FOR THE ALERT (TASK-388). Waiting on the alert's
+      EXISTENCE and then asserting focus in the next statement is a race the
+      product legitimately loses: `useResolutionFocus` moves focus from a
+      `useEffect`, so there is a window where the alert is committed and the
+      effect that focuses it has not run. Measured at 2 failures in 15 local
+      runs before this change — and it is the assertion, not the product, that
+      was early: the focus does land, one tick later.
+
+      The invariant is unchanged and still pinned — focus ends up on the alert
+      and not on `<body>`. Only the deadline moved.
+    */
     await waitFor(() => {
-      expect(screen.getByRole('alert')).toBeTruthy();
+      expect(document.activeElement).toBe(screen.getByRole('alert'));
     });
-    expect(document.activeElement).toBe(screen.getByRole('alert'));
     expect(document.activeElement).not.toBe(document.body);
   });
 
@@ -968,12 +979,15 @@ describe('the host grant turned down (site 4)', () => {
     allow.focus();
     fireEvent.click(allow);
 
+    // Same race as the `GrantRow` case above, latent here rather than
+    // observed — same renderer-independent cause (focus arrives from an
+    // effect), so it gets the same deadline rather than waiting its turn to
+    // start failing.
     await waitFor(() => {
-      expect(screen.getByRole('alert')).toBeTruthy();
+      expect(document.activeElement).toBe(screen.getByRole('alert'));
     });
     // The card is still up — this is the failure path, not the dismiss path.
     expect(screen.getByTestId('permission-card-host')).toBeTruthy();
-    expect(document.activeElement).toBe(screen.getByRole('alert'));
     expect(document.activeElement).not.toBe(document.body);
   });
 
