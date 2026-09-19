@@ -71,11 +71,20 @@ TASK-329 this run. A default dispatch will start a fresh worktree and rebuild.
 
 ### 2. One card was deliberately NOT filed — the breaker was at its cap
 
-`scripts/__tests__/container-test-timeouts.test.js` carries the same **unanchored
-`readTimeout`** regex that TASK-331 just fixed in a sibling guard: a number
-written in a config **comment** outranks the real setting, across **21 container
-packages**. Found by TASK-331 (MEASURED). It is a live fail-open in a guard, and
-those 21 packages were never checked.
+The guard now at `scripts/__tests__/out-of-process-test-timeouts.test.js` — then
+called `container-test-timeouts.test.js` — **carried** the same **unanchored
+`readTimeout`** regex that TASK-331 had just fixed in a sibling guard: a number
+written in a config **comment** outranked the real setting, across **21 container
+packages**. Found by TASK-331 (MEASURED). It **was** a live fail-open in a guard,
+and those 21 packages had never been checked.
+
+> **Closed — and the tense above is deliberate: the file named there no longer has
+> this defect.** Filed as TASK-386. TASK-400 (PR #581) renamed the file and
+> replaced the text scan with `readResolvedTestBudgets`, which `import()`s each
+> config and reads the resolved object, so there is no regex left to anchor.
+> TASK-386 measured the defect as real on the live corpus before confirming it was
+> already gone. The path is updated so it resolves; the claim is past-tense so it
+> stays true of the file it now names.
 
 It went unfiled because the run had already auto-spawned **10 cards
 (TASK-376–385)**, which is auto-ship's global breaker cap. The cap is per-run, so
