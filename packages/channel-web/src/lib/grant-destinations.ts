@@ -36,8 +36,18 @@ export interface CardSlot {
  * be carried straight into the write. Treating a non-string as ABSENT is what
  * makes that safe: every branch below already has a defined fallback for an
  * absent tag (the collapsed `account` route, then `skill-slot`/`connectorId`),
- * so a malformed frame degrades onto the id the caller passed in rather than
- * onto a row nobody can name.
+ * so a malformed frame degrades onto the id the caller passed in.
+ *
+ * MIND THE FLOOR, THOUGH: that id is only a row somebody can NAME where the
+ * caller's own producer vouched for it. The workspace's does
+ * (`isRenderableGrant` requires a string `skillId`/`connectorId`); chat's
+ * validates nothing, so a hostile frame can still hand us a non-string
+ * subject id and this degrades onto that. Bounded rather than fixed: the
+ * write is user-scoped and the server computes the ref, so the blast radius
+ * is a garbage row in the person's OWN vault (or, more likely, a schema
+ * rejection surfaced as an error on the card). Scrubbing the caller id too
+ * is the honest completion of this guard and is deliberately left as a
+ * follow-up rather than claimed here.
  */
 function tag(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
