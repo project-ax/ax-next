@@ -382,22 +382,94 @@ describe('AgentFiles: the durable user-files tier', () => {
     expect(screen.queryByText(raw)).toBeNull();
   });
 
-  it('names BOTH possibilities at the root rather than blaming the agent', async () => {
+  it('a 404 on the tier ROOT is the empty state, with no hedge left in it', async () => {
     /*
-      The ambiguous case, and the reason it gets its own test. The backing hook
-      answers `absent` for "no durable tier here" AND for "nothing written
-      yet", deliberately — distinguishing them on a mount that holds every
-      tenant would be an oracle. So the UI must not pick one. Saying "Quill
-      hasn't written anything" over a deployment that stores nothing is exactly
-      the H7 lie this tab exists to stop telling.
+      TASK-403. This used to be the ambiguous case: the hook answered one word
+      for "no durable tier here" and for "nothing written yet", so the tab had
+      to name both and admit it could not tell which — and it said that even on
+      a deployment where the tier was wired and working.
+
+      The hook now answers `unavailable` (503) for the no-tier case, so a 404
+      at the root means exactly one thing and gets the plain sentence. The
+      hedge must be gone: leaving "we can't tell which" over a working
+      deployment is its own small lie.
     */
     userFilesMock.mockRejectedValue(
       new WorkspaceApiError('/agents/a-quill/user-files', 404),
     );
     renderTab();
-    const note = await screen.findByText(/we can’t tell which from here/i);
-    expect(note.textContent).toMatch(/hasn’t written any yet/);
-    expect(note.textContent).toMatch(/isn’t keeping them/);
+    expect(
+      await screen.findByText(/Quill hasn’t put any files here yet/i),
+    ).toBeTruthy();
+    expect(screen.queryByText(/can’t tell which/i)).toBeNull();
+    expect(screen.queryByText(/isn’t keeping them/i)).toBeNull();
+  });
+
+  it('a 503 says this server keeps no files, and offers no retry', async () => {
+    /*
+      The other half of the same split. Retrying will never produce a file, so
+      a "try again" button here would send somebody hunting for something that
+      was never going to be there.
+    */
+    userFilesMock.mockRejectedValue(
+      new WorkspaceApiError('/agents/a-quill/user-files', 503),
+    );
+    renderTab();
+    expect(
+      await screen.findByText(/server isn’t set up to keep Quill’s files/i),
+    ).toBeTruthy();
+    expect(screen.queryByText(/hasn’t put any files here yet/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: /try again/i })).toBeNull();
+  });
+
+  it('REGRESSION: a FAILED durable read never renders as an empty tier', async () => {
+    /*
+      THE HALF THAT MATTERS. A read that broke — the export unreachable, the
+      reader pod dead, a listing that raised EIO — reaches the client as a 5xx,
+      and it must not be spelled like an absence. "Quill hasn't put any files
+      here yet" over a mount we could not read is indistinguishable from the
+      truth, so the reader cannot tell anything is wrong. This is the assertion
+      the card asks for explicitly, and it is written as a NEGATIVE on every
+      emptiness sentence this section can draw, not just as a positive on the
+      error one.
+    */
+    userFilesMock.mockRejectedValue(
+      new WorkspaceApiError('/agents/a-quill/user-files', 500),
+    );
+    renderTab();
+    expect(await screen.findByText(/could not read Quill’s files/i)).toBeTruthy();
+    // None of the three ways this tab can say "there is nothing here".
+    expect(screen.queryByText(/hasn’t put any files here yet/i)).toBeNull();
+    expect(screen.queryByText(/this folder is empty/i)).toBeNull();
+    expect(screen.queryByText(/server isn’t set up to keep/i)).toBeNull();
+    // A broken read is worth coming back to, so it gets a real button.
+    expect(screen.getByRole('button', { name: /try again/i })).toBeTruthy();
+  });
+
+  it('REGRESSION: a 404 walking INTO a folder is not the root being empty', async () => {
+    /*
+      `dirPath` only moves on a SUCCESSFUL listing, so after a failed step into
+      `reports/` it still reads `''`. A root check written against it would
+      call this failure the root's and tell the reader Quill has written
+      nothing — while the root listing on screen names a folder. The error
+      carries the path it is about for exactly this reason.
+    */
+    durableTree({
+      '': {
+        kind: 'dir',
+        path: '',
+        name: '',
+        entries: [{ path: 'reports', name: 'reports', kind: 'dir' }],
+        truncated: false,
+      },
+      // `reports` is deliberately absent from the tree, so durableTree 404s it.
+    });
+    renderTab();
+    fireEvent.click(await screen.findByText('reports'));
+    expect(
+      await screen.findByText(/that folder isn’t here any more/i),
+    ).toBeTruthy();
+    expect(screen.queryByText(/hasn’t put any files here yet/i)).toBeNull();
   });
 
   it('says an empty SUBFOLDER is empty — that one is not ambiguous', async () => {

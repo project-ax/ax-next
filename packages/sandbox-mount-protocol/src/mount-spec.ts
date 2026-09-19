@@ -224,10 +224,32 @@ export interface UserFileDirEntry {
  *   them.
  * - `{ kind: 'dir', entries }` — `relPath` resolved to a directory; its
  *   immediate children are listed (not recursive).
- * - `{ kind: 'absent' }` — no user-files mount for this owner (no resolver
- *   loaded, anonymous owner, or the mount/path does not exist). A graceful
- *   "nothing to serve", never an error — mirrors `sandbox:resolve-mounts`
- *   returning `[]`.
+ * - `{ kind: 'absent' }` — there IS a durable tier for this owner and the path
+ *   is not in it: never written, since deleted, or resolved outside the
+ *   owner's own subtree. A graceful "this surface does not have that file".
+ * - `{ kind: 'unavailable' }` — there is no durable tier for this owner AT ALL
+ *   in this deployment: no `sandbox:resolve-mounts` resolver is loaded, the
+ *   owner is anonymous, or no resolver emitted a `role: 'user-files'` mount.
+ *
+ * THE LAST TWO USED TO BE ONE ANSWER, and collapsing them was a lie the UI had
+ * no way to un-tell (TASK-403). A caller that gets `absent` for both can only
+ * say "either nothing was written or nothing is being kept — we can't tell
+ * which", and it had to say that even on a deployment where the tier is wired
+ * and working. They are now separate because they are separate facts, and
+ * because `unavailable` is safe to distinguish: it is decided BEFORE any path
+ * is consulted, so it is the same answer for every `relPath` and therefore
+ * discloses nothing about which paths exist. `absent` keeps carrying every
+ * path-dependent case for exactly that reason — a 400-vs-404 split on a path
+ * is a free oracle for mapping somebody else's subtree.
+ *
+ * A READ THAT FAILED IS NEITHER, AND MUST NOT BE EITHER. If the storage is
+ * there and would not answer — the export is unreachable, the listing raised
+ * `EIO`/`ESTALE`, the reader pod died — a realization THROWS. There is
+ * deliberately no `failed` member here: an absence and an error travel by
+ * different mechanisms so that no caller can pattern-match one into the other
+ * by forgetting a case. The host surface turns a throw into a 5xx and the UI
+ * offers a retry; an `absent` rendered over a broken mount would tell somebody
+ * their agent produced nothing when we simply could not look.
  *
  * WHY `truncated` EXISTS. Every realization bounds one file read — an
  * unbounded read of somebody else's filesystem into the host process is a
@@ -263,7 +285,8 @@ export type ReadUserFilesOutput =
       truncated?: boolean;
     }
   | { kind: 'dir'; entries: UserFileDirEntry[] }
-  | { kind: 'absent' };
+  | { kind: 'absent' }
+  | { kind: 'unavailable' };
 
 /**
  * The full `sandbox:read-user-files` handler signature — the in-process

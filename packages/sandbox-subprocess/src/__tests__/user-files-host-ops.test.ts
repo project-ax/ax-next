@@ -74,12 +74,20 @@ async function seedAgentFiles(agentId: string): Promise<string> {
 }
 
 describe('readUserFiles (subprocess host-read)', () => {
-  it('returns absent when no resolver is loaded', async () => {
+  it('returns UNAVAILABLE (not absent) when no resolver is loaded', async () => {
+    /*
+      TASK-403. "This deployment keeps no durable files for this agent" is a
+      different answer from "that path is not there", and it used to be the
+      same one — which left the Files tab with nothing to say but "either your
+      agent wrote nothing or this server isn't keeping them, we can't tell
+      which". It is decided before any path is consulted, so telling the two
+      apart discloses nothing about which paths exist.
+    */
     const bus = new HookBus();
     const out = await readUserFiles(ctx(), bus, PLUGIN, {
       owner: ownerFromAgentId('agent-a', 'u1'),
     });
-    expect(out).toEqual({ kind: 'absent' });
+    expect(out).toEqual({ kind: 'unavailable' });
   });
 
   it('lists the mount root directory (dir kind)', async () => {

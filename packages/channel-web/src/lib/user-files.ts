@@ -12,17 +12,28 @@
  * of its own and never collapses into "empty". `entries` is only meaningful
  * while `error` is `null`.
  *
- * WHAT `missing` MEANS, and why it is its own kind. The backing hook answers
- * `absent` for BOTH "this deployment has no durable tier wired" and "that path
- * is not there", and it does that on purpose: on a mount that holds every
- * tenant's subtree, a response code that distinguished a well-formed path from
- * a missing one would be a way to map somebody else's files. The cost lands
- * here — at the tier root we genuinely cannot tell "the agent has written
- * nothing" from "there is nothing to write to". So we do not pick one. The UI
- * says both, and says we cannot tell which; stating the uncertainty is more
- * honest than asserting the half we would rather be true. Distinguishing them
- * properly needs an `absent` REASON on the hook, which is a hook-surface change
- * and a follow-up.
+ * WHAT `missing` MEANS, and why it is its own kind. The backing hook still
+ * answers ONE thing for every path-shaped absence — never written, since
+ * deleted, resolved outside the agent's own subtree — and that collapse is
+ * deliberate: on a mount that holds every tenant's subtree, a response that
+ * distinguished a well-formed path from a missing one would be a way to map
+ * somebody else's files. So `missing` means "the tier is there and that path
+ * is not in it", and nothing finer.
+ *
+ * IT USED TO MEAN LESS THAN THAT. `absent` also covered "this deployment has
+ * no durable tier at all", so at the tier root we could not tell "the agent
+ * has written nothing" from "there is nothing to write to", and the tab said
+ * both and said it could not tell which — on every deployment, working ones
+ * included (TASK-403). The hook now answers `unavailable` for the no-tier
+ * case, which costs no secrecy because it is decided before any path is looked
+ * at and is therefore the same answer for every path. So a `missing` at the
+ * root now means exactly one thing: the tier is wired, and this agent has not
+ * written anything into it yet.
+ *
+ * AND A BROKEN READ IS `failed`, not either of the above. A realization whose
+ * storage will not answer throws, the route turns that into a 5xx, and it
+ * lands here as `failed` with a retry. "We could not look" must never be
+ * spelled the same way as "there is nothing to see".
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { userFacingMessage } from './http';
@@ -34,25 +45,36 @@ import type { UserFileEntry, UserFilesAnswer } from './workspace-types';
  *
  * Three kinds, because three different sentences are true:
  *
- *   - `unavailable` — no sandbox provider in this deployment can read the
- *     tier. Retrying will never help, so the UI offers no button.
- *   - `missing`     — the path (or the whole subtree) is not there. At the
- *     root this is the ambiguous one described in this file's header.
+ *   - `unavailable` — this deployment keeps no durable files for this agent at
+ *     all: no sandbox provider that can read the tier, or no tier resolved for
+ *     the agent. Retrying will never help, so the UI offers no button.
+ *   - `missing`     — the tier is there and this path is not in it. At the
+ *     ROOT that is the agent having written nothing yet, which is not an error
+ *     at all and the tab draws it as the empty state.
  *   - `failed`      — something broke. Retrying might help, so it gets a
  *     button.
+ *
+ * `path` rides along because the sentence depends on WHICH path failed, and
+ * the hook's `dirPath` cannot answer that: it only moves on success, so after
+ * a failed step into `reports/` it still reads `''`. A component that checked
+ * `dirPath === ''` to recognise the root would call that failure the root's
+ * and tell the reader their agent has written nothing, while the root listing
+ * it is standing on says otherwise.
  */
 export interface UserFilesError {
   kind: 'unavailable' | 'missing' | 'failed';
+  /** The tier path the failed read asked for. `''` is the tier root. */
+  path: string;
   detail: string;
 }
 
-function toUserFilesError(e: unknown): UserFilesError {
+function toUserFilesError(e: unknown, path: string): UserFilesError {
   const detail = userFacingMessage(e, 'user-files');
   if (e instanceof WorkspaceApiError) {
-    if (e.status === 503) return { kind: 'unavailable', detail };
-    if (e.status === 404) return { kind: 'missing', detail };
+    if (e.status === 503) return { kind: 'unavailable', path, detail };
+    if (e.status === 404) return { kind: 'missing', path, detail };
   }
-  return { kind: 'failed', detail };
+  return { kind: 'failed', path, detail };
 }
 
 /** A file's text as this tier serves it. */
@@ -130,7 +152,7 @@ export function useAgentUserFiles(agentId: string): AgentUserFilesState {
           if (listRequest.current !== id) return;
           // `entries` is NOT cleared here — but it is never rendered while
           // `error` is set, so a stale listing cannot pass for a fresh one.
-          setError(toUserFilesError(e));
+          setError(toUserFilesError(e, path));
         } finally {
           if (listRequest.current === id) setLoading(false);
         }
@@ -178,7 +200,7 @@ export function useAgentUserFiles(agentId: string): AgentUserFilesState {
         setFile(answer);
       } catch (e) {
         if (bodyRequest.current !== id) return;
-        setFileError(toUserFilesError(e));
+        setFileError(toUserFilesError(e, filePath));
       } finally {
         if (bodyRequest.current === id) setFileLoading(false);
       }

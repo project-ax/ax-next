@@ -635,6 +635,54 @@ describe('the download routes', () => {
     expect(d.captured.statusCode).toBe(404);
   });
 
+  it('503s the durable download when this deployment keeps no files', async () => {
+    /*
+      TASK-403. `unavailable` is "there is no durable tier for this agent here",
+      and it used to arrive as `absent` — a 404 the reader would read as "that
+      file is gone". It is decided before the path is looked at, so answering
+      it differently cannot be used to probe which paths exist.
+    */
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerAgents();
+    bus.registerService('sandbox:read-user-files', 'sandbox', async () => ({
+      kind: 'unavailable',
+    }));
+    const d = mkRes();
+    await handlers().agentUserFileDownload(
+      mkReq({ agentId: 'a1', '*': 'report.md' }),
+      d.res,
+    );
+    expect(d.captured.statusCode).toBe(503);
+    expect(d.captured.bytes).toBeNull();
+  });
+
+  it('REGRESSION: a durable download whose read THREW hands over no bytes', async () => {
+    /*
+      A failed read must not become an empty or a missing file on the way to
+      somebody's disk. The handler does not catch, so the rejection becomes a
+      500 — and nothing at all is written.
+    */
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerAgents();
+    bus.registerService('sandbox:read-user-files', 'sandbox', async () => {
+      throw new PluginError({
+        code: 'userfiles-read-failed',
+        plugin: 'sandbox',
+        message: 'the export would not answer',
+      });
+    });
+    const d = mkRes();
+    await expect(
+      handlers().agentUserFileDownload(
+        mkReq({ agentId: 'a1', '*': 'report.md' }),
+        d.res,
+      ),
+    ).rejects.toThrow();
+    expect(d.captured.bytes).toBeNull();
+    expect(d.captured.statusCode).not.toBe(404);
+    expect(d.captured.statusCode).not.toBe(200);
+  });
+
   // --- routing -------------------------------------------------------------
 
   it('reads on the AGENT’s own context and owner, never the plugin’s', async () => {

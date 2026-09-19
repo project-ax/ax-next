@@ -767,8 +767,17 @@ describe('the Files routes over a real socket', () => {
 //   - the ACL still runs BEFORE path validation, and for a sharper reason: the
 //     backing mount is ONE export holding EVERY tenant's subtree, so a
 //     400-vs-404 split under a foreign agent would map somebody else's files.
-//   - `absent` is 404, and covers "no durable tier" and "no such path"
-//     identically. That is deliberate; see the oracle note above.
+//   - `absent` is 404, and covers every PATH-shaped absence identically —
+//     never written, since deleted, resolved outside the agent's own subtree.
+//     That is deliberate; see the oracle note above.
+//   - `unavailable` is 503: this deployment keeps no durable files for the
+//     agent at all. It used to arrive as `absent` too (TASK-403), which left
+//     the Files tab hedging "either your agent wrote nothing or this server
+//     isn't keeping them" on every deployment, working ones included. It is
+//     decided before any path is looked at, so it is the same answer for every
+//     path and reports nothing about which ones exist.
+//   - a reader that THROWS is a 5xx, not an empty listing. "We could not look"
+//     must never be spelled like "there is nothing to see".
 //   - the raw key comes back joined onto its parent, and the label is fenced.
 //   - the governed tier's `.ax`/`.claude`/`memory` exclusions do NOT apply
 //     here: they are the OTHER tier's machinery, and hiding a folder the user
@@ -1114,7 +1123,7 @@ describe('the durable user-files routes (direct handlers)', () => {
     expect(body.clipped).toBe('too-large');
   });
 
-  it('404s an absent path — the same answer as an absent tier', async () => {
+  it('404s an absent path — the root and a nested path answer identically', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerAgents();
     registerReader();
@@ -1129,9 +1138,64 @@ describe('the durable user-files routes (direct handlers)', () => {
     await h.agentUserFile(mkReq({ agentId: 'a1', '*': 'gone.md' }), missing.res);
     expect(missing.captured.statusCode).toBe(404);
 
-    // Identical bodies too. A different error code for "no tier here" would
-    // be readable from outside, and the tier is one export for every tenant.
+    // Identical bodies too. Every path-shaped absence is one answer, because
+    // the tier is one export for every tenant and a split would be readable
+    // from outside.
     expect(root.captured.body).toEqual(missing.captured.body);
+  });
+
+  it('503s when the reader says this deployment keeps no durable files', async () => {
+    /*
+      TASK-403. The service IS registered — the `hasService` gate above passes
+      — and it answers `unavailable` because no mount resolved for this agent.
+      That used to come back as `absent`, i.e. a 404 indistinguishable from
+      "that file is not there", and the tab could only hedge about which.
+    */
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerAgents();
+    bus.registerService('sandbox:read-user-files', 'sandbox', async () => ({
+      kind: 'unavailable',
+    }));
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+
+    const root = mkRes();
+    await h.agentUserFiles(mkReq({ agentId: 'a1' }), root.res);
+    expect(root.captured.statusCode).toBe(503);
+    expect(root.captured.body).toEqual({ error: 'user-files-unavailable' });
+
+    // Same answer for a nested path, which is what makes it safe: the 503 does
+    // not depend on the path, so it cannot be used to probe which paths exist.
+    const nested = mkRes();
+    await h.agentUserFile(mkReq({ agentId: 'a1', '*': 'report.md' }), nested.res);
+    expect(nested.captured.statusCode).toBe(503);
+    expect(nested.captured.body).toEqual(root.captured.body);
+  });
+
+  it('REGRESSION: a reader that THROWS never answers 200-with-nothing or 404', async () => {
+    /*
+      The half of TASK-403 that matters. A read that broke must reach the
+      client as a 5xx so the tab can say "we could not look" and offer a retry.
+      The handler deliberately does not catch: @ax/http-server turns a rejected
+      handler into a 500, and a `try { … } catch { res.json({ entries: [] }) }`
+      here would be the silent-failure shape this whole surface exists to
+      avoid.
+    */
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerAgents();
+    bus.registerService('sandbox:read-user-files', 'sandbox', async () => {
+      throw new PluginError({
+        code: 'userfiles-read-failed',
+        plugin: 'sandbox',
+        message: 'the export would not answer',
+      });
+    });
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await expect(h.agentUserFiles(mkReq({ agentId: 'a1' }), res)).rejects.toThrow();
+    // Nothing was written: no empty listing, and no 404 either.
+    expect(captured.statusCode).not.toBe(200);
+    expect(captured.statusCode).not.toBe(404);
+    expect(captured.body).toBeUndefined();
   });
 
   it('routes the read on the AGENT’s own context and owner, never the plugin’s', async () => {
