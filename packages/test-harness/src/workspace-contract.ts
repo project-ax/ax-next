@@ -267,11 +267,18 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
     // Case 7 is the load-bearing one. Two callers that agree on `agentId`
     // and differ on EVERY other field `makeAgentContext` accepts — `userId`,
     // `sessionId`, `conversationId`, `source`, `triggerLabel`,
-    // `workspace.rootPath`, and `reqId`, which is re-minted per call anyway
-    // — must see ONE tree. Any partition keyed on anything but `agentId`
-    // separates those two callers and reddens, including a field nobody has
-    // added yet. The case asserts the inequalities themselves, so it fails
-    // loudly rather than silently weakening if one stops holding.
+    // `workspace.rootPath`, and `reqId`/`logger`/`state`, which are re-minted
+    // per call anyway — must see ONE tree. Any partition keyed on anything
+    // but `agentId` separates those two callers and reddens.
+    //
+    // "By construction" is a TYPE claim, and it is the only reason this
+    // round's completeness claim is safer than the last three. Case 7's
+    // overrides are `Required<Omit<…>>` over `makeAgentContext`'s options, so
+    // a field added to `AgentContext` breaks the BUILD until a human decides
+    // whether it is identity. Without that, a new field is simply `undefined`
+    // for both callers, equal, and therefore unpinned — which is precisely
+    // how `(agentId, conversationId)` and then `(agentId, source)` each
+    // shipped green.
     //
     // Cases 4 and 6 are the same property stated one field at a time
     // (`userId` alone, `sessionId` alone). They are kept because a one-field
@@ -341,6 +348,27 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
             userId,
             agentId,
           });
+
+        // Case 7's caller. Same thing, but its overrides are `Required`, so
+        // every field `makeAgentContext` accepts must be passed explicitly.
+        // THAT is what closes the space: add an option to
+        // `MakeAgentContextOptions` and case 7 stops COMPILING until someone
+        // either varies the new field or adds it to the exclusion list below
+        // — which is exactly the "is this identity?" judgement that must not
+        // be made by default. The four exclusions: `agentId`/`userId` are
+        // passed positionally, and `reqId`/`logger` are re-minted per
+        // `makeAgentContext` call, so they vary across any two callers
+        // without being named.
+        const callerVaryingEverything = (
+          userId: string,
+          agentId: string,
+          rest: Required<
+            Omit<
+              NonNullable<Parameters<typeof h.ctx>[0]>,
+              'userId' | 'agentId' | 'reqId' | 'logger'
+            >
+          >,
+        ) => h.ctx({ ...rest, userId, agentId });
         const write = (
           ctx: ReturnType<typeof caller>,
           path: string,
@@ -374,7 +402,7 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
         const A = `${h.agentId}-a`;
         const B = `${h.agentId}-b`;
         const SHARED = `${h.agentId}-shared`;
-        return { h, caller, write, list, read, A, B, SHARED };
+        return { h, caller, callerVaryingEverything, write, list, read, A, B, SHARED };
       }
 
       it("one agent's tree is invisible to a different agent", async () => {
@@ -526,11 +554,17 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
 
       it('callers that agree on agentId and NOTHING ELSE share ONE tree', async () => {
         // THE COMPLETENESS CASE. Cases 4 and 6 pin one named field each out
-        // of the key; this one pins out every field at once, including ones
-        // nobody has thought of. The two callers agree on `agentId` and
-        // differ on every other field `makeAgentContext` accepts. A backend
-        // keyed on any of them, alone or with `agentId`, gives these two
-        // callers different trees and reddens.
+        // of the key; this one pins out every field `makeAgentContext`
+        // accepts, at once. The two callers agree on `agentId` and differ on
+        // all of them, so a backend keyed on any of them — alone or with
+        // `agentId` — gives these two callers different trees and reddens.
+        //
+        // It does NOT magically cover a field nobody has added yet: a field
+        // the literals below don't set is `undefined` for BOTH callers, equal,
+        // and therefore unpinned. What covers the future is the `Required<>`
+        // on `callerVaryingEverything`'s overrides — adding a field to
+        // `MakeAgentContextOptions` breaks compilation here until someone
+        // handles it. The type is the guard; this literal is what it guards.
         //
         // It exists because per-field enumeration was measured wrong twice
         // in review. With all seven subsets of {userId, agentId, sessionId}
@@ -543,26 +577,32 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
         // `(agentId, source)` green at 18/18 for the identical reason. An
         // unset optional field is not a pinned field.
         //
-        // When `AgentContext` grows another field, add it HERE, and re-run
-        // the `(agentId, <newField>)` mutant to prove it landed.
-        const { caller, write, list, read, SHARED } = await tenants();
-        const one = caller('user-alpha', SHARED, {
+        // So when the build breaks here because `AgentContext` grew a field:
+        // add it to both literals with different values, and run the
+        // `(agentId, <newField>)` mutant to prove the pin landed. If you
+        // instead judge it non-identity, add it to the `Omit` exclusion list
+        // and say why.
+        const { callerVaryingEverything, write, list, read, SHARED } =
+          await tenants();
+        const one = callerVaryingEverything('user-alpha', SHARED, {
           sessionId: 'session-alpha',
           conversationId: 'conversation-alpha',
           source: 'user',
           triggerLabel: 'Alpha trigger',
           workspace: { rootPath: '/tmp/contract-alpha' },
         });
-        const two = caller('user-beta', SHARED, {
+        const two = callerVaryingEverything('user-beta', SHARED, {
           sessionId: 'session-beta',
           conversationId: 'conversation-beta',
           source: 'routine',
           triggerLabel: 'Beta trigger',
           workspace: { rootPath: '/tmp/contract-beta' },
         });
-        // Nothing but `agentId` is equal. If that ever stops being true
-        // because `AgentContext` grew a field, this is the assertion that
-        // should have been updated.
+        // Nothing but `agentId` is equal. This guards against the SHARE
+        // assertion passing vacuously — if a future edit let two of these
+        // values collapse, the case would still go green while testing
+        // nothing. It does not, and cannot, notice a field that was never
+        // set; that is the `Required<>` type's job.
         expect(one.reqId).not.toBe(two.reqId);
         for (const k of [
           'userId',
