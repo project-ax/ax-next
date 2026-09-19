@@ -81,6 +81,22 @@ import {
 // them. This file is deleted by TASK-360; the copy must outlive it.
 
 /**
+ * (TASK-388) Neither `skillId` nor a connector's `name`/`connectorId` is
+ * guaranteed present on this frame — unlike the workspace's `GrantRow`,
+ * whose producer (`isRenderableGrant`) refuses to create a row unless
+ * `skillId`/`connectorId` is a string (TASK-351), this card's producer
+ * (`transport.ts`) does no shape validation at all before calling
+ * `permissionCardActions.show()`. A missing id must not reach `humanizeId`,
+ * which does `id.replace(...)` and throws `TypeError` on `undefined` — and
+ * a bare template-string fallback (`` `Connect ${undefined}` ``) is worse
+ * than the crash it replaces: it prints the literal words "Connect
+ * undefined" above a password field, per TASK-351/#557's round-two finding.
+ */
+function humanizedTitleOrFallback(id: unknown, fallback: string): string {
+  return typeof id === 'string' && id.trim().length > 0 ? humanizeId(id) : fallback;
+}
+
+/**
  * The ONE bundled approval card (JIT design §11.3/§6B, decision #6) — the
  * open-mode security boundary. Surfaced by a `chat:permission-request` SSE
  * frame. Two variants discriminated on `kind`:
@@ -125,10 +141,15 @@ export function PermissionCard() {
   // The skill AND connector variants carry slots; the host variant is always
   // "fillable". A slot already in the user's shared vault (haveExisting) needs no
   // input — it counts as filled (JIT P2). Otherwise the user must type a value.
+  // (TASK-388) `slots` is typed required, but this producer validates
+  // nothing on the wire (see `humanizedTitleOrFallback` above for why) — a
+  // frame that omits it threw here too. `?? []` treats "no slots" the same
+  // as "empty slots array": a slotless grant is immediately connectable
+  // either way, which is the existing, intended behavior for that case.
   const allSlotsFilled =
     request === null ||
     (request.kind !== 'skill' && request.kind !== 'connector') ||
-    request.slots.every(
+    (request.slots ?? []).every(
       (s) => s.haveExisting === true || (values[s.slot] ?? '').trim().length > 0,
     );
 
@@ -162,7 +183,13 @@ export function PermissionCard() {
       // `account:<service>` route; an untagged slot keeps the per-skill
       // `skill-slot` destination. A slot already in the vault (haveExisting) writes
       // nothing — the key is already there.
-      for (const s of request.slots) {
+      //
+      // (TASK-388) `?? []` on both reads below: `allSlotsFilled` now treats a
+      // missing `slots` the same as an empty array (see its comment above),
+      // so this click path can run with `request.slots` absent — guard it
+      // the same way here, or an undefined-iteration throw replaces the
+      // request-shape one this task exists to fix.
+      for (const s of request.slots ?? []) {
         if (s.haveExisting === true) continue; // already in the vault — nothing to write
         const payload = (values[s.slot] ?? '').trim();
         if (payload.length === 0) continue;
@@ -182,8 +209,8 @@ export function PermissionCard() {
       // current proposalDelta so an agent that widens its draft between card
       // render and user click can never grant caps the user never saw.
       const shown = {
-        hosts: request.hosts,
-        slots: request.slots.map((s) => s.slot),
+        hosts: request.hosts ?? [],
+        slots: (request.slots ?? []).map((s) => s.slot),
         npm: request.packages?.npm ?? [],
         pypi: request.packages?.pypi ?? [],
       };
@@ -225,8 +252,8 @@ export function PermissionCard() {
       // so the key lands on the SAME per-slot row the connector resolver / fold
       // reads (no collision). A slot already in the vault (haveExisting) writes
       // nothing — the key is already there. No secret crosses the decision POST
-      // below (§10).
-      for (const s of request.slots) {
+      // below (§10). (TASK-388) `?? []` — same reasoning as `connect()` above.
+      for (const s of request.slots ?? []) {
         if (s.haveExisting === true) continue;
         const payload = (values[s.slot] ?? '').trim();
         if (payload.length === 0) continue;
@@ -243,8 +270,8 @@ export function PermissionCard() {
       // intersects this with the re-resolved current proposal so a draft widened
       // between render and click can never grant caps the user never saw.
       const shown = {
-        hosts: request.hosts,
-        slots: request.slots.map((s) => s.slot),
+        hosts: request.hosts ?? [],
+        slots: (request.slots ?? []).map((s) => s.slot),
         npm: request.packages?.npm ?? [],
         pypi: request.packages?.pypi ?? [],
       };
@@ -370,10 +397,18 @@ export function PermissionCard() {
   }
 
   if (request.kind === 'connector') {
+    // (TASK-388) See `humanizedTitleOrFallback` above: `name` is not
+    // guaranteed, and neither is `connectorId` behind it (unlike `GrantRow`,
+    // where `isRenderableGrant` requires `connectorId`). Falls through to a
+    // plain English noun rather than a raw id or a crash.
+    const connectorTitle =
+      typeof request.name === 'string' && request.name.trim().length > 0
+        ? request.name
+        : humanizedTitleOrFallback(request.connectorId, 'this connector');
     return (
       <Card className="mb-3" data-testid="permission-card-connector">
         <CardHeader>
-          <CardTitle>Connect {request.name}</CardTitle>
+          <CardTitle>Connect {connectorTitle}</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           {request.authored === true && (
@@ -382,7 +417,7 @@ export function PermissionCard() {
               <AlertDescription>{AUTHORED_CONNECTOR_WARNING}</AlertDescription>
             </Alert>
           )}
-          {renderReach(request.hosts, request.slots, request.packages)}
+          {renderReach(request.hosts ?? [], request.slots ?? [], request.packages)}
           <p className="text-sm text-muted-foreground">{GRANT_REASSURANCE}</p>
           {error !== null && (
             <Alert variant="destructive">
@@ -451,6 +486,11 @@ export function PermissionCard() {
   // down, and can't render as a React child either.
   const skillDescription =
     typeof request.description === 'string' ? request.description : '';
+  // (TASK-388) `skillId` is likewise not guaranteed on this unvalidated
+  // frame (unlike `GrantRow`, where `isRenderableGrant` requires it) —
+  // `humanizeId(undefined)` throws inside it (`id.replace(...)`). Falls
+  // through to plain English rather than a raw id or a crash.
+  const skillTitle = humanizedTitleOrFallback(request.skillId, 'this skill');
 
   return (
     <Card className="mb-3" data-testid="permission-card">
@@ -458,7 +498,7 @@ export function PermissionCard() {
         {/* (A2) The title read `Connect linear-issues` — the id the producer
             uses, not the name a person would. Humanized, with the raw id as its
             own fallback for anything we can't read. */}
-        <CardTitle>Connect {humanizeId(request.skillId)}</CardTitle>
+        <CardTitle>Connect {skillTitle}</CardTitle>
         {skillDescription.length > 0 && (
           <CardDescription>{skillDescription}</CardDescription>
         )}
@@ -470,7 +510,7 @@ export function PermissionCard() {
             <AlertDescription>{AUTHORED_SKILL_WARNING}</AlertDescription>
           </Alert>
         )}
-        {renderReach(request.hosts, request.slots, request.packages)}
+        {renderReach(request.hosts ?? [], request.slots ?? [], request.packages)}
         <p className="text-sm text-muted-foreground">{GRANT_REASSURANCE}</p>
         {error !== null && (
           <Alert variant="destructive">

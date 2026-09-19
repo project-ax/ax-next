@@ -33,6 +33,14 @@ const skillReq: PermissionRequest = {
   slots: [{ slot: 'api_key', kind: 'api-key', haveExisting: true }],
 };
 
+const connectorReq: PermissionRequest = {
+  kind: 'connector',
+  connectorId: 'linear',
+  name: 'Linear',
+  hosts: ['api.linear.app'],
+  slots: [],
+};
+
 function show(request: PermissionRequest) {
   setActiveConversationId('cnv-1');
   permissionCardActions.show(request);
@@ -138,5 +146,70 @@ describe('a payload the producer lets through with no shape guard at all', () =>
 
     expect(screen.getByText('File and read Linear issues')).toBeTruthy();
     expect(screen.getByTestId('permission-packages')).toBeTruthy();
+  });
+
+  /*
+    THE FINDING FROM THE FIRST REVIEW ROUND. `description`/`packages` were
+    not the only unguarded reads on this frame — `hosts`, `slots`, `skillId`
+    and a connector's `name` are all read with no fallback either, and this
+    producer validates none of them (unlike the workspace's `GrantRow`,
+    where `isRenderableGrant` requires `skillId`/`connectorId` plus iterable
+    `hosts`/`slots` before a row is ever created). Missing `hosts`/`slots`
+    threw inside `renderReach`; a missing `skillId` threw inside
+    `humanizeId` (`id.replace(...)` on `undefined`); a missing `slots` also
+    threw earlier still, inside `allSlotsFilled`'s `.every`, before the card
+    even reached JSX.
+  */
+  test('a skill with no hosts, slots, or id renders an answerable card, not a crash', () => {
+    const bareMinimum = { kind: 'skill' } as unknown as PermissionRequest;
+
+    show(bareMinimum);
+
+    // No id to humanize -> plain English, not "Connect undefined" and not a
+    // crash. No slots -> nothing to fill -> Connect is enabled.
+    expect(screen.getByText('Connect this skill')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^connect$/i })).toBeEnabled();
+    expect(screen.queryByText('undefined')).toBeNull();
+  });
+
+  test('a connector with no name or id renders an answerable card, not a crash', () => {
+    const bareMinimum = { kind: 'connector' } as unknown as PermissionRequest;
+
+    show(bareMinimum);
+
+    expect(screen.getByText('Connect this connector')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^connect$/i })).toBeEnabled();
+    expect(screen.queryByText(/undefined/)).toBeNull();
+  });
+
+  test('a connector with no name falls back to its humanized id, not "Connect undefined"', () => {
+    // `name` absent but `connectorId` present is the case #557's own
+    // review round found live on `GrantRow` — mirrored here since this
+    // producer offers no more protection for `name` than that one did.
+    const nameless = {
+      kind: 'connector',
+      connectorId: 'linear',
+      hosts: ['api.linear.app'],
+      slots: [],
+    } as unknown as PermissionRequest;
+
+    show(nameless);
+
+    expect(screen.getByText('Connect Linear')).toBeTruthy();
+    expect(screen.queryByText(/undefined/)).toBeNull();
+  });
+
+  test('an empty-string connector name falls back the same way', () => {
+    const blankName = { ...connectorReq, name: '   ' } as unknown as PermissionRequest;
+
+    show(blankName);
+
+    expect(screen.getByText('Connect Linear')).toBeTruthy();
+  });
+
+  test('a real connector name still wins over the fallback', () => {
+    show({ ...connectorReq, name: 'Linear Issues' });
+
+    expect(screen.getByText('Connect Linear Issues')).toBeTruthy();
   });
 });
