@@ -901,6 +901,11 @@ export interface DismissResponse {
 }
 
 export interface UndoResponse {
+  /**
+   * The row as it stands. On a refusal (`undone: false`) it carries
+   * `undoable: false` — see `undoDecision` below for why the projection alone
+   * would not say so, and why saying so here is not a second copy of the rule.
+   */
   decision: Decision;
   /** False when there was nothing left to take back. */
   undone: boolean;
@@ -3829,6 +3834,29 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * has closed on, or one whose call has already been made — comes back with
      * the row and `undone: false`, and that is a 200: the click was absorbed
      * and the honest thing to show is what the row actually says now.
+     *
+     * AND A REFUSAL RETIRES THE AFFORDANCE (TASK-441). `undone: false` with a
+     * row attached is the server saying this can no longer be taken back, so
+     * the row it answers with must not go on claiming it can. It would: the
+     * plugin refuses a late undo by returning the stored row UNCHANGED — which
+     * is right, a refusal must not write anything — and `toWireDecision`
+     * derives `undoable` from `consumedAt` / `replayedAt` / `replayClaimedAt`
+     * alone, all three of which are still null when the refusal is the TIME
+     * window closing. So the projection would answer `undoable: true` about a
+     * row the very same response has just refused, and every control that keys
+     * off it — `undoSecondsLeft`, and therefore the Undo button in both
+     * renderers — would keep offering a button that cannot work. Measured on
+     * the TASK-358 walk: the button came back pressable after the refusal and
+     * could be pressed again, and again.
+     *
+     * The override is NOT a second copy of the undo rule. It re-derives
+     * nothing; it records the verdict this very response is carrying, which is
+     * the only place that verdict exists. `toWireDecision` stays the one
+     * derivation, and it stays clock-free.
+     *
+     * Which direction it fails in: CLOSED. The narrowing only ever turns
+     * `undoable` from true to false, only on a response that already says
+     * `undone: false`, and nothing here can turn it back on.
      */
     async undoDecision(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);
@@ -3843,7 +3871,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       );
       const decision = resolvedOrGone(out.decision, res);
       if (decision === null) return;
-      res.status(200).json({ decision, undone: out.undone } satisfies UndoResponse);
+      res.status(200).json({
+        decision: out.undone ? decision : { ...decision, undoable: false },
+        undone: out.undone,
+      } satisfies UndoResponse);
     },
 
     /**
