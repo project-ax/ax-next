@@ -311,6 +311,10 @@ ITEM_ID=$(printf '%s' "$ITEMS" | jq -r --arg p "[$TASK_ID] " \
   '.items[] | select(.title // "" | startswith($p)) | .id' | head -1)
 [ -z "$ITEM_ID" ] && ITEM_ID=$(gh project item-create "$PNUM" --owner "$OWNER" \
   --title "[$TASK_ID] $TASK_TITLE" --body "$TASK_BODY" --format json | jq -r .id)
+# `$TASK_ID` here is one you ALREADY hold, so this path allocates nothing -- but another
+# session may have taken the number between your snapshot and this write, so confirm
+# before anything starts referencing the card (§8.2a).
+scripts/board-task-id.sh settle --item "$ITEM_ID"
 
 # move a card to a lane (OPT_ID from the §2 map):
 gh project item-edit --id "$ITEM_ID" --project-id "$PROJ_ID" \
@@ -336,7 +340,15 @@ board_batch "$PROJ_ID" "$ID1|$STATUS_FIELD_ID|single|$INPROG" \
                        "$ID2|$STATUS_FIELD_ID|single|$INPROG" \
                        "$ID3|$STATUS_FIELD_ID|single|$INPROG"
 # a new follow-up card's Status + Depends on in ONE request (create still separate):
-ID=$(gh project item-create "$PNUM" --owner "$OWNER" --title "$T" --body "$B" --format json | jq -r .id)
+# `claim` allocates the [TASK-n], creates the card and confirms the number survived, all
+# in ONE process -- see §8.2a. `$T` is the BARE title; claim adds the prefix. It prints
+# "<TASK-ID> <PVTI_id>" on success.
+# Captured, NOT `read … <<<"$(…)"`: a herestring makes `$?` READ's status, so a refusal
+# would arrive as two empty variables and `board_batch` would then write fields onto a
+# card that does not exist. Same trap as the piped `gh` in §8.2.
+CLAIM=$(scripts/board-task-id.sh claim --title "$T" --body "$B") \
+  || echo "FATAL: no Task ID allocated — follow-up card NOT created"
+TASK_ID=${CLAIM%% *}; ID=${CLAIM##* }
 board_batch "$PROJ_ID" "$ID|$STATUS_FIELD_ID|single|$TODO" "$ID|$DEPS_FIELD_ID|text|none"
 ```
 
@@ -888,8 +900,14 @@ printf '%s' "$ITEMS" | jq -r '.items[] | select(.status=="To Do") | "\(.title)\t
 
 **Untagged** = the title does not match `^\[(ARCH|CLI|SYNC|FAULTA|TASK)-[0-9]+\] `.
 For each untagged candidate, assign the next **`TASK-n`** (n = max existing
-`[TASK-<num>]` across the whole board + 1; sequential for several in one pass,
-computed from the already-bound `$ITEMS` so there's no race) and rewrite the title:
+`[TASK-<num>]` across the whole board + 1; sequential for several in one pass, computed
+from the already-bound `$ITEMS`) and rewrite the title:
+
+> An earlier version of this line said `$ITEMS` meant "there's no race". That is true
+> **within** one pass and false **across sessions**, which is the whole of TASK-426 —
+> `$ITEMS` is minutes old and other sessions write this board. The claim here stays
+> optimistic on purpose (it is free, and it is usually right); **§8.2a's settle step
+> below is what makes a collision unable to survive**, and it is not optional.
 
 ```bash
 NEXT=$(printf '%s' "$ITEMS" | jq -r '.items[].title | capture("\\[TASK-(?<n>[0-9]+)\\]").n // empty' \
@@ -956,6 +974,76 @@ would pass against a doc that merely says "DI_" — the mistake TASK-392 already
 The `(walk)` tag is appended **after** the triage agent's verdict (it needs the body).
 Per convention a walk card carries **both** the ID **and** `(walk)` — never one instead
 of the other. A human who pre-tagged `(walk)` keeps it.
+
+### 8.2a Confirming the number survived — `scripts/board-task-id.sh`
+
+Run this immediately after the stamp above, for every card you just numbered:
+
+```bash
+scripts/board-task-id.sh settle --item "$ITEM_ID"
+```
+
+**Why.** Allocating a Task ID is a read-modify-write, and several sessions write this
+board. Measured 2026-09-19: two sessions each created a TASK-420 *and* a TASK-421 within
+minutes; a third landed on a TASK-454 another session had just taken. Nothing noticed
+until a later `jq` returned two ids for one number. Task IDs are the board's only stable
+handle — `Depends on` is a list of them, the journal keys on them, dispatch prompts name
+them, `.claude/memory` rows cite them — so a duplicate corrupts four things at once and
+silently. A dependency on "TASK-420" cannot say which card it means, and readiness is
+*derived* from exactly that field.
+
+**What `settle` does, and what it does not.** Projects v2 has no atomic counter and no
+uniqueness constraint on a card title, so a collision cannot be *prevented* through this
+API and nothing here pretends otherwise. What `settle` removes is a collision that
+**survives**: it re-reads the board, and if another card now carries the same number,
+the colliding card with the **lowest item node id keeps it** and every other one
+renumbers **itself**. Both racers read the same board and compute the same winner, so
+exactly one moves — a deterministic rule, not a randomized backoff that could have two
+racers pick the same next number again.
+
+A process only ever renames **its own** card. That is what makes two settles safe at the
+same time, and it is why this runs at **creation**, not at triage: a card seconds old has
+no references, while by triage the dispatch prompt and the `Depends on` field are already
+written. If the duplicate is still there when the attempts run out, `settle` exits
+non-zero and names both cards rather than reporting success.
+
+**The other subcommands.**
+
+```bash
+scripts/board-task-id.sh check    # any duplicated id anywhere on the board? (exit 1 if so)
+scripts/board-task-id.sh next     # the next free number
+scripts/board-task-id.sh claim --title "<bare title>" --body "<body>"   # create + settle
+```
+
+`claim` is the one to use when creating a card that needs a **new** id (§4 follow-ups,
+the decomposition agent). It reads the max and creates the card in **one process** —
+computing the max in one tool call and creating the card in a later one is exactly how
+2026-09-19's third collision happened.
+
+The read is the cheap one: a paginated `items(first:100)` fetching ids and titles only,
+~1 point a page, not the ~102 `gh project item-list` costs. It asks for the `DraftIssue`
+id in the same query, so a rename needs no second lookup hop.
+
+**Guard direction.** `check` fails **closed** — an unreadable board, an unparseable
+reply, and a reply that parses to zero cards are all exit 2, never exit 0. The board has
+never been empty, so "no cards" is the signature of a read that failed quietly, and "no
+cards, therefore no duplicates" is the fail-open shape the whole card is about. `settle`
+fails **loud**: no path exits 0 on a duplicate it saw.
+
+**Rejected, with reasons** (so nobody re-proposes them):
+
+- *Allocate from something already atomic* — GitHub issue numbers are atomic, but cards
+  are draft issues on purpose; minting a real issue per card makes the repo, not the
+  board, the id authority (a second source of truth, CLAUDE.md invariant 4) and shares a
+  counter with PRs, so `[TASK-617]` and `#617` become confusable.
+- *A git ref as the lock* (`refs/task-ids/TASK-n`, push fails if it exists) — genuinely
+  atomic, and genuinely a second source of truth for the same concept. Same invariant.
+- *Namespace by producer* — breaks the flat id space `Depends on`, the journal and the
+  memory rows all assume, and does nothing when two auto-ship orchestrators run at once.
+
+`scripts/__tests__/board-task-id-race.test.js` holds this: it builds a board that really
+holds two `[TASK-420]` cards and runs the guard against it, and it runs two `claim`
+processes rendezvoused on a barrier so both provably compute the same max.
 
 ### 8.3 The needs-input block + `set_needs_input` helper
 
