@@ -51,6 +51,7 @@ import { AgentView } from '@/components/workspace/AgentView';
 import { workspaceApi } from '@/lib/workspace-api';
 import { uploadAttachment } from '@/lib/attachment-upload';
 import type { AgentDetail, WorkspaceAgent } from '@/lib/workspace-api';
+import { ATTACHMENT_NAME_MAX_CHARS } from '@/components/workspace/WorkspaceAttachmentChip';
 import { rail as railFixture } from '@/components/workspace/__tests__/rail-fixture';
 
 vi.mock('@/lib/workspace-api', async () => {
@@ -137,7 +138,7 @@ const attachmentBlock = {
   sizeBytes: 4096,
 };
 
-function storedTurns(blocks: unknown[]): unknown[] {
+function storedTurns(blocks: unknown[], agentBlocks?: unknown[]): unknown[] {
   return [
     {
       turnId: 't1',
@@ -150,7 +151,9 @@ function storedTurns(blocks: unknown[]): unknown[] {
       turnId: 't2',
       turnIndex: 1,
       role: 'assistant',
-      contentBlocks: [{ type: 'text', text: 'Those are missing shingles.' }],
+      contentBlocks: agentBlocks ?? [
+        { type: 'text', text: 'Those are missing shingles.' },
+      ],
       createdAt: '2026-09-18T10:00:05.000Z',
     },
   ];
@@ -167,7 +170,17 @@ const conversationRow = {
   lastActivityAt: null,
 };
 
-async function reloadDetail(blocks: unknown[]): Promise<AgentDetail> {
+/** The same read, but the extra blocks ride on the AGENT's turn instead. */
+async function reloadDetailWithAgentBlocks(
+  agentBlocks: unknown[],
+): Promise<AgentDetail> {
+  return reloadDetail([{ type: 'text', text: CAPTION }], agentBlocks);
+}
+
+async function reloadDetail(
+  blocks: unknown[],
+  agentBlocks?: unknown[],
+): Promise<AgentDetail> {
   const bus = new HookBus();
   const notFound = (): PluginError =>
     new PluginError({ code: 'not-found', plugin: 'test', message: 'nope' });
@@ -186,7 +199,7 @@ async function reloadDetail(blocks: unknown[]): Promise<AgentDetail> {
   ]);
   bus.registerService('conversations:get', 'conversations', async () => ({
     conversation: conversationRow,
-    turns: storedTurns(blocks),
+    turns: storedTurns(blocks, agentBlocks),
   }));
 
   const handlers = makeWorkspaceHandlers({ bus, initCtx });
@@ -314,6 +327,74 @@ describe('a message the person attached a file to', () => {
     );
     expect(container.textContent).toContain(FILE_NAME);
     expect(userBubble(container).textContent).toContain(FILE_NAME);
+    unmount();
+  });
+
+  it('draws nothing for an `attachment` block on an AGENT turn', async () => {
+    /*
+      The prompt-injection guard, pinned rather than assumed.
+
+      A user turn's attachments are host-minted: `@ax/chat-orchestrator`
+      persists the turn from the person's own content blocks, and the runner
+      deliberately does not write user turns at all (its TASK-66 note says so).
+      A model CAN emit whatever content blocks it likes on its OWN turn,
+      though, and if this renderer read them the same way it would hand a
+      model-chosen `path` to `GET /api/files` and a model-chosen string to a
+      chip — which is the shape of the sibling finding where an MCP argument
+      put a credential prefix on screen.
+
+      It does not, because `turnAttachments` runs on `turn.role === 'user'`
+      only. This test is what keeps that true: widen the call to every turn and
+      it goes red.
+    */
+    const bus = 'sk-live-0123456789abcdef-not-a-real-key';
+    const detail = await reloadDetail([{ type: 'text', text: CAPTION }]);
+    const withAgentAttachment = await reloadDetailWithAgentBlocks([
+      { type: 'text', text: 'Those are missing shingles.' },
+      {
+        type: 'attachment',
+        path: '.ax/uploads/other-conversation/t9/stolen.png',
+        displayName: bus,
+        mediaType: 'image/png',
+      },
+    ]);
+    // The agent's prose still renders; only the block it invented is ignored.
+    expect(JSON.stringify(withAgentAttachment.thread)).toContain(
+      'Those are missing shingles.',
+    );
+    expect(JSON.stringify(withAgentAttachment.thread)).not.toContain(bus);
+    expect(JSON.stringify(withAgentAttachment.thread)).not.toContain('stolen');
+
+    const { container, unmount } = render(
+      <AgentConversation {...conversationProps(withAgentAttachment)} />,
+    );
+    expect(container.textContent).not.toContain(bus);
+    expect(container.querySelector('img')).toBeNull();
+    unmount();
+    // Sanity: the same fixture on a USER turn does draw — so the negative
+    // above is about WHOSE turn it is, not about the assertion being unreachable.
+    expect(JSON.stringify(detail.thread)).toContain(CAPTION);
+  });
+
+  it('clamps a filename long enough to flood the accessibility tree', async () => {
+    /*
+      A filename comes off the person's own disk and has no length limit. The
+      chip's CSS `truncate` hides the overflow on screen while leaving the whole
+      string in `alt` and in the `aria-label` — so the clamp has to happen in
+      the data, not in the styling. Same function the composer's chips use.
+    */
+    const long = `${'z'.repeat(400)}.png`;
+    const detail = await reloadDetail([
+      { ...attachmentBlock, displayName: long, path: '.ax/uploads/c1/t1/z.png' },
+    ]);
+    const { container, unmount } = render(
+      <AgentConversation {...conversationProps(detail)} />,
+    );
+    const img = container.querySelector('img');
+    expect(img).not.toBeNull();
+    const alt = img?.getAttribute('alt') ?? '';
+    expect(alt.length).toBeLessThanOrEqual(ATTACHMENT_NAME_MAX_CHARS);
+    expect(alt.startsWith('zzz')).toBe(true);
     unmount();
   });
 

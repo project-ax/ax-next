@@ -77,7 +77,10 @@ import {
   ThreadFindToggle,
   type FindView,
 } from './ThreadFind';
-import { WorkspaceAttachmentChip } from './WorkspaceAttachmentChip';
+import {
+  clampAttachmentName,
+  WorkspaceAttachmentChip,
+} from './WorkspaceAttachmentChip';
 import { AttachmentChip } from '@/components/AttachmentChip';
 
 /**
@@ -888,7 +891,30 @@ function Message({
         */}
         {attachments.length > 0 && (
           <div className="flex max-w-[80%] flex-col items-end gap-1.5">
-            {attachments.map((a, i) => (
+            {attachments.map((a, i) => {
+              /*
+                CLAMPED, not merely truncated. A filename comes off the
+                person's own disk and can be any length at all, and the chip's
+                CSS `truncate` hides the overflow visually while leaving the
+                whole string in the accessibility tree and in the chip's
+                `aria-label` / `alt` — a screen reader reading four hundred
+                characters is its own kind of broken. Same rule, and the same
+                function, the composer's own chips already use.
+
+                This is also the honest place to say what CANNOT reach here.
+                `turnAttachments` runs on `turn.role === 'user'` ONLY, and user
+                turns are persisted host-side by `@ax/chat-orchestrator` from
+                the person's own content blocks — the runner never writes one
+                (see its TASK-66 note). So a model that emits an `attachment`
+                block of its own gets no chip, no `<img>` and no
+                `/api/files` URL out of this renderer: the assistant branch
+                below never asks for attachments at all. Nothing on this path
+                is model- or tool-authored, which is the one reason a label
+                here is safe to draw when a step label built from tool input
+                would not be.
+              */
+              const name = clampAttachmentName(a.displayName);
+              return (
               <AttachmentChip
                 /*
                   Position-bearing, like the step rows: one message can legally
@@ -900,7 +926,7 @@ function Message({
                   ? {
                       path: a.path,
                       conversationId,
-                      displayName: a.displayName,
+                      displayName: name,
                       mediaType: a.mediaType,
                       ...(a.sizeBytes === undefined
                         ? {}
@@ -914,11 +940,12 @@ function Message({
                         this card is about, in a smaller window.
                       */
                       variant: 'pending' as const,
-                      displayName: a.displayName,
+                      displayName: name,
                       mediaType: a.mediaType,
                     })}
-              />
-            ))}
+                />
+              );
+            })}
           </div>
         )}
         {m.text.length > 0 && (
