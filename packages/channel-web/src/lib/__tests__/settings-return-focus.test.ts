@@ -194,8 +194,15 @@ describe('focusSettingsOpenerWhenReady — the wait ENDS', () => {
   });
 
   it('still restores inside the window, so giving up is not the whole story', async () => {
-    // The anti-vacuity half: if the window were zero — or the give-up ran
-    // eagerly — the test above would pass for the wrong reason.
+    // The anti-vacuity half: without it, a `stop()` that ran EAGERLY — at arm
+    // time, or on the first mutation — would make the test above pass while
+    // the restore was dead for everyone.
+    //
+    // It does NOT catch a zero window, and an earlier version of this comment
+    // claimed it did (caught in review). The opener here is added
+    // synchronously, so the observer's microtask beats a `setTimeout(…, 0)`
+    // macrotask and this stays green at `windowMs = 0`. The zero-DEFAULT case
+    // is the next test's job, which is why that one exists separately.
     cancel = focusSettingsOpenerWhenReady(document, SHORT_WINDOW_MS);
 
     const opener = addOpener();
