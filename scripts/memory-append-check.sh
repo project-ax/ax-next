@@ -172,19 +172,32 @@ fi
 # prose cannot waive.
 #
 # Probe first, with a key no commit can carry. Git emits an UNSUPPORTED pretty
-# placeholder LITERALLY rather than failing, so on a git too old for
-# `%(trailers:key=…)` (before 2.22) the expansion would be the format string
-# itself — non-empty for every commit, i.e. a waiver on everything. That is
-# fail-OPEN, and this is the one place in the script where that direction
-# matters: a waiver that silently stops working is a nuisance, a waiver that
-# silently starts working removes the guard. So an unexpanded probe disables
-# the waiver loudly instead.
-if [ -n "$(git log --format='%(trailers:key=Ax-Unused-Probe,valueonly)' -1 HEAD 2>/dev/null)" ]; then
-  echo "memory-append-check.sh: this git does not expand %(trailers:key=...) — it needs 2.22+." >&2
-  echo "  Not honouring any Memory-Rewrite waiver, because it cannot be told from prose here." >&2
+# placeholder LITERALLY rather than failing, so on a git too old to expand
+# `%(trailers:key=…)` the expansion would be the format string itself —
+# non-empty for every commit, i.e. a waiver on everything. That is fail-OPEN,
+# and this is the one place in the script where the direction matters: a
+# waiver that silently stops working is a nuisance, a waiver that silently
+# starts working removes the guard. So an unexpanded probe disables the waiver
+# loudly instead.
+#
+# The probe carries the SAME option string as the real command, differing only
+# in the key. Git stops at the first option it does not understand, so a git
+# that supported `key=` but not `separator=` would let a bare probe parse
+# clean while the real command echoed literally — fail-OPEN, undetected, and
+# invisible to the test shim (which trips on any `%(trailers:` argument).
+# Keeping the options identical means anything that breaks one breaks both,
+# so this does not rest on a claim about which git version added which option.
+# For the same reason the message names the capability rather than a version
+# number: a number that is off by a release tells someone running 2.23 that
+# they need "2.22+", which is worse than saying nothing.
+trailer_fmt_opts='valueonly,separator=%x0A'
+if [ -n "$(git log --format="%(trailers:key=Ax-Unused-Probe,${trailer_fmt_opts})" -1 HEAD 2>/dev/null)" ]; then
+  echo "memory-append-check.sh: this git cannot expand %(trailers:key=...)." >&2
+  echo "  Not honouring any Memory-Rewrite waiver, because a real trailer cannot be told" >&2
+  echo "  from prose that merely quotes one without it. Upgrade git to use the waiver." >&2
   waiver=''
 else
-  waiver=$(git log --format='%(trailers:key=Memory-Rewrite,valueonly,separator=%x0A)' \
+  waiver=$(git log --format="%(trailers:key=Memory-Rewrite,${trailer_fmt_opts})" \
     "${merge_base}..HEAD" | grep -E '[^[:space:]]' | head -n 1 || true)
 fi
 

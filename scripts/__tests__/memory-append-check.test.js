@@ -258,7 +258,7 @@ describe('memory-append-check.sh', () => {
   it('a git too old to expand %(trailers:key=...) waives NOTHING, loudly', () => {
     // Direction matters here and nowhere else in this script. Git emits an
     // UNSUPPORTED pretty placeholder LITERALLY rather than failing, so on a
-    // git before 2.22 the expansion is the format string itself — non-empty
+    // git too old to expand it the expansion is the format string itself — non-empty
     // for every commit, i.e. a waiver on everything. A waiver that silently
     // stops working is a nuisance; one that silently starts working deletes
     // the guard.
@@ -289,7 +289,7 @@ describe('memory-append-check.sh', () => {
       env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}` },
     });
     expect(r.status).toBe(1);
-    expect(r.stderr).toMatch(/does not expand %\(trailers:key=\.\.\.\)/);
+    expect(r.stderr).toMatch(/cannot expand %\(trailers:key=\.\.\.\)/);
     expect(r.stderr).not.toMatch(/WAIVED/);
   });
 
@@ -320,8 +320,12 @@ describe('memory-append-check.sh', () => {
     const r = run(dir, ['main']);
     expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/--shard/); // the answer it SHOULD give
-    // Nothing copy-pasteable: no `Memory-Rewrite:` followed by a reason.
-    expect(r.stderr).not.toMatch(/Memory-Rewrite:[ \t]*\S/);
+    // The rule is the strong one: the failure text does not NAME the trailer
+    // at all. An earlier version asserted `/Memory-Rewrite:[ \t]*\S/`, which
+    // a line-wrapped reintroduction (`Memory-Rewrite:` then the reason on the
+    // next line) would have slipped straight past, since `[ \t]` does not
+    // cross a newline. Not naming it is also simply easier to keep true.
+    expect(r.stderr).not.toContain('Memory-Rewrite');
   });
 
   it('an empty or whitespace-only Memory-Rewrite trailer waives nothing', () => {

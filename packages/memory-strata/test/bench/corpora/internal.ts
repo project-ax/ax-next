@@ -44,18 +44,24 @@ const SOURCE_GLOBS = [
   'docs/plans/*-plan.md',
   'docs/plans/*-pr-notes.md',
   'docs/plans/*-followup.md',
-  '.claude/memory/*.md',
-  // Both halves of `.claude/memory/`, deliberately. The root files are frozen
-  // ARCHIVES; every row written since TASK-415 lives in a per-task shard one
-  // level down, so an archive-only glob would make this corpus progressively
-  // less representative of the memory it claims to be built from — the same
-  // flat-reader blind spot that had `memory-cited-paths-exist.test.js` going
-  // green while checking nothing.
+  // ARCHIVE-ONLY, and deliberately so — this is not an oversight, and it is
+  // not the flat-reader bug it looks like.
   //
-  // Note the interaction with MAX_DOCS_FOR_REGEN below: the cap already binds,
-  // so adding shards shifts which documents make the cut. That only matters on
-  // an explicit `--regen-internal`, which produces a new artifact anyway.
-  '.claude/memory/*/*.md',
+  // Since TASK-415 every new memory row lands in a per-task shard at
+  // `.claude/memory/<kind>/<date>-<TASK-ID>.md`, so this glob does miss them.
+  // Adding `.claude/memory/*/*.md` was tried and reverted, because it makes
+  // the corpus WORSE rather than more representative. Measured: SOURCE_GLOBS
+  // matches 180 files against `MAX_DOCS_FOR_REGEN = 60`, so the cap binds
+  // hard — and `collectSources` sorts for determinism, where `.claude/memory/`
+  // sorts ahead of `docs/plans/` and `README`/`CLAUDE`. One shard per task
+  // means the front of that sorted list grows without bound, evicting the
+  // design docs from the back of the top-60. Today that is 6 memory files of
+  // 60; it would not stay there.
+  //
+  // So the corpus keeps the five archives, which are a bounded, curated
+  // sample of the same material. Including shards needs the selection to stop
+  // being "first 60 after a lexical sort" first — see the follow-up card.
+  '.claude/memory/*.md',
   'README.md',
   'CLAUDE.md',
 ];

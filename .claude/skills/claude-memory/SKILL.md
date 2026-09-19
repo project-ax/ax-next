@@ -107,7 +107,9 @@ When `.claude/memory/` does not exist:
 
    Don't hand-create the shard directories: git doesn't track empty ones anyway, and each appears the first time `scripts/memory-write-target.sh --shard <kind> <TASK-ID>` names a file in it (that mode prints a path and creates nothing, so `mkdir -p "$(dirname "$path")"` is on you).
 
-   **On a greenfield project this seed commit trips R2**, because creating the five archives *is* touching them — measured, exit 1 with two violations. That is the guard being right rather than the bootstrap being wrong: the archives predate it everywhere else. Put a `Memory-Rewrite: seeding .claude/memory/` trailer on the seed commit, or land the guard in a later PR than the seed.
+   **On a greenfield project this seed commit trips R2**, because creating the five archives *is* touching them — measured, exit 1 with two violations. That is the guard being right rather than the bootstrap being wrong: the archives predate it everywhere else. Land the guard in a later PR than the seed, or put a `Memory-Rewrite: seeding .claude/memory/` trailer on the seed commit.
+
+   This is the **one** exception to "agents shipping a card do not add that trailer" (Hygiene, below), and it is narrow: it applies only to the commit that *creates* `.claude/memory/` on a project that has none. If the directory already exists — as it does here — the rule below applies with no exception, and the answer is a shard. Prefer the later-PR route anyway; it needs no exception at all.
 
 2. Run the write phase against what was just done, writing the current task's output as shards.
 
@@ -145,7 +147,9 @@ Shards are small by construction — one day, one task, one kind — so the ~150
 
 Every hygiene move rewrites or removes existing lines, which is exactly what the guard blocks (R1: no deletions; R2: don't touch an archive). That friction is the point. **A hygiene pass is its own branch and its own commit, carrying a `Memory-Rewrite: <reason>` trailer** — never folded into a feature branch while other agents are shipping shards.
 
-**If you are an agent shipping a card, you do not add that trailer.** Tripping the guard means you wrote to the wrong place; the fix is a shard, not a waiver. A trailer that makes a red check go green is the easiest thing in this file to reach for and the only thing here that quietly undoes it — which is why the guard's own failure message deliberately does not print a copy-pasteable one. Hygiene is a human call on a branch of its own.
+**If you are an agent shipping a card, you do not add that trailer.** Tripping the guard means you wrote to the wrong place; the fix is a shard, not a waiver. A trailer that makes a red check go green is the easiest thing in this file to reach for and the only thing here that quietly undoes it — which is why the guard's own failure message deliberately does not print a copy-pasteable one, or even name it. Hygiene is a human call on a branch of its own.
+
+The single exception is the greenfield seed commit under "First session" above, which has to create the archives before they can exist. It does not apply to any repo that already has a `.claude/memory/` — including this one.
 
 | Kind | Hygiene rule |
 |---|---|
@@ -167,6 +171,7 @@ If a hygiene pass would materially change a file (not just whitespace), note it 
 - **No duplication.** Scan the kind's archive *and* its existing shards before adding.
 - **No padding.** An entry that doesn't earn its place is noise.
 - **Cite the file, not the line — unless the line IS the point.** `packages/core/src/workspace-policy.ts` stays true across every edit above it; `workspace-policy.ts:162` is wrong the next time someone adds an import. Line numbers rot silently and they rot *precisely* — a wrong `file:line` reads as more authoritative than no line at all, which is why two PRs in one session shipped precise-looking-but-wrong refs while *fixing* false claims. Keep the line only when you are pinning that exact line (a specific regex, a magic default), and then quote what is on it so the reader can tell it moved.
+- **A measurement is about one version of a file — say which.** Mutation counts ("mutant X reddens 5 tests") are true of one blob and of nothing else. Record the blob in exactly this shape and `scripts/__tests__/memory-quoted-blob-shas.test.js` will keep it honest: `` `scripts/thing.sh` blob `a1b2c3d4…` ``. It goes red when the file changes and the row does not — which happened **twice in one branch** on TASK-415, the second time in the very row explaining the first. When it goes red, re-run the measurement; do not just edit the sha. A fresh sha beside a number nobody re-measured is the same lie with a green tick. Nothing forces you to quote a blob — but a number without one is a number nobody can reproduce.
 - **Name a path only if it exists.** `scripts/__tests__/memory-cited-paths-exist.test.js` fails if any repo path cited in these files is no longer tracked by git — it is what caught two rows still pointing at `@ax/agent-claude-sdk-runner` months after #395 moved them to `@ax/agent-runner-core`. If a sentence needs to name something that deliberately does *not* exist (a rejected alternative, a doc that never landed), write it so it does not read as a live file reference. Do not add an allowlist to that guard; an exceptions list is just the next thing to rot.
 
 When in doubt, the write test on each file is the arbiter: if the answer is no, don't write.
