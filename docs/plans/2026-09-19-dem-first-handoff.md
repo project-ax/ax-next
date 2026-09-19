@@ -159,8 +159,10 @@ here: `runFactsContract` — the whole of what a second backend must satisfy —
 went to **TASK-457**, where there is a sqlite implementation to match. See the spike.
 
 What shipped: `@ax/memory-facts-postgres` (same five hooks, `settleArrival` ported unchanged
-from TASK-422's extraction, `valid_start`/`valid_end` as `TEXT` so ordering stays
-collation-immune, borrowing the shared Kysely via `database:get-instance` with no
+from TASK-422's extraction, `valid_start`/`valid_end` as `TEXT` — safe not because TEXT
+ordering is collation-independent (it is not) but because every stored instant is
+canonical fixed-width, so lexicographic order matches chronological order under any
+collation; `schema.ts` carries the real revisit trigger — borrowing the shared Kysely via `database:get-instance` with no
 `shutdown()` of its own) and the `presets/k8s` wiring. The push is **unconditional** —
 deliberately *not* behind `config.hostLlmTools`, which gates the memory-STRATA bundle because
 that bundle needs an `ANTHROPIC_API_KEY`. A facts engine has no LLM dependency, so gating it

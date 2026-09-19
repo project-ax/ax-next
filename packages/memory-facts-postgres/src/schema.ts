@@ -69,14 +69,29 @@ export interface MemoryFactsDatabase {
  * Both are `TEXT`, including the `'9999-12-31T23:59:59.999Z'` sentinel,
  * exactly as the sqlite twin stores them. The instinct is that postgres `TEXT`
  * ordering is collation-dependent and therefore dangerous. It is not
- * load-bearing *today*: every ordering comparison in the closure rules runs in
- * JavaScript, inside `settleArrival` (`peer.valid_start <= arrival.when`,
- * `peer.valid_end > arrival.when`, and a `localeCompare` tiebreak). The SQL
- * only ever compares the sentinel by EQUALITY, so the rules are
- * collation-immune by construction. Both stored instants are canonical
- * fixed-width (`YYYY-MM-DDTHH:MM:SS.sssZ`, enforced at the write door in
- * `plugin.ts`), so lexicographic order agrees with chronological order under
- * any collation anyway.
+ * load-bearing here, but be precise about WHY, because the obvious reason is
+ * wrong:
+ *
+ *  - Every comparison the CLOSURE RULES make runs in JavaScript, inside
+ *    `settleArrival` (`peer.valid_start <= arrival.when`, `peer.valid_end >
+ *    arrival.when`, and a `localeCompare` tiebreak). Those are collation-immune
+ *    because they never reach the database at all.
+ *  - But the SQL does NOT only compare these columns by equality. `recall`
+ *    issues `.orderBy('valid_start', 'desc')` — a genuine SQL ordering over a
+ *    `TEXT` column, evaluated under the database's collation.
+ *
+ * What actually makes that safe is the SHAPE of the values, not where they are
+ * compared: every instant stored here is canonical fixed-width
+ * `YYYY-MM-DDTHH:MM:SS.sssZ` (enforced at the write door by
+ * `normalizeIsoInstant`), and `INFINITY_SENTINEL` has the identical shape.
+ * Same length, same punctuation in the same positions, digits only elsewhere —
+ * so lexicographic order agrees with chronological order under ANY collation.
+ *
+ * REVISIT THIS if either of those stops holding: a non-canonical value reaching
+ * these columns (a migration, a backfill, a second write path that skips
+ * `normalizeIsoInstant`), or a RANGE comparison (`<`/`>`) on them moving into
+ * SQL, where the database's answer and `settleArrival`'s JS answer would have
+ * to agree. TASK-457's temporal channel is the likely trigger for the second.
  *
  * `timestamptz` would also cost more than it buys: `rowToFactRecord` decides
  * whether to emit `until` by comparing `valid_end !== INFINITY_SENTINEL` as a

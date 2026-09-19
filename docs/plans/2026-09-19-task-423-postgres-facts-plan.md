@@ -19,7 +19,10 @@ From the spike, already merged as #615:
   `query` with `invalid-payload` exactly as sqlite does. TASK-457 owns the channels.
 - **`valid_start`/`valid_end` are `TEXT`**, sentinel included. Every ordering
   comparison runs in JS inside `settleArrival`; the SQL only compares the sentinel by
-  equality, so the rules are collation-immune. Put the revisit-trigger in a comment.
+  equality in the closure rules, which run in JS. (Corrected during review: `recall`
+  DOES order by `valid_start` in SQL — what makes that safe is the canonical
+  fixed-width shape of every stored instant, not the absence of SQL ordering. See
+  `schema.ts`'s comment for the accurate version and the real revisit trigger.) Put the revisit-trigger in a comment.
 - **The plugin does not own the pool.** Borrow the Kysely via `database:get-instance`
   at `init`, no `shutdown()` — copy `@ax/memory-strata-index-postgres`.
 

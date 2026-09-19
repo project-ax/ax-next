@@ -58,9 +58,19 @@ Store both as `TEXT`, exactly as sqlite does, including the
 The instinct is that postgres `TEXT` ordering is collation-dependent and therefore
 dangerous. **It is not load-bearing here.** Every ordering comparison in the
 closure rules runs **in JavaScript**, inside `settleArrival` — `peer.valid_start <=
-arrival.when`, `peer.valid_end > arrival.when`, and a `localeCompare` tiebreak. The
-SQL only ever compares the sentinel by **equality** (`valid_end = ?`). So the rules
-are collation-immune by construction, on any backend.
+arrival.when`, `peer.valid_end > arrival.when`, and a `localeCompare` tiebreak. So
+the closure *rules* are collation-immune because they never reach the database.
+
+> **Corrected during TASK-423's review.** This section originally added "the SQL only
+> ever compares the sentinel by equality", and that is **false** — `recall` orders by
+> `valid_start` in SQL, on both backends. The conclusion survives but the reason is
+> different: what makes the ordering safe is that every stored instant is canonical
+> fixed-width `YYYY-MM-DDTHH:MM:SS.sssZ` (enforced by `normalizeIsoInstant`), with
+> the sentinel in the identical shape, so lexicographic order agrees with
+> chronological order under any collation. It matters because the revisit trigger
+> below was written as "if ordering moves into SQL" — which had *already happened*,
+> so as written it could never fire. The accurate trigger, and the accurate reason,
+> are in `packages/memory-facts-postgres/src/schema.ts`.
 
 `timestamptz` would buy collation-independent `ORDER BY` — but it costs more than it
 buys:
