@@ -68,6 +68,7 @@ review round later than it should have been.
 > Full reasoning: `docs/plans/2026-09-16-task-250-day-one-empty-state.md`
 > § OUTCOME and § "STOP".
 
+
 | Date | Decision | Rationale | Alternatives |
 |---|---|---|---|
 | 2026-09-16 | **Keep both endorsed sentences verbatim** (as shipped: nothing on Today changed at all, so both are untouched) — `Nothing is waiting on you.` and `When an agent hits something it wants your OK on, it’ll wait for you here.` The day-one panel is added *around* the second one, which becomes its closing line. | The card's brief carried this as an `[INFERRED]` hypothesis and the code confirms it: both are honest, in voice, and test-pinned. The gap is that every sentence on Today is about the queue, which is the right subject on day thirty and the wrong one on day one. | Rewrite the headline for first-timers — REJECTED: it would be a second claim to keep true, and the existing one already is. |
@@ -788,6 +789,7 @@ Decisions:
 | Date | Decision | Rationale | Alternatives |
 |---|---|---|---|
 | 2026-05-30 | TASK-71 merged to main WHILE TASK-68 was in flight and ALSO wired the blob store into the k8s preset — but via a `blob: { backend: 'fs' \| 's3', ... }` config block + `AX_BLOB_BACKEND` env (pushing exactly ONE backend), NOT TASK-68's unconditional `blobStore: { root }` + `AX_BLOB_STORE_ROOT`. On merge I DROPPED TASK-68's redundant blob-store-fs registration + config field + env read from `presets/k8s/src/index.ts` and rely on TASK-71's selection block (fs is its default). Kept TASK-68's attachments/artifacts/runner/IPC work intact (that's the actual card). | One blob registration, not two (avoids duplicate-registrant bootstrap throw + I4). TASK-71's selectable fs/s3 seam is strictly more general than TASK-68's fs-only wiring and was merged first. The blob *root* now comes from TASK-71's `blob` config (fs arm), which I point the chart/tests at. | Keep TASK-68's wiring + drop TASK-71's (rejected — TASK-71 is already on main; rebasing onto it means adopting its seam); keep both (rejected — duplicate `blob:put` registrant fails verifyCalls). |
+
 
 ## 2026-05-26 — TASK-56 JIT cold-start user-facing narration ("asked your admin", not an error)
 
@@ -2067,6 +2069,7 @@ Deps: S3←S2, S4←S2, S5←S2,S3,S4, S6←S2,S5, S7←S3,S4,S5.
 | 2026-08-22 | ax-code-reviewer returned APPROVE, 0 blocking, in ~9 min (dispatched 12:25 deep into this ship session; delivered via a scratchpad findings file because the reviewer's tool set is Read/Grep/Glob/Bash with no SendMessage). It independently confirmed the audience-split premise: the substituted role='tool' blocks reach NO model-context path — cross-runner aisdk seed drops non-user/assistant turns in `buildDisplayHistory` (`ipc-core/src/handlers/session-display-history.ts:134`), and `chatEndHistory` is text-only. | The load-bearing claim of the whole fix is "the published blocks feed only the human display path". Verified three ways (resume=SDK jsonl untouched, cross-runner seed drops the turn twice over, chat:end text-only) rather than taken on the plan's word. Contra the TASK-247 hang pattern (reviewer hangs deep in a long builder session), this dispatch returned fast — one data point that a fresh, minimal, file-delivery dispatch is more reliable than the SendMessage return channel. | — |
 | 2026-08-22 | Accepted the reviewer's Minor "back-compat not migrated": a hold ALREADY persisted in the display log before this fix still renders red on reload, because the is_error/content rewrite is publish-time, not a history migration (only the `mcp__` strip is retroactive, being a display-time transform). Documented in the PR, not fixed. | Holds are transient and rare, and a decision persisted before this code shipped is by definition already resolved or abandoned — migrating historical rows to relabel a settled hold buys nothing and touches a durable table for cosmetics. The asymmetry (prefix strip retroactive, is_error not) is real but harmless. | Backfill historical tool_result rows (rejected — durable-table write for cosmetic gain on resolved decisions). |
 
+
 ### TASK-261 — the in-thread approval control on the default `/` chat surface (2026-08-22)
 
 | Date | Decision | Rationale | Alternatives |
@@ -2394,6 +2397,7 @@ Deps: S3←S2, S4←S2, S5←S2,S3,S4, S6←S2,S5, S7←S3,S4,S5.
 | 2026-08-24 | **`skip (not a draft-issue card)` is left exactly as it is, and the card's claim that a malformed id can reach it is recorded as FALSE.** | Measured: that branch needs `gh` to exit **0** with an empty content id, i.e. a *resolvable* node of the wrong type (a linked real issue/PR card). An unresolvable or garbage id always errors rc=1 + `NOT_FOUND`, so a malformed id can only ever reach `skip (read)`. It is a documented deliberate harmless skip. | Fold it into the malformed class (rejected: it is a different condition, and folding it would break linked-issue cards). |
 | 2026-08-24 | The shape check, not the API error, is the signal. | `NOT_FOUND` also fires for a deleted card or one the token cannot see, so it means "not my card", not "malformed". The prefix/whitespace test is a positive signal and costs zero API calls. | Classify on the GraphQL error body (rejected: weaker signal, and costs a call to learn it). |
 | 2026-08-24 | Implemented inline rather than via per-task subagents. | The edits are byte-precise string surgery in a doc where a subagent misquoting the anchor text is the dominant risk, and the orchestrator's measurement pass had already done the exploration a subagent would exist to do. Deviation from yolo-ship Phase 3 logged deliberately. | One subagent per file (rejected: more context spent than saved, higher misquote risk). |
+
 
 ## 2026-08-24 — TASK-317: pre-pull ONE tag, and let a source-shape guard keep the list honest
 
