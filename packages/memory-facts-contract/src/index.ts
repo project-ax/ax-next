@@ -13,6 +13,12 @@
 //    decisions.md; `dem-memory/tests/temporal-invalidation.test.ts` is NOT
 //    ported).
 //
+// TASK-422 extends that scope with the write-path/signal half of the design:
+// batch idempotency + atomicity (§3.5), the `pending` slot sentinel and the
+// `memory:facts:reindex` drain (§3.5), `activeOnly: false` history (§4.2),
+// a real `degraded` signal and `store-unavailable` errors (§4.4). Still no
+// FTS/dense/RRF/rerank — TASK-434.
+//
 // This file imports `@ax/core` types only — no plugin imports — so the
 // contract itself stays storage-agnostic (Invariant 1).
 
@@ -55,6 +61,11 @@ export interface FactStatementInput {
    * `@ax/memory`) — a statement arrives with `slot` already set, or absent.
    * Absent means "no slot": stored, retrievable, inert — it closes nothing
    * and nothing closes it.
+   *
+   * {@link PENDING_SLOT} is the one reserved value: "the caller's normalizer
+   * could not derive a slot yet" (design §3.5). It behaves exactly like an
+   * absent slot — inert — until `memory:facts:reindex` resolves it. Pending
+   * is the SAFE direction: under-closing, never mis-closing.
    */
   slot?: string;
   /** Defaults to `extracted` — `record` is the observer's door. */
@@ -65,8 +76,16 @@ export interface FactStatementInput {
 
 export interface RecordInput {
   /**
-   * Accepted for forward-compat with TASK-422's idempotent-batch dedup.
-   * THIS engine stores/uses it nowhere — no dedup happens on it here.
+   * Idempotency key for the whole batch (design §3.5) — `chat:end` can fire
+   * twice on the same conversation. Recording a batch whose key this tenant
+   * has already seen writes NOTHING and returns the ORIGINAL rows, in input
+   * order. Scoped per tenant: two agents may reuse a key independently.
+   *
+   * Omitted means "no dedup" — every call is a fresh batch.
+   *
+   * A batch is also ALL-OR-NOTHING: if any statement fails to settle, none of
+   * them are stored, so a retry under the same key is a clean retry rather
+   * than a permanently half-written batch.
    */
   batchKey?: string;
   statements: FactStatementInput[];
@@ -106,12 +125,18 @@ export interface RecordOutput {
 export interface RecallInput {
   about?: string;
   /**
-   * This engine only ever behaves as if `true` — there is no supported way
-   * to fetch closed rows through `recall` yet (TASK-422 territory). The
-   * field is accepted for forward-compat; a backend rejects `false` with
-   * `invalid-payload` rather than silently ignoring it (a caller who reads
-   * this type and asks for history should get a loud "not yet", not fewer
-   * rows than requested with no signal).
+   * Defaults to `true`: only currently-active rows. `false` is the `history`
+   * mode of design §4.2 — no validity filter at all, so closed rows come back
+   * alongside active ones, each carrying its `until` and (for a rule-closure)
+   * `closedBy`.
+   *
+   * History exists because closing a row correctly can still lose the answer:
+   * a question about a TRANSITION ("when did I change jobs") needs the row the
+   * slot rule superseded. Only slot-mapped statements are ever closed, so this
+   * is a no-op for the overwhelming majority of rows.
+   *
+   * Deliberately NOT point-in-time travel (`at`/`temporalAnchor`) — that is
+   * the footgun §4.2 keeps off the agent-facing tool.
    */
   activeOnly?: boolean;
   limit: number;
@@ -126,8 +151,11 @@ export interface RecallInput {
 
 export interface RecallOutput {
   statements: FactRecord[];
-  /** Always `[]` from this engine — TASK-422 adds real degraded-mode flags. */
-  degraded: string[];
+  /**
+   * What was degraded about THIS answer — empty when nothing was (design
+   * §4.4). Never a reason to return fewer rows silently.
+   */
+  degraded: DegradedFlag[];
 }
 
 export interface SupersedeInput {
@@ -140,6 +168,78 @@ export interface SupersedeOutput {
 }
 
 export type ClearInput = Record<string, never>;
+
+/**
+ * The reserved `slot` value meaning "not derived yet" (design §3.5). A row
+ * carrying it is stored and retrievable but INERT for closure — it closes
+ * nothing and nothing closes it — until `memory:facts:reindex` is handed the
+ * resolved slot.
+ *
+ * It cannot collide with a real slot: the slot list is a fixed eight entries
+ * in `@ax/memory` (design §3.3) — `name`, `pronouns`, `lives_in`, `works_at`,
+ * `role`, `timezone`, `language`, `birthday`.
+ *
+ * One spelling, shared by every backend (Invariant 4).
+ */
+export const PENDING_SLOT = 'pending';
+
+/**
+ * What was degraded about a `recall` answer (design §4.4). Degraded mode is a
+ * SIGNAL — the caller still gets rows, and still gets told the answer was
+ * built on less than the full machinery.
+ *
+ * - `'pending'` — this tenant holds rows whose slot is {@link PENDING_SLOT},
+ *   so supersession has not fully run: a value a later statement should have
+ *   closed may still read as active. Under-closing, the safe direction.
+ *   Produced by every backend that implements the pending drain.
+ * - `'semantic'` — the dense/embedding channel was skipped because the
+ *   embedder was unavailable. **Not produced yet**: there is no dense channel
+ *   until TASK-434 builds one. Reserved here so both backends and the product
+ *   layer agree on the spelling before there are two of them.
+ * - `'ranking'` — the cross-encoder rerank was skipped and the lexical order
+ *   stands. **Not produced yet**, same reason.
+ *
+ * A store that is unavailable is NOT a degraded flag — it is a thrown
+ * `PluginError` (`code: 'store-unavailable'`). An empty table is a valid
+ * answer; a failed store is not.
+ */
+export type DegradedFlag = 'semantic' | 'ranking' | 'pending';
+
+/** One caller-resolved slot for a row that was recorded as {@link PENDING_SLOT}. */
+export interface ResolvedSlot {
+  id: string;
+  /**
+   * The derived slot, or `null` for "no slot after all" — a legitimate
+   * outcome of the normalizer, and the row stays inert forever.
+   */
+  slot: string | null;
+}
+
+export interface ReindexInput {
+  /**
+   * Slots the CALLER derived for rows it previously recorded as pending.
+   * Derivation is not the engine's job (design §3.3) — the engine applies
+   * these and re-settles the affected `(about, slot)` chains.
+   *
+   * An id that is foreign to this tenant, missing, or no longer pending is
+   * ignored rather than an error — the same forgiving shape `supersede` has.
+   *
+   * Omitted, this is a STATUS read: nothing is resolved or re-closed, and the
+   * caller learns how many rows are still pending.
+   */
+  slots?: ResolvedSlot[];
+}
+
+export interface ReindexOutput {
+  /** How many pending rows this call actually resolved. */
+  resolved: number;
+  /** Ids whose closure changed as a result — auditable, like `record`'s `closes`. */
+  reclosed: string[];
+  /** Rows still pending in this tenant AFTER the call. */
+  pending: number;
+  /** Same vocabulary as `recall` — `['pending']` while any row is still undrained. */
+  degraded: DegradedFlag[];
+}
 
 // ---------------------------------------------------------------------------
 // runFactsContract
