@@ -9,12 +9,15 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowUp,
   ChevronRight,
+  Hand,
   Layers,
   ListChecks,
   MessageSquare,
   Paperclip,
+  type LucideIcon,
 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -33,6 +36,10 @@ import {
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
+import type {
+  WorkspaceStep,
+  WorkspaceStepStatus,
+} from '@/lib/workspace-steps';
 import { ATTACHMENT_ACCEPT } from '@/lib/attachment-upload';
 import { signInWithGoogle } from '@/lib/auth';
 import { readAlertVariant } from '@/lib/read-register';
@@ -936,13 +943,35 @@ function Message({
  *
  * A real `ul`/`li`, not a stack of divs: it is a list, and a screen reader that
  * announces "list, 4 items" is telling the reader the same thing the header
- * does. The key is position-bearing because two steps can legitimately read
- * the same — an agent that ran `Bash` twice produces two identical rows, and
- * a key that was just the sentence would be a duplicate React key across
- * siblings, which is a reconciliation bug waiting for the first list that
- * grows in the middle. `AgentConversationSteps.test.tsx` renders that case.
+ * does. The key is position-bearing because two steps can still read the same
+ * — TASK-419 gave rows a qualifier, but two calls with the same qualifier are
+ * legal — and a key that was just the sentence would be a duplicate React key
+ * across siblings, which is a reconciliation bug waiting for the first list
+ * that grows in the middle. `AgentConversationSteps.test.tsx` renders that case.
+ *
+ * A FAILED ROW LOOKS FAILED (TASK-419). It used to be the same grey as every
+ * other row, with the difference carried by three trailing words — so a walk
+ * against the live deployment read a step that had failed as one that had
+ * worked. The state comes off `shapeSteps`, never off matching our own copy,
+ * and it lands on the tokens the rest of the product already uses for the same
+ * two ideas: `text-destructive` for a failure (chat's tool panel, the activity
+ * feed's stopped row), `text-warning` for a hold. The mark is an ICON AND a
+ * colour, because colour alone is not a signal a colour-blind reader can read.
  */
-function Steps({ label, steps }: { label: string; steps: string[] }) {
+const STEP_MARK: Record<
+  WorkspaceStepStatus,
+  { Icon: LucideIcon; tone: string } | null
+> = {
+  // A finished step and one still going get no mark: the panel is mostly
+  // these, and a row of icons saying "fine" is noise the exceptions have to
+  // compete with.
+  done: null,
+  running: null,
+  failed: { Icon: AlertTriangle, tone: 'text-destructive' },
+  waiting: { Icon: Hand, tone: 'text-warning' },
+};
+
+function Steps({ label, steps }: { label: string; steps: WorkspaceStep[] }) {
   return (
     <Collapsible
       defaultOpen
@@ -960,17 +989,24 @@ function Steps({ label, steps }: { label: string; steps: string[] }) {
       </CollapsibleTrigger>
       <CollapsibleContent>
         <ul className="px-3.5 py-1">
-          {steps.map((s, i) => (
-            <li
-              key={`${i}-${s}`}
-              className={cn(
-                'py-2 text-[12.5px] text-muted-foreground',
-                i > 0 && 'border-t border-rule-soft',
-              )}
-            >
-              {s}
-            </li>
-          ))}
+          {steps.map((s, i) => {
+            const mark = STEP_MARK[s.status];
+            return (
+              <li
+                key={`${i}-${s.text}`}
+                className={cn(
+                  'flex items-start gap-1.5 py-2 text-[12.5px]',
+                  i > 0 && 'border-t border-rule-soft',
+                  mark === null ? 'text-muted-foreground' : mark.tone,
+                )}
+              >
+                {mark !== null && (
+                  <mark.Icon size={12} aria-hidden="true" className="mt-0.5 shrink-0" />
+                )}
+                <span className="min-w-0 flex-1">{s.text}</span>
+              </li>
+            );
+          })}
         </ul>
       </CollapsibleContent>
     </Collapsible>

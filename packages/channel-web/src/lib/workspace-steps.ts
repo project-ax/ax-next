@@ -84,6 +84,40 @@ export interface WorkspaceToolCall {
    * row and the reloaded row end up reading differently.
    */
   phrase?: string | undefined;
+  /**
+   * The short "which one" of this call — the command a `Bash` ran, the file a
+   * `Write` wrote — already derived and fenced by {@link stepDetail}.
+   *
+   * ALREADY DERIVED is the point, and it is a capability decision (invariant
+   * 5), not a style one. A tool's raw input is model-authored and this surface
+   * has no renderer for it, so neither path hands the input itself to a step
+   * row: each normalizer calls `stepDetail` at its own edge and passes on the
+   * one bounded line that comes back. The live path keeps dropping `input` at
+   * `workspace-api.ts` exactly as it did before.
+   */
+  detail?: string | undefined;
+  status: WorkspaceStepStatus;
+}
+
+/**
+ * One row in the panel: the sentence, and the state that sentence is in.
+ *
+ * WHY THE STATUS RIDES ALONG rather than being baked into the sentence and
+ * thrown away. Until TASK-419 a row was a bare string, so a failed step and a
+ * finished one reached the renderer as the same kind of thing and were drawn
+ * the same way — same colour, same weight, no mark — with the difference
+ * carried entirely by three trailing words in identical grey. A walk against
+ * the live deployment read a step that had failed as one that had worked,
+ * which is worse than an uninformative row: it is a false one.
+ *
+ * Everywhere else in the product a failure is `text-destructive` and a hold is
+ * `text-warning` (the activity feed, chat's tool panel). The renderer cannot
+ * apply those from a string without matching our own copy back out of it,
+ * which would put two modules in charge of one sentence. So it gets the state.
+ */
+export interface WorkspaceStep {
+  /** What the row says. Already named, qualified and fenced. */
+  text: string;
   status: WorkspaceStepStatus;
 }
 
@@ -91,8 +125,8 @@ export interface WorkspaceToolCall {
 export interface WorkspaceStepPanel {
   /** The disclosure header. Always opens with the step COUNT — see below. */
   label: string;
-  /** One line per call, in call order. `label`'s count is `steps.length`. */
-  steps: string[];
+  /** One row per call, in call order. `label`'s count is `steps.length`. */
+  steps: WorkspaceStep[];
 }
 
 /**
@@ -114,6 +148,203 @@ export const STEP_NAME_MAX_CHARS = 80;
  */
 export const UNNAMED_STEP = 'Unnamed step';
 
+/**
+ * How much of a call's input reaches the row beside the tool name.
+ *
+ * Shorter than {@link STEP_NAME_MAX_CHARS} on purpose: this rides AFTER the
+ * name on one line, and a detail that can outrun the thing it qualifies turns
+ * a list of steps back into a wall of text.
+ */
+export const STEP_DETAIL_MAX_CHARS = 60;
+
+/**
+ * The input keys that answer "which one", in preference order.
+ *
+ * WHY A LIST AND NOT THE WHOLE OBJECT. A step row had no detail at all until
+ * TASK-419, which is how a turn that ran `Bash` three times drew three rows
+ * reading `Bash`, `Bash`, `Bash` — a list that reports a count and tells the
+ * reader nothing else. The fix is the smallest thing that distinguishes one
+ * call from the next, not the argument blob: `Write`'s input carries the whole
+ * file it is writing, and a row is a line.
+ *
+ * The order is the order a person would ask in: what was run, then what it was
+ * run on, then what was searched for or fetched. `content`-shaped keys are
+ * deliberately absent — they are never the answer to "which one", and every
+ * tool that has one also has a path or a command above it here.
+ */
+const DETAIL_KEYS = [
+  'command',
+  'file_path',
+  'path',
+  'notebook_path',
+  'pattern',
+  'query',
+  'url',
+  'title',
+  'description',
+  'prompt',
+] as const;
+
+/**
+ * Key NAMES that must never choose a row's qualifier, whatever they hold.
+ *
+ * The ordered list above is safe by construction — nothing in it is a secret —
+ * but the fallback takes the first string an UNKNOWN tool carries, and MCP
+ * servers name their arguments whatever they like. A tool called as
+ * `{ token: 'sk-live-…', resource: 'issues' }` would have drawn its row as the
+ * first 60 characters of the token. That is a 60-character prefix of a secret
+ * on screen, which is a worse worst case than "a less useful string".
+ *
+ * Matched WORD BY WORD rather than as substrings, so `apiKey`, `api_key` and
+ * `AUTH_TOKEN` are all caught while `keyword`, `passenger` and `authored` are
+ * not. A skipped key simply hands the choice to the next candidate; the row
+ * falls back to its bare name if nothing else qualifies, which is where it was
+ * before this card and is never worse than showing the secret.
+ *
+ * THE SMUSHED FORMS ARE ENUMERATED, and they have to be. `namesASecret` can
+ * only find a boundary at a separator or a camel hump, so a delimiter-free
+ * compound in one case — `apikey`, `APIKEY`, `authtoken` — stays a single
+ * token and has to be in this set by name. The first review of this guard
+ * caught it leaking on `apikey`: the smushed spelling of its OWN motivating
+ * example, while `apiKey`, `api_key` and `API_KEY` were all handled. Measured
+ * against ~50 names.
+ *
+ * And no, this cannot be a suffix rule instead. "Ends with `key`" would catch
+ * `apikey` and also `monkey`, `donkey`, `turkey`, `hockey` and `whiskey` — the
+ * `monkey` case is pinned in the tests. Enumeration is incomplete by nature
+ * and a name nobody listed will get through; it is still the only rule here
+ * that does not blank rows at random. **If you meet a spelling this misses,
+ * add it — do not "generalise" it into a substring or suffix match.**
+ *
+ * ABBREVIATIONS BELONG HERE TOO. `pwd`, `pass`, `pat`, `creds` and `sig` are
+ * among the commonest secret field names in the wild, and whole-word matching
+ * means `pass` does NOT eat `passenger` any more than `key` eats `keyword` —
+ * so the anti-substring reasoning never justified leaving them out.
+ *
+ * WHAT THIS DOES NOT DO, said out loud so nobody reads more into it: it filters
+ * argument NAMES, not values. A secret pasted into a `Bash` command still
+ * reaches the row, because `command` is exactly the thing a step row exists to
+ * show and no heuristic can tell a password from an argument inside it. That is
+ * the same exposure chat's tool panel has always had, to the same reader — the
+ * signed-in owner of the agent, looking at their own agent's work.
+ */
+const SECRET_WORDS = new Set([
+  // Whole words, found either alone or between separators / camel humps.
+  'auth',
+  'authorization',
+  'bearer',
+  'cred',
+  'credential',
+  'credentials',
+  'creds',
+  'jwt',
+  'key',
+  'keys',
+  'otp',
+  'pass',
+  'passphrase',
+  'passwd',
+  'password',
+  'pat',
+  'pin',
+  'pwd',
+  'secret',
+  'secrets',
+  'sig',
+  'signature',
+  'token',
+  'tokens',
+  // Delimiter-free compounds, which the splitter cannot break apart. Spelled
+  // in lower case because the comparison lowercases, so each of these also
+  // covers its all-caps twin (`APIKEY`, `APITOKEN`).
+  'accesskey',
+  'accesstoken',
+  'apikey',
+  'apisecret',
+  'apitoken',
+  'authtoken',
+  'bearertoken',
+  'clientsecret',
+  'idtoken',
+  'privatekey',
+  'refreshtoken',
+  'secretkey',
+  'sessiontoken',
+]);
+
+/*
+  `session` IS DELIBERATELY ABSENT, and that is a decision rather than an
+  oversight. A session *token* is already covered by `token` in every spelling
+  that has a boundary (`sessionToken`, `session_token`) and by `sessiontoken`
+  in the one that does not. What `session` on its own would blank is
+  `sessionId` / `session_id` / `sessionName` — a correlation handle, not a
+  credential — and blanking those costs a real qualifier on the one surface
+  whose entire job is to say which call this was. `key` and `pin` are kept
+  despite the same shape (`keyName`, `pinBoard`) because the secrets they
+  cover are far commoner than those two names.
+*/
+
+/**
+ * Does this argument name announce a secret?
+ *
+ * Splits on separators AND on camel humps — `apiKey` becomes `api` + `Key` —
+ * without a lookbehind, which is not something to rely on across every browser
+ * this bundle runs in.
+ */
+function namesASecret(key: string): boolean {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[^A-Za-z0-9]+/)
+    .some((word) => SECRET_WORDS.has(word.toLowerCase()));
+}
+
+/**
+ * One tool call's input → the short line that tells it apart, or `undefined`.
+ *
+ * FENCED HERE, at the edge both paths share. The value is model-authored — it
+ * is whatever the model decided to put in the tool's arguments — so it gets
+ * the same treatment every other untrusted string on this surface gets: one
+ * line, bounded, control and bidi characters neutralised. React escapes
+ * markup, so the risk was never script; it is a row that reorders or hides
+ * what the reader sees, in our voice (see `fence-line.ts`).
+ *
+ * `undefined` rather than an empty string when nothing legible survives, so a
+ * row falls back to its bare name instead of ending in a dangling separator.
+ * An unnamed-key tool (`TodoWrite`, whose input is a list) lands here too, and
+ * that is correct: there is no "which one" to show.
+ *
+ * The fallback past {@link DETAIL_KEYS} is the first string-valued key the
+ * object carries, in its own order, SKIPPING any key that names a secret (see
+ * {@link SECRET_WORDS}). MCP servers name their arguments whatever they like,
+ * and `create_issue` called on `{ title: … }` is exactly the case a fixed list
+ * cannot enumerate. Every candidate is bounded and fenced, so the worst case is
+ * a row qualified by a less useful string — or by nothing at all.
+ */
+export function stepDetail(input: unknown): string | undefined {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    return undefined;
+  }
+  const args = input as Record<string, unknown>;
+  const candidate = (key: string): string | null => {
+    const value = args[key];
+    if (typeof value !== 'string') return null;
+    // The guard runs on the ordered pass too. Nothing in DETAIL_KEYS trips it
+    // today; asking here rather than only in the fallback means a key added to
+    // that list later cannot quietly opt out of it.
+    if (namesASecret(key)) return null;
+    return fenceLine(value, STEP_DETAIL_MAX_CHARS);
+  };
+  for (const key of DETAIL_KEYS) {
+    const fenced = candidate(key);
+    if (fenced !== null) return fenced;
+  }
+  for (const key of Object.keys(args)) {
+    const fenced = candidate(key);
+    if (fenced !== null) return fenced;
+  }
+  return undefined;
+}
+
 /** Suffixes that make a row say what state it is in, rather than implying one. */
 const STATUS_SUFFIX: Record<Exclude<WorkspaceStepStatus, 'done'>, string> = {
   // "in progress", not "running": a program runs, a person's errand is in
@@ -130,6 +361,21 @@ function stepName(call: WorkspaceToolCall): string {
     fenceLine(stripMcpToolPrefix(call.name), STEP_NAME_MAX_CHARS) ??
     UNNAMED_STEP
   );
+}
+
+/**
+ * One call's row: what ran, and — when we can say it — which one.
+ *
+ * A COLON, not the em dash. The dash is already spoken for by the status
+ * suffix below, and `Bash — ls -la — in progress` makes the reader work out
+ * which half is the machine's and which is ours. `Bash: ls -la — in progress`
+ * reads in one pass.
+ */
+function stepRow(call: WorkspaceToolCall): string {
+  const name = stepName(call);
+  return call.detail === undefined || call.detail.length === 0
+    ? name
+    : `${name}: ${call.detail}`;
 }
 
 /**
@@ -173,16 +419,22 @@ export function shapeSteps(
   calls: readonly WorkspaceToolCall[],
 ): WorkspaceStepPanel | null {
   if (calls.length === 0) return null;
-  const steps: string[] = [];
+  const steps: WorkspaceStep[] = [];
   const counts = { failed: 0, waiting: 0, running: 0 };
   for (const call of calls) {
-    const name = stepName(call);
+    const row = stepRow(call);
     if (call.status === 'done') {
-      steps.push(name);
+      steps.push({ text: row, status: 'done' });
       continue;
     }
     counts[call.status] += 1;
-    steps.push(`${name} — ${STATUS_SUFFIX[call.status]}`);
+    // The words stay, ALONGSIDE the status — a colour is not a sentence, and a
+    // reader who cannot see the difference between two greys still has to be
+    // told what happened.
+    steps.push({
+      text: `${row} — ${STATUS_SUFFIX[call.status]}`,
+      status: call.status,
+    });
   }
   return { label: stepsLabel(steps.length, counts), steps };
 }
@@ -202,12 +454,19 @@ export function shapeSteps(
  */
 export function applyToolUse(
   calls: readonly WorkspaceToolCall[],
-  frame: { toolCallId: string; toolName: string; activityPhrase?: string | undefined },
+  frame: {
+    toolCallId: string;
+    toolName: string;
+    activityPhrase?: string | undefined;
+    /** Already through {@link stepDetail} — see {@link WorkspaceToolCall.detail}. */
+    detail?: string | undefined;
+  },
 ): WorkspaceToolCall[] {
   const next: WorkspaceToolCall = {
     id: frame.toolCallId,
     name: frame.toolName,
     phrase: frame.activityPhrase,
+    detail: frame.detail,
     status: 'running',
   };
   const at = calls.findIndex((c) => c.id === frame.toolCallId);

@@ -83,6 +83,9 @@ describe('the workspace reply stream', () => {
         toolCallId: 'tu1',
         toolName: 'mcp__linear__create_issue',
         activityPhrase: 'Filing a Linear issue',
+        // `input` itself does NOT come through — what does is the one bounded
+        // line derived from it, so the row can say which call this was.
+        detail: 'x',
       },
     ]);
     // `output` is untrusted tool content with no renderer here, so it is not
@@ -155,6 +158,50 @@ describe('the workspace reply stream', () => {
 
     expect(JSON.stringify(seen)).not.toContain(SCRATCHPAD);
     expect(seen).toEqual(['Filed it.']);
+  });
+
+  it('tells two calls to the same tool apart, without forwarding the arguments', async () => {
+    /*
+      TASK-419. Two `Bash` calls in one turn used to reach the caller as two
+      identical descriptions, and the panel drew `Bash` twice. The reader could
+      not tell what the agent had done, which is the whole point of the panel.
+
+      What this pins is the LIVE half of that fix — the reload half lives in
+      `src/__tests__/server/routes-workspace.test.ts`, and the two agreeing on
+      screen is `workspace-steps-seam.test.tsx`.
+    */
+    stubStream([
+      {
+        reqId: 'r1',
+        kind: 'tool-use',
+        toolCallId: 'tu1',
+        toolName: 'Bash',
+        input: { command: 'pnpm build', description: 'build it' },
+        seq: 1,
+      },
+      {
+        reqId: 'r1',
+        kind: 'tool-use',
+        toolCallId: 'tu2',
+        toolName: 'Bash',
+        input: { command: 'pnpm test', description: 'test it' },
+        seq: 2,
+      },
+      { reqId: 'r1', done: true },
+    ]);
+
+    const uses: Array<{ toolName: string; detail?: string | undefined }> = [];
+    await workspaceApi.streamReply('r1', {
+      onText: () => undefined,
+      onDone: () => undefined,
+      onError: () => undefined,
+      onToolUse: (u) => uses.push(u),
+    });
+
+    expect(uses.map((u) => u.detail)).toEqual(['pnpm build', 'pnpm test']);
+    expect(uses[0]!.detail).not.toBe(uses[1]!.detail);
+    // The reach is unchanged: the caller gets the line, never the arguments.
+    expect(uses.every((u) => !('input' in u))).toBe(true);
   });
 
   it('drops a tool frame that is missing the id the row hangs on', async () => {

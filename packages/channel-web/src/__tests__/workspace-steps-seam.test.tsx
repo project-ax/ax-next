@@ -38,6 +38,10 @@ import type { RouteRequest, RouteResponse } from '@/server/routes-chat';
 import { AgentConversation } from '@/components/workspace/AgentConversation';
 import { AgentView } from '@/components/workspace/AgentView';
 import { workspaceApi } from '@/lib/workspace-api';
+// The REAL derivation, standing in for the frame reader that `workspaceApi` is
+// mocked out of here. `workspace-api-stream-tools.test.ts` pins that the live
+// reader actually calls it; this file pins what the two paths DRAW.
+import { stepDetail } from '@/lib/workspace-steps';
 import type {
   AgentDetail,
   ThreadMessage,
@@ -187,11 +191,16 @@ function mkRes(): { res: RouteResponse; captured: { status: number; body: unknow
   return { res, captured };
 }
 
-const toolUseBlock = (c: (typeof CALLS)[number]): unknown => ({
+const toolUseBlock = (c: {
+  id: string;
+  name: string;
+  phrase?: string | undefined;
+  input?: Record<string, unknown>;
+}): unknown => ({
   type: 'tool_use',
   id: c.id,
   name: c.name,
-  input: {},
+  input: c.input ?? {},
   ...(c.phrase === undefined ? {} : { activityPhrase: c.phrase }),
 });
 
@@ -489,6 +498,112 @@ describe('a turn that ran tools', () => {
 
     // The sentences agree, which is the part one shaping function owns.
     expect(livePanels.flatMap((p) => p.steps)).toEqual(reloadSentences);
+    live.unmount();
+  });
+
+  it('tells two Bash calls apart, on BOTH paths (TASK-419)', async () => {
+    /*
+      THE DEFECT, as a walk against the live deployment read it: a panel whose
+      rows said `Write`, `Bash`, `Bash`. The count was right and the rows told
+      the reader nothing — three tool calls, no way to know what any of them
+      did. A step list that cannot distinguish its own steps is a progress bar
+      with extra words.
+
+      Both paths, because a fix on one of them is half a fix: the panel is
+      drawn live off SSE frames and again on reload off the stored transcript,
+      and the seam between them is what TASK-352 exists to hold shut.
+    */
+    const TWICE = [
+      { id: 'w1', name: 'Write', input: { file_path: 'src/app.ts', content: 'x' } },
+      { id: 'b1', name: 'Bash', input: { command: 'pnpm build' } },
+      { id: 'b2', name: 'Bash', input: { command: 'pnpm test' } },
+    ] as const;
+
+    const turns = [
+      {
+        turnId: 't1',
+        turnIndex: 0,
+        role: 'user',
+        contentBlocks: [{ type: 'text', text: 'build and test it' }],
+        createdAt: '2026-09-17T10:00:00.000Z',
+      },
+      {
+        turnId: 't2',
+        turnIndex: 1,
+        role: 'assistant',
+        contentBlocks: [...TWICE.map(toolUseBlock), { type: 'text', text: REPLY }],
+        createdAt: '2026-09-17T10:00:05.000Z',
+      },
+      {
+        turnId: 't3',
+        turnIndex: 2,
+        role: 'tool',
+        contentBlocks: TWICE.map((c) => ({
+          type: 'tool_result',
+          tool_use_id: c.id,
+          content: 'ok',
+        })),
+        createdAt: '2026-09-17T10:00:07.000Z',
+      },
+    ];
+
+    // ---- reload -----------------------------------------------------------
+    const thread = await reloadThread(turns);
+    const reloaded = render(<AgentConversation {...conversationProps(thread)} />);
+    const onReload = readPanel(reloaded.container);
+    reloaded.unmount();
+
+    // ---- live -------------------------------------------------------------
+    vi.mocked(workspaceApi.agent).mockResolvedValue(liveDetail());
+    vi.mocked(workspaceApi.sendMessage).mockResolvedValue({
+      conversationId: 'c1',
+      reqId: 'r1',
+    } as never);
+    vi.mocked(workspaceApi.streamReply).mockImplementation(
+      async (_reqId: string, h): Promise<void> => {
+        for (const c of TWICE) {
+          h.onToolUse?.({
+            toolCallId: c.id,
+            toolName: c.name,
+            detail: stepDetail(c.input),
+          });
+          h.onToolResult?.({ toolCallId: c.id });
+        }
+        h.onText(REPLY);
+        await new Promise<void>(() => {});
+      },
+    );
+
+    const live = renderLiveView();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'build and test it' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => {
+      expect(
+        live.container.querySelector('[data-testid="workspace-steps"]'),
+      ).not.toBeNull();
+    });
+    const onLive = readPanel(live.container);
+
+    // ---- what the card asks for -------------------------------------------
+    for (const panel of [onReload, onLive]) {
+      // The assertion that reddens against the unfixed code: two Bash rows
+      // that are not the same row.
+      expect(panel.steps[1]).not.toBe(panel.steps[2]);
+      expect(new Set(panel.steps).size).toBe(panel.steps.length);
+      expect(panel.steps).toEqual([
+        'Write: src/app.ts',
+        'Bash: pnpm build',
+        'Bash: pnpm test',
+      ]);
+    }
+    // Still one producer, so the two paths cannot drift into two wordings.
+    expect(onLive.steps).toEqual(onReload.steps);
+    expect(onLive.label).toBe(onReload.label);
+    expect(reportedCount(onLive.label)).toBe(onLive.steps.length);
+    // The file BODY is not a step row. It is the one input field that would
+    // turn this list back into a wall of text.
+    expect(live.container.textContent).not.toContain('content');
     live.unmount();
   });
 });

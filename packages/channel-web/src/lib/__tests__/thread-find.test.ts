@@ -122,7 +122,10 @@ describe('threadFindFields', () => {
         text: 'here is what I did',
         time: '4:13 PM',
         stepsLabel: 'four steps',
-        steps: ['read the file', 'wrote the file'],
+        steps: [
+          { text: 'read the file', status: 'done' },
+          { text: 'wrote the file', status: 'done' },
+        ],
       },
     ];
     expect(threadFindFields(withSteps)).toEqual([

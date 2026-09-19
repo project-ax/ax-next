@@ -21,7 +21,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { PluginError, makeAgentContext, type AgentContext } from '@ax/core';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
-import { registerWorkspaceRoutes } from '../../server/routes-workspace.js';
+import {
+  FIRE_NO_SUMMARY,
+  registerWorkspaceRoutes,
+} from '../../server/routes-workspace.js';
 
 const COOKIE_KEY = randomBytes(32);
 
@@ -144,7 +147,11 @@ describe('GET /api/workspace/activity over a real socket', () => {
     expect(r.status).toBe(200);
     const body = (await r.json()) as ActivityBody;
     expect(body.events.map((e) => e.agentId)).toEqual(['a2']);
-    expect(body.events.map((e) => e.text)).toEqual(['Paper scan']);
+    // The row is a sentence, not a label (TASK-419) — what this case is
+    // checking is WHOSE row came back, so it matches on the name inside it.
+    expect(body.events.map((e) => e.text)).toEqual([
+      `Ran Paper scan. ${FIRE_NO_SUMMARY}`,
+    ]);
   });
 
   it('serves every agent when no agentId is given', async () => {

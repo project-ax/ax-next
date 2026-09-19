@@ -152,6 +152,7 @@ import { byVerdict } from '../lib/permission-frames.js';
 import { fenceLine } from '../lib/fence-line.js';
 import {
   shapeSteps,
+  stepDetail,
   type WorkspaceStepStatus,
   type WorkspaceToolCall,
 } from '../lib/workspace-steps.js';
@@ -489,6 +490,14 @@ type TurnBlock = {
   id?: string;
   name?: string;
   activityPhrase?: string;
+  /**
+   * `tool_use`: the model-authored arguments. READ, never forwarded —
+   * `stepDetail` reduces it to one fenced line so two calls to the same tool
+   * can be told apart (TASK-419), and the blob itself goes no further than
+   * `turnToolCalls`. The live path applies the same function to the same
+   * field on its own frame.
+   */
+  input?: unknown;
   /** `tool_result`: which call it answers, and how that call ended. */
   tool_use_id?: string;
   is_error?: boolean;
@@ -1717,6 +1726,58 @@ export function toFileSummary(path: string): WorkspaceFileSummary {
 }
 
 /**
+ * What we say under "What it did" when we cannot say what it did.
+ *
+ * A routine fire records THAT it ran, when, how it was triggered and whether
+ * it failed. It does not record a summary of what it produced — the agent's
+ * output goes to the conversation the fire opened, and nothing copies a
+ * sentence of it back onto the fire row.
+ *
+ * Until TASK-419 this surface papered over that by printing the routine's NAME
+ * as the whole row. On the default self-improvement routine that reads, in
+ * full, `heartbeat` — a bare identifier sitting where a sentence about the
+ * agent's work belongs, which tells the reader nothing and looks like machinery
+ * leaking through. Naming the routine is fine; presenting the name AS the
+ * answer is not.
+ *
+ * So the row says both halves out loud: what ran, and that we do not have a
+ * summary of what it did. Stating the gap is the honest move and it keeps the
+ * gap visible — a row that silently reads like a label is one nobody ever
+ * fixes. (Same rule as the "It failed, and no reason was recorded." sentence
+ * below: we would rather admit a blank than dress one up.)
+ */
+export const FIRE_NO_SUMMARY = "We don't have a summary of what it did.";
+
+/** The same admission when even the routine's name is unreadable. */
+export const FIRE_UNNAMED_SENTENCE =
+  "A routine ran. We don't have a readable name for it, or a summary of what it did.";
+
+/**
+ * The routine a fire belongs to, as a reader should see it named — or `null`
+ * when nothing legible is left.
+ *
+ * Both the authored name and the path are the agent's own words, so both go
+ * through the fence. A name fenced down to nothing falls through to the path
+ * exactly as an absent one does, and a row whose every candidate label is
+ * unprintable still gets a row — dropping it would claim the agent did
+ * nothing, which is the bigger lie.
+ *
+ * `nameByPath` supplies the routine's AUTHORED name. When a routine has been
+ * deleted its fires survive it, so the path is the fallback: it is the truest
+ * thing still known about that row, and it is not a guess at what the routine
+ * used to be called.
+ */
+export function fireLabel(
+  fire: FireRow,
+  nameByPath: ReadonlyMap<string, string>,
+): string | null {
+  return (
+    fenceLine(nameByPath.get(fire.path), ACTIVITY_LABEL_MAX_CHARS) ??
+    fenceLine(fire.path, ACTIVITY_LABEL_MAX_CHARS)
+  );
+}
+
+/**
  * One fire → one feed row, or `null` for a fire that produced nothing.
  *
  * `silenced` maps to `null` and that is the whole point of this function. A
@@ -1726,10 +1787,8 @@ export function toFileSummary(path: string): WorkspaceFileSummary {
  * cannot afford. It is not rendered dimmed, or collapsed, or as "no change".
  * It is not rendered.
  *
- * `nameByPath` supplies the routine's AUTHORED name. When a routine has been
- * deleted its fires survive it, so the path is the fallback: it is the truest
- * thing still known about that row, and it is not a guess at what the routine
- * used to be called.
+ * The headline is a SENTENCE, not a label — see {@link FIRE_NO_SUMMARY} for
+ * why, and {@link fireLabel} for how the routine in it gets named.
  */
 export function fireToActivityEvent(
   fire: FireRow,
@@ -1739,15 +1798,9 @@ export function fireToActivityEvent(
   const stamp = fireStamp(fire.firedAt);
   if (Number.isNaN(stamp)) return null; // An undateable row cannot be filed.
   const at = new Date(stamp).toISOString();
-  // Both the authored name and the path are the agent's own words, so both go
-  // through the fence. A name fenced down to nothing falls through to the path
-  // exactly as an absent one does, and a row whose every candidate label is
-  // unprintable still gets a row — dropping it would claim the agent did
-  // nothing, which is the bigger lie.
+  const label = fireLabel(fire, nameByPath);
   const text =
-    fenceLine(nameByPath.get(fire.path), ACTIVITY_LABEL_MAX_CHARS) ??
-    fenceLine(fire.path, ACTIVITY_LABEL_MAX_CHARS) ??
-    'A routine with no readable name';
+    label === null ? FIRE_UNNAMED_SENTENCE : `Ran ${label}. ${FIRE_NO_SUMMARY}`;
   return {
     // Composite, and stable across pages. Never the fire's BIGSERIAL id.
     // Deliberately the RAW path: this is a key, not a label — it is never
@@ -1950,6 +2003,7 @@ function turnToolCalls(
       id: block.id,
       name: block.name,
       phrase: block.activityPhrase,
+      detail: stepDetail(block.input),
       status,
     });
   }
