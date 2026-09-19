@@ -80,7 +80,7 @@ export const ATTACHMENT_NEEDS_MESSAGE = 'Add a message to go with your file.';
  *
  * `sendBlock` wins because it is the more consequential of the two: a file
  * that failed, or is still on its way up, is the one whose id would drop out
- * of `attachmentIds` and take the person's file out of the message without
+ * of `sendable` and take the person's file out of the message without
  * saying so. A missing message is the milder problem — the file is fine.
  */
 export function composerSendBlock(
@@ -145,14 +145,34 @@ export function attachmentFailureSentence(err: unknown): string {
   }
 }
 
+/**
+ * One uploaded file, ready to ride along with a message.
+ *
+ * The id alone used to be enough, because the id was all the WIRE needed. It
+ * is not all the TRANSCRIPT needs (TASK-424): the composer clears its chips the
+ * instant it hands the message over, and until the turn is re-read the only
+ * thing that can name the person's own file in their own bubble is what came
+ * back with it here. So the name and type travel with the id rather than being
+ * looked up from state that has already been cleared.
+ */
+export interface SendableAttachment {
+  attachmentId: string;
+  displayName: string;
+  mediaType: string;
+}
+
 export interface WorkspaceAttachments {
   attachments: readonly WorkspaceAttachment[];
   add(files: readonly File[] | FileList): void;
   remove(id: string): void;
   retry(id: string): void;
   clear(): void;
-  /** Ids of the 'uploaded' ones, in pick order — what the composer sends. */
-  attachmentIds: readonly string[];
+  /**
+   * The 'uploaded' ones, in pick order — what the composer sends. ONE list,
+   * not an id list beside a name list: two derivations of the same set are how
+   * a message reaches the wire with one file and the screen with another.
+   */
+  sendable: readonly SendableAttachment[];
   /** The ONE reason sending is held right now, as a sentence, or null. */
   sendBlock: string | null;
 }
@@ -287,7 +307,7 @@ export function useWorkspaceAttachments(): WorkspaceAttachments {
     setAttachments([]);
   }, []);
 
-  const attachmentIds = useMemo(
+  const sendable = useMemo(
     () =>
       attachments
         /*
@@ -301,7 +321,11 @@ export function useWorkspaceAttachments(): WorkspaceAttachments {
             typeof a.attachmentId === 'string' &&
             a.attachmentId.length > 0,
         )
-        .map((a) => a.attachmentId as string),
+        .map((a) => ({
+          attachmentId: a.attachmentId as string,
+          displayName: a.name,
+          mediaType: a.contentType,
+        })),
     [attachments],
   );
 
@@ -317,5 +341,5 @@ export function useWorkspaceAttachments(): WorkspaceAttachments {
     return null;
   }, [attachments]);
 
-  return { attachments, add, remove, retry, clear, attachmentIds, sendBlock };
+  return { attachments, add, remove, retry, clear, sendable, sendBlock };
 }

@@ -39,6 +39,7 @@ import { workspaceApi, type WorkspaceAgent } from '@/lib/workspace-api';
 import {
   composerSendBlock,
   useWorkspaceAttachments,
+  type SendableAttachment,
 } from '@/lib/workspace-attachments';
 import { AgentTile } from './bits';
 import { WorkspaceAttachmentChip } from './WorkspaceAttachmentChip';
@@ -61,16 +62,17 @@ export function HomeComposer({
    * here is what let a failed send reject unhandled while the draft was
    * already gone — see `dispatch`.
    *
-   * `attachmentIds` are the uploaded files this message carries, in pick
-   * order. An EMPTY LIST AND AN OMITTED ONE MEAN THE SAME THING: a plain
-   * text-only send. The text-only path deliberately calls this with two
+   * `attachments` are the uploaded files this message carries, in pick order,
+   * each carrying the id the wire needs and the name and type the transcript
+   * needs (TASK-424). An EMPTY LIST AND AN OMITTED ONE MEAN THE SAME THING: a
+   * plain text-only send. The text-only path deliberately calls this with two
    * arguments, so a caller that never asked for attachments sees exactly the
    * call it saw before they existed.
    */
   onSend: (
     agentId: string,
     text: string,
-    attachmentIds?: readonly string[],
+    attachments?: readonly SendableAttachment[],
   ) => void | Promise<void>;
 }) {
   const [draft, setDraft] = useState('');
@@ -80,7 +82,7 @@ export function HomeComposer({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
-  const { attachments, add, remove, retry, clear, attachmentIds, sendBlock } =
+  const { attachments, add, remove, retry, clear, sendable, sendBlock } =
     useWorkspaceAttachments();
 
   /**
@@ -140,12 +142,12 @@ export function HomeComposer({
     setSending(true);
     setError(null);
     try {
-      const ids = attachmentIds;
+      const files = sendable;
       // Two arguments when nothing is attached: an empty list and no list are
       // the same send (see the prop doc), and keeping the text-only call
       // two-argument means nothing downstream had to change to keep working.
-      await (ids.length > 0
-        ? onSend(agentId, text, ids)
+      await (files.length > 0
+        ? onSend(agentId, text, files)
         : onSend(agentId, text));
       // On the home surface `onSend` navigates to the agent, so this component
       // is on its way out by the time these run. React makes a setState on an
@@ -194,7 +196,7 @@ export function HomeComposer({
   const confirm = (agentId: string) => {
     if (!proposal) return;
     /*
-      `dispatch` reads the CURRENT `attachmentIds`, not a copy taken when the
+      `dispatch` reads the CURRENT `sendable`, not a copy taken when the
       route came back, so a file picked while the "Send to X" row was on screen
       still goes with the message. Only the TEXT is frozen at route time,
       because the text is what was routed.

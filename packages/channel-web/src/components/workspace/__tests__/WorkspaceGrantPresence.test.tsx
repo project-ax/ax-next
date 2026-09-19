@@ -378,6 +378,7 @@ describe('the render site itself', () => {
       <AgentConversation
         agent={QUILL}
         thread={[]}
+        conversationId="c1"
         decisions={[]}
         readOnly={false}
         onSend={vi.fn()}

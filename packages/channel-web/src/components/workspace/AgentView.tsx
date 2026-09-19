@@ -42,6 +42,7 @@ import {
   shapeSteps,
   type WorkspaceToolCall,
 } from '@/lib/workspace-steps';
+import type { SendableAttachment } from '@/lib/workspace-attachments';
 import type { PhaseKind } from '@/server/types';
 import { ActivityFeed } from './ActivityFeed';
 import { AgentConversation, type ApprovalRead } from './AgentConversation';
@@ -136,7 +137,13 @@ interface Props {
    * A message the shell already sent on this agent's behalf (the home
    * composer). We stream its reply as soon as we mount.
    */
-  pendingReply?: { reqId: string; text: string; conversationId: string } | null;
+  pendingReply?: {
+    reqId: string;
+    text: string;
+    conversationId: string;
+    /** The files that message carried — see `WorkspaceShell`'s own field. */
+    attachments: readonly SendableAttachment[];
+  } | null;
   onPendingReplyConsumed?: () => void;
 }
 
@@ -267,18 +274,25 @@ export function AgentView({
   /**
    * The turn in flight: what we sent, what has streamed back, how it ended.
    *
-   * `attachmentIds` is not decoration — it is what makes "Resend" honest.
+   * `attachments` is not decoration — it is what makes "Resend" honest, and
+   * since TASK-424 it is also the only thing that can DRAW the person's file.
    * The composer clears its chips the moment it hands the message over, so
    * after a failed send the ONLY record that a file was part of this message
    * is right here. A resend that read the text alone would quietly deliver
    * less than the person wrote, which is the exact failure TASK-353 exists to
    * prevent, reintroduced on the error path.
    *
-   * IT EMPTIES THE INSTANT THE POST LANDS, and that is the other half of the
-   * rule. `attachments:commit` consumes each temp upload into that turn, so a
+   * `resendable` FLIPS THE INSTANT THE POST LANDS, and that is the other half
+   * of the rule. `attachments:commit` consumes each temp upload into that turn
+   * (`server/routes-chat.ts` calls it once per `attachment_ref` block), so a
    * second message naming the same ids gets `attachment-not-found` — a resend
    * that could never work. Once the POST has returned, the file is already in
    * the conversation and the only thing left worth retrying is the reply.
+   *
+   * The LIST itself no longer empties there, which is the TASK-424 half: the
+   * turn is on screen for as long as it runs, and a bubble that forgets the
+   * file the moment the POST succeeds is the bug this card fixed, in a
+   * smaller window.
    *
    * WHAT THE REJECTED CASE DOES *NOT* GUARANTEE, so nobody reads more into
    * this than it says: a rejected POST does not mean nothing was committed.
@@ -296,7 +310,25 @@ export function AgentView({
    */
   interface SentTurn {
     text: string;
-    attachmentIds: readonly string[];
+    /**
+     * The files, NAME AND TYPE INCLUDED, not just their ids (TASK-424). Ids
+     * were enough while this only fed "Resend"; the transient bubble below now
+     * draws them too, and a bubble cannot draw an id.
+     *
+     * THIS LIST SURVIVES THE POST. What used to happen on success — emptying
+     * it — is now `resendable`, because the two facts it was standing for are
+     * different: "these ids can be spent again" (no, the commit consumed them)
+     * and "the person attached these files" (yes, permanently, and the
+     * composer has already forgotten).
+     */
+    attachments: readonly SendableAttachment[];
+    /**
+     * Whether those ids are still spendable. `attachments:commit` consumes
+     * each temp upload into the turn, so once the POST returns a second
+     * message naming the same ids gets `attachment-not-found` — a resend that
+     * could never work. False from that moment on; the words alone go back.
+     */
+    resendable: boolean;
   }
   const [sent, setSent] = useState<SentTurn | null>(null);
   const [streamed, setStreamed] = useState('');
@@ -566,32 +598,44 @@ export function AgentView({
     */
     conversationRef.current = pendingReply.conversationId;
     /*
-      No ids: the shell only mints a `pendingReply` AFTER its own POST resolved,
-      so anything it attached is already committed into that turn. See `sent`.
+      The shell only mints a `pendingReply` AFTER its own POST resolved, so
+      anything it attached is already committed into that turn and these ids
+      can never be re-sent — but the NAMES still have to be drawn, which is why
+      the list is carried across rather than emptied here. `send` below is what
+      makes the ids unusable for a resend; see `sent`.
     */
-    setSent({ text: pendingReply.text, attachmentIds: [] });
+    setSent({
+      text: pendingReply.text,
+      attachments: pendingReply.attachments,
+      resendable: false,
+    });
     onPendingReplyConsumed?.();
     void streamFrom(pendingReply.reqId);
   }, [pendingReply, streamFrom, onPendingReplyConsumed]);
 
   const send = useCallback(
-    async (text: string, attachmentIds?: readonly string[]) => {
-      const ids = attachmentIds ?? [];
-      setSent({ text, attachmentIds: ids });
+    async (text: string, attachments?: readonly SendableAttachment[]) => {
+      const files = attachments ?? [];
+      setSent({ text, attachments: files, resendable: true });
       setTurnError(null);
       try {
         const { conversationId, reqId } = await workspaceApi.sendMessage({
           agentId,
           conversationId: conversationRef.current,
           text,
-          ...(ids.length > 0 ? { attachmentIds: ids } : {}),
+          ...(files.length > 0
+            ? { attachmentIds: files.map((a) => a.attachmentId) }
+            : {}),
         });
         /*
           The POST landed, so every id it carried has been committed into that
-          turn and its temp record is gone. Drop them before anything can offer
-          to send them a second time — see `sent`.
+          turn and its temp record is gone. The ids must not be offered for a
+          second send — but the FILES must stay on screen, because the composer
+          has already cleared its chips and this bubble is now the only place
+          the person can see what they sent (TASK-424). The record stays; only
+          the right to spend it again goes.
         */
-        setSent({ text, attachmentIds: [] });
+        setSent({ text, attachments: files, resendable: false });
         conversationRef.current = conversationId;
         await streamFrom(reqId);
       } catch (e) {
@@ -678,7 +722,30 @@ export function AgentView({
   */
   const liveThread: ThreadMessage[] = [...detail.thread];
   if (sent !== null) {
-    liveThread.push({ kind: 'user', id: 'pending-user', text: sent.text });
+    /*
+      TASK-424 — the person's file goes into the bubble with their words.
+
+      `path: null` is the honest shape here and not a placeholder: the durable
+      workspace path is minted by `attachments:commit` on the server, so in
+      this window there is nothing to build a download URL from. The chip falls
+      back to naming the file, and the picture arrives with the re-read on
+      `done`. What must never happen — and is what this card is about — is the
+      message rendering as if no file had been sent at all.
+    */
+    liveThread.push({
+      kind: 'user',
+      id: 'pending-user',
+      text: sent.text,
+      ...(sent.attachments.length > 0
+        ? {
+            attachments: sent.attachments.map((a) => ({
+              path: null,
+              displayName: a.displayName,
+              mediaType: a.mediaType,
+            })),
+          }
+        : {}),
+    });
   }
   /*
     The in-flight reply. `livePanel` is built by the SAME `shapeSteps` the
@@ -891,7 +958,12 @@ export function AgentView({
                               reached the conversation and re-naming it would
                               only earn an `attachment-not-found`.
                             */
-                            onClick={() => void send(sent.text, sent.attachmentIds)}
+                            onClick={() =>
+                              void send(
+                                sent.text,
+                                sent.resendable ? sent.attachments : undefined,
+                              )
+                            }
                             disabled={streaming}
                           >
                             Resend
@@ -950,10 +1022,22 @@ export function AgentView({
               <AgentConversation
                 agent={agent}
                 thread={past ? pastThread : liveThread}
+                /*
+                  Whose conversation the thread on screen belongs to, so a
+                  person's own attachments can be downloaded from it
+                  (TASK-424). Read from the SAME detail the thread came from —
+                  the excerpt's id when an excerpt is open, the current one
+                  otherwise — because a file path scoped to one conversation
+                  answers 404 under another, and handing the wrong id here
+                  would turn a working thumbnail into a broken image.
+                */
+                conversationId={
+                  past ? (pastDetail?.conversationId ?? null) : detail.conversationId
+                }
                 decisions={decisions}
                 readOnly={past !== null}
                 busy={streaming}
-                onSend={(text, attachmentIds) => void send(text, attachmentIds)}
+                onSend={(text, attachments) => void send(text, attachments)}
                 onApprove={onApprove}
                 onDismiss={onDismiss}
                 onUndo={onUndo}

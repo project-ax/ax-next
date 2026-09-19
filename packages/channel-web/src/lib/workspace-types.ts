@@ -536,9 +536,42 @@ export interface ActivityEvent {
   decisionId: string | null;
 }
 
+/**
+ * One file the person attached to a message, as the transcript remembers it
+ * (TASK-424).
+ *
+ * This is the user's own record of what they sent, so it is carried on the
+ * message rather than derived at render time: the walk found a turn whose image
+ * reached the model and left NOTHING on screen, which made the agent look like
+ * it was describing a picture nobody had sent.
+ *
+ * `path` is `null` in exactly one case — the live frame, between the composer
+ * handing the message over and `attachments:commit` minting a durable
+ * workspace path. The name and type are known from the person's own pick in
+ * that window, and a chip that names the file is the honest thing to draw;
+ * the thumbnail arrives with the path on the next read. Null is therefore
+ * "no download URL yet", never "no attachment" — the renderer must still show
+ * the name.
+ */
+export interface ThreadAttachment {
+  path: string | null;
+  displayName: string;
+  mediaType: string;
+  sizeBytes?: number;
+}
+
 export type ThreadMessage =
   | { kind: 'agent'; id: string; text: string; time: string }
-  | { kind: 'user'; id: string; text: string }
+  | {
+      kind: 'user';
+      id: string;
+      text: string;
+      /**
+       * Files this message carried. Omitted / empty on the overwhelming
+       * majority of turns — a plain text message is byte-identical to before.
+       */
+      attachments?: readonly ThreadAttachment[];
+    }
   | {
       kind: 'steps';
       id: string;

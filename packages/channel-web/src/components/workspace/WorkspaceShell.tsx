@@ -29,6 +29,7 @@ import {
 import { useActivityFeed } from '@/lib/workspace-activity';
 import { useDecisionQueue } from '@/lib/workspace-decisions';
 import { resumeParkedTurn } from '@/lib/workspace-resume';
+import type { SendableAttachment } from '@/lib/workspace-attachments';
 import {
   useWorkspaceGrants,
   workspaceGrantActions,
@@ -393,6 +394,15 @@ function Inner({
     reqId: string;
     text: string;
     /**
+     * The files that went with it (TASK-424). The home composer clears its own
+     * chips the moment the POST resolves, so between here and the agent view's
+     * first re-read this is the only record that the person attached anything
+     * — and without it their message lands in their transcript looking like
+     * text they never illustrated. Empty on the kickoff and grant-resume paths,
+     * neither of which can carry a file.
+     */
+    attachments: readonly SendableAttachment[];
+    /**
      * The conversation the send created. Carried rather than re-derived: the
      * agent view streams this turn BEFORE its own read resolves, so without
      * this it has no conversation to attribute the turn to — and a capability
@@ -420,21 +430,24 @@ function Inner({
    * draft), and the kickoff effect needs it to decide whether to toast.
    */
   const startTurn = useCallback(
-    // `attachmentIds` is optional so the TASK-249 kickoff effect's existing
+    // `attachments` is optional so the TASK-249 kickoff effect's existing
     // two-arg call (`startTurn(id, KICKOFF_TEXT)`) keeps compiling and
     // behaving exactly as before — a plain text-only send.
     async (
       agentId: string,
       text: string,
-      attachmentIds?: readonly string[],
+      attachments?: readonly SendableAttachment[],
     ): Promise<void> => {
+      const files = attachments ?? [];
       const { reqId, conversationId } = await workspaceApi.sendMessage({
         agentId,
         conversationId: null,
         text,
-        ...(attachmentIds !== undefined ? { attachmentIds } : {}),
+        ...(files.length > 0
+          ? { attachmentIds: files.map((a) => a.attachmentId) }
+          : {}),
       });
-      setPendingReply({ agentId, reqId, text, conversationId });
+      setPendingReply({ agentId, reqId, text, conversationId, attachments: files });
       navigate({ kind: 'agent', id: agentId, tab: 'chat' });
     },
     [navigate],
@@ -503,6 +516,8 @@ function Inner({
           reqId: result.reqId,
           text: result.text,
           conversationId: result.conversationId,
+          // A resumed turn re-POSTs the words only; see `lib/workspace-resume.ts`.
+          attachments: [],
         });
       } else {
         /*
@@ -792,6 +807,7 @@ function Inner({
                       reqId: pendingReply.reqId,
                       text: pendingReply.text,
                       conversationId: pendingReply.conversationId,
+                      attachments: pendingReply.attachments,
                     }
                   : null
               }

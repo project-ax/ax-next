@@ -59,6 +59,7 @@ function props(
   return {
     agent: quill,
     thread: [],
+    conversationId: 'c1',
     decisions: [],
     readOnly: false,
     onSend: vi.fn(),
@@ -112,6 +113,18 @@ function pickFile(name = 'notes.pdf') {
   });
 }
 
+/**
+ * What the composer hands up for one uploaded file — the id the wire needs
+ * plus the name and type the transcript needs (TASK-424). The composer clears
+ * its chips on send, so this object is the only thing that can still name the
+ * person's file when their own bubble is drawn.
+ */
+const SENT_FILE = {
+  attachmentId: 'att-1',
+  displayName: 'notes.pdf',
+  mediaType: 'application/pdf',
+};
+
 function uploadedAs(attachmentId: string): AttachmentUploadResult {
   return {
     attachmentId,
@@ -160,7 +173,7 @@ describe('AgentConversation — attaching a file', () => {
     fireEvent.change(box(), { target: { value: 'have a look at this' } });
     fireEvent.click(sendButton());
 
-    expect(onSend).toHaveBeenCalledWith('have a look at this', ['att-1']);
+    expect(onSend).toHaveBeenCalledWith('have a look at this', [SENT_FILE]);
     // The chips go with the words: leaving them would put the same file on the
     // next message too.
     await waitFor(() => expect(screen.queryByText('notes.pdf')).toBeNull());
@@ -371,7 +384,7 @@ describe('find and attach on the same thread', () => {
     expect(visibleCount()).toBe(before);
     fireEvent.click(sendButton());
 
-    expect(onSend).toHaveBeenCalledWith('here is the quote', ['att-1']);
+    expect(onSend).toHaveBeenCalledWith('here is the quote', [SENT_FILE]);
     // And the bar survived the send rather than being torn down with the chips.
     expect(
       within(findBar()).getByRole('textbox', {

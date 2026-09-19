@@ -9,7 +9,7 @@
  * the two behaviours worth guarding hardest are:
  *
  *  1. A file that did not upload MUST NOT be silently dropped from the send.
- *     `attachmentIds` is asserted as an exact array everywhere below, because
+ *     `sendable` is asserted as an exact id array everywhere below, because
  *     a leaked-in id is how "we sent your message without your file" happens.
  *  2. The upload endpoint's JSON `{error}` string MUST NOT reach the DOM.
  *     `attachmentFailureSentence` maps through a fixed lookup; the
@@ -121,6 +121,18 @@ beforeEach(() => {
   armUploads();
 });
 
+/**
+ * The ids `sendable` carries, in order. TASK-424 widened that list from bare
+ * ids to `{ attachmentId, displayName, mediaType }` — the composer's chips are
+ * gone by the time the transcript has to name the file, so the name travels
+ * with the id. Every assertion below is about WHICH files are sendable and in
+ * what order, which is the ids, so they read through this rather than being
+ * rewritten into object literals that would hide the ordering they pin.
+ */
+function sendableIds(v: { sendable: readonly { attachmentId: string }[] }): string[] {
+  return v.sendable.map((a) => a.attachmentId);
+}
+
 describe('useWorkspaceAttachments — the happy path', () => {
   it('shows an uploading chip immediately, then the server-minted id', async () => {
     const { result } = renderHook(() => useWorkspaceAttachments());
@@ -138,7 +150,7 @@ describe('useWorkspaceAttachments — the happy path', () => {
     expect(chip.message).toBeNull();
     // Nothing is sendable yet — an id here would be an id for a file the
     // server has not acknowledged.
-    expect(result.current.attachmentIds).toEqual([]);
+    expect(sendableIds(result.current)).toEqual([]);
     expect(result.current.sendBlock).toBe(ATTACHMENT_SEND_BLOCKED_UPLOADING);
 
     await act(async () => {
@@ -150,7 +162,7 @@ describe('useWorkspaceAttachments — the happy path', () => {
     );
     expect(result.current.attachments[0]!.attachmentId).toBe('att-1');
     expect(result.current.attachments[0]!.message).toBeNull();
-    expect(result.current.attachmentIds).toEqual(['att-1']);
+    expect(sendableIds(result.current)).toEqual(['att-1']);
     expect(result.current.sendBlock).toBeNull();
   });
 
@@ -188,9 +200,9 @@ describe('useWorkspaceAttachments — the happy path', () => {
       pending[0]!.resolve(serverResult('att-first'));
     });
     await waitFor(() =>
-      expect(result.current.attachmentIds).toHaveLength(2),
+      expect(sendableIds(result.current)).toHaveLength(2),
     );
-    expect(result.current.attachmentIds).toEqual(['att-first', 'att-second']);
+    expect(sendableIds(result.current)).toEqual(['att-first', 'att-second']);
   });
 
   it('accepts a FileList, which is what a real <input type=file> hands over', () => {
@@ -223,7 +235,7 @@ describe('useWorkspaceAttachments — a failed upload', () => {
     );
     // THE assertion: an exact empty array. `toHaveLength(0)` would pass for a
     // hook that had already dropped the chip entirely; this pins both.
-    expect(result.current.attachmentIds).toEqual([]);
+    expect(sendableIds(result.current)).toEqual([]);
     expect(result.current.attachments).toHaveLength(1);
     expect(result.current.sendBlock).toBe(ATTACHMENT_SEND_BLOCKED_FAILED);
   });
@@ -348,7 +360,7 @@ describe('useWorkspaceAttachments — retry', () => {
 
     await act(async () => pending[1]!.resolve(serverResult('att-retry')));
     await waitFor(() =>
-      expect(result.current.attachmentIds).toEqual(['att-retry']),
+      expect(sendableIds(result.current)).toEqual(['att-retry']),
     );
   });
 
@@ -370,7 +382,7 @@ describe('useWorkspaceAttachments — remove', () => {
     const id = result.current.attachments[0]!.id;
     act(() => result.current.remove(id));
     expect(result.current.attachments).toEqual([]);
-    expect(result.current.attachmentIds).toEqual([]);
+    expect(sendableIds(result.current)).toEqual([]);
     expect(result.current.sendBlock).toBeNull();
   });
 
@@ -384,7 +396,7 @@ describe('useWorkspaceAttachments — remove', () => {
     await settle();
 
     expect(result.current.attachments).toEqual([]);
-    expect(result.current.attachmentIds).toEqual([]);
+    expect(sendableIds(result.current)).toEqual([]);
   });
 
   it('a late upload for a removed chip does not clobber a surviving one', async () => {
@@ -402,11 +414,11 @@ describe('useWorkspaceAttachments — remove', () => {
     expect(result.current.attachments.map((a) => a.id)).toEqual([keptId]);
     expect(result.current.attachments[0]!.name).toBe('kept.txt');
     expect(result.current.attachments[0]!.status).toBe('uploading');
-    expect(result.current.attachmentIds).toEqual([]);
+    expect(sendableIds(result.current)).toEqual([]);
 
     await act(async () => pending[1]!.resolve(serverResult('att-kept')));
     await waitFor(() =>
-      expect(result.current.attachmentIds).toEqual(['att-kept']),
+      expect(sendableIds(result.current)).toEqual(['att-kept']),
     );
   });
 
@@ -465,7 +477,7 @@ describe('useWorkspaceAttachments — sendBlock', () => {
       pending[1]!.resolve(serverResult('att-b'));
     });
     await waitFor(() =>
-      expect(result.current.attachmentIds).toEqual(['att-a', 'att-b']),
+      expect(sendableIds(result.current)).toEqual(['att-a', 'att-b']),
     );
     expect(result.current.sendBlock).toBeNull();
   });
@@ -494,13 +506,13 @@ describe('useWorkspaceAttachments — clear', () => {
       pending[1]!.resolve(serverResult('att-b'));
     });
     await waitFor(() =>
-      expect(result.current.attachmentIds).toEqual(['att-a', 'att-b']),
+      expect(sendableIds(result.current)).toEqual(['att-a', 'att-b']),
     );
 
     act(() => result.current.clear());
 
     expect(result.current.attachments).toEqual([]);
-    expect(result.current.attachmentIds).toEqual([]);
+    expect(sendableIds(result.current)).toEqual([]);
     expect(result.current.sendBlock).toBeNull();
   });
 
@@ -548,7 +560,7 @@ describe('useWorkspaceAttachments — a response with no attachment id', () => {
     expect(result.current.attachments[0]?.message).toBe(
       ATTACHMENT_FAILED_MALFORMED,
     );
-    expect(result.current.attachmentIds).toEqual([]);
+    expect(sendableIds(result.current)).toEqual([]);
     // And the send is held, so the message cannot leave without it.
     expect(result.current.sendBlock).toBe(ATTACHMENT_SEND_BLOCKED_FAILED);
   });
@@ -573,6 +585,6 @@ describe('useWorkspaceAttachments — a response with no attachment id', () => {
     });
     await settle();
 
-    expect(result.current.attachmentIds).toEqual([]);
+    expect(sendableIds(result.current)).toEqual([]);
   });
 });

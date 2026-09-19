@@ -143,6 +143,7 @@ import type {
   PastConversation,
   PermissionRow,
   RailActivity,
+  ThreadAttachment,
   ThreadMessage,
   WorkspaceAgent,
   WorkspaceReadStatus,
@@ -502,6 +503,16 @@ type TurnBlock = {
   tool_use_id?: string;
   is_error?: boolean;
   held?: boolean;
+  /**
+   * `attachment`: a file the person sent, as `routes-chat.ts` writes it after
+   * `attachments:commit` (TASK-424). `path` is workspace-relative and is what
+   * `GET /api/files` takes; `displayName` is the person's own filename and is
+   * therefore untrusted text, rendered as a React child and never as markup.
+   */
+  path?: string;
+  displayName?: string;
+  mediaType?: string;
+  sizeBytes?: number;
 };
 interface TurnRow {
   turnId: string;
@@ -2017,6 +2028,44 @@ function turnToolCalls(
  * assistant turn that only ran tools used to vanish here, which is how a turn
  * that did six things could render as if the agent had said nothing at all.
  */
+/**
+ * The files a user turn carried, as the transcript stored them (TASK-424).
+ *
+ * The transcript is the person's own record of their conversation, and it was
+ * silently omitting something they did: the model received the image and
+ * described it while the thread showed no trace of it at all. This is the read
+ * that puts it back.
+ *
+ * EVERY FIELD IS CHECKED rather than spread. These blocks are persisted turn
+ * content — the same wire that carries model output — so a block missing a
+ * `path` or carrying a non-string `displayName` is dropped here rather than
+ * reaching the client as a half-shaped row that the renderer then has to guess
+ * about. `sizeBytes` is the one optional: it is a nicety on the chip, and a
+ * chip without it still names the file.
+ */
+function turnAttachments(blocks: TurnBlock[]): ThreadAttachment[] {
+  const out: ThreadAttachment[] = [];
+  for (const block of blocks) {
+    if (block.type !== 'attachment') continue;
+    if (typeof block.path !== 'string' || block.path.length === 0) continue;
+    if (typeof block.displayName !== 'string' || block.displayName.length === 0) {
+      continue;
+    }
+    if (typeof block.mediaType !== 'string' || block.mediaType.length === 0) {
+      continue;
+    }
+    out.push({
+      path: block.path,
+      displayName: block.displayName,
+      mediaType: block.mediaType,
+      ...(typeof block.sizeBytes === 'number' && Number.isFinite(block.sizeBytes)
+        ? { sizeBytes: block.sizeBytes }
+        : {}),
+    });
+  }
+  return out;
+}
+
 function buildThread(turns: TurnRow[]): ThreadMessage[] {
   const out: ThreadMessage[] = [];
   const outcomes = toolOutcomes(turns);
@@ -2028,8 +2077,21 @@ function buildThread(turns: TurnRow[]): ThreadMessage[] {
     const blocks = turn.contentBlocks ?? [];
     const text = renderableText(blocks);
     if (turn.role === 'user') {
-      if (text.length === 0) continue; // An empty bubble is worse than no bubble.
-      out.push({ kind: 'user', id: turn.turnId, text });
+      const attachments = turnAttachments(blocks);
+      /*
+        An empty bubble is worse than no bubble — but a turn carrying a FILE is
+        not empty, and dropping it was how a caption-less attachment vanished
+        from the person's own transcript entirely (TASK-424). The rule now
+        reads "nothing to show", the same way the assistant branch below
+        already does since TASK-352.
+      */
+      if (text.length === 0 && attachments.length === 0) continue;
+      out.push({
+        kind: 'user',
+        id: turn.turnId,
+        text,
+        ...(attachments.length > 0 ? { attachments } : {}),
+      });
       continue;
     }
     const panel = shapeSteps(turnToolCalls(blocks, outcomes));

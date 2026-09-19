@@ -53,6 +53,7 @@ import { useStickToBottom } from '@/lib/use-stick-to-bottom';
 import {
   composerSendBlock,
   useWorkspaceAttachments,
+  type SendableAttachment,
 } from '@/lib/workspace-attachments';
 import { isOpenDecision } from '@/lib/workspace-types';
 import type {
@@ -76,7 +77,11 @@ import {
   ThreadFindToggle,
   type FindView,
 } from './ThreadFind';
-import { WorkspaceAttachmentChip } from './WorkspaceAttachmentChip';
+import {
+  clampAttachmentName,
+  WorkspaceAttachmentChip,
+} from './WorkspaceAttachmentChip';
+import { AttachmentChip } from '@/components/AttachmentChip';
 
 /**
  * What this thread can honestly say about its approvals.
@@ -119,8 +124,23 @@ function threadGrowthKey(thread: readonly ThreadMessage[]): string {
           return `approval:${m.id}`;
         case 'steps':
           return `steps:${m.id}:${m.text.length}:${m.steps.length}`;
-        case 'agent':
+        /*
+          A user message grows when its files are drawn (TASK-424), and
+          `text.length` cannot see that: a caption-less attachment has an empty
+          text and a bubble taller than nothing.
+
+          WHAT THIS TERM DOES NOT COVER, said plainly because the first draft of
+          this comment got it wrong. It is NOT what catches the live name-only
+          chip becoming a reloaded thumbnail — that count is 1 on both sides.
+          What catches THAT is the `m.id` term: the transient turn is
+          `pending-user` and the re-read turn is a real `turnId`, so the key
+          changes anyway. And the image decoding after layout is caught by
+          neither; that is the `ResizeObserver`'s job (TASK-418's own note says
+          so, and it is why the hook has one).
+        */
         case 'user':
+          return `user:${m.id}:${m.text.length}:${(m.attachments ?? []).length}`;
+        case 'agent':
         case 'status':
         case 'fold':
           return `${m.kind}:${m.id}:${m.text.length}`;
@@ -144,17 +164,29 @@ function threadGrowthKey(thread: readonly ThreadMessage[]): string {
 interface Props {
   agent: WorkspaceAgent;
   thread: ThreadMessage[];
+  /**
+   * The conversation `thread` was read from, or `null` when the agent has
+   * never had one.
+   *
+   * Needed to draw a person's own attachments (TASK-424): `GET /api/files`
+   * scopes every download to a conversation, so without this id a committed
+   * file has a path and still no URL. A null id is not an error here — the
+   * chip falls back to naming the file, which is the whole point of the card.
+   */
+  conversationId: string | null;
   decisions: Decision[];
   readOnly: boolean;
   /** True while a reply is streaming — the composer waits it out. */
   busy?: boolean;
   /**
-   * `attachmentIds` are the uploaded files this message carries, in pick
-   * order. An EMPTY LIST AND AN OMITTED ONE MEAN THE SAME THING: a plain
-   * text-only send, which is why the text-only path still calls this with one
-   * argument.
+   * `attachments` are the uploaded files this message carries, in pick order,
+   * each carrying the id the wire needs AND the name and type the transcript
+   * needs (TASK-424 — the caller has to draw the person's own file in their
+   * bubble, and an id alone cannot be drawn). An EMPTY LIST AND AN OMITTED ONE
+   * MEAN THE SAME THING: a plain text-only send, which is why the text-only
+   * path still calls this with one argument.
    */
-  onSend: (text: string, attachmentIds?: readonly string[]) => void;
+  onSend: (text: string, attachments?: readonly SendableAttachment[]) => void;
   /**
    * The three ways out of a decision. REQUIRED: the routes behind them ship
    * with the rows, so there is no longer a state where a card is on screen with
@@ -232,6 +264,7 @@ interface Props {
 export function AgentConversation({
   agent,
   thread,
+  conversationId,
   decisions,
   readOnly,
   busy = false,
@@ -250,7 +283,7 @@ export function AgentConversation({
 }: Props) {
   const [draft, setDraft] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
-  const { attachments, add, remove, retry, clear, attachmentIds, sendBlock } =
+  const { attachments, add, remove, retry, clear, sendable, sendBlock } =
     useWorkspaceAttachments();
 
   /*
@@ -294,11 +327,11 @@ export function AgentConversation({
     const v = draft.trim();
     if (!v || busy || held || attachBlock !== null) return;
     setDraft('');
-    const ids = attachmentIds;
+    const files = sendable;
     // One argument when nothing is attached — see the prop doc. An empty list
     // and no list are the same send, and the text-only call stays the call it
     // was before a file could ride along with it.
-    if (ids.length > 0) onSend(v, ids);
+    if (files.length > 0) onSend(v, files);
     else onSend(v);
     // Only now. The chips stood for files that are already on the server and
     // have just been handed to the agent; leaving them would put the same file
@@ -516,6 +549,7 @@ export function AgentConversation({
               fieldKey={key}
               m={m}
               agent={agent}
+              conversationId={conversationId}
               decisions={decisions}
               onApprove={onApprove}
               onDismiss={onDismiss}
@@ -811,6 +845,7 @@ export function AgentConversation({
 function Message({
   m,
   agent,
+  conversationId,
   decisions,
   onApprove,
   onDismiss,
@@ -822,6 +857,8 @@ function Message({
 }: {
   m: ThreadMessage;
   agent: WorkspaceAgent;
+  /** See `Props.conversationId` — what turns an attachment path into a URL. */
+  conversationId: string | null;
   decisions: Decision[];
   onApprove: (id: string) => void;
   onDismiss: (id: string) => void;
@@ -838,11 +875,91 @@ function Message({
   fieldKey: string;
 }) {
   if (m.kind === 'user') {
+    const attachments = m.attachments ?? [];
     return (
-      <div className="flex justify-end">
-        <div className="max-w-[80%] rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[13.5px] leading-relaxed text-primary-foreground">
-          <FindHighlight fieldKey={fieldKey} text={m.text} find={find} />
-        </div>
+      <div
+        data-testid="workspace-user-message"
+        className="flex flex-col items-end gap-1.5"
+      >
+        {/*
+          TASK-424 — the files the person sent, ABOVE their words.
+
+          Outside the bubble rather than inside it, which is where chat puts
+          them too (`MessagePrimitive.Attachments` sits above `msg-body`). The
+          bubble is `bg-primary`, and a `bg-card` chip dropped inside it would
+          be a card-coloured island on a primary field — two surfaces fighting,
+          and a contrast pair nobody checked. Above it, the chip sits on the
+          page background it was drawn for.
+
+          A turn can be attachment-only: `buildThread` no longer drops a user
+          turn that has a file and no caption, so the bubble below is skipped
+          when there is nothing to put in it. An empty bubble is worse than no
+          bubble — but the FILE is not nothing, which is the whole bug.
+        */}
+        {attachments.length > 0 && (
+          <div className="flex max-w-[80%] flex-col items-end gap-1.5">
+            {attachments.map((a, i) => {
+              /*
+                CLAMPED, not merely truncated. A filename comes off the
+                person's own disk and can be any length at all, and the chip's
+                CSS `truncate` hides the overflow visually while leaving the
+                whole string in the accessibility tree and in the chip's
+                `aria-label` / `alt` — a screen reader reading four hundred
+                characters is its own kind of broken. Same rule, and the same
+                function, the composer's own chips already use.
+
+                This is also the honest place to say what CANNOT reach here.
+                `turnAttachments` runs on `turn.role === 'user'` ONLY, and user
+                turns are persisted host-side by `@ax/chat-orchestrator` from
+                the person's own content blocks — the runner never writes one
+                (see its TASK-66 note). So a model that emits an `attachment`
+                block of its own gets no chip, no `<img>` and no
+                `/api/files` URL out of this renderer: the assistant branch
+                below never asks for attachments at all. Nothing on this path
+                is model- or tool-authored, which is the one reason a label
+                here is safe to draw when a step label built from tool input
+                would not be.
+              */
+              const name = clampAttachmentName(a.displayName);
+              return (
+              <AttachmentChip
+                /*
+                  Position-bearing, like the step rows: one message can legally
+                  carry the same file twice, and a key that was just the name
+                  would be a duplicate React key across siblings.
+                */
+                key={`${i}-${a.path ?? a.displayName}`}
+                {...(a.path !== null && conversationId !== null
+                  ? {
+                      path: a.path,
+                      conversationId,
+                      displayName: name,
+                      mediaType: a.mediaType,
+                      ...(a.sizeBytes === undefined
+                        ? {}
+                        : { sizeBytes: a.sizeBytes }),
+                    }
+                  : {
+                      /*
+                        No path yet (the live frame, before the commit), or no
+                        conversation to scope a download to. We still know WHAT
+                        they sent, so we say so — the alternative is the bug
+                        this card is about, in a smaller window.
+                      */
+                      variant: 'pending' as const,
+                      displayName: name,
+                      mediaType: a.mediaType,
+                    })}
+                />
+              );
+            })}
+          </div>
+        )}
+        {m.text.length > 0 && (
+          <div className="max-w-[80%] rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[13.5px] leading-relaxed text-primary-foreground">
+            <FindHighlight fieldKey={fieldKey} text={m.text} find={find} />
+          </div>
+        )}
       </div>
     );
   }

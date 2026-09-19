@@ -70,6 +70,7 @@ function conversation(
     <AgentConversation
       agent={quill}
       thread={[asked]}
+      conversationId="c1"
       decisions={[]}
       readOnly={false}
       onSend={vi.fn()}

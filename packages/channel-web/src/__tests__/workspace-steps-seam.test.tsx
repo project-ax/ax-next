@@ -140,6 +140,7 @@ function conversationProps(
   return {
     agent: quill,
     thread,
+    conversationId: 'c1',
     decisions: [],
     readOnly: false,
     onSend: vi.fn(),

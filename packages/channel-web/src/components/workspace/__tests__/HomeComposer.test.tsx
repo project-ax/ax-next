@@ -120,6 +120,20 @@ function uploadedAs(attachmentId: string): AttachmentUploadResult {
   };
 }
 
+/**
+ * What the composer hands up for one uploaded file.
+ *
+ * The id alone was enough while the wire was the only consumer. It is not
+ * enough for the TRANSCRIPT (TASK-424): the chips are cleared the instant the
+ * send resolves, so the name and type have to travel with the id or the
+ * person's own message renders with no trace of the file they attached.
+ */
+const SENT_FILE = {
+  attachmentId: 'att-1',
+  displayName: 'notes.pdf',
+  mediaType: 'application/pdf',
+};
+
 function sendButton() {
   return screen.getByRole('button', { name: 'Send' });
 }
@@ -365,7 +379,7 @@ describe('attaching a file', () => {
 
     await waitFor(() =>
       expect(onSend).toHaveBeenCalledWith('scheduler', 'have a look at this', [
-        'att-1',
+        SENT_FILE,
       ]),
     );
     // The chips go with the words once the send resolves — otherwise the same
@@ -397,7 +411,7 @@ describe('attaching a file', () => {
       expect(onSend).toHaveBeenCalledWith(
         'scheduler',
         'can you read this quote',
-        ['att-1'],
+        [SENT_FILE],
       ),
     );
   });
