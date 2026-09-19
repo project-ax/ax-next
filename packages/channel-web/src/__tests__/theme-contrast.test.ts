@@ -4,11 +4,12 @@
  * A browser walk found two buttons below it: "Just this once" on the permission
  * card at 3.75:1 and "Turn it off anyway" on the sign-in lockout dialog at
  * 3.40:1 — the two most consequential buttons in the product. Both were white
- * text on an accent that dark mode had deliberately LIGHTENED (primary 44% ->
- * 52%, destructive 55% -> 62%), which moves the accent toward white and
- * squeezes the text on top of it. (Those two lightness pairs are 42% -> 56%
- * and 50% -> 62% today: TASK-425 moved primary and #537 darkened light-mode
- * destructive. The direction of travel is what the paragraph is about.)
+ * text on an accent that dark mode deliberately LIGHTENS (primary 42% -> 56%,
+ * destructive 50% -> 62%), which moves the accent toward white and squeezes
+ * the text on top of it. (Those are today's values. When the bug was found
+ * they read 44% -> 52% and 55% -> 62%; #537 darkened light-mode destructive
+ * and TASK-425 moved primary. The direction of travel is what matters here,
+ * and it has not changed.)
  *
  * A screenshot will not tell you that, and neither will a reviewer — 3.4:1 red
  * with white text looks fine until you measure it. So this measures, the same
@@ -136,9 +137,13 @@ const ACCENTS_USED_AS_TEXT = ['--primary', '--destructive', '--warning'] as cons
  * same hue, so only the lightness gap does any work.
  *
  * TASK-425 is what surfaced it: `text-primary` on `bg-primary-soft` measured
- * **4.35:1 light / 4.28:1 dark** in a browser, under the floor, at four render
- * sites — the selected row in `WorkspaceSidebar`, `AgentFiles` and `AgentRail`,
- * plus the added-line row in `BundleDiffView`.
+ * **4.35:1 light / 4.28:1 dark**, under the floor, at four render sites — the
+ * selected row in `WorkspaceSidebar`, `AgentFiles` and `AgentRail`, plus the
+ * added-line row in `BundleDiffView`.
+ *
+ * Those two are this file's own formula. A browser probe read the light one as
+ * 4.36; the gap is rounding, not disagreement, and it is worth keeping straight
+ * about which number came from where.
  *
  * The fix was to move `--primary` (see the note in `index.css`), NOT
  * `--primary-soft`. That asymmetry is the part worth writing down, because the

@@ -20,11 +20,14 @@
        from that side needs ~96.5% here, lighter than `--muted` at 96%, so the
        selected row would read as quieter than the hovered one — and ~12% in
        dark, within a point of `--card` at 11%, so it would all but disappear on
-       a card. `--primary` has the opposite property: every role it plays sits
-       on the far side of it, so moving it away from the surfaces lifts them all
-       together. The defect pair goes 4.35 -> 4.65, and the pairs that already
-       passed improved as well — white on `bg-primary` 4.97 -> 5.31, and
-       `text-primary` on the page 4.97 -> 5.31.
+       a card. `--primary` has the opposite property: every role of it that
+       carries text puts the foreground on the far side of the accent, so moving
+       it away from the surfaces lifts them all together. The defect pair goes
+       4.35 -> 4.65, and the pairs that already passed improved as well — white
+       on `bg-primary` 4.97 -> 5.31, and `text-primary` on the page 4.97 -> 5.31.
+       The roles that carry no text are unaffected either way: the state dots,
+       progress fills and switch tracks, and `AvatarTile`'s decorative gradient,
+       which mixes the accent at 22-26% behind an `aria-hidden` tile.
 
        Compare `--ink-ghost` below, where the roles genuinely fought and the fix
        was to split them. Same question, opposite answer; measure, don't assume.
