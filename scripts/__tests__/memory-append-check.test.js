@@ -245,6 +245,31 @@ describe('memory-append-check.sh', () => {
     expect(r.stderr).toMatch(/cannot line-diff/);
   });
 
+  it('R2: still sees a root archive whose name git would QUOTE', () => {
+    // Regression, and it bit while this script was being written. Without
+    // `-z`, git quotes any path holding a space or a non-ASCII byte
+    // (`".claude/memory/w\303\251ird note.md"`), and a quoted path no longer
+    // starts with the prefix R2 strips — so precisely the odd filename you
+    // would want flagged reads as a well-behaved shard. The `-z` fix then has
+    // a second trap behind it: bash cannot hold a NUL in a variable, so
+    // `$(git … -z)` loses the separators, `read -d ''` hits EOF, `read`
+    // returns nonzero and the `while` body never runs. That reports a cheerful
+    // `ok` on a diff nobody examined. Both mistakes are invisible except here.
+    const dir = makeRepo();
+    writeFileSync(join(dir, '.claude', 'memory', 'wéird note.md'), 'a root archive\n');
+    commit(dir, 'add an oddly named archive');
+
+    // Premise check: this really is a path git would quote without `-z`.
+    expect(
+      git(dir, 'diff', '--numstat', 'main', 'HEAD', '--', '.claude/memory/'),
+    ).toMatch(/^1\t0\t"/);
+
+    const r = run(dir, ['main']);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/root archive edited/);
+    expect(r.stderr).toMatch(/wéird note\.md/);
+  });
+
   it('exits 2 on an unresolvable base ref — a check that did not run is not a pass', () => {
     const dir = makeRepo();
     writeShard(dir, 'TASK-415');

@@ -87,29 +87,54 @@ fi
 # `--no-renames` on purpose: a rename of a memory file removes every row from
 # the old path, and that is exactly the thing R1 exists to notice. Letting git
 # report it as a rename would hide it behind a 0/0 line count.
-numstat=$(git diff --numstat --no-renames "$merge_base" HEAD -- "$MEMORY_PREFIX") || {
-  echo "memory-append-check.sh: git diff failed for ${merge_base}..HEAD" >&2
+#
+# `-z` on purpose too: without it git QUOTES any path holding a space or a
+# non-ASCII byte, and a quoted path no longer has the `.claude/memory/` prefix
+# R2 strips — so exactly the odd filename you would want flagged is the one
+# that reads as a well-behaved shard. NUL-terminated records have no such
+# escaping. `--no-renames` also keeps every record to three fields, which the
+# rename form of `-z` would not.
+#
+# Via a temp file, NOT `$(…)`: bash cannot hold a NUL byte in a variable and
+# drops them from command substitution silently, which leaves one run-together
+# record that `read -d ''` then hits EOF on — and `read` returning nonzero at
+# EOF means the `while` body never executes AT ALL. That failure mode is a
+# clean exit 0 on a diff nobody looked at, which is the worst thing a guard can
+# do. (Measured while writing this: the quoted-path case it was meant to fix
+# came back "ok".)
+numstat_file=$(mktemp "${TMPDIR:-/tmp}/memory-append-check.XXXXXX") || {
+  echo "memory-append-check.sh: could not create a temp file." >&2
   exit 2
 }
+trap 'rm -f "$numstat_file"' EXIT
 
-if [ -z "$numstat" ]; then
+if ! git -c core.quotePath=false diff --numstat -z --no-renames \
+  "$merge_base" HEAD -- "$MEMORY_PREFIX" >"$numstat_file"; then
+  echo "memory-append-check.sh: git diff failed for ${merge_base}..HEAD" >&2
+  exit 2
+fi
+
+if [ ! -s "$numstat_file" ]; then
   echo "memory-append-check.sh: nothing under ${MEMORY_PREFIX} changed — ok."
   exit 0
 fi
 
 violations=()
 
-while IFS=$'\t' read -r added deleted path; do
+while IFS=$'\t' read -r -d '' added deleted path; do
   [ -n "${path:-}" ] || continue
 
-  # A `-` in either column means git could not line-diff the file (it looks
-  # binary). "No rows were dropped" is then unprovable, so it fails.
-  if [ "$added" = '-' ] || [ "$deleted" = '-' ]; then
-    violations+=("${path}: git cannot line-diff this file (binary?), so zero-deletions is unprovable")
-    continue
-  fi
+  # Anything that is not a plain count means git could not line-diff the file
+  # (`-` for what it treats as binary). "No rows were dropped" is then
+  # unprovable, and an unprovable claim is not a passing one.
+  case "${added}${deleted}" in
+    *[!0-9]*)
+      violations+=("${path}: git cannot line-diff this file (binary?), so zero-deletions is unprovable")
+      continue
+      ;;
+  esac
 
-  if [ "$deleted" -gt 0 ] 2>/dev/null; then
+  if [ "$deleted" -gt 0 ]; then
     violations+=("${path}: ${deleted} line(s) DELETED (memory is append-only — R1)")
   fi
 
@@ -122,7 +147,7 @@ while IFS=$'\t' read -r added deleted path; do
       violations+=("${path}: root archive edited, +${added}/-${deleted} (append a shard instead — R2)")
       ;;
   esac
-done <<<"$numstat"
+done <"$numstat_file"
 
 if [ "${#violations[@]}" -eq 0 ]; then
   echo "memory-append-check.sh: ${MEMORY_PREFIX} changes are shard-only with zero deletions — ok."
