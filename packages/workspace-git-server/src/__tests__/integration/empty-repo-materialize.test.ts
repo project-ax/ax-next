@@ -30,7 +30,10 @@ import {
   createWorkspaceGitServer,
   type WorkspaceGitServer,
 } from '../../server/index.js';
-import { createTestOnlyGitServerPlugin } from '../../client/plugin-test-only.js';
+import {
+  createTestOnlyGitServerPlugin,
+  namespacedWorkspaceId,
+} from '../../client/plugin-test-only.js';
 import { createRepoLifecycleClient } from '../../client/repo-lifecycle.js';
 
 const TOKEN = 'secret';
@@ -70,7 +73,11 @@ function ctx() {
 describe('empty-repo materialize', () => {
   let server: WorkspaceGitServer;
   let repoRoot: string;
-  const workspaceId = 'empty1';
+  // The adapter partitions per agent (TASK-413), so the repo the plugin
+  // actually talks to is derived from the boot NAMESPACE plus this file's
+  // one `ctx().agentId`. Server-side assertions below address that repo.
+  const namespace = 'empty1';
+  const workspaceId = namespacedWorkspaceId(namespace, 'test-agent');
 
   beforeAll(async () => {
     repoRoot = mkdtempSync(join(tmpdir(), 'ax-ws-server-empty-'));
@@ -113,7 +120,7 @@ describe('empty-repo materialize', () => {
     expect(ls.stdout.trim()).toBe('');
 
     // 4. Boot a plugin instance and apply with parent: null.
-    const plug = await bootPlugin(baseUrl, workspaceId);
+    const plug = await bootPlugin(baseUrl, namespace);
     let plug2: BootedPlugin | null = null;
     try {
       const apply = await plug.bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
@@ -142,7 +149,7 @@ describe('empty-repo materialize', () => {
       expect(meta2!.headOid).toBe(apply.version);
 
       // 6. Second plugin instance (fresh mirror) — fetches and reads.
-      plug2 = await bootPlugin(baseUrl, workspaceId);
+      plug2 = await bootPlugin(baseUrl, namespace);
       const read = await plug2.bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
         'workspace:read',
         ctx(),

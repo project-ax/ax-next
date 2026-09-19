@@ -21,15 +21,21 @@
 //
 // Server cleanup: each test-only scenario boots its own server (we track
 // them and close them in `afterAll`). The production run uses ONE shared
-// server (booted at module load via top-level await) and gives each
-// scenario a fresh `workspaceId` via the override — that keeps the
-// production factory's contract clean (no test-only `boot()` seam) while
-// still isolating histories per scenario.
+// server, booted at module load via top-level await.
+//
+// ⚠ Both runs used to pin a per-scenario `workspaceId` that IGNORED ctx —
+// `boot()` for the test-only factory, a `workspaceIdFor` override for the
+// production one. That is how scenario histories were kept apart, and it
+// meant the contract ran against a derivation no host ever uses. TASK-413
+// gave `runWorkspaceContract` an isolation property, which no ctx-ignoring
+// backend can satisfy, so both pins are gone: the contract mints a unique
+// agentId per scenario and the REAL derivation keeps the histories apart.
+// The production run now exercises the shipped `workspaceIdFor` end to end,
+// which it never did before.
 
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
 import { afterAll } from 'vitest';
 import { runWorkspaceContract } from '@ax/test-harness';
 import {
@@ -100,9 +106,9 @@ runWorkspaceContract('@ax/workspace-git-server (test-only)', () =>
 //
 // The production factory takes `{baseUrl, token}` synchronously, so we boot
 // the storage tier once at module load (top-level await) and reuse it across
-// every scenario. Each scenario gets a unique `workspaceId` via the
-// `workspaceIdFor` override — different IDs map to different bare repos on
-// the same server, so version histories don't bleed.
+// every scenario. No `workspaceIdFor` override: the contract's per-scenario
+// agentId runs through the shipped derivation, which maps each scenario to
+// its own bare repo on the shared server.
 
 const sharedRepoRoot = mkdtempSync(join(tmpdir(), 'ax-ws-server-prod-contract-'));
 repoRoots.push(sharedRepoRoot);
@@ -116,17 +122,11 @@ bootedServers.push(sharedServer);
 const sharedBaseUrl = `http://127.0.0.1:${sharedServer.port}`;
 
 runWorkspaceContract('@ax/workspace-git-server (production)', () => {
-  // Fresh workspaceId per scenario — randomUUID().slice(0, 8) is cheap and
-  // collision-free for the handful of scenarios this suite runs.
-  const workspaceId = `wsprod${randomUUID().replace(/-/g, '').slice(0, 12)}`;
   const cacheRoot = mkdtempSync(join(tmpdir(), 'ax-ws-server-prod-contract-cache-'));
   cacheRoots.push(cacheRoot);
   return createWorkspaceGitServerPlugin({
     baseUrl: sharedBaseUrl,
     token: 'secret',
     cacheRoot,
-    // Ignore ctx; pin to the per-scenario id so the contract's history
-    // doesn't see writes from other scenarios.
-    workspaceIdFor: () => workspaceId,
   });
 });

@@ -24,7 +24,10 @@ import {
   createWorkspaceGitServer,
   type WorkspaceGitServer,
 } from '../../server/index.js';
-import { createTestOnlyGitServerPlugin } from '../../client/plugin-test-only.js';
+import {
+  createTestOnlyGitServerPlugin,
+  namespacedWorkspaceId,
+} from '../../client/plugin-test-only.js';
 import { createRepoLifecycleClient } from '../../client/repo-lifecycle.js';
 
 const TOKEN = 'secret';
@@ -64,7 +67,11 @@ function ctx() {
 describe('multi-replica concurrency', () => {
   let server: WorkspaceGitServer;
   let repoRoot: string;
-  const workspaceId = 'multireplica1';
+  // The adapter partitions per agent (TASK-413). Both replicas use the same
+  // boot namespace AND the same `ctx().agentId`, so they still land on one
+  // repo -- which is the whole premise of this test.
+  const namespace = 'multireplica1';
+  const workspaceId = namespacedWorkspaceId(namespace, 'test-agent');
 
   beforeAll(async () => {
     repoRoot = mkdtempSync(join(tmpdir(), 'ax-ws-server-multi-'));
@@ -89,7 +96,7 @@ describe('multi-replica concurrency', () => {
     await lifecycle.createRepo(workspaceId);
 
     // 2. Boot a "seed" plugin that lays down the initial commit.
-    const seed = await bootPlugin(baseUrl, workspaceId);
+    const seed = await bootPlugin(baseUrl, namespace);
     const v0Result = await seed.bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
       'workspace:apply',
       ctx(),
@@ -104,8 +111,8 @@ describe('multi-replica concurrency', () => {
     await shutdown(seed);
 
     // 3. Two independent plugins, each with its own mirror tempdir.
-    const a = await bootPlugin(baseUrl, workspaceId);
-    const b = await bootPlugin(baseUrl, workspaceId);
+    const a = await bootPlugin(baseUrl, namespace);
+    const b = await bootPlugin(baseUrl, namespace);
     try {
       // 4. Both apply concurrently with parent: v0.
       const applyA = a.bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(

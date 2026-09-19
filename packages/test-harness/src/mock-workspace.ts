@@ -115,6 +115,15 @@ function applyChanges(base: Snapshot, changes: FileChange[]): Snapshot {
 }
 
 /**
+ * One tenant's entire world: its own object store and its own head. Two
+ * tenants share nothing — see `tenantFor`.
+ */
+interface Tenant {
+  snapshots: Map<WorkspaceVersion, Snapshot>;
+  latest: WorkspaceVersion | null;
+}
+
+/**
  * In-memory linear-history workspace plugin. Used by the shared workspace
  * contract test-suite to prove that the contract isn't accidentally
  * git-shaped — anything that passes here AND passes for `@ax/workspace-git`
@@ -123,11 +132,43 @@ function applyChanges(base: Snapshot, changes: FileChange[]): Snapshot {
  * Versions are minted as opaque `mock-N` strings (intentionally NOT a SHA)
  * so subscribers that try to parse a `WorkspaceVersion` will break, the
  * way they should.
+ *
+ * TENANT PARTITION (TASK-413). Until the shared contract grew an isolation
+ * property, this mock kept ONE snapshot map and ONE head for the whole
+ * process, so every caller — every agent, every user — shared one tree. That
+ * is precisely the shape that shipped to production in `@ax/workspace-git-
+ * core` and leaked one user's files into another's Files tab (#583), and the
+ * mock reproduced it faithfully enough that no contract assertion could tell
+ * the two apart.
+ *
+ * The partition is `ctx.agentId` ALONE, matching `@ax/workspace-git-server`'s
+ * `workspaceIdFor` and `@ax/workspace-git-core`'s `workspaceIdForAgent` since
+ * TASK-257/TASK-396. Not `userId`, not the pair: every user authorized to
+ * reach an agent sees that agent's files, and an agent's files are not
+ * visible to any other agent. Invariant 2 forbids importing either backend's
+ * derivation, and we don't need to — a mock has no bare repos to name, so it
+ * keys buckets on the raw `agentId` and leaves the hashing to backends that
+ * have to turn an id into a directory name.
+ *
+ * ⚠ This is a PARTITION, not an access control. Nothing here decides whether
+ * a caller may reach an agent; that is the `agents:resolve` ACL's job.
  */
 export function createMockWorkspacePlugin(): Plugin {
-  const snapshots = new Map<WorkspaceVersion, Snapshot>();
-  let latest: WorkspaceVersion | null = null;
+  const tenants = new Map<string, Tenant>();
+  // Process-wide, NOT per-tenant. If each tenant minted `mock-0` the version
+  // namespaces would collide, and a cross-tenant `{ version }` lookup would
+  // succeed against the wrong tree — an isolation hole hidden inside the
+  // version allocator rather than the storage.
   let counter = 0;
+
+  const tenantFor = (ctx: { agentId: string }): Tenant => {
+    let t = tenants.get(ctx.agentId);
+    if (t === undefined) {
+      t = { snapshots: new Map(), latest: null };
+      tenants.set(ctx.agentId, t);
+    }
+    return t;
+  };
 
   const mintVersion = (): WorkspaceVersion =>
     asWorkspaceVersion(`mock-${counter++}`);
@@ -155,6 +196,8 @@ export function createMockWorkspacePlugin(): Plugin {
         'workspace:apply-internal',
         PLUGIN_NAME,
         async (ctx, input) => {
+          const tenant = tenantFor(ctx);
+          const latest = tenant.latest;
           if (input.parent !== latest) {
             throw new PluginError({
               code: 'parent-mismatch',
@@ -184,10 +227,10 @@ export function createMockWorkspacePlugin(): Plugin {
           }
 
           const parentSnapshot: Snapshot =
-            latest === null ? new Map() : snapshots.get(latest) ?? new Map();
+            latest === null ? new Map() : tenant.snapshots.get(latest) ?? new Map();
           const nextSnapshot = applyChanges(parentSnapshot, input.changes);
           const nextVersion = mintVersion();
-          snapshots.set(nextVersion, nextSnapshot);
+          tenant.snapshots.set(nextVersion, nextSnapshot);
 
           const delta = buildDelta(
             parentSnapshot,
@@ -197,7 +240,7 @@ export function createMockWorkspacePlugin(): Plugin {
             input.reason,
             author,
           );
-          latest = nextVersion;
+          tenant.latest = nextVersion;
           return { version: nextVersion, delta };
         },
       );
@@ -205,10 +248,14 @@ export function createMockWorkspacePlugin(): Plugin {
       bus.registerService<WorkspaceReadInput, WorkspaceReadOutput>(
         'workspace:read',
         PLUGIN_NAME,
-        async (_ctx, input) => {
-          const version = input.version ?? latest;
+        async (ctx, input) => {
+          const tenant = tenantFor(ctx);
+          const version = input.version ?? tenant.latest;
           if (version === null) return { found: false };
-          const snap = snapshots.get(version);
+          // Scoped to THIS tenant's store on purpose: a version minted for
+          // another agent must not resolve here, or `{ version }` would be a
+          // way around the partition.
+          const snap = tenant.snapshots.get(version);
           if (snap === undefined) return { found: false };
           const bytes = snap.get(input.path);
           if (bytes === undefined) return { found: false };
@@ -220,10 +267,11 @@ export function createMockWorkspacePlugin(): Plugin {
       bus.registerService<WorkspaceListInput, WorkspaceListOutput>(
         'workspace:list',
         PLUGIN_NAME,
-        async (_ctx, input) => {
-          const version = input.version ?? latest;
+        async (ctx, input) => {
+          const tenant = tenantFor(ctx);
+          const version = input.version ?? tenant.latest;
           if (version === null) return { paths: [] };
-          const snap = snapshots.get(version);
+          const snap = tenant.snapshots.get(version);
           if (snap === undefined) return { paths: [] };
           let paths = snapshotPaths(snap);
           if (input.pathGlob !== undefined) {
@@ -238,12 +286,13 @@ export function createMockWorkspacePlugin(): Plugin {
       bus.registerService<WorkspaceDiffInput, WorkspaceDiffOutput>(
         'workspace:diff',
         PLUGIN_NAME,
-        async (_ctx, input) => {
+        async (ctx, input) => {
+          const tenant = tenantFor(ctx);
           let fromSnapshot: Snapshot;
           if (input.from === null) {
             fromSnapshot = new Map();
           } else {
-            const found = snapshots.get(input.from);
+            const found = tenant.snapshots.get(input.from);
             if (found === undefined) {
               throw new PluginError({
                 code: 'unknown-version',
@@ -254,7 +303,7 @@ export function createMockWorkspacePlugin(): Plugin {
             }
             fromSnapshot = found;
           }
-          const toSnapshot = snapshots.get(input.to);
+          const toSnapshot = tenant.snapshots.get(input.to);
           if (toSnapshot === undefined) {
             throw new PluginError({
               code: 'unknown-version',
