@@ -894,8 +894,64 @@ computed from the already-bound `$ITEMS` so there's no race) and rewrite the tit
 ```bash
 NEXT=$(printf '%s' "$ITEMS" | jq -r '.items[].title | capture("\\[TASK-(?<n>[0-9]+)\\]").n // empty' \
         | sort -n | tail -1); NEXT=$(( ${NEXT:-0} + 1 ))
-gh project item-edit --id "$ITEM_ID" --title "[TASK-$NEXT] $ORIGINAL_TITLE"
+# `--title` edits the card's DRAFT-ISSUE CONTENT, so `--id` wants the `DI_` content id --
+# NOT the `PVTI_` project-item id that $ITEM_ID holds and that everything else in this
+# doc passes. Resolve it first (same hop `append_progress` / `set_needs_input` make).
+# NOTHING HERE IS PIPED INTO ANYTHING, at either call. `$?` after a pipeline belongs to
+# the pipeline TAIL, so `gh … | jq` would silently convert a transient API failure into
+# "this card has no draft issue" -- a different diagnosis with a different remedy (retry
+# vs. give up on the card). Same reason `append_progress` keeps its read rc (§6).
+json=$(gh api graphql -f query='query($i:ID!){node(id:$i){... on ProjectV2Item{content{... on DraftIssue{id}}}}}' \
+         -f i="$ITEM_ID") || json=
+# Empty covers BOTH "gh exited non-zero" and the theoretical "exited 0, said nothing".
+# One test, so no path can end in silence -- a quiet no-op here looks exactly like a
+# card nobody ever triaged.
+[ -n "$json" ] || echo "FATAL: draft-issue lookup FAILED for $ITEM_ID (no answer — transient? it retries next pass) — [TASK-$NEXT] NOT assigned"
+DI=; [ -n "$json" ] && DI=$(printf '%s' "$json" | jq -r '.data.node.content.id // empty')
+ok=; case "$DI" in DI_*) ok=1 ;; esac
+[ -n "$json" ] && [ -z "$ok" ] && echo "FATAL: no draft-issue content on $ITEM_ID (got '${DI:-<empty>}' — a linked issue/PR?) — [TASK-$NEXT] NOT assigned"
+[ -n "$ok" ] && { gh project item-edit --id "$DI" --title "[TASK-$NEXT] $ORIGINAL_TITLE" \
+  || echo "FATAL: item-edit refused $DI — [TASK-$NEXT] NOT assigned"; }
 ```
+
+**Why the extra hop (measured 2026-09-18, throwaway draft-issue card, both ids).**
+`gh` routes `--title`/`--body` to the `updateProjectV2DraftIssue` mutation, and that
+mutation addresses the **content** node:
+
+- `gh project item-edit --id <PVTI_…> --title …` → refused, in gh's own words:
+  `ID must be the ID of the draft issue content which is prefixed with DI_`. The title
+  did **not** change.
+- `gh project item-edit --id <DI_…> --title …` → succeeded.
+
+That probe **first measured the bug backwards**: its `rc` read **0 on the refusal**,
+because the command was piped into `head` and `$?` was `head`'s. Hence the no-pipe rule
+above — and hence the guard below asserting on the resulting **title**, never on a status
+that a pipeline could have laundered.
+
+**The `PVTI_`/`DI_` split is per-flag, not per-command.** §4's `--field-id` writes
+(`Status`, `Depends on`) take the **`PVTI_` item id** and are correct as written — the
+*item* is what carries field values. Only the content-editing flags need `DI_`. Don't
+"fix" §4 to match this.
+
+The two `FATAL` paths *for the lookup* (there is a third for the edit itself) are
+mutually exclusive and jointly total: a failed-or-empty lookup
+reports *lookup FAILED* (retry next pass), a successful lookup that yields no `DI_`
+reports *no draft-issue content* (stop trying). The one state neither names precisely is
+`gh` exiting **0** with malformed JSON — `jq` errors to stderr, `$DI` stays empty, and it
+lands in the second message. Loud, safe, never stamps; just imprecise. That rests on
+`gh api graphql` exiting non-zero for HTTP failures and GraphQL `errors` envelopes, which
+it does today.
+
+A card whose content is a linked real issue/PR has no draft issue, so `$DI` comes back
+empty and the guard above refuses rather than stamping the wrong node. Triage only ever
+sees auto-ship's own draft-issue cards, but the untagged-card path is exactly the one
+that went **~4 months** without an exerciser — the broken line landed in `af774cc3`
+(2026-05-25) and was corrected on 2026-09-19 — so it fails loudly instead of quietly.
+
+An **executing** guard pins this: `scripts/__tests__/autoship-triage-title-draft-id.test.js`
+extracts the block above and runs it under bash *and* zsh against a `gh` stub that
+reproduces the measured refusal, then asserts on the **resulting title**. A text scan
+would pass against a doc that merely says "DI_" — the mistake TASK-392 already paid for.
 
 The `(walk)` tag is appended **after** the triage agent's verdict (it needs the body).
 Per convention a walk card carries **both** the ID **and** `(walk)` — never one instead
