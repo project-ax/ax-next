@@ -1040,6 +1040,13 @@ non-zero and names both cards rather than reporting success.
 **The other subcommands.**
 
 ```bash
+# board-task-id: reference listing
+# This block DOCUMENTS the CLI; it is not a call site, so the branch-on-failure guard
+# in `scripts/__tests__/board-task-id-race.test.js` skips it. That guard defaults to
+# CHECKED and this marker is the only way out, on purpose: the exemption it replaced
+# inferred "reference listing" from the block's shape, and a lone bare call satisfied
+# it — which is to say the guard exempted precisely the regression it exists to catch.
+# If you add a real, executed call here, delete this marker.
 scripts/board-task-id.sh check    # any duplicated id anywhere on the board? (exit 1 if so)
 scripts/board-task-id.sh next     # the next free number
 scripts/board-task-id.sh claim --title "<bare title>" --body "<body>"   # create + settle

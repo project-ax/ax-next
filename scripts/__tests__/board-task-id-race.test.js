@@ -828,21 +828,25 @@ describe('board-task-id.sh — Task-ID allocation under concurrency', () => {
         .replace(/\\\n/g, ' ')
         .split('\n')
         .filter((l) => l.trim() && !/^\s*#/.test(l));
-      // A pure CLI-reference listing — every line is a bare `scripts/board-task-id.sh …`
-      // invocation with nothing depending on it — documents the subcommands rather than
-      // calling them, so there is no later work for a failure to corrupt. Any block that
-      // mixes the allocator with other statements IS a call site.
+      // The exemption is an EXPLICIT MARKER, not an inference from the block's shape.
       //
-      // The exemption keys on SHAPE, not intent, and that is the honest limit of it: a
-      // real call site consumes the result (`TASK_ID=$(…)`, so the line no longer starts
-      // with the script name) or interleaves `gh`/`board_batch`, and either one
-      // disqualifies the block. What could still slip through is a future BARE `claim`
-      // among reference lines — side-effecting, result discarded. Narrow, and no
-      // instance exists; noted so the next reader does not mistake the exemption for a
-      // judgement about what the block means.
-      if (code.length > 0 && code.every((l) => l.trim().startsWith('scripts/board-task-id.sh'))) {
-        continue;
-      }
+      // It used to be "every non-comment line is a bare `scripts/board-task-id.sh …`
+      // invocation, so nothing depends on the result". That reasoning is fine and the
+      // rule built from it was worthless, in the specific way that matters: a lone bare
+      // call in its own fence satisfies `every(...)` trivially — and a lone bare call IS
+      // the regression. MEASURED: with the shape rule in place, reverting SKILL.md's
+      // fenced `if TASK_ID=$(… settle …)` back to the bare form produced **0 red across
+      // 26**. The guard could not catch the exact bug it was written for, because the
+      // mutant deleted the very lines that disqualified the block from being exempt.
+      // Every additional line you remove makes an unsafe block *more* exempt. That is a
+      // rule whose strength runs backwards.
+      //
+      // So: default CHECKED, opt out on purpose and in writing. A doc that genuinely
+      // lists the CLI says so in the fence, and the marker is greppable, reviewable, and
+      // impossible to arrive at by deletion.
+      // Tested against the RAW block, not `code` — the marker IS a comment, and `code`
+      // has already dropped every comment line.
+      if (/#\s*board-task-id:\s*reference listing\b/.test(block)) continue;
       for (const line of code) {
         if (/scripts\/board-task-id\.sh\s+(claim|settle)\b/.test(line)) calls.push(line.trim());
       }
