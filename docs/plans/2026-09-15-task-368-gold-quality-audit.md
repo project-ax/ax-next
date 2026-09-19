@@ -3,14 +3,20 @@
 **The card asked:** of the 24 scored failures in the 2026-09-14 n=100 e2e run, how
 many are unwinnable because the *label* is wrong rather than because our memory is?
 
-**Answer: 3 of 24 are unwinnable. 4 more are winnable-but-scored-wrong. 17 of 24 are
+**Answer: 3 of 24 are unwinnable. 3 more are winnable-but-scored-wrong. 18 of 24 are
 real.**
+
+*(Corrected 2026-09-19, TASK-394: the headline originally read "4 strict / 17 real".
+That double-counted `eaca4986` — it is bad gold (see below) and was also carried into
+the strict-evidence table. The "Every row, with its reading" table below was right
+throughout: 3 / 3 / 18. See "The 3 that are unwinnable" and the corrected section
+below for why `eaca4986` belongs in bad-gold only.)*
 
 | reading of each failure | n | share of the 24 |
 |---|---|---|
 | **bad gold** — no correct answer exists, or the gold contradicts its own dates | **3** | 12.5% |
-| **gold sound, scoring strict** — the pipeline emitted the gold value and still failed | **4** | 16.7% |
-| **real** — memory, retrieval, or the agent's reasoning genuinely failed | **17** | **70.8%** |
+| **gold sound, scoring strict** — the pipeline emitted the gold value and still failed | **3** | 12.5% |
+| **real** — memory, retrieval, or the agent's reasoning genuinely failed | **18** | **75.0%** |
 
 **The card's own premise does not survive the audit.** It opened from "two of the 9
 false refusals look like bad gold — if that rate holds (22%)…". Only **one** of its two
@@ -27,8 +33,8 @@ stays comparable to our own history and to everyone else's. What the audit buys 
 |---|---|
 | scored product number (unchanged, quote this) | **76.0%** |
 | ceiling if the 3 unwinnable rows were removed | 79.0% |
-| ceiling if the 4 strict-scored rows also went our way | 83.0% |
-| headroom that is actually ours to win | **~17 points of the 24** |
+| ceiling if the 3 strict-scored rows also went our way | **82.0%** |
+| headroom that is actually ours to win | **~18 points of the 24** |
 
 So label noise is real and worth knowing about, but it is **not** the story. Three
 quarters of the failure set is ours.
@@ -130,20 +136,26 @@ Neither is stated.
 
 ---
 
-## The 4 where we produced the gold and lost anyway
+## The 3 where we produced the gold and lost anyway
 
 These are not bad gold. The gold is right, the pipeline retrieved it, and the answer
 was still marked wrong. Verified by exact substring match against the scored
-`agentAnswer`, not by eyeballing. (The last row is from TASK-365's replay rather than
-the scored run; it is **already counted** among the 3 bad-gold rows above and is listed
-here because it fails the same way, not as a fifth member of this group.)
+`agentAnswer`, not by eyeballing. The table below lists **five** rows because two of
+them — `eaca4986` and `7024f17c` (TASK-365 replay) — are **already counted** among the
+3 bad-gold rows above: both are listed here only because they *also* fail this same
+"gold present verbatim, still marked wrong" pattern, not because either is a member of
+this group. (Corrected 2026-09-19, TASK-394: an earlier version of this section header
+said "The 4" and folded `eaca4986` into the strict count, double-counting it against
+its own bad-gold classification above. Only `4b24c848`, `a2f3aa27`, and
+`gpt4_93159ced_abs` are strict-scored; that is the group this section is actually
+about.)
 
 | question | gold | present verbatim in our answer? | why it was failed |
 |---|---|---|---|
-| `eaca4986` | `C D E F G A B A G F E D C` | **yes** | labelled it "melody", declined to call it a chord progression |
+| `eaca4986` (bad gold, see above — not a member of this group) | `C D E F G A B A G F E D C` | **yes** | labelled it "melody", declined to call it a chord progression |
 | `4b24c848` | `five` | **yes** ("5 H&M tops") | hedged "at least 5" |
 | `a2f3aa27` | `1300` | **yes** ("1,250–1,300") | gave a range and a staleness caveat |
-| `7024f17c` (TASK-365 replay) | `0.5 hours` | **yes** ("at least 0.5 hours") | hedged on the yoga half |
+| `7024f17c` (TASK-365 replay; bad gold, see above — not a member of this group) | `0.5 hours` | **yes** ("at least 0.5 hours") | hedged on the yoga half |
 | `gpt4_93159ced_abs` | "…you haven't started working at Google yet" | **yes** ("no record of you working at Google") | rejected the false premise, then kept helping |
 
 Two deserve the detail:
@@ -259,7 +271,7 @@ Two patterns fall out of the "real" column, and neither is a memory-fidelity bug
   (misread "just started today"). Three more rows where nothing about retrieval or
   extraction would have helped.
 
-That is **6 of 24 that no memory change can fix**, on top of the 3 bad gold and 4 strict.
+That is **6 of 24 that no memory change can fix**, on top of the 3 bad gold and 3 strict.
 
 ---
 
@@ -289,9 +301,9 @@ How to use it:
   every number anyone else has. The deliverable is this list, not a fixed dataset. The
   file is untouched; this audit is read-only.
 
-The list is deliberately short. I did **not** add the 4 strict-scored rows to it,
-because those are winnable: three of them turn on answer *style* (hedging, ranges,
-helpfulness after a correct refusal), which is a prompt-level thing we control, not a
+The list is deliberately short. I did **not** add the 3 strict-scored rows to it,
+because those are winnable: two of them turn on answer *style* (hedging, ranges),
+and the third is helpfulness after a correct refusal, which is a prompt-level thing we control, not a
 property of the benchmark. If we ever want those points, the fix is on our side.
 
 ---
@@ -330,9 +342,10 @@ conclude a value is absent when it is two sessions away:
 computed first as an automatic screen for "we said the gold and still failed". It is
 unreliable in both directions — it scored `c9f37c46` at 100% because "months" matched
 while the agent said 3 and gold said 2, and it scored `eaca4986` at 0% because the gold
-is single letters. It is not in this report. The four strict-scored rows are backed by
-**exact substring match** against the scored answer text instead, which is the check
-that actually means what it says.
+is single letters. It is not in this report. The four "gold present verbatim" rows
+above (three strict-scored, plus `eaca4986` which is bad gold) are backed by **exact
+substring match** against the scored answer text instead, which is the check that
+actually means what it says.
 
 The verdicts themselves are judgments from reading the source. Where a judgment is
 close — `32260d93`, `a2f3aa27` — the report says so and counts it against us.
@@ -361,7 +374,8 @@ print('zero-span', sum(1 for a,_ in stats if a==0), '/', len(stats))
 print('evidence after question', sum(1 for _,b in stats if b>0), '/', len(stats))
 PY
 
-# the four strict-scored rows: gold present verbatim in our own answer
+# the four "gold present verbatim" rows (three strict-scored, plus eaca4986 which is
+# bad gold — see "The 3 that are unwinnable")
 python3 - <<'PY'
 import json, os
 rows={r['questionId']: r for r in (json.loads(l) for l in open(
