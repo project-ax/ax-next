@@ -153,6 +153,14 @@ read_board() {
     all=$(jq -cn --argjson a "$all" --argjson b "$nodes" '$a + $b') || return 1
     hasnext=$(printf '%s' "$page" | jq -r '.data.organization.projectV2.items.pageInfo.hasNextPage')
     cursor=$(printf '%s' "$page" | jq -r '.data.organization.projectV2.items.pageInfo.endCursor')
+    # Anything but the two booleans means the page did not have the shape we think it
+    # has — and the default branch below is `break`, which would report a PARTIAL board
+    # as a complete one. This is the one spot in this reader where an unchecked value
+    # turns a read failure into a wrong ANSWER rather than an error.
+    case "$hasnext" in
+      true | false) : ;;
+      *) return 1 ;;
+    esac
     [ "$hasnext" = "true" ] || break
     [ -n "$cursor" ] && [ "$cursor" != "null" ] || return 1
     after="$cursor"
@@ -283,7 +291,20 @@ settle_item() {
     mine=$(printf '%s' "$board" | jq -c "$JQ_WITH_IDS"' | map(select(.item == $i)) | .[0] // empty' \
       --arg i "$item")
     if [ -z "$mine" ]; then
-      fatal "item $item is not on the board. Nothing was renamed."
+      # Not necessarily a bad id. `claim` creates the card and re-reads it immediately,
+      # and Projects v2 does not promise read-after-write consistency. Treating the first
+      # absence as fatal would make `claim` report failure for a card it really did
+      # create — and the obvious remedy for THAT, creating another one, is the worst
+      # answer available. So an absent item is retried like any other unsettled state and
+      # only becomes fatal once the attempts run out. A genuinely bogus id still fails
+      # loudly, a couple of backoffs later.
+      if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+        echo "board-task-id.sh: $item is not on the board yet (attempt $attempt/$MAX_ATTEMPTS) — re-reading." >&2
+        attempt=$((attempt + 1))
+        backoff
+        continue
+      fi
+      fatal "item $item is not on the board after $MAX_ATTEMPTS reads. Nothing was renamed."
       return 2
     fi
     tid=$(printf '%s' "$mine" | jq -r '.tid // empty')
@@ -295,7 +316,12 @@ settle_item() {
     cohort_n=$(printf '%s' "$board" | jq -r "$JQ_WITH_IDS"' | map(select(.tid == $t)) | length' --arg t "$tid")
     if [ "$cohort_n" = "1" ]; then
       SETTLED_TID="$tid"
-      echo "board-task-id.sh: $tid is held by exactly one card ($item) — settled."
+      # Prose to STDERR, the id to STDOUT. A settle that YIELDS changes the card's
+      # number, and a caller still holding the old `$TASK_ID` would go on to dispatch,
+      # journal and set `Depends on` against an id this card no longer carries — silent
+      # id drift, which is the exact failure this script exists to end. So the surviving
+      # id is machine-readable output, not something to read out of a sentence.
+      echo "board-task-id.sh: $tid is held by exactly one card ($item) — settled." >&2
       return 0
     fi
 
@@ -328,7 +354,11 @@ settle_item() {
 
     echo "board-task-id.sh: COLLISION on $tid ($cohort_n cards). $item is not the keeper, so it yields -> [${tid%%-*}-$nextn]." >&2
     # NOT piped, for the same reason read_board is not: this `||` has to see gh's own rc.
-    if ! gh project item-edit --id "$draft" --title "$newtitle"; then
+    # `>&2`, because stdout is this script's machine-readable channel and `gh` prints a
+    # chatty `Edited item "…"` line on success. Redirection does not touch the exit
+    # status, so the `if !` still sees gh's own rc — this is not the pipe trap, it is the
+    # opposite: keep the status, get the noise out of the answer.
+    if ! gh project item-edit --id "$draft" --title "$newtitle" >&2; then
       fatal "item-edit refused $draft — $item still carries $tid."
       return 1
     fi
@@ -363,7 +393,11 @@ cmd_settle() {
     esac
   done
   [ -n "$item" ] || { echo "board-task-id.sh: settle needs --item <PVTI_...>" >&2; return 2; }
-  settle_item "$item"
+  settle_item "$item" || return $?
+  # The id that SURVIVED, for the caller to carry forward. See the stdout/stderr split in
+  # settle_item: a yield renames the card, so the id you passed in is not always the id
+  # you get back — and that is the whole reason to ask.
+  echo "$SETTLED_TID"
 }
 
 # ---------------------------------------------------------------------------------

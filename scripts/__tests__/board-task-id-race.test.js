@@ -456,6 +456,20 @@ describe('board-task-id.sh — Task-ID allocation under concurrency', () => {
     expect(out.trim()).toBe('402');
   });
 
+  it.runIf(HAS_JQ)('next counts every prefix, not just TASK', () => {
+    // One counter across ARCH/CLI/SYNC/FAULTA/TASK, which the script documents and
+    // nothing pinned: a reviewer applied `select(.prefix == "TASK")` to `next_num` and
+    // all 23 tests stayed green. `ARCH-500` and `TASK-500` really are different ids, so
+    // `check` would not flag the drift either — handing out a fresh `TASK-500` next to a
+    // historical `ARCH-500` is a human misreading waiting to happen, which is the same
+    // failure this card is about one level up.
+    seed('PVTI_a', '[ARCH-500] the highest number on the board');
+    seed('PVTI_b', '[TASK-100] the highest TASK');
+    const { code, out } = run(['next']);
+    expect(code).toBe(0);
+    expect(out.trim(), 'the max was taken from the TASK prefix alone').toBe('501');
+  });
+
   it.runIf(HAS_JQ)('pagination reaches the last page', () => {
     // The board passed 300 items in Aug 2026 and Done cards never leave. A lone
     // `first:100` reads the OLDEST cards and computes a max that is already taken.
@@ -519,6 +533,32 @@ describe('board-task-id.sh — Task-ID allocation under concurrency', () => {
       boardTitles().filter((t) => t.startsWith('[TASK-420]')).length,
       'the keeper renamed itself instead of holding its number',
     ).toBe(2);
+  });
+
+  it.runIf(HAS_JQ)('settle prints the SURVIVING id on stdout, prose on stderr', () => {
+    // The caller's `$TASK_ID` is stale the moment its card yields. If the surviving id
+    // were only mentioned inside a sentence on stdout, every later use of it — the
+    // dispatch prompt, the journal row, the `Depends on` field — would name a number
+    // this card no longer carries. Silent id drift, which is what this whole card is
+    // about, reintroduced one level up by the repair.
+    seed('PVTI_a', '[TASK-420] theirs');
+    seed('PVTI_b', '[TASK-420] mine');
+    const r = spawnSync('bash', ['-c', `"$0" settle --item PVTI_b 2>/dev/null`, SCRIPT], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${STUB_DIR}:${process.env.PATH}`,
+        STUB_BOARD_DIR: boardDir,
+        BOARD_TASK_ID_BACKOFF_MS: '30',
+      },
+      cwd: REPO_ROOT,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(
+      r.stdout.trim(),
+      'stdout must be exactly the id that survived — it is what the caller carries forward',
+    ).toBe('TASK-421');
+    expect(boardTitles()).toContain('[TASK-421] mine');
   });
 
   it.runIf(HAS_JQ)('renames through the draft-issue content id', () => {

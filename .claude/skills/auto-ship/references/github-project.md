@@ -314,7 +314,13 @@ ITEM_ID=$(printf '%s' "$ITEMS" | jq -r --arg p "[$TASK_ID] " \
 # `$TASK_ID` here is one you ALREADY hold, so this path allocates nothing -- but another
 # session may have taken the number between your snapshot and this write, so confirm
 # before anything starts referencing the card (§8.2a).
-scripts/board-task-id.sh settle --item "$ITEM_ID"
+# TAKE THE ANSWER BACK. If this card turns out not to be the keeper, `settle` renames
+# YOUR card and the surviving id is no longer the `$TASK_ID` you came in with -- and
+# every later use of it (dispatch prompt, journal row, `Depends on`) would then name a
+# number this card does not carry. settle prints the surviving id on stdout for exactly
+# this reason, and its prose goes to stderr so the capture stays clean.
+TASK_ID=$(scripts/board-task-id.sh settle --item "$ITEM_ID") \
+  || echo "FATAL: $TASK_ID is NOT confirmed unique — do not dispatch or write deps for $ITEM_ID" >&2
 
 # move a card to a lane (OPT_ID from the §2 map):
 gh project item-edit --id "$ITEM_ID" --project-id "$PROJ_ID" \
@@ -344,12 +350,16 @@ board_batch "$PROJ_ID" "$ID1|$STATUS_FIELD_ID|single|$INPROG" \
 # in ONE process -- see §8.2a. `$T` is the BARE title; claim adds the prefix. It prints
 # "<TASK-ID> <PVTI_id>" on success.
 # Captured, NOT `read … <<<"$(…)"`: a herestring makes `$?` READ's status, so a refusal
-# would arrive as two empty variables and `board_batch` would then write fields onto a
-# card that does not exist. Same trap as the piped `gh` in §8.2.
-CLAIM=$(scripts/board-task-id.sh claim --title "$T" --body "$B") \
-  || echo "FATAL: no Task ID allocated — follow-up card NOT created"
-TASK_ID=${CLAIM%% *}; ID=${CLAIM##* }
-board_batch "$PROJ_ID" "$ID|$STATUS_FIELD_ID|single|$TODO" "$ID|$DEPS_FIELD_ID|text|none"
+# would arrive as two empty variables. And the routing lives INSIDE the `if`, not after a
+# bare `|| echo` -- that form captures the status correctly and then falls through
+# anyway, so `board_batch` still runs with an empty `$ID`. Reporting a failure and then
+# proceeding as though it had not happened is the same bug wearing a FATAL line.
+if CLAIM=$(scripts/board-task-id.sh claim --title "$T" --body "$B"); then
+  TASK_ID=${CLAIM%% *}; ID=${CLAIM##* }
+  board_batch "$PROJ_ID" "$ID|$STATUS_FIELD_ID|single|$TODO" "$ID|$DEPS_FIELD_ID|text|none"
+else
+  echo "FATAL: no Task ID allocated — follow-up card NOT created, nothing routed" >&2
+fi
 ```
 
 The card **body** is written through a different door — the delimited progress block
@@ -404,7 +414,9 @@ Best-effort; a failed learnings write never blocks the merge. (The just-merged c
 **Done**, so it is naturally excluded from the To Do filter — no self-write.)
 
 **Design-intake card creation.** In design-intake mode the **decomposition agent** runs
-`item-create` for each slice with the `epic:<slug>` + `design:` markers in the body
+`scripts/board-task-id.sh claim` for each slice (**not** a bare `item-create` — it must
+allocate through the same door as everyone else, §8.2a) with the `epic:<slug>` +
+`design:` markers in the body
 (`references/templates.md` › Decomposition dispatch prompt); the orchestrator then
 `board_batch`es each new card's `Status → To Do` + `Depends on` from the returned
 manifest — the agent never sets routing.
