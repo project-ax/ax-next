@@ -183,12 +183,14 @@ The block is built at chat start and is stale for the rest of the conversation i
 
 ### 4.2 `memory_recall` — the per-turn path
 
-Input: `{ query: string; limit?: number }`. Default 15 rows, max 40 (rerank pool scales with `limit`; budget-fill was measured null).
+Input: `{ query: string; limit?: number; history?: boolean }`. Default 15 rows, max 40 (rerank pool scales with `limit`; budget-fill was measured null). `history` defaults `false`.
 
 Not on the tool, on purpose:
 - **`at` (time travel).** The exact footgun DEM's README warns about, handed to a model: an agent asked "what was I doing in March" will pass `at: March` and evict everything recorded later. `asOf` is automatic and the `When` column renders dates, so no measured question type needs it. Stays on `memory:recall` for the UI.
 - **`about`.** "Everything about Cedar Creek" is `query: "Cedar Creek", limit: 40`; `about` values are extractor-canonical and a model guessing them misses.
 - **Statement ids.** They pay tokens for a tool the agent doesn't have; correction of slot facts already works through `memory_note` under provenance ordering. Ids stay on the hook output for the UI.
+
+**`history` — decided, not built.** Rung 1 found `031748ae` (4/4 → 2/4): the slot rule correctly closed `user | works_as | Senior Software Engineer (new role)`, but `validityClause`'s active-only default (`valid_end = INFINITY_SENTINEL`) then drops the closed row out of the candidate set entirely, so a knowledge-update question about the *transition* loses the gold row that names the change. `at` stays off the tool — this is a different, safer request. When `history: true`, `validityClause` takes a third mode (neither the `at` point-in-time range nor the active-only default): no validity filter, returning active and superseded rows for the query. Since only slot-mapped statements are ever closed, this is a no-op for the other 99.66% of rows and changes nothing for calls that leave the flag unset. A closed row renders in the evidence table using the export's existing convention (§5.2): `Kind | When | Statement (until <date>)`, oldest-first, same table shape as today. Not yet implemented in `dem-memory` or `@ax/memory`.
 
 Output is the evidence table **byte-identical to DEM's**: `Kind | When | Statement`, `When` as date + weekday + elapsed computed in TypeScript, oldest-first, `asOf` set to the wall clock by the product layer on every call. This table is the artifact behind temporal-reasoning 90.2 vs 59.3; nothing in the read path re-renders it. The result header carries today's date, the degraded state if any (§4.4), and the *measured* grounding line from DEM's reflect prompt — not a new one; see "two prompt sentences that cost answers" in `HANDOFF.md`. The abstention directive does not otherwise come along, and hallucination over a thin table is the failure to expect; §8 rung 4 is where that gets measured.
 
