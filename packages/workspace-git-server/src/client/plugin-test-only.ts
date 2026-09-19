@@ -4,30 +4,39 @@
 // Role (unchanged from Phase 1): bridge between the contract-test harness and
 // the storage tier. The harness boots a fresh server per scenario and hands
 // us a `(baseUrl, token, workspaceId)` triple via `boot()`; we register the
-// four `workspace:*` hooks against that fixed workspaceId so the harness can
-// exercise apply/read/list/diff without knowing anything about git wire
-// formats, mirror caches, or repo lifecycle REST.
+// five `workspace:*` hooks against that server so the harness can exercise
+// apply/read/list/diff without knowing anything about git wire formats,
+// mirror caches, or repo lifecycle REST.
 //
 // What changed in Phase 2: this plugin no longer carries its own copy of the
 // git-engine helpers (runGit, fetchMirror, buildScratch, buildDelta, …). It
 // composes the shared `GitEngine` from `git-engine.ts` with a per-instance
-// `MirrorCache` and `RepoLifecycleClient`, and threads the fixed workspaceId
-// from `boot()` through every call. The factory signature, manifest, and
-// `CreateTestOnlyGitServerPluginOptions` shape are deliberately preserved so
-// the contract test, the multi-replica integration test, and the empty-repo
-// integration test all keep passing unchanged.
+// `MirrorCache` and `RepoLifecycleClient`. The factory signature, manifest,
+// and `CreateTestOnlyGitServerPluginOptions` shape are unchanged.
 //
 // Why we keep this plugin alongside `createWorkspaceGitServerPlugin`: the
-// contract test wants ONE workspaceId per plugin instance (so each scenario
-// gets a clean version history). The production plugin derives workspaceId
-// from `ctx` (a per-call agentId — TASK-257) — that's correct for production
-// where many agents share a single host pod, but wrong for the harness which
-// has no real ctx. Keeping a thin test-only adapter avoids contorting the
-// production factory's contract for test purposes.
+// production factory takes its server connection synchronously, while these
+// tests want to boot a server first and hand the connection over
+// asynchronously. This adapter is that `boot()` seam and nothing more.
+//
+// ⚠ It used to be more than that. It pinned ONE workspaceId per plugin
+// instance and ignored `ctx` on every hook, so every caller — every agent,
+// every user — shared one tree. That made it the one thing the shared
+// contract could not be allowed to accept, because a backend that ignores
+// ctx is exactly the #583 bug. TASK-413 gave `runWorkspaceContract` an
+// isolation property, and this adapter now partitions like the production
+// one: the boot-supplied workspaceId is a NAMESPACE, and each caller's
+// `agentId` selects a repo inside it.
+//
+// Why namespace rather than call `workspaceIdFor` straight: a test fixture
+// picks its own `boot()` workspaceId precisely so two fixtures sharing one
+// server don't collide. Hashing agentId alone would throw that away — every
+// fixture using the harness's default agent would land on one repo.
 //
 // NOT exported from `index.ts`. NOT registered by any preset.
 // ---------------------------------------------------------------------------
 
+import { createHash } from 'node:crypto';
 import { registerWorkspaceApplyFacade } from '@ax/core';
 import type {
   Plugin,
@@ -52,8 +61,11 @@ const PLUGIN_NAME = '@ax/workspace-git-server-test-only';
 export interface CreateTestOnlyGitServerPluginOptions {
   /**
    * Boots a fresh server (or reuses one) and returns the connection info +
-   * a workspaceId for this plugin instance to operate on. Called once per
-   * `init()`.
+   * the workspaceId NAMESPACE this plugin instance operates under. Called
+   * once per `init()`. The repo a given call actually reaches is
+   * `namespacedWorkspaceId(workspaceId, ctx.agentId)`; a fixture that needs
+   * to address that repo server-side (a `createRepo`, a `git log` on the bare
+   * repo) must derive it the same way.
    */
   boot: () => Promise<{
     baseUrl: string;
@@ -65,7 +77,26 @@ export interface CreateTestOnlyGitServerPluginOptions {
 interface PluginState {
   mirrorCache: MirrorCache;
   engine: GitEngine;
-  workspaceId: string;
+  namespace: string;
+}
+
+/**
+ * `<boot workspaceId>-<first 12 hex of sha256([agentId])>`.
+ *
+ * Same partition policy as production (`workspaceIdFor`): `agentId` ALONE,
+ * never `userId` and never the pair. Two users of one agent land on one
+ * repo; two agents never do.
+ *
+ * The digest contributes only `[0-9a-f]`, so no `agentId` — however hostile —
+ * can steer the result. Whether the whole id satisfies `WORKSPACE_ID_REGEX`
+ * also depends on `namespace`, which is neither hashed nor validated here: a
+ * fixture passing `Foo` or `-x` gets an id the server rejects. That is the
+ * fixture's problem, not a caller-reachable one, since `namespace` comes from
+ * test code and never from a request.
+ */
+export function namespacedWorkspaceId(namespace: string, agentId: string): string {
+  const h = createHash('sha256').update(JSON.stringify([agentId])).digest('hex');
+  return `${namespace}-${h.slice(0, 12)}`;
 }
 
 /**
@@ -74,8 +105,8 @@ interface PluginState {
  * `workspace:read` against a fresh workspace BEFORE any apply — and the
  * engine's first step is `git fetch`, which 404s against a server repo that
  * doesn't exist yet. Phase 1's plugin-test-only sidestepped this by calling
- * `createRepo` in `init()`. We preserve that behavior here so the contract
- * test sees the same surface.
+ * `createRepo` once in `init()`; since the repo is now chosen per caller we
+ * do it on first touch instead, which keeps that surface.
  *
  * 409 (repo already exists) is fine — multi-replica scenarios share one repo
  * across plugins, so racing creates are expected.
@@ -114,7 +145,7 @@ export function createTestOnlyGitServerPlugin(
     },
 
     async init({ bus }) {
-      const { baseUrl, token, workspaceId } = await opts.boot();
+      const { baseUrl, token, workspaceId: namespace } = await opts.boot();
       const mirrorCache = createMirrorCache();
       const lifecycleClient = createRepoLifecycleClient({ baseUrl, token });
       const engine = createGitEngine({
@@ -123,46 +154,67 @@ export function createTestOnlyGitServerPlugin(
         mirrorCache,
         lifecycleClient,
       });
-      // Pre-create the repo so a `workspace:read` before any `apply` doesn't
-      // 404 on the server. See ensureRepoExists() for the why.
-      await ensureRepoExists(lifecycleClient, workspaceId);
-      state = { mirrorCache, engine, workspaceId };
+      state = { mirrorCache, engine, namespace };
+
+      // Per-agent repos are created on first touch rather than once in
+      // init(), because we no longer know at init() which agents will call.
+      // Memoized so a read-heavy scenario doesn't re-POST per call.
+      const ensured = new Map<string, Promise<void>>();
+      const repoFor = async (ctx: { agentId: string }): Promise<string> => {
+        const id = namespacedWorkspaceId(namespace, ctx.agentId);
+        let pending = ensured.get(id);
+        if (pending === undefined) {
+          // Pre-create so a `workspace:read` before any `apply` doesn't 404
+          // on the server. See ensureRepoExists() for the why.
+          pending = ensureRepoExists(lifecycleClient, id);
+          ensured.set(id, pending);
+        }
+        try {
+          await pending;
+        } catch (err) {
+          // Don't cache a failure — a transient 500 would otherwise poison
+          // this workspaceId for the rest of the run.
+          ensured.delete(id);
+          throw err;
+        }
+        return id;
+      };
 
       // The PUBLIC `workspace:apply` is the @ax/core facade (pre-apply +
       // applied around the raw impl); we register the raw impl as
       // `workspace:apply-internal`.
       registerWorkspaceApplyFacade(bus, PLUGIN_NAME);
 
-      // Each hook delegates to the engine with the FIXED workspaceId from
-      // boot() — production callers derive workspaceId from ctx, but this
-      // adapter pins one workspace per plugin instance so the contract test
-      // gets a clean version history per scenario.
+      // Every hook derives its repo from `ctx.agentId`. Read/list/diff take
+      // ctx for exactly this reason — a backend that drops ctx on the read
+      // paths is the #583 shape, and the shared contract now rejects it.
       bus.registerService<WorkspaceApplyInput, WorkspaceApplyOutput>(
         'workspace:apply-internal',
         PLUGIN_NAME,
-        (ctx, input) => engine.apply(workspaceId, input, {
-          agentId: ctx.agentId,
-          userId: ctx.userId,
-          sessionId: ctx.sessionId,
-        }),
+        async (ctx, input) =>
+          engine.apply(await repoFor(ctx), input, {
+            agentId: ctx.agentId,
+            userId: ctx.userId,
+            sessionId: ctx.sessionId,
+          }),
       );
 
       bus.registerService<WorkspaceReadInput, WorkspaceReadOutput>(
         'workspace:read',
         PLUGIN_NAME,
-        (_ctx, input) => engine.read(workspaceId, input),
+        async (ctx, input) => engine.read(await repoFor(ctx), input),
       );
 
       bus.registerService<WorkspaceListInput, WorkspaceListOutput>(
         'workspace:list',
         PLUGIN_NAME,
-        (_ctx, input) => engine.list(workspaceId, input),
+        async (ctx, input) => engine.list(await repoFor(ctx), input),
       );
 
       bus.registerService<WorkspaceDiffInput, WorkspaceDiffOutput>(
         'workspace:diff',
         PLUGIN_NAME,
-        (_ctx, input) => engine.diff(workspaceId, input),
+        async (ctx, input) => engine.diff(await repoFor(ctx), input),
       );
     },
 
