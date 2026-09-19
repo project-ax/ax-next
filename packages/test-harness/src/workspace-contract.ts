@@ -278,8 +278,18 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
     describe('tenant isolation: the partition is agentId alone', () => {
       async function tenants() {
         const h = await load();
+        // `sessionId` is held CONSTANT, and that is load-bearing. It used to
+        // be `${userId}:${agentId}`, which made it co-vary with whichever
+        // field a case was varying — so cases 1/3/5 varied agentId AND
+        // sessionId and would have passed against a backend partitioned on
+        // `sessionId` alone. MEASURED: with the derived sessionId, a
+        // sessionId-keyed mutant scored 1 red / 15 green, the single red
+        // being case 4. The whole rejection of a wrong partition rested on
+        // one case, one deletion away from silently coming back. Pinning it
+        // is what makes "every pair varies exactly one field" true rather
+        // than aspirational.
         const caller = (userId: string, agentId: string) =>
-          h.ctx({ userId, agentId, sessionId: `${userId}:${agentId}` });
+          h.ctx({ userId, agentId, sessionId: 'contract-isolation' });
         const write = (
           ctx: ReturnType<typeof caller>,
           path: string,
@@ -421,7 +431,13 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
         const a1 = await write(asA, 'secret.md', 'agent A only');
 
         const out = await read(asB, 'secret.md', a1.version).catch(
-          () => ({ found: false }) as WorkspaceReadOutput,
+          (err: unknown) => {
+            // Only a STRUCTURED refusal counts. A bare `catch(() => notFound)`
+            // would let an unrelated backend crash wear the isolation costume
+            // and report green.
+            expect(err).toMatchObject({ code: expect.any(String) });
+            return { found: false } as WorkspaceReadOutput;
+          },
         );
         expect(out.found).toBe(false);
       });
