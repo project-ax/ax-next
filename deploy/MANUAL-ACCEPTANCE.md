@@ -622,22 +622,27 @@ small HTTP front door:
 
    The git-server is a **StatefulSet**, not a Deployment, and the chart names
    it `<release>-<chart>-git-server-experimental` (see
-   `ax-next.gitServerExperimentalComponentName` in `_helpers.tpl`). Don't type
-   the name — select on the label, which is stable across release names:
+   `ax-next.gitServerExperimentalComponentName` in `_helpers.tpl`). On a default
+   `helm install ax-next` that is `ax-next-git-server-experimental`, and the
+   pods are `<that>-<ordinal>`.
+
+   Note the label you'd reach for does NOT work on pods:
+   `ax-next.selectorLabels` emits only `app.kubernetes.io/name`, so
+   `app.kubernetes.io/component=git-server-experimental` is on the StatefulSet
+   and Service *metadata* but not on the pods. Select pods by name:
 
    ```bash
-   GS=-lapp.kubernetes.io/component=git-server-experimental
+   GSPOD=$(kubectl -n ax-next get pods -o name | grep git-server-experimental | head -1)
    ```
 
    ```bash
    # Probe A: count commits directly from the git-server pod, per workspace.
    # The pod ships the real `git` binary — that is the whole point of this
    # tier — so use it rather than a JS git library.
-   kubectl -n ax-next get pods $GS -o name | head -1 | xargs -I{} \
-     kubectl -n ax-next exec {} -- sh -c \
-       'for d in /var/lib/ax-next/repo/ws-*.git; do \
-          printf "%s %s\n" "$d" "$(git --git-dir="$d" rev-list --count refs/heads/main)"; \
-        done'
+   kubectl -n ax-next exec "$GSPOD" -- sh -c \
+     'for d in /var/lib/ax-next/repo/ws-*.git; do \
+        printf "%s %s\n" "$d" "$(git --git-dir="$d" rev-list --count refs/heads/main)"; \
+      done'
    ```
 
    Expected: at least one `ws-*.git` listed, with a commit count at least 2
@@ -651,7 +656,8 @@ small HTTP front door:
    # The token Secret is `<release>-<chart>-git-server-auth`; on a default
    # `helm install ax-next` that is `ax-next-git-server-auth`.
    SECRET=$(kubectl -n ax-next get secret -o name | grep git-server-auth | head -1)
-   kubectl -n ax-next port-forward $(kubectl -n ax-next get svc $GS -o name | head -1) 7780:7780 &
+   GSSVC=$(kubectl -n ax-next get svc -o name | grep git-server-experimental | grep -v headless | head -1)
+   kubectl -n ax-next port-forward "$GSSVC" 7780:7780 &
    curl http://localhost:7780/repos/<workspaceId> \
      -H "Authorization: Bearer $(kubectl -n ax-next get $SECRET \
         -o jsonpath='{.data.token}' | base64 -d)" | jq .
