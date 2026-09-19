@@ -207,6 +207,9 @@ const HOOK_WITH_TIMEOUT =
  * NAMED_NUMERIC_CONST rather than an exemption: both names resolve to 30_000 in
  * their own file, so folding them into the package maximum costs nothing and is
  * conservative in the fail-CLOSED direction even when the attribution is wrong.
+ * That direction is now PINNED rather than merely argued — see "folds a
+ * MISATTRIBUTED `it` budget into the maximum" below, which exists so that an
+ * edit turning this tolerance into an under-read reddens.
  * If this list ever reddens again, check the captured identifier really IS a
  * hook's timeout before believing the message — and fix the regex, never the
  * config.
@@ -228,14 +231,54 @@ const UNREADABLE_HOOK_TIMEOUT =
  * a constant declared in a helper module. Those stay in the unreadable list,
  * which is the fail-closed side — an unresolved name is reported, never silently
  * counted as zero.
+ *
+ * "Top-level-ish" is the part that needs care: the `[ \t]*` tolerance means this
+ * also matches a const declared inside a `describe`, so one name can be declared
+ * twice in a file with two different values. `numericConsts` resolves that to the
+ * LARGER value — see its comment for why last-write-wins was fail-open here.
  */
 const NAMED_NUMERIC_CONST =
   /^[ \t]*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::\s*number\s*)?=\s*(\d[\d_]*)\s*;/gm;
 
-/** `name -> milliseconds` for every file-local numeric constant in `text`. */
+/**
+ * `name -> milliseconds` for every file-local numeric constant in `text`.
+ *
+ * A repeated name resolves to the LARGEST value declared, not the last one.
+ * That is a safety property, not a tidy-up, and it is the only place in this
+ * file where the source scan had a genuine fail-OPEN direction.
+ *
+ * `NAMED_NUMERIC_CONST`'s `^[ \t]*` anchor is indentation-tolerant on purpose —
+ * it has to be, to reach a const declared inside a `describe` block — so a
+ * shadowing declaration matches just as readily as the top-level one. With
+ * last-write-wins, a file spelling
+ *
+ *     const TIMEOUT_MS = 120_000;            // the beforeAll's budget
+ *     describe(..., () => { const TIMEOUT_MS = 5_000; ... });
+ *
+ * reported its package maximum as **5_000**. `maxDeclaredHookTimeout` would then
+ * sit below what a hook in that package actually declares, and the
+ * `hookTimeout >= max` assertion passes a config that is far too low — the
+ * `packages/cli` shape again, green on the violation it exists to catch.
+ * Reversing the two declarations reported 120_000, so the guard's verdict turned
+ * on nothing but declaration order.
+ *
+ * Taking the maximum makes the resolution order-independent and monotone upward,
+ * which is the direction this file is already committed to everywhere else: an
+ * over-read reddens loudly (see the note on `HOOK_WITH_TIMEOUT`), an under-read
+ * reports success. MEASURED at the commit that made this change: it moves **0 of
+ * 32** in-scope package maxima — three files do repeat a name with differing
+ * values (`N` in `conversations/…/events-store.test.ts`, `cap` in
+ * `ipc-core/…/body.test.ts`) but none of those names is spelled as a timeout, so
+ * nothing resolves through them today. The fix is for the edit that comes later.
+ */
 function numericConsts(text) {
   const out = new Map();
-  for (const m of text.matchAll(NAMED_NUMERIC_CONST)) out.set(m[1], Number(m[2].replace(/_/g, '')));
+  for (const m of text.matchAll(NAMED_NUMERIC_CONST)) {
+    const name = m[1];
+    const ms = Number(m[2].replace(/_/g, ''));
+    const seen = out.get(name);
+    out.set(name, seen === undefined ? ms : Math.max(seen, ms));
+  }
   return out;
 }
 
@@ -359,8 +402,21 @@ function outOfProcessPackages(repoRoot) {
  * gone before the value exists, `60_000` has already become `60000`, two
  * settings may share a line, a `mergeConfig` with a shared base resolves, and
  * `defineConfig` is the identity function at runtime. Vitest transforms the
- * `.ts` through vite, so this needs no extra dependency and no extra loader; the
- * whole tree of 62 configs resolves in ~180ms.
+ * `.ts` through vite, so this needs no extra dependency and no extra loader.
+ *
+ * On cost, with the two corpora kept apart because they are easy to conflate.
+ * TASK-386's PROBE imported every `vitest.config.ts` under the package roots and
+ * took 177/184/188ms across three runs. This GUARD imports only the in-scope
+ * subset and took 152/175/203ms across three runs. Re-measured 2026-09-19 the
+ * corpora are **63** configs and **32** respectively; the probe figure was
+ * recorded here as "62 configs" and was right on the day it was taken —
+ * `packages/memory-facts-sqlite` arrived the next morning, which is all it takes.
+ *
+ * The two timings are close not because they measure the same thing but because
+ * the cost is dominated by vite's transform pipeline rather than by the file
+ * count — halving the corpus barely moves it. That is exactly why quoting the
+ * probe's number as this guard's cost read plausible for as long as it did, and
+ * why the scopes are now named separately even though the milliseconds agree.
  *
  * It fails CLOSED in all three ways it can fail: an import that throws, a
  * default export that is not a plain object (`defineConfig(({ mode }) => ...)`
@@ -402,19 +458,38 @@ describe('packages that leave the process declare their own timeouts (TASK-323, 
   // Bare on purpose. A hook's own timeout ARGUMENT overrides the config, so a
   // bare hook is what `scripts/vitest.config.mjs`'s `hookTimeout` actually
   // governs — this guard's own teardown budget should be the one the suite
-  // declares, not one typed here. Measured at ~180ms for the whole tree.
+  // declares, not one typed here. Measured 2026-09-19 at 152/175/203ms over
+  // three runs for the 32 in-scope configs this loop actually imports — NOT the
+  // whole tree; see `readResolvedTestBudgets` for the probe figure and why the
+  // two land in the same range.
   beforeAll(async () => {
     for (const pkg of packages) budgets.set(pkg.name, await readResolvedTestBudgets(pkg.dir));
   });
 
   it('finds the out-of-process packages at all — a scan that matches nothing would pass everything below', () => {
     // Vacuity guard. Every assertion in this file is a `for (const pkg of
-    // packages)`, so an empty scan makes all of them trivially green. 25 as this
-    // is written (21 container packages plus agent-aisdk-runner,
-    // agent-claude-sdk-runner, agent-runner-core, test-harness, user-files-read,
-    // sandbox-k8s, workspace-git*, ipc-core — with overlap). The floor is
-    // deliberately loose: this catches the scan BREAKING, not the count moving.
-    expect(packages.length).toBeGreaterThanOrEqual(20);
+    // packages)`, so an empty scan makes all of them trivially green.
+    //
+    // MEASURED 2026-09-19 by running `outOfProcessPackages` over this tree: **32**
+    // in scope — 22 that start a container, 12 whose tests spawn, 2 doing both
+    // (22 + 12 - 2 = 32). The inputs are written beside the total on purpose, so
+    // the next reader can check the arithmetic instead of trusting the digit.
+    //
+    // The version this replaces said "25 as this is written (21 container
+    // packages plus ...)" and worked through a hand-kept list of the rest. Both
+    // numbers were WRONG ON THE DAY — replaying this same function at the commit
+    // that wrote them (`8516da20`, PR #581) also reports 32 and 22, so nothing
+    // drifted; the figures never matched the code sitting beside them. That is
+    // the failure this file exists to make harder, committed inside the file
+    // itself, and no test could have caught it: a comment is not executed.
+    //
+    // The floor stays deliberately loose — it catches the scan BREAKING, not the
+    // count moving — so the live count goes in the failure message rather than
+    // into a second number that can rot quietly.
+    expect(
+      packages.length,
+      `out-of-process scan found ${packages.length} packages: ${packages.map((p) => p.name).join(', ')}`,
+    ).toBeGreaterThanOrEqual(20);
   });
 
   it('includes packages whose tests spawn but start no container — the TASK-400 gap', () => {
@@ -678,6 +753,90 @@ describe('the scan catches a NEW package, and the config read is a read (TASK-40
     const pkg = outOfProcessPackages(root).find((p) => p.name === 'packages/imported-const');
     expect(pkg.unreadable.map((u) => u.name)).toEqual(['TIMEOUT_MS']);
     expect(pkg.maxDeclaredHookTimeout).toBe(0);
+  });
+
+  it('folds a MISATTRIBUTED `it` budget into the maximum — the safe direction, pinned', () => {
+    // UNREADABLE_HOOK_TIMEOUT's `[\s\S]*?` is not anchored to its own hook, so a
+    // BARE hook followed by `it(..., NAMED_MS)` captures the `it`'s budget and
+    // credits it to the hook. That is a real misattribution and it is deliberately
+    // not worked around — but "deliberately" was only ever a comment. This asserts
+    // it, because the reason it is tolerable is a DIRECTION: the wrong value can
+    // only RAISE `maxDeclaredHookTimeout`, and a higher maximum makes the
+    // `hookTimeout >= max` assertion harder to satisfy, never easier.
+    //
+    // Against the unfixed code this test passes — that is the point. It is not
+    // here to catch a bug; it is here so that an edit which makes the
+    // misattribution LOWER the maximum (an "exemption" for `it`, a first-wins
+    // resolver, a narrower fold) reddens instead of quietly opening the guard.
+    makePackage('it-budget-misattributed', {
+      testSource: [
+        "import { spawn } from 'node:child_process';",
+        'const E2E_TIMEOUT_MS = 90_000;',
+        'describe("x", () => {',
+        '  beforeAll(async () => {',
+        '    await warm();',
+        '  });',
+        '  it("slow", async () => {',
+        '    await go();',
+        '  }, E2E_TIMEOUT_MS);',
+        '});',
+      ].join('\n'),
+      config: "export default { test: { include: ['src/**/*.test.ts'] } };",
+    });
+    const pkg = outOfProcessPackages(root).find((p) => p.name === 'packages/it-budget-misattributed');
+    expect(pkg.unreadable).toEqual([]);
+    expect(pkg.maxDeclaredHookTimeout).toBe(90_000);
+  });
+
+  it('resolves a SHADOWED constant to the larger value, whichever order it is declared in', () => {
+    // The half that was NOT fail-closed, and the mutation that proves it.
+    //
+    // `numericConsts` built its map with `out.set(name, value)` — last-write-wins.
+    // NAMED_NUMERIC_CONST's `^[ \t]*` anchor is indentation-tolerant, so a nested
+    // `const TIMEOUT_MS = 5_000` inside a describe block overwrites a top-level
+    // `const TIMEOUT_MS = 120_000`. MEASURED against the unfixed resolver: the two
+    // fixtures below are the same two declarations in opposite orders and reported
+    // **5_000** and **120_000** respectively. The 5_000 one is the dangerous
+    // direction — a package whose `beforeAll` asks for 120s reports a maximum of
+    // 5s, so the guard passes a `hookTimeout` far below what that hook declares.
+    // That is the `packages/cli` failure exactly: green on the violation it exists
+    // to catch, and green because a value it could not see read as smaller.
+    //
+    // The equality assertion is the load-bearing one. A maximum must not depend on
+    // the order two declarations happen to appear in, and asserting only the value
+    // would be satisfied by a resolver that got lucky on one layout.
+    const src = (first, second) =>
+      [
+        "import { spawn } from 'node:child_process';",
+        ...first,
+        ...second,
+      ].join('\n');
+    const bigFirst = [
+      'const TIMEOUT_MS = 120_000;',
+      'describe("outer", () => {',
+      '  beforeAll(async () => {',
+      '    await warm();',
+      '  }, TIMEOUT_MS);',
+      '});',
+    ];
+    const smallSecond = [
+      'describe("inner", () => {',
+      '  const TIMEOUT_MS = 5_000;',
+      '  it("quick", async () => {',
+      '    await go();',
+      '  }, TIMEOUT_MS);',
+      '});',
+    ];
+    const config = "export default { test: { include: ['src/**/*.test.ts'] } };";
+    makePackage('shadow-big-first', { testSource: src(bigFirst, smallSecond), config });
+    makePackage('shadow-small-first', { testSource: src(smallSecond, bigFirst), config });
+
+    const found = outOfProcessPackages(root);
+    const bigFirstMax = found.find((p) => p.name === 'packages/shadow-big-first').maxDeclaredHookTimeout;
+    const smallFirstMax = found.find((p) => p.name === 'packages/shadow-small-first').maxDeclaredHookTimeout;
+
+    expect(bigFirstMax).toBe(smallFirstMax);
+    expect(bigFirstMax).toBe(120_000);
   });
 
   // Bare, like the setup hook, and for the same reason: what the suite's

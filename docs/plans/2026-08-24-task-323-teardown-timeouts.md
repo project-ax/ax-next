@@ -82,8 +82,13 @@ Per package: `testTimeout: 60_000` (the in-tree precedent, 8 packages already), 
   carved out around known violations.
 
 ### T3 — the regression guard (Bug Fix Policy)
-`scripts/__tests__/container-test-timeouts.test.js`, run by `pnpm test:scripts` — no
-network, no Docker, no build, same posture as the other drift guards there:
+`scripts/__tests__/out-of-process-test-timeouts.test.js`, run by `pnpm test:scripts` —
+no network, no Docker, no build, same posture as the other drift guards there:
+
+> Path updated after the fact: this shipped as `container-test-timeouts.test.js` and
+> was renamed by TASK-400 (PR #581), which widened the scope predicate from "starts a
+> container" to "does work in another process". The three assertions below are
+> unchanged; only (1)'s subject widened.
 
 1. every container-starting package sets both `testTimeout` and `hookTimeout`;
 2. its `hookTimeout` ≥ the largest hook-timeout argument declared in that package;
