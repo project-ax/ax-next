@@ -52,9 +52,20 @@
 // already taken.
 //
 // MUTANTS RUN, NOT REASONED ABOUT (2026-09-19; each applied to the committed script and
-// executed, then restored with `git checkout --`; baseline 20 collected, 20 passed).
-// Every mutant still COLLECTS 20 — the number to distrust is a red count that arrives
-// with a shrunken total.
+// executed, then restored with `git checkout --`). Counts below are the RE-MEASURED ones
+// against the post-review script: baseline 25 collected, 25 passed, and every mutant
+// still COLLECTS 25 — the number to distrust is a red count that arrives with a shrunken
+// total.
+//
+// A WARNING THAT COST ME AN HOUR, AND IS NOT ABOUT MUTANTS AT ALL. Restoring a mutant
+// with `git checkout -- scripts/board-task-id.sh` is correct for whoever is running the
+// battery and DESTRUCTIVE to anyone else editing that file at the same moment. The
+// yolo-ship reviewer is dispatched WITHOUT its own worktree, so it shares the builder's
+// tree. Mine ran this same battery while I was applying its findings: my six edits
+// vanished, and the failing run I then spent a detour debugging was executing ITS mutant
+// — a deterministic keeper branch that provably could not behave the way I was seeing.
+// `git diff --stat` disagreeing with what you just wrote is the tell. Commit before
+// anyone else touches the tree.
 //
 //   M1. `board_or_die` reduced to a bare `read_board` — the naive version anyone writes
 //       first, with no guards at all -> 3 red: `a failed board read is not a pass`,
@@ -65,22 +76,22 @@
 //       `an empty board is not a pass`. The subtler half: `gh` exits 0, the JSON parses,
 //       and the answer is `[]`. A `length > 0` test is the only thing between that and
 //       "no cards, therefore no duplicates".
-//   M3. `settle` exits as soon as its rename succeeds, instead of looping to re-verify.
-//       THIS ONE SURVIVED THE FIRST VERSION OF THIS FILE — 0 red across every other test
-//       here, because with TWO parties it is genuinely enough: the deterministic keeper
-//       means only one of them renames, and it renames to a free number. It is wrong only
-//       with three, where two non-keepers compute the same `max+1` and swap one duplicate
-//       for another. `a three-way collision resolves` was written for exactly that and
-//       reddens it. A suite that stops at the headline scenario grades the easy case.
+//   M3. `settle` exits as soon as its rename succeeds, instead of looping to re-verify
+//       -> 2 red. THIS ONE SURVIVED THE FIRST VERSION OF THIS FILE — 0 red across every
+//       other test here, because with TWO parties it is genuinely enough: the
+//       deterministic keeper means only one of them renames, and it renames to a free
+//       number. It is wrong only with three, where two non-keepers compute the same
+//       `max+1` and swap one duplicate for another. `a three-way collision resolves` was
+//       written for exactly that. A suite that stops at the headline scenario grades the
+//       easy case.
 //   M4. `settle` always yields (the deterministic keeper branch removed) -> 3 red:
 //       `the keeper keeps its number`, `two concurrent claimers` and `a three-way
 //       collision resolves`. Note the middle one: both parties move, both land on the
 //       same `max+1`, and they collide AGAIN. A randomized backoff is what this mutant
 //       amounts to, and it is why the keeper rule is deterministic instead.
 //   M5. `settle` renames through the `PVTI_` item id instead of the `DI_` content id ->
-//       4 red: `the loser renames only its own card`, `renames through the draft-issue
-//       content id`, `two concurrent claimers`, `a three-way collision resolves`. The
-//       stub refuses exactly as real `gh` was measured to in TASK-401.
+//       5 red, every test that makes a card actually move. The stub refuses exactly as
+//       real `gh` was measured to in TASK-401.
 //   M6. `next_num` compares lexically instead of numerically -> 1 red, `next is numeric,
 //       not lexical`. The fixture's TASK-99 sorts above TASK-401 as a string, so the
 //       answer becomes 100 — a number a live card already holds. Not a wrong number, a
@@ -88,6 +99,14 @@
 //   M7. `read_board` stops after the first page -> 1 red, `pagination reaches the last
 //       page`. The board passed 300 items in Aug 2026 and Done cards never leave, so a
 //       lone `first:100` computes the max from the OLDEST cards.
+//   M8. `next_num` restricted to the `TASK` prefix -> 1 red, `next counts every prefix`.
+//       A REVIEWER FOUND THIS ONE SURVIVING all 23 tests of the previous version. The
+//       script documents one counter across every prefix and nothing held it, because no
+//       test had ever put a non-`TASK` card at the board maximum. Worth noticing that
+//       `check` would not have flagged the drift either — `ARCH-500` and `TASK-500` are
+//       genuinely different ids, so the damage is a human misreading rather than a
+//       detectable duplicate. Documented behaviour with no test is a preference, not a
+//       property.
 //
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally — no
 // network, no build.
