@@ -1242,6 +1242,65 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
           // happens to land on the same answer.
           expect(await reread(KEY, CHAIN)).toEqual(afterFirst);
         });
+
+        // The group map inside `supersedeIds` used to key on `${about}\u0000
+        // ${slot}`, which only distinguishes the two fields when neither
+        // contains a NUL — and `about` is free text (TASK-448). These two
+        // groups produce the SAME NUL-joined string:
+        //   about = "x\u0000y", slot = "z"      -> "x\u0000y\u0000z"
+        //   about = "x",        slot = "y\u0000z" -> "x\u0000y\u0000z"
+        // so a bug in that key collapses them to one Map entry and only one
+        // chain gets re-settled. One `supersede` call retracts a closer in
+        // BOTH groups; both older rows must re-open.
+        it('re-settles BOTH groups when their old NUL-joined keys would collide', async () => {
+          const KEY1 = 'nul-collision-group-1';
+          const KEY2 = 'nul-collision-group-2';
+          const ABOUT1 = 'x\u0000y';
+          const SLOT1 = 'z';
+          const ABOUT2 = 'x';
+          const SLOT2 = 'y\u0000z';
+
+          const stmts1: FactStatementInput[] = [
+            { about: ABOUT1, relation: 'r', value: 'old1', when: JAN, slot: SLOT1 },
+            { about: ABOUT1, relation: 'r', value: 'new1', when: JUN, slot: SLOT1 },
+          ];
+          const stmts2: FactStatementInput[] = [
+            { about: ABOUT2, relation: 'r', value: 'old2', when: JAN, slot: SLOT2 },
+            { about: ABOUT2, relation: 'r', value: 'new2', when: JUN, slot: SLOT2 },
+          ];
+
+          const [older1, newer1] = (await record({ batchKey: KEY1, statements: stmts1 }))
+            .records as [RecordedStatement, RecordedStatement];
+          expect(newer1.closes).toEqual([older1.id]);
+
+          const [older2, newer2] = (await record({ batchKey: KEY2, statements: stmts2 }))
+            .records as [RecordedStatement, RecordedStatement];
+          expect(newer2.closes).toEqual([older2.id]);
+
+          const result = await supersede([newer1.id, newer2.id]);
+          expect(result.closed.slice().sort()).toEqual([newer1.id, newer2.id].sort());
+          // Against the unfixed NUL-joined key, only ONE of these two groups
+          // survives in the Map, so exactly one of these ids is missing here.
+          expect(result.resettled.slice().sort()).toEqual([older1.id, older2.id].sort());
+
+          const [older1Now, newer1Now] = (await reread(KEY1, stmts1)) as [
+            RecordedStatement,
+            RecordedStatement,
+          ];
+          expect(older1Now.until).toBeUndefined();
+          expect(older1Now.closedBy).toBeUndefined();
+          expect(newer1Now.until).toBeDefined();
+          expect(newer1Now.closedBy).toBeUndefined();
+
+          const [older2Now, newer2Now] = (await reread(KEY2, stmts2)) as [
+            RecordedStatement,
+            RecordedStatement,
+          ];
+          expect(older2Now.until).toBeUndefined();
+          expect(older2Now.closedBy).toBeUndefined();
+          expect(newer2Now.until).toBeDefined();
+          expect(newer2Now.closedBy).toBeUndefined();
+        });
       });
     });
 
@@ -2707,6 +2766,91 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         expect(second).toEqual({ resolved: 0, resettled: [], pending: 0, degraded: [] });
         // Same rows, same closures, same everything.
         expect(await reread(KEY, statements)).toEqual(afterFirst);
+      });
+
+      // Same NUL-joined-key collision as the `supersede` case above
+      // (TASK-448), but through the drain's own group map in `plugin.ts`:
+      //   about = "x\u0000y", slot = "z"      -> "x\u0000y\u0000z"
+      //   about = "x",        slot = "y\u0000z" -> "x\u0000y\u0000z"
+      // One `reindex` call resolves a pending row in EACH group. Against the
+      // unfixed key, only one group's older row gets re-derived and closed.
+      it('settles BOTH groups when their old NUL-joined keys would collide', async () => {
+        const KEY1 = 'reindex-nul-collision-1';
+        const KEY2 = 'reindex-nul-collision-2';
+        const ABOUT1 = 'x\u0000y';
+        const SLOT1 = 'z';
+        const ABOUT2 = 'x';
+        const SLOT2 = 'y\u0000z';
+
+        const older1Stmt: FactStatementInput = {
+          about: ABOUT1,
+          relation: 'r',
+          value: 'old1',
+          when: JAN,
+          slot: SLOT1,
+        };
+        const pending1Stmt: FactStatementInput = {
+          about: ABOUT1,
+          relation: 'r',
+          value: 'new1',
+          when: JUN,
+          slot: PENDING_SLOT,
+        };
+        const older2Stmt: FactStatementInput = {
+          about: ABOUT2,
+          relation: 'r',
+          value: 'old2',
+          when: JAN,
+          slot: SLOT2,
+        };
+        const pending2Stmt: FactStatementInput = {
+          about: ABOUT2,
+          relation: 'r',
+          value: 'new2',
+          when: JUN,
+          slot: PENDING_SLOT,
+        };
+
+        const [older1, pending1] = (
+          await record({ batchKey: KEY1, statements: [older1Stmt, pending1Stmt] })
+        ).records as [RecordedStatement, RecordedStatement];
+        expect(pending1.closes).toEqual([]);
+
+        const [older2, pending2] = (
+          await record({ batchKey: KEY2, statements: [older2Stmt, pending2Stmt] })
+        ).records as [RecordedStatement, RecordedStatement];
+        expect(pending2.closes).toEqual([]);
+
+        const out = await reindex({
+          slots: [
+            { id: pending1.id, slot: SLOT1 },
+            { id: pending2.id, slot: SLOT2 },
+          ],
+        });
+        expect(out.resolved).toBe(2);
+        // Against the unfixed NUL-joined key, only ONE of these two groups
+        // survives in the Map, so exactly one of these ids is missing here.
+        expect(out.resettled.slice().sort()).toEqual([older1.id, older2.id].sort());
+        expect(out.pending).toBe(0);
+        expect(out.degraded).toEqual([]);
+
+        const [older1Now, pending1Now] = (await reread(KEY1, [older1Stmt, pending1Stmt])) as [
+          RecordedStatement,
+          RecordedStatement,
+        ];
+        expect(older1Now.until).toBe(JUN);
+        expect(older1Now.closedBy).toBe(pending1.id);
+        expect(pending1Now.until).toBeUndefined();
+        expect(pending1Now.closedBy).toBeUndefined();
+
+        const [older2Now, pending2Now] = (await reread(KEY2, [older2Stmt, pending2Stmt])) as [
+          RecordedStatement,
+          RecordedStatement,
+        ];
+        expect(older2Now.until).toBe(JUN);
+        expect(older2Now.closedBy).toBe(pending2.id);
+        expect(pending2Now.until).toBeUndefined();
+        expect(pending2Now.closedBy).toBeUndefined();
       });
 
       describe('invalid-payload rejection', () => {

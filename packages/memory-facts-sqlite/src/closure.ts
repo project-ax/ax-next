@@ -462,10 +462,14 @@ export function supersedeIds(
     // second pass over the same chain finds nothing left to move and adds
     // nothing to `resettled` — but because that second pass re-reads and
     // re-settles every row in the chain to reach that conclusion. The Map
-    // costs less than the query it saves. Keyed on a NUL-joined pair, because
-    // `about` and `slot` are both free text and a `${a}:${b}` key could
-    // collide across the boundary (same reasoning as the drain's group map in
-    // `plugin.ts`).
+    // costs less than the query it saves. Keyed structurally
+    // (`JSON.stringify([about, slot])`), not by joining the two fields with a
+    // delimiter: `about` is free text that can carry model output, and ANY
+    // in-band delimiter — including NUL — is only injective if the fields are
+    // guaranteed not to contain it, which nothing here guarantees. `about =
+    // "x\u0000y", slot = "z"` and `about = "x", slot = "y\u0000z"` produce the
+    // same NUL-joined string but different JSON arrays (same reasoning as the
+    // drain's group map in `plugin.ts`).
     const groups = new Map<string, SlotGroup>();
 
     const statement = driver.prepare(
@@ -487,7 +491,7 @@ export function supersedeIds(
       // this transaction — and is handled rather than asserted because the
       // honest fallback (skip the chain) is the same one a slotless row takes.
       if (row === undefined || row.slot === null || row.slot === PENDING_SLOT) continue;
-      groups.set(`${row.about}\u0000${row.slot}`, { about: row.about, slot: row.slot });
+      groups.set(JSON.stringify([row.about, row.slot]), { about: row.about, slot: row.slot });
     }
 
     return { closed, resettled: resettleSlotGroups(driver, agentKey, [...groups.values()]) };

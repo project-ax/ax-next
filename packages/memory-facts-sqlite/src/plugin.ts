@@ -642,9 +642,15 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
 
               let resolved = 0;
               // Deduped by `(about, slot)`: two rows resolved into the same
-              // chain re-derive it once, not twice. A Map keyed on a
-              // NUL-joined pair, because `about` and `slot` are both free
-              // text and a `${a}:${b}` key could collide across the boundary.
+              // chain re-derive it once, not twice. A Map keyed structurally
+              // (`JSON.stringify([about, slot])`), not by joining the two
+              // fields with a delimiter: `about` is free text that can carry
+              // model output, and ANY in-band delimiter — including NUL — is
+              // only injective if the fields are guaranteed not to contain
+              // it, which nothing here guarantees. `about = "x\u0000y", slot
+              // = "z"` and `about = "x", slot = "y\u0000z"` produce the same
+              // NUL-joined string but different JSON arrays (same reasoning
+              // as `supersedeIds`'s group map in `closure.ts`).
               const groups = new Map<string, SlotGroup>();
 
               for (const entry of slots) {
@@ -661,7 +667,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
                 // `slot: null` is "no slot after all" — the row is inert
                 // forever, joins no chain, and so touches nothing to re-settle.
                 if (entry.slot !== null) {
-                  groups.set(`${row.about}\u0000${entry.slot}`, {
+                  groups.set(JSON.stringify([row.about, entry.slot]), {
                     about: row.about,
                     slot: entry.slot,
                   });
