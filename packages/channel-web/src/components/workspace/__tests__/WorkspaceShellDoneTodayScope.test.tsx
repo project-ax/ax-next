@@ -21,7 +21,7 @@
  * called this counter out by name as the consumer that still existed.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { workspaceApi } from '@/lib/workspace-api';
 import { UserProvider } from '@/lib/user-context';
 import { WorkspaceShell } from '../WorkspaceShell';
@@ -89,13 +89,18 @@ const NOW = new Date(2026, 7, 23, 14, 30, 0);
 const midnight = new Date(2026, 7, 23).getTime();
 const iso = (ms: number): string => new Date(ms).toISOString();
 
-/** A `done` row from this morning — the only kind the count looks at. */
-function doneEvent(agentId: string, n: number): ActivityEvent {
+/**
+ * A `done` row from this morning — the only kind the count looks at.
+ *
+ * `label` makes the two collections tell themselves apart ON SCREEN, which is
+ * what lets the test PROVE the agent's page is in hand rather than assume it.
+ */
+function doneEvent(label: string, agentId: string, n: number): ActivityEvent {
   return {
     id: `${agentId}-e-${n}`,
     agentId,
     at: iso(midnight + 9 * 60 * 60 * 1000),
-    text: `Swept the inbox (${n})`,
+    text: `${label} row ${n}`,
     kind: 'done',
     detail: null,
     tag: null,
@@ -110,6 +115,10 @@ function doneEvent(agentId: string, n: number): ActivityEvent {
  */
 const AGENT_DONE = 3;
 const WORKSPACE_DONE = 7;
+
+/** Row text, one per collection, so the precondition below can be SEEN. */
+const AGENT_ROW = 'Agent-scoped';
+const WORKSPACE_ROW = 'Workspace-scoped';
 
 const quill = {
   id: 'a-quill',
@@ -157,8 +166,10 @@ beforeEach(() => {
   activityMock.mockImplementation(async (params?: { agentId?: string }) => {
     const scoped = params?.agentId !== undefined;
     return {
-      events: Array.from({ length: scoped ? AGENT_DONE : WORKSPACE_DONE }, (_, i) =>
-        doneEvent(scoped ? params.agentId! : 'a-quill', i),
+      events: Array.from(
+        { length: scoped ? AGENT_DONE : WORKSPACE_DONE },
+        (_, i) =>
+          doneEvent(scoped ? AGENT_ROW : WORKSPACE_ROW, 'a-quill', i),
       ),
       nextBefore: iso(midnight - 1_000),
     };
@@ -169,44 +180,55 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('Today’s "done today" count across an agent switch', () => {
-  it('never renders the agent’s count as the workspace’s, not even for one frame', async () => {
+describe('Today\u2019s "done today" count across an agent switch', () => {
+  it('never renders the agent\u2019s count as the workspace\u2019s, not even for one frame', async () => {
+    /*
+      Open ON the agent's "What it did" tab. That is the one surface which
+      renders `feed.events` directly, so it is where the agent-scoped
+      collection can be SEEN to be in hand — which is what makes the assertion
+      at the end non-vacuous rather than merely well-timed. The route is read
+      from the URL (TASK-327), and the tab is a Radix trigger that jsdom does
+      not drive from a bare `fireEvent.click`, so this is also the only way in.
+    */
+    window.history.replaceState(null, '', '/workspace/agents/a-quill/did');
     render(
       <UserProvider value={user}>
         <WorkspaceShell />
       </UserProvider>,
     );
 
-    // Today, with the whole workspace behind it.
-    await waitFor(() => expect(activityMock).toHaveBeenCalledWith({}));
-    await waitFor(() => expect(handed).toContain(WORKSPACE_DONE));
-
-    // Into the agent's tab. The feed re-scopes to Quill alone.
-    fireEvent.click(await screen.findByRole('button', { name: /Quill/ }));
     await waitFor(() =>
       expect(activityMock).toHaveBeenCalledWith({ agentId: 'a-quill' }),
     );
-    /*
-      The `waitFor` above only proves the agent's page was REQUESTED. If we
-      navigated back before it was APPLIED, the feed would still hold the empty
-      list the re-scope reset it to, there would be no agent count to leak, and
-      the assertion at the end would pass for a reason that has nothing to do
-      with the fix. Flushing here makes Quill's rows provably in hand before
-      the return trip — the state the bug needs.
-    */
-    await act(async () => {});
 
     /*
-      From here on, every recorded value is one Today actually rendered —
-      `TodayView` is mounted only on the Today route. Clearing now is what
-      makes the assertion below about the RETURN trip and nothing else.
+      The precondition, PROVEN rather than timed: Quill's rows are on screen,
+      so the feed is holding the agent's collection. Had we returned to Today
+      before this page was applied, the feed would still hold the empty list
+      the re-scope reset it to, there would be no agent count available to
+      leak, and the final assertion would pass for a reason unrelated to the
+      fix. Asserting it here stays true if the fetch chain ever grows an await.
     */
-    handed.length = 0;
+    await waitFor(() =>
+      expect(screen.getAllByText(new RegExp(AGENT_ROW))).toHaveLength(
+        AGENT_DONE,
+      ),
+    );
+    // ...and it is demonstrably NOT the workspace's collection.
+    expect(screen.queryByText(new RegExp(WORKSPACE_ROW))).toBeNull();
+
+    /*
+      `TodayView` is mounted only on the Today route, so nothing has been
+      recorded yet and every value from here on is one Today actually
+      rendered. Asserted rather than assumed, because the whole test rests on
+      it.
+    */
+    expect(handed).toHaveLength(0);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Today' }));
     await waitFor(() => expect(handed).toContain(WORKSPACE_DONE));
 
-    // The whole card: Quill's 3 must not appear on Today at any point.
+    // The whole card: Quill's 3 must never have reached Today.
     expect(handed).not.toContain(AGENT_DONE);
   });
 });
