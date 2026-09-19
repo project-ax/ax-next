@@ -63,8 +63,17 @@ function tokensAfter(selector: string): Map<string, string> {
   return out;
 }
 
+/** A colour resolved to sRGB 0-255. */
+type Rgb = [number, number, number];
+
+/**
+ * Either a raw token value (`"211 100% 52%"`) or a colour already resolved to
+ * sRGB — which is what an alpha-composited surface is, since no token holds it.
+ */
+type Colour = string | Rgb;
+
 /** `"211 100% 52%"` (the bare triple Tailwind wraps in `hsl()`) -> sRGB 0-255. */
-function hslTripleToRgb(triple: string): [number, number, number] {
+function hslTripleToRgb(triple: string): Rgb {
   const m = triple.match(/^([\d.]+)\s+([\d.]+)%\s+([\d.]+)%$/);
   if (!m) throw new Error(`not an hsl triple: ${triple}`);
   const h = Number(m[1]);
@@ -88,8 +97,31 @@ function hslTripleToRgb(triple: string): [number, number, number] {
   ];
 }
 
+function rgbOf(c: Colour): Rgb {
+  return typeof c === 'string' ? hslTripleToRgb(c) : c;
+}
+
+/**
+ * `fg` painted at `alpha` over the opaque `under` — what the browser actually
+ * puts on screen for a Tailwind `bg-<token>/<pct>` class.
+ *
+ * Rounded to whole channels for the same reason `hslTripleToRgb` is: these
+ * measurements are meant to agree with a browser probe, and a browser hands
+ * `getComputedStyle` 8-bit channels. The rounding is worth at most 0.02 on a
+ * ratio, which is why the numbers written down here read 5.03 where an
+ * unrounded pass reads 5.05.
+ *
+ * `under` must be OPAQUE. Nothing here composites a stack, because nothing in
+ * the tree paints one fractional surface directly on another.
+ */
+function composite(fg: Colour, alpha: number, under: Colour): Rgb {
+  const f = rgbOf(fg);
+  const b = rgbOf(under);
+  return [0, 1, 2].map((i) => Math.round(f[i]! * alpha + b[i]! * (1 - alpha))) as Rgb;
+}
+
 /** WCAG relative luminance. */
-function luminance([r, g, b]: [number, number, number]): number {
+function luminance([r, g, b]: Rgb): number {
   const ch = (v: number) => {
     const c = v / 255;
     return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
@@ -97,9 +129,9 @@ function luminance([r, g, b]: [number, number, number]): number {
   return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b);
 }
 
-function contrast(a: string, b: string): number {
-  const la = luminance(hslTripleToRgb(a));
-  const lb = luminance(hslTripleToRgb(b));
+function contrast(a: Colour, b: Colour): number {
+  const la = luminance(rgbOf(a));
+  const lb = luminance(rgbOf(b));
   const [hi, lo] = la > lb ? [la, lb] : [lb, la];
   return (hi + 0.05) / (lo + 0.05);
 }
@@ -252,17 +284,20 @@ const QUIET_TEXT = '--muted-foreground';
  *
  * That argument covers fractional MUTED only, so one case sits outside every
  * list here: `ApprovalCard`'s `bg-warning-soft/40` holds `text-muted-foreground`.
- * Measured rather than assumed — 5.05 over white, 5.52 over dark
- * `--background`, 4.68 over dark `--card` — so it passes and gets no row.
+ * It passes — and it now has rows of its own at the foot of this file rather
+ * than a paragraph saying so, because "measured once, written down, enforced by
+ * nobody" is how the number goes stale. See `ApprovalCard's tinted surface`.
  *
  * It passes only BECAUSE it is fractional, which is the part worth writing
- * down: quiet text on a SOLID `bg-warning-soft` would be **4.10:1** in dark
+ * down: quiet text on a SOLID `bg-warning-soft` measures **4.10:1** in dark
  * mode, under the floor. Nothing renders that today — the solid `-soft`
- * surfaces carry their own accent text, not the quiet token — so there is
- * nothing to fix and no row to add. But a `-soft` surface is the likeliest
- * next place this defect appears, and it is the one shape nothing in this file
- * bounds. (For the record, solid light: warning-soft 4.81, destructive-soft
- * 4.64, primary-soft 4.55. Dark: 4.10 / 4.63 / 4.69.)
+ * surfaces carry their own accent text, not the quiet token. But a `-soft`
+ * surface is the likeliest next place this defect appears, which is why the
+ * section below reads the alpha out of the component instead of trusting it.
+ * (For the record, solid light: warning-soft 4.78, destructive-soft 4.63,
+ * primary-soft 4.54. Dark: 4.10 / 4.61 / 4.69. Those are this file's own
+ * formula; the slightly higher figures this note used to carry came from an
+ * unrounded pass.)
  */
 const QUIET_TEXT_SURFACES = ['--background', '--card', '--popover', '--muted'] as const;
 
@@ -692,5 +727,170 @@ describe('--ink-ghost is a fill, never ink', () => {
       'components/AgentMenu.tsx',
       'index.css',
     ]);
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * `ApprovalCard`'s tinted surface — the one the token pairs above cannot see.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * A FRACTIONAL surface, which is a shape every list above is blind to.
+ *
+ * Everything before this measures one token against another. `ApprovalCard`
+ * paints `bg-warning-soft/40`, and 40%-of-a-token-over-something-else is not a
+ * token, so no pair in this file describes the pixels a reader is actually
+ * looking at. That gap is not academic — it is how TASK-428 was written.
+ *
+ * TASK-428 REPORTED 4.10:1 FOR THIS CARD'S BODY COPY IN DARK MODE, AND IT DOES
+ * NOT REPRODUCE. 4.10:1 is this file's own figure for quiet text on a SOLID
+ * `bg-warning-soft` — the number the note on `QUIET_TEXT_SURFACES` records
+ * precisely because nothing renders it. The probe read the declared token and
+ * not the composited pixel. A re-walk of the same surface got 5.03 light /
+ * 5.50 dark, which is this section's answer to two decimal places, so the
+ * instrument agrees once it composites.
+ *
+ * What ships here is therefore not a fix. It is the measurement, enforced:
+ *
+ *   `--muted-foreground`  5.03 light, 5.51 dark on `--background`, 4.66 dark on `--card`
+ *   `--destructive`       4.97 light, 5.55 dark on `--background`, 4.69 dark on `--card`
+ *
+ * Both clear AA on every backdrop. Light mode shows one number because
+ * `--card` and `--background` are the same white there.
+ *
+ * TWO BACKDROPS, because the card does not carry one. The approval stack in
+ * `Composer.tsx` and the thread row in `AgentConversation.tsx` both paint no
+ * background of their own, so today the card sits on the page (`--background`).
+ * `--card` is measured as well: it is the darker of the two in dark mode and
+ * therefore the tighter bound, and re-parenting this card onto a panel is a
+ * layout change nobody would think to re-measure.
+ *
+ * `--destructive` is here because it is the same surface, not a second topic:
+ * the stale-guard line and the failed-resolve notice are `text-destructive` on
+ * this exact tint, and they are the two sentences a reader most needs when
+ * something has gone wrong.
+ *
+ * NO TOKEN VALUE MOVES. `--warning` and `--warning-soft` are left exactly as
+ * they are, deliberately — `text-warning` on solid `bg-warning-soft` IS under
+ * the floor at 4.45:1 light, and that pair is TASK-445's card. Fixing it from
+ * here would move a token under two cards at once.
+ *
+ * THE ALPHA IS READ OUT OF THE COMPONENT, NOT WRITTEN DOWN HERE. That is the
+ * load-bearing choice. Every number above depends on the `/40`: the same quiet
+ * text on the solid tint is the 4.10:1 the card reported, so a future edit that
+ * drops the alpha reintroduces a real defect that a hard-coded `0.4` here would
+ * cheerfully keep measuring as fine. Reading it back means the rows re-measure
+ * whatever ships — a change to `/60` simply gets checked, and a change to solid
+ * fails with the true ratio rather than tripping a "do not touch this class"
+ * guard nobody can act on.
+ */
+const APPROVAL_CARD = 'components/workspace/ApprovalCard.tsx';
+
+/** The tint `ApprovalCard` actually paints, parsed from its source. */
+interface Tint {
+  /** The custom property behind the Tailwind class, e.g. `--warning-soft`. */
+  token: string;
+  /** `0`-`1`. A bare class with no `/pct` suffix is fully opaque. */
+  alpha: number;
+  /** The class as written, for failure messages. */
+  cls: string;
+}
+
+/**
+ * Comments are stripped first (`stripComments`, with its own fixtures above),
+ * because this file's block comments discuss `bg-warning-soft` in prose and a
+ * raw scan would count those as paint.
+ */
+function approvalCardTint(): Tint {
+  const src = stripComments(readFileSync(join(SRC_ROOT, APPROVAL_CARD), 'utf8'));
+  const hits = [...src.matchAll(/(?<![\w-])bg-(warning-soft)(?:\/(\d{1,3}))?(?![\w-])/g)];
+  if (hits.length !== 1) {
+    const found = hits.length === 0 ? 'none' : hits.map((h) => h[0]).join(', ');
+    throw new Error(
+      `${APPROVAL_CARD} paints ${hits.length} warning-soft classes (${found}); ` +
+        `this section measures exactly one. If the card's surface changed, re-read ` +
+        `the note above and give the new surface its own rows — do not delete these.`,
+    );
+  }
+  const [cls, name, pct] = hits[0]!;
+  return { token: `--${name!}`, alpha: pct === undefined ? 1 : Number(pct) / 100, cls: cls! };
+}
+
+/**
+ * The opaque surfaces the tinted card can sit on. See the two-backdrops note
+ * above for why `--card` is here when nothing paints it behind the card today.
+ */
+const TINT_BACKDROPS = ['--background', '--card'] as const;
+
+/** Every token the card paints as readable text on that tint. */
+const TINTED_TEXT = ['--muted-foreground', '--destructive'] as const;
+
+/**
+ * Same dropped-loop hazard the quiet-text loop documents, same guard. This file
+ * is a known auto-merge collision point and a clean merge has already once kept
+ * the constants while losing a loop.
+ */
+const tintCasesRegistered: string[] = [];
+
+describe("ApprovalCard's tinted surface", () => {
+  it('paints exactly one warning-soft class, and it is fractional', () => {
+    const tint = approvalCardTint();
+    expect(tint.token).toBe('--warning-soft');
+    expect(tint.alpha).toBeGreaterThan(0);
+    // Not an aesthetic preference: at alpha 1 the quiet text is 4.10:1 in dark
+    // mode. The rows below would catch that too — this just says so in one line.
+    expect(tint.alpha, `${tint.cls} is opaque; see the note above`).toBeLessThan(1);
+  });
+
+  for (const [name, selector] of THEMES) {
+    for (const under of TINT_BACKDROPS) {
+      for (const text of TINTED_TEXT) {
+        tintCasesRegistered.push(`${name}:${under}:${text}`);
+        it(`${name}: ${text} on the card's warning tint over ${under} clears AA`, () => {
+          const tokens = tokensAfter(selector);
+          const tint = approvalCardTint();
+          const tintV = tokens.get(tint.token);
+          const underV = tokens.get(under);
+          const textV = tokens.get(text);
+          expect(tintV, `${tint.token} missing from ${selector}`).toBeDefined();
+          expect(underV, `${under} missing from ${selector}`).toBeDefined();
+          expect(textV, `${text} missing from ${selector}`).toBeDefined();
+
+          const surface = composite(tintV!, tint.alpha, underV!);
+          const ratio = contrast(textV!, surface);
+          expect(
+            ratio,
+            `${text} on ${tint.cls} over ${under} is ${ratio.toFixed(2)}:1 in ${name} — ` +
+              `AA needs ${AA_NORMAL}:1. This is ${APPROVAL_CARD}'s body copy.`,
+          ).toBeGreaterThanOrEqual(AA_NORMAL);
+        });
+      }
+    }
+  }
+
+  /**
+   * Anti-vacuity. `composite` is the only new arithmetic in this file, and a
+   * broken one fails SAFE — it would quietly hand every row a surface closer to
+   * the backdrop, which in light mode is white and passes everything. So pin
+   * both ends and the midpoint against values that need no formula.
+   */
+  it('composites alpha the way a browser does', () => {
+    expect(composite('0 0% 100%', 1, '0 0% 0%')).toEqual([255, 255, 255]);
+    expect(composite('0 0% 100%', 0, '0 0% 0%')).toEqual([0, 0, 0]);
+    expect(composite('0 0% 100%', 0.5, '0 0% 0%')).toEqual([128, 128, 128]);
+
+    // And a fully opaque composite is the solid pairing the rest of the file
+    // already measures, so the two halves cannot drift apart.
+    const dark = tokensAfter(":root[data-theme='dark'] {");
+    const ws = dark.get('--warning-soft')!;
+    const mf = dark.get('--muted-foreground')!;
+    expect(contrast(mf, composite(ws, 1, '0 0% 100%'))).toBeCloseTo(contrast(mf, ws), 10);
+  });
+
+  it('registers one case per theme per backdrop per text token', () => {
+    const expected = THEMES.flatMap(([name]) =>
+      TINT_BACKDROPS.flatMap((under) => TINTED_TEXT.map((text) => `${name}:${under}:${text}`)),
+    );
+    expect(tintCasesRegistered).toEqual(expected);
   });
 });
