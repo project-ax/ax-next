@@ -219,6 +219,66 @@ describe('memory-append-check.sh', () => {
     expect(r.stderr).toMatch(/R1|R2/);
   });
 
+  it.each([
+    [
+      'documenting the mechanism in prose',
+      'explain the guard\n\nThe escape hatch is a trailer:\nMemory-Rewrite: some reason\n\nThat is all it takes.\n',
+    ],
+    [
+      'quoting it mid-body, indented',
+      'notes\n\nSomeone wrote:\n  Memory-Rewrite: consolidating rows\n\nand it worked.\n',
+    ],
+  ])('prose cannot waive — %s', (_label, message) => {
+    // The waiver is a TRAILER, and the distinction is load-bearing. A grep of
+    // the whole commit body for `^Memory-Rewrite:` matches the string anywhere
+    // in any message in the range, so a commit that merely quotes the line —
+    // documenting it, reverting a waived commit, or arriving from another
+    // branch — would waive real violations. Git's own trailer parser reads
+    // only the trailer block.
+    const dir = makeRepo();
+    writeFileSync(archivePath(dir), ARCHIVE.replace('## 2026-09-02', '## 2026-09-03'));
+    commit(dir, message);
+
+    // Premise: the string really is present in the message, so a body grep
+    // WOULD have matched. Without this the case could pass for the wrong reason.
+    expect(git(dir, 'log', '--format=%B', '-1')).toMatch(/Memory-Rewrite:/);
+
+    const r = run(dir, ['main']);
+    expect(r.status).toBe(1);
+    expect(r.stderr).not.toMatch(/WAIVED/);
+  });
+
+  it('a real trailer still waives when it sits beside other trailers', () => {
+    // The commits on this repo's branches carry Co-Authored-By and
+    // Claude-Session trailers, so the waiver has to survive company.
+    const dir = makeRepo();
+    writeFileSync(archivePath(dir), ARCHIVE.replace('## 2026-09-02', '## 2026-09-03'));
+    commit(
+      dir,
+      'hygiene pass\n\nMemory-Rewrite: folding Q2 shards into the archive\nCo-Authored-By: Someone <s@example.com>\n',
+    );
+
+    const r = run(dir, ['main']);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).toMatch(/WAIVED by a commit trailer/);
+    expect(r.stderr).toMatch(/folding Q2 shards/);
+  });
+
+  it('the failure text does not hand an agent a paste-ready waiver line', () => {
+    // A guard that prints the one line making CI green is coaching the
+    // automated writers it exists to police. The shard command is the answer
+    // it should be giving; the waiver is documented in CLAUDE.md for a human.
+    const dir = makeRepo();
+    writeFileSync(archivePath(dir), `${ARCHIVE}\n## 2026-09-19 — TASK-415 a row\n`);
+    commit(dir, 'TASK-415 memory');
+
+    const r = run(dir, ['main']);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/--shard/); // the answer it SHOULD give
+    // Nothing copy-pasteable: no `Memory-Rewrite:` followed by a reason.
+    expect(r.stderr).not.toMatch(/Memory-Rewrite:[ \t]*\S/);
+  });
+
   it('an empty or whitespace-only Memory-Rewrite trailer waives nothing', () => {
     const dir = makeRepo();
     writeFileSync(archivePath(dir), ARCHIVE.replace('## 2026-09-02', '## 2026-09-03'));

@@ -102,7 +102,10 @@ checkout while linked worktrees exist.
 - **R2** — a root `.claude/memory/<name>.md` archive may not be touched at all.
 
 A deliberate hygiene pass does need to edit an archive: put a `Memory-Rewrite: <reason>`
-trailer on a commit in the range and the guard waives both rules.
+trailer on a commit in the range and the guard waives both rules. It has to be a real
+trailer, in the trailer block — prose that merely quotes the line does not waive.
+**Agents shipping a card do not add it.** Tripping the guard means the rows went to the
+wrong place, and the fix is a shard; hygiene is a human call on a branch of its own.
 
 If the task touches architecture, hooks, plugins, security boundaries, CI/PR
 workflow, UI conventions, manual acceptance, or prior regressions, bias toward

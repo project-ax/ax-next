@@ -17,11 +17,12 @@
 // below is that refutation, kept executable so nobody re-proposes it from the
 // same plausible reasoning. Union is a LINE-wise driver: git's diff matches
 // whatever the two appended blocks happen to share at their edges as ordinary
-// context, and emits it once. Measured against the real 3189-line
-// decisions.md, all four shapes tried lost lines — from one (a shared leading
-// blank) up to two (a shared closing line, which left a multi-line row ending
-// in a colon with the next `##` heading welded to it) — and EVERY ONE of them
-// reported a `git diff --numstat` deletions column of 0.
+// context, and emits it once. Measured against the real decisions.md — 3189
+// lines the day this was written, and growing daily, which is rather the point
+// of it being the serialization point — all four shapes tried lost lines: from
+// one (a shared leading blank) up to two (a shared closing line, which left a
+// multi-line row ending in a colon with the next `##` heading welded to it).
+// EVERY ONE of them reported a `git diff --numstat` deletions column of 0.
 //
 // Calibrating that, because the frequency matters and overstating it would be
 // the same sin: the shared LEADING blank is lost in every case and that one is
@@ -126,9 +127,19 @@ function makeRepo({ unionDriver = false, rerere = false } = {}) {
 }
 
 /**
- * The text a task appends. Deliberately ends on a shared boilerplate line —
- * the house style really does close entries with `*Alternatives:* …`, and a
- * shared closing line is the shape that made union lose the most.
+ * The text a task appends. Deliberately ends on an IDENTICAL closing line,
+ * which is the MAXIMAL case: the shape that made union lose the most (two
+ * lines rather than one).
+ *
+ * Being straight about how artificial that is, since the whole file exists to
+ * argue against an overstated claim. Real entries do close with an
+ * `*Alternatives:* …` clause, but as the tail of a paragraph rather than a
+ * standalone line, so two real entries almost never share their last line
+ * byte-for-byte. The refutation does not rest on this case: a reviewer
+ * reproducing it independently, with two entries closing DIFFERENTLY, still
+ * measured 4 lines appended and 3 surviving with numstat deletions at 0. One
+ * lost line that the deletions column cannot see is already disqualifying.
+ * This fixture just makes the mechanism impossible to miss.
  */
 function entryFor(taskId) {
   return [

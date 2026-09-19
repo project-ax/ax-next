@@ -45,6 +45,17 @@ const SOURCE_GLOBS = [
   'docs/plans/*-pr-notes.md',
   'docs/plans/*-followup.md',
   '.claude/memory/*.md',
+  // Both halves of `.claude/memory/`, deliberately. The root files are frozen
+  // ARCHIVES; every row written since TASK-415 lives in a per-task shard one
+  // level down, so an archive-only glob would make this corpus progressively
+  // less representative of the memory it claims to be built from — the same
+  // flat-reader blind spot that had `memory-cited-paths-exist.test.js` going
+  // green while checking nothing.
+  //
+  // Note the interaction with MAX_DOCS_FOR_REGEN below: the cap already binds,
+  // so adding shards shifts which documents make the cut. That only matters on
+  // an explicit `--regen-internal`, which produces a new artifact anyway.
+  '.claude/memory/*/*.md',
   'README.md',
   'CLAUDE.md',
 ];

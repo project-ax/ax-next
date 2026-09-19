@@ -160,11 +160,18 @@ if [ "${#violations[@]}" -eq 0 ]; then
   exit 0
 fi
 
-# A deliberate rewrite says so in a commit trailer. Checked only once we know
+# A deliberate rewrite says so in a commit TRAILER. Checked only once we know
 # there is something to waive, so the trailer can never be reported as doing
 # nothing.
-waiver=$(git log --format='%B' "${merge_base}..HEAD" |
-  grep -E '^Memory-Rewrite:[[:space:]]*[^[:space:]]' | head -n 1 || true)
+#
+# `%(trailers:key=…)` and not a grep of the whole body: a grep for
+# `^Memory-Rewrite:` matches the string ANYWHERE in ANY commit message in the
+# range, so a commit that merely quotes the line — documenting the mechanism,
+# reverting a waived commit, or arriving from another branch — would waive real
+# violations. Git's own trailer parser only looks at the trailer block, so
+# prose cannot waive.
+waiver=$(git log --format='%(trailers:key=Memory-Rewrite,valueonly,separator=%x0A)' \
+  "${merge_base}..HEAD" | grep -E '[^[:space:]]' | head -n 1 || true)
 
 printf 'memory-append-check.sh: %d issue(s) in %s between %s and HEAD:\n' \
   "${#violations[@]}" "$MEMORY_PREFIX" "${merge_base:0:12}" >&2
@@ -189,7 +196,10 @@ echo "" >&2
 echo "Nothing else writes that path, so it cannot collide with another agent, and" >&2
 echo "nobody has to re-resolve it on every rebase." >&2
 echo "" >&2
-echo "If you MEANT to rewrite an archive (a hygiene pass, a stale citation), add a" >&2
-echo "trailer to a commit in this range and re-run:" >&2
-echo "  Memory-Rewrite: consolidating 2026-Q2 rows into ## Archived" >&2
+echo "There IS a waiver for deliberate maintenance — a hygiene pass, an archive" >&2
+echo "consolidation, fixing a stale citation. It is a commit trailer, and it is" >&2
+echo "documented in CLAUDE.md rather than printed here on purpose: an automated" >&2
+echo "writer that trips this guard should be reaching for a shard, not for the one" >&2
+echo "line that makes the check go green. If you are an agent shipping a card, the" >&2
+echo "answer above is the answer. The waiver is a human call on a branch of its own." >&2
 exit 1

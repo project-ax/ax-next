@@ -107,6 +107,8 @@ When `.claude/memory/` does not exist:
 
    Don't hand-create the shard directories: git doesn't track empty ones anyway, and each appears the first time `scripts/memory-write-target.sh --shard <kind> <TASK-ID>` names a file in it (that mode prints a path and creates nothing, so `mkdir -p "$(dirname "$path")"` is on you).
 
+   **On a greenfield project this seed commit trips R2**, because creating the five archives *is* touching them — measured, exit 1 with two violations. That is the guard being right rather than the bootstrap being wrong: the archives predate it everywhere else. Put a `Memory-Rewrite: seeding .claude/memory/` trailer on the seed commit, or land the guard in a later PR than the seed.
+
 2. Run the write phase against what was just done, writing the current task's output as shards.
 
 3. Commit the new `.claude/memory/` files alongside the task that created them. `.claude/memory/` is **tracked in the repo** — do not add it to `.gitignore`. If a stale `.gitignore` entry ignores it, remove that entry so memory updates can be committed.
@@ -131,7 +133,7 @@ R1 is deliberately stronger than "my rows survived": a branch's conflict resolut
 
 ### Why not `merge=union`
 
-It was the obvious cheap fix, and measurement refuted it. Union is line-wise: git matches whatever two appended blocks share at their edges as ordinary context and emits it once. Against the real 3189-line `decisions.md`, four different append shapes **all lost lines** — 1 to 2 each, in one case eating the closing line of a multi-line row so it ended mid-sentence with the next `##` heading welded on. And every single case reported a `git diff --numstat` deletions column of **0**, so the sharpest available "no row was dropped" check cannot see the loss. Union blinds the check that catches the real risk.
+It was the obvious cheap fix, and measurement refuted it. Union is line-wise: git matches whatever two appended blocks share at their edges as ordinary context and emits it once. Against the real `decisions.md` (3189 lines the day it was measured), four different append shapes **all lost lines** — 1 to 2 each, in one case eating the closing line of a multi-line row so it ended mid-sentence with the next `##` heading welded on. And every single case reported a `git diff --numstat` deletions column of **0**, so the sharpest available "no row was dropped" check cannot see the loss. Union blinds the check that catches the real risk.
 
 One related trap, for the archive-under-waiver case only: `rerere.enabled=false` is not proof the rerere hazard is absent. An `rr-cache` directory in a shared `.git` is enough for a replay, so `git rebase --no-rerere-autoupdate` is not redundant.
 
@@ -142,6 +144,8 @@ One related trap, for the archive-under-waiver case only: `rerere.enabled=false`
 Shards are small by construction — one day, one task, one kind — so the ~150-line threshold now only ever fires on an **archive**, and folding shards back into one is the main reason to run a pass at all.
 
 Every hygiene move rewrites or removes existing lines, which is exactly what the guard blocks (R1: no deletions; R2: don't touch an archive). That friction is the point. **A hygiene pass is its own branch and its own commit, carrying a `Memory-Rewrite: <reason>` trailer** — never folded into a feature branch while other agents are shipping shards.
+
+**If you are an agent shipping a card, you do not add that trailer.** Tripping the guard means you wrote to the wrong place; the fix is a shard, not a waiver. A trailer that makes a red check go green is the easiest thing in this file to reach for and the only thing here that quietly undoes it — which is why the guard's own failure message deliberately does not print a copy-pasteable one. Hygiene is a human call on a branch of its own.
 
 | Kind | Hygiene rule |
 |---|---|
