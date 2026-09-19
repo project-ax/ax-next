@@ -97,6 +97,35 @@ function humanizedTitleOrFallback(id: unknown, fallback: string): string {
 }
 
 /**
+ * (TASK-388) The slot ELEMENTS need the same treatment as the slots array —
+ * one level deeper than the fields this card's brief named, and the level
+ * where porting `GrantRow`'s render-site fix is NOT sufficient on its own:
+ * `GrantRow` reads `s.slot` unguarded too, and is safe only because its
+ * producer (`isRenderableGrant` -> `hasIterableReach`) already requires every
+ * element to carry a string `slot`. This card's producer requires nothing, so
+ * `humanizeId(s.account ?? s.slot)` / `humanizeSlotLabel(s.slot, ...)` reach
+ * `tokenize(undefined)` -> `undefined.replace(...)` -> `TypeError`, thrown
+ * inside render.
+ *
+ * ONE list, used by the renderer AND `allSlotsFilled` AND the two click
+ * handlers, because filtering only the renderer is a trap: `allSlotsFilled`
+ * would still count a slot nobody can see, leaving Connect disabled forever
+ * behind a hint pointing at no field — an unanswerable card, which is the
+ * failure this whole task is avoiding.
+ *
+ * Dropping such a slot is safe: its key has nowhere to go (every vault
+ * destination is derived from the slot id), and the server re-resolves the
+ * real proposal and intersects it with `shown`, so a slot missing from
+ * `shown` can only ever grant LESS, never more.
+ */
+function usableSlots<S extends { slot: string }>(slots: readonly S[] | undefined): S[] {
+  return (slots ?? []).filter(
+    (s) =>
+      typeof s === 'object' && s !== null && typeof s.slot === 'string' && s.slot.trim().length > 0,
+  );
+}
+
+/**
  * The ONE bundled approval card (JIT design §11.3/§6B, decision #6) — the
  * open-mode security boundary. Surfaced by a `chat:permission-request` SSE
  * frame. Two variants discriminated on `kind`:
@@ -143,13 +172,14 @@ export function PermissionCard() {
   // input — it counts as filled (JIT P2). Otherwise the user must type a value.
   // (TASK-388) `slots` is typed required, but this producer validates
   // nothing on the wire (see `humanizedTitleOrFallback` above for why) — a
-  // frame that omits it threw here too. `?? []` treats "no slots" the same
-  // as "empty slots array": a slotless grant is immediately connectable
-  // either way, which is the existing, intended behavior for that case.
+  // frame that omits it threw here too. `usableSlots` treats "no slots", "not
+  // an array" and "slots we cannot draw a field for" alike: a grant with
+  // nothing fillable is immediately connectable, which is the existing,
+  // intended behavior for the slotless case.
   const allSlotsFilled =
     request === null ||
     (request.kind !== 'skill' && request.kind !== 'connector') ||
-    (request.slots ?? []).every(
+    usableSlots(request.slots).every(
       (s) => s.haveExisting === true || (values[s.slot] ?? '').trim().length > 0,
     );
 
@@ -184,12 +214,13 @@ export function PermissionCard() {
       // `skill-slot` destination. A slot already in the vault (haveExisting) writes
       // nothing — the key is already there.
       //
-      // (TASK-388) `?? []` on both reads below: `allSlotsFilled` now treats a
-      // missing `slots` the same as an empty array (see its comment above),
-      // so this click path can run with `request.slots` absent — guard it
-      // the same way here, or an undefined-iteration throw replaces the
-      // request-shape one this task exists to fix.
-      for (const s of request.slots ?? []) {
+      // (TASK-388) `usableSlots` on every read below: `allSlotsFilled` now
+      // treats a missing or undrawable `slots` as vacuously filled (see its
+      // comment above), so this click path can run with `request.slots`
+      // absent — guard it the same way here, or an undefined-iteration throw
+      // replaces the request-shape one this task exists to fix. Same list the
+      // renderer used, so `shown` reports exactly what the person saw.
+      for (const s of usableSlots(request.slots)) {
         if (s.haveExisting === true) continue; // already in the vault — nothing to write
         const payload = (values[s.slot] ?? '').trim();
         if (payload.length === 0) continue;
@@ -210,7 +241,7 @@ export function PermissionCard() {
       // render and user click can never grant caps the user never saw.
       const shown = {
         hosts: request.hosts ?? [],
-        slots: (request.slots ?? []).map((s) => s.slot),
+        slots: usableSlots(request.slots).map((s) => s.slot),
         npm: request.packages?.npm ?? [],
         pypi: request.packages?.pypi ?? [],
       };
@@ -253,7 +284,7 @@ export function PermissionCard() {
       // reads (no collision). A slot already in the vault (haveExisting) writes
       // nothing — the key is already there. No secret crosses the decision POST
       // below (§10). (TASK-388) `?? []` — same reasoning as `connect()` above.
-      for (const s of request.slots ?? []) {
+      for (const s of usableSlots(request.slots)) {
         if (s.haveExisting === true) continue;
         const payload = (values[s.slot] ?? '').trim();
         if (payload.length === 0) continue;
@@ -271,7 +302,7 @@ export function PermissionCard() {
       // between render and click can never grant caps the user never saw.
       const shown = {
         hosts: request.hosts ?? [],
-        slots: (request.slots ?? []).map((s) => s.slot),
+        slots: usableSlots(request.slots).map((s) => s.slot),
         npm: request.packages?.npm ?? [],
         pypi: request.packages?.pypi ?? [],
       };
@@ -417,7 +448,7 @@ export function PermissionCard() {
               <AlertDescription>{AUTHORED_CONNECTOR_WARNING}</AlertDescription>
             </Alert>
           )}
-          {renderReach(request.hosts ?? [], request.slots ?? [], request.packages)}
+          {renderReach(request.hosts ?? [], usableSlots(request.slots), request.packages)}
           <p className="text-sm text-muted-foreground">{GRANT_REASSURANCE}</p>
           {error !== null && (
             <Alert variant="destructive">
@@ -446,15 +477,26 @@ export function PermissionCard() {
   }
 
   if (request.kind === 'host') {
+    // (TASK-388) The host arm's turn. An absent `host` degrades quietly on its
+    // own — React drops the child and the title reads "Allow access to ?" —
+    // but an OBJECT-typed one throws React's "Objects are not valid as a React
+    // child", and the workspace guards this at its producer
+    // (`isRenderableGrant` requires `typeof r.host === 'string'`) where this
+    // card cannot. NOT humanized: a hostname is already the thing we want the
+    // person to read, and `humanizeId('api.linear.app')` would dress it up.
+    const hostLabel =
+      typeof request.host === 'string' && request.host.trim().length > 0
+        ? request.host
+        : 'this site';
     return (
       <Card className="mb-3" data-testid="permission-card-host">
         <CardHeader>
-          <CardTitle>Allow access to {request.host}?</CardTitle>
+          <CardTitle>Allow access to {hostLabel}?</CardTitle>
           <CardDescription>{HOST_WALL_EXPLANATION}</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <div className="flex flex-wrap gap-1.5">
-            <Badge variant="secondary">{request.host}</Badge>
+            <Badge variant="secondary">{hostLabel}</Badge>
           </div>
           {error !== null && (
             <Alert variant="destructive">
@@ -510,7 +552,7 @@ export function PermissionCard() {
             <AlertDescription>{AUTHORED_SKILL_WARNING}</AlertDescription>
           </Alert>
         )}
-        {renderReach(request.hosts ?? [], request.slots ?? [], request.packages)}
+        {renderReach(request.hosts ?? [], usableSlots(request.slots), request.packages)}
         <p className="text-sm text-muted-foreground">{GRANT_REASSURANCE}</p>
         {error !== null && (
           <Alert variant="destructive">

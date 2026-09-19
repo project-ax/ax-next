@@ -23,7 +23,7 @@ import {
   type PermissionRequest,
 } from '@/lib/permission-card-store';
 import { setActiveConversationId } from '@/lib/use-conversation-id';
-import { GRANT_REASSURANCE } from '@/lib/grant-copy';
+import { GRANT_REASSURANCE, KEY_SAFETY, SLOT_HINT } from '@/lib/grant-copy';
 
 const skillReq: PermissionRequest = {
   kind: 'skill',
@@ -211,5 +211,97 @@ describe('a payload the producer lets through with no shape guard at all', () =>
     show({ ...connectorReq, name: 'Linear Issues' });
 
     expect(screen.getByText('Connect Linear Issues')).toBeTruthy();
+  });
+
+  /*
+    THE FINDING FROM THE SECOND REVIEW ROUND, one level deeper than the first.
+    Guarding the slots ARRAY left each slot ELEMENT's `slot` id unguarded, and
+    `humanizeId(s.account ?? s.slot)` / `humanizeSlotLabel(s.slot, ...)` reach
+    `tokenize(undefined)` -> `undefined.replace(...)` -> `TypeError` inside
+    render. This is the level at which porting `GrantRow`'s render-site fix is
+    provably NOT enough on its own: `GrantRow` reads `s.slot` unguarded too and
+    is safe only because `isRenderableGrant` -> `hasIterableReach` requires a
+    string `slot` on every element before a row exists. This producer requires
+    nothing.
+  */
+  test('a slot with no id is dropped rather than crashing the card', () => {
+    const idlessSlot = {
+      kind: 'skill',
+      skillId: 'linear-issues',
+      hosts: [],
+      slots: [{ kind: 'api-key' }],
+    } as unknown as PermissionRequest;
+
+    show(idlessSlot);
+
+    expect(screen.getByText('Connect Linear issues')).toBeTruthy();
+    // No field to fill, so the card must be ANSWERABLE — this is the half of
+    // the fix that filtering only the renderer would get wrong: `allSlotsFilled`
+    // would still count the invisible slot and disable Connect forever behind a
+    // hint pointing at no field.
+    expect(screen.getByRole('button', { name: /^connect$/i })).toBeEnabled();
+    expect(screen.queryByText(SLOT_HINT)).toBeNull();
+    expect(screen.queryByText(KEY_SAFETY)).toBeNull();
+  });
+
+  test('an id-less haveExisting slot is dropped too', () => {
+    // The OTHER arm of the `slots.map` ternary, and it crashes on a different
+    // line (`humanizeId(s.account ?? s.slot)` in the Badge). One fixture per
+    // branch — the input-branch case above never reaches this code.
+    const idlessExisting = {
+      ...skillReq,
+      slots: [{ kind: 'api-key', haveExisting: true }],
+    } as unknown as PermissionRequest;
+
+    show(idlessExisting);
+
+    expect(screen.getByText('Connect Linear issues')).toBeTruthy();
+    expect(screen.queryByText(/you already saved/)).toBeNull();
+  });
+
+  test('a real slot alongside an id-less one still renders and still gates Connect', () => {
+    // The positive control, and the one that proves the filter is a FILTER and
+    // not a "give up on slots entirely": the good slot keeps its field, and
+    // Connect stays disabled until it is filled.
+    const mixed = {
+      ...skillReq,
+      slots: [{ kind: 'api-key' }, { slot: 'api_key', kind: 'api-key' }],
+    } as unknown as PermissionRequest;
+
+    show(mixed);
+
+    expect(screen.getByLabelText(/api key/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^connect$/i })).toBeDisabled();
+    expect(screen.getByText(SLOT_HINT)).toBeTruthy();
+  });
+
+  test('a host grant with no host names the site in English, not "undefined"', () => {
+    const hostless = { kind: 'host', sessionId: 'sess-9' } as unknown as PermissionRequest;
+
+    show(hostless);
+
+    expect(screen.getByText('Allow access to this site?')).toBeTruthy();
+    expect(screen.queryByText(/undefined/)).toBeNull();
+  });
+
+  test('an object-typed host does not crash the host card', () => {
+    // An absent `host` degrades on its own (React drops the child), so THIS is
+    // the fixture that separates the guard from no guard: React throws
+    // "Objects are not valid as a React child" on an object.
+    const objectHost = {
+      kind: 'host',
+      sessionId: 'sess-9',
+      host: { hostname: 'example.org' },
+    } as unknown as PermissionRequest;
+
+    show(objectHost);
+
+    expect(screen.getByText('Allow access to this site?')).toBeTruthy();
+  });
+
+  test('a real host still wins over the fallback', () => {
+    show({ kind: 'host', host: 'example.org', sessionId: 'sess-9' });
+
+    expect(screen.getByText('Allow access to example.org?')).toBeTruthy();
   });
 });
