@@ -729,7 +729,16 @@ describe('board-task-id.sh — Task-ID allocation under concurrency', () => {
   );
 
   // -------------------------------------------------------------------------------
-  // The script is called from a zsh Bash tool as often as from bash.
+  // WHAT THE zsh ARM ACTUALLY COVERS, stated precisely because a reviewer caught the
+  // looser version overselling it.
+  //
+  // `board-task-id.sh` has a bash shebang and is always EXECUTED, never sourced, so its
+  // body runs under bash no matter who calls it. These cases therefore do NOT test the
+  // script's own syntax under zsh — they test the CALLER's side: that a zsh caller hands
+  // the arguments over intact and reads the answer back the same way. That is the real
+  // exposure, because the Bash tool on the maintainer's machine is zsh and every
+  // documented call site in the auto-ship docs is typed into it. Worth having, worth not
+  // claiming more than it is.
   // -------------------------------------------------------------------------------
 
   for (const shell of SHELLS) {

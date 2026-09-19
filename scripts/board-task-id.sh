@@ -81,6 +81,11 @@ set -uo pipefail
 
 OWNER="${BOARD_OWNER:-project-ax}"
 PNUM="${BOARD_PROJECT_NUMBER:-1}"
+# 6 rounds. A collision of k cards needs about k-1 rounds to unwind (each round retires
+# at least the cohort's keeper), so this has headroom for roughly a 6-way pileup and a
+# 7-way one would fail LOUD rather than resolve. That is the right way round — more
+# rounds would fix it, but a pileup that deep means something is wrong that a retry
+# should not paper over — and raising it is one env var away.
 MAX_ATTEMPTS="${BOARD_TASK_ID_MAX_ATTEMPTS:-6}"
 BACKOFF_MS="${BOARD_TASK_ID_BACKOFF_MS:-400}"
 
