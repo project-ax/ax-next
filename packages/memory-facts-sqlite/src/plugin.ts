@@ -163,7 +163,11 @@ function validateRecordInput(input: RecordInput): ValidatedRecordInput {
   };
 }
 
-function validateRecallInput(input: RecallInput): { about?: string; limit: number } {
+function validateRecallInput(input: RecallInput): {
+  about?: string;
+  limit: number;
+  activeOnly: boolean;
+} {
   if (
     typeof input.limit !== 'number' ||
     !Number.isFinite(input.limit) ||
@@ -182,10 +186,10 @@ function validateRecallInput(input: RecallInput): { about?: string; limit: numbe
       message: 'about must be a string when set',
     });
   }
-  // `query` (free-text search) and `activeOnly: false` (history) are on the
-  // contract's type for forward-compat (TASK-434, TASK-422) but this engine
-  // doesn't implement either yet. Rejecting them loudly beats silently
-  // returning fewer/more rows than a caller who read the type asked for.
+  // `query` (free-text search) is on the contract's type for forward-compat
+  // (TASK-434's fusion recall) but this engine doesn't implement it yet.
+  // Rejecting it loudly beats silently returning an unfiltered result set to
+  // a caller who read the type and expected it to narrow the answer.
   if (input.query !== undefined) {
     throw new PluginError({
       code: 'invalid-payload',
@@ -200,16 +204,14 @@ function validateRecallInput(input: RecallInput): { about?: string; limit: numbe
       message: 'activeOnly must be a boolean when set',
     });
   }
-  if (input.activeOnly === false) {
-    throw new PluginError({
-      code: 'invalid-payload',
-      plugin: PLUGIN_NAME,
-      message: 'activeOnly: false (history) is not implemented yet (TASK-422) — omit it',
-    });
-  }
   return {
     ...(input.about !== undefined ? { about: input.about } : {}),
     limit: Math.min(Math.floor(input.limit), MAX_LIMIT),
+    // Omitted or `true` -> only currently-active rows (unchanged TASK-421
+    // behavior). `false` -> history mode (design §4.2): no validity filter,
+    // so closed rows come back too, each carrying `until` and (for a
+    // rule-closure) `closedBy` via `rowToFactRecord` — no new field needed.
+    activeOnly: input.activeOnly !== false,
   };
 }
 
@@ -516,37 +518,48 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
         PLUGIN_NAME,
         async (ctx, input) => {
           // Validation before the store region — see `record`.
-          const { about, limit } = validateRecallInput(input);
+          const { about, limit, activeOnly } = validateRecallInput(input);
           const agentKey = agentScopeKey(ctx);
 
-          // The activeOnly-only cut (TASK-421 scope decision): always
-          // filters to currently-active rows regardless of `input.
-          // activeOnly`'s value, and never consults `input.query` — no
-          // FTS/dense/RRF/rerank here (TASK-434).
+          // `activeOnly` (§4.2 `history`) gates the validity predicate:
+          // omitted/`true` keeps the TASK-421 behavior of only currently-
+          // active rows; `false` drops the predicate entirely, so active AND
+          // closed rows both come back. `input.query` is never consulted
+          // here regardless — no FTS/dense/RRF/rerank (TASK-434).
           //
           // Recall is the handler where swallowing a store failure would be
           // most tempting and most harmful: "no facts" and "could not read the
           // facts" render identically to the model, and one of them is a lie.
-          const rows = inStore('memory:facts:recall', () => {
+          // `degraded` is read from the SAME store region for the same
+          // reason — a failed pending count must surface as `store-
+          // unavailable`, not silently report a clean tenant.
+          const { rows, degraded } = inStore('memory:facts:recall', () => {
             const db = requireDriver();
-            return about !== undefined
-              ? (db
-                  .prepare(
-                    `SELECT * FROM ${TABLE}
-                    WHERE agent_key = ? AND about = ? AND valid_end = ?
-                    ORDER BY valid_start DESC LIMIT ?`,
-                  )
-                  .all(agentKey, about, INFINITY_SENTINEL, limit) as FactRow[])
-              : (db
-                  .prepare(
-                    `SELECT * FROM ${TABLE}
-                    WHERE agent_key = ? AND valid_end = ?
-                    ORDER BY valid_start DESC LIMIT ?`,
-                  )
-                  .all(agentKey, INFINITY_SENTINEL, limit) as FactRow[]);
+
+            const conditions = ['agent_key = ?'];
+            const params: unknown[] = [agentKey];
+            if (about !== undefined) {
+              conditions.push('about = ?');
+              params.push(about);
+            }
+            if (activeOnly) {
+              conditions.push('valid_end = ?');
+              params.push(INFINITY_SENTINEL);
+            }
+            params.push(limit);
+
+            const rows = db
+              .prepare(
+                `SELECT * FROM ${TABLE}
+                WHERE ${conditions.join(' AND ')}
+                ORDER BY valid_start DESC LIMIT ?`,
+              )
+              .all(...params) as FactRow[];
+
+            return { rows, degraded: pendingStatus(db, agentKey).degraded };
           });
 
-          return { statements: rows.map(rowToFactRecord), degraded: [] };
+          return { statements: rows.map(rowToFactRecord), degraded };
         },
       );
 

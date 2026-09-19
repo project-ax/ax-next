@@ -409,9 +409,10 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
           slot: 'lives_in',
         });
         // The closure is visible on the NEW record's `closes` list — the
-        // closed row itself is no longer independently fetchable through
-        // this contract (recall is activeOnly-only), so this return payload
-        // is the auditability surface.
+        // closed row itself is not returned by this DEFAULT `recall`
+        // (activeOnly: true; `activeOnly: false` history is exercised
+        // separately below), so this return payload is the auditability
+        // surface for this case.
         expect(seattle.closes).toEqual([boston.id]);
         expect(seattle.closedBy).toBeUndefined();
       });
@@ -535,8 +536,9 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
 
     // -------------------------------------------------------------------------
     // The invariant: exactly one active winner, regardless of arrival order.
-    // NOTE what this block can and can't see: `recall` is activeOnly-only, so
-    // these assertions observe the ACTIVE row and which ids `supersede` still
+    // NOTE what this block can and can't see: these assertions use the
+    // DEFAULT `recall` (activeOnly: true), so they observe the ACTIVE row
+    // and which ids `supersede` still
     // finds open — not whether two CLOSED intervals overlap. Non-overlap
     // itself (rule 2's "earliest later row, active-or-not") is pinned by the
     // dedicated "bounds the backdated row at the EARLIEST later row" case
@@ -597,8 +599,8 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
           const out = await recall({ about: 'user', limit: 10 });
           expect(out.statements.map((s) => s.value)).toEqual(['Denver']);
 
-          // `recall` can't see the closed rows (activeOnly-only), but
-          // `supersede` acts on whatever is still active — attempting to
+          // This default `recall` (activeOnly: true) can't see the closed
+          // rows, but `supersede` acts on whatever is still active — attempting to
           // close all three ids and reading back which ones it ACTUALLY
           // closed proves only one was open, regardless of arrival order.
           const result = await supersede(ids);
@@ -1019,16 +1021,6 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         }
       });
 
-      it('recall rejects `activeOnly: false` — history not implemented yet (TASK-422)', async () => {
-        try {
-          await recall({ activeOnly: false, limit: 10 });
-          throw new Error('expected memory:facts:recall to reject activeOnly: false');
-        } catch (err) {
-          expect(err).toBeInstanceOf(Error);
-          expect((err as { code?: string }).code).toBe('invalid-payload');
-        }
-      });
-
       it('record rejects a non-string batchKey', async () => {
         await expectCode('invalid-payload', () =>
           bus.call('memory:facts:record', makeCtx(), {
@@ -1048,6 +1040,206 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
             statements: [{ about: 'user', relation: 'likes_artist', value: 'Khalid', when: JAN }],
           }),
         );
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // memory:facts:recall — activeOnly: false is history mode (design §4.2)
+    // -----------------------------------------------------------------------
+    describe('memory:facts:recall — activeOnly: false (history)', () => {
+      it('activeOnly: true is explicitly equivalent to omitting it', async () => {
+        await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Boston',
+          when: JAN,
+          slot: 'lives_in',
+        });
+        await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JUN,
+          slot: 'lives_in',
+        });
+
+        const omitted = await recall({ about: 'user', limit: 10 });
+        const explicitTrue = await recall({ about: 'user', limit: 10, activeOnly: true });
+        expect(explicitTrue.statements.map((s) => s.value)).toEqual(
+          omitted.statements.map((s) => s.value),
+        );
+        expect(explicitTrue.statements.map((s) => s.value)).toEqual(['Seattle']);
+      });
+
+      it('default recall returns only the active row; activeOnly: false returns both, the closed one carrying until + closedBy', async () => {
+        const boston = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Boston',
+          when: JAN,
+          slot: 'lives_in',
+        });
+        const seattle = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JUN,
+          slot: 'lives_in',
+        });
+        expect(seattle.closes).toEqual([boston.id]);
+
+        const activeOnly = await recall({ about: 'user', limit: 10 });
+        expect(activeOnly.statements.map((s) => s.value)).toEqual(['Seattle']);
+
+        const history = await recall({ about: 'user', limit: 10, activeOnly: false });
+        expect(history.statements.map((s) => s.value).sort()).toEqual(['Boston', 'Seattle']);
+
+        const bostonRecord = history.statements.find((s) => s.id === boston.id);
+        expect(bostonRecord?.until).toBeDefined();
+        expect(bostonRecord?.closedBy).toBe(seattle.id);
+
+        const seattleRecord = history.statements.find((s) => s.id === seattle.id);
+        expect(seattleRecord?.until).toBeUndefined();
+        expect(seattleRecord?.closedBy).toBeUndefined();
+      });
+
+      it('history includes an explicitly superseded row, with until set and closedBy ABSENT — that is what distinguishes a retraction from a rule-closure', async () => {
+        const rec = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Khalid',
+          when: JAN,
+        });
+        expect((await supersede([rec.id])).closed).toEqual([rec.id]);
+
+        const activeOnly = await recall({ about: 'user', limit: 10 });
+        expect(activeOnly.statements.map((s) => s.id)).not.toContain(rec.id);
+
+        const history = await recall({ about: 'user', limit: 10, activeOnly: false });
+        const retracted = history.statements.find((s) => s.id === rec.id);
+        expect(retracted).toBeDefined();
+        expect(retracted?.until).toBeDefined();
+        expect(retracted?.closedBy).toBeUndefined();
+      });
+
+      it('activeOnly: false still honours `about` filtering, the limit clamp, and tenant scoping', async () => {
+        const ctxA = makeCtx('agent-a', 'user-a');
+        const ctxB = makeCtx('agent-b', 'user-b');
+
+        const boston = await recordOne(
+          { about: 'user', relation: 'lives_in', value: 'Boston', when: JAN, slot: 'lives_in' },
+          ctxA,
+        );
+        await recordOne(
+          { about: 'user', relation: 'lives_in', value: 'Seattle', when: JUN, slot: 'lives_in' },
+          ctxA,
+        );
+        await recordOne(
+          { about: 'alice', relation: 'lives_in', value: 'Denver', when: JAN, slot: 'lives_in' },
+          ctxA,
+        );
+        await recordOne(
+          { about: 'user', relation: 'lives_in', value: 'Portland', when: JAN, slot: 'lives_in' },
+          ctxB,
+        );
+
+        // `about` filtering: only `user`'s two rows, never `alice`'s.
+        const aboutFiltered = await recall({ about: 'user', limit: 10, activeOnly: false }, ctxA);
+        expect(aboutFiltered.statements.map((s) => s.value).sort()).toEqual(['Boston', 'Seattle']);
+
+        // limit clamp: two rows exist for `user`, cap at 1.
+        const limited = await recall({ about: 'user', limit: 1, activeOnly: false }, ctxA);
+        expect(limited.statements).toHaveLength(1);
+
+        // tenant scoping: agent B never sees agent A's closed Boston row —
+        // or any of agent A's rows at all.
+        const crossTenant = await recall({ about: 'user', limit: 10, activeOnly: false }, ctxB);
+        expect(crossTenant.statements.map((s) => s.id)).not.toContain(boston.id);
+        expect(crossTenant.statements.map((s) => s.value)).toEqual(['Portland']);
+      });
+
+      it('after teardown, recall with activeOnly: false rejects store-unavailable rather than resolving []', async () => {
+        await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Khalid',
+          when: JAN,
+        });
+        // Tear the store down mid-test, same pattern as the dedicated
+        // "store unavailable" describe below (disarm the shared afterEach —
+        // the store is already gone).
+        const close = teardown;
+        teardown = async () => {};
+        await close();
+
+        let resolvedTo: RecallOutput | undefined;
+        let caught: unknown;
+        try {
+          resolvedTo = await recall({ about: 'user', limit: 10, activeOnly: false });
+        } catch (err) {
+          caught = err;
+        }
+        expect(resolvedTo).toBeUndefined();
+        expect(caught).toBeInstanceOf(Error);
+        expect((caught as { code?: string }).code).toBe('store-unavailable');
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // memory:facts:recall — degraded (design §4.4, the `pending` flag)
+    // -----------------------------------------------------------------------
+    describe('memory:facts:recall — degraded', () => {
+      it('is [] on a clean tenant, flags [\'pending\'] once a pending row exists, and drops back to [] once reindex resolves it', async () => {
+        // Before: an ordinary resolved-slot row is not degraded. This is the
+        // "before" half of the transition — asserted alone it would pass
+        // against the OLD hardcoded `degraded: []` too, so it only earns its
+        // place here, as the baseline the next two assertions move away from.
+        await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Boston',
+          when: JAN,
+          slot: 'lives_in',
+        });
+        const clean = await recall({ about: 'user', limit: 10 });
+        expect(clean.degraded).toEqual([]);
+
+        // A pending row appears — the tenant's answers are now degraded.
+        const seattle = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JUN,
+          slot: PENDING_SLOT,
+        });
+        const duringPending = await recall({ about: 'user', limit: 10 });
+        expect(duringPending.degraded).toEqual(['pending']);
+
+        // Draining it through reindex clears the flag again.
+        const drain = await reindex({ slots: [{ id: seattle.id, slot: 'lives_in' }] });
+        expect(drain.resolved).toBe(1);
+        const afterDrain = await recall({ about: 'user', limit: 10 });
+        expect(afterDrain.degraded).toEqual([]);
+      });
+
+      it("is per-tenant — agent A's pending row does not flag agent B's recall", async () => {
+        const ctxA = makeCtx('agent-a', 'user-a');
+        const ctxB = makeCtx('agent-b', 'user-b');
+
+        await recordOne(
+          { about: 'user', relation: 'lives_in', value: 'Boston', when: JAN, slot: PENDING_SLOT },
+          ctxA,
+        );
+        await recordOne(
+          { about: 'user', relation: 'lives_in', value: 'Denver', when: JAN, slot: 'lives_in' },
+          ctxB,
+        );
+
+        const outA = await recall({ about: 'user', limit: 10 }, ctxA);
+        expect(outA.degraded).toEqual(['pending']);
+
+        const outB = await recall({ about: 'user', limit: 10 }, ctxB);
+        expect(outB.degraded).toEqual([]);
       });
     });
 
