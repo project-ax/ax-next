@@ -772,6 +772,18 @@ function Inner({
 
           {route.kind === 'agent' && (
             <AgentView
+              /*
+                TASK-393 — a switch mid-send used to reuse this instance: the
+                old agent's `send()` continuation (its POST has no abort
+                signal) kept running against whatever `agentId` the pane now
+                showed, overwriting `conversationRef` and streaming its reply
+                into the new agent's view. Keying on the agent remounts on
+                every switch, so a stale continuation writes into a discarded
+                instance instead of the one on screen — see AgentView's own
+                header comment and `workspace-draft-store.ts` for what a
+                remount costs and how it is covered.
+              */
+              key={route.id}
               agentId={route.id}
               tab={route.tab}
               onTab={(t) => navigate({ ...route, tab: t })}
