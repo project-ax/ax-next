@@ -70,9 +70,11 @@
 //       no guards, while LEAVING the surrounding prose in place -> 14 red. That is the
 //       vacuity scenario stated as a mutant: the section still says "DI_" four times and
 //       explains the measurement, and the guard reddens anyway. All 12 behavioural cases
-//       (6 scenarios x 2 shells) plus both structural checks, since the reverted line
-//       contains no `gh api graphql` at all. The title file still holds the untagged
-//       title -- the production symptom verbatim.
+//       (6 scenarios x 2 shells) plus the two `gh api graphql`-dependent structural
+//       checks, since the reverted line contains no `gh api graphql` at all. The THIRD
+//       structural check (`gh project item-edit … is not piped`) stays GREEN under M1 --
+//       the pre-fix line genuinely was not piped; it was pointed at the wrong id. The
+//       title file still holds the untagged title -- the production symptom verbatim.
 //   M2. Keep the resolution but pass `--id "$ITEM_ID"` to the edit anyway -> 4 red:
 //       `assigns the new title` and `preserves the human's title` x both shells, while
 //       the `gh api graphql` structural check PASSES. A scan would call this fixed. This

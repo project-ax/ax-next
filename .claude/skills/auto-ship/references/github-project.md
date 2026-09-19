@@ -933,7 +933,8 @@ that a pipeline could have laundered.
 *item* is what carries field values. Only the content-editing flags need `DI_`. Don't
 "fix" §4 to match this.
 
-The two `FATAL` paths are mutually exclusive and jointly total: a failed-or-empty lookup
+The two `FATAL` paths *for the lookup* (there is a third for the edit itself) are
+mutually exclusive and jointly total: a failed-or-empty lookup
 reports *lookup FAILED* (retry next pass), a successful lookup that yields no `DI_`
 reports *no draft-issue content* (stop trying). The one state neither names precisely is
 `gh` exiting **0** with malformed JSON — `jq` errors to stderr, `$DI` stays empty, and it
