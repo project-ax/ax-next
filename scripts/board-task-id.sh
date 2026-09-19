@@ -338,13 +338,18 @@ settle_item() {
     [ "$attempt" -le "$MAX_ATTEMPTS" ] && backoff
   done
 
-  local board holders
+  # One last read purely to name the cards a human has to repair. `|| board='[]'` is the
+  # ONLY place a failed read is tolerated, and it is safe because this arm has already
+  # decided to fail: the outcome is `return 1` either way, and the fallback degrades the
+  # MESSAGE, never the verdict.
+  local board stuck_tid holders
   board=$(read_board) || board='[]'
-  holders=$(printf '%s' "$board" | jq -r "$JQ_WITH_IDS"'
+  stuck_tid=$(printf '%s' "$board" | jq -r "$JQ_WITH_IDS"'
     | map(select(.item == $i)) | .[0].tid // empty' --arg i "$item")
   holders=$(printf '%s' "$board" | jq -r "$JQ_WITH_IDS"'
-    | map(select(.tid == $t)) | [.[] | "\(.item) (\(.title))"] | join("  |  ")' --arg t "${holders:-none}")
-  fatal "$item is STILL sharing its Task ID after $MAX_ATTEMPTS attempts. Holders: ${holders:-<board unreadable>}"
+    | map(select(.tid == $t)) | [.[] | "\(.item) (\(.title))"] | join("  |  ")' \
+    --arg t "${stuck_tid:-none}")
+  fatal "$item is STILL sharing ${stuck_tid:-its Task ID} after $MAX_ATTEMPTS attempts. Holders: ${holders:-<board unreadable>}"
   echo "  Renumber the card with FEWER references by hand and repair any 'Depends on' that pointed at it." >&2
   return 1
 }
