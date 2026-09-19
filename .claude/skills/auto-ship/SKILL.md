@@ -179,11 +179,16 @@ runs **synchronously** at the top of the pass and **doesn't consume a code slot*
 
 1. **Assign IDs (shell-side, no body read).** Any candidate whose title doesn't match
    `^\[(ARCH|CLI|SYNC|FAULTA|TASK)-[0-9]+\] ` is untagged → give it the next
-   `[TASK-n]` (max `[TASK-<num>]` on the board + 1) and rewrite the title, then
-   **`scripts/board-task-id.sh settle --item <PVTI_…>`** to confirm the number is yours.
-   Other sessions allocate ids from this board too, and two of them took the same number
-   on 2026-09-19 — mechanics and the deterministic yield rule:
-   `references/github-project.md` §8.2/§8.2a.
+   `[TASK-n]` (max `[TASK-<num>]` on the board + 1) and rewrite the title, then **confirm
+   the number is yours with `scripts/board-task-id.sh settle` — using the `if
+   TASK_ID=$(…); then … else … fi` form in `references/github-project.md` §8.2a, not a
+   bare call.** Two things ride on that. The id you get back may not be the one you
+   stamped (a card that is not the keeper renumbers itself), so **journal and dispatch
+   under the id `settle` returned**, never the one you wrote. And a non-zero exit means
+   the number is *still* a duplicate, so that card does not get triaged, journalled or
+   dispatched this pass — leave it and retry. Other sessions allocate ids from this board
+   too, and two of them took the same number on 2026-09-19. Mechanics and the
+   deterministic yield rule: `references/github-project.md` §8.2/§8.2a.
 2. **Dispatch the triage agent** (`references/templates.md` › Triage dispatch prompt) —
    one lightweight `general-purpose` agent, **no worktree**, passed only the candidate
    **item-ids + TASK-IDs**. It fetches bodies itself (bodies never enter your context),

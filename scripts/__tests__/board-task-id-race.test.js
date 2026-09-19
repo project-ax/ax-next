@@ -773,17 +773,32 @@ describe('board-task-id.sh — Task-ID allocation under concurrency', () => {
     // So: every call to the allocator in the doc must sit in an `if`, where the failure
     // path is a branch rather than a line of prose. Checked on LOGICAL lines, with
     // `\`-continuations joined, because both real call sites wrap.
-    const doc = readFileSync(
-      join(REPO_ROOT, '.claude', 'skills', 'auto-ship', 'references', 'github-project.md'),
-      'utf8',
-    );
+    // ALL THREE auto-ship docs, not just the one the bug was found in. A reviewer found
+    // the bare form surviving in SKILL.md precisely because the first version of this
+    // guard read `github-project.md` alone — the rule was enforced where I had already
+    // looked, which is the least useful place to enforce a rule.
+    //
+    // WHAT THIS STILL DOES NOT COVER, said plainly rather than implied away. The guard
+    // reads ```bash FENCES. SKILL.md's triage step states its allocator call in PROSE,
+    // and prose is deliberately out of scope here — scanning it is what made an earlier
+    // version fail on a paragraph that merely named the script in backticks. So adding
+    // SKILL.md and templates.md to this list buys coverage for any FUTURE fenced block
+    // in them; it does not pin the prose instruction that a reviewer had to catch by
+    // reading. A text check for the right words there would be the TASK-392 mistake
+    // again: satisfied by a sentence that says them and branches on nothing.
+    const DOCS = [
+      ['.claude', 'skills', 'auto-ship', 'SKILL.md'],
+      ['.claude', 'skills', 'auto-ship', 'references', 'github-project.md'],
+      ['.claude', 'skills', 'auto-ship', 'references', 'templates.md'],
+    ].map((parts) => join(REPO_ROOT, ...parts));
+
     // Only ```bash FENCES, not "everything between fences" — a naive split enrols the
     // prose paragraphs too, and a sentence that merely names `scripts/board-task-id.sh`
     // in backticks then reads as an unguarded call site. (Measured: my first version of
     // this test failed on §4's design-intake PARAGRAPH.)
     const blocks = [];
-    {
-      const lines = doc.split('\n');
+    for (const docPath of DOCS) {
+      const lines = readFileSync(docPath, 'utf8').split('\n');
       for (let i = 0; i < lines.length; i++) {
         if (!/^\s*```bash\s*$/.test(lines[i])) continue;
         const body = [];
@@ -804,6 +819,14 @@ describe('board-task-id.sh — Task-ID allocation under concurrency', () => {
       // invocation with nothing depending on it — documents the subcommands rather than
       // calling them, so there is no later work for a failure to corrupt. Any block that
       // mixes the allocator with other statements IS a call site.
+      //
+      // The exemption keys on SHAPE, not intent, and that is the honest limit of it: a
+      // real call site consumes the result (`TASK_ID=$(…)`, so the line no longer starts
+      // with the script name) or interleaves `gh`/`board_batch`, and either one
+      // disqualifies the block. What could still slip through is a future BARE `claim`
+      // among reference lines — side-effecting, result discarded. Narrow, and no
+      // instance exists; noted so the next reader does not mistake the exemption for a
+      // judgement about what the block means.
       if (code.length > 0 && code.every((l) => l.trim().startsWith('scripts/board-task-id.sh'))) {
         continue;
       }
@@ -815,8 +838,10 @@ describe('board-task-id.sh — Task-ID allocation under concurrency', () => {
     // iterating nothing — the precise way a doc-scanning test goes quietly useless.
     expect(
       calls.length,
-      'found no `scripts/board-task-id.sh claim|settle` call in github-project.md — ' +
-        'either the wiring was removed or this extractor stopped matching it',
+      'found fewer than 2 `scripts/board-task-id.sh claim|settle` calls across the ' +
+        'auto-ship docs — either the wiring was removed or this extractor stopped ' +
+        'matching it, and in the second case every assertion below passes on an empty ' +
+        'list',
     ).toBeGreaterThanOrEqual(2);
 
     for (const line of calls) {
