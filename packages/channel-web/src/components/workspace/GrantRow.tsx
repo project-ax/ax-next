@@ -53,6 +53,11 @@ import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
 import { HttpError, httpFetch, userFacingMessage } from '@/lib/http';
 import type { PermissionRequest } from '@/server/types';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
+import {
+  clearGrantDraft,
+  getGrantDraft,
+  setGrantDraftValue,
+} from '@/lib/workspace-grant-drafts';
 
 interface Props {
   grant: WorkspaceGrant;
@@ -95,7 +100,17 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
   // The conversation is recorded on the grant when the frame arrives: Today can
   // hold grants from several agents, so the row cannot work it out from context.
   const { request, conversationId } = grant;
-  const [values, setValues] = useState<Record<string, string>>({});
+  /**
+   * Seeded from the durable draft (TASK-389), not blank — a half-typed key must
+   * survive this component unmounting and a fresh instance taking its place,
+   * which is exactly what happens on a tab switch or a route change (see
+   * `workspace-grant-drafts.ts` for which of those actually reproduce). `values`
+   * itself stays local `useState`: it is the fast path for this render, and
+   * `workspace-grant-drafts.ts` is what outlives it.
+   */
+  const [values, setValues] = useState<Record<string, string>>(() =>
+    getGrantDraft(grant.key),
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /**
@@ -119,6 +134,8 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
    * that was never given needs no revoking.
    */
   function reject(): void {
+    // Withdrawn — the draft must not outlive a prompt that is now gone.
+    clearGrantDraft(grant.key);
     onResolved(grant.key);
   }
 
@@ -165,6 +182,12 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
         ),
       });
       if (!resp.ok) throw new HttpError('/api/chat/permission-decision', resp.status);
+      // Answered — clear the draft here, not only in `onResolved`'s caller:
+      // the `stalled` branch below never calls `onResolved` (the row stays on
+      // screen to say the agent didn't restart), but the key has already been
+      // written to the credential vault by `writeKeys` above, so it must not
+      // linger here too.
+      clearGrantDraft(grant.key);
       /*
         THE GRANT IS APPLIED FROM HERE DOWN, and nothing below may report
         otherwise. The skill is attached and the warm session retired; the only
@@ -405,7 +428,17 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
               type="password"
               autoComplete="off"
               value={values[s.slot] ?? ''}
-              onChange={(e) => setValues((v) => ({ ...v, [s.slot]: e.target.value }))}
+              onChange={(e) => {
+                const value = e.target.value;
+                setValues((v) => ({ ...v, [s.slot]: value }));
+                // Written through immediately, not merely on unmount: an
+                // unmount from a tab switch or route change gives this
+                // component no chance to run a cleanup effect first (the
+                // parent has already decided to stop rendering it), so the
+                // draft has to be current after every keystroke, not just at
+                // the end.
+                setGrantDraftValue(grant.key, s.slot, value);
+              }}
             />
           </div>
         ),

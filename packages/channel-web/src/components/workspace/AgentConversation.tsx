@@ -702,15 +702,16 @@ export function AgentConversation({
         asking for a key are tall enough to push the composer off screen, and a
         composer you cannot reach is a worse bug than a card you must scroll.
 
-        KNOWN WRINKLE of presence being continuous: switching browser tabs
-        unmounts this region, so a half-typed key in it is gone on return. It
-        is the flow where that hurts — people leave to fetch the key from a
-        password manager — but they leave BEFORE pasting far more often than
-        after, the field is never the only copy of anything, and the grant
-        itself is never lost (the queue still has it). Keeping the draft would
-        mean lifting per-row input state out of `GrantRow` and into something
-        that outlives both render sites, which is a second piece of shared
-        grant state — the thing invariant 4 is about. Filed rather than fixed.
+        WRINKLE FIXED (TASK-389). Presence being continuous means switching
+        browser tabs (or navigating away from this thread) unmounts this
+        region, and a plain `useState` in `GrantRow` used to lose whatever was
+        half-typed when that happened. `workspace-grant-drafts.ts` now holds
+        that draft outside the component, keyed by the grant, so a value typed
+        here survives the unmount and reappears — in this thread, or in
+        Today's copy of the same row — until the grant is answered or
+        withdrawn. It is not a second copy of the GRANT (invariant 4 still
+        holds: `workspace-grant-store.ts` is the only place a grant's own
+        state lives) — only of what was typed and not yet submitted anywhere.
       */}
       {grants.length > 0 && (
         <div className="px-6 pt-4" data-testid="thread-grants">
