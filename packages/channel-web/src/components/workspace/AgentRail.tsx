@@ -75,7 +75,34 @@ function Note({ children }: { children: React.ReactNode }) {
   generally may not.
 */
 
+/**
+ * The rail in its desktop shape: a fixed 296px column against the right edge.
+ *
+ * Below `md` this column does not exist — 296px here plus the sidebar's 236px
+ * is 532px of non-shrinking chrome on a 390px phone, which leaves the
+ * conversation (the actual product) no width at all. `AgentView` renders
+ * `AgentRailContent` inside a `Sheet` there instead (TASK-404). The split is a
+ * wrapper and nothing else on purpose: the content below has state and a POST,
+ * and duplicating it per-layout is how the two shapes start disagreeing.
+ */
 export function AgentRail({ detail, openPastId, onOpenPast }: Props) {
+  return (
+    <aside className="w-[296px] shrink-0 overflow-y-auto border-l border-border px-5 pb-6">
+      <AgentRailContent
+        detail={detail}
+        openPastId={openPastId}
+        onOpenPast={onOpenPast}
+      />
+    </aside>
+  );
+}
+
+/**
+ * Everything the rail says, with no opinion about the box it says it in — so
+ * the off-canvas `Sheet` below `md` and the inline column above it are the same
+ * component, not two that drift.
+ */
+export function AgentRailContent({ detail, openPastId, onOpenPast }: Props) {
   const { agent, past } = detail;
   const { rail, loading, error, revoke } = useAgentRail(agent.id);
   /** The grant rows with a POST in flight, plus whatever the last one said. */
@@ -115,7 +142,7 @@ export function AgentRail({ detail, openPastId, onOpenPast }: Props) {
   }
 
   return (
-    <aside className="w-[296px] shrink-0 overflow-y-auto border-l border-border px-5 pb-6">
+    <>
       <RightNow agent={agent} rail={rail} loading={loading} error={error} />
 
       <SectionLabel>What it may do alone</SectionLabel>
@@ -157,7 +184,7 @@ export function AgentRail({ detail, openPastId, onOpenPast }: Props) {
           ))}
         </CardContent>
       </Card>
-    </aside>
+    </>
   );
 }
 

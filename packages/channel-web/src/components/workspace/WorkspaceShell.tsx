@@ -21,7 +21,14 @@
  * because only the second tells you what still has to be built.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Menu } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import {
+  Sheet,
+  SheetContent,
+  SheetTitle,
+} from '@/components/ui/sheet';
+import { useIsCompact } from '@/lib/use-compact';
 import {
   workspaceApi,
   WorkspaceApiError,
@@ -55,7 +62,7 @@ import { AgentView } from './AgentView';
 import { HomeComposer } from './HomeComposer';
 import { TodayView } from './TodayView';
 import { Segmented, WorkspaceHeader } from './WorkspaceHeader';
-import { WorkspaceSidebar } from './WorkspaceSidebar';
+import { WorkspaceSidebar, WorkspaceSidebarNav } from './WorkspaceSidebar';
 
 /** "Friday, August 21" — the date the queue is describing. */
 function today(): string {
@@ -396,6 +403,21 @@ function Inner({
   const [filter, setFilter] = useState<'needs' | 'working'>('needs');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [rosterOpen, setRosterOpen] = useState(true);
+  /*
+    BELOW `md` THE SHELL IS ONE COLUMN (TASK-404). The rail is 236px that does
+    not shrink, which on a 390px phone is most of the viewport — and `main` is
+    `overflow-hidden` under an `h-screen` root, so whatever it pushed off the
+    right edge was not merely awkward, it was unreachable. Below the breakpoint
+    the rail is not rendered at all and the same nav lives in a `Sheet` instead.
+
+    A branch in JS rather than a `md:` class because these are two trees, not
+    one tree with two stylesheets: rendering both would put a second copy of
+    every nav button — and of the `UserMenu` — in the accessibility tree and in
+    the tab order. See `lib/use-compact.ts`, which reads `false` wherever
+    `matchMedia` is absent, so jsdom keeps rendering the desktop tree.
+  */
+  const compact = useIsCompact();
+  const [navOpen, setNavOpen] = useState(false);
   const [version, setVersion] = useState(0);
   /**
    * A turn the home composer started. `AgentView` picks it up on mount and
@@ -682,27 +704,87 @@ function Inner({
   const openAgent = (id: string) =>
     navigate({ kind: 'agent', id, tab: 'chat' });
 
+  /*
+    One set of nav props, two frames. Written once because the rail and the
+    sheet are the SAME navigation — two literals here would be two things free
+    to drift, and the one that drifts is always the one nobody is looking at.
+  */
+  const navProps = {
+    agents: board.agents,
+    route: route.kind,
+    activeAgentId: route.kind === 'agent' ? route.id : null,
+    pendingCount: pending,
+    rosterOpen,
+    onRoster: setRosterOpen,
+    onToday: () => navigate({ kind: 'today' }),
+    onActivity: () => navigate({ kind: 'activity' }),
+    onAgent: openAgent,
+    onOpenAdminSettings,
+    onCreateAgent,
+  };
+
+  /*
+    The only door to the nav once the rail is off-canvas, so it is rendered
+    wherever a header is. `md:hidden` is belt and braces on top of the
+    `compact` guard: the hook re-renders on the `change` event, and this makes
+    sure a trigger can never be painted next to a rail that is also on screen.
+
+    NOT ON THE AGENT ROUTE, yet. `AgentView` draws its own header and does not
+    take a `leading` slot, so its trigger has to be added there — it lands with
+    T5, which is putting the same treatment on `AgentRail`. Until then that
+    route reaches the nav in two taps via its own Back button (→ Today → this
+    trigger), so it is a longer road, not a dead end.
+  */
+  const navTrigger = compact ? (
+    <Button
+      variant="ghost"
+      size="icon"
+      className="md:hidden"
+      onClick={() => setNavOpen(true)}
+      aria-label="Open navigation"
+    >
+      <Menu size={16} />
+    </Button>
+  ) : null;
+
   return (
     <div className="flex h-screen flex-col bg-background font-sans text-foreground">
       <div className="flex min-h-0 flex-1">
-        <WorkspaceSidebar
-          agents={board.agents}
-          route={route.kind}
-          activeAgentId={route.kind === 'agent' ? route.id : null}
-          pendingCount={pending}
-          rosterOpen={rosterOpen}
-          onRoster={setRosterOpen}
-          onToday={() => navigate({ kind: 'today' })}
-          onActivity={() => navigate({ kind: 'activity' })}
-          onAgent={openAgent}
-          onOpenAdminSettings={onOpenAdminSettings}
-          onCreateAgent={onCreateAgent}
-        />
+        {!compact && <WorkspaceSidebar {...navProps} />}
+
+        {compact && (
+          <Sheet open={navOpen} onOpenChange={setNavOpen}>
+            {/*
+              `p-0` and `gap-0` because the nav brings its own padding and its
+              own row rhythm — the sheet's defaults would inset the rail and
+              space its sections apart, which is a different component wearing
+              the same markup. 280px is the phone equivalent of the 236px rail:
+              wide enough for an agent name, narrow enough to leave the page
+              behind it visible, which is what says the sheet is temporary.
+
+              `aria-describedby={undefined}` tells Radix the missing
+              description is deliberate — same as the credential sheet. A list
+              of destinations does not need a sentence explaining it, and an
+              empty one added to silence a warning is worse than none.
+            */}
+            <SheetContent
+              side="left"
+              aria-describedby={undefined}
+              className="flex w-[280px] flex-col gap-0 p-0"
+            >
+              <SheetTitle className="sr-only">Navigation</SheetTitle>
+              <WorkspaceSidebarNav
+                {...navProps}
+                onNavigate={() => setNavOpen(false)}
+              />
+            </SheetContent>
+          </Sheet>
+        )}
 
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {route.kind === 'today' && (
             <>
-              <WorkspaceHeader title="Today" subtitle={today()}>
+              <WorkspaceHeader title="Today" subtitle={today()} leading={navTrigger}>
                 <Segmented
                   value={filter}
                   onValueChange={setFilter}
@@ -759,6 +841,7 @@ function Inner({
               */}
               <WorkspaceHeader
                 title="Activity"
+                leading={navTrigger}
                 {...(feed.events.length > 0 && !feed.hasMore
                   ? {
                       subtitle: `${feed.events.length} ${
