@@ -810,7 +810,7 @@ const TAILWIND_CONFIG = readFileSync(join(SRC_ROOT, '..', 'tailwind.config.ts'),
 /** Accent families tailwind publishes a `-soft` tint for, e.g. `warning`. */
 const SOFT_FAMILIES = [
   ...new Set(
-    [...TAILWIND_CONFIG.matchAll(/hsl\(var\(--([\w-]+)-soft\)\)/g)].map((m) => m[1]),
+    [...TAILWIND_CONFIG.matchAll(/hsl\(var\(--([\w-]+)-soft\)\)/g)].map((m) => m[1]!),
   ),
 ].sort();
 
