@@ -88,7 +88,7 @@ Two layers. **The hook you call determines provenance** — there is no `provena
 | `memory:facts:recall` | `{query?, about?, at?, activeOnly?, ownerUserId?, limit, poolSize}` → `{statements, degraded}` |
 | `memory:facts:supersede` | `{ids}` |
 | `memory:facts:clear` | `{}` |
-| `memory:facts:reindex` | `{slots?: [{id, slot}]}` → `{resolved, reclosed, pending, degraded}` — apply caller-derived slots to `pending` rows, re-settle the affected chains, rebuild derived indexes. Called with no `slots` it is a status read. See §3.5. |
+| `memory:facts:reindex` | `{slots?: [{id, slot}]}` → `{resolved, resettled, pending, degraded}` — apply caller-derived slots to `pending` rows, re-settle the affected chains, rebuild derived indexes. Called with no `slots` it is a status read. See §3.5. |
 
 The engine payload carries `provenance` and `ownerUserId` because they are stored columns; only `@ax/memory` calls it. Tenant (`agentId`) always comes from `ctx`, never from a payload.
 

@@ -618,7 +618,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
             // sitting in a chain that had never been re-derived, which reads
             // as two simultaneously-active values for one slot — the exact
             // corruption pending exists to avoid. It is also what makes the
-            // reported `resolved`/`reclosed`/`pending` numbers describe one
+            // reported `resolved`/`resettled`/`pending` numbers describe one
             // consistent snapshot rather than three moments.
             const drain = db.transaction((): ReindexOutput => {
               // Tenant-scoped AND still-pending, in one predicate: a foreign
@@ -661,13 +661,13 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
                 }
               }
 
-              const reclosed = resettleSlotGroups(db, agentKey, [...groups.values()]);
+              const resettled = resettleSlotGroups(db, agentKey, [...groups.values()]);
               // Counted AFTER the writes, inside the same transaction, so the
               // number is the state this call left behind — not the one it
               // found. Called with no `slots` this is the whole hook: a status
               // read (design §2.2). A whole-tenant repair sweep is deliberately
               // NOT built — it has no caller (plan §6).
-              return { resolved, reclosed, ...pendingStatus(db, agentKey) };
+              return { resolved, resettled, ...pendingStatus(db, agentKey) };
             });
 
             return drain();

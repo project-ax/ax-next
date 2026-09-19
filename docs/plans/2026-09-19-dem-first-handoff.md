@@ -106,7 +106,7 @@ split into **four board cards**, in dependency order:
 > `record` side of that. Also: a retracted row (`closed_by IS NULL`, finite `valid_end`) is
 > excluded from the peer set, so re-settling a chain whose closure depended on a since-
 > retracted row **reopens** the row it had closed. Documented on `resettleSlotGroups`; it
-> surfaces in `reclosed` rather than silently.
+> surfaces in `resettled` rather than silently.
 
 Its only dependency (TASK-421) was Done. Scope, per its card body and `docs/plans/2026-09-18-
 task-421-memory-facts-plan.md`'s YAGNI pass:

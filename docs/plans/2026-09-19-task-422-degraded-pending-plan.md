@@ -67,7 +67,7 @@ retried under the same `batchKey` would be permanently half-written.
   draining the same pending rows over a `tsvector`/`pgvector` store; plus a
   no-op in-memory backend for product-layer tests.
 - **Payload field names that might leak:** none. Input `{ slots?: [{id, slot}] }`
-  and output `{ resolved, reclosed, pending, degraded }` are the same domain
+  and output `{ resolved, resettled, pending, degraded }` are the same domain
   vocabulary already on `memory:facts:record`/`recall`. No `rowid`, `table`,
   `sha`, `bucket`, `vector`, `index`.
 - **Subscriber risk:** none — service hook, no subscribers. A caller keying off
@@ -137,7 +137,7 @@ the same `about`; a pending row is returned by `recall` like any active row.
 ### Task 5 — `memory:facts:reindex` (§3.5 bullet 3, §2.2)
 `plugin.ts` registers `memory:facts:reindex`:
 - `{ slots?: Array<{ id: string; slot: string | null }> }` → `{ resolved: number;
-  reclosed: string[]; pending: number; degraded: DegradedFlag[] }`.
+  resettled: string[]; pending: number; degraded: DegradedFlag[] }`.
 - For each entry whose row is in this tenant **and currently `PENDING_SLOT`**:
   write the resolved slot (`null` = "no slot after all", legitimately inert).
   A foreign, missing or already-resolved id is ignored, not an error — same
@@ -147,11 +147,11 @@ the same `about`; a pending row is returned by `recall` like any active row.
   `(valid_start, transaction_time)`; rows explicitly superseded (`closed_by IS
   NULL` with a finite `valid_end`) are retractions — left exactly as they are and
   excluded as bounding peers, matching `insertWithSlotClosure`'s peer query.
-- With no `slots`: resolves nothing and recloses nothing — it reports status
+- With no `slots`: resolves nothing and re-settles nothing — it reports status
   (`pending`, `degraded`). Deliberate YAGNI cut: a whole-tenant repair sweep has
   no caller (§2.2's `{}` form stays meaningful as the status read).
 **Contract cases:** a pending row resolved to a real slot now closes the older row
-of that slot and reports it in `reclosed`; resolving to `null` leaves it inert;
+of that slot and reports it in `resettled`; resolving to `null` leaves it inert;
 resolving a row **backdated into the middle** of an existing chain re-derives the
 whole chain (the row it should close, and its own bound per rule 2); provenance
 immunity still holds through a reindex; an explicit `supersede` survives a reindex

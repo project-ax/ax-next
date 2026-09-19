@@ -224,8 +224,8 @@ export interface ReindexInput {
    * An id that is foreign to this tenant, missing, or no longer pending is
    * ignored rather than an error — the same forgiving shape `supersede` has.
    *
-   * Omitted, this is a STATUS read: nothing is resolved or re-closed, and the
-   * caller learns how many rows are still pending.
+   * Omitted, this is a STATUS read: nothing is resolved and no chain is
+   * re-settled, and the caller learns how many rows are still pending.
    */
   slots?: ResolvedSlot[];
 }
@@ -233,8 +233,30 @@ export interface ReindexInput {
 export interface ReindexOutput {
   /** How many pending rows this call actually resolved. */
   resolved: number;
-  /** Ids whose closure changed as a result — auditable, like `record`'s `closes`. */
-  reclosed: string[];
+  /**
+   * Every id whose closure state CHANGED as a result of this call — auditable,
+   * like `record`'s `closes`.
+   *
+   * Not "re-closed". The list includes rows that were RE-OPENED, because
+   * re-settling a chain re-derives §3.4 from scratch over the rows that still
+   * assert something, and a row the caller retracted asserts nothing. So if
+   * the row that had closed some older row has since been retracted, that
+   * older row comes back ACTIVE (`until`/`closedBy` both cleared) and is named
+   * here.
+   *
+   * The scenario, in one line: `A(lives_in, Jan)`; `B(lives_in, Jun)` closes A;
+   * `supersede([B])` retracts B; a pending row `P` for the same `(about, slot)`
+   * is then resolved by `reindex` — the replay drops B from the peer set, A's
+   * closure has no basis left, and A is re-opened and listed in `resettled`.
+   *
+   * That is the intended behaviour, not a wart: nothing should stay closed on
+   * the authority of a statement a person asked us to forget. Plain
+   * `supersede` does not do it because it is a single-row write that never
+   * re-settles a chain; `reindex` is the operation that re-derives. A consumer
+   * reading this list must therefore treat it as "go re-read these rows",
+   * never as "these rows are now closed".
+   */
+  resettled: string[];
   /** Rows still pending in this tenant AFTER the call. */
   pending: number;
   /** Same vocabulary as `recall` — `['pending']` while any row is still undrained. */
@@ -1301,7 +1323,7 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
       });
 
       // `reindex` has the same problem `recall` does: `{ resolved: 0,
-      // reclosed: [], pending: 0, degraded: [] }` is a perfectly plausible
+      // resettled: [], pending: 0, degraded: [] }` is a perfectly plausible
       // answer for a clean tenant, so a store outage that came back as that
       // would read as "nothing left to drain" — and the drain would stop.
       it('rejects reindex with store-unavailable rather than reporting an empty drain', async () => {
@@ -1591,7 +1613,7 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         return (await record({ batchKey, statements }, ctx)).records;
       }
 
-      it('closes the older row of the slot it is resolved into, and names it in reclosed', async () => {
+      it('closes the older row of the slot it is resolved into, and names it in resettled', async () => {
         const boston = await recordOne({
           about: 'user',
           relation: 'lives_in',
@@ -1611,7 +1633,7 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
 
         const out = await reindex({ slots: [{ id: seattle.id, slot: LIVES_IN }] });
         expect(out.resolved).toBe(1);
-        expect(out.reclosed).toEqual([boston.id]);
+        expect(out.resettled).toEqual([boston.id]);
         expect(out.pending).toBe(0);
         expect(out.degraded).toEqual([]);
 
@@ -1636,11 +1658,11 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         });
 
         const out = await reindex({ slots: [{ id: seattle.id, slot: null }] });
-        // `resolved: 1` next to `reclosed: []` is the pairing that matters:
+        // `resolved: 1` next to `resettled: []` is the pairing that matters:
         // an implementation that silently did nothing would satisfy the empty
         // list but not the count, and it would still be reported as pending.
         expect(out.resolved).toBe(1);
-        expect(out.reclosed).toEqual([]);
+        expect(out.resettled).toEqual([]);
         expect(out.pending).toBe(0);
         expect(out.degraded).toEqual([]);
 
@@ -1691,7 +1713,7 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
 
         const out = await reindex({ slots: [{ id: seattle.id, slot: LIVES_IN }] });
         expect(out.resolved).toBe(1);
-        expect(out.reclosed).toEqual([boston.id, seattle.id]);
+        expect(out.resettled).toEqual([boston.id, seattle.id]);
         expect(out.pending).toBe(0);
 
         const [bostonNow, denverNow, seattleNow] = (await reread(KEY, statements)) as [
@@ -1711,6 +1733,86 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
 
         const active = await recall({ about: 'user', limit: 10 });
         expect(active.statements.map((s) => s.value)).toEqual(['Denver']);
+      });
+
+      // The multi-CALL companion to the case above. That one re-derives a
+      // three-row chain inside ONE drain; this one hands the second drain a
+      // group the FIRST drain already settled — which is the shape a real
+      // caller produces, since the normalizer resolves what it can now and
+      // the rest arrives on a later pass.
+      //
+      // What only this case can catch: an implementation that re-derives from
+      // the closure state `record` originally wrote rather than from the state
+      // the previous drain left behind, or one that skips a group on the
+      // grounds that it has been settled once already. Both look correct
+      // against a single-drain fixture.
+      //
+      // One batch again, so `batch_seq` pins the replay order (see above) and
+      // Denver provably "arrived" before Seattle however the two reindex calls
+      // are interleaved.
+      it('re-derives a group that an earlier reindex call had already settled', async () => {
+        const KEY = 'two-drains';
+        const statements: FactStatementInput[] = [
+          { about: 'user', relation: 'lives_in', value: 'Boston', when: JAN, slot: LIVES_IN },
+          { about: 'user', relation: 'lives_in', value: 'Denver', when: SEP, slot: PENDING_SLOT },
+          { about: 'user', relation: 'lives_in', value: 'Seattle', when: JUN, slot: PENDING_SLOT },
+        ];
+        const [boston, denver, seattle] = (await record({ batchKey: KEY, statements })).records as [
+          RecordedStatement,
+          RecordedStatement,
+          RecordedStatement,
+        ];
+        // Both pending rows are inert on arrival, so Boston is still the only
+        // row `lives_in` has and it is still open-ended.
+        expect(denver.closes).toEqual([]);
+        expect(seattle.closes).toEqual([]);
+
+        // First drain: Denver joins the chain and closes Boston at SEP. The
+        // second pending row is untouched and still flags the tenant degraded.
+        const first = await reindex({ slots: [{ id: denver.id, slot: LIVES_IN }] });
+        expect(first.resolved).toBe(1);
+        expect(first.resettled).toEqual([boston.id]);
+        expect(first.pending).toBe(1);
+        expect(first.degraded).toEqual(['pending']);
+
+        const midway = (await reread(KEY, statements)) as [
+          RecordedStatement,
+          RecordedStatement,
+          RecordedStatement,
+        ];
+        expect(midway[0].until).toBe(SEP);
+        expect(midway[0].closedBy).toBe(denver.id);
+        expect(midway[1].until).toBeUndefined();
+        expect(midway[1].closedBy).toBeUndefined();
+
+        // Second drain: Seattle lands BETWEEN the two rows the first call
+        // settled, so Boston's closure has to be re-derived off state this
+        // hook wrote a moment ago — SEP/Denver, not the open-ended row
+        // `record` left. Boston moving to JUN/Seattle is the assertion that
+        // an already-settled group really was re-entered; `resolved: 1` next
+        // to it rules out a call that simply did nothing.
+        const second = await reindex({ slots: [{ id: seattle.id, slot: LIVES_IN }] });
+        expect(second.resolved).toBe(1);
+        expect(second.resettled).toEqual([boston.id, seattle.id]);
+        expect(second.pending).toBe(0);
+        expect(second.degraded).toEqual([]);
+
+        // The whole chain, end to end: Boston ends where Seattle starts,
+        // Seattle ends where Denver starts, Denver is the one active row.
+        const [bostonNow, denverNow, seattleNow] = (await reread(KEY, statements)) as [
+          RecordedStatement,
+          RecordedStatement,
+          RecordedStatement,
+        ];
+        expect(bostonNow.until).toBe(JUN);
+        expect(bostonNow.closedBy).toBe(seattle.id);
+        expect(seattleNow.until).toBe(SEP);
+        expect(seattleNow.closedBy).toBe(denver.id);
+        expect(denverNow.until).toBeUndefined();
+        expect(denverNow.closedBy).toBeUndefined();
+
+        const drained = await recall({ about: 'user', limit: 10 });
+        expect(drained.statements.map((s) => s.value)).toEqual(['Denver']);
       });
 
       // Rule 3 is not suspended just because the row took the scenic route in.
@@ -1765,10 +1867,10 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
             { id: later.id, slot: LIVES_IN },
           ],
         });
-        // Two rows really were resolved — the empty `reclosed` below is a
+        // Two rows really were resolved — the empty `resettled` below is a
         // statement about the rules, not about the drain having skipped them.
         expect(out.resolved).toBe(2);
-        expect(out.reclosed).toEqual([]);
+        expect(out.resettled).toEqual([]);
         expect(out.pending).toBe(0);
         expect(out.degraded).toEqual([]);
 
@@ -1816,7 +1918,7 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
 
         const out = await reindex({ slots: [{ id: seattle.id, slot: LIVES_IN }] });
         expect(out.resolved).toBe(1);
-        expect(out.reclosed).toEqual([]);
+        expect(out.resettled).toEqual([]);
         expect(out.pending).toBe(0);
 
         // The retraction is byte-for-byte what supersede left behind.
@@ -1859,11 +1961,125 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         expect(out.resolved).toBe(1);
         // Rule 1 WOULD have closed Boston (JAN <= JUN, and its retraction
         // stamp is later than JUN) if a retracted row were still a peer.
-        expect(out.reclosed).toEqual([]);
+        expect(out.resettled).toEqual([]);
 
         const [retractedNow] = (await reread(KEY, [bostonStatement])) as [RecordedStatement];
         expect(retractedNow.closedBy).toBeUndefined();
         expect(retractedNow.until).toBe(retracted.until);
+      });
+
+      // The two cases above put the retraction on a NEIGHBOUR of the resolved
+      // row. This one puts it on the resolved row ITSELF — a row that is both
+      // pending and retracted, which is reachable because `supersede` closes a
+      // row without touching its `slot`, so the drain's worklist still names
+      // it. Two forgiving paths crossing, and neither knows about the other.
+      //
+      // The answer has to be "drained, and inert": the caller derived a slot
+      // for it, so the backlog genuinely shrinks (`resolved`/`pending` move),
+      // but a retracted row asserts nothing, so the chain it nominally joined
+      // must come out of the replay untouched.
+      //
+      // Two subjects so BOTH ways it could wrongly participate are visible at
+      // once, and one batch so `batch_seq` pins which arrived first. Under
+      // `user` the retracted row arrives AFTER the healthy one and is dated
+      // later — rule 1 would close Boston at JUN. Under `partner` it arrives
+      // BEFORE the healthy one and is dated later — rule 2 would bound Denver
+      // at JUN instead. Either bug ends with a healthy row carrying an `until`
+      // it never earned.
+      it('drains a pending row that was also retracted, and lets it assert nothing', async () => {
+        const KEY = 'pending-and-retracted';
+        const statements: FactStatementInput[] = [
+          { about: 'user', relation: 'lives_in', value: 'Boston', when: JAN, slot: LIVES_IN },
+          { about: 'user', relation: 'lives_in', value: 'Seattle', when: JUN, slot: PENDING_SLOT },
+          { about: 'partner', relation: 'lives_in', value: 'Austin', when: JUN, slot: PENDING_SLOT },
+          { about: 'partner', relation: 'lives_in', value: 'Denver', when: JAN, slot: LIVES_IN },
+        ];
+        const [boston, seattle, austin, denver] = (await record({ batchKey: KEY, statements }))
+          .records as [
+          RecordedStatement,
+          RecordedStatement,
+          RecordedStatement,
+          RecordedStatement,
+        ];
+        // Pending on arrival means inert on arrival, in both directions: the
+        // pending row closes nothing, and the healthy row that arrives after
+        // one is not closed by it either.
+        expect(boston.closes).toEqual([]);
+        expect(seattle.closes).toEqual([]);
+        expect(denver.closes).toEqual([]);
+
+        expect((await supersede([seattle.id, austin.id])).closed.sort()).toEqual(
+          [seattle.id, austin.id].sort(),
+        );
+        const afterRetraction = (await reread(KEY, statements)) as [
+          RecordedStatement,
+          RecordedStatement,
+          RecordedStatement,
+          RecordedStatement,
+        ];
+        // A retraction, not a rule-closure: finite `until`, no `closedBy`.
+        for (const row of [afterRetraction[1], afterRetraction[2]]) {
+          expect(row.until).toBeDefined();
+          expect(row.closedBy).toBeUndefined();
+        }
+
+        // Retracted or not, their slot was never derived — so they are still
+        // on the drain's worklist and the tenant still reads degraded.
+        const before = await reindex();
+        expect(before.pending).toBe(2);
+        expect(before.degraded).toEqual(['pending']);
+
+        const out = await reindex({
+          slots: [
+            { id: seattle.id, slot: LIVES_IN },
+            { id: austin.id, slot: LIVES_IN },
+          ],
+        });
+        // `resolved: 2` and `pending: 0` are the positive half: a backend that
+        // skipped retracted rows outright would report `resolved: 0,
+        // pending: 2` here, and would satisfy the empty `resettled` below for
+        // entirely the wrong reason.
+        expect(out.resolved).toBe(2);
+        expect(out.resettled).toEqual([]);
+        expect(out.pending).toBe(0);
+        expect(out.degraded).toEqual([]);
+
+        // Neither healthy row moved — not closed (rule 1, `user`), not bounded
+        // (rule 2, `partner`). Both are still the open-ended answer.
+        const [bostonNow, seattleNow, austinNow, denverNow] = (await reread(
+          KEY,
+          statements,
+        )) as [RecordedStatement, RecordedStatement, RecordedStatement, RecordedStatement];
+        expect(bostonNow.until).toBeUndefined();
+        expect(bostonNow.closedBy).toBeUndefined();
+        expect(denverNow.until).toBeUndefined();
+        expect(denverNow.closedBy).toBeUndefined();
+        expect((await recall({ about: 'user', limit: 10 })).statements.map((s) => s.value)).toEqual(
+          ['Boston'],
+        );
+        expect(
+          (await recall({ about: 'partner', limit: 10 })).statements.map((s) => s.value),
+        ).toEqual(['Denver']);
+
+        // ...and the retractions are byte-for-byte what `supersede` left: the
+        // drain wrote their slot, never their closure. Un-forgetting a row a
+        // person asked us to forget is the worst bug available here.
+        expect(seattleNow.until).toBe(afterRetraction[1].until);
+        expect(seattleNow.closedBy).toBeUndefined();
+        expect(austinNow.until).toBe(afterRetraction[2].until);
+        expect(austinNow.closedBy).toBeUndefined();
+
+        // The slot really was written, so a repeat of the same drain finds
+        // nothing pending and is a no-op — the row has left the worklist for
+        // good rather than being skipped afresh every pass.
+        expect(
+          await reindex({
+            slots: [
+              { id: seattle.id, slot: LIVES_IN },
+              { id: austin.id, slot: LIVES_IN },
+            ],
+          }),
+        ).toEqual({ resolved: 0, resettled: [], pending: 0, degraded: [] });
       });
 
       it('ignores an id belonging to another agent, and leaves that agent\'s row pending', async () => {
@@ -1881,7 +2097,7 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
 
         const stolen = await reindex({ slots: [{ id: seattle.id, slot: LIVES_IN }] }, ctxB);
         expect(stolen.resolved).toBe(0);
-        expect(stolen.reclosed).toEqual([]);
+        expect(stolen.resettled).toEqual([]);
         expect(stolen.pending).toBe(0);
         expect(stolen.degraded).toEqual([]);
 
@@ -1893,7 +2109,7 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         // ...and still resolvable BY A, which proves B did not write the slot.
         const drained = await reindex({ slots: [{ id: seattle.id, slot: LIVES_IN }] }, ctxA);
         expect(drained.resolved).toBe(1);
-        expect(drained.reclosed).toEqual([boston.id]);
+        expect(drained.resettled).toEqual([boston.id]);
       });
 
       it('ignores an id that is no longer pending, and does not move its slot', async () => {
@@ -1908,7 +2124,7 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
 
         const again = await reindex({ slots: [{ id: seattle.id, slot: 'works_at' }] });
         expect(again.resolved).toBe(0);
-        expect(again.reclosed).toEqual([]);
+        expect(again.resettled).toEqual([]);
 
         // If the second call HAD moved the row into `works_at`, this later
         // `works_at` row would have closed it.
@@ -1942,7 +2158,7 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         });
 
         const status = await reindex();
-        expect(status).toEqual({ resolved: 0, reclosed: [], pending: 2, degraded: ['pending'] });
+        expect(status).toEqual({ resolved: 0, resettled: [], pending: 2, degraded: ['pending'] });
 
         const half = await reindex({ slots: [{ id: first.id, slot: LIVES_IN }] });
         expect(half.resolved).toBe(1);
@@ -1970,7 +2186,7 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
 
         for (const input of [{}, { slots: [] }] as ReindexInput[]) {
           const out = await reindex(input);
-          expect(out).toEqual({ resolved: 0, reclosed: [], pending: 1, degraded: ['pending'] });
+          expect(out).toEqual({ resolved: 0, resettled: [], pending: 1, degraded: ['pending'] });
         }
 
         // Nothing moved: both rows still active, neither carrying a closure.
@@ -1987,7 +2203,7 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         // consume it, so the real drain still has work to do.
         const drained = await reindex({ slots: [{ id: seattle.id, slot: LIVES_IN }] });
         expect(drained.resolved).toBe(1);
-        expect(drained.reclosed).toEqual([boston.id]);
+        expect(drained.resettled).toEqual([boston.id]);
       });
 
       it('is a complete no-op the second time the same drain runs', async () => {
@@ -2004,14 +2220,14 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         const first = await reindex({ slots: [{ id: seattle.id, slot: LIVES_IN }] });
         expect(first).toEqual({
           resolved: 1,
-          reclosed: [boston.id],
+          resettled: [boston.id],
           pending: 0,
           degraded: [],
         });
         const afterFirst = await reread(KEY, statements);
 
         const second = await reindex({ slots: [{ id: seattle.id, slot: LIVES_IN }] });
-        expect(second).toEqual({ resolved: 0, reclosed: [], pending: 0, degraded: [] });
+        expect(second).toEqual({ resolved: 0, resettled: [], pending: 0, degraded: [] });
         // Same rows, same closures, same everything.
         expect(await reread(KEY, statements)).toEqual(afterFirst);
       });
@@ -2060,7 +2276,7 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
           );
           expect(await reindex()).toEqual({
             resolved: 0,
-            reclosed: [],
+            resettled: [],
             pending: 1,
             degraded: ['pending'],
           });

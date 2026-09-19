@@ -319,7 +319,7 @@ interface ReplayState extends ClosurePeer {
  * replay, a NEIGHBOUR whose closure was decided by it is re-derived without
  * it. If B closed A and B was then retracted, re-settling that chain reopens
  * A. That is deliberate — B asserts nothing, so nothing should still be closed
- * on B's authority — and it shows up in `reclosed`, not silently. Plain
+ * on B's authority — and it shows up in `resettled`, not silently. Plain
  * `supersede` does not do this because it is a cheap single-row write that
  * never re-settles; `reindex` is the operation that does.
  */
@@ -378,7 +378,7 @@ export function resettleSlotGroups(
       live.push({ stored: row, state });
     }
 
-    // Write back only what moved, so `reclosed` means "this row's closure
+    // Write back only what moved, so `resettled` means "this row's closure
     // actually changed" and a second identical reindex is a true no-op.
     for (const { stored, state } of live) {
       if (state.valid_end === stored.valid_end && state.closed_by === stored.closed_by) continue;
