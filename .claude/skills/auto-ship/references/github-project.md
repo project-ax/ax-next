@@ -902,8 +902,11 @@ NEXT=$(printf '%s' "$ITEMS" | jq -r '.items[].title | capture("\\[TASK-(?<n>[0-9
 # "this card has no draft issue" -- a different diagnosis with a different remedy (retry
 # vs. give up on the card). Same reason `append_progress` keeps its read rc (§6).
 json=$(gh api graphql -f query='query($i:ID!){node(id:$i){... on ProjectV2Item{content{... on DraftIssue{id}}}}}' \
-         -f i="$ITEM_ID") \
-  || { json=; echo "FATAL: draft-issue lookup FAILED for $ITEM_ID (transient? it retries next pass) — [TASK-$NEXT] NOT assigned"; }
+         -f i="$ITEM_ID") || json=
+# Empty covers BOTH "gh exited non-zero" and the theoretical "exited 0, said nothing".
+# One test, so no path can end in silence -- a quiet no-op here looks exactly like a
+# card nobody ever triaged.
+[ -n "$json" ] || echo "FATAL: draft-issue lookup FAILED for $ITEM_ID (no answer — transient? it retries next pass) — [TASK-$NEXT] NOT assigned"
 DI=; [ -n "$json" ] && DI=$(printf '%s' "$json" | jq -r '.data.node.content.id // empty')
 ok=; case "$DI" in DI_*) ok=1 ;; esac
 [ -n "$json" ] && [ -z "$ok" ] && echo "FATAL: no draft-issue content on $ITEM_ID (got '${DI:-<empty>}' — a linked issue/PR?) — [TASK-$NEXT] NOT assigned"
@@ -929,6 +932,14 @@ that a pipeline could have laundered.
 (`Status`, `Depends on`) take the **`PVTI_` item id** and are correct as written — the
 *item* is what carries field values. Only the content-editing flags need `DI_`. Don't
 "fix" §4 to match this.
+
+The two `FATAL` paths are mutually exclusive and jointly total: a failed-or-empty lookup
+reports *lookup FAILED* (retry next pass), a successful lookup that yields no `DI_`
+reports *no draft-issue content* (stop trying). The one state neither names precisely is
+`gh` exiting **0** with malformed JSON — `jq` errors to stderr, `$DI` stays empty, and it
+lands in the second message. Loud, safe, never stamps; just imprecise. That rests on
+`gh api graphql` exiting non-zero for HTTP failures and GraphQL `errors` envelopes, which
+it does today.
 
 A card whose content is a linked real issue/PR has no draft issue, so `$DI` comes back
 empty and the guard above refuses rather than stamping the wrong node. Triage only ever

@@ -52,39 +52,54 @@
 // parity with it.
 //
 // MUTANTS RUN, NOT REASONED ABOUT (2026-09-19, each applied to the committed text and
-// executed, then restored; baseline 15 passed on a machine with zsh and jq). Every
-// mutant below still COLLECTS 15, so none of them reddened by making the suite smaller
+// executed, then restored; baseline 17 passed on a machine with zsh and jq). Every
+// mutant below still COLLECTS 17, so none of them reddened by making the suite smaller
 // -- the number to distrust is a red count that arrives with a shrunken total.
 //
-//   - Revert §8.2 to the exact pre-fix line, `--id "$ITEM_ID"` with no resolution and no
-//     guards, while LEAVING the surrounding prose in place -> 12 red. That is the vacuity
-//     scenario stated as a mutant: the section still says "DI_" four times and explains
-//     the measurement, and the guard reddens anyway. The 10 behavioural cases (5
-//     scenarios x 2 shells) plus both structural checks, since the reverted line contains
-//     no `gh api graphql` at all. The title file still holds the untagged title -- the
-//     production symptom verbatim.
-//   - Keep the resolution but pass `--id "$ITEM_ID"` to the edit anyway -> 4 red:
-//     `assigns the new title` and `preserves the human's title` x both shells, while the
-//     `gh api graphql` structural check PASSES. A scan would call this fixed. This is the
-//     whole argument for executing over grepping, in one mutant.
-//   - Delete only the `no draft-issue content` FATAL line -> 2 red, `linked-issue card`
-//     x both shells: the block goes quiet on a card it cannot stamp.
-//   - Delete only the trailing `|| echo "FATAL: item-edit refused …"` -> 2 red,
-//     `refusal is loud` x both shells. This is the arm the edit-site pipe trap hides.
-//   - Swap `sort -n` for a plain `sort` in the NEXT computation -> 4 red, `assigns the
-//     new title` and `preserves the human's title` x both shells. The fixture's TASK-99
-//     sorts above TASK-401 lexically, so NEXT comes out 100 -- a COLLISION with a live
-//     card, not merely a wrong number. Not this card's bug, but it rides in the same
-//     block and the guard now holds it.
-//   - Pipe the EDIT (`… --title "…" | head -1 || echo FATAL`) -> 3 red: the
-//     `gh project item-edit … is not piped` check, plus `refusal is loud` x both shells,
-//     because `$?` is now `head`'s and the FATAL arm never fires.
-//   - Pipe the LOOKUP back into jq, i.e. the shape the first version of this fix shipped
-//     with -> 3 red, and the names are worth quoting because they are the finding:
-//     `the gh api graphql draft-issue lookup call is not piped, so its status is its
-//     own`, plus `a transient lookup failure is NOT reported as "no draft issue"` x both
-//     shells. The four title-related scenarios all stay GREEN under this mutant, which is
-//     exactly why the first version passed its own guard.
+// A CORRECTION THAT IS ITSELF THE LESSON. An earlier version of this header claimed the
+// piped-lookup mutant reddened **3**. A reviewer re-ran it and measured more. The cause
+// was not the suite: my mutant had spliced an artificial `json=x` line in to keep the
+// downstream `[ -n "$json" ]` tests true, and no real regression would ever contain that
+// line. So I had measured a mutant nobody could write. A mutant's CONSTRUCTION is a
+// claim as much as its count is, and "restore the previous version verbatim" is the only
+// construction that cannot be argued with. That is what M7 does now. (This repo has the
+// sibling lesson on file: `.claude/memory/mistakes.md`, TASK-403, a mutant that landed on
+// the wrong one of two identical lines and "survived".)
+//
+//   M1. Revert §8.2 to the exact pre-fix line, `--id "$ITEM_ID"` with no resolution and
+//       no guards, while LEAVING the surrounding prose in place -> 14 red. That is the
+//       vacuity scenario stated as a mutant: the section still says "DI_" four times and
+//       explains the measurement, and the guard reddens anyway. All 12 behavioural cases
+//       (6 scenarios x 2 shells) plus both structural checks, since the reverted line
+//       contains no `gh api graphql` at all. The title file still holds the untagged
+//       title -- the production symptom verbatim.
+//   M2. Keep the resolution but pass `--id "$ITEM_ID"` to the edit anyway -> 4 red:
+//       `assigns the new title` and `preserves the human's title` x both shells, while
+//       the `gh api graphql` structural check PASSES. A scan would call this fixed. This
+//       is the whole argument for executing over grepping, in one mutant.
+//   M3. Delete only the `no draft-issue content` FATAL line -> 2 red, `linked-issue card`
+//       x both shells: the block goes quiet on a card it cannot stamp.
+//   M4. Delete only the trailing `|| echo "FATAL: item-edit refused …"` -> 2 red,
+//       `refusal is loud` x both shells. This is the arm the edit-site pipe trap hides.
+//   M5. Swap `sort -n` for a plain `sort` in the NEXT computation -> 4 red, `assigns the
+//       new title` and `preserves the human's title` x both shells. The fixture's TASK-99
+//       sorts above TASK-401 lexically, so NEXT comes out 100 -- a COLLISION with a live
+//       card, not merely a wrong number. Not this card's bug, but it rides in the same
+//       block and the guard now holds it.
+//   M6. Pipe the EDIT (`… --title "…" | head -1 || echo FATAL`) -> 3 red: the
+//       `gh project item-edit … is not piped` check, plus `refusal is loud` x both
+//       shells, because `$?` is now `head`'s and the FATAL arm never fires.
+//   M7. Restore the round-1 block VERBATIM (`git show 38e85a17`), i.e. the piped lookup
+//       this branch actually shipped with before review -> 7 red: the
+//       `gh api graphql … is not piped` check, plus `transient lookup failure`,
+//       `rc-0 lookup that answers NOTHING` and `linked-issue card`, each x both shells.
+//       The four title scenarios all stay GREEN, which is exactly why the piped version
+//       passed its own guard and needed a human to catch it.
+//   M8. Delete only the `[ -n "$json" ] ||` lookup-FAILED line -> 4 red: `transient
+//       lookup failure` AND `rc-0 lookup that answers NOTHING`, x both shells. Both
+//       lookup-failure shapes route through that one test, which is the point of testing
+//       the OUTPUT rather than the exit code -- an `|| echo` on the assignment alone
+//       cannot see an rc-0 empty answer at all.
 //
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally -- no
 // network and no build. The `gh` on PATH is a stub, so nothing here reaches GitHub.
@@ -227,6 +242,12 @@ if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
     echo "gh: Post \\"https://api.github.com/graphql\\": dial tcp: i/o timeout" >&2
     exit 1
   fi
+  if [ "$STUB_GRAPHQL_EMPTY" = "1" ]; then
+    # The theoretical one: rc 0 and nothing on stdout. Real gh does not do this, which
+    # is exactly why it is worth a test -- it is the state a reader reasons past, and
+    # the one where an rc-only guard goes completely silent.
+    exit 0
+  fi
   id=""
   while [ "$#" -gt 0 ]; do
     if [ "$1" = "-f" ]; then
@@ -294,7 +315,10 @@ afterAll(() => {
  * doc's guards print and continue, and a helper that threw would turn "the block
  * refused loudly" into something hard to tell apart from "the test crashed".
  */
-function runBlock(shell, { hasDraft = true, editFails = false, lookupFails = false } = {}) {
+function runBlock(
+  shell,
+  { hasDraft = true, editFails = false, lookupFails = false, lookupEmpty = false } = {},
+) {
   writeFileSync(TITLE_FILE, ORIGINAL_TITLE);
   const r = spawnSync(shell, ['-c', BLOCK], {
     encoding: 'utf8',
@@ -310,6 +334,7 @@ function runBlock(shell, { hasDraft = true, editFails = false, lookupFails = fal
       STUB_HAS_DRAFT: hasDraft ? '1' : '0',
       STUB_EDIT_FAILS: editFails ? '1' : '0',
       STUB_GRAPHQL_FAILS: lookupFails ? '1' : '0',
+      STUB_GRAPHQL_EMPTY: lookupEmpty ? '1' : '0',
     },
     cwd: REPO_ROOT,
   });
@@ -434,6 +459,21 @@ describe('auto-ship triage: `item-edit --title` gets the DI_ draft-issue content
         out,
         'a transient failure was misdiagnosed as "this card has no draft issue"',
       ).not.toMatch(/no draft-issue content/);
+    });
+
+    it.runIf(HAS_JQ)(`${shell}: an rc-0 lookup that answers NOTHING is still loud`, () => {
+      // The one path an rc-only guard leaves completely silent: gh exits 0 and prints
+      // nothing, so the `||` never fires, `$json` is empty, and every downstream test
+      // is false. No FATAL, no stamp, no reason -- a card that simply looks untriaged
+      // forever, which is the exact symptom this whole card is about. §8.2 therefore
+      // tests the OUTPUT for emptiness rather than the exit code alone.
+      const { out, title } = runBlock(shell, { lookupEmpty: true });
+      expect(title, 'stamped a card off an empty lookup').toBe(ORIGINAL_TITLE);
+      expect(
+        out,
+        'the block said NOTHING about a lookup that returned nothing -- the silent ' +
+          'no-op shape. An `|| echo` alone cannot catch this; the guard must test $json.',
+      ).toMatch(/FATAL: draft-issue lookup FAILED/);
     });
 
     it.runIf(HAS_JQ)(`${shell}: a refused item-edit is loud, not swallowed`, () => {
