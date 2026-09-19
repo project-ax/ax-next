@@ -40,6 +40,7 @@ import {
 } from '@/lib/consent-focus';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import { StateDot } from './bits';
+import { ConsentAnnouncement } from './ConsentAnnouncement';
 import {
   DECISION_NOTHING_YET,
   DECISION_STALE_ADVICE,
@@ -143,246 +144,261 @@ export function DecisionRow({
             // both unmount and there is no resolution left to land on.
             `open:${d.status}:${d.resolvedAt ?? ''}`;
   const { answerRef, armForResolution } = useResolutionFocus(answerKey);
+  /*
+    ANNOUNCED, not only focused (TASK-442). Hung ABOVE the branch split on
+    purpose: resolving swaps one subtree for another, and a live region that
+    went with it would arrive already holding its message, which assistive tech
+    does not reliably announce. It is also FIRST, so the row's own `div` is
+    still its parent's last child and `last:border-b-0` keeps working.
+    `ConsentAnnouncement` carries the rest of the argument.
+  */
+  const announcement = <ConsentAnnouncement outcome={outcome} notice={notice} />;
 
   if (outcome !== null) {
     return (
-      <div
-        className="flex flex-col gap-1 border-b border-rule-soft px-5 py-3.5 last:border-b-0"
-        data-testid={`decision-${d.id}`}
-        data-status={d.status}
-      >
-        {/*
-          THE FOCUS TARGET. Undo sits INSIDE it so that the first tabbable
-          thing from here is Undo itself — one Tab, well inside the ten
-          seconds the window lasts. `tabIndex={-1}` keeps it a destination
-          rather than an extra stop in everyone else's Tab order.
-        */}
+      <>
+        {announcement}
         <div
-          ref={answerRef}
-          tabIndex={-1}
-          data-testid={`decision-outcome-${d.id}`}
-          className={`flex items-center gap-3 ${RESOLUTION_FOCUS_RING}`}
+          className="flex flex-col gap-1 border-b border-rule-soft px-5 py-3.5 last:border-b-0"
+          data-testid={`decision-${d.id}`}
+          data-status={d.status}
         >
-          <StateDot state={TONE_DOT[outcome.tone]} />
-          <span className="min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground">
-            {outcome.line}
-          </span>
-          {undoLeft > 0 && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                armForResolution();
-                onUndo();
-              }}
-              disabled={busy}
-              className="h-7 gap-1.5 text-[12px] text-primary"
-            >
-              <RotateCcw size={11} />
-              Undo · {undoLeft}s
-            </Button>
-          )}
-        </div>
-        {outcome.note !== null && (
-          <p className="pl-[22px] text-[12px] leading-relaxed text-muted-foreground">
-            {outcome.note}
-          </p>
-        )}
-        {/*
-          A REFUSED UNDO lands here (TASK-427) — the row is still resolved, the
-          Undo button has gone, and this line is the only thing that changed.
-          Last among this branch's `answerRef` holders, so it wins the ref.
-        */}
-        {notice !== null && (
-          <p
+          {/*
+            THE FOCUS TARGET. Undo sits INSIDE it so that the first tabbable
+            thing from here is Undo itself — one Tab, well inside the ten
+            seconds the window lasts. `tabIndex={-1}` keeps it a destination
+            rather than an extra stop in everyone else's Tab order.
+          */}
+          <div
             ref={answerRef}
             tabIndex={-1}
-            className={`pl-[22px] text-[12px] leading-relaxed text-destructive ${RESOLUTION_FOCUS_RING}`}
+            data-testid={`decision-outcome-${d.id}`}
+            className={`flex items-center gap-3 ${RESOLUTION_FOCUS_RING}`}
           >
-            {notice}
-          </p>
-        )}
-      </div>
+            <StateDot state={TONE_DOT[outcome.tone]} />
+            <span className="min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground">
+              {outcome.line}
+            </span>
+            {undoLeft > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  armForResolution();
+                  onUndo();
+                }}
+                disabled={busy}
+                className="h-7 gap-1.5 text-[12px] text-primary"
+              >
+                <RotateCcw size={11} />
+                Undo · {undoLeft}s
+              </Button>
+            )}
+          </div>
+          {outcome.note !== null && (
+            <p className="pl-[22px] text-[12px] leading-relaxed text-muted-foreground">
+              {outcome.note}
+            </p>
+          )}
+          {/*
+            A REFUSED UNDO lands here (TASK-427) — the row is still resolved, the
+            Undo button has gone, and this line is the only thing that changed.
+            Last among this branch's `answerRef` holders, so it wins the ref.
+          */}
+          {notice !== null && (
+            <p
+              ref={answerRef}
+              tabIndex={-1}
+              className={`pl-[22px] text-[12px] leading-relaxed text-destructive ${RESOLUTION_FOCUS_RING}`}
+            >
+              {notice}
+            </p>
+          )}
+        </div>
+      </>
     );
   }
 
   return (
-    <div
-      className={cnRow(stale)}
-      data-testid={`decision-${d.id}`}
-      data-status={d.status}
-    >
-      {/*
-        THE QUESTION, and therefore where Undo puts you (TASK-427): undoing
-        re-opens the row, unmounting the receipt the person was standing on.
-        This button's accessible name IS the question — agent, summary, age —
-        so landing here reads it back. NO `tabIndex={-1}`: it is a real control
-        and taking it out of the Tab order would be a regression. Pressing it
-        only opens or closes the row, which is the one thing on this card that
-        cannot cost anybody anything.
-      */}
-      <button
-        ref={answerRef}
-        type="button"
-        onClick={onToggle}
-        className={`flex w-full items-center gap-3 px-5 py-3.5 text-left ${RESOLUTION_FOCUS_RING}`}
+    <>
+      {announcement}
+      <div
+        className={cnRow(stale)}
+        data-testid={`decision-${d.id}`}
+        data-status={d.status}
       >
-        <StateDot state={stale ? 'stopped' : 'held'} />
-        <span className="shrink-0 text-[13px] font-medium">{agent.name}</span>
-        <span
-          className={
-            stale
-              ? 'min-w-0 flex-1 truncate text-[13.5px] text-destructive'
-              : 'min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground'
-          }
+        {/*
+          THE QUESTION, and therefore where Undo puts you (TASK-427): undoing
+          re-opens the row, unmounting the receipt the person was standing on.
+          This button's accessible name IS the question — agent, summary, age —
+          so landing here reads it back. NO `tabIndex={-1}`: it is a real control
+          and taking it out of the Tab order would be a regression. Pressing it
+          only opens or closes the row, which is the one thing on this card that
+          cannot cost anybody anything.
+        */}
+        <button
+          ref={answerRef}
+          type="button"
+          onClick={onToggle}
+          className={`flex w-full items-center gap-3 px-5 py-3.5 text-left ${RESOLUTION_FOCUS_RING}`}
         >
-          {stale ? DECISION_STALE_SUMMARY : d.summary}
-        </span>
-        <span className="shrink-0 text-[12.5px] text-muted-foreground">
-          {ago(d.createdAt)}
-        </span>
-        {expanded ? (
-          <ChevronUp size={13} className="shrink-0 text-muted-foreground" />
-        ) : (
-          <ChevronDown size={13} className="shrink-0 text-muted-foreground" />
-        )}
-      </button>
-
-      {expanded && (
-        <div className="px-5 pb-5 pl-[46px]">
-          {/*
-            A FOCUS TARGET, because this is an ANSWER (TASK-427) — approving a
-            row the guard trips re-opens it rather than resolving it, so there
-            is no receipt to land on and the person would otherwise be left on
-            `<body>` in front of a row that looks unchanged.
-          */}
-          {stale && d.staleReason && (
-            <Alert
-              ref={answerRef}
-              tabIndex={-1}
-              variant="destructive"
-              className={`mb-4 ${RESOLUTION_FOCUS_RING}`}
-            >
-              <AlertDescription className="text-[13px] leading-relaxed">
-                <strong className="font-medium">{DECISION_STALE_LEAD}</strong>{' '}
-                {d.staleReason} {DECISION_STALE_ADVICE}
-              </AlertDescription>
-            </Alert>
+          <StateDot state={stale ? 'stopped' : 'held'} />
+          <span className="shrink-0 text-[13px] font-medium">{agent.name}</span>
+          <span
+            className={
+              stale
+                ? 'min-w-0 flex-1 truncate text-[13.5px] text-destructive'
+                : 'min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground'
+            }
+          >
+            {stale ? DECISION_STALE_SUMMARY : d.summary}
+          </span>
+          <span className="shrink-0 text-[12.5px] text-muted-foreground">
+            {ago(d.createdAt)}
+          </span>
+          {expanded ? (
+            <ChevronUp size={13} className="shrink-0 text-muted-foreground" />
+          ) : (
+            <ChevronDown size={13} className="shrink-0 text-muted-foreground" />
           )}
+        </button>
 
-          <p className="max-w-[660px] text-[13.5px] leading-relaxed text-muted-foreground">
-            {d.detail}
-          </p>
+        {expanded && (
+          <div className="px-5 pb-5 pl-[46px]">
+            {/*
+              A FOCUS TARGET, because this is an ANSWER (TASK-427) — approving a
+              row the guard trips re-opens it rather than resolving it, so there
+              is no receipt to land on and the person would otherwise be left on
+              `<body>` in front of a row that looks unchanged.
+            */}
+            {stale && d.staleReason && (
+              <Alert
+                ref={answerRef}
+                tabIndex={-1}
+                variant="destructive"
+                className={`mb-4 ${RESOLUTION_FOCUS_RING}`}
+              >
+                <AlertDescription className="text-[13px] leading-relaxed">
+                  <strong className="font-medium">{DECISION_STALE_LEAD}</strong>{' '}
+                  {d.staleReason} {DECISION_STALE_ADVICE}
+                </AlertDescription>
+              </Alert>
+            )}
 
-          {d.preview && (
-            <div className="mt-3 max-w-[660px] rounded-md bg-muted px-4 py-3.5">
-              <div className="mb-1.5 text-[11.5px] text-muted-foreground">
-                {d.preview.meta}
+            <p className="max-w-[660px] text-[13.5px] leading-relaxed text-muted-foreground">
+              {d.detail}
+            </p>
+
+            {d.preview && (
+              <div className="mt-3 max-w-[660px] rounded-md bg-muted px-4 py-3.5">
+                <div className="mb-1.5 text-[11.5px] text-muted-foreground">
+                  {d.preview.meta}
+                </div>
+                <div className="text-[13px] leading-relaxed">{d.preview.body}</div>
               </div>
-              <div className="text-[13px] leading-relaxed">{d.preview.body}</div>
+            )}
+
+            {/*
+              The freshness label describes what was true at hold-time. Once the
+              guard has tripped that sentence is false, and repeating it under an
+              alert that says the opposite is worse than saying nothing — so the
+              clause is dropped on a stale row rather than shown stale.
+
+              TWO conditions, not one, and the second is not belt-and-braces:
+              `label` is NULLABLE (AW-7) and the host writes null onto exactly the
+              rows this branch is about. `!stale` is what we MEAN; `label !== null`
+              is what is TRUE on the wire, and a row that arrived stale from the
+              server on a page load has both. Rendering on `!stale` alone would
+              print "checked against: null" the moment the two disagreed.
+            */}
+            <p className="mt-3 text-[11.5px] text-muted-foreground">
+              {provenance(d, agent.name)}
+              {!stale &&
+                d.freshness?.label != null &&
+                ` · checked against: ${d.freshness.label}`}
+            </p>
+
+            {/*
+              Doing nothing is a choice, and it is the only one on this row whose
+              consequence is invisible. Shown only when the deadline is actually
+              near — see `expiresSoonNote`.
+            */}
+            {expiry !== null && (
+              <p className="mt-1.5 text-[11.5px] text-muted-foreground">{expiry}</p>
+            )}
+
+            {/*
+              The row stayed open because the resolve did not land. Focus comes
+              here for the same reason it goes to the receipt — the person
+              pressed something and this is the answer. Without it they are on
+              `<body>` with an unread error behind them.
+            */}
+            {notice !== null && (
+              <Alert
+                ref={answerRef}
+                tabIndex={-1}
+                variant="destructive"
+                className={`mt-3 max-w-[660px] ${RESOLUTION_FOCUS_RING}`}
+              >
+                <AlertDescription className="text-[13px] leading-relaxed">
+                  {notice}
+                </AlertDescription>
+              </Alert>
+            )}
+
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                onClick={() => {
+                  armForResolution();
+                  onApprove();
+                }}
+                disabled={busy}
+              >
+                {stale ? `${d.primaryLabel} anyway` : d.primaryLabel}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={onOpenAgent}
+                disabled={busy}
+              >
+                {d.secondaryLabel}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  armForResolution();
+                  onDismiss();
+                }}
+                disabled={busy}
+              >
+                {d.ghostLabel}
+              </Button>
+              <span className="ml-1 text-[11.5px] text-muted-foreground">
+                {/*
+                  While a click is in flight we say what we are doing instead of
+                  repeating a promise that is no longer the current state. The
+                  buttons are DISABLED, not removed — a control that vanishes
+                  under the cursor reads as a crash.
+                */}
+                {busy ? 'Working on it…' : DECISION_NOTHING_YET}
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={onOpenAgent}
+                className="ml-auto gap-1.5 text-primary"
+              >
+                Open {agent.name}
+                <ArrowRight size={11} />
+              </Button>
             </div>
-          )}
-
-          {/*
-            The freshness label describes what was true at hold-time. Once the
-            guard has tripped that sentence is false, and repeating it under an
-            alert that says the opposite is worse than saying nothing — so the
-            clause is dropped on a stale row rather than shown stale.
-
-            TWO conditions, not one, and the second is not belt-and-braces:
-            `label` is NULLABLE (AW-7) and the host writes null onto exactly the
-            rows this branch is about. `!stale` is what we MEAN; `label !== null`
-            is what is TRUE on the wire, and a row that arrived stale from the
-            server on a page load has both. Rendering on `!stale` alone would
-            print "checked against: null" the moment the two disagreed.
-          */}
-          <p className="mt-3 text-[11.5px] text-muted-foreground">
-            {provenance(d, agent.name)}
-            {!stale &&
-              d.freshness?.label != null &&
-              ` · checked against: ${d.freshness.label}`}
-          </p>
-
-          {/*
-            Doing nothing is a choice, and it is the only one on this row whose
-            consequence is invisible. Shown only when the deadline is actually
-            near — see `expiresSoonNote`.
-          */}
-          {expiry !== null && (
-            <p className="mt-1.5 text-[11.5px] text-muted-foreground">{expiry}</p>
-          )}
-
-          {/*
-            The row stayed open because the resolve did not land. Focus comes
-            here for the same reason it goes to the receipt — the person
-            pressed something and this is the answer. Without it they are on
-            `<body>` with an unread error behind them.
-          */}
-          {notice !== null && (
-            <Alert
-              ref={answerRef}
-              tabIndex={-1}
-              variant="destructive"
-              className={`mt-3 max-w-[660px] ${RESOLUTION_FOCUS_RING}`}
-            >
-              <AlertDescription className="text-[13px] leading-relaxed">
-                {notice}
-              </AlertDescription>
-            </Alert>
-          )}
-
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <Button
-              size="sm"
-              onClick={() => {
-                armForResolution();
-                onApprove();
-              }}
-              disabled={busy}
-            >
-              {stale ? `${d.primaryLabel} anyway` : d.primaryLabel}
-            </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={onOpenAgent}
-              disabled={busy}
-            >
-              {d.secondaryLabel}
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                armForResolution();
-                onDismiss();
-              }}
-              disabled={busy}
-            >
-              {d.ghostLabel}
-            </Button>
-            <span className="ml-1 text-[11.5px] text-muted-foreground">
-              {/*
-                While a click is in flight we say what we are doing instead of
-                repeating a promise that is no longer the current state. The
-                buttons are DISABLED, not removed — a control that vanishes
-                under the cursor reads as a crash.
-              */}
-              {busy ? 'Working on it…' : DECISION_NOTHING_YET}
-            </span>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={onOpenAgent}
-              className="ml-auto gap-1.5 text-primary"
-            >
-              Open {agent.name}
-              <ArrowRight size={11} />
-            </Button>
           </div>
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+    </>
   );
 }
 

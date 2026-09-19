@@ -43,6 +43,7 @@ import {
   decisionOutcome,
   undoSecondsLeft,
 } from './decision-copy';
+import { ConsentAnnouncement } from './ConsentAnnouncement';
 import { useDecisionClock } from './use-decision-clock';
 import { FindHighlight, type FindView } from './ThreadFind';
 
@@ -125,184 +126,199 @@ export function ApprovalCard({
             // honest answer: we are asking again, and this says so.
             `open:${d.status}:${d.resolvedAt ?? ''}`;
   const { answerRef, armForResolution } = useResolutionFocus(answerKey);
+  /*
+    ANNOUNCED, not only focused (TASK-442). Hung ABOVE the branch split on
+    purpose: resolving replaces the whole `Card` with the receipt, and a live
+    region that went with it would arrive already holding its message, which
+    assistive tech does not reliably announce. `ConsentAnnouncement` carries
+    the rest of the argument, including why it stays quiet on mount for the
+    settled receipts `InThreadApprovals` draws above the composer.
+  */
+  const announcement = <ConsentAnnouncement outcome={outcome} notice={notice} />;
 
   if (outcome !== null) {
     const undoLeft = undoSecondsLeft(d, now);
     return (
-      <div
-        className="flex flex-col gap-1 text-[13px] text-muted-foreground"
-        data-testid={`approval-${d.id}`}
-        data-status={d.status}
-      >
-        {/*
-          THE FOCUS TARGET, and the reason Undo lives inside it rather than
-          beside it: the first tabbable thing after this node has to BE Undo,
-          or the ten-second window is not one Tab away and the landing is
-          decoration. `tabIndex={-1}` keeps it out of everyone else's Tab
-          order — it is a destination, not a stop.
-        */}
+      <>
+        {announcement}
         <div
-          ref={answerRef}
-          tabIndex={-1}
-          data-testid={`approval-outcome-${d.id}`}
-          className={`flex items-center gap-2 ${RESOLUTION_FOCUS_RING}`}
+          className="flex flex-col gap-1 text-[13px] text-muted-foreground"
+          data-testid={`approval-${d.id}`}
+          data-status={d.status}
         >
-          <span>{outcome.line}</span>
-          {undoLeft > 0 && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                armForResolution();
-                onUndo();
-              }}
-              disabled={busy}
-              className="h-6 gap-1.5 px-2 text-[12px] text-primary"
-            >
-              <RotateCcw size={10} />
-              Undo · {undoLeft}s
-            </Button>
-          )}
-        </div>
-        {outcome.note !== null && <span className="text-[12px]">{outcome.note}</span>}
-        {/*
-          A REFUSED UNDO lands here (TASK-427): the row is still resolved, the
-          Undo button has gone, and this line is the only thing that changed.
-          Last among this branch's `answerRef` holders, so it wins the ref over
-          the outcome line above — which is what the notice-first key asks for.
-        */}
-        {notice !== null && (
-          <span
+          {/*
+            THE FOCUS TARGET, and the reason Undo lives inside it rather than
+            beside it: the first tabbable thing after this node has to BE Undo,
+            or the ten-second window is not one Tab away and the landing is
+            decoration. `tabIndex={-1}` keeps it out of everyone else's Tab
+            order — it is a destination, not a stop.
+          */}
+          <div
             ref={answerRef}
             tabIndex={-1}
-            className={`text-[12px] text-destructive ${RESOLUTION_FOCUS_RING}`}
+            data-testid={`approval-outcome-${d.id}`}
+            className={`flex items-center gap-2 ${RESOLUTION_FOCUS_RING}`}
           >
-            {notice}
-          </span>
-        )}
-      </div>
+            <span>{outcome.line}</span>
+            {undoLeft > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  armForResolution();
+                  onUndo();
+                }}
+                disabled={busy}
+                className="h-6 gap-1.5 px-2 text-[12px] text-primary"
+              >
+                <RotateCcw size={10} />
+                Undo · {undoLeft}s
+              </Button>
+            )}
+          </div>
+          {outcome.note !== null && <span className="text-[12px]">{outcome.note}</span>}
+          {/*
+            A REFUSED UNDO lands here (TASK-427): the row is still resolved, the
+            Undo button has gone, and this line is the only thing that changed.
+            Last among this branch's `answerRef` holders, so it wins the ref over
+            the outcome line above — which is what the notice-first key asks for.
+          */}
+          {notice !== null && (
+            <span
+              ref={answerRef}
+              tabIndex={-1}
+              className={`text-[12px] text-destructive ${RESOLUTION_FOCUS_RING}`}
+            >
+              {notice}
+            </span>
+          )}
+        </div>
+      </>
     );
   }
 
   return (
-    <Card
-      className="max-w-[560px] border-warning/40 bg-warning-soft/40"
-      data-testid={`approval-${d.id}`}
-      data-status={d.status}
-    >
-      <CardContent className="p-4">
-        {/*
-          THE QUESTION, and therefore a focus target (TASK-427). Undo re-opens
-          this card, which unmounts the receipt the person was standing on — so
-          this is where they land, hearing the question they are being asked
-          again. It is FIRST in document order among the nodes that share
-          `answerRef`, so a stale reason or a notice below it takes precedence,
-          which is the same order `answerKey` is built in.
-        */}
-        <div
-          ref={answerRef}
-          tabIndex={-1}
-          data-testid={`approval-question-${d.id}`}
-          className={`text-[13.5px] font-medium ${RESOLUTION_FOCUS_RING}`}
-        >
-          <FindHighlight fieldKey={`${fieldKey ?? ''}:summary`} text={d.summary} find={find} />
-        </div>
-        {/*
-          The paragraph is shown OUTRIGHT here, where the queue row hides it
-          behind a disclosure. The queue is a list to triage; this is a
-          conversation the reader is already inside, and there is nothing below
-          it competing for the space.
-
-          It is also what lets this card drop the secondary button. `secondaryLabel`
-          is "Show me the details" — in the queue that opens the agent, and there
-          is nowhere for it to go from inside the thread. The version this
-          replaced wired it to DISMISS, so a person asking to see more would have
-          turned the request down instead. A control that does something other
-          than what it says is worse than no control, so the details are simply
-          here and the button is gone.
-        */}
-        {d.detail.length > 0 && (
-          <p className="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">
-            <FindHighlight fieldKey={`${fieldKey ?? ''}:detail`} text={d.detail} find={find} />
-          </p>
-        )}
-        {/*
-          A stale card in a live thread is rare — the agent is warm and the
-          world has had seconds, not hours, to move — but "rare" is not "never",
-          and a card that quietly acted on the new situation would be the worst
-          version of this surface. Same sentence the queue row leads with.
-        */}
-        {/*
-          A FOCUS TARGET, because this is an ANSWER (TASK-427). Approving a row
-          the guard trips re-opens it rather than resolving it, so there is no
-          receipt to land on and the controls the person was standing in are
-          still here — just re-worded. Focusing it is also what gets it read
-          out: unlike the queue row's version this is a plain paragraph rather
-          than an `Alert`, matching the compact in-thread treatment the rest of
-          this card uses, so nothing announces it on its own.
-        */}
-        {stale && d.staleReason && (
-          <p
+    <>
+      {announcement}
+      <Card
+        className="max-w-[560px] border-warning/40 bg-warning-soft/40"
+        data-testid={`approval-${d.id}`}
+        data-status={d.status}
+      >
+        <CardContent className="p-4">
+          {/*
+            THE QUESTION, and therefore a focus target (TASK-427). Undo re-opens
+            this card, which unmounts the receipt the person was standing on — so
+            this is where they land, hearing the question they are being asked
+            again. It is FIRST in document order among the nodes that share
+            `answerRef`, so a stale reason or a notice below it takes precedence,
+            which is the same order `answerKey` is built in.
+          */}
+          <div
             ref={answerRef}
             tabIndex={-1}
-            className={`mt-2 text-[12.5px] leading-relaxed text-destructive ${RESOLUTION_FOCUS_RING}`}
+            data-testid={`approval-question-${d.id}`}
+            className={`text-[13.5px] font-medium ${RESOLUTION_FOCUS_RING}`}
           >
-            <strong className="font-medium">{DECISION_STALE_LEAD}</strong>{' '}
-            {d.staleReason} {DECISION_STALE_ADVICE}
-          </p>
-        )}
-        {d.preview && (
-          <div className="mt-3 rounded-md bg-background/70 px-3.5 py-3">
-            <div className="mb-1.5 text-[11.5px] text-muted-foreground">
-              {d.preview.meta}
-            </div>
-            <div className="text-[13px] leading-relaxed">{d.preview.body}</div>
+            <FindHighlight fieldKey={`${fieldKey ?? ''}:summary`} text={d.summary} find={find} />
           </div>
-        )}
-        {/*
-          The row stayed open because the resolve did not land. Focus comes
-          here for the same reason it goes to the receipt: the person pressed
-          something, and this is the answer. Without it they are on `<body>`
-          with an unread error behind them — the same bug, minus the receipt.
-        */}
-        {notice !== null && (
-          <p
-            ref={answerRef}
-            tabIndex={-1}
-            className={`mt-3 text-[12.5px] leading-relaxed text-destructive ${RESOLUTION_FOCUS_RING}`}
-          >
-            {notice}
+          {/*
+            The paragraph is shown OUTRIGHT here, where the queue row hides it
+            behind a disclosure. The queue is a list to triage; this is a
+            conversation the reader is already inside, and there is nothing below
+            it competing for the space.
+
+            It is also what lets this card drop the secondary button. `secondaryLabel`
+            is "Show me the details" — in the queue that opens the agent, and there
+            is nowhere for it to go from inside the thread. The version this
+            replaced wired it to DISMISS, so a person asking to see more would have
+            turned the request down instead. A control that does something other
+            than what it says is worse than no control, so the details are simply
+            here and the button is gone.
+          */}
+          {d.detail.length > 0 && (
+            <p className="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">
+              <FindHighlight fieldKey={`${fieldKey ?? ''}:detail`} text={d.detail} find={find} />
+            </p>
+          )}
+          {/*
+            A stale card in a live thread is rare — the agent is warm and the
+            world has had seconds, not hours, to move — but "rare" is not "never",
+            and a card that quietly acted on the new situation would be the worst
+            version of this surface. Same sentence the queue row leads with.
+          */}
+          {/*
+            A FOCUS TARGET, because this is an ANSWER (TASK-427). Approving a row
+            the guard trips re-opens it rather than resolving it, so there is no
+            receipt to land on and the controls the person was standing in are
+            still here — just re-worded. Focusing it is also what gets it read
+            out: unlike the queue row's version this is a plain paragraph rather
+            than an `Alert`, matching the compact in-thread treatment the rest of
+            this card uses, so nothing announces it on its own.
+          */}
+          {stale && d.staleReason && (
+            <p
+              ref={answerRef}
+              tabIndex={-1}
+              className={`mt-2 text-[12.5px] leading-relaxed text-destructive ${RESOLUTION_FOCUS_RING}`}
+            >
+              <strong className="font-medium">{DECISION_STALE_LEAD}</strong>{' '}
+              {d.staleReason} {DECISION_STALE_ADVICE}
+            </p>
+          )}
+          {d.preview && (
+            <div className="mt-3 rounded-md bg-background/70 px-3.5 py-3">
+              <div className="mb-1.5 text-[11.5px] text-muted-foreground">
+                {d.preview.meta}
+              </div>
+              <div className="text-[13px] leading-relaxed">{d.preview.body}</div>
+            </div>
+          )}
+          {/*
+            The row stayed open because the resolve did not land. Focus comes
+            here for the same reason it goes to the receipt: the person pressed
+            something, and this is the answer. Without it they are on `<body>`
+            with an unread error behind them — the same bug, minus the receipt.
+          */}
+          {notice !== null && (
+            <p
+              ref={answerRef}
+              tabIndex={-1}
+              className={`mt-3 text-[12.5px] leading-relaxed text-destructive ${RESOLUTION_FOCUS_RING}`}
+            >
+              {notice}
+            </p>
+          )}
+          <div className="mt-3.5 flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              onClick={() => {
+                armForResolution();
+                onApprove();
+              }}
+              disabled={busy}
+            >
+              {stale ? `${d.primaryLabel} anyway` : d.primaryLabel}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                armForResolution();
+                onDismiss();
+              }}
+              disabled={busy}
+            >
+              {d.ghostLabel}
+            </Button>
+          </div>
+          <p className="mt-2.5 text-[11.5px] text-muted-foreground">
+            {busy
+              ? 'Working on it…'
+              : 'Nothing is sent until you choose. I am holding here, so we can carry straight on.'}
           </p>
-        )}
-        <div className="mt-3.5 flex flex-wrap items-center gap-2">
-          <Button
-            size="sm"
-            onClick={() => {
-              armForResolution();
-              onApprove();
-            }}
-            disabled={busy}
-          >
-            {stale ? `${d.primaryLabel} anyway` : d.primaryLabel}
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => {
-              armForResolution();
-              onDismiss();
-            }}
-            disabled={busy}
-          >
-            {d.ghostLabel}
-          </Button>
-        </div>
-        <p className="mt-2.5 text-[11.5px] text-muted-foreground">
-          {busy
-            ? 'Working on it…'
-            : 'Nothing is sent until you choose. I am holding here, so we can carry straight on.'}
-        </p>
-      </CardContent>
-    </Card>
+        </CardContent>
+      </Card>
+    </>
   );
 }
