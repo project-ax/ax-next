@@ -35,6 +35,7 @@ import {
   DEFAULT_ORCHESTRATOR_MODEL,
 } from '@ax/memory-strata';
 import { createMemoryStrataIndexSqlitePlugin } from '@ax/memory-strata-index-sqlite';
+import { createMemoryFactsSqlitePlugin } from '@ax/memory-facts-sqlite';
 import { createWebToolsPlugin } from '@ax/web-tools';
 import { createDevAgentsStubPlugin } from './dev-agents-stub.js';
 import { AxConfigSchema, type AxConfig, type AxConfigInput } from './config/schema.js';
@@ -290,6 +291,19 @@ export async function main(opts: MainOptions): Promise<number> {
   // half-wired window: the validator + the `services` schema field exist, but
   // nothing folds a service descriptor onto a session yet.
   plugins.push(createValidatorServicePlugin());
+
+  // TASK-421 (DEM-first memory design, docs/plans/2026-09-18-dem-first-memory-
+  // design.md §2.1-2.2): registers memory:facts:record|recall|supersede|clear —
+  // the storage/closure engine only. Postgres-free (owns its own sqlite table,
+  // no collision with storage-sqlite's), so it loads unconditionally here like
+  // the other no-external-dep plugins above. This OPENS a half-wired window,
+  // same shape as validator-service just above: the engine is registered,
+  // contract-tested, and reachable from a real running host, but @ax/memory
+  // (the product-layer consumer — observer, tools, export) does not exist yet.
+  // See .claude/memory/decisions.md's TASK-421 entries.
+  plugins.push(
+    createMemoryFactsSqlitePlugin({ databasePath: opts.sqlitePath ?? DEFAULT_SQLITE_PATH }),
+  );
 
   // Sandbox. Config only admits 'subprocess' today; the switch is future-
   // proofing for when alternate sandbox providers land.

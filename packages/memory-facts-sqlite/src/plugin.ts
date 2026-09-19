@@ -31,6 +31,27 @@ function isNonEmptyString(v: unknown): v is string {
   return typeof v === 'string' && v.length > 0;
 }
 
+// Every closure decision (rules 1-4, closure.ts) and recall's ORDER BY compare
+// `when` lexicographically, which equals chronological order ONLY for a
+// normalized ISO-8601 Z-suffixed instant — a non-`Z` offset, an unpadded
+// date, or epoch millis would silently mis-bound the (about, slot) chain
+// with no error. `record` is the observer's door (default provenance
+// `extracted` = model output), so this is a real trust-boundary check
+// (Invariant 5), not decoration: reject anything Date.parse can't read, and
+// normalize what it can so a caller-supplied non-Z offset still sorts
+// correctly against every other row.
+function normalizeIsoInstant(field: string, value: string): string {
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: `statement.${field} must be a valid ISO-8601 instant`,
+    });
+  }
+  return new Date(ms).toISOString();
+}
+
 function validateStatement(input: unknown): FactStatementInput {
   if (typeof input !== 'object' || input === null) {
     throw new PluginError({
@@ -49,6 +70,7 @@ function validateStatement(input: unknown): FactStatementInput {
       });
     }
   }
+  const when = normalizeIsoInstant('when', s.when as string);
   if (s.slot !== undefined && !isNonEmptyString(s.slot)) {
     throw new PluginError({
       code: 'invalid-payload',
@@ -77,7 +99,7 @@ function validateStatement(input: unknown): FactStatementInput {
       message: 'statement.conversationId must be a string when set',
     });
   }
-  return s as unknown as FactStatementInput;
+  return { ...s, when } as unknown as FactStatementInput;
 }
 
 function validateRecordInput(input: RecordInput): FactStatementInput[] {
@@ -108,6 +130,24 @@ function validateRecallInput(input: RecallInput): { about?: string; limit: numbe
       code: 'invalid-payload',
       plugin: PLUGIN_NAME,
       message: 'about must be a string when set',
+    });
+  }
+  // `query` (free-text search) and `activeOnly: false` (history) are on the
+  // contract's type for forward-compat (TASK-424, TASK-422) but this engine
+  // doesn't implement either yet. Rejecting them loudly beats silently
+  // returning fewer/more rows than a caller who read the type asked for.
+  if (input.query !== undefined) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'query is not implemented yet (TASK-424) — omit it',
+    });
+  }
+  if (input.activeOnly === false) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'activeOnly: false (history) is not implemented yet (TASK-422) — omit it',
     });
   }
   return {

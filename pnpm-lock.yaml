@@ -776,6 +776,9 @@ importers:
       '@ax/mcp-client':
         specifier: workspace:*
         version: link:../mcp-client
+      '@ax/memory-facts-sqlite':
+        specifier: workspace:*
+        version: link:../memory-facts-sqlite
       '@ax/memory-strata':
         specifier: workspace:*
         version: link:../memory-strata

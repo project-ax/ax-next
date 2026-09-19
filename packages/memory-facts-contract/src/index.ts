@@ -101,15 +101,19 @@ export interface RecallInput {
   about?: string;
   /**
    * This engine only ever behaves as if `true` — there is no supported way
-   * to fetch closed rows through `recall` (TASK-422 territory). The field is
-   * accepted for forward-compat; the sqlite backend ignores its value.
+   * to fetch closed rows through `recall` yet (TASK-422 territory). The
+   * field is accepted for forward-compat; a backend rejects `false` with
+   * `invalid-payload` rather than silently ignoring it (a caller who reads
+   * this type and asks for history should get a loud "not yet", not fewer
+   * rows than requested with no signal).
    */
   activeOnly?: boolean;
   limit: number;
   /**
    * Accepted for forward-compat with TASK-424's fusion recall (FTS/dense/
-   * RRF/rerank). This contract never exercises it and the sqlite backend
-   * does not read it.
+   * RRF/rerank). This contract never exercises it, and a backend rejects
+   * any non-`undefined` value with `invalid-payload` rather than silently
+   * returning an unfiltered result set.
    */
   query?: string;
 }
@@ -402,9 +406,16 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
     });
 
     // -------------------------------------------------------------------------
-    // The invariant: one (about, slot) history is a non-overlapping chain
+    // The invariant: exactly one active winner, regardless of arrival order.
+    // NOTE what this block can and can't see: `recall` is activeOnly-only, so
+    // these assertions observe the ACTIVE row and which ids `supersede` still
+    // finds open — not whether two CLOSED intervals overlap. Non-overlap
+    // itself (rule 2's "earliest later row, active-or-not") is pinned by the
+    // dedicated "bounds the backdated row at the EARLIEST later row" case
+    // above, which fails under the overlap-producing "active-only" mutation
+    // this block cannot catch.
     // -------------------------------------------------------------------------
-    describe('the invariant: one (about, slot) history is a non-overlapping chain', () => {
+    describe('the invariant: exactly one active winner, any arrival order', () => {
       const orders: Array<Array<[string, string]>> = [
         [
           ['Boston', JAN],
@@ -811,6 +822,40 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
             statements: [{ about: 'user', relation: 'lives_in', when: JAN }],
           });
           throw new Error('expected memory:facts:record to reject a statement missing `value`');
+        } catch (err) {
+          expect(err).toBeInstanceOf(Error);
+          expect((err as { code?: string }).code).toBe('invalid-payload');
+        }
+      });
+
+      it('rejects a statement whose `when` is not a parseable instant', async () => {
+        try {
+          await bus.call('memory:facts:record', makeCtx(), {
+            statements: [
+              { about: 'user', relation: 'lives_in', value: 'Boston', when: 'not a date' },
+            ],
+          });
+          throw new Error('expected memory:facts:record to reject an unparseable `when`');
+        } catch (err) {
+          expect(err).toBeInstanceOf(Error);
+          expect((err as { code?: string }).code).toBe('invalid-payload');
+        }
+      });
+
+      it('recall rejects `query` — not implemented yet (TASK-424)', async () => {
+        try {
+          await recall({ query: 'anything', limit: 10 });
+          throw new Error('expected memory:facts:recall to reject a `query`');
+        } catch (err) {
+          expect(err).toBeInstanceOf(Error);
+          expect((err as { code?: string }).code).toBe('invalid-payload');
+        }
+      });
+
+      it('recall rejects `activeOnly: false` — history not implemented yet (TASK-422)', async () => {
+        try {
+          await recall({ activeOnly: false, limit: 10 });
+          throw new Error('expected memory:facts:recall to reject activeOnly: false');
         } catch (err) {
           expect(err).toBeInstanceOf(Error);
           expect((err as { code?: string }).code).toBe('invalid-payload');
