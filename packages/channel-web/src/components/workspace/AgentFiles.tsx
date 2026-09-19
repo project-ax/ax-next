@@ -72,7 +72,7 @@ import {
 import { Markdown } from '@/components/Markdown';
 import { useFileDownload } from '@/lib/file-download';
 import { useAgentFiles } from '@/lib/workspace-files';
-import { useAgentUserFiles, type UserFileBody } from '@/lib/user-files';
+import { parentDirOf, useAgentUserFiles, type UserFileBody } from '@/lib/user-files';
 import type { FileTier, WorkspaceFileBody } from '@/lib/workspace-api';
 import { cn } from '@/lib/utils';
 import { SectionLabel } from './bits';
@@ -309,10 +309,27 @@ export function AgentFiles({
                         : `We could not read ${agentName}’s files. Nothing was lost; we just could not look right now.`}
                   </span>
                   {durableError.kind !== 'unavailable' && (
+                    /*
+                      The two buttons do DIFFERENT things, which is why they
+                      are not one handler with two labels.
+
+                      "Try again" re-reads where we are, because the read is
+                      what failed. "Go back" leaves — and it has to leave to
+                      the missing path's PARENT, not to `dirPath`. `dirPath` is
+                      the last successful listing, so when a folder we were
+                      already standing in vanishes and we re-request it, they
+                      are the same path: a reload would re-fetch the folder
+                      that just 404'd and land on its own error, a button that
+                      loops on the thing it offers to escape.
+                    */
                     <Button
                       variant="secondary"
                       size="sm"
-                      onClick={durable.reload}
+                      onClick={
+                        durableError.kind === 'missing'
+                          ? () => durable.openDir(parentDirOf(durableError.path) ?? '')
+                          : durable.reload
+                      }
                       disabled={durable.loading}
                     >
                       {durable.loading

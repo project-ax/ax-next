@@ -368,11 +368,36 @@ export function buildReadCommand(): string {
     'set -eu',
     `base="${EXPORT_MOUNT}/$SUBPATH"`,
     'if [ "$RELPATH" = "." ]; then target="$base"; else target="$base/$RELPATH"; fi',
+    // THE AGENT'S OWN SUBTREE ROOT IS RESOLVED FIRST, and a failure here is not
+    // allowed to become an absence by default (TASK-403). It used to: `realpath
+    // ... || true` swallows the errno, so a subtree the export would not answer
+    // for — a stale NFS handle, a permission change — printed ABSENT and exited
+    // 0, and the Files tab drew "this agent has written nothing" over it. The
+    // host-mounted realization of this same hook throws in that case, and two
+    // realizations of one hook disagreeing about whether a read failed is a
+    // browser nobody can reason about.
+    //
+    // A `stat`-free POSIX shell cannot read an errno, so the discrimination
+    // comes from the EXPORT's directory listing instead: a glob is a `readdir`
+    // of the export and never stats our subtree, so the NAME is still there
+    // when the subtree itself has gone stale, and is absent when the agent
+    // simply never ran. Only our own `$SUBPATH` is ever compared or emitted —
+    // no sibling's name leaves this script.
+    'if ! realbase=$(realpath -- "$base" 2>/dev/null); then',
+    `  if ! realpath -- "${EXPORT_MOUNT}" >/dev/null 2>&1; then echo FAILED; exit 1; fi`,
+    '  found=0',
+    `  for e in "${EXPORT_MOUNT}"/*; do`,
+    '    if [ "$(basename -- "$e")" = "$SUBPATH" ]; then found=1; fi',
+    '  done',
+    '  if [ "$found" = 1 ]; then echo FAILED; exit 1; fi',
+    '  echo ABSENT',
+    '  exit 0',
+    'fi',
     // Resolve ALL symlinks; bail to ABSENT if it can't resolve (missing/dangling).
+    // This one stays an absence whatever the errno: it is the PATH-dependent
+    // half, and a distinguishing answer there would be an oracle.
     'real=$(realpath -- "$target" 2>/dev/null || true)',
     'if [ -z "$real" ]; then echo ABSENT; exit 0; fi',
-    'realbase=$(realpath -- "$base" 2>/dev/null || true)',
-    'if [ -z "$realbase" ]; then echo ABSENT; exit 0; fi',
     // Confine: the resolved target MUST be the agent subtree root or strictly
     // under it. A symlink that escaped (to a sibling subPath or absolute path)
     // fails this case and yields ABSENT — never discloses foreign contents.
@@ -584,6 +609,17 @@ export function parseReadOutput(raw: string): ReadUserFilesOutput {
       .pop() ?? '';
   if (line === 'ABSENT') {
     return { kind: 'absent' };
+  }
+  if (line === 'FAILED') {
+    // The script could not resolve the agent's own subtree root even though
+    // the export still lists it. It also exits non-zero, so this is the second
+    // of two guards; both exist because the day one of them is bypassed is the
+    // day the answer silently becomes "this agent wrote nothing".
+    throw new PluginError({
+      code: 'userfiles-read-failed',
+      plugin: PLUGIN_NAME,
+      message: "user-files reader could not resolve the agent's own subtree",
+    });
   }
   if (line === '') {
     throw new PluginError({

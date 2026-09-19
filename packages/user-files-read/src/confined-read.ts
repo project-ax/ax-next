@@ -63,15 +63,6 @@ import type {
 // ---------------------------------------------------------------------------
 
 /**
- * Bounds on somebody else's filesystem.
- *
- * Both matter for the HOST-mounted realization specifically. Before it, the
- * host had no access to an agent subtree at all; after it, an unbounded read of
- * an NFS file into the host process is a denial of service against the host —
- * which holds the database, the blob store and every credential — and not just
- * a slow request. So the cap is not a nicety, it is the price of the mount.
- */
-/**
  * The storage was there and would not answer.
  *
  * Thrown only from the post-confinement reads, so it can never be the first
@@ -114,6 +105,15 @@ function errnoOf(err: unknown): string | undefined {
   return typeof code === 'string' ? code : undefined;
 }
 
+/**
+ * Bounds on somebody else's filesystem.
+ *
+ * Both matter for the HOST-mounted realization specifically. Before it, the
+ * host had no access to an agent subtree at all; after it, an unbounded read of
+ * an NFS file into the host process is a denial of service against the host —
+ * which holds the database, the blob store and every credential — and not just
+ * a slow request. So the cap is not a nicety, it is the price of the mount.
+ */
 export interface ConfinedReadLimits {
   /**
    * The most bytes one file read will pull into memory. A larger file is read

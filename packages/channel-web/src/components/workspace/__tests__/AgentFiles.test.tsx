@@ -446,6 +446,63 @@ describe('AgentFiles: the durable user-files tier', () => {
     expect(screen.getByRole('button', { name: /try again/i })).toBeTruthy();
   });
 
+  it('REGRESSION: "Go back" leaves the subtree instead of re-asking for it', async () => {
+    /*
+      The button used to call `reload()`, which re-fetches `dirPath` — the last
+      SUCCESSFUL listing. That looks right when you walk INTO a missing folder,
+      because `dirPath` is then the parent. It is wrong the moment the failing
+      path is an ANCESTOR of where we stand: walk down to `reports/deep`, have
+      the whole subtree disappear, click back up to `reports` — and the reload
+      re-fetches `reports/deep`, which is just as gone. The escape hatch loops
+      on the thing it offers to escape. It has to leave to the MISSING path's
+      parent, which is the one place we know still answers.
+    */
+    const rootDir: UserFilesAnswer = {
+      kind: 'dir',
+      path: '',
+      name: '',
+      entries: [{ path: 'reports', name: 'reports', kind: 'dir' }],
+      truncated: false,
+    };
+    let subtreeGone = false;
+    userFilesMock.mockImplementation(async (_a: string, relPath: string) => {
+      if (relPath === '') return rootDir;
+      if (!subtreeGone && relPath === 'reports') {
+        return {
+          kind: 'dir',
+          path: 'reports',
+          name: 'reports',
+          entries: [{ path: 'reports/deep', name: 'deep', kind: 'dir' }],
+          truncated: false,
+        } satisfies UserFilesAnswer;
+      }
+      if (!subtreeGone && relPath === 'reports/deep') {
+        return {
+          kind: 'dir',
+          path: 'reports/deep',
+          name: 'deep',
+          entries: [],
+          truncated: false,
+        } satisfies UserFilesAnswer;
+      }
+      throw new WorkspaceApiError(`/agents/a-quill/user-files/${relPath}`, 404);
+    });
+    renderTab();
+    fireEvent.click(await screen.findByText('reports'));
+    fireEvent.click(await screen.findByText('deep'));
+    // Standing in `reports/deep`, with `reports` a clickable crumb above us.
+    expect(await screen.findByText(/this folder is empty/i)).toBeTruthy();
+
+    subtreeGone = true;
+    fireEvent.click(screen.getByRole('button', { name: 'reports' }));
+    expect(await screen.findByText(/that folder isn’t here any more/i)).toBeTruthy();
+
+    // `reports/deep` is gone too, so a reload would loop. Leaving must work.
+    fireEvent.click(screen.getByRole('button', { name: /go back/i }));
+    expect(await screen.findByText('reports')).toBeTruthy();
+    expect(screen.queryByText(/that folder isn’t here any more/i)).toBeNull();
+  });
+
   it('drops the breadcrumb when the ROOT read comes back missing', async () => {
     /*
       `dirPath` is the last SUCCESSFUL listing, so walking back to the root and

@@ -71,7 +71,8 @@ export function createSandboxSubprocessPlugin(): Plugin {
           hook: 'sandbox:resolve-mounts',
           degradation:
             'no durable per-agent user-files mount; AX_USERFILES_ROOT unset; ' +
-            'host-read returns absent and agent-delete cleanup is a no-op',
+            'host-read returns unavailable (this deployment keeps no durable ' +
+            'files) and agent-delete cleanup is a no-op',
         },
       ],
       // filestore-user-files §11 cleanup: when an agent is deleted, reclaim its

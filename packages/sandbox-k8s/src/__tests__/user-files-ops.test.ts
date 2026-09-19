@@ -86,11 +86,11 @@ interface InspectablePod {
 
 /** Drive the one-shot pod to a terminal Succeeded phase so watchPodExit
  *  resolves immediately. Optionally stub the read pod's log output. */
-function primeTerminal(api: MockK8sApi, log?: string) {
+function primeTerminal(api: MockK8sApi, log?: string, exitCode = 0) {
   api.setReadResponses({
     status: {
-      phase: 'Succeeded',
-      containerStatuses: [{ name: 'userfiles', state: { terminated: { exitCode: 0 } } }],
+      phase: exitCode === 0 ? 'Succeeded' : 'Failed',
+      containerStatuses: [{ name: 'userfiles', state: { terminated: { exitCode } } }],
     },
   });
   if (log !== undefined) api.setLogResponse('userfiles', log);
@@ -272,6 +272,36 @@ describe('readUserFiles (k8s one-shot read pod)', () => {
     });
     expect(out).toEqual({ kind: 'unavailable' });
     expect(api.creates).toHaveLength(0);
+  });
+
+  it('REGRESSION: a non-zero pod exit is a failure even when its log PARSES', async () => {
+    /*
+      TASK-403. The exit code was not checked at all, and an empty log alone
+      does not cover the gap: the script runs under `set -eu`, so it can print
+      `FILE ` and then die when `head` fails. That parses cleanly as a
+      zero-byte file — an EMPTY FILE served over a read that did not finish,
+      which is the same class of lie as an empty tier. The guard's whole value
+      is this case, so this is the case the test drives.
+    */
+    const api = makeMockK8sApi();
+    primeTerminal(api, 'FILE ', 137);
+    const { bus } = busWithNfs();
+    await expect(
+      readUserFiles(ctx(), bus, api, CONFIG, log, {
+        owner: ownerFromAgentId('agent-abc', 'u1'),
+        relPath: 'report.md',
+      }),
+    ).rejects.toBeInstanceOf(PluginError);
+    // The pod is still cleaned up — a failed read must not leak a pod.
+    expect(api.deletes.length).toBeGreaterThan(0);
+  });
+
+  it('parses a FAILED line from the reader as a failure', async () => {
+    // The script's own word for "I could not resolve this agent's subtree
+    // although the export still lists it". Two guards, deliberately: the
+    // non-zero exit AND the token, because the day one is bypassed is the day
+    // the answer silently becomes "this agent wrote nothing".
+    expect(() => parseReadOutput('FAILED')).toThrow(PluginError);
   });
 
   it('SECURITY: rejects a traversal relPath before creating a pod', async () => {
