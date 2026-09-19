@@ -391,9 +391,59 @@ describe('board-task-id.sh — Task-ID allocation under concurrency', () => {
     expect(out).toMatch(/FATAL/);
   });
 
+  it.runIf(HAS_JQ)('a board jq cannot analyse is not a pass either', () => {
+    // The third fail-open shape, and the quietest: `gh` succeeded, the JSON parsed, and
+    // the ANALYSIS is what fails. jq writes its errors to stderr and nothing to stdout,
+    // so an unchecked `dups=$(… | jq …)` comes back empty — byte-identical to "no
+    // duplicates found". A non-string title is the cheapest way to construct it: jq's
+    // `capture` refuses a number.
+    const f = join(boardDir, 'hostile.json');
+    writeFileSync(
+      f,
+      JSON.stringify([
+        { item: 'PVTI_a', draft: 'DI_a', title: 123 },
+        { item: 'PVTI_b', draft: 'DI_b', title: '[TASK-420] fine' },
+      ]),
+    );
+    const { code, out } = run(['check', '--board', f]);
+    expect(code, 'reported a clean board it could not actually analyse').not.toBe(0);
+    expect(out).toMatch(/FATAL/);
+  });
+
+  it.runIf(HAS_JQ)('--board reads a normalized board without touching gh', () => {
+    // Also the offline entry point: `check` and `next` need no network at all this way.
+    const f = join(boardDir, 'offline.json');
+    writeFileSync(
+      f,
+      JSON.stringify([
+        { item: 'PVTI_a', draft: 'DI_a', title: '[TASK-420] one' },
+        { item: 'PVTI_b', draft: 'DI_b', title: '[TASK-420] two' },
+      ]),
+    );
+    const { code, out } = run(['check', '--board', f], { env: { STUB_READ_FAILS: '1' } });
+    expect(code, 'gh was consulted despite --board').not.toBe(0);
+    expect(out, 'the duplicate came from the file, not from a failed gh read').toMatch(
+      /TASK-420 is held by 2 cards/,
+    );
+  });
+
   // -------------------------------------------------------------------------------
   // `next`.
   // -------------------------------------------------------------------------------
+
+  it.runIf(HAS_JQ)('next refuses to answer rather than answering nothing', () => {
+    // An unchecked `$(next_num …)` is the empty string when jq fails, and `[TASK-$NEXT]`
+    // then stamps the literal title `[TASK-] …` — a card with no id, which every
+    // consumer reads as "untagged" and which the duplicate guard would never flag.
+    const f = join(boardDir, 'hostile.json');
+    writeFileSync(f, JSON.stringify([{ item: 'PVTI_a', draft: 'DI_a', title: 99 }]));
+    const { code, out } = run(['next', '--board', f]);
+    expect(code).not.toBe(0);
+    expect(out).toMatch(/FATAL/);
+    expect(out, 'printed something that would be stamped onto a card').not.toMatch(
+      /^\s*\d+\s*$/m,
+    );
+  });
 
   it.runIf(HAS_JQ)('next is numeric, not lexical', () => {
     // TASK-99 sorts ABOVE TASK-401 lexically, so a plain `sort` answers 100 — a number

@@ -93,7 +93,10 @@ fatal() {
 }
 
 usage() {
-  sed -n '3,80p' "$0"
+  # From the `# Usage:` line to the end of the header comment. A hardcoded line range
+  # silently starts printing the wrong thing the first time anyone edits the header
+  # above it, and a usage message that drifts is worse than none.
+  sed -n '/^# Usage:/,/^$/p' "$0" | sed 's/^#\{0,1\} \{0,1\}//'
 }
 
 # ---------------------------------------------------------------------------------
@@ -197,15 +200,42 @@ next_num() {
   printf '%s' "$1" | jq -r "$JQ_WITH_IDS"' | [.[].num // empty] | (max // 0) + 1'
 }
 
+# next_or_die — next_num, with the answer PROVEN to be a number before anyone stamps it
+# onto a card. A jq that fails prints nothing on stdout, so an unchecked `$(next_num …)`
+# is the empty string, and `[TASK-$NEXT]` then becomes the literal title `[TASK-] …`:
+# a card with no id at all, which every consumer (readiness, `Depends on`, the journal)
+# reads as "untagged" and which no guard in this file would ever flag as a duplicate.
+# Silently wrong is worse here than loudly absent.
+next_or_die() {
+  local n
+  n=$(next_num "$1") || n=
+  case "$n" in
+    '' | *[!0-9]*)
+      fatal "could not compute the next free number from the board (got '${n:-<empty>}'). Nothing was created or renamed."
+      return 2
+      ;;
+  esac
+  printf '%s' "$n"
+}
+
 # ---------------------------------------------------------------------------------
 # check
 # ---------------------------------------------------------------------------------
 cmd_check() {
   local board dups
   board=$(board_or_die) || exit $?
+  # The `||` is the whole guard, and it is not decoration. jq prints its errors on
+  # stderr and nothing on stdout, so a filter that failed to compile or choked on the
+  # data leaves `$dups` EMPTY -- identical to "no duplicates found". `set -o pipefail`
+  # makes the pipeline carry jq's status, and this turns it into an exit 2. Without it,
+  # the single most alarming answer this script can give (a board it could not analyse)
+  # would print "ok".
   dups=$(printf '%s' "$board" | jq -r "$JQ_WITH_IDS"'
     | map(select(.tid != null)) | group_by(.tid) | map(select(length > 1))
-    | .[] | "\(.[0].tid) is held by \(length) cards: " + ([.[] | "\(.item) (\(.title))"] | join("  |  "))')
+    | .[] | "\(.[0].tid) is held by \(length) cards: " + ([.[] | "\(.item) (\(.title))"] | join("  |  "))') || {
+    fatal "could not analyse the board JSON. Not treating that as a pass — nothing was checked."
+    return 2
+  }
   if [ -n "$dups" ]; then
     fatal "duplicate Task IDs on the board:"
     printf '%s\n' "$dups" >&2
@@ -285,7 +315,7 @@ settle_item() {
     fi
 
     # I yield. Only ever my own card.
-    nextn=$(next_num "$board")
+    nextn=$(next_or_die "$board") || return 2
     draft=$(printf '%s' "$mine" | jq -r '.draft // empty')
     if [ -z "$draft" ]; then
       fatal "$item collides on $tid but has no draft-issue content id, so its title cannot be edited (a linked issue/PR?). Renumber it by hand."
@@ -360,7 +390,7 @@ cmd_claim() {
   # in a later one is how 2026-09-19's third collision happened.
   local board nextn created item
   board=$(board_or_die) || exit $?
-  nextn=$(next_num "$board")
+  nextn=$(next_or_die "$board") || return 2
 
   created=$(gh project item-create "$PNUM" --owner "$OWNER" \
     --title "[TASK-$nextn] $title" --body "$body" --format json) || {
@@ -406,7 +436,7 @@ fi
 
 case "$SUB" in
   check)  cmd_check  "${ARGS[@]+"${ARGS[@]}"}" ;;
-  next)   board=$(board_or_die) || exit $?; next_num "$board" ;;
+  next)   board=$(board_or_die) || exit $?; next_or_die "$board" || exit 2; echo ;;
   claim)  cmd_claim  "${ARGS[@]+"${ARGS[@]}"}" ;;
   settle) cmd_settle "${ARGS[@]+"${ARGS[@]}"}" ;;
   *) echo "board-task-id.sh: unknown subcommand '$SUB' (check | next | claim | settle)" >&2; exit 2 ;;
