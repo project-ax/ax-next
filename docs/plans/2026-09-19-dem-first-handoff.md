@@ -106,7 +106,11 @@ split into **four board cards**, in dependency order:
 > `record` side of that. Also: a retracted row (`closed_by IS NULL`, finite `valid_end`) is
 > excluded from the peer set, so re-settling a chain whose closure depended on a since-
 > retracted row **reopens** the row it had closed. Documented on `resettleSlotGroups`; it
-> surfaces in `resettled` rather than silently.
+> surfaces in `resettled` rather than silently. **TASK-448 then made
+> `memory:facts:supersede` call `resettleSlotGroups` itself**, over the chains of the rows
+> it closes and in the same transaction — so that re-open happens in the retraction's own
+> call rather than waiting for a drain that, for a chain holding no pending row, never
+> comes. `SupersedeOutput` gained `resettled` for it.
 
 Its only dependency (TASK-421) was Done. Scope, per its card body and `docs/plans/2026-09-18-
 task-421-memory-facts-plan.md`'s YAGNI pass:

@@ -162,7 +162,50 @@ export interface SupersedeInput {
   ids: string[];
 }
 
-export interface SupersedeOutput {
+/**
+ * The re-settle half of a write outcome. Both hooks that can invalidate a
+ * `(about, slot)` chain — `memory:facts:supersede` and `memory:facts:reindex`
+ * — re-derive §3.4 over the whole chain and owe the caller the SAME list, so
+ * the field and its caveats are declared once rather than described twice and
+ * allowed to drift (Invariant 4, applied to prose).
+ */
+export interface ResettleOutcome {
+  /**
+   * Every id whose closure state CHANGED as a result of this call — auditable,
+   * like `record`'s `closes`. Empty means nothing moved, which is the ordinary
+   * answer: most rows close nothing, and a chain that re-derives to the state
+   * it was already in writes nothing.
+   *
+   * Not "re-closed". The list includes rows that were RE-OPENED, because
+   * re-settling a chain re-derives §3.4 from scratch over the rows that still
+   * assert something, and a row the caller retracted asserts nothing. So if
+   * the row that had closed some older row has since been retracted, that
+   * older row comes back ACTIVE (`until`/`closedBy` both cleared) and is named
+   * here.
+   *
+   * The scenario, in one line: `A(lives_in, Jan)`; `B(lives_in, Jun)` closes A;
+   * `supersede([B])` retracts B — the replay drops B from the peer set, A's
+   * closure has no basis left, and A is re-opened and named in that same
+   * call's `resettled`. (`reindex` reaches the same rows from the other side:
+   * resolving a pending row into a chain replays that chain too.)
+   *
+   * That is the intended behaviour, not a wart: nothing should stay closed on
+   * the authority of a statement a person asked us to forget. A consumer
+   * reading this list must therefore treat it as "go re-read these rows",
+   * never as "these rows are now closed".
+   */
+  resettled: string[];
+}
+
+/**
+ * The retraction is atomic with the repair it forces: closing a row that had
+ * itself closed a neighbour leaves that neighbour ended on the authority of a
+ * row that now asserts nothing, so the same call re-derives the `(about, slot)`
+ * chains of the rows it closed. A retracted row whose slot is absent or
+ * {@link PENDING_SLOT} is inert and has no chain, so it strands nothing and
+ * re-settles nothing.
+ */
+export interface SupersedeOutput extends ResettleOutcome {
   /** Ids actually closed by this call — a foreign, missing, or already-closed id is silently absent. */
   closed: string[];
 }
@@ -230,40 +273,15 @@ export interface ReindexInput {
   slots?: ResolvedSlot[];
 }
 
-export interface ReindexOutput {
+/**
+ * `resettled` here names the chains a newly-resolved pending row joined —
+ * `reindex` re-settles those and nothing else. It is not a tenant-wide repair
+ * sweep, and it does not need to be: a retraction repairs its own chains in
+ * the `supersede` call that caused it.
+ */
+export interface ReindexOutput extends ResettleOutcome {
   /** How many pending rows this call actually resolved. */
   resolved: number;
-  /**
-   * Every id whose closure state CHANGED as a result of this call — auditable,
-   * like `record`'s `closes`.
-   *
-   * Not "re-closed". The list includes rows that were RE-OPENED, because
-   * re-settling a chain re-derives §3.4 from scratch over the rows that still
-   * assert something, and a row the caller retracted asserts nothing. So if
-   * the row that had closed some older row has since been retracted, that
-   * older row comes back ACTIVE (`until`/`closedBy` both cleared) and is named
-   * here.
-   *
-   * The scenario, in one line: `A(lives_in, Jan)`; `B(lives_in, Jun)` closes A;
-   * `supersede([B])` retracts B; a pending row `P` for the same `(about, slot)`
-   * is then resolved by `reindex` — the replay drops B from the peer set, A's
-   * closure has no basis left, and A is re-opened and listed in `resettled`.
-   *
-   * That is the intended behaviour, not a wart: nothing should stay closed on
-   * the authority of a statement a person asked us to forget. A consumer
-   * reading this list must therefore treat it as "go re-read these rows",
-   * never as "these rows are now closed".
-   *
-   * It is not, however, a repair guarantee. The re-open happens WHEN a
-   * `reindex` re-settles that `(about, slot)` group, and nothing schedules
-   * one: `supersede` is a single-row write that never re-settles, and
-   * `reindex` re-settles only the groups a newly-resolved pending row joined.
-   * A group with no pending row is never revisited, so `A` above can stay
-   * wrongly closed indefinitely — and a `recall` of that slot then returns
-   * neither `A` (closed) nor `B` (retracted). Known gap, left for its own
-   * card; see `supersedeIds` in the sqlite backend.
-   */
-  resettled: string[];
   /** Rows still pending in this tenant AFTER the call. */
   pending: number;
   /** Same vocabulary as `recall` — `['pending']` while any row is still undrained. */
@@ -347,6 +365,21 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
     ): Promise<RecordedStatement> {
       const out = await record({ statements: [statement] }, ctx);
       return out.records[0]!;
+    }
+
+    /**
+     * Read a stored row back as it stands NOW, including `until`/`closedBy`
+     * on a CLOSED row — which plain `recall` cannot show, since it filters
+     * to active rows. A `batchKey` replay rebuilds every row of that batch
+     * from the stored rows and writes nothing, so recording the fixture
+     * under a key gives a read-only inspector for the whole chain.
+     */
+    async function reread(
+      batchKey: string,
+      statements: FactStatementInput[],
+      ctx = makeCtx(),
+    ): Promise<RecordedStatement[]> {
+      return (await record({ batchKey, statements }, ctx)).records;
     }
 
     const JAN = '2023-01-01T00:00:00.000Z';
@@ -846,6 +879,428 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         await supersede([rec.id]);
         const second = await supersede([rec.id]);
         expect(second.closed).toEqual([]);
+      });
+
+      // ---------------------------------------------------------------------
+      // The retraction repairs the closures it invalidates (TASK-448)
+      //
+      // Ending a row is not the whole of retracting it. A row that had closed
+      // a neighbour leaves that neighbour ended on ITS authority, and a
+      // retracted row asserts nothing — so `supersede` re-derives §3.4 over
+      // the `(about, slot)` chains of the rows it closed, in the same call.
+      //
+      // Every case below pairs its `resettled: []` with a positive assertion —
+      // `closed: [id]`, or a `reread` of the stored chain. `resettled: []`
+      // ALONE is satisfied by a `supersede` that ignores the feature entirely,
+      // so on its own it pins nothing.
+      // ---------------------------------------------------------------------
+      describe('re-settles the chains it invalidates', () => {
+        const LIVES_IN = 'lives_in';
+
+        /** Boston (JAN), then Seattle (JUN) which closes it by rule 1. */
+        const CHAIN: FactStatementInput[] = [
+          { about: 'user', relation: 'lives_in', value: 'Boston', when: JAN, slot: LIVES_IN },
+          { about: 'user', relation: 'lives_in', value: 'Seattle', when: JUN, slot: LIVES_IN },
+        ];
+
+        // The headline. Before this landed, `recall` here returned NEITHER
+        // row — Boston closed, Seattle retracted — which is the user-facing
+        // shape of the bug: "I deleted the new fact and my old one disappeared
+        // too." An empty answer where Boston is the correct one.
+        it('re-OPENS the row a retracted closer had closed, and names it in resettled', async () => {
+          const KEY = 'retracted-closer';
+          const [boston, seattle] = (await record({ batchKey: KEY, statements: CHAIN }))
+            .records as [RecordedStatement, RecordedStatement];
+          expect(seattle.closes).toEqual([boston.id]);
+
+          const result = await supersede([seattle.id]);
+          expect(result.closed).toEqual([seattle.id]);
+          expect(result.resettled).toEqual([boston.id]);
+
+          const [bostonNow, seattleNow] = (await reread(KEY, CHAIN)) as [
+            RecordedStatement,
+            RecordedStatement,
+          ];
+          // Genuinely active again: BOTH columns cleared, not merely
+          // re-pointed at some other closer.
+          expect(bostonNow.until).toBeUndefined();
+          expect(bostonNow.closedBy).toBeUndefined();
+          // The retracted row stays retracted — the replay drops it rather
+          // than re-deriving it back into existence. Un-forgetting something a
+          // person asked us to forget is the worst bug available here.
+          expect(seattleNow.until).toBeDefined();
+          expect(seattleNow.closedBy).toBeUndefined();
+          expect(result.resettled).not.toContain(seattle.id);
+
+          const active = await recall({ about: 'user', limit: 10 });
+          expect(active.statements.map((s) => s.value)).toEqual(['Boston']);
+        });
+
+        it('reports nothing re-settled when the retracted row had closed nothing', async () => {
+          const KEY = 'closed-nothing';
+          const only: FactStatementInput[] = [CHAIN[0]!];
+          const [boston] = (await record({ batchKey: KEY, statements: only })).records as [
+            RecordedStatement,
+          ];
+          expect(boston.closes).toEqual([]);
+
+          const result = await supersede([boston.id]);
+          // The positive half: the row really WAS retracted, so the empty
+          // `resettled` is "there was nothing to repair" rather than "this
+          // call did nothing".
+          expect(result.closed).toEqual([boston.id]);
+          expect(result.resettled).toEqual([]);
+
+          const [bostonNow] = (await reread(KEY, only)) as [RecordedStatement];
+          expect(bostonNow.until).toBeDefined();
+          expect(bostonNow.closedBy).toBeUndefined();
+          expect((await recall({ about: 'user', limit: 10 })).statements).toHaveLength(0);
+        });
+
+        it('re-settles nothing for a row with NO slot — it never joined a chain', async () => {
+          const KEY = 'no-slot';
+          const statements: FactStatementInput[] = [
+            ...CHAIN,
+            // Same subject, no slot: stored, retrievable, inert.
+            { about: 'user', relation: 'likes_artist', value: 'Khalid', when: JAN },
+          ];
+          const [boston, seattle, khalid] = (await record({ batchKey: KEY, statements }))
+            .records as [RecordedStatement, RecordedStatement, RecordedStatement];
+          expect(seattle.closes).toEqual([boston.id]);
+          expect(khalid.closes).toEqual([]);
+
+          const result = await supersede([khalid.id]);
+          expect(result.closed).toEqual([khalid.id]);
+          expect(result.resettled).toEqual([]);
+
+          // The slotted chain in the same subject is untouched — Boston is
+          // still closed, and by Seattle, which still asserts it.
+          const [bostonNow, seattleNow, khalidNow] = (await reread(KEY, statements)) as [
+            RecordedStatement,
+            RecordedStatement,
+            RecordedStatement,
+          ];
+          expect(bostonNow.until).toBe(JUN);
+          expect(bostonNow.closedBy).toBe(seattle.id);
+          expect(seattleNow.until).toBeUndefined();
+          expect(khalidNow.until).toBeDefined();
+          expect(khalidNow.closedBy).toBeUndefined();
+          expect((await recall({ about: 'user', limit: 10 })).statements.map((s) => s.id)).toEqual([
+            seattle.id,
+          ]);
+        });
+
+        it('re-settles nothing for a PENDING-slot row — pending rows are inert', async () => {
+          const KEY = 'pending-slot';
+          const statements: FactStatementInput[] = [
+            ...CHAIN,
+            { about: 'user', relation: 'lives_in', value: 'Austin', when: SEP, slot: PENDING_SLOT },
+          ];
+          const [boston, seattle, austin] = (await record({ batchKey: KEY, statements }))
+            .records as [RecordedStatement, RecordedStatement, RecordedStatement];
+          // The real chain settled normally around it, and the pending row —
+          // dated latest of the three — STILL closes nothing: pending is out
+          // of the chain until `reindex` resolves it.
+          expect(boston.closes).toEqual([]);
+          expect(seattle.closes).toEqual([boston.id]);
+          expect(austin.closes).toEqual([]);
+
+          const result = await supersede([austin.id]);
+          expect(result.closed).toEqual([austin.id]);
+          expect(result.resettled).toEqual([]);
+
+          const [bostonNow, seattleNow, austinNow] = (await reread(KEY, statements)) as [
+            RecordedStatement,
+            RecordedStatement,
+            RecordedStatement,
+          ];
+          expect(bostonNow.until).toBe(JUN);
+          expect(bostonNow.closedBy).toBe(seattle.id);
+          expect(seattleNow.until).toBeUndefined();
+          expect(austinNow.until).toBeDefined();
+          expect(austinNow.closedBy).toBeUndefined();
+          expect((await recall({ about: 'user', limit: 10 })).statements.map((s) => s.value)).toEqual(
+            ['Seattle'],
+          );
+        });
+
+        // A chain of three, so the repair has to be a REPLAY rather than "undo
+        // the closures this row wrote". Dropping C re-opens B, but A stays
+        // closed — by B, which still asserts itself.
+        it('re-opens only the victim of the retracted row, leaving the rest of the chain closed', async () => {
+          const KEY = 'chain-of-three';
+          const statements: FactStatementInput[] = [
+            ...CHAIN,
+            { about: 'user', relation: 'lives_in', value: 'Austin', when: SEP, slot: LIVES_IN },
+          ];
+          const [boston, seattle, austin] = (await record({ batchKey: KEY, statements }))
+            .records as [RecordedStatement, RecordedStatement, RecordedStatement];
+          expect(seattle.closes).toEqual([boston.id]);
+          expect(austin.closes).toEqual([seattle.id]);
+
+          const result = await supersede([austin.id]);
+          expect(result.closed).toEqual([austin.id]);
+          expect(result.resettled).toEqual([seattle.id]);
+
+          const [bostonNow, seattleNow, austinNow] = (await reread(KEY, statements)) as [
+            RecordedStatement,
+            RecordedStatement,
+            RecordedStatement,
+          ];
+          // Boston is still closed, and still by Seattle — the replay
+          // reproduced that closure rather than clearing everything it saw.
+          expect(bostonNow.until).toBe(JUN);
+          expect(bostonNow.closedBy).toBe(seattle.id);
+          expect(seattleNow.until).toBeUndefined();
+          expect(seattleNow.closedBy).toBeUndefined();
+          expect(austinNow.until).toBeDefined();
+          expect(austinNow.closedBy).toBeUndefined();
+          expect((await recall({ about: 'user', limit: 10 })).statements.map((s) => s.value)).toEqual(
+            ['Seattle'],
+          );
+        });
+
+        // Two retracted rows of ONE chain, so the group is collected twice and
+        // must be de-duplicated before the replay. Getting two ACTIVE rows
+        // into one chain takes rule 3: the human row is unreachable from the
+        // extracted ones, so it neither closes nor is closed, and both ends of
+        // the chain are open at once. `supersede` can then retract two rows of
+        // the same group in a single call — which it cannot do for a plain
+        // chain, where only the newest row is ever open.
+        //
+        // What this pins is that the chain is re-derived from what SURVIVES
+        // both retractions at once, not once per retracted row against a
+        // half-repaired chain — and that `resettled` names Denver exactly
+        // once, so a caller told to "go re-read these rows" reads it once.
+        it('re-settles a chain ONCE when one call retracts two of its rows', async () => {
+          const KEY = 'two-of-one-chain';
+          const statements: FactStatementInput[] = [
+            {
+              about: 'user',
+              relation: 'lives_in',
+              value: 'Boston',
+              when: JAN,
+              slot: LIVES_IN,
+              provenance: 'human',
+            },
+            { about: 'user', relation: 'lives_in', value: 'Denver', when: JUN, slot: LIVES_IN },
+            { about: 'user', relation: 'lives_in', value: 'Seattle', when: SEP, slot: LIVES_IN },
+          ];
+          const [human, denver, seattle] = (await record({ batchKey: KEY, statements })).records as [
+            RecordedStatement,
+            RecordedStatement,
+            RecordedStatement,
+          ];
+          // Denver never reached the human row (rule 3) and Seattle closed
+          // Denver (rule 1), so the human row and Seattle are both active.
+          expect(denver.closes).toEqual([]);
+          expect(seattle.closes).toEqual([denver.id]);
+
+          const result = await supersede([human.id, seattle.id]);
+          expect(result.closed).toEqual([human.id, seattle.id]);
+          expect(result.resettled).toEqual([denver.id]);
+
+          const [humanNow, denverNow, seattleNow] = (await reread(KEY, statements)) as [
+            RecordedStatement,
+            RecordedStatement,
+            RecordedStatement,
+          ];
+          expect(denverNow.until).toBeUndefined();
+          expect(denverNow.closedBy).toBeUndefined();
+          for (const row of [humanNow, seattleNow]) {
+            expect(row.until).toBeDefined();
+            expect(row.closedBy).toBeUndefined();
+          }
+          expect((await recall({ about: 'user', limit: 10 })).statements.map((s) => s.value)).toEqual(
+            ['Denver'],
+          );
+        });
+
+        // Rule 3 has to survive the repair, not just the original arrival.
+        // The human row is unreachable from both lower ranks, so it neither
+        // closes nor is closed; a replay that dropped provenance immunity
+        // would have the extracted row (JUN) close the human one (JAN) — and
+        // this is the only place that shows, because `record` never had the
+        // chance to make that mistake.
+        it('re-derives across a provenance boundary without closing over it', async () => {
+          const KEY = 'provenance-immunity';
+          const statements: FactStatementInput[] = [
+            {
+              about: 'user',
+              relation: 'lives_in',
+              value: 'Boston',
+              when: JAN,
+              slot: LIVES_IN,
+              provenance: 'human',
+            },
+            {
+              about: 'user',
+              relation: 'lives_in',
+              value: 'Seattle',
+              when: JUN,
+              slot: LIVES_IN,
+              provenance: 'extracted',
+            },
+            {
+              about: 'user',
+              relation: 'lives_in',
+              value: 'Austin',
+              when: SEP,
+              slot: LIVES_IN,
+              provenance: 'agent',
+            },
+          ];
+          const [human, extracted, agent] = (await record({ batchKey: KEY, statements }))
+            .records as [RecordedStatement, RecordedStatement, RecordedStatement];
+          // The agent row outranks the extracted one and closes it; the human
+          // row outranks both, so it neither closes nor is closed.
+          expect(human.closes).toEqual([]);
+          expect(extracted.closes).toEqual([]);
+          expect(agent.closes).toEqual([extracted.id]);
+
+          const result = await supersede([agent.id]);
+          expect(result.closed).toEqual([agent.id]);
+          expect(result.resettled).toEqual([extracted.id]);
+
+          const [humanNow, extractedNow, agentNow] = (await reread(KEY, statements)) as [
+            RecordedStatement,
+            RecordedStatement,
+            RecordedStatement,
+          ];
+          // The rank boundary held through the replay.
+          expect(humanNow.until).toBeUndefined();
+          expect(humanNow.closedBy).toBeUndefined();
+          expect(extractedNow.until).toBeUndefined();
+          expect(extractedNow.closedBy).toBeUndefined();
+          expect(agentNow.until).toBeDefined();
+          expect(agentNow.closedBy).toBeUndefined();
+
+          // Both survivors are active — newest `when` first.
+          expect((await recall({ about: 'user', limit: 10 })).statements.map((s) => s.value)).toEqual(
+            ['Seattle', 'Boston'],
+          );
+        });
+
+        // The re-settle is scoped by `agentScopeKey(ctx)`, exactly like the
+        // close it follows. Both tenants hold the SAME chain here, so a
+        // re-settle that leaked would re-open the other agent's Boston too.
+        it("never re-settles another agent's identical chain", async () => {
+          const KEY = 'tenant-scoped-resettle';
+          const ctxA = makeCtx('agent-a', 'user-a');
+          const ctxB = makeCtx('agent-b', 'user-b');
+          const [, aSeattle] = (await record({ batchKey: KEY, statements: CHAIN }, ctxA)).records as [
+            RecordedStatement,
+            RecordedStatement,
+          ];
+          const [bBoston, bSeattle] = (await record({ batchKey: KEY, statements: CHAIN }, ctxB))
+            .records as [RecordedStatement, RecordedStatement];
+          // Each tenant settled its own copy: B's Seattle closed B's Boston.
+          expect(bSeattle.closes).toEqual([bBoston.id]);
+
+          const mine = await supersede([aSeattle.id], ctxA);
+          expect(mine.closed).toEqual([aSeattle.id]);
+          expect(mine.resettled).toHaveLength(1);
+
+          const [bBostonNow, bSeattleNow] = (await reread(KEY, CHAIN, ctxB)) as [
+            RecordedStatement,
+            RecordedStatement,
+          ];
+          expect(bBostonNow.until).toBe(JUN);
+          expect(bBostonNow.closedBy).toBe(bSeattle.id);
+          expect(bSeattleNow.until).toBeUndefined();
+          expect((await recall({ about: 'user', limit: 10 }, ctxB)).statements.map((s) => s.value)).toEqual(
+            ['Seattle'],
+          );
+
+          // And the foreign id is inert in the other direction: agent A
+          // retracting agent B's row closes nothing, so there is no chain to
+          // collect and B's Boston stays closed.
+          const foreign = await supersede([bSeattle.id], ctxA);
+          expect(foreign.closed).toEqual([]);
+          expect(foreign.resettled).toEqual([]);
+          const [bBostonStill] = (await reread(KEY, CHAIN, ctxB)) as [
+            RecordedStatement,
+            RecordedStatement,
+          ];
+          expect(bBostonStill.until).toBe(JUN);
+          expect(bBostonStill.closedBy).toBe(bSeattle.id);
+        });
+
+        it('is idempotent — the second identical call closes and re-settles nothing', async () => {
+          const KEY = 'idempotent-resettle';
+          const [boston, seattle] = (await record({ batchKey: KEY, statements: CHAIN }))
+            .records as [RecordedStatement, RecordedStatement];
+
+          expect(await supersede([seattle.id])).toEqual({
+            closed: [seattle.id],
+            resettled: [boston.id],
+          });
+          const afterFirst = await reread(KEY, CHAIN);
+
+          expect(await supersede([seattle.id])).toEqual({ closed: [], resettled: [] });
+          // Byte-for-byte: the second call is a true no-op, not a repair that
+          // happens to land on the same answer.
+          expect(await reread(KEY, CHAIN)).toEqual(afterFirst);
+        });
+
+        // The group map inside `supersedeIds` used to key on `${about}\u0000
+        // ${slot}`, which only distinguishes the two fields when neither
+        // contains a NUL — and `about` is free text (TASK-448). These two
+        // groups produce the SAME NUL-joined string:
+        //   about = "x\u0000y", slot = "z"      -> "x\u0000y\u0000z"
+        //   about = "x",        slot = "y\u0000z" -> "x\u0000y\u0000z"
+        // so a bug in that key collapses them to one Map entry and only one
+        // chain gets re-settled. One `supersede` call retracts a closer in
+        // BOTH groups; both older rows must re-open.
+        it('re-settles BOTH groups when their old NUL-joined keys would collide', async () => {
+          const KEY1 = 'nul-collision-group-1';
+          const KEY2 = 'nul-collision-group-2';
+          const ABOUT1 = 'x\u0000y';
+          const SLOT1 = 'z';
+          const ABOUT2 = 'x';
+          const SLOT2 = 'y\u0000z';
+
+          const stmts1: FactStatementInput[] = [
+            { about: ABOUT1, relation: 'r', value: 'old1', when: JAN, slot: SLOT1 },
+            { about: ABOUT1, relation: 'r', value: 'new1', when: JUN, slot: SLOT1 },
+          ];
+          const stmts2: FactStatementInput[] = [
+            { about: ABOUT2, relation: 'r', value: 'old2', when: JAN, slot: SLOT2 },
+            { about: ABOUT2, relation: 'r', value: 'new2', when: JUN, slot: SLOT2 },
+          ];
+
+          const [older1, newer1] = (await record({ batchKey: KEY1, statements: stmts1 }))
+            .records as [RecordedStatement, RecordedStatement];
+          expect(newer1.closes).toEqual([older1.id]);
+
+          const [older2, newer2] = (await record({ batchKey: KEY2, statements: stmts2 }))
+            .records as [RecordedStatement, RecordedStatement];
+          expect(newer2.closes).toEqual([older2.id]);
+
+          const result = await supersede([newer1.id, newer2.id]);
+          expect(result.closed.slice().sort()).toEqual([newer1.id, newer2.id].sort());
+          // Against the unfixed NUL-joined key, only ONE of these two groups
+          // survives in the Map, so exactly one of these ids is missing here.
+          expect(result.resettled.slice().sort()).toEqual([older1.id, older2.id].sort());
+
+          const [older1Now, newer1Now] = (await reread(KEY1, stmts1)) as [
+            RecordedStatement,
+            RecordedStatement,
+          ];
+          expect(older1Now.until).toBeUndefined();
+          expect(older1Now.closedBy).toBeUndefined();
+          expect(newer1Now.until).toBeDefined();
+          expect(newer1Now.closedBy).toBeUndefined();
+
+          const [older2Now, newer2Now] = (await reread(KEY2, stmts2)) as [
+            RecordedStatement,
+            RecordedStatement,
+          ];
+          expect(older2Now.until).toBeUndefined();
+          expect(older2Now.closedBy).toBeUndefined();
+          expect(newer2Now.until).toBeDefined();
+          expect(newer2Now.closedBy).toBeUndefined();
+        });
       });
     });
 
@@ -1605,21 +2060,6 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
     describe('memory:facts:reindex', () => {
       const LIVES_IN = 'lives_in';
 
-      /**
-       * Read a stored row back as it stands NOW, including `until`/`closedBy`
-       * on a CLOSED row — which plain `recall` cannot show, since it filters
-       * to active rows. A `batchKey` replay rebuilds every row of that batch
-       * from the stored rows and writes nothing, so recording the fixture
-       * under a key gives a read-only inspector for the whole chain.
-       */
-      async function reread(
-        batchKey: string,
-        statements: FactStatementInput[],
-        ctx = makeCtx(),
-      ): Promise<RecordedStatement[]> {
-        return (await record({ batchKey, statements }, ctx)).records;
-      }
-
       it('closes the older row of the slot it is resolved into, and names it in resettled', async () => {
         const boston = await recordOne({
           about: 'user',
@@ -1975,23 +2415,23 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         expect(retractedNow.until).toBe(retracted.until);
       });
 
-      // The two cases above each retract a row that had closed NOTHING, so
-      // both assert `resettled: []`. This one is the RE-OPEN the field was
-      // renamed for, and the scenario `ReindexOutput.resettled`'s doc comment
-      // headlines: B closed A, B was then retracted, and re-settling the chain
-      // finds A still ended on the authority of a row that asserts nothing.
-      // A comes back ACTIVE and is named in `resettled`.
+      // The two cases above each retract a row that had closed NOTHING. This
+      // one retracts a CLOSER, and pins the handover between the two hooks:
+      // `supersede` re-opens its victim itself, in the call that caused the
+      // problem (TASK-448 — the re-OPEN assertion lives in the
+      // `memory:facts:supersede` block, over the same `resettleSlotGroups`),
+      // and the later drain then has to place the resolved row into the chain
+      // that repair left behind rather than the one it found before it.
       //
-      // Only this case can catch a "resettled means closed" simplification —
-      // reporting just the rows whose `valid_end` moved to a FINITE value.
-      // That passes every other case here while silently dropping re-opened
-      // rows, and a consumer honouring the doc comment would go on showing a
-      // stale-closed row as closed.
+      // Reading this as "the drain does the repair" is the stale mental model
+      // TASK-448 retired: it left the store observably wrong in between, for
+      // an unbounded window, since a chain with no pending row was never
+      // revisited at all.
       //
       // One batch, so `batch_seq` pins the replay order: Boston, then Seattle,
       // then the pending row. That ordering is what decides where the pending
       // row lands once Seattle is out of the peer set.
-      it('re-OPENS a row whose closer was retracted, and names it in resettled', async () => {
+      it('places a drained row beneath the row a retraction had already re-opened', async () => {
         const KEY = 'reopened-by-drain';
         const statements: FactStatementInput[] = [
           { about: 'user', relation: 'lives_in', value: 'Boston', when: JUN, slot: LIVES_IN },
@@ -2007,38 +2447,43 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         expect(seattle.closes).toEqual([boston.id]);
         expect(austin.closes).toEqual([]);
 
-        // Retract the CLOSER. `supersede` is a single-row write that never
-        // re-settles, so Boston is left ended at SEP by a row that now asserts
-        // nothing — a closure with no authority behind it.
-        expect((await supersede([seattle.id])).closed).toEqual([seattle.id]);
+        // Retract the CLOSER. Boston would otherwise be left ended at SEP by a
+        // row that now asserts nothing — a closure with no authority behind
+        // it — so the retraction re-derives the chain and re-opens Boston
+        // then and there. The pending row is not in that chain yet.
+        expect(await supersede([seattle.id])).toEqual({
+          closed: [seattle.id],
+          resettled: [boston.id],
+        });
         const afterRetraction = (await reread(KEY, statements)) as [
           RecordedStatement,
           RecordedStatement,
           RecordedStatement,
         ];
-        expect(afterRetraction[0].until).toBe(SEP);
-        expect(afterRetraction[0].closedBy).toBe(seattle.id);
+        expect(afterRetraction[0].until).toBeUndefined();
+        expect(afterRetraction[0].closedBy).toBeUndefined();
         // A retraction, not a rule-closure: finite `until`, no `closedBy`.
         expect(afterRetraction[1].until).toBeDefined();
         expect(afterRetraction[1].closedBy).toBeUndefined();
 
         const out = await reindex({ slots: [{ id: austin.id, slot: LIVES_IN }] });
         // The positive half: a drain that silently did nothing would leave
-        // Boston exactly as it is and could never be told apart otherwise.
+        // every row exactly as it is and could never be told apart otherwise.
         expect(out.resolved).toBe(1);
         expect(out.pending).toBe(0);
         expect(out.degraded).toEqual([]);
-        // Replay order — and Boston is in this list because it was RE-OPENED,
-        // which is the assertion no other case in this suite makes.
-        expect(out.resettled).toEqual([boston.id, austin.id]);
+        // Only the drained row moved — Boston was already repaired, and a
+        // second re-derivation of a chain that is already correct writes
+        // nothing, which is what keeps `resettled` meaningful.
+        expect(out.resettled).toEqual([austin.id]);
 
         const [bostonNow, seattleNow, austinNow] = (await reread(KEY, statements)) as [
           RecordedStatement,
           RecordedStatement,
           RecordedStatement,
         ];
-        // Genuinely active again: BOTH columns cleared, not merely re-pointed
-        // at some other closer.
+        // Still active after the drain: the replay did not re-close the row
+        // the retraction freed, and did not re-point it at some other closer.
         expect(bostonNow.until).toBeUndefined();
         expect(bostonNow.closedBy).toBeUndefined();
 
@@ -2321,6 +2766,91 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         expect(second).toEqual({ resolved: 0, resettled: [], pending: 0, degraded: [] });
         // Same rows, same closures, same everything.
         expect(await reread(KEY, statements)).toEqual(afterFirst);
+      });
+
+      // Same NUL-joined-key collision as the `supersede` case above
+      // (TASK-448), but through the drain's own group map in `plugin.ts`:
+      //   about = "x\u0000y", slot = "z"      -> "x\u0000y\u0000z"
+      //   about = "x",        slot = "y\u0000z" -> "x\u0000y\u0000z"
+      // One `reindex` call resolves a pending row in EACH group. Against the
+      // unfixed key, only one group's older row gets re-derived and closed.
+      it('settles BOTH groups when their old NUL-joined keys would collide', async () => {
+        const KEY1 = 'reindex-nul-collision-1';
+        const KEY2 = 'reindex-nul-collision-2';
+        const ABOUT1 = 'x\u0000y';
+        const SLOT1 = 'z';
+        const ABOUT2 = 'x';
+        const SLOT2 = 'y\u0000z';
+
+        const older1Stmt: FactStatementInput = {
+          about: ABOUT1,
+          relation: 'r',
+          value: 'old1',
+          when: JAN,
+          slot: SLOT1,
+        };
+        const pending1Stmt: FactStatementInput = {
+          about: ABOUT1,
+          relation: 'r',
+          value: 'new1',
+          when: JUN,
+          slot: PENDING_SLOT,
+        };
+        const older2Stmt: FactStatementInput = {
+          about: ABOUT2,
+          relation: 'r',
+          value: 'old2',
+          when: JAN,
+          slot: SLOT2,
+        };
+        const pending2Stmt: FactStatementInput = {
+          about: ABOUT2,
+          relation: 'r',
+          value: 'new2',
+          when: JUN,
+          slot: PENDING_SLOT,
+        };
+
+        const [older1, pending1] = (
+          await record({ batchKey: KEY1, statements: [older1Stmt, pending1Stmt] })
+        ).records as [RecordedStatement, RecordedStatement];
+        expect(pending1.closes).toEqual([]);
+
+        const [older2, pending2] = (
+          await record({ batchKey: KEY2, statements: [older2Stmt, pending2Stmt] })
+        ).records as [RecordedStatement, RecordedStatement];
+        expect(pending2.closes).toEqual([]);
+
+        const out = await reindex({
+          slots: [
+            { id: pending1.id, slot: SLOT1 },
+            { id: pending2.id, slot: SLOT2 },
+          ],
+        });
+        expect(out.resolved).toBe(2);
+        // Against the unfixed NUL-joined key, only ONE of these two groups
+        // survives in the Map, so exactly one of these ids is missing here.
+        expect(out.resettled.slice().sort()).toEqual([older1.id, older2.id].sort());
+        expect(out.pending).toBe(0);
+        expect(out.degraded).toEqual([]);
+
+        const [older1Now, pending1Now] = (await reread(KEY1, [older1Stmt, pending1Stmt])) as [
+          RecordedStatement,
+          RecordedStatement,
+        ];
+        expect(older1Now.until).toBe(JUN);
+        expect(older1Now.closedBy).toBe(pending1.id);
+        expect(pending1Now.until).toBeUndefined();
+        expect(pending1Now.closedBy).toBeUndefined();
+
+        const [older2Now, pending2Now] = (await reread(KEY2, [older2Stmt, pending2Stmt])) as [
+          RecordedStatement,
+          RecordedStatement,
+        ];
+        expect(older2Now.until).toBe(JUN);
+        expect(older2Now.closedBy).toBe(pending2.id);
+        expect(pending2Now.until).toBeUndefined();
+        expect(pending2Now.closedBy).toBeUndefined();
       });
 
       describe('invalid-payload rejection', () => {

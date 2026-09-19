@@ -579,11 +579,18 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           const at = new Date().toISOString();
           // A supersede that silently did nothing is indistinguishable from
           // one whose ids were all foreign — `closed: []` is a legitimate
-          // answer here, so a store failure MUST be an error instead.
-          const closed = inStore('memory:facts:supersede', () =>
+          // answer here, so a store failure MUST be an error instead. Same
+          // for `resettled: []`, which is the ordinary answer whenever the
+          // retracted rows had closed nothing.
+          //
+          // `supersedeIds` owns the transaction that spans the retraction AND
+          // the re-settle of the chains it invalidated (TASK-448), so this
+          // handler hands its result straight out: `SupersedeResult` and
+          // `SupersedeOutput` are the same two fields, one in engine terms and
+          // one in the hook's.
+          return inStore('memory:facts:supersede', () =>
             supersedeIds(requireDriver(), agentKey, input.ids, at),
           );
-          return { closed };
         },
       );
 
@@ -635,9 +642,15 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
 
               let resolved = 0;
               // Deduped by `(about, slot)`: two rows resolved into the same
-              // chain re-derive it once, not twice. A Map keyed on a
-              // NUL-joined pair, because `about` and `slot` are both free
-              // text and a `${a}:${b}` key could collide across the boundary.
+              // chain re-derive it once, not twice. A Map keyed structurally
+              // (`JSON.stringify([about, slot])`), not by joining the two
+              // fields with a delimiter: `about` is free text that can carry
+              // model output, and ANY in-band delimiter — including NUL — is
+              // only injective if the fields are guaranteed not to contain
+              // it, which nothing here guarantees. `about = "x\u0000y", slot
+              // = "z"` and `about = "x", slot = "y\u0000z"` produce the same
+              // NUL-joined string but different JSON arrays (same reasoning
+              // as `supersedeIds`'s group map in `closure.ts`).
               const groups = new Map<string, SlotGroup>();
 
               for (const entry of slots) {
@@ -654,7 +667,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
                 // `slot: null` is "no slot after all" — the row is inert
                 // forever, joins no chain, and so touches nothing to re-settle.
                 if (entry.slot !== null) {
-                  groups.set(`${row.about}\u0000${entry.slot}`, {
+                  groups.set(JSON.stringify([row.about, entry.slot]), {
                     about: row.about,
                     slot: entry.slot,
                   });
