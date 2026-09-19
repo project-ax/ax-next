@@ -12,9 +12,32 @@ import {
   buildFindIndex,
   findFieldKey,
   findRanges,
+  grantFieldKeyBase,
   threadFindFields,
 } from '@/lib/thread-find';
 import type { ThreadMessage } from '@/lib/workspace-api';
+import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
+import { HOST_WALL_EXPLANATION } from '@/lib/grant-copy';
+import {
+  decisionFixture,
+  resolvedFixture,
+} from '@/components/workspace/__tests__/decision-fixture';
+
+function grantFixture(over: Partial<WorkspaceGrant> = {}): WorkspaceGrant {
+  return {
+    key: 'skill:writer',
+    agentId: 'a1',
+    conversationId: 'c1',
+    request: {
+      kind: 'skill',
+      skillId: 'writer',
+      description: 'Draft outbound emails on your behalf',
+      hosts: ['api.resend.com'],
+      slots: [],
+    },
+    ...over,
+  };
+}
 
 describe('findRanges', () => {
   it('finds every occurrence, in order', () => {
@@ -95,7 +118,7 @@ const thread: ThreadMessage[] = [
 
 describe('threadFindFields', () => {
   it('reads user and agent turns, and the fold marker', () => {
-    expect(threadFindFields(thread).map((f) => f.key)).toEqual([
+    expect(threadFindFields(thread, [], []).map((f) => f.key)).toEqual([
       findFieldKey(0, 'u1'),
       findFieldKey(1, 'a1'),
       findFieldKey(4, 'f1'),
@@ -105,12 +128,14 @@ describe('threadFindFields', () => {
   it('skips the transient status placeholder', () => {
     // Counting 'Thinking…' would make the total tick up mid-stream and back
     // down when the turn lands — a number that moves on its own.
-    expect(threadFindFields(thread).some((f) => f.text === 'Thinking…')).toBe(false);
+    expect(
+      threadFindFields(thread, [], []).some((f) => f.text === 'Thinking…'),
+    ).toBe(false);
   });
 
-  it('skips approval cards, whose words live in the decisions queue', () => {
+  it('skips an approval turn whose decision never arrived', () => {
     expect(
-      threadFindFields(thread).some((f) => f.key.endsWith(':p1')),
+      threadFindFields(thread, [], []).some((f) => f.key.startsWith(`${findFieldKey(2, 'p1')}:`)),
     ).toBe(false);
   });
 
@@ -128,33 +153,138 @@ describe('threadFindFields', () => {
         ],
       },
     ];
-    expect(threadFindFields(withSteps)).toEqual([
+    expect(threadFindFields(withSteps, [], [])).toEqual([
       { key: findFieldKey(0, 's1'), text: 'here is what I did' },
     ]);
+  });
+
+  describe('TASK-390 — an open approval’s visible prose', () => {
+    it('indexes summary and detail while the decision is still a question', () => {
+      const d = decisionFixture({
+        id: 'd-deploy',
+        status: 'pending',
+        summary: 'Deploy the site?',
+        detail: 'This pushes main to production.',
+      });
+      const base = findFieldKey(2, 'p1');
+      expect(threadFindFields(thread, [d], [])).toEqual(
+        expect.arrayContaining([
+          { key: `${base}:summary`, text: 'Deploy the site?' },
+          { key: `${base}:detail`, text: 'This pushes main to production.' },
+        ]),
+      );
+    });
+
+    it('also indexes a STALE decision — still a question, per isOpenDecision', () => {
+      const d = decisionFixture({ id: 'd-deploy', status: 'stale', summary: 'Deploy the site?' });
+      expect(
+        threadFindFields(thread, [d], []).some((f) => f.text === 'Deploy the site?'),
+      ).toBe(true);
+    });
+
+    it('drops the summary once the decision is resolved — the card no longer shows it', () => {
+      // Resolved: the card renders `decisionOutcome(d).line`, not `d.summary`.
+      // Indexing `d.summary` here would report a match the reader cannot see.
+      const d = resolvedFixture('executed', { id: 'd-deploy', summary: 'Deploy the site?' });
+      expect(
+        threadFindFields(thread, [d], []).some((f) => f.text === 'Deploy the site?'),
+      ).toBe(false);
+    });
+
+    it('omits an empty detail rather than indexing a blank field', () => {
+      const d = decisionFixture({ id: 'd-deploy', status: 'pending', detail: '' });
+      const base = findFieldKey(2, 'p1');
+      expect(threadFindFields(thread, [d], []).some((f) => f.key === `${base}:detail`)).toBe(
+        false,
+      );
+    });
+  });
+
+  describe('TASK-390 — a grant row’s visible prose', () => {
+    it('indexes only the title for a skill/connector grant', () => {
+      /*
+        Review finding (TASK-390): description/packages/reassurance are NOT
+        indexed, even though `GrantRow`'s main render arm shows them. The
+        `stalled` arm (TASK-374 — the grant landed, the agent did not resume)
+        keeps only the title and drops "the reach badges, the key field, the
+        reassurance line" — and `stalled` is component-local React state this
+        function's `WorkspaceGrant` input cannot see. Indexing those fields
+        unconditionally would report a match with no `<mark>` on screen the
+        moment a grant went stalled — count > marks, caught by review before
+        it shipped. Title is the one field every render arm keeps, so it is
+        the only one safe to index without also threading `stalled` into the
+        store.
+      */
+      const g = grantFixture({
+        key: 'skill:writer',
+        request: {
+          kind: 'skill',
+          skillId: 'writer',
+          description: 'Draft outbound emails on your behalf',
+          hosts: ['api.resend.com'],
+          slots: [],
+          packages: { npm: ['nodemailer'], pypi: [] },
+        },
+      });
+      const base = grantFieldKeyBase('skill:writer');
+      expect(threadFindFields([], [], [g])).toEqual([{ key: `${base}:title`, text: 'Connect Writer' }]);
+    });
+
+    it('indexes a host grant’s title and wall explanation — a host grant never goes stalled', () => {
+      const g = grantFixture({
+        key: 'host:evil.example',
+        request: { kind: 'host', host: 'evil.example', sessionId: 's1' },
+      });
+      const base = grantFieldKeyBase('host:evil.example');
+      expect(threadFindFields([], [], [g])).toEqual([
+        { key: `${base}:title`, text: 'Allow access to evil.example?' },
+        { key: `${base}:explanation`, text: HOST_WALL_EXPLANATION },
+      ]);
+    });
+
+    it('appends grant fields after every thread field — grants render below the transcript', () => {
+      const g = grantFixture();
+      const keys = threadFindFields(thread, [], [g]).map((f) => f.key);
+      const lastThreadKeyIndex = keys.findIndex((k) => k === findFieldKey(4, 'f1'));
+      const firstGrantKeyIndex = keys.findIndex((k) => k.startsWith('grant:'));
+      expect(lastThreadKeyIndex).toBeGreaterThanOrEqual(0);
+      expect(firstGrantKeyIndex).toBeGreaterThan(lastThreadKeyIndex);
+    });
+
+    it('keeps a grant’s keys disjoint from any thread position key', () => {
+      // Thread keys are `${index}:${id}` — always digits before the first
+      // colon. `grant:` keys never collide because they never start that way.
+      const g = grantFixture({ key: '0' });
+      const keys = threadFindFields(thread, [], [g]).map((f) => f.key);
+      const threadKeys = new Set([findFieldKey(0, 'u1'), findFieldKey(1, 'a1'), findFieldKey(4, 'f1')]);
+      for (const k of keys) {
+        if (k.startsWith('grant:')) expect(threadKeys.has(k)).toBe(false);
+      }
+    });
   });
 });
 
 describe('buildFindIndex', () => {
   it('totals every match across the thread', () => {
     // u1 has one 'deploy', a1 has two. The approval card's id contains
-    // 'deploy' too and must not be counted.
-    expect(buildFindIndex(thread, 'deploy').total).toBe(3);
+    // 'deploy' too and must not be counted (no decision supplied for it).
+    expect(buildFindIndex(thread, [], [], 'deploy').total).toBe(3);
   });
 
   it('numbers each field from where its first match falls in the whole thread', () => {
-    const { firstMatch } = buildFindIndex(thread, 'deploy');
+    const { firstMatch } = buildFindIndex(thread, [], [], 'deploy');
     expect(firstMatch.get(findFieldKey(0, 'u1'))).toBe(0);
     expect(firstMatch.get(findFieldKey(1, 'a1'))).toBe(1);
     expect(firstMatch.has(findFieldKey(4, 'f1'))).toBe(false);
   });
 
   it('reports nothing for a blank query', () => {
-    expect(buildFindIndex(thread, '').total).toBe(0);
-    expect(buildFindIndex(thread, '   ').total).toBe(0);
+    expect(buildFindIndex(thread, [], [], '').total).toBe(0);
+    expect(buildFindIndex(thread, [], [], '   ').total).toBe(0);
   });
 
   it('reports zero — not a crash — when nothing matches', () => {
-    const idx = buildFindIndex(thread, 'kubernetes');
+    const idx = buildFindIndex(thread, [], [], 'kubernetes');
     expect(idx.total).toBe(0);
     expect(idx.firstMatch.size).toBe(0);
   });
@@ -172,11 +302,35 @@ describe('buildFindIndex', () => {
       { kind: 'user', id: 'same', text: 'deploy once' },
       { kind: 'agent', id: 'same', text: 'deploy twice deploy', time: '4:12 PM' },
     ];
-    const { total, firstMatch } = buildFindIndex(collided, 'deploy');
+    const { total, firstMatch } = buildFindIndex(collided, [], [], 'deploy');
     expect(total).toBe(3);
     expect(firstMatch.size).toBe(2);
     expect(firstMatch.get(findFieldKey(0, 'same'))).toBe(0);
     expect(firstMatch.get(findFieldKey(1, 'same'))).toBe(1);
+  });
+
+  describe('TASK-390 — counts what the reader can now see beyond thread turns', () => {
+    it('counts an open approval’s summary and a grant’s title in the same total', () => {
+      const d = decisionFixture({ id: 'd-deploy', status: 'pending', summary: 'Deploy the site' });
+      const g = grantFixture({
+        request: {
+          kind: 'connector',
+          connectorId: 'deploy-bot',
+          name: 'Deploy bot',
+          hosts: [],
+          slots: [],
+        },
+      });
+      // u1 + a1 (3 hits) + approval summary (1) + grant title 'Connect Deploy
+      // bot' (1) = 5. The approval's own id ('p1') is never in the haystack.
+      expect(buildFindIndex(thread, [d], [g], 'deploy').total).toBe(5);
+    });
+
+    it('never counts a resolved decision’s summary or an unrelated grant’s copy', () => {
+      const d = resolvedFixture('dismissed', { id: 'd-deploy', summary: 'Deploy the site' });
+      const g = grantFixture(); // 'writer' skill — no 'deploy' anywhere in it
+      expect(buildFindIndex(thread, [d], [g], 'deploy').total).toBe(3);
+    });
   });
 });
 

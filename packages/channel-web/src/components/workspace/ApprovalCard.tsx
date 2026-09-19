@@ -44,6 +44,7 @@ import {
   undoSecondsLeft,
 } from './decision-copy';
 import { useDecisionClock } from './use-decision-clock';
+import { FindHighlight, type FindView } from './ThreadFind';
 
 interface Props {
   decision: Decision;
@@ -54,6 +55,19 @@ interface Props {
   busy?: boolean;
   /** What the last action came back with, when it was not what was asked for. */
   notice?: string | null;
+  /**
+   * The find bar's current search, or `null`/omitted when there is none
+   * (TASK-390) — `InThreadApprovals` renders this same card above chat's
+   * composer with no find bar at all, so both find props default to
+   * "no highlight" rather than being required of every caller.
+   */
+  find?: FindView | null;
+  /**
+   * This decision's field-key prefix in `lib/thread-find.ts`'s index — the
+   * same `findFieldKey(index, m.id)` the `approval` thread turn was keyed
+   * under. Only meaningful together with `find`.
+   */
+  fieldKey?: string;
 }
 
 export function ApprovalCard({
@@ -63,6 +77,8 @@ export function ApprovalCard({
   onUndo,
   busy = false,
   notice = null,
+  find = null,
+  fieldKey,
 }: Props) {
   // Same clock the queue row uses. The card sits in a transcript rather than a
   // live list, but the two claims it makes are the same two — how long undo has
@@ -189,7 +205,7 @@ export function ApprovalCard({
           data-testid={`approval-question-${d.id}`}
           className={`text-[13.5px] font-medium ${RESOLUTION_FOCUS_RING}`}
         >
-          {d.summary}
+          <FindHighlight fieldKey={`${fieldKey ?? ''}:summary`} text={d.summary} find={find} />
         </div>
         {/*
           The paragraph is shown OUTRIGHT here, where the queue row hides it
@@ -207,7 +223,7 @@ export function ApprovalCard({
         */}
         {d.detail.length > 0 && (
           <p className="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">
-            {d.detail}
+            <FindHighlight fieldKey={`${fieldKey ?? ''}:detail`} text={d.detail} find={find} />
           </p>
         )}
         {/*

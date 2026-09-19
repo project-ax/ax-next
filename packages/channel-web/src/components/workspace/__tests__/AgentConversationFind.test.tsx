@@ -21,10 +21,11 @@
  */
 import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { AgentConversation } from '../AgentConversation';
 import { ANNOUNCE_DELAY_MS } from '../ThreadFind';
 import type { ThreadMessage, WorkspaceAgent } from '@/lib/workspace-api';
+import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 import { decisionFixture } from './decision-fixture';
 
 const quill: WorkspaceAgent = {
@@ -303,13 +304,45 @@ describe('finding something in an agent thread', () => {
     );
   });
 
-  it('does not count the words on an approval card', () => {
+  it('TASK-390 — counts and highlights an open approval card’s summary', () => {
     /*
       An approval card is drawn from the GLOBAL decisions queue, not from the
-      thread, and a pointer whose row has not landed renders nothing at all. A
-      count that included those words would move when an unrelated fetch did.
+      thread — but as of TASK-390 the reader can see the summary on screen, so
+      it is findable exactly like any other visible prose, as long as the
+      pointer's decision has landed and is still a QUESTION (see
+      `isOpenDecision`; this fixture defaults to `pending`).
     */
     const decision = decisionFixture({ id: 'd1', summary: 'Deploy the site?' });
+    const { container } = renderConversation({
+      thread: [
+        { kind: 'user', id: 'u1', text: USER_LINE },
+        { kind: 'approval', id: 'p1', decisionId: 'd1' },
+      ],
+      decisions: [decision],
+    });
+    openFind();
+    type('deploy');
+
+    // u1's "deploy" plus the card's "Deploy" — two readings of one
+    // `findRanges` result, not a hardcoded total: the reported count and the
+    // painted marks must agree.
+    expect(count()).toHaveTextContent('1 of 2');
+    expect(container.querySelectorAll('mark')).toHaveLength(2);
+  });
+
+  it('TASK-390 — does not count a RESOLVED approval’s summary, which the card no longer shows', () => {
+    /*
+      Once resolved the card swaps to an outcome sentence instead of the raw
+      summary — counting the summary anyway would report a match the reader
+      cannot see, the same failure mode the file already avoids for the
+      collapsible `steps` panel.
+    */
+    const decision = decisionFixture({
+      id: 'd1',
+      status: 'dismissed',
+      dismissedText: 'You turned this down',
+      summary: 'Deploy the site?',
+    });
     const { container } = renderConversation({
       thread: [
         { kind: 'user', id: 'u1', text: USER_LINE },
@@ -458,5 +491,85 @@ describe('finding something in an agent thread', () => {
     const bar = within(findBar());
     expect(bar.getByRole('button', { name: 'Next match' })).toBeDisabled();
     expect(bar.getByRole('button', { name: 'Previous match' })).toBeDisabled();
+  });
+
+  describe('TASK-390 — a grant row’s visible prose', () => {
+    const grant: WorkspaceGrant = {
+      key: 'skill:writer',
+      agentId: quill.id,
+      conversationId: 'c1',
+      request: {
+        kind: 'skill',
+        skillId: 'writer',
+        description: 'Draft outbound emails on your behalf',
+        hosts: [],
+        slots: [],
+      },
+    };
+
+    it('counts and highlights the title — text the thread itself never mentions', () => {
+      const { container } = renderConversation({ grants: [grant] });
+      openFind();
+      type('writer');
+
+      // 'writer' appears nowhere in `thread` — every hit comes from the card.
+      expect(count()).toHaveTextContent('1 of 1');
+      expect(container.querySelectorAll('mark')).toHaveLength(1);
+    });
+
+    it('does not index the reassurance line — it disappears from the STALLED render', () => {
+      // Regression pin for an Important review finding: an earlier draft
+      // indexed the reassurance line unconditionally. `GrantRow`'s `stalled`
+      // arm (TASK-374 — connected, but the agent did not resume) drops the
+      // reassurance paragraph entirely, and `WorkspaceGrant` (what this
+      // function sees) carries no `stalled` flag to react to. Indexing it
+      // anyway meant: type a reassurance word, get "1 of 1" reported, watch
+      // the grant stall, and the mark vanishes while the count does not move
+      // — count > marks, painted count lying to the reader. Not indexing it
+      // is the fix; this proves the count stays at zero, not just that it
+      // stays consistent.
+      renderConversation({ grants: [grant] });
+      openFind();
+      type('happens'); // a word from GRANT_REASSURANCE
+
+      expect(count()).toHaveTextContent('No matches');
+    });
+
+    it('a stalled grant never lets the reported count outrun the painted marks', async () => {
+      const onGranted = vi.fn(async () => false);
+      const fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      try {
+        const { container } = renderConversation({ grants: [grant], onGranted });
+        openFind();
+        type('happens');
+        expect(count()).toHaveTextContent('No matches');
+        expect(container.querySelectorAll('mark')).toHaveLength(0);
+
+        // Drive the grant into `stalled` (TASK-374): the POST succeeds, the
+        // resume does not.
+        fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+        await waitFor(() => expect(onGranted).toHaveBeenCalled());
+        await screen.findByTestId('grant-not-resumed');
+
+        // Still nothing reported and nothing painted — never `count > marks`.
+        expect(count()).toHaveTextContent('No matches');
+        expect(container.querySelectorAll('mark')).toHaveLength(0);
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
+    it('the reported total and the painted marks are two readings of one result — the title, thread + grant combined', () => {
+      const { container } = renderConversation({ grants: [grant] });
+      openFind();
+      type('Writer'); // the grant's title; absent from `thread`
+
+      const marks = container.querySelectorAll('mark');
+      const reported = Number(count().textContent?.match(/of (\d+)/)?.[1]);
+      expect(reported).toBeGreaterThan(0);
+      expect(marks.length).toBe(reported);
+    });
   });
 });
