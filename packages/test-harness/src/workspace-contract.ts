@@ -257,11 +257,26 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
     // implement (TASK-257 / TASK-396), and it has to be asserted in BOTH
     // directions or the assertion is satisfied by the wrong key:
     //
-    //   - different agentId ⇒ ISOLATED (cases 1, 3, 5)
-    //   - same agentId, different userId ⇒ SHARED (case 4)
+    //   - different agentId  ⇒ ISOLATED (cases 1, 3, 5)
+    //   - different userId   ⇒ SHARED   (case 4)
+    //   - different sessionId ⇒ SHARED  (case 6)
     //
-    // Case 2 is neither: it is a single-agent guard, and case 4 doubles as
-    // one. Both pass before AND after any partitioning fix, deliberately.
+    // `ctx` carries exactly three identity fields, so those three axes are
+    // the whole space: together they reject all seven wrong subsets of
+    // {userId, agentId, sessionId}. MEASURED, one mutant per subset — the
+    // isolation axis catches {}, {userId}, {sessionId}, {userId, sessionId};
+    // the userId axis catches {userId, agentId}; the sessionId axis catches
+    // {agentId, sessionId} and {userId, agentId, sessionId}.
+    //
+    // Case 6 exists because a round of review measured its absence. With
+    // case 6 missing, a backend keyed on `(agentId, sessionId)` — "a fresh
+    // workspace per conversation", an easy and plausible mistake — passed
+    // all sixteen. Enumerating every FIELD is not enough; the completeness
+    // claim is only as good as the subset you actually mutated.
+    //
+    // Case 2 is neither direction: it is a single-agent guard, and cases 4
+    // and 6 double as guards. All pass before AND after any partitioning
+    // fix, deliberately.
     //
     // Either direction alone passes under a partition on the pair
     // `(userId, agentId)`, which silently fragments a team agent's shared
@@ -278,18 +293,21 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
     describe('tenant isolation: the partition is agentId alone', () => {
       async function tenants() {
         const h = await load();
-        // `sessionId` is held CONSTANT, and that is load-bearing. It used to
-        // be `${userId}:${agentId}`, which made it co-vary with whichever
-        // field a case was varying — so cases 1/3/5 varied agentId AND
-        // sessionId and would have passed against a backend partitioned on
-        // `sessionId` alone. MEASURED: with the derived sessionId, a
-        // sessionId-keyed mutant scored 1 red / 15 green, the single red
-        // being case 4. The whole rejection of a wrong partition rested on
-        // one case, one deletion away from silently coming back. Pinning it
-        // is what makes "every pair varies exactly one field" true rather
-        // than aspirational.
-        const caller = (userId: string, agentId: string) =>
-          h.ctx({ userId, agentId, sessionId: 'contract-isolation' });
+        // `sessionId` DEFAULTS to a constant, and that default is
+        // load-bearing. It used to be `${userId}:${agentId}`, which made it
+        // co-vary with whichever field a case was varying — so cases 1/3/5
+        // varied agentId AND sessionId and passed against a backend
+        // partitioned on `sessionId` alone (MEASURED: 1 red / 15 green, the
+        // one red being case 4). With the default pinned, that same mutant
+        // scores 3 red / 13 green: the direction cases catch it themselves.
+        //
+        // Case 6 then varies it EXPLICITLY, because a constant everywhere
+        // pins nothing at all about `sessionId` — see the header.
+        const caller = (
+          userId: string,
+          agentId: string,
+          sessionId = 'contract-isolation',
+        ) => h.ctx({ userId, agentId, sessionId });
         const write = (
           ctx: ReturnType<typeof caller>,
           path: string,
@@ -440,6 +458,37 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
           },
         );
         expect(out.found).toBe(false);
+      });
+
+      it('two sessions of the SAME agent share ONE tree', async () => {
+        // Direction 3, and the third guard. The two ctxs differ in sessionId
+        // ONLY — same userId, same agentId.
+        //
+        // This case was MISSING until review measured what that cost: with
+        // `sessionId` constant in every other case, nothing varied it, so
+        // nothing pinned it out of the key, and a backend partitioned on
+        // `(agentId, sessionId)` passed all sixteen assertions. That backend
+        // is "a fresh workspace per conversation" — an agent's files would
+        // vanish between chats and never be shared across a user's sessions.
+        // It is the kind of wrong that looks like a feature.
+        //
+        // Like the other guards this passes against a fully pooled backend.
+        const { caller, write, list, read, SHARED } = await tenants();
+        const first = caller('user-shared', SHARED, 'session-one');
+        const second = caller('user-shared', SHARED, 'session-two');
+
+        const v1 = await write(first, 'across-sessions.md', 'written in session one');
+
+        expect((await list(second)).paths).toEqual(['across-sessions.md']);
+        const got = await read(second, 'across-sessions.md');
+        expect(got.found).toBe(true);
+        expect(got.found === true && new TextDecoder().decode(got.bytes)).toBe(
+          'written in session one',
+        );
+
+        // One history, not two: the second session continues the first's.
+        const v2 = await write(second, 'reply.md', 'written in session two', v1.version);
+        expect(v2.delta.before).toBe(v1.version);
       });
     });
   });
