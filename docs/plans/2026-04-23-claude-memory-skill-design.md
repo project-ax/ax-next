@@ -1,8 +1,24 @@
 # `claude-memory` skill — design
 
 **Date:** 2026-04-23
-**Status:** Design approved, implementation pending
+**Status:** SHIPPED, and since diverged — historical. `.claude/skills/claude-memory/SKILL.md` is the live source of truth; where the two disagree, the skill wins.
 **Author:** Vinay Pulim (with Claude)
+
+> **What has changed since this was written** (so nobody settles an argument with a
+> stale document — the skill used to name this doc as its tie-breaker):
+>
+> - **`.claude/memory/` is tracked in git, not gitignored.** "Local, gitignored, and
+>   unversioned" below is false and has been for a long time; memory is committed with
+>   the work that produced it.
+> - **New rows go in per-task shard files**, `.claude/memory/<kind>/<YYYY-MM-DD>-<TASK-ID>.md`,
+>   not appended to the five root files, which are now frozen archives (TASK-415). Every
+>   concurrent branch appending to the same five files made them a serialization point:
+>   eight append-collisions in one day's runs. `scripts/memory-append-check.sh` enforces
+>   the shard rule in CI.
+> - The read phase therefore reads the archives **and** each kind's shard directory.
+>
+> Everything else below — the five kinds, the write tests, the trigger points, the
+> hygiene thresholds, the `meta` self-improvement layer — still describes what shipped.
 
 ## Goal
 
