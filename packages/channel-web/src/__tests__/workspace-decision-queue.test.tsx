@@ -377,9 +377,21 @@ describe('useDecisionQueue — the undo window is closed by the server, not the 
     // to click and none to reach with a Tab, so a second request cannot be
     // sent from this surface at all.
     expect(undoControls()).toHaveLength(0);
-    // ...and the explanation stayed. Withdrawing the button must not also
-    // swallow the reason it went.
-    expect(screen.getByText(DECISION_UNDO_TOO_LATE)).toBeTruthy();
+    /*
+      ...and the explanation stayed. Withdrawing the button must not also
+      swallow the reason it went.
+
+      TWO nodes carry that sentence since TASK-442: the line the person reads,
+      and the `sr-only` live region that announces it to a screen reader. This
+      case is about the VISIBLE one — the announcer is asserted in
+      `components/workspace/__tests__/consent-announce.test.tsx` — so it asks
+      for exactly that rather than for "an element with this text", and pins
+      the count so a third copy would fail here rather than pass quietly.
+    */
+    const explanation = screen
+      .getAllByText(DECISION_UNDO_TOO_LATE)
+      .filter((el) => !el.hasAttribute('data-consent-said'));
+    expect(explanation).toHaveLength(1);
     // The receipt itself is untouched.
     expect(screen.getByTestId(`decision-${open.id}`).dataset.status).toBe('executed');
 
