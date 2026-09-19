@@ -776,7 +776,7 @@ describe('--ink-ghost is a fill, never ink', () => {
  * things-to-check fails in one direction: silently, by omission. That is not a
  * hypothetical here. `--warning` was missing from it for the entire life of the
  * list, the pairing it describes rendered at two sites the whole time, and it
- * measured 4.47:1. The list did not go wrong — it was never asked whether it
+ * measured 4.45:1. The list did not go wrong — it was never asked whether it
  * was finished.
  *
  * So ask. Derive the accent families from `tailwind.config.ts` (whatever
@@ -788,10 +788,29 @@ describe('--ink-ghost is a fill, never ink', () => {
  *
  *   - It is FILE-level, not element-level. A file painting the tint on one
  *     element and the accent text on another is flagged even if the two never
- *     meet. That is a superset of the real pairings, so it cannot miss one, and
- *     the cost of a false flag is a measurement someone takes once and a row
- *     that then passes forever. An element-level parse would be the tighter
- *     answer and the one that can be wrong quietly; this is the other trade.
+ *     meet. Within a file that is a superset of the real pairings, so it cannot
+ *     miss one, and the cost of a false flag is a measurement someone takes
+ *     once and a row that then passes forever. An element-level parse would be
+ *     the tighter answer and the one that can be wrong quietly; this is the
+ *     other trade.
+ *
+ *     State the residual gap rather than hide it, the way the rest of this file
+ *     does: the guarantee is co-location, NOT existence. A pairing assembled
+ *     across two files — a parent painting `bg-<f>-soft` and a child painting
+ *     `text-<f>`, meeting only in the DOM — co-locates nowhere and is exempted
+ *     by the zero-sites case below. Tailwind forces each class to appear
+ *     literally somewhere, which is what makes the scan possible at all, but it
+ *     does not force them to appear TOGETHER. Every pairing in the tree today
+ *     co-locates, and the two anchors pin the one this card is about; a split
+ *     pairing is the shape to watch for, and the honest answer if one appears
+ *     is to widen the scan, not to trust this sentence.
+ *
+ *     The same coarseness bites the other way: a file using the tint and the
+ *     accent text on unrelated elements is forced to add a row for a pairing
+ *     that never renders. Adding a PASSING row costs nothing. If such a
+ *     fictional row ever FAILS, the fix is to confirm it is fiction and narrow
+ *     the scan — not to bolt on an exemption, which is how the list got a hole
+ *     in the first place.
  *   - There is NO alpha exemption. `paints` matches `bg-warning-soft/40` as
  *     readily as the solid class, so a fractional tint still demands its row.
  *     The temptation is to skip fractional paints on the grounds that the solid
@@ -824,6 +843,9 @@ function softTextSites(family: string): string[] {
     .map((path) => relative(SRC_ROOT, path))
     .sort();
 }
+
+/** One entry per family the per-family loop below actually registers a case for. */
+const softPairCasesRegistered: string[] = [];
 
 describe('ACCENT_SOFT_PAIRS covers every soft tint the tree paints as text', () => {
   /**
@@ -860,7 +882,25 @@ describe('ACCENT_SOFT_PAIRS covers every soft tint the tree paints as text', () 
     ]);
   });
 
+  /**
+   * The dropped-loop guard, the third in this file after
+   * `quietTextCasesRegistered` and `tintCasesRegistered`. The loop below is the
+   * newest auto-merge collision surface here, and it fails the same way they
+   * did: a clean merge that keeps `SOFT_FAMILIES` and the two anchors but drops
+   * the `for` stays entirely GREEN, because neither anchor depends on the loop
+   * running. The per-family enforcement would just quietly stop existing — this
+   * block's own hazard, one level up.
+   *
+   * So count the registrations at collection time and compare them to the
+   * families. Note this reads what was REGISTERED, not what passed: a dropped
+   * loop registers nothing and fails here loudly.
+   */
+  it('registers one measured-pair case per soft family', () => {
+    expect(softPairCasesRegistered).toEqual([...SOFT_FAMILIES]);
+  });
+
   for (const family of SOFT_FAMILIES) {
+    softPairCasesRegistered.push(family);
     it(`--${family}-soft painted with text-${family} is a measured pair`, () => {
       const sites = softTextSites(family);
       if (sites.length === 0) return; // nothing paints it; nothing to measure
