@@ -25,7 +25,16 @@
  * marks. Both call `findRanges`, so they cannot disagree about what matched —
  * a reader told "4 matches" who can only see three has been lied to twice.
  */
-import type { ThreadMessage } from '@/lib/workspace-types';
+import { isOpenDecision, type Decision, type ThreadMessage } from '@/lib/workspace-types';
+import {
+  GRANT_REASSURANCE,
+  HOST_WALL_EXPLANATION,
+  PACKAGES_LINE,
+  grantDescription,
+  grantPackagesVisible,
+  grantTitle,
+} from '@/lib/grant-copy';
+import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 
 /** Half-open `[start, end)` offsets into the string that was searched. */
 export interface FindRange {
@@ -138,12 +147,67 @@ export function findFieldKey(index: number, id: string): string {
 }
 
 /**
+ * The prefix a grant's find-index entries share (TASK-390) — `grant:${key}`,
+ * not a `ThreadMessage` position, because grants are not thread turns at all
+ * (see `grantFindFields` below). Exported so `AgentConversation` computes the
+ * exact same base it hands to `GrantRow`, rather than a second literal
+ * `` `grant:${g.key}` `` living in two files.
+ */
+export function grantFieldKeyBase(grantKey: string): string {
+  return `grant:${grantKey}`;
+}
+
+/**
+ * A grant's visible prose, as find-index entries (TASK-390).
+ *
+ * Grants are not `ThreadMessage`s — `AgentConversation` takes them as a
+ * separate `grants` prop off a presence-routed store (see
+ * `workspace-grant-store.ts`) and renders them below the transcript, out of
+ * band. They are appended here in the same position: last, because that is
+ * where `AgentConversation` draws them.
+ *
+ * TITLE / DESCRIPTION / PACKAGES-VISIBLE come from `lib/grant-copy.ts`, the
+ * SAME functions `GrantRow.tsx` calls to decide what to render — one
+ * computation, not two copies that could drift (invariant 4).
+ *
+ * DELIBERATELY NOT INDEXED: the `stalled` sentence (`GrantRow`'s own local
+ * React state — "the agent did not resume" — is not part of `WorkspaceGrant`
+ * and this function only ever sees the store's data), slot labels/hints,
+ * badges, the authored-warning banner, and `REACH_LEAD_IN` + host badges.
+ * Real prose, still uncovered — same kind of accepted gap as the collapsible
+ * `steps` panel below, not silently dropped.
+ */
+function grantFindFields(grants: readonly WorkspaceGrant[]): FindField[] {
+  const out: FindField[] = [];
+  for (const g of grants) {
+    const base = grantFieldKeyBase(g.key);
+    const { request } = g;
+    out.push({ key: `${base}:title`, text: grantTitle(request) });
+    if (request.kind === 'host') {
+      out.push({ key: `${base}:explanation`, text: HOST_WALL_EXPLANATION });
+      continue;
+    }
+    const description = grantDescription(request);
+    if (description.length > 0) {
+      out.push({ key: `${base}:description`, text: description });
+    }
+    if (grantPackagesVisible(request)) {
+      out.push({ key: `${base}:packages`, text: PACKAGES_LINE });
+    }
+    out.push({ key: `${base}:reassurance`, text: GRANT_REASSURANCE });
+  }
+  return out;
+}
+
+/**
  * The text of the thread that a reader can actually see, in render order.
  *
  * WHAT IS IN: `user` and `agent` turns — in production these are the only two
  * kinds that reach this wire at all (`buildThread` in `routes-workspace.ts`
  * emits nothing else) — plus a `steps` turn's bubble text and the `fold`
- * marker, both of which render as ordinary always-visible prose.
+ * marker, both of which render as ordinary always-visible prose. Also in, as
+ * of TASK-390: an OPEN `approval` turn's decision summary/detail (see below),
+ * and every grant's visible prose, appended last (see `grantFindFields`).
  *
  * WHAT IS OUT, and why each:
  *
@@ -151,30 +215,30 @@ export function findFieldKey(index: number, id: string): string {
  *     in flight ('Thinking…', 'Opening…'). It is chrome, not something the
  *     agent said, and counting it would make the total tick up mid-stream and
  *     back down when the turn lands: a number that moves on its own.
- *   - `approval` — an approval card carries no text of its own. Its words come
- *     from the GLOBAL decisions queue, which is a separate fetch, and a pointer
- *     whose row has not arrived renders nothing at all. A count that included
- *     them would change when an unrelated read landed.
- *
- *     STATE THE COST PLAINLY: an approval card DOES render visible prose (the
- *     decision's summary), so a reader looking at "Deploy the site?" on a card
- *     and searching "deploy" is told "No matches" about text on their own
- *     screen. That is a real limitation, accepted because the alternative is a
- *     count that moves on its own. If it starts to bite, the fix is to make the
- *     queue read part of this thread's read, not to reach into `decisions` from
- *     here.
- *
- *     THE SAME IS TRUE OF THE GRANT ROWS that TASK-351 routes into this thread.
- *     They are not `ThreadMessage`s at all — `AgentConversation` takes them as
- *     a separate `grants` prop off a presence-routed store and renders them
- *     below the transcript — so their words are invisible to find for the same
- *     reason and with the same justification. Anything that fixes one of these
- *     should fix both, and it is a wider change than a client-side loop.
+ *   - `approval`, ONCE RESOLVED. TASK-354 originally skipped every `approval`
+ *     turn outright — its words came from the GLOBAL decisions queue, a
+ *     separate fetch, and a pointer whose row had not arrived rendered
+ *     nothing. TASK-390 widened this: `decisions` is now a required argument,
+ *     and while the pointer resolves to a row that `isOpenDecision` (still a
+ *     QUESTION — pending or stale), `d.summary` and non-empty `d.detail` are
+ *     indexed under `${findFieldKey(index, m.id)}:summary` / `:detail` — the
+ *     exact prose `ApprovalCard` renders in that state. Once resolved, the
+ *     card swaps to an outcome sentence (`decisionOutcome`) instead of the raw
+ *     summary/detail, so those two fields drop out of the index the same turn
+ *     they drop off the screen — counting them anyway would name a match the
+ *     reader can no longer see, the same failure mode the `steps` exclusion
+ *     below exists to avoid. A pointer with no matching row (never arrived, or
+ *     already resolved and removed from the open list) still contributes
+ *     nothing, same as before.
  *   - a `steps` turn's `stepsLabel` and `steps[]` — that panel is COLLAPSIBLE
  *     (it renders open and the reader can shut it), so a count including it can
  *     name a match that is not on the screen at the moment it is counted.
  */
-export function threadFindFields(thread: readonly ThreadMessage[]): FindField[] {
+export function threadFindFields(
+  thread: readonly ThreadMessage[],
+  decisions: readonly Decision[],
+  grants: readonly WorkspaceGrant[],
+): FindField[] {
   const out: FindField[] = [];
   thread.forEach((m, index) => {
     switch (m.kind) {
@@ -185,10 +249,19 @@ export function threadFindFields(thread: readonly ThreadMessage[]): FindField[] 
         out.push({ key: findFieldKey(index, m.id), text: m.text });
         break;
       case 'status':
-      case 'approval':
         break;
+      case 'approval': {
+        const d = decisions.find((x) => x.id === m.decisionId);
+        if (d !== undefined && isOpenDecision(d)) {
+          const base = findFieldKey(index, m.id);
+          out.push({ key: `${base}:summary`, text: d.summary });
+          if (d.detail.length > 0) out.push({ key: `${base}:detail`, text: d.detail });
+        }
+        break;
+      }
     }
   });
+  out.push(...grantFindFields(grants));
   return out;
 }
 
@@ -214,13 +287,15 @@ export interface FindIndex {
  */
 export function buildFindIndex(
   thread: readonly ThreadMessage[],
+  decisions: readonly Decision[],
+  grants: readonly WorkspaceGrant[],
   query: string,
 ): FindIndex {
   const firstMatch = new Map<string, number>();
   if (query.trim().length === 0) return { total: 0, firstMatch };
 
   let total = 0;
-  for (const field of threadFindFields(thread)) {
+  for (const field of threadFindFields(thread, decisions, grants)) {
     const hits = findRanges(field.text, query).length;
     if (hits === 0) continue;
     firstMatch.set(field.key, total);

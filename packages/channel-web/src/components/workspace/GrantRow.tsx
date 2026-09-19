@@ -61,14 +61,17 @@ import {
   PACKAGES_LINE,
   REACH_LEAD_IN,
   SLOT_HINT,
+  grantDescription,
+  grantPackagesVisible,
+  grantTitle,
 } from '@/lib/grant-copy';
+import { FindHighlight, type FindView } from './ThreadFind';
 import {
   accountDestinationForConnectorSlot,
   accountOrSkillDestination,
 } from '@/lib/grant-destinations';
 import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
 import { HttpError, httpFetch, userFacingMessage } from '@/lib/http';
-import type { PermissionRequest } from '@/server/types';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 import {
   clearGrantDraft,
@@ -106,6 +109,19 @@ interface Props {
    * and the agent never stopped, so there is nothing to pick up.
    */
   onGranted: (grant: WorkspaceGrant) => Promise<boolean>;
+  /**
+   * The find bar's current search, or `null`/omitted when there is none to
+   * paint (TASK-390) — `TodayView` renders this same row with no find bar at
+   * all, so both are optional and default to "no highlight" rather than a
+   * required prop every non-thread caller would have to fake.
+   */
+  find?: FindView | null;
+  /**
+   * This grant's field-key prefix in `lib/thread-find.ts`'s index — see
+   * `grantFieldKeyBase`. Only meaningful together with `find`; a caller that
+   * passes one and not the other gets no highlight, not a crash.
+   */
+  fieldKeyBase?: string;
 }
 
 /** Slots the person still has to fill — the vaulted ones need no input. */
@@ -113,10 +129,20 @@ function blankSlots(slots: readonly { slot: string; haveExisting?: boolean }[]):
   return slots.filter((s) => s.haveExisting !== true).map((s) => s.slot);
 }
 
-export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement {
+export function GrantRow({
+  grant,
+  onResolved,
+  onGranted,
+  find = null,
+  fieldKeyBase,
+}: Props): ReactElement {
   // The conversation is recorded on the grant when the frame arrives: Today can
   // hold grants from several agents, so the row cannot work it out from context.
   const { request, conversationId } = grant;
+  // See `find`'s doc above — a `fieldKeyBase` with no `find` (or vice versa)
+  // still renders plain text, because `FindHighlight` itself no-ops on a null
+  // `find` and this key is never looked up in that case.
+  const keyOf = (suffix: string) => `${fieldKeyBase ?? ''}:${suffix}`;
   /**
    * Seeded from the durable draft (TASK-389), not blank — a half-typed key must
    * survive this component unmounting and a fresh instance taking its place,
@@ -290,9 +316,15 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
         className="border-b border-rule-soft p-4 last:border-b-0"
         data-testid={`grant-${grant.key}`}
       >
-        <p className="text-[14px] font-medium">Allow access to {request.host}?</p>
+        <p className="text-[14px] font-medium">
+          <FindHighlight fieldKey={keyOf('title')} text={grantTitle(request)} find={find} />
+        </p>
         <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
-          {HOST_WALL_EXPLANATION}
+          <FindHighlight
+            fieldKey={keyOf('explanation')}
+            text={HOST_WALL_EXPLANATION}
+            find={find}
+          />
         </p>
         <div className="mt-3 flex flex-wrap gap-1.5">
           <Badge variant="secondary">{request.host}</Badge>
@@ -347,15 +379,13 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
     `connectorId` IS guarded, so it is always there to fall back on, and
     `humanizeId` is already how the skill arm below builds its title. An empty
     string counts as missing for the same reason `undefined` does.
+
+    BUILT BY `grantTitle` (`lib/grant-copy.ts`), not inline, since TASK-390:
+    `lib/thread-find.ts` needs this exact string to index, and a second copy of
+    this logic there is how the index and the card end up naming the grant
+    differently.
   */
-  const connectorTitle = (r: Extract<PermissionRequest, { kind: 'connector' }>) =>
-    typeof r.name === 'string' && r.name.trim().length > 0
-      ? r.name
-      : humanizeId(r.connectorId);
-  const title =
-    request.kind === 'connector'
-      ? `Connect ${connectorTitle(request)}`
-      : `Connect ${humanizeId(request.skillId)}`;
+  const title = grantTitle(request);
   const authoredWarning =
     request.kind === 'connector' ? AUTHORED_CONNECTOR_WARNING : AUTHORED_SKILL_WARNING;
   /*
@@ -376,11 +406,9 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
     is also rendered as a React child, and an object with a truthy `.length`
     would throw again one line further down.
   */
-  const description =
-    request.kind === 'skill' && typeof request.description === 'string'
-      ? request.description
-      : '';
-  const packages = request.packages;
+  // Both derived by `lib/grant-copy.ts` — see the note on `title` above.
+  const description = grantDescription(request);
+  const showPackagesLine = grantPackagesVisible(request);
 
   /*
     THE GRANT LANDED AND THE AGENT DID NOT (TASK-374).
@@ -408,7 +436,9 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
         className="border-b border-rule-soft p-4 last:border-b-0"
         data-testid={`grant-${grant.key}`}
       >
-        <p className="text-[14px] font-medium">{title}</p>
+        <p className="text-[14px] font-medium">
+          <FindHighlight fieldKey={keyOf('title')} text={title} find={find} />
+        </p>
         <p
           ref={answerRef}
           tabIndex={-1}
@@ -432,10 +462,12 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
       className="border-b border-rule-soft p-4 last:border-b-0"
       data-testid={`grant-${grant.key}`}
     >
-      <p className="text-[14px] font-medium">{title}</p>
+      <p className="text-[14px] font-medium">
+        <FindHighlight fieldKey={keyOf('title')} text={title} find={find} />
+      </p>
       {description.length > 0 && (
         <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
-          {description}
+          <FindHighlight fieldKey={keyOf('description')} text={description} find={find} />
         </p>
       )}
 
@@ -504,15 +536,14 @@ export function GrantRow({ grant, onResolved, onGranted }: Props): ReactElement 
         handler was already reading them as `packages?.npm ?? []`; this is
         the render site catching up with it.
       */}
-      {packages != null &&
-        ((packages.npm?.length ?? 0) > 0 || (packages.pypi?.length ?? 0) > 0) && (
-          <p className="mt-3 text-[13px] text-muted-foreground" data-testid="grant-packages">
-            {PACKAGES_LINE}
-          </p>
-        )}
+      {showPackagesLine && (
+        <p className="mt-3 text-[13px] text-muted-foreground" data-testid="grant-packages">
+          <FindHighlight fieldKey={keyOf('packages')} text={PACKAGES_LINE} find={find} />
+        </p>
+      )}
 
       <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
-        {GRANT_REASSURANCE}
+        <FindHighlight fieldKey={keyOf('reassurance')} text={GRANT_REASSURANCE} find={find} />
       </p>
 
       {failure}

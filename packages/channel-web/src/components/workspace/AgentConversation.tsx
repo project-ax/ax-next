@@ -47,6 +47,7 @@ import {
   activeMatch,
   buildFindIndex,
   findFieldKey,
+  grantFieldKeyBase,
   threadFindFields,
 } from '@/lib/thread-find';
 import { useStickToBottom } from '@/lib/use-stick-to-bottom';
@@ -367,12 +368,12 @@ export function AgentConversation({
   // find bar can only ever answer "No matches", which is a true sentence about
   // a question the reader was invited to ask for no reason.
   const searchable = useMemo(
-    () => threadFindFields(thread).length > 0,
-    [thread],
+    () => threadFindFields(thread, decisions, grants).length > 0,
+    [thread, decisions, grants],
   );
   const findIndex = useMemo(
-    () => buildFindIndex(thread, findOpen ? findQuery : ''),
-    [thread, findOpen, findQuery],
+    () => buildFindIndex(thread, decisions, grants, findOpen ? findQuery : ''),
+    [thread, decisions, grants, findOpen, findQuery],
   );
   const findActive = activeMatch(findStep, findIndex.total);
   const finding = findOpen && findQuery.trim().length > 0;
@@ -741,6 +742,8 @@ export function AgentConversation({
                   grant={g}
                   onResolved={onGrantResolved}
                   onGranted={onGranted}
+                  find={find}
+                  fieldKeyBase={grantFieldKeyBase(g.key)}
                 />
               ))}
             </div>
@@ -1040,6 +1043,8 @@ function Message({
           onUndo={() => onUndo(d.id)}
           busy={busyIds?.has(d.id) === true}
           notice={notices?.get(d.id) ?? null}
+          find={find}
+          fieldKey={fieldKey}
         />
       </div>
     );
