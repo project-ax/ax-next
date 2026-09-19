@@ -77,6 +77,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { AllowedSitesPanel } from './AllowedSitesPanel';
+import { RememberedSitesPanel } from './RememberedSitesPanel';
 
 /** Mechanism-free "what it needs" caption — keyMode only, no transport vocab. */
 function needsCaption(c: ConnectorSummary): string {
@@ -670,6 +671,14 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
           user's agents may reach. One list across all agents, each host showing
           which agents it applies to (see AllowedSitesPanel). */}
       <AllowedSitesPanel />
+
+      {/* Sites we read without asking — a DIFFERENT store from Allowed sites
+          above, deliberately kept separate: Allowed sites is which hosts an
+          agent's SANDBOX may open raw network connections to (per agent);
+          this is which hosts `web_extract` may fetch a page from without
+          stopping to ask (per person). Folding them together would mean
+          approving one page read also opened raw sockets to that host. */}
+      <RememberedSitesPanel />
     </div>
   );
 }

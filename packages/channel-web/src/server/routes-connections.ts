@@ -172,7 +172,7 @@ export interface CatalogSkillsResponse {
 }
 
 /** Resolve the authenticated caller, or write 401 and return null. */
-async function authOr401(
+export async function authOr401(
   bus: HookBus,
   ctx: AgentContext,
   req: RouteRequest,

@@ -18,7 +18,12 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createToolPolicyPlugin } from '../plugin.js';
-import type { EvaluateResult, ListCapabilitiesOutput, ToolPolicyPluginOptions } from '../index.js';
+import type {
+  EgressListOutput,
+  EvaluateResult,
+  ListCapabilitiesOutput,
+  ToolPolicyPluginOptions,
+} from '../index.js';
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
@@ -215,6 +220,68 @@ describe('egress allowlist canary', () => {
         effect: [],
       });
     }
+  });
+
+  it('takes a site back out — the DELETE reaches the table, and the hold returns (TASK-406)', async () => {
+    // The revoke half of the loop, against a real database, for the same
+    // reason the remember half is here: every hop between the hook and the row
+    // is somewhere the answer can quietly go the other way. In particular a
+    // `revoke` that returned `true` over an UNTOUCHED table would pass every
+    // in-memory test in this package — `numDeletedRows` is a bigint, and
+    // reading it wrong is a cheerful lie rather than an error.
+    const h = await boot();
+    await h.bus.call('egress-allowlist:remember', h.ctx({ userId: 'alice' }), {
+      host: 'docs.example.com',
+    });
+    expect(await verdict(h, 'alice', 'https://docs.example.com/guide')).toBe('allow');
+
+    expect(
+      await h.bus.call('egress-allowlist:revoke', h.ctx({ userId: 'alice' }), {
+        host: 'docs.example.com',
+      }),
+    ).toEqual({ revoked: true });
+
+    // Both halves. The verdict is what the agent experiences; the list is what
+    // the person sees, and a panel that still shows a revoked site is a panel
+    // nobody can trust.
+    expect(await verdict(h, 'alice', 'https://docs.example.com/guide')).toBe('hold');
+    const after = await h.bus.call<unknown, EgressListOutput>(
+      'egress-allowlist:list',
+      h.ctx({ userId: 'alice' }),
+      {},
+    );
+    expect(after.sites).toEqual([]);
+
+    // Nothing to delete the second time — and no error either.
+    expect(
+      await h.bus.call('egress-allowlist:revoke', h.ctx({ userId: 'alice' }), {
+        host: 'docs.example.com',
+      }),
+    ).toEqual({ revoked: false });
+  });
+
+  it('reports a host on BOTH lists once, as global, against a real database (TASK-406)', async () => {
+    // The in-memory version of this lives next door; it is here as well
+    // because the db store answers it with a UNION over two exact keys and a
+    // dedupe in TypeScript, and "did the SQL really return both rows" is not
+    // a question the memory store can be asked. The overlap itself is routine:
+    // `web_extract` remembers every successful fetch, the silent ones
+    // included, so the first read of an operator-seeded host writes a personal
+    // row beside the global one.
+    const h = await boot({ globalEgressHosts: ['example.com'] });
+    expect(await verdict(h, 'alice', 'https://example.com/x')).toBe('allow');
+    expect(
+      await h.bus.call('egress-allowlist:remember', h.ctx({ userId: 'alice' }), {
+        host: 'example.com',
+      }),
+    ).toEqual({ remembered: true });
+
+    const out = await h.bus.call<unknown, EgressListOutput>(
+      'egress-allowlist:list',
+      h.ctx({ userId: 'alice' }),
+      {},
+    );
+    expect(out.sites.map((s) => [s.host, s.scope])).toEqual([['example.com', 'global']]);
   });
 
   it('leaves the rail row honest about the contingency', async () => {

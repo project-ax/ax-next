@@ -261,6 +261,12 @@ describe('@ax/preset-k8s wiring', () => {
       // the hook cannot sit here registered by somebody and called by nobody,
       // which is what `decisions:executed` did before TASK-279 deleted it.
       'egress-allowlist:remember',
+      // TASK-406 — the read + revoke half. Their caller is @ax/channel-web's
+      // Settings "Remembered sites" panel, asserted below for the same reason:
+      // a list hook nobody calls is a leak with no benefit, and a revoke hook
+      // nobody calls means the grant still cannot be taken back.
+      'egress-allowlist:list',
+      'egress-allowlist:revoke',
     ]);
     // The rule table is still in-repo and still consulted with no I/O. What
     // needs storage is the per-person egress allowlist, and a deployment
@@ -283,6 +289,20 @@ describe('@ax/preset-k8s wiring', () => {
     expect(wt!.manifest.optionalCalls?.map((c) => c.hook)).toContain(
       'egress-allowlist:remember',
     );
+  });
+
+  it('gives egress-allowlist:list + :revoke a caller — @ax/channel-web (TASK-406)', () => {
+    // #574 shipped `remember` with no way to see or take back what it wrote.
+    // The window the half-wired policy cares about closes HERE: the hooks and
+    // the Settings panel that calls them land in one PR, in a preset that
+    // loads both plugins. If this assertion ever has to be deleted, the panel
+    // went with it — do not delete one and keep the other.
+    const plugins = createK8sPlugins(stubConfig);
+    const cw = plugins.find((p) => p.manifest.name === '@ax/channel-web');
+    expect(cw).toBeDefined();
+    const hooks = cw!.manifest.optionalCalls?.map((c) => c.hook) ?? [];
+    expect(hooks).toContain('egress-allowlist:list');
+    expect(hooks).toContain('egress-allowlist:revoke');
   });
 
   it('passes the operator egress allowlist through to @ax/tool-policy (TASK-330)', () => {

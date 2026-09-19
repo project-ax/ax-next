@@ -16,7 +16,7 @@
  */
 import type { Kysely } from 'kysely';
 import type { EgressAllowlistRow, ToolPolicyDatabase } from './migrations.js';
-import type { EgressAllowlistEntry, EgressScope } from './types.js';
+import type { EgressAllowlistEntry, EgressAllowlistSite, EgressScope } from './types.js';
 
 /**
  * Exact-match allowlist hostnames only: no wildcards, no ports, no schemes, no
@@ -97,6 +97,83 @@ export interface EgressAllowlistStore {
    * already present is a no-op that returns false.
    */
   remember(entry: EgressAllowlistEntry): Promise<boolean>;
+  /**
+   * Every entry this person can SEE — the operator's global entries unioned
+   * with their own, never another person's. Same answer `allowedFor` gives,
+   * carrying the two facts a reader needs that a bare host does not: which list
+   * it is on, and when it got there.
+   *
+   * ONE ROW PER HOST, and a host on both lists reports as `global`. See
+   * `dedupeByHost` for why that is the honest answer and not a tidy-up.
+   *
+   * Sorted by host ascending, so the order is a property of the data rather
+   * than of whatever the storage handed back.
+   */
+  listFor(userId: string): Promise<EgressAllowlistSite[]>;
+  /**
+   * Forget one host this person remembered.
+   *
+   * `scope: 'user'` IS HARD-CODED HERE, not taken as a parameter, and that is
+   * the security decision rather than a simplification. A scope argument would
+   * mean every caller — present and future — is one typo away from deleting an
+   * operator's global entry, which is the deployment-wide list. Nothing above
+   * this function can express that request, so nothing has to be trusted not to
+   * make it.
+   *
+   * Returns false when the host is malformed, when the owner is not a person,
+   * or when no row matched. The three are indistinguishable on purpose: the
+   * caller is not entitled to learn that a host it cannot delete exists.
+   */
+  revoke(params: { ownerId: string; host: string }): Promise<boolean>;
+}
+
+/**
+ * Sort by host, the one order that does not depend on the backend.
+ *
+ * `created_at DESC` was the obvious alternative and is worse: the memory store
+ * stamps everything inside one process tick, so its "newest first" is really
+ * insertion order, and the two stores would disagree about a list the tests
+ * compare. Alphabetical is also what a reader scanning for a site wants.
+ */
+function byHost(a: EgressAllowlistSite, b: EgressAllowlistSite): number {
+  return a.host < b.host ? -1 : a.host > b.host ? 1 : 0;
+}
+
+/**
+ * One row per host, and a host on BOTH lists reports as `global`.
+ *
+ * THIS IS ROUTINE, not a corner case. `web_extract`'s executor calls
+ * `egress-allowlist:remember` after every successful fetch — including one that
+ * never prompted anybody because an operator's global entry already allowed it
+ * — and `remember`'s existence check keys on `(scope, owner, host)`, so the
+ * global row does not match and a personal row is written beside it. Any
+ * deployment that sets `globalEgressHosts` accumulates these from the first
+ * read onwards.
+ *
+ * Two rows for one host is not merely untidy. The panel keys its rows on the
+ * host, so it collides; and the personal duplicate renders a revoke control
+ * that deletes a row which was not the reason the site is silent. The person
+ * is told "we'll ask about that one next time" and then we do not ask, which
+ * is a false statement in the one surface whose whole job is to tell them what
+ * they have agreed to.
+ *
+ * `global` WINS, deliberately. The question this list answers is "can this be
+ * read without asking me, and can I stop that?" — and while a global entry
+ * stands, the answer is yes and no, whatever else also happens to be stored.
+ * Preferring `user` would keep exactly the lie above. The personal row is not
+ * lost: it stays in the table, `revoke` still finds it by host, and if the
+ * operator ever drops the global entry the host reappears here as `user` with
+ * its control back — correct at every point in time rather than only now.
+ */
+function dedupeByHost(sites: EgressAllowlistSite[]): EgressAllowlistSite[] {
+  const best = new Map<string, EgressAllowlistSite>();
+  for (const site of sites) {
+    const seen = best.get(site.host);
+    if (seen === undefined || (seen.scope !== 'global' && site.scope === 'global')) {
+      best.set(site.host, site);
+    }
+  }
+  return [...best.values()].sort(byHost);
 }
 
 function ownerKey(entry: EgressAllowlistEntry): string | null {
@@ -147,6 +224,72 @@ export function createDbEgressAllowlistStore(
         })
         .execute();
       return new Set(rows.map((r: Pick<EgressAllowlistRow, 'host'>) => r.host));
+    },
+
+    async listFor(userId) {
+      // THE SAME QUERY SHAPE AS `allowedFor`, deliberately: two exact keys,
+      // never an OR with a wildcard, and the personal half DROPPED ENTIRELY
+      // when the id is one this store would never have written under. The
+      // reasoning is on `allowedFor` above and it applies unchanged here — a
+      // read that could not name its owner is a read that can return somebody
+      // else's rows, and this one puts them on a screen.
+      //
+      // Two methods rather than `listFor().map(host)`: `allowedFor` runs on the
+      // `tool:pre-call` path under a 10 s ceiling and wants the narrowest
+      // possible select. This one is a settings read and can afford the rest.
+      const personal = isOwnerId(userId);
+      const rows = await db
+        .selectFrom('tool_policy_v1_egress_allowlist')
+        .select(['host', 'scope', 'created_at'])
+        .where((eb) => {
+          const global = eb.and([
+            eb('scope', '=', 'global'),
+            eb('owner_user_id', '=', ''),
+          ]);
+          if (!personal) return global;
+          return eb.or([
+            global,
+            eb.and([eb('scope', '=', 'user'), eb('owner_user_id', '=', userId)]),
+          ]);
+        })
+        .execute();
+      const sites = rows.map(
+        (r: Pick<EgressAllowlistRow, 'host' | 'scope' | 'created_at'>): EgressAllowlistSite => ({
+          host: r.host,
+          // The column is TEXT, so the row's scope is whatever was written.
+          // Narrowed rather than asserted: only this store writes the table,
+          // and it writes exactly these two — but an unexpected value reaching
+          // the bus's `returns` enum would throw the whole read away, and a
+          // settings panel that shows nothing because one row is odd is worse
+          // than one that shows the row as the personal entry it is.
+          scope: r.scope === 'global' ? 'global' : 'user',
+          rememberedAt: r.created_at.toISOString(),
+        }),
+      );
+      // Deduped here rather than in SQL: the rule ("global wins") is one both
+      // stores have to obey identically, and a `DISTINCT ON` the memory store
+      // cannot express is a rule that only one of them enforces.
+      return dedupeByHost(sites);
+    },
+
+    async revoke({ ownerId, host: rawHost }) {
+      // Validated here and not only at the hook: this is the trust boundary
+      // that owns the table. `scope` is never a parameter — see the interface.
+      const host = normalizeHost(rawHost);
+      if (host === null || !isOwnerId(ownerId)) return false;
+      const res = await db
+        .deleteFrom('tool_policy_v1_egress_allowlist')
+        .where('scope', '=', 'user')
+        .where('owner_user_id', '=', ownerId)
+        .where('host', '=', host)
+        .executeTakeFirst();
+      // `numDeletedRows` is a bigint, so `res.numDeletedRows > 0` would be a
+      // comparison against a number literal — legal, but `?? 0n` then mixes the
+      // two types. `Number(... ?? 0n) > 0` is the shape every other store in
+      // this repo uses (`@ax/host-grants`, `@ax/agents`), and the canary is
+      // what proves the delete actually reached Postgres rather than this
+      // returning a cheerful `true` over an untouched table.
+      return Number(res.numDeletedRows ?? 0n) > 0;
     },
 
     async remember(entry) {
@@ -200,26 +343,55 @@ export function createDbEgressAllowlistStore(
  * degradation is acceptable rather than a boot failure.
  */
 export function createMemoryEgressAllowlistStore(): EgressAllowlistStore {
-  const byOwner = new Map<string, Set<string>>();
+  // host -> when it was remembered. It was a bare `Set` until `listFor` needed
+  // to say WHEN, and the map is the smallest thing that answers that without a
+  // second structure to keep in step with the first.
+  const byOwner = new Map<string, Map<string, Date>>();
   const key = (scope: EgressScope, owner: string): string => `${scope}:${owner}`;
   return {
     async allowedFor(userId) {
-      const out = new Set<string>(byOwner.get(key('global', '')) ?? []);
+      const out = new Set<string>((byOwner.get(key('global', '')) ?? new Map()).keys());
       if (isOwnerId(userId)) {
-        for (const h of byOwner.get(key('user', userId)) ?? []) out.add(h);
+        for (const h of (byOwner.get(key('user', userId)) ?? new Map<string, Date>()).keys()) {
+          out.add(h);
+        }
       }
       return out;
+    },
+    async listFor(userId) {
+      // Same union, same drop of the personal half for an id this store would
+      // never have written under — see the db store, which carries the why.
+      const sites: EgressAllowlistSite[] = [];
+      const push = (scope: EgressScope, owner: string): void => {
+        for (const [host, at] of byOwner.get(key(scope, owner)) ?? []) {
+          sites.push({ host, scope, rememberedAt: at.toISOString() });
+        }
+      };
+      push('global', '');
+      if (isOwnerId(userId)) push('user', userId);
+      // Same "global wins, one row per host" rule as the db store, through the
+      // same function — a duplicate a person can see must not depend on which
+      // backend this deployment happens to have.
+      return dedupeByHost(sites);
+    },
+    async revoke({ ownerId, host: rawHost }) {
+      const host = normalizeHost(rawHost);
+      if (host === null || !isOwnerId(ownerId)) return false;
+      // `key('user', ...)` and never the caller's scope: the memory store has
+      // to refuse an operator entry for the same reason the db one does, and
+      // the only global bucket lives under a key this line cannot produce.
+      return byOwner.get(key('user', ownerId))?.delete(host) ?? false;
     },
     async remember(entry) {
       const checked = validate(entry);
       if (checked === null) return false;
       const { owner, host } = checked;
       const k = key(entry.scope, owner);
-      const set = byOwner.get(k) ?? new Set<string>();
-      if (set.has(host)) return false;
-      if (entry.scope === 'user' && set.size >= MAX_USER_HOSTS) return false;
-      set.add(host);
-      byOwner.set(k, set);
+      const hosts = byOwner.get(k) ?? new Map<string, Date>();
+      if (hosts.has(host)) return false;
+      if (entry.scope === 'user' && hosts.size >= MAX_USER_HOSTS) return false;
+      hosts.set(host, new Date());
+      byOwner.set(k, hosts);
       return true;
     },
   };

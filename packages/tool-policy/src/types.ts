@@ -529,9 +529,123 @@ export interface EgressRememberOutput {
   remembered: boolean;
 }
 
+/**
+ * One row of "sites we read without asking", as the hook hands it out.
+ *
+ * `rememberedAt` is an ISO-8601 instant — NOT a `Date`, and NOT `created_at`.
+ * Two reasons, and both of them are the rule rather than a preference. The hook
+ * surface is storage- and transport-agnostic (invariant 1), so a column name
+ * has no business on it; and a `Date` does not survive JSON, so an IPC hop
+ * would hand the renderer a string anyway while every in-process caller saw an
+ * object. One shape, the one that crosses the wire unchanged.
+ */
+export interface EgressAllowlistSite {
+  /** Lowercased hostname, exactly as it was stored. */
+  host: string;
+  /**
+   * Which list this entry is on. The reader needs it to know whether the entry
+   * is theirs to take back: a `global` one is the operator's, and `revoke`
+   * refuses it.
+   */
+  scope: EgressScope;
+  rememberedAt: string;
+}
+
+/**
+ * `egress-allowlist:list` — "which sites do we read without asking me first?"
+ *
+ * DELIBERATELY EMPTY, and it is the same decision `EgressRememberInput`
+ * documents above. The payload carries no owner and no scope: the answer is
+ * assembled for `ctx.userId` — the operator's global entries unioned with that
+ * person's own, and never anybody else's.
+ *
+ * BE PRECISE ABOUT WHAT THE MISSING FIELD BUYS, because an overstated security
+ * comment is how a later reader comes to rely on a guarantee that was never
+ * there. It does NOT make another person's list unreachable from inside the
+ * host: an in-process plugin can call `makeAgentContext({ userId: 'someone' })`
+ * and pass that ctx, and host plugins are trusted precisely because they can.
+ * What it does buy is two real things. At the NETWORK boundary it is the whole
+ * story — the BFF derives `ctx.userId` from the auth cookie and sends no owner,
+ * so a browser cannot name one however it shapes the request. And in-process it
+ * removes a field every future caller could get wrong by accident, which is a
+ * different and more likely failure than a malicious plugin.
+ *
+ * It is an interface rather than `void` so a later filter (a search box, a
+ * cursor) can be added without breaking every caller.
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface EgressListInput {}
+
+export interface EgressListOutput {
+  /** Sorted by host ascending, so a renderer never has to invent an order. */
+  sites: EgressAllowlistSite[];
+}
+
+/**
+ * `egress-allowlist:revoke` — "stop reading this one without asking me."
+ *
+ * NO OWNER AND NO SCOPE ON THE PAYLOAD, for the reason `EgressListInput` gives
+ * — read its note on what that does and does not buy, because it applies here
+ * unchanged, only with a DELETE at the end of it instead of a read. The row
+ * removed is always (`scope: 'user'`, `ctx.userId`, `host`).
+ *
+ * The missing `scope` is the stronger of the two, and it is NOT merely a
+ * convention: the store's `revoke` takes no scope either, so a caller holding
+ * any ctx it likes still cannot phrase a request to delete an operator's
+ * global entry. That one survives a forged ctx; the missing `ownerId` does not.
+ *
+ * A `global` entry is an operator decision and no bus caller can mint one or
+ * remove one — `remember` only ever writes `user`, and this only ever deletes
+ * `user`. Asking to forget an operator-seeded host is answered
+ * `revoked: false`, not honoured and not an error.
+ */
+export interface EgressRevokeInput {
+  /**
+   * A hostname — not a URL, not a prefix, no scheme, no port. Validated here
+   * again even though the list this came from produced it: it arrives over the
+   * bus, and a boundary that trusts its own output is not a boundary.
+   */
+  host: string;
+}
+
+export interface EgressRevokeOutput {
+  /**
+   * False when the host was malformed, when the caller is not a person, when
+   * it belongs to somebody else or to the operator, or when there was simply
+   * nothing to delete. NOT an error, and the four cases are deliberately
+   * indistinguishable: telling a caller "that host exists but is not yours"
+   * would answer a question about another person's list.
+   *
+   * False also means NOTHING CHANGED, which is the safe direction here in the
+   * opposite sense from `remember` — a failed revoke leaves a site allowed, so
+   * the UI must show the row still present rather than claim success.
+   */
+  revoked: boolean;
+}
+
 export const PolicyVerdictSchema = z.enum(['allow', 'hold', 'deny']);
 
+/** Mirrors `EgressScope`. See that type for why there is no `agent` member. */
+export const EgressScopeSchema = z.enum(['global', 'user']);
+
 export const EgressRememberOutputSchema = z.object({ remembered: z.boolean() });
+
+// Per the block comment above: a `z.object` STRIPS keys it does not declare.
+// Drop `scope` from this and the list still renders — every host is there — but
+// the reader can no longer tell an operator-curated entry from their own, so
+// the UI offers a revoke button that always answers `false`. The bus-level
+// tests assert the field is present AFTER the re-parse for exactly that reason.
+export const EgressAllowlistSiteSchema = z.object({
+  host: z.string(),
+  scope: EgressScopeSchema,
+  rememberedAt: z.string(),
+});
+
+export const EgressListOutputSchema = z.object({
+  sites: z.array(EgressAllowlistSiteSchema),
+});
+
+export const EgressRevokeOutputSchema = z.object({ revoked: z.boolean() });
 
 export const CapabilityProvenanceSchema = z.enum([
   'rule',

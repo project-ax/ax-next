@@ -11,6 +11,7 @@ import { makeAllowHostHandler } from './routes-allow-host.js';
 import { registerAttachmentsRoutes } from './routes-attachments.js';
 import { registerChatRoutes } from './routes-chat.js';
 import { makeConnectionsHandlers } from './routes-connections.js';
+import { makeRememberedSitesHandlers } from './routes-remembered-sites.js';
 import { registerWorkspaceRoutes } from './routes-workspace.js';
 import {
   createBufferFillSubscriber,
@@ -310,6 +311,23 @@ export function createChannelWebServerPlugin(
             'the rail renders no "This week" counters (nothing records decisions here)',
         },
         {
+          // TASK-406 — the Settings "Remembered sites" panel mirrors
+          // @ax/tool-policy's web_extract egress allowlist (deliberately NOT
+          // the allowed-sites / host-grants surface above — approving a page
+          // read must not also open raw sockets to that host). A preset
+          // without @ax/tool-policy degrades the panel to an empty list.
+          hook: 'egress-allowlist:list',
+          degradation:
+            'the Settings "Remembered sites" panel shows no remembered hosts (this deployment does not hold a web_extract allowlist)',
+        },
+        {
+          // Same panel's Revoke control. Degrades to an idempotent
+          // "already gone" answer without @ax/tool-policy.
+          hook: 'egress-allowlist:revoke',
+          degradation:
+            'the Settings "Remembered sites" Revoke control answers "already gone" (no allowlist to remove from)',
+        },
+        {
           // TASK-278 — the approve route binds the delivered continuation
           // turn as the conversation's live reqId so the open thread can
           // attach a stream consumer to it. Without the metadata read there
@@ -545,9 +563,28 @@ export function createChannelWebServerPlugin(
       // Connections-surface BFF handlers + ctx, shipping with its consumer (the
       // ConnectorsTab Allowed-sites section) in the same PR (I3 — no half-wired
       // surface).
+      // TASK-406 — the Settings "Remembered sites" panel: the tool-policy
+      // web_extract allowlist (deliberately NOT the allowed-sites /
+      // host-grants surface above — approving a page read must not also
+      // open raw sockets to that host). Ships with its consumer in the
+      // same PR (I3 — no half-wired surface).
+      const rememberedSites = makeRememberedSitesHandlers({ bus, initCtx });
+
       const connections = makeConnectionsHandlers({ bus, initCtx });
       for (const route of [
         { method: 'GET' as const, path: '/api/chat/connections/:agentId', handler: connections.get },
+        // Exact route, registered before any pattern route that could
+        // shadow it (same reasoning as /api/chat/allowed-sites below).
+        {
+          method: 'GET' as const,
+          path: '/api/chat/remembered-sites',
+          handler: rememberedSites.list,
+        },
+        {
+          method: 'DELETE' as const,
+          path: '/api/chat/remembered-sites/:host',
+          handler: rememberedSites.revoke,
+        },
         // TASK-126 — Skills app-store: the every-user global-catalog read (the
         // "Not installed" shelf) + the self-install attach route. Both ship with
         // their consumer (SkillsAppStore) in the same PR (I3 — no half-wired
