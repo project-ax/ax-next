@@ -20,6 +20,12 @@
  *      TASK-360 retires). Fixing only the named one would have left the live
  *      surface broken.
  *
+ * AND UNDO HAS TWO ENDINGS. It can succeed — the row goes back to `pending` —
+ * or the server can REFUSE it, because the window shut between the click and
+ * the request landing. A refusal is the one case where a notice arrives on a
+ * row that is already RESOLVED, so an outcome-first key would never notice it.
+ * Both endings are driven below.
+ *
  * AND TAKING IT BACK IS AN ANSWER TOO. Undo inside the window returns the row
  * to `pending` (`decisions/machine.ts`), so the receipt AND the Undo button
  * both unmount — the classic way to strand focus, on the one control this
@@ -337,6 +343,45 @@ describe('ApprovalCard — in-thread (sites 1 and 2)', () => {
     );
   });
 
+  it('a REFUSED undo focuses the line saying it was too late', () => {
+    /*
+      The second ending of Undo, and the one an outcome-first key cannot see:
+      the server refuses (`DECISION_UNDO_TOO_LATE` — the window shut between
+      the click and the request landing), so the row stays exactly as resolved
+      as it was and the ONLY thing that changes is a red line. The Undo button
+      is gone by then, so there is nothing left where the person was standing.
+    */
+    function RefusedUndoHarness() {
+      const [notice, setNotice] = useState<string | null>(null);
+      return (
+        <div>
+          <Decoys />
+          <ApprovalCard
+            decision={resolvedFixture('executed')}
+            onApprove={vi.fn()}
+            onDismiss={vi.fn()}
+            onUndo={() => setNotice('That had already happened.')}
+            notice={notice}
+          />
+        </div>
+      );
+    }
+    render(<RefusedUndoHarness />);
+
+    const undo = undoButton();
+    undo.focus();
+    fireEvent.click(undo);
+
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement?.textContent).toBe(
+      'That had already happened.',
+    );
+    // Still resolved — the refusal changed nothing but the sentence.
+    expect(screen.getByTestId('approval-d-marcus').dataset.status).toBe(
+      'executed',
+    );
+  });
+
   it('approving into a STALE re-open focuses the sentence that says so', () => {
     // The guard tripped: nothing was executed, the row is still open, the
     // buttons are still there, and the only thing that changed is a line at
@@ -516,6 +561,41 @@ describe('DecisionRow — the Today queue (site 3)', () => {
 
     expect(document.activeElement).toBe(screen.getByRole('alert'));
     expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it('a REFUSED undo on the queue row focuses the same line', () => {
+    // Same second ending, on the row whose receipt-branch notice is a
+    // paragraph rather than a span.
+    function RefusedUndoQueueHarness() {
+      const [notice, setNotice] = useState<string | null>(null);
+      return (
+        <div>
+          <Decoys />
+          <DecisionRow
+            decision={resolvedFixture('executed')}
+            agent={quill}
+            expanded
+            onToggle={vi.fn()}
+            onOpenAgent={vi.fn()}
+            onApprove={vi.fn()}
+            onDismiss={vi.fn()}
+            onUndo={() => setNotice('That had already happened.')}
+            notice={notice}
+          />
+        </div>
+      );
+    }
+    render(<RefusedUndoQueueHarness />);
+
+    fireEvent.click(undoButton());
+
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement?.textContent).toBe(
+      'That had already happened.',
+    );
+    expect(screen.getByTestId('decision-d-marcus').dataset.status).toBe(
+      'executed',
+    );
   });
 
   it('undo re-opens the queue row and lands on the row\u2019s own question', () => {

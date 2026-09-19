@@ -121,10 +121,21 @@ export function DecisionRow({
     match document order below — the last of these to mount owns the ref.
   */
   const answerKey =
-    outcome !== null
-      ? `outcome:${d.status}:${d.resolvedAt ?? ''}`
-      : notice !== null
-        ? `notice:${notice}`
+    /*
+      NOTICE FIRST, and this order is load-bearing. A REFUSED undo
+      (`DECISION_UNDO_TOO_LATE` — the window shut between the click and the
+      server) is the one case where a notice lands on a row that is already
+      RESOLVED: the outcome stays exactly as it was, so an outcome-first key
+      never changes, nothing fires, and the person is on `<body>` while a red
+      line they cannot see says the thing cannot be taken back after all. The
+      freshest thing the card has to say always wins — and the nodes below are
+      hung in the same order, because the last `answerRef` in document order
+      is the one that gets it.
+    */
+    notice !== null
+      ? `notice:${notice}`
+      : outcome !== null
+        ? `outcome:${d.status}:${d.resolvedAt ?? ''}`
         : stale && d.staleReason !== null
           ? `stale:${d.freshness?.value ?? ''}:${d.staleReason}`
           : // Back to being a QUESTION — Undo returns the row to `pending`
@@ -177,8 +188,17 @@ export function DecisionRow({
             {outcome.note}
           </p>
         )}
+        {/*
+          A REFUSED UNDO lands here (TASK-427) — the row is still resolved, the
+          Undo button has gone, and this line is the only thing that changed.
+          Last among this branch's `answerRef` holders, so it wins the ref.
+        */}
         {notice !== null && (
-          <p className="pl-[22px] text-[12px] leading-relaxed text-destructive">
+          <p
+            ref={answerRef}
+            tabIndex={-1}
+            className={`pl-[22px] text-[12px] leading-relaxed text-destructive ${RESOLUTION_FOCUS_RING}`}
+          >
             {notice}
           </p>
         )}
