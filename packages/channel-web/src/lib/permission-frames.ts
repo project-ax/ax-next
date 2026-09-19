@@ -206,6 +206,14 @@ export interface EffectDisclosure {
  * added to the union without a corresponding row here fails to compile,
  * which is the review moment we want rather than a member that silently
  * renders as `undefined`.
+ *
+ * READ THAT NARROWLY (TASK-408): the compiler pins this table to
+ * `CapabilityEffect`, the LOCAL hand-copy — not to `@ax/tool-policy`'s
+ * `ToolEffect`, which is what decides what actually arrives and which
+ * invariant 2 keeps unimportable. A member added over there alone reaches a
+ * row with no entry here, and `effectDisclosure` spreads `undefined` into an
+ * empty object rather than throwing, so the badge renders blank. That gap is
+ * covered by `__tests__/server/effect-mirror-drift.test.ts`, not by `tsc`.
  */
 const EFFECT_DISCLOSURES: Record<CapabilityEffect, EffectDisclosure> = {
   spends: {
