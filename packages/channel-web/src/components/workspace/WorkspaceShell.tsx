@@ -122,7 +122,20 @@ function startOfLocalToday(): number {
 function doneTodayFrom(feed: {
   events: ActivityEvent[];
   nextBefore: string | null;
+  scope: string | undefined;
 }): number | undefined {
+  /*
+    The rows in hand must describe the WHOLE workspace, because that is what
+    this line claims. One feed serves both scopes and it re-scopes in an
+    effect, so on the first render back from an agent's tab `events` is still
+    that agent's — and counting it printed one agent's day as the account's
+    (TASK-402). An undercount, and a one-frame one, but still a sentence about
+    the workspace built from a fact about one agent: the same H7 substitution
+    the honesty gate below exists to prevent, arriving through the other axis.
+    `undefined`, not `0`, for the same reason as everything else here — a zero
+    is a claim too, and we have none to make until the right pages land.
+  */
+  if (feed.scope !== undefined) return undefined;
   const reachesPastMidnight =
     feed.nextBefore === null || Date.parse(feed.nextBefore) < startOfLocalToday();
   if (!reachesPastMidnight) return undefined;
