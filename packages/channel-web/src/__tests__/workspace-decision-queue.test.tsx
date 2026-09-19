@@ -362,7 +362,9 @@ describe('useDecisionQueue — the undo window is closed by the server, not the 
 
     // The server refuses: the window shut between the click and the POST. The
     // row comes back exactly as it was — nothing consumed it, nothing replayed
-    // it, so nothing about it has changed. The re-read says the same.
+    // it, so nothing about it has changed. The re-read is armed with the same
+    // unchanged row, so that a regression which DOES poll gets the answer a
+    // real server would give rather than an undefined body.
     const refused = { ...justApproved };
     undoDecision.mockResolvedValue({ decision: refused, undone: false });
     readDecision.mockResolvedValue({ decision: refused });
@@ -381,16 +383,25 @@ describe('useDecisionQueue — the undo window is closed by the server, not the 
     // The receipt itself is untouched.
     expect(screen.getByTestId(`decision-${open.id}`).dataset.status).toBe('executed');
 
-    // Still well inside the ten seconds a clock-driven implementation would be
-    // counting down, and the once-a-second re-read keeps answering the same
-    // unchanged row. Neither brings the button back, and nothing else has
-    // asked the server to undo anything.
+    // Three seconds on — still well inside the ten a clock-driven
+    // implementation would be counting down.
     await tick(POLL_MS * 3);
     expect(Date.now() - Date.parse(justApproved.resolvedAt!)).toBeLessThan(
       UNDO_WINDOW_MS,
     );
+    // The button has not come back, and nothing has asked the server to undo
+    // anything a second time.
     expect(undoControls()).toHaveLength(0);
     expect(undoDecision).toHaveBeenCalledTimes(1);
+    /*
+      And the re-read never ran, which is the stronger fact and the reason it
+      cannot bring the button back. A row with no undo left drops out of
+      `watchedKey`, so the effect early-returns and clears its interval — the
+      row stops being polled at all, rather than being polled and ignored.
+      (`applyPolledRow`'s "still inside its own window" guard is the second
+      line of that defence, and has its own test above.)
+    */
+    expect(readDecision).not.toHaveBeenCalled();
 
     cleanup();
   });
