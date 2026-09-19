@@ -12,7 +12,7 @@ import type { HookBus, Plugin } from '@ax/core';
 import { main } from '../main.js';
 
 // ---------------------------------------------------------------------------
-// TASK-421 — invariant 3 (no half-wired plugins). @ax/memory-facts-sqlite is
+// TASK-421/TASK-422 — invariant 3 (no half-wired plugins). @ax/memory-facts-sqlite is
 // loaded unconditionally by main() (it's postgres-free and has no external
 // dependency to gate on, unlike the ANTHROPIC_API_KEY-gated memory-strata
 // bundle). This proves it is actually reachable from a real CLI boot, not
@@ -20,6 +20,11 @@ import { main } from '../main.js';
 // flagged. See .claude/memory/decisions.md's TASK-421 entries: there is still
 // no product-layer consumer (@ax/memory doesn't exist yet), so this pins only
 // that the engine's hooks land on the real bus, not that anything calls them.
+//
+// TASK-422 added a FIFTH hook, `memory:facts:reindex`, so it is pinned here
+// too. A hook that exists only in its own package's contract test is the
+// half-wired shape this file was written to catch — every hook the manifest
+// declares has to be listed below, or the next one added will quietly not be.
 // ---------------------------------------------------------------------------
 
 const SCRIPT: StubRunnerScript = {
@@ -74,7 +79,7 @@ describe('@ax/cli host-side memory-facts wiring', () => {
   });
 
   it(
-    'registers memory:facts:record|recall|supersede|clear on a real CLI boot',
+    'registers memory:facts:record|recall|supersede|clear|reindex on a real CLI boot',
     { timeout: 20_000 },
     async () => {
       const captor = busCaptor();
@@ -96,6 +101,7 @@ describe('@ax/cli host-side memory-facts wiring', () => {
       expect(bus.hasService('memory:facts:recall')).toBe(true);
       expect(bus.hasService('memory:facts:supersede')).toBe(true);
       expect(bus.hasService('memory:facts:clear')).toBe(true);
+      expect(bus.hasService('memory:facts:reindex')).toBe(true);
     },
   );
 });

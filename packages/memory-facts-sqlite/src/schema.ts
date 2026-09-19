@@ -20,6 +20,25 @@ export interface FactRow {
   valid_end: string;
   transaction_time: string;
   closed_by: string | null;
+  /**
+   * The `batchKey` of the `memory:facts:record` call that wrote this row, or
+   * NULL when the caller passed none. Every row of one batch carries the same
+   * value; dedup is `(agent_key, batch_key)`, never `batch_key` alone.
+   */
+  batch_key: string | null;
+  /**
+   * 0-based position of this row WITHIN its batch.
+   *
+   * It exists because `transaction_time` cannot order a batch: `record`
+   * computes `now` once per call, so every row of a batch shares one value to
+   * the millisecond. Nor can `id` — it is a random UUID. Nor is `rowid` safe:
+   * SQLite explicitly reserves the right to renumber it during `VACUUM` on a
+   * table (like this one) whose primary key is not an INTEGER. A stored
+   * counter is the only tiebreak that survives all three.
+   *
+   * Set on every row, batched or not, so the column has one meaning.
+   */
+  batch_seq: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -87,10 +106,58 @@ export function openDatabase(databasePath: string): OpenDatabaseResult {
       valid_start TEXT NOT NULL,
       valid_end TEXT NOT NULL DEFAULT '${INFINITY_SENTINEL}',
       transaction_time TEXT NOT NULL,
-      closed_by TEXT
+      closed_by TEXT,
+      batch_key TEXT,
+      batch_seq INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_facts_slot ON ${TABLE}(agent_key, about, slot, valid_end);
   `);
 
+  // `CREATE TABLE IF NOT EXISTS` is a no-op against a db TASK-421 already
+  // created, so that db would keep the 13-column shape forever and every
+  // `batch_key` read would fail with "no such column". The additive migration
+  // below is what actually moves an existing store forward. It has to run
+  // BEFORE idx_facts_batch, which indexes the column it adds.
+  migrateAddColumns(driver);
+
+  driver.exec(
+    `CREATE INDEX IF NOT EXISTS idx_facts_batch ON ${TABLE}(agent_key, batch_key);`,
+  );
+
+  // `(agent_key, slot)` — the pending probe. `memory:facts:recall` asks "does
+  // this tenant hold any `slot = 'pending'` row?" on EVERY read to build its
+  // `degraded` flag, and idx_facts_slot cannot serve that: `about` sits
+  // between `agent_key` and `slot` in its key, so the question would degrade
+  // to a full scan of the tenant on the hot read path.
+  driver.exec(`CREATE INDEX IF NOT EXISTS idx_facts_pending ON ${TABLE}(agent_key, slot);`);
+
   return { driver };
+}
+
+/**
+ * Add any column this version needs that an older db does not have.
+ *
+ * Idempotent by construction: `PRAGMA table_info` is read first and a column
+ * already present is skipped, so a second `openDatabase` on the same file is a
+ * no-op rather than a "duplicate column name" throw. (SQLite has no
+ * `ADD COLUMN IF NOT EXISTS`, which is why the pragma is needed at all.)
+ *
+ * Every identifier here is a module constant — `TABLE` and the literal column
+ * names — so the SQL stays fully static even though it is template-built. No
+ * caller value reaches it.
+ */
+function migrateAddColumns(driver: BetterSqliteDb): void {
+  const present = new Set(
+    (driver.pragma(`table_info(${TABLE})`) as Array<{ name: string }>).map((c) => c.name),
+  );
+  // Nullable and with no default, so the ALTER is instant and needs no
+  // backfill: an older row genuinely has no batch, and NULL says exactly that.
+  // A NULL `batch_key` never matches a dedup lookup, because every lookup
+  // binds a non-empty string.
+  if (!present.has('batch_key')) {
+    driver.exec(`ALTER TABLE ${TABLE} ADD COLUMN batch_key TEXT`);
+  }
+  if (!present.has('batch_seq')) {
+    driver.exec(`ALTER TABLE ${TABLE} ADD COLUMN batch_seq INTEGER`);
+  }
 }

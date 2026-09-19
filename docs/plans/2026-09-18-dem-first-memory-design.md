@@ -88,7 +88,7 @@ Two layers. **The hook you call determines provenance** — there is no `provena
 | `memory:facts:recall` | `{query?, about?, at?, activeOnly?, ownerUserId?, limit, poolSize}` → `{statements, degraded}` |
 | `memory:facts:supersede` | `{ids}` |
 | `memory:facts:clear` | `{}` |
-| `memory:facts:reindex` | `{}` — rebuild derived indexes, drain `pending` |
+| `memory:facts:reindex` | `{slots?: [{id, slot}]}` → `{resolved, resettled, pending, degraded}` — apply caller-derived slots to `pending` rows, re-settle the affected chains, rebuild derived indexes. Called with no `slots` it is a status read. See §3.5. |
 
 The engine payload carries `provenance` and `ownerUserId` because they are stored columns; only `@ax/memory` calls it. Tenant (`agentId`) always comes from `ctx`, never from a payload.
 
@@ -156,6 +156,8 @@ On record of statement **S** with a slot, within the tenant and `(about, slot)`:
 - **Idempotent.** `chat:end` can fire twice. `batchKey = conversationId + content hash` (the extraction cache's own key shape); a repeated batch is a no-op, not duplicate rows.
 - **All-or-nothing per batch.**
 - **Pending, not lost.** Embedder unavailable → rows stored with `embedding: pending`, `slot: pending`; `reindex` drains. Pending slot = under-closing, the safe direction.
+
+  **As built (TASK-422).** A pending row carries the reserved slot value `pending` and is **inert**: it closes nothing and nothing closes it, exactly like a no-slot row, so a deferred derivation can never mis-close. Because slot derivation lives in `@ax/memory` (§3.3) and not in the engine, `memory:facts:reindex` is *told* the resolved slots — `{slots: [{id, slot}]}` — rather than computing them; it applies them and re-derives §3.4's rules over each touched `(about, slot)` chain in one transaction, leaving explicit supersessions (`closed_by IS NULL`) untouched. `embedding: pending` has no counterpart yet: there is no embedding column until TASK-434 adds the dense channel.
 - Extraction schema failure → one retry with the schema echoed (the bench already does this), then drop the batch with an event.
 
 ---
@@ -207,6 +209,10 @@ The read path has two external dependencies and DEM's fallbacks are silent — t
 - Embedder unavailable → dense channel skipped, RRF over three; `degraded: ['semantic']`.
 - Reranker unavailable → lexical fallback; `degraded: ['ranking']`.
 - Store unavailable → **tool error**. An empty table is a valid answer; a failed store is not.
+- Rows still pending a slot (§3.5) → `degraded: ['pending']`. Supersession has not fully run, so a value a later statement should have closed may still read as active.
+
+**Which of these exist, and when.** The flag vocabulary (`DegradedFlag`) and the accumulator are shared by every backend from **TASK-422**, which also produces `'pending'` and turns store failure into a thrown `store-unavailable` error. `'semantic'` and `'ranking'` are **reserved but never raised** until **TASK-434** builds the channels that can degrade — there is no embedder and no reranker in the engine before then, and a flag about a dependency nothing consumes would be noise, not a signal. Don't read a `degraded: []` from a pre-434 engine as "semantic recall worked."
+
 - Timeouts, provisional until measured: embed 1.5 s, rerank 2 s, whole call 4 s, then degrade with the flag set. Embed + rerank end-to-end latency has not been measured and replaces a planner at p50 1.4–1.6 s.
 
 Degraded state renders in the tool result header and in telemetry. The engine contract asserts the flags; the product layer test asserts they render.

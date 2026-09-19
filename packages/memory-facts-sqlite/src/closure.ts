@@ -1,6 +1,7 @@
 import type { Database as BetterSqliteDb } from 'better-sqlite3';
 import type { Provenance } from '@ax/memory-facts-contract';
-import { TABLE, INFINITY_SENTINEL, type FactRow } from './schema.js';
+import { TABLE, INFINITY_SENTINEL } from './schema.js';
+import { PENDING_SLOT } from './pending.js';
 
 /**
  * Provenance ranking — copied verbatim (small enough to duplicate rather
@@ -25,6 +26,10 @@ export interface StatementToInsert {
   ownerUserId?: string;
   conversationId?: string;
   transactionTime: string;
+  /** The batch's idempotency key, or absent when the caller passed none. */
+  batchKey?: string;
+  /** 0-based position within the batch — the only stable ordering (see `FactRow.batch_seq`). */
+  batchSeq: number;
 }
 
 /** What one slot settlement did, so the caller can report it without re-reading the row. */
@@ -37,6 +42,83 @@ export interface SlotClosure {
   selfClosedAt: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// Rules 1-4, in one place
+// ---------------------------------------------------------------------------
+
+/** The only columns rules 1-4 read off a peer row. */
+export interface ClosurePeer {
+  id: string;
+  valid_start: string;
+  valid_end: string;
+  provenance: Provenance;
+}
+
+/** The arriving statement, as the rules see it. */
+export interface ClosureArrival {
+  id: string;
+  when: string;
+  provenance: Provenance;
+}
+
+export interface ArrivalOutcome<P> {
+  /** Peers this arrival closes (rule 1). Each ends at `arrival.when`, `closed_by = arrival.id`. */
+  closed: P[];
+  /** The earliest later peer that bounds this arrival (rule 2), or null. */
+  bound: P | null;
+}
+
+/**
+ * §3.4's rules 1-4 for ONE arrival against the peers that already exist in
+ * its `(agent, about, slot)` chain. Pure — it decides, it does not write.
+ *
+ * It is generic over the peer type so both callers can use the SAME rules
+ * (Invariant 4, one source of truth) without either distorting for the other:
+ * `insertWithSlotClosure` hands it rows read out of SQLite and turns the
+ * result into UPDATEs, while `resettleSlotGroups` hands it mutable in-memory
+ * state objects and mutates the very objects it gets back. Returning the peer
+ * OBJECTS rather than their ids is what makes the second caller lookup-free.
+ *
+ * Rule 3 (provenance immunity) is applied ONCE, to both directions: the
+ * arrival interacts only with peers of equal-or-lower rank, so a human row
+ * neither gets closed by an extracted one (rule 1) nor bounds it (rule 2).
+ *
+ * The rule-2 tiebreak is `(valid_start, id)`. Two peers can share the earliest
+ * later `valid_start`; either gives the arrival the same `valid_end`, but they
+ * give different `closed_by`, and SQLite promises no row order without an
+ * ORDER BY. Sorting on `id` after `valid_start` makes the answer the same
+ * every time — which is what lets `resettleSlotGroups` promise that re-running
+ * it changes nothing.
+ */
+export function settleArrival<P extends ClosurePeer>(
+  arrival: ClosureArrival,
+  peers: readonly P[],
+): ArrivalOutcome<P> {
+  const incomingRank = PROVENANCE_RANK[arrival.provenance];
+
+  // Rule 3, applied once and to both directions.
+  const reachable = peers.filter(
+    (peer) => peer.id !== arrival.id && PROVENANCE_RANK[peer.provenance] <= incomingRank,
+  );
+
+  // Rules 1 and 4: end every reachable row whose interval is still OPEN
+  // AT this statement's start — `valid_start <= S < valid_end`. Rule 4 falls
+  // out of the `<=`: an equal-`when` peer that arrived earlier is still open
+  // at S, so the later write wins.
+  const closed = reachable.filter(
+    (peer) => peer.valid_start <= arrival.when && peer.valid_end > arrival.when,
+  );
+
+  // Rule 2, bounded at the EARLIEST later row — ACTIVE OR NOT.
+  const bound =
+    reachable
+      .filter((peer) => peer.valid_start > arrival.when)
+      .sort((a, b) => a.valid_start.localeCompare(b.valid_start) || a.id.localeCompare(b.id))[0] ??
+    null;
+
+  return { closed, bound };
+}
+
 /**
  * Insert a statement and settle its slot in ONE transaction — ported from
  * `dem-memory/src/db/memory-repository.ts`'s `insertWithSlotClosure`
@@ -46,6 +128,15 @@ export interface SlotClosure {
  * engine's job — a statement arrives with `slot` already set, or absent.
  *
  * A statement with no slot skips all of it: stored, retrievable, and inert.
+ * So does a statement whose slot is {@link PENDING_SLOT} — see the early-out.
+ *
+ * The `driver.transaction(...)` here stays even though `record` now wraps the
+ * WHOLE batch in an outer transaction: better-sqlite3 implements a nested
+ * transaction function as a SAVEPOINT, so this one degrades to a savepoint
+ * inside the batch's transaction and the batch still commits or rolls back as
+ * one unit. Keeping it means a caller that settles a single statement outside
+ * a batch (a future one — `record` is the only caller today) is still atomic
+ * by itself, rather than silently depending on someone else's transaction.
  */
 export function insertWithSlotClosure(
   driver: BetterSqliteDb,
@@ -57,8 +148,9 @@ export function insertWithSlotClosure(
       .prepare(
         `INSERT INTO ${TABLE}
            (id, agent_key, about, relation, value, slot, provenance, owner_user_id,
-            conversation_id, valid_start, valid_end, transaction_time, closed_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            conversation_id, valid_start, valid_end, transaction_time, closed_by,
+            batch_key, batch_seq)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         statement.id,
@@ -74,65 +166,228 @@ export function insertWithSlotClosure(
         INFINITY_SENTINEL,
         statement.transactionTime,
         null,
+        statement.batchKey ?? null,
+        statement.batchSeq,
       );
 
-    if (statement.slot === undefined) {
+    // No slot, or a slot that is still PENDING: stored, retrievable, inert.
+    //
+    // Pending takes the no-slot path deliberately. The alternative — letting
+    // `pending` behave like any other slot string — would build a bogus
+    // `(about, 'pending')` chain in which every unrelated undrained fact about
+    // the same subject closes the one before it: a `lives_in` guess would end
+    // a `works_at` guess purely because neither had been normalized yet. That
+    // is MIS-closing, and the whole point of §3.5's pending is the opposite —
+    // "pending slot = under-closing, the safe direction". Nothing is lost:
+    // `memory:facts:reindex` re-derives the chain once the real slot arrives.
+    if (statement.slot === undefined || statement.slot === PENDING_SLOT) {
       return { closed: [], selfClosedBy: null, selfClosedAt: null };
     }
-
-    const incomingRank = PROVENANCE_RANK[statement.provenance];
 
     // Every OTHER row of this (agent, about, slot) that still asserts
     // something. Excludes rows closed with `closed_by IS NULL` — an
     // explicit `supersede` — because a retracted row asserts nothing and
     // must not bound its neighbours, whereas a rule-superseded row is still
     // a true statement about a past interval and does.
+    //
+    // `slot <> PENDING_SLOT` is redundant while the early-out above stands
+    // (a non-pending `slot = ?` can only match non-pending rows) and is kept
+    // anyway, so "a pending row is never anybody's peer" is enforced by the
+    // query that would violate it rather than by a guard fifteen lines away.
     const peers = driver
       .prepare(
         `SELECT id, valid_start, valid_end, provenance
            FROM ${TABLE}
-          WHERE agent_key = ? AND about = ? AND slot = ? AND id <> ?
+          WHERE agent_key = ? AND about = ? AND slot = ? AND slot <> ? AND id <> ?
             AND (valid_end = ? OR closed_by IS NOT NULL)`,
       )
-      .all(agentKey, statement.about, statement.slot, statement.id, INFINITY_SENTINEL) as Array<{
+      .all(
+        agentKey,
+        statement.about,
+        statement.slot,
+        PENDING_SLOT,
+        statement.id,
+        INFINITY_SENTINEL,
+      ) as Array<{
       id: string;
       valid_start: string;
       valid_end: string;
-      provenance: FactRow['provenance'] | null;
+      provenance: Provenance | null;
     }>;
 
-    // Rule 3, applied once and to both directions.
-    const reachable = peers.filter(
-      (peer) => PROVENANCE_RANK[peer.provenance ?? 'extracted'] <= incomingRank,
+    const outcome = settleArrival(
+      { id: statement.id, when: statement.when, provenance: statement.provenance },
+      // The column is NOT NULL with a CHECK, so the coalesce is belt-and-
+      // braces for a row written by some older schema; `extracted` is the
+      // least-privileged guess, which is the safe way to be wrong here.
+      peers.map((peer) => ({ ...peer, provenance: peer.provenance ?? 'extracted' })),
     );
 
-    // Rules 1 and 4: end every reachable row whose interval is still OPEN
-    // AT this statement's start — `valid_start <= S < valid_end`.
-    const closed = reachable
-      .filter((peer) => peer.valid_start <= statement.when && peer.valid_end > statement.when)
-      .map((peer) => peer.id);
+    const closed = outcome.closed.map((peer) => peer.id);
     if (closed.length > 0) {
       const close = driver.prepare(`UPDATE ${TABLE} SET valid_end = ?, closed_by = ? WHERE id = ?`);
       for (const id of closed) close.run(statement.when, statement.id, id);
     }
 
-    // Rule 2, bounded at the EARLIEST later row — ACTIVE OR NOT.
-    const bound = reachable
-      .filter((peer) => peer.valid_start > statement.when)
-      .sort((a, b) => a.valid_start.localeCompare(b.valid_start))[0];
-    if (bound !== undefined) {
+    if (outcome.bound !== null) {
       driver
         .prepare(`UPDATE ${TABLE} SET valid_end = ?, closed_by = ? WHERE id = ?`)
-        .run(bound.valid_start, bound.id, statement.id);
+        .run(outcome.bound.valid_start, outcome.bound.id, statement.id);
     }
 
     return {
       closed,
-      selfClosedBy: bound?.id ?? null,
-      selfClosedAt: bound?.valid_start ?? null,
+      selfClosedBy: outcome.bound?.id ?? null,
+      selfClosedAt: outcome.bound?.valid_start ?? null,
     };
   });
   return settle();
+}
+
+// ---------------------------------------------------------------------------
+// Re-settling a chain after `memory:facts:reindex` resolves a pending slot
+// ---------------------------------------------------------------------------
+
+/** One `(about, slot)` chain to re-derive. `slot` is a real slot, never {@link PENDING_SLOT}. */
+export interface SlotGroup {
+  about: string;
+  slot: string;
+}
+
+/** Only what the replay reads. `provenance` is nullable for the same reason as above. */
+interface GroupRow {
+  id: string;
+  valid_start: string;
+  valid_end: string;
+  provenance: Provenance | null;
+  closed_by: string | null;
+}
+
+/** A row's closure state during the replay — the two columns the rules decide. */
+interface ReplayState extends ClosurePeer {
+  closed_by: string | null;
+}
+
+/**
+ * Re-derive §3.4 over whole `(about, slot)` chains and write back only what
+ * actually moved. Returns the ids whose `valid_end` or `closed_by` CHANGED,
+ * in replay order.
+ *
+ * Called only by `memory:facts:reindex`, and only for chains a newly-resolved
+ * row joined. It expects to be inside a transaction — `reindex` opens one
+ * around the whole drain, because resolving a slot and re-settling the chain
+ * it lands in are one operation, not two.
+ *
+ * ## Why a REPLAY in arrival order, not a canonical sort by `valid_start`
+ *
+ * §3.4's rules are arrival-indexed: they say what an ARRIVING statement does
+ * to the chain it finds, and rule 4 says so out loud ("equal `when`: later
+ * `transaction_time` wins"). The state they leave behind is therefore
+ * genuinely path-dependent, and provenance immunity is where that shows: a
+ * human `lives_in` recorded first is never closed by an extracted one that
+ * arrives later and is dated earlier, but sort the same two rows by
+ * `valid_start` and the human row now closes the extracted one. Both are
+ * defensible readings of rule 3 — only one of them is what `record` does.
+ *
+ * So the replay walks `(transaction_time, batch_seq, id)`, which reproduces
+ * `insertWithSlotClosure` exactly. That gives the property that makes pending
+ * safe to use at all: resolving a pending row to slot X leaves the store in
+ * the state it would have been in had the row been recorded with slot X in
+ * the first place. Anything else would make `reindex` a second, quietly
+ * different set of closure rules.
+ *
+ * That ordering is total. `transaction_time` is one stamp per `record` call;
+ * `batch_seq` (COALESCEd, since a pre-TASK-422 row has none) separates rows
+ * within one batch; `id` is a UUID primary key, so no two rows can tie on all
+ * three. The honest limit: two SEPARATE `record` calls landing in the same
+ * millisecond at the same batch index fall back to `id`, which is stable but
+ * arbitrary rather than truly chronological. `rowid` would not help — SQLite
+ * reserves the right to renumber it during VACUUM on this table (see
+ * `FactRow.batch_seq`).
+ *
+ * ## Retractions
+ *
+ * A row closed by an explicit `memory:facts:supersede` has `closed_by IS NULL`
+ * and a finite `valid_end`. It asserts nothing, so it is dropped from the
+ * replay entirely: its own `valid_end`/`closed_by` are never rewritten, and it
+ * is never a peer, so it can neither close nor bound its neighbours. That is
+ * the same exclusion `insertWithSlotClosure`'s peer query makes, and it is the
+ * one thing this function must not get wrong — resurrecting a retracted row
+ * would un-forget something a person asked us to forget.
+ *
+ * Consequence worth stating: because a retracted row is absent from the
+ * replay, a NEIGHBOUR whose closure was decided by it is re-derived without
+ * it. If B closed A and B was then retracted, re-settling that chain reopens
+ * A. That is deliberate — B asserts nothing, so nothing should still be closed
+ * on B's authority — and it shows up in `resettled`, not silently. Plain
+ * `supersede` does not do this because it is a cheap single-row write that
+ * never re-settles; `reindex` is the operation that does.
+ */
+export function resettleSlotGroups(
+  driver: BetterSqliteDb,
+  agentKey: string,
+  groups: readonly SlotGroup[],
+): string[] {
+  if (groups.length === 0) return [];
+
+  const selectGroup = driver.prepare(
+    `SELECT id, valid_start, valid_end, provenance, closed_by
+       FROM ${TABLE}
+      WHERE agent_key = ? AND about = ? AND slot = ? AND slot <> ?
+      ORDER BY transaction_time, COALESCE(batch_seq, 0), id`,
+  );
+  const writeBack = driver.prepare(
+    `UPDATE ${TABLE} SET valid_end = ?, closed_by = ? WHERE id = ? AND agent_key = ?`,
+  );
+
+  const changed: string[] = [];
+
+  for (const group of groups) {
+    const rows = selectGroup.all(agentKey, group.about, group.slot, PENDING_SLOT) as GroupRow[];
+
+    // Replay the chain from nothing. `live` holds only rows that have
+    // "arrived" so far, which is exactly the peer set each of them saw.
+    const live: Array<{ stored: GroupRow; state: ReplayState }> = [];
+    for (const row of rows) {
+      const isRetraction = row.closed_by === null && row.valid_end !== INFINITY_SENTINEL;
+      if (isRetraction) continue;
+
+      const provenance = row.provenance ?? 'extracted';
+      const state: ReplayState = {
+        id: row.id,
+        valid_start: row.valid_start,
+        valid_end: INFINITY_SENTINEL,
+        provenance,
+        closed_by: null,
+      };
+      const outcome = settleArrival(
+        { id: row.id, when: row.valid_start, provenance },
+        live.map((entry) => entry.state),
+      );
+      // `settleArrival` hands back the state objects themselves, so rule 1 is
+      // applied by mutating the peers in place — no id lookup, no chance of
+      // updating a row the rules did not name.
+      for (const peer of outcome.closed) {
+        peer.valid_end = row.valid_start;
+        peer.closed_by = row.id;
+      }
+      if (outcome.bound !== null) {
+        state.valid_end = outcome.bound.valid_start;
+        state.closed_by = outcome.bound.id;
+      }
+      live.push({ stored: row, state });
+    }
+
+    // Write back only what moved, so `resettled` means "this row's closure
+    // actually changed" and a second identical reindex is a true no-op.
+    for (const { stored, state } of live) {
+      if (state.valid_end === stored.valid_end && state.closed_by === stored.closed_by) continue;
+      writeBack.run(state.valid_end, state.closed_by, stored.id, agentKey);
+      changed.push(stored.id);
+    }
+  }
+
+  return changed;
 }
 
 /**
@@ -140,6 +395,24 @@ export function insertWithSlotClosure(
  * stays NULL, which is what distinguishes "superseded by that row" from
  * "somebody retracted this". Returns the ids it actually closed, so a caller
  * handed a foreign or already-closed id learns that rather than assuming.
+ *
+ * ## Known gap: closures this row AUTHORED elsewhere are not repaired
+ *
+ * This is a single-row write. It ends the named rows and stops. Closures the
+ * retracted row had itself authored — neighbours carrying `closed_by = <this
+ * id>` — are left exactly as they are, still ended on the authority of a row
+ * that now asserts nothing.
+ *
+ * The only thing that repairs them is a later {@link resettleSlotGroups} over
+ * the same `(about, slot)` group, and nothing here schedules one: `reindex`
+ * re-settles only the groups a newly-resolved PENDING row joined, so a group
+ * with no pending row is never revisited. A victim of a retracted closer can
+ * therefore stay wrongly closed indefinitely, and a `recall` of that slot
+ * returns neither it (closed) nor its retracted closer (retracted).
+ *
+ * Deliberately left alone here (TASK-422): fixing it changes the semantics of
+ * a shipped hook and probably `SupersedeOutput`'s shape, so it wants its own
+ * card and boundary review rather than a drive-by.
  */
 export function supersedeIds(
   driver: BetterSqliteDb,

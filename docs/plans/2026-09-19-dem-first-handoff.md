@@ -64,9 +64,51 @@ split into **four board cards**, in dependency order:
 
 ## 3. Open work, in the order you'd actually do it
 
-### 3.1 TASK-422 — degraded-mode flags + pending/reindex drain (ready now)
+### 3.1 TASK-422 — degraded-mode flags + pending/reindex drain — **BUILT**
 
-Its only dependency (TASK-421) is Done. Scope, per its card body and `docs/plans/2026-09-18-
+> **As built, 2026-09-19.** See `docs/plans/2026-09-19-task-422-degraded-pending-plan.md`
+> and the five `2026-09-19 — TASK-422` rows in `.claude/memory/decisions.md`. The scope
+> below is the card body as filed; **two things came out differently**, and the paragraph
+> after this block is the part that matters if you are picking up TASK-434.
+>
+> **The `['semantic']` / `['ranking']` flags are NOT produced at this rung.** Neither
+> channel exists — TASK-421 cut dense/RRF/rerank and TASK-434 owns the embedder seam plus
+> `sqlite-vec`. Stubbing an embedder config that nothing consumes is what the Half-Wired
+> Code Policy exists to stop. What shipped is the *mechanism* — a `DegradedFlag` vocabulary
+> in the contract (`'semantic' | 'ranking' | 'pending'`) shared by both backends, a real
+> accumulator, and contract cases — producing only `'pending'`, the one degradation this
+> engine can honestly observe (a tenant holding un-drained pending-slot rows is answering
+> from an incompletely-closed store). **TASK-434 pushes two more strings into the same
+> array; it does not build the mechanism.** Design doc §4.4 now says which flag exists at
+> which rung, so nobody re-files this card off the old line.
+>
+> **`memory:facts:reindex` takes `{slots?: [{id, slot}]}`, not the bare `{}` of design
+> §2.2.** Slot derivation lives in `@ax/memory` (§3.3) and the engine cannot compute one,
+> so with a `{}` payload nothing could ever move a row out of `pending` — the sentinel
+> would be a one-way trap. The caller supplies the resolved slots; the engine applies them
+> and re-derives §3.4's closure over each touched `(about, slot)` chain. Called with no
+> `slots` it is a status read (`pending` count + `degraded`).
+>
+> **Two things were built that the card body doesn't list.** `activeOnly: false` (history,
+> design §4.2) — because two *shipped* comments named TASK-422 for it, and leaving them
+> standing would have re-filed the card off its own stale line. And `record`'s all-or-
+> nothing batch transaction (§3.5 bullet 2) — because `batchKey` idempotency is unsafe
+> without it: a batch that died halfway would be seen as "already recorded" and stay
+> permanently half-written.
+>
+> **The trap in the re-derivation, if you touch `resettleSlotGroups`.** Replay is ordered
+> by ARRIVAL (`transaction_time, COALESCE(batch_seq,0), id`), deliberately not by
+> `valid_start`. §3.4's rules are arrival-indexed (rule 4 says so outright), so a
+> `valid_start`-first replay gives a *different store*: a `human` row recorded first and an
+> `extracted` row backdated under it is left alone by `record` (provenance immunity blocks
+> the human from being reached), but a `valid_start` replay has the human close it via rule
+> 1. The shipped test `does not let a human row BOUND an extracted one either` pins the
+> `record` side of that. Also: a retracted row (`closed_by IS NULL`, finite `valid_end`) is
+> excluded from the peer set, so re-settling a chain whose closure depended on a since-
+> retracted row **reopens** the row it had closed. Documented on `resettleSlotGroups`; it
+> surfaces in `resettled` rather than silently.
+
+Its only dependency (TASK-421) was Done. Scope, per its card body and `docs/plans/2026-09-18-
 task-421-memory-facts-plan.md`'s YAGNI pass:
 - §4.4 of the design doc: embedder unavailable → `degraded: ['semantic']`; reranker
   unavailable → `degraded: ['ranking']`; store unavailable → the hook throws (never a silent
@@ -79,7 +121,17 @@ task-421-memory-facts-plan.md`'s YAGNI pass:
 - This has to land **before** TASK-434 (which needs the reranker-unavailable degraded flag to
   avoid reinventing it) and before TASK-423 (whose contract inherits whatever TASK-422 adds).
 
-### 3.2 TASK-434 — full RRF recall (blocked on 422)
+### 3.2 TASK-434 — full RRF recall (**unblocked** — 422 is built)
+
+**What 422 hands you.** `DegradedFlag` and the `degraded` accumulator already exist in
+`@ax/memory-facts-contract` and are already returned by `recall` and `reindex` — add
+`'semantic'` when the embedder is unavailable and `'ranking'` when the reranker is, into the
+same array, and extend the contract cases next to the existing `'pending'` ones. Don't
+reinvent the signal path. `pendingStatus()` in `packages/memory-facts-sqlite/src/pending.ts`
+is the single place the count-and-flag derivation lives (Invariant 4) — put the new probes
+beside it rather than inline in `recall`. `store-unavailable` already covers "store down"
+(that is an error, never a flag). `schema.ts` now has a `PRAGMA table_info`-guarded additive
+migration helper — use it for the embedding column rather than writing a second one.
 
 Port `dem-memory/src/engine/recall.ts`'s `RecallEngine`/`reciprocalRankFusion` (sparse FTS5 +
 dense `sqlite-vec` cosine + temporal channels — **not** graph, that's gone) into
@@ -176,7 +228,7 @@ changed. New, for the `@ax/memory-facts-*` packages (ordinary pnpm workspace pac
 part of `dem-memory`):
 
 ```bash
-pnpm --filter @ax/memory-facts-sqlite test       # 48 tests as of PR #603
+pnpm --filter @ax/memory-facts-sqlite test       # 98 tests as of TASK-422 (48 at PR #603)
 pnpm --filter @ax/memory-facts-contract build
 pnpm build                                       # root tsc --build; both packages are in
                                                   # root tsconfig.json's references
@@ -204,8 +256,14 @@ test` is unaffected by anything in it — unchanged from before.
 |---|---|---|
 | TASK-420 | Done | none |
 | TASK-421 | Done | TASK-420 |
-| TASK-422 | To Do (ready) | TASK-421 |
-| TASK-434 | To Do (blocked) | TASK-421, TASK-422 |
-| TASK-423 | Backlog (gated — needs FTS/vector design spike) | TASK-421, TASK-422 |
+| TASK-422 | Done (2026-09-19) | TASK-421 |
+| TASK-434 | To Do (**ready** — both deps Done) | TASK-421, TASK-422 |
+| TASK-423 | Backlog (gated — needs FTS/vector design spike; deps now Done) | TASK-421, TASK-422 |
 
 `@ax/memory` (rung 3, the product layer) has no cards yet.
+
+**Engine hook surface as of TASK-422** — `memory:facts:record | recall | supersede | clear |
+reindex`, all registered by `@ax/memory-facts-sqlite` and pinned on a real CLI boot by
+`packages/cli/src/__tests__/memory-facts-wiring.test.ts`. Still unreachable in k8s: the
+`presets/k8s` preset loads no facts backend at all, which is TASK-423's job and the reason
+that card shouldn't slip (§3.3).

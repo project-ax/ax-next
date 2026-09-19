@@ -292,9 +292,11 @@ export async function main(opts: MainOptions): Promise<number> {
   // nothing folds a service descriptor onto a session yet.
   plugins.push(createValidatorServicePlugin());
 
-  // TASK-421 (DEM-first memory design, docs/plans/2026-09-18-dem-first-memory-
-  // design.md §2.1-2.2): registers memory:facts:record|recall|supersede|clear —
-  // the storage/closure engine only. Postgres-free (owns its own sqlite table,
+  // TASK-421/TASK-422 (DEM-first memory design, docs/plans/2026-09-18-dem-
+  // first-memory-design.md §2.1-2.2): registers memory:facts:record|recall|
+  // supersede|clear|reindex — the storage/closure engine only. Every hook the
+  // manifest declares is pinned by memory-facts-wiring.test.ts; keep this list
+  // and that one in step. Postgres-free (owns its own sqlite table,
   // no collision with storage-sqlite's), so it loads unconditionally here like
   // the other no-external-dep plugins above. This OPENS TWO half-wired windows,
   // both tracked, neither closed by this plugin alone:
@@ -306,7 +308,7 @@ export async function main(opts: MainOptions): Promise<number> {
   //      same two-preset shape memory-strata-index-{sqlite,postgres} already
   //      has). Do not wire a `memory:facts` consumer into presets/k8s before
   //      TASK-423 lands, or it will boot against a missing service hook.
-  // See .claude/memory/decisions.md's TASK-421 entries.
+  // See .claude/memory/decisions.md's TASK-421 and TASK-422 entries.
   plugins.push(
     createMemoryFactsSqlitePlugin({ databasePath: opts.sqlitePath ?? DEFAULT_SQLITE_PATH }),
   );
