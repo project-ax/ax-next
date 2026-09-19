@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseCliArgs } from '../cli.js';
+import { parseCliArgs, buildE2EOptions } from '../cli.js';
 
 describe('parseCliArgs — e2e mode flags (TASK-189)', () => {
   it('defaults to bench mode', () => {
@@ -108,5 +108,29 @@ describe('parseCliArgs — --concurrency (e2e)', () => {
 
   it('carries an explicit value', () => {
     expect(parseCliArgs(['--concurrency', '4']).concurrency).toBe(4);
+  });
+});
+
+describe('buildE2EOptions — --out reaches runE2EMode (TASK-395)', () => {
+  // The bug this guards was NOT in parseCliArgs and NOT in runE2EMode: both
+  // ends were correct in isolation. `main()` simply never carried args.out
+  // across to the options object, so `--out` was accepted and silently
+  // dropped. Asserting parseCliArgs(...).out (above) stayed green through the
+  // whole bug, and so does any test that calls runE2EMode({ out }) directly.
+  // Deleting the forwarding line in buildE2EOptions must turn THIS red.
+  it('forwards --out from parsed args into the e2e options', () => {
+    const opts = buildE2EOptions(parseCliArgs(['--mode', 'e2e', '--out', 'docs/plans/x.md']));
+    expect(opts.out).toBe('docs/plans/x.md');
+  });
+
+  it('omits out entirely when --out was not passed, so the date-stamped default applies', () => {
+    const opts = buildE2EOptions(parseCliArgs(['--mode', 'e2e']));
+    expect(opts.out).toBeUndefined();
+    expect('out' in opts).toBe(false);
+  });
+
+  it('forwards a bare filename too (resolved against repoRoot downstream)', () => {
+    const opts = buildE2EOptions(parseCliArgs(['--mode', 'e2e', '--out', 'report.md']));
+    expect(opts.out).toBe('report.md');
   });
 });
