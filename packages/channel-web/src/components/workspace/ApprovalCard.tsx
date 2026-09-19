@@ -91,7 +91,12 @@ export function ApprovalCard({
         ? `notice:${notice}`
         : stale && d.staleReason !== null
           ? `stale:${d.freshness?.value ?? ''}:${d.staleReason}`
-          : null;
+          : // Back to being a QUESTION. Undo inside the window returns the row
+            // to `pending` (`decisions/machine.ts`), so the receipt and its
+            // Undo button both unmount and there is nothing left in the card
+            // that was ever a resolution. Landing on the question is the
+            // honest answer: we are asking again, and this says so.
+            `open:${d.status}:${d.resolvedAt ?? ''}`;
   const { answerRef, armForResolution } = useResolutionFocus(answerKey);
 
   if (outcome !== null) {
@@ -120,7 +125,10 @@ export function ApprovalCard({
             <Button
               variant="ghost"
               size="sm"
-              onClick={onUndo}
+              onClick={() => {
+                armForResolution();
+                onUndo();
+              }}
               disabled={busy}
               className="h-6 gap-1.5 px-2 text-[12px] text-primary"
             >
@@ -144,7 +152,22 @@ export function ApprovalCard({
       data-status={d.status}
     >
       <CardContent className="p-4">
-        <div className="text-[13.5px] font-medium">{d.summary}</div>
+        {/*
+          THE QUESTION, and therefore a focus target (TASK-427). Undo re-opens
+          this card, which unmounts the receipt the person was standing on — so
+          this is where they land, hearing the question they are being asked
+          again. It is FIRST in document order among the nodes that share
+          `answerRef`, so a stale reason or a notice below it takes precedence,
+          which is the same order `answerKey` is built in.
+        */}
+        <div
+          ref={answerRef}
+          tabIndex={-1}
+          data-testid={`approval-question-${d.id}`}
+          className={`text-[13.5px] font-medium ${RESOLUTION_FOCUS_RING}`}
+        >
+          {d.summary}
+        </div>
         {/*
           The paragraph is shown OUTRIGHT here, where the queue row hides it
           behind a disclosure. The queue is a list to triage; this is a

@@ -20,6 +20,13 @@
  *      TASK-360 retires). Fixing only the named one would have left the live
  *      surface broken.
  *
+ * AND TAKING IT BACK IS AN ANSWER TOO. Undo inside the window returns the row
+ * to `pending` (`decisions/machine.ts`), so the receipt AND the Undo button
+ * both unmount — the classic way to strand focus, on the one control this
+ * whole change exists to make reachable. The full keyboard journey is driven
+ * below: approve, land on the receipt, Tab to Undo, press it, land on the
+ * question.
+ *
  * AND THE ANSWER THAT IS NOT A RESOLUTION. Approving a row whose freshness
  * guard trips does NOT resolve it: `decisions/machine.ts` hands back a row that
  * is still open, `status: 'stale'`, and the card re-opens as a question with a
@@ -285,6 +292,51 @@ describe('ApprovalCard — in-thread (sites 1 and 2)', () => {
     );
   });
 
+  it('the whole keyboard journey: approve \u2192 receipt \u2192 Tab \u2192 Undo \u2192 question', () => {
+    /*
+      The end-to-end version of this card, and the one path that must not
+      strand anybody: undoing returns the row to `pending`, which unmounts the
+      receipt AND the Undo button the person was standing on. Without a landing
+      they are on `<body>` in front of a re-opened question — having used the
+      exact control this change exists to make reachable.
+    */
+    function UndoableHarness() {
+      const open = decisionFixture();
+      const [d, setD] = useState<Decision>(open);
+      return (
+        <div>
+          <Decoys />
+          <ApprovalCard
+            decision={d}
+            onApprove={() => setD(resolvedFixture('executed'))}
+            onDismiss={vi.fn()}
+            // What the server really answers an undo with: the original,
+            // open, unresolved row (`machine.ts` \u2192 status 'pending').
+            onUndo={() => setD(open)}
+          />
+        </div>
+      );
+    }
+    render(<UndoableHarness />);
+
+    const yes = screen.getByRole('button', { name: 'Move it' });
+    yes.focus();
+    fireEvent.click(yes);
+
+    // One Tab from here reaches Undo \u2014 the property the card is about.
+    expect(tabsToReach(undoButton())).toBe(1);
+
+    fireEvent.click(undoButton());
+
+    // The row is a question again \u2014 and we are standing on it, not on <body>.
+    expect(screen.getByRole('button', { name: 'Move it' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Undo/ })).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(
+      screen.getByTestId('approval-question-d-marcus'),
+    );
+  });
+
   it('approving into a STALE re-open focuses the sentence that says so', () => {
     // The guard tripped: nothing was executed, the row is still open, the
     // buttons are still there, and the only thing that changed is a line at
@@ -466,6 +518,48 @@ describe('DecisionRow — the Today queue (site 3)', () => {
     expect(document.activeElement).not.toBe(document.body);
   });
 
+  it('undo re-opens the queue row and lands on the row\u2019s own question', () => {
+    // Same journey on the queue row. Its question is the disclosure button,
+    // whose accessible name IS the question — so landing there reads it back,
+    // and it keeps its place in the Tab order because it is a real control.
+    function UndoableQueueHarness() {
+      const open = decisionFixture();
+      const [d, setD] = useState<Decision>(open);
+      return (
+        <div>
+          <Decoys />
+          <DecisionRow
+            decision={d}
+            agent={quill}
+            expanded
+            onToggle={vi.fn()}
+            onOpenAgent={vi.fn()}
+            onApprove={() => setD(resolvedFixture('executed'))}
+            onDismiss={vi.fn()}
+            onUndo={() => setD(open)}
+          />
+        </div>
+      );
+    }
+    render(<UndoableQueueHarness />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Move it' }));
+    expect(tabsToReach(undoButton())).toBe(1);
+
+    fireEvent.click(undoButton());
+
+    expect(screen.queryByRole('button', { name: /Undo/ })).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: /Move your 1:1 with Marcus/ }),
+    );
+    // The disclosure must stay reachable by Tab — `tabIndex={-1}` here would
+    // buy the landing at the cost of the control.
+    expect(
+      (document.activeElement as HTMLElement).getAttribute('tabindex'),
+    ).toBeNull();
+  });
+
   it('approving into a STALE re-open focuses the row\u2019s stale Alert', () => {
     // Same answer-that-is-not-a-resolution as the in-thread card, on the queue
     // row, where the sentence is an `Alert` rather than a paragraph.
@@ -487,6 +581,62 @@ describe('DecisionRow — the Today queue (site 3)', () => {
       'Thursday 9:30 is no longer free.',
     );
     expect(screen.getByRole('button', { name: 'Move it anyway' })).toBeTruthy();
+  });
+
+  it('lands AGAIN when the queue row comes back stale a second time', () => {
+    /*
+      The queue row's twin of the in-thread twice-stale case, and NOT a
+      duplicate: `open:${d.status}` already changes on pending -> stale, so a
+      build with no stale branch in `answerKey` at all still passes the
+      single-stale test above (measured — that mutant survived until this case
+      existed). It is the SECOND stale in a row, where the status does not
+      change, that the stale branch is actually load-bearing for.
+    */
+    function TwiceStaleQueueHarness() {
+      const [d, setD] = useState<Decision>(decisionFixture());
+      const staleAs = (value: string, why: string) =>
+        decisionFixture({
+          status: 'stale',
+          staleReason: why,
+          freshness: { kind: 'slot-etag', value, label: null },
+        });
+      return (
+        <div>
+          <Decoys />
+          <DecisionRow
+            decision={d}
+            agent={quill}
+            expanded
+            onToggle={vi.fn()}
+            onOpenAgent={vi.fn()}
+            onApprove={() =>
+              setD(
+                d.status === 'stale'
+                  ? staleAs('etag-3', 'It moved again while you were reading.')
+                  : staleAs('etag-2', 'Thursday 9:30 is no longer free.'),
+              )
+            }
+            onDismiss={vi.fn()}
+            onUndo={vi.fn()}
+          />
+        </div>
+      );
+    }
+    render(<TwiceStaleQueueHarness />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Move it' }));
+    expect(document.activeElement?.textContent).toContain(
+      'Thursday 9:30 is no longer free.',
+    );
+
+    (document.activeElement as HTMLElement).blur();
+    expect(document.activeElement).toBe(document.body);
+    fireEvent.click(screen.getByRole('button', { name: 'Move it anyway' }));
+
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement?.textContent).toContain(
+      'It moved again while you were reading.',
+    );
   });
 
   it('saying no lands focus on the receipt as well', () => {

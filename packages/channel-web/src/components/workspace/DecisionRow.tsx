@@ -127,7 +127,10 @@ export function DecisionRow({
         ? `notice:${notice}`
         : stale && d.staleReason !== null
           ? `stale:${d.freshness?.value ?? ''}:${d.staleReason}`
-          : null;
+          : // Back to being a QUESTION — Undo returns the row to `pending`
+            // (`decisions/machine.ts`), so the receipt and its Undo button
+            // both unmount and there is no resolution left to land on.
+            `open:${d.status}:${d.resolvedAt ?? ''}`;
   const { answerRef, armForResolution } = useResolutionFocus(answerKey);
 
   if (outcome !== null) {
@@ -157,7 +160,10 @@ export function DecisionRow({
             <Button
               variant="ghost"
               size="sm"
-              onClick={onUndo}
+              onClick={() => {
+                armForResolution();
+                onUndo();
+              }}
               disabled={busy}
               className="h-7 gap-1.5 text-[12px] text-primary"
             >
@@ -186,10 +192,20 @@ export function DecisionRow({
       data-testid={`decision-${d.id}`}
       data-status={d.status}
     >
+      {/*
+        THE QUESTION, and therefore where Undo puts you (TASK-427): undoing
+        re-opens the row, unmounting the receipt the person was standing on.
+        This button's accessible name IS the question — agent, summary, age —
+        so landing here reads it back. NO `tabIndex={-1}`: it is a real control
+        and taking it out of the Tab order would be a regression. Pressing it
+        only opens or closes the row, which is the one thing on this card that
+        cannot cost anybody anything.
+      */}
       <button
+        ref={answerRef}
         type="button"
         onClick={onToggle}
-        className="flex w-full items-center gap-3 px-5 py-3.5 text-left"
+        className={`flex w-full items-center gap-3 px-5 py-3.5 text-left ${RESOLUTION_FOCUS_RING}`}
       >
         <StateDot state={stale ? 'stopped' : 'held'} />
         <span className="shrink-0 text-[13px] font-medium">{agent.name}</span>

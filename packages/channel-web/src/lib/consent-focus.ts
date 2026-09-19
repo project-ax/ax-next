@@ -101,11 +101,17 @@ export function returnFocusToConsentRegion(
  * where the receipt (or, if the POST failed, the notice saying so) replaces the
  * controls in the same node the person was standing in.
  *
- * `answerKey` is "what the card says back, right now, as a string" — and `null`
- * while it is still an unanswered question. A receipt, a notice, a stale
- * re-open: any of those is an answer. Put `answerRef` on whichever of them is
- * currently rendered, and call `armForResolution` from the click handler of
- * every control that asks a question of the server.
+ * `answerKey` is "what the card says back, right now, as a string" — `null`
+ * only where a surface has nothing to say at all. A receipt, a notice, a stale
+ * re-open, and — on the decision cards — the QUESTION ITSELF are all answers:
+ * pressing Undo inside the window takes the yes back and `decisions/machine.ts`
+ * returns the row to `pending`, so the card goes back to asking, and "we are
+ * asking you again" is exactly the thing the person needs to hear. A key that
+ * treated only resolutions as answers would strand them on `<body>` in front of
+ * a re-opened question — on the very control this whole module exists to make
+ * reachable. Put `answerRef` on whichever node is currently rendered, and call
+ * `armForResolution` from the click handler of EVERY control that changes what
+ * the card says — Undo included.
  *
  * WHY A KEY AND NOT A BOOLEAN. A boolean only fires on the false → true edge,
  * so a card that answers TWICE in a row — approve a stale row, the world moves
