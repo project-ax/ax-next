@@ -22,10 +22,16 @@
 // contract is storage-agnostic (Invariant 1). So the check belongs here, in the
 // backend that mints SHAs and is entitled to demand them — not in core.
 //
-// EVERY hostile case below fails against the unvalidated engine: without
-// `requireOid` the call does NOT reject — it runs git with an option-shaped
-// argument and surfaces whatever git says, or (for `--name-only`-style values
-// on `ls-tree`) succeeds and returns nonsense.
+// EVERY hostile case below fails against the unvalidated engine, and for a
+// reason that does not depend on git's exact behaviour: `code:
+// 'invalid-version'` is produced in exactly one place in this package —
+// `requireOid` — so an engine that never calls it cannot reject with that
+// code, whatever git does. What git actually does varies by value and is not
+// worth asserting on: a duplicated `--name-only` on `ls-tree` errors, `-z` as
+// a rev errors, `cat-file -e '--name-only:a.md'` exits 129 so `read` resolves
+// `{found: false}`, and a non-option hostile value resolves outright. Two of
+// those four paths throw a bare `Error` with no `code` at all, which is
+// precisely why the assertion is on the code rather than on rejection.
 //
 // The `parent` case is deliberately different, and the anti-vacuity block below
 // pins why. `parent` is NOT `requireOid`-validated — narrowing it would turn a
