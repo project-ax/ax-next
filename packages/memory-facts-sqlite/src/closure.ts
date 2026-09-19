@@ -273,10 +273,13 @@ interface ReplayState extends ClosurePeer {
  * actually moved. Returns the ids whose `valid_end` or `closed_by` CHANGED,
  * in replay order.
  *
- * Called only by `memory:facts:reindex`, and only for chains a newly-resolved
- * row joined. It expects to be inside a transaction — `reindex` opens one
- * around the whole drain, because resolving a slot and re-settling the chain
- * it lands in are one operation, not two.
+ * Two callers, each handing it the chains ITS write disturbed:
+ * `memory:facts:reindex` passes the chains a newly-resolved pending row
+ * joined, and `memory:facts:supersede` ({@link supersedeIds}) passes the
+ * chains of the rows it just retracted. Both expect it to run inside a
+ * transaction they opened, because in both cases the write and the
+ * re-derivation it invalidates are one operation, not two: a crash between
+ * them leaves a chain nobody re-settled, which reads as a wrong answer.
  *
  * ## Why a REPLAY in arrival order, not a canonical sort by `valid_start`
  *
@@ -319,9 +322,10 @@ interface ReplayState extends ClosurePeer {
  * replay, a NEIGHBOUR whose closure was decided by it is re-derived without
  * it. If B closed A and B was then retracted, re-settling that chain reopens
  * A. That is deliberate — B asserts nothing, so nothing should still be closed
- * on B's authority — and it shows up in `resettled`, not silently. Plain
- * `supersede` does not do this because it is a cheap single-row write that
- * never re-settles; `reindex` is the operation that does.
+ * on B's authority — and it shows up in `resettled`, not silently. It is also
+ * why {@link supersedeIds} calls this in the same transaction as the
+ * retraction: the re-open is CAUSED by the retraction, so any gap between them
+ * is a window in which `recall` returns neither A (closed) nor B (retracted).
  */
 export function resettleSlotGroups(
   driver: BetterSqliteDb,
@@ -390,46 +394,103 @@ export function resettleSlotGroups(
   return changed;
 }
 
+/** What one {@link supersedeIds} call did — the retraction and the repair it forced. */
+export interface SupersedeResult {
+  /** Ids this call actually closed; a foreign, missing or already-closed id is absent. */
+  closed: string[];
+  /** Ids whose closure CHANGED as a fallout of those retractions — see {@link resettleSlotGroups}. */
+  resettled: string[];
+}
+
 /**
  * Explicit close — the only way a row ends without a successor. `closed_by`
  * stays NULL, which is what distinguishes "superseded by that row" from
  * "somebody retracted this". Returns the ids it actually closed, so a caller
  * handed a foreign or already-closed id learns that rather than assuming.
  *
- * ## Known gap: closures this row AUTHORED elsewhere are not repaired
+ * ## Why it also re-settles (TASK-448)
  *
- * This is a single-row write. It ends the named rows and stops. Closures the
- * retracted row had itself authored — neighbours carrying `closed_by = <this
- * id>` — are left exactly as they are, still ended on the authority of a row
- * that now asserts nothing.
+ * Ending a row is not the whole of retracting it. Closures the retracted row
+ * had itself AUTHORED — neighbours carrying `closed_by = <this id>` — would
+ * otherwise stay exactly as they are, still ended on the authority of a row
+ * that now asserts nothing:
  *
- * The only thing that repairs them is a later {@link resettleSlotGroups} over
- * the same `(about, slot)` group, and nothing here schedules one: `reindex`
- * re-settles only the groups a newly-resolved PENDING row joined, so a group
- * with no pending row is never revisited. A victim of a retracted closer can
- * therefore stay wrongly closed indefinitely, and a `recall` of that slot
- * returns neither it (closed) nor its retracted closer (retracted).
+ * ```
+ * A = lives_in Boston  (JAN)
+ * B = lives_in Seattle (JUN)  -> rule 1 closes A: until=JUN, closed_by=B
+ * supersede([B])              -> B retracted
+ * ```
  *
- * Deliberately left alone here (TASK-422): fixing it changes the semantics of
- * a shipped hook and probably `SupersedeOutput`'s shape, so it wants its own
- * card and boundary review rather than a drive-by.
+ * `recall` then returns NEITHER — A is closed, B is retracted — which the
+ * person experiences as "I deleted the new fact and my old one disappeared
+ * too". An empty answer where A is the correct one.
+ *
+ * So the retraction and the re-derivation it invalidates happen together, in
+ * the transaction below: collect the `(about, slot)` chains of the rows this
+ * call actually closed, hand them to {@link resettleSlotGroups}, and report
+ * what moved. Leaving it to a later `memory:facts:reindex` was the shape
+ * TASK-422 shipped, and its window had no bound — a `reindex` re-settles only
+ * the chains a newly-resolved PENDING row joined, so a chain with no pending
+ * row was never revisited at all.
+ *
+ * Two things the collection deliberately skips, because neither has a chain to
+ * re-derive (see {@link insertWithSlotClosure}'s early-out): a row with no
+ * slot, and a row still carrying {@link PENDING_SLOT}. Both are inert — they
+ * close nothing and nothing closes them — so retracting one strands nothing.
+ *
+ * The just-retracted rows are themselves retractions by the time the replay
+ * reads them (`closed_by IS NULL`, finite `valid_end`), so `resettleSlotGroups`
+ * drops them from the replay and never rewrites their own two columns. That is
+ * what keeps a retraction a retraction rather than something the repair pass
+ * re-derives back into existence.
+ *
+ * Idempotent by construction: a second `supersede` of the same ids closes
+ * nothing — the `valid_end = INFINITY_SENTINEL` predicate no longer matches —
+ * so it collects no chains and re-settles nothing.
  */
 export function supersedeIds(
   driver: BetterSqliteDb,
   agentKey: string,
   ids: readonly string[],
   at: string,
-): string[] {
-  if (ids.length === 0) return [];
-  const close = driver.transaction((): string[] => {
-    const done: string[] = [];
+): SupersedeResult {
+  if (ids.length === 0) return { closed: [], resettled: [] };
+  const close = driver.transaction((): SupersedeResult => {
+    const closed: string[] = [];
+    // Deduped by `(about, slot)`: several retracted rows of one chain
+    // re-derive it ONCE. Not for correctness — the replay is idempotent, so a
+    // second pass over the same chain finds nothing left to move and adds
+    // nothing to `resettled` — but because that second pass re-reads and
+    // re-settles every row in the chain to reach that conclusion. The Map
+    // costs less than the query it saves. Keyed on a NUL-joined pair, because
+    // `about` and `slot` are both free text and a `${a}:${b}` key could
+    // collide across the boundary (same reasoning as the drain's group map in
+    // `plugin.ts`).
+    const groups = new Map<string, SlotGroup>();
+
     const statement = driver.prepare(
       `UPDATE ${TABLE} SET valid_end = ? WHERE id = ? AND agent_key = ? AND valid_end = ?`,
     );
+    // Read back AFTER the UPDATE, keyed on the same tenant scope, so the
+    // `changes > 0` test stays the single authority on what this call closed:
+    // the chain is collected for rows it really retracted, never for a foreign
+    // or already-closed id it merely looked at.
+    const readGroup = driver.prepare(
+      `SELECT about, slot FROM ${TABLE} WHERE id = ? AND agent_key = ?`,
+    );
+
     for (const id of ids) {
-      if (statement.run(at, id, agentKey, INFINITY_SENTINEL).changes > 0) done.push(id);
+      if (statement.run(at, id, agentKey, INFINITY_SENTINEL).changes === 0) continue;
+      closed.push(id);
+      const row = readGroup.get(id, agentKey) as { about: string; slot: string | null } | undefined;
+      // `undefined` is unreachable — the UPDATE just matched this row inside
+      // this transaction — and is handled rather than asserted because the
+      // honest fallback (skip the chain) is the same one a slotless row takes.
+      if (row === undefined || row.slot === null || row.slot === PENDING_SLOT) continue;
+      groups.set(`${row.about}\u0000${row.slot}`, { about: row.about, slot: row.slot });
     }
-    return done;
+
+    return { closed, resettled: resettleSlotGroups(driver, agentKey, [...groups.values()]) };
   });
   return close();
 }

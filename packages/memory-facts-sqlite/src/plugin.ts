@@ -579,11 +579,18 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           const at = new Date().toISOString();
           // A supersede that silently did nothing is indistinguishable from
           // one whose ids were all foreign — `closed: []` is a legitimate
-          // answer here, so a store failure MUST be an error instead.
-          const closed = inStore('memory:facts:supersede', () =>
+          // answer here, so a store failure MUST be an error instead. Same
+          // for `resettled: []`, which is the ordinary answer whenever the
+          // retracted rows had closed nothing.
+          //
+          // `supersedeIds` owns the transaction that spans the retraction AND
+          // the re-settle of the chains it invalidated (TASK-448), so this
+          // handler hands its result straight out: `SupersedeResult` and
+          // `SupersedeOutput` are the same two fields, one in engine terms and
+          // one in the hook's.
+          return inStore('memory:facts:supersede', () =>
             supersedeIds(requireDriver(), agentKey, input.ids, at),
           );
-          return { closed };
         },
       );
 
