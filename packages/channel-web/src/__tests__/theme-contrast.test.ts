@@ -361,20 +361,58 @@ const INK_GHOST_TEXT_CLASS = 'text-ink-ghost';
 const SRC_ROOT = join(__dirname, '..');
 
 /**
- * Comments are not rendered classes. `AgentMenu.tsx` names
- * `text-ink-ghost` in prose precisely to explain why it does not use it, and
- * that sentence is worth more than the false positive it would otherwise cost.
+ * Comments are not rendered classes. `AgentMenu.tsx` names `text-ink-ghost` in
+ * prose precisely to explain why it does not use it, and that sentence is worth
+ * more than the false positive it would otherwise cost.
  *
- * Stripping can only ever HIDE a usage, never invent one, so it is the half of
- * this scanner that can fail silently — which is why `reads code and ignores
- * comments` below pins the behaviour both ways on a fixture.
+ * A block comment is recognised ONLY where one opens a line (after optional
+ * whitespace and a JSX `{`). That restriction is the entire point of this
+ * function, so do not "simplify" it back to a file-wide
+ * `src.replace(/\/\*[\s\S]*?\*\//g, '')`:
+ *
+ * **A bare `/` followed by `*` occurs in ordinary code in this tree.** Route
+ * paths like `'/api/workspace/agents/:agentId/files/*'` contain one, and
+ * `routines/*.md` is rendered as JSX text. A file-wide strip pairs that
+ * accidental opener with the next real `*​/` anywhere below it and deletes
+ * everything in between — including a real `text-ink-ghost` — leaving the guard
+ * silently green. That is not hypothetical: it was caught in review, with a
+ * working repro, on the first version of this file.
+ *
+ * Anchoring to the line start cannot see those, so the only way this errs now
+ * is by KEEPING comment text, which trips the guard loudly instead of
+ * silencing it. Wrong in the safe direction, on purpose.
+ *
+ * Residual gap, stated rather than hidden: a line-start `/` + `*` inside a
+ * multi-line template literal would still be read as a comment. Nothing in the
+ * tree does that, and `mentions every file that names the class` below is the
+ * backstop that would catch it anyway.
  */
 function stripComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    .filter((line) => !/^\s*(\/\/|\*)/.test(line))
-    .join('\n');
+  const kept: string[] = [];
+  let inBlock = false;
+  for (const line of src.split('\n')) {
+    if (inBlock) {
+      const close = line.indexOf('*/');
+      if (close === -1) continue;
+      inBlock = false;
+      kept.push(line.slice(close + 2)); // keep real code trailing the close
+      continue;
+    }
+    const opener = line.match(/^\s*\{?\s*\/\*/);
+    if (opener !== null) {
+      const rest = line.slice(opener[0].length);
+      const close = rest.indexOf('*/');
+      if (close === -1) {
+        inBlock = true;
+        continue;
+      }
+      kept.push(rest.slice(close + 2));
+      continue;
+    }
+    if (/^\s*(\/\/|\*)/.test(line)) continue;
+    kept.push(line);
+  }
+  return kept.join('\n');
 }
 
 /** Does this source file paint `cls`, ignoring anything said about it in prose? */
@@ -383,25 +421,44 @@ function paints(src: string, cls: string): boolean {
 }
 
 /**
- * Every shipped source file. Tests are excluded on purpose: `AgentMenu.test.tsx`
- * asserts the class is ABSENT, so scanning it would make the guard trip on its
- * own enforcement. Nothing under `__tests__` renders production UI.
+ * Every file Tailwind compiles classes out of. `tailwind.config.ts` globs
+ * `['./index.html', './src/**\/*.{ts,tsx}']`, so `index.html` is a real usage
+ * site and is scanned too — a class parked there would be live and invisible to
+ * a scan that stopped at `src/`. CSS is included as well, since a token can be
+ * applied through an `@apply` rule rather than a className.
+ *
+ * Tests are excluded on purpose: `AgentMenu.test.tsx` asserts the class is
+ * ABSENT, so scanning it would make the guard trip on its own enforcement.
+ * Nothing under `__tests__` renders production UI.
  */
-function sourceFiles(dir = SRC_ROOT): string[] {
+function walk(dir: string): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.name === '__tests__' || entry.name === 'node_modules') continue;
     const path = join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...sourceFiles(path));
+    if (entry.isDirectory()) out.push(...walk(path));
     else if (/\.(tsx?|css)$/.test(entry.name)) out.push(path);
   }
   return out;
+}
+
+function sourceFiles(): string[] {
+  return [...walk(SRC_ROOT), join(SRC_ROOT, '..', 'index.html')];
 }
 
 /** Relative paths of every shipped file painting `cls`, sorted. */
 function filesPainting(cls: string): string[] {
   return sourceFiles()
     .filter((path) => paints(readFileSync(path, 'utf8'), cls))
+    .map((path) => relative(SRC_ROOT, path))
+    .sort();
+}
+
+/** Same walk, but on the RAW text — comments included. See the backstop below. */
+function filesMentioning(cls: string): string[] {
+  const re = new RegExp(`(?<![\\w-])${cls}(?![\\w-])`);
+  return sourceFiles()
+    .filter((path) => re.test(readFileSync(path, 'utf8')))
     .map((path) => relative(SRC_ROOT, path))
     .sort();
 }
@@ -481,5 +538,74 @@ describe('--ink-ghost is a fill, never ink', () => {
     expect(paints(' * uses text-ink-ghost for the label', INK_GHOST_TEXT_CLASS)).toBe(false);
     expect(paints('<span className="bg-ink-ghost" />', INK_GHOST_TEXT_CLASS)).toBe(false);
     expect(paints('<span className="text-ink-ghostly" />', INK_GHOST_TEXT_CLASS)).toBe(false);
+
+    // A multi-line block comment is still stripped, and real code on the
+    // closing line survives it.
+    const block = [
+      '  /**',
+      '   * `text-ink-ghost` is too faint to read.',
+      '   */',
+      '  const x = 1;',
+    ].join('\n');
+    expect(paints(block, INK_GHOST_TEXT_CLASS)).toBe(false);
+    expect(paints(['  /* note */ <b className="text-ink-ghost" />'].join('\n'), INK_GHOST_TEXT_CLASS)).toBe(
+      true,
+    );
+  });
+
+  /**
+   * The regression that review caught, kept as a fixture because the bug is
+   * invisible: it made the guard PASS.
+   *
+   * The first version of `stripComments` did a file-wide
+   * `replace(/\/\*[\s\S]*?\*\//g, '')`. A bare `/` + `*` in ordinary code —
+   * a route path like `'…/files/*'`, or `routines/*.md` rendered as JSX text,
+   * both of which are live in this tree — was read as an opening delimiter and
+   * paired with the next real close far below, deleting a real class in
+   * between. Green suite, unguarded token.
+   *
+   * These are the reviewer's exact repro shapes. Case C is the control: if it
+   * ever goes false, the scanner is broken in the loud direction instead.
+   */
+  it('does not let a stray slash-star in code swallow a real usage', () => {
+    const caseA = [
+      '      <code>.ax/routines/*.md</code>',
+      '      <span className="text-ink-ghost">{row.source}</span>',
+      '      {/* a later block comment, whose close pairs with the text above */}',
+    ].join('\n');
+    expect(paints(caseA, INK_GHOST_TEXT_CLASS)).toBe(true);
+
+    const caseB = [
+      "      const rx = /\\/api\\/workspace\\/agents\\/:id\\/files\\/*/;",
+      '      <span className="text-ink-ghost" />',
+      '      {/* trailing comment */}',
+    ].join('\n');
+    expect(paints(caseB, INK_GHOST_TEXT_CLASS)).toBe(true);
+
+    const caseC = '<span className="text-ink-ghost" />';
+    expect(paints(caseC, INK_GHOST_TEXT_CLASS)).toBe(true);
+  });
+
+  /**
+   * The backstop that makes a silent hide impossible.
+   *
+   * `filesPainting` strips comments, and stripping is the one operation that
+   * can only ever LOSE a usage. So also scan the RAW text and pin the complete
+   * set of files that so much as name the class. The two checks cover each
+   * other: if stripping ever hides a real usage, the file still shows up here
+   * and is not on the list; if someone adds a real class to a file that is on
+   * the list, `filesPainting` catches it, because a className is not inside a
+   * line-opening block comment.
+   *
+   * Both entries below are prose EXPLAINING why the class is not used — the
+   * `AgentMenu` note that reached this conclusion first, and the token's own
+   * comment in the stylesheet. If you are adding to this list, you are almost
+   * certainly meant to be deleting a usage instead.
+   */
+  it('mentions every file that names the class, prose included', () => {
+    expect(filesMentioning(INK_GHOST_TEXT_CLASS)).toEqual([
+      'components/AgentMenu.tsx',
+      'index.css',
+    ]);
   });
 });
