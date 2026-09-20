@@ -221,6 +221,27 @@ export function createChannelWebServerPlugin(
             'the Settings "Allowed sites" Revoke control is a no-op (no persisted grants to remove)',
         },
         {
+          // TASK-444 — "Not now" on a capability grant is recorded durably on
+          // the (user, agent, grant) triple through the generic KV store, so
+          // the question is not asked again by EITHER reader: the workspace
+          // mount read-back or the pending-card replay on stream open. Both
+          // consult the same marker, so a refusal we could not write comes
+          // back on both.
+          hook: 'storage:set',
+          degradation:
+            '"Not now" on a capability grant cannot be recorded; POST /api/workspace/grants/decline answers 503 and the grant is asked again on the next workspace mount AND on the next chat stream open',
+        },
+        {
+          // TASK-444 — the read side of the same marker: one prefix scan per
+          // GET /api/workspace/grants AND per SSE stream open (the TASK-82
+          // pending-card replay reads through the same filter), dropping what
+          // the person already turned down. Without it both paths answer
+          // exactly as they did before the card.
+          hook: 'storage:list-prefix',
+          degradation:
+            'neither GET /api/workspace/grants nor the chat stream can tell which grants were already declined, so every pending grant is offered again on each workspace mount and each stream open',
+        },
+        {
           // TASK-230 — the agent-workspace roster derives each agent's
           // working/resting state from whether one of its conversations holds a
           // session the backend still calls alive. Without the probe we do not

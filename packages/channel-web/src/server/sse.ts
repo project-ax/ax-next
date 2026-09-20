@@ -5,6 +5,13 @@ import {
   type HookBus,
 } from '@ax/core';
 import type { ChunkBuffer } from './chunk-buffer.js';
+// The durable "Not now" filter (TASK-444). Same package, this plugin's own
+// module — and the SAME comparison GET /api/workspace/grants reads through,
+// deliberately: two server paths put a pending card in front of somebody and a
+// second copy of that comparison is how they drift apart. Split in two here
+// because this handler cannot await where it filters: the read happens before
+// the stream opens (step 3a), the filter after (step 4a-ter).
+import { filterDeclinedGrants, readGrantDeclines } from './grant-declines.js';
 import type { PermissionRequest, PhaseEvent, SseFrame, StreamChunk } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -216,8 +223,62 @@ export function createSseHandler(deps: SseHandlerDeps) {
       throw err;
     }
 
+    // 3a) Read this person's durable "Not now" markers (TASK-444). The
+    // pending-card replay in step 4a-ter is where they are USED, three steps
+    // down; they are fetched here, and moving this read down to its use would
+    // reintroduce the bug this placement fixes.
+    //
+    // WHY. Everything from `res.status(200).stream()` below to the last
+    // `subscribe()` call in step 4c-quater is ONE synchronous span, and step 4a
+    // spells out what depends on that: the buffer drain and the live-subscriber
+    // attach must not be separated by an `await`. A frame fired inside such a
+    // gap is appended to the buffer AFTER the drain and handed to a subscriber
+    // that is not attached YET — so to nobody — and a client that disconnects
+    // inside it runs `cleanup()` against subscribers that do not exist yet,
+    // leaving the real ones (and the keepalive) attached with nothing left to
+    // tear them down. `storage:list-prefix` is a same-tick map lookup on
+    // sqlite and real I/O on postgres, which is exactly the shape of bug that
+    // passes every local test and only shows up in the cluster.
+    //
+    // So: read here, where awaiting is free, and filter down there, where it
+    // is not. `filterDeclinedGrants` is synchronous and cannot throw.
+    //
+    // AND ONLY WHEN THERE IS SOMETHING TO FILTER. Most streams open on a
+    // conversation with no pending card at all, and a scan of this person's
+    // markers to filter an empty list is a per-turn round trip to the store
+    // bought for nothing (it would also be wasted outright on the turn-error
+    // replay below, which returns before the filter is ever reached).
+    // `withoutDeclinedGrants` short-circuits on an empty list for exactly this
+    // reason; splitting the read from the filter left that behind, so the
+    // guard is restored here explicitly.
+    //
+    // Counting from a snapshot taken BEFORE the read is safe in both
+    // directions, and the two directions have different reasons. Zero pending
+    // cards: nothing is awaited at all, so no card can arrive before the
+    // replay reads the buffer again a few lines down. One or more: the read
+    // happens, and the replay still re-reads the buffer, so a card that lands
+    // DURING the read is filtered against the complete map rather than missed.
+    const pendingAtOpen = deps.buffer.tailPermissionCardEntries(conversationId);
+    let grantDeclines: ReadonlyMap<string, number> = new Map();
+    if (pendingAtOpen.length > 0 && deps.bus.hasService('storage:list-prefix')) {
+      try {
+        grantDeclines = await readGrantDeclines(deps.bus, deps.initCtx, userId);
+      } catch (err) {
+        // Replay UNFILTERED rather than not at all — same posture, and the same
+        // event name, as the mount read-back: a question shown twice is an
+        // annoyance, a question the person never sees is an agent stuck with
+        // nobody able to unstick it.
+        deps.initCtx.logger.warn('workspace_grant_declines_read_failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     // 4) Open the SSE stream. From here on we own the response — write
     // failures and exceptions degrade to a quiet close.
+    //
+    // NOTHING BELOW THIS LINE MAY `await` until the last `subscribe()` call in
+    // step 4c-quater. See step 3a and step 4a.
     const stream = res.status(200).stream({
       contentType: 'text/event-stream; charset=utf-8',
     });
@@ -282,7 +343,10 @@ export function createSseHandler(deps: SseHandlerDeps) {
     // drain-first because the bus runs subscribers serially: the
     // subscribe call below executes synchronously after this drain,
     // and bus.fire() can't interleave with the same async tick (it
-    // awaits each subscriber). The narrow window where a chunk lands
+    // awaits each subscriber). That sentence is a claim about this
+    // code, and it is only true while no `await` sits between here
+    // and step 4c-quater — one did, briefly (TASK-444), and the
+    // regression tests in sse.test.ts hold it. The narrow window where a chunk lands
     // in the buffer DURING the drain is harmless because we re-snapshot
     // a copy via `tail()`, so any concurrent appends are visible to
     // the subscriber pass that follows.
@@ -342,9 +406,39 @@ export function createSseHandler(deps: SseHandlerDeps) {
     // we replay and KEEP the stream open for the live subscribers below. Skill
     // cards key off conversationId; host cards off the connection reqId — both
     // match the live subscriber's filter posture so replay + live agree exactly.
-    for (const card of deps.buffer.tailPermissionCards(conversationId)) {
+    //
+    // MINUS THE ONES ALREADY ANSWERED (TASK-444). Declining does NOT evict the
+    // card — the durable marker is the record, not the deletion — so the card
+    // sits in the buffer with its original `raisedAt` and this replay would
+    // hand it straight back the next time a stream opens on this conversation.
+    // That is not a reload-only path: it is what happens when the person
+    // declines and then simply sends one more message to the same agent. The
+    // agent re-proposing IS a fresh need and re-stamps `raisedAt`, so it
+    // outranks the older refusal and comes back; a replay is not, and does not.
+    // Same one comparison the mount read-back uses — two copies of it is how
+    // the two paths drift apart (grant-declines.ts). SYNCHRONOUS here: the
+    // markers were read back in step 3a precisely so this call cannot suspend
+    // the setup span, and `filterDeclinedGrants` is total, so it cannot throw
+    // out of it either.
+    //
+    // `userId` is the authenticated caller and `agentId` came out of the
+    // conversation lookup above: both authoritative, neither read off the card
+    // or out of the request.
+    const pendingCards = filterDeclinedGrants(
+      deps.initCtx,
+      grantDeclines,
+      userId,
+      deps.buffer
+        .tailPermissionCardEntries(conversationId)
+        .map((e) => ({ agentId, card: e.card, raisedAt: e.raisedAt })),
+    );
+    for (const { card } of pendingCards) {
       safeWrite({ reqId, permissionRequest: card });
     }
+    // HOST CARDS ARE NOT FILTERED, and must not be. They are turn-scoped and
+    // never enumerated, "Not now" on one stays purely local, and a later
+    // session that hits the same wall is a genuine new need rather than the
+    // answered question repeated.
     for (const card of deps.buffer.tailHostCards(reqId)) {
       // Strip the routing reqId before the browser sees it (same posture as the
       // live host-card subscriber): the connection already knows its reqId.

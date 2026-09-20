@@ -171,6 +171,9 @@ export interface ChunkBuffer {
    * Skill cards are keyed by `conversationId` (the SSE skill match key — the
    * firing ctx carries the real conversationId; its reqId is fresh) + `skillId`
    * (a re-proposal of the same skill replaces in place — never duplicates).
+   * A replace is stamped with a FRESH `raisedAt`, because a re-proposal is a
+   * fresh need: that stamp is what lets a grant outrank a durable "Not now"
+   * the person gave earlier (TASK-444).
    * Host cards are keyed by the routing `reqId` carried on the payload (the SSE
    * host match key) + host. Unlike the chunk/phase/turn-error slots, skill
    * cards are NOT reaped by the IDLE_TTL sweep — a pending approval legitimately
@@ -198,11 +201,20 @@ export interface ChunkBuffer {
     owner?: { userId: string; agentId: string },
   ): void;
   /**
-   * Snapshot of pending skill cards for a conversation, in insertion order.
-   * Empty when none. The SSE handler replays these on stream open keyed by
-   * conversationId.
+   * Snapshot of pending skill cards for a conversation, in insertion order,
+   * each with the instant it was raised beside it. Empty when none. The SSE
+   * handler replays these on stream open, keyed by conversationId.
+   *
+   * `raisedAt` is OUR bookkeeping and does not go on the wire — the caller
+   * writes `card` and nothing else. It is here because the one caller has to
+   * decide something about each card before writing it: the replay drops the
+   * grants this person already said "Not now" to, and that decision is
+   * `declinedAt >= raisedAt` (see `filterDeclinedGrants` in
+   * grant-declines.ts).
    */
-  tailPermissionCards(conversationId: string): readonly PermissionRequest[];
+  tailPermissionCardEntries(
+    conversationId: string,
+  ): readonly { card: PermissionRequest; raisedAt: number }[];
   /**
    * Every pending conversation-keyed card belonging to this user, with the
    * conversation and agent it was raised on (TASK-373).
@@ -220,10 +232,23 @@ export interface ChunkBuffer {
    *
    * Cards buffered without an owner are never returned: an unattributed card
    * cannot be shown to somebody without guessing whose it is.
+   *
+   * `raisedAt` is the host-clock instant this card was last asked at, and it
+   * exists for exactly one comparison (TASK-444): the grants route reads the
+   * durable "Not now" marker for the same `(user, agent, kind, subject)` and
+   * drops the row while the refusal is the NEWER of the two. A re-proposal
+   * re-stamps it (see `appendPermissionCard`), so a grant the agent genuinely
+   * needs again outranks the older decline and comes back with no timer and no
+   * expiry anywhere in the path — "Not now" defers until the next real need,
+   * not until a clock says so.
    */
-  pendingGrantsForUser(
-    userId: string,
-  ): readonly { conversationId: string; agentId: string; card: PermissionRequest }[];
+  pendingGrantsForUser(userId: string): readonly {
+    conversationId: string;
+    agentId: string;
+    card: PermissionRequest;
+    /** Host-clock ms when this card was last raised. See above. */
+    raisedAt: number;
+  }[];
   /**
    * Snapshot of pending host cards for a routing reqId, in insertion order.
    * Empty when none. The SSE handler replays these on stream open keyed by the
@@ -245,7 +270,18 @@ export interface ChunkBuffer {
 }
 
 export interface ChunkBufferOptions {
-  /** Test seam: returns "now" in ms. Default `Date.now`. */
+  /**
+   * Test seam: returns "now" in ms. Default `Date.now`. Also the source of
+   * each pending card's `raisedAt` (TASK-444) — one clock, so the sweep's
+   * deadlines and the grant-decline comparison can never drift apart.
+   *
+   * IT HAS A TWIN, and the pair is load-bearing: `WorkspaceHandlerDeps.now`
+   * in routes-workspace.ts stamps the `declinedAt` this `raisedAt` is
+   * compared against. Production injects NEITHER, so both are the system
+   * clock and the comparison is between two readings of one clock. A test
+   * that stubs one seam and not the other is comparing two different clocks
+   * and will get an answer that means nothing — stub both or stub neither.
+   */
   now?: () => number;
   /**
    * Test seam: alternate setInterval/clearInterval. Defaults to globals.
@@ -283,7 +319,15 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
   //     (the SSE skill match key). Cleared only on grant / conversation delete.
   //   - hostCards: routing reqId → ordered list of pending host cards (the SSE
   //     host match key). Cleared by evictReqId at the turn boundary.
-  const skillCards = new Map<string, PermissionRequest[]>();
+  //
+  // Skill/connector cards carry a `raisedAt` instant alongside the card rather
+  // than on it: the card object itself is what the SSE replay hands the
+  // browser, and this is host bookkeeping the grants route compares against a
+  // durable decline marker (TASK-444).
+  const skillCards = new Map<
+    string,
+    { card: PermissionRequest; raisedAt: number }[]
+  >();
   /**
    * conversationId → who it belongs to (TASK-373). A sibling map rather than a
    * field on each card so the stored card stays byte-identical to the wire
@@ -477,15 +521,21 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
       // stacking a second prompt for the same subject.
       if (card.kind === 'skill' || card.kind === 'connector') {
         const list = skillCards.get(key) ?? [];
-        const idx = list.findIndex((c) =>
+        const idx = list.findIndex((e) =>
           card.kind === 'skill'
-            ? c.kind === 'skill' && c.skillId === card.skillId
-            : c.kind === 'connector' && c.connectorId === card.connectorId,
+            ? e.card.kind === 'skill' && e.card.skillId === card.skillId
+            : e.card.kind === 'connector' &&
+              e.card.connectorId === card.connectorId,
         );
+        // A fresh instant on BOTH branches. The replace branch is the one that
+        // matters: a re-proposal is the agent asking again, and keeping the
+        // original instant there would leave a genuinely re-needed grant
+        // suppressed by an older "Not now" forever (TASK-444).
+        const entry = { card, raisedAt: now() };
         if (idx >= 0) {
-          list[idx] = card;
+          list[idx] = entry;
         } else {
-          list.push(card);
+          list.push(entry);
           // Bound the per-conversation list — drop the oldest on overflow.
           if (list.length > MAX_PENDING_CARDS_PER_CONV) {
             list.splice(0, list.length - MAX_PENDING_CARDS_PER_CONV);
@@ -515,10 +565,12 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
       hostCards.set(key, list);
     },
 
-    tailPermissionCards(conversationId) {
+    tailPermissionCardEntries(conversationId) {
       const list = skillCards.get(conversationId);
       if (list === undefined) return [];
-      return list.slice();
+      // A copy, like every other tail: the caller must not be able to reach
+      // back into the stored list.
+      return list.map((e) => ({ card: e.card, raisedAt: e.raisedAt }));
     },
 
     pendingGrantsForUser(userId) {
@@ -527,6 +579,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
         conversationId: string;
         agentId: string;
         card: PermissionRequest;
+        raisedAt: number;
       }[] = [];
       for (const [conversationId, list] of skillCards) {
         const owner = cardOwners.get(conversationId);
@@ -534,8 +587,13 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
         // "show it to whoever asked" is exactly the leak this map exists to
         // prevent.
         if (owner === undefined || owner.userId !== userId) continue;
-        for (const card of list) {
-          out.push({ conversationId, agentId: owner.agentId, card });
+        for (const entry of list) {
+          out.push({
+            conversationId,
+            agentId: owner.agentId,
+            card: entry.card,
+            raisedAt: entry.raisedAt,
+          });
         }
       }
       return out;
@@ -555,7 +613,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
       // in practice, and the match is exact-string, so a single id arg suffices
       // (the route passes whichever subject it just granted).
       const next = list.filter(
-        (c) =>
+        ({ card: c }) =>
           !(
             (c.kind === 'skill' && c.skillId === subjectId) ||
             (c.kind === 'connector' && c.connectorId === subjectId)

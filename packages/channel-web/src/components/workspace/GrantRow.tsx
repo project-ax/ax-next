@@ -52,6 +52,7 @@ import {
   GRANT_NO_CONVERSATION,
   GRANT_NOT_RESUMED,
   GRANT_NOT_RESUMED_DISMISS,
+  GRANT_REJECT_HINT,
   GRANT_REJECT_LABEL,
   HOST_ALLOW_ALWAYS_LABEL,
   HOST_ALLOW_ONCE_LABEL,
@@ -73,6 +74,7 @@ import {
 import { slotAccount } from '@/lib/grant-shape';
 import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
 import { HttpError, httpFetch, userFacingMessage } from '@/lib/http';
+import { workspaceApi } from '@/lib/workspace-api';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 import {
   clearGrantDraft,
@@ -193,14 +195,67 @@ export function GrantRow({
   const allSlotsFilled = needed.every((s) => (values[s] ?? '').trim().length > 0);
 
   /**
-   * Turning a grant down is PURELY LOCAL — no network call, the same as chat.
-   * There is nothing to tell the server: the wall already holds, and a grant
-   * that was never given needs no revoking.
+   * "Not now" — and it means two different things, because the question comes
+   * back from two different places (TASK-444).
+   *
+   * THIS USED TO BE PURELY LOCAL, on the reasoning that "the wall already
+   * holds, and a grant that was never given needs no revoking". Both halves
+   * are true and the conclusion was wrong. The pending card lives on the
+   * SERVER: `GET /api/workspace/grants` re-reads it on every workspace mount,
+   * so a refusal that never left the browser came straight back on the next
+   * reload, re-asking a question the person had already answered — and the
+   * only way to discover that was to reload and watch it happen.
+   *
+   * So a `skill` or `connector` refusal is RECORDED. It is a deferral, not a
+   * dismissal: the marker stops the replay, and a grant the agent raises again
+   * because it genuinely needs it outranks the marker and comes back. Need
+   * brings the question back; the clock never does. `GRANT_REJECT_HINT` is
+   * that promise in words, which is why it is drawn under the button.
+   *
+   * A `host` refusal STAYS purely local, and that is a decision rather than
+   * the old path surviving by accident. A host wall is turn-scoped and
+   * `chunk-buffer.ts`'s `pendingGrantsForUser` deliberately does not enumerate
+   * it, so this refusal cannot be replayed at all — there is nothing to
+   * suppress. Recording it would be actively wrong: the next session that hits
+   * the same wall is a genuinely NEW need, and an old "not now" must not
+   * answer it while nobody is looking.
    */
-  function reject(): void {
-    // Withdrawn — the draft must not outlive a prompt that is now gone.
+  async function reject(): Promise<void> {
+    /*
+      THE HALF-TYPED KEY GOES FIRST, and unconditionally. TASK-389 made the
+      draft outlive this component on purpose — a tab switch must not cost
+      someone the key they were halfway through typing — and this is the one
+      exit where it must not, because the person's intent here is withdrawal.
+      Before the request, not after it: whether we manage to tell the server is
+      our problem, and it is no reason to leave their secret on screen.
+      `values` as well as the draft — they are two stores, and clearing only
+      the durable one leaves this render still painting the key.
+    */
     clearGrantDraft(grant.key);
-    resolveAndReturnFocus();
+    setValues({});
+    if (request.kind === 'host') {
+      resolveAndReturnFocus();
+      return;
+    }
+    const subjectId =
+      request.kind === 'connector' ? request.connectorId : request.skillId;
+    setBusy(true);
+    setError(null);
+    try {
+      await workspaceApi.declineGrant(grant.agentId, request.kind, subjectId);
+      resolveAndReturnFocus();
+    } catch (err) {
+      /*
+        THE ROW STAYS. A decline the server never heard is a decline that comes
+        back on the next mount, so dropping the row here would tell the person
+        their answer was kept when it was not — the same false promise this
+        change exists to end, moved one layer down. Never the status or the
+        route: those go to the console.
+      */
+      setError(userFacingMessage(err, 'grant-row'));
+    } finally {
+      setBusy(false);
+    }
   }
 
   /** Write each freshly-typed key to the host credential store, then decide. */
@@ -353,10 +408,25 @@ export function GrantRow({
           >
             {HOST_ALLOW_ALWAYS_LABEL}
           </Button>
-          <Button size="sm" variant="ghost" disabled={busy} onClick={reject}>
+          {/*
+            No `armForResolution` on this one, unlike its two neighbours: the
+            host arm of `reject` cannot fail, so there is never an answer to
+            land on — the row goes and `resolveAndReturnFocus` hands focus to
+            the region above it.
+          */}
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={busy}
+            onClick={() => {
+              void reject();
+            }}
+          >
             {GRANT_REJECT_LABEL}
           </Button>
         </div>
+        {/* True here too — see `GRANT_REJECT_HINT`. */}
+        <p className="mt-2 text-[11.5px] text-muted-foreground">{GRANT_REJECT_HINT}</p>
       </div>
     );
   }
@@ -584,7 +654,20 @@ export function GrantRow({
         >
           {busy ? GRANT_CONNECTING_LABEL : GRANT_CONNECT_LABEL}
         </Button>
-        <Button size="sm" variant="ghost" disabled={busy} onClick={reject}>
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={busy}
+          onClick={() => {
+            // Armed like the other async buttons: if the decline does not
+            // land, the row stays wearing a sentence, and the sentence is what
+            // takes focus. `void` rather than an async handler — React does
+            // not await one, and the floating promise is already handled
+            // inside `reject`.
+            armForResolution();
+            void reject();
+          }}
+        >
           {GRANT_REJECT_LABEL}
         </Button>
         {!allSlotsFilled ? (
@@ -597,6 +680,13 @@ export function GrantRow({
           </span>
         ) : null}
       </div>
+      {/*
+        ON ITS OWN LINE, beneath the row of buttons, rather than beside them:
+        the hints above are CONDITIONAL and say why Connect is disabled, and
+        crowding a third, always-present sentence into that flex row would have
+        them reading as one run-on line whenever both are on screen.
+      */}
+      <p className="mt-2 text-[11.5px] text-muted-foreground">{GRANT_REJECT_HINT}</p>
     </div>
   );
 }

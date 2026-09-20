@@ -161,6 +161,15 @@ import {
 // not a cross-plugin import), and the route reads it rather than re-deriving
 // what is pending from anything else.
 import type { ChunkBuffer } from './chunk-buffer.js';
+// The durable "Not now" marker (TASK-444). Same package, this plugin's own
+// module: the route owns the wire shape and this owns the storage shape, so
+// the key spelling never leaks onto the wire (invariant 1).
+import {
+  grantSubjectId,
+  recordGrantDecline,
+  withoutDeclinedGrants,
+  type DeclinableGrantKind,
+} from './grant-declines.js';
 import type { PermissionRequest } from './types.js';
 import { listTeamIdsForUser, type RouteRequest, type RouteResponse } from './routes-chat.js';
 import { sanitizeContentDispositionFilename } from './content-disposition.js';
@@ -835,6 +844,52 @@ export interface GrantsResponse {
      */
     request: PermissionRequest;
   }>;
+}
+
+/**
+ * `POST /api/workspace/grants/decline` — "Not now", written down (TASK-444).
+ *
+ * Product vocabulary only, and that is the test that this payload is
+ * storage-agnostic (invariant 1): no key, no prefix, no timestamp. The
+ * alternate implementation — a `@ax/grant-declines` plugin behind a
+ * `grant-declines:record|list` hook with its own table — consumes exactly this
+ * body without one field changing.
+ *
+ * The client's `agentId` is a CLAIM, not an authority. The handler requires an
+ * exact match in the caller's OWN pending grants before it writes anything, so
+ * the only thing this body can ever decline is a question the deployment is
+ * genuinely asking this person right now. A triple that matches nothing —
+ * whether it never existed or belongs to somebody else — is one 404.
+ */
+export interface DeclineGrantRequest {
+  /** The agent that asked. Validated against the pending card, never trusted. */
+  agentId: string;
+  /** `skill` or `connector`. Host cards are turn-scoped and not declinable. */
+  kind: DeclinableGrantKind;
+  /** The skill id or connector id the card named. */
+  subjectId: string;
+}
+
+/** `200` from the decline route. A refusal we could not record is a 503, not
+ *  this with `declined: false` — see the handler. */
+export interface DeclineGrantResponse {
+  declined: true;
+}
+
+/**
+ * Validate a decline body. Nothing here is trusted beyond its shape — the
+ * handler still requires the triple to match a grant genuinely pending for the
+ * caller before it writes. `kind` is checked against the two literals rather
+ * than cast, so a third value (`host`, or anything invented) is a 400 and not
+ * a key in a namespace nobody meant to create.
+ */
+function readDeclineBody(parsed: unknown): DeclineGrantRequest | null {
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const { agentId, kind, subjectId } = parsed as Record<string, unknown>;
+  if (typeof agentId !== 'string' || agentId.length === 0) return null;
+  if (typeof subjectId !== 'string' || subjectId.length === 0) return null;
+  if (kind !== 'skill' && kind !== 'connector') return null;
+  return { agentId, kind, subjectId };
 }
 
 /**
@@ -2239,9 +2294,17 @@ export interface WorkspaceHandlerDeps {
    */
   agentWorkspacePreview?: boolean;
   /**
-   * Time seam for the "This week" window. Injected so the counter's boundary is
+   * Time seam for the "This week" window, and for the `declinedAt` a "Not now"
+   * is recorded with (TASK-444). Injected so the counter's boundary is
    * testable — a counter whose definition cannot be tested at its edge is a
    * counter whose definition will drift.
+   *
+   * IT HAS A TWIN: `ChunkBufferOptions.now` in chunk-buffer.ts stamps the
+   * `raisedAt` this `declinedAt` is compared against (`withoutDeclinedGrants`).
+   * Production injects NEITHER — both are the system clock, which is the only
+   * reason the comparison means anything. Nothing structurally forces that, so
+   * a test that stubs one and not the other is comparing two unrelated clocks:
+   * stub both or stub neither.
    */
   now?: () => Date;
 }
@@ -3828,12 +3891,85 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
 
       const rows = buffer?.pendingGrantsForUser(userId) ?? [];
       res.status(200).json({
-        grants: rows.map((g) => ({
+        // The filter is SHARED with the SSE replay (grant-declines.ts) — two
+        // copies of the comparison is how the two paths drift apart.
+        grants: (
+          await withoutDeclinedGrants(bus, initCtx, userId, rows)
+        ).map((g) => ({
           conversationId: g.conversationId,
           agentId: g.agentId,
           request: g.card,
         })),
       } satisfies GrantsResponse);
+    },
+
+    /**
+     * POST /api/workspace/grants/decline — "Not now", written down (TASK-444).
+     *
+     * A deferral, and a need-triggered one. The marker says WHEN the person
+     * refused; the pending card says when it was last asked; the read above
+     * drops the row only while the refusal is the newer of the two. So there
+     * is no timer here and no expiry to get wrong — the question returns when
+     * the agent genuinely asks again, and never merely because time passed.
+     *
+     * The body is a claim about what to decline, and it is checked against the
+     * caller's own pending grants before anything is written. "Not yours" and
+     * "not pending" are therefore the same 404: a 403 would confirm that a
+     * grant exists and belongs to someone, which is the oracle the GET above
+     * goes out of its way not to be either.
+     */
+    async declineGrant(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(req.body.toString('utf-8')) as unknown;
+      } catch {
+        res.status(400).json({ error: 'invalid-json' });
+        return;
+      }
+      const body = readDeclineBody(parsed);
+      if (body === null) {
+        res.status(400).json({ error: 'invalid-grant' });
+        return;
+      }
+
+      // AUTHORITATIVE STATE, not the request. A pending card the caller owns
+      // is the only thing that can be declined, and the card — not the body —
+      // is where `kind` and `subjectId` are read back from.
+      const pending = (buffer?.pendingGrantsForUser(userId) ?? []).find(
+        (g) =>
+          g.agentId === body.agentId &&
+          g.card.kind === body.kind &&
+          grantSubjectId(g.card) === body.subjectId,
+      );
+      if (pending === undefined) {
+        res.status(404).json({ error: 'grant-not-pending' });
+        return;
+      }
+
+      if (!bus.hasService('storage:set')) {
+        // Never a silent success. A refusal we failed to record is a refusal
+        // that comes back on the next mount, and saying so now is the honest
+        // ending — the row stays on screen with the error.
+        res.status(503).json({ error: 'declines-unavailable' });
+        return;
+      }
+
+      // Every segment of the marker is authoritative by now: `userId` is the
+      // authenticated caller, `agentId` comes off the matched card, and the
+      // match above required `kind` and `subjectId` to EQUAL that card's own
+      // (`card.kind`, `card.skillId` / `card.connectorId`) — so the body's
+      // copies are the card's values, checked rather than taken on trust.
+      await recordGrantDecline(bus, initCtx, {
+        userId,
+        agentId: pending.agentId,
+        kind: body.kind,
+        subjectId: body.subjectId,
+        declinedAt: now().getTime(),
+      });
+      res.status(200).json({ declined: true } satisfies DeclineGrantResponse);
     },
 
     /**
@@ -4915,6 +5051,14 @@ export async function registerWorkspaceRoutes(
   initCtx: AgentContext,
   opts: { agentWorkspacePreview: boolean; buffer?: ChunkBuffer },
 ): Promise<Array<() => void>> {
+  // TWO CLOCKS THAT HAVE TO BE ONE. `makeWorkspaceHandlers`'s `now` stamps the
+  // `declinedAt` of a "Not now"; `createChunkBuffer`'s `now` (plugin.ts, the
+  // same `opts.buffer` passed in here) stamps each pending card's `raisedAt`.
+  // `withoutDeclinedGrants` compares those two instants, which is only sound
+  // while they come from the same clock. Neither seam is injected on this
+  // path — both fall through to the system clock — and that is exactly why
+  // this call passes no `now`. If one ever gains an injected clock, the other
+  // has to gain the same one.
   const handlers = makeWorkspaceHandlers({
     bus,
     initCtx,
@@ -4998,6 +5142,15 @@ export async function registerWorkspaceRoutes(
         method: 'GET',
         path: '/api/workspace/grants',
         handler: handlers.grants as unknown as RouteHandler,
+      },
+      {
+        // TASK-444 — "Not now", recorded. Mounts beside the read above and
+        // behind the same flag: it can only ever decline something that read
+        // is offering, so a deployment without the surface has nothing for it
+        // to answer.
+        method: 'POST',
+        path: '/api/workspace/grants/decline',
+        handler: handlers.declineGrant as unknown as RouteHandler,
       },
       {
         method: 'GET',

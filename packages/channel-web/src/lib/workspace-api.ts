@@ -792,6 +792,41 @@ export const workspaceApi = {
     ),
 
   /**
+   * Turn a pending grant down, durably (TASK-444).
+   *
+   * NOT the opposite of `revokeGrant` above: that takes back a grant that was
+   * GIVEN, this records that one that was only ever ASKED FOR was refused. The
+   * refusal has to be durable because the question is: `GET /grants` re-reads
+   * the pending cards on every workspace mount, so a "Not now" the server never
+   * heard about comes straight back on the next reload.
+   *
+   * It is a DEFERRAL, not a dismissal — the marker suppresses the replay, and a
+   * grant the agent raises again afterwards outranks it and comes back. That is
+   * why there is no `undeclineGrant` to pair with this: nothing needs undoing,
+   * because a genuine new need already undoes it.
+   *
+   * `host` grants never come here. They are turn-scoped and the server does not
+   * enumerate them, so a host refusal cannot be replayed and recording one would
+   * wrongly answer a later session's question in advance — hence `kind` is the
+   * narrow pair rather than the full `PermissionRequest['kind']`.
+   *
+   * No storage key and no timestamp on the wire (invariant 1): the three ids are
+   * product vocabulary, and the server stamps the instant itself. The `agentId`
+   * is checked against what is actually pending for the caller, so this cannot
+   * be used to write markers for grants that are not theirs.
+   *
+   * Throws a `WorkspaceApiError` on anything non-2xx — 404 when that grant is
+   * not pending (any more), 503 when this deployment has nowhere durable to
+   * write it. Both are worth reporting: a refusal we failed to record is one
+   * the person will be asked again.
+   */
+  declineGrant: (agentId: string, kind: 'skill' | 'connector', subjectId: string) =>
+    req<{ declined: boolean }>('/grants/decline', {
+      method: 'POST',
+      body: { agentId, kind, subjectId },
+    }),
+
+  /**
    * Save the human-owned memory tier (AW-13).
    *
    * Named for what it can write. The server hands the text to

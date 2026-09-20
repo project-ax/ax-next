@@ -174,6 +174,26 @@ export const HOST_ALLOW_ALWAYS_LABEL = 'Always for this agent';
 export const HOST_ALLOWING_LABEL = 'Allowing…';
 
 /**
+ * What "Not now" actually does (TASK-444). Rendered under the button, on every
+ * kind of grant, because it is true of all of them.
+ *
+ * THE LABEL STAYS, AND THIS IS WHAT MAKES IT HONEST. "Not now" reads as a
+ * permanent no — a dismissal — and it is not one: the refusal is remembered, so
+ * we stop replaying the question, but the moment the agent genuinely needs that
+ * capability to get on with something, it asks again. Without this line the two
+ * plausible readings ("gone forever" and "it'll nag me on every reload") are
+ * both wrong, and the person has no way to tell which we meant.
+ *
+ * No timer in the sentence, because there is no timer in the behaviour — it is
+ * the need that brings the question back, never the clock.
+ *
+ * Curly apostrophes, for the reason `HOST_WALL_EXPLANATION` above gives: this
+ * line is drawn on the same card as that one, and a straight apostrophe here
+ * would be the only one on the surface.
+ */
+export const GRANT_REJECT_HINT = 'We’ll only ask if it’s needed again.';
+
+/**
  * The grant landed and the agent did not pick up again (TASK-374).
  *
  * The behaviour this replaces was SILENCE: the row vanished, the capability was

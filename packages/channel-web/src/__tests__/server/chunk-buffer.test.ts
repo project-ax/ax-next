@@ -501,17 +501,17 @@ describe('@ax/channel-web ChunkBuffer', () => {
         slots: [{ slot: 'KEY', kind: 'api-key' as const }],
       });
 
-    it('appendPermissionCard + tailPermissionCards round-trips by conversationId', () => {
+    it('appendPermissionCard + tailPermissionCardEntries round-trips by conversationId', () => {
       const buf = createChunkBuffer();
       try {
         buf.appendPermissionCard('cnv1', skill('s1'));
         buf.appendPermissionCard('cnv1', skill('s2'));
-        const cards = buf.tailPermissionCards('cnv1');
+        const cards = buf.tailPermissionCardEntries('cnv1').map((e) => e.card);
         expect(cards.map((c) => (c.kind === 'skill' ? c.skillId : ''))).toEqual([
           's1',
           's2',
         ]);
-        expect(buf.tailPermissionCards('cnv-unknown')).toEqual([]);
+        expect(buf.tailPermissionCardEntries('cnv-unknown')).toEqual([]);
       } finally {
         buf.dispose();
       }
@@ -525,7 +525,7 @@ describe('@ax/channel-web ChunkBuffer', () => {
           ...skill('s1'),
           hosts: ['api.example.com', 'extra.example.com'],
         });
-        const cards = buf.tailPermissionCards('cnv1');
+        const cards = buf.tailPermissionCardEntries('cnv1').map((e) => e.card);
         expect(cards).toHaveLength(1);
         expect(cards[0]?.kind === 'skill' ? cards[0].hosts : []).toEqual([
           'api.example.com',
@@ -542,13 +542,13 @@ describe('@ax/channel-web ChunkBuffer', () => {
         buf.appendPermissionCard('cnv1', skill('s1'));
         buf.appendPermissionCard('cnv1', skill('s2'));
         buf.evictPermissionCard('cnv1', 's1');
-        const cards = buf.tailPermissionCards('cnv1');
+        const cards = buf.tailPermissionCardEntries('cnv1').map((e) => e.card);
         expect(cards.map((c) => (c.kind === 'skill' ? c.skillId : ''))).toEqual([
           's2',
         ]);
         // Idempotent — evicting an absent skill is a no-op.
         buf.evictPermissionCard('cnv1', 's-absent');
-        expect(buf.tailPermissionCards('cnv1')).toHaveLength(1);
+        expect(buf.tailPermissionCardEntries('cnv1')).toHaveLength(1);
       } finally {
         buf.dispose();
       }
@@ -560,7 +560,7 @@ describe('@ax/channel-web ChunkBuffer', () => {
         buf.appendPermissionCard('cnv1', skill('s1'));
         buf.appendPermissionCard('cnv1', skill('s2'));
         buf.evictConversationCards('cnv1');
-        expect(buf.tailPermissionCards('cnv1')).toEqual([]);
+        expect(buf.tailPermissionCardEntries('cnv1')).toEqual([]);
       } finally {
         buf.dispose();
       }
@@ -585,7 +585,7 @@ describe('@ax/channel-web ChunkBuffer', () => {
       try {
         buf.appendPermissionCard('cnv1', skill('s1'));
         buf.appendPermissionCard('cnv1', connector('linear'));
-        const cards = buf.tailPermissionCards('cnv1');
+        const cards = buf.tailPermissionCardEntries('cnv1').map((e) => e.card);
         expect(cards).toHaveLength(2);
         expect(cards[1]?.kind).toBe('connector');
         expect(cards[1]?.kind === 'connector' ? cards[1].connectorId : '').toBe(
@@ -604,7 +604,7 @@ describe('@ax/channel-web ChunkBuffer', () => {
           ...connector('linear'),
           hosts: ['api.linear.app', 'extra.linear.app'],
         });
-        const cards = buf.tailPermissionCards('cnv1');
+        const cards = buf.tailPermissionCardEntries('cnv1').map((e) => e.card);
         expect(cards).toHaveLength(1);
         expect(cards[0]?.kind === 'connector' ? cards[0].hosts : []).toEqual([
           'api.linear.app',
@@ -621,7 +621,7 @@ describe('@ax/channel-web ChunkBuffer', () => {
         buf.appendPermissionCard('cnv1', connector('linear'));
         buf.appendPermissionCard('cnv1', skill('s1'));
         buf.evictPermissionCard('cnv1', 'linear');
-        const cards = buf.tailPermissionCards('cnv1');
+        const cards = buf.tailPermissionCardEntries('cnv1').map((e) => e.card);
         expect(cards).toHaveLength(1);
         expect(cards[0]?.kind).toBe('skill');
       } finally {
@@ -652,7 +652,7 @@ describe('@ax/channel-web ChunkBuffer', () => {
         buf.appendPermissionCard('cnv1', skill('s1'));
         // Well past the chunk IDLE_TTL (60s) and several sweep ticks (30s).
         vi.advanceTimersByTime(5 * 60_000);
-        expect(buf.tailPermissionCards('cnv1')).toHaveLength(1);
+        expect(buf.tailPermissionCardEntries('cnv1')).toHaveLength(1);
       } finally {
         buf.dispose();
         vi.useRealTimers();
@@ -664,7 +664,7 @@ describe('@ax/channel-web ChunkBuffer', () => {
       try {
         // Push 20 distinct skill cards — the cap is 16.
         for (let i = 0; i < 20; i++) buf.appendPermissionCard('cnv1', skill(`s${i}`));
-        const cards = buf.tailPermissionCards('cnv1');
+        const cards = buf.tailPermissionCardEntries('cnv1').map((e) => e.card);
         expect(cards).toHaveLength(16);
         // Oldest (s0..s3) dropped; the tail retains s4..s19.
         expect(cards[0]?.kind === 'skill' ? cards[0].skillId : '').toBe('s4');
@@ -705,7 +705,12 @@ describe('pendingGrantsForUser', () => {
     });
 
     expect(buf.pendingGrantsForUser('u-ann')).toEqual([
-      { conversationId: 'cnv-1', agentId: 'a-quill', card: skill('linear') },
+      {
+        conversationId: 'cnv-1',
+        agentId: 'a-quill',
+        card: skill('linear'),
+        raisedAt: expect.any(Number),
+      },
     ]);
   });
 
@@ -741,10 +746,20 @@ describe('pendingGrantsForUser', () => {
     });
 
     expect(buf.pendingGrantsForUser('u-ann')).toEqual([
-      { conversationId: 'cnv-ann', agentId: 'a-quill', card: skill('linear') },
+      {
+        conversationId: 'cnv-ann',
+        agentId: 'a-quill',
+        card: skill('linear'),
+        raisedAt: expect.any(Number),
+      },
     ]);
     expect(buf.pendingGrantsForUser('u-bob')).toEqual([
-      { conversationId: 'cnv-bob', agentId: 'a-scout', card: skill('github') },
+      {
+        conversationId: 'cnv-bob',
+        agentId: 'a-scout',
+        card: skill('github'),
+        raisedAt: expect.any(Number),
+      },
     ]);
   });
 
@@ -757,7 +772,7 @@ describe('pendingGrantsForUser', () => {
 
     expect(buf.pendingGrantsForUser('u-ann')).toEqual([]);
     // Still replayable the old way, on the conversation it belongs to.
-    expect(buf.tailPermissionCards('cnv-1')).toHaveLength(1);
+    expect(buf.tailPermissionCardEntries('cnv-1')).toHaveLength(1);
   });
 
   it('excludes host cards — a stale wall offers an answer that would do nothing', () => {
@@ -837,5 +852,74 @@ describe('pendingGrantsForUser', () => {
     });
 
     expect(buf.pendingGrantsForUser('')).toEqual([]);
+  });
+
+  describe('raisedAt (TASK-444)', () => {
+    /*
+      `raisedAt` is the whole need-trigger. A durable "Not now" marker carries
+      the instant the person refused; a pending card carries the instant it was
+      raised; the grants read drops the card only while the refusal is the
+      NEWER of the two. So the stamp has to be honest about one thing above all
+      — a re-proposal is a fresh ask, not the old one still hanging around.
+    */
+    it('stamps raisedAt from the injected clock when a card is first buffered', () => {
+      let clock = 5_000;
+      const buf = createChunkBuffer({ now: () => clock });
+      buf.appendPermissionCard('cnv-1', skill('linear'), {
+        userId: 'u-ann',
+        agentId: 'a-quill',
+      });
+      clock = 9_999;
+
+      expect(buf.pendingGrantsForUser('u-ann')[0]?.raisedAt).toBe(5_000);
+    });
+
+    it('a re-proposal of the SAME subject bumps raisedAt — it is a fresh need', () => {
+      /*
+        The replace-in-place branch. If it kept the original instant, a grant
+        the agent genuinely needs again would stay suppressed by an older
+        decline forever — the deferral would silently become a permanent no,
+        which is the one outcome "Not now" must never mean.
+      */
+      let clock = 5_000;
+      const buf = createChunkBuffer({ now: () => clock });
+      buf.appendPermissionCard('cnv-1', skill('linear'), {
+        userId: 'u-ann',
+        agentId: 'a-quill',
+      });
+      clock = 7_500;
+      buf.appendPermissionCard('cnv-1', skill('linear'), {
+        userId: 'u-ann',
+        agentId: 'a-quill',
+      });
+
+      const rows = buf.pendingGrantsForUser('u-ann');
+      // Still ONE grant (the dedupe is unchanged)...
+      expect(rows).toHaveLength(1);
+      // ...carrying the LATER instant.
+      expect(rows[0]?.raisedAt).toBe(7_500);
+    });
+
+    it('tailPermissionCardEntries keeps the instant BESIDE the card, never on it', () => {
+      /*
+        `raisedAt` is OURS. The card object in each entry is what the SSE replay
+        writes to the browser, so a bookkeeping field leaking onto it would ship
+        a server-side instant to the client and make the fetched grant and the
+        streamed grant of one subject disagree byte for byte. The entry carries
+        it; the card does not.
+      */
+      const buf = createChunkBuffer({ now: () => 5_000 });
+      buf.appendPermissionCard('cnv-1', skill('linear'), {
+        userId: 'u-ann',
+        agentId: 'a-quill',
+      });
+
+      const entries = buf.tailPermissionCardEntries('cnv-1');
+      expect(entries.map((e) => e.card)).toEqual([skill('linear')]);
+      expect(Object.keys(entries[0]?.card ?? {})).not.toContain('raisedAt');
+      // ...and it IS reachable, beside the card, for the one caller that has
+      // to compare it against a decline.
+      expect(entries[0]?.raisedAt).toBe(5_000);
+    });
   });
 });

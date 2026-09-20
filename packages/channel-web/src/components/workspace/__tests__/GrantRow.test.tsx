@@ -13,10 +13,12 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { GrantRow } from '../GrantRow';
 import { grantKey } from '@/lib/workspace-grant-store';
 import { getGrantDraft, resetGrantDraftsForTest } from '@/lib/workspace-grant-drafts';
-import { HTTP_SERVER_ERROR } from '@/lib/http';
+import { HTTP_SERVER_ERROR, HTTP_UNAVAILABLE } from '@/lib/http';
 import {
   GRANT_NO_CONVERSATION,
   GRANT_REASSURANCE,
+  GRANT_REJECT_HINT,
+  GRANT_REJECT_LABEL,
   KEY_SAFETY,
   SLOT_HINT,
 } from '@/lib/grant-copy';
@@ -396,17 +398,161 @@ describe('a host grant', () => {
   });
 });
 
-describe('turning a grant down', () => {
-  test('is purely local — it drops the row and calls nothing', () => {
+describe('turning a grant down (TASK-444)', () => {
+  /*
+    THE CLAIM THIS BLOCK REPLACES was "turning a grant down is purely local —
+    it drops the row and calls nothing". True of the code, wrong about the
+    product. A `skill` or `connector` grant is pending ON THE SERVER:
+    `pendingGrantsForUser` enumerates it on every workspace mount, so a refusal
+    nobody recorded came straight back on the next reload and re-asked a
+    question the person had already answered — and the only way to find that
+    out was to reload and see it again.
+
+    A `host` grant keeps the old path, and that is not an oversight. See the
+    host case near the bottom of this block.
+  */
+
+  test('a skill grant is recorded as declined BEFORE the row goes', async () => {
     const fetchMock = okFetch();
     const { onResolved } = row(skillReq);
 
-    fireEvent.click(screen.getByRole('button', { name: /not now/i }));
+    fireEvent.click(screen.getByRole('button', { name: GRANT_REJECT_LABEL }));
 
-    expect(onResolved).toHaveBeenCalledWith('skill:linear-issues');
-    // Nothing to tell the server: the wall already holds, and a grant that was
-    // never given needs no revoking.
+    await waitFor(() => expect(onResolved).toHaveBeenCalledWith('skill:linear-issues'));
+
+    const decline = fetchMock.mock.calls.find(
+      (c) => c[0] === '/api/workspace/grants/decline',
+    );
+    expect(decline).toBeDefined();
+    expect(decline?.[1]?.method).toBe('POST');
+    // The WHOLE body, not a `toContain`: the point of this wire shape is that
+    // no storage key crosses it (invariant 1), and only an exact match can say
+    // that a `key`, a `prefix` or a client-supplied timestamp is ABSENT.
+    expect(JSON.parse(String(decline?.[1]?.body))).toEqual({
+      agentId: 'a-quill',
+      kind: 'skill',
+      subjectId: 'linear-issues',
+    });
+    // CSRF: this route is gated on the header, like every other workspace write.
+    expect(decline?.[1]?.headers).toMatchObject({ 'x-requested-with': 'ax-admin' });
+  });
+
+  test('a connector grant declines as a connector, with its connectorId', async () => {
+    // Not a duplicate of the case above: `kind` and `subjectId` are both
+    // DERIVED from the request, and a version that hardcoded `'skill'` or read
+    // `skillId` on every arm passes that test and declines the wrong thing here.
+    const fetchMock = okFetch();
+    const { onResolved } = row(connectorReq);
+
+    fireEvent.click(screen.getByRole('button', { name: GRANT_REJECT_LABEL }));
+
+    await waitFor(() => expect(onResolved).toHaveBeenCalledWith('connector:linear'));
+    const decline = fetchMock.mock.calls.find(
+      (c) => c[0] === '/api/workspace/grants/decline',
+    );
+    expect(JSON.parse(String(decline?.[1]?.body))).toEqual({
+      agentId: 'a-quill',
+      kind: 'connector',
+      subjectId: 'linear',
+    });
+  });
+
+  test('a decline the server never heard leaves the row where it was', async () => {
+    /*
+      503 is the answer when there is nowhere durable to write the refusal —
+      and it is exactly the case where dropping the row would be a lie, because
+      that grant is coming back on the next mount. So the row stays and says
+      so. Resolving silently here would be the same false promise this card is
+      about, one layer down.
+    */
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 503 }));
+    const { onResolved } = row(skillReq);
+
+    fireEvent.click(screen.getByRole('button', { name: GRANT_REJECT_LABEL }));
+
+    expect(await screen.findByText(HTTP_UNAVAILABLE)).toBeInTheDocument();
+    expect(onResolved).not.toHaveBeenCalled();
+    expect(screen.getByTestId('grant-skill:linear-issues')).toBeInTheDocument();
+    // Still answerable — the way out came back rather than staying disabled.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: GRANT_REJECT_LABEL })).toBeEnabled(),
+    );
+    // No status code and no route name on screen.
+    expect(screen.queryByText(/503/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/grants\/decline/)).not.toBeInTheDocument();
+  });
+
+  test('the half-typed key is gone the moment the decline lands', async () => {
+    okFetch();
+    const { onResolved } = row(skillReq);
+
+    fireEvent.change(screen.getByLabelText('API key'), {
+      target: { value: 'lin_partial' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: GRANT_REJECT_LABEL }));
+
+    // BOTH halves, because they are two different stores and only one of them
+    // used to be cleared: `workspace-grant-drafts.ts` outlives the component
+    // (TASK-389), and `values` is what THIS render is painting. A row that
+    // clears the draft and goes on showing the secret has withdrawn nothing.
+    expect(getGrantDraft(grantKey(skillReq))).toEqual({});
+    expect(screen.getByLabelText('API key')).toHaveValue('');
+    await waitFor(() => expect(onResolved).toHaveBeenCalled());
+  });
+
+  test('the half-typed key is gone even when the decline FAILS', async () => {
+    // The person's intent is withdrawal. Whether we managed to tell the server
+    // is our problem, not a reason to leave their key on screen — so the clear
+    // is unconditional, and happens before the POST is even attempted.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 503 }));
+    row(skillReq);
+
+    fireEvent.change(screen.getByLabelText('API key'), {
+      target: { value: 'lin_partial' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: GRANT_REJECT_LABEL }));
+
+    expect(getGrantDraft(grantKey(skillReq))).toEqual({});
+    expect(screen.getByLabelText('API key')).toHaveValue('');
+    expect(await screen.findByText(HTTP_UNAVAILABLE)).toBeInTheDocument();
+  });
+
+  test('a host grant stays purely local — nothing is sent, the row goes at once', () => {
+    /*
+      THE ARM THAT MUST NOT CHANGE, which is why this is a case of its own and
+      not "the old test, kept". A host wall is turn-scoped and
+      `chunk-buffer.ts`'s `pendingGrantsForUser` deliberately never enumerates
+      it, so this refusal cannot come back on a reload — there is nothing to
+      suppress. Recording it would be worse than useless: a later session that
+      hits the same wall is a genuinely NEW need, and an old "not now" would
+      answer it in the person's absence.
+
+      So the obvious over-fix — make every "Not now" durable — fails here.
+    */
+    const fetchMock = okFetch();
+    const { onResolved } = row(hostReq);
+
+    fireEvent.click(screen.getByRole('button', { name: GRANT_REJECT_LABEL }));
+
+    expect(onResolved).toHaveBeenCalledWith('host:example.org');
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test('the skill arm says what "Not now" actually means', () => {
+    // "Not now" reads as permanent and it is not. The hint is what makes the
+    // label honest — without it the copy promises a dismissal while the code
+    // delivers a deferral.
+    row(skillReq);
+
+    expect(screen.getByText(GRANT_REJECT_HINT)).toBeInTheDocument();
+  });
+
+  test('the host arm says it too — it is true of both', () => {
+    // A host "Not now" also only comes back when the agent hits that wall
+    // again. Same sentence, different reason.
+    row(hostReq);
+
+    expect(screen.getByText(GRANT_REJECT_HINT)).toBeInTheDocument();
   });
 });
 
@@ -532,7 +678,12 @@ describe('a half-typed value surviving the row leaving and re-entering the threa
     await waitFor(() => expect(getGrantDraft(grantKey(skillReq))).toEqual({}));
   });
 
-  test('turning the grant down clears the draft too', () => {
+  test('turning the grant down clears the draft too', async () => {
+    // `okFetch` because turning a skill grant down now POSTs the decline
+    // (TASK-444). The clear itself is still SYNCHRONOUS — it happens before
+    // the request, on purpose — so the assertion below is unchanged; the await
+    // only lets the request this click started finish inside the test.
+    const fetchMock = okFetch();
     row(skillReq);
 
     fireEvent.change(screen.getByLabelText('API key'), {
@@ -541,5 +692,6 @@ describe('a half-typed value surviving the row leaving and re-entering the threa
     fireEvent.click(screen.getByRole('button', { name: /not now/i }));
 
     expect(getGrantDraft(grantKey(skillReq))).toEqual({});
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
   });
 });
