@@ -1291,6 +1291,26 @@ export function AgentView({
 
           {tab === 'did' && (
             <div className="flex-1 overflow-y-auto px-6 py-6">
+              {/*
+                NO `awaitingScope` HERE, and it is worth saying why rather than
+                leaving the asymmetry with the Activity page to look like an
+                oversight (TASK-453).
+
+                The feed hook re-scopes in an effect, so for one render after a
+                switch it holds the collection the reader just left — and this
+                tab drops the agent column, so those rows would paint as THIS
+                agent's. The Activity page takes a prop to refuse that frame.
+                This tab cannot reach it: `AgentView` is keyed on the agent id
+                so a switch remounts it, and the remount returns "Loading…"
+                above until its own `detail` read resolves — which is strictly
+                after the feed's reset effect has run. By the time this line
+                renders at all, the stale frame is over.
+
+                What it lands in instead is the feed's own not-yet-loaded
+                branch (empty list, still fetching), which shows the same
+                placeholders. If the `!detail` gate above ever goes away, this
+                needs the prop.
+              */}
               <ActivityFeed
                 events={activity}
                 agents={agents}
