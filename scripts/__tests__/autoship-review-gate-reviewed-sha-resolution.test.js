@@ -64,19 +64,27 @@
 //   - delete ONLY the `merge-base --is-ancestor` arm (keep resolution + the 40-char
 //     assert) -> 2 red: the off-branch case x both shells. Nothing else moves, so that
 //     arm is carrying its own property and is not decoration on the resolve.
+//   - drop the `|| { … exit 1; }` guard from the `git fetch` line -> 2 red: the
+//     failed-fetch case x both shells. Added after review; the two stale directions are
+//     not symmetric, and the one that hides work is the one this gate exists to close.
 //   - change the fail-closed arm to `exit 1` instead of falling back to origin/main
-//     -> 8 red (`-`, empty, unknown, ambiguous x 2 shells). Recorded because it is the
-//     mutant a reader expects to PASS: "halting is also closed". It is not what the
-//     gate is specified to do -- Q2's contract is that an unusable reviewed-sha means
-//     the whole branch is unreviewed, which keeps the queue moving through an
-//     independent pass instead of stalling it on a typo.
-//   - swap `--verify --quiet "…^{commit}"` for a bare `git rev-parse "…"` -> 2 red, NOT
-//     the 4 predicted. Only the unknown-sha case x both shells. The prediction assumed
-//     ambiguity rides on `--verify`; it does not -- bare `rev-parse` fails on an
-//     ambiguous prefix too, so the `||` arm still fires and that case stays green. What
-//     `--verify` uniquely buys is the 40-hex-looking string that names nothing: bare
-//     `rev-parse` assumes anything sha-shaped IS a sha, echoes it back and exits 0, so
-//     `REVIEWED_SHA` ends up holding the garbage it was handed. One property, not two.
+//     -> 10 red (`-`, empty, unknown, ambiguous, off-branch x 2 shells). Recorded
+//     because it is the mutant a reader expects to PASS: "halting is also closed". It
+//     is not what the gate is specified to do -- Q2's contract is that an unusable
+//     reviewed-sha means the whole branch is unreviewed, which keeps the SERIALIZED
+//     queue moving through an independent pass instead of stalling every card behind a
+//     typo. (The off-branch case joined this list at review: see its test.)
+//   - swap `--verify --quiet "${RAW_REVIEWED}^{commit}"` for a bare
+//     `git rev-parse "${RAW_REVIEWED}"` -- dropping the flags AND the `^{commit}` peel,
+//     which matters -> 2 red, NOT the 4 predicted. Only the unknown-sha case x both
+//     shells. The prediction assumed ambiguity rides on `--verify`; it does not -- bare
+//     `rev-parse` fails on an ambiguous prefix too, so the `||` arm still fires and that
+//     case stays green. What `--verify` uniquely buys is the 40-hex-looking string that
+//     names nothing: bare `rev-parse` assumes anything sha-shaped IS a sha, echoes it
+//     back and exits 0, so `REVIEWED_SHA` ends up holding the garbage it was handed.
+//     One property, not two. Keep the peel while dropping the flags and you measure 0
+//     red instead, because `<unknown40hex>^{commit}` forces a lookup and errors --
+//     a mutant is a claim about an EDIT, and this one is two edits.
 //   - delete the `[ ${#REVIEWED_SHA} -eq 40 ]` assert alone -> 0 red. Recorded because
 //     a passing mutant is data too: with resolution in place that assert is genuinely
 //     belt-and-braces, and it is kept because it is the line that stops a future edit
@@ -177,6 +185,7 @@ function q2Script(reviewedSha) {
 const WORKDIR = mkdtempSync(join(tmpdir(), 'autoship-reviewed-sha-'));
 const STUB_DIR = join(WORKDIR, 'stub');
 const CLONE = join(WORKDIR, 'work');
+const STALE_CLONE = join(WORKDIR, 'stale');
 const TRACE = join(WORKDIR, 'git-trace.log');
 
 /** Real git, in the fixture clone, never traced. */
@@ -281,6 +290,16 @@ beforeAll(() => {
     }
   }
 
+  // A second clone with a dead remote: every ref it holds is real but STALE, which is
+  // the state an unguarded `git fetch` leaves behind. Its origin/feat deliberately
+  // predates the unreviewed commit, so a block that shrugs off the failed fetch would
+  // range over a branch that is missing work -- the under-review direction.
+  execFileSync(REAL_GIT, ['clone', '-q', join(WORKDIR, 'origin.git'), STALE_CLONE]);
+  execFileSync(REAL_GIT, ['update-ref', 'refs/remotes/origin/feat', R1_SHA], { cwd: STALE_CLONE });
+  execFileSync(REAL_GIT, ['remote', 'set-url', 'origin', join(WORKDIR, 'no-such-remote.git')], {
+    cwd: STALE_CLONE,
+  });
+
   // The stubs. `gh` answers the one question the block asks it; `git` is a tracing shim
   // in front of the real binary, so every range the block forms is recorded verbatim.
   execFileSync('mkdir', ['-p', STUB_DIR]);
@@ -324,10 +343,10 @@ afterAll(() => {
  * specified to halt), and a helper that threw would push that assertion into a
  * try/catch where "it halted" is easy to confuse with "the test crashed".
  */
-function runGate(shell, reviewedSha) {
+function runGate(shell, reviewedSha, cwd = CLONE) {
   writeFileSync(TRACE, '');
   const r = spawnSync(shell, ['-c', q2Script(reviewedSha)], {
-    cwd: CLONE,
+    cwd,
     encoding: 'utf8',
     env: {
       ...process.env,
@@ -438,16 +457,36 @@ describe.each(SHELLS)('Q2 gate under %s: the base it ranges from (TASK-479)', (s
     }
   });
 
-  it('HALTS when the reviewed-sha resolves to a commit that is not on the branch', () => {
+  it('fails CLOSED when the reviewed-sha resolves to a commit that is not on the branch', () => {
     if (Q2 === undefined) return;
-    const { rc, out, bases } = runGate(shell, OFF_BRANCH_SHA);
+    const { bases } = runGate(shell, OFF_BRANCH_SHA);
+
+    expect(
+      bases.length,
+      `${SKILL_PATH}: no range formed for an off-branch reviewed-sha`,
+    ).toBeGreaterThanOrEqual(2);
+
+    for (const b of bases) {
+      expect(
+        b,
+        `${SKILL_PATH}: the gate measured the delta from ${OFF_BRANCH_SHA}, which is not an ancestor of origin/feat. That is the genuinely dangerous state an abbreviation buys: the range resolves, the delta can come back EMPTY, and an empty delta is this gate's "a reviewer saw the head" answer. Widen to origin/main instead — which is also the right answer for the honest cause of a non-ancestor, a rebase after the review round`,
+      ).toBe(ORIGIN_MAIN_SHA);
+    }
+  });
+
+  it('HALTS rather than ranging over refs a failed fetch could not refresh', () => {
+    if (Q2 === undefined) return;
+    // In this clone `origin/feat` is one commit behind the real branch and the remote is
+    // gone, so a block that shrugs off the fetch failure computes an EMPTY delta for the
+    // very commit it exists to notice. The two stale directions are not symmetric: a
+    // stale origin/main only widens, a stale branch ref hides work.
+    const { rc, out, bases } = runGate(shell, R1_SHA, STALE_CLONE);
 
     expect(
       bases,
-      `${SKILL_PATH}: the gate measured the delta from ${OFF_BRANCH_SHA}, which is not an ancestor of origin/feat. That is the genuinely dangerous state an abbreviation buys: the range resolves, the delta can come back EMPTY, and an empty delta is this gate's "a reviewer saw the head" answer`,
+      `${SKILL_PATH}: \`git fetch\` failed and the gate ranged anyway — from refs it could not refresh. Here that yields an empty delta for a branch whose head it never saw`,
     ).toEqual([]);
-
-    expect(rc, `${SKILL_PATH}: an off-branch reviewed-sha must halt this card, not fall back and merge`).not.toBe(0);
+    expect(rc, `${SKILL_PATH}: a failed fetch must halt the card, not produce a delta`).not.toBe(0);
     expect(out, 'the halt must say why').toMatch(/HALT/);
   });
 });

@@ -406,7 +406,11 @@ about to merge.
 BRANCH=$(gh pr view <n> --json headRefName --jq .headRefName)
 # BOTH endpoints, same rule as Q1: this block's fail-closed path ranges from
 # origin/main, so a stale origin/main here would quietly widen the "unreviewed" set.
-git fetch origin main "${BRANCH}"
+# Guarded, unlike the older blocks above, because the two stale directions are NOT
+# symmetric: a stale origin/main only widens the delta (fail-safe), but a stale
+# origin/${BRANCH} is MISSING commits pushed since the last fetch — an under-review
+# hole, in the one direction this whole gate exists to close.
+git fetch origin main "${BRANCH}" || { echo "HALT #<n>: fetch failed — every range below would be formed from stale refs"; exit 1; }
 
 RAW_REVIEWED=<reviewed-sha>   # from the handoff, VERBATIM — do not trim, do not retype.
 
@@ -440,12 +444,29 @@ if [ -z "${REVIEWED_SHA}" ]; then
   echo "⚠ #<n>: reviewed-sha '${RAW_REVIEWED}' is missing/ambiguous/unknown — failing CLOSED: whole branch is unreviewed"
   REVIEWED_SHA=$(git rev-parse --verify "origin/main^{commit}")
 elif ! git merge-base --is-ancestor "${REVIEWED_SHA}" "origin/${BRANCH}"; then
-  # It resolved — to something that is NOT on this branch. Do not fall back and do not
-  # proceed: a base off the branch makes the delta below meaningless in the direction
-  # that looks reassuring. Ask the builder which sha it meant.
-  echo "HALT #<n>: reviewed-sha ${REVIEWED_SHA} is not an ancestor of origin/${BRANCH} — the delta would be measured against the wrong base"
-  exit 1
+  # It resolved — to something that is NOT on this branch, so the delta below would be
+  # measured against the wrong base. This is the reassuring failure: a wrong base can
+  # report an EMPTY delta for code nobody read.
+  #
+  # TWO causes, and they want the same answer. (a) A corrupted handoff — the sha names
+  # another branch. (b) An HONEST one: the builder was reviewed at ${REVIEWED_SHA} and
+  # then rebased or force-pushed, which this very skill tells it to do when main moves.
+  # The old commit is orphaned but still resolvable in a long-lived checkout that
+  # fetched it earlier, so it resolves and is no longer an ancestor.
+  # So do NOT halt on it. Halting would stall a SERIALIZED queue on correct builder
+  # behaviour, and this gate has already ruled that a non-terminating queue is the worse
+  # bug. Widening is right for both causes anyway: a rebase can carry conflict
+  # resolutions no reviewer saw, and a wrong sha deserves the whole branch.
+  echo "⚠ #<n>: reviewed-sha ${REVIEWED_SHA} resolved but is not on origin/${BRANCH} (rebase/force-push, or the wrong sha) — failing CLOSED: whole branch is unreviewed"
+  REVIEWED_SHA=$(git rev-parse --verify "origin/main^{commit}")
 fi
+
+# NOTE, because this is semi-trusted builder input (invariant 5): resolution accepts any
+# commit-ish, so a handoff naming `HEAD` or the branch itself resolves, passes the
+# ancestry test (it IS the head) and yields an EMPTY delta — "fully reviewed". Nothing
+# here can distinguish that from an honest handoff; the mitigation is the contract
+# (`references/templates.md` asks for a full 40-char sha) plus Q1's `reviewer:` check,
+# not this block.
 
 # Same assertion `HEAD_SHA` gets, for the same reason: the two shas this gate compares
 # are now checked by one rule, so neither can drift back to an abbreviation alone.
