@@ -636,9 +636,11 @@ append_progress() {
   cid=$(printf '%s' "$json" | jq -r '.data.node.content.id // empty')
   body=$(printf '%s' "$json" | jq -r '.data.node.content.body // ""')
   [ -z "$cid" ] && { echo "progress: skip (not a draft-issue card)"; return 0; }
-  # SPLICE IN SHELL -- NEVER THROUGH `awk -v e="$entry"`. An awk `-v` assignment cannot
-  # carry a literal newline: awk aborts with `newline in string`, emits NOTHING, and the
-  # old code wrote that empty result back as the ENTIRE body while printing its normal
+  # SPLICE IN SHELL -- NEVER THROUGH `awk -v e="$entry"`. A literal newline in an awk
+  # `-v` assignment is implementation-defined: the one-true-awk macOS ships (the
+  # platform this runs on) ABORTS with `newline in string`, emits NOTHING and exits 2,
+  # while gawk/mawk on the CI runners accept it. The old code never checked that rc, so
+  # on a Mac it wrote the empty result back as the ENTIRE body while printing its normal
   # success line. It reduced a live card to 1 byte (TASK-470), and it fired only on the
   # SECOND-or-later multi-line append to a card -- the first takes the `printf` arm
   # below, because there is no block to splice into yet, which is why ten sibling cards

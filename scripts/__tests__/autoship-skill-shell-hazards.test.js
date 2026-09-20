@@ -805,6 +805,36 @@ describe('progress helpers carry a multi-line entry without destroying the body'
       );
 
       it.skipIf(!canRun)(
+        `${shell}: ${fn} splices at the FIRST END marker and leaves human text after it alone`,
+        () => {
+          // The shell splice takes `${body%%"$END"*}` / `${body#*"$END"}`, i.e. the
+          // FIRST occurrence. A human note that quotes the end marker -- or a body that
+          // somehow carries two -- must not move the insertion point or lose the text
+          // after the block. (awk inserted before EVERY line equal to the marker, which
+          // would have duplicated the entry here.)
+          const env = makeEnv();
+          const S = `<!-- AUTOSHIP-${label === 'progress' ? 'PROGRESS' : 'LEARNINGS'}:START -->`;
+          const E = `<!-- AUTOSHIP-${label === 'progress' ? 'PROGRESS' : 'LEARNINGS'}:END -->`;
+          writeFileSync(
+            env.state,
+            `${HUMAN}\n\n${S}\n${heading}\n- 10:00 a\n${E}\n\na human note quoting ${E} inline\n`,
+          );
+          const r = runIn(
+            env,
+            shell,
+            `. ${JSON.stringify(env.helper)} && ${fn} ${shq(ITEM)} ${shq('multi\nline')}`,
+          );
+          expect(r.code, r.out).toBe(0);
+          const stored = readFileSync(env.state, 'utf8');
+          expect(stored).toContain('a human note quoting');
+          expect(stored).toContain('human-authored description');
+          expect(stored).toContain('multi\nline');
+          // Inserted once, not once per marker occurrence.
+          expect(stored.split('multi\nline')).toHaveLength(2);
+        },
+      );
+
+      it.skipIf(!canRun)(
         `${shell}: ${fn} still accepts the literal backslash-n separator`,
         () => {
           // Back-compat, not a new feature: the old `awk -v` splice expanded escapes,
@@ -952,26 +982,78 @@ describe('progress helpers carry a multi-line entry without destroying the body'
 
 // The mechanism, measured rather than reasoned about -- and the static bans, which
 // run even where jq/zsh are unavailable.
-describe('awk -v cannot carry a newline (the TASK-470 mechanism)', () => {
-  it('awk -v with a literal newline fails and emits NOTHING', () => {
-    // This is the entire defect in four lines. The old helper did not check this rc.
-    let out = '';
-    let code = 0;
+describe('awk -v cannot be trusted with caller text (the TASK-470 mechanism)', () => {
+  // MEASURED CORRECTION to the card, and it matters. `awk -v name=value` with a
+  // LITERAL NEWLINE is implementation-defined, not universally fatal:
+  //
+  //   * the one-true-awk that ships with macOS -- the platform auto-ship runs on, and
+  //     the one the incident happened on -- aborts with `newline in string`, prints
+  //     NOTHING and exits 2. That empty stdout is what the helper wrote back as the
+  //     whole card body.
+  //   * gawk / mawk on ubuntu-latest accept it and print the value.
+  //
+  // So CI would never have reproduced the card-destroying failure, and the first draft
+  // of this test asserted the macOS behaviour unconditionally and went red on the
+  // runner. Both branches are pinned below, because the split IS the argument: a
+  // helper whose data-safety depends on which awk happens to be installed is broken
+  // even on the machines where it happens to work.
+  const awkNewline = (() => {
     try {
-      out = execFileSync(
-        'bash',
-        [
-          '-c',
-          `entry=$'a\\nb'; printf 'x\\nEND\\n' | awk -v e="$entry" -v end=END '$0==end{print e} {print}'`,
-        ],
-        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
-      );
+      return {
+        code: 0,
+        out: execFileSync(
+          'bash',
+          [
+            '-c',
+            `entry=$'a\\nb'; printf 'x\\nEND\\n' | awk -v e="$entry" -v end=END '$0==end{print e} {print}'`,
+          ],
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+        ),
+      };
     } catch (e) {
-      code = e.status;
-      out = e.stdout ?? '';
+      return { code: e.status, out: e.stdout ?? '' };
     }
-    expect(code, 'awk must be the thing that fails here').not.toBe(0);
-    expect(out, 'and it emits nothing -- which the helper then wrote as the body').toBe('');
+  })();
+
+  it('a literal newline in awk -v is implementation-defined -- and where it fails, it emits NOTHING', () => {
+    if (awkNewline.code !== 0) {
+      // The destructive branch. The old helper did not check this rc, so `nb` became
+      // the empty string and was written back as the entire card body.
+      expect(
+        awkNewline.out,
+        'awk failed -- and emitted nothing, which is the data-loss precondition',
+      ).toBe('');
+    } else {
+      // The permissive branch. Still not a reason to keep `-v`: see the escape test.
+      expect(awkNewline.out, 'awk accepted the newline, so it must have printed it').toContain(
+        'a\nb',
+      );
+    }
+  });
+
+  it.skipIf(process.platform !== 'darwin')(
+    'on darwin -- the platform auto-ship actually runs on -- it is the destructive branch',
+    () => {
+      expect(awkNewline.code, 'macOS awk must abort on a newline in -v').not.toBe(0);
+      expect(awkNewline.out).toBe('');
+    },
+  );
+
+  it('awk -v silently rewrites caller text on EVERY awk: it expands escapes', () => {
+    // Portable, and a second reason the old splice could not be trusted with caller
+    // text: `-v` runs the value through escape processing, so a progress line
+    // mentioning a Windows path or a tab sequence came out altered on every platform.
+    // It is also why the fixed helpers keep an explicit `\n` -> newline substitution:
+    // callers may have relied on that expansion, and only that part of it is kept.
+    const out = execFileSync(
+      'bash',
+      ['-c', String.raw`printf 'END\n' | awk -v e='a\tb C:\next' -v end=END '$0==end{print e}'`],
+      { encoding: 'utf8' },
+    );
+    expect(out, 'awk -v expanded the escapes rather than passing them through').not.toContain(
+      String.raw`\t`,
+    );
+    expect(out).not.toContain(String.raw`\n`);
   });
 
   it('the shell splice that replaced it is byte-identical under bash and zsh', () => {
