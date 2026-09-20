@@ -631,7 +631,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         {
           hook: 'storage:set',
           degradation:
-            '"Not now" on a capability grant cannot be recorded; POST /api/workspace/grants/decline answers 503 and the grant is asked again on the next workspace mount',
+            '"Not now" on a capability grant cannot be recorded; POST /api/workspace/grants/decline answers 503 and the grant is asked again on the next workspace mount AND on the next chat stream open',
         },
         {
           hook: 'storage:list-prefix',

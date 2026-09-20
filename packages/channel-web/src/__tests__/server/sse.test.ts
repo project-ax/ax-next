@@ -147,6 +147,23 @@ interface BootOpts {
    * under test; omitted → neither, i.e. a deployment with no KV store at all.
    */
   storage?: 'read-write' | 'write-only';
+  /**
+   * Hold `storage:list-prefix` open until the test says otherwise (TASK-444
+   * regression seam). The decline read is the only `await` the handler makes
+   * anywhere near the replay, and the whole question these tests ask is what
+   * happens to the connection while it is in flight — which is unaskable if
+   * the stub resolves on the spot. Requires `storage: 'read-write'`.
+   */
+  gateListPrefix?: boolean;
+}
+
+/** A promise plus the handle to settle it from the outside. */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
 }
 
 function bootHandler(opts: BootOpts = {}) {
@@ -215,15 +232,23 @@ function bootHandler(opts: BootOpts = {}) {
       },
     );
   }
+  // Resolves the moment the handler asks the store for this user's declines;
+  // `listPrefixGate` is what it then waits on when `gateListPrefix` is set.
+  const listPrefixEntered = deferred();
+  const listPrefixGate = deferred();
   if (opts.storage === 'read-write') {
     bus.registerService<
       { prefix: string },
       { entries: Array<{ key: string; value: Uint8Array }> }
-    >('storage:list-prefix', 'mock-storage', async (_ctx, { prefix }) => ({
-      entries: [...kv.entries()]
-        .filter(([k]) => k.startsWith(prefix))
-        .map(([key, value]) => ({ key, value })),
-    }));
+    >('storage:list-prefix', 'mock-storage', async (_ctx, { prefix }) => {
+      listPrefixEntered.resolve();
+      if (opts.gateListPrefix === true) await listPrefixGate.promise;
+      return {
+        entries: [...kv.entries()]
+          .filter(([k]) => k.startsWith(prefix))
+          .map(([key, value]) => ({ key, value })),
+      };
+    });
   }
 
   const buffer = createChunkBuffer(
@@ -266,7 +291,17 @@ function bootHandler(opts: BootOpts = {}) {
   );
 
   const handler = createSseHandler({ bus, initCtx, buffer });
-  return { bus, initCtx, buffer, handler, kv };
+  return {
+    bus,
+    initCtx,
+    buffer,
+    handler,
+    kv,
+    /** Resolves once the handler has entered the decline read. */
+    listPrefixCalled: listPrefixEntered.promise,
+    /** Lets that read finish. No-op unless `gateListPrefix` was set. */
+    releaseListPrefix: listPrefixGate.resolve,
+  };
 }
 
 function ctxWithConversation(ctx: AgentContext, conversationId: string): AgentContext {
@@ -1459,6 +1494,173 @@ describe('declined grants are not replayed on stream open (TASK-444)', () => {
       ).toMatchObject({ kind: 'host', host: 'status.example.com' });
     } finally {
       buffer.dispose();
+    }
+  });
+});
+
+// TASK-444 regression — the stream-open span has to stay SYNCHRONOUS.
+//
+// A first pass put the decline read (`withoutDeclinedGrants`, one
+// `storage:list-prefix` round trip) at the replay site, between the buffer
+// drain and the `subscribe` calls. With an in-memory sqlite store that await
+// resolves in the same tick and nothing shows; against postgres it is real
+// I/O, and the handler is then suspended in the middle of the one span step 4a
+// documents as unbreakable. Two things fall out of that, and neither has a
+// louder symptom than "the reply lost a bit":
+//
+//   - A frame fired during the await is appended to the buffer AFTER the drain
+//     and delivered to a subscriber that is not attached YET, so it reaches
+//     nobody. For a chunk that is TASK-23's gap detector firing; for a pending
+//     card there is no seq and no gap net at all, so it is silently gone — the
+//     exact TASK-82 class this replay exists to prevent.
+//   - A client that disconnects during the await runs `cleanup()` against six
+//     subscribers that do not exist yet (all no-ops), and the handler then
+//     attaches them, plus a keepalive, with nothing left to tear them down.
+//
+// So these two tests are not about declines. They are about the await, and
+// they are written at that level: the decline read is held open, the world
+// moves, and the connection is asked whether it noticed.
+describe('the SSE setup span stays synchronous (TASK-444 regression)', () => {
+  function skillCard(skillId: string): PermissionRequest {
+    return {
+      kind: 'skill',
+      skillId,
+      description: 'Reach the GitHub API on your behalf',
+      hosts: ['api.github.com'],
+      slots: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
+      authored: true,
+    };
+  }
+
+  const framesOf = (captured: CapturedResponse): Array<Record<string, unknown>> =>
+    captured.streamWrites
+      .filter((w) => w.startsWith('data: '))
+      .map((w) => JSON.parse(w.slice(6)) as Record<string, unknown>);
+
+  it('delivers a chunk and a card fired while the decline read is in flight', async () => {
+    let clock = 1_000;
+    const { bus, initCtx, handler, buffer, listPrefixCalled, releaseListPrefix } =
+      bootHandler({
+        storage: 'read-write',
+        gateListPrefix: true,
+        now: () => clock,
+      });
+    try {
+      // One pending card, so there is a replay for the decline read to filter
+      // — without it the filter short-circuits on an empty list and never
+      // reaches the store at all.
+      await bus.fire(
+        'chat:permission-request',
+        ctxWithConversation(initCtx, 'cnv_test'),
+        skillCard('already-pending'),
+      );
+
+      const { res, captured } = fakeRes();
+      const inFlight = handler(fakeReq({ reqId: 'r-test' }), res);
+      await listPrefixCalled;
+
+      // The turn does not pause while we read a KV store. A chunk lands and the
+      // agent proposes a second grant, both with the connection half-set-up.
+      clock = 1_500;
+      await bus.fire<StreamChunk>('chat:stream-chunk', initCtx, {
+        reqId: 'r-test',
+        kind: 'text',
+        text: 'mid-read',
+      });
+      await bus.fire(
+        'chat:permission-request',
+        ctxWithConversation(initCtx, 'cnv_test'),
+        skillCard('raised-mid-read'),
+      );
+
+      releaseListPrefix();
+      await inFlight;
+
+      const written = framesOf(captured);
+      const cardIds = written
+        .map(
+          (f) => (f.permissionRequest as { skillId?: string } | undefined)?.skillId,
+        )
+        .filter((id): id is string => typeof id === 'string');
+      // Asserted as ONE object so a regression shows both losses at once: they
+      // have the same cause and fixing only the loud one is the trap.
+      expect({
+        // The chunk: neither re-drained nor delivered live is a TASK-23 gap.
+        chunkDelivered: written.some(
+          (f) => f.kind === 'text' && f.text === 'mid-read',
+        ),
+        // The card: no seq, no gap net — losing it is silent and permanent,
+        // because the orchestrator's dedup suppresses a re-emission.
+        midReadCardDelivered: cardIds.includes('raised-mid-read'),
+        // Degradation direction: this one holds either way, and is here so a
+        // "fix" that stops replaying the buffer entirely cannot pass.
+        alreadyPendingReplayed: cardIds.includes('already-pending'),
+      }).toEqual({
+        chunkDelivered: true,
+        midReadCardDelivered: true,
+        alreadyPendingReplayed: true,
+      });
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('leaves no subscriber and no keepalive behind when the client disconnects during the decline read', async () => {
+    // Fake timers BEFORE bootHandler so the buffer's own sweep interval is in
+    // the baseline: what we are counting is the ONE extra timer a leaked
+    // keepalive adds, not the absolute number.
+    vi.useFakeTimers();
+    const sseSubscriptions: Array<{ hook: string; key: string }> = [];
+    const { bus, initCtx, handler, buffer, listPrefixCalled, releaseListPrefix } =
+      bootHandler({
+        storage: 'read-write',
+        gateListPrefix: true,
+        now: () => 1_000,
+      });
+    try {
+      // Record what the handler attaches. The keys carry a per-connection
+      // random suffix, so watching `subscribe` is the only way to learn them —
+      // and `unsubscribe`'s removed-count is then the bus's own bookkeeping
+      // answering "is this still attached?".
+      const realSubscribe = bus.subscribe.bind(bus);
+      vi.spyOn(bus, 'subscribe').mockImplementation(((
+        hook: string,
+        key: string,
+        handlerFn: Parameters<typeof realSubscribe>[2],
+      ): void => {
+        if (key.startsWith('@ax/channel-web/sse-')) {
+          sseSubscriptions.push({ hook, key });
+        }
+        realSubscribe(hook, key, handlerFn);
+      }) as typeof bus.subscribe);
+
+      await bus.fire(
+        'chat:permission-request',
+        ctxWithConversation(initCtx, 'cnv_test'),
+        skillCard('github-helper'),
+      );
+
+      const timersBefore = vi.getTimerCount();
+      const { res, captured } = fakeRes();
+      const inFlight = handler(fakeReq({ reqId: 'r-test' }), res);
+      await listPrefixCalled;
+
+      // The tab closes while we are still reading the store.
+      captured.fireClientClose();
+
+      releaseListPrefix();
+      await inFlight;
+      // Let a close handler queued during setup run before we count.
+      await Promise.resolve();
+
+      const stillAttached = sseSubscriptions.filter(
+        ({ hook, key }) => bus.unsubscribe(hook, key) > 0,
+      );
+      expect(stillAttached).toEqual([]);
+      expect(vi.getTimerCount()).toBe(timersBefore);
+    } finally {
+      buffer.dispose();
+      vi.useRealTimers();
     }
   });
 });

@@ -16,12 +16,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import { HookBus, makeAgentContext, type AgentContext } from '@ax/core';
 import {
+  filterDeclinedGrants,
   grantDeclineKey,
   grantDeclineUserPrefix,
   parseGrantDeclineKey,
   readGrantDeclines,
   recordGrantDecline,
 } from '../../server/grant-declines.js';
+import type { PermissionRequest } from '../../server/types.js';
 
 function makeCtx(warn: (event: string, fields?: unknown) => void): AgentContext {
   const ctx = makeAgentContext({
@@ -193,5 +195,131 @@ describe('recordGrantDecline / readGrantDeclines', () => {
     store.set(`${grantDeclineUserPrefix('u-ann')}only-two:segments`, enc({ declinedAt: 5 }));
 
     expect((await readGrantDeclines(bus, ctx, 'u-ann')).size).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The comparison itself, on its own.
+//
+// It was split out of `withoutDeclinedGrants` because the SSE replay has to run
+// it with the response already streaming and its live subscribers not yet
+// attached (see the step-3a/4a comments in sse.ts). That makes two properties
+// load-bearing rather than merely nice: it is SYNCHRONOUS, and it is TOTAL. The
+// second one is what these tests are mostly about.
+describe('filterDeclinedGrants', () => {
+  const skill = (skillId: string): PermissionRequest => ({
+    kind: 'skill',
+    skillId,
+    description: 'd',
+    hosts: ['api.example.com'],
+    slots: [{ slot: 'KEY', kind: 'api-key' as const }],
+  });
+
+  const row = (agentId: string, card: PermissionRequest, raisedAt: number) => ({
+    agentId,
+    card,
+    raisedAt,
+  });
+
+  const declines = (
+    entries: Array<[[string, string, 'skill' | 'connector', string], number]>,
+  ): Map<string, number> =>
+    new Map(
+      entries.map(([[u, a, k, s], at]) => [grantDeclineKey(u, a, k, s), at]),
+    );
+
+  it('drops a grant declined at or after it was raised, keeps one raised since', () => {
+    const ctx = makeCtx(() => {});
+    const kept = filterDeclinedGrants(
+      ctx,
+      declines([
+        [['u-ann', 'a-quill', 'skill', 'declined-same'], 1_000],
+        [['u-ann', 'a-quill', 'skill', 'declined-after'], 2_000],
+        [['u-ann', 'a-quill', 'skill', 're-raised'], 1_000],
+      ]),
+      'u-ann',
+      [
+        row('a-quill', skill('declined-same'), 1_000),
+        row('a-quill', skill('declined-after'), 1_000),
+        row('a-quill', skill('re-raised'), 1_500),
+        row('a-quill', skill('never-declined'), 1_000),
+      ],
+    );
+
+    expect(
+      kept.map((r) => (r.card.kind === 'skill' ? r.card.skillId : '')),
+    ).toEqual(['re-raised', 'never-declined']);
+  });
+
+  it('never suppresses another agent’s or another user’s grant', () => {
+    const ctx = makeCtx(() => {});
+    const marker = declines([
+      [['u-ann', 'a-quill', 'skill', 'linear'], 2_000],
+    ]);
+
+    // Same subject, different agent → different key → not answered.
+    expect(
+      filterDeclinedGrants(ctx, marker, 'u-ann', [
+        row('a-other', skill('linear'), 1_000),
+      ]),
+    ).toHaveLength(1);
+    // Same subject and agent, different reader → different key → not answered.
+    expect(
+      filterDeclinedGrants(ctx, marker, 'u-bob', [
+        row('a-quill', skill('linear'), 1_000),
+      ]),
+    ).toHaveLength(1);
+  });
+
+  it('passes a host card straight through — it has no durable subject', () => {
+    const ctx = makeCtx(() => {});
+    const host: PermissionRequest = {
+      kind: 'host',
+      host: 'example.org',
+      sessionId: 's-1',
+    };
+    expect(
+      filterDeclinedGrants(ctx, declines([]), 'u-ann', [
+        row('a-quill', host, 1_000),
+      ]),
+    ).toHaveLength(1);
+  });
+
+  // THE TOTALITY PROPERTY. `grantDeclineKey` runs `encodeURIComponent`, which
+  // throws `URIError` on a lone surrogate — and every id it encodes comes out of
+  // an agent-authored manifest. The caller that matters runs this with the SSE
+  // stream already open and its subscribers not yet attached, so a throw here
+  // does not fail a request, it abandons a connection half-built.
+  //
+  // Per-ROW, and that is the part that is new: the old shape wrapped the whole
+  // filter in one try/catch, so one unencodable id meant the entire list went
+  // through unfiltered and every genuine refusal in it was forgotten for that
+  // read. Now the row we cannot key is kept and its neighbours are still judged.
+  it('keeps a row whose key cannot be built, and still judges its neighbours', () => {
+    const warn = vi.fn();
+    const ctx = makeCtx(warn);
+    const loneSurrogate = 'a-\uD800';
+    // Guard the premise: if this ever stops throwing, the test below is vacuous.
+    expect(() => encodeURIComponent(loneSurrogate)).toThrow(URIError);
+
+    const kept = filterDeclinedGrants(
+      ctx,
+      declines([[['u-ann', 'a-quill', 'skill', 'linear'], 2_000]]),
+      'u-ann',
+      [
+        row(loneSurrogate, skill('linear'), 1_000),
+        row('a-quill', skill('linear'), 1_000),
+      ],
+    );
+
+    // Fail open on the one we could not evaluate; still drop the one we could.
+    expect(kept.map((r) => r.agentId)).toEqual([loneSurrogate]);
+    expect(warn).toHaveBeenCalledWith(
+      'workspace_grant_decline_key_failed',
+      expect.objectContaining({ kind: 'skill' }),
+    );
+    // Neither id is logged: one of them is the thing that failed to encode.
+    const [, fields] = warn.mock.calls[0] as [string, Record<string, unknown>];
+    expect(Object.keys(fields).sort()).toEqual(['error', 'kind']);
   });
 });

@@ -215,8 +215,8 @@ export function grantSubjectId(card: PermissionRequest): string | null {
 /**
  * Drop the grants this person has already said "Not now" to (TASK-444).
  *
- * ONE implementation, and that is the point of it living here. TWO server
- * paths put a pending card in front of somebody, and they have to agree:
+ * THE ONE COMPARISON, AND IT LIVES HERE ONLY. TWO server paths put a pending
+ * card in front of somebody, and they have to agree:
  *
  *   - `GET /api/workspace/grants` → `ChunkBuffer.pendingGrantsForUser` — the
  *     workspace-mount read-back (TASK-373).
@@ -227,12 +227,25 @@ export function grantSubjectId(card: PermissionRequest): string | null {
  *     filter that replay hands the answered question straight back.
  *
  * A second copy of the comparison below is exactly how those two drift apart,
- * and the drift is invisible from either side.
+ * and the drift is invisible from either side. The two paths reach it
+ * differently — the mount read-back through `withoutDeclinedGrants`, the SSE
+ * replay by reading the markers before it opens the stream and calling this
+ * function once the stream is open — but they land on the same three lines.
  *
- * ONE `list-prefix` per call, then a comparison per row: the marker wins while
- * `declinedAt >= raisedAt`. A grant re-raised after the refusal carries the
- * newer `raisedAt` and comes straight back — that is the whole need-trigger,
- * and it takes no write, no timer and no second decision.
+ * SYNCHRONOUS AND TOTAL, BOTH LOAD-BEARING. The SSE caller runs this with the
+ * response already streaming and its live subscribers not yet attached, so it
+ * can neither wait nor throw: an `await` here would reopen the frame-loss
+ * window this split exists to close, and a throw would abort the setup span
+ * mid-way. `grantDeclineKey` runs `encodeURIComponent` over ids out of an
+ * agent-authored manifest, and that throws `URIError` on a lone surrogate —
+ * so a row we cannot key is KEPT and logged. Failing open is the only honest
+ * direction: a question we could not evaluate is a question we have no
+ * grounds to suppress.
+ *
+ * The comparison itself: the marker wins while `declinedAt >= raisedAt`. A
+ * grant re-raised after the refusal carries the newer `raisedAt` and comes
+ * straight back — that is the whole need-trigger, and it takes no write, no
+ * timer and no second decision.
  *
  * THE TWO INSTANTS ARE WALL-CLOCK, AND WALL CLOCKS MOVE. Both come from this
  * one host process (channel-web is single-replica by construction — the chart
@@ -250,6 +263,57 @@ export function grantSubjectId(card: PermissionRequest): string | null {
  * Host cards pass through untouched — `grantSubjectId` returns `null` for
  * them and `null` means "keep".
  *
+ * `ctx` is first (rather than the bare `(declines, userId, rows)` the split was
+ * sketched as) for the one reason that it carries the logger the fail-open
+ * branch needs; it does no I/O.
+ */
+export function filterDeclinedGrants<
+  T extends { agentId: string; card: PermissionRequest; raisedAt: number },
+>(
+  ctx: AgentContext,
+  declines: ReadonlyMap<string, number>,
+  userId: string,
+  rows: readonly T[],
+): readonly T[] {
+  if (rows.length === 0 || declines.size === 0) return rows;
+  return rows.filter((row) => {
+    const subjectId = grantSubjectId(row.card);
+    if (subjectId === null) return true;
+    let key: string;
+    try {
+      key = grantDeclineKey(
+        userId,
+        row.agentId,
+        row.card.kind as DeclinableGrantKind,
+        subjectId,
+      );
+    } catch (err) {
+      // An id that cannot be percent-encoded (a lone surrogate). We have no
+      // key to look up, so we have no refusal to honour — keep the card.
+      // Neither id is logged: one of them is the thing that just failed to
+      // encode, and `kind` is a two-value enum that cannot be.
+      ctx.logger.warn('workspace_grant_decline_key_failed', {
+        kind: row.card.kind,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return true;
+    }
+    const declinedAt = declines.get(key);
+    return declinedAt === undefined || declinedAt < row.raisedAt;
+  });
+}
+
+/**
+ * `readGrantDeclines` + `filterDeclinedGrants`, for a caller that can simply
+ * await in place — today that is `GET /api/workspace/grants`, which has not
+ * written a byte of its response yet.
+ *
+ * The SSE replay deliberately does NOT use this: it has to do the read BEFORE
+ * it opens the stream, because everything from the stream opening to the last
+ * `subscribe()` call has to stay one synchronous span (see the step-4a comment
+ * in sse.ts). It reads and filters as two steps instead, and the step that
+ * matters — the comparison — is the same function.
+ *
  * Without `storage:list-prefix` this is exactly the pre-TASK-444 behaviour,
  * and the manifest declares that degradation.
  */
@@ -262,32 +326,18 @@ export async function withoutDeclinedGrants<
   rows: readonly T[],
 ): Promise<readonly T[]> {
   if (rows.length === 0 || !bus.hasService('storage:list-prefix')) return rows;
+  let declines: ReadonlyMap<string, number>;
   try {
-    const declines = await readGrantDeclines(bus, ctx, userId);
-    return rows.filter((row) => {
-      const subjectId = grantSubjectId(row.card);
-      if (subjectId === null) return true;
-      const declinedAt = declines.get(
-        grantDeclineKey(
-          userId,
-          row.agentId,
-          row.card.kind as DeclinableGrantKind,
-          subjectId,
-        ),
-      );
-      return declinedAt === undefined || declinedAt < row.raisedAt;
-    });
+    declines = await readGrantDeclines(bus, ctx, userId);
   } catch (err) {
     // Fall through UNFILTERED rather than failing the read. Losing the grants
     // list entirely is the worse outcome by a distance: a question shown twice
     // is a small annoyance, a question the person cannot see at all is an agent
-    // stuck with nobody able to unstick it. The `filter` is inside the `try`
-    // deliberately — `grantDeclineKey` runs `encodeURIComponent` over an id out
-    // of an agent-authored manifest, which throws on a lone surrogate, and on
-    // the SSE path that throw would land after the stream is already open.
+    // stuck with nobody able to unstick it.
     ctx.logger.warn('workspace_grant_declines_read_failed', {
       error: err instanceof Error ? err.message : String(err),
     });
     return rows;
   }
+  return filterDeclinedGrants(ctx, declines, userId, rows);
 }

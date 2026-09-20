@@ -223,10 +223,13 @@ export function createChannelWebServerPlugin(
         {
           // TASK-444 — "Not now" on a capability grant is recorded durably on
           // the (user, agent, grant) triple through the generic KV store, so
-          // the question is not asked again on the next workspace mount.
+          // the question is not asked again by EITHER reader: the workspace
+          // mount read-back or the pending-card replay on stream open. Both
+          // consult the same marker, so a refusal we could not write comes
+          // back on both.
           hook: 'storage:set',
           degradation:
-            '"Not now" on a capability grant cannot be recorded; POST /api/workspace/grants/decline answers 503 and the grant is asked again on the next workspace mount',
+            '"Not now" on a capability grant cannot be recorded; POST /api/workspace/grants/decline answers 503 and the grant is asked again on the next workspace mount AND on the next chat stream open',
         },
         {
           // TASK-444 — the read side of the same marker: one prefix scan per

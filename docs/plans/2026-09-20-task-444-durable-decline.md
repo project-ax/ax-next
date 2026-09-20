@@ -37,8 +37,8 @@ here (yolo-ship autonomy rule 5).
 
 The third row is the one a first pass missed, and review caught it: declining
 does not evict the card, so *both* read paths have to apply the filter. They
-share one implementation (`withoutDeclinedGrants`) precisely so they cannot
-drift apart.
+share one comparison (`filterDeclinedGrants`) precisely so they cannot drift
+apart.
 
 So the deferral is expressed as: **a decline suppresses the replay, and a newer
 raise outranks an older decline.** Nothing else is needed, and in particular no
@@ -57,8 +57,12 @@ wall is a genuine new need.
 `skillCards` holds `PermissionRequest[]`. Change the internal element to
 `{ card, raisedAt }`, stamped from an injectable clock on **both** insert and
 replace-in-place — a re-proposal for the same subject is a fresh need, so it
-gets a fresh instant. `tailPermissionCards` keeps its public shape;
-`pendingGrantsForUser` gains `raisedAt`.
+gets a fresh instant. The conversation accessor becomes
+`tailPermissionCardEntries`, returning `{ card, raisedAt }` (the plain-card
+`tailPermissionCards` had no caller left once the replay needed the instant, so
+it goes rather than sitting there half-wired); `pendingGrantsForUser` gains
+`raisedAt`. `raisedAt` stays OURS either way — the caller puts `card` on the
+wire and nothing else.
 
 ### 2. The durable marker (`server/grant-declines.ts`, new)
 
@@ -99,7 +103,7 @@ the wire** (invariant 1) and no client-supplied timestamp.
    silent success: a refusal we failed to record is one that will come back.
 4. Write `{ declinedAt: now() }` and answer `200 { declined: true }`.
 
-### 4. The filter — `withoutDeclinedGrants`, used by BOTH read paths
+### 4. The filter — one comparison, used by BOTH read paths
 
 One `storage:list-prefix` on `grant-decline:<enc(userId)>:`, then drop any
 pending grant whose marker has `declinedAt >= raisedAt`. A grant re-raised after
@@ -109,10 +113,24 @@ same host process (channel-web is single-replica by construction, plugin.ts J8);
 the one thing assumed is that that clock runs forwards, and the helper's comment
 says so rather than implying it away.
 
-It lives in `grant-declines.ts` and is called from *two* places — the
+It lives in `grant-declines.ts` and is reached from *two* places — the
 `GET /api/workspace/grants` handler and the SSE replay in `sse.ts`. One
 implementation on purpose: a second copy of the comparison is how the two paths
-drift, and the drift is invisible from either side.
+drift apart, and the drift is invisible from either side.
+
+They reach it differently, and that is not cosmetic. The read and the
+comparison are separate functions — `readGrantDeclines` (async) and
+`filterDeclinedGrants` (synchronous and total) — with
+`withoutDeclinedGrants = read + filter` as the convenience wrapper. The mount
+read-back awaits the wrapper. The SSE handler cannot: everything from
+`res.status(200).stream()` to its last `subscribe()` call has to stay one
+synchronous span, or a frame fired in the gap is appended to the buffer after
+the drain and delivered to a subscriber that is not attached yet — to nobody —
+and a disconnect in the gap leaks six subscribers and a keepalive. So it reads
+the markers *before* it opens the stream and calls the synchronous filter at
+the replay site. `filterDeclinedGrants` cannot throw either (a row whose key
+will not percent-encode is KEPT and logged): a throw there would land with the
+stream already open.
 
 Without `storage:list-prefix` the route answers exactly as it does today and the
 degradation is declared in the manifest.

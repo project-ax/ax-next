@@ -201,28 +201,16 @@ export interface ChunkBuffer {
     owner?: { userId: string; agentId: string },
   ): void;
   /**
-   * Snapshot of pending skill cards for a conversation, in insertion order.
-   * Empty when none. The SSE handler replays these on stream open keyed by
-   * conversationId.
+   * Snapshot of pending skill cards for a conversation, in insertion order,
+   * each with the instant it was raised beside it. Empty when none. The SSE
+   * handler replays these on stream open, keyed by conversationId.
    *
-   * Plain cards, deliberately: the `raisedAt` instant the buffer keeps beside
-   * each one (see `pendingGrantsForUser`) is OUR bookkeeping, and this list is
-   * what the SSE replay writes to the browser.
-   */
-  tailPermissionCards(conversationId: string): readonly PermissionRequest[];
-  /**
-   * The SAME cards `tailPermissionCards` returns, each with the `raisedAt`
-   * instant beside it.
-   *
-   * TWO accessors, on purpose. `tailPermissionCards` is the browser-facing
-   * shape — a list of cards, nothing else, and several callers already write
-   * it straight to a stream. This one is for the ONE caller that has to make a
-   * decision about a card before writing it: the SSE replay, which filters out
-   * the grants this person already said "Not now" to and needs `raisedAt` to
-   * do it (see `withoutDeclinedGrants` in grant-declines.ts). Widening
-   * `tailPermissionCards` instead would put our bookkeeping in front of every
-   * caller that only wants to draw a card, and putting a `raisedAt` on the
-   * wire is a field the browser has no business reading.
+   * `raisedAt` is OUR bookkeeping and does not go on the wire — the caller
+   * writes `card` and nothing else. It is here because the one caller has to
+   * decide something about each card before writing it: the replay drops the
+   * grants this person already said "Not now" to, and that decision is
+   * `declinedAt >= raisedAt` (see `filterDeclinedGrants` in
+   * grant-declines.ts).
    */
   tailPermissionCardEntries(
     conversationId: string,
@@ -575,13 +563,6 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
         }
       }
       hostCards.set(key, list);
-    },
-
-    tailPermissionCards(conversationId) {
-      const list = skillCards.get(conversationId);
-      if (list === undefined) return [];
-      // Map the bookkeeping off: callers of this one replay cards to browsers.
-      return list.map((e) => e.card);
     },
 
     tailPermissionCardEntries(conversationId) {
