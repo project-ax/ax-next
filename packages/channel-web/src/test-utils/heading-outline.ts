@@ -74,6 +74,14 @@ export function headingLevels(root: ParentNode = document.body): number[] {
  *   page; a component rendered on its own is a FRAGMENT of someone else's page
  *   and opens at whatever level its host gives it (`ConnectorsTab` sits under
  *   the Settings pane's `h1`, so it opens at `2`).
+ *
+ *   IT IS AN ASSERTION, NOT A TOLERANCE. Both the "opens at" and the
+ *   "above the expected top level" checks key off this number, so passing the
+ *   level a fragment HAPPENS to render at — rather than the level its host
+ *   actually gives it — makes a genuinely broken outline return `[]`. Read it
+ *   off the host, and pin the exact list with {@link headingOutline} as well:
+ *   a fragment test resting on `problems === []` alone is trusting the number
+ *   it just supplied.
  */
 export function headingOutlineProblems(
   root: ParentNode = document.body,

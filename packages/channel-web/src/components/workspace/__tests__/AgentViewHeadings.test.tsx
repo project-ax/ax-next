@@ -17,10 +17,11 @@
  * Elements, levels and DOM order are real, and they are the whole subject.
  */
 import type { ComponentProps } from 'react';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import {
   workspaceApi,
+  WorkspaceApiError,
   type AgentDetail,
   type WorkspaceAgent,
 } from '@/lib/workspace-api';
@@ -96,10 +97,38 @@ function renderView(over: Partial<ComponentProps<typeof AgentView>> = {}) {
   );
 }
 
+/**
+ * THE VIEWPORT STUB, copied in shape from `responsive-shell.test.tsx`. jsdom
+ * ships no `matchMedia`, so `use-compact.ts` reads `false` and every test below
+ * renders the DESKTOP tree unless it calls this. Only the compact query is
+ * answered from `compact`; everything else gets `false`, so widening the
+ * viewport cannot flip the palette as a side effect.
+ */
+const COMPACT_QUERY = 'not all and (min-width: 768px)';
+
+function setCompactViewport(): void {
+  window.matchMedia = ((query: string) => ({
+    media: query,
+    matches: query === COMPACT_QUERY,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia;
+}
+
 beforeEach(() => {
   agentMock.mockReset();
   agentMock.mockResolvedValue(detail());
   vi.mocked(workspaceApi.rail).mockClear();
+});
+
+afterEach(() => {
+  // Added to jsdom's window by `setCompactViewport`; deleting it restores "no
+  // matchMedia at all", which is what the rest of this package renders under.
+  delete (window as Partial<Window>).matchMedia;
 });
 
 /*
@@ -186,5 +215,51 @@ describe('AgentView heading outline', () => {
       const h2s = screen.getAllByRole('heading', { level: 2 });
       expect(h2s.map((h) => h.textContent)).toEqual(['What it did']);
     });
+  });
+
+  /*
+    REVIEW FOLLOW-UP. The load-error branch replaces the whole pane — header,
+    agent name and Back button included — so it was the one AgentView state
+    still rendering nothing at all after the fix. It is also the state a reader
+    is most likely to be hunting for their bearings in, and unlike the loading
+    tick it is terminal: someone can sit on it indefinitely.
+  */
+  it('still has an h1 when the agent will not load', async () => {
+    agentMock.mockRejectedValue(new WorkspaceApiError('/agents/a-quill', 500));
+    renderView();
+
+    await waitFor(() => expect(headingOutlineProblems()).toEqual([]));
+
+    const h1s = screen.getAllByRole('heading', { level: 1 });
+    expect(h1s).toHaveLength(1);
+    // The sentence IS the heading here, the same call `WorkspaceShell` makes on
+    // its own board-read failure. The exit stays a button, not a heading.
+    expect(h1s[0]?.textContent).toMatch(/We could not load this agent/);
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+  });
+
+  /*
+    REVIEW FOLLOW-UP, and it pins the claim the `sr-only` rail heading rests on:
+    below `md` the rail is a `Sheet` whose `SheetTitle` ALREADY renders an `h2`
+    saying "Agent details". The new heading went on the desktop `<aside>` alone
+    precisely so the compact branch does not announce it twice — an assertion
+    that is only worth anything with a compact viewport actually installed,
+    which jsdom does not give you for free.
+  */
+  it('says "Agent details" once below md, not twice', async () => {
+    setCompactViewport();
+    renderView({ tab: 'chat' });
+
+    // The compact rail lives behind a trigger; open it so its tree exists.
+    fireEvent.click(await screen.findByRole('button', { name: 'Agent details' }));
+    await screen.findByText('Granted by you');
+
+    const named = screen
+      .getAllByRole('heading')
+      .filter((h) => h.textContent === 'Agent details');
+    expect(named).toHaveLength(1);
+    expect(named[0]?.tagName).toBe('H2');
+    // And the sheet's sections still hang off it rather than off the page title.
+    expect(headingOutlineProblems()).toEqual([]);
   });
 });

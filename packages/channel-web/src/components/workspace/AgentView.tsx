@@ -730,7 +730,22 @@ export function AgentView({
       <div className="flex flex-1 items-start justify-center p-6">
         <Alert variant={readAlertVariant(loadError)} className="max-w-[520px]">
           <AlertDescription className="flex flex-col items-start gap-3">
-            <span>{LOAD_COPY[loadError]}</span>
+            {/*
+              THIS PANE'S `h1` (TASK-446, review follow-up). This branch
+              replaces the WHOLE pane — header, agent name and Back button
+              included — so without it a reader whose agent will not load gets
+              a surface with no page title at all: the exact gap this card
+              closes for the happy path, left open on the state where someone
+              is most likely to be hunting for their bearings. It is the same
+              call `WorkspaceShell` already makes on its board-read failure,
+              where the sentence IS the heading.
+
+              NOT `AlertTitle`: that primitive hardcodes an `h5`, which would
+              make this pane's only heading a level-5 one and skip four levels
+              to get there. A `<span>` swapped for an `<h1>` under preflight is
+              the same pixels.
+            */}
+            <h1>{LOAD_COPY[loadError]}</h1>
             {loadError === 'failed' ? (
               <Button variant="secondary" size="sm" onClick={() => void load()}>
                 Try again
@@ -747,6 +762,17 @@ export function AgentView({
   }
 
   if (!detail) {
+    /*
+      NO HEADING HERE, DELIBERATELY (TASK-446, review follow-up). The other two
+      states both carry an `h1`; this one is a single word on an otherwise empty
+      pane that resolves into one of them. Heading navigation exists to move
+      around a structure, and there is nothing here to move around — an `h1`
+      reading "Loading…" would be a landmark for a page that does not exist yet,
+      and it would be replaced a moment later by a heading naming something
+      else. What this state actually owes a screen reader is a live region
+      announcing that the wait ended, which is a different piece of work from
+      an outline.
+    */
     return (
       <div className="flex flex-1 items-center justify-center text-[13px] text-muted-foreground">
         Loading…
