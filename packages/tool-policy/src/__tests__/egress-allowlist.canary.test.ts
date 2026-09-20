@@ -11,6 +11,128 @@
  * other way — the returns zod, the `null` ↔ `''` owner sentinel, a query that
  * forgot to name the owner — and the failure mode of each is an allow somebody
  * did not grant. Hence a canary rather than a unit test with a fake store.
+ *
+ * ---------------------------------------------------------------------------
+ * VACUITY LEDGER (TASK-469, 2026-09-19) — why this green is worth believing
+ *
+ * #618 left this suite green at 12/12 with its vacuity never demonstrated: the
+ * one mutant that mattered died on a Docker flap. A canary that has never been
+ * made to go red is decoration, so every claim below was mutated and RUN, on a
+ * daemon proved alive by starting a container rather than by reading `rc=0`.
+ * Each mutant was restored with `git checkout --` and the file re-hashed to
+ * confirm the restore was byte-identical.
+ *
+ * TWENTY-THREE mutants: twenty-one killed, two equivalent. Every count below was
+ * re-measured against THIS suite at its current 15 tests, so the table has one
+ * denominator rather than a mix — a ledger whose rows were taken at different
+ * sizes is the kind of thing a later reader quietly mis-reads.
+ *
+ *   mutant (what was broken)                          result   counts
+ *   M1  db revoke returns true over an UNTOUCHED table KILLED   3 red / 12 pass
+ *   M2  revoke may also delete the GLOBAL row          KILLED   1 red / 14 pass
+ *   M3  revoke stops naming the owner                  KILLED   1 red / 14 pass
+ *   M4  the read stops naming its owner                KILLED   3 red / 12 pass
+ *   M5  listFor stops deduping                         KILLED   1 red / 14 pass
+ *   M6  normalizeHost accepts anything non-empty       KILLED   1 red / 14 pass
+ *   M7  a non-person id may own an entry               KILLED   1 red / 14 pass
+ *   M8  the plugin falls back to the in-memory store   KILLED   2 red / 13 pass
+ *   M9  an unreadable payload stops being a deny       KILLED   1 red / 14 pass
+ *   M10 remember files under the payload's ownerId     KILLED   1 red / 14 pass
+ *   M11 the database is unreachable                    KILLED  15 red /  0 pass
+ *   M12 every read returns zero rows                   KILLED  10 red /  5 pass
+ *   M13 listFor throws (hook swallows -> { sites: [] })KILLED   4 red / 11 pass
+ *   M14 the grant becomes the URL rather than the host KILLED  10 red /  5 pass
+ *   M15 one malformed operator host is fatal to boot   KILLED   1 red / 14 pass
+ *   M16 an egress rule stops reporting as conditional  KILLED   1 red / 14 pass
+ *   M17 the per-person cap stops being enforced        KILLED   1 red / 14 pass
+ *   M18 the cap boundary becomes > instead of >=       KILLED   1 red / 14 pass
+ *   M19a the count merely loses its Number()        EQUIVALENT (see below)
+ *   M19b the cap compares STRING to STRING             KILLED   1 red / 14 pass
+ *   M20 the cap counts the table, not the person       KILLED   1 red / 14 pass
+ *   M21 the cap is applied to the operator list too  EQUIVALENT (see below)
+ *   M22 remember loses its existence check             KILLED   1 red / 14 pass
+ *
+ * Where they came from, because the order turned out to matter. M1-M13 are the
+ * claims the suite already made. M14-M16 came from asking "which claim still
+ * has no mutant?" — naming a gap and then not closing it is the move this card
+ * exists to punish. M17-M21 came from review, and then from MUTATING THE TEST
+ * THAT REVIEW PRODUCED, which is where the sharpest finding of the run turned
+ * up.
+ *
+ * M19 is that finding, and the first version of this paragraph GOT IT WRONG —
+ * which review caught by running it, and which is left on the record here
+ * because a ledger that hides its own correction is worth less than one that
+ * shows it.
+ *
+ * The cap test as first written seeded to the boundary and probed 510 and 512.
+ * The claim was "drop the `Number()` and the comparison goes lexicographic".
+ * That is FALSE. `count` is indeed the string pg hands back for a bigint, but
+ * `MAX_USER_HOSTS` is a number literal, and ECMAScript's relational comparison
+ * only compares lexicographically when BOTH operands are strings; with one
+ * number it coerces numerically. So `count >= MAX_USER_HOSTS` is identical to
+ * `Number(count) >= MAX_USER_HOSTS` for every value a `count(*)` can return.
+ * M19a is EQUIVALENT — no test could kill it, and it was originally recorded
+ * as KILLED, which is exactly the lying-ledger failure this card exists to
+ * prevent. The `Number()` stays as defensive style; it would become
+ * load-bearing the moment the right-hand side came from config or env.
+ *
+ * What the run actually killed was M19b, a different mutation than the one the
+ * ledger named: `count >= String(MAX_USER_HOSTS)`, both operands strings, one
+ * `String()` away from the real code. THAT goes lexicographic, and it agrees
+ * with arithmetic at 510 and at 512 — the exact two values a boundary probe
+ * looks at — while `'6' >= '512'` is true and caps a person at six hosts. The
+ * seven consecutive remembers walk a fresh count through 0..6 and step on it.
+ *
+ * The lesson that survives, stated correctly: a boundary probe cannot see a
+ * STRING/STRING comparison, because such a comparison agrees with arithmetic
+ * at many boundary values and disagrees away from them. It generalises to any
+ * guard whose operands might both be strings — a driver value against an env
+ * var, say. It does NOT generalise to a string compared against a numeric
+ * literal, which is this code, and saying otherwise is how a wrong rule gets
+ * into everybody's memory.
+ *
+ * TWO mutants are EQUIVALENT rather than gaps — no test could kill either, and
+ * both are recorded because an unexplained survivor in a ledger reads as an
+ * open hole and invites somebody to "close" it with a test that cannot fail.
+ * M19a is above. M21 applies the cap to `global` entries: a global entry's
+ * owner key is `''`, so the count query the mutant adds is `scope = 'user' AND
+ * owner_user_id = ''`, which matches nothing and never caps.
+ *
+ * M22 is the second thing review caught by running. The idempotent
+ * re-`remember` asserted only `{ remembered: false }` — and deleting the
+ * existence check outright leaves that TRUE, because the insert then violates
+ * the primary key and the hook's catch returns the same answer. The assertion
+ * survived deleting the code it claimed to cover. It now also asserts the
+ * quiet path (no `tool_policy_egress_remember_failed` on the logger), which is
+ * the one observable that separates "recognised and skipped" from "blew up
+ * somewhere harmless".
+ *
+ * M1 here is the mutant TASK-469's card calls M4 — the one #618 could not run.
+ * It dies, so the DELETE really does reach Postgres. The total never shrank in
+ * any round either: every mutant reddened tests rather than removing them,
+ * which is the failure mode that makes a mutation run lie.
+ *
+ * M2, M3 and M13 tell a second story, and it is the reason this card existed
+ * rather than a footnote to it. Against the suite AS #618 LEFT IT, M2 and M3
+ * SURVIVED — all 167 tests in `@ax/tool-policy` stayed green with a `revoke`
+ * that could delete the operator's deployment-wide row, or anybody else's —
+ * and M13 was caught only by the overlap case, leaving `revoke`'s own list
+ * assertion blind to a read that never happened. M2 and M3 produced the two
+ * revoke cases titled TASK-469 below; M13 produced the `sites()` read added
+ * INSIDE the TASK-406 revoke case, which is commented there; M17-M20 produced
+ * the third TASK-469 case, the cap.
+ *
+ * WHICH DIRECTION DOES THE CANARY ITSELF FAIL IN? Red, on all three of the
+ * shapes worth fearing: an unreachable database (M11), a table that answers
+ * nothing (M12), and a read that throws into a soft-fail `{ sites: [] }`
+ * (M13). It does NOT silently pass on the in-memory store either (M8) — the
+ * restart case is what holds that door, which is worth knowing before anyone
+ * "simplifies" it away.
+ *
+ * Re-proving any of this is a local job, not a CI-only one: mutate,
+ * `npx vitest run src/__tests__/egress-allowlist.canary.test.ts` from this
+ * package, `git checkout --` the file. ~6 s a round on a warm image.
+ * ---------------------------------------------------------------------------
  */
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createTestHarness, stopPostgresContainer, type TestHarness } from '@ax/test-harness';
@@ -18,6 +140,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createToolPolicyPlugin } from '../plugin.js';
+import { MAX_USER_HOSTS } from '../egress-allowlist.js';
 import type {
   EgressListOutput,
   EvaluateResult,
@@ -69,6 +192,16 @@ async function verdict(h: TestHarness, userId: string, url: string): Promise<str
     EXTRACT(url),
   );
   return out.verdict;
+}
+
+/** What the settings panel would show this person, as `[host, scope]` pairs. */
+async function sites(h: TestHarness, userId: string): Promise<[string, string][]> {
+  const out = await h.bus.call<unknown, EgressListOutput>(
+    'egress-allowlist:list',
+    h.ctx({ userId }),
+    {},
+  );
+  return out.sites.map((s) => [s.host, s.scope]);
 }
 
 describe('egress allowlist canary', () => {
@@ -235,6 +368,17 @@ describe('egress allowlist canary', () => {
     });
     expect(await verdict(h, 'alice', 'https://docs.example.com/guide')).toBe('allow');
 
+    // READ THE LIST BEFORE THE REVOKE, and this is not ceremony (TASK-469).
+    //
+    // The `toEqual([])` below was vacuous on its own, proved by construction:
+    // mutant M13 made `listFor` THROW, `egress-allowlist:list` swallowed it
+    // into its deliberate `{ sites: [] }` soft-fail, and the assertion passed
+    // over a read that never reached the table. That is the same shape a
+    // sibling panel shipped — a store throw rendered as a reassuring "nothing
+    // here yet". With this line first, `[]` afterwards means the ROW WENT
+    // AWAY, because the identical read returned it a moment ago.
+    expect(await sites(h, 'alice')).toEqual([['docs.example.com', 'user']]);
+
     expect(
       await h.bus.call('egress-allowlist:revoke', h.ctx({ userId: 'alice' }), {
         host: 'docs.example.com',
@@ -245,12 +389,7 @@ describe('egress allowlist canary', () => {
     // the person sees, and a panel that still shows a revoked site is a panel
     // nobody can trust.
     expect(await verdict(h, 'alice', 'https://docs.example.com/guide')).toBe('hold');
-    const after = await h.bus.call<unknown, EgressListOutput>(
-      'egress-allowlist:list',
-      h.ctx({ userId: 'alice' }),
-      {},
-    );
-    expect(after.sites).toEqual([]);
+    expect(await sites(h, 'alice')).toEqual([]);
 
     // Nothing to delete the second time — and no error either.
     expect(
@@ -258,6 +397,231 @@ describe('egress allowlist canary', () => {
         host: 'docs.example.com',
       }),
     ).toEqual({ revoked: false });
+  });
+
+  it('cannot revoke the operator’s global entry, whoever asks (TASK-469)', async () => {
+    // A HOLE THE CANARY HAD, found by mutation rather than by reading.
+    //
+    // `revoke` hard-codes `scope: 'user'` inside the store, and the interface
+    // calls that "the security decision rather than a simplification" — a
+    // scope parameter would put every caller one typo away from deleting the
+    // deployment-wide list. Nothing asserted it. Mutant M2 rewrote the DELETE
+    // to `owner_user_id in [ownerId, '']` with the scope filter dropped, so a
+    // person's revoke also took out the operator's row, and ALL 167 TESTS IN
+    // THIS PACKAGE STAYED GREEN. The in-memory store cannot be asked this
+    // question at all — its only global bucket lives under a key `revoke`
+    // cannot produce — so the db store is the one that needs the test, and
+    // this is the file that has a db.
+    const h = await boot({ globalEgressHosts: ['intranet.example.com'] });
+    expect(await verdict(h, 'alice', 'https://intranet.example.com/x')).toBe('allow');
+
+    // Nothing of hers to take back: `false` is the whole answer, and she is
+    // deliberately not told that a row she cannot delete exists.
+    //
+    // THIS is the line M2 reddens, and it reddens first —
+    // `expected { revoked: true } to deeply equal { revoked: false }`, because
+    // the mutant's DELETE matched the operator's row and reported success.
+    expect(
+      await h.bus.call('egress-allowlist:revoke', h.ctx({ userId: 'alice' }), {
+        host: 'intranet.example.com',
+      }),
+    ).toEqual({ revoked: false });
+
+    // The operator's list is untouched — for her and for everybody else. These
+    // are the consequence of the same mutant rather than a second finding: with
+    // the global row deleted, both verdicts fall back to `hold`. They are here
+    // because `revoked: false` alone would also be satisfied by a revoke that
+    // did nothing at all for the wrong reason.
+    expect(await verdict(h, 'alice', 'https://intranet.example.com/x')).toBe('allow');
+    expect(await verdict(h, 'bob', 'https://intranet.example.com/x')).toBe('allow');
+    expect(await sites(h, 'alice')).toEqual([['intranet.example.com', 'global']]);
+
+    // And the same once she ALSO has a personal row for that host — the
+    // routine overlap, since `web_extract` remembers even the silent fetches.
+    // Her revoke takes hers; the operator's still stands.
+    expect(
+      await h.bus.call('egress-allowlist:remember', h.ctx({ userId: 'alice' }), {
+        host: 'intranet.example.com',
+      }),
+    ).toEqual({ remembered: true });
+    expect(
+      await h.bus.call('egress-allowlist:revoke', h.ctx({ userId: 'alice' }), {
+        host: 'intranet.example.com',
+      }),
+    ).toEqual({ revoked: true });
+    expect(await verdict(h, 'alice', 'https://intranet.example.com/x')).toBe('allow');
+    expect(await verdict(h, 'bob', 'https://intranet.example.com/x')).toBe('allow');
+  });
+
+  it('cannot revoke somebody else’s entry — the DELETE names its owner (TASK-469)', async () => {
+    // The second hole, same method. Mutant M3 dropped
+    // `.where('owner_user_id', '=', ownerId)` from the DELETE, leaving the
+    // host match and the scope filter, and all 167 tests stayed green — one
+    // person's revoke would have reached into everybody's list for that host.
+    //
+    // Deleting a grant fails CLOSED for egress, so this is not a way to widen
+    // anybody's reach. It is still somebody else's decision being thrown away
+    // without them asking, on the one surface whose job is to tell a person
+    // what they agreed to.
+    const h = await boot();
+    for (const who of ['alice', 'bob']) {
+      expect(
+        await h.bus.call('egress-allowlist:remember', h.ctx({ userId: who }), {
+          host: 'docs.example.com',
+        }),
+      ).toEqual({ remembered: true });
+    }
+
+    expect(
+      await h.bus.call('egress-allowlist:revoke', h.ctx({ userId: 'bob' }), {
+        host: 'docs.example.com',
+      }),
+    ).toEqual({ revoked: true });
+
+    // Bob's is gone; Alice's is exactly as she left it.
+    expect(await verdict(h, 'bob', 'https://docs.example.com/x')).toBe('hold');
+    expect(await sites(h, 'bob')).toEqual([]);
+    expect(await verdict(h, 'alice', 'https://docs.example.com/x')).toBe('allow');
+    expect(await sites(h, 'alice')).toEqual([['docs.example.com', 'user']]);
+  });
+
+  it('counts the per-person cap on the real backend, and never caps the operator (TASK-469)', async () => {
+    // RAISED BY REVIEW as a gap, and it is the same hazard as the revoke one
+    // rather than a neighbouring tidy-up, which is why it is closed here and
+    // not deferred. The db store decides the cap with
+    // `Number(count) >= MAX_USER_HOSTS` over an `eb.fn.countAll()` — a
+    // pg-driver value crossing into JS arithmetic, exactly the shape that made
+    // `numDeletedRows` worth a canary. Read it wrong and you get a cheerful
+    // number rather than an error: `'513' >= 512` is a string/number
+    // comparison, and an off-by-one lets everybody past the cap forever. The
+    // memory store's version is `hosts.size`, a plain number, so it cannot be
+    // asked this question either.
+    //
+    // Rows are seeded with SQL rather than 510 bus calls — the assertion is
+    // about the COUNT query, not about the insert path that the rest of this
+    // file already exercises, and a few hundred round trips would put seconds
+    // on every run of this suite for nothing.
+    const h = await boot({ globalEgressHosts: ['intranet.example.com'] });
+
+    // A PERSON NOWHERE NEAR THE CAP IS NEVER CAPPED, and this is not padding.
+    // It is the assertion that catches a STRING/STRING comparison rather than
+    // the boundary, and the reasoning here was wrong in review round 2 before
+    // it was right — so it is spelled out precisely.
+    //
+    // `count` arrives from pg as a STRING (a bigint crossing the driver).
+    // `MAX_USER_HOSTS` is a number literal, and ECMAScript's relational
+    // comparison only goes lexicographic when BOTH operands are strings — with
+    // one number it coerces numerically. So `count >= MAX_USER_HOSTS` behaves
+    // identically to `Number(count) >= MAX_USER_HOSTS` for every value a
+    // `count(*)` can return (mutant M19a: survives, equivalent). The `Number()`
+    // stays as defensive style, and it becomes load-bearing the moment the
+    // right-hand side is ever sourced from config or env as a string.
+    //
+    // The real hazard is the comparison becoming string-vs-string (M19b),
+    // which is one `String()` away: then `'510' >= '512'` is false and
+    // `'512' >= '512'` is true — AGREEING with arithmetic at exactly the two
+    // values a boundary probe looks at — while `'6' >= '512'` is true, capping
+    // a person at six hosts. Seven remembers walk a fresh count through 0..6
+    // and step on it.
+    for (let i = 0; i < 7; i += 1) {
+      expect(
+        await h.bus.call('egress-allowlist:remember', h.ctx({ userId: 'carol' }), {
+          host: `c${i}.example.com`,
+        }),
+        `carol's host #${i}`,
+      ).toEqual({ remembered: true });
+    }
+
+    const seed = new pg.Client({ connectionString });
+    await seed.connect();
+    try {
+      await seed.query(
+        `INSERT INTO tool_policy_v1_egress_allowlist (scope, owner_user_id, host, created_at)
+         SELECT 'user', 'alice', 'h' || g || '.example.com', NOW()
+         FROM generate_series(1, $1) AS g`,
+        [MAX_USER_HOSTS - 2],
+      );
+      // Somebody ELSE's rows, so the cap has to be counting one person rather
+      // than the table.
+      //
+      // HONESTY ABOUT WHAT THESE DO, corrected in review: they are NOT what
+      // kills a count that forgot its owner. Carol's seven rows above plus
+      // alice's 510 already total 517, which is past the cap, so a table-wide
+      // count diverges from alice's own with or without dave. Dave makes the
+      // divergence explicit and independent of how many hosts carol happens to
+      // take — a later reader trimming carol's loop should not silently also
+      // remove the owner-scoping coverage.
+      await seed.query(
+        `INSERT INTO tool_policy_v1_egress_allowlist (scope, owner_user_id, host, created_at)
+         VALUES ('user', 'dave', 'd1.example.com', NOW()), ('user', 'dave', 'd2.example.com', NOW())`,
+      );
+    } finally {
+      await seed.end().catch(() => {});
+    }
+
+    // Below the cap: accepted.
+    expect(
+      await h.bus.call('egress-allowlist:remember', h.ctx({ userId: 'alice' }), {
+        host: 'first.example.com',
+      }),
+    ).toEqual({ remembered: true });
+
+    // Still below the cap, so this `false` is not the cap — and it has to
+    // prove MORE than that, which the first version of this assertion did not
+    // (caught in round-2 review, by running it).
+    //
+    // `{ remembered: false }` alone is vacuous here. Delete the existence
+    // check entirely and the INSERT is attempted, violates the primary key
+    // `(scope, owner_user_id, host)`, and the hook's catch turns the throw
+    // into the very same `{ remembered: false }`. Mutant M22 did exactly that
+    // and this suite stayed 15/15 green — an assertion that survives deleting
+    // the code it claims to cover.
+    //
+    // The two paths differ in one observable: the PK route logs
+    // `tool_policy_egress_remember_failed` on its way out. So capture the
+    // logger and assert the quiet path. Idempotent means "recognised and
+    // skipped", not "blew up somewhere harmless".
+    const warned: string[] = [];
+    const spy = {
+      debug: () => {},
+      info: () => {},
+      warn: (msg: string) => void warned.push(msg),
+      error: (msg: string) => void warned.push(msg),
+      child: () => spy,
+    };
+    expect(
+      await h.bus.call(
+        'egress-allowlist:remember',
+        h.ctx({ userId: 'alice', logger: spy }),
+        { host: 'first.example.com' },
+      ),
+    ).toEqual({ remembered: false });
+    expect(warned).toEqual([]);
+
+    // The last one that fits.
+    expect(
+      await h.bus.call('egress-allowlist:remember', h.ctx({ userId: 'alice' }), {
+        host: 'last.example.com',
+      }),
+    ).toEqual({ remembered: true });
+
+    // And one past it. THIS is the cap.
+    expect(
+      await h.bus.call('egress-allowlist:remember', h.ctx({ userId: 'alice' }), {
+        host: 'overflow.example.com',
+      }),
+    ).toEqual({ remembered: false });
+
+    // The rows are real, not just a number that went up: the one accepted at
+    // the boundary is genuinely readable back, and the refused one is not.
+    expect(await verdict(h, 'alice', 'https://last.example.com/x')).toBe('allow');
+    expect(await verdict(h, 'alice', 'https://overflow.example.com/x')).toBe('hold');
+
+    // A person at their cap does not lose the operator's list — the cap is
+    // `scope === 'user'` only, and an operator whose deployment-wide hosts
+    // stopped applying to the busiest people would fail in the confusing
+    // direction rather than the safe one.
+    expect(await verdict(h, 'alice', 'https://intranet.example.com/x')).toBe('allow');
   });
 
   it('reports a host on BOTH lists once, as global, against a real database (TASK-406)', async () => {
