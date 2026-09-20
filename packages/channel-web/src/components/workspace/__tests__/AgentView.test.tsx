@@ -180,6 +180,23 @@ describe('past conversations', () => {
       half: the whole line is in `title`, punctuation and all.
     */
     expect(banner.getAttribute('title')).toBe('March · last week · read-only');
+    /*
+      TASK-435 — and the tooltip has to be the line it is recovering, not
+      another rendering of the same idea. The relative day is now computed in
+      the browser rather than read off a server-supplied field, so the two
+      slots are an expression rather than a field access and can be edited
+      apart.
+
+      BE PRECISE ABOUT WHAT THIS CATCHES. It catches the two slots drifting
+      into different sentences — someone changing the visible line and not the
+      tooltip, or vice versa. It does NOT catch the reason the production code
+      binds the string once: `relativeDay`'s `now` defaults to `new Date()`, so
+      two calls are two clock reads that can straddle a local midnight and land
+      in different buckets. That window is sub-millisecond and no test can
+      provoke it reliably, which is exactly why the fix there is to make it
+      unrepresentable rather than to assert against it.
+    */
+    expect(banner.getAttribute('title')).toBe(banner.textContent);
   });
 
   it('says so when the excerpt will not open, instead of showing a blank one', async () => {

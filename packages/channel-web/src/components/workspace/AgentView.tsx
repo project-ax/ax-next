@@ -1084,12 +1084,33 @@ export function AgentView({
               {past && (
                 <div className="flex items-center gap-2.5 border-b border-border bg-muted px-6 py-2.5">
                   <Archive size={13} className="text-muted-foreground" />
-                  <span
-                    className="min-w-0 flex-1 truncate text-[12.5px] text-muted-foreground"
-                    title={`${past.title} · ${relativeDay(past.lastActivityAt)} · read-only`}
-                  >
-                    {past.title} · {relativeDay(past.lastActivityAt)} · read-only
-                  </span>
+                  {/*
+                    ONE string, drawn twice. TASK-436 put the whole line in
+                    `title` because the visible copy is CSS-clamped, which only
+                    works while the two are the same sentence — and until
+                    TASK-435 they trivially were, because both slots read the
+                    server-computed `past.meta` field.
+
+                    They are now a CALL, and `relativeDay(iso, now = new
+                    Date())` reads the wall clock per call. Two calls are two
+                    clock reads, and two clock reads either side of a local
+                    midnight land in different buckets — so the tooltip would
+                    claim "today" over a line reading "yesterday". The window is
+                    sub-millisecond and the damage cosmetic, which is exactly
+                    why it would never be found; binding it once removes the
+                    question instead of making it unlikely.
+                  */}
+                  {(() => {
+                    const line = `${past.title} · ${relativeDay(past.lastActivityAt)} · read-only`;
+                    return (
+                      <span
+                        className="min-w-0 flex-1 truncate text-[12.5px] text-muted-foreground"
+                        title={line}
+                      >
+                        {line}
+                      </span>
+                    );
+                  })()}
                   <Button
                     variant="ghost"
                     size="sm"
