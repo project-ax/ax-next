@@ -141,7 +141,7 @@
 // changes the test set and a stale count is worse than none — a rule this file broke twice
 // and a reviewer caught both times. Every mutant was applied to the COMMITTED text and
 // restored with `git checkout --`; `git status --porcelain` was empty before and after each.
-// Every mutant still COLLECTS 64 — the number to distrust is a red count that arrives with
+// Every mutant still COLLECTS 68 — the number to distrust is a red count that arrives with
 // a shrunken total. A mutant's CONSTRUCTION is a claim as much as its count is, so each
 // says which kind it is:
 //
@@ -253,6 +253,11 @@
 //       Its sibling `\d?>&\d?` clause was already pinned; a third, `\d?>>?`, was measured
 //       DEAD (it can neither introduce nor remove a `[;&|]`) and has been deleted rather
 //       than left looking load-bearing.
+//  M20. CONSTRUCTED: make the refusal's `…` unconditional again -> **6 red**. Its first
+//       version put the `…` outside the `$( )`, so every refusal claimed truncation —
+//       including the 3-path directory and the 3-stage conflicted case, i.e. the two the
+//       message was rewritten to report honestly — and NOTHING here noticed. Found in
+//       review; the assertion that pins it is a negative on a one-path refusal.
 //
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally — no network,
 // no Docker, no build. Every git repository it touches is created under a temp dir and
@@ -834,6 +839,11 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
     // `includes` on a plain string, not a RegExp built from a filename: `guard.js` has
     // a `.` in it, and a fixture name should never quietly double as a pattern.
     expect(r.out.includes(`matched 1 path(s): ${TARGET}`)).toBe(true);
+    // The `…` is CONDITIONAL. A one-path refusal was not truncated, so claiming it was
+    // would tell the agent there is more it is not being shown — in the very message
+    // rewritten to report honestly. The first version put the `…` outside the `$( )`,
+    // making it unconditional, and nothing here would have noticed.
+    expect(r.out).not.toMatch(/matched 1 path\(s\):.*…/);
     expect(r.out).toMatch(/relative to the worktree root/);
     expect(read(dir)).toBe(MUTANT);
   });
