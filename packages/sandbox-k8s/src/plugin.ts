@@ -136,6 +136,18 @@ export function createSandboxK8sPlugin(
       const nextPid = makePidGenerator();
       const impl = createOpenSession({ api, config, bus, nextPid });
 
+      // NO `stallWarnMs` override here, deliberately (TASK-505). This hook
+      // declares a 300s timeout like `llm:call:*` does, and those opted OUT of
+      // the bus's 15s stall watch — but for the opposite reason. A generation
+      // legitimately runs for minutes, so a 15s warning would fire on the
+      // healthy case. A pod spawn does not: the warm path is a couple of
+      // seconds, and the 300s here is a worst-case backstop for a cold image
+      // pull, not a typical duration.
+      //
+      // So a spawn still running at 15s is worth a line. It happens per fresh
+      // session, not per turn, and "sandbox spawn is 15s in" is exactly the
+      // sentence an operator staring at a turn that has done nothing wants to
+      // read. Keeping the default watch is the choice, not an oversight.
       bus.registerService<unknown, OpenSessionResult>(
         'sandbox:open-session',
         PLUGIN_NAME,
@@ -152,7 +164,9 @@ export function createSandboxK8sPlugin(
       // sized for the
       // POD realization, which can take seconds (pull + mount + read); the
       // host-mounted realization returns in milliseconds and never approaches
-      // it.
+      // it. No `stallWarnMs` override, for the same reason as open-session
+      // above: the timeout is a worst-case backstop, not a typical duration, so
+      // a read still running at 15s is a fact worth logging rather than noise.
       bus.registerService<ReadUserFilesInput, ReadUserFilesOutput>(
         'sandbox:read-user-files',
         PLUGIN_NAME,

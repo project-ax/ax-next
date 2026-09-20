@@ -527,6 +527,23 @@ describe('HookBus — stall watch (TASK-505)', () => {
     expect(logged).toEqual([]);
   });
 
+  it('fires at a per-hook threshold TIGHTER than the bus default', async () => {
+    // The twin of the test above, in the other direction. Without it the suite
+    // only pins that an override can SUPPRESS the warning — an override that
+    // was read but never actually used as the deadline would still pass.
+    const logged: Logged[] = [];
+    const bus = new HookBus({ stallWarnMs: 5_000 });
+    bus.registerService(
+      'impatient',
+      'p',
+      () => new Promise<string>((resolve) => setTimeout(() => resolve('done'), 120)),
+      { stallWarnMs: 20 },
+    );
+    await expect(bus.call('impatient', capturingCtx(logged), {})).resolves.toBe('done');
+    expect(logged.map((l) => l.msg)).toEqual(['hook_call_stalled', 'hook_call_slow']);
+    expect(logged[0]?.bindings.hook).toBe('impatient');
+  });
+
   it('lets a hook opt out entirely with stallWarnMs:Infinity', async () => {
     // `agent:invoke`'s case: its own 120s timeout is its report, and there is
     // no threshold that separates a healthy long turn from a hung one.

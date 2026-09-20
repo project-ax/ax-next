@@ -37,15 +37,23 @@ export const DEFAULT_SERVICE_TIMEOUT_MS = 120_000;
  *  3. It names the plugin and hook. "Something is slow" is not a thread to
  *     pull; "@ax/memory-strata is 15 s into chat:start" is.
  *
- * 15 s is chosen to be far above any healthy *inner* hook and far below the
- * 120 s timeout, so a stalling call reports itself with 105 s of runway left.
+ * 15 s is chosen to be far above what a hook on a per-turn path costs when it
+ * is healthy, and far below the 120 s timeout, so a stalling call reports
+ * itself with 105 s of runway left.
  *
- * It is deliberately NOT right for every hook, and the ones it is wrong for
- * are the ones that legitimately run for minutes: `agent:invoke` spans a whole
- * turn, an LLM call spans a whole generation. Warning at 15 s on those would
- * fire on the healthy case every time and train everyone to filter the exact
- * message this exists to surface. Those hooks pass their own `stallWarnMs` at
- * registration — see the per-hook option on `registerService`.
+ * It is deliberately NOT right for every hook. The ones it is wrong for are the
+ * ones for which running for minutes is NORMAL, not merely possible:
+ * `agent:invoke` spans a whole turn, an LLM call spans a whole generation.
+ * Warning at 15 s on those fires on the healthy case every time and trains
+ * everyone to filter the exact message this exists to surface — so they pass
+ * their own `stallWarnMs` at registration.
+ *
+ * "Normal", not "possible", is the test, and it is why a long declared
+ * `timeoutMs` alone does not earn an override. `sandbox:open-session` declares
+ * 300 s too, but its warm path is a couple of seconds and that 300 s is a
+ * worst-case backstop for a cold image pull. A spawn still running at 15 s is
+ * a fact worth a line, so it keeps the default on purpose — see the note at
+ * its registration.
  */
 export const DEFAULT_STALL_WARN_MS = 15_000;
 
@@ -145,7 +153,9 @@ export class HookBus {
     kind: 'hook_call' | 'hook_subscriber',
     hookName: string,
     plugin: string,
-    warnMs: number = this.stallWarnMs,
+    // Required, with no default: the caller resolves it, so there is exactly
+    // one place the effective threshold is decided per call site.
+    warnMs: number,
   ): () => void {
     if (!Number.isFinite(warnMs)) return () => undefined;
     const startedAt = Date.now();
@@ -335,16 +345,33 @@ export class HookBus {
       // must not fail the thing it is observing. That makes subscribers the
       // one place on the bus where a hang can burn a caller's entire budget
       // in silence, so they are exactly where the stall watch earns its keep.
-      const settleStallWatch = this.watchStall(ctx, 'hook_subscriber', hookName, sub.plugin);
+      // Subscribers keep the bus-wide threshold: `subscribe` has no options bag
+      // to carry an override, and 15s is right for them — a subscriber on a
+      // per-turn hook has no business running longer.
+      const settleStallWatch = this.watchStall(
+        ctx,
+        'hook_subscriber',
+        hookName,
+        sub.plugin,
+        this.stallWarnMs,
+      );
       try {
         result = (await sub.handler(ctx, current)) as P | undefined | Rejection;
       } catch (err) {
         // NOTE this one is deliberately NOT routed through `warnQuietly`. The
         // stall watch is diagnostics and must never become a failure, but this
         // line reports a subscriber that actually threw — and under a ctx with
-        // no usable logger, throwing here is louder than swallowing a real
-        // subscriber error into a void. The guarantee the stall watch offers
-        // therefore does not extend to this log; that asymmetry is on purpose.
+        // no usable logger, throwing here beats swallowing a real subscriber
+        // error into a void. The guarantee the stall watch offers therefore
+        // does not extend to this log; the asymmetry is on purpose.
+        //
+        // Be precise about what "throwing here" costs, though: the TypeError
+        // escapes `fire()`, so it also SKIPS EVERY REMAINING SUBSCRIBER and
+        // reaches the caller wearing the wrong error's name. That is a change
+        // in control flow, not just in volume. It is reachable only from a ctx
+        // with no logger — synthetic and canary ones — which is the same
+        // population `warnQuietly` was just hardened for, so if this ever needs
+        // revisiting, revisit it on purpose rather than by accident.
         ctx.logger.error('hook_subscriber_failed', {
           hook: hookName,
           plugin: sub.plugin,
