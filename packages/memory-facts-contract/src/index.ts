@@ -170,6 +170,16 @@ export interface RecallInput {
    * the footgun §4.2 keeps off the agent-facing tool.
    */
   activeOnly?: boolean;
+  /**
+   * Maximum rows to return.
+   *
+   * On the `query` path this is a ceiling, not a target, and the real ceiling
+   * is lower than it looks: each channel contributes at most its own channel
+   * limit, so a fused answer cannot exceed the union of the channels however
+   * large `limit` is. A caller asking for more than that gets what the
+   * channels found. The filtered-listing path (no `query`) has no such cap and
+   * will return up to `limit`.
+   */
   limit: number;
   /**
    * Free text to retrieve by. Present, the answer is built by ranked

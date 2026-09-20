@@ -167,7 +167,14 @@ export async function embedTexts(
     { texts, task, ...(ref?.model !== undefined ? { model: ref.model } : {}) },
     EMBED_TIMEOUT_MS,
   );
-  if (out === undefined || !Array.isArray(out.vectors)) return undefined;
+  // `== null`, NOT `=== undefined`. `HookBus.call` returns a handler's raw
+  // value when the hook declares no `returns` schema, and no realistic provider
+  // will declare one — so a handler resolving to `null` arrives here intact. A
+  // strict `=== undefined` is `false` for it, control falls through to
+  // `out.vectors`, and the TypeError escapes from OUTSIDE `inStore`: one
+  // misconfigured provider becomes a deployment-wide write outage. Loose `==`
+  // is deliberate and covers both nullish values.
+  if (out == null || !Array.isArray(out.vectors)) return undefined;
   if (out.vectors.length !== texts.length) return undefined;
   const wellFormed = out.vectors.every(
     (vector) =>
@@ -199,7 +206,8 @@ export async function rerankDocuments(
     { query, documents, ...(ref?.model !== undefined ? { model: ref.model } : {}) },
     RERANK_TIMEOUT_MS,
   );
-  if (out === undefined || !Array.isArray(out.scores)) return undefined;
+  // `== null` for the same reason as `embedTexts` above — see that comment.
+  if (out == null || !Array.isArray(out.scores)) return undefined;
   if (out.scores.length !== documents.length) return undefined;
   if (out.scores.some((s) => typeof s !== 'number' || !Number.isFinite(s))) return undefined;
   return out.scores;

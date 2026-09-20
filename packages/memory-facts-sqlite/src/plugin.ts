@@ -586,7 +586,14 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
     const degraded: DegradedFlag[] = [
       ...pendingFlags,
       ...semanticStatus(denseContributed),
-      ...rankingStatus(scores !== undefined),
+      // `pool.length === 0` is NOT degraded ranking. With nothing to rank, a
+      // healthy configured reranker is never called, `rerankDocuments` returns
+      // `undefined` at its empty-`documents` guard, and a naive
+      // `scores !== undefined` would report the reranker as degraded on every
+      // empty answer — which is every recall on a day-one empty store (design
+      // §5's first walk step). A flag that fires when nothing is wrong is the
+      // opposite of §4.4's "degraded mode is a signal".
+      ...rankingStatus(pool.length === 0 || scores !== undefined),
     ];
     return { statements: ranked.slice(0, args.limit).map(rowToFactRecord), degraded };
   }

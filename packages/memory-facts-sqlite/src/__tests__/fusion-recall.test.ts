@@ -568,6 +568,49 @@ describe('@ax/memory-facts-sqlite — embedder/reranker seam', () => {
     expect(out.statements.map((s) => s.value)).toEqual(['Khalid']);
   });
 
+  // A producer that RESOLVES TO `null` — the one nullish value the guard did
+  // not check for. `HookBus.call` returns a handler's raw value when the hook
+  // declares no `returns` schema (`hook-bus.ts`, `return result as O`), and no
+  // realistic provider will declare one, so `null` arrives here intact. The
+  // guard read `out === undefined`, which is `false` for `null`, so control
+  // fell through to `out.vectors` — a property access on `null`.
+  //
+  // That TypeError is thrown from OUTSIDE `inStore` (record awaits the embed
+  // before opening the store region), so it escapes the handler and `HookBus`
+  // wraps it as `code: 'unknown'`: the fact is never written. One misconfigured
+  // provider becomes a deployment-wide WRITE OUTAGE — the precise failure the
+  // dimensionality check below exists to prevent, reachable through a different
+  // door. The throwing-embedder test above does not catch it, because a handler
+  // that throws and a handler that returns `null` take different paths.
+  //
+  // Latent until a provider ships (nothing registers these hooks yet), but the
+  // guard is in this card, so the fix is too.
+  it('degrades when a producer resolves to null, rather than failing the write', async () => {
+    bus.registerService<EmbedInput, EmbedOutput>(
+      EMBED_HOOK,
+      'test:null-embedder',
+      async () => null as unknown as EmbedOutput,
+    );
+    bus.registerService<RerankInput, RerankOutput>(
+      RERANK_HOOK,
+      'test:null-reranker',
+      async () => null as unknown as RerankOutput,
+    );
+    await start({
+      databasePath,
+      embedder: { hook: EMBED_HOOK },
+      reranker: { hook: RERANK_HOOK },
+    });
+
+    // The write survives: no vector, but the fact is stored.
+    await record({ statements: [KHALID] });
+
+    const out = await recall({ query: 'Khalid', limit: 10 });
+    expect(out.statements.map((s) => s.value)).toEqual(['Khalid']);
+    expect(out.degraded).toContain('semantic');
+    expect(out.degraded).toContain('ranking');
+  });
+
   // A provider configured for the wrong model returns the RIGHT NUMBER of
   // vectors at the wrong dimensionality, which is the shape an arity check
   // waves through. Against an implementation that only counted vectors, the
@@ -599,6 +642,42 @@ describe('@ax/memory-facts-sqlite — embedder/reranker seam', () => {
   // The rerank is the one producer whose effect is directly visible in the
   // answer, so this is the strongest available end-to-end assertion about it:
   // a reranker that prefers the row RRF ranked last must move it to the front.
+  // DAY ONE, and therefore not an edge case: an empty store, a query, and a
+  // healthy configured reranker. With nothing to rank the reranker is never
+  // called, so a naive `scores !== undefined` reports it as DEGRADED on every
+  // recall until the first fact lands — design §5's first walk step is exactly
+  // this state. A flag that fires when nothing is wrong is the opposite of
+  // §4.4's "degraded mode is a signal, not a quieter answer".
+  //
+  // The `calls` counter is what makes this more than an assertion about a
+  // string: it proves the reranker really was not invoked, so the absent flag
+  // is honest rather than hard-coded.
+  it('does not claim degraded ranking when there was nothing to rank', async () => {
+    let calls = 0;
+    bus.registerService<RerankInput, RerankOutput>(
+      RERANK_HOOK,
+      'test:healthy-reranker',
+      async (_ctx, input) => {
+        calls += 1;
+        return { scores: input.documents.map(() => 1) };
+      },
+    );
+    await start({ databasePath, reranker: { hook: RERANK_HOOK } });
+
+    const empty = await recall({ query: 'Khalid', limit: 10 });
+    expect(empty.statements).toEqual([]);
+    expect(calls).toBe(0);
+    expect(empty.degraded).not.toContain('ranking');
+
+    // ...and it still reports honestly once there IS something to rank, so the
+    // fix cannot be "never raise the flag".
+    await record({ statements: [KHALID] });
+    const found = await recall({ query: 'Khalid', limit: 10 });
+    expect(found.statements).toHaveLength(1);
+    expect(calls).toBe(1);
+    expect(found.degraded).not.toContain('ranking');
+  });
+
   it('lets the reranker reorder the fused answer, and drops the ranking flag', async () => {
     const seen: RerankInput[] = [];
     bus.registerService<RerankInput, RerankOutput>(
