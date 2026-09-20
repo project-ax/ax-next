@@ -147,10 +147,11 @@ function threadGrowthKey(thread: readonly ThreadMessage[]): string {
         case 'fold':
           return `${m.kind}:${m.id}:${m.text.length}`;
         /*
-          A replayed failure (TASK-498). Its height is fixed by the reason code
-          and the optional detail line, and both are frozen the moment the row
-          is persisted — so the id is enough, and folding a re-fired turn-error
-          onto the same key means the row is replaced rather than repeated.
+          A replayed failure (TASK-498). The id is NOT enough on its own: the
+          display log folds turn-errors per originating turn, so a re-fire
+          comes back under the SAME id carrying a different reason — and a
+          detail line appearing under the label is a row that grew. Same rule
+          as every sibling above, for the same reason.
         */
         case 'error':
           return `error:${m.id}:${m.reason}:${(m.detail ?? '').length}`;
