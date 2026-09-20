@@ -16,7 +16,11 @@
  * moved asynchronously, inside Radix's `setTimeout`, which is why the focus
  * assertions are wrapped in `waitFor`); the role test fails on `radiogroup`
  * (it was `group`); the accessible-name test fails on the missing `aria-label`.
- * Measured: 6 of the 8 fail with the fix reverted.
+ * Measured: with `onKeyDown`, `role` and `aria-label` reverted off the
+ * component, 7 of the 8 fail. The survivor is "leaves modified arrows to
+ * whoever owns them", which asserts that we do NOT act — it is a guard against
+ * over-reach and is supposed to hold either way. It reddens if the modifier
+ * check is deleted instead.
  */
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
