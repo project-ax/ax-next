@@ -82,24 +82,33 @@ function conversation(
 }
 
 /**
- * The bubble, found the way the BUG finds it rather than by a test id: it is
- * the box inside the user turn that carries the width cap, because a capped
- * box is the only kind that can have text outside it. Resolving it this way
- * means the assertions below are about "the box that can overflow", not about
- * whichever div someone tagged.
+ * The bubble, resolved by what it CONTAINS rather than by a test id or a style
+ * class: the innermost box whose entire text is this message.
+ *
+ * Deliberately NOT "the box carrying `max-w-`", which was the first draft and
+ * was wrong twice. It would have made the cap assertion below tautological —
+ * the helper's own filter re-asserted as a finding — and it does not survive a
+ * turn that has an attachment AND a caption, because the attachment strip is
+ * capped too and its chips carry the filename as text. Matching the whole
+ * message text tells those apart: the strip's text is the filename, and any
+ * ancestor of the bubble also holds the strip's text, so neither is an exact
+ * match. `FindHighlight` renders a bare string when `find` is null, so the
+ * innermost such box is the bubble itself.
  */
-function bubble(): HTMLElement {
+function bubble(text: string): HTMLElement {
   const turn = screen.getByTestId('workspace-user-message');
-  const capped = Array.from(turn.querySelectorAll<HTMLElement>('div')).filter(
-    (el) => /(^|\s)max-w-/.test(el.className),
+  const exact = Array.from(turn.querySelectorAll<HTMLElement>('div')).filter(
+    (el) => el.textContent === text,
   );
-  // The attachment strip is capped too, so narrow to the one holding the text.
-  const withText = capped.filter((el) => (el.textContent ?? '').length > 0);
+  // Innermost = the one containing no other match.
+  const innermost = exact.filter(
+    (el) => !exact.some((other) => other !== el && el.contains(other)),
+  );
   expect(
-    withText,
-    'expected exactly one width-capped box carrying the message text',
+    innermost,
+    'expected exactly one innermost box holding the whole message text',
   ).toHaveLength(1);
-  return withText[0]!;
+  return innermost[0]!;
 }
 
 /** Runs with no break opportunity a browser will take on its own. */
@@ -114,11 +123,15 @@ const UNBREAKABLE = {
 
 describe('the user bubble lets long text wrap', () => {
   it('puts a wrap escape on the same box that carries the width cap', () => {
-    render(conversation({ thread: [userTurn(UNBREAKABLE['a snake_case run'])] }));
+    const text = UNBREAKABLE['a snake_case run'];
+    render(conversation({ thread: [userTurn(text)] }));
 
-    const el = bubble();
+    const el = bubble(text);
 
-    // The cap is what makes the escape necessary; both belong to one box.
+    // The cap is what makes the escape necessary, and the two have to be on
+    // ONE box: a cap without an escape is this bug, and an escape on some
+    // other box is a fix aimed at the wrong place. Both are asserted of the
+    // element resolved by its text, so neither restates how it was found.
     expect(el.className).toMatch(/(^|\s)max-w-/);
     expect(el.className).toContain('break-words');
 
@@ -133,7 +146,7 @@ describe('the user bubble lets long text wrap', () => {
     (_label, text) => {
       render(conversation({ thread: [userTurn(text)] }));
 
-      const el = bubble();
+      const el = bubble(text);
 
       // The whole string, character for character — nothing elided, nothing
       // replaced by an ellipsis. (jsdom can say the text is THERE; only the
@@ -147,4 +160,31 @@ describe('the user bubble lets long text wrap', () => {
       expect(el.querySelector('[title]')).toBeNull();
     },
   );
+
+  it('wraps the caption on a turn that also carries a file', () => {
+    /*
+      The turn with TWO capped boxes. The attachment strip above the bubble is
+      `max-w-[80%]` as well and its chip carries the filename as text, so this
+      is the case that tells the bubble apart from a lookalike — and the case a
+      helper keyed on the cap alone would have failed on rather than resolved.
+    */
+    const text = UNBREAKABLE['a long unbroken token'];
+    render(
+      conversation({
+        thread: [
+          {
+            kind: 'user',
+            id: 'u1',
+            text,
+            attachments: [
+              { path: null, displayName: 'notes.txt', mediaType: 'text/plain' },
+            ],
+          },
+        ],
+      }),
+    );
+
+    expect(screen.getByText('notes.txt')).toBeInTheDocument();
+    expect(bubble(text).className).toContain('break-words');
+  });
 });
