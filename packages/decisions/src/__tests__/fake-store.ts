@@ -10,9 +10,12 @@
  */
 import { RECEIPT_STATUSES } from '../receipts.js';
 import { DuplicateAuthorisationError, type DecisionStore } from '../store.js';
-import { AUTHORISING_STATUSES, type Decision, type DecisionStatus } from '../types.js';
+import { AUTHORISING_STATUSES, OPEN_STATUSES, type Decision } from '../types.js';
 
-const OPEN: readonly DecisionStatus[] = ['pending', 'stale'];
+// The store's own open-set, not a third copy of it. A fake that disagreed
+// about which rows are still answerable would let a caller's test pass over a
+// query that does not work.
+const OPEN = OPEN_STATUSES;
 
 export interface FakeStore extends DecisionStore {
   rows: Map<string, Decision>;

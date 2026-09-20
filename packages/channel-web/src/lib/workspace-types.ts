@@ -509,6 +509,11 @@ export type ActivityKind =
   | 'approved'
   | 'dismissed'
   | 'working'
+  // Nobody answered in time (TASK-447). Its own value rather than a reuse of
+  // `dismissed`: the icon and tone happen to be quiet for both, but a kind is
+  // what the row MEANS, and "you turned this down" and "you never got to it"
+  // are different things to the person reading their own history.
+  | 'expired'
   | 'stopped';
 
 /**

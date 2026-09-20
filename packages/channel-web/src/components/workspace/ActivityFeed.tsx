@@ -24,6 +24,7 @@ import {
   CheckCheck,
   CircleDashed,
   Hand,
+  TimerOff,
   X,
   type LucideIcon,
 } from 'lucide-react';
@@ -39,6 +40,11 @@ const KIND: Record<ActivityEvent['kind'], { Icon: LucideIcon; tone: string }> = 
   approved: { Icon: CheckCheck, tone: 'text-primary' },
   dismissed: { Icon: X, tone: 'text-muted-foreground' },
   working: { Icon: CircleDashed, tone: 'text-primary' },
+  // Quiet, like `dismissed`, and deliberately NOT `text-destructive`: a
+  // decision nobody answered is not a failure, and the row's own sentence says
+  // nothing happened. An alarm colour over it would be the surface shouting
+  // about an outcome the copy is telling the reader not to worry about.
+  expired: { Icon: TimerOff, tone: 'text-muted-foreground' },
   stopped: { Icon: AlertTriangle, tone: 'text-destructive' },
 };
 

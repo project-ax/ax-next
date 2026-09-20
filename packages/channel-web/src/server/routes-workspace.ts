@@ -719,7 +719,13 @@ interface DecisionsGetOutput {
 interface DecisionReceiptRow {
   decisionId: string;
   agentId: string;
-  outcome: 'executed' | 'failed' | 'pending-agent';
+  /**
+   * Five outcomes, and only ONE of them claims the action happened. The other
+   * four are the question being settled — turned down, run out of time, tried
+   * and failed, approved but not yet performed — and every one of them is an
+   * event in the person's history (TASK-447).
+   */
+  outcome: 'executed' | 'failed' | 'pending-agent' | 'declined' | 'expired';
   /** HOST-AUTHORED prose. Fenced here anyway — see `receiptToActivityEvent`. */
   receipt: string;
   /** ISO instant. Orders the feed, cuts the page, prints on the row. */
@@ -1302,6 +1308,8 @@ export const DECISION_FALLBACK_SUMMARY = 'A decision with no readable summary';
  */
 export const DECISION_FALLBACK_APPROVED = 'You approved this.';
 export const DECISION_FALLBACK_DISMISSED = 'You turned this down. Nothing ran.';
+/** The feed's fallback for an expired row. See `RECEIPT_RENDERING`. */
+export const DECISION_FALLBACK_EXPIRED = 'This one ran out of time.';
 
 /**
  * What a decision receipt is badged as in the feed.
@@ -1312,6 +1320,21 @@ export const DECISION_FALLBACK_DISMISSED = 'You turned this down. Nothing ran.';
  * and icon say, and a badge repeating it would be the same fact three times.
  */
 export const DECISION_RECEIPT_TAG = 'Approval';
+
+/**
+ * …and what the OTHER half is badged as.
+ *
+ * "Approval" is the right word for a row that follows a yes — including a
+ * failed one, where the person did approve and the attempt is what went wrong.
+ * It is the wrong word over "You turned this down" and over "This one ran out
+ * of time", where nothing was approved at all, and a badge that says otherwise
+ * is the surface contradicting the sentence directly beneath it.
+ *
+ * Both are still one vocabulary answering one question — where did this row
+ * come from — and the answer for these two is the neutral one: a decision was
+ * put to you. The outcome is the row's own sentence and icon to tell.
+ */
+export const DECISION_UNRESOLVED_TAG = 'Decision';
 
 // --- the rail ------------------------------------------------------------
 
@@ -1871,9 +1894,64 @@ export function fireToActivityEvent(
  * "no reason was recorded" underneath that would be noise under a sentence
  * that is already complete.
  */
+/**
+ * How each outcome draws — TOTAL over the union, on purpose (TASK-447).
+ *
+ * This was three ternaries reading `r.outcome === 'failed'`, which meant every
+ * outcome that was not `failed` rendered as an approval: the right answer for
+ * the three that existed, and a silent lie the moment a fourth arrived. A
+ * `Record` keyed on the union cannot do that — adding an outcome and not
+ * deciding how it looks is a build error.
+ *
+ * `fallback` is per-outcome for the same reason and it is the load-bearing one.
+ * A receipt that fenced away entirely must still say something, but WHAT it
+ * says is not interchangeable: "You approved this." printed over a decision the
+ * person turned down is precisely the derived-from-the-wrong-outcome lie that
+ * `approvedText` and `dismissedText` are kept as separate authored strings to
+ * prevent. Three of the five sentences are host constants that cannot fence
+ * away today; the map is total anyway, because "cannot happen" is not a thing
+ * this file is willing to encode about a string it did not write.
+ */
+const RECEIPT_RENDERING: Record<
+  DecisionReceiptRow['outcome'],
+  { kind: ActivityEvent['kind']; tag: string; fallback: string }
+> = {
+  executed: {
+    kind: 'approved',
+    tag: DECISION_RECEIPT_TAG,
+    fallback: DECISION_FALLBACK_APPROVED,
+  },
+  'pending-agent': {
+    kind: 'approved',
+    tag: DECISION_RECEIPT_TAG,
+    fallback: DECISION_FALLBACK_APPROVED,
+  },
+  failed: {
+    kind: 'stopped',
+    tag: DECISION_RECEIPT_TAG,
+    fallback: DECISION_FALLBACK_APPROVED,
+  },
+  declined: {
+    kind: 'dismissed',
+    tag: DECISION_UNRESOLVED_TAG,
+    fallback: DECISION_FALLBACK_DISMISSED,
+  },
+  expired: {
+    kind: 'expired',
+    tag: DECISION_UNRESOLVED_TAG,
+    fallback: DECISION_FALLBACK_EXPIRED,
+  },
+};
+
 export function receiptToActivityEvent(r: DecisionReceiptRow): ActivityEvent | null {
   const stamp = Date.parse(r.at);
   if (Number.isNaN(stamp)) return null; // An undateable row cannot be filed.
+  // An outcome this build has never heard of is DROPPED, not guessed at. The
+  // plugin is duck-typed across the bus (I2), so a newer @ax/decisions can send
+  // one; rendering it as an approval because that is what the old ternary did
+  // is how a decline became a "You approved this." row in the first place.
+  const style = RECEIPT_RENDERING[r.outcome];
+  if (style === undefined) return null;
   return {
     // Composite and stable, in the same shape a fire's id takes. The decision
     // id is a KEY — never rendered — so it goes in raw; fencing it could
@@ -1883,12 +1961,12 @@ export function receiptToActivityEvent(r: DecisionReceiptRow): ActivityEvent | n
     at: new Date(stamp).toISOString(),
     // A receipt that fenced away entirely would say nothing at all, which
     // reads as "we are not sure what you did". Every outcome keeps a plain
-    // sentence rather than an empty row.
-    text: fenceLine(r.receipt, DECISION_RECEIPT_MAX_CHARS) ?? DECISION_FALLBACK_APPROVED,
-    kind: r.outcome === 'failed' ? 'stopped' : 'approved',
+    // sentence rather than an empty row — its OWN sentence.
+    text: fenceLine(r.receipt, DECISION_RECEIPT_MAX_CHARS) ?? style.fallback,
+    kind: style.kind,
     detail:
       r.outcome === 'failed' ? fenceLine(r.error, ACTIVITY_DETAIL_MAX_CHARS) : null,
-    tag: DECISION_RECEIPT_TAG,
+    tag: style.tag,
     decisionId: r.decisionId,
   };
 }

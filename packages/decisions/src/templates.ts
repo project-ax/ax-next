@@ -196,6 +196,22 @@ export const FAILED_RECEIPT =
   'It tried to do this, and it did not work. Nothing was completed.';
 
 /**
+ * The receipt when NOBODY ANSWERED IN TIME (TASK-447).
+ *
+ * A constant like its neighbours, and here the reason is sharper than usual:
+ * the row DOES carry a per-decision sentence for "it did not happen" —
+ * `dismissedText` — and using it would be a lie. That line says *you turned
+ * this down*, and nobody turned anything down; the question simply ran out.
+ * Attributing a choice to someone who never made one is design H1 pointed
+ * straight at the person it misrepresents.
+ *
+ * Word for word the sentence the Today queue already shows an expired row
+ * (`DECISION_EXPIRED`, channel-web). Two surfaces describing one event
+ * differently is how a reader learns not to trust either.
+ */
+export const EXPIRED_RECEIPT = 'This one ran out of time, so nothing happened.';
+
+/**
  * The receipt when the host TOOK the call and never came back — it died with
  * the replay in flight, and a later sweep reclaimed the row (TASK-253).
  *

@@ -22,14 +22,12 @@ import type { DecisionRow, DecisionsDatabase } from './migrations.js';
 import { RECEIPT_STATUSES } from './receipts.js';
 import {
   AUTHORISING_STATUSES,
+  OPEN_STATUSES,
   type Decision,
   type DecisionStatus,
   type FreshnessPredicate,
   type ToolCall,
 } from './types.js';
-
-/** The two statuses a human can still act on. */
-const OPEN_STATUSES: readonly DecisionStatus[] = ['pending', 'stale'];
 
 /**
  * SQLSTATE for a unique-violation. The one storage code this file translates.
