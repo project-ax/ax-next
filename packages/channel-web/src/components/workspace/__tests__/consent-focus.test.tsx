@@ -939,6 +939,15 @@ describe('the host grant turned down (site 4)', () => {
 
       The invariant is unchanged and still pinned — focus ends up on the alert
       and not on `<body>`. Only the deadline moved.
+
+      TASK-451 CLOSED THAT WINDOW rather than widening the deadline again:
+      `useResolutionFocus` focuses from a LAYOUT effect now, so the focus lands
+      inside the commit that draws the alert and this `waitFor` is satisfied on
+      its first check. It stays as a `waitFor` because what it is waiting for —
+      the POST failing and the alert appearing at all — is genuinely
+      asynchronous, and because waiting on the focus rather than on the element
+      is the shape that cannot go stale. The no-window property itself is
+      pinned on its own, deterministically, two cases below.
     */
     await waitFor(() => {
       expect(document.activeElement).toBe(screen.getByRole('alert'));
@@ -980,6 +989,79 @@ describe('the host grant turned down (site 4)', () => {
     expect(line.textContent).toBe(GRANT_NOT_RESUMED);
     expect(document.activeElement).toBe(line);
     expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it('lands in the SAME commit as the sentence, not a task later (TASK-451)', async () => {
+    /*
+      THE RACE THAT REDDENED `main`, pinned so it cannot come back.
+
+      `useResolutionFocus` used to move focus from a PASSIVE effect, which
+      React runs in a task of its OWN, after the commit that put the sentence
+      on screen. So there was a window — a whole task wide — in which the
+      answer was in the document, focusable, and focus was still on `<body>`.
+
+      Nothing already in this file could see that window reliably, which is
+      what made it a once-a-fortnight red instead of a permanent one.
+      `@testing-library/react`'s `asyncWrapper` turns the act environment OFF
+      for the duration of every `findBy*` and `waitFor`, so React schedules
+      through its own MessageChannel rather than act's queue — and then RTL
+      drains with a SINGLE `setTimeout(0)`. Whether React's MessageChannel task
+      beats that one timer is the host's business, not ours. It usually does.
+      On a loaded CI runner on 2026-09-19 it did not (run 35484852089): the
+      sentence below was mounted, `tabindex="-1"` and all, and
+      `document.activeElement` was `<body>`.
+
+      This case does not race it, on any scheduler. A `MutationObserver`
+      callback runs at the microtask checkpoint of the very task that did the
+      mutating, so it reads focus at the EARLIEST instant anything — this test,
+      a screen reader, the browser about to paint — can see the sentence at
+      all. A layout effect has already run by then. A passive effect has not.
+      Red for the old shape, green for the new one, every time.
+    */
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+    );
+    render(
+      <div>
+        <Decoys />
+        <div data-consent-region="" tabIndex={-1} role="group" aria-label="Your queue">
+          <GrantRow
+            grant={{
+              key: grantKey(skillReq),
+              request: skillReq,
+              conversationId: 'c1',
+              agentId: 'scheduler',
+            }}
+            onResolved={vi.fn()}
+            onGranted={vi.fn(async () => false)}
+          />
+        </div>
+      </div>,
+    );
+
+    // Where focus was standing the first time the sentence was observable.
+    const focusWhenSaid: (Element | null)[] = [];
+    const observer = new MutationObserver(() => {
+      if (focusWhenSaid.length > 0) return;
+      if (document.querySelector('[data-testid="grant-not-resumed"]') === null) {
+        return;
+      }
+      focusWhenSaid.push(document.activeElement);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    try {
+      fireEvent.change(screen.getByLabelText(/API key/i), {
+        target: { value: 'sk-test' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: GRANT_CONNECT_LABEL }));
+
+      const line = await screen.findByTestId('grant-not-resumed');
+      expect(focusWhenSaid).toHaveLength(1);
+      expect(focusWhenSaid[0]).toBe(line);
+    } finally {
+      observer.disconnect();
+    }
   });
 
   it('PermissionCard focuses its failure Alert when the grant does NOT land', async () => {

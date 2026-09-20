@@ -40,7 +40,7 @@
  * document, and whatever is still actionable on that surface is a forward Tab
  * or two away rather than a blind crawl.
  */
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useLayoutEffect, useRef } from 'react';
 
 /**
  * The focus ring for a node that is focusable only by script.
@@ -153,7 +153,22 @@ export function useResolutionFocus(answerKey: string | null): {
   const answerRef = useCallback((node: HTMLElement | null) => {
     answer.current = node;
   }, []);
-  useEffect(() => {
+  // A LAYOUT EFFECT, AND THAT IS LOAD-BEARING (TASK-451).
+  //
+  // A passive `useEffect` runs in a task of its OWN, after the commit that put
+  // the answer on screen. That leaves a window — a whole task wide — in which
+  // the answer is in the document, focusable, and focus is still on `<body>`:
+  // exactly the state this module exists to prevent, just briefly. A layout
+  // effect runs inside the commit, before the browser paints and before any
+  // `MutationObserver` microtask, so there is no instant at which anything —
+  // a screen reader, the paint, a test — can observe the answer without the
+  // focus that belongs to it.
+  //
+  // It is not only a test fix. Keyboard input during that window went to
+  // whatever `<body>` forwards it to, and a screen reader that reached the new
+  // node first could read it from the old position. The window was small; the
+  // fix for a window is to close it, not to wait longer for it to shut.
+  useLayoutEffect(() => {
     if (!armed.current || answerKey === null) return;
     armed.current = false;
     takeResolutionFocus(answer.current);
