@@ -51,14 +51,16 @@
 //
 // The doc IS the implementation -- there is no second copy in a script to drift from it.
 //
-// MUTANTS RUN, NOT REASONED ABOUT (2026-09-20, macOS, bash 3.2 + zsh 5.9; baseline
-// 22 passed with both shells present):
+// MUTANTS RUN, NOT REASONED ABOUT (2026-09-20, macOS, bash 3.2 + zsh 5.9; this file's
+// baseline is 19 passed, and 26 when the sibling text-scan guard is collected with it,
+// which is how the counts below were taken -- every mutant still collects 26, so none
+// of them reddened by making the suite smaller):
 //
 //   - revert the whole Q2 block to its pre-TASK-479 text (`REVIEWED_SHA=<reviewed-sha>`
-//     spliced straight into the two ranges) -> 10 red: abbreviation, `-`, empty,
-//     unknown-sha and off-branch, x both shells. The full-sha and vacuity cases stay
-//     green, which is the point -- the fix changed no behaviour for a well-formed
-//     handoff.
+//     spliced straight into the two ranges) -> 12 red: abbreviation, `-`, empty,
+//     unknown-sha, ambiguous and off-branch, x both shells. The full-sha and vacuity
+//     cases stay green, which is the point -- the fix changed no behaviour for a
+//     well-formed handoff.
 //   - delete ONLY the `merge-base --is-ancestor` arm (keep resolution + the 40-char
 //     assert) -> 2 red: the off-branch case x both shells. Nothing else moves, so that
 //     arm is carrying its own property and is not decoration on the resolve.
@@ -68,14 +70,21 @@
 //     gate is specified to do -- Q2's contract is that an unusable reviewed-sha means
 //     the whole branch is unreviewed, which keeps the queue moving through an
 //     independent pass instead of stalling it on a typo.
-//   - swap `--verify --quiet` for a bare `git rev-parse` -> 4 red (unknown + ambiguous
-//     x 2 shells): bare `rev-parse` echoes the unresolvable string back on stdout and
-//     exits 0-ish, so `REVIEWED_SHA` ends up holding the garbage it was handed.
+//   - swap `--verify --quiet "…^{commit}"` for a bare `git rev-parse "…"` -> 2 red, NOT
+//     the 4 predicted. Only the unknown-sha case x both shells. The prediction assumed
+//     ambiguity rides on `--verify`; it does not -- bare `rev-parse` fails on an
+//     ambiguous prefix too, so the `||` arm still fires and that case stays green. What
+//     `--verify` uniquely buys is the 40-hex-looking string that names nothing: bare
+//     `rev-parse` assumes anything sha-shaped IS a sha, echoes it back and exits 0, so
+//     `REVIEWED_SHA` ends up holding the garbage it was handed. One property, not two.
 //   - delete the `[ ${#REVIEWED_SHA} -eq 40 ]` assert alone -> 0 red. Recorded because
 //     a passing mutant is data too: with resolution in place that assert is genuinely
 //     belt-and-braces, and it is kept because it is the line that stops a future edit
 //     from reintroducing a raw splice without also deleting a visible assertion. This
 //     file does not claim it as load-bearing.
+//   - revert the handoff field line to `reviewed-sha: <sha> | -` -> 1 red (the field-line
+//     test). Revert the builder-prompt bullet to its pre-TASK-479 wording -> 1 red (the
+//     bullet test). The two contract halves are independently pinned.
 //
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally -- no
 // network, no Docker, no build.
