@@ -180,6 +180,71 @@ describe('TASK-66 display event log — persist + read', () => {
     expect(err!.payload).toMatchObject({ error: 'sandbox-terminated' });
   });
 
+  /*
+    TASK-498 — THE `detail` LINE HAS TO SURVIVE THE ROUND TRIP.
+
+    `persistTurnError` used to store `{ reqId, error }` and drop `detail` on
+    the floor, and that was invisible for as long as nothing replayed these
+    events at all. Once the agent view started rendering them on reload, a
+    `dev-service-failed` showed its actionable line live ("which service, at
+    which path" — TASK-160) and lost it on refresh: the same failure, worded
+    two different ways depending on when you looked at it.
+
+    This asserts the REAL path — `chat:turn-error` fired at the bus, through
+    the subscriber, into the event log, back out of `conversations:get`. A
+    reviewer found the first version of this feature tested with hand-built
+    `displayEvents` carrying a `detail` the producer could never have written,
+    which passed over a dead field. Synthetic fixtures cannot catch a producer
+    that does not produce.
+  */
+  it('carries a turn-error detail line through persist and back out (TASK-498)', async () => {
+    const h = await makeHarness();
+    const userId = 'userA';
+    const conversationId = await createConv(h, userId);
+    const cctx = h.ctx({ userId, conversationId });
+
+    await h.bus.fire('chat:turn-error', cctx, {
+      reqId: 'r-detail',
+      reason: 'dev-service-failed',
+      detail: "service 'kafka' couldn't write /opt/kafka",
+    });
+
+    const got = await h.bus.call<GetInput, GetOutput>(
+      'conversations:get',
+      h.ctx({ userId }),
+      { conversationId, userId },
+    );
+    const err = got.displayEvents.find((e) => e.kind === 'turn-error');
+    expect(err).toBeDefined();
+    expect(err!.payload).toMatchObject({
+      error: 'dev-service-failed',
+      detail: "service 'kafka' couldn't write /opt/kafka",
+    });
+  });
+
+  it('omits an absent turn-error detail rather than storing an empty one (TASK-498)', async () => {
+    // An empty `detail` would render as a blank line under the label — the
+    // renderer joins the two on a newline — so absence has to stay absence.
+    const h = await makeHarness();
+    const userId = 'userA';
+    const conversationId = await createConv(h, userId);
+
+    await h.bus.fire('chat:turn-error', h.ctx({ userId, conversationId }), {
+      reqId: 'r-plain',
+      reason: 'sandbox-terminated',
+      detail: '',
+    });
+
+    const got = await h.bus.call<GetInput, GetOutput>(
+      'conversations:get',
+      h.ctx({ userId }),
+      { conversationId, userId },
+    );
+    const err = got.displayEvents.find((e) => e.kind === 'turn-error');
+    expect(err).toBeDefined();
+    expect(err!.payload).not.toHaveProperty('detail');
+  });
+
   it('folds a later card-resolution frame onto the earlier card (terminal state on replay)', async () => {
     const h = await makeHarness();
     const userId = 'userA';

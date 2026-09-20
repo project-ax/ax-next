@@ -473,6 +473,18 @@ interface SessionTerminatePayload {
 interface TurnErrorPayload {
   reqId?: string;
   reason?: string;
+  /**
+   * The optional TASK-160 author-facing line under the label — which service
+   * failed, and where.
+   *
+   * IT USED TO BE DROPPED HERE, and that was only invisible while nothing
+   * replayed these events. TASK-498 made the agent view render persisted
+   * turn-errors on reload, and a `dev-service-failed` then showed its
+   * actionable line live and lost it on refresh — the same failure, worded two
+   * different ways depending on when you looked. Untrusted host text: stored
+   * opaque, bounded by its producer and again by every renderer.
+   */
+  detail?: string;
 }
 
 // The fired card shape is a discriminated union ('skill' | 'host'); the
@@ -723,6 +735,11 @@ async function persistTurnError(
   const reqId = payload.reqId;
   const reason = payload.reason;
   if (typeof reason !== 'string' || reason.length === 0) return;
+  // See `TurnErrorPayload.detail` — kept so a reloaded failure says what the
+  // live one said. Only a non-empty string travels; an absent one must stay
+  // absent rather than becoming an empty line under the label.
+  const detail = payload.detail;
+  const hasDetail = typeof detail === 'string' && detail.length > 0;
   try {
     await bus.call<AppendEventInput, AppendEventOutput>(
       'conversations:append-event',
@@ -734,7 +751,11 @@ async function persistTurnError(
         // turn (the bounded-timeout path re-fires after session:terminate)
         // collapses to one card on replay.
         key: typeof reqId === 'string' && reqId.length > 0 ? reqId : '',
-        payload: { ...(reqId !== undefined ? { reqId } : {}), error: reason },
+        payload: {
+          ...(reqId !== undefined ? { reqId } : {}),
+          error: reason,
+          ...(hasDetail ? { detail } : {}),
+        },
       },
     );
   } catch (err) {
