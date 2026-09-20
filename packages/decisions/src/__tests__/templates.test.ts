@@ -26,13 +26,43 @@ describe('the prose is host-authored', () => {
     }
   });
 
-  it('builds every line out of the capability clause and the tool name', () => {
+  it('builds every line out of the capability clause, and only that', () => {
     const text = decisionText({ capability: CAP, toolName: 'request_capability' });
     expect(text.summary).toBe('Wants to gain access to a new service or key');
-    expect(text.detail).toContain('request_capability');
     expect(text.detail).toContain(CAP);
     expect(text.approvedText).toContain(CAP);
     expect(text.dismissedText).toContain(CAP);
+  });
+
+  /**
+   * TASK-429. `connector_propose` and `skill_propose` are internal tool ids, and
+   * they were being printed verbatim into `detail` — the string BOTH consent
+   * renderers draw (`DecisionRow` in the Today queue, `ApprovalCard` in the
+   * thread). Both tools carry an authored capability clause in
+   * `@ax/tool-policy`'s rule table, so there was never anything the identifier
+   * was needed for.
+   *
+   * WHAT THIS WOULD DO AGAINST THE UNFIXED CODE: fail on `detail`, which read
+   * "It stopped before running connector_propose, because that would …". The
+   * other three fields passed before the fix and still pass; they are asserted
+   * anyway so a future edit cannot reintroduce the leak somewhere else on the
+   * same surface.
+   *
+   * It is deliberately NOT scoped to the two propose tools — the rule is that a
+   * described hold names no tool, whatever the tool is called.
+   */
+  it.each([
+    ['connector_propose', 'set up a new connection for you'],
+    ['skill_propose', 'install a skill it wrote for itself'],
+    ['request_capability', CAP],
+  ])('never prints %s on a consent surface that has a clause', (tool, capability) => {
+    const text = decisionText({ capability, toolName: tool });
+    for (const [field, line] of Object.entries(text)) {
+      expect(line, `${field} leaked the tool id`).not.toContain(tool);
+    }
+    // …and it still says what the call does, so the fix is not "say less".
+    expect(text.summary).toContain(capability);
+    expect(text.detail).toContain(capability);
   });
 
   it('falls back mechanically when no rule described the capability', () => {

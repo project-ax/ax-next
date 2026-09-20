@@ -792,6 +792,7 @@ function Inner({
             <>
               <WorkspaceHeader title="Today" subtitle={today()} leading={navTrigger}>
                 <Segmented
+                  label="Filter today"
                   value={filter}
                   onValueChange={setFilter}
                   options={[
