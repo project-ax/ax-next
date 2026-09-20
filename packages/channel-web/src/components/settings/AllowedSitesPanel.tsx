@@ -79,7 +79,7 @@ export function AllowedSitesPanel() {
     <section className="flex flex-col gap-3.5 border-t border-border pt-5 mt-2">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h3 className="text-sm font-medium text-foreground">Allowed sites</h3>
+          <h2 className="text-sm font-medium text-foreground">Allowed sites</h2>
           {/* (TASK-344 / audit E6) Matches the lead-in A12 put on the permission
               card: say what the list IS before showing it, in the same words.
               This opened on "Not connectors" — a negation about our own

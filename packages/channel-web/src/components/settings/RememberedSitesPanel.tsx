@@ -89,7 +89,7 @@ export function RememberedSitesPanel() {
   return (
     <section className="flex flex-col gap-3.5 border-t border-border pt-5 mt-2">
       <div>
-        <h3 className="text-sm font-medium text-foreground">Sites we read without asking</h3>
+        <h2 className="text-sm font-medium text-foreground">Sites we read without asking</h2>
         <p className="text-xs text-muted-foreground">
           When your assistant wants to read a web page from a site it hasn’t read before, we
           stop and ask. Say yes once and we stop asking about that site. This list is yours

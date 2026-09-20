@@ -88,6 +88,18 @@ function Note({ children }: { children: React.ReactNode }) {
 export function AgentRail({ detail, openPastId, onOpenPast }: Props) {
   return (
     <aside className="w-[296px] shrink-0 overflow-y-auto border-l border-border px-5 pb-6">
+      {/*
+        The rail's own `h2` (TASK-446), so its five `SectionLabel` `h3`s hang
+        off something instead of skipping a level straight from the page title.
+
+        `sr-only`, and named exactly as the two controls that reach this panel
+        already name it — `AgentView`'s `aria-label="Agent details"` trigger and
+        the compact `SheetTitle`. The sheet gets its `h2` from `SheetTitle`
+        (Radix renders one), which is why this sits on the DESKTOP column only:
+        put it in `AgentRailContent` and the compact branch would announce
+        "Agent details" twice.
+      */}
+      <h2 className="sr-only">Agent details</h2>
       <AgentRailContent
         detail={detail}
         openPastId={openPastId}

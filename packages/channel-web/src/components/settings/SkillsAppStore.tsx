@@ -430,12 +430,17 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
           </Alert>
         )}
 
-        {/* ============================ INSTALLED ========================= */}
+        {/* ============================ INSTALLED =========================
+            `h2`, not the `h3` this shelf used to be (TASK-446). The Settings
+            surface's `h1` is the pane title above ("Skills"), so a shelf that
+            opened at `h3` skipped a level in the outline; the shelves ARE the
+            first division under the title, and their own sub-lists below step
+            down to `h3`. */}
         <section className="flex flex-col gap-3">
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-medium text-foreground">
+            <h2 className="text-sm font-medium text-foreground">
               {installed !== null ? `Installed (${installedCount})` : 'Installed'}
-            </h3>
+            </h2>
             <Button size="sm" onClick={() => setEditor({ mode: 'create-user' })}>
               <Plus className="h-3.5 w-3.5 mr-1" />
               Create
@@ -625,9 +630,9 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
               editor on the copy. */}
           {authored.length > 0 && (
             <div className="flex flex-col gap-1.5">
-              <h4 className="text-xs font-medium text-muted-foreground">
+              <h3 className="text-xs font-medium text-muted-foreground">
                 Authored by your agents
-              </h4>
+              </h3>
               <p className="text-xs text-muted-foreground">
                 Skills your agents drafted. Edit one to make an editable copy you
                 own.
@@ -706,13 +711,13 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
         {/* ========================= NOT INSTALLED ======================= */}
         <section className="flex flex-col gap-3">
           <div className="flex items-center justify-between gap-3">
-            <h3 className="text-sm font-medium text-foreground">
+            <h2 className="text-sm font-medium text-foreground">
               {catalog !== null &&
               agentsLoaded &&
               (installed !== null || agents.length === 0)
                 ? `Not installed · available in your workspace (${notInstalledCount})`
                 : 'Not installed · available in your workspace'}
-            </h3>
+            </h2>
             {isAdmin && (
               <Button
                 size="sm"

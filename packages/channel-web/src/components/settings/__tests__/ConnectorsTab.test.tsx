@@ -6,6 +6,10 @@ import * as agentsLib from '@/lib/agents';
 import * as connLib from '@/lib/connections';
 import * as credLib from '@/lib/credentials';
 import type { ConnectorSummary, Connector } from '@/lib/connectors';
+import {
+  headingOutline,
+  headingOutlineProblems,
+} from '@/test-utils/heading-outline';
 
 const PRIVATE_CONN: ConnectorSummary = {
   id: 'my-notion',
@@ -559,5 +563,37 @@ describe('ConnectorsTab', () => {
   it('embeds the Allowed sites panel', async () => {
     render(<ConnectorsTab isAdmin={false} />);
     expect(await screen.findByText('Allowed sites')).toBeInTheDocument();
+  });
+
+  /*
+    THE TAB'S HEADING LEVELS (TASK-446).
+
+    A FRAGMENT, so the expected top level is 2, not 1: this body renders inside
+    `AdminPane`, under the pane title's `h1` ("Connectors"). It used to open at
+    `h3` with `h4` shelves under it, which — with no `h1` above it anywhere in
+    the shell — meant the tab's outline began two levels down from a heading
+    that did not exist.
+
+    The three `h2`s are the tab's three genuine top-level sections; the `h3`s
+    are the connector shelves inside the first of them. Asserting the exact
+    list, not just "no skipped levels", is what stops the levels being fixed by
+    deleting a section heading.
+  */
+  it('opens at h2 and steps down one level to the shelves', async () => {
+    vi.spyOn(connectorsLib, 'listAuthoredPending').mockResolvedValue([
+      PROPOSED_LINEAR,
+    ]);
+    render(<ConnectorsTab isAdmin={false} />);
+    await screen.findByText('My Notion');
+
+    expect(headingOutlineProblems(document.body, 2)).toEqual([]);
+    expect(headingOutline()).toEqual([
+      'h2: Connectors',
+      'h3: Proposed by your assistant (1)',
+      'h3: Connected (0)',
+      'h3: Available (2)',
+      'h2: Allowed sites',
+      'h2: Sites we read without asking',
+    ]);
   });
 });

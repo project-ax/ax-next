@@ -61,11 +61,29 @@ import {
   workspaceGrantActions,
   type WorkspaceGrant,
 } from '@/lib/workspace-grant-store';
-import type { AgentTab } from '@/lib/workspace-route';
+import { WORKSPACE_AGENT_TABS, type AgentTab } from '@/lib/workspace-route';
 
 // The tab vocabulary lives with the URL grammar that has to name it — one
 // list, so a tab cannot exist that no link can reach.
 export type { AgentTab } from '@/lib/workspace-route';
+
+/**
+ * What each tab is CALLED — the trigger's word and the panel's heading, from
+ * one map (TASK-446).
+ *
+ * The triggers used to carry these strings inline. Now that the open panel is
+ * also headed by its name, two copies would be two places for the word to
+ * drift, and the one that drifted would be the one nobody can see: a reader
+ * navigating by heading would land on "Conversation" while the strip they
+ * cannot see says something else. `Record<AgentTab, string>` also makes a new
+ * tab a compile error here rather than a panel with no heading.
+ */
+const TAB_LABELS: Record<AgentTab, string> = {
+  chat: 'Conversation',
+  did: 'What it did',
+  files: 'Files',
+  memory: 'Memory',
+};
 
 interface Props {
   agentId: string;
@@ -905,7 +923,22 @@ export function AgentView({
           </Button>
           <AgentTile agent={agent} size={30} />
           <div className="flex min-w-0 items-center gap-2.5">
-            <span className="text-[15px] font-medium">{agent.name}</span>
+            {/*
+              THE PAGE'S ONE `h1` (TASK-446). The agent is the object you
+              navigated to, so its name is the page title — the same call
+              `WorkspaceHeader` makes for Today and Activity, which is why the
+              typography here is already that header's (`text-[15px]
+              font-medium`). Nothing else on the agent route renders an `h1`:
+              the shell hands the whole `main` to this component on
+              `route.kind === 'agent'` and does not draw its own header, and
+              `WorkspaceShell`'s only other `h1` is the full-screen
+              board-read-failure pane, which replaces this one rather than
+              sitting beside it.
+
+              Preflight strips the browser's heading size/weight/margin, so
+              the rendered row is unchanged.
+            */}
+            <h1 className="text-[15px] font-medium">{agent.name}</h1>
             <AgentStateLabel agent={agent} />
           </div>
           {/*
@@ -950,20 +983,13 @@ export function AgentView({
             {/* `w-max` so the list keeps its intrinsic width and overflows into
                 the scroller above, instead of shrinking to fit and clipping. */}
             <TabsList className="h-auto w-max bg-transparent p-0">
-              {(
-              [
-                  ['chat', 'Conversation'],
-                  ['did', 'What it did'],
-                  ['files', 'Files'],
-                  ['memory', 'Memory'],
-                ] as const
-              ).map(([v, label]) => (
+              {WORKSPACE_AGENT_TABS.map((v) => (
                 <TabsTrigger
                   key={v}
                   value={v}
                   className="rounded-none border-b-2 border-transparent bg-transparent px-0 pb-3 pt-0 text-[13px] text-muted-foreground shadow-none data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none [&:not(:first-child)]:ml-6"
                 >
-                  {label}
+                  {TAB_LABELS[v]}
                 </TabsTrigger>
               ))}
             </TabsList>
@@ -973,6 +999,25 @@ export function AgentView({
 
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col">
+          {/*
+            THE OPEN PANEL'S HEADING (TASK-446) — the `h2` between the page's
+            `h1` (the agent's name, above) and the `SectionLabel` `h3`s that
+            Memory, Files and the rail draw inside it.
+
+            `sr-only` BECAUSE THE TAB STRIP ALREADY SAYS IT. A second copy of
+            "Conversation" in 15px type under a tab that is already highlighted
+            would be visual noise; the word is missing only from the
+            ACCESSIBILITY tree, so the fix belongs in `className`, not in the
+            element. (The same call `SheetTitle` makes for the rail sheet below
+            — sr-only, present, real.) The honest alternative would be a `div`
+            with `role="heading" aria-level="2"`, which is the same element
+            with worse support and no reason.
+
+            ONE heading, not four: only the open panel is mounted, so the
+            outline names where the reader actually is rather than listing
+            three regions that are not on screen.
+          */}
+          <h2 className="sr-only">{TAB_LABELS[tab]}</h2>
           {tab === 'chat' && (
             <>
               {past && (
