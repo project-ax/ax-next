@@ -6,8 +6,7 @@
 //
 //  - `memory:facts:recall` here is a simple filtered listing (tenant scope +
 //    optional `about` + activeOnly), sorted by `when` desc, capped at
-//    `limit`. No FTS, no dense/vector search, no RRF fusion, no rerank —
-//    those are TASK-434.
+//    `limit`.
 //  - No `temporalAnchor`/`at` time-travel — DEM's `invalidatesPrevious` mode
 //    and temporal-anchor recall are explicitly not built here (see
 //    decisions.md; `dem-memory/tests/temporal-invalidation.test.ts` is NOT
@@ -16,18 +15,50 @@
 // TASK-422 extends that scope with the write-path/signal half of the design:
 // batch idempotency + atomicity (§3.5), the `pending` slot sentinel and the
 // `memory:facts:reindex` drain (§3.5), `activeOnly: false` history (§4.2),
-// a real `degraded` signal and `store-unavailable` errors (§4.4). Still no
-// FTS/dense/RRF/rerank — TASK-434.
+// a real `degraded` signal and `store-unavailable` errors (§4.4).
+//
+// TASK-434 adds the read half — ranked retrieval behind `query` (§2.3, §4.4).
+// The two engines get there at different times, so that half runs behind the
+// {@link FactsBackendCapabilities.fusionRecall} flag: a backend declaring it
+// is held to the fusion cases, a backend that doesn't is held to rejecting
+// `query`. Nobody is silently exempt, and there is exactly one contract.
 //
 // This file imports `@ax/core` types only — no plugin imports — so the
 // contract itself stays storage-agnostic (Invariant 1).
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type { TestContext } from 'vitest';
 import { HookBus, makeAgentContext } from '@ax/core';
 import type { Plugin } from '@ax/core';
 
+/**
+ * What a backend claims it can do, so ONE contract can hold engines that are
+ * deliberately at different stages without silently exempting either.
+ *
+ * Every field defaults to `false` when absent: a backend opts IN to a
+ * capability, it never has to opt out of one. That is what lets a new
+ * capability land without touching the backends that do not have it yet.
+ */
+export interface FactsBackendCapabilities {
+  /**
+   * The backend implements fusion recall — `query` is answered by ranked
+   * retrieval instead of rejected (design §2.3; TASK-434 on sqlite, TASK-457
+   * on postgres).
+   *
+   * Absent or `false` means `query` is still rejected with `invalid-payload`,
+   * and the contract asserts exactly that. Flipping it to `true` inherits
+   * every fusion case below, which is the point: the second engine gets held
+   * to the first engine's behaviour by changing one boolean.
+   */
+  fusionRecall?: boolean;
+}
+
 export interface FactsBackendFactory {
-  (bus: HookBus): Promise<{ plugin: Plugin; teardown: () => Promise<void> }>;
+  (bus: HookBus): Promise<{
+    plugin: Plugin;
+    teardown: () => Promise<void>;
+    capabilities?: FactsBackendCapabilities;
+  }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,14 +170,40 @@ export interface RecallInput {
    * the footgun §4.2 keeps off the agent-facing tool.
    */
   activeOnly?: boolean;
+  /**
+   * Maximum rows to return.
+   *
+   * On the `query` path this is a ceiling, not a target, and the real ceiling
+   * is lower than it looks: each channel contributes at most its own channel
+   * limit, so a fused answer cannot exceed the union of the channels however
+   * large `limit` is. A caller asking for more than that gets what the
+   * channels found. The filtered-listing path (no `query`) has no such cap and
+   * will return up to `limit`.
+   */
   limit: number;
   /**
-   * Accepted for forward-compat with TASK-434's fusion recall (FTS/dense/
-   * RRF/rerank). This contract never exercises it, and a backend rejects
-   * any non-`undefined` value with `invalid-payload` rather than silently
-   * returning an unfiltered result set.
+   * Free text to retrieve by. Present, the answer is built by ranked
+   * retrieval over the tenant's rows and ordered by RELEVANCE; absent, this is
+   * the filtered listing ordered by recency. `about`, `activeOnly` and tenant
+   * scope apply either way.
+   *
+   * Only a backend declaring {@link FactsBackendCapabilities.fusionRecall}
+   * implements it. One that does not rejects any non-`undefined` value with
+   * `invalid-payload` rather than silently returning an unfiltered result set
+   * dressed up as a search — a wrong answer the caller cannot detect is worse
+   * than a rejection it can.
    */
   query?: string;
+  /**
+   * How many of the top-ranked candidates the rerank step reorders, defaulting
+   * to {@link DEFAULT_POOL_SIZE}. Ignored when {@link query} is absent (there
+   * is nothing to rerank) and by a backend without fusion recall.
+   *
+   * Named `poolSize` and not `rerankPool`: it is a count of candidates, and
+   * nothing about it should tie the payload to whether a reranker exists at
+   * all (Appendix B).
+   */
+  poolSize?: number;
 }
 
 export interface RecallOutput {
@@ -235,12 +292,27 @@ export const PENDING_SLOT = 'pending';
  *   so supersession has not fully run: a value a later statement should have
  *   closed may still read as active. Under-closing, the safe direction.
  *   Produced by every backend that implements the pending drain.
- * - `'semantic'` — the dense/embedding channel was skipped because the
- *   embedder was unavailable. **Not produced yet**: there is no dense channel
- *   until TASK-434 builds one. Reserved here so both backends and the product
- *   layer agree on the spelling before there are two of them.
- * - `'ranking'` — the cross-encoder rerank was skipped and the lexical order
- *   stands. **Not produced yet**, same reason.
+ * - `'semantic'` — the dense/embedding channel did not contribute, because no
+ *   embedder was registered or the embed call failed. Raised only by a backend
+ *   declaring {@link FactsBackendCapabilities.fusionRecall}, and only on a
+ *   `query` recall: an `about`-only listing runs no channels, so flagging it
+ *   there would be noise rather than signal.
+ * - `'ranking'` — the rerank step did not run, for the same two reasons, and
+ *   the fused order stands. Same two conditions on when it is raised, plus one
+ *   CARVE-OUT a second backend must match: an **empty answer does not raise
+ *   it**. With no candidates there is nothing to rank, the reranker is never
+ *   invoked, and a flag fired there would report degradation on every recall
+ *   against a day-one empty store — the opposite of a signal.
+ *
+ *   Note the resulting asymmetry, which is deliberate rather than an
+ *   oversight: on an empty store with no providers configured, a fusion
+ *   backend raises `'semantic'` but NOT `'ranking'`. Embedding is
+ *   store-independent (the *query* is embedded, so the call happens and its
+ *   absence is real), while reranking is pool-dependent (there is no pool, so
+ *   nothing was lost).
+ *
+ * Don't read a `degraded: []` from a backend WITHOUT fusion recall as
+ * "semantic recall worked" — it has no dense channel to skip.
  *
  * A store that is unavailable is NOT a degraded flag — it is a thrown
  * `PluginError` (`code: 'store-unavailable'`). An empty table is a valid
@@ -289,6 +361,79 @@ export interface ReindexOutput extends ResettleOutcome {
 }
 
 // ---------------------------------------------------------------------------
+// Fusion: the constants and the ONE implementation both engines share
+// ---------------------------------------------------------------------------
+//
+// A `query` recall fuses several independently-ranked candidate lists with
+// Reciprocal Rank Fusion (design §2.3). `@ax/memory-facts-sqlite` builds those
+// lists out of FTS5 + vec0; TASK-457's postgres engine will build them out of
+// something else entirely. What must NOT differ is the fusion itself: the
+// contract's ordering cases assert one ranking, and if the two engines score
+// or tiebreak differently, the same case means two different things. So the
+// arithmetic lives here, imported by both, exactly like the `, id DESC`
+// tiebreak that already had to be identical in both backends (Invariant 4).
+//
+// These are internal constants, not payload fields — Appendix B's "`RRF`,
+// `vec0`, `FTS5`, `cosine` do not appear in any payload" still holds, and
+// nothing below leaks into a hook surface.
+
+/**
+ * RRF's rank-damping constant. 60 is the value `dem-memory` measured with, and
+ * rung 4 re-measures this engine against those numbers — a retuned `k` would
+ * make that comparison meaningless, so it is a constant and not config.
+ */
+export const DEFAULT_RRF_K = 60;
+
+/** How many candidates one channel contributes to the fusion. */
+export const DEFAULT_CHANNEL_LIMIT = 40;
+
+/**
+ * How many fused candidates the rerank step reorders. The tail beyond it keeps
+ * raw RRF order, so raise this alongside a raised `limit` rather than letting a
+ * long answer run off the end of the reranked pool.
+ */
+export const DEFAULT_POOL_SIZE = 40;
+
+/** One fused candidate: a row id and its summed reciprocal-rank score. */
+export interface FusedCandidate {
+  id: string;
+  score: number;
+}
+
+/**
+ * Reciprocal Rank Fusion over any number of ranked id lists, best-first.
+ *
+ * `score += 1 / (k + rank + 1)` with a 0-BASED rank, summed across lists and
+ * UNWEIGHTED — every channel counts the same, which is what lets two channels
+ * agreeing on a mediocre row outrank one channel's single best hit.
+ *
+ * Ties are broken by ascending id, and that tiebreak is load-bearing rather
+ * than cosmetic: `Array.prototype.sort` is stable, so without it the output
+ * order of two equally-scored rows is whatever order the channels happened to
+ * be passed in — which differs between backends and makes every ordering
+ * assertion in the contract suite quietly backend-specific. (The in-repo bench
+ * copy at `packages/memory-strata/test/bench/configs/c-rrf.ts` omits it; this
+ * is the port of `dem-memory/src/engine/recall.ts`, which does not.)
+ *
+ * An id repeated within a single list is summed twice, same as the reference
+ * implementation; channels are expected to return distinct ids.
+ */
+export function reciprocalRankFusion(
+  lists: string[][],
+  k: number = DEFAULT_RRF_K,
+): FusedCandidate[] {
+  const scores = new Map<string, number>();
+  for (const list of lists) {
+    list.forEach((id, rank) => {
+      scores.set(id, (scores.get(id) ?? 0) + 1 / (k + rank + 1));
+    });
+  }
+  return [...scores.entries()]
+    .map(([id, score]) => ({ id, score }))
+    .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
+}
+
+// ---------------------------------------------------------------------------
 // runFactsContract
 // ---------------------------------------------------------------------------
 
@@ -299,11 +444,13 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
     // gets assigned) doesn't trigger a second error in afterEach that masks
     // the real failure.
     let teardown: () => Promise<void> = async () => {};
+    let fusionRecall = false;
 
     beforeEach(async () => {
       bus = new HookBus();
       const result = await factory(bus);
       teardown = result.teardown;
+      fusionRecall = result.capabilities?.fusionRecall === true;
       await result.plugin.init({ bus, config: {} });
     });
 
@@ -356,6 +503,24 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         expect((err as { code?: string }).code).toBe(code);
       }
       expect(threw).toBe(true);
+    }
+
+    /**
+     * Capability gates for the `query` half of the contract.
+     *
+     * These have to skip at RUN time rather than branch at collection time:
+     * the factory is async, so a backend's `capabilities` are not known until
+     * `beforeEach` has run, and vitest has finished collecting the suite long
+     * before that. A plain `if` in the suite body would have to guess. A
+     * runtime `ctx.skip()` reports the gated cases as SKIPPED — visible in the
+     * run, never a silent pass.
+     */
+    function needsFusion(t: TestContext): void {
+      t.skip(!fusionRecall, 'backend does not declare capabilities.fusionRecall');
+    }
+
+    function needsNoFusion(t: TestContext): void {
+      t.skip(fusionRecall, 'backend declares capabilities.fusionRecall');
     }
 
     // One statement, one call — the common case used by most cases below.
@@ -1532,7 +1697,13 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         }
       });
 
-      it('recall rejects `query` — not implemented yet (TASK-434)', async () => {
+      // Only for a backend WITHOUT fusion recall. The alternative — dropping
+      // the assertion once the first engine implements `query` — would lose
+      // the guarantee for the engine that still doesn't, which is the one that
+      // needs it: a backend that quietly ignored `query` would answer a search
+      // with an unfiltered listing and look fine.
+      it('recall rejects `query` on a backend without fusion recall', async (t) => {
+        needsNoFusion(t);
         try {
           await recall({ query: 'anything', limit: 10 });
           throw new Error('expected memory:facts:recall to reject a `query`');
@@ -1761,6 +1932,254 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
 
         const outB = await recall({ about: 'user', limit: 10 }, ctxB);
         expect(outB.degraded).toEqual([]);
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // memory:facts:recall — `query` is ranked retrieval (design §2.3)
+    // -----------------------------------------------------------------------
+    //
+    // Everything in here is gated on `capabilities.fusionRecall`, and
+    // everything in here is deliberately backend-AGNOSTIC: no payload, no
+    // assertion and no fixture below mentions a lexical index, a vector, a
+    // score function or a fusion constant. What the contract can see is the
+    // ANSWER — which rows come back, in what order, under which filters — and
+    // that is the only part two engines built on different machinery can be
+    // held to identically (Invariant 1).
+    //
+    // The property that makes these cases worth writing: the pre-fusion engine
+    // answers `recall` as a filtered listing ordered by recency. Every case
+    // below is built so the recency answer is a DIFFERENT answer — a different
+    // ROW FIRST, and where the filters allow it a different row SET — so none
+    // of them can pass by accident on a backend that took `query` and ignored
+    // it. Order carries most of that weight because the temporal channel
+    // admits candidates the query never reached (see the block further down),
+    // so "the irrelevant row is absent" is not available as an assertion.
+    describe('memory:facts:recall — query (fusion recall)', () => {
+      // A fixture whose relevance order and recency order are opposites: the
+      // only row mentioning Khalid is the OLDEST, so recency ranks it last.
+      const KHALID: FactStatementInput = {
+        about: 'user',
+        relation: 'likes_artist',
+        value: 'Khalid',
+        when: JAN,
+      };
+      const BOSTON: FactStatementInput = {
+        about: 'user',
+        relation: 'lives_in',
+        value: 'Boston',
+        when: JUN,
+      };
+      const ACME: FactStatementInput = {
+        about: 'user',
+        relation: 'works_at',
+        value: 'Acme',
+        when: SEP,
+      };
+
+      it('ranks by relevance, NOT by the recency order the filtered listing uses', async (t) => {
+        needsFusion(t);
+        await record({ statements: [KHALID, BOSTON, ACME] });
+
+        // Pin the contrast inside the test rather than asserting it from
+        // memory: the listing really does put the Khalid row LAST, so a
+        // `query` answer that merely re-ran the listing cannot pass below.
+        const listing = await recall({ about: 'user', limit: 10 });
+        expect(listing.statements.map((s) => s.value)).toEqual(['Acme', 'Boston', 'Khalid']);
+
+        const queried = await recall({ query: 'Khalid', limit: 10 });
+        expect(queried.statements[0]?.value).toBe('Khalid');
+      });
+
+      // There is deliberately NO "a term nothing matches returns []" case, and
+      // this comment exists so nobody re-adds the obvious one.
+      //
+      // The temporal channel ADMITS candidates — it is query-independent, so
+      // it contributes the tenant's most recent rows to every fusion whether
+      // or not any relevance channel hit. A query matching nothing therefore
+      // returns recent rows, not an empty answer. That is `dem-memory`'s
+      // measured behaviour, and the whole point of the ladder is that rung 4
+      // re-measures what rung 1 measured: an unmeasured retrieval change made
+      // by fiat here would make that number answer a different question.
+      // (`.claude/memory/decisions/2026-09-19-TASK-434.md` records the
+      // argument, including the product objection — "memory has nothing about
+      // that" beats fifteen unrelated recent facts as hallucination fuel —
+      // which is filed to be settled by rung 4's numbers, not by assertion.)
+      //
+      // What still discriminates a working `query` from an ignored one is
+      // ORDER, which is why every case below asserts position rather than
+      // membership.
+
+      it('treats a "-"-prefixed token as a literal term, not as boolean NOT', async (t) => {
+        needsFusion(t);
+        // Query text is untrusted — it reaches the engine as model or user
+        // input through `@ax/memory` — and a full-text parser that honours
+        // operators in raw input INVERTS this query: `-graduated` matches
+        // every row LACKING the term, so the answer becomes the unrelated row
+        // and the relevant one disappears. Mirrors
+        // `memory-strata-index-contract`'s Test 8c, which pins the same class
+        // on the document index.
+        const graduated = await recordOne({
+          about: 'user',
+          relation: 'stated',
+          value: 'The user graduated with honors',
+          when: JAN,
+        });
+        // A distractor, and a NEWER one, so recency and relevance disagree.
+        // Its id is deliberately not captured: the assertion below is about
+        // order, and the temporal channel admits this row either way (see the
+        // block above), so "where is pasta" is not a question the contract can
+        // answer identically on both models.
+        await recordOne({
+          about: 'user',
+          relation: 'stated',
+          value: 'A completely unrelated note about pasta',
+          when: SEP,
+        });
+
+        const out = await recall({ query: 'zzq_absent_term -graduated', limit: 10 });
+        const ids = out.statements.map((s) => s.id);
+        expect(ids).toContain(graduated.id);
+        // ORDERING, not exclusion. The pasta row is in the answer either way —
+        // the temporal channel admits it as one of the tenant's two rows (see
+        // the block above) — so "it isn't there" cannot be the assertion. What
+        // the leaked-NOT reading CANNOT produce is this order: under boolean
+        // NOT the only relevance hit is the pasta row, and it is also the
+        // newer of the two, so it would lead on both channels at once.
+        expect(out.statements[0]?.id).toBe(graduated.id);
+      });
+
+      it('still applies the activeOnly filter — default hides a closed row, activeOnly: false returns it with until + closedBy', async (t) => {
+        needsFusion(t);
+        const boston = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Boston',
+          when: JAN,
+          slot: 'lives_in',
+        });
+        const seattle = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JUN,
+          slot: 'lives_in',
+        });
+        expect(seattle.closes).toEqual([boston.id]);
+
+        // The query reaches BOTH rows, so anything missing from the default
+        // answer was dropped by the validity filter and not by the ranking.
+        // Worth a case of its own because a candidate channel that cannot take
+        // arbitrary predicates has to be validity-filtered afterwards, in
+        // application code — exactly the step that gets forgotten.
+        const active = await recall({ query: 'Boston Seattle', limit: 10 });
+        expect(active.statements.map((s) => s.id)).toEqual([seattle.id]);
+
+        const history = await recall({ query: 'Boston Seattle', limit: 10, activeOnly: false });
+        const ids = history.statements.map((s) => s.id);
+        expect(ids).toContain(boston.id);
+        expect(ids).toContain(seattle.id);
+        const closed = history.statements.find((s) => s.id === boston.id);
+        expect(closed?.until).toBeDefined();
+        expect(closed?.closedBy).toBe(seattle.id);
+      });
+
+      it("is tenant-scoped — agent A's query never reaches agent B's identical row", async (t) => {
+        needsFusion(t);
+        const ctxA = makeCtx('agent-a', 'user-a');
+        const ctxB = makeCtx('agent-b', 'user-b');
+
+        // Same text on both sides, so a leaked answer is unmistakable: only
+        // the id tells them apart, and a pooled index would return both.
+        const a = await recordOne(KHALID, ctxA);
+        const b = await recordOne(KHALID, ctxB);
+
+        const outA = await recall({ query: 'Khalid', limit: 10 }, ctxA);
+        expect(outA.statements.map((s) => s.id)).toEqual([a.id]);
+        const outB = await recall({ query: 'Khalid', limit: 10 }, ctxB);
+        expect(outB.statements.map((s) => s.id)).toEqual([b.id]);
+      });
+
+      it('partitions a query by agentId ALONE — a second user on the same agent reads it, the same user on another agent does not', async (t) => {
+        needsFusion(t);
+        const alice = makeCtx('shared-agent', 'user-alice');
+        const bob = makeCtx('shared-agent', 'user-bob');
+        const otherAgent = makeCtx('other-agent', 'user-alice');
+
+        const rec = await recordOne(KHALID, alice);
+
+        // The same two directions the listing is already held to, restated for
+        // the query path: an isolation-only case is satisfied by the WRONG
+        // partition (a per-(user, agent) one), so both halves are needed.
+        const sameAgent = await recall({ query: 'Khalid', limit: 10 }, bob);
+        expect(sameAgent.statements.map((s) => s.id)).toEqual([rec.id]);
+
+        const crossAgent = await recall({ query: 'Khalid', limit: 10 }, otherAgent);
+        expect(crossAgent.statements).toEqual([]);
+      });
+
+      // Preconditions: the factory registers NO producer at the backend's
+      // embedder or reranker hook. That is the default deployment — TASK-434
+      // ships the seam, not a provider — and it is the state design §4.4 wants
+      // observable rather than silent.
+      it("reports degraded ['ranking', 'semantic'] on a query with no embedder or reranker, and neither on an `about`-only listing", async (t) => {
+        needsFusion(t);
+        await recordOne(KHALID);
+
+        const queried = await recall({ query: 'Khalid', limit: 10 });
+        expect([...queried.degraded].sort()).toEqual(['ranking', 'semantic']);
+
+        // An `about`-only listing runs no channels at all, so it has nothing
+        // to degrade — flagging it there would be noise, and a caller that
+        // reads the flags as "memory is unhealthy" would read it wrong.
+        const listing = await recall({ about: 'user', limit: 10 });
+        expect(listing.degraded).toEqual([]);
+      });
+
+      // The empty-answer carve-out, pinned in the CONTRACT so a second fusion
+      // backend cannot diverge on it silently. Without this case the suite
+      // stays green whether a backend raises `'ranking'` on an empty answer or
+      // not — every other fusion case records a row first, so none of them
+      // ever exercises an empty pool — and TASK-457 would be free to implement
+      // it from the flag's one-line description and disagree with sqlite on
+      // day one of every deployment (Invariant 4: the two engines must not
+      // differ in ways the contract cannot see).
+      it("does not raise 'ranking' on an empty answer, but still raises 'semantic'", async (t) => {
+        needsFusion(t);
+
+        // Deliberately record NOTHING. This is the day-one state of every
+        // deployment, not an edge case.
+        const empty = await recall({ query: 'Khalid', limit: 10 });
+        expect(empty.statements).toEqual([]);
+
+        // Nothing to rank: the reranker is never reached, so nothing was lost
+        // and there is nothing to report.
+        expect(empty.degraded).not.toContain('ranking');
+
+        // ...but the dense channel IS reported absent, and the asymmetry is
+        // the point: embedding is store-independent (the QUERY is embedded, so
+        // the missing producer really did cost the answer a channel), while
+        // reranking is pool-dependent. A backend that reports both, or
+        // neither, has got one of the two wrong.
+        expect(empty.degraded).toContain('semantic');
+      });
+
+      it('accumulates the query flags ALONGSIDE pending rather than replacing them', async (t) => {
+        needsFusion(t);
+        await recordOne(KHALID);
+        await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JUN,
+          slot: PENDING_SLOT,
+        });
+
+        // `recall` assembles ONE array from independent probes (Invariant 4);
+        // an implementation that returned the fusion flags instead of the
+        // pending one would lose a signal the caller already depends on.
+        const queried = await recall({ query: 'Khalid', limit: 10 });
+        expect([...queried.degraded].sort()).toEqual(['pending', 'ranking', 'semantic']);
       });
     });
 

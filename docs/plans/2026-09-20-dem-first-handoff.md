@@ -77,6 +77,46 @@ see §4.
 
 ### 3.1 TASK-434 — full RRF recall, sqlite (ready, critical path)
 
+> **As built, 2026-09-19/20 (PR pending).** Shipped as described below, with four
+> corrections worth carrying forward.
+>
+> 1. **The embedder/reranker seam is a hook NAME + optional model** (`{ hook, model? }`)
+>    declared under `optionalCalls` with a `degradation` string — not a function injected
+>    through plugin config. That is the in-repo precedent twice over (`memory-strata`'s
+>    `orchestrator: { hook, model }`; `llm-anthropic`'s `credentials:get`), and it answers
+>    §1's "two embedder seams" worry directly: a hook name makes rung 3's write-path
+>    embedder and this read-path one the SAME seam. Verified that `bootstrap.ts`'s
+>    `verifyCalls` skips `optionalCalls`, so an absent producer is non-fatal at boot and
+>    does **not** drag the plugin into the preset canaries' `PLUGINS_TO_DROP`.
+> 2. **The contract divergence §3.1 warned about is resolved by a capability descriptor,
+>    not a simultaneous flip.** `runFactsContract`'s factory now takes
+>    `capabilities: { fusionRecall?: boolean }`. sqlite declares `true`; postgres declares
+>    nothing and stays on the rejection branch (its 7 fusion cases report as *skipped*, not
+>    as silent passes). TASK-457 flips one boolean and inherits them.
+> 3. **No provider plugin ships.** Nothing registers the hooks, so a default boot reports
+>    `degraded: ['semantic','ranking']` — §4.4's designed state, not half-wired code. The
+>    card still delivers live value: `query` goes from `invalid-payload` to a real
+>    **sparse + temporal** RRF answer with no provider at all.
+> 4. **The temporal channel ADMITS candidates** (query-independent), as `dem-memory` has
+>    it — so a query matching nothing returns recent rows, not an empty answer. An earlier
+>    plan of mine specified the opposite; faithful won because rung 4 must replicate what
+>    rung 1 measured, and design §4.2 already routes the thin-table hallucination risk to
+>    that same rung. It orders by `transaction_time DESC, valid_start DESC, id DESC` (the
+>    reference's key, not the filtered listing's), which matters precisely *because* the
+>    channel admits: the ORDER BY sets RRF ranks.
+>
+> **Two traps for whoever takes TASK-457.** (a) The plan's "share the RRF constants via
+> `@ax/memory-facts-contract`" is **not implementable**: that package declares `vitest` as a
+> runtime dependency and `eslint.config.mjs` blocks `@ax/*` *value* imports from plugin code
+> outside a named allow-list (`allowTypeImports` is why `import type` works today). Each
+> engine keeps a local copy pinned by a parity test, the `PENDING_SLOT` precedent. **TASK-457
+> hits the same wall** — duplicate + pin, or split the suite behind a subpath export first.
+> (b) `sqlite-vec` is pinned **exact at 0.1.9** per design §6.5; `packages/memory-strata`'s
+> pre-existing `^0.1.6` was left alone and is now inconsistent (follow-up filed).
+>
+> Tests: sqlite **111 → 162**, contract **9** (new unit suite; that package had no test
+> runner before), postgres **107** unchanged. Full gate green.
+
 Port `dem-memory/src/engine/recall.ts` — sparse FTS5 + dense `sqlite-vec` + temporal, RRF
 fusion, optional rerank. **Not graph** (ablated and dropped at rung 0).
 
@@ -247,7 +287,7 @@ a short-circuit; confirm by reading the job's step list, not its duration.
 | Card | Status | Note |
 |---|---|---|
 | TASK-420/421/422/448/423 | **Done** | rung 2's gate |
-| **TASK-434** | To Do, **ready** | RRF recall, sqlite — **last card of rung 2**; prerequisite for a meaningful rung 4, but does NOT unblock it (see §1) |
+| **TASK-434** | **Built, PR pending** | RRF recall, sqlite — **last card of rung 2**, now closed. Still does NOT unblock rung 4 (see §1): that measurement runs through an agent holding `memory_recall`, which is rung 3. See the as-built note in §3.1 |
 | TASK-457 | To Do (deps 434) | same channels on postgres; owns the tsvector/pgvector call |
 | TASK-458 | To Do | pgvector bootstrap swallows its failure |
 | TASK-459 | To Do | NUL/control chars — the backends disagree until this lands |

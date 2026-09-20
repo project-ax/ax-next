@@ -199,18 +199,26 @@ function validateRecallInput(input: RecallInput): {
       message: 'about must be a string when set',
     });
   }
-  // `query` (free-text search) is on the contract's type for forward-compat
-  // (TASK-434's fusion recall) but this engine doesn't implement it yet —
-  // there is no tsvector, no GIN index and no pgvector here, deliberately
-  // (TASK-457 owns those channels, and owns the decision of what they should
-  // be). Rejecting it loudly beats silently returning an unfiltered result
-  // set to a caller who read the type and expected it to narrow the answer,
-  // and it keeps the two backends saying the same thing about the same input.
+  // `query` (free-text search) is implemented on the SQLITE twin as of
+  // TASK-434 and is not implemented here: there is no tsvector, no GIN index
+  // and no pgvector, deliberately — TASK-457 owns those channels and owns
+  // deciding what they should be, and TASK-458 owns the prior question of
+  // whether pgvector is even available in the image we deploy.
+  //
+  // So the two backends now deliberately DIFFER on this input, which is a
+  // thing the shared contract has to be TOLD rather than left to discover:
+  // `runFactsContract`'s factory takes a capability descriptor, this backend
+  // declares no `fusionRecall`, and the contract therefore runs the rejection
+  // case here and the fusion cases against sqlite. When TASK-457 lands it
+  // flips that one boolean and inherits the fusion cases.
+  //
+  // Rejecting loudly still beats silently returning an unfiltered result set
+  // to a caller who read the type and expected it to narrow the answer.
   if (input.query !== undefined) {
     throw new PluginError({
       code: 'invalid-payload',
       plugin: PLUGIN_NAME,
-      message: 'query is not implemented yet (TASK-434) — omit it',
+      message: 'query is not implemented on the postgres engine yet (TASK-457) — omit it',
     });
   }
   if (input.activeOnly !== undefined && typeof input.activeOnly !== 'boolean') {
@@ -458,10 +466,14 @@ async function rebuildBatch(
  * package at runtime — the bus is the only inter-plugin API.
  *
  * Deliberately NOT implemented here: free-text (`tsvector`/`pg_trgm`) and
- * dense (`pgvector`) recall. The contract has neither, the sqlite twin has
- * neither, and `recall` REJECTS a `query` field with `invalid-payload` on
- * both. TASK-457 owns those channels and owns choosing what they should be,
- * when there is a sqlite implementation to match.
+ * dense (`pgvector`) recall. **The sqlite twin HAS had them since TASK-434**,
+ * so this is a real asymmetry now rather than a shared gap: `recall` rejects a
+ * `query` field with `invalid-payload` here and answers it there. The shared
+ * contract is told so explicitly — this backend's factory declares no
+ * `fusionRecall` capability, so the contract runs the rejection case against it
+ * and the fusion cases against sqlite. TASK-457 owns building these channels
+ * (and now has a sqlite implementation to match); TASK-458 owns the prior
+ * question of whether pgvector exists in the image at all.
  */
 export function createMemoryFactsPostgresPlugin(): Plugin {
   let db: Kysely<MemoryFactsDatabase> | undefined;
@@ -627,7 +639,8 @@ export function createMemoryFactsPostgresPlugin(): Plugin {
           // omitted/`true` keeps the TASK-421 behavior of only currently-
           // active rows; `false` drops the predicate entirely, so active AND
           // closed rows both come back. `input.query` is never consulted
-          // here regardless — no FTS/dense/RRF/rerank (TASK-434/457).
+          // here regardless — no FTS/dense/RRF/rerank on this backend. It is
+          // rejected upstream in validation; TASK-457 owns adding it.
           //
           // Recall is the handler where swallowing a store failure would be
           // most tempting and most harmful: "no facts" and "could not read the

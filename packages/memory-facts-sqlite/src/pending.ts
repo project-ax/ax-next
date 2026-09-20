@@ -52,3 +52,50 @@ export function pendingStatus(driver: BetterSqliteDb, agentKey: string): Pending
   const pending = row.n;
   return { pending, degraded: pending > 0 ? ['pending'] : [] };
 }
+
+// ---------------------------------------------------------------------------
+// The two `query`-only probes (TASK-434), living beside `pendingStatus` for
+// the same reason it exists: `recall` is the ONE place that assembles the
+// `degraded` array, and the vocabulary is decided here rather than inline at
+// three call sites (Invariant 4).
+//
+// Both are pure functions of an outcome the caller already has, not store
+// reads — unlike `pendingStatus`, whose answer is only in the table. They are
+// still functions and not inline ternaries because the flag names are the
+// shared thing; a future third reason to raise `'semantic'` (a provider
+// health signal, say) lands in one place.
+//
+// Both are raised ONLY on a `query` recall. An `about`-only listing runs no
+// channels at all, so it has nothing to degrade — flagging it there would be
+// noise, and a caller reading the flags as "memory is unhealthy" would read it
+// wrong. `recall` enforces that by not calling these on the listing path.
+// ---------------------------------------------------------------------------
+
+/**
+ * §4.4's `'semantic'`: the dense channel did not contribute to THIS answer.
+ *
+ * All three causes collapse to one flag on purpose — no embedder producer is
+ * registered, the vector extension is unavailable on this host, or the embed
+ * call failed or timed out. The caller cannot act differently on any of them:
+ * the answer in hand was built lexically either way, and the distinction
+ * belongs in an operator's logs, not in a payload field the model reads.
+ */
+export function semanticStatus(denseContributed: boolean): DegradedFlag[] {
+  return denseContributed ? [] : ['semantic'];
+}
+
+/**
+ * §4.4's `'ranking'`: the rerank step did not run, so the answer keeps raw
+ * fusion order — the lexical fallback the design asks for. Same three causes,
+ * same reason they collapse.
+ *
+ * The CALLER carves out one case this helper cannot see: an empty candidate
+ * pool. `rerankDocuments` returns early on zero documents without ever
+ * invoking the producer, so "did not run" is true but nothing was degraded —
+ * `recall` passes `true` there rather than letting a day-one empty store
+ * report ranking degradation on every query. Keep that decision at the call
+ * site: this helper stays a pure `boolean -> flag` mapping.
+ */
+export function rankingStatus(reranked: boolean): DegradedFlag[] {
+  return reranked ? [] : ['ranking'];
+}

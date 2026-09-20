@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { PluginError, type Plugin } from '@ax/core';
+import { PluginError, type AgentContext, type HookBus, type Plugin } from '@ax/core';
 import type {
   RecordInput,
   RecordOutput,
@@ -8,6 +8,7 @@ import type {
   RecallInput,
   RecallOutput,
   FactRecord,
+  DegradedFlag,
   SupersedeInput,
   SupersedeOutput,
   ClearInput,
@@ -16,14 +17,37 @@ import type {
   ReindexOutput,
   ResolvedSlot,
 } from '@ax/memory-facts-contract';
-import { openDatabase, TABLE, INFINITY_SENTINEL, type FactRow } from './schema.js';
+import {
+  openDatabase,
+  indexFactRow,
+  deleteIndexedFactRows,
+  EMBEDDING_DIMENSIONS,
+  TABLE,
+  FTS_TABLE,
+  VEC_TABLE,
+  INFINITY_SENTINEL,
+  type FactRow,
+} from './schema.js';
 import {
   insertWithSlotClosure,
   resettleSlotGroups,
   supersedeIds,
   type SlotGroup,
 } from './closure.js';
-import { PENDING_SLOT, pendingStatus } from './pending.js';
+import { PENDING_SLOT, pendingStatus, semanticStatus, rankingStatus } from './pending.js';
+import {
+  buildFtsMatchQuery,
+  denseChannel,
+  factStatementText,
+  reciprocalRankFusion,
+  rowsInRankOrder,
+  sparseChannel,
+  temporalChannel,
+  CHANNEL_LIMIT,
+  POOL_SIZE,
+  type ChannelScope,
+} from './recall.js';
+import { embedTexts, rerankDocuments, type ProducerRef } from './producers.js';
 import { agentScopeKey } from './agent-scope-key.js';
 import type { Database as BetterSqliteDb } from 'better-sqlite3';
 
@@ -165,7 +189,9 @@ function validateRecordInput(input: RecordInput): ValidatedRecordInput {
 
 function validateRecallInput(input: RecallInput): {
   about?: string;
+  query?: string;
   limit: number;
+  poolSize: number;
   activeOnly: boolean;
 } {
   if (
@@ -186,15 +212,27 @@ function validateRecallInput(input: RecallInput): {
       message: 'about must be a string when set',
     });
   }
-  // `query` (free-text search) is on the contract's type for forward-compat
-  // (TASK-434's fusion recall) but this engine doesn't implement it yet.
-  // Rejecting it loudly beats silently returning an unfiltered result set to
-  // a caller who read the type and expected it to narrow the answer.
-  if (input.query !== undefined) {
+  // `query` IS implemented here (TASK-434) — this engine declares
+  // `capabilities.fusionRecall`. An EMPTY query is still rejected rather than
+  // treated as absent: `''` is falsy in JS but a perfectly good value on the
+  // wire, and silently answering it with the recency listing would hand a
+  // caller who thought they were searching an unfiltered result set dressed up
+  // as a search. Same reasoning as the empty-`batchKey` rejection above.
+  if (input.query !== undefined && !isNonEmptyString(input.query)) {
     throw new PluginError({
       code: 'invalid-payload',
       plugin: PLUGIN_NAME,
-      message: 'query is not implemented yet (TASK-434) — omit it',
+      message: 'query must be a non-empty string when set',
+    });
+  }
+  if (
+    input.poolSize !== undefined &&
+    (typeof input.poolSize !== 'number' || !Number.isFinite(input.poolSize) || input.poolSize < 1)
+  ) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'poolSize must be a positive number when set',
     });
   }
   if (input.activeOnly !== undefined && typeof input.activeOnly !== 'boolean') {
@@ -206,7 +244,12 @@ function validateRecallInput(input: RecallInput): {
   }
   return {
     ...(input.about !== undefined ? { about: input.about } : {}),
+    ...(input.query !== undefined ? { query: input.query } : {}),
     limit: Math.min(Math.floor(input.limit), MAX_LIMIT),
+    // Clamped by the same ceiling as `limit`, for the same reason: this one
+    // sizes the payload handed to a third-party reranker, so an unbounded
+    // value would be an unbounded outbound request carrying memory content.
+    poolSize: Math.min(Math.floor(input.poolSize ?? POOL_SIZE), MAX_LIMIT),
     // Omitted or `true` -> only currently-active rows (unchanged TASK-421
     // behavior). `false` -> history mode (design §4.2): no validity filter,
     // so closed rows come back too, each carrying `until` and (for a
@@ -378,10 +421,48 @@ function rebuildBatch(
 
 export interface MemoryFactsSqliteConfig {
   databasePath: string;
+  /**
+   * Which service hook produces embeddings, and optionally which model to ask
+   * it for. Absent — the default today, since no provider plugin ships yet —
+   * means the dense channel never runs and every `query` recall reports
+   * `degraded: ['semantic']` (design §4.4). See `producers.ts`.
+   *
+   * A hook NAME rather than a function, deliberately: it makes this read-path
+   * embedder and §3.3's write-path (slot-normalization) one the SAME seam —
+   * one provider, one credential, one egress host.
+   */
+  embedder?: ProducerRef;
+  /**
+   * Which service hook reranks a candidate pool. Absent means the fused order
+   * stands and a `query` recall reports `degraded: ['ranking']` — except when
+   * the answer is empty, where there was no pool to rank and nothing was lost.
+   */
+  reranker?: ProducerRef;
 }
+
+/**
+ * Ceiling on how many rows ONE `memory:facts:reindex` call re-derives.
+ *
+ * Backfill exists because rows recorded before a provider (or before
+ * TASK-434's tables) would otherwise be permanently invisible to the sparse
+ * and dense channels. It is bounded because the vector half makes an outbound
+ * call per chunk, and an unbounded sweep over a large tenant would sit inside
+ * one hook call until the bus timed it out — leaving nothing committed. The
+ * drain is re-runnable, so a big backlog clears over several calls.
+ */
+const BACKFILL_LIMIT = 200;
+
+/** Texts per embed call during backfill — one bounded request, not one per row. */
+const BACKFILL_EMBED_CHUNK = 32;
 
 export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): Plugin {
   let driver: BetterSqliteDb | undefined;
+  // Set by `openDatabase`: whether THIS connection can use `VEC_TABLE`. The
+  // dense channel's availability is a property of the host (is there a
+  // prebuilt `sqlite-vec` binary for it?), not of any one call, so it is read
+  // once at init and threaded everywhere instead of being re-derived — or,
+  // as it was before, discovered by letting a write fail.
+  let vectorExtensionLoaded = false;
 
   /**
    * The one legal way to reach the driver from a handler.
@@ -404,6 +485,256 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
     return driver;
   }
 
+  /**
+   * The `query` half of `memory:facts:recall` — three channels, RRF, an
+   * optional rerank (design §2.3), ported from `dem-memory`'s `RecallEngine`.
+   *
+   * The interleaving of async producer calls and synchronous store regions is
+   * the shape of the whole function, so it is worth naming: better-sqlite3 is
+   * synchronous and nothing may be awaited inside a transaction, while both
+   * producers are network calls. So it runs embed (async) → channels + fetch
+   * (one store region) → rerank (async) → reorder (pure). The store region
+   * fetches the rows for EVERY fused candidate rather than only the page that
+   * will be returned, which is what lets the rerank reorder without a second
+   * read — and a second read taken after an awaited rerank could see a
+   * different store than the one the ranking was computed over.
+   */
+  async function fusionRecall(
+    bus: HookBus,
+    ctx: AgentContext,
+    args: {
+      agentKey: string;
+      query: string;
+      about?: string;
+      limit: number;
+      poolSize: number;
+      activeOnly: boolean;
+    },
+  ): Promise<RecallOutput> {
+    const scope: ChannelScope = {
+      agentKey: args.agentKey,
+      activeOnly: args.activeOnly,
+      limit: CHANNEL_LIMIT,
+      ...(args.about !== undefined ? { about: args.about } : {}),
+    };
+
+    // No vec0 on this host means no dense channel whatever the embedder says,
+    // so the call is not even attempted — an outbound request carrying memory
+    // content whose answer has nowhere to go is pure cost and pure exposure.
+    // Both roads lead to the same `'semantic'`.
+    const queryVectors = vectorExtensionLoaded
+      ? await embedTexts(bus, ctx, config.embedder, [args.query], 'query', EMBEDDING_DIMENSIONS)
+      : undefined;
+    const queryVector = queryVectors?.[0];
+    const denseContributed = queryVector !== undefined;
+
+    const { fusedRows, pendingFlags } = inStore('memory:facts:recall', () => {
+      const db = requireDriver();
+
+      // The sanitizer returns null when nothing survives tokenizing; that is
+      // "the sparse channel found nothing", not an error.
+      const match = buildFtsMatchQuery(args.query);
+      const sparse = match === null ? [] : sparseChannel(db, { ...scope, match });
+      const dense = queryVector === undefined ? [] : denseChannel(db, scope, queryVector);
+      const temporal = temporalChannel(db, scope);
+
+      // Unweighted, k = 60, three channels — `dem-memory`'s constants exactly,
+      // taken from the contract so postgres cannot drift (TASK-457). The graph
+      // channel is ABSENT rather than an empty list: it was ablated at rung 0
+      // and deleted upstream in #587, and passing `[]` for it would change
+      // nothing while implying it might come back.
+      const fused = reciprocalRankFusion([sparse, dense, temporal]);
+      return {
+        fusedRows: rowsInRankOrder<FactRow>(
+          db,
+          args.agentKey,
+          fused.map((c) => c.id),
+        ),
+        pendingFlags: pendingStatus(db, args.agentKey).degraded,
+      };
+    });
+
+    // Rerank the head of the fused list and leave the tail in raw RRF order —
+    // the reference implementation's behaviour, and the reason `poolSize`
+    // wants raising alongside a raised `limit` rather than being left at its
+    // default while a long answer runs off the end of the reranked pool.
+    const pool = fusedRows.slice(0, args.poolSize);
+    const scores = await rerankDocuments(
+      bus,
+      ctx,
+      config.reranker,
+      args.query,
+      pool.map((row) => factStatementText(row.about, row.relation, row.value)),
+    );
+    const ranked =
+      scores === undefined
+        ? fusedRows
+        : [
+            ...pool
+              .map((row, index) => ({ row, score: scores[index] ?? 0 }))
+              // `id.localeCompare` on ties for the same reason RRF has it: a
+              // reranker that returns equal scores must not leave the order to
+              // whatever `sort` stability happens to hand us.
+              .sort((a, b) => b.score - a.score || a.row.id.localeCompare(b.row.id))
+              .map((entry) => entry.row),
+            ...fusedRows.slice(args.poolSize),
+          ];
+
+    // ONE array, assembled in ONE place out of independent probes
+    // (Invariant 4). APPENDED to the pending flags, never substituted for
+    // them: a caller that already depends on `'pending'` must not lose it the
+    // moment it starts passing a `query`.
+    const degraded: DegradedFlag[] = [
+      ...pendingFlags,
+      ...semanticStatus(denseContributed),
+      // `pool.length === 0` is NOT degraded ranking. With nothing to rank, a
+      // healthy configured reranker is never called, `rerankDocuments` returns
+      // `undefined` at its empty-`documents` guard, and a naive
+      // `scores !== undefined` would report the reranker as degraded on every
+      // empty answer — which is every recall on a day-one empty store (design
+      // §5's first walk step). A flag that fires when nothing is wrong is the
+      // opposite of §4.4's "degraded mode is a signal".
+      ...rankingStatus(pool.length === 0 || scores !== undefined),
+    ];
+    return { statements: ranked.slice(0, args.limit).map(rowToFactRecord), degraded };
+  }
+
+  /**
+   * Re-derive the sparse (and, when an embedder is configured, dense) index
+   * rows for facts that have none — `memory:facts:reindex`'s other half.
+   *
+   * It is `reindex`'s job rather than a new hook because that hook already
+   * promises to rebuild derived indexes, and because there are exactly two
+   * ways a fact ends up unindexed and both are ordinary: it was recorded
+   * before TASK-434 added the tables, or it was recorded while no embedder
+   * was configured. Without this those rows are permanently invisible to the
+   * two channels that rank by relevance — present in the store, unreachable
+   * by search.
+   *
+   * Bounded at {@link BACKFILL_LIMIT} rows per call and re-runnable; see that
+   * constant for why an unbounded sweep would be worse than a partial one.
+   * Everything here is tenant-scoped like every other read in this plugin.
+   */
+  async function backfillDerivedIndexes(
+    bus: HookBus,
+    ctx: AgentContext,
+    agentKey: string,
+  ): Promise<void> {
+    const missingFts = inStore('memory:facts:reindex', () => {
+      const db = requireDriver();
+      // One scan of each side and a set difference, rather than a correlated
+      // `NOT EXISTS` per row: an FTS5 table has no index on `id` (it is
+      // UNINDEXED — a join key, never a search term), so the per-row form is
+      // a full scan of the shadow table for every fact in the tenant.
+      const indexed = new Set(
+        (db.prepare(`SELECT id FROM ${FTS_TABLE}`).all() as Array<{ id: string }>).map(
+          (r) => r.id,
+        ),
+      );
+      return (
+        db
+          .prepare(`SELECT id, about, relation, value FROM ${TABLE} WHERE agent_key = ?`)
+          .all(agentKey) as Array<{
+          id: string;
+          about: string;
+          relation: string;
+          value: string;
+        }>
+      )
+        .filter((row) => !indexed.has(row.id))
+        .slice(0, BACKFILL_LIMIT);
+    });
+
+    if (missingFts.length > 0) {
+      inStore('memory:facts:reindex', () => {
+        const db = requireDriver();
+        const writeAll = db.transaction(() => {
+          for (const row of missingFts) indexFactRow(db, row, { vectorExtensionLoaded });
+        });
+        writeAll();
+      });
+    }
+
+    if (config.embedder === undefined || !vectorExtensionLoaded) return;
+
+    const missingVectors = inStore('memory:facts:reindex', () => {
+      const db = requireDriver();
+      const embedded = new Set(
+        (db.prepare(`SELECT id FROM ${VEC_TABLE}`).all() as Array<{ id: string }>).map(
+          (r) => r.id,
+        ),
+      );
+      return (
+        db
+          .prepare(`SELECT id, about, relation, value FROM ${TABLE} WHERE agent_key = ?`)
+          .all(agentKey) as Array<{
+          id: string;
+          about: string;
+          relation: string;
+          value: string;
+        }>
+      )
+        .filter((row) => !embedded.has(row.id))
+        .slice(0, BACKFILL_LIMIT);
+    });
+
+    for (let start = 0; start < missingVectors.length; start += BACKFILL_EMBED_CHUNK) {
+      const chunk = missingVectors.slice(start, start + BACKFILL_EMBED_CHUNK);
+      const vectors = await embedTexts(
+        bus,
+        ctx,
+        config.embedder,
+        chunk.map((row) => factStatementText(row.about, row.relation, row.value)),
+        'document',
+        EMBEDDING_DIMENSIONS,
+      );
+      // The producer did not answer. Stop rather than hammering it for every
+      // remaining chunk: the backlog is still there and the next `reindex`
+      // call picks it up, which is the same degradation as never having had a
+      // provider at all.
+      if (vectors === undefined) return;
+      inStore('memory:facts:reindex', () => {
+        const db = requireDriver();
+        const writeAll = db.transaction(() => {
+          chunk.forEach((row, index) => {
+            const vector = vectors[index];
+            if (vector === undefined) return;
+            indexFactRow(db, row, { vector, vectorExtensionLoaded });
+          });
+        });
+        writeAll();
+      });
+    }
+  }
+
+  // Declared only when CONFIGURED, the same shape `@ax/llm-anthropic` uses for
+  // `credentials:get`: a deployment that never sets `embedder` has no business
+  // advertising a dependency on a hook it will never call, and a deployment
+  // that does gets the gap documented at the manifest level rather than buried
+  // in a comment. `bootstrap.ts`'s `verifyCalls` deliberately skips
+  // `optionalCalls`, so an absent producer is non-fatal at boot — which is
+  // also what keeps this plugin out of the preset canaries' `PLUGINS_TO_DROP`.
+  const optionalCalls = [
+    ...(config.embedder !== undefined
+      ? [
+          {
+            hook: config.embedder.hook,
+            degradation:
+              "the dense (semantic) recall channel does not run: `memory:facts:recall` answers a `query` from the lexical and recency channels alone and reports degraded: ['semantic']; newly recorded facts store no vector, and `memory:facts:reindex` backfills them once a producer exists",
+          },
+        ]
+      : []),
+    ...(config.reranker !== undefined
+      ? [
+          {
+            hook: config.reranker.hook,
+            degradation:
+              "the rerank step does not run: `memory:facts:recall` returns candidates in fused-rank order instead of reranked order and reports degraded: ['ranking']",
+          },
+        ]
+      : []),
+  ];
+
   return {
     manifest: {
       name: PLUGIN_NAME,
@@ -416,12 +747,14 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
         'memory:facts:reindex',
       ],
       calls: [],
+      ...(optionalCalls.length > 0 ? { optionalCalls } : {}),
       subscribes: [],
     },
 
     init({ bus }) {
       const opened = openDatabase(config.databasePath);
       driver = opened.driver;
+      vectorExtensionLoaded = opened.vectorExtensionLoaded;
 
       // Every handler derives the per-agent scope key from the calling ctx
       // so the single shared sqlite db is partitioned by agentId alone
@@ -443,6 +776,31 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           // ONE timestamp for the whole batch, which is why `batch_seq` has to
           // exist: `transaction_time` cannot order rows that all share it.
           const now = new Date().toISOString();
+
+          // Embed BEFORE the store region, because better-sqlite3's
+          // transactions are synchronous and nothing may be awaited inside
+          // one. The engine owns the `vec0` table, so it owns DOCUMENT
+          // embedding too (task `document`, as against `recall`'s `query`) —
+          // a different use of the same seam from §3.3's slot normalizer,
+          // which stays in `@ax/memory`.
+          //
+          // `undefined` here is the ordinary no-provider case, not a failure:
+          // the rows are stored without vectors and `reindex` backfills them
+          // if a provider appears. One honest cost: an idempotent REPLAY of a
+          // batch pays for an embed call whose result the dedup path then
+          // discards. Avoiding it would mean reading the dedup row outside the
+          // transaction, which is exactly the check-then-write race that
+          // transaction was moved inward to close.
+          const vectors = vectorExtensionLoaded
+            ? await embedTexts(
+                bus,
+                ctx,
+                config.embedder,
+                statements.map((s) => factStatementText(s.about, s.relation, s.value)),
+                'document',
+                EMBEDDING_DIMENSIONS,
+              )
+            : undefined;
 
           const records = inStore('memory:facts:record', () => {
             const db = requireDriver();
@@ -492,6 +850,25 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
                     : {}),
                 });
 
+                // Derived indexes are written INSIDE the batch transaction, so
+                // a fact and its searchability commit or roll back together —
+                // design §1's "record is atomic across relational + FTS +
+                // vector". A row that existed but could not be found would be
+                // the worst of both.
+                indexFactRow(
+                  db,
+                  {
+                    id,
+                    about: statement.about,
+                    relation: statement.relation,
+                    value: statement.value,
+                  },
+                  {
+                    vectorExtensionLoaded,
+                    ...(vectors?.[index] !== undefined ? { vector: vectors[index] } : {}),
+                  },
+                );
+
                 return {
                   id,
                   about: statement.about,
@@ -518,14 +895,27 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
         PLUGIN_NAME,
         async (ctx, input) => {
           // Validation before the store region — see `record`.
-          const { about, limit, activeOnly } = validateRecallInput(input);
+          const { about, query, limit, poolSize, activeOnly } = validateRecallInput(input);
           const agentKey = agentScopeKey(ctx);
+
+          if (query !== undefined) {
+            return fusionRecall(bus, ctx, {
+              agentKey,
+              query,
+              limit,
+              poolSize,
+              activeOnly,
+              ...(about !== undefined ? { about } : {}),
+            });
+          }
 
           // `activeOnly` (§4.2 `history`) gates the validity predicate:
           // omitted/`true` keeps the TASK-421 behavior of only currently-
           // active rows; `false` drops the predicate entirely, so active AND
-          // closed rows both come back. `input.query` is never consulted
-          // here regardless — no FTS/dense/RRF/rerank (TASK-434).
+          // closed rows both come back. This is the LISTING path — no `query`,
+          // therefore no channels, therefore nothing that could degrade beyond
+          // `'pending'`. Raising `'semantic'`/`'ranking'` here would be noise:
+          // no dense channel was skipped, because none was asked for.
           //
           // Recall is the handler where swallowing a store failure would be
           // most tempting and most harmful: "no facts" and "could not read the
@@ -613,7 +1003,25 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           // for a tenant whose data is still there — the worst possible lie
           // for a "forget this" operation.
           inStore('memory:facts:clear', () => {
-            requireDriver().prepare(`DELETE FROM ${TABLE} WHERE agent_key = ?`).run(agentKey);
+            const db = requireDriver();
+            // The derived rows go too, in the same transaction. Everywhere
+            // else the FTS shadow is left alone when a fact stops being
+            // current — that is a VALIDITY question and the base table is its
+            // sole authority (Invariant 4), so the join at query time settles
+            // it. Clear is not a validity question: the base row is gone, so
+            // the join would hide the text either way, and leaving the
+            // tenant's statements sitting in a shadow table after they asked
+            // us to forget them is a retention bug rather than a ranking one.
+            const forget = db.transaction(() => {
+              const ids = (
+                db.prepare(`SELECT id FROM ${TABLE} WHERE agent_key = ?`).all(agentKey) as Array<{
+                  id: string;
+                }>
+              ).map((row) => row.id);
+              deleteIndexedFactRows(db, ids, vectorExtensionLoaded);
+              db.prepare(`DELETE FROM ${TABLE} WHERE agent_key = ?`).run(agentKey);
+            });
+            forget();
           });
         },
       );
@@ -626,7 +1034,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           const slots = validateReindexInput(input);
           const agentKey = agentScopeKey(ctx);
 
-          return inStore('memory:facts:reindex', () => {
+          const drained = inStore('memory:facts:reindex', () => {
             const db = requireDriver();
 
             // ONE transaction for the whole drain. Writing a resolved slot and
@@ -695,6 +1103,17 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
 
             return drain();
           });
+
+          // The index backfill runs AFTER the drain and outside its
+          // transaction, because embedding is an awaited network call and a
+          // better-sqlite3 transaction is synchronous. It is deliberately not
+          // reported in the return payload: `ReindexOutput`'s three numbers
+          // describe the pending drain, which is one consistent snapshot taken
+          // inside one transaction, and folding in a count from a later,
+          // separately-committed pass would quietly break that promise.
+          await backfillDerivedIndexes(bus, ctx, agentKey);
+
+          return drained;
         },
       );
     },
