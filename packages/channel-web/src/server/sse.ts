@@ -12,6 +12,7 @@ import type { ChunkBuffer } from './chunk-buffer.js';
 // because this handler cannot await where it filters: the read happens before
 // the stream opens (step 3a), the filter after (step 4a-ter).
 import { filterDeclinedGrants, readGrantDeclines } from './grant-declines.js';
+import type { StoredDecline } from './grant-declines.js';
 import type { PermissionRequest, PhaseEvent, SseFrame, StreamChunk } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -259,7 +260,7 @@ export function createSseHandler(deps: SseHandlerDeps) {
     // happens, and the replay still re-reads the buffer, so a card that lands
     // DURING the read is filtered against the complete map rather than missed.
     const pendingAtOpen = deps.buffer.tailPermissionCardEntries(conversationId);
-    let grantDeclines: ReadonlyMap<string, number> = new Map();
+    let grantDeclines: ReadonlyMap<string, StoredDecline> = new Map();
     if (pendingAtOpen.length > 0 && deps.bus.hasService('storage:list-prefix')) {
       try {
         grantDeclines = await readGrantDeclines(deps.bus, deps.initCtx, userId);

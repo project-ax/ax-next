@@ -137,7 +137,22 @@ export async function recordGrantDecline(
 }
 
 /**
- * Every marker this user owns, as `key → declinedAt`, in ONE `list-prefix`.
+ * One marker as it was read back, and BOTH fields are load-bearing.
+ *
+ * `raw` is the exact bytes the store handed over, kept so the reclaim can ask
+ * for a compare-and-delete rather than an unconditional one. It is not a
+ * cache of `declinedAt` — re-encoding `{declinedAt}` would round-trip to
+ * different bytes for a row some other version of this code wrote, and the
+ * guard would then never match. The bytes are carried, never rebuilt.
+ */
+export interface StoredDecline {
+  declinedAt: number;
+  /** The stored value, verbatim. Never parsed twice, never re-encoded. */
+  raw: Uint8Array;
+}
+
+/**
+ * Every marker this user owns, as `key → StoredDecline`, in ONE `list-prefix`.
  * Keys are re-built from the parsed segments, so a caller can look one up with
  * `grantDeclineKey(...)` and get a hit regardless of how the stored spelling
  * was encoded.
@@ -152,8 +167,8 @@ export async function readGrantDeclines(
   bus: HookBus,
   ctx: AgentContext,
   userId: string,
-): Promise<Map<string, number>> {
-  const out = new Map<string, number>();
+): Promise<Map<string, StoredDecline>> {
+  const out = new Map<string, StoredDecline>();
   const { entries } = await bus.call<
     { prefix: string },
     { entries: Array<{ key: string; value: Uint8Array }> }
@@ -179,7 +194,7 @@ export async function readGrantDeclines(
         parsed.kind as DeclinableGrantKind,
         parsed.subjectId,
       ),
-      declinedAt,
+      { declinedAt, raw: entry.value },
     );
   }
   return out;
@@ -281,7 +296,7 @@ export function filterDeclinedGrants<
   T extends { agentId: string; card: PermissionRequest; raisedAt: number },
 >(
   ctx: AgentContext,
-  declines: ReadonlyMap<string, number>,
+  declines: ReadonlyMap<string, StoredDecline>,
   userId: string,
   rows: readonly T[],
   stillSuppressing?: Set<string>,
@@ -313,8 +328,8 @@ export function filterDeclinedGrants<
       });
       return true;
     }
-    const declinedAt = declines.get(key);
-    if (declinedAt === undefined || declinedAt < row.raisedAt) return true;
+    const stored = declines.get(key);
+    if (stored === undefined || stored.declinedAt < row.raisedAt) return true;
     stillSuppressing?.add(key);
     return false;
   });
@@ -344,6 +359,11 @@ const RECLAIM_MAX_PER_READ = 64;
  * one: a marker for a perfectly live agent whose card was re-raised is just as
  * dead as a marker for an agent that was deleted.
  *
+ * That reasoning is about the SNAPSHOT, and a snapshot is a past tense. It
+ * says the marker was dead when we read it, which is not the same as "is dead
+ * when we delete it" — see the compare-and-delete paragraph below for the
+ * decline that can land in between.
+ *
  * WHAT THE CALLER MUST HAVE HANDED THE FILTER. `stillSuppressing` is only
  * meaningful if the rows it was computed over were the COMPLETE user-wide
  * pending set (`ChunkBuffer.pendingGrantsForUser`). Give it the SSE replay's
@@ -354,6 +374,35 @@ const RECLAIM_MAX_PER_READ = 64;
  * EXACT KEYS ONLY. `storage:delete-prefix` on one of these keys would also
  * take every key that EXTENDS it — `…:abc` is a prefix of `…:abcd` — so this
  * needs the equality delete, and degrades to a no-op without it.
+ *
+ * AND COMPARE-AND-DELETE, because the snapshot goes stale while we work. The
+ * decision to drop a marker is made from `declines`, read one round trip ago,
+ * but the row it names is live: nothing holds a lock, and the person can press
+ * "Not now" on the very grant this loop has already written off. The sequence
+ * is the ORDINARY lifecycle of a deferred grant, not an exotic one — decline,
+ * agent re-proposes, decline again — and the second refusal lands while a
+ * workspace mount is mid-read:
+ *
+ *   1. the marker says `declinedAt = D1`, the re-raised card says
+ *      `raisedAt = R1 > D1`, so the card is on screen and the marker is dead;
+ *   2. the grants read snapshots both, keeps the card, and lists the marker
+ *      for reclamation;
+ *   3. the person presses "Not now" again — the route writes `D2 > R1` and
+ *      answers 200, so as far as they are concerned it stuck;
+ *   4. this loop deletes the key, and `D2` goes with it. The question they
+ *      just answered is back on the next mount.
+ *
+ * So every delete carries the bytes the read actually saw. A row rewritten in
+ * the meantime no longer matches, the delete takes nothing, and the fresh
+ * refusal survives — it is simply reclaimed on a later read, if it ever goes
+ * dead. The guard fails in the safe direction by construction: a mismatch
+ * always means KEEP, and keeping a marker is at worst a row we sweep next
+ * time, while dropping one loses a decision the person made.
+ *
+ * This is why the bytes are carried rather than re-encoded from `declinedAt`
+ * (see `StoredDecline`), and why a store without `ifValueEquals` support must
+ * not silently ignore it — a guard that is dropped rather than honoured is a
+ * guard that is not there.
  *
  * IT CAN ONLY DELETE KEYS IT COULD HAVE WRITTEN. Every key here came back out
  * of `readGrantDeclines`, which rebuilds it with `grantDeclineKey` from the
@@ -368,21 +417,20 @@ const RECLAIM_MAX_PER_READ = 64;
 export async function reclaimGrantDeclines(
   bus: HookBus,
   ctx: AgentContext,
-  declines: ReadonlyMap<string, number>,
+  declines: ReadonlyMap<string, StoredDecline>,
   stillSuppressing: ReadonlySet<string>,
 ): Promise<number> {
   if (declines.size === 0 || !bus.hasService('storage:delete')) return 0;
   let deleted = 0;
   let considered = 0;
-  for (const key of declines.keys()) {
+  for (const [key, stored] of declines) {
     if (stillSuppressing.has(key)) continue;
     if (considered >= RECLAIM_MAX_PER_READ) break;
     considered += 1;
-    const res = await bus.call<{ key: string }, { deleted: number }>(
-      'storage:delete',
-      ctx,
-      { key },
-    );
+    const res = await bus.call<
+      { key: string; ifValueEquals?: Uint8Array },
+      { deleted: number }
+    >('storage:delete', ctx, { key, ifValueEquals: stored.raw });
     deleted += res.deleted;
   }
   if (deleted > 0) {
@@ -432,7 +480,7 @@ export async function withoutDeclinedGrants<
   options: { reclaimAgainstCompleteSet?: boolean } = {},
 ): Promise<readonly T[]> {
   if (rows.length === 0 || !bus.hasService('storage:list-prefix')) return rows;
-  let declines: ReadonlyMap<string, number>;
+  let declines: ReadonlyMap<string, StoredDecline>;
   try {
     declines = await readGrantDeclines(bus, ctx, userId);
   } catch (err) {

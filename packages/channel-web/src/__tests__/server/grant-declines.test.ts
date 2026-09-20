@@ -17,6 +17,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { HookBus, makeAgentContext, type AgentContext } from '@ax/core';
 import {
   filterDeclinedGrants,
+  type StoredDecline,
   grantDeclineKey,
   grantDeclineUserPrefix,
   parseGrantDeclineKey,
@@ -60,6 +61,9 @@ function busWith(store: Map<string, Uint8Array>): HookBus {
 }
 
 const enc = (v: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(v));
+
+const bytesEqual = (a: Uint8Array, b: Uint8Array): boolean =>
+  a.length === b.length && a.every((byte, i) => byte === b[i]);
 
 describe('grant-decline keys', () => {
   it('round-trips every segment back out, verbatim', () => {
@@ -135,9 +139,15 @@ describe('recordGrantDecline / readGrantDeclines', () => {
     });
 
     const declines = await readGrantDeclines(bus, ctx, 'u-ann');
-    expect(declines.get(grantDeclineKey('u-ann', 'a-quill', 'skill', 'linear'))).toBe(
-      1234,
+    const stored = declines.get(
+      grantDeclineKey('u-ann', 'a-quill', 'skill', 'linear'),
     );
+    expect(stored?.declinedAt).toBe(1234);
+    // The bytes come back VERBATIM, not re-encoded from `declinedAt` — the
+    // compare-and-delete guard in the reclaim is only as good as that.
+    expect(stored?.raw).toEqual(store.get(
+      grantDeclineKey('u-ann', 'a-quill', 'skill', 'linear'),
+    ));
   });
 
   it('reads only the caller’s own rows', async () => {
@@ -160,7 +170,7 @@ describe('recordGrantDecline / readGrantDeclines', () => {
     });
 
     const declines = await readGrantDeclines(bus, ctx, 'u-ann');
-    expect([...declines.values()]).toEqual([1]);
+    expect([...declines.values()].map((d) => d.declinedAt)).toEqual([1]);
   });
 
   it('skips a value that does not decode to {declinedAt: number}, and says so', async () => {
@@ -224,9 +234,12 @@ describe('filterDeclinedGrants', () => {
 
   const declines = (
     entries: Array<[[string, string, 'skill' | 'connector', string], number]>,
-  ): Map<string, number> =>
+  ): Map<string, StoredDecline> =>
     new Map(
-      entries.map(([[u, a, k, s], at]) => [grantDeclineKey(u, a, k, s), at]),
+      entries.map(([[u, a, k, s], at]) => [
+        grantDeclineKey(u, a, k, s),
+        { declinedAt: at, raw: enc({ declinedAt: at }) },
+      ]),
     );
 
   it('drops a grant declined at or after it was raised, keeps one raised since', () => {
@@ -376,7 +389,9 @@ describe('reclaimGrantDeclines', () => {
    * does disappear and the collision test below really does go red. A stub
    * that merely recorded the call would pass a broken implementation.
    */
-  function kvBus(opts: { noDelete?: boolean } = {}): Kv {
+  function kvBus(
+    opts: { noDelete?: boolean; onDelete?: (key: string) => Promise<void> } = {},
+  ): Kv {
     const bus = new HookBus();
     const store = new Map<string, Uint8Array>();
     const kv: Kv = {
@@ -421,14 +436,26 @@ describe('reclaimGrantDeclines', () => {
       },
     );
     if (opts.noDelete !== true) {
-      bus.registerService<{ key: string }, { deleted: number }>(
-        'storage:delete',
-        'storage',
-        async (_ctx, { key: k }) => {
-          kv.deleted.push(k);
-          return { deleted: store.delete(k) ? 1 : 0 };
-        },
-      );
+      // REAL compare-and-delete semantics, for the same reason delete-prefix
+      // above has real prefix semantics: a stub that ignored `ifValueEquals`
+      // would pass an implementation that had quietly stopped sending it.
+      bus.registerService<
+        { key: string; ifValueEquals?: Uint8Array },
+        { deleted: number }
+      >('storage:delete', 'storage', async (_ctx, { key: k, ifValueEquals }) => {
+        kv.deleted.push(k);
+        if (opts.onDelete !== undefined) await opts.onDelete(k);
+        const current = store.get(k);
+        if (current === undefined) return { deleted: 0 };
+        if (
+          ifValueEquals !== undefined &&
+          !bytesEqual(current, ifValueEquals)
+        ) {
+          return { deleted: 0 };
+        }
+        store.delete(k);
+        return { deleted: 1 };
+      });
     }
     return kv;
   }
@@ -509,6 +536,65 @@ describe('reclaimGrantDeclines', () => {
     (every future raise is newer still). Keeping it would be keeping a row that
     is guaranteed inert, which is the growth this card is about.
   */
+  /*
+    THE SNAPSHOT IS A PAST TENSE, and this is the decline it loses.
+
+    Nothing locks. The reclaim decides from a `declines` map read one round
+    trip ago, and the rows it named are live for the whole loop — so the
+    ORDINARY lifecycle of a deferred grant races it: decline, the agent
+    re-proposes, the person declines again while a workspace mount happens to
+    be mid-read. The second refusal is written into the very key the loop has
+    already written off, and an unconditional delete takes it.
+
+    The user-visible failure is the one TASK-444 exists to prevent: they press
+    "Not now", get a 200, and the question is back on the next mount.
+
+    Interleaved for real rather than reasoned about — `onDelete` fires INSIDE
+    the delete hook, after the reclaim committed to the key and before the row
+    is touched, which is exactly the window. The fix is a compare-and-delete:
+    the bytes moved, so the delete matches nothing.
+  */
+  it('does not destroy a decline written after the snapshot it is deleting from', async () => {
+    const ctx = makeCtx(() => {});
+    let kv: Kv;
+    const raced: string[] = [];
+    kv = kvBus({
+      onDelete: async (k) => {
+        // Once, and only for the key under test: the person presses "Not now"
+        // again while this very delete is in flight.
+        if (raced.length > 0 || k !== key('a-quill', 'linear')) return;
+        raced.push(k);
+        await recordGrantDecline(kv.bus, ctx, {
+          userId: 'u-ann',
+          agentId: 'a-quill',
+          kind: 'skill',
+          subjectId: 'linear',
+          declinedAt: 3_000,
+        });
+      },
+    });
+    // Declined at 1_000, then re-raised at 2_000 — so at snapshot time the
+    // marker is genuinely dead and genuinely a reclaim candidate.
+    await seed(kv, ctx, [['a-quill', 'linear', 1_000]]);
+
+    const kept = await withoutDeclinedGrants(
+      kv.bus,
+      ctx,
+      'u-ann',
+      [row('a-quill', skill('linear'), 2_000)],
+      { reclaimAgainstCompleteSet: true },
+    );
+
+    // Premise: the race actually happened, so this is not passing by accident.
+    expect(raced).toEqual([key('a-quill', 'linear')]);
+    // The card was on screen for this read — unchanged, that is the re-raise.
+    expect(kept).toHaveLength(1);
+    // THE POINT: the refusal the person just gave is still in the store, at
+    // the instant they gave it. Without the guard the row is simply gone.
+    const after = await readGrantDeclines(kv.bus, ctx, 'u-ann');
+    expect(after.get(key('a-quill', 'linear'))?.declinedAt).toBe(3_000);
+  });
+
   it('reclaims the marker for a grant that has since been re-raised', async () => {
     const ctx = makeCtx(() => {});
     const kv = kvBus();

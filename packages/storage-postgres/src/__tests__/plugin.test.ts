@@ -226,6 +226,51 @@ describe('@ax/storage-postgres storage:delete', () => {
     expect(gotAbcdAfterPrefixDelete.value).toBeUndefined();
   });
 
+  /*
+    COMPARE-AND-DELETE. A caller that decided to drop a row from a snapshot is
+    deciding about the past; between its read and this delete somebody can
+    rewrite the row, and an unconditional delete destroys that newer write with
+    nobody the wiser. `ifValueEquals` makes the delete a no-op instead. The
+    predicate has to be enforced by the QUERY — a guard the SQL ignores is a
+    guard that is not there, and it would fail in the dangerous direction.
+  */
+  it('ifValueEquals deletes on a match and takes nothing once the row has moved', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const first = new Uint8Array([1, 2, 3]);
+    const rewritten = new Uint8Array([9, 9, 9]);
+
+    // The row was rewritten after the caller read `first`.
+    await h.bus.call('storage:set', ctx, { key: 'cas', value: first });
+    await h.bus.call('storage:set', ctx, { key: 'cas', value: rewritten });
+
+    const stale = await h.bus.call<
+      { key: string; ifValueEquals?: Uint8Array },
+      { deleted: number }
+    >('storage:delete', ctx, { key: 'cas', ifValueEquals: first });
+    expect(stale).toEqual({ deleted: 0 });
+
+    // ...and the newer value is untouched.
+    const survived = await h.bus.call<
+      { key: string },
+      { value: Uint8Array | undefined }
+    >('storage:get', ctx, { key: 'cas' });
+    expect(Array.from(survived.value!)).toEqual([9, 9, 9]);
+
+    // Handed the bytes that ARE there, it deletes.
+    const fresh = await h.bus.call<
+      { key: string; ifValueEquals?: Uint8Array },
+      { deleted: number }
+    >('storage:delete', ctx, { key: 'cas', ifValueEquals: rewritten });
+    expect(fresh).toEqual({ deleted: 1 });
+
+    const gone = await h.bus.call<
+      { key: string },
+      { value: Uint8Array | undefined }
+    >('storage:get', ctx, { key: 'cas' });
+    expect(gone.value).toBeUndefined();
+  });
+
   it('deleting an absent key returns { deleted: 0 } and throws nothing', async () => {
     const h = await makeHarness();
     const result = await h.bus.call<{ key: string }, { deleted: number }>(

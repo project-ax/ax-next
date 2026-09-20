@@ -249,6 +249,13 @@ export function createChannelWebServerPlugin(
           // `storage:delete-prefix` on one of these keys would also take every
           // key that extends it (`…:abc` is a prefix of `…:abcd`), which is a
           // sibling grant's refusal.
+          //
+          // The reclaim passes `ifValueEquals`, and an implementation of this
+          // hook MUST honour it: the decision to drop a marker is made from a
+          // snapshot, and a "Not now" written into that key in the meantime is
+          // destroyed by an unconditional delete. Ignoring the guard is not a
+          // degradation, it is the bug — a backend that cannot compare values
+          // should not register this hook at all and take the no-op below.
           hook: 'storage:delete',
           degradation:
             'declined-grant markers are never reclaimed, so the per-user prefix scan behind GET /api/workspace/grants grows with every "Not now" ever given (correct answers, slower reads)',
