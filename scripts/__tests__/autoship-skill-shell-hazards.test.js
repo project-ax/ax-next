@@ -177,13 +177,18 @@ function extractHeredocs(md, targetPath) {
   return [...md.matchAll(re)].map((m) => m[1]);
 }
 
-function shellExists(shell) {
+/** `command -v <name>` — true when the binary is on PATH. */
+function commandExists(name) {
   try {
-    execFileSync('sh', ['-c', `command -v ${shell}`], { stdio: 'ignore' });
+    execFileSync('sh', ['-c', `command -v ${name}`], { stdio: 'ignore' });
     return true;
   } catch {
     return false;
   }
+}
+
+function shellExists(shell) {
+  return commandExists(shell);
 }
 
 describe('auto-ship skill docs: no zsh-modifier hazard in any runnable snippet', () => {
@@ -629,6 +634,572 @@ describe('progress helpers: a malformed id is loud, a transient failure stays qu
     const wrapper = hbBlocks[0];
     expect(wrapper).toMatch(/malformed|caller/i);
     expect(wrapper).toContain('exit 6');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-470: a MULTI-LINE entry must land intact, and a helper must never write a
+// body it did not successfully construct.
+//
+// What happened (observed first-hand by the orchestrator, 2026-09-19). All three
+// helpers spliced their entry with `awk -v e="$entry" … '$0==end{print e} {print}'`.
+// An awk `-v` assignment CANNOT carry a literal newline: awk aborts with
+// `newline in string`, prints nothing to stdout, and exits 2. Nothing checked that
+// exit status, so `nb` was the empty string -- and the helper handed that to
+// updateProjectV2DraftIssue as the ENTIRE card body and then printed its normal
+// `learnings: - …` SUCCESS line. A real card (TASK-463) was reduced to 1 byte.
+//
+// The reason it hid for so long is the branch structure: the FIRST multi-line append
+// to a card takes the `printf` arm (there is no block to splice into yet) and works
+// fine. Only the SECOND-or-later one reaches awk. Ten sibling cards audited the same
+// day were intact -- each had received exactly one multi-line append. So a
+// single-append test PASSES against the bug; the reproduction below is deliberately
+// two appends.
+//
+// This describe is BEHAVIOURAL, not a doc scan: it extracts the helper heredocs the
+// orchestrator actually regenerates, runs them under bash and zsh against a `gh` stub
+// that round-trips a real body through a state file, and asserts on the body that was
+// stored. The static assertions live in the sibling describe below so that the
+// `awk -v` shape stays banned even where jq is unavailable.
+//
+// KNOW WHERE THE TEETH ARE ON EACH PLATFORM. The multi-line-append tests here catch a
+// reintroduced `awk -v` splice only on an awk that rejects a newline -- macOS's, which
+// is the platform auto-ship runs on and where the card was destroyed. gawk/mawk accept
+// it, so on a Linux runner those same tests would go GREEN against the buggy helper.
+// What holds the line there is unconditional and structural: the `awk -v` ban and the
+// "refusal reachable before the mutation" check in the sibling describe, plus the
+// REFUSED / wrapper-class cases here, none of which depend on the awk implementation.
+// Do not "simplify" the static pair away because the behavioural ones look sufficient
+// locally -- locally is the only place they are.
+describe('progress helpers carry a multi-line entry without destroying the body', () => {
+  const md = readFileSync(GITHUB_PROJECT_MD, 'utf8');
+  const helperBlocks = extractHeredocs(md, '.claude/auto-ship-progress.sh');
+  const hbBlocks = extractHeredocs(md, '.claude/auto-ship-hb.sh');
+
+  const HUMAN = 'human-authored description\n\nsecond paragraph a person typed';
+  const ITEM = 'PVTI_lADOAAtestonly';
+
+  // Single-quote for the shell. NOT JSON.stringify: that renders a real newline as the
+  // two characters `\` `n`, which a double-quoted shell word keeps literal -- so the
+  // "multi-line" test would have passed a single-line string and proved nothing. (It
+  // did, on the first run of this suite.)
+  const shq = (s) => `'${String(s).replaceAll("'", `'\\''`)}'`;
+
+  const dirs = [];
+  afterAll(() => {
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  });
+
+  // A `gh` that behaves like the real one for the two calls the helpers make: the
+  // node query returns the current body, the mutation stores whatever body it is
+  // handed. The stored file IS the card, so "what did the helper write" is directly
+  // observable -- including writing an empty body, which is the bug.
+  function makeEnv() {
+    const dir = mkdtempSync(join(tmpdir(), 'autoship-multiline-'));
+    dirs.push(dir);
+    const helper = join(dir, 'auto-ship-progress.sh');
+    writeFileSync(helper, helperBlocks.join('\n') + '\n');
+    writeFileSync(join(dir, 'auto-ship-hb.sh'), hbBlocks.join('\n') + '\n', { mode: 0o755 });
+    const binDir = join(dir, 'bin');
+    mkdirSync(binDir);
+    const state = join(dir, 'body.txt');
+    writeFileSync(state, HUMAN);
+    writeFileSync(
+      join(binDir, 'gh'),
+      [
+        '#!/usr/bin/env node',
+        "const fs = require('node:fs');",
+        'const args = process.argv.slice(2);',
+        'const f = {};',
+        'for (let i = 0; i < args.length; i++) {',
+        "  if (args[i] !== '-f') continue;",
+        "  const s = args[++i] ?? '';",
+        "  const j = s.indexOf('=');",
+        '  f[s.slice(0, j)] = s.slice(j + 1);',
+        '}',
+        'const STATE = process.env.AUTOSHIP_STUB_BODY;',
+        "if (/^\\s*mutation/.test(f.query || '')) {",
+        "  fs.writeFileSync(STATE, f.b ?? '');",
+        "  process.stdout.write(JSON.stringify({ data: { updateProjectV2DraftIssue: { draftIssue: { id: f.d } } } }));",
+        '} else {',
+        "  const body = fs.readFileSync(STATE, 'utf8');",
+        "  process.stdout.write(JSON.stringify({ data: { node: { content: { id: 'DI_stub', body } } } }));",
+        '}',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    return { dir, helper, hb: join(dir, 'auto-ship-hb.sh'), binDir, state };
+  }
+
+  const runIn = (env, shell, script) => {
+    const opts = {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${env.binDir}:${process.env.PATH}`,
+        AUTOSHIP_STUB_BODY: env.state,
+      },
+    };
+    try {
+      return { code: 0, out: execFileSync(shell, ['-c', script], opts) };
+    } catch (e) {
+      return { code: e.status, out: `${e.stdout ?? ''}${e.stderr ?? ''}` };
+    }
+  };
+
+  // The stub `gh` is node; the helpers pipe its JSON through jq. jq ships on
+  // ubuntu-latest and on the dev machine. If it is ever missing these skip, which is
+  // why the static bans below are a SEPARATE, unconditional describe -- a green run
+  // with these skipped still cannot let `awk -v e="$entry"` back in.
+  const canRun = commandExists('jq') && commandExists('node');
+  const SHELLS = ['bash', ...(shellExists('zsh') ? ['zsh'] : [])];
+
+  it('has jq + node available for the behavioural reproduction', () => {
+    // Not skipped: if this ever goes false the reader should know the proof below was
+    // not executed, rather than reading a green suite as coverage.
+    expect(
+      canRun,
+      'jq and node are required to run the helper end to end; the behavioural ' +
+        'reproduction below was SKIPPED. The static bans still ran.',
+    ).toBe(true);
+  });
+
+  for (const shell of SHELLS) {
+    for (const [fn, label, heading] of [
+      ['append_progress', 'progress', '### Progress'],
+      ['append_learnings', 'learnings', '### Predecessor learnings'],
+    ]) {
+      it.skipIf(!canRun)(
+        `${shell}: ${fn} survives TWO multi-line appends (the exact TASK-470 sequence)`,
+        () => {
+          const env = makeEnv();
+          const one = 'first entry line one\n  first entry line two';
+          const two = 'second entry line one\n  second entry line two';
+          const call = (e) =>
+            runIn(
+              env,
+              shell,
+              `. ${JSON.stringify(env.helper)} && ${fn} ${shq(ITEM)} ${shq(e)}`,
+            );
+
+          const r1 = call(one);
+          expect(r1.code, `first append failed: ${r1.out}`).toBe(0);
+          const afterFirst = readFileSync(env.state, 'utf8');
+          expect(afterFirst).toContain('human-authored description');
+          expect(afterFirst).toContain(heading);
+
+          // THE BUG. Against the old `awk -v e="$entry"` splice this call printed a
+          // success line and stored an EMPTY body.
+          const r2 = call(two);
+          expect(r2.code, `second append failed: ${r2.out}`).toBe(0);
+          const afterSecond = readFileSync(env.state, 'utf8');
+
+          expect(
+            afterSecond.length,
+            'the second multi-line append truncated the card body -- this is the ' +
+              'TASK-470 data loss: awk -v cannot carry a newline, it emitted nothing, ' +
+              'and the empty result was written back as the whole body.',
+          ).toBeGreaterThan(afterFirst.length);
+          expect(afterSecond, 'human-authored text outside the markers must survive')
+            .toContain('human-authored description');
+          expect(afterSecond).toContain('second paragraph a person typed');
+          // Both entries, with their newlines, verbatim.
+          expect(afterSecond).toContain('first entry line one\n  first entry line two');
+          expect(afterSecond).toContain('second entry line one\n  second entry line two');
+          // Exactly one block, still fenced.
+          expect(afterSecond.split(`<!-- AUTOSHIP-${label === 'progress' ? 'PROGRESS' : 'LEARNINGS'}:START -->`))
+            .toHaveLength(2);
+          expect(r2.out).not.toContain('REFUSED');
+        },
+      );
+
+      it.skipIf(!canRun)(
+        `${shell}: ${fn} splices at the FIRST END marker and leaves human text after it alone`,
+        () => {
+          // The shell splice takes `${body%%"$END"*}` / `${body#*"$END"}`, i.e. the
+          // FIRST occurrence. A human note that quotes the end marker -- or a body that
+          // somehow carries two -- must not move the insertion point or lose the text
+          // after the block. (awk inserted before EVERY line equal to the marker, which
+          // would have duplicated the entry here.)
+          const env = makeEnv();
+          const S = `<!-- AUTOSHIP-${label === 'progress' ? 'PROGRESS' : 'LEARNINGS'}:START -->`;
+          const E = `<!-- AUTOSHIP-${label === 'progress' ? 'PROGRESS' : 'LEARNINGS'}:END -->`;
+          writeFileSync(
+            env.state,
+            `${HUMAN}\n\n${S}\n${heading}\n- 10:00 a\n${E}\n\na human note quoting ${E} inline\n`,
+          );
+          const r = runIn(
+            env,
+            shell,
+            `. ${JSON.stringify(env.helper)} && ${fn} ${shq(ITEM)} ${shq('multi\nline')}`,
+          );
+          expect(r.code, r.out).toBe(0);
+          const stored = readFileSync(env.state, 'utf8');
+          expect(stored).toContain('a human note quoting');
+          expect(stored).toContain('human-authored description');
+          expect(stored).toContain('multi\nline');
+          // Inserted once, not once per marker occurrence.
+          expect(stored.split('multi\nline')).toHaveLength(2);
+        },
+      );
+
+      it.skipIf(!canRun)(
+        `${shell}: ${fn} anchors the END to the START, so a marker quoted ABOVE the block cannot capture the splice`,
+        () => {
+          // Review finding on this PR, and it is this PR's own failure direction: a
+          // plain `${body%%"$END"*}` takes the FIRST end marker ANYWHERE, so a human
+          // description that merely quotes the marker above the block captured the
+          // splice -- the entry landed in the human prose, the length-and-markers gate
+          // passed, and the helper printed success. `awk '$0==end'` matched whole lines
+          // and never did this, so it was a regression the gate could not see. The END
+          // is now taken from after the START.
+          const env = makeEnv();
+          const S = `<!-- AUTOSHIP-${label === 'progress' ? 'PROGRESS' : 'LEARNINGS'}:START -->`;
+          const E = `<!-- AUTOSHIP-${label === 'progress' ? 'PROGRESS' : 'LEARNINGS'}:END -->`;
+          const desc = `the card explains the ${E} marker inline, above the block`;
+          writeFileSync(env.state, `${desc}\n\n${S}\n${heading}\n- 10:00 a\n${E}\n`);
+          const r = runIn(
+            env,
+            shell,
+            `. ${JSON.stringify(env.helper)} && ${fn} ${shq(ITEM)} ${shq('landed')}`,
+          );
+          expect(r.code, r.out).toBe(0);
+          const stored = readFileSync(env.state, 'utf8');
+          expect(stored, 'the human description must come back byte-identical').toContain(
+            `${desc}\n`,
+          );
+          // The entry belongs inside the block, after the existing one -- never in the
+          // prose above the START.
+          expect(stored.indexOf('landed')).toBeGreaterThan(stored.indexOf(S));
+          expect(stored.indexOf('landed')).toBeGreaterThan(stored.indexOf('- 10:00 a'));
+        },
+      );
+
+      it.skipIf(!canRun)(
+        `${shell}: ${fn} REFUSES an entry that carries a block marker`,
+        () => {
+          // Such an entry would plant a second END inside the block and move every
+          // later splice. auto-ship ships changes to this very file, so a progress line
+          // about these markers is not hypothetical.
+          const env = makeEnv();
+          const S = `<!-- AUTOSHIP-${label === 'progress' ? 'PROGRESS' : 'LEARNINGS'}:START -->`;
+          const E = `<!-- AUTOSHIP-${label === 'progress' ? 'PROGRESS' : 'LEARNINGS'}:END -->`;
+          const before = `${HUMAN}\n\n${S}\n${heading}\n- 10:00 a\n${E}\n`;
+          writeFileSync(env.state, before);
+          for (const marker of [S, E]) {
+            writeFileSync(env.state, before);
+            const r = runIn(
+              env,
+              shell,
+              `. ${JSON.stringify(env.helper)} && ${fn} ${shq(ITEM)} ${shq(`sneaky ${marker} tail`)}`,
+            );
+            expect(r.out).toContain(`${label}: REFUSED`);
+            expect(r.out).not.toContain('skip (');
+            expect(r.code).not.toBe(0);
+            expect(readFileSync(env.state, 'utf8'), 'nothing may be written').toBe(before);
+          }
+        },
+      );
+
+      it.skipIf(!canRun)(
+        `${shell}: ${fn} still accepts the literal backslash-n separator`,
+        () => {
+          // Back-compat, not a new feature: the old `awk -v` splice expanded escapes,
+          // so a caller writing "a\nb" in a double-quoted string got two lines. That
+          // form must keep working -- dropping it would be a silent regression for
+          // every caller that used it, and it is the convention set_needs_input has
+          // documented all along. Two appends, so the splice path is the one tested.
+          const env = makeEnv();
+          const call = (e) =>
+            runIn(env, shell, `. ${JSON.stringify(env.helper)} && ${fn} ${shq(ITEM)} ${shq(e)}`);
+          expect(call(String.raw`alpha\nbeta`).code).toBe(0);
+          expect(call(String.raw`gamma\ndelta`).code).toBe(0);
+          const stored = readFileSync(env.state, 'utf8');
+          expect(stored).toContain('alpha\nbeta');
+          expect(stored).toContain('gamma\ndelta');
+          expect(stored).toContain('human-authored description');
+        },
+      );
+
+      it.skipIf(!canRun)(
+        `${shell}: ${fn} REFUSES loudly and writes nothing when the block is corrupt`,
+        () => {
+          // The direction of failure is the whole point. Old code: destroy + report
+          // success. New code: write nothing + say so + return nonzero.
+          const env = makeEnv();
+          const start = `<!-- AUTOSHIP-${label === 'progress' ? 'PROGRESS' : 'LEARNINGS'}:START -->`;
+          const corrupt = `${HUMAN}\n\n${start}\n${heading}\n- 10:00 an entry\n`;
+          writeFileSync(env.state, corrupt);
+          const r = runIn(
+            env,
+            shell,
+            `. ${JSON.stringify(env.helper)} && ${fn} ${shq(ITEM)} ${shq('x\ny')}`,
+          );
+          expect(r.out).toContain(`${label}: REFUSED`);
+          expect(r.out, 'a refusal must not borrow the transient wording').not.toContain('skip (');
+          expect(r.code, 'a refusal must be nonzero -- return 0 makes it silent').not.toBe(0);
+          expect(
+            readFileSync(env.state, 'utf8'),
+            'a REFUSED helper must not have written anything at all',
+          ).toBe(corrupt);
+        },
+      );
+    }
+
+    it.skipIf(!canRun)(
+      `${shell}: set_needs_input keeps the human body across a re-set`,
+      () => {
+        const env = makeEnv();
+        const call = (q) =>
+          runIn(
+            env,
+            shell,
+            `. ${JSON.stringify(env.helper)} && set_needs_input ${shq(ITEM)} ${shq(q)}`,
+          );
+        const r1 = call('first question?\nsecond question?');
+        expect(r1.code, r1.out).toBe(0);
+        const afterFirst = readFileSync(env.state, 'utf8');
+        expect(afterFirst).toContain('human-authored description');
+        expect(afterFirst).toContain('**Q1.** first question?');
+        expect(afterFirst).toContain('**Q2.** second question?');
+
+        const r2 = call('replacement question?');
+        expect(r2.code, r2.out).toBe(0);
+        const afterSecond = readFileSync(env.state, 'utf8');
+        expect(afterSecond).toContain('human-authored description');
+        expect(afterSecond).toContain('second paragraph a person typed');
+        expect(afterSecond).toContain('**Q1.** replacement question?');
+        expect(afterSecond).not.toContain('first question?');
+        // Replaced, never duplicated.
+        expect(afterSecond.split('<!-- AUTOSHIP-NEEDS-INPUT:START -->')).toHaveLength(2);
+      },
+    );
+
+    it.skipIf(!canRun)(`${shell}: set_needs_input refuses an empty question set`, () => {
+      const env = makeEnv();
+      const r = runIn(
+        env,
+        shell,
+        `. ${JSON.stringify(env.helper)} && set_needs_input ${shq(ITEM)} '   '`,
+      );
+      expect(r.out).toContain('needs-input: REFUSED');
+      expect(r.code).not.toBe(0);
+      expect(readFileSync(env.state, 'utf8')).toBe(HUMAN);
+    });
+  }
+
+  it.skipIf(!canRun)('the wrapper reports a REFUSED write as its own class', () => {
+    // rc 3 must not fall through to the transient catch-all: nothing was written and
+    // nothing was lost, so calling it a rate-limit blip is the same mislabelling the
+    // caller class exists to prevent.
+    const env = makeEnv();
+    const corrupt = `${HUMAN}\n\n<!-- AUTOSHIP-PROGRESS:START -->\n### Progress\n- 10:00 e\n`;
+    writeFileSync(env.state, corrupt);
+    const opts = {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${env.binDir}:${process.env.PATH}`,
+        AUTOSHIP_STUB_BODY: env.state,
+      },
+    };
+    let r;
+    try {
+      r = { code: 0, out: execFileSync(env.hb, [ITEM, 'a\nb'], opts) };
+    } catch (e) {
+      r = { code: e.status, out: `${e.stdout ?? ''}${e.stderr ?? ''}` };
+    }
+    expect(r.out).toContain('HEARTBEAT-FAILED(refused)');
+    expect(r.out).not.toContain('HEARTBEAT-FAILED(transient)');
+    expect(r.out).not.toContain('HEARTBEAT-FAILED(caller)');
+    expect(r.code).toBe(7);
+    expect(readFileSync(env.state, 'utf8')).toBe(corrupt);
+  });
+
+  it.skipIf(!canRun)('a landed multi-line write is not mislabelled transient', () => {
+    // The helper echoes its confirmation on ONE line even though the entry has
+    // newlines, because the wrapper matches `^<label>: skip (` line-wise. A second
+    // line of caller text saying `foo: skip (x)` would otherwise relabel a successful
+    // write as a rate-limit blip.
+    const env = makeEnv();
+    const opts = {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${env.binDir}:${process.env.PATH}`,
+        AUTOSHIP_STUB_BODY: env.state,
+      },
+    };
+    const call = (line) => {
+      try {
+        return { code: 0, out: execFileSync(env.hb, [ITEM, line], opts) };
+      } catch (e) {
+        return { code: e.status, out: `${e.stdout ?? ''}${e.stderr ?? ''}` };
+      }
+    };
+    expect(call('one\ntwo').code).toBe(0); // first append -- creates the block
+    const r = call('real text\nfoo: skip (a decoy in the caller text)');
+    expect(r.out, r.out).not.toContain('HEARTBEAT-FAILED');
+    expect(r.code).toBe(0);
+    const stored = readFileSync(env.state, 'utf8');
+    expect(stored).toContain('human-authored description');
+    expect(stored).toContain('real text\nfoo: skip (a decoy in the caller text)');
+  });
+});
+
+// The mechanism, measured rather than reasoned about -- and the static bans, which
+// run even where jq/zsh are unavailable.
+describe('awk -v cannot be trusted with caller text (the TASK-470 mechanism)', () => {
+  // MEASURED CORRECTION to the card, and it matters. `awk -v name=value` with a
+  // LITERAL NEWLINE is implementation-defined, not universally fatal:
+  //
+  //   * the one-true-awk that ships with macOS -- the platform auto-ship runs on, and
+  //     the one the incident happened on -- aborts with `newline in string`, prints
+  //     NOTHING and exits 2. That empty stdout is what the helper wrote back as the
+  //     whole card body.
+  //   * gawk / mawk on ubuntu-latest accept it and print the value.
+  //
+  // So CI would never have reproduced the card-destroying failure, and the first draft
+  // of this test asserted the macOS behaviour unconditionally and went red on the
+  // runner. Both branches are pinned below, because the split IS the argument: a
+  // helper whose data-safety depends on which awk happens to be installed is broken
+  // even on the machines where it happens to work.
+  const awkNewline = (() => {
+    try {
+      return {
+        code: 0,
+        out: execFileSync(
+          'bash',
+          [
+            '-c',
+            `entry=$'a\\nb'; printf 'x\\nEND\\n' | awk -v e="$entry" -v end=END '$0==end{print e} {print}'`,
+          ],
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+        ),
+      };
+    } catch (e) {
+      return { code: e.status, out: e.stdout ?? '' };
+    }
+  })();
+
+  it('a literal newline in awk -v is implementation-defined -- and where it fails, it emits NOTHING', () => {
+    if (awkNewline.code !== 0) {
+      // The destructive branch. The old helper did not check this rc, so `nb` became
+      // the empty string and was written back as the entire card body.
+      expect(
+        awkNewline.out,
+        'awk failed -- and emitted nothing, which is the data-loss precondition',
+      ).toBe('');
+    } else {
+      // The permissive branch. Still not a reason to keep `-v`: see the escape test.
+      expect(awkNewline.out, 'awk accepted the newline, so it must have printed it').toContain(
+        'a\nb',
+      );
+    }
+  });
+
+  it.skipIf(process.platform !== 'darwin')(
+    'on darwin -- the platform auto-ship actually runs on -- it is the destructive branch',
+    () => {
+      expect(awkNewline.code, 'macOS awk must abort on a newline in -v').not.toBe(0);
+      expect(awkNewline.out).toBe('');
+    },
+  );
+
+  it('awk -v silently rewrites caller text on EVERY awk: it expands escapes', () => {
+    // Portable, and a second reason the old splice could not be trusted with caller
+    // text: `-v` runs the value through escape processing, so a progress line
+    // mentioning a Windows path or a tab sequence came out altered on every platform.
+    // It is also why the fixed helpers keep an explicit `\n` -> newline substitution:
+    // callers may have relied on that expansion, and only that part of it is kept.
+    const out = execFileSync(
+      'bash',
+      ['-c', String.raw`printf 'END\n' | awk -v e='a\tb C:\next' -v end=END '$0==end{print e}'`],
+      { encoding: 'utf8' },
+    );
+    expect(out, 'awk -v expanded the escapes rather than passing them through').not.toContain(
+      String.raw`\t`,
+    );
+    expect(out).not.toContain(String.raw`\n`);
+  });
+
+  it('the shell splice that replaced it is byte-identical under bash and zsh', () => {
+    const script =
+      `body=$'head\\nEND\\ntail'; END=END; entry=$'one\\n  two'; ` +
+      `nb="\${body%%"$END"*}\${entry}"$'\\n'"\${END}\${body#*"$END"}"; printf '%s' "$nb"`;
+    const bash = execFileSync('bash', ['-c', script], { encoding: 'utf8' });
+    expect(bash).toBe('head\none\n  two\nEND\ntail');
+    if (shellExists('zsh')) {
+      expect(execFileSync('zsh', ['-c', script], { encoding: 'utf8' })).toBe(bash);
+    }
+  });
+
+  it('no helper passes caller text through an awk -v assignment', () => {
+    // The ban, not just the fix: `-v` is fine for the fixed marker constants, and
+    // fatal for anything the caller supplies. Unconditional -- no jq, no zsh, no gh.
+    const md = readFileSync(GITHUB_PROJECT_MD, 'utf8');
+    const helper = extractHeredocs(md, '.claude/auto-ship-progress.sh').join('\n');
+    expect(helper.length, 'the helper heredocs vanished -- this guard is vacuous').toBeGreaterThan(
+      500,
+    );
+    // Line-oriented, and `#`-leading lines are skipped -- same rule the two scanners
+    // above use, and for the same reason: the helper has to be able to WRITE the
+    // broken form in a comment in order to explain why it is banned.
+    const offenders = [];
+    for (const line of helper.split('\n')) {
+      if (/^\s*#/.test(line)) continue;
+      for (const m of line.matchAll(/awk[^\n]*?-v\s+[A-Za-z_][A-Za-z0-9_]*="\$(\w+)"/g)) {
+        if (!['START', 'END'].includes(m[1].toUpperCase())) offenders.push(m[1]);
+      }
+    }
+    expect(
+      offenders,
+      'These awk `-v` assignments carry caller-supplied text. An awk -v assignment ' +
+        'cannot hold a literal newline: awk aborts, emits nothing, and the helper ' +
+        'used to write that empty result back as the entire card body while printing ' +
+        'its success line (TASK-470 -- a real card went to 1 byte). Splice in shell, ' +
+        'or feed the text to awk on STDIN. `-v` is only for the fixed markers.',
+    ).toEqual([]);
+  });
+
+  it('every helper gates its write on a body it verified', () => {
+    // Each helper must refuse rather than write an unverified body, and must say so.
+    const md = readFileSync(GITHUB_PROJECT_MD, 'utf8');
+    const blocks = extractHeredocs(md, '.claude/auto-ship-progress.sh');
+    const all = blocks.join('\n');
+    for (const fn of ['append_progress', 'append_learnings', 'set_needs_input']) {
+      const start = all.indexOf(`${fn}() {`);
+      expect(start, `${fn} is no longer defined -- this guard is vacuous`).toBeGreaterThan(-1);
+      const rest = all.slice(start);
+      // The closing `}` is at column 0. The LAST function in the file has no trailing
+      // newline after it, so match on `\n}` and fall back to the end of the slice --
+      // an earlier draft looked for `\n}\n` and silently produced an EMPTY body for
+      // set_needs_input, i.e. a guard that asserted nothing about the last helper.
+      const end = rest.indexOf('\n}');
+      const fnBody = end === -1 ? rest : rest.slice(0, end);
+      expect(fnBody.length, `${fn} body came back empty`).toBeGreaterThan(200);
+      expect(fnBody, `${fn} has no REFUSED path`).toContain('REFUSED');
+      expect(fnBody, `${fn}'s refusal must return 3, the wrapper's own class`).toMatch(
+        /return 3/,
+      );
+      const refuse = fnBody.indexOf('REFUSED');
+      const write = fnBody.indexOf('updateProjectV2DraftIssue');
+      expect(write, `${fn} no longer writes`).toBeGreaterThan(-1);
+      expect(
+        refuse,
+        `${fn}'s refusal must be reachable BEFORE the mutation -- a guard after the ` +
+          'write guards nothing',
+      ).toBeLessThan(write);
+    }
+  });
+
+  it('the wrapper keeps a distinct exit code for a refused write', () => {
+    const md = readFileSync(GITHUB_PROJECT_MD, 'utf8');
+    const wrapper = extractHeredocs(md, '.claude/auto-ship-hb.sh')[0];
+    expect(wrapper).toMatch(/rc -eq 3/);
+    expect(wrapper).toContain('exit 7');
+    expect(wrapper, 'the header an operator reads must name the class').toMatch(/refused/i);
   });
 });
 

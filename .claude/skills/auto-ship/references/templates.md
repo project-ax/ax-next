@@ -189,7 +189,7 @@ afford — heed it rather than dispatching and hoping.
 >                                                  # indented line per commit after it:
 >   - <sha> fix: <the reviewer finding it answers>
 >   - <sha> new: <what you found yourself, after the review>
-> progress: live | FAILED-<setup|caller|transient>  # REQUIRED. Did your card heartbeat
+> progress: live | FAILED-<setup|caller|refused|transient>  # REQUIRED. Did your card heartbeat
 >                                                  # actually land? Never blocks the
 >                                                  # merge; journalled so a dead
 >                                                  # heartbeat surfaces within ONE card
