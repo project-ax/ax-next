@@ -248,6 +248,47 @@ describe('storage:delete', () => {
     expect(gone.value).toBeUndefined();
   });
 
+  /*
+    THE SEAM, not the predicate. The one caller of `ifValueEquals` does not
+    invent the bytes — it passes back what `storage:list-prefix` just handed
+    it, which is whatever the driver produced rather than a plain
+    `Uint8Array` the test built. If that representation did not compare equal
+    to the stored row, the guard would silently never fire, and it would fail
+    "safe" forever: nothing would ever be reclaimed and nobody would hear.
+
+    MEASURED, so the comment does not overclaim: better-sqlite3 hands back a
+    `Buffer` with `byteOffset === 0` over an exactly-sized backing store, so
+    the Node small-buffer POOLING hazard (a view whose `.buffer` is far larger
+    than the value) is not live on this driver today. The `Buffer.from(view)`
+    in the plugin is what keeps it offset-correct anyway, for this driver's
+    next version and for the other backend.
+  */
+  it('accepts the bytes storage:list-prefix handed back', async () => {
+    const h = await createTestHarness({
+      plugins: [createStorageSqlitePlugin({ databasePath: ':memory:' })],
+    });
+    const ctx = h.ctx();
+    await h.bus.call('storage:set', ctx, {
+      key: 'roundtrip',
+      value: new Uint8Array([4, 5, 6]),
+    });
+
+    const { entries } = await h.bus.call<
+      { prefix: string },
+      { entries: Array<{ key: string; value: Uint8Array }> }
+    >('storage:list-prefix', ctx, { prefix: 'roundtrip' });
+    expect(entries).toHaveLength(1);
+
+    const result = await h.bus.call<
+      { key: string; ifValueEquals?: Uint8Array },
+      { deleted: number }
+    >('storage:delete', ctx, {
+      key: 'roundtrip',
+      ifValueEquals: entries[0]!.value,
+    });
+    expect(result).toEqual({ deleted: 1 });
+  });
+
   it('deleting an absent key returns { deleted: 0 } and throws nothing', async () => {
     const h = await createTestHarness({
       plugins: [createStorageSqlitePlugin({ databasePath: ':memory:' })],
