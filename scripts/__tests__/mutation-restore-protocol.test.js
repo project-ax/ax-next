@@ -65,11 +65,11 @@
 //     fixture run through a file copy loses it.
 //   - **The zsh half does not run in CI.** `SHELLS` is `['bash', ...zsh if present]`, and
 //     the GitHub runner has no zsh: measured on this branch's own PR run, `pnpm
-//     test:scripts` collected **335** tests there against **387** locally on macOS. So
-//     every zsh assertion in this file is a LOCAL result, and the claim "under bash and
-//     zsh" in the doc is only continuously enforced for bash. That is the same shape every
-//     sibling shell guard in this directory has; it is written down here rather than left
-//     for someone to infer from a test count.
+//     test:scripts` collected **335** tests there, against **391** locally on macOS at the
+//     same sha. So every zsh assertion in this file is a LOCAL result, and the doc's claim
+//     is only continuously enforced for bash. That is the same shape every sibling shell
+//     guard in this directory has; it is written down here, and in the doc, rather than
+//     left for someone to infer from a test count.
 //   - The templates.md assertions at the bottom are TEXT checks, deliberately weaker than
 //     the executable core, and labelled as such. There is no second runnable copy of the
 //     block in the dispatch prompt to execute; what the prompt must carry is the pointer
@@ -375,36 +375,62 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
   });
 
   it('restore keeps a commit that landed during the window — a file copy reverts it', () => {
-    // Incident (1), reproduced: the agent takes a copy, mutates, and while its suite runs a
-    // sibling in the same worktree commits a fix to the same file.
+    // Incident (1), reproduced. The agent takes a copy of v1, mutates, and while its suite
+    // runs a sibling in the same worktree commits a fix (v2) to the same file. The agent's
+    // mutant is then re-applied ON TOP of v2, which is what makes this test stand on its
+    // own: the restore has to both REMOVE the mutant and KEEP the sibling's commit. (An
+    // earlier version wrote the mutant and overwrote it with v2 on the next line, so the
+    // mutant was never in the tree when the block ran — it leaned entirely on the control.)
     const dir = makeRepo();
-    // The copy lives OUTSIDE the repo, where a builder's scratchpad copy would.
     writeFileSync(join(scratch(), 'backup.copy'), read(dir));
-    writeFileSync(join(dir, TARGET), MUTANT);
     writeFileSync(join(dir, TARGET), V2);
     git(dir, 'add', TARGET);
     git(dir, 'commit', '-q', '-m', 'sibling fix');
+    const mutantOnTop = V2.replace('answer = 42', 'answer = 43');
+    writeFileSync(join(dir, TARGET), mutantOnTop);
 
     const r = runBlock(shell, RESTORE, { cwd: dir, file: TARGET, mark: RESTORE_MARK });
 
     expect(r.status).toBe(0);
+    expect(read(dir)).toBe(V2);
     expect(read(dir)).toContain('SIBLING-FIX');
     expect(porcelain(dir)).toBe('');
 
-    // CONTROL, so the assertion above is not vacuous: the same fixture restored the way
-    // incident (1) restored it loses the sibling's committed fix, silently, exit status 0.
+    // CONTROL: the same fixture restored the way incident (1) restored it puts back the
+    // stale v1 — the mutant is gone, which LOOKS right, and the sibling's committed fix is
+    // gone with it, silently, exit status 0.
     const control = makeRepo();
     const controlCopy = join(scratch(), 'backup.copy');
     writeFileSync(controlCopy, read(control));
     writeFileSync(join(control, TARGET), V2);
     git(control, 'add', TARGET);
     git(control, 'commit', '-q', '-m', 'sibling fix');
+    writeFileSync(join(control, TARGET), mutantOnTop);
     const cp = spawnSync(shell, ['-c', `cp "${controlCopy}" "${TARGET}"`], {
       cwd: control,
       encoding: 'utf8',
     });
     expect(cp.status).toBe(0);
     expect(read(control)).not.toContain('SIBLING-FIX');
+  });
+
+  it('restore refuses a mutant that was COMMITTED — checkout would be a no-op reporting success', () => {
+    // `git commit -am wip` after a red run is an ordinary habit. Do it here and
+    // `git checkout --` has nothing to undo, `git status --porcelain` is empty, and without
+    // the already-clean gate the block prints `ok: restored, working tree clean` over a
+    // mutant that is now on the branch and headed for the PR.
+    const dir = makeRepo();
+    writeFileSync(join(dir, TARGET), MUTANT);
+    git(dir, 'commit', '-q', '-am', 'wip');
+
+    const r = runBlock(shell, RESTORE, { cwd: dir, file: TARGET, mark: RESTORE_MARK });
+
+    expect(r.status).not.toBe(0);
+    expect(r.out).toMatch(/already clean/);
+    expect(r.out).toMatch(/COMMITTED it/);
+    expect(r.out).not.toMatch(/^ok:/m);
+    // And it does not pretend: the mutant is still exactly where the agent left it.
+    expect(read(dir)).toBe(MUTANT);
   });
 
   it('restore refuses when the mutant was staged — checkout restores from the INDEX', () => {
@@ -454,35 +480,55 @@ describe('the blocks in yolo-ship Phase 4', () => {
     expect(bashBlocks(yoloText).filter((b) => b.includes(RESTORE_MARK))).toHaveLength(1);
   });
 
-  it('bind the target exactly once, in the precondition block', () => {
-    expect(PRECONDITION.split('\n').filter((l) => /^F=/.test(l))).toHaveLength(1);
-    expect(RESTORE.split('\n').filter((l) => /^F=/.test(l))).toHaveLength(0);
-    // The restore block must USE that binding rather than re-derive a path of its own.
-    expect(RESTORE).toContain('"$F"');
+  it('each bind the target exactly once, and address it as a literal pathspec', () => {
+    // BOTH blocks bind it. An agent's Bash calls do not share shell state, and the restore
+    // runs a red test-run later — i.e. always a new shell — so a restore block that leaned
+    // on the precondition's `$F` would run with it unset. (It failed closed when that
+    // happened, but named the wrong cause.)
+    for (const block of [PRECONDITION, RESTORE]) {
+      expect(block.split('\n').filter((l) => /^F=/.test(l))).toHaveLength(1);
+      expect(block.split('\n').filter((l) => /^P=":\(literal\)\$F"$/.test(l))).toHaveLength(1);
+    }
+    // And every git command addresses `$P`, not `$F`: a filename containing [ * or ? is a
+    // PATTERN to git, so a bare `$F` could check, or restore, a sibling file instead.
+    for (const l of [...logicalLines(PRECONDITION), ...logicalLines(RESTORE)]) {
+      if (!/\bgit\b/.test(l)) continue;
+      expect(l).not.toMatch(/--\s+"\$F"/);
+    }
   });
 
   it('restore with git, never with a file copy', () => {
-    expect(logicalLines(RESTORE).some((l) => /^git checkout -- "\$F"$/.test(l))).toBe(true);
+    expect(logicalLines(RESTORE).some((l) => /^git checkout -- "\$P"$/.test(l))).toBe(true);
     for (const l of [...logicalLines(PRECONDITION), ...logicalLines(RESTORE)]) {
       expect(l).not.toMatch(/(^|[;&|(]\s*)(cp|rsync|install|mv)\s/);
     }
   });
 
   it('pipe no git invocation', () => {
-    // A pipe launders git's exit status, so a FAILED status call reads as "clean" — the
-    // fail-OPEN direction. Every git line is scanned, not just the first: a check that
-    // inspects one occurrence is a check on that occurrence, not on the property.
+    // A pipe launders git's exit status. Narrowly: this check forbids ONE laundering shape.
+    // `[ -n "$(git … )" ]` launders the status just as thoroughly, and both blocks use it —
+    // which is exactly why each one first establishes the path is tracked with an
+    // status-checked `git ls-files`, rather than trusting an empty string to mean "clean".
+    // Every git line is scanned, not just the first: a check that inspects one occurrence
+    // is a check on that occurrence, not on the property.
     for (const l of [...logicalLines(PRECONDITION), ...logicalLines(RESTORE)]) {
       if (!/\bgit\b/.test(l)) continue;
       expect(l).not.toMatch(/\|/);
     }
   });
 
-  it('gate on git status --porcelain and exit non-zero on both refusals', () => {
+  it('exit non-zero on EVERY refusal, not merely on one of them', () => {
+    // `some(/^exit 1$/)` would be satisfied by a block that kept one refusal and softened
+    // the rest — measured: dropping only the dirty-branch `exit 1` left `some()` true, so
+    // the structure check passed and the mutant had to be widened to fit it. Counting pairs
+    // the gate to the message: 2 REFUSE branches in the precondition, 3 in the restore.
     for (const block of [PRECONDITION, RESTORE]) {
       const lines = logicalLines(block);
+      const refusals = lines.filter((l) => /^echo "REFUSE/.test(l)).length;
+      const exits = lines.filter((l) => /^exit 1$/.test(l)).length;
+      expect(refusals).toBeGreaterThanOrEqual(2);
+      expect(exits).toBe(refusals);
       expect(lines.some((l) => l.includes('git status --porcelain'))).toBe(true);
-      expect(lines.some((l) => /^exit 1$/.test(l))).toBe(true);
     }
   });
 
@@ -555,8 +601,12 @@ describe('the code-lane dispatch prompt (text check — weaker on purpose)', () 
   });
 
   it('keeps the rule in the prompt, not in the orchestrator-facing prose above it', () => {
-    // The habit-vs-fix distinction as an assertion: guidance addressed to the orchestrator
-    // ("remember to tell builders…") reproduces the exact defect this card fixes.
+    // NOT COVERAGE OF THIS CHANGE — it passes either way. Measured: `git show
+    // origin/main:…/templates.md | grep -i mutation` matches nothing, so this negative
+    // assertion is byte-identically green against the unfixed file. It is a tripwire for a
+    // drift nobody has made yet: guidance addressed to the orchestrator ("remember to tell
+    // builders…") would reproduce the exact defect this card fixes, because a habit lives
+    // in whoever is driving. The two assertions above it ARE red against `origin/main`.
     const prose = section
       .split('\n')
       .filter((l) => !(l === '>' || l.startsWith('> ')))

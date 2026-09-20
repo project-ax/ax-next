@@ -163,7 +163,7 @@ That precondition — not the choice of restore command — is what the four cas
 | --- | --- | --- |
 | the worktree **owner** | clean | mutate; restore with `git checkout -- <path>` |
 | the worktree **owner** | carrying uncommitted work | **commit it first**, then mutate. `git checkout --` would take the uncommitted work with the mutant; a file copy would revert whatever lands while you mutate. |
-| a **subagent in someone else's worktree** (reviewer, helper) | clean | mutate; restore with `git checkout -- <path>` |
+| a **subagent in someone else's worktree** (reviewer, helper) | clean | **prefer not to.** "Clean" is a snapshot, not a property: in a shared tree the owner is a live writer by definition, and even when nothing clobbers your file the owner may be running a build off that tree and will debug *your* mutant as their own code (TASK-426, measured — *"the run I had just debugged was executing ITS mutant"*). If you must: announce the window, and re-run the precondition immediately before restoring — a path that is no longer dirty means someone else wrote it, so stop rather than restore. |
 | a **subagent in someone else's worktree** | carrying uncommitted work | **do not mutate it.** You may not commit someone else's work-in-progress onto their branch, and you may not restore over it. Stop and say so. |
 
 So *"commit before you mutate"* is the **owner's** way of satisfying the precondition, and for
@@ -175,22 +175,27 @@ recommended restore for an owner who committed first and the destructive one for
 
 **A file copy is never the restore.** A copy writes back whatever the file looked like when the
 copy was taken, so anything committed in between is silently undone and nothing reports it.
-`git checkout --` restores the *committed* content, so a concurrent commit survives it.
+`git checkout --` restores from the **index** — which is the content you committed, once the
+precondition has passed and you have staged nothing since — so it cannot write back a snapshot
+older than your own baseline.
 
 Run this **before** you write the mutant, from your worktree root:
 
 ```bash
 # ax-mutation-restore: precondition — run BEFORE you write the mutant.
 F="<the file you are about to mutate>"
+# `:(literal)` so a filename containing [ * or ? is a NAME, not a pattern that could match
+# — and silently check, or restore, a sibling file instead.
+P=":(literal)$F"
 
 # `git status` on a path git does not know prints NOTHING and errors, which reads as
 # "clean" — so an unsubstituted $F would sail through the check below. Fail closed first.
-if ! git ls-files --error-unmatch -- "$F" >/dev/null 2>&1; then
+if ! git ls-files --error-unmatch -- "$P" >/dev/null 2>&1; then
   echo "REFUSE: $F is not a tracked file — git cannot restore it. Did you substitute \$F?"
   exit 1
 fi
 
-if [ -n "$(git status --porcelain -- "$F")" ]; then
+if [ -n "$(git status --porcelain -- "$P")" ]; then
   echo "REFUSE: $F carries uncommitted work — every restore from here is lossy."
   echo "  owner of this worktree: commit $F first, then mutate."
   echo "  subagent in someone else's worktree: do NOT commit it and do NOT restore it;"
@@ -200,42 +205,70 @@ fi
 echo "ok: $F is committed-clean — git checkout -- $F restores it exactly."
 ```
 
-and this **after** the suite has gone red, in the same shell:
+and this **after** the suite has gone red. It binds `$F` again on purpose: an agent's Bash
+calls do not share shell state, and the restore happens a red test-run and several minutes
+after the precondition, which is always a new shell.
 
 ```bash
 # ax-mutation-restore: restore — never from a file copy.
-if ! git ls-files --error-unmatch -- "$F" >/dev/null 2>&1; then
-  echo "REFUSE: $F is not a tracked file — there is nothing for git to restore."
+F="<the file you are about to mutate>"
+P=":(literal)$F"
+
+if ! git ls-files --error-unmatch -- "$P" >/dev/null 2>&1; then
+  echo "REFUSE: $F is not a tracked file — nothing for git to restore. Did you substitute \$F?"
   exit 1
 fi
 
-git checkout -- "$F"
+# A path with nothing to restore is the dangerous case, not the harmless one: `git checkout
+# --` over a mutant you COMMITTED is a no-op that reports success.
+if [ -z "$(git status --porcelain -- "$P")" ]; then
+  echo "REFUSE: $F is already clean — there is no mutation here to put back."
+  echo "  Either you never wrote it, or you COMMITTED it (check git log), or someone else"
+  echo "  in this worktree has already written over it. Do not proceed as if restored."
+  exit 1
+fi
 
-if [ -n "$(git status --porcelain -- "$F")" ]; then
+git checkout -- "$P"
+
+if [ -n "$(git status --porcelain -- "$P")" ]; then
   echo "REFUSE: $F is still dirty after restore — look before you commit anything."
   exit 1
 fi
 echo "ok: $F restored, working tree clean."
 ```
 
-Two things the second block is really for, neither of them obvious. **`git checkout -- <path>`
-restores from the INDEX, not from `HEAD`** — so if you ever `git add`ed the mutant it comes
-straight back, exit status 0, looking restored. And **`git status` on a path git does not know
-prints nothing**, which is indistinguishable from "clean" — which is why both blocks refuse an
-untracked path before they trust a clean answer, and why an unsubstituted `$F` stops there
-instead of sailing through.
+Three things the second block is really for, none of them obvious:
 
-**Which direction does this fail in? Closed.** Both blocks refuse and change nothing when they
-cannot prove the tree is in the state the restore assumes; neither has a branch that proceeds
-on a failed check. What they do **not** cover, stated rather than implied away: a second writer
-that touches the path *during* your mutation window. No restore protocol can fix that — the fix
-is that a mutation window has one writer, which is what TASK-471 is for.
+- **`git checkout -- <path>` restores from the INDEX, not from `HEAD`.** If you ever
+  `git add`ed the mutant it comes straight back, exit status 0, looking restored.
+- **A mutant you COMMITTED makes the restore a no-op that reports success.** `git commit -am
+  wip` after a red run is an ordinary habit; do it here and `git checkout --` has nothing to
+  undo, `git status` is empty, and the block would print `ok` over a mutant headed for your
+  PR. That is why the restore refuses a path that is *already clean*.
+- **`git status` on a path git does not know prints nothing**, which is indistinguishable from
+  "clean" — which is why both blocks establish the path is tracked before trusting a clean
+  answer, and why an unsubstituted `$F` stops there instead of sailing through.
+
+**Which direction does this fail in? Closed** — for every state the blocks can observe. Neither
+has a branch that proceeds on a failed check, and each of the three traps above is a refusal
+rather than an `ok`. Two things they still cannot see, stated rather than implied away:
+
+- **A second writer touching the path *during* your window.** No restore protocol fixes that;
+  the fix is one writer per window, which is TASK-471's scope. Note the hazard runs both ways
+  — a second **reader** is enough, because the owner's build can pick up your live mutant and
+  the owner will debug it as their own code.
+- **`git update-index --assume-unchanged` / `--skip-worktree` on the path.** `ls-files`
+  succeeds and `status` stays empty, so the block reports clean over a live mutant. Nothing
+  here sets those; if you have, you already know.
 
 `scripts/__tests__/mutation-restore-protocol.test.js` EXTRACTS both blocks from this file and
-RUNS them, under bash and zsh, against throwaway git repositories built to each of the four
-shapes above. It does not scan this prose for the right words: the prose quotes the dangerous
+RUNS them against throwaway git repositories built to three of the four incident shapes above
+(the fourth, the reviewer that kept `git status` clean, is the *absence* of a failure and has
+no fixture). It runs them under bash and, **when the machine has zsh, under zsh too** — the CI
+runner does not, so the zsh half is a local result and only the bash half is continuously
+enforced. It does not scan this prose for the right words: the prose quotes the dangerous
 commands on purpose, so a text scan would pass against the broken text (the TASK-392 vacuity
-mistake). Delete or weaken either block and the guard reddens.
+mistake). Delete either block, or drop any single gate inside one, and the guard reddens.
 
 ### Phase 5 — Local review (before the PR exists)
 This replaces waiting on a hosted reviewer. Review the **whole branch** locally with the **`ax-code-reviewer`** subagent *before* any PR is opened, and address findings in a loop until the review is clean.
