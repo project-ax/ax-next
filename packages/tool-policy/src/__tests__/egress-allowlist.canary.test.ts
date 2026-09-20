@@ -22,28 +22,58 @@
  * Each mutant was restored with `git checkout --` and the file re-hashed to
  * confirm the restore was byte-identical.
  *
- * Sixteen mutants, sixteen killed. M14-M16 were added after a first pass at
- * "which claim still has no mutant?" — naming a gap and then not closing it is
- * the move this card exists to punish. Counts are against THIS suite as it now
- * stands, 14 tests:
+ * TWENTY-ONE mutants: twenty killed, one equivalent. Every count below was
+ * re-measured against THIS suite at its current 15 tests, so the table has one
+ * denominator rather than a mix — a ledger whose rows were taken at different
+ * sizes is the kind of thing a later reader quietly mis-reads.
  *
  *   mutant (what was broken)                          result   counts
- *   M1  db revoke returns true over an UNTOUCHED table KILLED   3 red / 11 pass
- *   M2  revoke may also delete the GLOBAL row          KILLED   1 red / 13 pass
- *   M3  revoke stops naming the owner                  KILLED   1 red / 13 pass
- *   M4  the read stops naming its owner                KILLED   3 red / 11 pass
- *   M5  listFor stops deduping                         KILLED   1 red / 13 pass
- *   M6  normalizeHost accepts anything non-empty       KILLED   1 red / 13 pass
- *   M7  a non-person id may own an entry               KILLED   1 red / 13 pass
- *   M8  the plugin falls back to the in-memory store   KILLED   1 red / 13 pass
- *   M9  an unreadable payload stops being a deny       KILLED   1 red / 13 pass
- *   M10 remember files under the payload's ownerId     KILLED   1 red / 13 pass
- *   M11 the database is unreachable                    KILLED  14 red /  0 pass
- *   M12 every read returns zero rows                   KILLED   9 red /  5 pass
- *   M13 listFor throws (hook swallows -> { sites: [] })KILLED   4 red / 10 pass
- *   M14 the grant becomes the URL rather than the host  KILLED   9 red /  5 pass
- *   M15 one malformed operator host is fatal to boot    KILLED   1 red / 13 pass
- *   M16 an egress rule stops reporting as conditional   KILLED   1 red / 13 pass
+ *   M1  db revoke returns true over an UNTOUCHED table KILLED   3 red / 12 pass
+ *   M2  revoke may also delete the GLOBAL row          KILLED   1 red / 14 pass
+ *   M3  revoke stops naming the owner                  KILLED   1 red / 14 pass
+ *   M4  the read stops naming its owner                KILLED   3 red / 12 pass
+ *   M5  listFor stops deduping                         KILLED   1 red / 14 pass
+ *   M6  normalizeHost accepts anything non-empty       KILLED   1 red / 14 pass
+ *   M7  a non-person id may own an entry               KILLED   1 red / 14 pass
+ *   M8  the plugin falls back to the in-memory store   KILLED   2 red / 13 pass
+ *   M9  an unreadable payload stops being a deny       KILLED   1 red / 14 pass
+ *   M10 remember files under the payload's ownerId     KILLED   1 red / 14 pass
+ *   M11 the database is unreachable                    KILLED  15 red /  0 pass
+ *   M12 every read returns zero rows                   KILLED  10 red /  5 pass
+ *   M13 listFor throws (hook swallows -> { sites: [] })KILLED   4 red / 11 pass
+ *   M14 the grant becomes the URL rather than the host KILLED  10 red /  5 pass
+ *   M15 one malformed operator host is fatal to boot   KILLED   1 red / 14 pass
+ *   M16 an egress rule stops reporting as conditional  KILLED   1 red / 14 pass
+ *   M17 the per-person cap stops being enforced        KILLED   1 red / 14 pass
+ *   M18 the cap boundary becomes > instead of >=       KILLED   1 red / 14 pass
+ *   M19 the count loses its Number() coercion          KILLED   1 red / 14 pass
+ *   M20 the cap counts the table, not the person       KILLED   1 red / 14 pass
+ *   M21 the cap is applied to the operator list too  EQUIVALENT (see below)
+ *
+ * Where they came from, because the order turned out to matter. M1-M13 are the
+ * claims the suite already made. M14-M16 came from asking "which claim still
+ * has no mutant?" — naming a gap and then not closing it is the move this card
+ * exists to punish. M17-M21 came from review, and then from MUTATING THE TEST
+ * THAT REVIEW PRODUCED, which is where the sharpest finding of the run turned
+ * up.
+ *
+ * M19 is that finding and it is worth the paragraph. The cap test as first
+ * written seeded the table to the boundary and probed 510 and 512. Drop the
+ * `Number()` and `count` is still the STRING pg hands back for a bigint, so
+ * the comparison goes lexicographic — and lexicographic agrees with arithmetic
+ * at 510 and at 512, the exact two values the test looked at, while disagreeing
+ * at SIX, where a person with six remembered hosts is capped forever. A
+ * boundary-only test watches precisely the places the bug is not. The seven
+ * consecutive remembers in that case walk the count through 0..6 and step on
+ * it. The lesson generalises past this file: a test that only probes the
+ * boundary of a numeric guard cannot see a coercion bug, because coercion bugs
+ * are not boundary bugs.
+ *
+ * M21 SURVIVED and is EQUIVALENT rather than a gap — no test could kill it. A
+ * global entry's owner key is `''`, so the count query the mutant adds is
+ * `scope = 'user' AND owner_user_id = ''`, which matches nothing and therefore
+ * never caps. The mutation changes no behaviour. Recorded rather than dropped,
+ * because an unexplained survivor in a ledger reads as an open hole.
  *
  * M1 here is the mutant TASK-469's card calls M4 — the one #618 could not run.
  * It dies, so the DELETE really does reach Postgres. The total never shrank in
@@ -56,8 +86,9 @@
  * that could delete the operator's deployment-wide row, or anybody else's —
  * and M13 was caught only by the overlap case, leaving `revoke`'s own list
  * assertion blind to a read that never happened. M2 and M3 produced the two
- * cases titled TASK-469 below; M13 produced the `sites()` read added INSIDE
- * the TASK-406 revoke case, which is commented there.
+ * revoke cases titled TASK-469 below; M13 produced the `sites()` read added
+ * INSIDE the TASK-406 revoke case, which is commented there; M17-M20 produced
+ * the third TASK-469 case, the cap.
  *
  * WHICH DIRECTION DOES THE CANARY ITSELF FAIL IN? Red, on all three of the
  * shapes worth fearing: an unreachable database (M11), a table that answers
