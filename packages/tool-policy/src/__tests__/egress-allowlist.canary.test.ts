@@ -347,15 +347,21 @@ describe('egress allowlist canary', () => {
 
     // Nothing of hers to take back: `false` is the whole answer, and she is
     // deliberately not told that a row she cannot delete exists.
+    //
+    // THIS is the line M2 reddens, and it reddens first —
+    // `expected { revoked: true } to deeply equal { revoked: false }`, because
+    // the mutant's DELETE matched the operator's row and reported success.
     expect(
       await h.bus.call('egress-allowlist:revoke', h.ctx({ userId: 'alice' }), {
         host: 'intranet.example.com',
       }),
     ).toEqual({ revoked: false });
 
-    // The operator's list is untouched — for her and for everybody else. This
-    // is the assertion M2 reddens: under it the global row is gone and both
-    // verdicts fall back to `hold`.
+    // The operator's list is untouched — for her and for everybody else. These
+    // are the consequence of the same mutant rather than a second finding: with
+    // the global row deleted, both verdicts fall back to `hold`. They are here
+    // because `revoked: false` alone would also be satisfied by a revoke that
+    // did nothing at all for the wrong reason.
     expect(await verdict(h, 'alice', 'https://intranet.example.com/x')).toBe('allow');
     expect(await verdict(h, 'bob', 'https://intranet.example.com/x')).toBe('allow');
     expect(await sites(h, 'alice')).toEqual([['intranet.example.com', 'global']]);
