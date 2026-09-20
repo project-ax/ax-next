@@ -189,12 +189,20 @@ describe('past conversations', () => {
 
       BE PRECISE ABOUT WHAT THIS CATCHES. It catches the two slots drifting
       into different sentences — someone changing the visible line and not the
-      tooltip, or vice versa. It does NOT catch the reason the production code
-      binds the string once: `relativeDay`'s `now` defaults to `new Date()`, so
-      two calls are two clock reads that can straddle a local midnight and land
-      in different buckets. That window is sub-millisecond and no test can
-      provoke it reliably, which is exactly why the fix there is to make it
-      unrepresentable rather than to assert against it.
+      tooltip, or vice versa — and it is the ONLY assertion here that catches
+      the visible-line direction, since the literal above pins `title` alone.
+
+      It does NOT catch the reason the production code binds the string once:
+      `relativeDay`'s `now` defaults to `new Date()`, so two calls are two clock
+      reads that can straddle a local midnight and land in different buckets.
+      Two REAL calls in a test return the same string, so the unfixed two-call
+      code passes this. Stated carefully, because the obvious next sentence is
+      wrong: the midnight window itself cannot be provoked (you cannot advance
+      the wall clock between two synchronous reads in one render), but its
+      observable consequence can — mocking `relativeDay` to answer differently
+      on consecutive calls makes the unfixed code fail this very assertion.
+      That is a test of the binding rather than of the clock, which is why the
+      production fix is to make the divergence unrepresentable instead.
     */
     expect(banner.getAttribute('title')).toBe(banner.textContent);
   });

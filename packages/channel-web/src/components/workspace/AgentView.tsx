@@ -894,6 +894,26 @@ export function AgentView({
     placeholder, not a thread, so there is no conversation on screen for "this
     conversation" to be about yet. The answer arrives with the excerpt.
   */
+  /*
+    The archived-conversation banner's one sentence, bound ONCE because it is
+    drawn twice — as the visible line and, since TASK-436, as the `title`
+    tooltip that recovers it when CSS clamps it. A tooltip that is not the line
+    it is recovering is worse than no tooltip.
+
+    Until TASK-435 the two slots trivially agreed: both read `past.meta`, a
+    string the server had already computed. They are now a CALL, and
+    `relativeDay(iso, now = new Date())` reads the wall clock per call — so two
+    calls either side of a local midnight (or a 7/14/60/365-day threshold) land
+    in different buckets, and the tooltip claims "today" over a line reading
+    "yesterday". Sub-millisecond window, cosmetic damage, and therefore
+    something nobody would ever find. One binding makes it unrepresentable
+    rather than unlikely.
+  */
+  const pastLine =
+    past === null
+      ? null
+      : `${past.title} · ${relativeDay(past.lastActivityAt)} · read-only`;
+
   const excerptOpening = past !== null && pastDetail === null && pastError === null;
   const shownRead = (past !== null ? pastDetail : detail)?.decisions.status ?? 'ok';
   const approvalRead: ApprovalRead = excerptOpening
@@ -1084,33 +1104,13 @@ export function AgentView({
               {past && (
                 <div className="flex items-center gap-2.5 border-b border-border bg-muted px-6 py-2.5">
                   <Archive size={13} className="text-muted-foreground" />
-                  {/*
-                    ONE string, drawn twice. TASK-436 put the whole line in
-                    `title` because the visible copy is CSS-clamped, which only
-                    works while the two are the same sentence — and until
-                    TASK-435 they trivially were, because both slots read the
-                    server-computed `past.meta` field.
-
-                    They are now a CALL, and `relativeDay(iso, now = new
-                    Date())` reads the wall clock per call. Two calls are two
-                    clock reads, and two clock reads either side of a local
-                    midnight land in different buckets — so the tooltip would
-                    claim "today" over a line reading "yesterday". The window is
-                    sub-millisecond and the damage cosmetic, which is exactly
-                    why it would never be found; binding it once removes the
-                    question instead of making it unlikely.
-                  */}
-                  {(() => {
-                    const line = `${past.title} · ${relativeDay(past.lastActivityAt)} · read-only`;
-                    return (
-                      <span
-                        className="min-w-0 flex-1 truncate text-[12.5px] text-muted-foreground"
-                        title={line}
-                      >
-                        {line}
-                      </span>
-                    );
-                  })()}
+                  {/* One binding, two slots — see `pastLine` above for why. */}
+                  <span
+                    className="min-w-0 flex-1 truncate text-[12.5px] text-muted-foreground"
+                    title={pastLine ?? undefined}
+                  >
+                    {pastLine}
+                  </span>
                   <Button
                     variant="ghost"
                     size="sm"
