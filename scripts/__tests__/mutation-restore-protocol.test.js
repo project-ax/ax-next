@@ -136,22 +136,22 @@
 //     block in the dispatch prompt to execute; what the prompt must carry is the pointer
 //     and the per-role rule, and text is the only surface that has ever carried those.
 //
-// MUTANTS RUN, NOT REASONED ABOUT (2026-09-19, macOS + zsh + git 2.52.0; baseline **68
-// passed**). Re-measured **in full after each of six review rounds**, because a round
-// changes the test set and a stale count is worse than none — a rule this file broke twice
-// and a reviewer caught both times. Every mutant was applied to the COMMITTED text and
-// restored with `git checkout --`; `git status --porcelain` was empty before and after each.
-// Every mutant still COLLECTS 68 — the number to distrust is a red count that arrives with
-// a shrunken total. A mutant's CONSTRUCTION is a claim as much as its count is, so each
-// says which kind it is:
+// MUTANTS RUN, NOT REASONED ABOUT (2026-09-19, macOS + zsh + git 2.52.0; baseline **72
+// passed**). **Every entry below was re-run in one pass at this baseline** — not a spot
+// check, because the last time three entries were checked, two had moved. A round that
+// adds a test changes the test set, and a stale count is worse than none: this file broke
+// that rule three times and a reviewer caught it each time, most pointedly in the sentence
+// on the next line, whose entire job is to state the total. Every mutant COLLECTS 72 — the
+// number to distrust is a red count that arrives with a shrunken total. A mutant's
+// CONSTRUCTION is a claim as much as its count is, so each says which kind it is:
 //
 //   M1. RESTORED VERBATIM — `git show origin/main:.claude/skills/yolo-ship/SKILL.md >` the
-//       file, i.e. the pre-fix text, which carries NEITHER marked block -> **47 red of 68**.
+//       file, i.e. the pre-fix text, which carries NEITHER marked block -> **51 red of 72**.
 //       The extractor finds 0 of each, `runBlock` throws by design naming the reason, and
-//       every behavioural case plus every block-structure check reds out. The **21**
-//       survivors are the 17 predicate table rows (which read no file), `logicalLines keeps
-//       a command a comment tried to swallow`, and the three templates.md text checks. The
-//       survivor count grows whenever a table row is added, which is expected rather than a
+//       every behavioural case plus every block-structure check reds out. The 21 survivors
+//       are the 17 predicate table rows (which read no file), `logicalLines keeps a command
+//       a comment tried to swallow`, and the three templates.md text checks. The survivor
+//       count grows whenever a table row is added, which is expected rather than a
 //       regression. This is the mutant the card asks for: the guard fails against the text
 //       as it stands on `main`.
 //   M2. CONSTRUCTED, one token: drop ONLY the dirty-branch `exit 1` from the precondition
@@ -167,8 +167,8 @@
 //       in a mutant's costume.** Hence M3b. The same trap bit M8 and M14 in later rounds: a
 //       line-count-based deletion left a dangling `fi`, every block failed to parse, and the
 //       33 and 37 red those produced measured a syntax error rather than a missing gate.
-//       Both re-done brace-matched. **Three separate mutants in this file have lied by
-//       being broken rather than by being wrong.**
+//       Both re-done brace-matched. **Three separate mutants here have lied by being broken
+//       rather than by being wrong.**
 //   M3b.CONSTRUCTED, the honest version of M3: `git show HEAD~1:"$F" > "$F"`, a restore that
 //       SUCCEEDS at writing back a stale snapshot, i.e. what a copy taken before a sibling's
 //       commit does -> **14 red**, including `keeps a commit that landed during the window`
@@ -200,10 +200,8 @@
 //       earlier round it reddened only text checks; a reviewer was right that a claim
 //       enforced by a text match is not enforced, and the two glob fixtures closed it.
 //       **Its failure mode today is DEFENCE IN DEPTH, not fail-open** — the scope gate
-//       catches this input first. The fail-open story (`status --porcelain "we[i]rd.js"`
-//       matching the CLEAN sibling and the block announcing `committed-clean` over a dirty
-//       file) was measured against the PRE-scope-gate block, and is why `:(literal)` stayed
-//       rather than being deleted as redundant.
+//       catches this input first. The fail-open story was measured against the PRE-scope-gate
+//       block, and is why `:(literal)` stayed rather than being deleted as redundant.
 //  M12. CONSTRUCTED: delete the empty-`$F` guard from both blocks -> **5 red**, all on the
 //       refusal MESSAGE. Same correction as M11: the CRITICAL it was written for — with
 //       `$F` empty, `":(literal)"` addresses EVERY tracked file, so the restore exited **0**
@@ -211,7 +209,7 @@
 //       against the pre-scope-gate block. `[ -z ]` now survives for its message rather than
 //       its reach. The original measurement is kept because it is why this branch exists,
 //       not because it describes today's failure mode.
-//  M14. CONSTRUCTED: delete the git-side scope gate from both blocks -> **13 red**,
+//  M14. CONSTRUCTED: delete the git-side scope gate from both blocks -> **17 red**,
 //       including the deleted-directory case x2 blocks x2 shells. **In the RESTORE block
 //       those are exit-status reds — measured: without the gate it exits 0, prints `ok`,
 //       and recreates the subtree. In the PRECONDITION block they are message reds, and
@@ -219,55 +217,51 @@
 //       dirty-branch refuses with or without the gate. An earlier version of this entry
 //       claimed exit-status reds for both; a reviewer measured it and was right. The
 //       precondition half now also asserts the dirty-branch did NOT fire, so it pins WHICH
-//       gate refused rather than merely that something did. The gate replaced an earlier
-//       `[ -d "$F" ]` filesystem guard (M13, retired) that was blind in the Critical's exact
-//       shape: `[ -d ]` is FALSE for a directory removed from disk, while git still expands
-//       the pathspec to the whole subtree. **The first version of that regression test did
-//       not reproduce the bug** — it removed a file INSIDE the directory, leaving `[ -d ]`
-//       true. Also caught in review. Ask git what the pathspec addresses, not the filesystem
-//       what `$F` looks like.
+//       gate refused. The gate replaced an earlier `[ -d "$F" ]` filesystem guard (M13,
+//       retired) that was blind in the Critical's exact shape: `[ -d ]` is FALSE for a
+//       directory removed from disk, while git still expands the pathspec to the whole
+//       subtree. **The first version of that regression test did not reproduce the bug** —
+//       it removed a file INSIDE the directory, leaving `[ -d ]` true. Also caught in
+//       review. Ask git what the pathspec addresses, not the filesystem what `$F` looks like.
 //  M15. CONSTRUCTED: drop `-c core.quotePath=false` from the scope gate -> **2 red**, the
 //       non-ASCII case x2 shells. The gate compares bytes, and `ls-files` quotes a
 //       non-ASCII path by default, so `café.js` came back as `"caf\303\251.js"` and an
 //       ordinary file was refused. Fail-CLOSED, and still a defect: it locks an agent out of
 //       mutating that file, and the block gets blamed. **A byte-comparison gate is only as
 //       good as the spelling the command on the other side of it chooses.**
-//  M16. CONSTRUCTED, and a mutant of THIS FILE: put `messageOffersBareF`'s anchor back to
-//       `/\bgit\s+[a-z][a-z-]*/` -> **3 red**, the three `git -c` / `git -C` / `git
-//       --no-pager` table rows. That anchor requires a lowercase word after `git`, so it
-//       missed every invocation written with an OPTION first — including
-//       `git -c core.quotePath=false ls-files`, which is the shape the blocks themselves
-//       use and therefore the one a future editor would reach for. Found in review, and it
-//       is why both `$F` predicates are now named functions with a TABLE TEST: as bare
-//       loops over clean block text they passed VACUOUSLY, so a widened predicate was
-//       invisible. The guard's own guard had the defect the guard exists to catch.
+//  M16. CONSTRUCTED, of THIS FILE: put `messageOffersBareF`'s anchor back to
+//       `/\bgit\s+[a-z][a-z-]*/` -> **3 red**, the `git -c` / `git -C` / `git --no-pager`
+//       rows. That anchor requires a lowercase word after `git`, so it missed every
+//       invocation written with an OPTION first — including the shape the blocks themselves
+//       use. It is why both `$F` predicates are named functions with a table test: as bare
+//       loops over clean block text they passed VACUOUSLY.
 //  M17. CONSTRUCTED, of THIS FILE: NARROW both predicates from `\$\{?F\b` to `\$F\b`,
-//       dropping the `${F}` brace form -> **2 red**, the two brace rows. Before those rows
-//       existed this narrowing reddened NOTHING: the table caught widenings (M16) and was
-//       blind to the other direction. A table of known-bad inputs only guards one way.
+//       dropping the `${F}` brace form -> **2 red**. Before those rows existed this
+//       narrowing reddened NOTHING: the table caught widenings (M16) and was blind to the
+//       other direction. **A table of known-bad inputs only guards one way.**
 //  M18. CONSTRUCTED, of THIS FILE: drop `isWholeEcho`'s `$(`/backtick clause -> **1 red**.
 //       `echo "$(git checkout -- $F)"` starts with `echo` but RUNS git; without the clause
-//       it was flagged by the MESSAGE rule, so the red named the wrong cause. Not a safety
-//       hole — it was still flagged — which is why only an attribution test finds it.
-//  M19. CONSTRUCTED, of THIS FILE: drop `withoutRedirections`'s `&>` clause -> **1 red**.
-//       Its sibling `\d?>&\d?` clause was already pinned; a third, `\d?>>?`, was measured
-//       DEAD (it can neither introduce nor remove a `[;&|]`) and has been deleted rather
-//       than left looking load-bearing.
-//  M20. CONSTRUCTED: make the refusal's `…` unconditional again -> **6 red**. Its first
-//       version put the `…` outside the `$( )`, so every refusal claimed truncation —
-//       including the 3-path directory and the 3-stage conflicted case, i.e. the two the
-//       message was rewritten to report honestly — and NOTHING here noticed. Found in
-//       review; the assertion that pins it is a negative on a one-path refusal.
-//  M21. CONSTRUCTED: put the multibyte ellipsis back (`SHORT="$SHORT…"`) -> **2 red**.
-//       **This one was a live defect, not a hypothetical.** Appending a multibyte
-//       character to a variable mangles it under the system bash — measured:
-//       `X="abc…"` is 4 chars, but `Y="abc"; Y="$Y…"` is 2 and prints two replacement
-//       characters. The refusal's whole match list was destroyed:
-//       `matched 40 path(s): ??`. It survived review and a green suite because NO
-//       fixture had ever produced more than 120 characters of paths, so the truncation
-//       branch had never executed. Found by probing the branch by hand rather than
-//       trusting the green. The marker is plain ASCII now, and the 40-file fixture is
-//       what makes the branch run at all.
+//       it was flagged by the MESSAGE rule, so the red named the wrong cause.
+//  M19. CONSTRUCTED, of THIS FILE: drop `withoutRedirections`' `&>` clause -> **1 red**. Its
+//       sibling `\d?>&\d?` clause was already pinned; a third, `\d?>>?`, was measured DEAD
+//       and deleted rather than left looking load-bearing.
+//  M20. CONSTRUCTED: make the truncation marker UNCONDITIONAL (append it outside the
+//       comparison) -> **4 red**, the absolute-path case x2 blocks x2 shells. It claimed
+//       truncation on every refusal, including the 3-path directory and 3-stage conflicted
+//       cases — the two the message was rewritten to report honestly. **It measured 6 at
+//       one point, and a third of that was another mutant's signal**: two of those reds
+//       were M21's mojibake, not this property. Recorded because a count borrowed from a
+//       neighbouring defect is exactly the kind of number this header exists to distrust.
+//  M21. CONSTRUCTED: restore the multibyte truncation marker (`SHORT="$SHORT…"`) -> **4 red**.
+//       **This one was a live defect, not a hypothetical.** Appending a multibyte character
+//       to a variable mangles it under the system bash — measured: `X="abc…"` is 4 chars,
+//       but `Y="abc"; Y="$Y…"` is 2 and prints replacement characters. The refusal's whole
+//       match list was destroyed: `matched 40 path(s): ??`. It survived review and a green
+//       suite because NO fixture had ever produced more than 120 characters of paths, so
+//       the truncation branch had never executed in EITHER block. The marker is ASCII now.
+//       It measured **2** when the fixture ran the restore block only — reintroducing the
+//       defect in the precondition alone reddened nothing, the same hole one block over,
+//       inside the test written to close it. The fixture is an `it.each` over both now.
 //
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally — no network,
 // no Docker, no build. Every git repository it touches is created under a temp dir and
@@ -637,13 +631,21 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
     expect(read(control)).not.toContain('SIBLING-FIX');
   });
 
-  it('restore TRUNCATES a long match list, and says so in ASCII', () => {
+  it.each([
+    ['precondition', () => PRECONDITION, PRECONDITION_MARK],
+    ['restore', () => RESTORE, RESTORE_MARK],
+  ])('%s TRUNCATES a long match list, and says so in ASCII', (_name, block, mark) => {
     // No fixture had ever produced more than 120 characters of matched paths, so the
     // truncation branch of the refusal was unexecuted — and it was broken. Measured on the
-    // system bash: appending a multibyte character to a variable (`SHORT="$SHORT…"`) yields
-    // MOJIBAKE, two replacement characters, while the same literal written inline
-    // (`X="abc…"`) is fine. The marker is plain ASCII now, and this fixture is what makes
-    // the branch run at all.
+    // system bash: appending a multibyte character to a variable (`SHORT="$SHORT…"`) mangles
+    // it, while the same literal written inline (`X="abc…"`) is fine. The marker is plain
+    // ASCII now, and this fixture is what makes the branch run at all.
+    //
+    // **BOTH blocks, because the fix was applied to both and pinned in one.** The first
+    // version of this test ran `RESTORE` only; measured, reintroducing the exact defect in
+    // the precondition alone reddened NOTHING. Same class of hole, one block over, in the
+    // test written to close it — which is why every sibling refusal case here is an
+    // `it.each` over both blocks and this one now is too.
     const dir = makeRepo();
     mkdirSync(join(dir, 'sub'));
     for (let i = 0; i < 40; i++) {
@@ -652,16 +654,20 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
     git(dir, 'add', 'sub');
     git(dir, 'commit', '-q', '-m', 'many');
 
-    const r = runBlock(shell, RESTORE, { cwd: dir, file: 'sub', mark: RESTORE_MARK });
+    const r = runBlock(shell, block(), { cwd: dir, file: 'sub', mark });
 
     expect(r.status).not.toBe(0);
     expect(r.out).toMatch(/matched 40 path\(s\):/);
     expect(r.out).toMatch(/\(truncated\)/);
-    // The list is bounded and the line is not mangled: every character it printed is one
-    // this test can name. A mojibake run fails here rather than looking plausible.
     const line = r.out.split('\n').find((l) => l.includes('matched 40 path(s):'));
+    // The line is not mangled: every character it printed is one this test can name, so a
+    // mojibake run fails rather than looking plausible.
     expect(line).toMatch(/^ {2}matched 40 path\(s\): [\x20-\x7E]+ \(truncated\)$/);
-    expect(line.length).toBeLessThan(160);
+    // …and it still carries the LIST. `[\x20-\x7E]+` is one-or-more, so it would accept a
+    // list truncated to a single character; this is the positive half of that pair.
+    expect(line).toContain('sub/long-name-number-0.js');
+    // 120 (the `cut` bound) + the label + the marker. Derived, not guessed.
+    expect(line.length).toBeLessThanOrEqual(120 + '  matched 40 path(s): '.length + ' (truncated)'.length);
   });
 
   it('restore accepts a NON-ASCII filename — `core.quotePath` must not refuse it', () => {
