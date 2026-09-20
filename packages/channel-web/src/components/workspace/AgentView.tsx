@@ -1045,9 +1045,11 @@ export function AgentView({
           the id the open trigger points at, `aria-labelledby` back to that
           trigger, and `tabIndex={0}` so Tab out of the strip lands in here.
 
-          `forceMount` because without it Radix drops the panel from the DOM
-          whenever its tab is closed, which is the whole defect in miniature —
-          see the three closed panels below for why that matters even here.
+          `forceMount` is NOT load-bearing on this one, and saying so is worth a
+          line: `value={tab}` means this panel's tab is open by definition, so
+          Radix would mount it anyway. It is here to keep all four panels one
+          shape — the three below, where `forceMount` is the entire point. If
+          that uniformity ever stops earning its keep, this is the prop to drop.
 
           `mt-0` cancels the `mt-2` shadcn's `TabsContent` ships. This panel butts
           straight up against the header, as the `div` it replaces did.
@@ -1326,11 +1328,18 @@ export function AgentView({
           `ActivityFeed`, `AgentFiles` and `AgentMemory` side by side or fire
           their reads. An empty `div` is what a closed panel costs.
 
-          `hidden` WITHOUT a display class, deliberately: Tailwind preflight's
-          `[hidden] { display: none }` and a utility like `flex` have the same
-          specificity, and the utilities win on source order — so `class="flex"
-          hidden` renders visible. The open panel above needs its `flex`; these
-          must not have one.
+          `hidden` WITHOUT a display class, deliberately. Tailwind preflight
+          (3.4.19) hides them with
+          `[hidden]:where(:not([hidden="until-found"])) { display: none }` — and
+          `:where()` contributes NOTHING to specificity, so that rule is (0,1,0),
+          exactly a utility like `flex`. Ties go to source order and the
+          utilities come last, so `class="flex" hidden` renders VISIBLE. The open
+          panel above needs its `flex`; these must not have one.
+
+          And the `hidden` has to be ours. Radix computes `hidden: !present`,
+          which is `false` for a force-mounted panel however its tab is set —
+          then spreads our props over it. Without this attribute the three
+          closed panels would be present AND shown.
         */}
         {WORKSPACE_AGENT_TABS.filter((v) => v !== tab).map((v) => (
           <TabsContent key={v} value={v} forceMount hidden className="mt-0" />

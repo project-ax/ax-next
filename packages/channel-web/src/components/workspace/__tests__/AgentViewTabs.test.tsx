@@ -205,13 +205,20 @@ describe('AgentView tab set — the accessibility tree', () => {
     THE TRAP THIS PINS, and it is invisible in jsdom as a rendered fact so it is
     pinned structurally instead.
 
-    Tailwind's preflight carries `[hidden] { display: none }`. That selector and
-    a `flex` utility have the SAME specificity, and the utilities are emitted
-    after preflight — so `<div class="flex" hidden>` renders VISIBLE in a real
-    browser. The open panel genuinely needs `flex min-h-0 flex-1 flex-col` to
-    give the conversation its height, so the closed ones must carry no display
-    utility at all. jsdom loads no CSS and would happily agree either way, which
-    is exactly why this reads the class list rather than the computed style.
+    Tailwind preflight (3.4.19) carries
+    `[hidden]:where(:not([hidden="until-found"])) { display: none }`. `:where()`
+    adds NOTHING to specificity, so that rule is (0,1,0) — exactly a `flex`
+    utility. Ties go to source order and the utilities are emitted last, so
+    `<div class="flex" hidden>` renders VISIBLE in a real browser. The open panel
+    genuinely needs `flex min-h-0 flex-1 flex-col` to give the conversation its
+    height, so the closed ones must carry no display utility at all. jsdom loads
+    no CSS and would agree either way, which is exactly why this reads the class
+    list rather than the computed style.
+
+    WHAT THIS ONE DOES NOT COVER: it skips any panel without `hidden`, so on its
+    own it would go quiet if a regression dropped the attribute entirely. That
+    case is covered by `mounts content in the open panel only`, which asserts the
+    closed panels DO carry `hidden`. The pair is complete; neither half is.
   */
   it('gives the closed panels no display utility to override [hidden]', async () => {
     renderView({ tab: 'chat' });
