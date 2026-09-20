@@ -40,17 +40,29 @@ describe('localTime', () => {
   });
 
   it('reads an instant on the READER\'s clock, not UTC', () => {
-    const iso = '2026-09-19T00:56:00.000Z';
-    // Derived, not literal: production formats in the reader's locale and
-    // pinning `en-US` here would assert a formatter the code never calls.
-    // What is pinned is the ZONE — the local reading of this instant, which is
-    // the half that was wrong.
-    expect(localTime(iso)).toBe(
-      new Date(iso).toLocaleTimeString(undefined, {
-        hour: 'numeric',
-        minute: '2-digit',
-      }),
-    );
+    /*
+      THE MINUTES ARE THE ASSERTION, and they are why this is not the
+      tautology it would otherwise be. Comparing `localTime(iso)` against an
+      inline re-run of the same `toLocaleTimeString` call would be `f(x) ===
+      f(x)` — green in every zone, including the broken one.
+
+      So the zone is pinned to one with a HALF-HOUR offset. `00:56Z` read from
+      Kolkata is `6:26`, and 26 ≠ 56: the minute field alone proves the offset
+      was applied. Minutes are also the one field no common locale renders
+      differently, so this stays honest on a 24-hour runner where the hour
+      would read `06` instead of `6`.
+    */
+    const saved = process.env.TZ;
+    process.env.TZ = 'Asia/Kolkata';
+    try {
+      const out = localTime('2026-09-19T00:56:00.000Z');
+      expect(out).not.toBeNull();
+      expect(out).toMatch(/\b6:26\b/);
+      expect(out).not.toContain('56');
+    } finally {
+      if (saved === undefined) delete process.env.TZ;
+      else process.env.TZ = saved;
+    }
   });
 });
 

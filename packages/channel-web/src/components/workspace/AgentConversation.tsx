@@ -1067,6 +1067,14 @@ function Message({
     );
   }
 
+  /*
+    Read ONCE. The guard below and the child it renders have to be the same
+    string, and two calls are two chances for them to disagree — not today,
+    when `localTime` is pure, but the moment someone reaches for `Date.now()`
+    inside it. Also just cheaper: one `Date`, not two, per bubble per render.
+  */
+  const clock = localTime(m.at);
+
   return (
     <div className="flex gap-3">
       <AgentTile agent={agent} />
@@ -1107,9 +1115,9 @@ function Message({
           whitespace under the live bubble; no row at all is the honest render
           of "we don't have a time to show yet" (TASK-435).
         */}
-        {localTime(m.at) !== null && (
+        {clock !== null && (
           <div className="mt-1.5 text-[11.5px] text-muted-foreground">
-            {localTime(m.at)}
+            {clock}
           </div>
         )}
       </div>
