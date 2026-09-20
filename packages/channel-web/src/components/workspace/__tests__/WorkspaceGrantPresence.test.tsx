@@ -55,6 +55,12 @@ vi.mock('@/lib/workspace-api', async () => {
       grants: vi.fn(async () => ({ grants: [] })),
       rail: vi.fn(async () => railFixture()),
       revokeGrant: vi.fn(),
+      // TASK-444: turning a skill or connector grant down now records the
+      // refusal, so `GrantRow` reaches for this. Left off, the row catches the
+      // `TypeError` and STAYS — which is the honest failure, and would make
+      // the refusal case below fail for a reason that has nothing to do with
+      // presence routing.
+      declineGrant: vi.fn(async () => ({ declined: true })),
       sendMessage: vi.fn(),
       streamReply: vi.fn(async () => {}),
     },
@@ -484,9 +490,11 @@ describe('one grant, two render sites, never two live copies', () => {
     expect(decisionPosts(fetchSpy)).toHaveLength(1);
   });
 
-  it('turning it down in the thread turns it down in the queue, with no POST at all', async () => {
-    // Refusal is purely local — the wall already holds, and a grant that was
-    // never given needs no revoking. It must still reach both sites.
+  it('turning it down in the thread turns it down in the queue, with no decision POST', async () => {
+    // A refusal is RECORDED as a refusal (TASK-444) and is still not a
+    // decision: nothing is granted, so `/api/chat/permission-decision` must
+    // stay untouched. What it does do is reach both sites, which is the claim
+    // this file is here for.
     const fetchSpy = okPost();
     renderAt('/workspace/agents/a-quill');
     await screen.findByTestId('thread-grants');
@@ -496,6 +504,11 @@ describe('one grant, two render sites, never two live copies', () => {
     await waitFor(() => expect(threadRegion()).toBeNull());
     expect(getWorkspaceGrantSnapshot().grants).toHaveLength(0);
     expect(decisionPosts(fetchSpy)).toHaveLength(0);
+    expect(vi.mocked(workspaceApi.declineGrant)).toHaveBeenCalledWith(
+      'a-quill',
+      'skill',
+      'linear',
+    );
   });
 
   it('a grant the read-back and the stream both deliver stays one row', async () => {

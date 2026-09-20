@@ -629,6 +629,16 @@ describe('@ax/channel-web server plugin (integration)', () => {
             'the Settings "Allowed sites" Revoke control is a no-op (no persisted grants to remove)',
         },
         {
+          hook: 'storage:set',
+          degradation:
+            '"Not now" on a capability grant cannot be recorded; POST /api/workspace/grants/decline answers 503 and the grant is asked again on the next workspace mount',
+        },
+        {
+          hook: 'storage:list-prefix',
+          degradation:
+            'GET /api/workspace/grants cannot tell which grants were already declined, so every pending grant is offered again on each workspace mount',
+        },
+        {
           hook: 'session:is-alive',
           degradation:
             'every agent in the workspace roster reads as resting (liveness cannot be probed, and a guess would be worse than a blank)',
