@@ -112,6 +112,37 @@ function readClock(container: HTMLElement): string {
   return hits[0]!;
 }
 
+/**
+ * The feed's day heading — the bucket label, not the row count beside it.
+ *
+ * Found by SHAPE rather than by position. "The first `span` in the container"
+ * happens to be the heading today only because this test scopes the feed to one
+ * agent, which drops the agent-name button that would otherwise come first; a
+ * fixture that stopped passing `agentId` would silently start reading a
+ * different node and the assertion below would be about the wrong thing.
+ *
+ * `Today` / `Yesterday` / a rendered date, and nothing else, so a wrong node is
+ * a thrown error rather than a quiet pass.
+ */
+function readDayLabel(container: HTMLElement): string {
+  const seen = new Set<string>();
+  for (const el of container.querySelectorAll('span')) {
+    const text = (el.textContent ?? '').trim();
+    if (text === 'Today' || text === 'Yesterday' || /\d/.test(text)) {
+      // The count badge is a bare number; the heading never is.
+      if (/^\d+$/.test(text)) continue;
+      if (/^\d{1,2}:\d{2}(\s?[AP]M)?$/i.test(text)) continue;
+      seen.add(text);
+    }
+  }
+  const hits = [...seen];
+  if (hits.length === 0) throw new Error('no day heading was rendered');
+  if (hits.length > 1) {
+    throw new Error(`expected one day heading, found: ${hits.join(' / ')}`);
+  }
+  return hits[0]!;
+}
+
 // ---------------------------------------------------------------------------
 // The wire: the real `GET /api/workspace/agents/:id` over a stubbed transcript.
 // ---------------------------------------------------------------------------
@@ -294,7 +325,7 @@ describe('one event, two tabs', () => {
       <ActivityFeed events={[activityRow]} agents={[quill]} agentId="a1" />,
     );
     const didClock = readClock(did.container);
-    const didDay = did.container.querySelector('span')?.textContent ?? '';
+    const didDay = readDayLabel(did.container);
 
     // ---- what the card asks for -------------------------------------------
     // The one assertion the card is named after. Against the unfixed code the

@@ -8,21 +8,31 @@ says which of the two you are looking at.
 
 ## What the audit found (verified, not assumed)
 
-Every timestamp on the workspace surfaces, and which side formatted it **before**
-this card:
+Every workspace surface that turns an instant into something a reader reads, and
+which side did the turning **before** this card. Note the claim: it is about
+where the *formatting* happens, not about a list of fields — the `startedAt` row
+below is here precisely because an earlier draft of this table said "every
+timestamp" and then omitted it.
 
 | Site | Where | Before |
 |---|---|---|
 | Chat bubble clock | `routes-workspace.ts` `shortTime()` → `ThreadMessage.time` → `AgentConversation` | **SERVER**, server's zone (`Date#getHours`) |
 | "Previous conversations" row | `routes-workspace.ts` `relativeDay()` → `PastConversation.meta` → `AgentView` | **SERVER**, server's zone (`getFullYear/getMonth/getDate`) |
 | `did` feed day buckets + clock | `ActivityFeed.tsx` `localDayKey` / `dayLabel` / `localTime` off `ActivityEvent.at` | client, reader's zone |
+| Rail "started 4 min ago" | `RailActivity.startedAt` → `bits.tsx` `Elapsed` | client — and elapsed time has no zone to get wrong |
 | Grant "14 Aug" | `bits.tsx` `grantedDay` | client, reader's zone |
 | Today header + "done today" count | `WorkspaceShell.tsx` `today()` / `isLocalToday` | client, reader's zone |
 | Decision `preview.meta` | `workspace-types.ts` | not a timestamp — the quoted artifact's header line |
 | Files / memory rows | `WorkspaceFileSummary`, `UserFileEntry`, memory doc | carry no timestamp at all |
 
 So exactly **two** server-formatted sites, both in `routes-workspace.ts`, and both
-feeding the chat tab. Everything else was already right.
+feeding the chat tab. Everything else was already right — and the two kinds of
+"already right" are worth separating, because only one of them is a decision
+anybody made. `ActivityFeed`, `grantedDay` and the Today header format on the
+client *deliberately*. `Elapsed` is correct *by construction*: "4 minutes ago" is
+a difference between two instants, and a difference has no timezone to be wrong
+about. It could be computed on either side and read the same. It is listed so the
+audit is exhaustive, not because it was ever at risk.
 
 ## The product question is already settled in the code
 
