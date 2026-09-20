@@ -67,7 +67,17 @@ export function AgentTile({
   );
 }
 
-/** Colour is the state, so the dot needs no label to be scannable in a list. */
+/**
+ * Colour is the state, so the dot needs no label to be scannable in a list.
+ *
+ * Which is exactly why every fill here owes 3:1 against the surfaces it lands
+ * on — an information-bearing non-text element under WCAG 1.4.11. `resting`
+ * used to be `bg-ink-ghost` and measured 1.72:1 light / 1.67:1 dark, so on a
+ * pale row it was less "quiet" than "absent". It is `bg-state-quiet` now;
+ * `--ink-ghost` stayed behind with the composer's send circle, which is a
+ * disabled control and the one thing 1.4.11 exempts. `theme-contrast.test.ts`
+ * reads these classes back out of this file and measures whatever it finds.
+ */
 export function StateDot({
   state,
   className,
@@ -83,7 +93,7 @@ export function StateDot({
         state === 'working' && 'bg-primary',
         state === 'waiting' && 'bg-warning',
         state === 'held' && 'bg-warning',
-        state === 'resting' && 'bg-ink-ghost',
+        state === 'resting' && 'bg-state-quiet',
         state === 'stopped' && 'bg-destructive',
         className,
       )}

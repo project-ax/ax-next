@@ -468,12 +468,15 @@ describe('theme contrast', () => {
  *   - `Composer.tsx` — the send circle's INACTIVE state. A `:has()` rule flips
  *     it to `bg-primary` the moment the field has content, so the faintness is
  *     the affordance: it is how the button says "nothing to send yet".
- *   - `bits.tsx` `StateDot` — the `resting` dot.
- *   - `StatusDot.tsx` — the admin `empty` and `pending` dots.
  *
- * A mid-grey send circle reads as enabled. A mid-grey `resting` dot reads as
- * active sitting next to `bg-primary` "working". Moving the value satisfies the
- * text role by destroying the fill role.
+ * That is now the ONLY thing it fills. It used to fill the state dots too —
+ * `bits.tsx` `StateDot`'s `resting`, and `StatusDot.tsx`'s admin `empty` and
+ * `pending` — and TASK-450 moved those to `--state-quiet`, because a dot that
+ * carries information owes 3:1 and an inactive control does not. See the
+ * non-text section at the foot of this file.
+ *
+ * A mid-grey send circle reads as enabled. Moving the value satisfies the text
+ * role by destroying the fill role.
  *
  * That tension is not new here — it is the same one this file already documents
  * for `--primary` and `--destructive`, where an accent is also a foreground and
@@ -487,11 +490,14 @@ describe('theme contrast', () => {
  * generates `text-ink-ghost` from the same colour entry as `bg-ink-ghost` and
  * there is no way to publish one without the other.
  *
- * NOT covered here, deliberately: the fill sites themselves. `bits.tsx` says
- * "colour is the state", which makes the `resting` dot an information-bearing
- * non-text element owing 3:1 under WCAG 1.4.11 — and at 1.72:1 light / 1.67:1
- * dark it does not clear that either. That is a real defect with a different
- * fix, tracked on its own card. This file bounds the TEXT floor.
+ * The fill sites used to be out of scope here, and are not any more. `bits.tsx`
+ * says "colour is the state", which makes the `resting` dot an information-
+ * bearing non-text element owing 3:1 under WCAG 1.4.11 — and on this token it
+ * measured 1.72:1 light / 1.67:1 dark, so it did not clear that either. That
+ * was TASK-450, and the fix was the same split one level down: the dots took a
+ * new token and the send circle kept this one. The 3:1 floor now has its own
+ * section at the foot of this file; everything in THIS block still bounds the
+ * 4.5:1 TEXT floor, which is a different number for a different reason.
  */
 const INK_GHOST = '--ink-ghost';
 
@@ -658,10 +664,18 @@ describe('--ink-ghost is a fill, never ink', () => {
     // than passing silently one assertion up.
     expect(filesPainting('text-muted-foreground').length).toBeGreaterThan(10);
 
-    // And the fill sites are still there — the guard bans the token as TEXT,
-    // not as a background. A sweep that deleted `--ink-ghost` outright would
+    // And the fill site is still there — the guard bans the token as TEXT, not
+    // as a background. A sweep that deleted `--ink-ghost` outright would
     // satisfy the ban and lose the affordance; this notices.
-    expect(filesPainting('bg-ink-ghost').length).toBeGreaterThanOrEqual(3);
+    //
+    // Pinned as a SET rather than a count, and the set is now exactly one file.
+    // Before TASK-450 this was `>= 3` and the other two were the state dots; a
+    // count would have gone on passing while they drifted back, which is the
+    // regression this list exists to make loud. `Composer.tsx` is the send
+    // circle, an inactive control — the one role that is meant to keep a token
+    // this faint. Anything else appearing here is a dot that skipped the 3:1
+    // floor, and belongs on `--state-quiet` instead.
+    expect(filesPainting('bg-ink-ghost')).toEqual(['components/Composer.tsx']);
   });
 
   /**
@@ -1165,5 +1179,379 @@ describe("ApprovalCard's tinted surface", () => {
       TINT_BACKDROPS.flatMap((under) => TINTED_TEXT.map((text) => `${name}:${under}:${text}`)),
     );
     expect(tintCasesRegistered).toEqual(expected);
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * The state dots — the 3:1 NON-TEXT floor (WCAG 1.4.11).
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Everything above this line measures TEXT against 4.5:1. This measures MARKS
+ * against 3:1, and the two floors are not a strict-vs-lenient pair — they are
+ * different criteria answering different questions, which is why folding a dot
+ * into a text table would be wrong in both directions.
+ *
+ * `bits.tsx` states the premise in a doc comment: *"colour is the state"*. A
+ * `StateDot` carries no glyph, no label and no shape difference — the fill is
+ * the whole message — which makes it "visual information required to identify
+ * ... a state": WCAG 2.1 SC 1.4.11 Non-text Contrast, 3:1.
+ *
+ * TASK-450 found three fills under it, all of them `bg-ink-ghost`: `StateDot`'s
+ * `resting`, and `StatusDot`'s `empty` and `pending`, at 1.72:1 light and
+ * 1.67:1 dark against the worst surface they land on. A bit over half the
+ * floor. They paint `--state-quiet` now; `index.css` carries the numbers.
+ *
+ * THREE THINGS ABOUT THAT CARD DID NOT SURVIVE CONTACT, recorded here because
+ * each one changes what this section is allowed to claim:
+ *
+ *   1. `StatusDot`'s dots are NOT the sole carrier of their state. All four
+ *      render sites put a plain-English label immediately beside the dot —
+ *      `ProviderRow` ("Not configured" / "Validating…"), and three in
+ *      `ConnectorsTab` (`STATUS_COPY`, `testLabel`, "Awaiting your approval") —
+ *      and the dot is `aria-hidden`. Where the information is duplicated in
+ *      adjacent text, the mark is decorative and 1.4.11 does not reach it. They
+ *      were raised anyway, because they shared a token with a dot that IS the
+ *      sole carrier and splitting them apart would buy nothing but a third
+ *      token. The rows below are therefore a floor these two do not strictly
+ *      owe — a fine thing for a test to over-enforce, and a bad thing for a
+ *      reader to mistake for a finding.
+ *   2. `StateDot` in `WorkspaceSidebar` IS the sole carrier: that row is a dot
+ *      plus the agent's name and nothing else. It is the site the card is
+ *      really about, and it is the reason the floor is owed at all.
+ *   3. The card offered "raise the ratio" OR "add a non-colour channel" and
+ *      called the second better. It is better, and it is NOT what shipped,
+ *      because the two are not alternatives for one defect. The dot being
+ *      invisible (1.4.11) and the dot being colour-only (1.4.1, plus
+ *      `aria-hidden` hiding it from screen readers altogether) are two bugs;
+ *      this fixes the first. The second is a layout and copy change to the
+ *      sidebar row, and is left as a follow-up rather than smuggled in here.
+ *
+ * WHY A SECOND TOKEN rather than moving `--ink-ghost`: the block above spells
+ * out the tension and the precedent. `--ink-ghost` also fills the composer's
+ * send circle while the field is empty, where the faintness IS the affordance
+ * — and an inactive control is the one case SC 1.4.11 exempts by name, so that
+ * role owes no ratio at all. Raising the shared token would have paid a bill
+ * the send circle does not have. This file's answer to "one token, two roles
+ * pulling apart" has now twice been to split rather than average.
+ *
+ * THE CLASSES ARE READ OUT OF THE COMPONENTS, not written down here — the same
+ * load-bearing choice the `ApprovalCard` section makes about its alpha. A
+ * revert of `bg-state-quiet` to `bg-ink-ghost` fails these rows with the true
+ * 1.72:1, instead of passing because a constant in the test moved along with
+ * the component. Mutation-verified in both directions when this was written.
+ */
+const AA_NON_TEXT = 3;
+
+/**
+ * A surface a dot is painted on: a token, optionally at `alpha` over another.
+ *
+ * FIVE of them, because a dot moves around more than a paragraph does. The
+ * sidebar row is the page by default, `bg-muted/60` on hover and
+ * `bg-primary-soft` when selected; `StatusDot` lives inside `RoleCard`'s
+ * `bg-card`. `--primary-soft` is the tightest of the five in BOTH themes, and
+ * it is the one nobody would think to check, because "the selected row" reads
+ * as a state of the row rather than as a place a dot lives.
+ */
+interface DotBackdrop {
+  label: string;
+  token: string;
+  /** `0`-`1`; anything below 1 needs `over`. */
+  alpha: number;
+  over?: string;
+}
+
+const DOT_BACKDROPS: readonly DotBackdrop[] = [
+  { label: '--background', token: '--background', alpha: 1 },
+  { label: '--card', token: '--card', alpha: 1 },
+  { label: '--muted', token: '--muted', alpha: 1 },
+  { label: '--primary-soft (the selected sidebar row)', token: '--primary-soft', alpha: 1 },
+  {
+    label: 'bg-muted/60 over --background (the hover row)',
+    token: '--muted',
+    alpha: 0.6,
+    over: '--background',
+  },
+];
+
+function resolveBackdrop(tokens: Map<string, string>, b: DotBackdrop): Colour {
+  const v = tokens.get(b.token);
+  expect(v, `${b.token} missing`).toBeDefined();
+  if (b.alpha === 1) return v!;
+  const under = tokens.get(b.over!);
+  expect(under, `${b.over} missing`).toBeDefined();
+  return composite(v!, b.alpha, under!);
+}
+
+/**
+ * The one `bg-*` class in a className string, as a token plus alpha.
+ *
+ * Throws on zero and on two rather than picking one. `StatusDot`'s `ok` variant
+ * carries a `shadow-[…color-mix(…)]` alongside its fill and is the reason this
+ * cannot just be "the first match": if that shadow ever became a second
+ * background, the silent outcome would be measuring the wrong one.
+ */
+function bgFill(cls: string): { token: string; alpha: number; cls: string } {
+  const hits = [...cls.matchAll(/(?<![\w-])bg-([a-z][\w-]*?)(?:\/(\d{1,3}))?(?![\w/-])/g)];
+  if (hits.length !== 1) {
+    throw new Error(
+      `expected exactly one bg-* class, found ${hits.length} in "${cls}"` +
+        (hits.length > 1 ? ` (${hits.map((h) => h[0]).join(', ')})` : ''),
+    );
+  }
+  const [whole, name, pct] = hits[0]!;
+  return { token: `--${name!}`, alpha: pct === undefined ? 1 : Number(pct) / 100, cls: whole! };
+}
+
+const STATE_DOT_FILE = 'components/workspace/bits.tsx';
+const STATUS_DOT_FILE = 'components/admin/StatusDot.tsx';
+
+/**
+ * `StateDot`'s arms, read off its `cn()` call: `state === 'resting' && 'bg-…'`.
+ *
+ * Comments are stripped first, because that component's doc comment now
+ * discusses `bg-ink-ghost` in prose and a raw scan would count it as paint —
+ * the same trap `parseTint` documents one section up.
+ */
+function parseStateDotArms(source: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const m of stripComments(source).matchAll(/state === '([a-z]+)' && '([^']+)'/g)) {
+    out.set(m[1]!, m[2]!);
+  }
+  return out;
+}
+
+/** `StatusDot`'s `VARIANT_CLASS` record, brace-matched and then read key by key. */
+function parseVariantClass(source: string): Map<string, string> {
+  const src = stripComments(source);
+  const at = src.indexOf('VARIANT_CLASS');
+  if (at === -1) throw new Error('VARIANT_CLASS not found');
+  let i = src.indexOf('{', at);
+  const start = i;
+  let depth = 0;
+  for (; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}' && --depth === 0) break;
+  }
+  const out = new Map<string, string>();
+  for (const m of src.slice(start, i).matchAll(/([a-z][\w]*)\s*:\s*'([^']+)'/g)) {
+    out.set(m[1]!, m[2]!);
+  }
+  return out;
+}
+
+function readSource(rel: string): string {
+  return readFileSync(join(SRC_ROOT, rel), 'utf8');
+}
+
+/**
+ * Every dot fill in the tree, as `label -> class`. Derived, not listed: the
+ * hand-maintained-list failure this file keeps paying for (`ACCENT_SOFT_PAIRS`
+ * missing `--warning` for its entire life) is exactly what a sixth `StateDot`
+ * state would reproduce here.
+ *
+ * So ALL variants are measured, not only the three the card named. The accent
+ * fills pass comfortably — they are the same tokens the AA tables already bound
+ * — and including them costs nothing while closing the omission hole.
+ */
+function dotFills(): Array<readonly [string, string]> {
+  const arms = parseStateDotArms(readSource(STATE_DOT_FILE));
+  const variants = parseVariantClass(readSource(STATUS_DOT_FILE));
+  return [
+    ...[...arms].map(([k, v]) => [`StateDot.${k}`, v] as const),
+    ...[...variants].map(([k, v]) => [`StatusDot.${k}`, v] as const),
+  ];
+}
+
+const DOT_FILLS = dotFills();
+
+/** One entry per registered case — the dropped-loop guard, same as the three above. */
+const dotCasesRegistered: string[] = [];
+
+describe('state dots clear the 3:1 non-text floor', () => {
+  /**
+   * The parse anchor, and the reason the rows below cannot go green on nothing.
+   * `dotFills()` returning nothing would loop zero times and prove nothing —
+   * the same shape as a clean pass. Pinned EXACTLY, so a sixth state or a fifth
+   * variant arrives as a red test plus a measurement rather than as silence.
+   */
+  it('reads every dot variant out of the two components', () => {
+    expect(DOT_FILLS.map(([label]) => label)).toEqual([
+      'StateDot.working',
+      'StateDot.waiting',
+      'StateDot.held',
+      'StateDot.resting',
+      'StateDot.stopped',
+      'StatusDot.empty',
+      'StatusDot.ok',
+      'StatusDot.bad',
+      'StatusDot.pending',
+    ]);
+  });
+
+  /**
+   * The split itself, asserted where it can be read in one line: the three dots
+   * TASK-450 moved are off `--ink-ghost` and on `--state-quiet`. The ratio rows
+   * below catch a revert too, but they report it as "3.20 became 1.50" and
+   * leave the reader to work out which token that is.
+   */
+  it('keeps the moved dots on --state-quiet, not the send-circle token', () => {
+    const fills = new Map(DOT_FILLS);
+    for (const label of ['StateDot.resting', 'StatusDot.empty', 'StatusDot.pending']) {
+      const cls = fills.get(label);
+      expect(cls, `${label} missing`).toBeDefined();
+      expect(bgFill(cls!).token, `${label} paints \`${cls}\``).toBe('--state-quiet');
+    }
+  });
+
+  for (const [themeName, selector] of THEMES) {
+    for (const [label, cls] of DOT_FILLS) {
+      dotCasesRegistered.push(`${themeName}:${label}`);
+      it(`${themeName}: ${label} clears 3:1 on every surface it lands on`, () => {
+        const tokens = tokensAfter(selector);
+        const fill = bgFill(cls);
+        const fillV = tokens.get(fill.token);
+        expect(fillV, `${fill.token} missing from ${selector}`).toBeDefined();
+
+        for (const backdrop of DOT_BACKDROPS) {
+          const under = resolveBackdrop(tokens, backdrop);
+          const painted: Colour = fill.alpha === 1 ? fillV! : composite(fillV!, fill.alpha, under);
+          const ratio = contrast(painted, under);
+          expect(
+            ratio,
+            `${label} paints \`${fill.cls}\` (${fill.token}) and measures ` +
+              `${ratio.toFixed(2)}:1 on ${backdrop.label} in ${themeName} — WCAG 1.4.11 ` +
+              `needs ${AA_NON_TEXT}:1 for a mark that carries information. ` +
+              `\`bits.tsx\` says "colour is the state", so this dot IS the message.`,
+          ).toBeGreaterThanOrEqual(AA_NON_TEXT);
+        }
+      });
+    }
+  }
+
+  /**
+   * The judgement call, pinned so that it stops being one.
+   *
+   * The objection to raising these dots was that a darker `resting` dot "reads
+   * as active" beside a `bg-primary` "working" one. The answer is an ordering,
+   * not an opinion: the quiet dot must stay QUIETER than both the working dot
+   * and the quiet text it sits beside, in every theme. It does, comfortably,
+   * because what separates "working" from "resting" here is SATURATION — a
+   * 100%-sat blue against a 4%-sat neutral — and not lightness.
+   *
+   * This is also what stops `--state-quiet` collapsing into
+   * `--muted-foreground`, the objection that killed the idea of lifting
+   * `--ink-ghost` to AA. Note the direction FLIPS between themes: 54% is
+   * lighter than the 44% quiet text in light mode, 45% is darker than its 56%
+   * in dark. Asserting "quieter" rather than "lighter" is what lets one
+   * assertion cover both.
+   */
+  it('stays quieter than the working dot and the quiet text, in both themes', () => {
+    for (const [themeName, selector] of THEMES) {
+      const tokens = tokensAfter(selector);
+      const page = tokens.get('--background')!;
+      const quiet = contrast(tokens.get('--state-quiet')!, page);
+      const working = contrast(tokens.get('--primary')!, page);
+      const text = contrast(tokens.get('--muted-foreground')!, page);
+      expect(
+        quiet,
+        `${themeName}: --state-quiet is ${quiet.toFixed(2)}:1 on the page and --primary is ` +
+          `${working.toFixed(2)}:1 — the resting dot must not out-shout the working one`,
+      ).toBeLessThan(working);
+      expect(
+        text,
+        `${themeName}: --state-quiet is ${quiet.toFixed(2)}:1 and --muted-foreground is ` +
+          `${text.toFixed(2)}:1 — a dot louder than the label beside it is a new bug, and ` +
+          `two neutrals this close together are one token wearing two names`,
+      ).toBeGreaterThan(quiet);
+    }
+  });
+
+  /**
+   * Anti-vacuity for the two parsers, the only pieces here that can be wrong
+   * QUIETLY — everything else fails with a ratio. Both directions: they read
+   * real code, they ignore prose, and they refuse the shapes they cannot stand
+   * in for rather than guessing.
+   */
+  it('reads classes off code and not off comments', () => {
+    const arms = parseStateDotArms(
+      [
+        "        state === 'working' && 'bg-primary',",
+        "        // state === 'resting' && 'bg-ink-ghost',",
+        " * the `resting` dot was state === 'resting' && 'bg-ink-ghost' once",
+        "        state === 'resting' && 'bg-state-quiet',",
+      ].join('\n'),
+    );
+    expect([...arms]).toEqual([
+      ['working', 'bg-primary'],
+      ['resting', 'bg-state-quiet'],
+    ]);
+
+    const variants = parseVariantClass(
+      [
+        '/** `empty` used to be bg-ink-ghost. */',
+        'const VARIANT_CLASS: Record<V, string> = {',
+        "  empty: 'bg-state-quiet',",
+        "  ok: 'bg-primary shadow-[0_0_0_3px_color-mix(in_srgb,hsl(var(--primary))_18%,transparent)]',",
+        '  pending:',
+        "    'bg-state-quiet animate-pulse',",
+        '};',
+        "const OTHER = { decoy: 'bg-destructive' };",
+      ].join('\n'),
+    );
+    expect([...variants.keys()]).toEqual(['empty', 'ok', 'pending']);
+    expect(variants.get('pending')).toBe('bg-state-quiet animate-pulse');
+
+    expect(() => parseVariantClass('const NOPE = {};')).toThrow(/VARIANT_CLASS not found/);
+  });
+
+  /**
+   * `bgFill` is what turns a class into a measured token, so pin it on the
+   * shapes this tree actually contains — including the `ok` variant's
+   * `shadow-[…color-mix(…)]`, the one string here that looks like it might
+   * carry a second background and does not.
+   */
+  it('extracts exactly one background token per class', () => {
+    expect(bgFill('bg-state-quiet')).toMatchObject({ token: '--state-quiet', alpha: 1 });
+    expect(bgFill('bg-state-quiet animate-pulse')).toMatchObject({ token: '--state-quiet' });
+    expect(
+      bgFill(
+        'bg-primary shadow-[0_0_0_3px_color-mix(in_srgb,hsl(var(--primary))_18%,transparent)]',
+      ),
+    ).toMatchObject({ token: '--primary' });
+    expect(bgFill('bg-warning-soft/40')).toMatchObject({ token: '--warning-soft', alpha: 0.4 });
+
+    // Zero and two are both loud. A dot with no fill is a dot that vanished;
+    // two fills means this helper would otherwise be picking one at random.
+    expect(() => bgFill('animate-pulse')).toThrow(/found 0/);
+    expect(() => bgFill('bg-primary bg-destructive')).toThrow(/found 2/);
+    // The lookbehind protects both ends, exactly as it does for the tint parser.
+    expect(() => bgFill('hover-bg-primary')).toThrow(/found 0/);
+  });
+
+  /**
+   * The composited hover row is the one backdrop with arithmetic in it, and a
+   * broken `composite` fails SAFE in light mode: everything drifts toward white
+   * and passes. `composite` has its own fixtures above; this pins that the
+   * BACKDROP LIST actually uses them, by checking the fractional row lands
+   * between the two surfaces it blends.
+   */
+  it('resolves the fractional hover backdrop between its two layers', () => {
+    for (const [, selector] of THEMES) {
+      const tokens = tokensAfter(selector);
+      const hover = DOT_BACKDROPS.find((b) => b.alpha < 1)!;
+      const blended = luminance(rgbOf(resolveBackdrop(tokens, hover)));
+      const ends = [
+        luminance(rgbOf(tokens.get(hover.token)!)),
+        luminance(rgbOf(tokens.get(hover.over!)!)),
+      ].sort((a, b) => a - b);
+      expect(blended).toBeGreaterThanOrEqual(ends[0]!);
+      expect(blended).toBeLessThanOrEqual(ends[1]!);
+    }
+  });
+
+  it('registers one case per theme per dot variant', () => {
+    const expected = THEMES.flatMap(([name]) => DOT_FILLS.map(([label]) => `${name}:${label}`));
+    expect(dotCasesRegistered).toEqual(expected);
   });
 });
