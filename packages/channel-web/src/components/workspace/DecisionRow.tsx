@@ -176,7 +176,10 @@ export function DecisionRow({
             className={`flex items-center gap-3 ${RESOLUTION_FOCUS_RING}`}
           >
             <StateDot state={TONE_DOT[outcome.tone]} />
-            <span className="min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground">
+            <span
+              className="min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground"
+              title={outcome.line}
+            >
               {outcome.line}
             </span>
             {undoLeft > 0 && (
@@ -250,6 +253,7 @@ export function DecisionRow({
                 ? 'min-w-0 flex-1 truncate text-[13.5px] text-destructive'
                 : 'min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground'
             }
+            title={stale ? DECISION_STALE_SUMMARY : d.summary}
           >
             {stale ? DECISION_STALE_SUMMARY : d.summary}
           </span>

@@ -163,7 +163,14 @@ describe('past conversations', () => {
 
     // …and the past one does not.
     expect(screen.queryByPlaceholderText('Message Quill')).toBeNull();
-    expect(screen.getByText(/read-only/)).toBeTruthy();
+    const banner = screen.getByText(/read-only/);
+    expect(banner).toBeTruthy();
+    /*
+      TASK-436 — the banner is one CSS-clamped line, and a long conversation
+      title is what eats it. jsdom has no CSS, so this asserts the recoverable
+      half: the whole line is in `title`, punctuation and all.
+    */
+    expect(banner.getAttribute('title')).toBe('March · last week · read-only');
   });
 
   it('says so when the excerpt will not open, instead of showing a blank one', async () => {

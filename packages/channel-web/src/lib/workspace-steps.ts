@@ -130,13 +130,64 @@ export interface WorkspaceStepPanel {
 }
 
 /**
- * How much of a tool name or activity phrase reaches the panel.
+ * How much of a step row — tool name, and the qualifier beside it — reaches
+ * the panel.
  *
- * A step row is a line in a list, so it gets a line's worth. The number is a
- * size because "however long the MCP server felt like" is not a size — the
- * same reasoning the decision caps in `routes-workspace.ts` are written to.
+ * ONE NUMBER, AND IT IS A FENCE, NOT A LAYOUT CLAMP. There used to be two:
+ * 80 for the name and 60 for the detail, sized so that a row would fit on a
+ * line. That made `fenceLine` do the LAYOUT — it writes a literal `…` when it
+ * cuts — and a literal `…` on this surface has two costs TASK-436 measured.
+ * It is indistinguishable from an ellipsis the model actually emitted, and it
+ * corrupts a copy-paste of the row. Worse, it was the only copy: nothing else
+ * carried the characters it removed, so a deep path or a long command was
+ * unrecoverable by any means short of the API.
+ *
+ * So the line is now clamped in CSS (`truncate` on the row's span, with the
+ * whole string in its `title`), and this number goes back to being what it
+ * always should have been: the bound on how much untrusted text crosses onto
+ * the surface at all (invariant 5). "However long the MCP server felt like"
+ * is not a size — the same reasoning the decision caps in
+ * `routes-workspace.ts` are written to.
+ *
+ * WHY 200 AND NOT 400, which is what the decision/rail caps use. This one
+ * still bounds untrusted text: `call.phrase` is host-authored, but
+ * `call.name` is whatever an MCP server called its tool. 200 is a line's
+ * worth of name with room to spare and no more.
+ *
+ * THE NAME AND THE QUALIFIER GET DIFFERENT NUMBERS, and they have to.
+ * Collapsing them into one was the first draft of this card, and review
+ * caught what it cost: see {@link STEP_DETAIL_MAX_CHARS}.
  */
-export const STEP_NAME_MAX_CHARS = 80;
+export const STEP_NAME_MAX_CHARS = 200;
+
+/**
+ * How much of a call's INPUT reaches the row beside the tool name.
+ *
+ * SMALLER THAN THE NAME CAP ON PURPOSE, and the reason is no longer layout —
+ * CSS clamps the line now, so this number governs only two things: how much
+ * survives into the `title` (and therefore into a copy-paste), and how much
+ * untrusted text is on the surface at all.
+ *
+ * Which makes it a SECURITY ceiling, because this is the model/tool-authored
+ * half. Two of {@link DETAIL_KEYS} — `prompt` and `description` — hold text
+ * the model wrote, and the workspace has no thinking gate (invariant J4).
+ * Worse, {@link namesASecret} filters key NAMES, not values: a credential
+ * arriving under an innocent name (`value`, `arg`, `data`) reaches the
+ * fallback and is drawn up to this cap.
+ *
+ * That is why this is 120 and not 200. `fenceLine` returns a value UNCHANGED
+ * when it fits, so the cap is the line between "a masked prefix" and "the
+ * whole thing": most tokens in the 120–200 range stay masked at 120 and would
+ * have been rendered entire at 200. 120 is `DECISION_SUMMARY_MAX_CHARS`, it
+ * still holds an ordinary command and all but the deepest workspace paths,
+ * and it costs roughly half the worst case that one shared number did.
+ *
+ * A row can therefore carry up to both caps together — name, `: `, qualifier.
+ * That is the surface's real per-row budget for untrusted text; the number
+ * that matters for exposure is this one, because it is the half a secret can
+ * ride in on.
+ */
+export const STEP_DETAIL_MAX_CHARS = 120;
 
 /**
  * What a step is called when nothing legible survives fencing — a tool name
@@ -147,15 +198,6 @@ export const STEP_NAME_MAX_CHARS = 80;
  * showing; a silently shorter list is not.
  */
 export const UNNAMED_STEP = 'Unnamed step';
-
-/**
- * How much of a call's input reaches the row beside the tool name.
- *
- * Shorter than {@link STEP_NAME_MAX_CHARS} on purpose: this rides AFTER the
- * name on one line, and a detail that can outrun the thing it qualifies turns
- * a list of steps back into a wall of text.
- */
-export const STEP_DETAIL_MAX_CHARS = 60;
 
 /**
  * The input keys that answer "which one", in preference order.
@@ -192,8 +234,15 @@ const DETAIL_KEYS = [
  * but the fallback takes the first string an UNKNOWN tool carries, and MCP
  * servers name their arguments whatever they like. A tool called as
  * `{ token: 'sk-live-…', resource: 'issues' }` would have drawn its row as the
- * first 60 characters of the token. That is a 60-character prefix of a secret
- * on screen, which is a worse worst case than "a less useful string".
+ * leading {@link STEP_DETAIL_MAX_CHARS} characters of the token. That is a
+ * prefix of a secret on screen, which is a worse worst case than "a less
+ * useful string" — and it is why that cap is a fence and not a layout number.
+ *
+ * THE GUARD IS ON THE NAME, SO IT IS NOT THE WHOLE ANSWER. A secret under a
+ * name this cannot recognise still reaches the fallback, which is the other
+ * reason {@link STEP_DETAIL_MAX_CHARS} is kept small: the guard decides
+ * WHETHER a value is drawn, the cap decides HOW MUCH of one that slipped past
+ * it is.
  *
  * Matched WORD BY WORD rather than as substrings, so `apiKey`, `api_key` and
  * `AUTH_TOKEN` are all caught while `keyword`, `passenger` and `authored` are

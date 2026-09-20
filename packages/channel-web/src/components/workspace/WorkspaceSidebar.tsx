@@ -145,7 +145,9 @@ export function WorkspaceSidebarNav({
               )}
             >
               <StateDot state={a.state} />
-              <span className="truncate">{a.name}</span>
+              <span className="truncate" title={a.name}>
+                {a.name}
+              </span>
             </button>
           ))}
 

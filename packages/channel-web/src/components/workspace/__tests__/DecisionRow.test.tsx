@@ -235,3 +235,17 @@ describe('DecisionRow — the outcomes the host cannot claim', () => {
     expect(screen.queryByRole('button', { name: /Undo/ })).toBeNull();
   });
 });
+
+/*
+  TASK-436 — the collapsed summary is one clamped line, and it is the only
+  thing the reader has to go on before opening the row. jsdom has no CSS, so
+  this asserts the recoverable half: the whole summary is in `title`.
+*/
+describe('DecisionRow — a clamped summary (TASK-436)', () => {
+  it('keeps the whole summary reachable in `title`', () => {
+    const summary =
+      'Move the quarterly review with the EMEA regional leads from Thursday 09:30 to Friday 14:00 and re-invite everyone';
+    renderRow(decisionFixture({ summary }), false);
+    expect(screen.getByText(summary).getAttribute('title')).toBe(summary);
+  });
+});

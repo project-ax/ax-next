@@ -27,6 +27,7 @@ import {
   DECISION_PREVIEW_BODY_MAX_CHARS,
   DECISION_RECEIPT_MAX_CHARS,
   DECISION_SUMMARY_MAX_CHARS,
+  CONVERSATION_TITLE_MAX_CHARS,
   DECISION_RECEIPT_TAG,
   DECISION_UNRESOLVED_TAG,
   FIRE_NO_SUMMARY,
@@ -995,6 +996,47 @@ describe('channel-web agent-workspace BFF', () => {
     // "0 messages were summarised". The excerpt now comes from a real re-read
     // through `?conversationId=`.
     expect(Object.keys(body.past[0]!)).toEqual(['id', 'title', 'meta']);
+  });
+
+  it('fences a past conversation title like every other label out of this file', async () => {
+    /*
+      TASK-436 review finding. A conversation title is GENERATED — the title
+      plugin asks a model for it — and it was leaving this file unfenced,
+      while summaries, file names and activity lines all go through
+      `fenceLine`. It renders in the read-only banner, and that banner now
+      also carries it in a `title` attribute, so an unbounded string with a
+      bidi override in it had two sinks instead of one.
+
+      It is NOT the last unfenced label here — the learned-memory doc `name`
+      is the same shape of thing and still needs a card of its own. See
+      CONVERSATION_TITLE_MAX_CHARS.
+    */
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [
+      conv({
+        conversationId: 'newest',
+        agentId: 'a1',
+        title: 'Right now',
+        createdAt: '2026-07-02T10:00:00.000Z',
+        lastActivityAt: new Date().toISOString(),
+      }),
+      conv({
+        conversationId: 'nasty',
+        agentId: 'a1',
+        title: `The\u202Egnp.dorp-eteled ${'x'.repeat(400)}`,
+        createdAt: '2026-07-01T10:00:00.000Z',
+      }),
+    ];
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    const body = captured.body as { past: Array<{ title: string }> };
+    const title = body.past[0]!.title;
+    // Bounded…
+    expect([...title]).toHaveLength(CONVERSATION_TITLE_MAX_CHARS);
+    // …and stripped of the override that reorders what the reader sees.
+    expect(title).not.toContain('\u202E');
   });
 
   it('serves a past conversation\'s turns when ?conversationId= names one', async () => {
