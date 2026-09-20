@@ -1,8 +1,7 @@
 import type { AgentOutcome, Plugin } from '@ax/core';
 import {
-  AGENT_INVOKE_TIMEOUT_SLACK_MS,
+  AGENT_INVOKE_TIMEOUT_MS,
   createOrchestrator,
-  DEFAULT_CHAT_TIMEOUT_MS,
   PLUGIN_NAME,
   type ChatOrchestratorConfig,
   type AgentInvokeInput,
@@ -146,33 +145,33 @@ export function createChatOrchestratorPlugin(
     init({ bus }) {
       const orch = createOrchestrator(bus, config);
 
-      // `stallWarnMs: Infinity` — opt OUT of the bus's stall watch, on purpose.
+      // `stallWarnMs: Infinity` (TASK-505) — opt OUT of the bus's stall watch,
+      // on purpose.
       //
       // This handler spans an entire turn: sandbox spawn, generation, the whole
       // tool loop. There is no duration that separates "healthy long turn" from
       // "hung", so any threshold here would either fire on the common case or be
-      // useless. And the outermost frame is the one thing an operator already
-      // knows is stuck — `service hook 'agent:invoke' exceeded 120000ms` says so
-      // loudly enough, and that is this hook's report.
+      // useless.
       //
       // The diagnosis lives one frame in. The subscribers and service calls
       // `runAgentInvoke` awaits keep the 15s default, so a turn that hangs
       // upstream of sandbox provisioning now names the plugin responsible
-      // instead of producing the silence TASK-505 is about.
+      // instead of producing the silence TASK-505 is about. What reports a turn
+      // that dies is the orchestrator's own `chat:turn-error`, which every early
+      // return fires (see `turn-error-discipline.test.ts`) — not this frame.
       bus.registerService<AgentInvokeInput, AgentOutcome>(
         'agent:invoke',
         PLUGIN_NAME,
         async (ctx, input) => orch.runAgentInvoke(ctx, input),
         {
-          // A BACKSTOP, NOT THE TURN'S CLOCK. See
-          // AGENT_INVOKE_TIMEOUT_SLACK_MS — the orchestrator bounds each turn
-          // with `chatTimeoutMs` and fires its own turn-error; this only
-          // catches a handler that failed to settle at all. On the HookBus
-          // default (120 s) it fired on any turn longer than two minutes,
-          // rejecting a call whose turn was still streaming.
-          timeoutMs:
-            (config.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS) +
-            AGENT_INVOKE_TIMEOUT_SLACK_MS,
+          // NO SECOND CLOCK. See AGENT_INVOKE_TIMEOUT_MS — the orchestrator
+          // bounds every phase of a turn itself and fires `chat:turn-error` on
+          // the way out of each one. The HookBus default (120 s) was a shorter,
+          // blinder bound that rejected calls whose turns were still streaming,
+          // and no finite replacement is safe: the bus clock starts at handler
+          // entry, the orchestrator's starts after a setup phase whose own
+          // budget is minutes.
+          timeoutMs: AGENT_INVOKE_TIMEOUT_MS,
           stallWarnMs: Number.POSITIVE_INFINITY,
         },
       );

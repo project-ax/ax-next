@@ -795,26 +795,46 @@ export const PLUGIN_NAME = '@ax/chat-orchestrator';
 export const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
- * How much longer than its own chat timeout `agent:invoke` is allowed to take
- * before the HookBus gives up on it (TASK-498).
+ * `agent:invoke` runs with NO HookBus timeout at all (TASK-498).
  *
- * THE BUS TIMEOUT MUST NEVER FIRE FIRST. `runAgentInvoke` bounds every turn
- * itself — it rejects the waiter with `ChatTimeoutError(chatTimeoutMs)` and
- * that path fires `chat:turn-error(chat-run-timeout)`, which is what puts a
- * timed-out turn on screen. Registering the hook with the HookBus DEFAULT
- * (120 s) put a second, much shorter bound underneath that one: the default
- * chat timeout is ten minutes, so `bus.call('agent:invoke')` rejected with
- * `exceeded 120000ms` on every turn longer than two minutes — while the turn
- * was alive and still streaming. channel-web only logged that rejection
- * (`chat_run_dispatch_failed`), so it was invisible; it is also why that log
- * line could not be trusted as a failure signal, which is exactly what
- * TASK-498 needed it to be.
+ * WHAT WAS BROKEN. The hook was registered with no `timeoutMs`, so it used the
+ * HookBus default of 120 s — while `chatTimeoutMs` allows a turn ten minutes.
+ * `withTimeout` races the handler and does NOT cancel it, so every turn longer
+ * than two minutes had its `bus.call('agent:invoke')` rejected WHILE THE TURN
+ * WAS ALIVE AND STREAMING. channel-web only logged that rejection
+ * (`chat_run_dispatch_failed`), so nobody noticed — and it is why that log line
+ * could not be trusted as a failure signal, which is exactly what TASK-498
+ * needed it to be.
  *
- * With the backstop strictly AFTER the orchestrator's own bound, a rejection
- * means what it says: the handler did not settle even though its own timer
- * should have. channel-web surfaces that as a turn-error.
+ * WHY NOT SIMPLY A BIGGER NUMBER, which is where this landed first. The first
+ * fix was `chatTimeoutMs + 60 s`, on the reasoning that the bus must never fire
+ * before the orchestrator's own bound. A reviewer showed that does not hold:
+ * the `chatTimeoutMs` timer is armed only AFTER setup — `chat:start`
+ * subscribers, `agents:resolve`, `proxy:open-session` and `sandbox:open-session`
+ * (registered `timeoutMs: 300_000` by both providers) — while the bus clock
+ * starts at handler entry. A three-minute cold pod spawn therefore still put
+ * the bus deadline two minutes AHEAD of the orchestrator's, and now that
+ * channel-web surfaces the rejection it would have killed a healthy streaming
+ * turn's SSE and persisted a failure that never happened. Any finite slack has
+ * that shape, because `chat:start` subscribers are unbounded and no number
+ * dominates them.
+ *
+ * SO THE ORCHESTRATOR OWNS TURN DURATION, ALONE — which it is built to do, and
+ * this is not a backstop being removed so much as a second, wrong clock. Every
+ * phase it waits on is bounded by that phase's OWN hook timeout, and every
+ * early return fires `chat:turn-error` on the way out (see the `fireTurnError`
+ * call sites below); the streaming phase is bounded by `chatTimeoutMs`, which
+ * fires `chat:turn-error(chat-run-timeout)`. A turn cannot now be reported dead
+ * by a clock that was not watching the thing it timed.
+ *
+ * WHAT IS GENUINELY UNCOVERED, said plainly rather than left for the next
+ * reader to discover: a `chat:start` subscriber that hangs forever. `HookBus.
+ * fire` puts no clock on subscribers, so that turn hangs with nothing to end
+ * it. It hung before this change too — the 120 s rejection only wrote a log
+ * line and never reached the browser — so this is a pre-existing gap, not one
+ * opened here, and bounding `chat:start` is its own card.
  */
-export const AGENT_INVOKE_TIMEOUT_SLACK_MS = 60 * 1000;
+export const AGENT_INVOKE_TIMEOUT_MS = Number.POSITIVE_INFINITY;
 
 // ---------------------------------------------------------------------------
 // PR 2 (provider-agnostic runner, design doc §1) — runner id → binary path.
