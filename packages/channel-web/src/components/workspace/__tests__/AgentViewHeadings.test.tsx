@@ -27,6 +27,12 @@ import {
 } from '@/lib/workspace-api';
 import { AgentView } from '../AgentView';
 import { rail as railFixture } from './rail-fixture';
+/*
+  THE VIEWPORT STUB, shared (TASK-455). jsdom ships no `matchMedia`, so
+  `use-compact.ts` reads `false` and every test below renders the DESKTOP tree
+  unless it calls `setViewport`.
+*/
+import { clearViewport, setViewport } from './viewport';
 import { headingOutline, headingOutlineProblems } from '@/test-utils/heading-outline';
 
 vi.mock('@/lib/workspace-api', async () => {
@@ -97,28 +103,6 @@ function renderView(over: Partial<ComponentProps<typeof AgentView>> = {}) {
   );
 }
 
-/**
- * THE VIEWPORT STUB, copied in shape from `responsive-shell.test.tsx`. jsdom
- * ships no `matchMedia`, so `use-compact.ts` reads `false` and every test below
- * renders the DESKTOP tree unless it calls this. Only the compact query is
- * answered from `compact`; everything else gets `false`, so widening the
- * viewport cannot flip the palette as a side effect.
- */
-const COMPACT_QUERY = 'not all and (min-width: 768px)';
-
-function setCompactViewport(): void {
-  window.matchMedia = ((query: string) => ({
-    media: query,
-    matches: query === COMPACT_QUERY,
-    onchange: null,
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    addListener: () => {},
-    removeListener: () => {},
-    dispatchEvent: () => false,
-  })) as unknown as typeof window.matchMedia;
-}
-
 beforeEach(() => {
   agentMock.mockReset();
   agentMock.mockResolvedValue(detail());
@@ -126,9 +110,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // Added to jsdom's window by `setCompactViewport`; deleting it restores "no
+  // Added to jsdom's window by `setViewport`; clearing it restores "no
   // matchMedia at all", which is what the rest of this package renders under.
-  delete (window as Partial<Window>).matchMedia;
+  clearViewport();
 });
 
 /*
@@ -247,7 +231,7 @@ describe('AgentView heading outline', () => {
     which jsdom does not give you for free.
   */
   it('says "Agent details" once below md, not twice', async () => {
-    setCompactViewport();
+    setViewport(true);
     renderView({ tab: 'chat' });
 
     // The compact rail lives behind a trigger; open it so its tree exists.
