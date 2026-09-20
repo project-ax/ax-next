@@ -439,6 +439,24 @@ describe('egress allowlist canary', () => {
     // file already exercises, and a few hundred round trips would put seconds
     // on every run of this suite for nothing.
     const h = await boot({ globalEgressHosts: ['intranet.example.com'] });
+
+    // A PERSON NOWHERE NEAR THE CAP IS NEVER CAPPED, and this is not padding —
+    // it is the assertion that catches the coercion itself rather than the
+    // boundary. `count` arrives from pg as a STRING (a bigint crossing the
+    // driver), so dropping the `Number()` makes the comparison lexicographic,
+    // and lexicographic agrees with arithmetic at 510 and at 512 while
+    // disagreeing at SIX: `'6' >= '512'` is true. A boundary-only test watches
+    // the two values where the bug hides. Seven in a row walks the count
+    // through 0..6 and steps on it.
+    for (let i = 0; i < 7; i += 1) {
+      expect(
+        await h.bus.call('egress-allowlist:remember', h.ctx({ userId: 'carol' }), {
+          host: `c${i}.example.com`,
+        }),
+        `carol's host #${i}`,
+      ).toEqual({ remembered: true });
+    }
+
     const seed = new pg.Client({ connectionString });
     await seed.connect();
     try {
@@ -447,6 +465,13 @@ describe('egress allowlist canary', () => {
          SELECT 'user', 'alice', 'h' || g || '.example.com', NOW()
          FROM generate_series(1, $1) AS g`,
         [MAX_USER_HOSTS - 2],
+      );
+      // Somebody ELSE's rows, so the cap has to be counting one person rather
+      // than the table. Without these, a count that forgot its owner would sit
+      // on exactly the same numbers and pass.
+      await seed.query(
+        `INSERT INTO tool_policy_v1_egress_allowlist (scope, owner_user_id, host, created_at)
+         VALUES ('user', 'dave', 'd1.example.com', NOW()), ('user', 'dave', 'd2.example.com', NOW())`,
       );
     } finally {
       await seed.end().catch(() => {});
