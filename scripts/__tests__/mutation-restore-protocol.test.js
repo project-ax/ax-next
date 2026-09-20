@@ -75,6 +75,23 @@
 //     LOCAL result, and only the bash half is continuously enforced. Same shape as every
 //     sibling shell guard in this directory; written down here, and in the doc, rather
 //     than left for someone to infer from a test count.
+//   - **Pathspec edge cases, MEASURED on git 2.52.0 rather than reasoned about**, because
+//     the `:(literal)` hardening itself shipped a Critical (see M12) and "it's only a
+//     pathspec" is exactly the reasoning that produced it. Probed with the block's own
+//     three commands against a throwaway repo, `[ -d ]` first:
+//       * `""`                -> `[ -d ]` no, `ls-files` rc=0, `status` lists EVERY dirty
+//                                file. The Critical. Only the `[ -z ]` guard stops it.
+//       * a directory         -> `[ -d ]` yes -> REFUSED. (`ls-files` rc=0 and `status`
+//                                reports the whole subtree, so the guard is load-bearing.)
+//       * a symlink to a dir  -> `[ -d ]` yes (the test follows the link) -> REFUSED.
+//                                Conservative, and it happens to be right: `ls-files` rc=1.
+//       * an ABSOLUTE path    -> rc=0, `status` reports exactly the one file. Works; no
+//                                guard needed, and none added.
+//       * `../escape`         -> rc=128 -> REFUSED by the tracked check.
+//       * a name starting `:` -> resolves to itself; `status` reports only it, and
+//                                `checkout --` restores only it, leaving siblings alone.
+//     None of these is guarded by a test below — they are properties of git, not of the
+//     blocks, and the two that matter (`""`, directory) have behavioural tests of their own.
 //   - The templates.md assertions at the bottom are TEXT checks, deliberately weaker than
 //     the executable core, and labelled as such. There is no second runnable copy of the
 //     block in the dispatch prompt to execute; what the prompt must carry is the pointer
@@ -443,6 +460,24 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
     });
     expect(cp.status).toBe(0);
     expect(read(control)).not.toContain('SIBLING-FIX');
+  });
+
+  it('restore brings back a DELETED file — "remove it and watch it go red" is a legal mutant', () => {
+    // The guard above is `[ -d "$F" ]`, deliberately not `[ -f "$F" ]`: deleting the file
+    // the guard covers is one of the commonest mutants on this board, and an existence
+    // check would refuse it. Nothing asserted that the rest of the block survives a path
+    // that is tracked but absent from disk, so this walks it: `ls-files` answers from the
+    // index (tracked), `status --porcelain` reports ` D` (dirty, so not "already clean"),
+    // and `checkout --` recreates the file.
+    const dir = makeRepo();
+    rmSync(join(dir, TARGET));
+
+    const r = runBlock(shell, RESTORE, { cwd: dir, file: TARGET, mark: RESTORE_MARK });
+
+    expect(r.status).toBe(0);
+    expect(r.out).toMatch(/^ok:/m);
+    expect(read(dir)).toBe(V1);
+    expect(porcelain(dir)).toBe('');
   });
 
   it('restore refuses a mutant that was COMMITTED — checkout would be a no-op reporting success', () => {
