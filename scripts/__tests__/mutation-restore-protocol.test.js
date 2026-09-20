@@ -90,6 +90,14 @@
 //       * a DELETED file      -> `ls-files` answers from the INDEX, so the gate passes and
 //                                `checkout --` recreates it. Deletion stays a legal mutant.
 //       * a symlink to a dir  -> `ls-files --error-unmatch` rc=1 -> REFUSED as untracked.
+//       * a NON-ASCII name    -> `ls-files` QUOTES it by default (`core.quotePath`):
+//                                `"caf\303\251.js"`, quotes and octal escapes included,
+//                                which never equals `café.js`. A legitimate single file,
+//                                refused. Fixed with `-c core.quotePath=false`; pinned by
+//                                a test, because fail-closed still locks an agent out.
+//       * a name with a space  -> printed unquoted, compares equal. Fine.
+//       * `./a.js`             -> `ls-files` prints `a.js` -> REFUSED. Fail-closed, and
+//                                the blocks already say "from your worktree root".
 //       * an ABSOLUTE path    -> rc=0, `status` reports exactly the one file. Works; no
 //                                guard needed, and none added.
 //       * `../escape`         -> rc=128 -> REFUSED by the tracked check.
@@ -103,8 +111,10 @@
 //     block in the dispatch prompt to execute; what the prompt must carry is the pointer
 //     and the per-role rule, and text is the only surface that has ever carried those.
 //
-// MUTANTS RUN, NOT REASONED ABOUT (2026-09-19, macOS + zsh + git 2.52.0; baseline **45
-// passed**). Re-measured in full after EACH review round — three of them — because a round
+// MUTANTS RUN, NOT REASONED ABOUT (2026-09-19, macOS + zsh + git 2.52.0; baseline **47
+// passed**; M1-M14 measured at the 45-test baseline, before M15's two cases were added,
+// and none of them touches a line those two read). Re-measured in full after EACH round —
+// three of them — because a round
 // changes the test set and a stale count is worse than none. (Round 3 caught this file
 // breaking its own rule: two tests had been added without re-running the table.) Each
 // mutant was applied to the COMMITTED text and restored with `git checkout --` afterwards,
@@ -180,6 +190,12 @@
 //       directory removed from disk, while git still expands the pathspec to the whole
 //       subtree — so the restore reverted a bystander's work and printed `ok`, at subtree
 //       scale. Ask git what the pathspec addresses, not the filesystem what `$F` looks like.
+//  M15. CONSTRUCTED: drop `-c core.quotePath=false` from the scope gate -> **2 red**, the
+//       non-ASCII case x2 shells. The gate compares bytes, and `ls-files` quotes a
+//       non-ASCII path by default, so `café.js` came back as `"caf\303\251.js"` and an
+//       ordinary file was refused. Fail-CLOSED, and still a defect: it locks an agent out
+//       of mutating that file, and the block gets blamed. **A byte-comparison gate is only
+//       as good as the spelling the command on the other side of it chooses.**
 //
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally — no network,
 // no Docker, no build. Every git repository it touches is created under a temp dir and
@@ -468,6 +484,28 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
     });
     expect(cp.status).toBe(0);
     expect(read(control)).not.toContain('SIBLING-FIX');
+  });
+
+  it('restore accepts a NON-ASCII filename — `core.quotePath` must not refuse it', () => {
+    // The scope gate compares `git ls-files` output with `$F`, and git QUOTES a non-ASCII
+    // path by default: measured, `ls-files -- ":(literal)café.js"` prints `"caf\303\251.js"`
+    // — with the quotes and the octal escapes — which is never equal to `café.js`, so the
+    // gate would refuse a perfectly ordinary single file. Fail-closed, but it locks an agent
+    // out of mutating any such file, and the block would be blamed for it. Hence
+    // `-c core.quotePath=false`. A byte-comparison gate is only as good as the spelling the
+    // command on the other side of it chooses.
+    const dir = makeRepo();
+    const ACCENTED = 'café.js';
+    writeFileSync(join(dir, ACCENTED), V1);
+    git(dir, 'add', '-A');
+    git(dir, 'commit', '-q', '-m', 'accented');
+    writeFileSync(join(dir, ACCENTED), MUTANT);
+
+    const r = runBlock(shell, RESTORE, { cwd: dir, file: ACCENTED, mark: RESTORE_MARK });
+
+    expect(r.out).not.toMatch(/more than one tracked path/);
+    expect(r.status).toBe(0);
+    expect(read(dir, ACCENTED)).toBe(V1);
   });
 
   it('restore brings back a DELETED file — "remove it and watch it go red" is a legal mutant', () => {

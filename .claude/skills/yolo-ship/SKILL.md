@@ -208,7 +208,7 @@ fi
 # empty $F — expands to everything under it and the restore would revert work you never
 # touched and print `ok`. A `[ -d ]` test cannot see this, because a directory DELETED from
 # disk is still a directory to git. Measured on git 2.52.0.
-ONE=$(git ls-files -- "$P")
+ONE=$(git -c core.quotePath=false ls-files -- "$P")
 if [ "$ONE" != "$F" ]; then
   echo "REFUSE: $F addresses more than one tracked path — name the single file you mutated."
   exit 1
@@ -247,7 +247,7 @@ if ! git ls-files --error-unmatch -- "$P" >/dev/null 2>&1; then
 fi
 
 # See the precondition block: ask GIT what the pathspec addresses, not the filesystem.
-ONE=$(git ls-files -- "$P")
+ONE=$(git -c core.quotePath=false ls-files -- "$P")
 if [ "$ONE" != "$F" ]; then
   echo "REFUSE: $F addresses more than one tracked path — name the single file you mutated."
   exit 1
