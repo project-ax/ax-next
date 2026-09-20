@@ -66,6 +66,7 @@ const config: Config = {
         },
         'rule-soft': 'hsl(var(--rule-soft))',
         'ink-ghost': 'hsl(var(--ink-ghost))',
+        'state-quiet': 'hsl(var(--state-quiet))',
       },
       borderRadius: {
         lg: 'var(--radius)',

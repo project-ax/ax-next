@@ -94,18 +94,54 @@
     --ring: 211 100% 42%;
     --radius: 0.5rem;
     --rule-soft: 240 6% 95%;
-    /* A FILL, never ink. Value unchanged on purpose — read this before nudging it.
+    /* A FILL, never ink, and now a fill for exactly ONE thing: the composer's
+       send circle while the field is empty. Value unchanged on purpose — read
+       this before nudging it.
+
        As text it measures 1.72:1 on the page and 1.57:1 on `--muted`, about a
        third of the AA floor, which is why nothing paints `text-ink-ghost` any
        more; quiet copy is `--muted-foreground`. Lifting it to AA would need
        ~46% here and ~53% in dark, and `--muted-foreground` is already 44/56 —
        the same colour under a second name. It would also wreck the fill role
-       this token exists for: the send circle's inactive state (faintness is how
-       it says "nothing to send yet"), and the resting/empty state dots, which
-       have to stay quiet beside a `bg-primary` "working". Same accent-vs-
+       this token exists for: the send circle's inactive state, where the
+       faintness IS the affordance — it is how the button says "nothing to send
+       yet". A disabled control is the one thing WCAG 1.4.11 exempts outright,
+       so that role owes no ratio and is free to stay this faint.
+
+       The state DOTS used to share this token and are no longer allowed to:
+       they carry information rather than an inactive affordance, so they owe
+       3:1 and moved to `--state-quiet` below (TASK-450). Same accent-vs-
        foreground tension documented above for primary/destructive, same fix —
        split the roles. `theme-contrast.test.ts` measures this and enforces it. */
     --ink-ghost: 240 4% 78%;
+    /* The quiet-but-legible state mark: the `resting` dot in `bits.tsx` and the
+       admin `empty` / `pending` dots in `StatusDot.tsx`.
+
+       `bits.tsx` says "colour is the state", which makes these information-
+       bearing non-text UI owing 3:1 under WCAG 1.4.11 — a different floor from
+       the 4.5:1 that governs text. On `--ink-ghost` they measured 1.72:1 here
+       and 1.67:1 in dark against the worst surface they land on, a bit over
+       half of what they owe.
+
+       Why a second token rather than moving `--ink-ghost`: see its note above.
+       And why this is NOT `--muted-foreground` under a third name — the value
+       that clears 3:1 sits on the OTHER side of it in each theme. 54% here is
+       LIGHTER than `--muted-foreground` at 44%; 45% in dark is DARKER than its
+       56%. So the dot stays quieter than the quiet text in both themes, which
+       is the visual hierarchy we want: an agent's name outranks its resting
+       dot. That ordering is asserted, not just described.
+
+       Measured against every surface a dot lands on — the page, a card,
+       `--muted`, the hover `bg-muted/60`, and `bg-primary-soft` (the SELECTED
+       sidebar row, which is the tightest of the five): 3.66 / 3.66 / 3.33 /
+       3.45 / 3.20 light, and 4.16 / 3.41 / 3.58 / 3.85 / 3.18 dark.
+
+       It still reads as "not working" beside a `bg-primary` dot, because
+       activeness here is carried by SATURATION, not lightness: this is a 4%-sat
+       neutral sitting in the same family as every border and every line of
+       quiet text, next to a 100%-sat blue. What 78% actually bought was not
+       calm — it was a dot people could not see at all. */
+    --state-quiet: 240 4% 54%;
   }
 
   /* Dark tokens scoped to existing data-theme mechanism + system fallback.
@@ -161,8 +197,11 @@
       /* Tracks `--primary`. */
       --ring: 211 100% 56%;
       --rule-soft: 240 4% 13%;
-      /* A fill, never ink — 2.04:1 on the page, 1.67:1 on a card. See the light block. */
+      /* A fill, never ink, and only the empty composer's send circle. 2.04:1 on
+         the page, 1.67:1 on a card. See the light block. */
       --ink-ghost: 240 4% 26%;
+      /* The state dots. See the light block for the whole argument. */
+      --state-quiet: 240 4% 45%;
       color-scheme: dark;
     }
   }
@@ -194,8 +233,11 @@
     /* Tracks `--primary`. */
     --ring: 211 100% 56%;
     --rule-soft: 240 4% 13%;
-    /* A fill, never ink — 2.04:1 on the page, 1.67:1 on a card. See the light block. */
+    /* A fill, never ink, and only the empty composer's send circle. 2.04:1 on
+       the page, 1.67:1 on a card. See the light block. */
     --ink-ghost: 240 4% 26%;
+    /* The state dots. See the light block for the whole argument. */
+    --state-quiet: 240 4% 45%;
     color-scheme: dark;
   }
 }
