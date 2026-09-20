@@ -214,7 +214,7 @@ if [ "$ONE" != "$F" ]; then
   echo "REFUSE: that pathspec is not the one file you named."
   LIST=$(printf '%s' "$ONE" | tr '\n' ' ')
   SHORT=$(printf '%s' "$LIST" | cut -c1-120)
-  [ "$SHORT" = "$LIST" ] || SHORT="$SHORT…"
+  [ "$SHORT" = "$LIST" ] || SHORT="$SHORT (truncated)"
   echo "  matched $N path(s): $SHORT"
   echo "  Name ONE tracked file, spelled relative to the worktree root — not an"
   echo "  absolute path, not a directory. The same path repeated means it is"
@@ -261,7 +261,7 @@ if [ "$ONE" != "$F" ]; then
   echo "REFUSE: that pathspec is not the one file you named."
   LIST=$(printf '%s' "$ONE" | tr '\n' ' ')
   SHORT=$(printf '%s' "$LIST" | cut -c1-120)
-  [ "$SHORT" = "$LIST" ] || SHORT="$SHORT…"
+  [ "$SHORT" = "$LIST" ] || SHORT="$SHORT (truncated)"
   echo "  matched $N path(s): $SHORT"
   echo "  Name ONE tracked file, spelled relative to the worktree root — not an"
   echo "  absolute path, not a directory. The same path repeated means it is"

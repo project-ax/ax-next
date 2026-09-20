@@ -258,6 +258,16 @@
 //       including the 3-path directory and the 3-stage conflicted case, i.e. the two the
 //       message was rewritten to report honestly — and NOTHING here noticed. Found in
 //       review; the assertion that pins it is a negative on a one-path refusal.
+//  M21. CONSTRUCTED: put the multibyte ellipsis back (`SHORT="$SHORT…"`) -> **2 red**.
+//       **This one was a live defect, not a hypothetical.** Appending a multibyte
+//       character to a variable mangles it under the system bash — measured:
+//       `X="abc…"` is 4 chars, but `Y="abc"; Y="$Y…"` is 2 and prints two replacement
+//       characters. The refusal's whole match list was destroyed:
+//       `matched 40 path(s): ??`. It survived review and a green suite because NO
+//       fixture had ever produced more than 120 characters of paths, so the truncation
+//       branch had never executed. Found by probing the branch by hand rather than
+//       trusting the green. The marker is plain ASCII now, and the 40-file fixture is
+//       what makes the branch run at all.
 //
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally — no network,
 // no Docker, no build. Every git repository it touches is created under a temp dir and
@@ -627,6 +637,33 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
     expect(read(control)).not.toContain('SIBLING-FIX');
   });
 
+  it('restore TRUNCATES a long match list, and says so in ASCII', () => {
+    // No fixture had ever produced more than 120 characters of matched paths, so the
+    // truncation branch of the refusal was unexecuted — and it was broken. Measured on the
+    // system bash: appending a multibyte character to a variable (`SHORT="$SHORT…"`) yields
+    // MOJIBAKE, two replacement characters, while the same literal written inline
+    // (`X="abc…"`) is fine. The marker is plain ASCII now, and this fixture is what makes
+    // the branch run at all.
+    const dir = makeRepo();
+    mkdirSync(join(dir, 'sub'));
+    for (let i = 0; i < 40; i++) {
+      writeFileSync(join(dir, 'sub', `long-name-number-${i}.js`), V1);
+    }
+    git(dir, 'add', 'sub');
+    git(dir, 'commit', '-q', '-m', 'many');
+
+    const r = runBlock(shell, RESTORE, { cwd: dir, file: 'sub', mark: RESTORE_MARK });
+
+    expect(r.status).not.toBe(0);
+    expect(r.out).toMatch(/matched 40 path\(s\):/);
+    expect(r.out).toMatch(/\(truncated\)/);
+    // The list is bounded and the line is not mangled: every character it printed is one
+    // this test can name. A mojibake run fails here rather than looking plausible.
+    const line = r.out.split('\n').find((l) => l.includes('matched 40 path(s):'));
+    expect(line).toMatch(/^ {2}matched 40 path\(s\): [\x20-\x7E]+ \(truncated\)$/);
+    expect(line.length).toBeLessThan(160);
+  });
+
   it('restore accepts a NON-ASCII filename — `core.quotePath` must not refuse it', () => {
     // The scope gate compares `git ls-files` output with `$F`, and git QUOTES a non-ASCII
     // path by default: measured, `ls-files -- ":(literal)café.js"` prints `"caf\303\251.js"`
@@ -839,11 +876,11 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
     // `includes` on a plain string, not a RegExp built from a filename: `guard.js` has
     // a `.` in it, and a fixture name should never quietly double as a pattern.
     expect(r.out.includes(`matched 1 path(s): ${TARGET}`)).toBe(true);
-    // The `…` is CONDITIONAL. A one-path refusal was not truncated, so claiming it was
-    // would tell the agent there is more it is not being shown — in the very message
-    // rewritten to report honestly. The first version put the `…` outside the `$( )`,
-    // making it unconditional, and nothing here would have noticed.
-    expect(r.out).not.toMatch(/matched 1 path\(s\):.*…/);
+    // The truncation marker is CONDITIONAL. A one-path refusal was not truncated, so
+    // claiming it was would tell the agent there is more it is not being shown — in the
+    // very message rewritten to report honestly. The first version appended it outside the
+    // `$( )`, making it unconditional, and nothing here would have noticed.
+    expect(r.out).not.toMatch(/matched 1 path\(s\):.*truncated/);
     expect(r.out).toMatch(/relative to the worktree root/);
     expect(read(dir)).toBe(MUTANT);
   });
