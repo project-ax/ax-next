@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 import { HookBus } from '../hook-bus.js';
 import { isRejection, isHold, PluginError, reject, hold } from '../errors.js';
-import { makeAgentContext, createLogger } from '../context.js';
+import { makeAgentContext, createLogger, type Logger } from '../context.js';
 import type { FireResult } from '../types.js';
 
 const silentCtx = () =>
@@ -365,5 +365,164 @@ describe('HookBus — a scoped rejection survives the fire (TASK-287)', () => {
         expect(result.offendingPaths).toEqual(['CLAUDE.md']);
         expect(result.source).toBe('@ax/test-scoped-rejecter');
       });
+  });
+});
+
+/**
+ * TASK-505 — the bug this block exists for was an ABSENCE.
+ *
+ * `agent:invoke` sat for the full 120 s service timeout, created no sandbox
+ * pod, and wrote nothing to the log at any level. Four rounds of diagnosis
+ * could only narrow it by elimination, because the one frame that was actually
+ * stuck never identified itself: `fire()` has no timeout, and `call()` only
+ * speaks on settle — which, for a hang, is never.
+ *
+ * These tests pin the observable behaviour, not the mechanism: a stalled hook
+ * NAMES ITSELF (hook + plugin) while it is still stalled.
+ */
+describe('HookBus — stall watch (TASK-505)', () => {
+  interface Logged {
+    msg: string;
+    bindings: Record<string, unknown>;
+  }
+
+  const capturingCtx = (sink: Logged[]) => {
+    const logger: Logger = {
+      debug: () => undefined,
+      info: () => undefined,
+      warn: (msg: string, bindings?: Record<string, unknown>) => {
+        sink.push({ msg, bindings: bindings ?? {} });
+      },
+      error: () => undefined,
+      child: () => logger,
+    };
+    return makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u', logger });
+  };
+
+  const tick = (ms: number): Promise<void> =>
+    new Promise((resolve) => setTimeout(resolve, ms));
+
+  it('names a subscriber that hangs, WHILE the fire is still in flight', async () => {
+    // The card's exact shape: a subscriber that never resolves. `fire` has no
+    // timeout, so before this watch nothing was ever emitted — the caller's
+    // whole budget burned in silence, and the outer call's timeout named only
+    // itself.
+    const logged: Logged[] = [];
+    const bus = new HookBus({ stallWarnMs: 20 });
+    bus.subscribe('chat:start', '@ax/test-hanger', () => new Promise<never>(() => {}));
+
+    void bus.fire('chat:start', capturingCtx(logged), {});
+    await tick(120);
+
+    const stall = logged.find((l) => l.msg === 'hook_subscriber_stalled');
+    expect(
+      stall,
+      'a hung subscriber must report itself before the caller gives up',
+    ).toBeDefined();
+    expect(stall?.bindings.hook).toBe('chat:start');
+    expect(stall?.bindings.plugin).toBe('@ax/test-hanger');
+    expect(stall?.bindings.stalledForMs).toBeTypeOf('number');
+    // Still hung: no settle line. That asymmetry IS the diagnosis — a
+    // `_stalled` with no matching `_slow` is a hang, not mere slowness.
+    expect(logged.some((l) => l.msg === 'hook_subscriber_slow')).toBe(false);
+  });
+
+  it('names a service call that hangs, before its timeout fires', async () => {
+    const logged: Logged[] = [];
+    // Timeout far enough out that the watch is demonstrably speaking first.
+    const bus = new HookBus({ defaultServiceTimeoutMs: 5_000, stallWarnMs: 20 });
+    bus.registerService(
+      'sandbox:open-session',
+      '@ax/test-sandbox',
+      () => new Promise<never>(() => {}),
+    );
+
+    const inFlight = bus.call('sandbox:open-session', capturingCtx(logged), {});
+    inFlight.catch(() => undefined);
+    await tick(120);
+
+    const stall = logged.find((l) => l.msg === 'hook_call_stalled');
+    expect(stall).toBeDefined();
+    expect(stall?.bindings.hook).toBe('sandbox:open-session');
+    expect(stall?.bindings.plugin).toBe('@ax/test-sandbox');
+  });
+
+  it('follows a stall with a settle line carrying the real duration', async () => {
+    const logged: Logged[] = [];
+    const bus = new HookBus({ stallWarnMs: 20 });
+    bus.registerService(
+      'slow',
+      'p',
+      () => new Promise<string>((resolve) => setTimeout(() => resolve('done'), 120)),
+    );
+
+    await expect(bus.call('slow', capturingCtx(logged), {})).resolves.toBe('done');
+    expect(logged.map((l) => l.msg)).toEqual(['hook_call_stalled', 'hook_call_slow']);
+    expect(logged[1]?.bindings.durationMs).toBeTypeOf('number');
+  });
+
+  it('stays quiet for hooks that finish promptly', async () => {
+    const logged: Logged[] = [];
+    const bus = new HookBus({ stallWarnMs: 5_000 });
+    bus.registerService('fast', 'p', async () => 'ok');
+    bus.subscribe('chat:start', 'p', async () => undefined);
+
+    await bus.call('fast', capturingCtx(logged), {});
+    await bus.fire('chat:start', capturingCtx(logged), {});
+    expect(logged).toEqual([]);
+  });
+
+  it('still reports a subscriber that stalls and then throws', async () => {
+    // The `catch` branch must not skip the settle — otherwise a slow-then-
+    // failing subscriber leaves a live timer and no settle line.
+    const logged: Logged[] = [];
+    const bus = new HookBus({ stallWarnMs: 20 });
+    bus.subscribe(
+      'chat:start',
+      '@ax/test-slow-thrower',
+      () =>
+        new Promise<never>((_resolve, rejectLate) => {
+          setTimeout(() => rejectLate(new Error('boom')), 120);
+        }),
+    );
+
+    await bus.fire('chat:start', capturingCtx(logged), {});
+    expect(logged.map((l) => l.msg)).toEqual([
+      'hook_subscriber_stalled',
+      'hook_subscriber_slow',
+    ]);
+  });
+
+  it('treats stallWarnMs:Infinity as "never warn"', async () => {
+    const logged: Logged[] = [];
+    const bus = new HookBus({ stallWarnMs: Number.POSITIVE_INFINITY });
+    bus.registerService(
+      'slow',
+      'p',
+      () => new Promise<string>((resolve) => setTimeout(() => resolve('done'), 60)),
+    );
+    await expect(bus.call('slow', capturingCtx(logged), {})).resolves.toBe('done');
+    expect(logged).toEqual([]);
+  });
+
+  it('rejects a nonsense stallWarnMs at construction, not per call', () => {
+    expect(() => new HookBus({ stallWarnMs: Number.NaN })).toThrow(PluginError);
+    expect(() => new HookBus({ stallWarnMs: -1 })).toThrow(PluginError);
+  });
+
+  it('never fails a hook because the ctx had no usable logger', async () => {
+    // Canaries and synthetic contexts hand the bus a partial ctx. A watchdog
+    // that threw on one would be a new silent-failure source bolted onto the
+    // fix for one.
+    const bus = new HookBus({ stallWarnMs: 20 });
+    bus.registerService(
+      'slow',
+      'p',
+      () => new Promise<string>((resolve) => setTimeout(() => resolve('done'), 120)),
+    );
+    const loggerless = { sessionId: 's', agentId: 'a', userId: 'u' } as unknown as ReturnType<
+      typeof silentCtx
+    >;
+    await expect(bus.call('slow', loggerless, {})).resolves.toBe('done');
   });
 });
