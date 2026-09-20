@@ -571,6 +571,7 @@ describe('reclaimGrantDeclines', () => {
     const stale = [row('a-other', skill('github'), 1_000)];
     const pending = [...stale];
 
+    let wroteDuringScan = false;
     kv.onListPrefix = async () => {
       // Mid-scan: the agent raises `linear` and the person turns it down.
       pending.push(row('a-quill', skill('linear'), 2_000));
@@ -581,14 +582,21 @@ describe('reclaimGrantDeclines', () => {
         subjectId: 'linear',
         declinedAt: 2_500,
       });
+      // Recorded HERE, inside the window, so the premise below is about the
+      // write happening and not about the row still being there afterwards —
+      // which is the thing under test and would make the two collapse into
+      // one assertion that cannot tell them apart.
+      wroteDuringScan = kv.store.has(key('a-quill', 'linear'));
     };
 
     const kept = await withoutDeclinedGrants(kv.bus, ctx, 'u-ann', stale, {
       reclaimAgainstCompleteSet: () => pending,
     });
 
-    // Premise: the marker really was written during the scan, so it really is
-    // in the map this reclaim works from.
+    // Premise, established inside the window: the marker really was written
+    // during the scan, so it really is in the map this reclaim works from.
+    expect(wroteDuringScan).toBe(true);
+    // Outcome: and it is still there.
     expect(kv.store.has(key('a-quill', 'linear'))).toBe(true);
     // The fresh refusal survives — it is answering the card that arrived with
     // it, which the re-sample can see and the stale snapshot could not.
