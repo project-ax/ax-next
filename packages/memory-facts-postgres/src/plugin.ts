@@ -182,6 +182,7 @@ function validateRecordInput(input: RecordInput): ValidatedRecordInput {
 
 function validateRecallInput(input: RecallInput): {
   about?: string;
+  ownerUserId?: string;
   limit: number;
   activeOnly: boolean;
 } {
@@ -221,6 +222,19 @@ function validateRecallInput(input: RecallInput): {
       message: 'query is not implemented on the postgres engine yet (TASK-457) — omit it',
     });
   }
+  // Owner scope (design §6.1). Same non-empty-string rule as `batchKey`, and
+  // it earns it harder: `''` is falsy in JS but a perfectly good TEXT value in
+  // postgres, so treating it as absent would hand a caller who ASKED to be
+  // scoped the whole tenant instead — a read silently WIDER than the one it
+  // requested, which is the one direction a scope must never fail in.
+  // Rejecting is the only outcome the caller can detect.
+  if (input.ownerUserId !== undefined && !isNonEmptyString(input.ownerUserId)) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'ownerUserId must be a non-empty string when set',
+    });
+  }
   if (input.activeOnly !== undefined && typeof input.activeOnly !== 'boolean') {
     throw new PluginError({
       code: 'invalid-payload',
@@ -230,6 +244,7 @@ function validateRecallInput(input: RecallInput): {
   }
   return {
     ...(input.about !== undefined ? { about: input.about } : {}),
+    ...(input.ownerUserId !== undefined ? { ownerUserId: input.ownerUserId } : {}),
     limit: Math.min(Math.floor(input.limit), MAX_LIMIT),
     // Omitted or `true` -> only currently-active rows (unchanged TASK-421
     // behavior). `false` -> history mode (design §4.2): no validity filter,
@@ -632,7 +647,7 @@ export function createMemoryFactsPostgresPlugin(): Plugin {
         PLUGIN_NAME,
         async (ctx, input) => {
           // Validation before the store region — see `record`.
-          const { about, limit, activeOnly } = validateRecallInput(input);
+          const { about, ownerUserId, limit, activeOnly } = validateRecallInput(input);
           const agentKey = agentScopeKey(ctx);
 
           // `activeOnly` (§4.2 `history`) gates the validity predicate:
@@ -653,6 +668,21 @@ export function createMemoryFactsPostgresPlugin(): Plugin {
 
             let query = store.selectFrom(TABLE).selectAll().where('agent_key', '=', agentKey);
             if (about !== undefined) query = query.where('about', '=', about);
+            // Owner scope in the WHERE, never as a filter over the rows that
+            // come back. The `.limit()` below is the whole argument: cut the
+            // page first and filter after, and an owner whose rows are older
+            // than another owner's gets a short answer — or an empty one —
+            // while their rows sit there active and perfectly visible. Design
+            // §6.1, "Never post-filter a widened pool", which lands hardest on
+            // THIS backend: it is the one whose future dense channel (TASK-457)
+            // will be a filtered ANN, where a widened-then-filtered pool is the
+            // classic pgvector footgun the design already calls out.
+            //
+            // `=` is strict, and postgres's three-valued logic means a row with
+            // `owner_user_id IS NULL` simply does not match. That is the
+            // behaviour we want: unowned is not provably yours, and a scope may
+            // only ever fail closed (Invariant 5).
+            if (ownerUserId !== undefined) query = query.where('owner_user_id', '=', ownerUserId);
             if (activeOnly) query = query.where('valid_end', '=', INFINITY_SENTINEL);
 
             const rows = (await query
@@ -687,6 +717,17 @@ export function createMemoryFactsPostgresPlugin(): Plugin {
               message: 'ids must be an array',
             });
           }
+          // Same rule and same reason as `recall`'s: `''` is storable, so
+          // treating it as absent would turn "close only MY rows" into "close
+          // any row in the tenant" — a scope failing OPEN, on the one hook
+          // that destroys state.
+          if (input.ownerUserId !== undefined && !isNonEmptyString(input.ownerUserId)) {
+            throw new PluginError({
+              code: 'invalid-payload',
+              plugin: PLUGIN_NAME,
+              message: 'ownerUserId must be a non-empty string when set',
+            });
+          }
           const agentKey = agentScopeKey(ctx);
           const at = new Date().toISOString();
           // A supersede that silently did nothing is indistinguishable from
@@ -701,7 +742,7 @@ export function createMemoryFactsPostgresPlugin(): Plugin {
           // `SupersedeOutput` are the same two fields, one in engine terms and
           // one in the hook's.
           return inStore('memory:facts:supersede', () =>
-            supersedeIds(requireDb(), agentKey, input.ids, at),
+            supersedeIds(requireDb(), agentKey, input.ids, at, input.ownerUserId),
           );
         },
       );

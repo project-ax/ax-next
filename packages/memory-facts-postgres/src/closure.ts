@@ -504,27 +504,46 @@ export interface SupersedeResult {
  * Idempotent by construction: a second `supersede` of the same ids closes
  * nothing — the `valid_end = INFINITY_SENTINEL` predicate no longer matches —
  * so it collects no chains and re-settles nothing.
+ *
+ * ## Owner scope (design §6.1)
+ *
+ * `ownerUserId`, when the caller supplies one, joins the tenant key in the
+ * UPDATE's own predicate. It goes there and nowhere else for the same reason
+ * `RETURNING` is the authority on `closed`: the rows that come back ARE the
+ * rows the statement matched, so a foreign-owner id is never in `closed` and
+ * its chain is never collected — no second step that could disagree with the
+ * first. Checking the owner in application code would mean read, compare, then
+ * decide: three steps, one race, and a window in which the row could change.
+ * (The sqlite twin has to splice the clause into a separate read-back for the
+ * same reason; here that read-back IS the `RETURNING`.)
+ *
+ * A foreign-owner id is REFUSED in exactly the sense a foreign-tenant id
+ * already is: silently absent from `closed`, no throw. Same shape, one thing
+ * for a caller to handle. `=` is strict, so an unstamped row is not closable by
+ * an owner-scoped call — unowned is not provably yours.
  */
 export async function supersedeIds(
   db: FactsDatabase,
   agentKey: string,
   ids: readonly string[],
   at: string,
+  ownerUserId?: string,
 ): Promise<SupersedeResult> {
   if (ids.length === 0) return { closed: [], resettled: [] };
 
   return db.transaction().execute(async (trx) => {
-    // One statement for the whole id list, scoped to the tenant and to rows
-    // that are still active. A foreign id, a missing id and an already-closed
-    // id are all simply absent from RETURNING.
-    const retracted = await trx
+    // One statement for the whole id list, scoped to the tenant, to the
+    // caller's owner scope when it named one, and to rows that are still
+    // active. A foreign id, a foreign-OWNER id, a missing id and an
+    // already-closed id are all simply absent from RETURNING.
+    let update = trx
       .updateTable(TABLE)
       .set({ valid_end: at })
       .where('agent_key', '=', agentKey)
       .where('valid_end', '=', INFINITY_SENTINEL)
-      .where('id', 'in', [...ids])
-      .returning(['id', 'about', 'slot'])
-      .execute();
+      .where('id', 'in', [...ids]);
+    if (ownerUserId !== undefined) update = update.where('owner_user_id', '=', ownerUserId);
+    const retracted = await update.returning(['id', 'about', 'slot']).execute();
 
     const retractedById = new Map(retracted.map((row) => [row.id, row]));
 
@@ -558,6 +577,13 @@ export async function supersedeIds(
       groups.set(JSON.stringify([row.about, row.slot]), { about: row.about, slot: row.slot });
     }
 
+    // The REPLAY stays tenant-scoped on purpose, and it is the one place the
+    // owner predicate deliberately stops. A `(about, slot)` chain belongs to
+    // the TENANT — the contract pins that two people on one agent share ONE
+    // slot history, not two private shards — so re-deriving it over only one
+    // owner's rows would invent a second, quietly different set of closure
+    // rules for owner-scoped retractions. Owner scope decides WHAT this caller
+    // may retract; it does not get to change what the remaining rows then mean.
     return { closed, resettled: await resettleSlotGroups(trx, agentKey, [...groups.values()]) };
   });
 }

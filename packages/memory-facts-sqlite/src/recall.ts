@@ -134,6 +134,14 @@ export function buildFtsMatchQuery(query: string): string | null {
 export interface ChannelScope {
   agentKey: string;
   about?: string;
+  /**
+   * The caller's owner scope, or absent for "every owner in this tenant" —
+   * the hook's `ownerUserId`, which is a SCOPE and not a hint (design §6.1).
+   * It sits here, on the scope every channel already takes, precisely so no
+   * channel can be written without it: `scopeFilter` is the one place the
+   * predicate is spelled, and all three channels go through it.
+   */
+  ownerUserId?: string;
   activeOnly: boolean;
   limit: number;
 }
@@ -150,6 +158,23 @@ function scopeFilter(scope: ChannelScope, alias: string): ValidityFilter {
   if (scope.about !== undefined) {
     sql.push(`${prefix}about = ?`);
     params.push(scope.about);
+  }
+  // Owner scope, ANDed into the channel's OWN predicate rather than applied to
+  // the rows it returns. Post-filtering would be wrong twice over. First,
+  // `scope.limit` is the channel's contribution to the fusion: filter after
+  // the LIMIT and an owner whose rows happen to rank below another owner's
+  // contributes NOTHING to a fusion that had forty slots available — design
+  // §6.1's "Never post-filter a widened pool", which is a correctness rule
+  // here and not a performance one. Second, a post-filter is a filter someone
+  // has to remember to write at each of the three call sites; this is the one
+  // place all three already go through.
+  //
+  // Strict `=`, so a row with `owner_user_id IS NULL` does not match — SQL's
+  // three-valued logic gives that for free, and it is the behaviour we want:
+  // unowned is not provably yours (Invariant 5, fail closed).
+  if (scope.ownerUserId !== undefined) {
+    sql.push(`${prefix}owner_user_id = ?`);
+    params.push(scope.ownerUserId);
   }
   if (scope.activeOnly) {
     sql.push(`${prefix}valid_end = ?`);
@@ -296,21 +321,40 @@ export function temporalChannel(driver: BetterSqliteDb, scope: ChannelScope): st
  * only one in the fusion path whose `WHERE` would otherwise be a bare id list,
  * and a future channel that forgot its own scope would leak through it
  * silently. Invariant 5 — every hop.
+ *
+ * `ownerUserId` rides along for exactly that reason and no other. Every id
+ * here already came out of an owner-filtered channel, so this predicate should
+ * never remove a row — but "should never" is the whole argument for having it:
+ * an unscoped hydration is a latent hole that opens the moment a channel is
+ * added or a filter is edited, and it opens SILENTLY, since the rows still
+ * come back and still look like an answer. It stays in SQL rather than
+ * becoming a `.filter()` on the result for the same reason the channels'
+ * does — the store decides what this caller may see, and nothing downstream
+ * gets handed a row it then has to be trusted to drop.
+ *
+ * A trailing optional parameter rather than a scope object, to keep the
+ * existing `(driver, agentKey, ids)` shape readable at its one call site.
  */
 export function rowsInRankOrder<T extends { id: string }>(
   driver: BetterSqliteDb,
   agentKey: string,
   ids: readonly string[],
+  ownerUserId?: string,
 ): T[] {
   if (ids.length === 0) return [];
+  const scoped = ownerUserId !== undefined;
   const byId = new Map<string, T>();
   const CHUNK = 500;
   for (let start = 0; start < ids.length; start += CHUNK) {
     const chunk = ids.slice(start, start + CHUNK);
     const placeholders = chunk.map(() => '?').join(', ');
     const rows = driver
-      .prepare(`SELECT * FROM ${TABLE} WHERE agent_key = ? AND id IN (${placeholders})`)
-      .all(agentKey, ...chunk) as T[];
+      .prepare(
+        `SELECT * FROM ${TABLE}
+          WHERE agent_key = ?${scoped ? ' AND owner_user_id = ?' : ''}
+            AND id IN (${placeholders})`,
+      )
+      .all(agentKey, ...(scoped ? [ownerUserId] : []), ...chunk) as T[];
     for (const row of rows) byId.set(row.id, row);
   }
   return ids.flatMap((id) => {

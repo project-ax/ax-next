@@ -156,6 +156,34 @@ export interface RecordOutput {
 export interface RecallInput {
   about?: string;
   /**
+   * Scope this read to rows stamped with this owner; omitted = every owner in
+   * the tenant, which is exactly today's behaviour and is what every other
+   * case in this contract keeps asserting.
+   *
+   * It is a SCOPE, not a hint — the same phrasing and the same rule
+   * `@ax/decisions` already enforces on its `userId`. The tenant key is
+   * `agentId` ALONE (see the `per-agent isolation` cases), so one agent's
+   * store can hold rows belonging to several people; reaching the tenant is
+   * therefore not the same as being entitled to read every row in it. A caller
+   * naming an owner is asserting which of those people it reads AS, and the
+   * engine enforces it rather than trusting it.
+   *
+   * Pushed into the store's own predicate, never applied to rows after they
+   * come back. That is not a performance preference: `limit` has to count rows
+   * this owner may SEE, and a filter applied after a widened page has already
+   * been cut returns an empty answer to an owner whose rows were simply
+   * outranked by someone else's. Design §6.1, in four words: "Never
+   * post-filter a widened pool."
+   *
+   * Matching is STRICT EQUALITY, with one consequence worth stating out loud:
+   * a row stamped with NO owner is NOT visible to an owner-scoped read.
+   * Unowned is not provably yours. The alternative — treating an unstamped row
+   * as everybody's — turns a caller that forgot to stamp a write into a
+   * cross-owner channel, and the whole point of Invariant 5 is that the
+   * failure direction is the closed one.
+   */
+  ownerUserId?: string;
+  /**
    * Defaults to `true`: only currently-active rows. `false` is the `history`
    * mode of design §4.2 — no validity filter at all, so closed rows come back
    * alongside active ones, each carrying its `until` and (for a rule-closure)
@@ -217,6 +245,28 @@ export interface RecallOutput {
 
 export interface SupersedeInput {
   ids: string[];
+  /**
+   * Close only ids stamped with this owner; omitted = no owner check, which is
+   * exactly today's behaviour. A SCOPE and not a hint, for the same reasons
+   * spelled out on {@link RecallInput.ownerUserId}, and enforced in the same
+   * place — the UPDATE's own predicate, so the store decides what was closed
+   * rather than the caller being trusted to have asked nicely.
+   *
+   * A foreign-owner id is REFUSED, and "refused" here means precisely: it is
+   * NOT CLOSED, so it does not appear in `closed`. Nothing throws. That is
+   * deliberately the identical shape a foreign-TENANT id already has today —
+   * this hook has always been forgiving about ids it will not touch, and the
+   * caller learns what happened by reading `closed` rather than by catching.
+   * One refusal shape, not two, because a second one would be a second thing
+   * every caller has to handle to be correct.
+   *
+   * Strict equality again, so an UNOWNED row is not closable by an
+   * owner-scoped supersede either.
+   *
+   * Owner scope NARROWS, it never widens: naming the owner of a row in ANOTHER
+   * tenant still closes nothing, because both predicates are ANDed.
+   */
+  ownerUserId?: string;
 }
 
 /**
@@ -475,8 +525,21 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
       return bus.call<RecallInput, RecallOutput>('memory:facts:recall', ctx, input);
     }
 
-    async function supersede(ids: string[], ctx = makeCtx()): Promise<SupersedeOutput> {
-      return bus.call<SupersedeInput, SupersedeOutput>('memory:facts:supersede', ctx, { ids });
+    // `ownerUserId` is a trailing OPTIONAL third argument rather than an
+    // options object, so every existing call site keeps reading as
+    // `supersede(ids)` / `supersede(ids, ctx)` and the owner cases are the only
+    // ones that mention the owner at all. Omitted here means omitted on the
+    // payload — not `undefined` spelled explicitly — because "absent" is the
+    // behaviour under test in every other case in this file.
+    async function supersede(
+      ids: string[],
+      ctx = makeCtx(),
+      ownerUserId?: string,
+    ): Promise<SupersedeOutput> {
+      return bus.call<SupersedeInput, SupersedeOutput>('memory:facts:supersede', ctx, {
+        ids,
+        ...(ownerUserId !== undefined ? { ownerUserId } : {}),
+      });
     }
 
     async function clear(ctx = makeCtx()): Promise<void> {
@@ -1615,6 +1678,180 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
     });
 
     // -----------------------------------------------------------------------
+    // Owner scope — `ownerUserId` is a SCOPE, not a hint (design §6.1)
+    // -----------------------------------------------------------------------
+    //
+    // The tenant key is `agentId` ALONE, pinned directly above. So one agent's
+    // store legitimately holds rows belonging to several people, and the owner
+    // stamp is the SECOND axis: `record` has stamped it since TASK-421, and
+    // these cases are what make it readable and enforceable rather than a
+    // write-only column nothing ever consults.
+    //
+    // Every case below asserts BOTH directions, and that is the point rather
+    // than thoroughness for its own sake: omitting `ownerUserId` must still
+    // mean "every owner in the tenant", because that is what the other ~200
+    // cases in this file are written against. A backend that scoped by owner
+    // unconditionally would pass the narrowing half and quietly break
+    // everything else.
+    //
+    // All of it runs on ONE ctx. Two owners, one tenant, one `ctx.userId` —
+    // which is deliberate: `ctx.userId` is not the partition (see above), so
+    // it cannot be the thing separating these rows, and a backend that somehow
+    // passed by keying off it would be caught here rather than flattered.
+    describe('owner scope (ownerUserId)', () => {
+      const OWNER_A = 'owner-alice';
+      const OWNER_B = 'owner-bob';
+      const team = makeCtx('team-agent', 'whoever');
+
+      /** A's row and B's row in one tenant, neither slotted, so neither closes the other. */
+      async function twoOwners(): Promise<{ a: RecordedStatement; b: RecordedStatement }> {
+        const a = await recordOne(
+          {
+            about: 'user',
+            relation: 'likes_artist',
+            value: 'Khalid',
+            when: JAN,
+            ownerUserId: OWNER_A,
+          },
+          team,
+        );
+        const b = await recordOne(
+          {
+            about: 'user',
+            relation: 'likes_artist',
+            value: 'Sade',
+            when: JUN,
+            ownerUserId: OWNER_B,
+          },
+          team,
+        );
+        return { a, b };
+      }
+
+      it('scopes the listing to one owner, and returns every owner when omitted', async () => {
+        await twoOwners();
+
+        const scopedA = await recall({ about: 'user', limit: 10, ownerUserId: OWNER_A }, team);
+        expect(scopedA.statements.map((s) => s.value)).toEqual(['Khalid']);
+
+        const scopedB = await recall({ about: 'user', limit: 10, ownerUserId: OWNER_B }, team);
+        expect(scopedB.statements.map((s) => s.value)).toEqual(['Sade']);
+
+        // Omitted — unchanged behaviour, both owners' rows.
+        const unscoped = await recall({ about: 'user', limit: 10 }, team);
+        expect(unscoped.statements.map((s) => s.value).sort()).toEqual(['Khalid', 'Sade']);
+      });
+
+      // The push-down case, and the reason the predicate cannot live in
+      // application code. B's row is NEWER, so it wins the recency order: a
+      // `limit: 1` read that took the top row first and applied the owner
+      // filter afterwards would hand A an EMPTY answer while A's row sat there
+      // perfectly visible. Design §6.1: "Never post-filter a widened pool."
+      it('counts `limit` against the owner-scoped rows, not a widened pool', async () => {
+        const { a } = await twoOwners();
+
+        const scopedA = await recall({ about: 'user', limit: 1, ownerUserId: OWNER_A }, team);
+        expect(scopedA.statements.map((s) => s.id)).toEqual([a.id]);
+      });
+
+      // Same isolation on the `query` path. Both rows carry the SAME text, so
+      // ranking cannot be what separates them — only the scope can. Note this
+      // also covers the query-INDEPENDENT temporal channel, which admits the
+      // tenant's recent rows whatever the query says and would leak B's row
+      // into A's answer all by itself if it were left unscoped.
+      it('scopes a `query` recall the same way', async (t) => {
+        needsFusion(t);
+        const a = await recordOne(
+          {
+            about: 'user',
+            relation: 'likes_artist',
+            value: 'Khalid',
+            when: JAN,
+            ownerUserId: OWNER_A,
+          },
+          team,
+        );
+        const b = await recordOne(
+          {
+            about: 'user',
+            relation: 'likes_artist',
+            value: 'Khalid',
+            when: JUN,
+            ownerUserId: OWNER_B,
+          },
+          team,
+        );
+
+        const scopedA = await recall(
+          { query: 'likes artist Khalid', limit: 10, ownerUserId: OWNER_A },
+          team,
+        );
+        expect(scopedA.statements.map((s) => s.id)).toEqual([a.id]);
+
+        const scopedB = await recall(
+          { query: 'likes artist Khalid', limit: 10, ownerUserId: OWNER_B },
+          team,
+        );
+        expect(scopedB.statements.map((s) => s.id)).toEqual([b.id]);
+
+        const unscoped = await recall({ query: 'likes artist Khalid', limit: 10 }, team);
+        expect(unscoped.statements.map((s) => s.id).sort()).toEqual([a.id, b.id].sort());
+      });
+
+      // Unowned is not provably yours. A row nobody stamped is invisible to an
+      // owner-scoped read — fail-closed (Invariant 5) — and still perfectly
+      // visible to the unscoped one, which is what keeps it a scoping rule
+      // rather than a data-loss bug.
+      it('hides an UNOWNED row from an owner-scoped read, and still returns it unscoped', async () => {
+        const unowned = await recordOne(
+          { about: 'user', relation: 'likes_artist', value: 'Nobody', when: JAN },
+          team,
+        );
+
+        const scoped = await recall({ about: 'user', limit: 10, ownerUserId: OWNER_A }, team);
+        expect(scoped.statements).toHaveLength(0);
+
+        const unscoped = await recall({ about: 'user', limit: 10 }, team);
+        expect(unscoped.statements.map((s) => s.id)).toEqual([unowned.id]);
+      });
+
+      it("refuses a foreign-OWNER id — closes nothing, and the row is still active", async () => {
+        const { a } = await twoOwners();
+
+        const result = await supersede([a.id], team, OWNER_B);
+        // Refused == not closed. Absent from `closed`, nothing thrown — the
+        // same shape a foreign-TENANT id already has.
+        expect(result.closed).toEqual([]);
+
+        const stillThere = await recall({ about: 'user', limit: 10, ownerUserId: OWNER_A }, team);
+        expect(stillThere.statements.map((s) => s.id)).toEqual([a.id]);
+      });
+
+      it('closes the id when the owner matches', async () => {
+        const { a } = await twoOwners();
+
+        const result = await supersede([a.id], team, OWNER_A);
+        expect(result.closed).toEqual([a.id]);
+
+        const gone = await recall({ about: 'user', limit: 10, ownerUserId: OWNER_A }, team);
+        expect(gone.statements).toHaveLength(0);
+      });
+
+      // Tenant beats owner: the two predicates are ANDed, so knowing (or
+      // guessing) the right owner buys no reach across the tenant boundary.
+      it('still refuses a foreign-TENANT id even when the owner matches', async () => {
+        const otherTenant = makeCtx('other-agent', 'whoever');
+        const { a } = await twoOwners();
+
+        const result = await supersede([a.id], otherTenant, OWNER_A);
+        expect(result.closed).toEqual([]);
+
+        const stillThere = await recall({ about: 'user', limit: 10, ownerUserId: OWNER_A }, team);
+        expect(stillThere.statements.map((s) => s.id)).toEqual([a.id]);
+      });
+    });
+
+    // -----------------------------------------------------------------------
     // invalid-payload rejection at the boundary
     // -----------------------------------------------------------------------
     describe('invalid-payload rejection', () => {
@@ -1731,6 +1968,32 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
             batchKey: '',
             statements: [{ about: 'user', relation: 'likes_artist', value: 'Khalid', when: JAN }],
           }),
+        );
+      });
+
+      // Same argument as the empty `batchKey` and the empty `query`, and it
+      // matters more here because this one is a SECURITY scope: `''` is falsy
+      // in JS but a perfectly good column value, so a backend that treated it
+      // as "absent" would answer a caller who asked to be scoped with the
+      // whole tenant — silently widening a read the caller believed it had
+      // narrowed. Rejecting is the only answer the caller can detect.
+      it('recall rejects an EMPTY ownerUserId rather than treating it as absent', async () => {
+        await expectCode('invalid-payload', () => recall({ limit: 10, ownerUserId: '' }));
+      });
+
+      it('recall rejects a non-string ownerUserId', async () => {
+        await expectCode('invalid-payload', () =>
+          bus.call('memory:facts:recall', makeCtx(), { limit: 10, ownerUserId: 7 }),
+        );
+      });
+
+      it('supersede rejects an EMPTY ownerUserId rather than treating it as absent', async () => {
+        await expectCode('invalid-payload', () => supersede([], makeCtx(), ''));
+      });
+
+      it('supersede rejects a non-string ownerUserId', async () => {
+        await expectCode('invalid-payload', () =>
+          bus.call('memory:facts:supersede', makeCtx(), { ids: [], ownerUserId: 7 }),
         );
       });
     });

@@ -447,12 +447,29 @@ export interface SupersedeResult {
  * Idempotent by construction: a second `supersede` of the same ids closes
  * nothing — the `valid_end = INFINITY_SENTINEL` predicate no longer matches —
  * so it collects no chains and re-settles nothing.
+ *
+ * ## Owner scope (design §6.1)
+ *
+ * `ownerUserId`, when the caller supplies one, joins the tenant key in the
+ * UPDATE's own predicate — and in the `readGroup` read-back that follows it,
+ * so the two statements agree on which rows exist. Putting it in the SQL is
+ * what keeps `changes > 0` the SINGLE authority on what this call closed: a
+ * foreign-owner id fails to match, so it is never added to `closed` and its
+ * chain is never collected. Checking the owner in application code instead
+ * would mean reading the row, comparing, and then deciding — three steps that
+ * can disagree with each other, replacing one atomic test with a race.
+ *
+ * A foreign-owner id is therefore REFUSED in exactly the sense a foreign-tenant
+ * id already is: silently absent from `closed`, no throw. Same shape, one
+ * thing for a caller to handle. And `=` is strict, so an unstamped row is not
+ * closable by an owner-scoped call — unowned is not provably yours.
  */
 export function supersedeIds(
   driver: BetterSqliteDb,
   agentKey: string,
   ids: readonly string[],
   at: string,
+  ownerUserId?: string,
 ): SupersedeResult {
   if (ids.length === 0) return { closed: [], resettled: [] };
   const close = driver.transaction((): SupersedeResult => {
@@ -472,21 +489,29 @@ export function supersedeIds(
     // drain's group map in `plugin.ts`).
     const groups = new Map<string, SlotGroup>();
 
+    // The owner predicate is spliced into BOTH statements or neither, so the
+    // read-back can never see a row the UPDATE could not have touched.
+    const ownerClause = ownerUserId === undefined ? '' : ' AND owner_user_id = ?';
+    const ownerParams: string[] = ownerUserId === undefined ? [] : [ownerUserId];
+
     const statement = driver.prepare(
-      `UPDATE ${TABLE} SET valid_end = ? WHERE id = ? AND agent_key = ? AND valid_end = ?`,
+      `UPDATE ${TABLE} SET valid_end = ?
+        WHERE id = ? AND agent_key = ?${ownerClause} AND valid_end = ?`,
     );
-    // Read back AFTER the UPDATE, keyed on the same tenant scope, so the
-    // `changes > 0` test stays the single authority on what this call closed:
-    // the chain is collected for rows it really retracted, never for a foreign
-    // or already-closed id it merely looked at.
+    // Read back AFTER the UPDATE, keyed on the same tenant AND owner scope, so
+    // the `changes > 0` test stays the single authority on what this call
+    // closed: the chain is collected for rows it really retracted, never for a
+    // foreign, foreign-owner, or already-closed id it merely looked at.
     const readGroup = driver.prepare(
-      `SELECT about, slot FROM ${TABLE} WHERE id = ? AND agent_key = ?`,
+      `SELECT about, slot FROM ${TABLE} WHERE id = ? AND agent_key = ?${ownerClause}`,
     );
 
     for (const id of ids) {
-      if (statement.run(at, id, agentKey, INFINITY_SENTINEL).changes === 0) continue;
+      if (statement.run(at, id, agentKey, ...ownerParams, INFINITY_SENTINEL).changes === 0) continue;
       closed.push(id);
-      const row = readGroup.get(id, agentKey) as { about: string; slot: string | null } | undefined;
+      const row = readGroup.get(id, agentKey, ...ownerParams) as
+        | { about: string; slot: string | null }
+        | undefined;
       // `undefined` is unreachable — the UPDATE just matched this row inside
       // this transaction — and is handled rather than asserted because the
       // honest fallback (skip the chain) is the same one a slotless row takes.
@@ -494,6 +519,13 @@ export function supersedeIds(
       groups.set(JSON.stringify([row.about, row.slot]), { about: row.about, slot: row.slot });
     }
 
+    // The REPLAY stays tenant-scoped on purpose, and it is the one place the
+    // owner predicate deliberately stops. A `(about, slot)` chain belongs to
+    // the TENANT — the contract pins that two people on one agent share ONE
+    // slot history, not two private shards — so re-deriving it over only one
+    // owner's rows would invent a second, quietly different set of closure
+    // rules for owner-scoped retractions. Owner scope decides WHAT this caller
+    // may retract; it does not get to change what the remaining rows then mean.
     return { closed, resettled: resettleSlotGroups(driver, agentKey, [...groups.values()]) };
   });
   return close();
