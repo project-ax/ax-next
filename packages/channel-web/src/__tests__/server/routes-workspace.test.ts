@@ -955,7 +955,12 @@ describe('channel-web agent-workspace BFF', () => {
       {
         kind: 'permission-card',
         key: 'skill:x',
-        payload: { kind: 'skill', skillId: 'x' },
+        // The payload is an OPAQUE frame body, so it may legitimately carry a
+        // key called `error` that means something else entirely. What keeps
+        // this out of the thread has to be the EVENT KIND, not a duck-type on
+        // the payload — read the other way round, a card would surface as a
+        // failure the agent never had.
+        payload: { kind: 'skill', skillId: 'x', error: 'user-declined' },
         createdAt: '2026-08-01T10:00:00.000Z',
       },
     ]);
