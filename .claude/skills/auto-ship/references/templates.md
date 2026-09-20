@@ -170,9 +170,17 @@ afford — heed it rather than dispatching and hoping.
 >   the PR but return `reviewer: hung` — auto-ship orders an independent pass before it
 >   merges. **Never** substitute your own self-review and report `reviewer: clean`; a
 >   reviewer that produced no findings is `hung`, always.
-> - **State WHICH SHA your reviewer approved, and what landed after it.** Record the
->   branch head (`rev-parse HEAD`) at the moment you dispatch each review round; the
+> - **State WHICH SHA your reviewer approved, as a FULL 40-character sha, and what
+>   landed after it.** Record the branch head (`git rev-parse HEAD` — never `--short`,
+>   never `%h`) at the moment you dispatch each review round; the
 >   last round that came back with no actionable findings is your `reviewed-sha:`.
+>   **Do not abbreviate it.** Three handoffs in the 2026-09-20 run returned 8 characters
+>   (TASK-436, PR #650, PR #652) and all three "worked", because git expands an
+>   unambiguous prefix locally — which is exactly why it is dangerous: an abbreviation
+>   that resolves to a commit on another branch makes the gate's delta come back empty
+>   for code nobody reviewed. The gate now resolves and ancestry-checks whatever you
+>   send and fails closed when it cannot, so an abbreviation costs you a re-review
+>   rather than sneaking through.
 >   Phase 5's loop already ends at "a review saw THIS head" — this field is what makes
 >   that checkable instead of assumed, because the usual rhythm (review → apply the
 >   findings → push the fix) leaves the fix commit as the PR head with nobody having
@@ -200,9 +208,14 @@ afford — heed it rather than dispatching and hoping.
 > reviewer: clean | hung | skipped-<reason>        # REQUIRED. "clean" ONLY if an
 >                                                  # ax-code-reviewer actually RETURNED
 >                                                  # and its findings are addressed.
-> reviewed-sha: <sha> | -                          # REQUIRED whenever reviewer=clean.
+> reviewed-sha: <full 40-char sha> | -             # REQUIRED whenever reviewer=clean.
 >                                                  # The sha your reviewer actually
 >                                                  # APPROVED — not headSha by default.
+>                                                  # FULL 40 characters, never an
+>                                                  # abbreviation: the merge gate ranges
+>                                                  # over it, and a short sha resolves
+>                                                  # LOCALLY, so a wrong-base delta comes
+>                                                  # back empty instead of loud.
 >                                                  # If it differs from headSha, add one
 >                                                  # indented line per commit after it:
 >   - <sha> fix: <the reviewer finding it answers>

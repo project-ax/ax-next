@@ -1,0 +1,592 @@
+// Guard: the merge gate's Q2 block must RESOLVE the handoff's `reviewed-sha` before it
+// ranges over it -- and must never range from an abbreviation, from a base it cannot
+// resolve, or from a commit that is not on the branch.
+//
+// ---------------------------------------------------------------------------------
+// WHY THIS EXISTS (TASK-479).
+//
+// The merge gate compares two shas. One of them, `HEAD_SHA`, has carried
+// `[ ${#HEAD_SHA} -eq 40 ]` since TASK-392, with a long note about why `gh run list
+// --commit` needs the full 40 characters. The other, `reviewed-sha`, came straight out
+// of the handoff and was spliced into a git range with no assertion at all. Its only
+// documented failure mode was "MISSING or `-`" -> fail closed to origin/main.
+//
+// ABBREVIATED is a third state, and it is the one that actually arrives. Measured
+// 2026-09-20, three handoffs in a single auto-ship run:
+//
+//     TASK-436  reviewed-sha: 79940789   (8 chars)
+//     PR #650   reviewed-sha: a46a874f   (8 chars)
+//     PR #652   reviewed-sha: 78d43240   (8 chars)
+//
+// all three under an honest `reviewer: clean`, and all three hand-mitigated by the
+// orchestrator with `git rev-parse`. Nothing failed, which is precisely the defect:
+// `git log 79940789..origin/<branch>` resolves an unambiguous prefix LOCALLY and prints
+// a plausible delta, so the gate silently works and no operator looks twice.
+//
+// The two ways that stops being harmless fail in opposite directions:
+//
+//   - AMBIGUOUS prefix -> git errors about object names. Loud, but it reads as a broken
+//     command rather than as "this PR has no verified review", and the obvious repair
+//     (re-run it with a longer prefix) is the wrong instinct.
+//   - RESOLVES TO THE WRONG COMMIT -> the delta is computed against a base that is not
+//     on the branch. That can come back EMPTY, and an empty delta is this gate's
+//     "a reviewer saw the head" answer. The gate then merges unreviewed code while
+//     reporting that it checked.
+//
+// ---------------------------------------------------------------------------------
+// WHY THIS GUARD EXECUTES THE BLOCK INSTEAD OF SCANNING IT.
+//
+// Its sibling `autoship-review-gate-reviewed-sha.test.js` is a text scan, and rightly
+// so -- it pins RULES stated in prose (scope routing, the `fix:`/`new:` labels). This
+// card's subject is not a rule, it is a BEHAVIOUR: what the documented shell does when
+// handed eight characters. A scan for the words "full 40-char sha" would pass against a
+// doc that says them and branches on nothing, which is the shape the block had.
+//
+// So the tests below extract the Q2 fenced block from `auto-ship/SKILL.md` and RUN it,
+// with `<reviewed-sha>` substituted, against a REAL throwaway git repository -- real
+// abbreviations, a real ambiguous prefix (two commits manufactured to share one), a real
+// off-branch commit. `git` on PATH is a tracing shim that records every invocation and
+// then execs the real thing, so the assertions are about the ranges the block actually
+// hands to git, not about its prose. Only `gh` is stubbed. Nothing reaches the network.
+//
+// The doc IS the implementation -- there is no second copy in a script to drift from it.
+//
+// MUTANTS RUN, NOT REASONED ABOUT. Re-derived 2026-09-20 on git 2.52.0, macOS, bash 3.2
+// + zsh 5.9, against the head this file ships with -- baseline 23 here, 30 with the
+// sibling text-scan guard collected, which is how the counts below were taken. Every
+// mutant still collects 30, so none of them reddened by making the suite smaller.
+//
+// Two earlier tables were wrong, both in the flattering direction, and the reason is the
+// same both times: they were measured against an INTERMEDIATE state of this patch and
+// carried forward unedited while tests and code kept landing. A mutant table is a claim
+// about a specific head. Re-run it against the head you ship, or delete it -- a stale
+// table is worse than none, because it reads as evidence.
+//
+//   - revert the whole Q2 block to its pre-TASK-479 text (`REVIEWED_SHA=<reviewed-sha>`
+//     spliced straight into the two ranges) -> 16 red: abbreviation, `-`, empty,
+//     unknown-sha, ambiguous, off-branch, whitespace and failed-fetch, x both shells.
+//     The full-sha and the two vacuity cases stay green, which is the point -- the fix
+//     changed no behaviour for a well-formed handoff.
+//   - delete ONLY the `merge-base --is-ancestor` arm (keep resolution + the 40-char
+//     assert) -> 2 red: the off-branch case x both shells. Nothing else moves, so that
+//     arm is carrying its own property and is not decoration on the resolve. It is also
+//     the only arm with no substitute -- see the bare-`rev-parse` entry below, where it
+//     silently covers a case the resolve was credited with.
+//   - drop the `|| { … exit 1; }` guard from the `git fetch` line -> 2 red: the
+//     failed-fetch case x both shells. The two stale directions are not symmetric, and
+//     the one that hides work is the one this gate exists to close.
+//   - change the fail-closed arm to `exit 1` instead of falling back to origin/main
+//     -> 12 red (`-`, empty, unknown, ambiguous, off-branch, whitespace x 2 shells).
+//     Recorded because it is the mutant a reader expects to PASS: "halting is also
+//     closed". It is not what the gate is specified to do -- Q2's contract is that an
+//     unusable reviewed-sha means the whole branch is unreviewed, which keeps the
+//     SERIALIZED queue moving through an independent pass instead of stalling every card
+//     behind a typo.
+//   - swap `--verify --quiet --end-of-options "${RAW_REVIEWED}^{commit}"` for a bare
+//     `git rev-parse "${RAW_REVIEWED}"` -- dropping every flag AND the `^{commit}` peel
+//     -> 0 red. An earlier table claimed 2 (the unknown-sha case), and the correction is
+//     worth more than the number. Its premise is right: bare `rev-parse` assumes anything
+//     sha-shaped IS a sha, so `rev-parse dead0beefdead0beefdead0beefdead0beefdead` echoes
+//     it back at rc 0 (measured) and `REVIEWED_SHA` ends up holding garbage. Its
+//     conclusion was wrong, because the garbage does not survive the next line: a
+//     nonexistent object is not an ancestor of anything, so the `merge-base
+//     --is-ancestor` arm rejects it and fails closed. The two arms OVERLAP here and the
+//     ancestry arm wins. Keeping the peel while dropping the flags is also 0 red, and so
+//     is dropping `--end-of-options` alone. So the flags buy DIAGNOSIS, not the property:
+//     they yield an empty string and the "missing/ambiguous/unknown" line, where the bare
+//     form gets there via a `merge-base` error on stderr and the wordier non-ancestor
+//     line. They stay for the message, and this file does not claim them as load-bearing.
+//   - delete the `[ ${#REVIEWED_SHA} -eq 40 ]` assert alone -> 0 red. Same status: with
+//     resolution and the ancestry arm in place it is genuinely belt-and-braces, kept
+//     because it is the visible assertion a future edit would have to delete on purpose
+//     in order to reintroduce a raw splice.
+//   - double-quote the doc's `RAW_REVIEWED=<reviewed-sha>` line -> 4 red, and read this
+//     one carefully rather than counting it as a kill. The reddened cases are the two
+//     HAPPY paths (full sha, abbreviation), and they redden because `q2Script` already
+//     wraps the value in single quotes, so the doubled quoting makes every value
+//     unresolvable. It is a substitution artifact, not a behavioural difference: on real
+//     input both spellings fail closed. What it does buy is a canary -- an edit to that
+//     line cannot land quietly -- and that is all it is claimed to buy. The actual
+//     hazard of quoting that line (it looks handled while `$( )` still expands inside it)
+//     is not observable by any test, which is why it is stated in the block's own NOTE.
+//   - revert the handoff field line to `reviewed-sha: <sha> | -` -> 1 red (the field-line
+//     test). Revert the builder-prompt bullet to its pre-TASK-479 wording -> 1 red (the
+//     bullet test). The two contract halves are independently pinned.
+//
+// Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally -- no
+// network, no Docker, no build.
+
+import { createHash } from 'node:crypto';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const SKILL_PATH = '.claude/skills/auto-ship/SKILL.md';
+const TEMPLATES_PATH = '.claude/skills/auto-ship/references/templates.md';
+const AUTO_SHIP_DOC = join(REPO_ROOT, SKILL_PATH);
+const TEMPLATES_DOC = join(REPO_ROOT, TEMPLATES_PATH);
+
+function binExists(name) {
+  try {
+    execFileSync('sh', ['-c', `command -v ${name}`], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const HAS_ZSH = binExists('zsh');
+const SHELLS = HAS_ZSH ? ['bash', 'zsh'] : ['bash'];
+const REAL_GIT = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+
+// ---------------------------------------------------------------------------------
+// Extracting the block.
+// ---------------------------------------------------------------------------------
+
+/** Every fenced ```bash block in `md`, dedented by the fence's own indent. */
+function bashBlocks(md) {
+  const out = [];
+  const lines = md.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const open = /^(\s*)```bash\s*$/.exec(lines[i]);
+    if (!open) continue;
+    const indent = open[1];
+    const body = [];
+    let j = i + 1;
+    for (; j < lines.length; j++) {
+      if (new RegExp(`^${indent}\`\`\`\\s*$`).test(lines[j])) break;
+      body.push(lines[j].startsWith(indent) ? lines[j].slice(indent.length) : lines[j]);
+    }
+    out.push(body.join('\n'));
+    i = j;
+  }
+  return out;
+}
+
+/**
+ * The Q2 post-review-delta block: the one that substitutes the handoff's
+ * `<reviewed-sha>` placeholder and scans the delta's FILES.
+ *
+ * Located structurally (placeholder + `--name-only` over a two-dot range) rather than
+ * by any line this file is asserting about, so that mutating the assertions under test
+ * cannot make the extraction return nothing. That coupling is the trap its sibling
+ * `autoship-ci-run-lookup-full-sha.test.js` hit and documented: a guard whose extractor
+ * keys on the line it is guarding reports "vacuous", not "broken", when that line dies.
+ */
+function q2Block() {
+  const md = readFileSync(AUTO_SHIP_DOC, 'utf8');
+  const blocks = bashBlocks(md).filter(
+    (b) => /<reviewed-sha>/.test(b) && /--name-only[^\n]*\.\.(?!\.)/.test(b),
+  );
+  return blocks.length === 1 ? blocks[0] : undefined;
+}
+
+const Q2 = q2Block();
+
+/** The block with its two placeholders filled, ready to run. */
+function q2Script(reviewedSha) {
+  // Single-quoted so an empty value, a bare `-`, or anything else the handoff might
+  // carry reaches the block as ONE word -- the same way an operator pasting a field
+  // value would, and without this file's substitution deciding the answer.
+  const quoted = `'${String(reviewedSha).replace(/'/g, `'\\''`)}'`;
+  return Q2.replace(/<reviewed-sha>/g, quoted).replace(/<n>/g, '123');
+}
+
+/**
+ * The same block with the value spliced in RAW -- no quoting of any kind.
+ *
+ * This is what the doc literally says (`RAW_REVIEWED=<reviewed-sha>`), and the quoted
+ * substitution above deliberately does not exercise it. `q2Script`'s quoting is right
+ * for reasoning about VALUES -- it stops this file's own substitution from deciding the
+ * answer -- but it means no other test in here runs the assignment line as the operator
+ * will actually run it. One case does, below.
+ */
+function q2ScriptRaw(reviewedSha) {
+  return Q2.replace(/<reviewed-sha>/g, String(reviewedSha)).replace(/<n>/g, '123');
+}
+
+// ---------------------------------------------------------------------------------
+// The fixture: a real repository, and real objects to be wrong about.
+// ---------------------------------------------------------------------------------
+
+const WORKDIR = mkdtempSync(join(tmpdir(), 'autoship-reviewed-sha-'));
+const STUB_DIR = join(WORKDIR, 'stub');
+const CLONE = join(WORKDIR, 'work');
+const STALE_CLONE = join(WORKDIR, 'stale');
+const TRACE = join(WORKDIR, 'git-trace.log');
+
+/** Real git, in the fixture clone, never traced. */
+function git(...args) {
+  return execFileSync(REAL_GIT, args, {
+    cwd: CLONE,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: 'T',
+      GIT_AUTHOR_EMAIL: 't@example.invalid',
+      GIT_COMMITTER_NAME: 'T',
+      GIT_COMMITTER_EMAIL: 't@example.invalid',
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_SYSTEM: '/dev/null',
+    },
+  }).trim();
+}
+
+/**
+ * Two real commits whose object ids share their first `n` hex characters, written
+ * straight into the object database.
+ *
+ * Manufactured rather than hoped for: a commit's id is the sha1 of its serialized
+ * bytes, so varying the timestamp walks a space of valid commits, and at n=4 (65536
+ * buckets) a few thousand candidates collide many times over. Both are well-formed
+ * commits over a real tree with a real parent, so `git rev-parse --verify X^{commit}`
+ * genuinely has two answers -- which is the state this gate has to fail closed on, and
+ * the one state it cannot be handed by accident on demand.
+ */
+function ambiguousCommitPair(tree, parent, n) {
+  const seen = new Map();
+  for (let ts = 1_500_000_000; ts < 1_500_006_000; ts++) {
+    const body =
+      `tree ${tree}\n` +
+      `parent ${parent}\n` +
+      `author T <t@example.invalid> ${ts} +0000\n` +
+      `committer T <t@example.invalid> ${ts} +0000\n` +
+      `\nambiguity fixture\n`;
+    const raw = Buffer.from(`commit ${Buffer.byteLength(body)}\0${body}`, 'utf8');
+    const oid = createHash('sha1').update(raw).digest('hex');
+    const key = oid.slice(0, n);
+    const prior = seen.get(key);
+    if (prior && prior.oid !== oid) return { prefix: key, bodies: [prior.body, body] };
+    seen.set(key, { oid, body });
+  }
+  return undefined;
+}
+
+let BASE_SHA; // on main, and on feat
+let R1_SHA; // first feat commit -- the sha a well-behaved handoff names
+let ORIGIN_MAIN_SHA; // what a fail-closed run must range from
+let OFF_BRANCH_SHA; // resolves fine, is NOT on feat
+let AMBIGUOUS_PREFIX; // resolves to two commits
+
+beforeAll(() => {
+  execFileSync(REAL_GIT, ['init', '-q', '--bare', join(WORKDIR, 'origin.git')]);
+  execFileSync(REAL_GIT, ['init', '-q', '-b', 'main', CLONE]);
+
+  git('config', 'user.email', 't@example.invalid');
+  git('config', 'user.name', 'T');
+  git('remote', 'add', 'origin', join(WORKDIR, 'origin.git'));
+
+  writeFileSync(join(CLONE, 'f.txt'), 'base\n');
+  git('add', '.');
+  git('commit', '-qm', 'base');
+  BASE_SHA = git('rev-parse', 'HEAD');
+  git('push', '-q', 'origin', 'main');
+  ORIGIN_MAIN_SHA = BASE_SHA;
+
+  git('switch', '-qc', 'feat');
+  writeFileSync(join(CLONE, 'f.txt'), 'r1\n');
+  git('commit', '-qam', 'reviewed work');
+  R1_SHA = git('rev-parse', 'HEAD');
+  writeFileSync(join(CLONE, 'prod.ts'), 'export const x = 1;\n');
+  git('add', '.');
+  git('commit', '-qm', 'unreviewed fix');
+  git('push', '-q', 'origin', 'feat');
+
+  // A commit that resolves but is not on `feat`. This is the dangerous half of the
+  // abbreviation story made explicit: a base off the branch yields a delta that can be
+  // empty for code nobody read.
+  git('switch', '-q', 'main');
+  git('switch', '-qc', 'other');
+  writeFileSync(join(CLONE, 'g.txt'), 'other\n');
+  git('add', '.');
+  git('commit', '-qm', 'off-branch');
+  OFF_BRANCH_SHA = git('rev-parse', 'HEAD');
+  git('switch', '-q', 'feat');
+
+  if (git('rev-parse', '--show-object-format') === 'sha1') {
+    const pair = ambiguousCommitPair(git('rev-parse', 'HEAD^{tree}'), BASE_SHA, 4);
+    if (pair) {
+      for (const body of pair.bodies) {
+        execFileSync(REAL_GIT, ['hash-object', '-w', '-t', 'commit', '--stdin'], {
+          cwd: CLONE,
+          input: body,
+          encoding: 'utf8',
+        });
+      }
+      AMBIGUOUS_PREFIX = pair.prefix;
+    }
+  }
+
+  // A second clone with a dead remote: every ref it holds is real but STALE, which is
+  // the state an unguarded `git fetch` leaves behind. Its origin/feat deliberately
+  // predates the unreviewed commit, so a block that shrugs off the failed fetch would
+  // range over a branch that is missing work -- the under-review direction.
+  execFileSync(REAL_GIT, ['clone', '-q', join(WORKDIR, 'origin.git'), STALE_CLONE]);
+  execFileSync(REAL_GIT, ['update-ref', 'refs/remotes/origin/feat', R1_SHA], { cwd: STALE_CLONE });
+  execFileSync(REAL_GIT, ['remote', 'set-url', 'origin', join(WORKDIR, 'no-such-remote.git')], {
+    cwd: STALE_CLONE,
+  });
+
+  // The stubs. `gh` answers the one question the block asks it; `git` is a tracing shim
+  // in front of the real binary, so every range the block forms is recorded verbatim.
+  execFileSync('mkdir', ['-p', STUB_DIR]);
+  writeFileSync(
+    join(STUB_DIR, 'gh'),
+    `#!/bin/sh
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  printf '%s\\n' "$STUB_BRANCH"
+  exit 0
+fi
+echo "stub gh: unhandled invocation: $*" >&2
+exit 64
+`,
+    { mode: 0o755 },
+  );
+  chmodSync(join(STUB_DIR, 'gh'), 0o755);
+
+  writeFileSync(
+    join(STUB_DIR, 'git'),
+    `#!/bin/sh
+printf '%s\\n' "$*" >> "$GIT_TRACE_FILE"
+exec ${REAL_GIT} "$@"
+`,
+    { mode: 0o755 },
+  );
+  chmodSync(join(STUB_DIR, 'git'), 0o755);
+});
+
+afterAll(() => {
+  try {
+    rmSync(WORKDIR, { recursive: true, force: true });
+  } catch {
+    /* best-effort */
+  }
+});
+
+/**
+ * Run the extracted block for one `reviewed-sha` value and report what it did.
+ *
+ * spawnSync, not execFileSync: a non-zero exit is DATA here (the off-branch case is
+ * specified to halt), and a helper that threw would push that assertion into a
+ * try/catch where "it halted" is easy to confuse with "the test crashed".
+ */
+function runGate(shell, reviewedSha, cwd = CLONE, build = q2Script) {
+  writeFileSync(TRACE, '');
+  const r = spawnSync(shell, ['-c', build(reviewedSha)], {
+    cwd,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: `${STUB_DIR}:${process.env.PATH}`,
+      GIT_TRACE_FILE: TRACE,
+      STUB_BRANCH: 'feat',
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_SYSTEM: '/dev/null',
+    },
+  });
+  const trace = readFileSync(TRACE, 'utf8').split('\n').filter(Boolean);
+  // The left endpoint of every two-dot range the block handed to `git log` / `git diff`
+  // -- i.e. every base it actually measured the unreviewed delta from.
+  const bases = trace
+    .filter((l) => /^(log|diff)\b/.test(l))
+    .map((l) => /(\S+)\.\.(?!\.)(\S+)/.exec(l))
+    .filter(Boolean)
+    .map((m) => m[1]);
+  return { rc: r.status, out: `${r.stdout}${r.stderr}`, trace, bases };
+}
+
+const FULL_SHA = /^[0-9a-f]{40}$/;
+
+// ---------------------------------------------------------------------------------
+
+describe('the Q2 block is where this guard thinks it is (TASK-479)', () => {
+  it('extracts exactly one post-review-delta block from the skill', () => {
+    expect(
+      Q2,
+      `${SKILL_PATH}: could not find exactly one fenced bash block that substitutes \`<reviewed-sha>\` and scans a two-dot range with \`--name-only\`. Every assertion below runs that block, so a broken extraction would pass all of them`,
+    ).not.toBeUndefined();
+  });
+
+  it('that block really forms both ranges — otherwise there is nothing to be wrong about', () => {
+    if (Q2 === undefined) return; // reported above
+    expect(/git log[^\n]*\.\.(?!\.)/.test(Q2), `${SKILL_PATH}: the Q2 block no longer lists the unseen COMMITS`).toBe(true);
+    expect(/git diff[^\n]*--name-only[^\n]*\.\.(?!\.)/.test(Q2), `${SKILL_PATH}: the Q2 block no longer lists the unseen FILES`).toBe(true);
+  });
+});
+
+describe.each(SHELLS)('Q2 gate under %s: the base it ranges from (TASK-479)', (shell) => {
+  it('a full 40-char reviewed-sha on the branch is used as-is', () => {
+    if (Q2 === undefined) return;
+    const { rc, bases } = runGate(shell, R1_SHA);
+    expect(rc, 'a well-formed handoff must not halt the gate').toBe(0);
+    expect(bases.length, 'the gate formed neither range').toBeGreaterThanOrEqual(2);
+    for (const b of bases) expect(b).toBe(R1_SHA);
+  });
+
+  it('an ABBREVIATED reviewed-sha is resolved to 40 chars before any range is formed', () => {
+    if (Q2 === undefined) return;
+    const short = R1_SHA.slice(0, 8);
+    const { bases } = runGate(shell, short);
+
+    expect(
+      bases.length,
+      `${SKILL_PATH}: the gate formed no range at all for an abbreviated reviewed-sha`,
+    ).toBeGreaterThanOrEqual(2);
+
+    for (const b of bases) {
+      expect(
+        b,
+        `${SKILL_PATH}: the gate ranged from '${b}' — the abbreviation the handoff sent, unresolved. This is the measured 2026-09-20 state (three handoffs, 8 chars each, all "working"): git expands an unambiguous prefix locally, so the wrong-base and ambiguous cases are the only ones that ever surface, and one of them surfaces as an EMPTY delta for unreviewed code`,
+      ).toMatch(FULL_SHA);
+      expect(b, 'resolved to the wrong commit').toBe(R1_SHA);
+    }
+  });
+
+  it.each([
+    ['-', 'the documented "no review" marker'],
+    ['', 'an empty/missing field'],
+    ['dead0beefdead0beefdead0beefdead0beefdead', 'a 40-char sha this clone does not have'],
+  ])('fails CLOSED to origin/main for %s', (value) => {
+    if (Q2 === undefined) return;
+    const { bases } = runGate(shell, value);
+
+    expect(
+      bases.length,
+      `${SKILL_PATH}: the gate formed no usable range for reviewed-sha '${value}'. Fail-closed means ranging from origin/main — treating the whole branch as unreviewed — not skipping the scope test`,
+    ).toBeGreaterThanOrEqual(2);
+
+    for (const b of bases) {
+      expect(
+        b,
+        `${SKILL_PATH}: the gate ranged from '${b}' for reviewed-sha '${value}' instead of falling back to origin/main (${ORIGIN_MAIN_SHA})`,
+      ).toBe(ORIGIN_MAIN_SHA);
+    }
+  });
+
+  it('fails CLOSED for an AMBIGUOUS abbreviation rather than guessing', () => {
+    if (Q2 === undefined) return;
+    if (AMBIGUOUS_PREFIX === undefined) {
+      // Only reachable on a sha256 repository, where the fixture cannot be manufactured
+      // the same way. Say so rather than reporting a green that tested nothing.
+      expect(git('rev-parse', '--show-object-format')).not.toBe('sha1');
+      return;
+    }
+    const { bases } = runGate(shell, AMBIGUOUS_PREFIX);
+    expect(
+      bases.length,
+      `${SKILL_PATH}: no range formed for the ambiguous prefix '${AMBIGUOUS_PREFIX}'`,
+    ).toBeGreaterThanOrEqual(2);
+    for (const b of bases) {
+      expect(
+        b,
+        `${SKILL_PATH}: an ambiguous prefix must fail closed to origin/main, not reach git as '${b}' — where it surfaces as an error about object names rather than as "this PR has no verified review"`,
+      ).toBe(ORIGIN_MAIN_SHA);
+    }
+  });
+
+  it('fails CLOSED when the reviewed-sha resolves to a commit that is not on the branch', () => {
+    if (Q2 === undefined) return;
+    const { bases } = runGate(shell, OFF_BRANCH_SHA);
+
+    expect(
+      bases.length,
+      `${SKILL_PATH}: no range formed for an off-branch reviewed-sha`,
+    ).toBeGreaterThanOrEqual(2);
+
+    for (const b of bases) {
+      expect(
+        b,
+        `${SKILL_PATH}: the gate measured the delta from ${OFF_BRANCH_SHA}, which is not an ancestor of origin/feat. That is the genuinely dangerous state an abbreviation buys: the range resolves, the delta can come back EMPTY, and an empty delta is this gate's "a reviewer saw the head" answer. Widen to origin/main instead — which is also the right answer for the honest cause of a non-ancestor, a rebase after the review round`,
+      ).toBe(ORIGIN_MAIN_SHA);
+    }
+  });
+
+  it('a WHITESPACE-bearing handoff value, spliced in raw as the doc splices it, fails CLOSED', () => {
+    if (Q2 === undefined) return;
+    // Runs `RAW_REVIEWED=<reviewed-sha>` exactly as written -- unquoted. A value with a
+    // space (`<sha> feat`) then parses as a one-shot env assignment prefixing a command,
+    // so `RAW_REVIEWED` is never set in the shell and the block must fail closed.
+    //
+    // WHAT THIS DOES NOT PIN, stated because the first draft of this comment claimed it
+    // did: it does not defend the unquoted splice against being "hardened" to
+    // `RAW_REVIEWED="<reviewed-sha>"`. Both spellings fail closed on this input -- raw
+    // because the assignment never lands, quoted because `<sha> feat^{commit}` does not
+    // resolve. No input separates them, because the difference is not behavioural: the
+    // quoted form is worse only in that it looks handled while `$( )` still expands
+    // inside it. That belongs in the block's own NOTE, and it is there. A guard cannot
+    // assert a thing it cannot observe, and pretending otherwise is how a green test
+    // ends up standing in for a fix.
+    const { bases } = runGate(shell, `${R1_SHA} feat`, CLONE, q2ScriptRaw);
+
+    expect(
+      bases.length,
+      `${SKILL_PATH}: the gate formed no usable range for a whitespace-bearing reviewed-sha`,
+    ).toBeGreaterThanOrEqual(2);
+
+    for (const b of bases) {
+      expect(
+        b,
+        `${SKILL_PATH}: a handoff value carrying whitespace must widen to origin/main (${ORIGIN_MAIN_SHA}), not range from '${b}'`,
+      ).toBe(ORIGIN_MAIN_SHA);
+    }
+  });
+
+  it('HALTS rather than ranging over refs a failed fetch could not refresh', () => {
+    if (Q2 === undefined) return;
+    // In this clone `origin/feat` is one commit behind the real branch and the remote is
+    // gone, so a block that shrugs off the fetch failure computes an EMPTY delta for the
+    // very commit it exists to notice. The two stale directions are not symmetric: a
+    // stale origin/main only widens, a stale branch ref hides work.
+    const { rc, out, bases } = runGate(shell, R1_SHA, STALE_CLONE);
+
+    expect(
+      bases,
+      `${SKILL_PATH}: \`git fetch\` failed and the gate ranged anyway — from refs it could not refresh. Here that yields an empty delta for a branch whose head it never saw`,
+    ).toEqual([]);
+    expect(rc, `${SKILL_PATH}: a failed fetch must halt the card, not produce a delta`).not.toBe(0);
+    expect(out, 'the halt must say why').toMatch(/HALT/);
+  });
+});
+
+describe('the handoff contract asks for the full sha (TASK-479)', () => {
+  const templates = readFileSync(TEMPLATES_DOC, 'utf8');
+  // The `> `-quoted builder prompt, dedented.
+  const prompt = templates
+    .split('\n')
+    .filter((l) => l.startsWith('>'))
+    .map((l) => l.replace(/^>\s?/, ''))
+    .join('\n');
+
+  it('finds the quoted builder prompt — a broken parse would pass everything below', () => {
+    expect(prompt.length, `${TEMPLATES_PATH}: no \`> \`-quoted prompt found`).toBeGreaterThan(500);
+    expect(/^reviewed-sha:/m.test(prompt), `${TEMPLATES_PATH}: no \`reviewed-sha:\` field in the handoff block`).toBe(true);
+  });
+
+  it('the `reviewed-sha:` field line says FULL 40 characters, not `<sha>`', () => {
+    const line = /^reviewed-sha:[^\n]*/m.exec(prompt)?.[0] ?? '';
+    expect(
+      /40[-\s]?char/i.test(line),
+      `${TEMPLATES_PATH}: the handoff declares \`${line.trim()}\`, which is what three builders read on 2026-09-20 before each returning 8 characters. The placeholder is the contract — spell the width into it`,
+    ).toBe(true);
+  });
+
+  it('a prompt bullet tells the builder not to abbreviate it', () => {
+    const bullets = prompt.split('\n').reduce((acc, line) => {
+      if (/^- /.test(line)) acc.push(line);
+      else if (acc.length && /^\s+\S/.test(line)) acc[acc.length - 1] += `\n${line}`;
+      return acc;
+    }, []);
+    const instructing = bullets.filter(
+      (b) => /reviewed-sha/.test(b) && /40[-\s]?char/i.test(b) && /abbreviat/i.test(b),
+    );
+    expect(
+      instructing.length,
+      `${TEMPLATES_PATH}: no bullet in the builder prompt both names \`reviewed-sha\` and forbids abbreviating it. The field comment alone is easy to skim past — the three 8-char handoffs are the evidence`,
+    ).toBeGreaterThanOrEqual(1);
+  });
+});

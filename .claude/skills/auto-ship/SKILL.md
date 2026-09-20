@@ -404,9 +404,91 @@ about to merge.
 ```bash
 # The post-review delta: everything no reviewer has seen.
 BRANCH=$(gh pr view <n> --json headRefName --jq .headRefName)
-REVIEWED_SHA=<reviewed-sha>   # from the handoff. MISSING or `-` fails CLOSED:
-                              # use origin/main, i.e. the whole branch is unreviewed.
-git fetch origin "${BRANCH}"
+# BOTH endpoints, same rule as Q1: this block's fail-closed path ranges from
+# origin/main, so a stale origin/main here would quietly widen the "unreviewed" set.
+# Guarded, unlike the older blocks above, because the two stale directions are NOT
+# symmetric: a stale origin/main only widens the delta (fail-safe), but a stale
+# origin/${BRANCH} is MISSING commits pushed since the last fetch — an under-review
+# hole, in the one direction this whole gate exists to close.
+git fetch origin main "${BRANCH}" || { echo "HALT #<n>: fetch failed — every range below would be formed from stale refs"; exit 1; }
+
+RAW_REVIEWED=<reviewed-sha>   # from the handoff, VERBATIM — do not trim, do not retype.
+
+# ⚠ NORMALIZE IT BEFORE YOU RANGE OVER IT. `HEAD_SHA` above is length-checked and this
+# one was not, so an ABBREVIATION was a third state neither branch of this gate named —
+# and it is the state that arrives. Measured 2026-09-20, three handoffs in one run:
+# TASK-436 returned `79940789`, PR #650 `a46a874f`, PR #652 `78d43240`, all 8 chars, all
+# under an honest `reviewer: clean`. Every one of them WORKED, which is the problem:
+# `git log 79940789..origin/<branch>` resolves an unambiguous abbreviation locally and
+# prints a plausible delta, so nothing fails and nobody looks. The two ways that stops
+# being harmless are silent in opposite directions — an AMBIGUOUS prefix errors with a
+# message about object names rather than about the gate, and a prefix that resolves to a
+# commit on a DIFFERENT branch computes the delta against the wrong base, which can
+# report an EMPTY delta for code no reviewer read. That is this gate reporting "a
+# reviewer saw the head" about a branch it never looked at.
+#
+# ASKING git to expand an abbreviation is safe. RECONSTRUCTING one by hand is not — the
+# merge queue's "never RETYPE a sha" note above still stands, and `rev-parse` is how you
+# obey it: it either prints the full 40 characters or it fails.
+#
+# `--verify --quiet` makes an unresolvable OR ambiguous name yield an empty string and
+# rc 1 instead of a guess, and `--end-of-options` stops a value that starts with `-`
+# from being read as a flag. Measured caveat, so nobody credits these flags with more
+# than they do: the ancestry arm below independently rejects everything they reject
+# (deleting them reddens NOTHING — see the mutant table in the guard). They are here for
+# a clean diagnostic, not for the property.
+case "${RAW_REVIEWED}" in
+  ''|'-') REVIEWED_SHA="" ;;
+  *) REVIEWED_SHA=$(git rev-parse --verify --quiet --end-of-options "${RAW_REVIEWED}^{commit}") || REVIEWED_SHA="" ;;
+esac
+
+if [ -z "${REVIEWED_SHA}" ]; then
+  # MISSING, `-`, ambiguous, or unknown to this clone — all four fail CLOSED to
+  # origin/main, i.e. treat the WHOLE branch as unreviewed. Never fail open.
+  echo "⚠ #<n>: reviewed-sha '${RAW_REVIEWED}' is missing/ambiguous/unknown — failing CLOSED: whole branch is unreviewed"
+  REVIEWED_SHA=$(git rev-parse --verify "origin/main^{commit}")
+elif ! git merge-base --is-ancestor "${REVIEWED_SHA}" "origin/${BRANCH}"; then
+  # It resolved — to something that is NOT on this branch, so the delta below would be
+  # measured against the wrong base. This is the reassuring failure: a wrong base can
+  # report an EMPTY delta for code nobody read.
+  #
+  # TWO causes, and they want the same answer. (a) A corrupted handoff — the sha names
+  # another branch. (b) An HONEST one: the builder was reviewed at ${REVIEWED_SHA} and
+  # then rebased or force-pushed, which this very skill tells it to do when main moves.
+  # The old commit is orphaned but still resolvable in a long-lived checkout that
+  # fetched it earlier, so it resolves and is no longer an ancestor.
+  # So do NOT halt on it. Halting would stall a SERIALIZED queue on correct builder
+  # behaviour, and this gate has already ruled that a non-terminating queue is the worse
+  # bug. Widening is right for both causes anyway: a rebase can carry conflict
+  # resolutions no reviewer saw, and a wrong sha deserves the whole branch.
+  echo "⚠ #<n>: reviewed-sha ${REVIEWED_SHA} resolved but is not on origin/${BRANCH} (rebase/force-push, or the wrong sha) — failing CLOSED: whole branch is unreviewed"
+  REVIEWED_SHA=$(git rev-parse --verify "origin/main^{commit}")
+fi
+
+# KNOWN RESIDUAL, because this is semi-trusted builder input (invariant 5). Two holes,
+# neither closed by anything above, both unchanged from before this gate was hardened:
+#
+#   (1) Resolution accepts any commit-ish, so a handoff naming `HEAD` or the branch
+#       itself resolves, passes the ancestry test (it IS the head) and yields an EMPTY
+#       delta — "fully reviewed".
+#   (2) `RAW_REVIEWED=<reviewed-sha>` is an UNQUOTED splice of handoff text. An
+#       ACCIDENT fails closed and loud — `79940789 feat` parses as a one-shot env
+#       assignment, leaves `RAW_REVIEWED` unset in the shell, and lands in the
+#       fail-closed arm (verified, bash and zsh). A hostile value does not: a literal
+#       `$(git rev-parse origin/${BRANCH})` both EXECUTES and resolves to the head,
+#       which is hole (1) again. Do not "fix" this by double-quoting the line —
+#       `$( )` expands inside double quotes, so quoting buys nothing here and makes
+#       the hazard look handled. The real fix is a quoted-delimiter here-doc
+#       (`IFS= read -r RAW_REVIEWED <<'SHA'` … `SHA`), which is deferred, not done.
+#
+# So the mitigation for both is the contract (`references/templates.md` asks for a full
+# 40-char sha) plus Q1's `reviewer:` check — NOT this block. Said plainly because the
+# tempting summary, "it fails closed either way", is only true for the accident.
+
+# Same assertion `HEAD_SHA` gets, for the same reason: the two shas this gate compares
+# are now checked by one rule, so neither can drift back to an abbreviation alone.
+[ ${#REVIEWED_SHA} -eq 40 ] || { echo "HALT #<n>: resolved reviewed-sha '${REVIEWED_SHA}' is not a full 40-char sha"; exit 1; }
+
 git log  --oneline   "${REVIEWED_SHA}..origin/${BRANCH}"   # the unseen commits
 git diff --name-only "${REVIEWED_SHA}..origin/${BRANCH}"   # the unseen FILES
 ```
