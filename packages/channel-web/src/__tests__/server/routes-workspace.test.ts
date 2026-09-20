@@ -1001,11 +1001,15 @@ describe('channel-web agent-workspace BFF', () => {
   it('fences a past conversation title like every other label out of this file', async () => {
     /*
       TASK-436 review finding. A conversation title is GENERATED — the title
-      plugin asks a model for it — and this was the one label leaving this
-      file unfenced, while summaries, file names and activity lines all go
-      through `fenceLine`. It renders in the read-only banner, and that banner
-      now also carries it in a `title` attribute, so an unbounded string with
-      a bidi override in it had two sinks instead of one.
+      plugin asks a model for it — and it was leaving this file unfenced,
+      while summaries, file names and activity lines all go through
+      `fenceLine`. It renders in the read-only banner, and that banner now
+      also carries it in a `title` attribute, so an unbounded string with a
+      bidi override in it had two sinks instead of one.
+
+      It is NOT the last unfenced label here — the learned-memory doc `name`
+      is the same shape of thing and still needs a card of its own. See
+      CONVERSATION_TITLE_MAX_CHARS.
     */
     registerAuth({ id: 'u1', isAdmin: false });
     conversations = [

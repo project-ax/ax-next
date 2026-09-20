@@ -1576,17 +1576,28 @@ export const FILE_LABEL_MAX_CHARS = 120;
 /**
  * How much of a past conversation's title this surface will carry.
  *
- * TASK-436 review finding. Every other label leaving this file goes through
+ * TASK-436 review finding. The labels leaving this file mostly go through
  * `fenceLine` — summaries, details, button labels, file names, activity lines
  * — and this one did not, although a conversation title is GENERATED (the
  * title plugin asks a model for it) and is therefore exactly the kind of
- * string the fence exists for. It rendered in the read-only banner, and this
+ * string the fence exists for. It rendered in the read-only banner, and that
  * card was about to give it a `title` attribute as well, which is one more
  * sink for a value that had never been bounded or stripped of bidi overrides.
  *
+ * NOT THE LAST ONE, and the honest version of that sentence matters. A second
+ * review pass found the learned-memory doc `name` below (search
+ * `status: 'learned'`) is the same shape of thing — a one-line label the model
+ * wrote — and is still unfenced, as is the owner-authored `displayName` on the
+ * rail. The first draft of this comment claimed every other label was fenced;
+ * a grep says otherwise. `name` wants the same treatment on a card of its own,
+ * because the doc `body` beside it is a document and a one-line fence is the
+ * wrong tool for that half.
+ *
  * 120 is `FILE_LABEL_MAX_CHARS` — a banner and a rail row are the same size
  * of thing — and the fallback below is unchanged, so a title that fences to
- * nothing still reads as "Untitled conversation" rather than as a blank.
+ * nothing still reads as "Untitled conversation" rather than as a blank. That
+ * is a small improvement on its own: a title of nothing but invisibles used to
+ * draw an empty banner.
  */
 export const CONVERSATION_TITLE_MAX_CHARS = 120;
 
