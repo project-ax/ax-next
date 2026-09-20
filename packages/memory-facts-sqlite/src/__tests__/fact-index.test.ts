@@ -109,12 +109,19 @@ describe('@ax/memory-facts-sqlite — indexFactRow', () => {
         limit: 40,
       }),
     ]);
-    // Two equally-relevant rows: whatever order bm25 puts them in, their
-    // scores must not differ by "one of them was indexed twice".
-    const byId = new Map(fused.map((c) => [c.id, c.score]));
-    expect(byId.get('dup')).toBeDefined();
-    expect(byId.get('once')).toBeDefined();
+    // Two equally-relevant rows, so the fused scores must be exactly the two
+    // adjacent RRF terms — 1/(60+0+1) and 1/(60+1+1) — in whichever order bm25
+    // ranked them.
+    //
+    // ASSERT THE SCORES, NOT THE SHAPE. An earlier version of this test checked
+    // `fused).toHaveLength(2)` and that both ids were present, and a mutation
+    // run proved it VACUOUS: `reciprocalRankFusion` accumulates into a Map keyed
+    // by id, so a doubly-indexed row still yields exactly 2 entries with both
+    // ids defined — it just carries 1/61 + 1/62 = 0.0325 instead of 0.0164,
+    // which is the whole bug and the old assertions could not see it.
     expect(fused).toHaveLength(2);
+    expect(fused[0]!.score).toBeCloseTo(1 / 61, 10);
+    expect(fused[1]!.score).toBeCloseTo(1 / 62, 10);
   });
 
   // Against the UNFIXED code: the bare `catch {}` swallows the throw from
