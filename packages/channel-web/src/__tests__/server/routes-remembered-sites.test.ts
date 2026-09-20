@@ -68,7 +68,7 @@ describe('channel-web Remembered-sites BFF (TASK-406)', () => {
     bus.registerService('egress-allowlist:list', 'tool-policy', async (c, i: unknown) => {
       listCallCtxUserIds.push(c.userId);
       listCallInputs.push(i);
-      return { sites: SITES };
+      return { status: 'ok', sites: SITES };
     });
     bus.registerService('egress-allowlist:revoke', 'tool-policy', async (c, i: unknown) => {
       revokeCallCtxUserIds.push(c.userId);
@@ -127,6 +127,77 @@ describe('channel-web Remembered-sites BFF (TASK-406)', () => {
       await h.list(mkReq({}), res);
       expect(captured.statusCode).toBe(200);
       expect(captured.body).toEqual({ sites: [] });
+    });
+
+    /*
+     * TASK-464 — the route's half of "empty is not unknown".
+     *
+     * Three cases arrive here and two of them used to leave by the same door.
+     * "No allowlist plugin in this preset" and "the allowlist could not be
+     * read" are different claims, and only the first one licenses an empty
+     * array. Each test below is paired with the 200 it must NOT be, because an
+     * assertion on a status code alone cannot tell you the route distinguishes
+     * anything — it only tells you what it did once.
+     */
+    function busAnswering(list: unknown): HookBus {
+      const b = new HookBus();
+      b.registerService('auth:require-user', 'auth', async () => ({
+        user: { id: 'u1', isAdmin: false },
+      }));
+      b.registerService('egress-allowlist:list', 'tool-policy', async () => list);
+      return b;
+    }
+
+    it('503s when the hook says `unknown` — and does NOT send an empty list', async () => {
+      const h = makeRememberedSitesHandlers({ bus: busAnswering({ status: 'unknown' }), initCtx });
+      const { res, captured } = mkRes();
+      await h.list(mkReq({}), res);
+      expect(captured.statusCode).toBe(503);
+      expect(captured.body).toEqual({ error: 'remembered-sites-unreadable' });
+      // The assertion that carries the card. A body with a `sites` key — of any
+      // length — is the route telling a browser something about this person's
+      // allowlist that it does not know.
+      expect(captured.body).not.toHaveProperty('sites');
+    });
+
+    it('still 200s a genuinely empty list, so the 503 above means something', async () => {
+      const h = makeRememberedSitesHandlers({
+        bus: busAnswering({ status: 'ok', sites: [] }),
+        initCtx,
+      });
+      const { res, captured } = mkRes();
+      await h.list(mkReq({}), res);
+      expect(captured.statusCode).toBe(200);
+      expect(captured.body).toEqual({ sites: [] });
+    });
+
+    it('503s a hook answer it does not recognise, rather than reading it as empty', async () => {
+      // The mirror type is hand-declared, so a producer that grows a third arm
+      // (or reverts to the pre-TASK-464 `{ sites: [...] }`) cannot be caught by
+      // tsc. Unknown is the safe reading of a shape we cannot describe; empty
+      // is the unsafe one, and it is the reading the old code picked.
+      for (const odd of [{ sites: SITES }, { status: 'degraded' }, {}]) {
+        const h = makeRememberedSitesHandlers({ bus: busAnswering(odd), initCtx });
+        const { res, captured } = mkRes();
+        await h.list(mkReq({}), res);
+        expect(captured.statusCode, JSON.stringify(odd)).toBe(503);
+        expect(captured.body).not.toHaveProperty('sites');
+      }
+    });
+
+    it('503s a hook that throws, rather than letting the framework decide', async () => {
+      const b = new HookBus();
+      b.registerService('auth:require-user', 'auth', async () => ({
+        user: { id: 'u1', isAdmin: false },
+      }));
+      b.registerService('egress-allowlist:list', 'tool-policy', async () => {
+        throw new Error('bus is having a day');
+      });
+      const h = makeRememberedSitesHandlers({ bus: b, initCtx });
+      const { res, captured } = mkRes();
+      await h.list(mkReq({}), res);
+      expect(captured.statusCode).toBe(503);
+      expect(captured.body).toEqual({ error: 'remembered-sites-unreadable' });
     });
   });
 

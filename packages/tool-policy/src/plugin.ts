@@ -430,25 +430,41 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
        * drops the personal half of its read for an id that names nobody, so a
        * `system` context sees the operator's list and nothing else.
        *
-       * FAILS SOFT, unlike `evaluate`'s read. An empty list GRANTS NOTHING —
-       * the enforcement path has its own read and its own fail-closed catch —
-       * so the worst outcome here is a panel that says "no sites yet" when we
-       * could not reach the database. The route in front of this has its own
-       * error path for the failure that matters; throwing at a UI caller would
-       * only turn a degraded panel into a broken one.
+       * FAILS SOFT BUT NOT SILENTLY (TASK-464). It still does not throw — the
+       * reasoning for that survives: a read failure GRANTS NOTHING, because the
+       * enforcement path has its own read and its own fail-closed catch, and a
+       * throw at a UI caller turns a degraded panel into a broken one.
+       *
+       * WHAT CHANGED IS THE VALUE. This used to answer `{ sites: [] }` on a
+       * store throw, and `[]` is the same answer a person with nothing
+       * remembered gets. So the one surface whose job is to say what somebody
+       * has agreed to told them, confidently, that the answer was "nothing",
+       * over a read that never reached the table. That is failing toward
+       * REASSURANCE, which is the wrong direction for a list of grants — an
+       * allowlist that reads as empty when it is merely unreadable invites the
+       * conclusion that there is nothing to revoke.
+       *
+       * It was not only a UI problem: the Postgres canary asserted
+       * `sites === []` to prove a revoke had landed, and mutant M13 (TASK-469)
+       * made `listFor` throw, got swallowed here, and passed the assertion over
+       * a read that never happened. `status: 'unknown'` is a value neither the
+       * success path nor a vacuous test can produce by accident.
        */
       bus.registerService<EgressListInput, EgressListOutput>(
         'egress-allowlist:list',
         PLUGIN_NAME,
         async (ctx) => {
           try {
-            return { sites: await egressStore.listFor(ctx.userId) };
+            return { status: 'ok', sites: await egressStore.listFor(ctx.userId) };
           } catch (err) {
             ctx.logger.error('tool_policy_egress_allowlist_list_failed', {
               plugin: PLUGIN_NAME,
               err: err instanceof Error ? err : new Error(String(err)),
             });
-            return { sites: [] };
+            // The REASON stays here and goes no further. A caller gets "we do
+            // not know", which is all it can act on; an operator gets the
+            // exception, which is what they can act on.
+            return { status: 'unknown' };
           }
         },
         { returns: EgressListOutputSchema },

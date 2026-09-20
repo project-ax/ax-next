@@ -590,10 +590,53 @@ export interface EgressAllowlistSite {
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface EgressListInput {}
 
-export interface EgressListOutput {
-  /** Sorted by host ascending, so a renderer never has to invent an order. */
-  sites: EgressAllowlistSite[];
-}
+/**
+ * The answer, or the admission that there isn't one (TASK-464).
+ *
+ * A DISCRIMINATED UNION, AND `sites` IS ABSENT ON THE FAILURE ARM. That is the
+ * whole point and it is not a stylistic preference: this hook used to catch a
+ * store throw and answer `{ sites: [] }`, so `[]` meant BOTH "you have allowed
+ * nothing" and "we could not read the table". The panel in front of it drew the
+ * first sentence over the second — "Nothing here yet" — which on the one screen
+ * whose job is to list what a person has agreed to is an invitation to conclude
+ * there is nothing to take back.
+ *
+ * It fails toward REASSURANCE, which is the worst direction available to a
+ * security surface. The shape here makes that failure unrepresentable rather
+ * than merely discouraged: on `unknown` there is no array to mistake for an
+ * empty one, and `exactOptionalPropertyTypes` plus the discriminant mean a
+ * caller cannot reach `.sites` without first saying which arm it is in.
+ *
+ * NOT `{ sites: [] , unknown: true }` and not `sites: null`. One spelling per
+ * meaning: `[]` is "none" and only ever "none". A nullable `sites` beside an
+ * empty one is the same overload with an extra step, and every caller that
+ * forgot to check the flag would keep the old bug.
+ *
+ * AND NOT A THROW, which was the other candidate. A throw is unambiguous but it
+ * travels: `HookBus.fire` swallows a subscriber's throw, the BFF in front of
+ * this would turn it into a 500 chosen by a framework rather than by us, and a
+ * caller that wants to say "we don't know" politely would have to write the
+ * catch anyway. The admission belongs in the answer, where the type system can
+ * see it.
+ *
+ * WHAT `unknown` DOES NOT SAY: why. No status code, no backend name, no
+ * exception message — invariant 1, and a reader cannot act on any of them. The
+ * reason goes to `ctx.logger`, which is where an operator can read it.
+ */
+export type EgressListOutput =
+  | {
+      status: 'ok';
+      /** Sorted by host ascending, so a renderer never has to invent an order. */
+      sites: EgressAllowlistSite[];
+    }
+  | {
+      /**
+       * The list could not be read. It is NOT empty — it is unseen, and a
+       * caller that renders this as "nothing allowed" has reintroduced the
+       * defect this arm exists to make impossible.
+       */
+      status: 'unknown';
+    };
 
 /**
  * `egress-allowlist:revoke` — "stop reading this one without asking me."
@@ -655,9 +698,15 @@ export const EgressAllowlistSiteSchema = z.object({
   rememberedAt: z.string(),
 });
 
-export const EgressListOutputSchema = z.object({
-  sites: z.array(EgressAllowlistSiteSchema),
-});
+// A `discriminatedUnion` and not a `z.object` with an optional array, for the
+// reason the type above gives at length. It also buys something the plain
+// object could not: the bus's `returns` re-parse now REJECTS `{ sites: [] }`
+// with no `status`, so a producer that quietly went back to the old shape
+// cannot reach a caller pretending to be an empty list.
+export const EgressListOutputSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('ok'), sites: z.array(EgressAllowlistSiteSchema) }),
+  z.object({ status: z.literal('unknown') }),
+]);
 
 export const EgressRevokeOutputSchema = z.object({ revoked: z.boolean() });
 

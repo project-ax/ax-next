@@ -19,9 +19,13 @@
  * `egress-allowlist.canary.test.ts` runs the real-Postgres version, which is
  * where the delete's SQL shape gets proved.
  */
+import type { Logger } from '@ax/core';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createMemoryEgressAllowlistStore } from '../egress-allowlist.js';
+import {
+  createMemoryEgressAllowlistStore,
+  type EgressAllowlistStore,
+} from '../egress-allowlist.js';
 import { createToolPolicyPlugin } from '../plugin.js';
 import type {
   EgressAllowlistSite,
@@ -53,12 +57,25 @@ async function remember(h: TestHarness, userId: string, host: string): Promise<u
   return h.bus.call('egress-allowlist:remember', h.ctx({ userId }), { host });
 }
 
+/**
+ * The list, or a thrown test failure — never a silent `[]` (TASK-464).
+ *
+ * NARROWING HERE IS THE POINT, not ceremony. Every `expect(await list(...))
+ * .toEqual([])` below is an assertion that somebody has nothing remembered,
+ * and before this hook could say `status: 'unknown'` those assertions also
+ * passed over a read that never reached the store. They cannot now: an
+ * unreadable list stops the test at this line with a sentence about it, rather
+ * than handing back the same empty array a happy read produces.
+ */
 async function list(h: TestHarness, userId: string): Promise<EgressAllowlistSite[]> {
   const out = await h.bus.call<unknown, EgressListOutput>(
     'egress-allowlist:list',
     h.ctx({ userId }),
     {},
   );
+  if (out.status !== 'ok') {
+    throw new Error(`expected a readable list for ${userId}, got status=${out.status}`);
+  }
   return out.sites;
 }
 
@@ -239,5 +256,146 @@ describe('egress-allowlist:revoke', () => {
       ),
     ).toEqual({ revoked: false });
     expect(await verdict(h, 'bob', 'https://docs.example.com/x')).toBe('allow');
+  });
+});
+
+/**
+ * TASK-464 — "you have allowed nothing" and "we could not read your list" are
+ * two facts, and only one of them is reassuring.
+ *
+ * This hook used to answer `{ sites: [] }` on a store throw, so the two facts
+ * arrived as the SAME VALUE and every caller downstream drew the reassuring
+ * one. The settings panel said "Nothing here yet" over an unread allowlist;
+ * the Postgres canary's `expect(sites).toEqual([])` passed over a read that
+ * never reached the table (TASK-469's mutant M13).
+ *
+ * WHAT MAKES THESE TESTS NON-VACUOUS. Each one asserts the failing read against
+ * the succeeding read of the same shape — an empty-but-read list next to an
+ * unread one — so an implementation that collapsed them again would have to
+ * make two different assertions true with one value. It cannot. The `logger`
+ * assertions are the second half of that: `{ status: 'unknown' }` alone could
+ * in principle be produced by some future quiet path, but the catch is the only
+ * thing that logs `tool_policy_egress_allowlist_list_failed`, so the pair pins
+ * WHICH branch ran and not merely what it returned.
+ */
+describe('egress-allowlist:list — empty is not unknown (TASK-464)', () => {
+  /** A logger that records what it was told, for asserting which branch ran. */
+  function recorder(): { logger: Logger; errors: string[] } {
+    const errors: string[] = [];
+    const logger: Logger = {
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: (msg: string) => void errors.push(msg),
+      child: () => logger,
+    };
+    return { logger, errors };
+  }
+
+  /** A store that cannot be read. Everything else behaves. */
+  function unreadableStore(): EgressAllowlistStore {
+    const inner = createMemoryEgressAllowlistStore();
+    return {
+      ...inner,
+      listFor: async () => {
+        throw new Error('storage unreachable');
+      },
+    };
+  }
+
+  async function bootWith(egressStore: EgressAllowlistStore): Promise<TestHarness> {
+    const h = await createTestHarness({
+      plugins: [createToolPolicyPlugin({ egressStore })],
+    });
+    harnesses.push(h);
+    return h;
+  }
+
+  async function raw(
+    h: TestHarness,
+    userId: string,
+    logger?: Logger,
+  ): Promise<EgressListOutput> {
+    return h.bus.call<unknown, EgressListOutput>(
+      'egress-allowlist:list',
+      h.ctx(logger === undefined ? { userId } : { userId, logger }),
+      {},
+    );
+  }
+
+  it('answers `unknown` when the store throws — and `ok` with an empty list when it does not', async () => {
+    // THE PAIR IS THE TEST. Run the same call against a store that cannot be
+    // read and against one that simply has nothing in it, and demand two
+    // different answers. Against the old implementation both of these were
+    // `{ sites: [] }`, so no assertion could tell them apart.
+    const broken = await bootWith(unreadableStore());
+    const empty = await bootWith(createMemoryEgressAllowlistStore());
+
+    expect(await raw(broken, 'alice')).toEqual({ status: 'unknown' });
+    expect(await raw(empty, 'alice')).toEqual({ status: 'ok', sites: [] });
+  });
+
+  it('carries NO `sites` key at all on `unknown`, even after the returns re-parse', async () => {
+    // `[]` has to be unreachable, not merely discouraged. A caller doing
+    // `out.sites.length === 0` must fail to compile and, if it got there
+    // anyway, must not find an empty array waiting for it — which is exactly
+    // what `{ sites: [], unknown: true }` would have handed it.
+    //
+    // AFTER the bus's zod re-parse, deliberately: `discriminatedUnion` picks
+    // the `unknown` member, and that member does not declare `sites`, so a
+    // producer that smuggled one in has it stripped here rather than in front
+    // of a reader.
+    const h = await bootWith(unreadableStore());
+    const out = await raw(h, 'alice');
+    expect(Object.keys(out)).toEqual(['status']);
+    expect('sites' in out).toBe(false);
+  });
+
+  it('took the failure branch to get there — the logger says so', async () => {
+    // `{ status: 'unknown' }` is a value; this is the proof of the PATH. The
+    // catch is the only line in the hook that logs this event, so a green
+    // assertion above plus a silent logger would mean the answer came from
+    // somewhere we did not intend.
+    const broken = await bootWith(unreadableStore());
+    const { logger, errors } = recorder();
+    expect(await raw(broken, 'alice', logger)).toEqual({ status: 'unknown' });
+    expect(errors).toEqual(['tool_policy_egress_allowlist_list_failed']);
+  });
+
+  it('stays quiet on a healthy read — the log line means what it says', async () => {
+    // The other half of the previous test. A hook that logged the failure
+    // event unconditionally would pass that one while meaning nothing.
+    const h = await bootWith(createMemoryEgressAllowlistStore());
+    const { logger, errors } = recorder();
+    await remember(h, 'alice', 'docs.example.com');
+    const out = await raw(h, 'alice', logger);
+    expect(out.status).toBe('ok');
+    expect(out.status === 'ok' ? out.sites.map((s) => s.host) : null).toEqual([
+      'docs.example.com',
+    ]);
+    expect(errors).toEqual([]);
+  });
+
+  it('still refuses to throw at its caller', async () => {
+    // The soft-fail posture is unchanged and that is deliberate: this hook sits
+    // in front of a settings panel, and a throw turns a degraded panel into a
+    // broken one. What changed is the VALUE it fails with, not whether it fails
+    // loudly. If this ever rejects, every caller's error path becomes reachable
+    // and the panel's three states become four.
+    const h = await bootWith(unreadableStore());
+    await expect(raw(h, 'alice')).resolves.toBeDefined();
+  });
+
+  it('does not stop the allowlist ENFORCING while its list is unreadable', async () => {
+    // The bound on the exposure, asserted rather than assumed (#618 inferred
+    // it; this pins it). `listFor` and `allowedFor` are two reads, and only the
+    // first one is broken here — so a site alice remembered is still silent,
+    // and one she did not is still held, while the panel can say nothing about
+    // either. The panel going blind must not take the gate with it.
+    const h = await bootWith(unreadableStore());
+    await remember(h, 'alice', 'docs.example.com');
+    expect(await verdict(h, 'alice', 'https://docs.example.com/x')).toBe('allow');
+    expect(await verdict(h, 'alice', 'https://elsewhere.example.com/x')).toBe('hold');
+    expect(await raw(h, 'alice')).toEqual({ status: 'unknown' });
   });
 });
