@@ -63,6 +63,13 @@
 //     window` does pin is the part that IS in this card's control: the restore target is
 //     the index/HEAD, so a commit that lands during the window survives — and the same
 //     fixture run through a file copy loses it.
+//   - **The zsh half does not run in CI.** `SHELLS` is `['bash', ...zsh if present]`, and
+//     the GitHub runner has no zsh: measured on this branch's own PR run, `pnpm
+//     test:scripts` collected **335** tests there against **387** locally on macOS. So
+//     every zsh assertion in this file is a LOCAL result, and the claim "under bash and
+//     zsh" in the doc is only continuously enforced for bash. That is the same shape every
+//     sibling shell guard in this directory has; it is written down here rather than left
+//     for someone to infer from a test count.
 //   - The templates.md assertions at the bottom are TEXT checks, deliberately weaker than
 //     the executable core, and labelled as such. There is no second runnable copy of the
 //     block in the dispatch prompt to execute; what the prompt must carry is the pointer
