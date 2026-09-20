@@ -297,6 +297,20 @@ export function AgentFiles({
     on screen and nothing was unmounted to need rescuing.
   */
   const backRef = useRef<HTMLButtonElement>(null);
+  /*
+    ONE REF, HANDED TO WHICHEVER ROW IS SELECTED, in either tier's loop.
+    Selecting in one tier closes the other, so normally at most one row claims
+    it. One narrow exception: a row listed as `kind: 'dir'` that resolves to a
+    FILE on the server leaves `durable.filePath` set without clearing
+    `governed.openPath`, and then both loops spread this ref and the later
+    render wins. Harmless today — the effect below is `compact`-gated and that
+    race does not flip `showViewer`, so focus never chases the wrong row — but
+    it is why this is worth knowing about rather than assuming exclusivity.
+
+    `.current` can also be legitimately null: the selected row is only rendered
+    when the listing is showing rows, so the optional call below is the only
+    thing keeping a drill-out into an errored listing from throwing.
+  */
   const selectedRowRef = useRef<HTMLButtonElement>(null);
   const wasShowingViewer = useRef(showViewer);
   useLayoutEffect(() => {

@@ -193,25 +193,22 @@ describe('the Files tab below md', () => {
       place; only a FILE crosses to the viewer. Conflating them would put the
       reader in the viewer every time they tried to navigate.
 
-      WHAT THIS TEST IS WORTH, measured rather than assumed. "A folder tap
-      cannot reach the viewer" is enforced TWICE over: `showViewer` is
-      `drilledIn && hasSelection`, and `useAgentUserFiles.openDir` independently
-      clears the open file on the way into a folder. So each half alone is an
-      EQUIVALENT mutation — setting the drill-in latch on the folder branch too,
-      or routing dir rows through `selectDurable`, both leave all nine of these
-      tests green, because the other half still holds the pane down. Only
-      breaking BOTH (latch on the folder branch AND `openDir` no longer clearing
-      the selection) actually reopens the viewer, and this is the one test in
-      the file that goes red when it does.
+      Written as Back-then-navigate rather than as a folder tap from a clean
+      start. From a clean start `hasSelection` is false and the pane could not
+      appear however wrong the latch was — the assertion would be proving the
+      selection is empty, not that a folder is navigation. Coming back from the
+      viewer leaves the selection standing ON PURPOSE (see the test above),
+      which is both the state where the two conjuncts can disagree and the
+      state a reader is really in when they press Back and then go looking
+      somewhere else.
 
-      Which is why it is written as Back-then-navigate rather than as a folder
-      tap from a clean start. From a clean start `hasSelection` is false and the
-      pane could not appear however wrong the latch was — the assertion would be
-      proving the selection is empty, not that a folder is navigation. Coming
-      back from the viewer leaves the selection standing ON PURPOSE (see the
-      test above), which is both the state where the two conjuncts can disagree
-      and the state a reader is really in when they press Back and then go
-      looking somewhere else.
+      WITH A DURABLE SELECTION, as here, a second mechanism ALSO holds the pane
+      down: `useAgentUserFiles.openDir` clears the durable file on the way into
+      a folder, so `hasSelection` goes false regardless of the latch. That makes
+      a latch-on-the-folder-branch mutation *equivalent* in this scenario — it
+      is killed only together with removing that clear. The governed-selection
+      case below is the one where the latch stands alone, and it is the test
+      that actually pins this branch.
     */
     setViewport(true);
     durableTree({
@@ -257,6 +254,59 @@ describe('the Files tab below md', () => {
     expect(screen.getByRole('heading', { name: 'Agent workspace' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Back' })).toBeNull();
     expect(screen.queryByText('the inbox body')).toBeNull();
+  });
+
+  it('stays on the list for a folder tap while a GOVERNED file is still selected', async () => {
+    /*
+      THE CASE WHERE THE LATCH STANDS ALONE, and the reason the test above is
+      not enough. `durable.openDir` clears the DURABLE file only
+      (`user-files.ts` `setFilePath(null)`); it never touches
+      `governed.openPath` — the two tiers are separate hooks and neither reaches
+      into the other. So when the surviving selection is governed, the single
+      thing keeping a folder tap off the viewer is that the folder branch does
+      not set `drilledIn`.
+
+      Measured: add `setDrilledIn(true)` to the `e.kind === 'dir'` branch and
+      this is the only test in the file that goes red. Every other folder case
+      here carries a DURABLE selection, where the `openDir` clear masks the
+      mutation — which is exactly how that mutant read as "equivalent" until a
+      reviewer traced the governed path.
+
+      The journey is ordinary: read something the agent wrote, come back, go
+      looking through your own files.
+    */
+    setViewport(true);
+    durableTree({
+      '': {
+        kind: 'dir',
+        path: '',
+        name: '',
+        entries: [{ path: 'reports', name: 'reports', kind: 'dir' }],
+        truncated: false,
+      },
+      reports: {
+        kind: 'dir',
+        path: 'reports',
+        name: 'reports',
+        entries: [{ path: 'reports/q3.md', name: 'q3.md', kind: 'file' }],
+        truncated: false,
+      },
+    });
+    renderTab();
+
+    // Open a file from the GOVERNED tier, then come back. The governed
+    // selection survives, and nothing in the durable tier will clear it.
+    fireEvent.click(await screen.findByRole('button', { name: 'notes.md' }));
+    expect(await screen.findByText('the body of the file')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+
+    // Now tap a DURABLE folder. `hasSelection` is still true via the governed
+    // tier, so only the drill-in latch is holding the viewer down.
+    fireEvent.click(await screen.findByRole('button', { name: 'reports' }));
+
+    expect(await screen.findByRole('button', { name: 'q3.md' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Back' })).toBeNull();
+    expect(screen.queryByText('the body of the file')).toBeNull();
   });
 
   it('keeps the way out on a viewer that could not open the file', async () => {
@@ -313,10 +363,16 @@ describe('the Files tab below md', () => {
   it('returns to the list when the selection is dropped under it', async () => {
     /*
       "Showing the viewer" is a preference; having something to show is the
-      truth, and the render requires both. A new agent is a new workspace and
-      both file hooks drop their selection on the switch — without the second
-      half of that condition the reader would be left on a pane with no file in
-      it and a back button, which is a dead end reached by doing nothing wrong.
+      truth, and the render requires both. Without the second half of that
+      condition a dropped selection would leave the reader on a pane with no
+      file in it and a back button — a dead end reached by doing nothing wrong.
+
+      NOTE ON HOW THIS IS DRIVEN. Production does not actually reach it by this
+      route: `AgentView` is keyed on the agent id (`WorkspaceShell.tsx`), so an
+      agent switch REMOUNTS this component and `drilledIn` resets outright. The
+      prop rerender here is a harsher input than production supplies, and what
+      it pins is the resilience property — selection gone, therefore list —
+      independent of whether a remount happens to rescue us.
     */
     setViewport(true);
     const { rerender } = renderTab();
