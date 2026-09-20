@@ -734,10 +734,13 @@ describe('GET /api/workspace/grants', () => {
     /*
       DEGRADATION DIRECTION. A KV store with no exact-key delete answers the
       read exactly as it did before TASK-482 — the manifest says so, and this
-      is the assertion behind that sentence. What it must NOT do is fall back
-      to `storage:delete-prefix`, which would take a prefix-colliding sibling
-      with it; there is no delete-prefix registered here, so a fallback would
-      throw and fail the read rather than silently pass.
+      is the assertion behind that sentence. Both rows are still there
+      afterwards, so "degraded" means the housekeeping did not run, not that it
+      ran through some other hook. (The unit test next door is the one that
+      pins WHICH other hook: it asserts `storage:delete-prefix` was never
+      called, because a fallback to it would take a prefix-colliding sibling
+      with it. A throw here would be swallowed by the reclaim's try/catch and
+      this test would not notice.)
     */
     it('answers the read unchanged when the store cannot delete one key', async () => {
       const store = registerStorage({ noDelete: true });
