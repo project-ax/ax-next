@@ -153,6 +153,11 @@ import type {
 import { isOpenDecision } from '../lib/workspace-types.js';
 import { byVerdict } from '../lib/permission-frames.js';
 import { fenceLine } from '../lib/fence-line.js';
+// The renderer's own ceiling for the untrusted `detail` line. Imported rather
+// than restated so the host and the browser cannot drift about where that
+// sentence ends (invariant 4) — the module is pure constants and one pure
+// function, with no DOM or React in it.
+import { MAX_DETAIL_CHARS } from '../lib/turn-error-labels.js';
 import {
   shapeSteps,
   stepDetail,
@@ -2251,15 +2256,15 @@ function turnAttachments(blocks: TurnBlock[]): ThreadAttachment[] {
 }
 
 /**
- * Ceilings for the two untrusted strings a replayed failure carries.
+ * How long a replayed failure's `reason` code may be.
  *
- * `detail` matches the client's own clamp (`MAX_DETAIL_CHARS` in
- * `lib/turn-error-labels.ts`) — deliberately the same number rather than a
- * tighter one, so the two never disagree about where a sentence ends. `reason`
- * is a short stable code; anything longer is not one, and the renderer will
- * fall back to the generic label for it either way.
+ * There is no twin for this one — it is this route's own judgement that a
+ * stable code is short, and anything longer is not one (the renderer falls
+ * back to the generic label for it either way). The `detail` ceiling
+ * deliberately has NO local constant: it is imported from the renderer's own
+ * `MAX_DETAIL_CHARS`, because two numbers for one boundary is how the ends
+ * come to disagree about where a sentence stops (invariant 4).
  */
-const TURN_ERROR_DETAIL_MAX_CHARS = 400;
 const TURN_ERROR_REASON_MAX_CHARS = 120;
 
 /**
@@ -2314,7 +2319,7 @@ function errorMessages(
       this file emits.
     */
     const raw = ev.payload.detail;
-    const detail = typeof raw === 'string' ? raw.slice(0, TURN_ERROR_DETAIL_MAX_CHARS) : '';
+    const detail = typeof raw === 'string' ? raw.slice(0, MAX_DETAIL_CHARS) : '';
     out.push({
       at: ev.createdAt,
       msg: {
