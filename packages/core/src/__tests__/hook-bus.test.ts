@@ -544,6 +544,23 @@ describe('HookBus — stall watch (TASK-505)', () => {
     expect(logged[0]?.bindings.hook).toBe('impatient');
   });
 
+  it('treats a per-hook stallWarnMs of 0 as "warn immediately", not "unset"', async () => {
+    // `isValidTimeoutMs` accepts 0, so 0 is a legal override — and it is the
+    // one value where `??` and `||` disagree. Written down so a future
+    // simplification to `||` fails here instead of silently falling back to
+    // the bus default for the one caller who meant "tell me right away".
+    const logged: Logged[] = [];
+    const bus = new HookBus({ stallWarnMs: 5_000 });
+    bus.registerService(
+      'tell-me-now',
+      'p',
+      () => new Promise<string>((resolve) => setTimeout(() => resolve('done'), 60)),
+      { stallWarnMs: 0 },
+    );
+    await expect(bus.call('tell-me-now', capturingCtx(logged), {})).resolves.toBe('done');
+    expect(logged.map((l) => l.msg)).toEqual(['hook_call_stalled', 'hook_call_slow']);
+  });
+
   it('lets a hook opt out entirely with stallWarnMs:Infinity', async () => {
     // `agent:invoke`'s case: its own 120s timeout is its report, and there is
     // no threshold that separates a healthy long turn from a hung one.

@@ -131,6 +131,10 @@ export async function registerWebExtract(bus: HookBus, backend: WebExtractBacken
       await rememberHost(bus, ctx, url);
       return out;
     },
-    { timeoutMs: 120_000 },
+    // `stallWarnMs` raised above the bus's 15s default, same reasoning as
+    // web_search (TASK-505): fetching and extracting a large page from a third
+    // party we don't control takes as long as that party takes, so tens of
+    // seconds is an ordinary healthy result rather than a symptom.
+    { timeoutMs: 120_000, stallWarnMs: 60_000 },
   );
 }
