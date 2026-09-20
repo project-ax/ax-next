@@ -151,7 +151,13 @@ export function Segmented<T extends string>({
           : // Wraps, as a radiogroup does.
             (from + step + options.length) % options.length;
 
-    onValueChange(options[next].value);
+    // `next` is always in range — `options` is non-empty by the guard above,
+    // and every branch either clamps to an end or takes a modulus. The lookup
+    // is written defensively anyway because `noUncheckedIndexedAccess` is on,
+    // and a silent no-op beats an exception thrown out of a key handler.
+    const target = options[next];
+    if (target === undefined) return;
+    onValueChange(target.value);
     items[next]?.focus();
   }
 

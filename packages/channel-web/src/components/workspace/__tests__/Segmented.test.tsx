@@ -16,6 +16,7 @@
  * moved asynchronously, inside Radix's `setTimeout`, which is why the focus
  * assertions are wrapped in `waitFor`); the role test fails on `radiogroup`
  * (it was `group`); the accessible-name test fails on the missing `aria-label`.
+ * Measured: 6 of the 8 fail with the fix reverted.
  */
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
@@ -43,8 +44,20 @@ function Harness({ onChange }: { onChange?: (v: Filter) => void } = {}) {
   );
 }
 
-function segments(): HTMLElement[] {
-  return screen.getAllByRole('radio');
+/**
+ * Both segments, fetched BY NAME rather than by index.
+ *
+ * Indexing a `getAllByRole` array hands `noUncheckedIndexedAccess` a
+ * `HTMLElement | undefined` at every use, and the obvious way out — a bare
+ * `const working = () => …` accessor — is worse: `expect(working)` then
+ * asserts against the FUNCTION and passes whatever the DOM says.
+ */
+function bothSegments(): { needs: HTMLElement; working: HTMLElement } {
+  return {
+    // The label carries its count ("Needs you2"), so match the start of it.
+    needs: screen.getByRole('radio', { name: /^Needs you/ }),
+    working: screen.getByRole('radio', { name: 'Working' }),
+  };
 }
 
 describe('Segmented — the radios have a radiogroup, and it is named', () => {
@@ -53,7 +66,9 @@ describe('Segmented — the radios have a radiogroup, and it is named', () => {
     const group = screen.getByRole('radiogroup');
     // The radios are INSIDE it — a radiogroup elsewhere on the page would
     // satisfy `getByRole` while leaving these radios unowned.
-    for (const radio of segments()) expect(group).toContainElement(radio);
+    const { needs, working } = bothSegments();
+    expect(group).toContainElement(needs);
+    expect(group).toContainElement(working);
   });
 
   it('gives the group an accessible name', () => {
@@ -66,7 +81,7 @@ describe('Segmented — arrow keys move selection and focus together', () => {
   it('ArrowRight checks the next segment, not just focuses it', async () => {
     const onChange = vi.fn();
     render(<Harness onChange={onChange} />);
-    const [needs, working] = segments();
+    const { needs, working } = bothSegments();
 
     needs.focus();
     expect(needs).toHaveAttribute('aria-checked', 'true');
@@ -81,7 +96,7 @@ describe('Segmented — arrow keys move selection and focus together', () => {
 
   it('ArrowLeft checks the previous segment', async () => {
     render(<Harness />);
-    const [needs, working] = segments();
+    const { needs, working } = bothSegments();
 
     needs.focus();
     fireEvent.keyDown(needs, { key: 'ArrowRight' });
@@ -99,7 +114,7 @@ describe('Segmented — arrow keys move selection and focus together', () => {
 
   it('wraps at the ends, the way a radiogroup does', async () => {
     render(<Harness />);
-    const [needs, working] = segments();
+    const { needs, working } = bothSegments();
 
     needs.focus();
     // Backwards off the front lands on the last segment.
@@ -110,12 +125,13 @@ describe('Segmented — arrow keys move selection and focus together', () => {
     // …and forwards off the end comes back to the first.
     fireEvent.keyDown(working, { key: 'ArrowRight' });
     expect(needs).toHaveAttribute('aria-checked', 'true');
+    expect(working).toHaveAttribute('aria-checked', 'false');
     await waitFor(() => expect(document.activeElement).toBe(needs));
   });
 
   it('Home and End jump to the ends', async () => {
     render(<Harness />);
-    const [needs, working] = segments();
+    const { needs, working } = bothSegments();
 
     needs.focus();
     fireEvent.keyDown(needs, { key: 'End' });
@@ -124,6 +140,7 @@ describe('Segmented — arrow keys move selection and focus together', () => {
 
     fireEvent.keyDown(working, { key: 'Home' });
     expect(needs).toHaveAttribute('aria-checked', 'true');
+    expect(working).toHaveAttribute('aria-checked', 'false');
     await waitFor(() => expect(document.activeElement).toBe(needs));
   });
 
@@ -132,10 +149,11 @@ describe('Segmented — arrow keys move selection and focus together', () => {
     // the tab stop and no item is focused. Arrowing from there must land
     // somewhere predictable rather than on whatever Radix would have focused.
     render(<Harness />);
-    const [needs, working] = segments();
-    screen.getByRole('radiogroup').focus();
+    const { needs, working } = bothSegments();
+    const group = screen.getByRole('radiogroup');
+    group.focus();
 
-    fireEvent.keyDown(screen.getByRole('radiogroup'), { key: 'ArrowRight' });
+    fireEvent.keyDown(group, { key: 'ArrowRight' });
 
     expect(working).toHaveAttribute('aria-checked', 'true');
     expect(needs).toHaveAttribute('aria-checked', 'false');
@@ -145,12 +163,13 @@ describe('Segmented — arrow keys move selection and focus together', () => {
   it('leaves modified arrows to whoever owns them', () => {
     const onChange = vi.fn();
     render(<Harness onChange={onChange} />);
-    const [needs] = segments();
+    const { needs, working } = bothSegments();
     needs.focus();
 
     fireEvent.keyDown(needs, { key: 'ArrowRight', metaKey: true });
 
     expect(onChange).not.toHaveBeenCalled();
     expect(needs).toHaveAttribute('aria-checked', 'true');
+    expect(working).toHaveAttribute('aria-checked', 'false');
   });
 });
