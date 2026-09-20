@@ -28,6 +28,8 @@ export interface BuildSandboxToolsOptions {
   holdLatch: HoldLatch;
   /** Fired with the call id on a hold — see WrapWithPolicyOptions. */
   onHold: (toolCallId: string) => void;
+  /** Fired with the call id when a tool ran and failed — see WrapWithPolicyOptions. */
+  onToolFailure: (toolCallId: string) => void;
 }
 
 /**
@@ -64,7 +66,7 @@ export function buildSandboxTools(
       description: descriptor.description ?? '',
       inputSchema: jsonSchema(descriptor.inputSchema as JSONSchema7),
       execute: wrapWithPolicy(
-        { policy, name: descriptor.name, isBuiltin: false, holdLatch, onHold: opts.onHold },
+        { policy, name: descriptor.name, isBuiltin: false, holdLatch, onHold: opts.onHold, onToolFailure: opts.onToolFailure },
         async (input) => {
           // A dispatcher failure (unregistered tool, or the executor
           // itself throwing) propagates as a throw — `LocalDispatcher.

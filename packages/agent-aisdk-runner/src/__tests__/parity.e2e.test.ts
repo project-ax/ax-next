@@ -516,6 +516,79 @@ describe('aisdk runner — parity', () => {
     );
   });
 
+  // -------------------------------------------------------------------------
+  // TASK-430. The end-to-end proof, through the REAL loop, REAL ai@7 and a
+  // REAL bash: a command that exits non-zero must reach the host marked as a
+  // failure, on BOTH surfaces the person and the model read.
+  //
+  // Before the fix, ai@7 marked only a thrown executor; `Bash` returns a
+  // string on a non-zero exit (deliberately — the model needs the output), so
+  // the persisted `tool_result` carried no `is_error` and the live chunk no
+  // `isError`. A failed command was published as a success, and nothing
+  // downstream could tell the difference.
+  //
+  // Asserted as the PRESENCE of the flag, not a boolean value: the success
+  // path omits the key entirely, so this cannot be satisfied by whatever the
+  // clean path happens to produce.
+  // -------------------------------------------------------------------------
+  it('publishes a non-zero-exit command as a FAILED tool result, on the wire and in the turn', async () => {
+    scriptedModel.mockReturnValue(
+      modelReplaying([
+        toolStep('Bash', { command: 'echo out-line; echo err-line 1>&2; exit 3' }),
+        textStep('that failed'),
+      ]),
+    );
+    inboxEntries = [userMessage('run something that fails')];
+
+    await expect(main()).resolves.toBe(0);
+
+    // 1. The live stream — what the UI renders while the turn is running.
+    const resultChunk = chunks().find((c) => c.kind === 'tool-result');
+    expect(resultChunk).toBeDefined();
+    expect(resultChunk).toMatchObject({ toolCallId: 'c1', isError: true });
+
+    // 2. The durable record — what the transcript, and the model resuming from
+    //    it, will read back.
+    const toolEnd = turnEnds().find((t) => t.role === 'tool');
+    expect(toolEnd).toBeDefined();
+    expect(toolEnd!.contentBlocks).toEqual([
+      expect.objectContaining({
+        type: 'tool_result',
+        tool_use_id: 'c1',
+        is_error: true,
+      }),
+    ]);
+
+    // 3. The output the model reads is unchanged — this fix adds a fact, it
+    //    does not take the failing command's output away.
+    const failedBlock = (toolEnd!.contentBlocks as Array<{ content: string }>)[0];
+    expect(failedBlock!.content).toContain('out-line');
+    expect(failedBlock!.content).toContain('err-line');
+    expect(failedBlock!.content).toContain('exit code: 3');
+  });
+
+  // The other direction, in the same harness. Without this row, an
+  // implementation that marked EVERY tool result would pass the row above.
+  it('publishes a command that exits 0 with no failure flag on either surface', async () => {
+    scriptedModel.mockReturnValue(
+      modelReplaying([
+        toolStep('Bash', { command: 'echo all-good' }),
+        textStep('worked'),
+      ]),
+    );
+    inboxEntries = [userMessage('run something that works')];
+
+    await expect(main()).resolves.toBe(0);
+
+    const resultChunk = chunks().find((c) => c.kind === 'tool-result');
+    expect(resultChunk).toBeDefined();
+    expect(resultChunk).not.toHaveProperty('isError');
+
+    const toolEnd = turnEnds().find((t) => t.role === 'tool');
+    const okBlock = (toolEnd!.contentBlocks as Array<Record<string, unknown>>)[0];
+    expect(okBlock).not.toHaveProperty('is_error');
+  });
+
   it('appends the egress-block remediation note after a Bash call', async () => {
     egressBlockedHosts = ['registry.npmjs.org'];
     scriptedModel.mockReturnValue(

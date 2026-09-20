@@ -7,7 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Tool } from 'ai';
 import { createHoldLatch, type PreToolVerdict, type ToolPolicy } from '@ax/agent-runner-core';
 import { POLICY_WRAPPED, type WrappedExecute } from '../tools/policy-wrap.js';
-import { buildBuiltinTools, resolveBashTimeoutMs } from '../tools/builtins.js';
+import {
+  bashRunFailed,
+  buildBuiltinTools,
+  resolveBashTimeoutMs,
+} from '../tools/builtins.js';
 
 // Same shape as policy-wrap.test.ts's fake — an allow-everything policy, so
 // these tests exercise the tool bodies rather than re-testing the gate.
@@ -36,7 +40,7 @@ beforeEach(async () => {
     policy,
     homeDir: home,
     env: { PATH: process.env['PATH'] ?? '', HOME: home },
-    holdLatch: createHoldLatch(), onHold: () => {},
+    holdLatch: createHoldLatch(), onHold: () => {}, onToolFailure: () => {},
   });
 });
 
@@ -204,7 +208,7 @@ describe('Bash', () => {
       policy,
       homeDir: home,
       env: { PATH: process.env['PATH'] ?? '', AX_TEST_MARKER: 'composed' },
-      holdLatch: createHoldLatch(), onHold: () => {},
+      holdLatch: createHoldLatch(), onHold: () => {}, onToolFailure: () => {},
     });
     const out = await run('Bash', { command: 'echo "[$AX_TEST_MARKER]"' });
     expect(out).toContain('[composed]');
@@ -673,6 +677,126 @@ describe('Grep', () => {
     });
     expect(out).toContain('a.ts:2:NEEDLE here');
     expect(out).not.toContain('b.md');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-430 — a command that failed must not be published as one that worked.
+//
+// These assert on WHAT THE RUNNER REPORTED, through an injected recorder, not
+// on the output text. That distinction is the whole point: the output is
+// command-authored, so a test that read "exit code: 3" out of it would pass
+// for a command that merely PRINTED that line, and would keep passing if the
+// reporting channel were deleted.
+// ---------------------------------------------------------------------------
+
+describe('Bash — failure reporting (TASK-430)', () => {
+  /** Run one Bash command and report both halves: text, and what was recorded. */
+  async function runBash(
+    input: Record<string, unknown>,
+  ): Promise<{ output: string; failedIds: string[] }> {
+    const failedIds: string[] = [];
+    const built = buildBuiltinTools({
+      policy: fakePolicy(),
+      homeDir: home,
+      env: { PATH: process.env['PATH'] ?? '', HOME: home },
+      holdLatch: createHoldLatch(),
+      onHold: () => {},
+      onToolFailure: (toolCallId) => {
+        failedIds.push(toolCallId);
+      },
+    });
+    const execute = built['Bash']?.execute as unknown as (
+      input: unknown,
+      options: { toolCallId: string; messages: [] },
+    ) => Promise<string>;
+    const output = await execute(input, { toolCallId: 'tc_bash', messages: [] });
+    return { output, failedIds };
+  }
+
+  // The headline. Before the fix this recorded nothing at all, so the
+  // transcript published `exit 3` with no `is_error`.
+  it('reports a non-zero exit as a failure, against the call id', async () => {
+    const { output, failedIds } = await runBash({
+      command: 'echo out-line; echo err-line 1>&2; exit 3',
+    });
+    expect(failedIds).toEqual(['tc_bash']);
+    // And the model still reads everything it read before — the text is the
+    // part that must NOT change, or the two runners diverge.
+    expect(output).toContain('out-line');
+    expect(output).toContain('err-line');
+    expect(output).toContain('exit code: 3');
+  });
+
+  it('reports a command killed by a signal as a failure, and names the signal', async () => {
+    const { output, failedIds } = await runBash({
+      command: 'kill -TERM $$',
+    });
+    expect(failedIds).toEqual(['tc_bash']);
+    // The old text for this case was literally "(command produced no output;
+    // exit code: 0)" — an exit code we never observed, invented for a process
+    // that was killed.
+    expect(output).not.toContain('exit code: 0');
+    expect(output).toContain('killed by SIGTERM');
+  });
+
+  it(
+    'reports a timed-out command as a failure',
+    async () => {
+      const { output, failedIds } = await runBash({
+        command: 'echo before-sleep; sleep 30',
+        timeout: 400,
+      });
+      expect(failedIds).toEqual(['tc_bash']);
+      expect(output).toContain('timed out');
+      expect(output).toContain('before-sleep');
+    },
+    20_000,
+  );
+
+  // The other direction, and the one that stops "mark everything" from
+  // passing this file: a command that succeeds must record NOTHING.
+  it('reports nothing for a command that exited 0', async () => {
+    const { output, failedIds } = await runBash({ command: 'echo fine' });
+    expect(failedIds).toEqual([]);
+    expect(output).toContain('fine');
+  });
+
+  // A command whose OUTPUT talks about failing, but which exited 0. The fact
+  // travels structurally, so this is a success — and a text-matching
+  // implementation would get it wrong.
+  it('does not mark a successful command whose output merely mentions an exit code', async () => {
+    const { failedIds } = await runBash({
+      command: 'echo "exit code: 1"; echo "command not found"; exit 0',
+    });
+    expect(failedIds).toEqual([]);
+  });
+});
+
+// The predicate itself, enumerated. Driving real processes cannot reach every
+// combination (a timeout always kills, so `timedOut` never coexists with a
+// clean exit), and the states are exactly what this card is about.
+describe('bashRunFailed — every outcome, stated', () => {
+  const cases: Array<[string, { exitCode: number | null; timedOut: boolean; aborted: boolean }, boolean]> = [
+    ['exited 0', { exitCode: 0, timedOut: false, aborted: false }, false],
+    ['exited 1', { exitCode: 1, timedOut: false, aborted: false }, true],
+    ['exited 127', { exitCode: 127, timedOut: false, aborted: false }, true],
+    ['killed by a signal', { exitCode: null, timedOut: false, aborted: false }, true],
+    ['timed out', { exitCode: null, timedOut: true, aborted: false }, true],
+    ['cancelled', { exitCode: null, timedOut: false, aborted: true }, true],
+    // Defensive: if a future change ever let a flag coexist with a clean exit,
+    // the flag must still win. Success is the narrow case, not the default.
+    ['exited 0 but timed out', { exitCode: 0, timedOut: true, aborted: false }, true],
+    ['exited 0 but cancelled', { exitCode: 0, timedOut: false, aborted: true }, true],
+  ];
+  it.each(cases)('%s -> failed=%o', (_label, outcome, expected) => {
+    expect(bashRunFailed(outcome)).toBe(expected);
+  });
+
+  // Exactly one of the enumerated states is a success. If a later edit widens
+  // that, this count changes and someone has to say why.
+  it('counts exactly one non-failing outcome among the enumerated states', () => {
+    expect(cases.filter(([, , failed]) => !failed)).toHaveLength(1);
   });
 });
 

@@ -55,7 +55,7 @@ function executeOf(tools: Record<string, { execute?: unknown }>): (
 
 describe('buildSkillTool', () => {
   it('registers exactly one tool, named Skill, with a required `name` input', () => {
-    const tools = buildSkillTool({ policy: fakePolicy(), skills: [skill()], holdLatch, onHold: () => {} });
+    const tools = buildSkillTool({ policy: fakePolicy(), skills: [skill()], holdLatch, onHold: () => {}, onToolFailure: () => {} });
 
     expect(Object.keys(tools)).toEqual([SKILL_TOOL_NAME]);
     const schema = (
@@ -74,7 +74,7 @@ describe('buildSkillTool', () => {
   // not special-cased just because it executes in-process.
   it('wraps execute in the policy gate', async () => {
     const policy = fakePolicy();
-    const tools = buildSkillTool({ policy, skills: [skill()], holdLatch, onHold: () => {} });
+    const tools = buildSkillTool({ policy, skills: [skill()], holdLatch, onHold: () => {}, onToolFailure: () => {} });
     const execute = executeOf(tools);
 
     expect(
@@ -91,7 +91,7 @@ describe('buildSkillTool', () => {
   });
 
   it('returns the body and the bundle directory', async () => {
-    const tools = buildSkillTool({ policy: fakePolicy(), skills: [skill()], holdLatch, onHold: () => {} });
+    const tools = buildSkillTool({ policy: fakePolicy(), skills: [skill()], holdLatch, onHold: () => {}, onToolFailure: () => {} });
 
     const out = await executeOf(tools)({ name: 'pdf-filler' }, OPTS);
 
@@ -106,7 +106,7 @@ describe('buildSkillTool', () => {
     const tools = buildSkillTool({
       policy: fakePolicy(),
       skills: [skill({ id: 'pdf-filler-v2', name: 'pdf-filler' })],
-      holdLatch, onHold: () => {},
+      holdLatch, onHold: () => {}, onToolFailure: () => {},
     });
 
     await expect(
@@ -121,7 +121,7 @@ describe('buildSkillTool', () => {
     const tools = buildSkillTool({
       policy: fakePolicy(),
       skills: [skill(), skill({ id: 'csv-wrangler', name: 'csv-wrangler' })],
-      holdLatch, onHold: () => {},
+      holdLatch, onHold: () => {}, onToolFailure: () => {},
     });
 
     const settled = await executeOf(tools)({ name: 'pdf-fillr' }, OPTS).then(
@@ -137,7 +137,7 @@ describe('buildSkillTool', () => {
   });
 
   it('returns a helpful result for a missing or non-string name', async () => {
-    const tools = buildSkillTool({ policy: fakePolicy(), skills: [skill()], holdLatch, onHold: () => {} });
+    const tools = buildSkillTool({ policy: fakePolicy(), skills: [skill()], holdLatch, onHold: () => {}, onToolFailure: () => {} });
     const execute = executeOf(tools);
 
     await expect(execute({}, OPTS)).resolves.toContain('pdf-filler');
@@ -145,7 +145,7 @@ describe('buildSkillTool', () => {
   });
 
   it('registers nothing when no skills are installed', () => {
-    expect(buildSkillTool({ policy: fakePolicy(), skills: [], holdLatch, onHold: () => {} })).toEqual({});
+    expect(buildSkillTool({ policy: fakePolicy(), skills: [], holdLatch, onHold: () => {}, onToolFailure: () => {} })).toEqual({});
   });
 
   it('surfaces a policy denial as the tool result (inherited from the wrapper)', async () => {
@@ -156,7 +156,7 @@ describe('buildSkillTool', () => {
         cause: 'policy' as const,
       })),
     } as never);
-    const tools = buildSkillTool({ policy, skills: [skill()], holdLatch, onHold: () => {} });
+    const tools = buildSkillTool({ policy, skills: [skill()], holdLatch, onHold: () => {}, onToolFailure: () => {} });
 
     const out = await executeOf(tools)({ name: 'pdf-filler' }, OPTS);
 
@@ -208,7 +208,7 @@ describe('skills declaring mcpServers — the documented degradation', () => {
     expect(skills.map((s) => s.id)).toEqual(['linear-helper']);
     expect(skills[0]?.hasMcpServers).toBe(true);
 
-    const tools = buildSkillTool({ policy: fakePolicy(), skills, holdLatch, onHold: () => {} });
+    const tools = buildSkillTool({ policy: fakePolicy(), skills, holdLatch, onHold: () => {}, onToolFailure: () => {} });
     const out = await executeOf(tools)({ name: 'linear-helper' }, OPTS);
 
     // Still loads — degradation, not removal.

@@ -11,7 +11,7 @@
 // (`createToolPolicy`) — that is what makes "one security policy, two runners"
 // true rather than aspirational (design §2/§3).
 //
-// Two deliberate choices, both load-bearing:
+// Three deliberate choices, all load-bearing:
 //
 //   1. A VETO RETURNS AS A TOOL RESULT, NEVER A THROW. Throwing would mark the
 //      call failed and (in the SDK's own error channel) hand the model an
@@ -27,6 +27,17 @@
 //      aborted — the model just sees a failed tool instead of a denied one, and
 //      the host sees `is_error` on the persisted tool_result block. We still
 //      fire `postToolUse` first so the audit event records the failed call.
+//
+//   3. A TOOL THAT RAN AND FAILED WITHOUT THROWING IS RECORDED, NOT INFERRED.
+//      `ai@7` has exactly one failure channel — the throw — and `Bash` cannot
+//      use it, because a failed command's output is the thing the model needs
+//      to read. Before TASK-430 that meant `exit 127` published to the
+//      transcript with no `is_error`: a failure recorded as a success, for the
+//      person AND for the model resuming from the thread. A runner now returns
+//      `{output, failed: true}`, this wrapper reports the id through
+//      `onToolFailure`, and the loop marks the published result. The fact comes
+//      from the runner's own structured observation (a process exit status),
+//      never from matching the output text.
 // ---------------------------------------------------------------------------
 
 import type { DenyCause, HoldLatch, ToolPolicy } from '@ax/agent-runner-core';
@@ -52,12 +63,38 @@ export const POLICY_WRAPPED = Symbol.for('ax.aisdk.tool.policyWrapped');
  */
 export const HOLD_LATCH = Symbol.for('ax.aisdk.tool.holdLatch');
 
+/**
+ * A tool that RAN and whose work FAILED, without throwing (TASK-430).
+ *
+ * `ai@7` marks a tool result as an error only when the executor threw, so a
+ * `Bash` call that exited 127 was published to the transcript with no
+ * `is_error` — a failure recorded as a success. Throwing instead is not an
+ * option: `ai@7` discards a thrown executor's return value, and for `Bash` that
+ * value (the compiler output, the failing test) is the whole point.
+ *
+ * So a runner returns this shape instead of a bare string. `output` is what the
+ * model reads — byte-for-byte what it read before, which keeps this runner's
+ * model-facing behaviour identical to the claude-sdk runner's. `failed` is the
+ * out-of-band fact, and it travels to the HOST record only.
+ *
+ * `failed: true` rather than `failed: boolean` on purpose: the union already
+ * says "plain string = succeeded", so a `failed: false` member would be a
+ * second way to spell success and a chance to get it the wrong way round.
+ */
+export interface ToolFailure {
+  output: string;
+  failed: true;
+}
+
+/** What a tool implementation returns: its output, or its output plus a failure. */
+export type ToolRunResult = string | ToolFailure;
+
 /** What a tool implementation actually does, once the policy has allowed it. */
 export type ToolRunner = (
   /** The re-rooted input — `verdict.updatedInput` when the policy rewrote it. */
   input: Record<string, unknown>,
   ctx: { toolCallId: string; abortSignal?: AbortSignal | undefined },
-) => Promise<string>;
+) => Promise<ToolRunResult>;
 
 export interface WrapWithPolicyOptions {
   policy: ToolPolicy;
@@ -93,6 +130,18 @@ export interface WrapWithPolicyOptions {
    * a hold silently publishing as an ordinary completed step.
    */
   onHold: (toolCallId: string) => void;
+  /**
+   * Called with the tool-call id when a call RAN and FAILED without throwing
+   * — see `ToolFailure` and failed-calls.ts (TASK-430). The loop records it and
+   * marks that call's published result `is_error`, so the transcript stops
+   * reporting a non-zero exit as a success.
+   *
+   * Required, like `holdLatch` and `onHold`, and for the same reason: a tool
+   * group built without the wire would publish its failures as successes and
+   * NOTHING would fail — the exact silent shape this exists to close. Required
+   * makes tsc catch a missing wire at every call site.
+   */
+  onToolFailure: (toolCallId: string) => void;
 }
 
 /** The `execute` shape `ai@7`'s `tool()` accepts, narrowed to what we produce. */
@@ -143,11 +192,19 @@ export function wrapWithPolicy(
 
     let output: string;
     let failure: unknown;
+    /** The tool ran and reported its own work failed — see `ToolFailure`. */
+    let ranAndFailed = false;
     try {
-      output = await run(effectiveInput, {
+      const result = await run(effectiveInput, {
         toolCallId: options.toolCallId,
         abortSignal: options.abortSignal,
       });
+      if (typeof result === 'string') {
+        output = result;
+      } else {
+        output = result.output;
+        ranAndFailed = true;
+      }
     } catch (err) {
       failure = err;
       output = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
@@ -167,6 +224,14 @@ export function wrapWithPolicy(
       // Choice 2 above: re-throw so the SDK marks the result as an error.
       throw failure instanceof Error ? failure : new Error(String(failure));
     }
+
+    // Choice 3 (TASK-430): the tool RAN and its work failed. `ai@7` has no
+    // channel for that, so the fact is recorded against the call id and read
+    // back when the turn publishes. Recorded AFTER the re-throw above so the
+    // two error channels stay disjoint — a thrown executor is marked by the
+    // SDK's own `error-text` result and must not also land here, or the same
+    // fact would have two sources (invariant 4).
+    if (ranAndFailed) opts.onToolFailure(options.toolCallId);
 
     return note === undefined ? output : `${output}\n\n${note}`;
   };

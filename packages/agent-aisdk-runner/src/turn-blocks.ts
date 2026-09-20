@@ -57,12 +57,20 @@ function flattenToolOutput(output: unknown): string {
   return JSON.stringify(o.value ?? o);
 }
 
+/**
+ * Did the SDK itself mark this output an error? True for a THROWN executor.
+ *
+ * `error-json` is accepted alongside `error-text` because which of the two
+ * `ai@7` produces is an internal choice of its own (`createToolModelOutput`
+ * picks by `errorMode`, and the two call sites disagree — `toResponseMessages`
+ * uses `'text'`, the UI-message path uses `'json'`). Keying on only one of them
+ * would make "was this a failure?" depend on which SDK code path built the
+ * message, and the wrong answer would be the reassuring one.
+ */
 function isErrorOutput(output: unknown): boolean {
-  return (
-    output !== null &&
-    typeof output === 'object' &&
-    (output as { type?: unknown }).type === 'error-text'
-  );
+  if (output === null || typeof output !== 'object') return false;
+  const type = (output as { type?: unknown }).type;
+  return type === 'error-text' || type === 'error-json';
 }
 
 /**
@@ -83,6 +91,15 @@ export function toTurnBlocks(
    * claude-sdk runner's publish path does. Defaults to none held.
    */
   isHeld: (toolCallId: string) => boolean = () => false,
+  /**
+   * TASK-430: which tool calls RAN AND FAILED without throwing (the loop's
+   * per-turn failure record). `ai@7` only marks a thrown executor, so without
+   * this a `Bash` call that exited 127 persisted as an ordinary success and
+   * neither the reader nor the model resuming from the thread could tell.
+   * Structural — populated from a process exit status, never from the output
+   * text. Defaults to none failed.
+   */
+  isFailed: (toolCallId: string) => boolean = () => false,
 ): TurnBlocks {
   const contentBlocks: ContentBlock[] = [];
   const toolResultBlocks: ContentBlock[] = [];
@@ -130,7 +147,13 @@ export function toTurnBlocks(
       for (const part of message.content) {
         if (part.type !== 'tool-result') continue;
         const held = isHeld(part.toolCallId);
-        const isError = !held && isErrorOutput(part.output);
+        // Two ways a call can have failed, and the transcript must say so for
+        // both: the SDK marked it (a thrown executor), or the tool told us it
+        // did (a non-zero exit — see failed-calls.ts). `held` still wins over
+        // both, because a hold is not a failure (TASK-270) and a held call
+        // never reaches either branch anyway.
+        const isError =
+          !held && (isFailed(part.toolCallId) || isErrorOutput(part.output));
         toolResultBlocks.push({
           type: 'tool_result',
           tool_use_id: part.toolCallId,

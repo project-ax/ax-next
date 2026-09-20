@@ -43,7 +43,7 @@ import { mkdir, open, readdir, readFile, stat, writeFile } from 'node:fs/promise
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { jsonSchema, tool, type Tool } from 'ai';
 import type { HoldLatch, ToolPolicy } from '@ax/agent-runner-core';
-import { wrapWithPolicy } from './policy-wrap.js';
+import { wrapWithPolicy, type ToolRunResult } from './policy-wrap.js';
 
 // --- Bounds ----------------------------------------------------------------
 
@@ -142,6 +142,8 @@ export interface BuiltinToolsOptions {
   holdLatch: HoldLatch;
   /** Fired with the call id on a hold — see WrapWithPolicyOptions. */
   onHold: (toolCallId: string) => void;
+  /** Fired with the call id when a tool ran and failed — see WrapWithPolicyOptions. */
+  onToolFailure: (toolCallId: string) => void;
 }
 
 /**
@@ -154,9 +156,9 @@ export function buildBuiltinTools(
 ): Record<string, Tool> {
   const wrap = (
     name: string,
-    run: (input: Record<string, unknown>, ctx: { abortSignal?: AbortSignal | undefined }) => Promise<string>,
+    run: (input: Record<string, unknown>, ctx: { abortSignal?: AbortSignal | undefined }) => Promise<ToolRunResult>,
   ): ReturnType<typeof wrapWithPolicy> =>
-    wrapWithPolicy({ policy: opts.policy, name, isBuiltin: true, holdLatch: opts.holdLatch, onHold: opts.onHold }, (input, ctx) =>
+    wrapWithPolicy({ policy: opts.policy, name, isBuiltin: true, holdLatch: opts.holdLatch, onHold: opts.onHold, onToolFailure: opts.onToolFailure }, (input, ctx) =>
       run(input, { abortSignal: ctx.abortSignal }),
     );
 
@@ -359,13 +361,60 @@ export function resolveBashTimeoutMs(raw: unknown): number {
   return Math.min(BASH_MAX_TIMEOUT_MS, Math.max(BASH_MIN_TIMEOUT_MS, raw));
 }
 
+/**
+ * Everything the runner observed about one `Bash` run.
+ *
+ * The five outcomes a command can have, and how this shape tells them apart
+ * (TASK-430 — collapsing any two of them is how a failure came to be published
+ * as a success):
+ *
+ *   - SUCCEEDED         `exitCode === 0`, not timed out, not aborted.
+ *   - EXITED NON-ZERO   `exitCode` is a non-zero number.
+ *   - KILLED BY SIGNAL  `exitCode === null`, `signal` names it.
+ *   - TIMED OUT         `timedOut` — our own SIGKILL, so also `exitCode: null`.
+ *   - CANCELLED         `aborted` — the turn gave up; also our SIGKILL.
+ *
+ * A sixth, NEVER STARTED (`spawn` raised ENOENT/EPERM), never reaches this
+ * shape: `child.on('error')` rejects, so it surfaces as a thrown executor and
+ * `ai@7` marks it an error itself. That is the one state the process gives us
+ * no way to confuse with the others, because there is no exit status at all.
+ *
+ * `timedOut` and `aborted` are OUR flags, set before we kill, so they are not
+ * inferred from the signal — which is why a command killed by an unrelated
+ * outside SIGKILL stays distinguishable from one we timed out.
+ */
 interface BashOutcome {
   stdout: BoundedCapture;
   stderr: BoundedCapture;
   /** null when the child died on a signal rather than exiting. */
   exitCode: number | null;
+  /** The signal that killed the child, when one did. */
+  signal: NodeJS.Signals | null;
   timedOut: boolean;
   aborted: boolean;
+}
+
+/**
+ * Did this run FAIL? The one predicate, derived from the process status alone.
+ *
+ * Exported so the table test can enumerate every `BashOutcome` shape against
+ * it directly, rather than inferring the answer from rendered text.
+ *
+ * Written as "succeeded" and negated, deliberately. Listing the failures
+ * instead would make every outcome added later default to SUCCESS — the
+ * direction this whole defect fails in. Here a new field is a compile-time
+ * decision and an unhandled state is reported as a failure, which is the safe
+ * way round: alarm about a success is noticed and corrected, silence about a
+ * failure is not.
+ */
+export function bashRunFailed(outcome: {
+  exitCode: number | null;
+  timedOut: boolean;
+  aborted: boolean;
+}): boolean {
+  const succeeded =
+    outcome.exitCode === 0 && !outcome.timedOut && !outcome.aborted;
+  return !succeeded;
 }
 
 /**
@@ -399,11 +448,16 @@ async function runBashTool(
   input: Record<string, unknown>,
   opts: BuiltinToolsOptions,
   abortSignal: AbortSignal | undefined,
-): Promise<string> {
+): Promise<ToolRunResult> {
   const command = requireString(input, 'command', 'Bash');
   const timeoutMs = resolveBashTimeoutMs(input['timeout']);
   const outcome = await spawnBash(command, opts, timeoutMs, abortSignal);
-  return formatBashOutcome(outcome, timeoutMs);
+  const output = formatBashOutcome(outcome, timeoutMs);
+  // The model reads `output` either way — identical bytes to before TASK-430,
+  // which is what keeps this runner's model-facing behaviour the same as the
+  // claude-sdk runner's. `failed` rides alongside it to the HOST record, so the
+  // transcript stops calling a non-zero exit a success.
+  return bashRunFailed(outcome) ? { output, failed: true } : output;
 }
 
 /**
@@ -490,11 +544,18 @@ function spawnBash(
 
     // 'close' rather than 'exit': it fires once the pipes are drained too, so
     // we never truncate the tail of a command's output by racing its exit.
-    child.on('close', (code) => {
+    //
+    // The SIGNAL is captured, not discarded. `code` is null exactly when the
+    // child died on a signal, and without the signal name the outcome could
+    // only say "no exit code" — which `formatBashOutcome` used to render as
+    // "(command produced no output; exit code: 0)" when the command printed
+    // nothing. A killed command reported as a clean exit 0 is the same defect
+    // as the missing `is_error`, one layer down.
+    child.on('close', (code, signal) => {
       if (settled) return;
       settled = true;
       cleanup();
-      resolvePromise({ stdout, stderr, exitCode: code, timedOut, aborted });
+      resolvePromise({ stdout, stderr, exitCode: code, signal, timedOut, aborted });
     });
   });
 }
@@ -520,10 +581,25 @@ function formatBashOutcome(outcome: BashOutcome, timeoutMs: number): string {
 
   if (outcome.exitCode !== null && outcome.exitCode !== 0) {
     sections.push(`exit code: ${outcome.exitCode}`);
+  } else if (outcome.exitCode === null && !outcome.timedOut && !outcome.aborted) {
+    // Killed by something other than our own timeout or cancellation. Before
+    // TASK-430 this produced NO line at all, so a silent kill fell through to
+    // the "exit code: 0" default below and the model was told a command that
+    // was shot in the head had succeeded.
+    sections.push(
+      `[command was killed by ${outcome.signal ?? 'a signal'} and did not finish]`,
+    );
   }
-  return sections.length === 0
-    ? '(command produced no output; exit code: 0)'
-    : sections.join('\n');
+  // Only reachable when the command truly exited 0 with nothing on either
+  // stream: every other outcome pushed a section above. Guarded anyway —
+  // asserting an exit code we did not observe is the defect this file is
+  // being fixed for.
+  if (sections.length === 0) {
+    return outcome.exitCode === 0
+      ? '(command produced no output; exit code: 0)'
+      : '(command produced no output, and its exit status could not be determined)';
+  }
+  return sections.join('\n');
 }
 
 // --- Read ------------------------------------------------------------------

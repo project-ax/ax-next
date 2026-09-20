@@ -192,6 +192,101 @@ describe('toTurnBlocks (outbound)', () => {
     ]);
   });
 
+  // TASK-430. The SDK's `errorMode` picks between `error-text` and
+  // `error-json` per call site, so keying on only one of them would make "did
+  // this fail?" depend on which SDK path built the message — and the wrong
+  // answer would be the reassuring one.
+  it('marks an error-json output as is_error too', () => {
+    const { toolResultBlocks } = toTurnBlocks([
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'c10',
+            toolName: 'Read',
+            output: { type: 'error-json', value: { message: 'boom' } },
+          },
+        ],
+      },
+    ]);
+    expect(toolResultBlocks[0]).toMatchObject({ is_error: true });
+  });
+
+  // TASK-430 — the defect this card exists for, at the translation layer.
+  //
+  // A `Bash` call that exited non-zero returns a plain STRING, so `ai@7` wraps
+  // it as `{type:'text'}` and nothing in the output says it failed. Before the
+  // fix this block persisted with NO `is_error` and the transcript reported a
+  // failed command as a success.
+  //
+  // The neighbour is the half that makes the assertion mean something: the two
+  // calls carry the SAME output shape and differ ONLY in the per-turn failure
+  // record, so a fix that marked everything — or nothing — fails here.
+  it('marks a call the runner recorded as failed, and leaves its identical-shaped neighbour clean', () => {
+    const toolMessage = (toolCallId: string, value: string) => ({
+      role: 'tool' as const,
+      content: [
+        {
+          type: 'tool-result' as const,
+          toolCallId,
+          toolName: 'Bash',
+          output: { type: 'text' as const, value },
+        },
+      ],
+    });
+    const { toolResultBlocks } = toTurnBlocks(
+      [
+        toolMessage('c_fail', 'bash: line 1: nope: command not found\nexit code: 127'),
+        toolMessage('c_ok', 'hello'),
+      ],
+      new Map(),
+      () => false,
+      (toolCallId) => toolCallId === 'c_fail',
+    );
+    expect(toolResultBlocks).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 'c_fail',
+        content: 'bash: line 1: nope: command not found\nexit code: 127',
+        is_error: true,
+      },
+      { type: 'tool_result', tool_use_id: 'c_ok', content: 'hello' },
+    ]);
+  });
+
+  // TASK-430 x TASK-270. The two records must not be confused: a call that is
+  // waiting on a person is not a call that failed. `held` wins, and `is_error`
+  // stays off even if the failure record somehow names the same id.
+  it('keeps a held call unmarked even when the failure record names it', () => {
+    const { toolResultBlocks } = toTurnBlocks(
+      [
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'c_held',
+              toolName: 'gmail_send',
+              output: { type: 'text', value: 'Held: sending email' },
+            },
+          ],
+        },
+      ],
+      new Map(),
+      () => true,
+      () => true,
+    );
+    expect(toolResultBlocks).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 'c_held',
+        content: 'Held: sending email',
+        held: true,
+      },
+    ]);
+  });
+
   // TASK-270: a held call persists with the flag and no is_error — the
   // reader keys the Waiting treatment off the flag, never off the copy.
   // An unheld neighbour in the same turn is untouched.

@@ -47,6 +47,8 @@ export interface BuildSkillToolOptions {
   holdLatch: HoldLatch;
   /** Fired with the call id on a hold — see WrapWithPolicyOptions. */
   onHold: (toolCallId: string) => void;
+  /** Fired with the call id when a tool ran and failed — see WrapWithPolicyOptions. */
+  onToolFailure: (toolCallId: string) => void;
 }
 
 /**
@@ -65,7 +67,7 @@ export function buildSkillTool(
   const available = opts.skills.map((s) => s.name).join(', ');
 
   const execute = wrapWithPolicy(
-    { policy: opts.policy, name: SKILL_TOOL_NAME, isBuiltin: true, holdLatch: opts.holdLatch, onHold: opts.onHold },
+    { policy: opts.policy, name: SKILL_TOOL_NAME, isBuiltin: true, holdLatch: opts.holdLatch, onHold: opts.onHold, onToolFailure: opts.onToolFailure },
     async (input) => {
       const requested = typeof input['name'] === 'string' ? input['name'].trim() : '';
       const found = lookup(opts.skills, requested);
