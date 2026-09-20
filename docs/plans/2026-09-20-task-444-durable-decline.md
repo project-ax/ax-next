@@ -31,8 +31,14 @@ here (yolo-ship autonomy rule 5).
 
 | Path | When | Is it a genuine need? |
 |---|---|---|
-| `chat:permission-request` → `appendPermissionCard` → SSE frame | the agent just asked | **yes** |
+| `chat:permission-request` → `appendPermissionCard` → live SSE frame | the agent just asked | **yes** |
 | `GET /api/workspace/grants` → `pendingGrantsForUser` | every workspace mount | **no** — a replay of an already-answered question |
+| the TASK-82 replay on stream open → `tailPermissionCardEntries` (`sse.ts`) | every time a stream opens on that conversation — i.e. the next message to the same agent | **no** — the same replay, on the more common path |
+
+The third row is the one a first pass missed, and review caught it: declining
+does not evict the card, so *both* read paths have to apply the filter. They
+share one implementation (`withoutDeclinedGrants`) precisely so they cannot
+drift apart.
 
 So the deferral is expressed as: **a decline suppresses the replay, and a newer
 raise outranks an older decline.** Nothing else is needed, and in particular no
@@ -93,13 +99,20 @@ the wire** (invariant 1) and no client-supplied timestamp.
    silent success: a refusal we failed to record is one that will come back.
 4. Write `{ declinedAt: now() }` and answer `200 { declined: true }`.
 
-### 4. The filter in `GET /api/workspace/grants`
+### 4. The filter — `withoutDeclinedGrants`, used by BOTH read paths
 
 One `storage:list-prefix` on `grant-decline:<enc(userId)>:`, then drop any
 pending grant whose marker has `declinedAt >= raisedAt`. A grant re-raised after
 the decline has the newer `raisedAt` and comes straight back — that is the
 need-trigger, and it needs no write and no timer. Both instants come from the
-same host process (channel-web is single-replica by construction, plugin.ts J8).
+same host process (channel-web is single-replica by construction, plugin.ts J8);
+the one thing assumed is that that clock runs forwards, and the helper's comment
+says so rather than implying it away.
+
+It lives in `grant-declines.ts` and is called from *two* places — the
+`GET /api/workspace/grants` handler and the SSE replay in `sse.ts`. One
+implementation on purpose: a second copy of the comparison is how the two paths
+drift, and the drift is invisible from either side.
 
 Without `storage:list-prefix` the route answers exactly as it does today and the
 degradation is declared in the manifest.

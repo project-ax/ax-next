@@ -211,6 +211,23 @@ export interface ChunkBuffer {
    */
   tailPermissionCards(conversationId: string): readonly PermissionRequest[];
   /**
+   * The SAME cards `tailPermissionCards` returns, each with the `raisedAt`
+   * instant beside it.
+   *
+   * TWO accessors, on purpose. `tailPermissionCards` is the browser-facing
+   * shape — a list of cards, nothing else, and several callers already write
+   * it straight to a stream. This one is for the ONE caller that has to make a
+   * decision about a card before writing it: the SSE replay, which filters out
+   * the grants this person already said "Not now" to and needs `raisedAt` to
+   * do it (see `withoutDeclinedGrants` in grant-declines.ts). Widening
+   * `tailPermissionCards` instead would put our bookkeeping in front of every
+   * caller that only wants to draw a card, and putting a `raisedAt` on the
+   * wire is a field the browser has no business reading.
+   */
+  tailPermissionCardEntries(
+    conversationId: string,
+  ): readonly { card: PermissionRequest; raisedAt: number }[];
+  /**
    * Every pending conversation-keyed card belonging to this user, with the
    * conversation and agent it was raised on (TASK-373).
    *
@@ -269,6 +286,13 @@ export interface ChunkBufferOptions {
    * Test seam: returns "now" in ms. Default `Date.now`. Also the source of
    * each pending card's `raisedAt` (TASK-444) — one clock, so the sweep's
    * deadlines and the grant-decline comparison can never drift apart.
+   *
+   * IT HAS A TWIN, and the pair is load-bearing: `WorkspaceHandlerDeps.now`
+   * in routes-workspace.ts stamps the `declinedAt` this `raisedAt` is
+   * compared against. Production injects NEITHER, so both are the system
+   * clock and the comparison is between two readings of one clock. A test
+   * that stubs one seam and not the other is comparing two different clocks
+   * and will get an answer that means nothing — stub both or stub neither.
    */
   now?: () => number;
   /**
@@ -558,6 +582,14 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
       if (list === undefined) return [];
       // Map the bookkeeping off: callers of this one replay cards to browsers.
       return list.map((e) => e.card);
+    },
+
+    tailPermissionCardEntries(conversationId) {
+      const list = skillCards.get(conversationId);
+      if (list === undefined) return [];
+      // A copy, like every other tail: the caller must not be able to reach
+      // back into the stored list.
+      return list.map((e) => ({ card: e.card, raisedAt: e.raisedAt }));
     },
 
     pendingGrantsForUser(userId) {

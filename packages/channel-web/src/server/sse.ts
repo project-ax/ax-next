@@ -5,6 +5,11 @@ import {
   type HookBus,
 } from '@ax/core';
 import type { ChunkBuffer } from './chunk-buffer.js';
+// The durable "Not now" filter (TASK-444). Same package, this plugin's own
+// module — and the SAME implementation GET /api/workspace/grants reads
+// through, deliberately: two server paths put a pending card in front of
+// somebody and a second copy of the comparison is how they drift apart.
+import { withoutDeclinedGrants } from './grant-declines.js';
 import type { PermissionRequest, PhaseEvent, SseFrame, StreamChunk } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -342,9 +347,36 @@ export function createSseHandler(deps: SseHandlerDeps) {
     // we replay and KEEP the stream open for the live subscribers below. Skill
     // cards key off conversationId; host cards off the connection reqId — both
     // match the live subscriber's filter posture so replay + live agree exactly.
-    for (const card of deps.buffer.tailPermissionCards(conversationId)) {
+    //
+    // MINUS THE ONES ALREADY ANSWERED (TASK-444). Declining does NOT evict the
+    // card — the durable marker is the record, not the deletion — so the card
+    // sits in the buffer with its original `raisedAt` and this replay would
+    // hand it straight back the next time a stream opens on this conversation.
+    // That is not a reload-only path: it is what happens when the person
+    // declines and then simply sends one more message to the same agent. The
+    // agent re-proposing IS a fresh need and re-stamps `raisedAt`, so it
+    // outranks the older refusal and comes back; a replay is not, and does not.
+    // Same one filter the mount read-back uses — two copies of that comparison
+    // is how the two paths drift apart (grant-declines.ts).
+    //
+    // `userId` is the authenticated caller and `agentId` came out of the
+    // conversation lookup above: both authoritative, neither read off the card
+    // or out of the request.
+    const pendingCards = await withoutDeclinedGrants(
+      deps.bus,
+      deps.initCtx,
+      userId,
+      deps.buffer
+        .tailPermissionCardEntries(conversationId)
+        .map((e) => ({ agentId, card: e.card, raisedAt: e.raisedAt })),
+    );
+    for (const { card } of pendingCards) {
       safeWrite({ reqId, permissionRequest: card });
     }
+    // HOST CARDS ARE NOT FILTERED, and must not be. They are turn-scoped and
+    // never enumerated, "Not now" on one stays purely local, and a later
+    // session that hits the same wall is a genuine new need rather than the
+    // answered question repeated.
     for (const card of deps.buffer.tailHostCards(reqId)) {
       // Strip the routing reqId before the browser sees it (same posture as the
       // live host-card subscriber): the connection already knows its reqId.

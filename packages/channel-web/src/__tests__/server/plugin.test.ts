@@ -636,7 +636,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         {
           hook: 'storage:list-prefix',
           degradation:
-            'GET /api/workspace/grants cannot tell which grants were already declined, so every pending grant is offered again on each workspace mount',
+            'neither GET /api/workspace/grants nor the chat stream can tell which grants were already declined, so every pending grant is offered again on each workspace mount and each stream open',
         },
         {
           hook: 'session:is-alive',

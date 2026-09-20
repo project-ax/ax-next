@@ -230,12 +230,13 @@ export function createChannelWebServerPlugin(
         },
         {
           // TASK-444 — the read side of the same marker: one prefix scan per
-          // GET /api/workspace/grants, filtering out what the person already
-          // turned down. Without it the route answers exactly as it did
-          // before the card.
+          // GET /api/workspace/grants AND per SSE stream open (the TASK-82
+          // pending-card replay reads through the same filter), dropping what
+          // the person already turned down. Without it both paths answer
+          // exactly as they did before the card.
           hook: 'storage:list-prefix',
           degradation:
-            'GET /api/workspace/grants cannot tell which grants were already declined, so every pending grant is offered again on each workspace mount',
+            'neither GET /api/workspace/grants nor the chat stream can tell which grants were already declined, so every pending grant is offered again on each workspace mount and each stream open',
         },
         {
           // TASK-230 — the agent-workspace roster derives each agent's

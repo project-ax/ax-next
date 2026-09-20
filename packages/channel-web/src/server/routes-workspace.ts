@@ -165,9 +165,9 @@ import type { ChunkBuffer } from './chunk-buffer.js';
 // module: the route owns the wire shape and this owns the storage shape, so
 // the key spelling never leaks onto the wire (invariant 1).
 import {
-  grantDeclineKey,
-  readGrantDeclines,
+  grantSubjectId,
   recordGrantDecline,
+  withoutDeclinedGrants,
   type DeclinableGrantKind,
 } from './grant-declines.js';
 import type { PermissionRequest } from './types.js';
@@ -874,19 +874,6 @@ export interface DeclineGrantRequest {
  *  this with `declined: false` — see the handler. */
 export interface DeclineGrantResponse {
   declined: true;
-}
-
-/**
- * The subject a pending card is about: a skill's `skillId`, a connector's
- * `connectorId`. `null` for a host card, which is turn-scoped and never
- * enumerated here (TASK-375) — so a host card can never be declined durably
- * either, and that is correct: a later session that hits the same wall is a
- * genuine new need, not a repeat of the answered question.
- */
-function grantSubjectId(card: PermissionRequest): string | null {
-  if (card.kind === 'skill') return card.skillId;
-  if (card.kind === 'connector') return card.connectorId;
-  return null;
 }
 
 /**
@@ -2314,9 +2301,17 @@ export interface WorkspaceHandlerDeps {
    */
   agentWorkspacePreview?: boolean;
   /**
-   * Time seam for the "This week" window. Injected so the counter's boundary is
+   * Time seam for the "This week" window, and for the `declinedAt` a "Not now"
+   * is recorded with (TASK-444). Injected so the counter's boundary is
    * testable — a counter whose definition cannot be tested at its edge is a
    * counter whose definition will drift.
+   *
+   * IT HAS A TWIN: `ChunkBufferOptions.now` in chunk-buffer.ts stamps the
+   * `raisedAt` this `declinedAt` is compared against (`withoutDeclinedGrants`).
+   * Production injects NEITHER — both are the system clock, which is the only
+   * reason the comparison means anything. Nothing structurally forces that, so
+   * a test that stubs one and not the other is comparing two unrelated clocks:
+   * stub both or stub neither.
    */
   now?: () => Date;
 }
@@ -3792,54 +3787,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     };
   }
 
-  /**
-   * Drop the grants this person has already said "Not now" to (TASK-444).
-   *
-   * ONE `list-prefix` for the caller, then a comparison per row: the marker
-   * wins while `declinedAt >= raisedAt`. A grant re-raised after the refusal
-   * carries the newer `raisedAt` and comes straight back — that is the whole
-   * need-trigger, and it takes no write, no timer and no second decision.
-   * Comparing two instants like this is sound because BOTH come from this one
-   * host process: channel-web is single-replica by construction (the chart
-   * refuses to render replicas > 1 — see the J7/J8 note in plugin.ts and
-   * chunk-buffer.ts), and the pending cards live in that process's memory
-   * anyway, so there is no second clock for them to disagree with.
-   *
-   * Without `storage:list-prefix` this is exactly today's behaviour, and the
-   * manifest declares that degradation.
-   */
-  async function withoutDeclined<
-    T extends { agentId: string; card: PermissionRequest; raisedAt: number },
-  >(userId: string, rows: readonly T[]): Promise<readonly T[]> {
-    if (rows.length === 0 || !bus.hasService('storage:list-prefix')) return rows;
-    let declines: Map<string, number>;
-    try {
-      declines = await readGrantDeclines(bus, initCtx, userId);
-    } catch (err) {
-      // Fall through UNFILTERED rather than failing the read. Losing the
-      // grants list entirely is the worse outcome by a distance: a question
-      // shown twice is a small annoyance, a question the person cannot see at
-      // all is an agent stuck with nobody able to unstick it.
-      initCtx.logger.warn('workspace_grant_declines_read_failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return rows;
-    }
-    return rows.filter((row) => {
-      const subjectId = grantSubjectId(row.card);
-      if (subjectId === null) return true;
-      const declinedAt = declines.get(
-        grantDeclineKey(
-          userId,
-          row.agentId,
-          row.card.kind as DeclinableGrantKind,
-          subjectId,
-        ),
-      );
-      return declinedAt === undefined || declinedAt < row.raisedAt;
-    });
-  }
-
   return {
     /**
      * GET /api/features — a public echo of a build-time flag.
@@ -3951,7 +3898,11 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
 
       const rows = buffer?.pendingGrantsForUser(userId) ?? [];
       res.status(200).json({
-        grants: (await withoutDeclined(userId, rows)).map((g) => ({
+        // The filter is SHARED with the SSE replay (grant-declines.ts) — two
+        // copies of the comparison is how the two paths drift apart.
+        grants: (
+          await withoutDeclinedGrants(bus, initCtx, userId, rows)
+        ).map((g) => ({
           conversationId: g.conversationId,
           agentId: g.agentId,
           request: g.card,
@@ -5103,6 +5054,14 @@ export async function registerWorkspaceRoutes(
   initCtx: AgentContext,
   opts: { agentWorkspacePreview: boolean; buffer?: ChunkBuffer },
 ): Promise<Array<() => void>> {
+  // TWO CLOCKS THAT HAVE TO BE ONE. `makeWorkspaceHandlers`'s `now` stamps the
+  // `declinedAt` of a "Not now"; `createChunkBuffer`'s `now` (plugin.ts, the
+  // same `opts.buffer` passed in here) stamps each pending card's `raisedAt`.
+  // `withoutDeclinedGrants` compares those two instants, which is only sound
+  // while they come from the same clock. Neither seam is injected on this
+  // path — both fall through to the system clock — and that is exactly why
+  // this call passes no `now`. If one ever gains an injected clock, the other
+  // has to gain the same one.
   const handlers = makeWorkspaceHandlers({
     bus,
     initCtx,

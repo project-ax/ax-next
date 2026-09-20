@@ -18,6 +18,7 @@ import {
   type RouteResponse,
   type RouteStream,
 } from '../../server/sse';
+import { recordGrantDecline } from '../../server/grant-declines';
 import type { PermissionRequest, PhaseEvent, StreamChunk } from '../../server/types';
 
 // ---------------------------------------------------------------------------
@@ -133,6 +134,19 @@ interface BootOpts {
   } | null;
   /** Whether agents:resolve allows the (agentId, userId) tuple. */
   agentResolveAllow?: boolean;
+  /**
+   * Test clock for the buffer's pending-card `raisedAt` stamps (TASK-444).
+   * Omitted → the system clock, exactly as production wires it.
+   */
+  now?: () => number;
+  /**
+   * Register the generic KV services the durable "Not now" marker lives in
+   * (TASK-444). `'read-write'` registers both `storage:set` and
+   * `storage:list-prefix`; `'write-only'` registers only the writer, so the
+   * filter's `hasService('storage:list-prefix')` short-circuit is the thing
+   * under test; omitted → neither, i.e. a deployment with no KV store at all.
+   */
+  storage?: 'read-write' | 'write-only';
 }
 
 function bootHandler(opts: BootOpts = {}) {
@@ -188,7 +202,33 @@ function bootHandler(opts: BootOpts = {}) {
     return { agent: { id: 'agt_test', visibility: 'personal' } };
   });
 
-  const buffer = createChunkBuffer();
+  // The KV substrate the durable decline marker is written through. Only
+  // registered when a test asks for it — every other test in this file runs in
+  // a process with no store, which is the pre-TASK-444 world.
+  const kv = new Map<string, Uint8Array>();
+  if (opts.storage !== undefined) {
+    bus.registerService<{ key: string; value: Uint8Array }, void>(
+      'storage:set',
+      'mock-storage',
+      async (_ctx, { key, value }) => {
+        kv.set(key, value);
+      },
+    );
+  }
+  if (opts.storage === 'read-write') {
+    bus.registerService<
+      { prefix: string },
+      { entries: Array<{ key: string; value: Uint8Array }> }
+    >('storage:list-prefix', 'mock-storage', async (_ctx, { prefix }) => ({
+      entries: [...kv.entries()]
+        .filter(([k]) => k.startsWith(prefix))
+        .map(([key, value]) => ({ key, value })),
+    }));
+  }
+
+  const buffer = createChunkBuffer(
+    opts.now !== undefined ? { now: opts.now } : {},
+  );
   // Plugin-side buffer-fill subscriber — stand-in for the channel-web
   // plugin's boot-time wiring.
   bus.subscribe(
@@ -226,7 +266,7 @@ function bootHandler(opts: BootOpts = {}) {
   );
 
   const handler = createSseHandler({ bus, initCtx, buffer });
-  return { bus, initCtx, buffer, handler };
+  return { bus, initCtx, buffer, handler, kv };
 }
 
 function ctxWithConversation(ctx: AgentContext, conversationId: string): AgentContext {
@@ -1197,6 +1237,226 @@ describe('permission-request replay on (re)connect (TASK-82)', () => {
         .filter((w) => w.startsWith('data: '))
         .map((w) => JSON.parse(w.slice(6)) as Record<string, unknown>);
       expect(frames.some((f) => 'permissionRequest' in f)).toBe(false);
+    } finally {
+      buffer.dispose();
+    }
+  });
+});
+
+// TASK-444 — "Not now" has to survive the REPLAY, not just the reload.
+//
+// Declining a grant does not evict the card: the durable marker is the record,
+// not the deletion. So the card stays in the buffer with its original
+// `raisedAt`, and the TASK-82 replay above hands it straight back the next time
+// a stream opens on that conversation — which is not a reload-only path, it is
+// what happens when the person declines and then sends one more message to the
+// same agent. The agent never re-proposed anything, so that is a replay, not a
+// need, and the whole product decision is that only a need brings the question
+// back. These tests pin the replay side of that filter; the mount read-back
+// side is pinned in routes-workspace-grants.test.ts.
+describe('declined grants are not replayed on stream open (TASK-444)', () => {
+  function skillCard(skillId = 'github-helper'): PermissionRequest {
+    return {
+      kind: 'skill',
+      skillId,
+      description: 'Reach the GitHub API on your behalf',
+      hosts: ['api.github.com'],
+      slots: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
+      authored: true,
+    };
+  }
+
+  /** The frames a fresh connection wrote, decoded. */
+  async function openStream(
+    handler: (req: RouteRequest, res: RouteResponse) => Promise<void>,
+  ): Promise<Array<Record<string, unknown>>> {
+    const { res, captured } = fakeRes();
+    await handler(fakeReq({ reqId: 'r-test' }), res);
+    return captured.streamWrites
+      .filter((w) => w.startsWith('data: '))
+      .map((w) => JSON.parse(w.slice(6)) as Record<string, unknown>);
+  }
+
+  const skillIds = (frames: Array<Record<string, unknown>>): string[] =>
+    frames
+      .map(
+        (f) => (f.permissionRequest as { skillId?: string } | undefined)?.skillId,
+      )
+      .filter((id): id is string => typeof id === 'string');
+
+  it('does NOT replay a skill card the person already declined', async () => {
+    let clock = 1_000;
+    const { bus, initCtx, handler, buffer } = bootHandler({
+      storage: 'read-write',
+      now: () => clock,
+    });
+    try {
+      // The agent proposes; the card is buffered with raisedAt = 1000.
+      await bus.fire(
+        'chat:permission-request',
+        ctxWithConversation(initCtx, 'cnv_test'),
+        skillCard(),
+      );
+
+      // The person says "Not now". The route writes the marker and leaves the
+      // card where it is — we write it through the real recorder so the key
+      // spelling under test is the production one.
+      await recordGrantDecline(bus, initCtx, {
+        userId: 'userA',
+        agentId: 'agt_test',
+        kind: 'skill',
+        subjectId: 'github-helper',
+        declinedAt: 2_000,
+      });
+
+      // They send one more message to the same agent: a new stream opens on
+      // the same conversation. The answered question must NOT come back.
+      clock = 2_500;
+      expect(skillIds(await openStream(handler))).toEqual([]);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('replays the card again once the agent re-proposes it (fresh raisedAt)', async () => {
+    let clock = 1_000;
+    const { bus, initCtx, handler, buffer } = bootHandler({
+      storage: 'read-write',
+      now: () => clock,
+    });
+    try {
+      await bus.fire(
+        'chat:permission-request',
+        ctxWithConversation(initCtx, 'cnv_test'),
+        skillCard(),
+      );
+      await recordGrantDecline(bus, initCtx, {
+        userId: 'userA',
+        agentId: 'agt_test',
+        kind: 'skill',
+        subjectId: 'github-helper',
+        declinedAt: 2_000,
+      });
+      clock = 2_500;
+      expect(skillIds(await openStream(handler))).toEqual([]);
+
+      // The agent genuinely needs it again. A re-proposal replaces the card in
+      // place with a FRESH raisedAt, which outranks the older refusal — that is
+      // the need-trigger, and it is the only thing that brings the card back.
+      clock = 3_000;
+      await bus.fire(
+        'chat:permission-request',
+        ctxWithConversation(initCtx, 'cnv_test'),
+        skillCard(),
+      );
+      expect(skillIds(await openStream(handler))).toEqual(['github-helper']);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  // DEGRADATION-DIRECTION GUARD, deliberately: it passes against the unfixed
+  // code too (nothing filtered there). It exists to catch the OTHER failure —
+  // a filter that over-suppresses, e.g. a key spelling where one subject's
+  // refusal answers a different subject's card.
+  it('replays a card whose subject was never declined', async () => {
+    let clock = 1_000;
+    const { bus, initCtx, handler, buffer } = bootHandler({
+      storage: 'read-write',
+      now: () => clock,
+    });
+    try {
+      await bus.fire(
+        'chat:permission-request',
+        ctxWithConversation(initCtx, 'cnv_test'),
+        skillCard('linear-helper'),
+      );
+      // A refusal recorded against another skill must not answer this one.
+      await recordGrantDecline(bus, initCtx, {
+        userId: 'userA',
+        agentId: 'agt_test',
+        kind: 'skill',
+        subjectId: 'github-helper',
+        declinedAt: 2_000,
+      });
+      clock = 2_500;
+      expect(skillIds(await openStream(handler))).toEqual(['linear-helper']);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  // DEGRADATION-DIRECTION GUARD, deliberately: this passes against the unfixed
+  // code too, because nothing filtered there either. What it pins is that the
+  // filter's `hasService('storage:list-prefix')` short-circuit leaves the
+  // replay exactly as it was — the degradation the manifest declares, and the
+  // thing a later refactor could quietly turn into "no store, no cards".
+  it('replays pending cards unchanged when storage:list-prefix is absent', async () => {
+    let clock = 1_000;
+    const { bus, initCtx, handler, buffer, kv } = bootHandler({
+      storage: 'write-only',
+      now: () => clock,
+    });
+    try {
+      await bus.fire(
+        'chat:permission-request',
+        ctxWithConversation(initCtx, 'cnv_test'),
+        skillCard(),
+      );
+      await recordGrantDecline(bus, initCtx, {
+        userId: 'userA',
+        agentId: 'agt_test',
+        kind: 'skill',
+        subjectId: 'github-helper',
+        declinedAt: 2_000,
+      });
+      // The refusal WAS written — there is simply no way to read it back.
+      expect(kv.size).toBe(1);
+      clock = 2_500;
+      expect(skillIds(await openStream(handler))).toEqual(['github-helper']);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  // Half red, half guard. The skill assertion fails against the unfixed code
+  // like the ones above; the host assertion passes either way and is there on
+  // purpose — host cards were never filterable and must stay that way. They are
+  // turn-scoped, never enumerated, and a later session hitting the same wall is
+  // a genuine new need, so this pins that the skill filter did not quietly grow
+  // a second victim standing right beside it.
+  it('still replays the host card on a stream whose skill card was declined', async () => {
+    let clock = 1_000;
+    const { bus, initCtx, handler, buffer } = bootHandler({
+      storage: 'read-write',
+      now: () => clock,
+    });
+    try {
+      await bus.fire(
+        'chat:permission-request',
+        ctxWithConversation(initCtx, 'cnv_test'),
+        skillCard(),
+      );
+      await bus.fire('chat:permission-request', initCtx, {
+        kind: 'host',
+        host: 'status.example.com',
+        sessionId: 's1',
+        reqId: 'r-test',
+      });
+      await recordGrantDecline(bus, initCtx, {
+        userId: 'userA',
+        agentId: 'agt_test',
+        kind: 'skill',
+        subjectId: 'github-helper',
+        declinedAt: 2_000,
+      });
+
+      clock = 2_500;
+      const frames = await openStream(handler);
+      expect(skillIds(frames)).toEqual([]);
+      expect(
+        frames.find((f) => 'permissionRequest' in f)?.permissionRequest,
+      ).toMatchObject({ kind: 'host', host: 'status.example.com' });
     } finally {
       buffer.dispose();
     }
