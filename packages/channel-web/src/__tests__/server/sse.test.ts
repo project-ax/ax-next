@@ -239,7 +239,21 @@ function bootHandler(opts: BootOpts = {}) {
   // How many times the handler actually went to the store. A stream opening on
   // a conversation with no pending card must not go at all (TASK-444).
   const listPrefixCalls = { n: 0 };
+  // TASK-482: the reclaim capability is REGISTERED on this bus on purpose.
+  // "The stream never prunes" is only worth asserting against a deployment
+  // that could have — with no `storage:delete` on the bus the assertion would
+  // hold for free, and would keep holding after somebody wired pruning into
+  // the replay.
+  const deleteCalls: string[] = [];
   if (opts.storage === 'read-write') {
+    bus.registerService<{ key: string }, { deleted: number }>(
+      'storage:delete',
+      'mock-storage',
+      async (_ctx, { key }) => {
+        deleteCalls.push(key);
+        return { deleted: kv.delete(key) ? 1 : 0 };
+      },
+    );
     bus.registerService<
       { prefix: string },
       { entries: Array<{ key: string; value: Uint8Array }> }
@@ -305,6 +319,8 @@ function bootHandler(opts: BootOpts = {}) {
     listPrefixCalled: listPrefixEntered.promise,
     /** How many times the handler went to the store. */
     listPrefixCalls,
+    /** Every key the handler deleted. Must stay empty (TASK-482). */
+    deleteCalls,
     /** Lets that read finish. No-op unless `gateListPrefix` was set. */
     releaseListPrefix: listPrefixGate.resolve,
   };
@@ -1354,6 +1370,57 @@ describe('declined grants are not replayed on stream open (TASK-444)', () => {
       // the same conversation. The answered question must NOT come back.
       clock = 2_500;
       expect(skillIds(await openStream(handler))).toEqual([]);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  // TASK-482. Reclamation of dead markers rides the MOUNT read-back, and this
+  // is the path it must never ride: the stream sees ONE conversation
+  // (`tailPermissionCardEntries`), so "no pending card references this marker"
+  // is a statement about that conversation and nothing else. Prune from here
+  // and every other conversation's live refusal looks unreferenced and goes.
+  //
+  // The scenario is exactly that shape: two conversations, a live marker on
+  // each, a stream opening on only one of them.
+  it('never deletes a marker on stream open, not even one this conversation no longer references', async () => {
+    let clock = 1_000;
+    const { bus, initCtx, handler, buffer, kv, deleteCalls } = bootHandler({
+      storage: 'read-write',
+      now: () => clock,
+    });
+    try {
+      // A pending card on the conversation the stream will open on...
+      await bus.fire(
+        'chat:permission-request',
+        ctxWithConversation(initCtx, 'cnv_test'),
+        skillCard(),
+      );
+      await recordGrantDecline(bus, initCtx, {
+        userId: 'userA',
+        agentId: 'agt_test',
+        kind: 'skill',
+        subjectId: 'github-helper',
+        declinedAt: 2_000,
+      });
+      // ...and a refusal belonging to a DIFFERENT conversation, whose card
+      // this stream cannot see and has no business judging.
+      await recordGrantDecline(bus, initCtx, {
+        userId: 'userA',
+        agentId: 'agt_other',
+        kind: 'connector',
+        subjectId: 'linear',
+        declinedAt: 2_000,
+      });
+      const before = [...kv.keys()].sort();
+      expect(before).toHaveLength(2);
+
+      clock = 2_500;
+      // The filter still runs — the answered card is suppressed...
+      expect(skillIds(await openStream(handler))).toEqual([]);
+      // ...and not one byte was reclaimed.
+      expect(deleteCalls).toEqual([]);
+      expect([...kv.keys()].sort()).toEqual(before);
     } finally {
       buffer.dispose();
     }

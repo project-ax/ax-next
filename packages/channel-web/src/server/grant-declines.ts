@@ -104,13 +104,14 @@ interface DeclineRecord {
  * `bus.hasService` first and answers 503 rather than reporting a success it
  * did not have (a refusal we failed to record is one that will come back).
  *
- * NOTHING DELETES THESE, and the obvious way to start would be wrong.
- * Reclaiming a marker (when the subject is granted, or uninstalled) is a
- * tracked follow-up, and whoever picks it up should not reach for
- * `storage:delete-prefix` with an exact key: `subjectId` is variable-length,
- * so `…:abc` is a PREFIX of `…:abcd` and a "delete this one" would silently
- * take a sibling grant's refusal with it. It needs a real single-key delete,
- * or a scan that matches the whole key.
+ * THESE ARE RECLAIMED, and the obvious way to do it is still wrong (TASK-482).
+ * `reclaimGrantDeclines` below drops the markers that can no longer suppress
+ * anything, and it deletes them one EXACT key at a time through
+ * `storage:delete`. It must never reach for `storage:delete-prefix` with an
+ * exact key: `subjectId` is variable-length, so `…:abc` is a PREFIX of
+ * `…:abcd` and a "delete this one" would silently take a sibling grant's
+ * refusal with it. That is not a comment any more — `grant-declines.test.ts`
+ * pins it with a marker pair that differs only by a trailing character.
  */
 export async function recordGrantDecline(
   bus: HookBus,
@@ -136,7 +137,22 @@ export async function recordGrantDecline(
 }
 
 /**
- * Every marker this user owns, as `key → declinedAt`, in ONE `list-prefix`.
+ * One marker as it was read back, and BOTH fields are load-bearing.
+ *
+ * `raw` is the exact bytes the store handed over, kept so the reclaim can ask
+ * for a compare-and-delete rather than an unconditional one. It is not a
+ * cache of `declinedAt` — re-encoding `{declinedAt}` would round-trip to
+ * different bytes for a row some other version of this code wrote, and the
+ * guard would then never match. The bytes are carried, never rebuilt.
+ */
+export interface StoredDecline {
+  declinedAt: number;
+  /** The stored value, verbatim. Never parsed twice, never re-encoded. */
+  raw: Uint8Array;
+}
+
+/**
+ * Every marker this user owns, as `key → StoredDecline`, in ONE `list-prefix`.
  * Keys are re-built from the parsed segments, so a caller can look one up with
  * `grantDeclineKey(...)` and get a hit regardless of how the stored spelling
  * was encoded.
@@ -151,8 +167,8 @@ export async function readGrantDeclines(
   bus: HookBus,
   ctx: AgentContext,
   userId: string,
-): Promise<Map<string, number>> {
-  const out = new Map<string, number>();
+): Promise<Map<string, StoredDecline>> {
+  const out = new Map<string, StoredDecline>();
   const { entries } = await bus.call<
     { prefix: string },
     { entries: Array<{ key: string; value: Uint8Array }> }
@@ -178,7 +194,7 @@ export async function readGrantDeclines(
         parsed.kind as DeclinableGrantKind,
         parsed.subjectId,
       ),
-      declinedAt,
+      { declinedAt, raw: entry.value },
     );
   }
   return out;
@@ -266,14 +282,24 @@ export function grantSubjectId(card: PermissionRequest): string | null {
  * `ctx` is first (rather than the bare `(declines, userId, rows)` the split was
  * sketched as) for the one reason that it carries the logger the fail-open
  * branch needs; it does no I/O.
+ *
+ * `stillSuppressing`, when given, collects the marker keys that ACTUALLY
+ * dropped a row (TASK-482). It is an out-parameter rather than a second return
+ * value for two reasons: the SSE caller passes nothing and keeps the exact
+ * call it has today, and `Set.prototype.add` cannot throw — a callback could,
+ * and this function's guarantee is that it does not throw with the stream
+ * already open. It is filled ONLY on the paths that reach the comparison, so a
+ * caller that short-circuits gets an empty set, which is the truth: no
+ * comparison ran, so no marker was observed doing work.
  */
 export function filterDeclinedGrants<
   T extends { agentId: string; card: PermissionRequest; raisedAt: number },
 >(
   ctx: AgentContext,
-  declines: ReadonlyMap<string, number>,
+  declines: ReadonlyMap<string, StoredDecline>,
   userId: string,
   rows: readonly T[],
+  stillSuppressing?: Set<string>,
 ): readonly T[] {
   if (rows.length === 0 || declines.size === 0) return rows;
   return rows.filter((row) => {
@@ -302,9 +328,117 @@ export function filterDeclinedGrants<
       });
       return true;
     }
-    const declinedAt = declines.get(key);
-    return declinedAt === undefined || declinedAt < row.raisedAt;
+    const stored = declines.get(key);
+    if (stored === undefined || stored.declinedAt < row.raisedAt) return true;
+    stillSuppressing?.add(key);
+    return false;
   });
+}
+
+/**
+ * How many markers one read may reclaim. A bound, not a tuning knob: the very
+ * first prune on a store that grew before TASK-482 shipped could otherwise
+ * stall a workspace mount behind thousands of sequential deletes. Whatever is
+ * left over is reclaimed by the next read, and the next — it converges, and
+ * nothing is ever wrong in the meantime, because an unreclaimed marker is
+ * inert rather than incorrect.
+ */
+const RECLAIM_MAX_PER_READ = 64;
+
+/**
+ * Drop the markers that can no longer suppress anything (TASK-482).
+ *
+ * WHY "NO LONGER SUPPRESSING" IS THE SAME THING AS "DEAD", exactly and not
+ * heuristically. `raisedAt` is stamped from the host clock every time a card
+ * is appended OR replaced (`ChunkBuffer.appendPermissionCard` — a re-proposal
+ * re-stamps deliberately), and the pending-card buffer lives in this one
+ * process's memory. So every future raise of the same `(user, agent, kind,
+ * subject)` carries a `raisedAt` newer than an already-stored `declinedAt`,
+ * and a marker that is not winning its comparison now can never win one again.
+ * There is no agent-exists or skill-exists probe here, and there should not be
+ * one: a marker for a perfectly live agent whose card was re-raised is just as
+ * dead as a marker for an agent that was deleted.
+ *
+ * That reasoning is about the SNAPSHOT, and a snapshot is a past tense. It
+ * says the marker was dead when we read it, which is not the same as "is dead
+ * when we delete it" — see the compare-and-delete paragraph below for the
+ * decline that can land in between.
+ *
+ * WHAT THE CALLER MUST HAVE HANDED THE FILTER. `stillSuppressing` is only
+ * meaningful if the rows it was computed over were the COMPLETE user-wide
+ * pending set (`ChunkBuffer.pendingGrantsForUser`). Give it the SSE replay's
+ * per-conversation tail instead and every other conversation's live markers
+ * look unreferenced, and get deleted. That is why this is reached from the
+ * mount read-back only, behind an explicit opt-in, and never from the stream.
+ *
+ * EXACT KEYS ONLY. `storage:delete-prefix` on one of these keys would also
+ * take every key that EXTENDS it — `…:abc` is a prefix of `…:abcd` — so this
+ * needs the equality delete, and degrades to a no-op without it.
+ *
+ * AND COMPARE-AND-DELETE, because the snapshot goes stale while we work. The
+ * decision to drop a marker is made from `declines`, read one round trip ago,
+ * but the row it names is live: nothing holds a lock, and the person can press
+ * "Not now" on the very grant this loop has already written off. The sequence
+ * is the ORDINARY lifecycle of a deferred grant, not an exotic one — decline,
+ * agent re-proposes, decline again — and the second refusal lands while a
+ * workspace mount is mid-read:
+ *
+ *   1. the marker says `declinedAt = D1`, the re-raised card says
+ *      `raisedAt = R1 > D1`, so the card is on screen and the marker is dead;
+ *   2. the grants read snapshots both, keeps the card, and lists the marker
+ *      for reclamation;
+ *   3. the person presses "Not now" again — the route writes `D2 > R1` and
+ *      answers 200, so as far as they are concerned it stuck;
+ *   4. this loop deletes the key, and `D2` goes with it. The question they
+ *      just answered is back on the next mount.
+ *
+ * So every delete carries the bytes the read actually saw. A row rewritten in
+ * the meantime no longer matches, the delete takes nothing, and the fresh
+ * refusal survives — it is simply reclaimed on a later read, if it ever goes
+ * dead. The guard fails in the safe direction by construction: a mismatch
+ * always means KEEP, and keeping a marker is at worst a row we sweep next
+ * time, while dropping one loses a decision the person made.
+ *
+ * This is why the bytes are carried rather than re-encoded from `declinedAt`
+ * (see `StoredDecline`), and why a store without `ifValueEquals` support must
+ * not silently ignore it — a guard that is dropped rather than honoured is a
+ * guard that is not there.
+ *
+ * IT CAN ONLY DELETE KEYS IT COULD HAVE WRITTEN. Every key here came back out
+ * of `readGrantDeclines`, which rebuilds it with `grantDeclineKey` from the
+ * authenticated `userId` — a spelling is never echoed back out of the store.
+ * So a row written under some other encoding of the same triple (a `%7E`
+ * where we write a `~`) is not reclaimed: the delete names the canonical
+ * spelling, misses, and changes nothing. Inert either way, and it means no
+ * value in the store can steer this at a key we could not have written.
+ *
+ * Returns how many rows the store reported deleting.
+ */
+export async function reclaimGrantDeclines(
+  bus: HookBus,
+  ctx: AgentContext,
+  declines: ReadonlyMap<string, StoredDecline>,
+  stillSuppressing: ReadonlySet<string>,
+): Promise<number> {
+  if (declines.size === 0 || !bus.hasService('storage:delete')) return 0;
+  let deleted = 0;
+  let considered = 0;
+  for (const [key, stored] of declines) {
+    if (stillSuppressing.has(key)) continue;
+    if (considered >= RECLAIM_MAX_PER_READ) break;
+    considered += 1;
+    const res = await bus.call<
+      { key: string; ifValueEquals?: Uint8Array },
+      { deleted: number }
+    >('storage:delete', ctx, { key, ifValueEquals: stored.raw });
+    deleted += res.deleted;
+  }
+  if (deleted > 0) {
+    // The COUNT, never the keys: a key is `(user, agent, kind, subject)` and
+    // three of those four belong to somebody.
+    ctx.logger.debug('workspace_grant_declines_reclaimed', { count: deleted });
+  }
+  return deleted;
 }
 
 /**
@@ -320,6 +454,27 @@ export function filterDeclinedGrants<
  *
  * Without `storage:list-prefix` this is exactly the pre-TASK-444 behaviour,
  * and the manifest declares that degradation.
+ *
+ * RECLAMATION RIDES THIS SCAN AND NEVER BUYS ONE (TASK-482). The empty-list
+ * short-circuit below is load-bearing and stays exactly where it is: TASK-444
+ * lost it once and turned one KV scan per grants-read into one per turn.
+ * Pruning therefore happens only on a read that was going to scan anyway, so
+ * it costs zero extra round trips — and the read that does scan is precisely
+ * the read whose cost the pruning is there to bound. A person with nothing
+ * pending never prunes, and never scans either, so the markers they are
+ * sitting on cost them nothing until the next read that has to look.
+ *
+ * `reclaimAgainstCompleteSet` is a FUNCTION rather than a boolean, and that is
+ * the whole of it: it re-samples every pending grant this person has, across
+ * every conversation, at a moment this code chooses rather than one the caller
+ * chose. A boolean could only ever mean "the rows I handed you a while ago
+ * were complete THEN", and "then" is one storage round trip ago — see the
+ * re-sample comment in the body for the decline that falls into that gap.
+ *
+ * Its presence is also the opt-in, so a caller that has not thought about it
+ * does not prune. The grants route passes one only when it actually holds a
+ * buffer — with no buffer it would sample `[]`, which is indistinguishable
+ * from "nothing pending" and would reclaim the lot.
  */
 export async function withoutDeclinedGrants<
   T extends { agentId: string; card: PermissionRequest; raisedAt: number },
@@ -328,9 +483,12 @@ export async function withoutDeclinedGrants<
   ctx: AgentContext,
   userId: string,
   rows: readonly T[],
+  options: {
+    reclaimAgainstCompleteSet?: (() => readonly T[]) | undefined;
+  } = {},
 ): Promise<readonly T[]> {
   if (rows.length === 0 || !bus.hasService('storage:list-prefix')) return rows;
-  let declines: ReadonlyMap<string, number>;
+  let declines: ReadonlyMap<string, StoredDecline>;
   try {
     declines = await readGrantDeclines(bus, ctx, userId);
   } catch (err) {
@@ -343,5 +501,47 @@ export async function withoutDeclinedGrants<
     });
     return rows;
   }
-  return filterDeclinedGrants(ctx, declines, userId, rows);
+  // RE-SAMPLED AFTER THE READ, AND THAT ORDER IS THE POINT. `rows` was taken
+  // before the scan above, so judging the markers against it judges them
+  // against a set that is one round trip stale — and a card raised AND
+  // declined inside that window is absent from it while its brand-new marker
+  // is present in `declines`. The marker then looks unreferenced, its bytes
+  // have not changed since it was written, so the compare-and-delete guard
+  // matches, and the refusal the person just gave is deleted.
+  //
+  // Sampling after the read closes it, and the argument is small: every
+  // marker in `declines` was written no later than the read, so a card it
+  // could suppress (`raisedAt <= declinedAt`) was raised no later than the
+  // read either, and is therefore in any snapshot taken from here on. A card
+  // raised AFTER this point cannot be suppressed by anything in `declines`,
+  // and a decline written after this point is not in `declines` to be deleted
+  // — that later window is what the compare-and-delete covers.
+  //
+  // The stale `rows` is still what the cheap emptiness guard above runs on:
+  // that guard exists to avoid the scan entirely, so it has to come first, and
+  // "was anything pending a moment ago" is the right question for it.
+  const complete = options.reclaimAgainstCompleteSet?.();
+  const stillSuppressing = new Set<string>();
+  const kept = filterDeclinedGrants(
+    ctx,
+    declines,
+    userId,
+    complete ?? rows,
+    stillSuppressing,
+  );
+  if (complete !== undefined) {
+    try {
+      await reclaimGrantDeclines(bus, ctx, declines, stillSuppressing);
+    } catch (err) {
+      // Housekeeping never fails the read. A marker we could not delete is a
+      // marker we will delete next time; a grants list we did not answer is a
+      // person who cannot unstick their agent. Whatever was deleted before the
+      // throw stays deleted — there is nothing to undo, because every delete
+      // here was of a row that had already stopped doing anything.
+      ctx.logger.warn('workspace_grant_declines_reclaim_failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return kept;
 }

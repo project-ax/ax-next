@@ -174,3 +174,128 @@ describe('@ax/storage-postgres storage:list-prefix', () => {
     ).rejects.toMatchObject({ code: 'invalid-payload' });
   });
 });
+
+describe('@ax/storage-postgres storage:delete', () => {
+  it('deletes exactly the matching key, unlike storage:delete-prefix on the same key', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx();
+
+    // First half: storage:delete only ever touches the exact key — a key
+    // that merely extends it ('k:abcd' extends 'k:abc') must survive.
+    await h.bus.call('storage:set', ctx, { key: 'k:abc', value: new Uint8Array([1]) });
+    await h.bus.call('storage:set', ctx, { key: 'k:abcd', value: new Uint8Array([2]) });
+
+    const delResult = await h.bus.call<{ key: string }, { deleted: number }>(
+      'storage:delete',
+      ctx,
+      { key: 'k:abc' },
+    );
+    expect(delResult).toEqual({ deleted: 1 });
+
+    const gotAbc = await h.bus.call<{ key: string }, { value: Uint8Array | undefined }>(
+      'storage:get',
+      ctx,
+      { key: 'k:abc' },
+    );
+    expect(gotAbc.value).toBeUndefined();
+
+    const gotAbcd = await h.bus.call<{ key: string }, { value: Uint8Array | undefined }>(
+      'storage:get',
+      ctx,
+      { key: 'k:abcd' },
+    );
+    expect(gotAbcd.value).toBeDefined();
+    expect(Array.from(gotAbcd.value!)).toEqual([2]);
+
+    // Second half (contrast, re-seeded): storage:delete-prefix on the SAME
+    // exact key destroys the row that merely extends it too — this is the
+    // unsafe behavior storage:delete exists to avoid.
+    await h.bus.call('storage:set', ctx, { key: 'k:abc', value: new Uint8Array([1]) });
+
+    const prefixDelResult = await h.bus.call<{ prefix: string }, { deleted: number }>(
+      'storage:delete-prefix',
+      ctx,
+      { prefix: 'k:abc' },
+    );
+    expect(prefixDelResult.deleted).toBe(2);
+
+    const gotAbcdAfterPrefixDelete = await h.bus.call<
+      { key: string },
+      { value: Uint8Array | undefined }
+    >('storage:get', ctx, { key: 'k:abcd' });
+    expect(gotAbcdAfterPrefixDelete.value).toBeUndefined();
+  });
+
+  /*
+    COMPARE-AND-DELETE. A caller that decided to drop a row from a snapshot is
+    deciding about the past; between its read and this delete somebody can
+    rewrite the row, and an unconditional delete destroys that newer write with
+    nobody the wiser. `ifValueEquals` makes the delete a no-op instead. The
+    predicate has to be enforced by the QUERY — a guard the SQL ignores is a
+    guard that is not there, and it would fail in the dangerous direction.
+  */
+  it('ifValueEquals deletes on a match and takes nothing once the row has moved', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const first = new Uint8Array([1, 2, 3]);
+    const rewritten = new Uint8Array([9, 9, 9]);
+
+    // The row was rewritten after the caller read `first`.
+    await h.bus.call('storage:set', ctx, { key: 'cas', value: first });
+    await h.bus.call('storage:set', ctx, { key: 'cas', value: rewritten });
+
+    const stale = await h.bus.call<
+      { key: string; ifValueEquals?: Uint8Array },
+      { deleted: number }
+    >('storage:delete', ctx, { key: 'cas', ifValueEquals: first });
+    expect(stale).toEqual({ deleted: 0 });
+
+    // ...and the newer value is untouched.
+    const survived = await h.bus.call<
+      { key: string },
+      { value: Uint8Array | undefined }
+    >('storage:get', ctx, { key: 'cas' });
+    expect(Array.from(survived.value!)).toEqual([9, 9, 9]);
+
+    // Handed the bytes that ARE there, it deletes.
+    const fresh = await h.bus.call<
+      { key: string; ifValueEquals?: Uint8Array },
+      { deleted: number }
+    >('storage:delete', ctx, { key: 'cas', ifValueEquals: rewritten });
+    expect(fresh).toEqual({ deleted: 1 });
+
+    const gone = await h.bus.call<
+      { key: string },
+      { value: Uint8Array | undefined }
+    >('storage:get', ctx, { key: 'cas' });
+    expect(gone.value).toBeUndefined();
+  });
+
+  it('deleting an absent key returns { deleted: 0 } and throws nothing', async () => {
+    const h = await makeHarness();
+    const result = await h.bus.call<{ key: string }, { deleted: number }>(
+      'storage:delete',
+      h.ctx(),
+      { key: 'nope' },
+    );
+    expect(result).toEqual({ deleted: 0 });
+  });
+
+  it('rejects empty key with invalid-payload and deletes nothing', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    await h.bus.call('storage:set', ctx, { key: 'survivor', value: new Uint8Array([7]) });
+
+    await expect(h.bus.call('storage:delete', ctx, { key: '' })).rejects.toMatchObject({
+      code: 'invalid-payload',
+    });
+
+    const got = await h.bus.call<{ key: string }, { value: Uint8Array | undefined }>(
+      'storage:get',
+      ctx,
+      { key: 'survivor' },
+    );
+    expect(got.value).toBeDefined();
+    expect(Array.from(got.value!)).toEqual([7]);
+  });
+});

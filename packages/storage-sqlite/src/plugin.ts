@@ -44,6 +44,10 @@ export const StorageDeletePrefixOutputSchema = z.object({
   deleted: z.number(),
 });
 
+export const StorageDeleteOutputSchema = z.object({
+  deleted: z.number(),
+});
+
 export function createStorageSqlitePlugin(config: StorageSqliteConfig): Plugin {
   let db: Kysely<Database> | undefined;
 
@@ -56,6 +60,7 @@ export function createStorageSqlitePlugin(config: StorageSqliteConfig): Plugin {
         'storage:set',
         'storage:list-prefix',
         'storage:delete-prefix',
+        'storage:delete',
         'db:transact',
       ],
       calls: [],
@@ -160,6 +165,46 @@ export function createStorageSqlitePlugin(config: StorageSqliteConfig): Plugin {
           return { deleted: Number(result.numDeletedRows ?? 0) };
         },
         { returns: StorageDeletePrefixOutputSchema },
+      );
+
+      // `storage:delete-prefix` on an exact key is a trap: 'k:abc' is a
+      // prefix of 'k:abcd', so a caller reaching for "delete this one row"
+      // by handing delete-prefix a full key silently takes out every key
+      // that extends it too. Variable-length ids (e.g. @ax/channel-web's
+      // decline-marker reclamation, TASK-482) need an exact-key delete that
+      // can never spill past its own row — hence an equality predicate,
+      // never LIKE.
+      //
+      // `ifValueEquals` makes it a COMPARE-and-delete: the row goes only if it
+      // still holds exactly the bytes the caller last read. A caller that
+      // decided to delete a row from a snapshot is deciding about the past,
+      // and between the read and the delete somebody can rewrite it — without
+      // the guard, that newer write is destroyed and nobody hears. With it,
+      // the predicate simply misses and the delete reports 0. Omitted, the
+      // delete is unconditional, which is the right default for a caller that
+      // holds the only reference.
+      bus.registerService<
+        { key: string; ifValueEquals?: Uint8Array },
+        { deleted: number }
+      >(
+        'storage:delete',
+        PLUGIN_NAME,
+        async (_ctx, { key, ifValueEquals }) => {
+          if (typeof key !== 'string' || key.length === 0) {
+            throw new PluginError({
+              code: 'invalid-payload',
+              plugin: PLUGIN_NAME,
+              message: 'key is required',
+            });
+          }
+          let q = db!.deleteFrom('kv').where('key', '=', key);
+          if (ifValueEquals !== undefined) {
+            q = q.where('value', '=', Buffer.from(ifValueEquals));
+          }
+          const result = await q.executeTakeFirst();
+          return { deleted: Number(result.numDeletedRows ?? 0) };
+        },
+        { returns: StorageDeleteOutputSchema },
       );
     },
     async shutdown() {
