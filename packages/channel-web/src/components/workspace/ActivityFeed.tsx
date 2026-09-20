@@ -138,8 +138,15 @@ function bucket(rows: ActivityEvent[]): Bucket[] {
  * "we are reading it" sign, not a guess at how much is coming.
  *
  * `role="status"` with a sentence in it, because a pile of pulsing rectangles
- * is nothing at all to a screen reader — it has no CSS and no pulse, just
- * empty divs, which is indistinguishable from the empty state it replaced.
+ * is nothing at all without CSS — just empty divs, indistinguishable from the
+ * empty state it replaced, with nothing for a screen reader or a test to read.
+ *
+ * Do not read that as a promise that it ANNOUNCES. The region is inserted in
+ * the same commit that gives it its text, and a live region created and filled
+ * together is announced inconsistently — NVDA and JAWS usually do, VoiceOver
+ * often does not. Reliable announcement needs the region mounted first. What
+ * this earns today is a state with a NAME: reachable in the accessibility
+ * tree, and assertable in jsdom, which has no CSS and no pulse either.
  */
 function FeedPlaceholder() {
   return (

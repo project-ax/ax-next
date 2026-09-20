@@ -1308,8 +1308,13 @@ export function AgentView({
 
                 What it lands in instead is the feed's own not-yet-loaded
                 branch (empty list, still fetching), which shows the same
-                placeholders. If the `!detail` gate above ever goes away, this
-                needs the prop.
+                placeholders.
+
+                If this tab ever renders before `detail` resolves, it needs the
+                prop. Note that simply deleting the `!detail` gate would not
+                get you there quietly — `const { agent } = detail` below throws
+                on a null destructure, so that edit fails loudly. The change to
+                watch for is one that gives `detail` a synchronous seed.
               */}
               <ActivityFeed
                 events={activity}
