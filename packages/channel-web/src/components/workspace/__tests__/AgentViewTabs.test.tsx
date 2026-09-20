@@ -230,10 +230,18 @@ describe('AgentView tab set — the accessibility tree', () => {
 
   /*
     KEYBOARD, per the WAI-ARIA tabs pattern: the strip is ONE tab stop and the
-    arrow keys move within it. Radix's roving tabindex is what provides this,
-    and it comes with the primitive — which is the point. A hand-rolled strip of
-    four buttons would be four tab stops with no arrow handling, and that is the
-    shape this card exists to avoid re-inventing.
+    arrow keys move within it.
+
+    STATED PLAINLY — THIS ONE PASSES AGAINST THE UNFIXED CODE TOO, and it is the
+    only test in this file that does (measured: 8 of 9 fail against the commit
+    before the fix, this is the ninth). Radix's roving tabindex lives on
+    `TabsList`/`TabsTrigger`, both of which were already here; the missing
+    `TabsContent` never affected it. So this is a CHARACTERIZATION test, not a
+    guard for this card's defect: it pins the keyboard half of the card's
+    acceptance criteria and would catch a later rewrite that replaced the
+    primitive with four hand-rolled buttons — four tab stops, no arrow keys.
+    It is deliberately not the evidence that this card's fix works; the eight
+    above are.
   */
   it('moves between tabs with the arrow keys, not the Tab key', async () => {
     const onTab = vi.fn();
