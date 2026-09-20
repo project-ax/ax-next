@@ -1,9 +1,11 @@
 /**
  * Today is where a zero does the most damage, because it sits next to a green
  * tick. "0 agents working · 0 waiting on you" under a check mark reads as a
- * report on a healthy system — and the surface cannot even know it: without
- * `session:is-alive` registered, every agent reads `resting` regardless of what
- * it is actually doing. A number we cannot back does not get rendered.
+ * report on a healthy system — and the surface cannot even know it: without an
+ * activity producer (`agent-activity:get` — TASK-498 moved the state word off
+ * sandbox liveness, which stayed true through every warm idle gap), every agent
+ * reads `resting` regardless of what it is actually doing. A number we cannot
+ * back does not get rendered.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
