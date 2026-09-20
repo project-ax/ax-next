@@ -41,7 +41,7 @@ describe('wrapWithPolicy — the one choke point', () => {
   it('runs the executor and returns its output when the policy allows', async () => {
     const policy = fakePolicy();
     const run = vi.fn(async () => 'the output');
-    const execute = wrapWithPolicy({ policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} }, run);
+    const execute = wrapWithPolicy({ policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {}, onToolFailure: () => {} }, run);
 
     await expect(execute({ command: 'ls' }, OPTS)).resolves.toBe('the output');
 
@@ -71,7 +71,7 @@ describe('wrapWithPolicy — the one choke point', () => {
       })),
     } as never);
     const run = vi.fn(async () => 'must not run');
-    const execute = wrapWithPolicy({ policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} }, run);
+    const execute = wrapWithPolicy({ policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {}, onToolFailure: () => {} }, run);
 
     const settled = await execute({ command: 'npm i' }, OPTS).then(
       (value) => ({ status: 'fulfilled' as const, value }),
@@ -96,7 +96,7 @@ describe('wrapWithPolicy — the one choke point', () => {
       })),
     } as never);
     const run = vi.fn(async () => 'read ok');
-    const execute = wrapWithPolicy({ policy, name: 'Read', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} }, run);
+    const execute = wrapWithPolicy({ policy, name: 'Read', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {}, onToolFailure: () => {} }, run);
 
     await execute({ file_path: '~/.ax/uploads/c1/t1/report.pdf' }, OPTS);
 
@@ -119,7 +119,7 @@ describe('wrapWithPolicy — the one choke point', () => {
       postToolUse: vi.fn(async () => ({ note: 'Blocked host: registry.npmjs.org' })),
     } as never);
     const execute = wrapWithPolicy(
-      { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} },
+      { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {}, onToolFailure: () => {} },
       async () => 'npm ERR! network',
     );
 
@@ -130,7 +130,7 @@ describe('wrapWithPolicy — the one choke point', () => {
   it('re-throws an executor failure (the SDK error channel) but still audits it', async () => {
     const policy = fakePolicy();
     const execute = wrapWithPolicy(
-      { policy, name: 'Read', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} },
+      { policy, name: 'Read', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {}, onToolFailure: () => {} },
       async () => {
         throw new Error('ENOENT: no such file');
       },
@@ -164,7 +164,7 @@ describe('wrapWithPolicy — the one choke point', () => {
       })),
     } as never);
     const run = vi.fn(async () => 'ran anyway');
-    const execute = wrapWithPolicy({ policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} }, run);
+    const execute = wrapWithPolicy({ policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {}, onToolFailure: () => {} }, run);
 
     await expect(execute({ command: 'ls' }, OPTS)).resolves.toContain(
       'approval check could not be completed',
@@ -191,7 +191,7 @@ describe('wrapWithPolicy — the one choke point', () => {
     });
     const run = vi.fn(async () => 'ran anyway');
     const execute = wrapWithPolicy(
-      { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} },
+      { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {}, onToolFailure: () => {} },
       run,
     );
 
@@ -227,7 +227,7 @@ describe('wrapWithPolicy — the one choke point', () => {
     const policy = createToolPolicy({ client, workspaceRoot: '/agent' });
     const run = vi.fn(async () => 'ran anyway');
     const execute = wrapWithPolicy(
-      { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} },
+      { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {}, onToolFailure: () => {} },
       run,
     );
 
@@ -243,7 +243,7 @@ describe('wrapWithPolicy — the one choke point', () => {
 
   it('marks the returned execute so a bypass is detectable', () => {
     const execute = wrapWithPolicy(
-      { policy: fakePolicy(), name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} },
+      { policy: fakePolicy(), name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {}, onToolFailure: () => {} },
       async () => 'x',
     );
     expect(execute[POLICY_WRAPPED]).toBe(true);
@@ -252,6 +252,7 @@ describe('wrapWithPolicy — the one choke point', () => {
   it('returns the hold note as tool text, trips the latch, fires onHold with the call id, and never runs the tool', async () => {
     const latch = createHoldLatch();
     const heldIds: string[] = [];
+    const failedIds: string[] = [];
     let ran = false;
     const execute = wrapWithPolicy(
       {
@@ -271,6 +272,9 @@ describe('wrapWithPolicy — the one choke point', () => {
         onHold: (toolCallId) => {
           heldIds.push(toolCallId);
         },
+        onToolFailure: (toolCallId) => {
+          failedIds.push(toolCallId);
+        },
       },
       async () => {
         ran = true;
@@ -286,6 +290,10 @@ describe('wrapWithPolicy — the one choke point', () => {
     expect(out).toContain('Do not retry it and do not achieve the same effect another way.');
     expect(out).toContain('waiting for the person you are working for');
     expect(latch.decisionId).toBe('dec_3');
+    // TASK-430: a hold is not a failure. The hold text is a plain string, so
+    // the failure channel must stay silent — otherwise a call merely waiting
+    // on a person would publish with `is_error` and read as broken.
+    expect(failedIds).toEqual([]);
   });
 });
 
@@ -295,7 +303,7 @@ describe('assertAllToolsWrapped', () => {
     const tools = {
       Bash: {
         execute: wrapWithPolicy(
-          { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} },
+          { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {}, onToolFailure: () => {} },
           async () => 'x',
         ),
       },
@@ -308,7 +316,7 @@ describe('assertAllToolsWrapped', () => {
     const tools = {
       Bash: {
         execute: wrapWithPolicy(
-          { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} },
+          { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {}, onToolFailure: () => {} },
           async () => 'x',
         ),
       },
@@ -331,13 +339,13 @@ describe('assertAllToolsWrapped', () => {
     const tools = {
       Bash: {
         execute: wrapWithPolicy(
-          { policy: fakePolicy(), name: 'Bash', isBuiltin: true, holdLatch: loopLatch, onHold: () => {}},
+          { policy: fakePolicy(), name: 'Bash', isBuiltin: true, holdLatch: loopLatch, onHold: () => {}, onToolFailure: () => {} },
           async () => 'x',
         ),
       },
       Stray: {
         execute: wrapWithPolicy(
-          { policy: fakePolicy(), name: 'Stray', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} },
+          { policy: fakePolicy(), name: 'Stray', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {}, onToolFailure: () => {} },
           async () => 'x',
         ),
       },
@@ -451,7 +459,7 @@ describe('hold latch identity across the built tool set', () => {
           policy: fakePolicy(),
           homeDir: '/tmp/ax-hold-latch-test-home',
           env: {},
-          holdLatch: latch, onHold: () => {},
+          holdLatch: latch, onHold: () => {}, onToolFailure: () => {},
         }),
       },
       {
@@ -460,7 +468,7 @@ describe('hold latch identity across the built tool set', () => {
           policy: fakePolicy(),
           client: mkHostClient(),
           tools: catalog,
-          holdLatch: latch, onHold: () => {},
+          holdLatch: latch, onHold: () => {}, onToolFailure: () => {},
         }),
       },
       {
@@ -469,12 +477,12 @@ describe('hold latch identity across the built tool set', () => {
           policy: fakePolicy(),
           dispatcher,
           tools: catalog,
-          holdLatch: latch, onHold: () => {},
+          holdLatch: latch, onHold: () => {}, onToolFailure: () => {},
         }),
       },
       {
         label: 'the Skill tool',
-        tools: buildSkillTool({ policy: fakePolicy(), skills: [SKILL], holdLatch: latch, onHold: () => {}}),
+        tools: buildSkillTool({ policy: fakePolicy(), skills: [SKILL], holdLatch: latch, onHold: () => {}, onToolFailure: () => {} }),
       },
     ]) as unknown as Record<string, { execute: WrappedExecute }>;
 

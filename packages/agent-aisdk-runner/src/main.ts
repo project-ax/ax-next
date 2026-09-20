@@ -37,6 +37,7 @@ import {
 } from './provider.js';
 import { discoverInstalledSkills, buildSkillsPromptSection } from './skills-index.js';
 import { buildBuiltinTools } from './tools/builtins.js';
+import { createFailedCallRegistry } from './tools/failed-calls.js';
 import { buildHostTools } from './tools/host-tools.js';
 import { assertAllToolsWrapped, mergeToolSets } from './tools/policy-wrap.js';
 import { buildSandboxTools } from './tools/sandbox-tools.js';
@@ -224,6 +225,15 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
       const onHold = (toolCallId: string): void => {
         heldCalls.record(toolCallId);
       };
+      // TASK-430: which of this turn's calls RAN and FAILED without throwing.
+      // `ai@7` marks only a thrown executor, and `Bash` deliberately does not
+      // throw on a non-zero exit (the model needs the output), so without this
+      // record a failed command published as a success. Same per-turn lifetime
+      // as the hold record, and cleared beside it below.
+      const failedCalls = createFailedCallRegistry();
+      const onToolFailure = (toolCallId: string): void => {
+        failedCalls.record(toolCallId);
+      };
 
       // Skills: the read-only projection is the SOLE discovery path. Names +
       // descriptions go into the prompt; bodies load on demand through the
@@ -236,7 +246,14 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
       const tools = mergeToolSets([
         {
           label: 'built-ins',
-          tools: buildBuiltinTools({ policy, homeDir, env: bashEnv, holdLatch, onHold }),
+          tools: buildBuiltinTools({
+            policy,
+            homeDir,
+            env: bashEnv,
+            holdLatch,
+            onHold,
+            onToolFailure,
+          }),
         },
         {
           label: 'host catalog tools',
@@ -247,6 +264,7 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
             flushWorkspace: flushWorkspaceForHostTool,
             holdLatch,
             onHold,
+            onToolFailure,
           }),
         },
         {
@@ -257,9 +275,13 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
             tools: catalog,
             holdLatch,
             onHold,
+            onToolFailure,
           }),
         },
-        { label: 'the Skill tool', tools: buildSkillTool({ policy, skills, holdLatch, onHold }) },
+        {
+          label: 'the Skill tool',
+          tools: buildSkillTool({ policy, skills, holdLatch, onHold, onToolFailure }),
+        },
       ]) as unknown as Record<string, Tool>;
       // I₁, enforced rather than asserted in prose. `WebFetch`/`WebSearch`/
       // `Task`/`AskUserQuestion`/`TodoWrite` are absent by construction here —
@@ -342,6 +364,7 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
         // Per-turn latch: a hold in one turn must not bleed into the next.
         holdLatch.reset();
         heldCalls.clear();
+        failedCalls.clear();
 
         transcript.append([toUserModelMessage(next.content)]);
 
@@ -411,11 +434,21 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
             // TASK-270: the hold branch returns text (never throws), so a
             // held call arrives here, not on the tool-error arm. Mark it
             // from the per-turn record — never from the output copy.
+            //
+            // TASK-430: and a call that RAN and FAILED is marked from the same
+            // per-turn record the persisted block reads, so the live stream and
+            // the durable transcript cannot disagree about whether it failed.
+            // `held` is checked first and exclusively: a hold is not a failure,
+            // and a held call never reaches the failure record anyway.
             await ctx.emitChunk({
               kind: 'tool-result',
               toolCallId: part.toolCallId,
               output: renderStreamedOutput(part.output),
-              ...(heldCalls.has(part.toolCallId) ? { held: true } : {}),
+              ...(heldCalls.has(part.toolCallId)
+                ? { held: true }
+                : failedCalls.has(part.toolCallId)
+                  ? { isError: true }
+                  : {}),
             });
           } else if (part.type === 'tool-error') {
             // A thrown executor. `ai@7` still produces a tool result for the
@@ -462,8 +495,11 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
         transcript.append(newMessages);
 
         const { contentBlocks, toolResultBlocks, assistantText } =
-          toTurnBlocks(newMessages, phraseByName, (toolCallId) =>
-            heldCalls.has(toolCallId),
+          toTurnBlocks(
+            newMessages,
+            phraseByName,
+            (toolCallId) => heldCalls.has(toolCallId),
+            (toolCallId) => failedCalls.has(toolCallId),
           );
         if (assistantText.length > 0) ctx.recordAssistantText(assistantText);
 
