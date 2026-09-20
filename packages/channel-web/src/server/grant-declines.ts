@@ -464,11 +464,17 @@ export async function reclaimGrantDeclines(
  * pending never prunes, and never scans either, so the markers they are
  * sitting on cost them nothing until the next read that has to look.
  *
- * `reclaimAgainstCompleteSet` says `rows` IS every pending grant this person
- * has, across every conversation. The grants route passes it only when it
- * actually holds a buffer — with no buffer it reads `[]`, which is
- * indistinguishable from "nothing pending" and would reclaim the lot. Default
- * off: a caller that has not thought about it does not prune.
+ * `reclaimAgainstCompleteSet` is a FUNCTION rather than a boolean, and that is
+ * the whole of it: it re-samples every pending grant this person has, across
+ * every conversation, at a moment this code chooses rather than one the caller
+ * chose. A boolean could only ever mean "the rows I handed you a while ago
+ * were complete THEN", and "then" is one storage round trip ago — see the
+ * re-sample comment in the body for the decline that falls into that gap.
+ *
+ * Its presence is also the opt-in, so a caller that has not thought about it
+ * does not prune. The grants route passes one only when it actually holds a
+ * buffer — with no buffer it would sample `[]`, which is indistinguishable
+ * from "nothing pending" and would reclaim the lot.
  */
 export async function withoutDeclinedGrants<
   T extends { agentId: string; card: PermissionRequest; raisedAt: number },
@@ -477,7 +483,9 @@ export async function withoutDeclinedGrants<
   ctx: AgentContext,
   userId: string,
   rows: readonly T[],
-  options: { reclaimAgainstCompleteSet?: boolean } = {},
+  options: {
+    reclaimAgainstCompleteSet?: (() => readonly T[]) | undefined;
+  } = {},
 ): Promise<readonly T[]> {
   if (rows.length === 0 || !bus.hasService('storage:list-prefix')) return rows;
   let declines: ReadonlyMap<string, StoredDecline>;
@@ -493,15 +501,35 @@ export async function withoutDeclinedGrants<
     });
     return rows;
   }
+  // RE-SAMPLED AFTER THE READ, AND THAT ORDER IS THE POINT. `rows` was taken
+  // before the scan above, so judging the markers against it judges them
+  // against a set that is one round trip stale — and a card raised AND
+  // declined inside that window is absent from it while its brand-new marker
+  // is present in `declines`. The marker then looks unreferenced, its bytes
+  // have not changed since it was written, so the compare-and-delete guard
+  // matches, and the refusal the person just gave is deleted.
+  //
+  // Sampling after the read closes it, and the argument is small: every
+  // marker in `declines` was written no later than the read, so a card it
+  // could suppress (`raisedAt <= declinedAt`) was raised no later than the
+  // read either, and is therefore in any snapshot taken from here on. A card
+  // raised AFTER this point cannot be suppressed by anything in `declines`,
+  // and a decline written after this point is not in `declines` to be deleted
+  // — that later window is what the compare-and-delete covers.
+  //
+  // The stale `rows` is still what the cheap emptiness guard above runs on:
+  // that guard exists to avoid the scan entirely, so it has to come first, and
+  // "was anything pending a moment ago" is the right question for it.
+  const complete = options.reclaimAgainstCompleteSet?.();
   const stillSuppressing = new Set<string>();
   const kept = filterDeclinedGrants(
     ctx,
     declines,
     userId,
-    rows,
+    complete ?? rows,
     stillSuppressing,
   );
-  if (options.reclaimAgainstCompleteSet === true) {
+  if (complete !== undefined) {
     try {
       await reclaimGrantDeclines(bus, ctx, declines, stillSuppressing);
     } catch (err) {

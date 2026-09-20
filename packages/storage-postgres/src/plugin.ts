@@ -109,8 +109,12 @@ export function createStoragePostgresPlugin(): Plugin {
         PLUGIN_NAME,
         async (_ctx, input) => {
           const { key, value } = input;
-          // Buffer.from(Uint8Array) shares the underlying memory, so this
-          // doesn't copy. Kysely's pg dialect serializes Buffer → BYTEA.
+          // Buffer.from(Uint8Array) COPIES the view's own bytes (the
+          // sharing overload is Buffer.from(arrayBuffer) — a different
+          // argument). The copy is what makes it correct for a pooled view
+          // with a non-zero byteOffset, here and in the `ifValueEquals`
+          // predicate below, which has to bind the same bytes this wrote.
+          // Kysely's pg dialect serializes Buffer → BYTEA.
           const buf = Buffer.from(value);
           const exec = (input.tx ?? db!) as Kysely<StorageDatabase>;
           await exec

@@ -3895,20 +3895,25 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         // copies of the comparison is how the two paths drift apart.
         grants: (
           await withoutDeclinedGrants(bus, initCtx, userId, rows, {
-            // AND THIS READ IS THE ONE THAT PRUNES (TASK-482). `rows` came
-            // from `pendingGrantsForUser`, which is every pending grant this
-            // person has across every conversation — the only set against
-            // which "this marker is not suppressing anything" means "this
-            // marker is dead". The SSE replay sees ONE conversation and so
-            // must never do this.
+            // AND THIS READ IS THE ONE THAT PRUNES (TASK-482).
+            // `pendingGrantsForUser` is every pending grant this person has
+            // across every conversation — the only set against which "this
+            // marker is not suppressing anything" means "this marker is
+            // dead". The SSE replay sees ONE conversation and so must never
+            // do this.
             //
-            // The expression, rather than a bare `true`, is what makes the
-            // claim honest: with no buffer `rows` is the `[]` above, which is
-            // a statement about this handler's wiring and not about what is
-            // pending. Belt and braces today — the empty-list short-circuit
-            // inside already declines to prune an empty set — and the braces
-            // are the half that survives someone revisiting the belt.
-            reclaimAgainstCompleteSet: buffer !== undefined,
+            // Handed over as a FUNCTION so the sample is taken after the
+            // marker read rather than at the top of this handler: the two
+            // have to be judged against each other, and `rows` above is a
+            // storage round trip older than the markers will be. It is
+            // omitted entirely when there is no buffer — sampling would then
+            // yield `[]`, a statement about this handler's wiring and not
+            // about what is pending, and reclaiming against it would take
+            // every marker the person owns.
+            reclaimAgainstCompleteSet:
+              buffer === undefined
+                ? undefined
+                : () => buffer.pendingGrantsForUser(userId),
           })
         ).map((g) => ({
           conversationId: g.conversationId,

@@ -380,6 +380,8 @@ describe('reclaimGrantDeclines', () => {
     listCalls: { n: number };
     /** Rows handed back by the last `storage:list-prefix`. The scan cost. */
     lastScanSize: number;
+    /** Fires INSIDE the scan, to land a write in the read's window. */
+    onListPrefix?: () => Promise<void>;
   }
 
   /**
@@ -414,6 +416,9 @@ describe('reclaimGrantDeclines', () => {
       { entries: Array<{ key: string; value: Uint8Array }> }
     >('storage:list-prefix', 'storage', async (_ctx, { prefix }) => {
       kv.listCalls.n += 1;
+      // The window between "what was pending" and "what the markers say" —
+      // see the re-sample test below.
+      if (kv.onListPrefix !== undefined) await kv.onListPrefix();
       const entries = [...store.entries()]
         .filter(([k]) => k.startsWith(prefix))
         .map(([k, value]) => ({ key: k, value }));
@@ -497,12 +502,13 @@ describe('reclaimGrantDeclines', () => {
     ]);
 
     // `abcd` is still answering a pending card; `abc` answers nothing.
+    const pending = [row('a-quill', skill('abcd'), 1_000)];
     const kept = await withoutDeclinedGrants(
       kv.bus,
       ctx,
       'u-ann',
-      [row('a-quill', skill('abcd'), 1_000)],
-      { reclaimAgainstCompleteSet: true },
+      pending,
+      { reclaimAgainstCompleteSet: () => pending },
     );
 
     expect(kept).toHaveLength(0);
@@ -516,12 +522,13 @@ describe('reclaimGrantDeclines', () => {
     const kv = kvBus();
     await seed(kv, ctx, [['a-quill', 'linear', 2_000]]);
 
+    const pending = [row('a-quill', skill('linear'), 1_000)];
     const kept = await withoutDeclinedGrants(
       kv.bus,
       ctx,
       'u-ann',
-      [row('a-quill', skill('linear'), 1_000)],
-      { reclaimAgainstCompleteSet: true },
+      pending,
+      { reclaimAgainstCompleteSet: () => pending },
     );
 
     expect(kept).toHaveLength(0);
@@ -536,6 +543,63 @@ describe('reclaimGrantDeclines', () => {
     (every future raise is newer still). Keeping it would be keeping a row that
     is guaranteed inert, which is the growth this card is about.
   */
+  /*
+    THE OTHER STALE SNAPSHOT, and the compare-and-delete does NOT cover it.
+
+    Two things have to be judged against each other: the markers, and what is
+    pending. The route samples what is pending at the top of the handler and
+    the markers one storage round trip later, so a card that is raised AND
+    declined inside that gap is missing from the pending set while its
+    brand-new marker is present in the map. The marker looks unreferenced, and
+    its bytes have not changed since it was written a moment ago — so the
+    value guard MATCHES and the refusal is deleted anyway.
+
+    The fix is ordering, not another guard: `reclaimAgainstCompleteSet` is a
+    function, so the pending set is re-sampled after the marker read. Every
+    marker in the map was written no later than that read, so a card it could
+    suppress was raised no later than it too, and is in the fresh sample.
+
+    Modelled here the way the route lives it: `pending` starts out not
+    containing the grant, and the raise-plus-decline lands while the
+    list-prefix scan is in flight.
+  */
+  it('re-samples what is pending after the marker read, not before', async () => {
+    const ctx = makeCtx(() => {});
+    const kv = kvBus();
+    // What the handler saw at the top: one unrelated card, and nothing at all
+    // about `linear`.
+    const stale = [row('a-other', skill('github'), 1_000)];
+    const pending = [...stale];
+
+    kv.onListPrefix = async () => {
+      // Mid-scan: the agent raises `linear` and the person turns it down.
+      pending.push(row('a-quill', skill('linear'), 2_000));
+      await recordGrantDecline(kv.bus, ctx, {
+        userId: 'u-ann',
+        agentId: 'a-quill',
+        kind: 'skill',
+        subjectId: 'linear',
+        declinedAt: 2_500,
+      });
+    };
+
+    const kept = await withoutDeclinedGrants(kv.bus, ctx, 'u-ann', stale, {
+      reclaimAgainstCompleteSet: () => pending,
+    });
+
+    // Premise: the marker really was written during the scan, so it really is
+    // in the map this reclaim works from.
+    expect(kv.store.has(key('a-quill', 'linear'))).toBe(true);
+    // The fresh refusal survives — it is answering the card that arrived with
+    // it, which the re-sample can see and the stale snapshot could not.
+    expect(kv.deleted).toEqual([]);
+    // And the card it answers is suppressed, which only the fresh sample
+    // could have told us.
+    expect(kept.map((r) => (r.card as { skillId: string }).skillId)).toEqual([
+      'github',
+    ]);
+  });
+
   /*
     THE SNAPSHOT IS A PAST TENSE, and this is the decline it loses.
 
@@ -579,12 +643,13 @@ describe('reclaimGrantDeclines', () => {
     // marker is genuinely dead and genuinely a reclaim candidate.
     await seed(kv, ctx, [['a-quill', 'linear', 1_000]]);
 
+    const pending = [row('a-quill', skill('linear'), 2_000)];
     const kept = await withoutDeclinedGrants(
       kv.bus,
       ctx,
       'u-ann',
-      [row('a-quill', skill('linear'), 2_000)],
-      { reclaimAgainstCompleteSet: true },
+      pending,
+      { reclaimAgainstCompleteSet: () => pending },
     );
 
     // Premise: the race actually happened, so this is not passing by accident.
@@ -602,12 +667,13 @@ describe('reclaimGrantDeclines', () => {
     const kv = kvBus();
     await seed(kv, ctx, [['a-quill', 'linear', 2_000]]);
 
+    const pending = [row('a-quill', skill('linear'), 3_000)];
     const kept = await withoutDeclinedGrants(
       kv.bus,
       ctx,
       'u-ann',
-      [row('a-quill', skill('linear'), 3_000)],
-      { reclaimAgainstCompleteSet: true },
+      pending,
+      { reclaimAgainstCompleteSet: () => pending },
     );
 
     // The card comes back — that is the need-trigger, unchanged...
@@ -633,12 +699,12 @@ describe('reclaimGrantDeclines', () => {
 
     const rows = [row('a-quill', skill('linear'), 1_000)];
     await withoutDeclinedGrants(kv.bus, ctx, 'u-ann', rows, {
-      reclaimAgainstCompleteSet: true,
+      reclaimAgainstCompleteSet: () => rows,
     });
     expect(kv.lastScanSize).toBe(21);
 
     await withoutDeclinedGrants(kv.bus, ctx, 'u-ann', rows, {
-      reclaimAgainstCompleteSet: true,
+      reclaimAgainstCompleteSet: () => rows,
     });
     // One row: the only refusal still doing any work.
     expect(kv.lastScanSize).toBe(1);
@@ -658,7 +724,7 @@ describe('reclaimGrantDeclines', () => {
     await seed(kv, ctx, [['a-gone', 'linear', 2_000]]);
 
     const kept = await withoutDeclinedGrants(kv.bus, ctx, 'u-ann', [], {
-      reclaimAgainstCompleteSet: true,
+      reclaimAgainstCompleteSet: () => [],
     });
 
     expect(kept).toEqual([]);
@@ -690,12 +756,13 @@ describe('reclaimGrantDeclines', () => {
     const kv = kvBus({ noDelete: true });
     await seed(kv, ctx, [['a-gone', 'linear', 2_000]]);
 
+    const pending = [row('a-quill', skill('github'), 1_000)];
     const kept = await withoutDeclinedGrants(
       kv.bus,
       ctx,
       'u-ann',
-      [row('a-quill', skill('github'), 1_000)],
-      { reclaimAgainstCompleteSet: true },
+      pending,
+      { reclaimAgainstCompleteSet: () => pending },
     );
 
     // The answer is right; only the housekeeping is missing. And it did NOT
@@ -752,12 +819,13 @@ describe('reclaimGrantDeclines', () => {
       declinedAt: 2_000,
     });
 
+    const pending = [row('a-quill', skill('github'), 1_000)];
     const kept = await withoutDeclinedGrants(
       bus,
       ctx,
       'u-ann',
-      [row('a-quill', skill('github'), 1_000)],
-      { reclaimAgainstCompleteSet: true },
+      pending,
+      { reclaimAgainstCompleteSet: () => pending },
     );
 
     expect(kept).toHaveLength(1);
@@ -783,13 +851,13 @@ describe('reclaimGrantDeclines', () => {
 
     const rows = [row('a-quill', skill('github'), 1_000)];
     await withoutDeclinedGrants(kv.bus, ctx, 'u-ann', rows, {
-      reclaimAgainstCompleteSet: true,
+      reclaimAgainstCompleteSet: () => rows,
     });
     expect(kv.deleted).toHaveLength(64);
     expect(kv.store.size).toBe(6);
 
     await withoutDeclinedGrants(kv.bus, ctx, 'u-ann', rows, {
-      reclaimAgainstCompleteSet: true,
+      reclaimAgainstCompleteSet: () => rows,
     });
     expect(kv.store.size).toBe(0);
   });
@@ -815,12 +883,13 @@ describe('reclaimGrantDeclines', () => {
       foreign,
     );
 
+    const pending = [row('a-quill', skill('github'), 1_000)];
     await withoutDeclinedGrants(
       kv.bus,
       ctx,
       'u-ann',
-      [row('a-quill', skill('github'), 1_000)],
-      { reclaimAgainstCompleteSet: true },
+      pending,
+      { reclaimAgainstCompleteSet: () => pending },
     );
 
     // The canonical spelling was attempted and missed; the stored row is
