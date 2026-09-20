@@ -925,6 +925,27 @@ describe('channel-web agent-workspace BFF', () => {
     expect(body.thread[1]).not.toHaveProperty('reqId');
   });
 
+  it('(TASK-498) bounds the untrusted detail before it leaves the host', async () => {
+    // The renderer clamps too, but this copy comes out of a JSONB column that
+    // outlives both ends. Shipping whatever it found is a size problem before
+    // it is a wording one.
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
+    eventsByConversation.set('c1', [
+      {
+        kind: 'turn-error',
+        key: 'k',
+        payload: { error: 'dev-service-failed', detail: 'x'.repeat(5_000) },
+        createdAt: '2026-08-01T10:00:00.000Z',
+      },
+    ]);
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    const row = (captured.body as { thread: Array<{ detail?: string }> }).thread[0]!;
+    expect(row.detail).toHaveLength(400);
+  });
+
   it('(TASK-498) a turn-error with no reason code is dropped, not half-drawn', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];

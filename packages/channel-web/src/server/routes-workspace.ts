@@ -2251,6 +2251,18 @@ function turnAttachments(blocks: TurnBlock[]): ThreadAttachment[] {
 }
 
 /**
+ * Ceilings for the two untrusted strings a replayed failure carries.
+ *
+ * `detail` matches the client's own clamp (`MAX_DETAIL_CHARS` in
+ * `lib/turn-error-labels.ts`) — deliberately the same number rather than a
+ * tighter one, so the two never disagree about where a sentence ends. `reason`
+ * is a short stable code; anything longer is not one, and the renderer will
+ * fall back to the generic label for it either way.
+ */
+const TURN_ERROR_DETAIL_MAX_CHARS = 400;
+const TURN_ERROR_REASON_MAX_CHARS = 120;
+
+/**
  * The failures this conversation recorded, as thread rows (TASK-498).
  *
  * WHAT WAS BROKEN. `chat:turn-error` has been persisted since TASK-66 and
@@ -2282,14 +2294,24 @@ function errorMessages(
     // and a half-shaped row reaching the client is a renderer guessing.
     const reason = ev.payload.error;
     if (typeof reason !== 'string' || reason.length === 0) continue;
-    const detail = ev.payload.detail;
+    /*
+      BOUNDED HERE TOO, not only at the renderer. The live SSE `detail` is
+      bounded where it is produced and clamped again in the client; this copy
+      comes back out of a JSONB column that outlives both and can be reached by
+      anything with database access. An unbounded string would ship whatever it
+      found straight down the wire before the client's clamp ever saw it, which
+      is a size problem, not a wording one. Same rule as every other string
+      this file emits.
+    */
+    const raw = ev.payload.detail;
+    const detail = typeof raw === 'string' ? raw.slice(0, TURN_ERROR_DETAIL_MAX_CHARS) : '';
     out.push({
       at: ev.createdAt,
       msg: {
         kind: 'error',
         id: `turn-error:${ev.key}`,
-        reason,
-        ...(typeof detail === 'string' && detail.length > 0 ? { detail } : {}),
+        reason: reason.slice(0, TURN_ERROR_REASON_MAX_CHARS),
+        ...(detail.length > 0 ? { detail } : {}),
         at: ev.createdAt,
       },
     });
