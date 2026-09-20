@@ -1310,6 +1310,17 @@ export const DECISION_FALLBACK_APPROVED = 'You approved this.';
 export const DECISION_FALLBACK_DISMISSED = 'You turned this down. Nothing ran.';
 /** The feed's fallback for an expired row. See `RECEIPT_RENDERING`. */
 export const DECISION_FALLBACK_EXPIRED = 'This one ran out of time.';
+/**
+ * …and for a failed one, which cannot borrow either of the lines above.
+ *
+ * It is NOT "you approved this" — true, but the wrong fact to lead a failure
+ * with — and it is NOT "it did not work", because one kind of `failed` is the
+ * host dying mid-flight, where the call may well have gone out and the only
+ * honest receipt is that we cannot say. So the fallback claims nothing about
+ * the action at all: our own sentence was the thing that could not be printed,
+ * and saying so is the one statement that is true either way.
+ */
+export const DECISION_FALLBACK_FAILED = 'We could not show what happened here.';
 
 /**
  * What a decision receipt is badged as in the feed.
@@ -1929,7 +1940,7 @@ const RECEIPT_RENDERING: Record<
   failed: {
     kind: 'stopped',
     tag: DECISION_RECEIPT_TAG,
-    fallback: DECISION_FALLBACK_APPROVED,
+    fallback: DECISION_FALLBACK_FAILED,
   },
   declined: {
     kind: 'dismissed',
@@ -1943,15 +1954,34 @@ const RECEIPT_RENDERING: Record<
   },
 };
 
-export function receiptToActivityEvent(r: DecisionReceiptRow): ActivityEvent | null {
+export function receiptToActivityEvent(
+  r: DecisionReceiptRow,
+  /**
+   * Called instead of silence when a row is dropped for an outcome this build
+   * cannot name. The drop itself is right — see below — but a row vanishing
+   * with nothing said is the shape this whole change exists to remove, so the
+   * route passes its logger through rather than letting the last one go quiet.
+   * Optional because the mapping is otherwise pure and every other caller (and
+   * every test) wants it that way.
+   */
+  onUnknownOutcome?: (outcome: string) => void,
+): ActivityEvent | null {
   const stamp = Date.parse(r.at);
   if (Number.isNaN(stamp)) return null; // An undateable row cannot be filed.
   // An outcome this build has never heard of is DROPPED, not guessed at. The
   // plugin is duck-typed across the bus (I2), so a newer @ax/decisions can send
   // one; rendering it as an approval because that is what the old ternary did
   // is how a decline became a "You approved this." row in the first place.
+  //
+  // Unreachable in a single-commit deployment — `DecisionReceiptSchema`'s
+  // `returns` validation refuses an unknown outcome before it gets here — and
+  // kept anyway, because "the layer above catches it" is exactly the reasoning
+  // that left the old ternary looking safe.
   const style = RECEIPT_RENDERING[r.outcome];
-  if (style === undefined) return null;
+  if (style === undefined) {
+    onUnknownOutcome?.(r.outcome);
+    return null;
+  }
   return {
     // Composite and stable, in the same shape a fire's id takes. The decision
     // id is a KEY — never rendered — so it goes in raw; fencing it could
@@ -4051,7 +4081,12 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           })),
           ...s.receipts.map((r) => ({
             stamp: sortableStamp(r.at),
-            event: receiptToActivityEvent(r),
+            event: receiptToActivityEvent(r, (outcome) =>
+              initCtx.logger.warn('workspace_activity_receipt_outcome_unknown', {
+                agentId: r.agentId,
+                outcome,
+              }),
+            ),
           })),
         ])
         .sort((x, y) => y.stamp - x.stamp)

@@ -19,6 +19,7 @@ import {
   DECISION_FALLBACK_APPROVED,
   DECISION_FALLBACK_DISMISSED,
   DECISION_FALLBACK_EXPIRED,
+  DECISION_FALLBACK_FAILED,
   DECISION_FALLBACK_GHOST,
   DECISION_FALLBACK_PRIMARY,
   DECISION_FALLBACK_SECONDARY,
@@ -2059,14 +2060,37 @@ describe('channel-web agent-workspace BFF', () => {
     expect(expired.text).not.toContain('turned this down');
   });
 
-  it('drops an outcome this build has never heard of rather than guessing', () => {
+  it('drops an outcome this build has never heard of — and SAYS it did', () => {
     // @ax/decisions is duck-typed across the bus (I2), so a newer copy of it
     // can send an outcome this one does not know. Rendering it as an approval
     // — which is what a `!== 'failed'` ternary did — is how a refusal became
     // a "You approved this." row. A row we cannot describe is no row.
+    //
+    // But a row vanishing in silence is the shape this whole change exists to
+    // remove, so the drop is reported. The route hands its logger in.
     const row = receipt({ decisionId: 'dec_1', at: '2026-08-20T12:00:00.000Z' });
     (row as { outcome: string }).outcome = 'deferred';
-    expect(receiptToActivityEvent(row)).toBeNull();
+    const dropped: string[] = [];
+    expect(receiptToActivityEvent(row, (o) => dropped.push(o))).toBeNull();
+    expect(dropped).toEqual(['deferred']);
+  });
+
+  it('never claims a failed row was approved, even when its line fences away', () => {
+    // Unreachable today — `FAILED_RECEIPT` and the abandoned line are host
+    // constants that cannot fence to nothing — and the fallback still may not
+    // be "You approved this.", which is the wrong fact to lead a failure with.
+    // Nor may it say the call did not go through: one kind of `failed` is the
+    // host dying mid-flight, where it may well have.
+    const ev = receiptToActivityEvent(
+      receipt({
+        decisionId: 'dec_1',
+        at: '2026-08-20T12:00:00.000Z',
+        outcome: 'failed',
+        receipt: '\u200B\u200B',
+      }),
+    )!;
+    expect(ev.text).toBe(DECISION_FALLBACK_FAILED);
+    expect(ev.text).not.toBe(DECISION_FALLBACK_APPROVED);
   });
 
   it('drops a receipt whose instant cannot be read', () => {

@@ -15,7 +15,13 @@ import { describe, expect, it } from 'vitest';
 import { createFakeStore, type FakeStore } from './fake-store.js';
 import { receiptFor, RECEIPT_STATUSES } from '../receipts.js';
 import { EXPIRED_RECEIPT, FAILED_RECEIPT, PENDING_AGENT_RECEIPT } from '../templates.js';
-import { DecisionStatusSchema, type Decision, type DecisionStatus } from '../types.js';
+import {
+  DECISION_RECEIPT_OUTCOMES,
+  DecisionReceiptSchema,
+  DecisionStatusSchema,
+  type Decision,
+  type DecisionStatus,
+} from '../types.js';
 
 const T_RESOLVED = '2026-08-20T09:00:00.000Z';
 const T_RAN = '2026-08-20T09:00:10.000Z';
@@ -165,6 +171,56 @@ describe('receiptFor — the states that have no receipt', () => {
     // Nothing to file it under. Inventing "now" would put a months-old
     // approval at the top of today's feed.
     expect(receiptFor(base({ replayedAt: T_RAN, resolvedAt: null }))).toBeNull();
+  });
+});
+
+describe('DecisionReceiptSchema — the enum that silently eats rows if it drifts', () => {
+  /**
+   * The roll-call `RECEIPT_STATUSES` gets, one layer down.
+   *
+   * `DecisionReceiptSchema` is registered as `returns` for
+   * `decisions:recent-receipts-for-agent`, and a `z.object` DROPS what its
+   * schema does not declare. So an outcome that exists in the union and in
+   * `receiptFor` but not in this enum does not fail — the row just stops
+   * arriving, which is TASK-447's defect reproduced at the bus instead of in
+   * the store. The `as unknown as z.ZodType<DecisionReceipt>` cast the schema
+   * carries means TypeScript will not notice either.
+   *
+   * Both sides now derive from `DECISION_RECEIPT_OUTCOMES`, so this cannot
+   * drift by construction; the test is the sentinel for somebody
+   * reintroducing a literal list on either side.
+   */
+  it('accepts exactly the outcomes the union declares', () => {
+    const declared = [...DECISION_RECEIPT_OUTCOMES];
+    // Guard against the roll-call emptying out and turning the comparison
+    // below into a green light over nothing.
+    expect(declared.length).toBeGreaterThanOrEqual(5);
+    const schemaOutcome = (
+      DecisionReceiptSchema as unknown as {
+        shape: { outcome: { options: readonly string[] } };
+      }
+    ).shape.outcome;
+    expect([...schemaOutcome.options].sort()).toEqual([...declared].sort());
+  });
+
+  it('lets every outcome receiptFor can produce through the returns schema', () => {
+    // The end of the argument: not just "the lists match" but "a real row of
+    // each shape survives validation". A `z.object` strips silently, so the
+    // parsed value is compared, not merely the absence of a throw.
+    const rows: Decision[] = [
+      base({ status: 'executed', replayedAt: T_RAN }),
+      base({ status: 'approved-pending-agent' }),
+      base({ status: 'failed', replayError: 'upstream 503' }),
+      base({ status: 'dismissed' }),
+      base({ status: 'expired' }),
+    ];
+    const produced = rows.map((d) => receiptFor(d)!);
+    expect(produced.map((r) => r.outcome).sort()).toEqual(
+      [...DECISION_RECEIPT_OUTCOMES].sort(),
+    );
+    for (const r of produced) {
+      expect(DecisionReceiptSchema.parse(r)).toEqual(r);
+    }
   });
 });
 

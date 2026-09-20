@@ -488,10 +488,13 @@ export interface DecisionsApproveOutput {
  * trace saying so; the alternative is silence, which a reader correctly
  * interprets as "nothing was approved" (design H1).
  */
-export type DecisionReceiptOutcome =
-  | 'executed'
-  | 'failed'
-  | 'pending-agent'
+export const DECISION_RECEIPT_OUTCOMES = [
+  /** The call was made. The ONLY one of these that claims the action happened. */
+  'executed',
+  /** The host tried it and the tool threw — or took the flight and never came back. */
+  'failed',
+  /** Approved, and standing at the gate until the agent next runs. Nothing yet. */
+  'pending-agent',
   /**
    * The person said no. `receipt` is the row's own `dismissedText` — authored
    * when they were asked, and written from scratch rather than derived from
@@ -503,14 +506,30 @@ export type DecisionReceiptOutcome =
    * their refusals the one part of the history they could not see, while
    * "Brought to you" went on counting it.
    */
-  | 'declined'
+  'declined',
   /**
    * Nobody answered in time. Also not an absence: the agent stopped, waited,
    * and gave up, and "it asked and I missed it" is a thing a person needs to be
    * able to find. `receipt` is a constant — `dismissedText` would claim a
    * choice that was never made.
    */
-  | 'expired';
+  'expired',
+] as const;
+
+/**
+ * THE outcome list, written once — same discipline as `DECISION_STATUSES`, and
+ * for a sharper reason.
+ *
+ * The union and `DecisionReceiptSchema`'s `z.enum` used to be two hand-written
+ * copies, and the `as unknown as z.ZodType` cast the schema carries means
+ * TypeScript will not notice when they disagree. That enum is load-bearing:
+ * `decisions:recent-receipts-for-agent` registers it as `returns`, so an
+ * outcome present in the union and in `receiptFor` but missing from the enum
+ * is DROPPED on the bus — silently, with the row simply absent from the feed,
+ * which is TASK-447's failure mode all over again one layer down. Deriving
+ * both from this array makes that disagreement impossible to write.
+ */
+export type DecisionReceiptOutcome = (typeof DECISION_RECEIPT_OUTCOMES)[number];
 
 export interface DecisionReceipt {
   decisionId: string;
@@ -703,10 +722,11 @@ export const DecisionsCountOutputSchema = z.object({
 export const DecisionReceiptSchema = z.object({
   decisionId: z.string(),
   agentId: z.string(),
-  // Every value the union carries. A `z.enum` that falls behind it does not
-  // fail loudly — `returns` validation drops the whole row on the bus, so the
-  // feed silently loses exactly the outcomes this schema forgot.
-  outcome: z.enum(['executed', 'failed', 'pending-agent', 'declined', 'expired']),
+  // Built FROM the union's own array, never beside it — a `z.enum` that falls
+  // behind the union does not fail loudly, it makes `returns` validation drop
+  // the whole row on the bus, and the feed silently loses exactly the outcomes
+  // this schema forgot.
+  outcome: z.enum(DECISION_RECEIPT_OUTCOMES),
   receipt: z.string(),
   at: z.string(),
   error: z.string().nullable(),
