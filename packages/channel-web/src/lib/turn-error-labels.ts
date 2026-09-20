@@ -81,3 +81,27 @@ export const ERROR_LABELS: Record<string, string> = {
 /** Max chars of the untrusted `detail` line we render (defense-in-depth — it's
  *  already bounded + sanitized server-side; this is a final client-side clamp). */
 export const MAX_DETAIL_CHARS = 400;
+
+/**
+ * One turn-error frame's worth of readable text: the authored label for the
+ * reason code, and the optional `detail` line under it.
+ *
+ * WHY THIS IS A FUNCTION AND NOT THREE COPIES OF FOUR LINES. The mapping
+ * (`ERROR_LABELS[code] ?? DEFAULT_TURN_ERROR`, plus a clamped `detail` joined
+ * on a newline) was written out by hand at every reader of an error frame, and
+ * TASK-498 was about to add a fourth — the RELOADED error row, which reads the
+ * same reason code out of the persisted display-event log rather than off the
+ * live SSE. Four hand-copies of one rule is how the surfaces drift (invariant
+ * 4), and drift here means two readers being told different things about the
+ * same failure.
+ *
+ * `detail` is UNTRUSTED author-facing text — bounded and sanitized server-side
+ * per `server/types.ts`, clamped once more here, and rendered by every caller
+ * as a plain text node. It is never markup and never a reason code.
+ */
+export function turnErrorText(reason: string, detail?: string | null): string {
+  const label = ERROR_LABELS[reason] ?? DEFAULT_TURN_ERROR;
+  const line =
+    typeof detail === 'string' ? detail.slice(0, MAX_DETAIL_CHARS).trim() : '';
+  return line.length > 0 ? `${label}\n${line}` : label;
+}

@@ -89,10 +89,6 @@ function conversationsMockPlugin(args: {
         'conversations:get',
         'conversations:list',
         'conversations:delete',
-        // TASK-230 — channel-web declares session:is-alive as an OPTIONAL call
-        // (the workspace roster's working/resting probe). Registering it here
-        // keeps the flag-on boot exercising the real path.
-        'session:is-alive',
       ],
       calls: [],
       subscribes: [],
@@ -167,12 +163,6 @@ function conversationsMockPlugin(args: {
           message: 'conversations:delete stub (not exercised by this suite)',
         });
       });
-      // TASK-230 — the agent-workspace roster probes session liveness through
-      // this optional hook. Nothing here is alive, which is the honest answer
-      // for a suite that never starts a session.
-      bus.registerService('session:is-alive', 'mock-conversations', async () => ({
-        alive: false,
-      }));
     },
   };
 }
@@ -644,11 +634,6 @@ describe('@ax/channel-web server plugin (integration)', () => {
             'declined-grant markers are never reclaimed, so the per-user prefix scan behind GET /api/workspace/grants grows with every "Not now" ever given (correct answers, slower reads)',
         },
         {
-          hook: 'session:is-alive',
-          degradation:
-            'every agent in the workspace roster reads as resting (liveness cannot be probed, and a guess would be worse than a blank)',
-        },
-        {
           hook: 'routines:recent-fires-for-agent',
           degradation:
             'the workspace Activity feed is empty (this deployment keeps no routine fire history)',
@@ -676,7 +661,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         {
           hook: 'agent-activity:get',
           degradation:
-            'the rail shows the agent state word alone instead of a live activity line',
+            'every agent reads as resting and the rail shows that state word alone — nothing is reporting turns, and a guess would be worse than a blank',
         },
         {
           hook: 'skills:approved-caps-list',
@@ -793,10 +778,19 @@ describe('@ax/channel-web server plugin (integration)', () => {
   });
 
   describe('agent-workspace routes (TASK-230)', () => {
-    it('declares session:is-alive in manifest.optionalCalls', () => {
+    /*
+      TASK-498 — the roster's working/resting word is read off the ACTIVITY
+      record now, not off sandbox liveness, so `session:is-alive` is no longer
+      reachable from this plugin at all and the manifest must not claim it
+      (invariant 5: capabilities explicit AND minimized). The assertion is kept
+      pointing the other way so a re-added probe has to justify itself here.
+    */
+    it('reaches agent-activity:get for the roster state word, and no longer session:is-alive', () => {
       const plugin = createChannelWebServerPlugin();
       const hooks = (plugin.manifest.optionalCalls ?? []).map((o) => o.hook);
-      expect(hooks).toContain('session:is-alive');
+      expect(hooks).toContain('agent-activity:get');
+      expect(hooks).not.toContain('session:is-alive');
+      expect(plugin.manifest.calls ?? []).not.toContain('session:is-alive');
     });
 
     it('mounts /api/workspace/* and echoes the flag when the preview is on', async () => {

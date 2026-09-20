@@ -50,11 +50,7 @@ import { HttpError, httpErrorMessage, httpFetch } from './http';
   `transport.ts` with the rest of chat, and this is the surface that is left.
   The table now lives in `./turn-error-labels`, outside the tree that goes.
 */
-import {
-  DEFAULT_TURN_ERROR,
-  ERROR_LABELS,
-  MAX_DETAIL_CHARS,
-} from './turn-error-labels';
+import { turnErrorText } from './turn-error-labels';
 import { readSseFrames } from './sse-frames';
 // The ONE producer of a step row's qualifier, shared with the reload path so
 // the same call cannot read two ways (TASK-419).
@@ -999,13 +995,15 @@ async function streamReply(
         text. It is NOT plumbing and NOT the reason code — dropping it
         costs the reader the only actionable specifics they get.
       */
-      const label = ERROR_LABELS[frame.error] ?? DEFAULT_TURN_ERROR;
-      const detail =
-        'detail' in frame && typeof frame.detail === 'string'
-          ? frame.detail.slice(0, MAX_DETAIL_CHARS).trim()
-          : '';
       terminated = true;
-      onError(detail.length > 0 ? `${label}\n${detail}` : label);
+      onError(
+        turnErrorText(
+          frame.error,
+          'detail' in frame && typeof frame.detail === 'string'
+            ? frame.detail
+            : null,
+        ),
+      );
       return 'stop';
     }
     if ('kind' in frame && frame.kind === 'text' && typeof frame.text === 'string') {

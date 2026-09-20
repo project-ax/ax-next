@@ -612,6 +612,36 @@ export type ThreadMessage =
     }
   | { kind: 'approval'; id: string; decisionId: string }
   | { kind: 'status'; id: string; text: string }
+  /**
+   * A turn that ended badly, replayed from the durable record (TASK-498).
+   *
+   * THIS IS THE RELOAD HALF OF FAULT A, and before this card there wasn't one.
+   * `chat:turn-error` has been persisted as a host-only display event since
+   * TASK-66, and `conversations:get` has projected it onto `displayEvents`
+   * ever since — but NOTHING in the repo read that field. So a turn that died
+   * flipped the live surface out of "Thinking…" and then vanished completely
+   * on the next read: the person's message sat alone, and the failure looked
+   * like a reply that had simply never been asked for.
+   *
+   * `reason` IS A STABLE CODE AND NEVER PROSE — the same backend-agnostic
+   * vocabulary the SSE `error` frame carries (`chat-run-timeout`,
+   * `dev-service-failed`, …), wired the way `phase` is: the wire says what
+   * happened, the client says it in words. `lib/turn-error-labels.ts` owns
+   * the wording for the live frame and this row alike, so a reloaded failure
+   * cannot word itself differently from the live one it replaces.
+   *
+   * `detail` is the optional TASK-160 author-facing line underneath —
+   * untrusted text, bounded and sanitized server-side, rendered as a plain
+   * text node and never as markup.
+   */
+  | {
+      kind: 'error';
+      id: string;
+      reason: string;
+      detail?: string;
+      /** See `at` on the `agent` variant above — same field, same rule. */
+      at: string;
+    }
   /** The compaction summarize rung, surfaced. */
   /**
    * Compaction's summarize rung, surfaced. NOTHING PRODUCES THIS TODAY: the
@@ -627,8 +657,10 @@ export type ThreadMessage =
    * so the in-thread card is the same row the Today queue shows rather than a
    * second copy of it. `steps` GOT ONE TOO (TASK-352): `lib/workspace-steps.ts`
    * shapes it for the reload path (`buildThread`) and the live stream
-   * (`AgentView`) alike. `status` (AW-8) is the one still waiting, and
-   * `fold` above. This list is meant to be exhaustive — if you add a
+   * (`AgentView`) alike. `error` GOT ONE IN TASK-498: `buildThread` now reads
+   * the persisted `turn-error` display events off `conversations:get` and
+   * interleaves them with the turns. `status` (AW-8) is the one still
+   * waiting, and `fold` above. This list is meant to be exhaustive — if you add a
    * producer, say so here, because the next card scoped off this comment
    * will believe it.
    */

@@ -201,7 +201,18 @@ interface ChatRunCapture {
   };
 }
 
-function chatRunMockPlugin(captures: ChatRunCapture[]): Plugin {
+function chatRunMockPlugin(
+  captures: ChatRunCapture[],
+  /**
+   * TASK-498 — make the `agent:invoke` CALL reject rather than the turn fail
+   * inside it. That is the shape of a turn that dies in host dispatch: no
+   * handler settled, so the orchestrator (which owns every other
+   * `chat:turn-error` fire site) never registered a waiter and can never close
+   * the turn out. It is also what the HookBus itself produces when a handler
+   * blows its service timeout.
+   */
+  rejects = false,
+): Plugin {
   return {
     manifest: {
       name: 'mock-chat-run',
@@ -225,6 +236,7 @@ function chatRunMockPlugin(captures: ChatRunCapture[]): Plugin {
             ctx,
             input: input as { message: { role: string; content: string } },
           });
+          if (rejects) throw new Error("service hook 'agent:invoke' exceeded 1ms");
           // Mimic agent:invoke's contract — return a AgentOutcome shape; the
           // route handler's dispatch is fire-and-forget so the value is
           // unobserved, but we keep the shape correct in case a future
@@ -318,6 +330,8 @@ interface BootArgs {
   >;
   /** Override allowedOrigins on the http-server. */
   allowedOrigins?: readonly string[];
+  /** TASK-498 — see `chatRunMockPlugin`'s `rejects`. */
+  dispatchRejects?: boolean;
   /**
    * Phase 3 (attachments): when true, boot `@ax/attachments` alongside a
    * permissive in-memory workspace stub (so `attachments:commit`'s
@@ -538,7 +552,7 @@ async function boot(args: BootArgs): Promise<BootResult> {
     // empty turns, which is what these tests expect.
     workspacePlugin,
     createConversationsPlugin(),
-    chatRunMockPlugin(chatRunCaptures),
+    chatRunMockPlugin(chatRunCaptures, args.dispatchRejects === true),
     grantMockPlugin(grantCaptures),
   ];
   if (args.includeAttachments === true) {
@@ -740,6 +754,93 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
     );
     expect(appendCalls).toHaveLength(0);
     callSpy.mockRestore();
+  });
+
+  /*
+    TASK-498 — A TURN THAT DIES IN HOST DISPATCH MUST NOT DIE QUIETLY.
+
+    The POST still answers 202 (the dispatch is fire-and-forget by design and
+    the conversation row is real), and before this card that was the end of it:
+    the rejection was written to the log and nothing else happened. Nobody was
+    left to close the turn out — the orchestrator owns every other
+    `chat:turn-error` fire site and never got far enough to register a waiter —
+    so the browser's SSE sat on "Thinking…", nothing was persisted, and after a
+    reload the person's message sat alone with no reply and no failure beside
+    it. That is the whole defect, and it is one `fire` away from legible: our
+    own SSE handler matches the reqId and ends the spinner, `@ax/conversations`
+    persists the row that survives the reload, and `@ax/agent-activity` forgets
+    the agent so the roster stops saying "Working".
+
+    THE REQID MUST BE THE ORIGINATING ONE. The SSE subscriber matches on
+    `payload.reqId`, so an error keyed on anything else reaches no stream at
+    all — which is indistinguishable, from the reader's chair, from not firing.
+  */
+  it('4b. (TASK-498) a rejected agent:invoke fires chat:turn-error for that exact reqId', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+      dispatchRejects: true,
+    });
+    harnesses.push(booted.harness);
+
+    const fired: Array<{ reqId?: string; reason?: string }> = [];
+    booted.harness.bus.subscribe<unknown>(
+      'chat:turn-error',
+      'spy',
+      async (_ctx, payload) => {
+        fired.push(payload as { reqId?: string; reason?: string });
+        return undefined;
+      },
+    );
+
+    const r = await postMessage(booted.port, {
+      conversationId: null,
+      agentId: 'agt_test',
+      contentBlocks: [{ type: 'text', text: 'this turn will never run' }],
+    });
+    expect(r.status).toBe(202);
+    const body = (await r.json()) as { conversationId: string; reqId: string };
+
+    // The dispatch — and therefore its rejection — is fire-and-forget.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(fired).toEqual([
+      { reqId: body.reqId, reason: 'chat-run-dispatch-failed' },
+    ]);
+  });
+
+  /*
+    THE OTHER HALF OF THE SAME RULE: a dispatch that LANDS must fire nothing.
+    A turn-error on the happy path would end the stream on a turn that is
+    about to answer — the same blank screen, arrived at from the opposite
+    direction — and it is the mutation a one-sided test would miss.
+  */
+  it('4c. (TASK-498) a dispatch that lands fires NO chat:turn-error', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+
+    const fired: unknown[] = [];
+    booted.harness.bus.subscribe<unknown>(
+      'chat:turn-error',
+      'spy',
+      async (_ctx, payload) => {
+        fired.push(payload);
+        return undefined;
+      },
+    );
+
+    const r = await postMessage(booted.port, {
+      conversationId: null,
+      agentId: 'agt_test',
+      contentBlocks: [{ type: 'text', text: 'hello there' }],
+    });
+    expect(r.status).toBe(202);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(booted.chatRunCaptures).toHaveLength(1);
+    expect(fired).toEqual([]);
   });
 
   it('5. existing conversation: 202 returned, no new conversation created, no append-turn call', async () => {

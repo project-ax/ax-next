@@ -210,6 +210,8 @@ describe('channel-web agent-workspace BFF', () => {
   let conversations: ConvRow[];
   let aliveSessions: Set<string>;
   let turnsByConversation: Map<string, unknown[]>;
+  /** TASK-498 — `conversations:get`'s host-only display events, per row. */
+  let eventsByConversation: Map<string, unknown[]>;
   let fires: FireRowLike[];
   let routinesByAgent: Map<string, Array<{ path: string; name: string }>>;
   let firesReadFailure: Map<string, Error>;
@@ -227,6 +229,20 @@ describe('channel-web agent-workspace BFF', () => {
       }
       return { user };
     });
+  }
+
+  /**
+   * The roster's activity producer (TASK-498) — the one signal that now
+   * answers "is a turn running".
+   *
+   * Registered per test, like the routines reads below and for the same
+   * reason: a deployment WITHOUT @ax/agent-activity has to be testable, and
+   * its answer (everything rests) is a branch of its own.
+   */
+  function registerActivity(byAgent: Record<string, unknown>): void {
+    bus.registerService('agent-activity:get', 'activity', async (_c, i: unknown) => ({
+      activity: byAgent[(i as { agentId: string }).agentId] ?? null,
+    }));
   }
 
   /**
@@ -314,6 +330,7 @@ describe('channel-web agent-workspace BFF', () => {
     conversations = [];
     aliveSessions = new Set<string>();
     turnsByConversation = new Map<string, unknown[]>();
+    eventsByConversation = new Map<string, unknown[]>();
     fires = [];
     routinesByAgent = new Map<string, Array<{ path: string; name: string }>>();
     firesReadFailure = new Map<string, Error>();
@@ -350,7 +367,14 @@ describe('channel-web agent-workspace BFF', () => {
       };
       const row = conversations.find((c) => c.conversationId === conversationId);
       if (row === undefined || row.userId !== userId) throw notFound();
-      return { conversation: row, turns: turnsByConversation.get(conversationId) ?? [] };
+      return {
+        conversation: row,
+        turns: turnsByConversation.get(conversationId) ?? [],
+        // TASK-498 — the host-only display events (`turn-error`,
+        // `permission-card`). The shipped `conversations:get` has answered
+        // these since TASK-66; nothing read them until this card.
+        displayEvents: eventsByConversation.get(conversationId) ?? [],
+      };
     });
   });
 
@@ -447,18 +471,31 @@ describe('channel-web agent-workspace BFF', () => {
     expect(Object.keys(body)).toEqual(['agents']);
   });
 
-  it('reports working for an agent with a live session, resting otherwise', async () => {
+  /*
+    TASK-498 — `working` MEANS A TURN IS RUNNING.
+
+    This assertion used to read the other way: it registered `session:is-alive`
+    and expected an agent with a live SESSION to report `working`. That is a
+    different question, and the gap between the two is a whole warm sandbox:
+    `chat:turn-end` clears `active_req_id` and deliberately KEEPS
+    `active_session_id` so the next message reuses the pod, so the probe stayed
+    true through every idle gap. The TASK-357 walk found an agent reading
+    "Working" through a reload AND a host restart with nothing running at all.
+  */
+  it('reports working only while a turn is actually running', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
-    bus.registerService('session:is-alive', 'session', async (_c, i: unknown) => ({
-      alive: aliveSessions.has((i as { sessionId: string }).sessionId),
-    }));
+    registerActivity({
+      a1: {
+        phrase: 'Reading email',
+        startedAt: '2026-09-20T11:54:00.000Z',
+        source: 'tool',
+        stale: false,
+      },
+    });
     conversations = [
       conv({ conversationId: 'c1', agentId: 'a1', activeSessionId: 'sess-live' }),
-      // a2 has a STALE activeSessionId — the row is there but the session is
-      // gone, which is exactly the case that must not read as "working".
-      conv({ conversationId: 'c2', agentId: 'a2', activeSessionId: 'sess-dead' }),
+      conv({ conversationId: 'c2', agentId: 'a2', activeSessionId: 'sess-live' }),
     ];
-    aliveSessions.add('sess-live');
 
     const h = makeWorkspaceHandlers({ bus, initCtx });
     const { res, captured } = mkRes();
@@ -468,8 +505,55 @@ describe('channel-web agent-workspace BFF', () => {
     expect(body.agents.find((a) => a.id === 'a2')?.state).toBe('resting');
   });
 
-  it('reports resting for everyone when session:is-alive is not registered', async () => {
+  /*
+    THE REGRESSION ITSELF (TASK-498). Both agents hold a LIVE session — the
+    warm-reuse steady state after any successful turn — and neither has a turn
+    in flight. Before this card `session:is-alive` answered `true` for both and
+    the whole roster read "Working". Nothing is running, so nothing may claim
+    to be.
+  */
+  it('a warm session with no turn in flight is NOT working', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
+    bus.registerService('session:is-alive', 'session', async (_c, i: unknown) => ({
+      alive: aliveSessions.has((i as { sessionId: string }).sessionId),
+    }));
+    aliveSessions.add('sess-warm');
+    registerActivity({});
+    conversations = [
+      conv({ conversationId: 'c1', agentId: 'a1', activeSessionId: 'sess-warm' }),
+      conv({ conversationId: 'c2', agentId: 'a2', activeSessionId: 'sess-warm' }),
+    ];
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.state(mkReq(), res);
+    const body = captured.body as { agents: Array<{ id: string; state: string }> };
+    expect(body.agents.every((a) => a.state === 'resting')).toBe(true);
+  });
+
+  /*
+    A HOST RESTART LOSES THE ACTIVITY RECORD (it is in-memory), and the honest
+    reading of that absence is `resting` — nothing survives a restart still
+    running. Same branch as "no activity producer wired at all", which is why
+    one test covers both: "we don't know" must never render as "it's busy".
+  */
+  it('reports resting for everyone when nothing reports activity', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [
+      conv({ conversationId: 'c1', agentId: 'a1', activeSessionId: 'sess-live' }),
+    ];
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.state(mkReq(), res);
+    const body = captured.body as { agents: Array<{ id: string; state: string }> };
+    expect(body.agents.every((a) => a.state === 'resting')).toBe(true);
+  });
+
+  it('reports resting when the activity read FAILS — a fault is not a claim', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    bus.registerService('agent-activity:get', 'activity', async () => {
+      throw new Error('activity backend down');
+    });
     conversations = [
       conv({ conversationId: 'c1', agentId: 'a1', activeSessionId: 'sess-live' }),
     ];
@@ -764,6 +848,121 @@ describe('channel-web agent-workspace BFF', () => {
     const foreign = mkRes();
     await h.saveRules(mkReq({ agentId: 'a2' }, { body: 'x' }), foreign.res);
     expect(foreign.captured.statusCode).toBe(404);
+  });
+
+  /*
+    TASK-498 — THE FAILURE HAS TO SURVIVE THE RELOAD.
+
+    `chat:turn-error` has been persisted as a host-only display event since
+    TASK-66, and `conversations:get` has projected it onto `displayEvents` ever
+    since — and a repo-wide grep for that field, on the day this card was
+    built, found NO reader anywhere. The live surfaces flip out of "Thinking…"
+    off the SSE frame and then forget. So the durable record was write-only,
+    and the walk on TASK-357 saw the consequence: after a refresh the person's
+    message sat alone, with no reply and no failure, as if they had never asked
+    for one.
+
+    WHAT TRAVELS IS THE CODE, NOT A SENTENCE. `reason` is the same
+    backend-agnostic vocabulary the live SSE `error` frame carries, and
+    `lib/turn-error-labels.ts` turns it into words on both paths — so the
+    reloaded row cannot word itself differently from the live alert it
+    replaces, and `dev-service-failed` can never land in front of a reader.
+  */
+  it('(TASK-498) replays a persisted turn-error into the thread, in place', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
+    turnsByConversation.set('c1', [
+      {
+        turnId: 't1',
+        turnIndex: 0,
+        role: 'user',
+        contentBlocks: [{ type: 'text', text: 'summarise my inbox' }],
+        createdAt: '2026-08-01T10:00:00.000Z',
+      },
+      // The person tried again after the failure, and got an answer. The error
+      // belongs BETWEEN the two, not appended at the end — which is exactly
+      // what a naive "add the events last" would have done.
+      {
+        turnId: 't2',
+        turnIndex: 1,
+        role: 'user',
+        contentBlocks: [{ type: 'text', text: 'try that again' }],
+        createdAt: '2026-08-01T10:05:00.000Z',
+      },
+      {
+        turnId: 't3',
+        turnIndex: 2,
+        role: 'assistant',
+        contentBlocks: [{ type: 'text', text: 'Four things need you.' }],
+        createdAt: '2026-08-01T10:05:04.000Z',
+      },
+    ]);
+    eventsByConversation.set('c1', [
+      {
+        kind: 'turn-error',
+        key: 'req-dead',
+        payload: { reqId: 'req-dead', error: 'dev-service-failed', detail: 'kafka' },
+        createdAt: '2026-08-01T10:00:09.000Z',
+      },
+    ]);
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    const body = captured.body as { thread: Array<Record<string, unknown>> };
+
+    expect(body.thread.map((m) => m.kind)).toEqual(['user', 'error', 'user', 'agent']);
+    expect(body.thread[1]).toEqual({
+      kind: 'error',
+      id: 'turn-error:req-dead',
+      reason: 'dev-service-failed',
+      detail: 'kafka',
+      at: '2026-08-01T10:00:09.000Z',
+    });
+    // The fold key is host routing vocabulary and has no business on the wire
+    // (invariant 1). The row's id carries it, because that id has to be stable
+    // across re-reads — but `reqId` itself never travels as a field.
+    expect(body.thread[1]).not.toHaveProperty('reqId');
+  });
+
+  it('(TASK-498) a turn-error with no reason code is dropped, not half-drawn', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
+    eventsByConversation.set('c1', [
+      // An opaque JSONB payload that lost its `error`. A row built from it
+      // would render the generic sentence over a failure we cannot name —
+      // a claim, not a reading.
+      { kind: 'turn-error', key: 'k', payload: { reqId: 'r' }, createdAt: '2026-08-01T10:00:00.000Z' },
+      { kind: 'turn-error', key: 'k2', payload: { error: 42 }, createdAt: '2026-08-01T10:00:01.000Z' },
+    ]);
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    expect((captured.body as { thread: unknown[] }).thread).toEqual([]);
+  });
+
+  /*
+    A `permission-card` rides the SAME array and must NOT become a row here.
+    The in-thread approval card is built from the decisions queue
+    (`approvalMessages`), and a second producer for one row is the two-sources
+    drift invariant 4 forbids — it would put two cards on screen for one
+    question, one of them unanswerable.
+  */
+  it('(TASK-498) ignores permission-card display events — the queue owns those', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
+    eventsByConversation.set('c1', [
+      {
+        kind: 'permission-card',
+        key: 'skill:x',
+        payload: { kind: 'skill', skillId: 'x' },
+        createdAt: '2026-08-01T10:00:00.000Z',
+      },
+    ]);
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    expect((captured.body as { thread: unknown[] }).thread).toEqual([]);
   });
 
   it('builds the thread from real turns, keeping tool steps and dropping thinking', async () => {

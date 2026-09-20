@@ -1,6 +1,8 @@
 import type { AgentOutcome, Plugin } from '@ax/core';
 import {
+  AGENT_INVOKE_TIMEOUT_SLACK_MS,
   createOrchestrator,
+  DEFAULT_CHAT_TIMEOUT_MS,
   PLUGIN_NAME,
   type ChatOrchestratorConfig,
   type AgentInvokeInput,
@@ -161,7 +163,18 @@ export function createChatOrchestratorPlugin(
         'agent:invoke',
         PLUGIN_NAME,
         async (ctx, input) => orch.runAgentInvoke(ctx, input),
-        { stallWarnMs: Number.POSITIVE_INFINITY },
+        {
+          // A BACKSTOP, NOT THE TURN'S CLOCK. See
+          // AGENT_INVOKE_TIMEOUT_SLACK_MS — the orchestrator bounds each turn
+          // with `chatTimeoutMs` and fires its own turn-error; this only
+          // catches a handler that failed to settle at all. On the HookBus
+          // default (120 s) it fired on any turn longer than two minutes,
+          // rejecting a call whose turn was still streaming.
+          timeoutMs:
+            (config.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS) +
+            AGENT_INVOKE_TIMEOUT_SLACK_MS,
+          stallWarnMs: Number.POSITIVE_INFINITY,
+        },
       );
 
       // JIT (design §7/§11.5) — apply a user-approved capability grant: attach

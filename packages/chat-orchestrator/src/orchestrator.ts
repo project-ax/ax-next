@@ -792,7 +792,29 @@ function newDeferred<T>(): Deferred<T> {
 // ---------------------------------------------------------------------------
 
 export const PLUGIN_NAME = '@ax/chat-orchestrator';
-const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60 * 1000;
+export const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * How much longer than its own chat timeout `agent:invoke` is allowed to take
+ * before the HookBus gives up on it (TASK-498).
+ *
+ * THE BUS TIMEOUT MUST NEVER FIRE FIRST. `runAgentInvoke` bounds every turn
+ * itself — it rejects the waiter with `ChatTimeoutError(chatTimeoutMs)` and
+ * that path fires `chat:turn-error(chat-run-timeout)`, which is what puts a
+ * timed-out turn on screen. Registering the hook with the HookBus DEFAULT
+ * (120 s) put a second, much shorter bound underneath that one: the default
+ * chat timeout is ten minutes, so `bus.call('agent:invoke')` rejected with
+ * `exceeded 120000ms` on every turn longer than two minutes — while the turn
+ * was alive and still streaming. channel-web only logged that rejection
+ * (`chat_run_dispatch_failed`), so it was invisible; it is also why that log
+ * line could not be trusted as a failure signal, which is exactly what
+ * TASK-498 needed it to be.
+ *
+ * With the backstop strictly AFTER the orchestrator's own bound, a rejection
+ * means what it says: the handler did not settle even though its own timer
+ * should have. channel-web surfaces that as a turn-error.
+ */
+export const AGENT_INVOKE_TIMEOUT_SLACK_MS = 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // PR 2 (provider-agnostic runner, design doc §1) — runner id → binary path.

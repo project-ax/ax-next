@@ -38,10 +38,12 @@
  *   - `now` / `counter` / `startedAt` — null; nothing reports them yet (AW-8).
  *   - there is no `stats` field at all.
  *
- * Agent `state` is likewise derived, never guessed: `working` iff one of the
- * agent's conversations holds a live session (`session:is-alive` says so),
- * otherwise `resting`. Without the liveness probe everything reads `resting`,
- * because "we don't know" must never render as "it's busy".
+ * Agent `state` is likewise derived, never guessed: `working` iff the agent
+ * has a live activity record (`agent-activity:get` — a turn started and has
+ * not ended), otherwise `resting`. Without that producer everything reads
+ * `resting`, because "we don't know" must never render as "it's busy". It
+ * used to probe sandbox liveness instead, which answered a different question
+ * and is why a warm idle agent read "Working" — see `deriveState`.
  *
  * Security posture (matches routes-connections.ts):
  *   - identity is ALWAYS the authenticated user (auth:require-user → 401).
@@ -534,16 +536,36 @@ interface ConversationsGetInput {
   conversationId: string;
   userId: string;
 }
+/**
+ * One host-only display event off `conversations:get` (TASK-66's redisplay
+ * log, folded to its terminal state per key by the projection).
+ *
+ * Narrowed to what this surface draws: today that is `turn-error` and only
+ * `turn-error`. `permission-card` rides the same array and is deliberately
+ * NOT read here — the in-thread approval card is already built from the
+ * decisions queue (`approvalMessages` below), and a second producer for one
+ * row is exactly the drift invariant 4 forbids.
+ *
+ * `payload` is opaque and UNTRUSTED (it is the host's own frame body, which
+ * for a turn-error carries model/provider vocabulary). Every field is checked
+ * before it leaves here, never spread.
+ */
+interface DisplayEventRow {
+  kind: 'permission-card' | 'turn-error';
+  key: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+}
 interface ConversationsGetOutput {
   conversation: ConversationRow;
   turns: TurnRow[];
-}
-
-interface SessionIsAliveInput {
-  sessionId: string;
-}
-interface SessionIsAliveOutput {
-  alive: boolean;
+  /**
+   * Optional on THIS side on purpose: a `conversations:get` implementation
+   * predating TASK-66 answers no such field at all, and absence must read as
+   * "no host-only events to replay" rather than as a crash in the thread
+   * build. (The shipped producer always sets it.)
+   */
+  displayEvents?: DisplayEventRow[];
 }
 
 /**
@@ -2228,7 +2250,66 @@ function turnAttachments(blocks: TurnBlock[]): ThreadAttachment[] {
   return out;
 }
 
-function buildThread(turns: TurnRow[]): ThreadMessage[] {
+/**
+ * The failures this conversation recorded, as thread rows (TASK-498).
+ *
+ * WHAT WAS BROKEN. `chat:turn-error` has been persisted since TASK-66 and
+ * projected onto `conversations:get`'s `displayEvents` ever since — and a
+ * repo-wide grep for that field found NO reader at all. The live surfaces
+ * flip out of "Thinking…" off the SSE frame and then forget; the durable
+ * record was write-only. So a turn that died left the person's message
+ * sitting alone on the next read, as if they had never asked for a reply.
+ *
+ * WHAT TRAVELS: the stable `reason` code and the optional bounded `detail`
+ * line, exactly the two fields the live SSE `error` frame carries. NOT a
+ * sentence — the wording is `lib/turn-error-labels.ts`' job on both paths, so
+ * a reloaded failure cannot word itself differently from the live one it
+ * replaces, and a raw reason code can never reach a reader (TASK-296).
+ *
+ * `reqId` IS ON THE PERSISTED PAYLOAD AND DELIBERATELY STAYS THERE. It is the
+ * fold key, i.e. host routing vocabulary, and the row needs no such thing: the
+ * event's own `key` is the row id here, which is stable across re-reads and
+ * means a re-fired turn-error replaces its earlier row rather than stacking a
+ * second one.
+ */
+function errorMessages(
+  events: readonly DisplayEventRow[],
+): Array<{ at: string; msg: ThreadMessage }> {
+  const out: Array<{ at: string; msg: ThreadMessage }> = [];
+  for (const ev of events) {
+    if (ev.kind !== 'turn-error') continue;
+    // Every field checked, never spread: this payload is an opaque JSONB blob
+    // and a half-shaped row reaching the client is a renderer guessing.
+    const reason = ev.payload.error;
+    if (typeof reason !== 'string' || reason.length === 0) continue;
+    const detail = ev.payload.detail;
+    out.push({
+      at: ev.createdAt,
+      msg: {
+        kind: 'error',
+        id: `turn-error:${ev.key}`,
+        reason,
+        ...(typeof detail === 'string' && detail.length > 0 ? { detail } : {}),
+        at: ev.createdAt,
+      },
+    });
+  }
+  return out;
+}
+
+/**
+ * Interleave the turns with the host-only failure rows, by instant.
+ *
+ * TURNS WIN A TIE. A turn-error is the thing that ENDED a turn, so when its
+ * timestamp collides with a turn's it belongs after it, never before — an
+ * error drawn above the message it answers reads as a failure that happened
+ * first.
+ */
+function buildThread(
+  turns: TurnRow[],
+  displayEvents: readonly DisplayEventRow[] = [],
+): ThreadMessage[] {
+  const dated: Array<{ at: string; msg: ThreadMessage }> = [];
   const out: ThreadMessage[] = [];
   const outcomes = toolOutcomes(turns);
   for (const turn of turns) {
@@ -2248,29 +2329,52 @@ function buildThread(turns: TurnRow[]): ThreadMessage[] {
         already does since TASK-352.
       */
       if (text.length === 0 && attachments.length === 0) continue;
-      out.push({
-        kind: 'user',
-        id: turn.turnId,
-        text,
-        ...(attachments.length > 0 ? { attachments } : {}),
+      dated.push({
+        at: turn.createdAt,
+        msg: {
+          kind: 'user',
+          id: turn.turnId,
+          text,
+          ...(attachments.length > 0 ? { attachments } : {}),
+        },
       });
       continue;
     }
     const panel = shapeSteps(turnToolCalls(blocks, outcomes));
     if (text.length === 0 && panel === null) continue;
-    out.push(
-      panel === null
-        ? { kind: 'agent', id: turn.turnId, text, at: turn.createdAt }
-        : {
-            kind: 'steps',
-            id: turn.turnId,
-            text,
-            at: turn.createdAt,
-            stepsLabel: panel.label,
-            steps: panel.steps,
-          },
-    );
+    dated.push({
+      at: turn.createdAt,
+      msg:
+        panel === null
+          ? { kind: 'agent', id: turn.turnId, text, at: turn.createdAt }
+          : {
+              kind: 'steps',
+              id: turn.turnId,
+              text,
+              at: turn.createdAt,
+              stepsLabel: panel.label,
+              steps: panel.steps,
+            },
+    });
   }
+  /*
+    A STABLE merge, not a re-sort of everything. The turn order comes out of
+    the event log and is authoritative — several turns legitimately share one
+    instant, and a comparator over the whole list could reorder them. So the
+    turns keep their order and the failures are slotted in around them.
+  */
+  const failures = errorMessages(displayEvents).sort((a, b) =>
+    a.at < b.at ? -1 : a.at > b.at ? 1 : 0,
+  );
+  let f = 0;
+  for (const row of dated) {
+    while (f < failures.length && failures[f]!.at < row.at) {
+      out.push(failures[f]!.msg);
+      f++;
+    }
+    out.push(row.msg);
+  }
+  for (; f < failures.length; f++) out.push(failures[f]!.msg);
   return out;
 }
 
@@ -2356,33 +2460,36 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   }
 
   /**
-   * `working` iff one of these conversations holds a session the session
-   * backend still calls alive. Absence of the probe means we don't know, and
-   * "don't know" renders as `resting` — never as a guess that it's busy.
+   * `working` iff a TURN IS RUNNING — which is what the word means to the
+   * person reading it, and is not what this used to measure (TASK-498).
+   *
+   * IT USED TO PROBE `session:is-alive` over the agent's conversations, and
+   * that answers a different question: whether a SANDBOX is up. Sandboxes are
+   * deliberately kept warm between turns (TASK-124's idle keepalive) and
+   * `chat:turn-end` explicitly clears `active_req_id` while KEEPING
+   * `active_session_id`, so the probe stayed true long after the work stopped.
+   * The walk on TASK-357 found the consequence: an agent whose turn had failed
+   * read "Working" through a reload AND a host restart, with nothing running.
+   * It was not a stuck turn — it was a warm sandbox being reported as busy,
+   * and every agent that had ever answered anything read the same way until
+   * the reaper got round to it.
+   *
+   * THE ACTIVITY LINE IS THE HONEST SIGNAL, and the route already reads it for
+   * "Right now". `@ax/agent-activity` records on `chat:start` and forgets on
+   * `chat:end` AND on `chat:turn-error` — so a turn that fails closes this out
+   * on the same frame that puts the failure on screen, which is the coupling
+   * this card needed and the probe could never have.
+   *
+   * ABSENCE STILL READS `resting`, on every branch: no activity producer
+   * wired, a failed read, or a host that restarted and lost its in-memory
+   * record. That is the route's standing rule — "we don't know" must never
+   * render as "it's busy" — and a restart is the case that proves it, because
+   * nothing survives one still running.
    */
-  async function deriveState(rows: ConversationRow[]): Promise<AgentRunState> {
-    if (!bus.hasService('session:is-alive')) return 'resting';
-    const candidates = rows
-      .map((c) => c.activeSessionId)
-      .filter((s): s is string => typeof s === 'string' && s.length > 0);
-    if (candidates.length === 0) return 'resting';
-    try {
-      const probes = await Promise.all(
-        candidates.map((sessionId) =>
-          bus.call<SessionIsAliveInput, SessionIsAliveOutput>(
-            'session:is-alive',
-            initCtx,
-            { sessionId },
-          ),
-        ),
-      );
-      return probes.some((p) => p.alive) ? 'working' : 'resting';
-    } catch (err) {
-      initCtx.logger.warn('workspace_session_liveness_failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return 'resting';
-    }
+  function deriveState(activity: AgentRailData['activity']): AgentRunState {
+    return activity.status === 'ok' && activity.activity !== null
+      ? 'working'
+      : 'resting';
   }
 
   /**
@@ -3798,18 +3905,19 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       if (userId === null) return;
 
       const agents = await listAgents(userId);
-      // Without the liveness probe every answer is `resting` anyway, so don't
-      // pay for N conversation listings to arrive at a foregone conclusion.
-      const canProbe = bus.hasService('session:is-alive');
       const rows = await Promise.all(
         agents.map(async (a) => {
           // The roster is already inside `agents:list-for-user`, which is the
           // ACL — `readActivity` is safe here for the same reason it is safe on
           // the rail, and for no other.
+          //
+          // ONE READ ANSWERS BOTH HALVES since TASK-498: the state word and the
+          // "Right now" line come off the same activity record, so the roster
+          // can no longer say "Working" over a blank phrase. The N conversation
+          // listings this used to pay for — one per agent, to probe sandbox
+          // liveness — are gone with the probe.
           const line = await readActivity(a.id);
-          if (!canProbe) return toWorkspaceAgent(a, 'resting', line);
-          const convs = await listConversations(userId, a.id);
-          return toWorkspaceAgent(a, await deriveState(convs), line);
+          return toWorkspaceAgent(a, deriveState(line), line);
         }),
       );
 
@@ -4391,7 +4499,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
             });
             return;
           }
-          thread = buildThread(got.turns ?? []);
+          thread = buildThread(got.turns ?? [], got.displayEvents ?? []);
           threadConversationId = got.conversation.conversationId;
         }
       }
@@ -4418,8 +4526,14 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         thread = [...thread, ...approvals.messages];
       }
 
+      // One read, both halves (TASK-498) — see `deriveState`. The state word
+      // and the "Right now" line are two readings of the same record, and
+      // taking them from two different sources is how the header came to say
+      // "Working" over a phrase that was not there.
+      const activityLine = await readActivity(agentId);
+
       res.status(200).json({
-        agent: toWorkspaceAgent(agent, await deriveState(convs), await readActivity(agentId)),
+        agent: toWorkspaceAgent(agent, deriveState(activityLine), activityLine),
         // There is no `permissions` here any more. The rail's three blocks have
         // their own producer — `GET /api/workspace/agents/:agentId/rail` — for
         // the reason the feed and the queue got theirs: one collection, one
