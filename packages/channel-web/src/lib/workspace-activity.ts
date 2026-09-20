@@ -55,11 +55,16 @@ export interface ActivityFeedState {
    * before making any claim from `events`; they differ for exactly one render.
    *
    * Deliberately not fixed by blanking `events` while stale: "we hold nothing"
-   * and "we hold the wrong thing" are different facts, and a consumer that
-   * only wants rows on screen (the Activity page, an agent's "What it did"
-   * tab) is better served by one frame of the old list than by a flicker to
-   * empty. This field lets the consumers that DO need the distinction — the
-   * ones making a counted claim — ask for it.
+   * and "we hold the wrong thing" are different facts, and a hook that erased
+   * the second into the first would hand every consumer a flicker to empty and
+   * no way to tell it from a genuinely empty record. This field keeps both
+   * facts on the table and lets each consumer answer for itself.
+   *
+   * All of them now do (TASK-453), and none of them chose either horn: the
+   * counted claims (`doneTodayFrom`, Activity's "N entries") go silent, and
+   * the surfaces that render rows show placeholders — see `awaitingScope` in
+   * `components/workspace/ActivityFeed.tsx` for why holding the old rows is
+   * not rescuable by dimming them.
    */
   scope: string | undefined;
   loadMore: () => void;

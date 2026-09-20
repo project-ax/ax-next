@@ -243,4 +243,85 @@ describe('a clamped activity row (TASK-436)', () => {
     );
     expect(screen.getByText(detail).getAttribute('title')).toBe(detail);
   });
+
+  /*
+    TASK-453. `awaitingScope` is the caller saying "the rows I am handing you
+    belong to a collection you are not rendering" — which happens for exactly
+    one render after the reader switches scope, because the feed hook re-scopes
+    in an effect.
+
+    Both false options put a sentence on screen that we have not read anything
+    to back: holding the rows attributes them to the wrong agent (this feed
+    drops the agent column when scoped, so there is nothing left to correct
+    the reader with), and blanking lands on the empty state, whose copy says
+    the record IS empty. The placeholders say the only true thing.
+  */
+  describe('while the rows in hand describe a different collection', () => {
+    it('shows placeholders instead of the rows it was handed', () => {
+      render(
+        <ActivityFeed
+          events={[event({ text: 'Somebody else\u2019s row' })]}
+          agents={[agent()]}
+          agentId="a-tern"
+          awaitingScope
+        />,
+      );
+      expect(screen.getByRole('status')).toHaveTextContent(
+        'Reading the record',
+      );
+      expect(screen.queryByText('Somebody else\u2019s row')).toBeNull();
+    });
+
+    it('does not claim the record is empty either', () => {
+      render(
+        <ActivityFeed
+          events={[event()]}
+          agents={[agent()]}
+          agentId="a-tern"
+          awaitingScope
+        />,
+      );
+      expect(screen.queryByText('Nothing recorded yet.')).toBeNull();
+    });
+
+    it('drops the previous scope\u2019s error along with its rows', () => {
+      /*
+        The hook clears `error` in the same reset effect that clears the list,
+        so on the stale frame the error belongs to the collection just left.
+        "We could not load Quill's record" is no more true of Tern's tab than
+        Quill's rows are.
+      */
+      render(
+        <ActivityFeed
+          events={[]}
+          agents={[agent()]}
+          agentId="a-tern"
+          awaitingScope
+          error="We could not load the record."
+        />,
+      );
+      expect(screen.getByRole('status')).toBeInTheDocument();
+      expect(screen.queryByRole('alert')).toBeNull();
+    });
+
+    it('shows the same placeholders before the first page of a fresh mount', () => {
+      /*
+        The same false emptiness reached by a different route: on mount the
+        list is empty because nothing has landed yet, and the empty copy would
+        tell the reader their agents have done nothing. The caller cannot
+        distinguish this one by scope — both scopes agree on mount — so the
+        component answers it from `loading` itself.
+      */
+      render(<ActivityFeed events={[]} agents={[agent()]} loading />);
+      expect(screen.getByRole('status')).toBeInTheDocument();
+      expect(screen.queryByText('Nothing recorded yet.')).toBeNull();
+    });
+
+    it('still says the record is empty once the page has landed empty', () => {
+      // The guard above must not swallow the genuinely empty record.
+      render(<ActivityFeed events={[]} agents={[agent()]} loading={false} />);
+      expect(screen.getByText('Nothing recorded yet.')).toBeInTheDocument();
+      expect(screen.queryByRole('status')).toBeNull();
+    });
+  });
 });

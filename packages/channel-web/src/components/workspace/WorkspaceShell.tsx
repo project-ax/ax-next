@@ -282,7 +282,25 @@ function Inner({
    * count, the Activity page, and a given agent's "What it did" tab all read
    * off this same fetch.
    */
-  const feed = useActivityFeed(route.kind === 'agent' ? route.id : undefined);
+  const feedScope = route.kind === 'agent' ? route.id : undefined;
+  const feed = useActivityFeed(feedScope);
+  /**
+   * The feed is holding a DIFFERENT collection than the one this render is
+   * asking for. True for exactly one render after the reader switches scope,
+   * because the hook re-scopes in an effect and effects run after the commit.
+   *
+   * Every consumer of `feed.events` has to answer for this, not just the one
+   * that counts: `doneTodayFrom` refuses its number, the Activity subtitle
+   * refuses its total, and the feed itself shows placeholders instead of rows
+   * that belong to somebody else (TASK-453).
+   *
+   * `AgentView` is deliberately NOT handed this. It remounts on every agent
+   * switch (`key` below) and renders nothing until its own detail read
+   * resolves, which is after the feed's reset effect — so the stale frame is
+   * already over by the time its "What it did" tab exists. See the note beside
+   * that tab's `ActivityFeed`.
+   */
+  const feedStale = feed.scope !== feedScope;
   /**
    * The queue, fetched once here and read by three places: Today's rows, the
    * sidebar's pending badge, and the in-thread approval card on an agent's
@@ -704,6 +722,26 @@ function Inner({
   const openAgent = (id: string) =>
     navigate({ kind: 'agent', id, tab: 'chat' });
 
+  /**
+   * The same door, opened onto the agent's RECORD rather than its thread —
+   * used from the Activity page's rows, and only there.
+   *
+   * Everywhere else ("open this agent" from the rail, from Today, from a
+   * decision card) the reader is going to the agent, and its conversation is
+   * the right landing. On Activity they are reading the record and clicked a
+   * name IN it, so the question is "what else has this one done"; dropping
+   * them into a chat throws away the only thing they told us. The record is
+   * also the one place the agent column exists to be clicked at all — the
+   * per-agent feed drops it.
+   *
+   * #609's reviewer filed this as "agent→agent 'What it did' is unreachable".
+   * That overstates it: every `AgentView` renders a visible "What it did" tab
+   * trigger, so the destination was always two clicks away. What was missing
+   * is the one-click path from the surface that is already about the record.
+   */
+  const openAgentRecord = (id: string) =>
+    navigate({ kind: 'agent', id, tab: 'did' });
+
   /*
     One set of nav props, two frames. Written once because the rail and the
     sheet are the SAME navigation — two literals here would be two things free
@@ -849,7 +887,7 @@ function Inner({
               <WorkspaceHeader
                 title="Activity"
                 leading={navTrigger}
-                {...(feed.events.length > 0 && !feed.hasMore
+                {...(!feedStale && feed.events.length > 0 && !feed.hasMore
                   ? {
                       subtitle: `${feed.events.length} ${
                         feed.events.length === 1 ? 'entry' : 'entries'
@@ -862,11 +900,12 @@ function Inner({
                   <ActivityFeed
                     events={feed.events}
                     agents={board.agents}
-                    onOpenAgent={openAgent}
+                    onOpenAgent={openAgentRecord}
                     hasMore={feed.hasMore}
                     onLoadMore={feed.loadMore}
                     loading={feed.loading}
                     error={feed.error}
+                    awaitingScope={feedStale}
                   />
                 </div>
               </div>
