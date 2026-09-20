@@ -45,6 +45,13 @@ export async function registerWebSearch(bus: HookBus, backend: WebSearchBackend)
       }
       return backend.run(query);
     },
-    { timeoutMs: 120_000 },
+    // `stallWarnMs` raised above the bus's 15s default (TASK-505). The test is
+    // whether running long is NORMAL, not merely possible — and it is here: a
+    // server-side search fans out into several queries against a third party we
+    // don't control, so tens of seconds is an ordinary healthy result, not a
+    // symptom. Warning at 15s would fire on the good case and teach everyone to
+    // filter the message. Half the declared timeout keeps the line rare and
+    // still leaves 60s to notice a genuinely wedged call.
+    { timeoutMs: 120_000, stallWarnMs: 60_000 },
   );
 }

@@ -123,6 +123,16 @@ const VALIDATION_TIMEOUT_MS = 10_000;
 const TRANSIENT_STATUSES = new Set<number>([429, 500, 502, 503, 504]);
 const DEFAULT_RETRY_DELAY_MS = 1000;
 
+/**
+ * Stall threshold for the LLM call, overriding the bus's 15s default. Twin of
+ * the one in `@ax/llm-anthropic`, for the same reason: a generation
+ * legitimately runs for minutes (hence the 300s timeout), so warning at 15s
+ * would fire on every healthy call — and a warning that fires on the healthy
+ * case is one people learn to ignore. Half the declared timeout keeps the line
+ * rare and still leaves 150s to notice a wedged provider call.
+ */
+const LLM_CALL_STALL_WARN_MS = 150_000;
+
 export interface LlmOpenRouterConfig {
   /**
    * OpenRouter API key. Falls back to `process.env.OPENROUTER_API_KEY` if
@@ -237,7 +247,7 @@ export function createLlmOpenRouterPlugin(cfg: LlmOpenRouterConfig = {}): Plugin
           'llm:call:openrouter',
           PLUGIN_NAME,
           async (_ctx, input) => callWithRetry(fetchImpl, apiKey, input, cfg),
-          { returns: LlmCallOutputSchema, timeoutMs: 300_000 },
+          { returns: LlmCallOutputSchema, timeoutMs: 300_000, stallWarnMs: LLM_CALL_STALL_WARN_MS },
         );
       } else {
         // Credential-resolution mode: resolve the key for each call.
@@ -248,7 +258,7 @@ export function createLlmOpenRouterPlugin(cfg: LlmOpenRouterConfig = {}): Plugin
             const apiKey = await resolveApiKey(bus, ctx, cfg, credentialRef);
             return callWithRetry(fetchImpl, apiKey, input, cfg);
           },
-          { returns: LlmCallOutputSchema, timeoutMs: 300_000 },
+          { returns: LlmCallOutputSchema, timeoutMs: 300_000, stallWarnMs: LLM_CALL_STALL_WARN_MS },
         );
       }
 

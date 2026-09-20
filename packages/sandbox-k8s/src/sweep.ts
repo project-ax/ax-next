@@ -19,6 +19,17 @@
 // (Succeeded/Failed) older than `terminalAgeMs` — a Running/Pending pod, or a
 // young just-finished one mid-teardown, is left alone. It uses the EXISTING
 // `pods: list/delete` grant from the host Role; no new capability.
+//
+// NOT IN SCOPE, deliberately (TASK-505): a RUNNING runner pod that outlived the
+// host which spawned it. The new host adopts it (the conversation row still
+// points at its session) but never registered a credential-proxy session for
+// it, so the next turn 403s on the provider with "not in any session
+// allowlist". Reaping live pods at host start would fix that for one replica
+// and break it for two — replica B would delete replica A's in-flight turns —
+// so the correct reconciler needs per-host pod ownership on the wire first.
+// Until then this is an ACCEPTED limitation with a written operational order:
+// delete runner pods FIRST, then restart the host. See the "Restarting the host
+// pod" section in `deploy/README.md`.
 // ---------------------------------------------------------------------------
 
 import { makeAgentContext, type Logger } from '@ax/core';

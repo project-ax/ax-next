@@ -82,6 +82,10 @@ export function createSandboxSubprocessPlugin(): Plugin {
       subscribes: ['agents:deleted'],
     },
     async init({ bus }) {
+      // No `stallWarnMs` override, matching the k8s backend's reasoning
+      // (TASK-505): the 300s timeout is a worst-case backstop, not a typical
+      // duration, so a spawn still running at the bus's 15s stall threshold is
+      // worth naming rather than filtering.
       bus.registerService<unknown, OpenSessionResult>(
         'sandbox:open-session',
         PLUGIN_NAME,

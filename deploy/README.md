@@ -184,6 +184,47 @@ So we made the chart loud about it:
 The full threat-model walk is in
 [`charts/ax-next/SECURITY.md`](charts/ax-next/SECURITY.md).
 
+## Restarting the host pod: delete the runner pods FIRST
+
+The order is counter-intuitive, so here it is up front:
+
+```bash
+# 1. Evict any live runner pods.
+kubectl delete pods -n ax-next-runners -l app.kubernetes.io/component=ax-next-runner
+
+# 2. THEN restart the host.
+kubectl rollout restart deployment/ax-next-host -n ax-next
+```
+
+Do it the other way round and the next turn fails in a way that looks like an
+auth bug: a `403` on the call to `api.anthropic.com`, saying the host is "not in
+any session allowlist". It isn't an auth bug, and it isn't Anthropic — our own
+credential proxy short-circuits the request, which never leaves the cluster. So
+don't go rotating provider keys; the problem is a pod, not a credential.
+
+Here's why. A runner pod outlives the host that spawned it — it's a bare Pod
+with no ownerReference, which is deliberate (no controller gets to resurrect a
+sandbox). The conversation row still points at that pod's session, so the new
+host happily routes the next turn into it. But the credential proxy keeps its
+session allowlist **in the host's memory**, and the new host never registered a
+session for a pod it didn't spawn. So the pod is alive, reachable, and holding a
+token nobody will vouch for. Every outbound provider call gets refused.
+
+We know about this and we're accepting it for now rather than papering over it.
+The tempting fix — have a starting host evict every Running runner pod it has no
+session for — is the wrong shape the moment the host runs more than one replica:
+replica B would cheerfully murder replica A's in-flight turns. A correct
+reconciler needs per-host pod ownership on the wire first, which is a bigger
+change than this note.
+
+What we *do* clean up automatically is the **terminal** case: the periodic
+orphan sweep in `@ax/sandbox-k8s` reaps runner pods in `Succeeded` / `Failed`
+that a failed delete left behind. Live pods are deliberately out of its scope,
+for the replica reason above.
+
+If you've already restarted in the wrong order, the recovery is the same two
+commands — delete the runner pods, and the next turn spawns a fresh one.
+
 ## Credentials key rotation — please read before `helm upgrade`
 
 This is the bit that bites people, so we want to be loud about it.
