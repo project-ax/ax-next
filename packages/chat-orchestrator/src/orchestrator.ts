@@ -830,9 +830,22 @@ export const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60 * 1000;
  * WHAT IS GENUINELY UNCOVERED, said plainly rather than left for the next
  * reader to discover: a `chat:start` subscriber that hangs forever. `HookBus.
  * fire` puts no clock on subscribers, so that turn hangs with nothing to end
- * it. It hung before this change too — the 120 s rejection only wrote a log
- * line and never reached the browser — so this is a pre-existing gap, not one
- * opened here, and bounding `chat:start` is its own card.
+ * it. What the person sees is unchanged — it hung before this change too, and
+ * the 120 s rejection only wrote a log line that never reached the browser —
+ * so this is a pre-existing gap, not one opened here.
+ *
+ * WHAT THIS DOES COST, because "pre-existing" would otherwise read as "nothing
+ * changed": the OPERATOR loses a signal. That 120 s rejection did run the
+ * caller's `.catch` and wrote `chat_run_dispatch_failed`. With no timeout the
+ * call never settles, so the `.catch` never runs — and `agent:invoke` also
+ * opts out of TASK-505's stall watch (`stallWarnMs: Infinity`, on the same
+ * argument: no threshold separates a healthy long turn from a hung one). So a
+ * wedged `agent:invoke` now emits nothing of its own, ever. The diagnosis
+ * lives one frame in and is deliberately better there: the subscribers and
+ * service calls it awaits keep the default stall watch, so a hang names the
+ * plugin responsible instead of reporting the outermost frame — which was
+ * only ever the frame an operator already knew was stuck. Bounding
+ * `chat:start` is its own card.
  */
 export const AGENT_INVOKE_TIMEOUT_MS = Number.POSITIVE_INFINITY;
 
