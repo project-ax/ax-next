@@ -1603,6 +1603,9 @@ importers:
       better-sqlite3:
         specifier: 13.0.3
         version: 13.0.3
+      sqlite-vec:
+        specifier: 0.1.9
+        version: 0.1.9
     devDependencies:
       '@ax/memory-facts-contract':
         specifier: workspace:*
