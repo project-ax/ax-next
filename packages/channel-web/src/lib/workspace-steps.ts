@@ -149,15 +149,45 @@ export interface WorkspaceStepPanel {
  * is not a size — the same reasoning the decision caps in
  * `routes-workspace.ts` are written to.
  *
- * WHY 200 AND NOT 400, which is what the decision/rail caps use. The row's
- * qualifier comes from {@link DETAIL_KEYS}, and two of those keys — `prompt`
- * and `description` — hold text the MODEL wrote. This surface has no
- * thinking gate (invariant J4), so the cap is also the bound on how much of
- * the model's own prose can ride into a step row. 200 covers the values a
- * person actually needs back — a deep file path, an ordinary command — and
- * stops well short of turning a row into an excerpt of the model.
+ * WHY 200 AND NOT 400, which is what the decision/rail caps use. This one
+ * still bounds untrusted text: `call.phrase` is host-authored, but
+ * `call.name` is whatever an MCP server called its tool. 200 is a line's
+ * worth of name with room to spare and no more.
+ *
+ * THE NAME AND THE QUALIFIER GET DIFFERENT NUMBERS, and they have to.
+ * Collapsing them into one was the first draft of this card, and review
+ * caught what it cost: see {@link STEP_DETAIL_MAX_CHARS}.
  */
-export const STEP_TEXT_MAX_CHARS = 200;
+export const STEP_NAME_MAX_CHARS = 200;
+
+/**
+ * How much of a call's INPUT reaches the row beside the tool name.
+ *
+ * SMALLER THAN THE NAME CAP ON PURPOSE, and the reason is no longer layout —
+ * CSS clamps the line now, so this number governs only two things: how much
+ * survives into the `title` (and therefore into a copy-paste), and how much
+ * untrusted text is on the surface at all.
+ *
+ * Which makes it a SECURITY ceiling, because this is the model/tool-authored
+ * half. Two of {@link DETAIL_KEYS} — `prompt` and `description` — hold text
+ * the model wrote, and the workspace has no thinking gate (invariant J4).
+ * Worse, {@link namesASecret} filters key NAMES, not values: a credential
+ * arriving under an innocent name (`value`, `arg`, `data`) reaches the
+ * fallback and is drawn up to this cap.
+ *
+ * That is why this is 120 and not 200. `fenceLine` returns a value UNCHANGED
+ * when it fits, so the cap is the line between "a masked prefix" and "the
+ * whole thing": most tokens in the 120–200 range stay masked at 120 and would
+ * have been rendered entire at 200. 120 is `DECISION_SUMMARY_MAX_CHARS`, it
+ * still holds an ordinary command and all but the deepest workspace paths,
+ * and it costs roughly half the worst case that one shared number did.
+ *
+ * A row can therefore carry up to both caps together — name, `: `, qualifier.
+ * That is the surface's real per-row budget for untrusted text; the number
+ * that matters for exposure is this one, because it is the half a secret can
+ * ride in on.
+ */
+export const STEP_DETAIL_MAX_CHARS = 120;
 
 /**
  * What a step is called when nothing legible survives fencing — a tool name
@@ -204,9 +234,15 @@ const DETAIL_KEYS = [
  * but the fallback takes the first string an UNKNOWN tool carries, and MCP
  * servers name their arguments whatever they like. A tool called as
  * `{ token: 'sk-live-…', resource: 'issues' }` would have drawn its row as the
- * leading {@link STEP_TEXT_MAX_CHARS} characters of the token. That is a
+ * leading {@link STEP_DETAIL_MAX_CHARS} characters of the token. That is a
  * prefix of a secret on screen, which is a worse worst case than "a less
  * useful string" — and it is why that cap is a fence and not a layout number.
+ *
+ * THE GUARD IS ON THE NAME, SO IT IS NOT THE WHOLE ANSWER. A secret under a
+ * name this cannot recognise still reaches the fallback, which is the other
+ * reason {@link STEP_DETAIL_MAX_CHARS} is kept small: the guard decides
+ * WHETHER a value is drawn, the cap decides HOW MUCH of one that slipped past
+ * it is.
  *
  * Matched WORD BY WORD rather than as substrings, so `apiKey`, `api_key` and
  * `AUTH_TOKEN` are all caught while `keyword`, `passenger` and `authored` are
@@ -345,7 +381,7 @@ export function stepDetail(input: unknown): string | undefined {
     // today; asking here rather than only in the fallback means a key added to
     // that list later cannot quietly opt out of it.
     if (namesASecret(key)) return null;
-    return fenceLine(value, STEP_TEXT_MAX_CHARS);
+    return fenceLine(value, STEP_DETAIL_MAX_CHARS);
   };
   for (const key of DETAIL_KEYS) {
     const fenced = candidate(key);
@@ -370,8 +406,8 @@ const STATUS_SUFFIX: Record<Exclude<WorkspaceStepStatus, 'done'>, string> = {
 /** The display name for one call: phrase first, then the stripped tool name. */
 function stepName(call: WorkspaceToolCall): string {
   return (
-    fenceLine(call.phrase, STEP_TEXT_MAX_CHARS) ??
-    fenceLine(stripMcpToolPrefix(call.name), STEP_TEXT_MAX_CHARS) ??
+    fenceLine(call.phrase, STEP_NAME_MAX_CHARS) ??
+    fenceLine(stripMcpToolPrefix(call.name), STEP_NAME_MAX_CHARS) ??
     UNNAMED_STEP
   );
 }

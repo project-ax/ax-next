@@ -1574,6 +1574,23 @@ export function toWireDecision(stored: StoredDecision): Decision {
 export const FILE_LABEL_MAX_CHARS = 120;
 
 /**
+ * How much of a past conversation's title this surface will carry.
+ *
+ * TASK-436 review finding. Every other label leaving this file goes through
+ * `fenceLine` — summaries, details, button labels, file names, activity lines
+ * — and this one did not, although a conversation title is GENERATED (the
+ * title plugin asks a model for it) and is therefore exactly the kind of
+ * string the fence exists for. It rendered in the read-only banner, and this
+ * card was about to give it a `title` attribute as well, which is one more
+ * sink for a value that had never been bounded or stripped of bidi overrides.
+ *
+ * 120 is `FILE_LABEL_MAX_CHARS` — a banner and a rail row are the same size
+ * of thing — and the fallback below is unchanged, so a title that fences to
+ * nothing still reads as "Untitled conversation" rather than as a blank.
+ */
+export const CONVERSATION_TITLE_MAX_CHARS = 120;
+
+/**
  * How many rows one listing will carry, and how much of one file we will send.
  *
  * Both are bounds on somebody else's output. An agent can write a hundred
@@ -4171,7 +4188,11 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       // See `PastConversation` for why both fields are gone.
       const past: PastConversation[] = convs.slice(1).map((c) => ({
         id: c.conversationId,
-        title: c.title ?? 'Untitled conversation',
+        // Fenced like every other label out of this file — see
+        // CONVERSATION_TITLE_MAX_CHARS. A model wrote this string.
+        title:
+          fenceLine(c.title, CONVERSATION_TITLE_MAX_CHARS) ??
+          'Untitled conversation',
         meta: relativeDay(c.lastActivityAt ?? c.createdAt),
       }));
 

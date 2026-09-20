@@ -1187,6 +1187,15 @@ function Steps({ label, steps }: { label: string; steps: WorkspaceStep[] }) {
                   path or a long command was unrecoverable. The fence stays
                   (the text is untrusted), the layout moved here, and the
                   whole fenced row is on the element that hides part of it.
+
+                  RECOVERY IS BOUNDED AT THE FENCE, AND THAT IS THE DECISION.
+                  `title` carries the row as `shapeSteps` fenced it, not the
+                  raw value — so a name or qualifier that outruns its cap
+                  still ends in a literal `…`, here and in a copy-paste. The
+                  alternative is putting the unfenced value in a tooltip,
+                  which hands back the whole of whatever the fence exists to
+                  bound. Hover recovers everything up to the cap; past it, the
+                  `…` is the honest statement that there was more.
                 */}
                 <span className="min-w-0 flex-1 truncate" title={s.text}>
                   {s.text}
