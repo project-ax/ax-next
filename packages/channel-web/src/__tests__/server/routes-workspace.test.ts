@@ -955,16 +955,45 @@ describe('channel-web agent-workspace BFF', () => {
       // a claim, not a reading.
       { kind: 'turn-error', key: 'k', payload: { reqId: 'r' }, createdAt: '2026-08-01T10:00:00.000Z' },
       { kind: 'turn-error', key: 'k2', payload: { error: 42 }, createdAt: '2026-08-01T10:00:01.000Z' },
-      // `key` becomes the row's id and `createdAt` is what the merge sorts on.
-      // A row missing either would park itself at the end of the thread under
-      // an id it could share with the next malformed one.
-      { kind: 'turn-error', key: '', payload: { error: 'chat-run-timeout' }, createdAt: '2026-08-01T10:00:02.000Z' },
+      // `createdAt` is what the merge sorts on; a row without one would park
+      // itself at the end of the thread rather than beside its message.
       { kind: 'turn-error', key: 'k4', payload: { error: 'chat-run-timeout' }, createdAt: '' },
     ]);
     const h = makeWorkspaceHandlers({ bus, initCtx });
     const { res, captured } = mkRes();
     await h.agentDetail(mkReq({ agentId: 'a1' }), res);
     expect((captured.body as { thread: unknown[] }).thread).toEqual([]);
+  });
+
+  it('(TASK-498) shows a turn-error the store folded under an EMPTY key', async () => {
+    /*
+      `persistTurnError` writes `key: ''` when the fire carried no reqId. The
+      first cut of this read dropped empty keys, so the store recorded a
+      failure the reader was then refused — the two halves of one row
+      disagreeing, which is the defect this card exists to end. The fold makes
+      one per conversation, so the id stays unique.
+    */
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
+    eventsByConversation.set('c1', [
+      {
+        kind: 'turn-error',
+        key: '',
+        payload: { error: 'chat-run-timeout' },
+        createdAt: '2026-08-01T10:00:02.000Z',
+      },
+    ]);
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    expect((captured.body as { thread: Array<Record<string, unknown>> }).thread).toEqual([
+      {
+        kind: 'error',
+        id: 'turn-error:',
+        reason: 'chat-run-timeout',
+        at: '2026-08-01T10:00:02.000Z',
+      },
+    ]);
   });
 
   /*

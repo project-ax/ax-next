@@ -2299,13 +2299,20 @@ function errorMessages(
       Every field checked, never spread: this payload is an opaque JSONB blob
       and a half-shaped row reaching the client is a renderer guessing.
 
-      `key` and `createdAt` are checked too, and not out of politeness — `key`
-      becomes the row's React id, and `createdAt` is what the merge below sorts
-      on, so a missing one would silently park the failure at the end of the
-      thread wearing a `turn-error:undefined` key it could share with the next
-      malformed row.
+      `createdAt` is checked for the same reason: it is what the merge below
+      sorts on, so a missing one would silently park the failure at the end of
+      the thread rather than beside the message it answers.
+
+      AN EMPTY `key` IS KEPT, and that is a correction rather than laxity. The
+      persist side folds a turn-error on its originating reqId and writes the
+      EMPTY STRING when there isn't one (`@ax/conversations`' persistTurnError),
+      so dropping empty keys here meant the store recorded a failure that this
+      read then refused to show — the two halves disagreeing about the same
+      row, which is the bug this card exists to end. The fold makes it safe:
+      one empty-key turn-error per conversation, so `turn-error:` is as stable
+      and as unique an id as any other.
     */
-    if (typeof ev.key !== 'string' || ev.key.length === 0) continue;
+    if (typeof ev.key !== 'string') continue;
     if (typeof ev.createdAt !== 'string' || ev.createdAt.length === 0) continue;
     const reason = ev.payload.error;
     if (typeof reason !== 'string' || reason.length === 0) continue;
