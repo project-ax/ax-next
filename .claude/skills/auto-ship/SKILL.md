@@ -431,11 +431,15 @@ RAW_REVIEWED=<reviewed-sha>   # from the handoff, VERBATIM — do not trim, do n
 # merge queue's "never RETYPE a sha" note above still stands, and `rev-parse` is how you
 # obey it: it either prints the full 40 characters or it fails.
 #
-# `--verify` + `^{commit}` is what turns ambiguity into an ERROR instead of a guess, and
-# with `--quiet` an unresolvable or ambiguous name yields an empty string and rc 1.
+# `--verify --quiet` makes an unresolvable OR ambiguous name yield an empty string and
+# rc 1 instead of a guess, and `--end-of-options` stops a value that starts with `-`
+# from being read as a flag. Measured caveat, so nobody credits these flags with more
+# than they do: the ancestry arm below independently rejects everything they reject
+# (deleting them reddens NOTHING — see the mutant table in the guard). They are here for
+# a clean diagnostic, not for the property.
 case "${RAW_REVIEWED}" in
   ''|'-') REVIEWED_SHA="" ;;
-  *) REVIEWED_SHA=$(git rev-parse --verify --quiet "${RAW_REVIEWED}^{commit}") || REVIEWED_SHA="" ;;
+  *) REVIEWED_SHA=$(git rev-parse --verify --quiet --end-of-options "${RAW_REVIEWED}^{commit}") || REVIEWED_SHA="" ;;
 esac
 
 if [ -z "${REVIEWED_SHA}" ]; then
@@ -461,12 +465,25 @@ elif ! git merge-base --is-ancestor "${REVIEWED_SHA}" "origin/${BRANCH}"; then
   REVIEWED_SHA=$(git rev-parse --verify "origin/main^{commit}")
 fi
 
-# NOTE, because this is semi-trusted builder input (invariant 5): resolution accepts any
-# commit-ish, so a handoff naming `HEAD` or the branch itself resolves, passes the
-# ancestry test (it IS the head) and yields an EMPTY delta — "fully reviewed". Nothing
-# here can distinguish that from an honest handoff; the mitigation is the contract
-# (`references/templates.md` asks for a full 40-char sha) plus Q1's `reviewer:` check,
-# not this block.
+# KNOWN RESIDUAL, because this is semi-trusted builder input (invariant 5). Two holes,
+# neither closed by anything above, both unchanged from before this gate was hardened:
+#
+#   (1) Resolution accepts any commit-ish, so a handoff naming `HEAD` or the branch
+#       itself resolves, passes the ancestry test (it IS the head) and yields an EMPTY
+#       delta — "fully reviewed".
+#   (2) `RAW_REVIEWED=<reviewed-sha>` is an UNQUOTED splice of handoff text. An
+#       ACCIDENT fails closed and loud — `79940789 feat` parses as a one-shot env
+#       assignment, leaves `RAW_REVIEWED` unset in the shell, and lands in the
+#       fail-closed arm (verified, bash and zsh). A hostile value does not: a literal
+#       `$(git rev-parse origin/${BRANCH})` both EXECUTES and resolves to the head,
+#       which is hole (1) again. Do not "fix" this by double-quoting the line —
+#       `$( )` expands inside double quotes, so quoting buys nothing here and makes
+#       the hazard look handled. The real fix is a quoted-delimiter here-doc
+#       (`IFS= read -r RAW_REVIEWED <<'SHA'` … `SHA`), which is deferred, not done.
+#
+# So the mitigation for both is the contract (`references/templates.md` asks for a full
+# 40-char sha) plus Q1's `reviewer:` check — NOT this block. Said plainly because the
+# tempting summary, "it fails closed either way", is only true for the accident.
 
 # Same assertion `HEAD_SHA` gets, for the same reason: the two shas this gate compares
 # are now checked by one rule, so neither can drift back to an abbreviation alone.

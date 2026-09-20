@@ -190,6 +190,19 @@ function q2Script(reviewedSha) {
   return Q2.replace(/<reviewed-sha>/g, quoted).replace(/<n>/g, '123');
 }
 
+/**
+ * The same block with the value spliced in RAW -- no quoting of any kind.
+ *
+ * This is what the doc literally says (`RAW_REVIEWED=<reviewed-sha>`), and the quoted
+ * substitution above deliberately does not exercise it. `q2Script`'s quoting is right
+ * for reasoning about VALUES -- it stops this file's own substitution from deciding the
+ * answer -- but it means no other test in here runs the assignment line as the operator
+ * will actually run it. One case does, below.
+ */
+function q2ScriptRaw(reviewedSha) {
+  return Q2.replace(/<reviewed-sha>/g, String(reviewedSha)).replace(/<n>/g, '123');
+}
+
 // ---------------------------------------------------------------------------------
 // The fixture: a real repository, and real objects to be wrong about.
 // ---------------------------------------------------------------------------------
@@ -355,9 +368,9 @@ afterAll(() => {
  * specified to halt), and a helper that threw would push that assertion into a
  * try/catch where "it halted" is easy to confuse with "the test crashed".
  */
-function runGate(shell, reviewedSha, cwd = CLONE) {
+function runGate(shell, reviewedSha, cwd = CLONE, build = q2Script) {
   writeFileSync(TRACE, '');
-  const r = spawnSync(shell, ['-c', q2Script(reviewedSha)], {
+  const r = spawnSync(shell, ['-c', build(reviewedSha)], {
     cwd,
     encoding: 'utf8',
     env: {
@@ -482,6 +495,36 @@ describe.each(SHELLS)('Q2 gate under %s: the base it ranges from (TASK-479)', (s
       expect(
         b,
         `${SKILL_PATH}: the gate measured the delta from ${OFF_BRANCH_SHA}, which is not an ancestor of origin/feat. That is the genuinely dangerous state an abbreviation buys: the range resolves, the delta can come back EMPTY, and an empty delta is this gate's "a reviewer saw the head" answer. Widen to origin/main instead — which is also the right answer for the honest cause of a non-ancestor, a rebase after the review round`,
+      ).toBe(ORIGIN_MAIN_SHA);
+    }
+  });
+
+  it('a WHITESPACE-bearing handoff value, spliced in raw as the doc splices it, fails CLOSED', () => {
+    if (Q2 === undefined) return;
+    // Runs `RAW_REVIEWED=<reviewed-sha>` exactly as written -- unquoted. A value with a
+    // space (`<sha> feat`) then parses as a one-shot env assignment prefixing a command,
+    // so `RAW_REVIEWED` is never set in the shell and the block must fail closed.
+    //
+    // WHAT THIS DOES NOT PIN, stated because the first draft of this comment claimed it
+    // did: it does not defend the unquoted splice against being "hardened" to
+    // `RAW_REVIEWED="<reviewed-sha>"`. Both spellings fail closed on this input -- raw
+    // because the assignment never lands, quoted because `<sha> feat^{commit}` does not
+    // resolve. No input separates them, because the difference is not behavioural: the
+    // quoted form is worse only in that it looks handled while `$( )` still expands
+    // inside it. That belongs in the block's own NOTE, and it is there. A guard cannot
+    // assert a thing it cannot observe, and pretending otherwise is how a green test
+    // ends up standing in for a fix.
+    const { bases } = runGate(shell, `${R1_SHA} feat`, CLONE, q2ScriptRaw);
+
+    expect(
+      bases.length,
+      `${SKILL_PATH}: the gate formed no usable range for a whitespace-bearing reviewed-sha`,
+    ).toBeGreaterThanOrEqual(2);
+
+    for (const b of bases) {
+      expect(
+        b,
+        `${SKILL_PATH}: a handoff value carrying whitespace must widen to origin/main (${ORIGIN_MAIN_SHA}), not range from '${b}'`,
       ).toBe(ORIGIN_MAIN_SHA);
     }
   });

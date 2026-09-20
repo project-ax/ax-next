@@ -449,8 +449,9 @@ echo "files in range: $N"
 - Proceed to Phase 6 and open the PR when the review is clean **and** either
   `reviewed-sha` is the head you are about to push, or everything after it falls under
   the carve-out above. **Orchestrated mode:** report that sha as the handoff's
-  `reviewed-sha:` field — **all 40 characters of it**, straight from `git rev-parse HEAD`,
-  never `--short` and never `%h`. Three handoffs in the 2026-09-20 run sent 8 characters
+  `reviewed-sha:` field — **all 40 characters of it**, as `git rev-parse HEAD` printed it
+  *when you dispatched that review round* (not your current HEAD, which is the whole
+  point of the field), never `--short` and never `%h`. Three handoffs in the 2026-09-20 run sent 8 characters
   and none of them failed loudly, because git expands an unambiguous prefix locally; the
   merge gate now resolves and ancestry-checks it and fails closed when it cannot, so an
   abbreviation buys you a re-review instead of a merge. And if anything did land after it
