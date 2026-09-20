@@ -47,6 +47,7 @@ import {
   sparseChannel,
   temporalChannel,
   MAX_MATCH_TOKENS,
+  CHANNEL_LIMIT,
 } from '../recall.js';
 import { agentScopeKey } from '../agent-scope-key.js';
 import { EMBED_HOOK, RERANK_HOOK, hashVector, registerHashEmbedder } from './hash-embedder.js';
@@ -60,6 +61,9 @@ const SEP = '2023-09-01T00:00:00.000Z';
 // agentId itself (`agent-scope-key.ts`), so a test that drives a channel
 // directly has to derive the same key rather than inventing a readable one.
 const AGENT_A = agentScopeKey({ agentId: 'a' });
+// Wide enough that presence/absence is about the CHANNELS, not about a
+// dense-only row losing a top-5 race to rows that two channels both proposed.
+const MAX_ANSWER = 50;
 
 const KHALID = { about: 'user', relation: 'likes_artist', value: 'Khalid', when: JAN };
 const BOSTON = { about: 'user', relation: 'lives_in', value: 'Boston', when: JUN };
@@ -400,6 +404,95 @@ describe('@ax/memory-facts-sqlite — embedder/reranker seam', () => {
     // ...and still says 'ranking', because no reranker was registered. Both
     // halves, so the test cannot pass by reporting an empty array.
     expect(out.degraded).toEqual(['ranking']);
+  });
+
+  // THE CARD'S CENTRAL ACCEPTANCE CRITERION: "a term that only matches via the
+  // dense channel". This is the entire reason a dense channel exists — if every
+  // row it surfaces was already reachable lexically, the embedder, the native
+  // dependency and the egress it will eventually need all buy nothing.
+  //
+  // It is NOT a semantic-paraphrase test, and saying so matters: the hash
+  // embedder has no semantics, and a real paraphrase assertion would need a real
+  // model and a network call in a unit test. What this pins is the MECHANISM —
+  // a row sharing no token with the query is still reachable, via the dense
+  // channel and only via it.
+  //
+  // The 45 distractors are load-bearing, and the number is not arbitrary: the
+  // temporal channel ADMITS the `CHANNEL_LIMIT` (40) most recent rows whatever
+  // the query, so with a smaller store the target arrives on the temporal
+  // channel by itself and the test would pass against an engine with no dense
+  // channel at all. Pushing it past 40 makes the dense channel the only route.
+  it('reaches a row via the dense channel that the sparse channel cannot', async () => {
+    // A controlled stand-in for an embedding model: it collapses two
+    // lexically-disjoint spellings onto one vector and leaves everything else
+    // where the hash puts it. Exactly the property a real embedder has and FTS5
+    // structurally cannot.
+    const SYNONYMS = /\b(car|automobile)\b/i;
+    bus.registerService<EmbedInput, EmbedOutput>(
+      EMBED_HOOK,
+      'test:synonym-embedder',
+      async (_ctx, input) => ({
+        vectors: input.texts.map((text) =>
+          hashVector(SYNONYMS.test(text) ? 'SYNONYM_CLUSTER' : text),
+        ),
+      }),
+    );
+    await start({ databasePath, embedder: { hook: EMBED_HOOK } });
+
+    const target = await record({
+      statements: [{ about: 'user', relation: 'drives', value: 'a red automobile', when: JAN }],
+    });
+    const targetId = target.records[0]!.id;
+    for (let i = 0; i < 45; i += 1) {
+      await record({
+        statements: [
+          { about: 'user', relation: 'stated', value: `unrelated note number ${i}`, when: JUN },
+        ],
+      });
+    }
+
+    const db = openDatabase(databasePath).driver;
+    const scope = { agentKey: AGENT_A, activeOnly: true, limit: CHANNEL_LIMIT };
+    const sparse = sparseChannel(db, { ...scope, match: buildFtsMatchQuery('car')! });
+    const temporal = temporalChannel(db, scope);
+    const dense = denseChannel(db, scope, hashVector('SYNONYM_CLUSTER'));
+    db.close();
+
+    // Not reachable lexically: no row contains the token.
+    expect(sparse).toEqual([]);
+    // Not reachable by recency either: 45 newer rows fill the temporal channel.
+    expect(temporal).not.toContain(targetId);
+    expect(temporal).toHaveLength(CHANNEL_LIMIT);
+    // Reachable densely, and first — it is the only row on the synonym vector.
+    expect(dense[0]).toBe(targetId);
+
+    const out = await recall({ query: 'car', limit: MAX_ANSWER });
+    expect(out.statements.map((s) => s.id)).toContain(targetId);
+    expect(out.degraded).not.toContain('semantic');
+  });
+
+  // The other half of the pair, and what makes the one above mean something:
+  // the SAME store and the SAME query, with no embedder, must NOT reach the
+  // target — it is in no channel at all. Without this, the test above could
+  // pass against an engine whose "dense channel" simply returned everything.
+  it('cannot reach that row at all when no embedder is configured', async () => {
+    await start({ databasePath });
+
+    const target = await record({
+      statements: [{ about: 'user', relation: 'drives', value: 'a red automobile', when: JAN }],
+    });
+    const targetId = target.records[0]!.id;
+    for (let i = 0; i < 45; i += 1) {
+      await record({
+        statements: [
+          { about: 'user', relation: 'stated', value: `unrelated note number ${i}`, when: JUN },
+        ],
+      });
+    }
+
+    const out = await recall({ query: 'car', limit: MAX_ANSWER });
+    expect(out.statements.map((s) => s.id)).not.toContain(targetId);
+    expect(out.degraded).toContain('semantic');
   });
 
   // The ordinary production sequence, not an edge case: a deployment runs for
