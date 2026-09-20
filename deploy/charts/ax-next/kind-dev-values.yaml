@@ -75,6 +75,30 @@ minio:
   enabled: true
   storage: 1Gi
 
+# ─── Agent workspace surface ─────────────────────────────────────
+# ON for kind, and deliberately still OFF in the chart's own defaults.
+#
+# This is the surface the manual-acceptance walks exist to test, and the
+# only mechanism that reaches it: the chart stamps
+# `AX_AGENT_WORKSPACE_PREVIEW` from this value, the k8s preset reads that
+# env var to decide whether to register `/api/workspace/*` at all, and the
+# SPA gates `/` and `/workspace` on the resulting `/api/features` answer.
+# Leave it unset and every one of those says "no" — quietly. Nothing
+# errors, `/api/features` returns HTTP 200 with
+# `{"agentWorkspacePreview":false}`, the page loads, and the legacy chat
+# shell renders. A walker has to notice the shell is wrong, which is
+# exactly the kind of failure we'd rather not rely on noticing.
+#
+# NOT a suggestion for production. `values.yaml` keeps `agentWorkspace:
+# false` on purpose — with it off the routes are never mounted, so the
+# surface does not exist on the wire (invariant #5, capabilities
+# minimized). This file is the dev cluster only.
+#
+# Set it HERE, not as a `host.env` entry — doing both renders the env var
+# twice and the winner depends on template order. See values.yaml.
+channelWeb:
+  agentWorkspace: true
+
 sandbox:
   # kind doesn't ship gVisor. The plugin will WARN at boot.
   runtimeClassName: ""

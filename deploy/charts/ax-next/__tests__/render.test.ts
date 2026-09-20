@@ -1060,6 +1060,27 @@ describeIfHelm('ax-next chart: channelWeb.agentWorkspace', () => {
     expect(entries).toEqual([{ name: 'AX_AGENT_WORKSPACE_PREVIEW', value: '1' }]);
   });
 
+  // TASK-499. The two cases above pin the DEFAULT (off) and the OPT-IN shape,
+  // and both stayed green for the entire window in which no shipped values
+  // file exercised the opt-in: `kind-dev-values.yaml` never set the flag, so a
+  // stock kind install rendered the legacy chat shell and every walk of the
+  // workspace silently tested the wrong UI. Nothing errored — `/api/features`
+  // answered HTTP 200 with `agentWorkspacePreview: false`, which is a real
+  // answer, not a fallback. The missing assertion is this one: the dev values
+  // the walks actually install with must reach the surface the walks exist to
+  // test.
+  it('kind-dev-values renders the surface ON, exactly once', () => {
+    const entries = hostEnvEntries(
+      helmTemplate(['-f', resolve(chartDir, 'kind-dev-values.yaml')]),
+    ).filter((e) => e.name === 'AX_AGENT_WORKSPACE_PREVIEW');
+    // `toEqual` on the whole list, not `toContain`/`toHaveLength(>=1)`: this
+    // has to catch the double-stamp too. kind-dev-values carries a `host.env`
+    // block, so it is one careless line away from being the exact
+    // upgrade hazard values.yaml warns about — two entries of the same name,
+    // legal YAML, winner decided by template order.
+    expect(entries).toEqual([{ name: 'AX_AGENT_WORKSPACE_PREVIEW', value: '1' }]);
+  });
+
   it('is independent of channelWeb.enabled — the SPA and the surface are separate', () => {
     // The bundle being served and the workspace ROUTES existing are two
     // different grants; a headless deploy could want the API surface without
