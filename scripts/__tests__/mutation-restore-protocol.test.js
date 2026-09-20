@@ -392,20 +392,40 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
     expect(read(control)).not.toContain('SIBLING-FIX');
   });
 
-  it('restore refuses when it cannot actually put the path back', () => {
-    // A path git does not track: `git checkout --` cannot restore it, and without the
-    // post-restore check the block would report success over an untouched mutant.
+  it('restore refuses when the mutant was staged — checkout restores from the INDEX', () => {
+    // `git checkout -- <path>` restores from the index, not from HEAD. Stage the mutant
+    // (an `git add -A` between mutating and restoring is all it takes) and the restore
+    // brings it straight back with exit status 0, looking successful. The post-restore
+    // check is the only thing that notices.
     const dir = makeRepo();
-    writeFileSync(join(dir, 'scratch-guard.js'), MUTANT);
+    writeFileSync(join(dir, TARGET), MUTANT);
+    git(dir, 'add', TARGET);
 
-    const r = runBlock(shell, RESTORE, {
-      cwd: dir,
-      file: 'scratch-guard.js',
-      mark: RESTORE_MARK,
-    });
+    const r = runBlock(shell, RESTORE, { cwd: dir, file: TARGET, mark: RESTORE_MARK });
 
     expect(r.status).not.toBe(0);
     expect(r.out).toMatch(/still dirty after restore/);
+    // And it says so rather than quietly leaving the mutant behind as "restored".
+    expect(read(dir)).toBe(MUTANT);
+  });
+
+  it.each([
+    ['precondition', () => PRECONDITION, PRECONDITION_MARK],
+    ['restore', () => RESTORE, RESTORE_MARK],
+  ])('%s refuses a path git does not track', (_name, block, mark) => {
+    // `git status --porcelain -- <unknown path>` prints NOTHING and errors, which is
+    // indistinguishable from "clean" — so without an explicit tracked check an
+    // UNSUBSTITUTED `F="<the file you are about to mutate>"` sails straight through and the
+    // agent proceeds to mutate on a guarantee nothing actually checked. Found by mutating
+    // this branch's own block; fail-closed in both directions.
+    const dir = makeRepo();
+    writeFileSync(join(dir, 'never-added.js'), MUTANT);
+
+    for (const file of ['never-added.js', '<the file you are about to mutate>']) {
+      const r = runBlock(shell, block(), { cwd: dir, file, mark });
+      expect(r.status).not.toBe(0);
+      expect(r.out).toMatch(/not a tracked file/);
+    }
   });
 });
 

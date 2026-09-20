@@ -183,6 +183,13 @@ Run this **before** you write the mutant, from your worktree root:
 # ax-mutation-restore: precondition — run BEFORE you write the mutant.
 F="<the file you are about to mutate>"
 
+# `git status` on a path git does not know prints NOTHING and errors, which reads as
+# "clean" — so an unsubstituted $F would sail through the check below. Fail closed first.
+if ! git ls-files --error-unmatch -- "$F" >/dev/null 2>&1; then
+  echo "REFUSE: $F is not a tracked file — git cannot restore it. Did you substitute \$F?"
+  exit 1
+fi
+
 if [ -n "$(git status --porcelain -- "$F")" ]; then
   echo "REFUSE: $F carries uncommitted work — every restore from here is lossy."
   echo "  owner of this worktree: commit $F first, then mutate."
@@ -197,6 +204,11 @@ and this **after** the suite has gone red, in the same shell:
 
 ```bash
 # ax-mutation-restore: restore — never from a file copy.
+if ! git ls-files --error-unmatch -- "$F" >/dev/null 2>&1; then
+  echo "REFUSE: $F is not a tracked file — there is nothing for git to restore."
+  exit 1
+fi
+
 git checkout -- "$F"
 
 if [ -n "$(git status --porcelain -- "$F")" ]; then
@@ -205,6 +217,13 @@ if [ -n "$(git status --porcelain -- "$F")" ]; then
 fi
 echo "ok: $F restored, working tree clean."
 ```
+
+Two things the second block is really for, neither of them obvious. **`git checkout -- <path>`
+restores from the INDEX, not from `HEAD`** — so if you ever `git add`ed the mutant it comes
+straight back, exit status 0, looking restored. And **`git status` on a path git does not know
+prints nothing**, which is indistinguishable from "clean" — which is why both blocks refuse an
+untracked path before they trust a clean answer, and why an unsubstituted `$F` stops there
+instead of sailing through.
 
 **Which direction does this fail in? Closed.** Both blocks refuse and change nothing when they
 cannot prove the tree is in the state the restore assumes; neither has a branch that proceeds
