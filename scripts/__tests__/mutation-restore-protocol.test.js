@@ -96,6 +96,16 @@
 //                                refused. Fixed with `-c core.quotePath=false`; pinned by
 //                                a test, because fail-closed still locks an agent out.
 //       * a name with a space  -> printed unquoted, compares equal. Fine.
+//     And two properties of the REFUSAL's own `matched N path(s): …` line, measured on
+//     macOS because it is the thing an agent actually reads:
+//       * `printf '%s\n' "$ONE" | wc -l` counts 1, 3 and 2012 correctly. For an EMPTY
+//         `$ONE` it says 1, which is wrong — but unreachable, because the tracked check
+//         has already established at least one match. Noted, not guarded.
+//       * `cut -c1-120` is CHARACTER-aware here (120 chars of accented names came out as
+//         131 bytes, intact). GNU `cut -c` is byte-based in some builds, so on the CI
+//         runner a non-ASCII path could be split mid-sequence and print a partial
+//         character. Cosmetic only — it truncates a refusal that has already decided —
+//         and bounding the output is worth that, but it is not claimed to be clean.
 //       * `./a.js`             -> `ls-files` prints `a.js` -> REFUSED. Fail-closed, and
 //                                the blocks already say "from your worktree root".
 //       * an ABSOLUTE path    -> `ls-files` answers REPO-RELATIVE, so the scope gate's
