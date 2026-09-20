@@ -51,57 +51,64 @@
 //
 // The doc IS the implementation -- there is no second copy in a script to drift from it.
 //
-// MUTANTS RUN, NOT REASONED ABOUT (re-derived 2026-09-20 on git 2.52.0, macOS, bash 3.2
-// + zsh 5.9; this file's baseline is 21 passed, and 28 when the sibling text-scan guard
-// is collected with it, which is how the counts below were taken -- every mutant still
-// collects 28, so none of them reddened by making the suite smaller. An earlier draft of
-// this note recorded 19/26 and the counts that go with them; it was written before the
-// failed-fetch test existed, and two of its numbers were wrong. Both corrections are
-// called out inline below, because a stale mutant table is worse than none: it reads as
-// evidence):
+// MUTANTS RUN, NOT REASONED ABOUT. Re-derived 2026-09-20 on git 2.52.0, macOS, bash 3.2
+// + zsh 5.9, against the head this file ships with -- baseline 23 here, 30 with the
+// sibling text-scan guard collected, which is how the counts below were taken. Every
+// mutant still collects 30, so none of them reddened by making the suite smaller.
+//
+// Two earlier tables were wrong, both in the flattering direction, and the reason is the
+// same both times: they were measured against an INTERMEDIATE state of this patch and
+// carried forward unedited while tests and code kept landing. A mutant table is a claim
+// about a specific head. Re-run it against the head you ship, or delete it -- a stale
+// table is worse than none, because it reads as evidence.
 //
 //   - revert the whole Q2 block to its pre-TASK-479 text (`REVIEWED_SHA=<reviewed-sha>`
-//     spliced straight into the two ranges) -> 14 red: abbreviation, `-`, empty,
-//     unknown-sha, ambiguous, off-branch and failed-fetch, x both shells. (The earlier
-//     note said 12, counting the six cases that predated the fetch guard.) The full-sha
-//     and the two vacuity cases stay green, which is the point -- the fix changed no
-//     behaviour for a well-formed handoff.
+//     spliced straight into the two ranges) -> 16 red: abbreviation, `-`, empty,
+//     unknown-sha, ambiguous, off-branch, whitespace and failed-fetch, x both shells.
+//     The full-sha and the two vacuity cases stay green, which is the point -- the fix
+//     changed no behaviour for a well-formed handoff.
 //   - delete ONLY the `merge-base --is-ancestor` arm (keep resolution + the 40-char
 //     assert) -> 2 red: the off-branch case x both shells. Nothing else moves, so that
 //     arm is carrying its own property and is not decoration on the resolve. It is also
-//     the only arm with no single-mutant substitute -- see the bare-`rev-parse` entry
-//     below, where it silently covers a case the resolve was credited with.
+//     the only arm with no substitute -- see the bare-`rev-parse` entry below, where it
+//     silently covers a case the resolve was credited with.
 //   - drop the `|| { … exit 1; }` guard from the `git fetch` line -> 2 red: the
-//     failed-fetch case x both shells. Added after review; the two stale directions are
-//     not symmetric, and the one that hides work is the one this gate exists to close.
+//     failed-fetch case x both shells. The two stale directions are not symmetric, and
+//     the one that hides work is the one this gate exists to close.
 //   - change the fail-closed arm to `exit 1` instead of falling back to origin/main
-//     -> 10 red (`-`, empty, unknown, ambiguous, off-branch x 2 shells). Recorded
-//     because it is the mutant a reader expects to PASS: "halting is also closed". It
-//     is not what the gate is specified to do -- Q2's contract is that an unusable
-//     reviewed-sha means the whole branch is unreviewed, which keeps the SERIALIZED
-//     queue moving through an independent pass instead of stalling every card behind a
-//     typo. (The off-branch case joined this list at review: see its test.)
-//   - swap `--verify --quiet "${RAW_REVIEWED}^{commit}"` for a bare
-//     `git rev-parse "${RAW_REVIEWED}"` -- dropping the flags AND the `^{commit}` peel
-//     -> 0 red. The earlier note claimed 2 (the unknown-sha case); re-running it measures
-//     0, and the correction is worth more than the number. The premise is right: bare
-//     `rev-parse` assumes anything sha-shaped IS a sha, so `rev-parse
-//     dead0beefdead0beefdead0beefdead0beefdead` echoes it back at rc 0 (measured, git
-//     2.52.0) and `REVIEWED_SHA` ends up holding garbage. The conclusion was wrong,
-//     because the garbage does not survive the next line: a nonexistent object is not an
-//     ancestor of anything, so the `merge-base --is-ancestor` arm rejects it and fails
-//     closed. The two arms OVERLAP on this case, and the ancestry arm wins. Keep the
-//     peel while dropping the flags and it is still 0 red. So the flags buy DIAGNOSIS,
-//     not the property: `--verify --quiet` yields an empty string and the
-//     "missing/ambiguous/unknown" line, where the bare form gets there via a `merge-base`
-//     error on stderr and the wordier non-ancestor line. They stay for the message.
-//     (Note the shape of the error this replaces: a mutant table quoted, not re-run,
-//     that says a line is load-bearing when it is not.)
-//   - delete the `[ ${#REVIEWED_SHA} -eq 40 ]` assert alone -> 0 red. Recorded because
-//     a passing mutant is data too: with resolution in place that assert is genuinely
-//     belt-and-braces, and it is kept because it is the line that stops a future edit
-//     from reintroducing a raw splice without also deleting a visible assertion. This
-//     file does not claim it as load-bearing.
+//     -> 12 red (`-`, empty, unknown, ambiguous, off-branch, whitespace x 2 shells).
+//     Recorded because it is the mutant a reader expects to PASS: "halting is also
+//     closed". It is not what the gate is specified to do -- Q2's contract is that an
+//     unusable reviewed-sha means the whole branch is unreviewed, which keeps the
+//     SERIALIZED queue moving through an independent pass instead of stalling every card
+//     behind a typo.
+//   - swap `--verify --quiet --end-of-options "${RAW_REVIEWED}^{commit}"` for a bare
+//     `git rev-parse "${RAW_REVIEWED}"` -- dropping every flag AND the `^{commit}` peel
+//     -> 0 red. An earlier table claimed 2 (the unknown-sha case), and the correction is
+//     worth more than the number. Its premise is right: bare `rev-parse` assumes anything
+//     sha-shaped IS a sha, so `rev-parse dead0beefdead0beefdead0beefdead0beefdead` echoes
+//     it back at rc 0 (measured) and `REVIEWED_SHA` ends up holding garbage. Its
+//     conclusion was wrong, because the garbage does not survive the next line: a
+//     nonexistent object is not an ancestor of anything, so the `merge-base
+//     --is-ancestor` arm rejects it and fails closed. The two arms OVERLAP here and the
+//     ancestry arm wins. Keeping the peel while dropping the flags is also 0 red, and so
+//     is dropping `--end-of-options` alone. So the flags buy DIAGNOSIS, not the property:
+//     they yield an empty string and the "missing/ambiguous/unknown" line, where the bare
+//     form gets there via a `merge-base` error on stderr and the wordier non-ancestor
+//     line. They stay for the message, and this file does not claim them as load-bearing.
+//   - delete the `[ ${#REVIEWED_SHA} -eq 40 ]` assert alone -> 0 red. Same status: with
+//     resolution and the ancestry arm in place it is genuinely belt-and-braces, kept
+//     because it is the visible assertion a future edit would have to delete on purpose
+//     in order to reintroduce a raw splice.
+//   - double-quote the doc's `RAW_REVIEWED=<reviewed-sha>` line -> 4 red, and read this
+//     one carefully rather than counting it as a kill. The reddened cases are the two
+//     HAPPY paths (full sha, abbreviation), and they redden because `q2Script` already
+//     wraps the value in single quotes, so the doubled quoting makes every value
+//     unresolvable. It is a substitution artifact, not a behavioural difference: on real
+//     input both spellings fail closed. What it does buy is a canary -- an edit to that
+//     line cannot land quietly -- and that is all it is claimed to buy. The actual
+//     hazard of quoting that line (it looks handled while `$( )` still expands inside it)
+//     is not observable by any test, which is why it is stated in the block's own NOTE.
 //   - revert the handoff field line to `reviewed-sha: <sha> | -` -> 1 red (the field-line
 //     test). Revert the builder-prompt bullet to its pre-TASK-479 wording -> 1 red (the
 //     bullet test). The two contract halves are independently pinned.
