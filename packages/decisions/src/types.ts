@@ -85,14 +85,43 @@ export type ExecutionPath = 'agent-executes' | 'host-replays';
  * call again rather than silently inheriting a yes for an action that did not
  * happen.
  */
-export type DecisionStatus =
-  | 'pending'
-  | 'executed'
-  | 'approved-pending-agent'
-  | 'dismissed'
-  | 'stale'
-  | 'expired'
-  | 'failed';
+export const DECISION_STATUSES = [
+  'pending',
+  'executed',
+  'approved-pending-agent',
+  'dismissed',
+  'stale',
+  'expired',
+  'failed',
+] as const;
+
+/**
+ * THE list, written once. The union below, `DecisionStatusSchema` and
+ * `RECEIPT_STATUSES` are all read off this array rather than restated, because
+ * a status added to one spelling and missed in another fails SILENTLY: a row
+ * that never reaches a reader looks exactly like a row that never happened.
+ * That is not hypothetical — it is TASK-447, where a hand-listed receipt set
+ * dropped two of these seven and the Activity feed lost every decision the
+ * person turned down.
+ */
+export type DecisionStatus = (typeof DECISION_STATUSES)[number];
+
+/**
+ * The statuses a human can still act on. Nothing has been settled, so there is
+ * no outcome to report and nothing to file in Activity — and `stale` is in here
+ * for exactly that reason: the freshness guard RE-OPENS the row, it does not
+ * close it.
+ *
+ * Everything NOT in here is terminal, and a terminal decision owes the person a
+ * line. That is the whole rule, and it is stated as a complement rather than as
+ * a second list so that adding a status cannot quietly omit it from the feed
+ * (TASK-447).
+ *
+ * Exported because the store's conditional updates, the expiry sweep and
+ * `receiptFor` all have to agree on this set, and a second copy is how they
+ * stop agreeing.
+ */
+export const OPEN_STATUSES: readonly DecisionStatus[] = ['pending', 'stale'];
 
 /**
  * The two statuses that carry a standing authorisation the pre-call gate will
@@ -282,7 +311,8 @@ export type ActivityKind =
   | 'approved'
   | 'dismissed'
   | 'working'
-  | 'stopped';
+  | 'stopped'
+  | 'expired';
 
 /**
  * A receipt. `at` is an ISO instant — the prototype's `day`/`time` pair was a
@@ -458,7 +488,48 @@ export interface DecisionsApproveOutput {
  * trace saying so; the alternative is silence, which a reader correctly
  * interprets as "nothing was approved" (design H1).
  */
-export type DecisionReceiptOutcome = 'executed' | 'failed' | 'pending-agent';
+export const DECISION_RECEIPT_OUTCOMES = [
+  /** The call was made. The ONLY one of these that claims the action happened. */
+  'executed',
+  /** The host tried it and the tool threw — or took the flight and never came back. */
+  'failed',
+  /** Approved, and standing at the gate until the agent next runs. Nothing yet. */
+  'pending-agent',
+  /**
+   * The person said no. `receipt` is the row's own `dismissedText` — authored
+   * when they were asked, and written from scratch rather than derived from
+   * `approvedText`, so it states what did NOT happen.
+   *
+   * It is an outcome of its own and not an absence (TASK-447). A decline is
+   * something that happened to the person: they were interrupted, they were
+   * asked, and they answered. Leaving it out of the feed made the record of
+   * their refusals the one part of the history they could not see, while
+   * "Brought to you" went on counting it.
+   */
+  'declined',
+  /**
+   * Nobody answered in time. Also not an absence: the agent stopped, waited,
+   * and gave up, and "it asked and I missed it" is a thing a person needs to be
+   * able to find. `receipt` is a constant — `dismissedText` would claim a
+   * choice that was never made.
+   */
+  'expired',
+] as const;
+
+/**
+ * THE outcome list, written once — same discipline as `DECISION_STATUSES`, and
+ * for a sharper reason.
+ *
+ * The union and `DecisionReceiptSchema`'s `z.enum` used to be two hand-written
+ * copies, and the `as unknown as z.ZodType` cast the schema carries means
+ * TypeScript will not notice when they disagree. That enum is load-bearing:
+ * `decisions:recent-receipts-for-agent` registers it as `returns`, so an
+ * outcome present in the union and in `receiptFor` but missing from the enum
+ * is DROPPED on the bus — silently, with the row simply absent from the feed,
+ * which is TASK-447's failure mode all over again one layer down. Deriving
+ * both from this array makes that disagreement impossible to write.
+ */
+export type DecisionReceiptOutcome = (typeof DECISION_RECEIPT_OUTCOMES)[number];
 
 export interface DecisionReceipt {
   decisionId: string;
@@ -466,8 +537,11 @@ export interface DecisionReceipt {
   outcome: DecisionReceiptOutcome;
   receipt: string;
   /**
-   * ISO instant — the moment the person answered (`resolvedAt`). It orders the
-   * feed, cuts the page, and prints on the row; see `receiptFor`.
+   * ISO instant — the moment the question was SETTLED (`resolvedAt`). Usually
+   * the moment the person answered; on an `expired` receipt it is the sweep's
+   * clock rather than anything they did, which is why that row's sentence
+   * claims no choice on their behalf. It orders the feed, cuts the page, and
+   * prints on the row; see `receiptFor`.
    */
   at: string;
   /**
@@ -595,15 +669,10 @@ export const FreshnessPredicateSchema = z.object({
   label: z.string().nullable(),
 });
 
-export const DecisionStatusSchema = z.enum([
-  'pending',
-  'executed',
-  'approved-pending-agent',
-  'dismissed',
-  'stale',
-  'expired',
-  'failed',
-]);
+// Built FROM `DECISION_STATUSES`, never beside it. `.options` is therefore the
+// union itself, which is what lets `receipts.test.ts` roll-call every status
+// without hand-listing them a third time.
+export const DecisionStatusSchema = z.enum(DECISION_STATUSES);
 
 export const DecisionSchema = z.object({
   id: z.string(),
@@ -653,7 +722,11 @@ export const DecisionsCountOutputSchema = z.object({
 export const DecisionReceiptSchema = z.object({
   decisionId: z.string(),
   agentId: z.string(),
-  outcome: z.enum(['executed', 'failed', 'pending-agent']),
+  // Built FROM the union's own array, never beside it — a `z.enum` that falls
+  // behind the union does not fail loudly, it makes `returns` validation drop
+  // the whole row on the bus, and the feed silently loses exactly the outcomes
+  // this schema forgot.
+  outcome: z.enum(DECISION_RECEIPT_OUTCOMES),
   receipt: z.string(),
   at: z.string(),
   error: z.string().nullable(),

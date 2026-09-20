@@ -18,6 +18,8 @@ import {
   CONVERSATION_ID_QUERY_KEY,
   DECISION_FALLBACK_APPROVED,
   DECISION_FALLBACK_DISMISSED,
+  DECISION_FALLBACK_EXPIRED,
+  DECISION_FALLBACK_FAILED,
   DECISION_FALLBACK_GHOST,
   DECISION_FALLBACK_PRIMARY,
   DECISION_FALLBACK_SECONDARY,
@@ -26,6 +28,7 @@ import {
   DECISION_RECEIPT_MAX_CHARS,
   DECISION_SUMMARY_MAX_CHARS,
   DECISION_RECEIPT_TAG,
+  DECISION_UNRESOLVED_TAG,
   FIRE_NO_SUMMARY,
   FIRE_UNNAMED_SENTENCE,
   fireLabel,
@@ -161,7 +164,7 @@ interface ReceiptRowLike {
   decisionId: string;
   agentId: string;
   ownerUserId: string;
-  outcome: 'executed' | 'failed' | 'pending-agent';
+  outcome: 'executed' | 'failed' | 'pending-agent' | 'declined' | 'expired';
   receipt: string;
   at: string;
   error: string | null;
@@ -178,6 +181,8 @@ const FAILED_RECEIPT =
   'It tried to do this, and it did not work. Nothing was completed.';
 const PENDING_AGENT_RECEIPT =
   'Approved — it will do this the next time it runs.';
+/** And the one for a decision nobody answered in time (TASK-447). */
+const EXPIRED_RECEIPT = 'This one ran out of time, so nothing happened.';
 
 function receipt(o: {
   decisionId: string;
@@ -1888,6 +1893,41 @@ describe('channel-web agent-workspace BFF', () => {
     ).toEqual(['dec_1']);
   });
 
+  it('puts a declined decision in the feed, beside the ones that ran', async () => {
+    // The end of the wire for TASK-447: the route asks @ax/decisions for the
+    // agent's receipts and renders what comes back. Asserted against the ROWS
+    // the hook was given — not against the rail's counter, which measures a
+    // different thing (every decision raised in a window, answered or not) and
+    // would make this pass just as happily with both surfaces wrong.
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerRoutines();
+    registerDecisionReceipts();
+    receipts = [
+      receipt({
+        decisionId: 'dec_yes',
+        at: '2026-08-20T12:00:00.000Z',
+        receipt: 'You said yes, so it may send email as you.',
+      }),
+      receipt({
+        decisionId: 'dec_no',
+        at: '2026-08-20T11:00:00.000Z',
+        outcome: 'declined',
+        receipt: 'You turned this down. It did not send email as you, and nothing ran.',
+      }),
+    ];
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.activity(activityReq(), res);
+    expect(captured.statusCode).toBe(200);
+    const events = (captured.body as ActivityBody).events;
+    // Every receipt the hook handed over reached the page, newest first.
+    expect(events.map((e) => e.decisionId)).toEqual(['dec_yes', 'dec_no']);
+    expect(events.map((e) => e.kind)).toEqual(['approved', 'dismissed']);
+    expect(events[1]!.text).toBe(
+      'You turned this down. It did not send email as you, and nothing ran.',
+    );
+  });
+
   it('shows the fires when no decisions plugin is loaded at all', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
@@ -1951,6 +1991,106 @@ describe('channel-web agent-workspace BFF', () => {
     )!;
     expect(ev.kind).toBe('approved');
     expect(ev.text).toBe(PENDING_AGENT_RECEIPT);
+  });
+
+  it('renders a DECLINED receipt as a dismissed row, in the person\'s own words', () => {
+    // TASK-447. This row did not exist in the feed at all: @ax/decisions
+    // derived no receipt for a dismissed decision, so the one part of the
+    // history that recorded a person's refusals was the part they could not
+    // see — while the rail went on counting it under "Brought to you".
+    const ev = receiptToActivityEvent(
+      receipt({
+        decisionId: 'dec_1',
+        at: '2026-08-20T12:00:00.000Z',
+        outcome: 'declined',
+        receipt: 'You turned this down. It did not send email as you, and nothing ran.',
+      }),
+    )!;
+    expect(ev.kind).toBe('dismissed');
+    expect(ev.text).toBe(
+      'You turned this down. It did not send email as you, and nothing ran.',
+    );
+    // NOT badged "Approval". Nothing was approved, and a badge contradicting
+    // the sentence under it is the surface arguing with itself.
+    expect(ev.tag).toBe(DECISION_UNRESOLVED_TAG);
+    expect(ev.detail).toBeNull();
+  });
+
+  it('renders an EXPIRED receipt without blaming the reader for it', () => {
+    const ev = receiptToActivityEvent(
+      receipt({
+        decisionId: 'dec_1',
+        at: '2026-08-20T12:00:00.000Z',
+        outcome: 'expired',
+        receipt: EXPIRED_RECEIPT,
+      }),
+    )!;
+    expect(ev.kind).toBe('expired');
+    expect(ev.text).toBe(EXPIRED_RECEIPT);
+    expect(ev.tag).toBe(DECISION_UNRESOLVED_TAG);
+  });
+
+  it('never falls back to "You approved this." over an outcome that was not approved', () => {
+    // The whole reason the fallback is keyed on the outcome. `dismissedText`
+    // is built from a capability clause that arrives from an MCP server or an
+    // agent-authored skill, so it CAN fence away — and the old single
+    // fallback would then have printed "You approved this." over a decision
+    // the person turned down. That is the derived-from-the-wrong-outcome lie
+    // @ax/decisions keeps two separate authored strings to prevent.
+    const declined = receiptToActivityEvent(
+      receipt({
+        decisionId: 'dec_1',
+        at: '2026-08-20T12:00:00.000Z',
+        outcome: 'declined',
+        receipt: '\u200B\u200B',
+      }),
+    )!;
+    expect(declined.text).toBe(DECISION_FALLBACK_DISMISSED);
+    expect(declined.text).not.toBe(DECISION_FALLBACK_APPROVED);
+
+    const expired = receiptToActivityEvent(
+      receipt({
+        decisionId: 'dec_2',
+        at: '2026-08-20T12:00:00.000Z',
+        outcome: 'expired',
+        receipt: '\u200B\u200B',
+      }),
+    )!;
+    expect(expired.text).toBe(DECISION_FALLBACK_EXPIRED);
+    expect(expired.text).not.toContain('turned this down');
+  });
+
+  it('drops an outcome this build has never heard of — and SAYS it did', () => {
+    // @ax/decisions is duck-typed across the bus (I2), so a newer copy of it
+    // can send an outcome this one does not know. Rendering it as an approval
+    // — which is what a `!== 'failed'` ternary did — is how a refusal became
+    // a "You approved this." row. A row we cannot describe is no row.
+    //
+    // But a row vanishing in silence is the shape this whole change exists to
+    // remove, so the drop is reported. The route hands its logger in.
+    const row = receipt({ decisionId: 'dec_1', at: '2026-08-20T12:00:00.000Z' });
+    (row as { outcome: string }).outcome = 'deferred';
+    const dropped: string[] = [];
+    expect(receiptToActivityEvent(row, (o) => dropped.push(o))).toBeNull();
+    expect(dropped).toEqual(['deferred']);
+  });
+
+  it('never claims a failed row was approved, even when its line fences away', () => {
+    // Unreachable today — `FAILED_RECEIPT` and the abandoned line are host
+    // constants that cannot fence to nothing — and the fallback still may not
+    // be "You approved this.", which is the wrong fact to lead a failure with.
+    // Nor may it say the call did not go through: one kind of `failed` is the
+    // host dying mid-flight, where it may well have.
+    const ev = receiptToActivityEvent(
+      receipt({
+        decisionId: 'dec_1',
+        at: '2026-08-20T12:00:00.000Z',
+        outcome: 'failed',
+        receipt: '\u200B\u200B',
+      }),
+    )!;
+    expect(ev.text).toBe(DECISION_FALLBACK_FAILED);
+    expect(ev.text).not.toBe(DECISION_FALLBACK_APPROVED);
   });
 
   it('drops a receipt whose instant cannot be read', () => {

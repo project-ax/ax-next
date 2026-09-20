@@ -12,9 +12,16 @@
  * receipt simply stops existing.
  */
 import { describe, expect, it } from 'vitest';
+import { createFakeStore, type FakeStore } from './fake-store.js';
 import { receiptFor, RECEIPT_STATUSES } from '../receipts.js';
-import { FAILED_RECEIPT, PENDING_AGENT_RECEIPT } from '../templates.js';
-import { DecisionStatusSchema, type Decision, type DecisionStatus } from '../types.js';
+import { EXPIRED_RECEIPT, FAILED_RECEIPT, PENDING_AGENT_RECEIPT } from '../templates.js';
+import {
+  DECISION_RECEIPT_OUTCOMES,
+  DecisionReceiptSchema,
+  DecisionStatusSchema,
+  type Decision,
+  type DecisionStatus,
+} from '../types.js';
 
 const T_RESOLVED = '2026-08-20T09:00:00.000Z';
 const T_RAN = '2026-08-20T09:00:10.000Z';
@@ -55,7 +62,7 @@ function base(over: Partial<Decision> = {}): Decision {
   };
 }
 
-describe('receiptFor — the three outcomes that have one', () => {
+describe('receiptFor — the outcomes that have one', () => {
   it('a host replay that ran carries the row\'s own approvedText', () => {
     const decision = base({ replayedAt: T_RAN });
     expect(receiptFor(decision)).toEqual({
@@ -149,8 +156,13 @@ describe('receiptFor — the states that have no receipt', () => {
     ).toBeNull();
   });
 
-  it('pending, stale, dismissed and expired rows have none', () => {
-    for (const status of ['pending', 'stale', 'dismissed', 'expired'] as DecisionStatus[]) {
+  it('pending and stale rows have none — the question is still OPEN', () => {
+    // And that is the whole of the remaining exclusion list. `dismissed` and
+    // `expired` used to be in here with them (TASK-447), which put "nothing
+    // has been decided yet" and "you decided no" in the same bucket and made
+    // the second one invisible. `stale` genuinely belongs: the freshness guard
+    // RE-OPENS the row, so it is back in the queue awaiting an answer.
+    for (const status of ['pending', 'stale'] as DecisionStatus[]) {
       expect(receiptFor(base({ status }))).toBeNull();
     }
   });
@@ -159,6 +171,197 @@ describe('receiptFor — the states that have no receipt', () => {
     // Nothing to file it under. Inventing "now" would put a months-old
     // approval at the top of today's feed.
     expect(receiptFor(base({ replayedAt: T_RAN, resolvedAt: null }))).toBeNull();
+  });
+});
+
+describe('DecisionReceiptSchema — the enum that silently eats rows if it drifts', () => {
+  /**
+   * The roll-call `RECEIPT_STATUSES` gets, one layer down.
+   *
+   * `DecisionReceiptSchema` is registered as `returns` for
+   * `decisions:recent-receipts-for-agent`, and a `z.object` DROPS what its
+   * schema does not declare. So an outcome that exists in the union and in
+   * `receiptFor` but not in this enum does not fail — the row just stops
+   * arriving, which is TASK-447's defect reproduced at the bus instead of in
+   * the store. The `as unknown as z.ZodType<DecisionReceipt>` cast the schema
+   * carries means TypeScript will not notice either.
+   *
+   * Both sides now derive from `DECISION_RECEIPT_OUTCOMES`, so this cannot
+   * drift by construction; the test is the sentinel for somebody
+   * reintroducing a literal list on either side.
+   */
+  it('accepts exactly the outcomes the union declares', () => {
+    const declared = [...DECISION_RECEIPT_OUTCOMES];
+    // Guard against the roll-call emptying out and turning the comparison
+    // below into a green light over nothing.
+    expect(declared.length).toBeGreaterThanOrEqual(5);
+    const schemaOutcome = (
+      DecisionReceiptSchema as unknown as {
+        shape: { outcome: { options: readonly string[] } };
+      }
+    ).shape.outcome;
+    expect([...schemaOutcome.options].sort()).toEqual([...declared].sort());
+  });
+
+  it('lets every outcome receiptFor can produce through the returns schema', () => {
+    // The end of the argument: not just "the lists match" but "a real row of
+    // each shape survives validation". A `z.object` strips silently, so the
+    // parsed value is compared, not merely the absence of a throw.
+    const rows: Decision[] = [
+      base({ status: 'executed', replayedAt: T_RAN }),
+      base({ status: 'approved-pending-agent' }),
+      base({ status: 'failed', replayError: 'upstream 503' }),
+      base({ status: 'dismissed' }),
+      base({ status: 'expired' }),
+    ];
+    const produced = rows.map((d) => receiptFor(d)!);
+    expect(produced.map((r) => r.outcome).sort()).toEqual(
+      [...DECISION_RECEIPT_OUTCOMES].sort(),
+    );
+    for (const r of produced) {
+      expect(DecisionReceiptSchema.parse(r)).toEqual(r);
+    }
+  });
+});
+
+describe('receiptFor — the outcomes where NOTHING RAN (TASK-447)', () => {
+  /**
+   * THE BUG, stated once. Activity is the record of what happened to a person,
+   * and a decision they turned down happened to them: they were interrupted,
+   * they were asked, and they answered. It was filed under "no receipt"
+   * alongside rows nobody had answered yet, so the feed showed every decision
+   * the person said yes to and none of the ones they said no to — while the
+   * rail's "Brought to you" counter, which filters on the window and nothing
+   * else, went on counting them.
+   *
+   * The count was never the wrong number. The feed was missing rows.
+   */
+  it("a dismissed row carries the row's own dismissedText, as `declined`", () => {
+    const decision = base({ status: 'dismissed' });
+    const r = receiptFor(decision);
+    expect(r?.outcome).toBe('declined');
+    expect(r?.receipt).toBe(decision.dismissedText);
+    // Authored independently at hold time — never reachable from the approved
+    // line by string surgery, which is how a design once shipped "sent your
+    // reply" for a reply that was never sent.
+    expect(r?.receipt).not.toContain(decision.approvedText);
+    expect(r?.at).toBe(T_RESOLVED);
+    // Nothing was attempted, so there is no executor detail to carry.
+    expect(r?.error).toBeNull();
+  });
+
+  it('a dismissed row NEVER reads as a success, whatever markers it carries', () => {
+    // Unreachable through the store's transitions — and exactly the kind of
+    // "unreachable" that stops being true when somebody adds a status. The
+    // status decides first; `replayedAt` / `consumedAt` cannot promote a
+    // refusal into "you said yes, so it may…".
+    for (const marker of [{ replayedAt: T_RAN }, { consumedAt: T_RAN }]) {
+      const r = receiptFor(base({ status: 'dismissed', ...marker }));
+      expect(r?.outcome).toBe('declined');
+      expect(r?.receipt).toBe(base().dismissedText);
+    }
+  });
+
+  it('an expired row says it ran out of time — and NOT that you turned it down', () => {
+    const decision = base({ status: 'expired' });
+    const r = receiptFor(decision);
+    expect(r?.outcome).toBe('expired');
+    expect(r?.receipt).toBe(EXPIRED_RECEIPT);
+    // The load-bearing half. The row HAS a per-decision "nothing happened"
+    // sentence, and it is the wrong one: nobody turned this down, the question
+    // simply ran out. Attributing a choice to someone who never made one is
+    // H1 aimed at the person it misrepresents.
+    expect(r?.receipt).not.toBe(decision.dismissedText);
+    expect(r?.receipt).not.toContain('turned this down');
+    expect(r?.error).toBeNull();
+  });
+
+  it('an undone dismissal stops having a receipt, like every other undo', () => {
+    // `restore` accepts `dismissed`, writes `pending` and clears `resolvedAt`.
+    // Adding an outcome must not add a receipt that survives being taken back.
+    expect(receiptFor(base({ status: 'pending', resolvedAt: null }))).toBeNull();
+  });
+});
+
+describe('the count and the feed, recomputed from the SAME rows (TASK-447)', () => {
+  /**
+   * Two surfaces, one row set, and EACH asserted against the rows rather than
+   * against the other. A test that only checked "the number equals the list
+   * length" would pass just as happily with both of them wrong in the same
+   * direction — and these two are not measuring the same thing anyway: the
+   * counter is every decision RAISED in a window, the feed is every decision
+   * SETTLED, newest-first and paged. They can legitimately differ, and a
+   * pending row is exactly where they do. What they must never do is disagree
+   * about a row that has been answered.
+   */
+  const OWNER = 'u1';
+  const AGENT = 'a1';
+  const WINDOW_START = '2026-08-20T00:00:00.000Z';
+
+  function seeded(): FakeStore {
+    const store = createFakeStore();
+    const rows: Array<[string, Partial<Decision>]> = [
+      ['d_approved', { status: 'executed', replayedAt: T_RAN }],
+      ['d_declined', { status: 'dismissed' }],
+      ['d_expired', { status: 'expired' }],
+      ['d_failed', { status: 'failed', replayError: 'the tool threw' }],
+      // Raised and still sitting in the queue: counted, nothing to show yet.
+      ['d_open', { status: 'pending', resolvedAt: null }],
+    ];
+    for (const [id, over] of rows) {
+      store.rows.set(
+        id,
+        base({
+          id,
+          ownerUserId: OWNER,
+          agentId: AGENT,
+          createdAt: '2026-08-20T08:00:00.000Z',
+          callFingerprint: `fp-${id}`,
+          ...over,
+        }),
+      );
+    }
+    return store;
+  }
+
+  it('counts every decision raised in the window, whatever was decided', async () => {
+    const store = seeded();
+    // Recomputed here from the fixture rather than restated as a literal: the
+    // number under test and the number it is checked against must not be two
+    // copies of one guess.
+    const raisedInWindow = [...store.rows.values()].filter(
+      (r) => Date.parse(r.createdAt) >= Date.parse(WINDOW_START),
+    ).length;
+    expect(raisedInWindow).toBe(5);
+    await expect(
+      store.count({ ownerUserId: OWNER, agentId: AGENT, since: WINDOW_START }),
+    ).resolves.toBe(raisedInWindow);
+  });
+
+  it('shows a row for every SETTLED decision — including the declined one', async () => {
+    const store = seeded();
+    const candidates = await store.listReceiptCandidates({
+      ownerUserId: OWNER,
+      agentId: AGENT,
+      limit: 50,
+    });
+    const shown = candidates
+      .map(receiptFor)
+      .filter((r): r is NonNullable<typeof r> => r !== null);
+
+    // Every row the person answered, or that answered itself. Derived from the
+    // fixture's own statuses, so widening `OPEN_STATUSES` cannot quietly make
+    // this pass with fewer rows.
+    const settled = [...store.rows.values()]
+      .filter((r) => r.resolvedAt !== null)
+      .map((r) => r.id);
+    expect(new Set(shown.map((r) => r.decisionId))).toEqual(new Set(settled));
+    // The one the card was filed for. Before TASK-447 this set was three.
+    expect(shown.find((r) => r.decisionId === 'd_declined')?.outcome).toBe('declined');
+    // And the open row is still absent, which is the half a "just make the two
+    // numbers match" fix would have broken: it HAS been brought to you, and
+    // there is nothing yet to report about it.
+    expect(shown.map((r) => r.decisionId)).not.toContain('d_open');
   });
 });
 
@@ -191,17 +394,18 @@ describe('RECEIPT_STATUSES — the coarse filter the store pushes into SQL', () 
    * WHAT THIS CATCHES, precisely — because the obvious reading of it is wrong
    * and a comment that overstates a guard is worse than no guard.
    *
-   * While the `RECEIPT_STATUSES` gate is the FIRST statement in `receiptFor`,
-   * the two sides of this assertion cannot disagree by construction: a status
-   * outside the list is refused at the gate, and a status inside it always
-   * answers for at least the marker-set variant below. Probing it by adding a
-   * status to the list, and to the union, leaves it green — correctly.
+   * Since TASK-447 there is no separate gate to drift: `RECEIPT_STATUSES` is
+   * the complement of `OPEN_STATUSES`, and `receiptFor` is an exhaustive
+   * switch over the union, so a status with no answer is a COMPILE error. The
+   * two sides agree by construction, and this stays as the sentinel for the
+   * construction itself going away — someone reintroducing a literal list
+   * here, or an early `return null` above the switch.
    *
-   * What it does catch is the gate MOVING or GOING: a branch added above it,
-   * or the line deleted. That is not hypothetical — it is the bug this file
-   * found the first time it ran, where a `dismissed` row carrying a spent
-   * authorisation read back as a success while the SQL query excluded it, and
-   * the two halves of the rule silently disagreed.
+   * That is not hypothetical. It is the bug this file found the first time it
+   * ran, where a `dismissed` row carrying a spent authorisation read back as a
+   * success while the SQL query excluded it and the two halves of the rule
+   * silently disagreed — and it is TASK-447, where the literal list dropped
+   * two settled statuses out of the feed altogether.
    *
    * The full status x marker cross-check against real Postgres lives in
    * `store.test.ts`, where both spellings can actually be run against each
