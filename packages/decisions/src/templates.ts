@@ -131,9 +131,27 @@ export function decisionText(input: DecisionTextInput): DecisionText {
   const summary =
     capability !== null ? `Wants to ${capability}` : `Wants to run ${tool}`;
 
+  // WHEN WE HAVE THE CLAUSE, THE CLAUSE IS THE WHOLE ANSWER — the tool's
+  // internal name never appears (TASK-429). `connector_propose` and
+  // `skill_propose` were being printed verbatim onto the one surface where a
+  // person is being asked to approve something, which is the surface that can
+  // least afford an identifier nobody outside this repo has ever seen. A rule
+  // author already wrote what the call does, in our voice, and both renderers
+  // of this row (the Today queue and the in-thread card) draw this string — so
+  // "it stopped before doing this" plus the clause says strictly more to a
+  // reader than the clause plus a token they have to skip over.
+  //
+  // THE FALLBACK STILL NAMES THE TOOL, AND THAT IS NOT THE SAME BUG. It is the
+  // `described: false` case — no rule described this call in our words — and
+  // the house answer there is already settled: the rail prints the bare tool
+  // name beside "We haven't described this one" rather than omitting the row,
+  // because understating reach is worse than overstating it (design H4). Drop
+  // the name here and the sentence says nothing at all about what was stopped.
+  // In practice a hold always carries a clause — `PolicyRule.capability` is
+  // required — so this branch is the defensive one.
   const detail =
     capability !== null
-      ? `It stopped before running ${tool}, because that would ${capability}. ` +
+      ? `It stopped before doing this, because that would ${capability}. ` +
         `Nothing has happened yet — it is waiting for your answer.`
       : `It stopped before running ${tool} and is waiting for your answer. ` +
         `Nothing has happened yet.`;
