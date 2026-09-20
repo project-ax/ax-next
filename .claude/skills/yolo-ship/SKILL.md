@@ -58,7 +58,7 @@ abort the ship, and must **never** pass unreported either. The wrapper prints
 `HEARTBEAT-FAILED(caller)` for a malformed item id (your argument is wrong — no
 retry helps), and `HEARTBEAT-FAILED(transient)` for a rate-limited or blipped
 write. Report the outcome in the **required** `progress:` handoff field — `live`, or
-`FAILED-<setup|caller|transient>`. Nothing machine-reads the progress block, so if you do not
+`FAILED-<setup|caller|refused|transient>`. Nothing machine-reads the progress block, so if you do not
 report it, nobody learns the heartbeat was dead until the run is over. It is not a
 merge blocker.
 *Shell-side* — the helper does the read-modify-write in shell; never read the card

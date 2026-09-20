@@ -622,22 +622,55 @@ append_progress() {
   now=$(date +%H:%M)
   local START='<!-- AUTOSHIP-PROGRESS:START -->'
   local END='<!-- AUTOSHIP-PROGRESS:END -->'
-  local entry="- $now $line"
+  # A line may be MULTI-LINE -- real newlines (use $'a\nb') or a literal backslash-n,
+  # both accepted, same convention set_needs_input has always documented (§8.3). The
+  # old `awk -v` splice expanded the literal form as a side effect of awk's escape
+  # handling and DESTROYED the card on the real one; keeping both means no caller
+  # changes behaviour. Substitution measured byte-identical under bash and zsh.
+  local nl='
+'
+  local entry="- $now ${line//\\n/$nl}"
   local q='query($i:ID!){node(id:$i){... on ProjectV2Item{content{... on DraftIssue{id body}}}}}'
   local json cid body
   json=$(gh api graphql -f query="$q" -f i="$item" 2>/dev/null) || { echo "progress: skip (read)"; return 0; }
   cid=$(printf '%s' "$json" | jq -r '.data.node.content.id // empty')
   body=$(printf '%s' "$json" | jq -r '.data.node.content.body // ""')
   [ -z "$cid" ] && { echo "progress: skip (not a draft-issue card)"; return 0; }
+  # SPLICE IN SHELL -- NEVER THROUGH `awk -v e="$entry"`. An awk `-v` assignment cannot
+  # carry a literal newline: awk aborts with `newline in string`, emits NOTHING, and the
+  # old code wrote that empty result back as the ENTIRE body while printing its normal
+  # success line. It reduced a live card to 1 byte (TASK-470), and it fired only on the
+  # SECOND-or-later multi-line append to a card -- the first takes the `printf` arm
+  # below, because there is no block to splice into yet, which is why ten sibling cards
+  # audited the same day looked fine. (`-v` also expands escapes, so a literal
+  # backslash-n inside an entry was silently rewritten too.) Parameter expansion carries
+  # newlines and backslashes verbatim, spawns no process, and cannot fail; measured
+  # byte-identical under bash and zsh.
   local nb
-  if printf '%s' "$body" | grep -qF "$START"; then
-    nb=$(printf '%s' "$body" | awk -v e="$entry" -v end="$END" '$0==end{print e} {print}')
-  else
-    nb=$(printf '%s\n\n%s\n### Progress\n%s\n%s' "$body" "$START" "$entry" "$END")
-  fi
+  case "$body" in
+    *"$START"*"$END"*) nb="${body%%"$END"*}${entry}"$'\n'"${END}${body#*"$END"}" ;;
+    *"$START"*) echo "progress: REFUSED (block START without END; body untouched)"; return 3 ;;
+    *) nb=$(printf '%s\n\n%s\n### Progress\n%s\n%s' "$body" "$START" "$entry" "$END") ;;
+  esac
+  # NEVER WRITE A BODY WE DID NOT SUCCESSFULLY CONSTRUCT. An append can only GROW the
+  # body and must leave both markers standing. Anything else is the data loss this gate
+  # exists to stop, so refuse LOUDLY (return 3, its own class -- see the wrapper) and
+  # write nothing. The old failure direction was the worst possible pairing: destroy the
+  # body, print success. This one cannot destroy anything and cannot claim success.
+  case "$nb" in
+    *"$START"*"$END"*) ;;
+    *) echo "progress: REFUSED (spliced body lost its markers; body untouched)"; return 3 ;;
+  esac
+  [ "${#nb}" -gt "${#body}" ] || {
+    echo "progress: REFUSED (splice did not grow the body; body untouched)"; return 3; }
+  # The ECHO is flattened to one line even though the ENTRY is not. Multi-line entries
+  # are the whole point of the fix above, but the wrapper classifies transient failures
+  # by matching `^<label>: skip (` line-wise against this output -- so a second line of
+  # caller text reading `foo: skip (x)` would relabel a landed write as a rate-limit
+  # blip. The card body keeps the real newlines; only the confirmation is flattened.
   gh api graphql -f query='mutation($d:ID!,$b:String!){updateProjectV2DraftIssue(input:{draftIssueId:$d,body:$b}){draftIssue{id}}}' \
     -f d="$cid" -f b="$nb" >/dev/null 2>&1 \
-    && echo "progress: $entry" || echo "progress: skip (write)"
+    && echo "progress: $(printf '%s' "$entry" | tr '\n' ' ')" || echo "progress: skip (write)"
 }
 SH
 chmod +x .claude/auto-ship-progress.sh
@@ -667,7 +700,8 @@ this way:
   `source … && helper …` chain, and a nonzero loop body does not stop a
   `while IFS= read -r` loop (measured 3/3 iterations under both shells).
 - **`return 2` is the contract, and it is what the wrapper keys on.** Every
-  best-effort path returns 0; only the gate returns 2. `auto-ship-hb.sh` therefore
+  best-effort path returns 0; only the malformed-id gate returns 2 (and only the
+  never-write-an-unverified-body gate returns 3). `auto-ship-hb.sh` therefore
   classifies the caller class on `rc`, not by grepping for `MALFORMED-ID` — a text
   match would also fire on a *successful* write whose progress line happens to
   contain that string, labelling a landed heartbeat a non-retryable caller bug.
@@ -675,6 +709,13 @@ this way:
 - **Genuine failures stay best-effort.** A rate limit or blip on a well-shaped id is
   still the quiet `skip (read)` / `skip (write)` with `return 0`, and still never
   blocks a ship. Only a caller bug is loud.
+- **A refusal to write is its own class — loud, `return 3`, and non-destructive
+  (TASK-470).** Multi-line entries are supported (that is the fix), but if a helper
+  ever builds a body it cannot verify — markers gone, or an append that did not grow
+  the body — it prints `<label>: REFUSED (… body untouched)` and makes **no** write.
+  The direction of failure is the point: the old code destroyed the body and printed
+  success. The only way for a helper to print its success line now is a body that
+  still carries both markers and is strictly longer than the one it read.
 - **`skip (not a draft-issue card)` is a different thing and stays put.** It needs
   `gh` to exit **0** with an empty content id — a *resolvable* node of the wrong
   type, i.e. a card that is a linked real issue/PR. A malformed id cannot reach it
@@ -708,20 +749,35 @@ append_learnings() {
   [ -n "$ok" ] || { echo "learnings: MALFORMED-ID ${item:-<empty>}"; return 2; }
   local START='<!-- AUTOSHIP-LEARNINGS:START -->'
   local END='<!-- AUTOSHIP-LEARNINGS:END -->'
-  local entry="- $line"
+  # Multi-line accepted, real newlines or a literal backslash-n -- see append_progress.
+  local nl='
+'
+  local entry="- ${line//\\n/$nl}"
   local q='query($i:ID!){node(id:$i){... on ProjectV2Item{content{... on DraftIssue{id body}}}}}'
   local json cid body nb
   json=$(gh api graphql -f query="$q" -f i="$item" 2>/dev/null) || { echo "learnings: skip (read)"; return 0; }
   cid=$(printf '%s' "$json" | jq -r '.data.node.content.id // empty')
   body=$(printf '%s' "$json" | jq -r '.data.node.content.body // ""')
   [ -z "$cid" ] && { echo "learnings: skip (not a draft-issue card)"; return 0; }
-  if printf '%s' "$body" | grep -qF "$START"; then
-    nb=$(printf '%s' "$body" | awk -v e="$entry" -v end="$END" '$0==end{print e} {print}')
-  else
-    nb=$(printf '%s\n\n%s\n### Predecessor learnings\n%s\n%s' "$body" "$START" "$entry" "$END")
-  fi
+  # Shell splice, never `awk -v e="$entry"` -- see the long note in append_progress
+  # (§6). This is the helper that actually destroyed a card: a multi-line entry made
+  # awk abort, emit nothing, and the empty result was written back as the whole body.
+  case "$body" in
+    *"$START"*"$END"*) nb="${body%%"$END"*}${entry}"$'\n'"${END}${body#*"$END"}" ;;
+    *"$START"*) echo "learnings: REFUSED (block START without END; body untouched)"; return 3 ;;
+    *) nb=$(printf '%s\n\n%s\n### Predecessor learnings\n%s\n%s' "$body" "$START" "$entry" "$END") ;;
+  esac
+  # Never write a body we did not successfully construct: an append only ever grows the
+  # body, and both markers must survive. Loud refusal, nothing written, return 3.
+  case "$nb" in
+    *"$START"*"$END"*) ;;
+    *) echo "learnings: REFUSED (spliced body lost its markers; body untouched)"; return 3 ;;
+  esac
+  [ "${#nb}" -gt "${#body}" ] || {
+    echo "learnings: REFUSED (splice did not grow the body; body untouched)"; return 3; }
   gh api graphql -f query='mutation($d:ID!,$b:String!){updateProjectV2DraftIssue(input:{draftIssueId:$d,body:$b}){draftIssue{id}}}' \
-    -f d="$cid" -f b="$nb" >/dev/null 2>&1 && echo "learnings: $entry" || echo "learnings: skip (write)"
+    -f d="$cid" -f b="$nb" >/dev/null 2>&1 \
+    && echo "learnings: $(printf '%s' "$entry" | tr '\n' ' ')" || echo "learnings: skip (write)"
 }
 SH
 ```
@@ -740,13 +796,16 @@ cat > .claude/auto-ship-hb.sh <<'SH'
 # Worktree-safe progress heartbeat. CALL it (do not `source` it):
 #   /abs/path/.claude/auto-ship-hb.sh <PVTI-item-id> "<line>"
 #
-# LOUD BY DESIGN, and the THREE failure classes are NOT the same thing:
+# LOUD BY DESIGN, and the FOUR failure classes are NOT the same thing:
 #   * helper missing / unsourceable  -> a SETUP bug. Exit 3/4/5 (2 = bad usage). The
 #     heartbeat can never work this run; the operator must fix it.
 #     Report progress: FAILED-setup.
 #   * malformed item id              -> a CALLER bug. Exit 6. What you passed is not
 #     a project item node id (`PVTI_`-prefixed, no whitespace), so no retry helps.
 #     Report progress: FAILED-caller.
+#   * REFUSED body construction      -> a helper-side BUG guard. Exit 7. The helper
+#     built a body that failed its own safety check and wrote NOTHING; the card is
+#     intact and retrying will not help. Report progress: FAILED-refused.
 #   * GraphQL read/write failed      -> TRANSIENT (rate limit, blip). Exit 1. Still
 #     best-effort: it must never block the ship.
 #     Report progress: FAILED-transient.
@@ -778,6 +837,14 @@ echo "$out"
 if [ $rc -eq 2 ]; then
   echo "HEARTBEAT-FAILED(caller): $out" >&2; exit 6
 fi
+# rc 3 = the helper REFUSED to write a body it could not verify (TASK-470). It is not
+# transient -- nothing was written, nothing was lost, and a retry changes nothing -- and
+# it is not a caller bug either. Falling through to the transient catch-all would dress
+# a data-loss near-miss as a rate-limit blip, which is the same mislabelling this
+# wrapper's caller class exists to prevent. Its own class, checked before the catch-all.
+if [ $rc -eq 3 ]; then
+  echo "HEARTBEAT-FAILED(refused): $out" >&2; exit 7
+fi
 # The quiet best-effort failures DO return 0, so they can only be found in the text.
 # Anchor it to the leading `<label>: ` so a success line whose caller-supplied text
 # happens to contain "skip (" is not mislabelled transient either.
@@ -793,7 +860,7 @@ for, and a green check in the orchestrator's own checkout proves nothing about i
 
 **Handoff field.** Because nothing machine-reads the progress block (below), a dead
 heartbeat is invisible unless the agent says so. Every dispatched agent therefore
-returns a **required** `progress: live | FAILED-<setup|caller|transient>` field
+returns a **required** `progress: live | FAILED-<setup|caller|refused|transient>` field
 alongside `reviewer:`.
 `FAILED-*` never blocks the merge, but the orchestrator journals it — so a dead
 heartbeat surfaces within one card instead of at the end of a whole run.
@@ -1154,9 +1221,26 @@ set_needs_input() {
             | awk 'NF { n++; printf "**Q%d.** %s\n\n**A%d.**\n\n", n, $0, n }')
   block=$(printf '%s\n### ⚠ Needs input before this can ship\n\nType your answer on the **A** line under each question (leave the `Qn` / `An` labels in place), then drag this card back to **To Do**.\n\n%s%s' \
             "$START" "$items" "$END")
+  # A question may contain newlines, so `items` reaches awk on STDIN and the two `-v`
+  # assignments below carry only the fixed marker constants. Never pass caller text
+  # through `-v`: an awk `-v` assignment cannot hold a literal newline (§6, TASK-470).
+  [ -n "$items" ] || { echo "needs-input: REFUSED (no questions; body untouched)"; return 3; }
   # drop any prior block (markers inclusive), then append the fresh one
-  stripped=$(printf '%s' "$body" | awk -v s="$START" -v e="$END" 'BEGIN{k=0} $0==s{k=1} k==0{print} $0==e{k=0}')
+  stripped=$(printf '%s' "$body" | awk -v s="$START" -v e="$END" 'BEGIN{k=0} $0==s{k=1} k==0{print} $0==e{k=0}') \
+    || { echo "needs-input: REFUSED (strip failed; body untouched)"; return 3; }
+  # If there was no prior block, the strip must be a no-op. Anything else means awk ate
+  # human-authored text, which is exactly the loss this gate exists to stop.
+  case "$body" in
+    *"$START"*) ;;
+    *) [ "$stripped" = "$body" ] || {
+         echo "needs-input: REFUSED (strip altered a body with no block; body untouched)"; return 3; } ;;
+  esac
   nb=$(printf '%s\n\n%s' "$stripped" "$block")
+  # Never write a body we did not successfully construct.
+  case "$nb" in
+    *"$START"*"$END"*) ;;
+    *) echo "needs-input: REFUSED (block not constructed; body untouched)"; return 3 ;;
+  esac
   gh api graphql -f query='mutation($d:ID!,$b:String!){updateProjectV2DraftIssue(input:{draftIssueId:$d,body:$b}){draftIssue{id}}}' \
     -f d="$cid" -f b="$nb" >/dev/null 2>&1 && echo "needs-input: set" || echo "needs-input: skip (write)"
 }
