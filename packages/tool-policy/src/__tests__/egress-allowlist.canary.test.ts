@@ -22,24 +22,35 @@
  * Each mutant was restored with `git checkout --` and the file re-hashed to
  * confirm the restore was byte-identical.
  *
+ * Counts are against THIS suite as it now stands, 14 tests:
+ *
  *   mutant (what was broken)                          result   counts
- *   M1  db revoke returns true over an UNTOUCHED table KILLED   1 red / 11 pass
- *   M4  the read stops naming its owner                KILLED   2 red / 10 pass
- *   M5  listFor stops deduping                         KILLED   1 red / 11 pass
- *   M6  normalizeHost accepts anything non-empty       KILLED   1 red / 11 pass
- *   M7  a non-person id may own an entry               KILLED   1 red / 11 pass
- *   M8  the plugin falls back to the in-memory store   KILLED   1 red / 11 pass
- *   M9  an unreadable payload stops being a deny       KILLED   1 red / 11 pass
- *   M10 remember files under the payload's ownerId     KILLED   1 red / 11 pass
- *   M11 the database is unreachable                    KILLED  12 red /  0 pass
- *   M12 every read returns zero rows                   KILLED   7 red /  5 pass
- *   M13 listFor throws (hook swallows -> { sites: [] })KILLED   1 red / 11 pass
- *   M2  revoke may also delete the GLOBAL row        SURVIVED  167/167 green
- *   M3  revoke stops naming the owner                SURVIVED  167/167 green
+ *   M1  db revoke returns true over an UNTOUCHED table KILLED   3 red / 11 pass
+ *   M2  revoke may also delete the GLOBAL row          KILLED   1 red / 13 pass
+ *   M3  revoke stops naming the owner                  KILLED   1 red / 13 pass
+ *   M4  the read stops naming its owner                KILLED   3 red / 11 pass
+ *   M5  listFor stops deduping                         KILLED   1 red / 13 pass
+ *   M6  normalizeHost accepts anything non-empty       KILLED   1 red / 13 pass
+ *   M7  a non-person id may own an entry               KILLED   1 red / 13 pass
+ *   M8  the plugin falls back to the in-memory store   KILLED   1 red / 13 pass
+ *   M9  an unreadable payload stops being a deny       KILLED   1 red / 13 pass
+ *   M10 remember files under the payload's ownerId     KILLED   1 red / 13 pass
+ *   M11 the database is unreachable                    KILLED  14 red /  0 pass
+ *   M12 every read returns zero rows                   KILLED   9 red /  5 pass
+ *   M13 listFor throws (hook swallows -> { sites: [] })KILLED   4 red / 10 pass
  *
  * M1 is the one #618 could not run; it dies, so the DELETE really does reach
- * Postgres. The total never shrank — every mutant reddened tests rather than
- * removing them, which is the failure mode that makes a mutation run lie.
+ * Postgres. The total never shrank in any round — every mutant reddened tests
+ * rather than removing them, which is the failure mode that makes a mutation
+ * run lie.
+ *
+ * M2, M3 and M13 tell a second story, and it is the reason this card existed
+ * rather than a footnote to it. Against the suite AS #618 LEFT IT, M2 and M3
+ * SURVIVED — all 167 tests in `@ax/tool-policy` stayed green with a `revoke`
+ * that could delete the operator's deployment-wide row, or anybody else's —
+ * and M13 was caught only by the overlap case, leaving `revoke`'s own list
+ * assertion blind to a read that never happened. The three cases those
+ * findings produced are tagged TASK-469 below.
  *
  * WHICH DIRECTION DOES THE CANARY ITSELF FAIL IN? Red, on all three of the
  * shapes worth fearing: an unreachable database (M11), a table that answers
@@ -48,9 +59,7 @@
  * restart case is what holds that door, which is worth knowing before anyone
  * "simplifies" it away.
  *
- * M2 and M3 are the two holes this found, both on `revoke` and both invisible
- * to all 167 tests in this package. They are closed by the two TASK-469 cases
- * below. Re-proving any of this is a local job, not a CI-only one: mutate,
+ * Re-proving any of this is a local job, not a CI-only one: mutate,
  * `npx vitest run src/__tests__/egress-allowlist.canary.test.ts` from this
  * package, `git checkout --` the file. ~6 s a round on a warm image.
  * ---------------------------------------------------------------------------
