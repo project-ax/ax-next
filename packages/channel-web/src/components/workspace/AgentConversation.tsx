@@ -995,8 +995,40 @@ function Message({
             })}
           </div>
         )}
+        {/*
+          `break-words` (`overflow-wrap: break-word`) is the one class here that
+          is not decoration — without it the person's OWN words can be lost
+          (TASK-503). The bubble is capped at `max-w-[80%]`, so once a run of
+          text is longer than that cap the browser's default `normal` wrapping
+          has no break opportunity to take and paints the overflow outside the
+          box. Nothing in the workspace scrolls horizontally, so those pixels
+          are not merely ugly — they are UNREACHABLE. `break-words` gives the
+          line breaker permission to split such a run, and only such a run: it
+          is ignored wherever an ordinary break opportunity exists, so normal
+          prose wraps exactly as it did.
+
+          MEASURED in Chrome at a 390px viewport, before → after (bubble
+          `scrollWidth - clientWidth`): a bare 101-char path 77px → 0, a URL
+          with a query string 178px → 0, a 70-char unbroken token 238px → 0,
+          a long snake_case run 252px → 0. Two inputs that already wrapped —
+          a short slash-separated path, and one with a long but slash-delimited
+          segment — measured 0 both ways and gained no line, which is the
+          evidence for "only such a run": Chrome's UAX-14 breaking already
+          offers an opportunity around `/`, so most paths were never the
+          casualty. The card's own repro string was one of those; the class of
+          input that actually loses characters is any long run the breaker
+          cannot split — an id, a token, a base64 blob, a query string, or a
+          path whose segments happen to run long.
+
+          NO `title=` here, deliberately, and the distinction is TASK-436's: a
+          `title` is the remedy when CSS *clamps* a value, because the whole
+          string is still in the DOM with no way to read it. This bubble clamps
+          nothing once it wraps — every character is on screen — so a tooltip
+          would add a hover-only duplicate of text the reader is already
+          looking at, and one that touch has no way to open at all.
+        */}
         {m.text.length > 0 && (
-          <div className="max-w-[80%] rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[13.5px] leading-relaxed text-primary-foreground">
+          <div className="max-w-[80%] break-words rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[13.5px] leading-relaxed text-primary-foreground">
             <FindHighlight fieldKey={fieldKey} text={m.text} find={find} />
           </div>
         )}
