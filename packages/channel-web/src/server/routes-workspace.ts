@@ -2283,11 +2283,15 @@ const TURN_ERROR_REASON_MAX_CHARS = 120;
  * a reloaded failure cannot word itself differently from the live one it
  * replaces, and a raw reason code can never reach a reader (TASK-296).
  *
- * `reqId` IS ON THE PERSISTED PAYLOAD AND DELIBERATELY STAYS THERE. It is the
- * fold key, i.e. host routing vocabulary, and the row needs no such thing: the
- * event's own `key` is the row id here, which is stable across re-reads and
- * means a re-fired turn-error replaces its earlier row rather than stacking a
- * second one.
+ * `reqId` DOES NOT TRAVEL AS A FIELD, and that is the honest version of the
+ * claim: the event's `key` IS the originating reqId (`@ax/conversations`'
+ * `persistTurnError` folds on it), so it is inside the row id
+ * `turn-error:<key>` and this row is not free of it. What it is free of is a
+ * reqId the client could READ — there is no such field, the id is opaque, and
+ * nothing on the other side parses it. That is the property worth having:
+ * the id is stable across re-reads, so a re-fired turn-error replaces its
+ * earlier row instead of stacking a second one, and the client gets that for
+ * free without ever learning what host routing vocabulary is.
  */
 function errorMessages(
   events: readonly DisplayEventRow[],
@@ -2536,6 +2540,24 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * does "reports resting when the activity read FAILS"). A second condition
    * that no input can falsify reads as a guard and is really dead code — the
    * kind a mutant battery cannot kill, which is how it was found.
+   *
+   * WHAT THIS SIGNAL IS NOT, said here rather than left to be discovered.
+   * `@ax/agent-activity` keys ONE record per agent and deletes it on the FIRST
+   * `chat:end` it sees for that agent — there is no refcount. So an agent
+   * running two turns at once (a routine fire beside a chat, two open threads)
+   * reads `resting` from the moment the first of them ends until the other's
+   * next tool call re-creates the record. The reload test below pins exactly
+   * that, so it is a known shape and not an accident.
+   *
+   * IT IS LEFT THAT WAY ON PURPOSE, and the direction is the argument. This
+   * route's standing rule is that "we don't know" renders as `resting`, and an
+   * under-report obeys it: the reader sees a quiet chip above a conversation
+   * that is visibly streaming, and the next step corrects it. A refcount would
+   * be more precise and fails the OTHER way — one `chat:start` whose end never
+   * arrives pins the agent on "Working" with nothing running, which is the bug
+   * this card exists to end. Getting that right belongs in the activity
+   * plugin, with its own card and its own leak story; it is not something to
+   * bolt onto the reader of the signal.
    */
   function deriveState(activity: AgentRailData['activity']): AgentRunState {
     return activity.activity !== null ? 'working' : 'resting';
