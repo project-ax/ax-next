@@ -625,8 +625,11 @@ append_progress() {
   # A line may be MULTI-LINE -- real newlines (use $'a\nb') or a literal backslash-n,
   # both accepted, same convention set_needs_input has always documented (§8.3). The
   # old `awk -v` splice expanded the literal form as a side effect of awk's escape
-  # handling and DESTROYED the card on the real one; keeping both means no caller
-  # changes behaviour. Substitution measured byte-identical under bash and zsh.
+  # handling and DESTROYED the card on the real one, so the substitution keeps callers
+  # of the literal form working. Two honest caveats: it is PARTIAL back-compat (awk -v
+  # also expanded \t, \\ and octal; those now pass through literally), and like awk it
+  # mangles a genuine backslash-n in caller text -- `C:\next` becomes `C:` + newline +
+  # `ext`. Every other backslash survives. Measured byte-identical under bash and zsh.
   local nl='
 '
   local entry="- $now ${line//\\n/$nl}"
@@ -648,10 +651,27 @@ append_progress() {
   # backslash-n inside an entry was silently rewritten too.) Parameter expansion carries
   # newlines and backslashes verbatim, spawns no process, and cannot fail; measured
   # byte-identical under bash and zsh.
+  # An entry carrying a marker of its own would plant a second END inside the block and
+  # move every later splice. Refuse it -- loudly, writing nothing. (A progress line ABOUT
+  # these markers is not hypothetical: auto-ship ships changes to this very file.)
+  case "$entry" in
+    *"$START"* | *"$END"*)
+      echo "progress: REFUSED (entry contains a block marker; body untouched)"; return 3 ;;
+  esac
   local nb
   case "$body" in
-    *"$START"*"$END"*) nb="${body%%"$END"*}${entry}"$'\n'"${END}${body#*"$END"}" ;;
-    *"$START"*) echo "progress: REFUSED (block START without END; body untouched)"; return 3 ;;
+    *"$START"*)
+      # ANCHOR THE END TO THE START, not to the body. A plain `${body%%"$END"*}` takes
+      # the FIRST END anywhere -- so a human note that merely quotes the end marker
+      # ABOVE the block would capture the splice and the entry would land in the human
+      # prose. (`awk '$0==end'` matched whole lines, so it never did that; this is the
+      # one case where the shell splice needed to be taught what awk knew.) Split the
+      # body at START first, then take the first END *after* it.
+      local pre="${body%%"$START"*}" rest="${body#*"$START"}"
+      case "$rest" in
+        *"$END"*) nb="${pre}${START}${rest%%"$END"*}${entry}"$'\n'"${END}${rest#*"$END"}" ;;
+        *) echo "progress: REFUSED (block START without END; body untouched)"; return 3 ;;
+      esac ;;
     *) nb=$(printf '%s\n\n%s\n### Progress\n%s\n%s' "$body" "$START" "$entry" "$END") ;;
   esac
   # NEVER WRITE A BODY WE DID NOT SUCCESSFULLY CONSTRUCT. An append can only GROW the
@@ -716,8 +736,12 @@ this way:
   ever builds a body it cannot verify — markers gone, or an append that did not grow
   the body — it prints `<label>: REFUSED (… body untouched)` and makes **no** write.
   The direction of failure is the point: the old code destroyed the body and printed
-  success. The only way for a helper to print its success line now is a body that
-  still carries both markers and is strictly longer than the one it read.
+  success. **The claim is bounded, deliberately**: the gate proves a helper cannot
+  silently write an *empty or shorter* body — it is a length-and-markers check, not an
+  integrity proof. What closes the rest of the gap sits upstream of it: the END marker
+  is anchored to the **START** (so a human note that merely quotes the end marker above
+  the block cannot capture the splice — `awk '$0==end'` matched whole lines and never
+  could), and an entry carrying a marker of its own is refused before anything is built.
 - **`skip (not a draft-issue card)` is a different thing and stays put.** It needs
   `gh` to exit **0** with an empty content id — a *resolvable* node of the wrong
   type, i.e. a card that is a linked real issue/PR. A malformed id cannot reach it
@@ -764,9 +788,19 @@ append_learnings() {
   # Shell splice, never `awk -v e="$entry"` -- see the long note in append_progress
   # (§6). This is the helper that actually destroyed a card: a multi-line entry made
   # awk abort, emit nothing, and the empty result was written back as the whole body.
+  case "$entry" in
+    *"$START"* | *"$END"*)
+      echo "learnings: REFUSED (entry contains a block marker; body untouched)"; return 3 ;;
+  esac
   case "$body" in
-    *"$START"*"$END"*) nb="${body%%"$END"*}${entry}"$'\n'"${END}${body#*"$END"}" ;;
-    *"$START"*) echo "learnings: REFUSED (block START without END; body untouched)"; return 3 ;;
+    *"$START"*)
+      # END anchored to START -- see append_progress. A human note quoting the end
+      # marker above the block must not capture the splice.
+      local pre="${body%%"$START"*}" rest="${body#*"$START"}"
+      case "$rest" in
+        *"$END"*) nb="${pre}${START}${rest%%"$END"*}${entry}"$'\n'"${END}${rest#*"$END"}" ;;
+        *) echo "learnings: REFUSED (block START without END; body untouched)"; return 3 ;;
+      esac ;;
     *) nb=$(printf '%s\n\n%s\n### Predecessor learnings\n%s\n%s' "$body" "$START" "$entry" "$END") ;;
   esac
   # Never write a body we did not successfully construct: an append only ever grows the

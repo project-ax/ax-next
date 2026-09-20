@@ -845,6 +845,64 @@ describe('progress helpers carry a multi-line entry without destroying the body'
       );
 
       it.skipIf(!canRun)(
+        `${shell}: ${fn} anchors the END to the START, so a marker quoted ABOVE the block cannot capture the splice`,
+        () => {
+          // Review finding on this PR, and it is this PR's own failure direction: a
+          // plain `${body%%"$END"*}` takes the FIRST end marker ANYWHERE, so a human
+          // description that merely quotes the marker above the block captured the
+          // splice -- the entry landed in the human prose, the length-and-markers gate
+          // passed, and the helper printed success. `awk '$0==end'` matched whole lines
+          // and never did this, so it was a regression the gate could not see. The END
+          // is now taken from after the START.
+          const env = makeEnv();
+          const S = `<!-- AUTOSHIP-${label === 'progress' ? 'PROGRESS' : 'LEARNINGS'}:START -->`;
+          const E = `<!-- AUTOSHIP-${label === 'progress' ? 'PROGRESS' : 'LEARNINGS'}:END -->`;
+          const desc = `the card explains the ${E} marker inline, above the block`;
+          writeFileSync(env.state, `${desc}\n\n${S}\n${heading}\n- 10:00 a\n${E}\n`);
+          const r = runIn(
+            env,
+            shell,
+            `. ${JSON.stringify(env.helper)} && ${fn} ${shq(ITEM)} ${shq('landed')}`,
+          );
+          expect(r.code, r.out).toBe(0);
+          const stored = readFileSync(env.state, 'utf8');
+          expect(stored, 'the human description must come back byte-identical').toContain(
+            `${desc}\n`,
+          );
+          // The entry belongs inside the block, after the existing one -- never in the
+          // prose above the START.
+          expect(stored.indexOf('landed')).toBeGreaterThan(stored.indexOf(S));
+          expect(stored.indexOf('landed')).toBeGreaterThan(stored.indexOf('- 10:00 a'));
+        },
+      );
+
+      it.skipIf(!canRun)(
+        `${shell}: ${fn} REFUSES an entry that carries a block marker`,
+        () => {
+          // Such an entry would plant a second END inside the block and move every
+          // later splice. auto-ship ships changes to this very file, so a progress line
+          // about these markers is not hypothetical.
+          const env = makeEnv();
+          const S = `<!-- AUTOSHIP-${label === 'progress' ? 'PROGRESS' : 'LEARNINGS'}:START -->`;
+          const E = `<!-- AUTOSHIP-${label === 'progress' ? 'PROGRESS' : 'LEARNINGS'}:END -->`;
+          const before = `${HUMAN}\n\n${S}\n${heading}\n- 10:00 a\n${E}\n`;
+          writeFileSync(env.state, before);
+          for (const marker of [S, E]) {
+            writeFileSync(env.state, before);
+            const r = runIn(
+              env,
+              shell,
+              `. ${JSON.stringify(env.helper)} && ${fn} ${shq(ITEM)} ${shq(`sneaky ${marker} tail`)}`,
+            );
+            expect(r.out).toContain(`${label}: REFUSED`);
+            expect(r.out).not.toContain('skip (');
+            expect(r.code).not.toBe(0);
+            expect(readFileSync(env.state, 'utf8'), 'nothing may be written').toBe(before);
+          }
+        },
+      );
+
+      it.skipIf(!canRun)(
         `${shell}: ${fn} still accepts the literal backslash-n separator`,
         () => {
           // Back-compat, not a new feature: the old `awk -v` splice expanded escapes,
