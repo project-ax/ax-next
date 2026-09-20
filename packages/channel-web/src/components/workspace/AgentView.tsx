@@ -23,6 +23,7 @@ import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useIsCompact } from '@/lib/use-compact';
+import { relativeDay } from '@/lib/workspace-time';
 import { HTTP_SESSION_ENDED, logRequestFailure } from '@/lib/http';
 import {
   readAlertVariant,
@@ -830,12 +831,12 @@ export function AgentView({
     if (hasLiveContent) {
       liveThread.push(
         livePanel === null
-          ? { kind: 'agent', id: 'pending-agent', text: streamed, time: '' }
+          ? { kind: 'agent', id: 'pending-agent', text: streamed, at: '' }
           : {
               kind: 'steps',
               id: 'pending-agent',
               text: streamed,
-              time: '',
+              at: '',
               stepsLabel: livePanel.label,
               steps: livePanel.steps,
             },
@@ -893,6 +894,26 @@ export function AgentView({
     placeholder, not a thread, so there is no conversation on screen for "this
     conversation" to be about yet. The answer arrives with the excerpt.
   */
+  /*
+    The archived-conversation banner's one sentence, bound ONCE because it is
+    drawn twice — as the visible line and, since TASK-436, as the `title`
+    tooltip that recovers it when CSS clamps it. A tooltip that is not the line
+    it is recovering is worse than no tooltip.
+
+    Until TASK-435 the two slots trivially agreed: both read `past.meta`, a
+    string the server had already computed. They are now a CALL, and
+    `relativeDay(iso, now = new Date())` reads the wall clock per call — so two
+    calls either side of a local midnight (or a 7/14/60/365-day threshold) land
+    in different buckets, and the tooltip claims "today" over a line reading
+    "yesterday". Sub-millisecond window, cosmetic damage, and therefore
+    something nobody would ever find. One binding makes it unrepresentable
+    rather than unlikely.
+  */
+  const pastLine =
+    past === null
+      ? null
+      : `${past.title} · ${relativeDay(past.lastActivityAt)} · read-only`;
+
   const excerptOpening = past !== null && pastDetail === null && pastError === null;
   const shownRead = (past !== null ? pastDetail : detail)?.decisions.status ?? 'ok';
   const approvalRead: ApprovalRead = excerptOpening
@@ -1083,11 +1104,12 @@ export function AgentView({
               {past && (
                 <div className="flex items-center gap-2.5 border-b border-border bg-muted px-6 py-2.5">
                   <Archive size={13} className="text-muted-foreground" />
+                  {/* One binding, two slots — see `pastLine` above for why. */}
                   <span
                     className="min-w-0 flex-1 truncate text-[12.5px] text-muted-foreground"
-                    title={`${past.title} · ${past.meta} · read-only`}
+                    title={pastLine ?? undefined}
                   >
-                    {past.title} · {past.meta} · read-only
+                    {pastLine}
                   </span>
                   <Button
                     variant="ghost"

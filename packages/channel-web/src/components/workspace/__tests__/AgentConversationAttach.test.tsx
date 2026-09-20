@@ -327,7 +327,7 @@ describe('find and attach on the same thread', () => {
       kind: 'agent',
       id: 'a1',
       text: 'the roof quote is attached',
-      time: '4:12 PM',
+      at: '2026-09-17T16:12:00.000Z',
     },
   ];
 

@@ -2042,40 +2042,6 @@ function isBenignConversationRead(err: unknown): boolean {
 }
 
 /**
- * A short, plain relative date — "today", "3 days ago". Deliberately coarse:
- * the past-conversation rows are for orientation, not for forensics, and an
- * exact timestamp there reads like it means something it doesn't.
- */
-export function relativeDay(iso: string, now: Date = new Date()): string {
-  const then = new Date(iso);
-  if (Number.isNaN(then.getTime())) return 'a while ago';
-  const startOfDay = (d: Date): number =>
-    new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const days = Math.round((startOfDay(now) - startOfDay(then)) / 86_400_000);
-  if (days <= 0) return 'today';
-  if (days === 1) return 'yesterday';
-  if (days < 7) return `${days} days ago`;
-  if (days < 14) return 'last week';
-  if (days < 60) return `${Math.floor(days / 7)} weeks ago`;
-  if (days < 365) return `${Math.floor(days / 30)} months ago`;
-  return 'over a year ago';
-}
-
-/**
- * A short wall-clock time for a message bubble. Formatted by hand rather than
- * via `toLocaleTimeString` so the output is the same shape everywhere the host
- * runs (the ICU data available to Node varies by build).
- */
-export function shortTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  const h24 = d.getHours();
-  const suffix = h24 < 12 ? 'AM' : 'PM';
-  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
-  return `${h12}:${String(d.getMinutes()).padStart(2, '0')} ${suffix}`;
-}
-
-/**
  * The renderable text of a turn: its `text` blocks and nothing else.
  *
  * THIS FILTER IS LOAD-BEARING, not a formatting choice. The workspace calls
@@ -2237,15 +2203,14 @@ function buildThread(turns: TurnRow[]): ThreadMessage[] {
     }
     const panel = shapeSteps(turnToolCalls(blocks, outcomes));
     if (text.length === 0 && panel === null) continue;
-    const time = shortTime(turn.createdAt);
     out.push(
       panel === null
-        ? { kind: 'agent', id: turn.turnId, text, time }
+        ? { kind: 'agent', id: turn.turnId, text, at: turn.createdAt }
         : {
             kind: 'steps',
             id: turn.turnId,
             text,
-            time,
+            at: turn.createdAt,
             stepsLabel: panel.label,
             steps: panel.steps,
           },
@@ -4204,7 +4169,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         title:
           fenceLine(c.title, CONVERSATION_TITLE_MAX_CHARS) ??
           'Untitled conversation',
-        meta: relativeDay(c.lastActivityAt ?? c.createdAt),
+        lastActivityAt: c.lastActivityAt ?? c.createdAt,
       }));
 
       /*

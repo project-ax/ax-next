@@ -36,6 +36,15 @@ import {
 } from '@/lib/workspace-grant-store';
 import type { PermissionRequest } from '@/server/types';
 
+/**
+ * A `PastConversation.lastActivityAt` fixture (TASK-435). The row's own text
+ * ("March") is what these tests assert on — none of them assert the
+ * `relativeDay(...)` string itself — so any instant safely in the past works;
+ * this one is computed off `Date.now()` rather than a fixed date so it does
+ * not silently age out of "10 days ago" territory as the calendar moves on.
+ */
+const TEN_DAYS_AGO = new Date(Date.now() - 10 * 86_400_000).toISOString();
+
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>(
     '@/lib/workspace-api',
@@ -100,7 +109,7 @@ function withPast() {
           conversationId: 'c-old',
           thread: [{ kind: 'user', id: 'o1', text: 'the March question' }],
         })
-      : detail({ past: [{ id: 'c-old', title: 'March', meta: 'last week' }] }),
+      : detail({ past: [{ id: 'c-old', title: 'March', lastActivityAt: TEN_DAYS_AGO }] }),
   );
 }
 
@@ -171,12 +180,37 @@ describe('past conversations', () => {
       half: the whole line is in `title`, punctuation and all.
     */
     expect(banner.getAttribute('title')).toBe('March · last week · read-only');
+    /*
+      TASK-435 — and the tooltip has to be the line it is recovering, not
+      another rendering of the same idea. The relative day is now computed in
+      the browser rather than read off a server-supplied field, so the two
+      slots are an expression rather than a field access and can be edited
+      apart.
+
+      BE PRECISE ABOUT WHAT THIS CATCHES. It catches the two slots drifting
+      into different sentences — someone changing the visible line and not the
+      tooltip, or vice versa — and it is the ONLY assertion here that catches
+      the visible-line direction, since the literal above pins `title` alone.
+
+      It does NOT catch the reason the production code binds the string once:
+      `relativeDay`'s `now` defaults to `new Date()`, so two calls are two clock
+      reads that can straddle a local midnight and land in different buckets.
+      Two REAL calls in a test return the same string, so the unfixed two-call
+      code passes this. Stated carefully, because the obvious next sentence is
+      wrong: the midnight window itself cannot be provoked (you cannot advance
+      the wall clock between two synchronous reads in one render), but its
+      observable consequence can — mocking `relativeDay` to answer differently
+      on consecutive calls makes the unfixed code fail this very assertion.
+      That is a test of the binding rather than of the clock, which is why the
+      production fix is to make the divergence unrepresentable instead.
+    */
+    expect(banner.getAttribute('title')).toBe(banner.textContent);
   });
 
   it('says so when the excerpt will not open, instead of showing a blank one', async () => {
     agentMock.mockImplementation(async (_id: string, conversationId?: string) => {
       if (conversationId === 'c-old') throw new Error('workspace /agents → 404');
-      return detail({ past: [{ id: 'c-old', title: 'March', meta: 'last week' }] });
+      return detail({ past: [{ id: 'c-old', title: 'March', lastActivityAt: TEN_DAYS_AGO }] });
     });
 
     renderView();
@@ -283,7 +317,7 @@ describe('AgentView — an excerpt that will not open', () => {
   function withFailingExcerpt(err: unknown) {
     agentMock.mockImplementation(async (_id: string, conversationId?: string) => {
       if (conversationId === 'c-old') throw err;
-      return detail({ past: [{ id: 'c-old', title: 'March', meta: 'last week' }] });
+      return detail({ past: [{ id: 'c-old', title: 'March', lastActivityAt: TEN_DAYS_AGO }] });
     });
   }
 
@@ -338,7 +372,7 @@ describe('AgentView — an excerpt that will not open', () => {
           thread: [{ kind: 'user', id: 'o1', text: 'the March question' }],
         });
       }
-      return detail({ past: [{ id: 'c-old', title: 'March', meta: 'last week' }] });
+      return detail({ past: [{ id: 'c-old', title: 'March', lastActivityAt: TEN_DAYS_AGO }] });
     });
 
     await openMarch();
@@ -589,7 +623,7 @@ describe('AgentView — the approval read', () => {
             thread: [{ kind: 'user', id: 'o1', text: 'the March question' }],
             decisions: { status: 'failed' },
           })
-        : detail({ past: [{ id: 'c-old', title: 'March', meta: 'last week' }] }),
+        : detail({ past: [{ id: 'c-old', title: 'March', lastActivityAt: TEN_DAYS_AGO }] }),
     );
 
     renderView();
@@ -609,7 +643,7 @@ describe('AgentView — the approval read', () => {
             thread: [{ kind: 'user', id: 'o1', text: 'the March question' }],
             decisions: { status: excerptFails ? 'failed' : 'ok' },
           })
-        : detail({ past: [{ id: 'c-old', title: 'March', meta: 'last week' }] }),
+        : detail({ past: [{ id: 'c-old', title: 'March', lastActivityAt: TEN_DAYS_AGO }] }),
     );
 
     renderView();

@@ -44,6 +44,7 @@ import { ATTACHMENT_ACCEPT } from '@/lib/attachment-upload';
 import { signInWithGoogle } from '@/lib/auth';
 import { readAlertVariant } from '@/lib/read-register';
 import { getDraft, setDraft as saveDraft } from '@/lib/workspace-draft-store';
+import { localTime } from '@/lib/workspace-time';
 import {
   activeMatch,
   buildFindIndex,
@@ -1066,6 +1067,14 @@ function Message({
     );
   }
 
+  /*
+    Read ONCE. The guard below and the child it renders have to be the same
+    string, and two calls are two chances for them to disagree — not today,
+    when `localTime` is pure, but the moment someone reaches for `Date.now()`
+    inside it. Also just cheaper: one `Date`, not two, per bubble per render.
+  */
+  const clock = localTime(m.at);
+
   return (
     <div className="flex gap-3">
       <AgentTile agent={agent} />
@@ -1097,7 +1106,20 @@ function Message({
           </div>
         )}
         {m.kind === 'steps' && <Steps label={m.stepsLabel} steps={m.steps} />}
-        <div className="mt-1.5 text-[11.5px] text-muted-foreground">{m.time}</div>
+        {/*
+          `at` is `''` on the live streaming frame (no committed instant until
+          the turn ends) and can be an unparseable instant in principle — either
+          way `localTime` returns `null`, and the row is dropped entirely
+          rather than drawn as an empty div. An empty clock row used to render
+          (an empty string is still a child), which left a sliver of dead
+          whitespace under the live bubble; no row at all is the honest render
+          of "we don't have a time to show yet" (TASK-435).
+        */}
+        {clock !== null && (
+          <div className="mt-1.5 text-[11.5px] text-muted-foreground">
+            {clock}
+          </div>
+        )}
       </div>
     </div>
   );

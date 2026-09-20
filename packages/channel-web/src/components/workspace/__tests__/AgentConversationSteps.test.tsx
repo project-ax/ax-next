@@ -49,7 +49,7 @@ const steps = (over: Partial<Extract<ThreadMessage, { kind: 'steps' }>> = {}) =>
     kind: 'steps',
     id: 't1',
     text: 'Done.',
-    time: '4:12 PM',
+    at: '2026-09-17T16:12:00.000Z',
     stepsLabel: '2 steps',
     steps: [
       { text: 'Bash', status: 'done' },
