@@ -252,11 +252,24 @@ export function denseChannel(
  * measurement rather than to an argument. See
  * `.claude/memory/decisions/2026-09-19-TASK-434.md`.
  *
- * The ordering is this package's existing recency order — `valid_start DESC,
- * id DESC`, the filtered listing's — rather than the reference's
- * `transaction_time DESC`: one recency order per store beats two that
- * disagree, and the `id` tiebreak is what makes a `LIMIT` over tied rows a
- * deterministic SET and not just a deterministic order.
+ * The ordering key is `transaction_time DESC, valid_start DESC` — the
+ * reference's, not this package's filtered-listing order. That is deliberate,
+ * and the two are answering different questions: the listing answers "what is
+ * true, newest first" (`valid_start DESC, id DESC`, pinned by a contract case),
+ * while this channel answers "what did I learn most recently". Because the
+ * channel ADMITS its rows rather than merely ranking ones some other channel
+ * found, this ORDER BY decides their RRF ranks and so moves the fused answer.
+ *
+ * The keys agree on ~93% of rows — `when` equals the extraction date on that
+ * share (design §4.1) — so the divergence is bounded. It is still worth being
+ * faithful about, for the same reason the admitting behaviour above is: rung 4
+ * has to replicate what rung 1 measured, and an unmeasured retrieval change
+ * made by fiat at rung 2 would quietly make that number answer a different
+ * question.
+ *
+ * `, id DESC` is appended beyond the reference: it is what makes a `LIMIT` over
+ * rows tied on both clocks a deterministic SET and not merely a deterministic
+ * order — the same argument that already put the tiebreak on the listing.
  */
 export function temporalChannel(driver: BetterSqliteDb, scope: ChannelScope): string[] {
   const filter = scopeFilter(scope, '');
@@ -264,7 +277,7 @@ export function temporalChannel(driver: BetterSqliteDb, scope: ChannelScope): st
     .prepare(
       `SELECT id FROM ${TABLE}
         WHERE ${filter.sql}
-        ORDER BY valid_start DESC, id DESC
+        ORDER BY transaction_time DESC, valid_start DESC, id DESC
         LIMIT ?`,
     )
     .all(...filter.params, scope.limit) as Array<{ id: string }>;

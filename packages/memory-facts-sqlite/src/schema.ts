@@ -197,6 +197,23 @@ export function openDatabase(databasePath: string): OpenDatabaseResult {
   // to a full scan of the tenant on the hot read path.
   driver.exec(`CREATE INDEX IF NOT EXISTS idx_facts_pending ON ${TABLE}(agent_key, slot);`);
 
+  // `(agent_key, valid_end, transaction_time DESC, valid_start DESC)` — the
+  // temporal channel (TASK-434). That channel ADMITS candidates rather than
+  // ranking ones another channel found, so it runs on every `query` recall and
+  // always sorts the tenant's rows by a key no other index carries: none of the
+  // three above mentions `transaction_time`, so without this the hot read path
+  // is a scan of the tenant plus a sort. The DESC markers match the query's own
+  // direction, which is what lets SQLite walk the index instead of sorting.
+  // `valid_end` sits second because the channel's common case is the
+  // `activeOnly` equality on the sentinel. `id DESC` is in the key rather than
+  // left to a sort: measured with EXPLAIN QUERY PLAN, omitting it still SEARCHes
+  // this index but adds `USE TEMP B-TREE FOR LAST TERM OF ORDER BY`, because a
+  // TEXT primary key is not the rowid the index carries implicitly.
+  driver.exec(
+    `CREATE INDEX IF NOT EXISTS idx_facts_temporal
+       ON ${TABLE}(agent_key, valid_end, transaction_time DESC, valid_start DESC, id DESC);`,
+  );
+
   return { driver, vectorExtensionLoaded };
 }
 

@@ -45,6 +45,7 @@ import {
   denseChannel,
   factStatementText,
   sparseChannel,
+  temporalChannel,
   MAX_MATCH_TOKENS,
 } from '../recall.js';
 import { agentScopeKey } from '../agent-scope-key.js';
@@ -158,6 +159,69 @@ describe('@ax/memory-facts-sqlite — sparse channel', () => {
     });
     expect(ids).toHaveLength(2);
     expect(ids[0]).toBe(out.records[0]!.id);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The temporal channel's ordering key
+// ---------------------------------------------------------------------------
+describe('@ax/memory-facts-sqlite — temporal channel', () => {
+  let dir: string;
+  const toClose: BetterSqliteDb[] = [];
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'memory-facts-sqlite-temporal-'));
+  });
+
+  afterEach(async () => {
+    for (const db of toClose.splice(0)) if (db.open) db.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  // `dem-memory`'s no-anchor temporal branch orders by `transaction_time DESC,
+  // valid_start DESC` — "what did I learn most recently" — while this package's
+  // FILTERED LISTING orders by `valid_start DESC, id DESC` ("what is true, newest
+  // first"). Those are two different questions and the channel wants the first
+  // one, so the divergence is not cosmetic: the channel ADMITS its rows as
+  // candidates (see the decisions shard), which means this ORDER BY decides their
+  // RRF ranks and therefore the fused answer.
+  //
+  // The two keys agree on ~93% of rows, because `when` equals the extraction date
+  // on that share (design §4.1). This test is built from the other ~7%: the row
+  // recorded LATER carries the EARLIER `when`, so the two orderings are exact
+  // opposites and no assertion can pass under both.
+  it('orders by transaction_time, not valid_start — the most recently LEARNED row first', async () => {
+    const databasePath = join(dir, 'facts.db');
+    const bus = new HookBus();
+    const plugin = createMemoryFactsSqlitePlugin({ databasePath });
+    await plugin.init({ bus, config: {} });
+    const ctx = makeAgentContext({
+      sessionId: 's',
+      agentId: 'a',
+      userId: 'u',
+      workspace: { rootPath: '/tmp' },
+    });
+    const out = await bus.call<RecordInput, RecordOutput>('memory:facts:record', ctx, {
+      statements: [ACME, KHALID],
+    });
+    await plugin.shutdown?.();
+    const acme = out.records[0]!.id;
+    const khalid = out.records[1]!.id;
+
+    const db = openDatabase(databasePath).driver;
+    toClose.push(db);
+    // Pin both clocks rather than racing the wall clock: one `record` call can
+    // stamp every row in the same millisecond, which would make this tie and
+    // pass on whichever order the planner happened to emit.
+    db.prepare(`UPDATE ${TABLE} SET transaction_time = ? WHERE id = ?`).run(SEP, khalid);
+    db.prepare(`UPDATE ${TABLE} SET transaction_time = ? WHERE id = ?`).run(JAN, acme);
+
+    const ids = temporalChannel(db, { agentKey: AGENT_A, activeOnly: true, limit: 40 });
+
+    // Khalid has the OLDER `when` (JAN vs SEP) and the NEWER transaction_time.
+    // Under `valid_start DESC` Acme leads; under `transaction_time DESC` Khalid
+    // does. Asserting the full array pins the whole order, not just the head.
+    expect(ids).toEqual([khalid, acme]);
   });
 });
 
