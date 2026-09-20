@@ -102,6 +102,29 @@ describe('a replayed turn failure', () => {
     expect(alert.textContent ?? '').not.toContain('chat-run-dispatch-failed');
   });
 
+  it('falls back for a code that names something on the PROTOTYPE, not the table', () => {
+    /*
+      The label table is an object literal, so `ERROR_LABELS['toString']` is
+      not undefined — it is an inherited function, and a `?? DEFAULT` fallback
+      never fires for it. Unguarded, the template that builds the sentence
+      stringifies that function and shows a reader
+      `function toString() { [native code] }` where their failure should be.
+
+      NOT REACHABLE FROM OUTSIDE TODAY: reason codes are host vocabulary, and
+      no producer emits these. It is pinned because TASK-498 made one function
+      the single mapping for both the live frame and this replayed row, so the
+      hole — previously hand-copied at every reader — is now fixable, and
+      therefore testable, exactly once.
+    */
+    for (const inherited of ['toString', 'constructor', 'valueOf', '__proto__']) {
+      const { unmount } = renderThread([errorRow({ reason: inherited })]);
+      const alert = screen.getByRole('alert');
+      expect(alert).toHaveTextContent(DEFAULT_TURN_ERROR);
+      expect(alert.textContent ?? '').not.toContain('native code');
+      unmount();
+    }
+  });
+
   it('renders the optional detail line under the label', () => {
     // TASK-160 — the only actionable specifics a reader gets ("this dev
     // service failed, at this path"). Dropping it costs them the line that

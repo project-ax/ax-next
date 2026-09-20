@@ -100,7 +100,23 @@ export const MAX_DETAIL_CHARS = 400;
  * as a plain text node. It is never markup and never a reason code.
  */
 export function turnErrorText(reason: string, detail?: string | null): string {
-  const label = ERROR_LABELS[reason] ?? DEFAULT_TURN_ERROR;
+  /*
+    A PLAIN OBJECT LOOKUP ANSWERS FOR THE PROTOTYPE TOO, which is a real way
+    for this table to put something absurd in front of a person. `ERROR_LABELS`
+    is an object literal, so `ERROR_LABELS['toString']` — or `'constructor'`,
+    or `'valueOf'` — is NOT undefined: it is an inherited function, the `??`
+    never fires, and the template below stringifies it into the reader's alert
+    as `function Object() { [native code] }`.
+    No producer emits such a reason today (the codes are host vocabulary), so
+    this is a latent defect rather than a live one. It is fixed HERE, in the
+    one function both the live SSE frame and the replayed row now read, because
+    that is the whole reason this function exists — before TASK-498 the same
+    lookup was hand-copied at each reader and each copy had its own version of
+    this hole. `typeof` answers it completely: a non-string is not a label,
+    whatever it is and wherever it came from.
+  */
+  const found: unknown = ERROR_LABELS[reason];
+  const label = typeof found === 'string' ? found : DEFAULT_TURN_ERROR;
   const line =
     typeof detail === 'string' ? detail.slice(0, MAX_DETAIL_CHARS).trim() : '';
   return line.length > 0 ? `${label}\n${line}` : label;
