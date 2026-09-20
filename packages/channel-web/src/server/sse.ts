@@ -242,8 +242,25 @@ export function createSseHandler(deps: SseHandlerDeps) {
     //
     // So: read here, where awaiting is free, and filter down there, where it
     // is not. `filterDeclinedGrants` is synchronous and cannot throw.
+    //
+    // AND ONLY WHEN THERE IS SOMETHING TO FILTER. Most streams open on a
+    // conversation with no pending card at all, and a scan of this person's
+    // markers to filter an empty list is a per-turn round trip to the store
+    // bought for nothing (it would also be wasted outright on the turn-error
+    // replay below, which returns before the filter is ever reached).
+    // `withoutDeclinedGrants` short-circuits on an empty list for exactly this
+    // reason; splitting the read from the filter left that behind, so the
+    // guard is restored here explicitly.
+    //
+    // Counting from a snapshot taken BEFORE the read is safe in both
+    // directions, and the two directions have different reasons. Zero pending
+    // cards: nothing is awaited at all, so no card can arrive before the
+    // replay reads the buffer again a few lines down. One or more: the read
+    // happens, and the replay still re-reads the buffer, so a card that lands
+    // DURING the read is filtered against the complete map rather than missed.
+    const pendingAtOpen = deps.buffer.tailPermissionCardEntries(conversationId);
     let grantDeclines: ReadonlyMap<string, number> = new Map();
-    if (deps.bus.hasService('storage:list-prefix')) {
+    if (pendingAtOpen.length > 0 && deps.bus.hasService('storage:list-prefix')) {
       try {
         grantDeclines = await readGrantDeclines(deps.bus, deps.initCtx, userId);
       } catch (err) {

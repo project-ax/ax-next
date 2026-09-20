@@ -277,10 +277,14 @@ export function filterDeclinedGrants<
 ): readonly T[] {
   if (rows.length === 0 || declines.size === 0) return rows;
   return rows.filter((row) => {
-    const subjectId = grantSubjectId(row.card);
-    if (subjectId === null) return true;
     let key: string;
     try {
+      // `grantSubjectId` is inside the `try` as well, even though the type
+      // says `card` is always there. The guarantee this function offers is
+      // "cannot throw out of it", and it is relied on with the SSE stream
+      // already open — so it is bought from the code, not from the types.
+      const subjectId = grantSubjectId(row.card);
+      if (subjectId === null) return true;
       key = grantDeclineKey(
         userId,
         row.agentId,

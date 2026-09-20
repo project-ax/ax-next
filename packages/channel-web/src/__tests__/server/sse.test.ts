@@ -236,11 +236,15 @@ function bootHandler(opts: BootOpts = {}) {
   // `listPrefixGate` is what it then waits on when `gateListPrefix` is set.
   const listPrefixEntered = deferred();
   const listPrefixGate = deferred();
+  // How many times the handler actually went to the store. A stream opening on
+  // a conversation with no pending card must not go at all (TASK-444).
+  const listPrefixCalls = { n: 0 };
   if (opts.storage === 'read-write') {
     bus.registerService<
       { prefix: string },
       { entries: Array<{ key: string; value: Uint8Array }> }
     >('storage:list-prefix', 'mock-storage', async (_ctx, { prefix }) => {
+      listPrefixCalls.n += 1;
       listPrefixEntered.resolve();
       if (opts.gateListPrefix === true) await listPrefixGate.promise;
       return {
@@ -299,6 +303,8 @@ function bootHandler(opts: BootOpts = {}) {
     kv,
     /** Resolves once the handler has entered the decline read. */
     listPrefixCalled: listPrefixEntered.promise,
+    /** How many times the handler went to the store. */
+    listPrefixCalls,
     /** Lets that read finish. No-op unless `gateListPrefix` was set. */
     releaseListPrefix: listPrefixGate.resolve,
   };
@@ -1546,9 +1552,11 @@ describe('the SSE setup span stays synchronous (TASK-444 regression)', () => {
         now: () => clock,
       });
     try {
-      // One pending card, so there is a replay for the decline read to filter
-      // — without it the filter short-circuits on an empty list and never
-      // reaches the store at all.
+      // One pending card, so there is a replay for the decline read to filter.
+      // Load-bearing, not scene-setting: the handler only reads the markers
+      // when this conversation actually has a card to judge, so with an empty
+      // list it never reaches the store and `listPrefixCalled` below would
+      // never resolve.
       await bus.fire(
         'chat:permission-request',
         ctxWithConversation(initCtx, 'cnv_test'),
@@ -1600,6 +1608,48 @@ describe('the SSE setup span stays synchronous (TASK-444 regression)', () => {
         midReadCardDelivered: true,
         alreadyPendingReplayed: true,
       });
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  /*
+    A STREAM WITH NOTHING TO FILTER MUST NOT GO TO THE STORE.
+
+    Most streams open on a conversation holding no pending card at all, and
+    scanning this person's markers to filter an empty list buys a round trip
+    per turn for nothing. `withoutDeclinedGrants` short-circuits on an empty
+    list for exactly this reason; splitting the read from the filter (so the
+    read could happen before the stream opens) left that behind for one
+    commit, and this is the assertion that keeps it.
+  */
+  it('never asks the store for declines when nothing is pending to filter', async () => {
+    const { handler, buffer, listPrefixCalls } = bootHandler({
+      storage: 'read-write',
+    });
+    try {
+      const { res } = fakeRes();
+      const inFlight = handler(fakeReq({ reqId: 'r-test' }), res);
+      await inFlight;
+      expect(listPrefixCalls.n).toBe(0);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('does ask once there IS a pending card to judge', async () => {
+    const { bus, initCtx, handler, buffer, listPrefixCalls } = bootHandler({
+      storage: 'read-write',
+    });
+    try {
+      await bus.fire(
+        'chat:permission-request',
+        ctxWithConversation(initCtx, 'cnv_test'),
+        skillCard('github-helper'),
+      );
+      const { res } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+      expect(listPrefixCalls.n).toBe(1);
     } finally {
       buffer.dispose();
     }

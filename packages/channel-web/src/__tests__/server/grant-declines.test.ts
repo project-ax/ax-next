@@ -298,7 +298,12 @@ describe('filterDeclinedGrants', () => {
   it('keeps a row whose key cannot be built, and still judges its neighbours', () => {
     const warn = vi.fn();
     const ctx = makeCtx(warn);
-    const loneSurrogate = 'a-\uD800';
+    // IN THE subjectId, because that is the segment that is actually
+    // untrusted: `userId` is the authenticated caller and `agentId` is
+    // server-derived on both call paths (the conversation lookup on the SSE
+    // side, the card's recorded owner on the workspace side), while the
+    // skill/connector id comes out of a manifest an agent authored.
+    const loneSurrogate = 'linear-\uD800';
     // Guard the premise: if this ever stops throwing, the test below is vacuous.
     expect(() => encodeURIComponent(loneSurrogate)).toThrow(URIError);
 
@@ -307,13 +312,15 @@ describe('filterDeclinedGrants', () => {
       declines([[['u-ann', 'a-quill', 'skill', 'linear'], 2_000]]),
       'u-ann',
       [
-        row(loneSurrogate, skill('linear'), 1_000),
+        row('a-quill', skill(loneSurrogate), 1_000),
         row('a-quill', skill('linear'), 1_000),
       ],
     );
 
     // Fail open on the one we could not evaluate; still drop the one we could.
-    expect(kept.map((r) => r.agentId)).toEqual([loneSurrogate]);
+    expect(kept.map((r) => (r.card as { skillId: string }).skillId)).toEqual([
+      loneSurrogate,
+    ]);
     expect(warn).toHaveBeenCalledWith(
       'workspace_grant_decline_key_failed',
       expect.objectContaining({ kind: 'skill' }),
