@@ -220,17 +220,33 @@ const ACCENTS_USED_AS_TEXT = ['--primary', '--destructive', '--warning'] as cons
  * against each other and the resolution WAS to split them. Which way a token
  * goes is a question to be measured, not assumed.
  *
- * `--warning` is deliberately NOT in this list yet. It belongs here — and it
- * FAILS: `text-warning` on `bg-warning-soft` measures **4.45:1 in light mode**
- * (dark is fine at 8.47), on the `WorkspaceSidebar` count badge and the
- * `bits.tsx` status badge. That is a real AA miss and it is TASK-445's card,
- * not this one's, so the row is withheld rather than added-and-excluded. Add
- * `['--warning', '--warning-soft']` here as part of that fix; the number above
- * is the measurement, so nobody has to take it again.
+ * `--warning` was withheld from this list by TASK-425 with its measurement
+ * recorded here, and TASK-445 is the card that paid it off. It measured
+ * **4.45:1 light** — this file's formula and the browser walk's probe agreeing
+ * to three digits for once — on the `WorkspaceSidebar` count badge and the
+ * `bits.tsx` "Waiting on you" badge.
+ *
+ * Both of those paint the tint SOLID, with no alpha, and that is the whole
+ * reason this card survived contact and TASK-428's did not. TASK-428 reported
+ * the same kind of number for the same token family, but the class it described
+ * was `bg-warning-soft/40`; composited against what is behind it, that one was
+ * already clear. A token reading is only the pixel when the paint is opaque.
+ * Check which you have before believing the number.
+ *
+ * The fix was again to move the ACCENT, and the tint side was even less
+ * available here than for `--primary`: darkening `--warning-soft` moves it
+ * toward the accent and makes the text ratio WORSE (4.45 -> 4.08 at 85%), so
+ * the only helpful direction is lighter, and by the time it clears with any
+ * headroom (~97%) the held tint measures 1.04:1 against the white page — an
+ * invisible badge in exchange for a readable one. `--warning` 36% -> 35% takes
+ * the defect pair to **4.66:1 light**, and white on `bg-warning` and
+ * `text-warning` on the page both go 4.84 -> 5.07 along with it. Dark measured
+ * 8.47 throughout and did not move.
  */
 const ACCENT_SOFT_PAIRS = [
   ['--primary', '--primary-soft'],
   ['--destructive', '--destructive-soft'],
+  ['--warning', '--warning-soft'],
 ] as const;
 
 /**
@@ -749,6 +765,156 @@ describe('--ink-ghost is a fill, never ink', () => {
       'index.css',
     ]);
   });
+});
+
+/* ------------------------------------------------------------------------- *
+ * Is `ACCENT_SOFT_PAIRS` complete? — the question that cost TASK-445.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * `ACCENT_SOFT_PAIRS` is a hand-maintained list, and a hand-maintained list of
+ * things-to-check fails in one direction: silently, by omission. That is not a
+ * hypothetical here. `--warning` was missing from it for the entire life of the
+ * list, the pairing it describes rendered at two sites the whole time, and it
+ * measured 4.45:1. The list did not go wrong — it was never asked whether it
+ * was finished.
+ *
+ * So ask. Derive the accent families from `tailwind.config.ts` (whatever
+ * publishes a `hsl(var(--<family>-soft))`), scan the shipped tree for files
+ * that paint `bg-<family>-soft` alongside `text-<family>`, and require the pair
+ * to be measured above.
+ *
+ * **Which direction does this fail in?** Closed, deliberately, at three points:
+ *
+ *   - It is FILE-level, not element-level. A file painting the tint on one
+ *     element and the accent text on another is flagged even if the two never
+ *     meet. Within a file that is a superset of the real pairings, so it cannot
+ *     miss one, and the cost of a false flag is a measurement someone takes
+ *     once and a row that then passes forever. An element-level parse would be
+ *     the tighter answer and the one that can be wrong quietly; this is the
+ *     other trade.
+ *
+ *     State the residual gap rather than hide it, the way the rest of this file
+ *     does: the guarantee is co-location, NOT existence. A pairing assembled
+ *     across two files — a parent painting `bg-<f>-soft` and a child painting
+ *     `text-<f>`, meeting only in the DOM — co-locates nowhere and is exempted
+ *     by the zero-sites case below. Tailwind forces each class to appear
+ *     literally somewhere, which is what makes the scan possible at all, but it
+ *     does not force them to appear TOGETHER. Every pairing in the tree today
+ *     co-locates, and the two anchors pin the one this card is about; a split
+ *     pairing is the shape to watch for, and the honest answer if one appears
+ *     is to widen the scan, not to trust this sentence.
+ *
+ *     The same coarseness bites the other way: a file using the tint and the
+ *     accent text on unrelated elements is forced to add a row for a pairing
+ *     that never renders. Adding a PASSING row costs nothing. If such a
+ *     fictional row ever FAILS, the fix is to confirm it is fiction and narrow
+ *     the scan — not to bolt on an exemption, which is how the list got a hole
+ *     in the first place.
+ *   - There is NO alpha exemption. `paints` matches `bg-warning-soft/40` as
+ *     readily as the solid class, so a fractional tint still demands its row.
+ *     The temptation is to skip fractional paints on the grounds that the solid
+ *     number does not describe them — true, and exactly backwards as a rule:
+ *     the exemption would be keyed on a SHAPE, and every future unmeasured
+ *     pairing could wear that shape. `ApprovalCard` is the precedent for what
+ *     to do instead — measure the composited pixel, in its own block below.
+ *   - The one exemption that does exist — a family no file paints as text —
+ *     is the case where there is genuinely nothing to measure, and it is the
+ *     one an empty scan would forge. So the scan is anchored: the family this
+ *     card is about has its sites pinned by name, and a scan that stopped
+ *     seeing the tree fails there instead of quietly exempting everything.
+ */
+const TAILWIND_CONFIG = readFileSync(join(SRC_ROOT, '..', 'tailwind.config.ts'), 'utf8');
+
+/** Accent families tailwind publishes a `-soft` tint for, e.g. `warning`. */
+const SOFT_FAMILIES = [
+  ...new Set(
+    [...TAILWIND_CONFIG.matchAll(/hsl\(var\(--([\w-]+)-soft\)\)/g)].map((m) => m[1]!),
+  ),
+].sort();
+
+/** Shipped files painting both `bg-<family>-soft` and `text-<family>`. */
+function softTextSites(family: string): string[] {
+  return sourceFiles()
+    .filter((path) => {
+      const src = readFileSync(path, 'utf8');
+      return paints(src, `bg-${family}-soft`) && paints(src, `text-${family}`);
+    })
+    .map((path) => relative(SRC_ROOT, path))
+    .sort();
+}
+
+/** One entry per family the per-family loop below actually registers a case for. */
+const softPairCasesRegistered: string[] = [];
+
+describe('ACCENT_SOFT_PAIRS covers every soft tint the tree paints as text', () => {
+  /**
+   * The parse anchor. If this regex ever stopped matching, `SOFT_FAMILIES`
+   * would be empty, every case below would loop zero times, and the whole
+   * describe would go green on nothing — the precise failure it exists to
+   * prevent.
+   *
+   * Pinned exactly rather than loosely, so a FIFTH soft tint lands here as a
+   * red test rather than as silence. Satisfying it is one line plus a
+   * measurement, which is the point: a new tinted accent should cost a thought.
+   *
+   * `rule` is here and is not an accent — `rule-soft` is the hairline behind
+   * `.ax-md`'s blockquote bar, table cells and `hr`, and there is no `--rule`
+   * token for anything to paint as text. It stays in the list anyway. Trimming
+   * it would mean filtering families by whether a matching accent token exists,
+   * and that filter is a shape a genuinely unmeasured family could wear. A
+   * family nothing paints as text costs nothing here; it simply finds no sites.
+   */
+  it('reads the soft tints tailwind publishes', () => {
+    expect(SOFT_FAMILIES).toEqual(['destructive', 'primary', 'rule', 'warning']);
+  });
+
+  /**
+   * The scan anchor, pinned on this card's own family because it is two files
+   * and it is the pairing the defect lived in. A rename, a move or a third
+   * badge shows up here as a red test naming the file, which is the cheapest
+   * possible way to be told.
+   */
+  it('finds the warning tint exactly where TASK-445 measured it', () => {
+    expect(softTextSites('warning')).toEqual([
+      'components/workspace/WorkspaceSidebar.tsx',
+      'components/workspace/bits.tsx',
+    ]);
+  });
+
+  /**
+   * The dropped-loop guard, the third in this file after
+   * `quietTextCasesRegistered` and `tintCasesRegistered`. The loop below is the
+   * newest auto-merge collision surface here, and it fails the same way they
+   * did: a clean merge that keeps `SOFT_FAMILIES` and the two anchors but drops
+   * the `for` stays entirely GREEN, because neither anchor depends on the loop
+   * running. The per-family enforcement would just quietly stop existing — this
+   * block's own hazard, one level up.
+   *
+   * So count the registrations at collection time and compare them to the
+   * families. Note this reads what was REGISTERED, not what passed: a dropped
+   * loop registers nothing and fails here loudly.
+   */
+  it('registers one measured-pair case per soft family', () => {
+    expect(softPairCasesRegistered).toEqual([...SOFT_FAMILIES]);
+  });
+
+  for (const family of SOFT_FAMILIES) {
+    softPairCasesRegistered.push(family);
+    it(`--${family}-soft painted with text-${family} is a measured pair`, () => {
+      const sites = softTextSites(family);
+      if (sites.length === 0) return; // nothing paints it; nothing to measure
+      const measured = ACCENT_SOFT_PAIRS.some(
+        ([accent, soft]) => accent === `--${family}` && soft === `--${family}-soft`,
+      );
+      expect(
+        measured,
+        `${sites.join(', ')} paint bg-${family}-soft with text-${family}, but ` +
+          `['--${family}', '--${family}-soft'] is not in ACCENT_SOFT_PAIRS, so ` +
+          `no theme measures it. Add the row.`,
+      ).toBe(true);
+    });
+  }
 });
 
 /* ------------------------------------------------------------------------- *
