@@ -164,7 +164,14 @@ export function createChatOrchestratorPlugin(
         PLUGIN_NAME,
         async (ctx, input) => orch.runAgentInvoke(ctx, input),
         {
-          // NO SECOND CLOCK. See AGENT_INVOKE_TIMEOUT_MS — the orchestrator
+          // NO SECOND CLOCK, AND A DEPENDENCY THAT IS NOW LOAD-BEARING:
+          // because nothing outside the handler is watching the clock, every
+          // exit that builds a `terminated` outcome MUST call fireTurnError
+          // before it fires chat:end, or that turn is invisible to the
+          // browser forever. `turn-error-discipline.test.ts` enforces that
+          // over all fifteen of them, rather than leaving it to be noticed.
+          //
+          // See AGENT_INVOKE_TIMEOUT_MS — the orchestrator
           // bounds every phase of a turn itself and fires `chat:turn-error` on
           // the way out of each one. The HookBus default (120 s) was a shorter,
           // blinder bound that rejected calls whose turns were still streaming,
