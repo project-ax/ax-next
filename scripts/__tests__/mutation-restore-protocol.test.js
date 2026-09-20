@@ -126,22 +126,22 @@
 //     block in the dispatch prompt to execute; what the prompt must carry is the pointer
 //     and the per-role rule, and text is the only surface that has ever carried those.
 //
-// MUTANTS RUN, NOT REASONED ABOUT (2026-09-19, macOS + zsh + git 2.52.0; baseline **51
-// passed**). Re-measured **in full after each of four review rounds**, because a round
+// MUTANTS RUN, NOT REASONED ABOUT (2026-09-19, macOS + zsh + git 2.52.0; baseline **64
+// passed**). Re-measured **in full after each of five review rounds**, because a round
 // changes the test set and a stale count is worse than none — a rule this file broke twice
 // and a reviewer caught both times. Every mutant was applied to the COMMITTED text and
 // restored with `git checkout --`; `git status --porcelain` was empty before and after each.
-// Every mutant still COLLECTS 51 — the number to distrust is a red count that arrives with
+// Every mutant still COLLECTS 64 — the number to distrust is a red count that arrives with
 // a shrunken total. A mutant's CONSTRUCTION is a claim as much as its count is, so each
 // says which kind it is:
 //
 //   M1. RESTORED VERBATIM — `git show origin/main:.claude/skills/yolo-ship/SKILL.md >` the
-//       file, i.e. the pre-fix text, which carries NEITHER marked block -> **47 red of 51**.
+//       file, i.e. the pre-fix text, which carries NEITHER marked block -> **47 red of 64**.
 //       The extractor finds 0 of each, `runBlock` throws by design naming the reason, and
-//       every behavioural case plus every block-structure check reds out. The 4 survivors
-//       are `logicalLines keeps a command a comment tried to swallow` and the three
-//       templates.md text checks — none of which read this skill file. This is the mutant
-//       the card asks for: the guard fails against the text as it stands on `main`.
+//       every behavioural case plus every block-structure check reds out. The 17 survivors
+//       are the 13 predicate table cases (which read no file), `logicalLines keeps a command
+//       a comment tried to swallow`, and the three templates.md text checks. This is the
+//       mutant the card asks for: the guard fails against the text as it stands on `main`.
 //   M2. CONSTRUCTED, one token: drop ONLY the dirty-branch `exit 1` from the precondition
 //       -> **5 red**. The plausible regression: someone "softens" a refusal into a warning.
 //       **This mutant is why the structure check counts instead of using `.some()`.** In an
@@ -152,11 +152,11 @@
 //       recorded WITH ITS FLAW rather than as a result. It did NOT redden the incident-1
 //       case: `$BACKUP` is unbound in the harness, so the copy fails and leaves the file
 //       where it was — the right answer by accident. **A mutant that errors out is a no-op
-//       in a mutant's costume.** Hence M3b. The same trap bit M8 and M14 later: a
-//       line-count-based deletion left a dangling `fi`, every block failed to parse, and
-//       the 33 and 37 red those produced measured a syntax error rather than a missing
-//       gate. Both re-done brace-matched. **Three separate mutants in this file have lied
-//       by being broken rather than by being wrong.**
+//       in a mutant's costume.** Hence M3b. The same trap bit M8 and M14 in later rounds: a
+//       line-count-based deletion left a dangling `fi`, every block failed to parse, and the
+//       33 and 37 red those produced measured a syntax error rather than a missing gate.
+//       Both re-done brace-matched. **Three separate mutants in this file have lied by
+//       being broken rather than by being wrong.**
 //   M3b.CONSTRUCTED, the honest version of M3: `git show HEAD~1:"$F" > "$F"`, a restore that
 //       SUCCEEDS at writing back a stale snapshot, i.e. what a copy taken before a sibling's
 //       commit does -> **14 red**, including `keeps a commit that landed during the window`
@@ -200,21 +200,35 @@
 //       its reach. The original measurement is kept because it is why this branch exists,
 //       not because it describes today's failure mode.
 //  M14. CONSTRUCTED: delete the git-side scope gate from both blocks -> **13 red**,
-//       including the deleted-directory case x2 blocks x2 shells, on EXIT STATUS rather
-//       than on a message. It replaced an earlier `[ -d "$F" ]` filesystem guard (M13,
-//       retired) that a reviewer showed was blind in the Critical's exact shape: `[ -d ]`
-//       is FALSE for a directory removed from disk, while git still expands the pathspec to
-//       the whole subtree, so the restore reverted a bystander's work and printed `ok`.
-//       **The first version of that regression test did not reproduce the bug** — it
-//       removed a file INSIDE the directory, leaving `[ -d ]` true, so it reddened only on
-//       the message string and was a duplicate of the plain-directory case. Also caught in
-//       review. Ask git what the pathspec addresses, not the filesystem what `$F` looks like.
+//       including the deleted-directory case x2 blocks x2 shells. **In the RESTORE block
+//       those are exit-status reds — measured: without the gate it exits 0, prints `ok`,
+//       and recreates the subtree. In the PRECONDITION block they are message reds, and
+//       structurally cannot be anything else:** a deleted directory is dirty, so the
+//       dirty-branch refuses with or without the gate. An earlier version of this entry
+//       claimed exit-status reds for both; a reviewer measured it and was right. The
+//       precondition half now also asserts the dirty-branch did NOT fire, so it pins WHICH
+//       gate refused rather than merely that something did. The gate replaced an earlier
+//       `[ -d "$F" ]` filesystem guard (M13, retired) that was blind in the Critical's exact
+//       shape: `[ -d ]` is FALSE for a directory removed from disk, while git still expands
+//       the pathspec to the whole subtree. **The first version of that regression test did
+//       not reproduce the bug** — it removed a file INSIDE the directory, leaving `[ -d ]`
+//       true. Also caught in review. Ask git what the pathspec addresses, not the filesystem
+//       what `$F` looks like.
 //  M15. CONSTRUCTED: drop `-c core.quotePath=false` from the scope gate -> **2 red**, the
 //       non-ASCII case x2 shells. The gate compares bytes, and `ls-files` quotes a
 //       non-ASCII path by default, so `café.js` came back as `"caf\303\251.js"` and an
 //       ordinary file was refused. Fail-CLOSED, and still a defect: it locks an agent out of
 //       mutating that file, and the block gets blamed. **A byte-comparison gate is only as
 //       good as the spelling the command on the other side of it chooses.**
+//  M16. CONSTRUCTED, and a mutant of THIS FILE: put `messageOffersBareF`'s anchor back to
+//       `/\bgit\s+[a-z][a-z-]*/` -> **3 red**, the three `git -c` / `git -C` / `git
+//       --no-pager` table rows. That anchor requires a lowercase word after `git`, so it
+//       missed every invocation written with an OPTION first — including
+//       `git -c core.quotePath=false ls-files`, which is the shape the blocks themselves
+//       use and therefore the one a future editor would reach for. Found in review, and it
+//       is why both `$F` predicates are now named functions with a TABLE TEST: as bare
+//       loops over clean block text they passed VACUOUSLY, so a widened predicate was
+//       invisible. The guard's own guard had the defect the guard exists to catch.
 //
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally — no network,
 // no Docker, no build. Every git repository it touches is created under a temp dir and
@@ -311,6 +325,59 @@ function logicalLines(block) {
     .split('\n')
     .map((l) => l.trim())
     .filter(Boolean);
+}
+
+/** A logical line with its shell redirections removed, so `>&2` is not a separator. */
+function withoutRedirections(line) {
+  return line.replace(/\d?>&\d?/g, ' ').replace(/&>/g, ' ').replace(/\d?>>?/g, ' ');
+}
+
+/** Is `line` a single `echo` and nothing else? */
+function isWholeEcho(line) {
+  return /^echo\b/.test(line) && !/[;&|]/.test(withoutRedirections(line));
+}
+
+/**
+ * Does this logical line INVOKE git with `$F` as a pathspec?
+ *
+ * A filename containing `[`, `*` or `?` is a PATTERN to git, so a bare `$F` could check —
+ * or restore — a sibling file instead. Every git command in the blocks must go through
+ * `$P` (`:(literal)$F`). Comparisons against `$F` live on non-git lines
+ * (`[ "$ONE" != "$F" ]`), so forbidding the mention outright costs nothing.
+ *
+ * Two measured refinements, each from a mutant that survived the whole suite:
+ *   - keying on the `--` separator missed `git status --porcelain "$F"`, which has none
+ *     and is just as bare (round 3);
+ *   - skipping every line starting `echo` missed `echo "checking"; git diff -- "$F"`,
+ *     because a shell line carries several commands (round 4). Hence `isWholeEcho`, whose
+ *     redirection-stripping keeps `echo "…" >&2` classified as a message.
+ */
+function gitInvocationTakesBareF(line) {
+  if (isWholeEcho(line) || !/\bgit\b/.test(line)) return false;
+  return /\$\{?F\b/.test(line);
+}
+
+/**
+ * Does this MESSAGE hand the reader a runnable git command with a bare `$F` in it?
+ *
+ * Not hypothetical: the precondition's success line used to end `— git checkout -- $F
+ * restores it exactly`. An agent that reads an `ok:` line naming a command runs that
+ * command, and `git checkout -- we[i]rd.js` reverts the SIBLING.
+ *
+ * The rule is POSITIONAL, not an allow-list of verbs: a `$F` AFTER the git token is an
+ * argument, a `$F` before it is the message naming the file, which is the whole job. An
+ * allow-list (`checkout|restore|status|ls-files`) let `git reset --hard -- $F` through;
+ * anchoring on `git` + a lowercase word missed `git -c …`, `git -C .` and
+ * `git --no-pager …` — and the first of those is the invocation shape the blocks
+ * themselves use, so it is what a future editor would reach for. Anchor on `git` alone.
+ */
+function messageOffersBareF(line) {
+  // `isWholeEcho`, not `^echo`: a line that merely STARTS with echo and then invokes git
+  // is an invocation, and belongs to `gitInvocationTakesBareF` so the red names one cause.
+  if (!isWholeEcho(line)) return false;
+  const at = line.search(/\bgit\b/);
+  if (at === -1) return false;
+  return /\$\{?F\b|\\\$\{?F\b/.test(line.slice(at));
 }
 
 const PRECONDITION_MARK = '# ax-mutation-restore: precondition';
@@ -529,7 +596,7 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
 
     const r = runBlock(shell, RESTORE, { cwd: dir, file: ACCENTED, mark: RESTORE_MARK });
 
-    expect(r.out).not.toMatch(/more than one tracked path/);
+    expect(r.out).not.toMatch(/^REFUSE/m);
     expect(r.status).toBe(0);
     expect(read(dir, ACCENTED)).toBe(V1);
   });
@@ -640,7 +707,7 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
     expect(r.out).toMatch(/not the one file you named/);
     // It reports what git actually matched, which for a directory is the paths INSIDE
     // it — the whole point: the pathspec was never addressing the thing the agent typed.
-    expect(r.out.includes('matched: sub/nested.js')).toBe(true);
+    expect(r.out.includes('matched 1 path(s): sub/nested.js')).toBe(true);
     expect(r.out).not.toMatch(/^ok:/m);
     expect(read(dir, join('sub', 'nested.js'))).toBe(theirs);
   });
@@ -681,6 +748,13 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
     expect(r.status).not.toBe(0);
     expect(r.out).toMatch(/not the one file you named/);
     expect(r.out).not.toMatch(/^ok:/m);
+    // WHICH gate refused matters here. A deleted directory is dirty, so the precondition's
+    // dirty-branch would refuse it even with the scope gate gone — which is why the
+    // precondition half of this case can only ever red on the MESSAGE, never on the exit
+    // status (measured; an earlier version of the M14 entry claimed otherwise). Asserting
+    // the dirty-branch did NOT fire is what stops that message red being satisfied by the
+    // wrong refusal.
+    expect(r.out).not.toMatch(/carries uncommitted work/);
     // The block restored NOTHING: an agent mutating by deletion keeps its mutant, and a
     // bystander's deletions under the same subtree are not silently undone either.
     expect(existsSync(join(dir, 'sub'))).toBe(false);
@@ -705,7 +779,7 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
     // asserting a cause ("more than one path") it has not established. Asserted with
     // `includes` on a plain string, not a RegExp built from a filename: `guard.js` has
     // a `.` in it, and a fixture name should never quietly double as a pattern.
-    expect(r.out.includes(`matched: ${TARGET}`)).toBe(true);
+    expect(r.out.includes(`matched 1 path(s): ${TARGET}`)).toBe(true);
     expect(r.out).toMatch(/relative to the worktree root/);
     expect(read(dir)).toBe(MUTANT);
   });
@@ -805,44 +879,48 @@ describe('the blocks in yolo-ship Phase 4', () => {
     for (const block of [PRECONDITION, RESTORE]) {
       expect(block.split('\n').filter((l) => /^P=":\(literal\)\$F"$/.test(l))).toHaveLength(1);
     }
-    // No git INVOCATION may mention `$F` at all — deliberately stronger than "no `-- "$F"`".
-    // A filename containing [ * or ? is a PATTERN to git, so a bare `$F` could check, or
-    // restore, a sibling file instead. Measured: the `--`-keyed version of this check
-    // missed `git status --porcelain "$F"` — no separator, and the pathspec is still bare —
-    // and that mutant survived the ENTIRE suite while making the precondition announce
-    // `ok: committed-clean` over a dirty file. Comparisons against `$F` live on non-git
-    // lines (`[ "$ONE" != "$F" ]`), so this costs nothing.
-    //
-    // Lines that are ENTIRELY an echo are excluded here and checked separately below,
-    // because a refusal message legitimately says both `$F` (naming the file for the
-    // reader) and the word "git" (explaining what git did). The `!/[;&|]/` qualifier is
-    // load-bearing: `echo "checking"; git diff --quiet -- "$F"` starts with `echo` but is
-    // two commands, and a bare-`$F` git invocation hiding behind a leading echo is exactly
-    // the class round 3 measured as surviving the whole suite.
     for (const l of [...logicalLines(PRECONDITION), ...logicalLines(RESTORE)]) {
-      if ((/^echo\b/.test(l) && !/[;&|]/.test(l)) || !/\bgit\b/.test(l)) continue;
-      expect(l).not.toMatch(/\$\{?F\b/);
+      expect({ line: l, bare: gitInvocationTakesBareF(l) }).toEqual({ line: l, bare: false });
     }
   });
 
   it('hand the reader no runnable git command with a bare $F in it', () => {
-    // The other direction of the same hazard, and it is not hypothetical: the precondition's
-    // success line used to end `— git checkout -- $F restores it exactly`, bare and
-    // unquoted. An agent that reads an `ok:`/`REFUSE:` line naming a command runs that
-    // command, and `git checkout -- we[i]rd.js` reverts the SIBLING. A message may name a
-    // command, but it must spell the path as a placeholder, never as `$F`.
-    // The rule is POSITIONAL, not an allow-list of verbs. An allow-list of
-    // `checkout|restore|status|ls-files` let `git reset --hard -- $F` and `git clean -fd $F`
-    // through — the two most destructive things a refusal could hand someone — while
-    // matching ANY word after `git` flags ordinary prose like "git cannot restore it".
-    // What makes a mention dangerous is `$F` sitting AFTER the git token, i.e. in argument
-    // position. A `$F` before it is the message naming the file, which is the whole job.
     for (const l of [...logicalLines(PRECONDITION), ...logicalLines(RESTORE)]) {
-      if (!/^echo\b/.test(l)) continue;
-      const git = l.search(/\bgit\s+[a-z][a-z-]*/);
-      if (git === -1) continue;
-      expect(l.slice(git)).not.toMatch(/\$\{?F\b|\\\$\{?F\b/);
+      expect({ line: l, bare: messageOffersBareF(l) }).toEqual({ line: l, bare: false });
     }
+  });
+
+  // Both predicates get TABLE TESTS of their own, because as bare loops over clean block
+  // text they pass VACUOUSLY: with the blocks correct, a widened predicate is invisible.
+  // That is exactly how the `[a-z]` gap below got in, and it is the same vacuity class this
+  // whole file is about — pointed out in review, one layer beneath the thing being guarded.
+  it.each([
+    // [line, gitInvocationTakesBareF, messageOffersBareF]
+    ['git status --porcelain -- "$P"', false, false],
+    ['ONE=$(git -c core.quotePath=false ls-files -- "$P")', false, false],
+    ['[ "$ONE" != "$F" ]', false, false],
+    // A git invocation passing $F as a pathspec, with and without the `--` separator.
+    ['git checkout -- "$F"', true, false],
+    ['git status --porcelain "$F"', true, false],
+    // Hiding a git invocation behind a leading echo. `^echo` alone skipped these.
+    ['echo "checking"; git diff --quiet -- "$F"', true, false],
+    // A message naming the file is the whole job; `$F` BEFORE the git token is fine.
+    ['echo "REFUSE: $F is not tracked here - git cannot restore it."', false, false],
+    // …but a message handing over a runnable command with $F in argument position is not.
+    ['echo "  recover with git checkout -- $F"', false, true],
+    ['echo "  recover with git reset --hard -- $F"', false, true],
+    // The shapes the `/\bgit\s+[a-z][a-z-]*/` anchor missed: an OPTION after `git`. The
+    // first is the invocation form the blocks themselves use, so it is the spelling a
+    // future editor is likeliest to reach for.
+    ['echo "  recover with git -c core.quotePath=false ls-files -- $F"', false, true],
+    ['echo "  recover with git --no-pager checkout -- $F"', false, true],
+    ['echo "  recover with git -C . checkout -- $F"', false, true],
+    // A refusal routed to stderr is a WHOLE echo: the `&` belongs to the redirection, not
+    // to a command separator, and rejecting it would punish a reasonable future edit.
+    ['echo "REFUSE: $F bad - git says no" >&2', false, false],
+  ])('predicates classify %s', (line, invocation, message) => {
+    expect({ invocation: gitInvocationTakesBareF(line), message: messageOffersBareF(line) })
+      .toEqual({ invocation, message });
   });
 
   it('restore with git, never with a file copy', () => {

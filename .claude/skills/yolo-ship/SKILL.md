@@ -167,7 +167,7 @@ That precondition — not the choice of restore command — is what the four cas
 | a **subagent in someone else's worktree** | carrying uncommitted work | **do not mutate it.** You may not commit someone else's work-in-progress onto their branch, and you may not restore over it. Stop and say so. |
 
 So *"commit before you mutate"* is the **owner's** way of satisfying the precondition, and for
-the owner it is the right instruction — it is the one sentence that covers all four incidents
+the owner it is the right instruction — it is the one sentence that covers all four shapes
 from the owner's chair. It is the **wrong** instruction for a subagent in a tree it does not
 own, which is the whole reason this is stated as the precondition rather than as the commit.
 And a guard that only says "use `git checkout --`" is half the problem restated: that is the
@@ -210,10 +210,11 @@ fi
 # disk is still a directory to git. Measured on git 2.52.0.
 ONE=$(git -c core.quotePath=false ls-files -- "$P")
 if [ "$ONE" != "$F" ]; then
+  N=$(printf '%s\n' "$ONE" | wc -l | tr -d ' ')
   echo "REFUSE: that pathspec is not the one file you named."
-  echo "  matched: $(printf '%s' "$ONE" | tr '\n' ' ')"
+  echo "  matched $N path(s): $(printf '%s' "$ONE" | tr '\n' ' ' | cut -c1-120)"
   echo "  Name ONE tracked file, spelled relative to the worktree root — not an"
-  echo "  absolute path, not a directory. Several identical lines mean the path is"
+  echo "  absolute path, not a directory. The same path repeated means it is"
   echo "  unmerged; resolve the conflict first."
   exit 1
 fi
@@ -253,10 +254,11 @@ fi
 # See the precondition block: ask GIT what the pathspec addresses, not the filesystem.
 ONE=$(git -c core.quotePath=false ls-files -- "$P")
 if [ "$ONE" != "$F" ]; then
+  N=$(printf '%s\n' "$ONE" | wc -l | tr -d ' ')
   echo "REFUSE: that pathspec is not the one file you named."
-  echo "  matched: $(printf '%s' "$ONE" | tr '\n' ' ')"
+  echo "  matched $N path(s): $(printf '%s' "$ONE" | tr '\n' ' ' | cut -c1-120)"
   echo "  Name ONE tracked file, spelled relative to the worktree root — not an"
-  echo "  absolute path, not a directory. Several identical lines mean the path is"
+  echo "  absolute path, not a directory. The same path repeated means it is"
   echo "  unmerged; resolve the conflict first."
   exit 1
 fi
