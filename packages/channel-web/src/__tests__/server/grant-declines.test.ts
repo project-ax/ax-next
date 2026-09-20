@@ -597,7 +597,8 @@ describe('reclaimGrantDeclines', () => {
   });
 
   it('degrades to answering the read when the store cannot delete one key', async () => {
-    const ctx = makeCtx(() => {});
+    const warn = vi.fn();
+    const ctx = makeCtx(warn);
     const kv = kvBus({ noDelete: true });
     await seed(kv, ctx, [['a-gone', 'linear', 2_000]]);
 
@@ -615,6 +616,17 @@ describe('reclaimGrantDeclines', () => {
     expect(kept).toHaveLength(1);
     expect(kv.deletedPrefixes).toEqual([]);
     expect(kv.store.size).toBe(1);
+    // AND IT ASKED NOTHING. `reclaimGrantDeclines` checks `hasService` before
+    // it dispatches, so a store without the hook is a quiet no-op rather than
+    // a hook call that throws into the catch. Drop that check and the read
+    // still answers correctly — the catch sees to that — but it logs a
+    // "reclaim failed" warning on EVERY grants read for the life of the
+    // deployment, which is how a degradation becomes a page of noise. This
+    // assertion is the only thing that notices.
+    expect(warn).not.toHaveBeenCalledWith(
+      'workspace_grant_declines_reclaim_failed',
+      expect.anything(),
+    );
   });
 
   it('a delete that throws is logged and never fails the grants read', async () => {
