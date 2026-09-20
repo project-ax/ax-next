@@ -37,9 +37,15 @@ export const DEFAULT_SERVICE_TIMEOUT_MS = 120_000;
  *  3. It names the plugin and hook. "Something is slow" is not a thread to
  *     pull; "@ax/memory-strata is 15 s into chat:start" is.
  *
- * 15 s is chosen to be far above any healthy hook (the slowest legitimate ones
- * — sandbox spawn, LLM calls — are seconds) and far below the 120 s timeout, so
- * a stalling call reports itself with 105 s of runway left.
+ * 15 s is chosen to be far above any healthy *inner* hook and far below the
+ * 120 s timeout, so a stalling call reports itself with 105 s of runway left.
+ *
+ * It is deliberately NOT right for every hook, and the ones it is wrong for
+ * are the ones that legitimately run for minutes: `agent:invoke` spans a whole
+ * turn, an LLM call spans a whole generation. Warning at 15 s on those would
+ * fire on the healthy case every time and train everyone to filter the exact
+ * message this exists to surface. Those hooks pass their own `stallWarnMs` at
+ * registration — see the per-hook option on `registerService`.
  */
 export const DEFAULT_STALL_WARN_MS = 15_000;
 
@@ -70,6 +76,7 @@ interface RegisteredService {
   handler: ServiceHandler;
   returns?: ZodType;
   timeoutMs?: number;
+  stallWarnMs?: number;
 }
 
 interface RegisteredSubscriber {
@@ -138,8 +145,9 @@ export class HookBus {
     kind: 'hook_call' | 'hook_subscriber',
     hookName: string,
     plugin: string,
+    warnMs: number = this.stallWarnMs,
   ): () => void {
-    if (!Number.isFinite(this.stallWarnMs)) return () => undefined;
+    if (!Number.isFinite(warnMs)) return () => undefined;
     const startedAt = Date.now();
     let stalled = false;
     const timer = setTimeout(() => {
@@ -149,7 +157,7 @@ export class HookBus {
         plugin,
         stalledForMs: Date.now() - startedAt,
       });
-    }, this.stallWarnMs);
+    }, warnMs);
     timer.unref?.();
     return () => {
       clearTimeout(timer);
@@ -167,7 +175,18 @@ export class HookBus {
     hookName: string,
     plugin: string,
     handler: ServiceHandler<I, O>,
-    opts?: { returns?: ZodType<O>; timeoutMs?: number },
+    opts?: {
+      returns?: ZodType<O>;
+      timeoutMs?: number;
+      /**
+       * Override the bus-wide stall threshold for THIS hook. Pass it when the
+       * hook legitimately runs long — a whole turn, a whole generation — so the
+       * stall warning stays a signal instead of becoming background noise.
+       * `Infinity` opts the hook out of the stall watch entirely, which is the
+       * right answer for a frame whose own timeout is already its report.
+       */
+      stallWarnMs?: number;
+    },
   ): void {
     const existing = this.services.get(hookName);
     if (existing !== undefined) {
@@ -189,6 +208,17 @@ export class HookBus {
         });
       }
       record.timeoutMs = opts.timeoutMs;
+    }
+    if (opts?.stallWarnMs !== undefined) {
+      if (!isValidTimeoutMs(opts.stallWarnMs)) {
+        throw new PluginError({
+          code: 'invalid-payload',
+          plugin,
+          hookName,
+          message: `service hook '${hookName}' stallWarnMs must be a non-negative finite number or Infinity (got ${opts.stallWarnMs})`,
+        });
+      }
+      record.stallWarnMs = opts.stallWarnMs;
     }
     this.services.set(hookName, record);
   }
@@ -219,7 +249,13 @@ export class HookBus {
     const timeoutMs = registered.timeoutMs ?? this.defaultServiceTimeoutMs;
     // Report a call that is TAKING too long while it still is, not only if it
     // eventually blows the timeout. See DEFAULT_STALL_WARN_MS.
-    const settleStallWatch = this.watchStall(ctx, 'hook_call', hookName, registered.plugin);
+    const settleStallWatch = this.watchStall(
+      ctx,
+      'hook_call',
+      hookName,
+      registered.plugin,
+      registered.stallWarnMs ?? this.stallWarnMs,
+    );
     try {
       const result = await withTimeout(
         registered.handler(ctx, input),
@@ -303,6 +339,12 @@ export class HookBus {
       try {
         result = (await sub.handler(ctx, current)) as P | undefined | Rejection;
       } catch (err) {
+        // NOTE this one is deliberately NOT routed through `warnQuietly`. The
+        // stall watch is diagnostics and must never become a failure, but this
+        // line reports a subscriber that actually threw — and under a ctx with
+        // no usable logger, throwing here is louder than swallowing a real
+        // subscriber error into a void. The guarantee the stall watch offers
+        // therefore does not extend to this log; that asymmetry is on purpose.
         ctx.logger.error('hook_subscriber_failed', {
           hook: hookName,
           plugin: sub.plugin,

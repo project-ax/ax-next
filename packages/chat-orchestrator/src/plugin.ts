@@ -144,10 +144,24 @@ export function createChatOrchestratorPlugin(
     init({ bus }) {
       const orch = createOrchestrator(bus, config);
 
+      // `stallWarnMs: Infinity` — opt OUT of the bus's stall watch, on purpose.
+      //
+      // This handler spans an entire turn: sandbox spawn, generation, the whole
+      // tool loop. There is no duration that separates "healthy long turn" from
+      // "hung", so any threshold here would either fire on the common case or be
+      // useless. And the outermost frame is the one thing an operator already
+      // knows is stuck — `service hook 'agent:invoke' exceeded 120000ms` says so
+      // loudly enough, and that is this hook's report.
+      //
+      // The diagnosis lives one frame in. The subscribers and service calls
+      // `runAgentInvoke` awaits keep the 15s default, so a turn that hangs
+      // upstream of sandbox provisioning now names the plugin responsible
+      // instead of producing the silence TASK-505 is about.
       bus.registerService<AgentInvokeInput, AgentOutcome>(
         'agent:invoke',
         PLUGIN_NAME,
         async (ctx, input) => orch.runAgentInvoke(ctx, input),
+        { stallWarnMs: Number.POSITIVE_INFINITY },
       );
 
       // JIT (design §7/§11.5) — apply a user-approved capability grant: attach

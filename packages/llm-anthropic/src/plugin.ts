@@ -45,6 +45,17 @@ export const ModelsListSupportedOutputSchema = z.object({
 const TRANSIENT_STATUSES = new Set<number>([429, 500, 502, 503, 504]);
 const DEFAULT_RETRY_DELAY_MS = 1000;
 
+/**
+ * Stall threshold for the LLM call, overriding the bus's 15s default.
+ *
+ * A generation legitimately runs for minutes — that is why this hook carries a
+ * 300s timeout rather than the bus default. Warning at 15s would fire on every
+ * healthy call, and a warning that fires on the healthy case is one people
+ * learn to ignore. Half the declared timeout keeps the line rare and still
+ * leaves 150s of runway to notice a genuinely wedged provider call.
+ */
+const LLM_CALL_STALL_WARN_MS = 150_000;
+
 export interface LlmAnthropicConfig {
   /**
    * Anthropic API key. Falls back to `process.env.ANTHROPIC_API_KEY` if
@@ -175,7 +186,7 @@ export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
           'llm:call:anthropic',
           PLUGIN_NAME,
           async (_ctx, input) => callWithRetry(client, input, cfg),
-          { returns: LlmCallOutputSchema, timeoutMs: 300_000 },
+          { returns: LlmCallOutputSchema, timeoutMs: 300_000, stallWarnMs: LLM_CALL_STALL_WARN_MS },
         );
       } else {
         // Credential-resolution mode: resolve the key for each call.
@@ -186,7 +197,7 @@ export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
             const apiKey = await resolveApiKey(bus, ctx, cfg, credentialRef);
             return callWithRetry(clientFor(apiKey), input, cfg);
           },
-          { returns: LlmCallOutputSchema, timeoutMs: 300_000 },
+          { returns: LlmCallOutputSchema, timeoutMs: 300_000, stallWarnMs: LLM_CALL_STALL_WARN_MS },
         );
       }
 

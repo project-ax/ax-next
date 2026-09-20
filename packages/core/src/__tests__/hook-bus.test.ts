@@ -510,10 +510,72 @@ describe('HookBus — stall watch (TASK-505)', () => {
     expect(() => new HookBus({ stallWarnMs: -1 })).toThrow(PluginError);
   });
 
-  it('never fails a hook because the ctx had no usable logger', async () => {
+  it('honors a per-hook stallWarnMs over the bus default', async () => {
+    // A hook that legitimately runs long says so at registration, the same way
+    // it already says so with `timeoutMs`. Without this, the whole-turn frame
+    // (`agent:invoke`) and every LLM generation would warn on the HEALTHY case
+    // and teach everyone to filter the message.
+    const logged: Logged[] = [];
+    const bus = new HookBus({ stallWarnMs: 20 });
+    bus.registerService(
+      'slow-but-fine',
+      'p',
+      () => new Promise<string>((resolve) => setTimeout(() => resolve('done'), 120)),
+      { stallWarnMs: 5_000 },
+    );
+    await expect(bus.call('slow-but-fine', capturingCtx(logged), {})).resolves.toBe('done');
+    expect(logged).toEqual([]);
+  });
+
+  it('lets a hook opt out entirely with stallWarnMs:Infinity', async () => {
+    // `agent:invoke`'s case: its own 120s timeout is its report, and there is
+    // no threshold that separates a healthy long turn from a hung one.
+    const logged: Logged[] = [];
+    const bus = new HookBus({ stallWarnMs: 20 });
+    bus.registerService('whole-turn', 'p', () => new Promise<never>(() => {}), {
+      stallWarnMs: Number.POSITIVE_INFINITY,
+      timeoutMs: 5_000,
+    });
+    const inFlight = bus.call('whole-turn', capturingCtx(logged), {});
+    inFlight.catch(() => undefined);
+    await tick(120);
+    expect(logged).toEqual([]);
+  });
+
+  it('rejects a nonsense per-hook stallWarnMs at registration', () => {
+    const bus = new HookBus();
+    expect(() =>
+      bus.registerService('bad', 'p', async () => 'x', { stallWarnMs: Number.NaN }),
+    ).toThrow(PluginError);
+    expect(() =>
+      bus.registerService('bad2', 'p', async () => 'x', { stallWarnMs: -1 }),
+    ).toThrow(PluginError);
+  });
+
+  it('leaves subscribers on the default when their hook overrides it', async () => {
+    // The override is per SERVICE registration; `fire` has no registration to
+    // carry one, so subscribers keep the bus default. That asymmetry is the
+    // point — subscribers are the untimed half, and 15s is right for them.
+    const logged: Logged[] = [];
+    const bus = new HookBus({ stallWarnMs: 20 });
+    bus.registerService('whole-turn', 'p', async () => 'ok', {
+      stallWarnMs: Number.POSITIVE_INFINITY,
+    });
+    bus.subscribe('chat:start', '@ax/test-hanger', () => new Promise<never>(() => {}));
+
+    void bus.fire('chat:start', capturingCtx(logged), {});
+    await tick(120);
+    expect(logged.map((l) => l.msg)).toEqual(['hook_subscriber_stalled']);
+  });
+
+  it('never fails a service call because the ctx had no usable logger', async () => {
     // Canaries and synthetic contexts hand the bus a partial ctx. A watchdog
     // that threw on one would be a new silent-failure source bolted onto the
     // fix for one.
+    //
+    // Scoped to the STALL WATCH on purpose. `fire`'s pre-existing
+    // `hook_subscriber_failed` log is still unguarded, deliberately — see the
+    // note at that call site.
     const bus = new HookBus({ stallWarnMs: 20 });
     bus.registerService(
       'slow',

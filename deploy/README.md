@@ -197,7 +197,10 @@ kubectl rollout restart deployment/ax-next-host -n ax-next
 ```
 
 Do it the other way round and the next turn fails in a way that looks like an
-auth bug: `403` from `api.anthropic.com`, "not in any session allowlist".
+auth bug: a `403` on the call to `api.anthropic.com`, saying the host is "not in
+any session allowlist". It isn't an auth bug, and it isn't Anthropic — our own
+credential proxy short-circuits the request, which never leaves the cluster. So
+don't go rotating provider keys; the problem is a pod, not a credential.
 
 Here's why. A runner pod outlives the host that spawned it — it's a bare Pod
 with no ownerReference, which is deliberate (no controller gets to resurrect a
