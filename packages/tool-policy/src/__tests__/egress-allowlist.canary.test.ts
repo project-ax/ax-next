@@ -22,7 +22,7 @@
  * Each mutant was restored with `git checkout --` and the file re-hashed to
  * confirm the restore was byte-identical.
  *
- * TWENTY-ONE mutants: twenty killed, one equivalent. Every count below was
+ * TWENTY-THREE mutants: twenty-one killed, two equivalent. Every count below was
  * re-measured against THIS suite at its current 15 tests, so the table has one
  * denominator rather than a mix — a ledger whose rows were taken at different
  * sizes is the kind of thing a later reader quietly mis-reads.
@@ -46,9 +46,11 @@
  *   M16 an egress rule stops reporting as conditional  KILLED   1 red / 14 pass
  *   M17 the per-person cap stops being enforced        KILLED   1 red / 14 pass
  *   M18 the cap boundary becomes > instead of >=       KILLED   1 red / 14 pass
- *   M19 the count loses its Number() coercion          KILLED   1 red / 14 pass
+ *   M19a the count merely loses its Number()        EQUIVALENT (see below)
+ *   M19b the cap compares STRING to STRING             KILLED   1 red / 14 pass
  *   M20 the cap counts the table, not the person       KILLED   1 red / 14 pass
  *   M21 the cap is applied to the operator list too  EQUIVALENT (see below)
+ *   M22 remember loses its existence check             KILLED   1 red / 14 pass
  *
  * Where they came from, because the order turned out to matter. M1-M13 are the
  * claims the suite already made. M14-M16 came from asking "which claim still
@@ -57,23 +59,53 @@
  * THAT REVIEW PRODUCED, which is where the sharpest finding of the run turned
  * up.
  *
- * M19 is that finding and it is worth the paragraph. The cap test as first
- * written seeded the table to the boundary and probed 510 and 512. Drop the
- * `Number()` and `count` is still the STRING pg hands back for a bigint, so
- * the comparison goes lexicographic — and lexicographic agrees with arithmetic
- * at 510 and at 512, the exact two values the test looked at, while disagreeing
- * at SIX, where a person with six remembered hosts is capped forever. A
- * boundary-only test watches precisely the places the bug is not. The seven
- * consecutive remembers in that case walk the count through 0..6 and step on
- * it. The lesson generalises past this file: a test that only probes the
- * boundary of a numeric guard cannot see a coercion bug, because coercion bugs
- * are not boundary bugs.
+ * M19 is that finding, and the first version of this paragraph GOT IT WRONG —
+ * which review caught by running it, and which is left on the record here
+ * because a ledger that hides its own correction is worth less than one that
+ * shows it.
  *
- * M21 SURVIVED and is EQUIVALENT rather than a gap — no test could kill it. A
- * global entry's owner key is `''`, so the count query the mutant adds is
- * `scope = 'user' AND owner_user_id = ''`, which matches nothing and therefore
- * never caps. The mutation changes no behaviour. Recorded rather than dropped,
- * because an unexplained survivor in a ledger reads as an open hole.
+ * The cap test as first written seeded to the boundary and probed 510 and 512.
+ * The claim was "drop the `Number()` and the comparison goes lexicographic".
+ * That is FALSE. `count` is indeed the string pg hands back for a bigint, but
+ * `MAX_USER_HOSTS` is a number literal, and ECMAScript's relational comparison
+ * only compares lexicographically when BOTH operands are strings; with one
+ * number it coerces numerically. So `count >= MAX_USER_HOSTS` is identical to
+ * `Number(count) >= MAX_USER_HOSTS` for every value a `count(*)` can return.
+ * M19a is EQUIVALENT — no test could kill it, and it was originally recorded
+ * as KILLED, which is exactly the lying-ledger failure this card exists to
+ * prevent. The `Number()` stays as defensive style; it would become
+ * load-bearing the moment the right-hand side came from config or env.
+ *
+ * What the run actually killed was M19b, a different mutation than the one the
+ * ledger named: `count >= String(MAX_USER_HOSTS)`, both operands strings, one
+ * `String()` away from the real code. THAT goes lexicographic, and it agrees
+ * with arithmetic at 510 and at 512 — the exact two values a boundary probe
+ * looks at — while `'6' >= '512'` is true and caps a person at six hosts. The
+ * seven consecutive remembers walk a fresh count through 0..6 and step on it.
+ *
+ * The lesson that survives, stated correctly: a boundary probe cannot see a
+ * STRING/STRING comparison, because such a comparison agrees with arithmetic
+ * at many boundary values and disagrees away from them. It generalises to any
+ * guard whose operands might both be strings — a driver value against an env
+ * var, say. It does NOT generalise to a string compared against a numeric
+ * literal, which is this code, and saying otherwise is how a wrong rule gets
+ * into everybody's memory.
+ *
+ * TWO mutants are EQUIVALENT rather than gaps — no test could kill either, and
+ * both are recorded because an unexplained survivor in a ledger reads as an
+ * open hole and invites somebody to "close" it with a test that cannot fail.
+ * M19a is above. M21 applies the cap to `global` entries: a global entry's
+ * owner key is `''`, so the count query the mutant adds is `scope = 'user' AND
+ * owner_user_id = ''`, which matches nothing and never caps.
+ *
+ * M22 is the second thing review caught by running. The idempotent
+ * re-`remember` asserted only `{ remembered: false }` — and deleting the
+ * existence check outright leaves that TRUE, because the insert then violates
+ * the primary key and the hook's catch returns the same answer. The assertion
+ * survived deleting the code it claimed to cover. It now also asserts the
+ * quiet path (no `tool_policy_egress_remember_failed` on the logger), which is
+ * the one observable that separates "recognised and skipped" from "blew up
+ * somewhere harmless".
  *
  * M1 here is the mutant TASK-469's card calls M4 — the one #618 could not run.
  * It dies, so the DELETE really does reach Postgres. The total never shrank in
@@ -471,14 +503,26 @@ describe('egress allowlist canary', () => {
     // on every run of this suite for nothing.
     const h = await boot({ globalEgressHosts: ['intranet.example.com'] });
 
-    // A PERSON NOWHERE NEAR THE CAP IS NEVER CAPPED, and this is not padding —
-    // it is the assertion that catches the coercion itself rather than the
-    // boundary. `count` arrives from pg as a STRING (a bigint crossing the
-    // driver), so dropping the `Number()` makes the comparison lexicographic,
-    // and lexicographic agrees with arithmetic at 510 and at 512 while
-    // disagreeing at SIX: `'6' >= '512'` is true. A boundary-only test watches
-    // the two values where the bug hides. Seven in a row walks the count
-    // through 0..6 and steps on it.
+    // A PERSON NOWHERE NEAR THE CAP IS NEVER CAPPED, and this is not padding.
+    // It is the assertion that catches a STRING/STRING comparison rather than
+    // the boundary, and the reasoning here was wrong in review round 2 before
+    // it was right — so it is spelled out precisely.
+    //
+    // `count` arrives from pg as a STRING (a bigint crossing the driver).
+    // `MAX_USER_HOSTS` is a number literal, and ECMAScript's relational
+    // comparison only goes lexicographic when BOTH operands are strings — with
+    // one number it coerces numerically. So `count >= MAX_USER_HOSTS` behaves
+    // identically to `Number(count) >= MAX_USER_HOSTS` for every value a
+    // `count(*)` can return (mutant M19a: survives, equivalent). The `Number()`
+    // stays as defensive style, and it becomes load-bearing the moment the
+    // right-hand side is ever sourced from config or env as a string.
+    //
+    // The real hazard is the comparison becoming string-vs-string (M19b),
+    // which is one `String()` away: then `'510' >= '512'` is false and
+    // `'512' >= '512'` is true — AGREEING with arithmetic at exactly the two
+    // values a boundary probe looks at — while `'6' >= '512'` is true, capping
+    // a person at six hosts. Seven remembers walk a fresh count through 0..6
+    // and step on it.
     for (let i = 0; i < 7; i += 1) {
       expect(
         await h.bus.call('egress-allowlist:remember', h.ctx({ userId: 'carol' }), {
@@ -498,8 +542,15 @@ describe('egress allowlist canary', () => {
         [MAX_USER_HOSTS - 2],
       );
       // Somebody ELSE's rows, so the cap has to be counting one person rather
-      // than the table. Without these, a count that forgot its owner would sit
-      // on exactly the same numbers and pass.
+      // than the table.
+      //
+      // HONESTY ABOUT WHAT THESE DO, corrected in review: they are NOT what
+      // kills a count that forgot its owner. Carol's seven rows above plus
+      // alice's 510 already total 517, which is past the cap, so a table-wide
+      // count diverges from alice's own with or without dave. Dave makes the
+      // divergence explicit and independent of how many hosts carol happens to
+      // take — a later reader trimming carol's loop should not silently also
+      // remove the owner-scoping coverage.
       await seed.query(
         `INSERT INTO tool_policy_v1_egress_allowlist (scope, owner_user_id, host, created_at)
          VALUES ('user', 'dave', 'd1.example.com', NOW()), ('user', 'dave', 'd2.example.com', NOW())`,
@@ -515,15 +566,37 @@ describe('egress allowlist canary', () => {
       }),
     ).toEqual({ remembered: true });
 
-    // Still below the cap, so THIS `false` is the existence check and not the
-    // cap — the two answers are deliberately indistinguishable to a caller, so
-    // the test has to separate them by position instead. (The second gap
-    // review named: `remember` idempotence on the db path.)
+    // Still below the cap, so this `false` is not the cap — and it has to
+    // prove MORE than that, which the first version of this assertion did not
+    // (caught in round-2 review, by running it).
+    //
+    // `{ remembered: false }` alone is vacuous here. Delete the existence
+    // check entirely and the INSERT is attempted, violates the primary key
+    // `(scope, owner_user_id, host)`, and the hook's catch turns the throw
+    // into the very same `{ remembered: false }`. Mutant M22 did exactly that
+    // and this suite stayed 15/15 green — an assertion that survives deleting
+    // the code it claims to cover.
+    //
+    // The two paths differ in one observable: the PK route logs
+    // `tool_policy_egress_remember_failed` on its way out. So capture the
+    // logger and assert the quiet path. Idempotent means "recognised and
+    // skipped", not "blew up somewhere harmless".
+    const warned: string[] = [];
+    const spy = {
+      debug: () => {},
+      info: () => {},
+      warn: (msg: string) => void warned.push(msg),
+      error: (msg: string) => void warned.push(msg),
+      child: () => spy,
+    };
     expect(
-      await h.bus.call('egress-allowlist:remember', h.ctx({ userId: 'alice' }), {
-        host: 'first.example.com',
-      }),
+      await h.bus.call(
+        'egress-allowlist:remember',
+        h.ctx({ userId: 'alice', logger: spy }),
+        { host: 'first.example.com' },
+      ),
     ).toEqual({ remembered: false });
+    expect(warned).toEqual([]);
 
     // The last one that fits.
     expect(
