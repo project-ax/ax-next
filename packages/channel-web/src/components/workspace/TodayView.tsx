@@ -491,7 +491,12 @@ export function TodayView({
                   (AW-8/AW-14). The name and the state dot already say "working";
                   a placeholder phrase here would read as a report.
                 */}
-                <span className="min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground">
+                <span
+                  className="min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground"
+                  /* No empty `title`: a tooltip with nothing in it is a tooltip
+                     that fires on an empty line (TASK-436). */
+                  {...(a.now ? { title: a.now } : {})}
+                >
                   {a.now ?? ''}
                 </span>
                 <span className="shrink-0 text-[12.5px] text-muted-foreground">

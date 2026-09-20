@@ -64,6 +64,16 @@ function rows(container: HTMLElement): string[] {
   return [...panel.querySelectorAll('li')].map((li) => (li.textContent ?? '').trim());
 }
 
+/*
+  TASK-436 — WHAT THE CLAMP HIDES HAS TO BE RECOVERABLE.
+
+  jsdom has no CSS and no layout, so nothing below asserts that anything is
+  visually truncated — there is nothing here to truncate it, and such an
+  assertion would be vacuous by construction. What IS assertable, and what
+  this card is actually about, is that the element doing the hiding carries
+  the WHOLE source string in `title`.
+*/
+
 describe('the step panel', () => {
   it('keeps two identical rows as two rows', () => {
     // An agent that ran the same tool twice did two things. Keying the list by
@@ -191,5 +201,38 @@ describe('the step panel', () => {
     const live = rowFor(container, 'pnpm build');
     expect(live.className).toContain('text-muted-foreground');
     expect(live.querySelector('svg')).toBeNull();
+  });
+});
+
+describe('a clamped step row (TASK-436)', () => {
+  it('carries the whole row text in `title`', () => {
+    const row =
+      'Read: /permanent/projects/quarterly-review/2026-Q3/regional-breakdown-emea.csv';
+    const { container } = renderThread([
+      steps({ stepsLabel: '1 step', steps: [{ text: row, status: 'done' }] }),
+    ]);
+    const span = container.querySelector(
+      '[data-testid="workspace-steps"] li span[title]',
+    );
+    expect(span).toBeTruthy();
+    expect(span?.getAttribute('title')).toBe(row);
+    // And the element with the title is the one holding the text — a title on
+    // some ancestor is not a tooltip on the thing that got cut.
+    expect(span?.textContent).toBe(row);
+  });
+
+  it('still says in words what a failed row did, title or no title', () => {
+    // The status suffix is part of the row, so it has to be inside `title`
+    // too: a reader recovering the row by hover must not lose the outcome.
+    const { container } = renderThread([
+      steps({
+        stepsLabel: '1 step',
+        steps: [{ text: "Sending the email — didn't finish", status: 'failed' }],
+      }),
+    ]);
+    const span = container.querySelector(
+      '[data-testid="workspace-steps"] li span[title]',
+    );
+    expect(span?.getAttribute('title')).toBe("Sending the email — didn't finish");
   });
 });

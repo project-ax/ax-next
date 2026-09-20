@@ -205,12 +205,19 @@ export function ActivityFeed({
                     </button>
                   )}
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13.5px] text-muted-foreground">
+                    {/* `title` so the clamp hides nothing unrecoverably (TASK-436). */}
+                    <span
+                      className="block truncate text-[13.5px] text-muted-foreground"
+                      title={e.text}
+                    >
                       {e.text}
                     </span>
                     {/* The real error on a stopped row. Untrusted text — a string, never markup. */}
                     {e.detail !== null && (
-                      <span className="block truncate text-[12px] text-destructive">
+                      <span
+                        className="block truncate text-[12px] text-destructive"
+                        title={e.detail}
+                      >
                         {e.detail}
                       </span>
                     )}

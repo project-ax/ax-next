@@ -215,3 +215,32 @@ describe('ActivityFeed', () => {
     expect(screen.getByText(/what Quill does/i)).toBeInTheDocument();
   });
 });
+
+/*
+  TASK-436 — a summary and its error are both CSS-clamped to one line, and CSS
+  is exactly what jsdom does not have. So these assert the recoverable half:
+  the clamping element carries the untruncated string in `title`. Asserting the
+  clamp itself here would be vacuous by construction.
+*/
+describe('a clamped activity row (TASK-436)', () => {
+  it('keeps the whole summary reachable in `title`', () => {
+    const text =
+      'Swept the shared inbox, filed 14 receipts under 2026-Q3 and flagged three that had no matching purchase order';
+    render(<ActivityFeed events={[event({ text })]} agents={[agent()]} />);
+    expect(screen.getByText(text).getAttribute('title')).toBe(text);
+  });
+
+  it('keeps the whole error reachable in `title` too', () => {
+    // The error is the only actionable thing on a stopped row, and it is the
+    // longest — clamping it with nothing behind it loses the reason outright.
+    const detail =
+      'SMTP connect to mail.corp.example:587 timed out after 30s (attempt 3 of 3); last error ETIMEDOUT';
+    render(
+      <ActivityFeed
+        events={[event({ kind: 'stopped', text: 'Nightly backup', detail })]}
+        agents={[agent()]}
+      />,
+    );
+    expect(screen.getByText(detail).getAttribute('title')).toBe(detail);
+  });
+});

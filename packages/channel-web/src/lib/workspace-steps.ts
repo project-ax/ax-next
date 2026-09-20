@@ -130,13 +130,34 @@ export interface WorkspaceStepPanel {
 }
 
 /**
- * How much of a tool name or activity phrase reaches the panel.
+ * How much of a step row — tool name, and the qualifier beside it — reaches
+ * the panel.
  *
- * A step row is a line in a list, so it gets a line's worth. The number is a
- * size because "however long the MCP server felt like" is not a size — the
- * same reasoning the decision caps in `routes-workspace.ts` are written to.
+ * ONE NUMBER, AND IT IS A FENCE, NOT A LAYOUT CLAMP. There used to be two:
+ * 80 for the name and 60 for the detail, sized so that a row would fit on a
+ * line. That made `fenceLine` do the LAYOUT — it writes a literal `…` when it
+ * cuts — and a literal `…` on this surface has two costs TASK-436 measured.
+ * It is indistinguishable from an ellipsis the model actually emitted, and it
+ * corrupts a copy-paste of the row. Worse, it was the only copy: nothing else
+ * carried the characters it removed, so a deep path or a long command was
+ * unrecoverable by any means short of the API.
+ *
+ * So the line is now clamped in CSS (`truncate` on the row's span, with the
+ * whole string in its `title`), and this number goes back to being what it
+ * always should have been: the bound on how much untrusted text crosses onto
+ * the surface at all (invariant 5). "However long the MCP server felt like"
+ * is not a size — the same reasoning the decision caps in
+ * `routes-workspace.ts` are written to.
+ *
+ * WHY 200 AND NOT 400, which is what the decision/rail caps use. The row's
+ * qualifier comes from {@link DETAIL_KEYS}, and two of those keys — `prompt`
+ * and `description` — hold text the MODEL wrote. This surface has no
+ * thinking gate (invariant J4), so the cap is also the bound on how much of
+ * the model's own prose can ride into a step row. 200 covers the values a
+ * person actually needs back — a deep file path, an ordinary command — and
+ * stops well short of turning a row into an excerpt of the model.
  */
-export const STEP_NAME_MAX_CHARS = 80;
+export const STEP_TEXT_MAX_CHARS = 200;
 
 /**
  * What a step is called when nothing legible survives fencing — a tool name
@@ -147,15 +168,6 @@ export const STEP_NAME_MAX_CHARS = 80;
  * showing; a silently shorter list is not.
  */
 export const UNNAMED_STEP = 'Unnamed step';
-
-/**
- * How much of a call's input reaches the row beside the tool name.
- *
- * Shorter than {@link STEP_NAME_MAX_CHARS} on purpose: this rides AFTER the
- * name on one line, and a detail that can outrun the thing it qualifies turns
- * a list of steps back into a wall of text.
- */
-export const STEP_DETAIL_MAX_CHARS = 60;
 
 /**
  * The input keys that answer "which one", in preference order.
@@ -192,8 +204,9 @@ const DETAIL_KEYS = [
  * but the fallback takes the first string an UNKNOWN tool carries, and MCP
  * servers name their arguments whatever they like. A tool called as
  * `{ token: 'sk-live-…', resource: 'issues' }` would have drawn its row as the
- * first 60 characters of the token. That is a 60-character prefix of a secret
- * on screen, which is a worse worst case than "a less useful string".
+ * leading {@link STEP_TEXT_MAX_CHARS} characters of the token. That is a
+ * prefix of a secret on screen, which is a worse worst case than "a less
+ * useful string" — and it is why that cap is a fence and not a layout number.
  *
  * Matched WORD BY WORD rather than as substrings, so `apiKey`, `api_key` and
  * `AUTH_TOKEN` are all caught while `keyword`, `passenger` and `authored` are
@@ -332,7 +345,7 @@ export function stepDetail(input: unknown): string | undefined {
     // today; asking here rather than only in the fallback means a key added to
     // that list later cannot quietly opt out of it.
     if (namesASecret(key)) return null;
-    return fenceLine(value, STEP_DETAIL_MAX_CHARS);
+    return fenceLine(value, STEP_TEXT_MAX_CHARS);
   };
   for (const key of DETAIL_KEYS) {
     const fenced = candidate(key);
@@ -357,8 +370,8 @@ const STATUS_SUFFIX: Record<Exclude<WorkspaceStepStatus, 'done'>, string> = {
 /** The display name for one call: phrase first, then the stripped tool name. */
 function stepName(call: WorkspaceToolCall): string {
   return (
-    fenceLine(call.phrase, STEP_NAME_MAX_CHARS) ??
-    fenceLine(stripMcpToolPrefix(call.name), STEP_NAME_MAX_CHARS) ??
+    fenceLine(call.phrase, STEP_TEXT_MAX_CHARS) ??
+    fenceLine(stripMcpToolPrefix(call.name), STEP_TEXT_MAX_CHARS) ??
     UNNAMED_STEP
   );
 }

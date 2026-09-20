@@ -453,3 +453,26 @@ describe('a grant when the decisions queue cannot be read', () => {
     expect(screen.queryByText(/Open a row to see the detail/)).toBeNull();
   });
 });
+
+/*
+  TASK-436 — the working row's activity line is clamped to one line by CSS.
+  jsdom has no CSS, so this asserts what is assertable: the whole line is on
+  the element in `title`, and an agent with NOTHING to report gets no `title`
+  at all rather than an empty tooltip.
+*/
+describe('a clamped activity line (TASK-436)', () => {
+  it('keeps the whole line reachable in `title`', () => {
+    const now =
+      'Reading the EMEA regional breakdown and reconciling it against the Q3 purchase orders';
+    renderToday({ filter: 'working', agents: [agent({ state: 'working', now })] });
+    expect(screen.getByText(now).getAttribute('title')).toBe(now);
+  });
+
+  it('adds no empty `title` when there is nothing to say', () => {
+    const { container } = renderToday({
+      filter: 'working',
+      agents: [agent({ state: 'working' })],
+    });
+    expect(container.querySelector('[title=""]')).toBeNull();
+  });
+});

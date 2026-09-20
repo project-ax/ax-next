@@ -267,12 +267,17 @@ export function AgentFiles({
                 {crumbs.map((c, i) => (
                   <BreadcrumbItem key={c.path}>
                     {i === crumbs.length - 1 ? (
-                      <BreadcrumbPage className="truncate">{c.label}</BreadcrumbPage>
+                      /* Both crumbs carry `title`: a nested folder truncates to
+                         nothing legible otherwise (TASK-436). */
+                      <BreadcrumbPage className="truncate" title={c.label}>
+                        {c.label}
+                      </BreadcrumbPage>
                     ) : (
                       <>
                         <button
                           type="button"
                           className="truncate hover:text-foreground"
+                          title={c.label}
                           onClick={() => durable.openDir(c.path)}
                         >
                           {c.label}
@@ -555,7 +560,9 @@ function FileViewer({
     */
     <div>
       <div className="mb-1 flex items-center gap-2.5">
-        <span className="truncate font-mono text-[13px]">{basename(label)}</span>
+        <span className="truncate font-mono text-[13px]" title={basename(label)}>
+          {basename(label)}
+        </span>
         <Badge variant="secondary" className="shrink-0">
           written by {agentName}
         </Badge>
@@ -579,7 +586,7 @@ function FileViewer({
           {download.busy ? 'Getting it…' : 'Download'}
         </Button>
       </div>
-      <div className="mb-5 truncate text-[12.5px] text-muted-foreground">
+      <div className="mb-5 truncate text-[12.5px] text-muted-foreground" title={label}>
         {label}
       </div>
 

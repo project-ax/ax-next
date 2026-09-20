@@ -1178,7 +1178,19 @@ function Steps({ label, steps }: { label: string; steps: WorkspaceStep[] }) {
                 {mark !== null && (
                   <mark.Icon size={12} aria-hidden="true" className="mt-0.5 shrink-0" />
                 )}
-                <span className="min-w-0 flex-1">{s.text}</span>
+                {/*
+                  TASK-436 — CSS clamps the line, and `title` keeps what the
+                  clamp hides. `lib/workspace-steps.ts` used to do BOTH jobs:
+                  it fenced the row to 80/60 characters and wrote a literal
+                  `…` where it cut, which was the only copy — the characters
+                  it dropped existed nowhere else on this surface, so a deep
+                  path or a long command was unrecoverable. The fence stays
+                  (the text is untrusted), the layout moved here, and the
+                  whole fenced row is on the element that hides part of it.
+                */}
+                <span className="min-w-0 flex-1 truncate" title={s.text}>
+                  {s.text}
+                </span>
               </li>
             );
           })}

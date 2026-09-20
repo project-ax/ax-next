@@ -998,3 +998,61 @@ describe('AgentFiles: the download state belongs to the file, not to the pane', 
     finishA?.();
   });
 });
+
+/*
+  TASK-436 — the Files tab clamps in three more places than the rail row that
+  already had a `title`: both breadcrumb crumbs, the viewer's filename heading,
+  and the full path under it. jsdom has no CSS, so none of these assert the
+  clamp; they assert that the string the clamp would hide is still on the
+  element, where a hover (and most screen readers) can reach it.
+*/
+describe('clamped labels in the Files tab (TASK-436)', () => {
+  it('puts each breadcrumb crumb in its own `title`', async () => {
+    const folder = 'quarterly-review-2026-Q3-regional-breakdown-emea';
+    durableTree({
+      '': {
+        kind: 'dir',
+        path: '',
+        name: '',
+        entries: [{ path: folder, name: folder, kind: 'dir' }],
+        truncated: false,
+      },
+      [folder]: {
+        kind: 'dir',
+        path: folder,
+        name: folder,
+        entries: [],
+        truncated: false,
+      },
+    });
+    renderTab();
+    fireEvent.click(await screen.findByText(folder));
+    await screen.findByText(/this folder is empty/i);
+
+    // Standing inside it: `Files` is the clickable crumb, the folder is the
+    // current page. Both are clamped, so both have to carry their own value.
+    const root = screen.getByRole('button', { name: 'Files' });
+    expect(root.getAttribute('title')).toBe('Files');
+    const here = screen.getAllByText(folder).find((n) => n.hasAttribute('title'));
+    expect(here?.getAttribute('title')).toBe(folder);
+  });
+
+  it('puts the viewer filename and its full path in `title`', async () => {
+    const path = 'reports/2026-Q3/regional-breakdown-emea-with-adjustments.md';
+    filesMock.mockResolvedValue({
+      files: [{ path, name: path }],
+      truncated: false,
+    });
+    fileMock.mockResolvedValue({ path, name: path, body: 'rows', clipped: null });
+    renderTab();
+    fireEvent.click(await screen.findByText(path));
+    expect(await screen.findByText('rows')).toBeTruthy();
+
+    // The heading shows the BASENAME and the line under it the whole path, so
+    // each carries what IT would hide — not the other one's string.
+    const basename = 'regional-breakdown-emea-with-adjustments.md';
+    expect(screen.getByText(basename).getAttribute('title')).toBe(basename);
+    const full = screen.getAllByText(path).find((n) => n.getAttribute('title') === path);
+    expect(full).toBeTruthy();
+  });
+});

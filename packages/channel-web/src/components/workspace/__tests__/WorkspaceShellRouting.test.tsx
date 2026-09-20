@@ -172,6 +172,20 @@ describe('navigating', () => {
     return screen.findByRole('button', { name: 'Quill' });
   }
 
+  it('keeps a clamped roster name reachable in `title` (TASK-436)', async () => {
+    /*
+      The roster row clamps the agent's name to the sidebar's width. jsdom has
+      no CSS, so this does not assert the clamp — it asserts that the element
+      doing the clamping carries the whole name, which is the half that was
+      missing: the row used to be the only copy of a name it truncated.
+    */
+    renderAt('/workspace');
+    const row = await rosterRow();
+    const label = row.querySelector('span[title]');
+    expect(label?.getAttribute('title')).toBe('Quill');
+    expect(label?.textContent).toBe('Quill');
+  });
+
   it('gives an opened agent an address', async () => {
     renderAt('/workspace');
 

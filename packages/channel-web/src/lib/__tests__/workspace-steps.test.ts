@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
-  STEP_DETAIL_MAX_CHARS,
+  STEP_TEXT_MAX_CHARS,
   UNNAMED_STEP,
   applyToolResult,
   applyToolUse,
@@ -67,7 +67,7 @@ describe('shapeSteps', () => {
 
   it('bounds a name that arrived without one', () => {
     const panel = shapeSteps([done({ phrase: 'x'.repeat(500) })]);
-    expect(texts(panel)[0]?.length).toBeLessThanOrEqual(80);
+    expect(texts(panel)[0]?.length).toBeLessThanOrEqual(STEP_TEXT_MAX_CHARS);
     expect(texts(panel)[0]?.endsWith('…')).toBe(true);
   });
 
@@ -303,15 +303,42 @@ describe('stepDetail', () => {
 
   it('bounds a detail that arrived without a bound, and marks the cut', () => {
     const long = stepDetail({ command: 'x'.repeat(5000) })!;
-    expect([...long]).toHaveLength(STEP_DETAIL_MAX_CHARS);
+    expect([...long]).toHaveLength(STEP_TEXT_MAX_CHARS);
     expect(long.endsWith('…')).toBe(true);
+  });
+
+  it('keeps a realistic deep path whole rather than cutting it (TASK-436)', () => {
+    /*
+      THE REGRESSION THIS CARD EXISTS FOR. The detail cap was 60, which is
+      shorter than an ordinary path inside an agent's workspace — so the row
+      read `/permanent/projects/quarterly-review/…` and the rest of the path
+      existed NOWHERE on the surface. It was not hidden; it was gone.
+
+      This asserts the value SURVIVES, not that it is visually clamped: the
+      clamp is CSS now, and jsdom has neither CSS nor layout, so an assertion
+      about the clamp would be vacuous by construction.
+    */
+    const path =
+      '/permanent/projects/quarterly-review/2026-Q3/attachments/regional-breakdown-emea.csv';
+    expect(path.length).toBeGreaterThan(60);
+    expect(path.length).toBeLessThanOrEqual(STEP_TEXT_MAX_CHARS);
+    expect(stepDetail({ file_path: path })).toBe(path);
+  });
+
+  it('puts the whole row in the step text, uncut, for a long call', () => {
+    const path = '/permanent/notes/' + 'a'.repeat(100) + '.md';
+    const panel = shapeSteps([
+      { id: 'c1', name: 'Read', detail: stepDetail({ file_path: path }), status: 'done' },
+    ])!;
+    expect(panel.steps[0]!.text).toBe(`Read: ${path}`);
+    expect(panel.steps[0]!.text).not.toContain('…');
   });
 
   it('never lets an argument that names a secret qualify the row', () => {
     /*
       Review finding on this card. The fallback takes the first string an
       unknown tool carries, and MCP servers name their arguments whatever they
-      like — so `{ token: 'sk-live-…' }` drew a row that was the first 60
+      like — so `{ token: 'sk-live-…' }` drew a row that was the leading
       characters of a live token. The guard is on the NAME, matched word by
       word, and a skipped key hands the choice to the next candidate.
     */
