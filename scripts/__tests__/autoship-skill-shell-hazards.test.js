@@ -661,6 +661,16 @@ describe('progress helpers: a malformed id is loud, a transient failure stays qu
 // that round-trips a real body through a state file, and asserts on the body that was
 // stored. The static assertions live in the sibling describe below so that the
 // `awk -v` shape stays banned even where jq is unavailable.
+//
+// KNOW WHERE THE TEETH ARE ON EACH PLATFORM. The multi-line-append tests here catch a
+// reintroduced `awk -v` splice only on an awk that rejects a newline -- macOS's, which
+// is the platform auto-ship runs on and where the card was destroyed. gawk/mawk accept
+// it, so on a Linux runner those same tests would go GREEN against the buggy helper.
+// What holds the line there is unconditional and structural: the `awk -v` ban and the
+// "refusal reachable before the mutation" check in the sibling describe, plus the
+// REFUSED / wrapper-class cases here, none of which depend on the awk implementation.
+// Do not "simplify" the static pair away because the behavioural ones look sufficient
+// locally -- locally is the only place they are.
 describe('progress helpers carry a multi-line entry without destroying the body', () => {
   const md = readFileSync(GITHUB_PROJECT_MD, 'utf8');
   const helperBlocks = extractHeredocs(md, '.claude/auto-ship-progress.sh');
