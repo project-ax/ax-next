@@ -22,7 +22,10 @@
  * Each mutant was restored with `git checkout --` and the file re-hashed to
  * confirm the restore was byte-identical.
  *
- * Counts are against THIS suite as it now stands, 14 tests:
+ * Sixteen mutants, sixteen killed. M14-M16 were added after a first pass at
+ * "which claim still has no mutant?" — naming a gap and then not closing it is
+ * the move this card exists to punish. Counts are against THIS suite as it now
+ * stands, 14 tests:
  *
  *   mutant (what was broken)                          result   counts
  *   M1  db revoke returns true over an UNTOUCHED table KILLED   3 red / 11 pass
@@ -38,6 +41,9 @@
  *   M11 the database is unreachable                    KILLED  14 red /  0 pass
  *   M12 every read returns zero rows                   KILLED   9 red /  5 pass
  *   M13 listFor throws (hook swallows -> { sites: [] })KILLED   4 red / 10 pass
+ *   M14 the grant becomes the URL rather than the host  KILLED   9 red /  5 pass
+ *   M15 one malformed operator host is fatal to boot    KILLED   1 red / 13 pass
+ *   M16 an egress rule stops reporting as conditional   KILLED   1 red / 13 pass
  *
  * M1 here is the mutant TASK-469's card calls M4 — the one #618 could not run.
  * It dies, so the DELETE really does reach Postgres. The total never shrank in
