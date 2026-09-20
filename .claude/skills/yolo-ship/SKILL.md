@@ -134,9 +134,9 @@ Per-phase line catalogue (prefix exceptions with `⚠`):
 #### Mutation testing: restore without clobbering (REQUIRED whenever you mutate a file)
 
 Proving a guard reddens means writing a mutant into a real file and then putting the file
-back. **Putting it back is where the damage has happened** — four measured incidents on
-2026-09-18/19, across three different restore mechanisms, and the two obvious remedies
-point in opposite directions:
+back. **Putting it back is where the damage has happened** — **five measured instances** on
+2026-09-18/19, in **four** distinct shapes, across **two** restore mechanisms (a file copy,
+and `git checkout --`), and the two obvious remedies point in opposite directions:
 
 - A builder restored a mutated file **from a file copy** and silently reverted a fix another
   agent had **committed** to the same worktree in between. Caught only because a checksum
@@ -163,7 +163,7 @@ That precondition — not the choice of restore command — is what the four cas
 | --- | --- | --- |
 | the worktree **owner** | clean | mutate; restore with `git checkout -- <path>` |
 | the worktree **owner** | carrying uncommitted work | **commit it first**, then mutate. `git checkout --` would take the uncommitted work with the mutant; a file copy would revert whatever lands while you mutate. |
-| a **subagent in someone else's worktree** (reviewer, helper) | clean | **prefer not to.** "Clean" is a snapshot, not a property: in a shared tree the owner is a live writer by definition, and even when nothing clobbers your file the owner may be running a build off that tree and will debug *your* mutant as their own code (TASK-426, measured — *"the run I had just debugged was executing ITS mutant"*). If you must: announce the window, and re-run the precondition immediately before restoring — a path that is no longer dirty means someone else wrote it, so stop rather than restore. |
+| a **subagent in someone else's worktree** (reviewer, helper) | clean | **don't — report instead.** "Clean" is a snapshot, not a property: in a shared tree the owner is a live writer by definition, and even when nothing clobbers your file the owner may be running a build off that tree and will debug *your* mutant as their own code (TASK-426, measured — *"the run I had just debugged was executing ITS mutant"*). The **only** exception is a dispatching brief that explicitly says the owner is parked for your window — a yes/no you can check, not a judgement call. Absent that, say what you would have mutated and why, and let the owner run it. |
 | a **subagent in someone else's worktree** | carrying uncommitted work | **do not mutate it.** You may not commit someone else's work-in-progress onto their branch, and you may not restore over it. Stop and say so. |
 
 So *"commit before you mutate"* is the **owner's** way of satisfying the precondition, and for
@@ -184,6 +184,19 @@ Run this **before** you write the mutant, from your worktree root:
 ```bash
 # ax-mutation-restore: precondition — run BEFORE you write the mutant.
 F="<the file you are about to mutate>"
+
+# ONE named file, and a non-empty one. An empty $F, or a directory, is a pathspec that
+# addresses everything under it — the restore below would then revert work you never
+# touched and report success. Measured on git 2.52.0.
+if [ -z "$F" ]; then
+  echo "REFUSE: \$F is empty — that pathspec addresses the WHOLE worktree."
+  exit 1
+fi
+if [ -d "$F" ]; then
+  echo "REFUSE: $F is a directory — name the single file you are mutating."
+  exit 1
+fi
+
 # `:(literal)` so a filename containing [ * or ? is a NAME, not a pattern that could match
 # — and silently check, or restore, a sibling file instead.
 P=":(literal)$F"
@@ -202,7 +215,7 @@ if [ -n "$(git status --porcelain -- "$P")" ]; then
   echo "  stop and ask the owner to commit before you mutate."
   exit 1
 fi
-echo "ok: $F is committed-clean — git checkout -- $F restores it exactly."
+echo "ok: $F is committed-clean — restore it with the restore block below, not by hand."
 ```
 
 and this **after** the suite has gone red. It binds `$F` again on purpose: an agent's Bash
@@ -212,6 +225,16 @@ after the precondition, which is always a new shell.
 ```bash
 # ax-mutation-restore: restore — never from a file copy.
 F="<the file you are about to mutate>"
+
+if [ -z "$F" ]; then
+  echo "REFUSE: \$F is empty — that pathspec addresses the WHOLE worktree."
+  exit 1
+fi
+if [ -d "$F" ]; then
+  echo "REFUSE: $F is a directory — name the single file you mutated."
+  exit 1
+fi
+
 P=":(literal)$F"
 
 if ! git ls-files --error-unmatch -- "$P" >/dev/null 2>&1; then

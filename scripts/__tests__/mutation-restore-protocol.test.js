@@ -66,12 +66,15 @@
 //     the index/HEAD, so a commit that lands during the window survives — and the same
 //     fixture run through a file copy loses it.
 //   - **The zsh half does not run in CI.** `SHELLS` is `['bash', ...zsh if present]`, and
-//     the GitHub runner has no zsh: measured on this branch's own PR run, `pnpm
-//     test:scripts` collected **335** tests there, against **391** locally on macOS at the
-//     same sha. So every zsh assertion in this file is a LOCAL result, and the doc's claim
-//     is only continuously enforced for bash. That is the same shape every sibling shell
-//     guard in this directory has; it is written down here, and in the doc, rather than
-//     left for someone to infer from a test count.
+//     the GitHub runner has no zsh, so it collects materially fewer tests than a macOS
+//     machine does — measured on this branch's own PR run, 335 on the runner against 391
+//     locally. **Both of those numbers are from an earlier sha on this branch and are kept
+//     only as an order of magnitude**; the count moves every time a case is added, and a
+//     pair of exact figures nobody re-measures is the stale-count trap this file's own
+//     header warns about. What matters and does not drift: every `zsh` assertion here is a
+//     LOCAL result, and only the bash half is continuously enforced. Same shape as every
+//     sibling shell guard in this directory; written down here, and in the doc, rather
+//     than left for someone to infer from a test count.
 //   - The templates.md assertions at the bottom are TEXT checks, deliberately weaker than
 //     the executable core, and labelled as such. There is no second runnable copy of the
 //     block in the dispatch prompt to execute; what the prompt must carry is the pointer
@@ -146,7 +149,7 @@
 // removed afterwards; it never runs git against this repository.
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -394,7 +397,6 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
     // earlier version wrote the mutant and overwrote it with v2 on the next line, so the
     // mutant was never in the tree when the block ran — it leaned entirely on the control.)
     const dir = makeRepo();
-    writeFileSync(join(scratch(), 'backup.copy'), read(dir));
     writeFileSync(join(dir, TARGET), V2);
     git(dir, 'add', TARGET);
     git(dir, 'commit', '-q', '-m', 'sibling fix');
@@ -408,9 +410,14 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
     expect(read(dir)).toContain('SIBLING-FIX');
     expect(porcelain(dir)).toBe('');
 
-    // CONTROL: the same fixture restored the way incident (1) restored it puts back the
-    // stale v1 — the mutant is gone, which LOOKS right, and the sibling's committed fix is
-    // gone with it, silently, exit status 0.
+    // DEMONSTRATION, not a control, and labelled so after it stopped being load-bearing:
+    // the same fixture restored the way incident (1) restored it puts back the stale v1 —
+    // the mutant is gone, which LOOKS right, and the sibling's committed fix is gone with
+    // it, silently, exit status 0. It touches nothing from SKILL.md, so it cannot fail for
+    // any change under review; it is kept because the assertions above say what the block
+    // DOES and this says what the alternative would have done. Measured: deleting the
+    // block's `git checkout -- "$P"` reddens the assertions above on both shells, so they
+    // no longer lean on it.
     const control = makeRepo();
     const controlCopy = join(scratch(), 'backup.copy');
     writeFileSync(controlCopy, read(control));
@@ -465,6 +472,83 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
   it.each([
     ['precondition', () => PRECONDITION, PRECONDITION_MARK],
     ['restore', () => RESTORE, RESTORE_MARK],
+  ])('%s refuses an EMPTY $F rather than addressing the whole worktree', (_name, block, mark) => {
+    // A pathspec of `""` — and, worse, `:(literal)` of `""` — matches EVERY tracked file.
+    // Measured on git 2.52.0: `ls-files --error-unmatch -- ":(literal)"` exits 0 and lists
+    // the lot, `status --porcelain` reports them all, and `checkout --` reverts them all and
+    // exits 0. That is incident (2) — a subagent silently reverting work that is not its
+    // own — performed by the protocol block itself, printing `ok`. `$F` goes empty whenever
+    // an agent parameterises the block (`F="$TARGET"`, `F=$(…)` returning nothing) or drops
+    // the `F=` line while pasting, which is the exact shape this section is about.
+    const dir = makeRepo();
+    const BYSTANDER = 'bystander.js';
+    writeFileSync(join(dir, BYSTANDER), V1);
+    git(dir, 'add', BYSTANDER);
+    git(dir, 'commit', '-q', '-m', 'bystander');
+    // Somebody else's uncommitted work, sitting in the same tree.
+    const theirs = `${V1}// work that belongs to someone else\n`;
+    writeFileSync(join(dir, BYSTANDER), theirs);
+    writeFileSync(join(dir, TARGET), MUTANT);
+
+    const r = runBlock(shell, block(), { cwd: dir, file: '', mark });
+
+    expect(r.status).not.toBe(0);
+    expect(r.out).toMatch(/is empty/);
+    expect(r.out).not.toMatch(/^ok:/m);
+    // Nothing was touched — neither their work nor the mutant.
+    expect(read(dir, BYSTANDER)).toBe(theirs);
+    expect(read(dir)).toBe(MUTANT);
+  });
+
+  it.each([
+    ['precondition', () => PRECONDITION, PRECONDITION_MARK],
+    ['restore', () => RESTORE, RESTORE_MARK],
+  ])('%s refuses a DIRECTORY — literal magic drops wildcards, not the subtree', (_name, block, mark) => {
+    // `:(literal)` disables pattern matching, NOT directory-prefix matching. Measured:
+    // `ls-files --error-unmatch -- ":(literal)sub"` exits 0 and prints `sub/nested.js`, so a
+    // directory sails the tracked gate and `checkout --` reverts the whole subtree.
+    const dir = makeRepo();
+    mkdirSync(join(dir, 'sub'));
+    writeFileSync(join(dir, 'sub', 'nested.js'), V1);
+    git(dir, 'add', 'sub');
+    git(dir, 'commit', '-q', '-m', 'subtree');
+    const theirs = `${V1}// someone else's work under sub/\n`;
+    writeFileSync(join(dir, 'sub', 'nested.js'), theirs);
+
+    const r = runBlock(shell, block(), { cwd: dir, file: 'sub', mark });
+
+    expect(r.status).not.toBe(0);
+    expect(r.out).toMatch(/is a directory/);
+    expect(r.out).not.toMatch(/^ok:/m);
+    expect(read(dir, join('sub', 'nested.js'))).toBe(theirs);
+  });
+
+  it('restore addresses the named file literally — a `[`-bracketed name is not a pattern', () => {
+    // The behavioural half of `:(literal)`, which until now only a text check asserted.
+    // Without it, `git checkout -- "we[i]rd.js"` is a character class matching `weird.js`:
+    // the sibling gets reverted and the real mutant survives, exit status 0.
+    const dir = makeRepo();
+    const ODD = 'we[i]rd.js';
+    const SIBLING = 'weird.js';
+    writeFileSync(join(dir, ODD), V1);
+    writeFileSync(join(dir, SIBLING), V1);
+    git(dir, 'add', '-A');
+    git(dir, 'commit', '-q', '-m', 'odd names');
+    writeFileSync(join(dir, ODD), MUTANT);
+    const siblingWork = `${V1}// the sibling's own uncommitted work\n`;
+    writeFileSync(join(dir, SIBLING), siblingWork);
+
+    const r = runBlock(shell, RESTORE, { cwd: dir, file: ODD, mark: RESTORE_MARK });
+
+    expect(r.status).toBe(0);
+    expect(read(dir, ODD)).toBe(V1);
+    // The sibling the pattern would have matched is untouched.
+    expect(read(dir, SIBLING)).toBe(siblingWork);
+  });
+
+  it.each([
+    ['precondition', () => PRECONDITION, PRECONDITION_MARK],
+    ['restore', () => RESTORE, RESTORE_MARK],
   ])('%s refuses a path git does not track', (_name, block, mark) => {
     // `git status --porcelain -- <unknown path>` prints NOTHING and errors, which is
     // indistinguishable from "clean" — so without an explicit tracked check an
@@ -492,20 +576,29 @@ describe('the blocks in yolo-ship Phase 4', () => {
     expect(bashBlocks(yoloText).filter((b) => b.includes(RESTORE_MARK))).toHaveLength(1);
   });
 
-  it('each bind the target exactly once, and address it as a literal pathspec', () => {
+  it('each bind the target exactly once', () => {
     // BOTH blocks bind it. An agent's Bash calls do not share shell state, and the restore
     // runs a red test-run later — i.e. always a new shell — so a restore block that leaned
     // on the precondition's `$F` would run with it unset. (It failed closed when that
-    // happened, but named the wrong cause.)
+    // happened, but named the wrong cause.) Split from the pathspec check below so a red
+    // names one cause: a single loop asserting both died on the first and reported it.
     for (const block of [PRECONDITION, RESTORE]) {
       expect(block.split('\n').filter((l) => /^F=/.test(l))).toHaveLength(1);
+    }
+  });
+
+  it('each address the target as a literal pathspec, never as a bare $F', () => {
+    for (const block of [PRECONDITION, RESTORE]) {
       expect(block.split('\n').filter((l) => /^P=":\(literal\)\$F"$/.test(l))).toHaveLength(1);
     }
-    // And every git command addresses `$P`, not `$F`: a filename containing [ * or ? is a
-    // PATTERN to git, so a bare `$F` could check, or restore, a sibling file instead.
+    // Every git command addresses `$P`: a filename containing [ * or ? is a PATTERN to git,
+    // so a bare `$F` could check, or restore, a sibling file instead. Unquoted too — an
+    // unquoted `$F` word-splits a path with spaces into several pathspecs, and a `--  $F`
+    // in a *message* is as dangerous as one in a command, because an agent that reads an
+    // `ok:` line naming a command runs that command.
     for (const l of [...logicalLines(PRECONDITION), ...logicalLines(RESTORE)]) {
       if (!/\bgit\b/.test(l)) continue;
-      expect(l).not.toMatch(/--\s+"\$F"/);
+      expect(l).not.toMatch(/--\s+"?\$F"?(\s|$)/);
     }
   });
 
@@ -529,16 +622,23 @@ describe('the blocks in yolo-ship Phase 4', () => {
     }
   });
 
-  it('exit non-zero on EVERY refusal, not merely on one of them', () => {
+  it('match every REFUSE one-for-one with an `exit 1` — COUNTED, not paired', () => {
     // `some(/^exit 1$/)` would be satisfied by a block that kept one refusal and softened
     // the rest — measured: dropping only the dirty-branch `exit 1` left `some()` true, so
-    // the structure check passed and the mutant had to be widened to fit it. Counting pairs
-    // the gate to the message: 2 REFUSE branches in the precondition, 3 in the restore.
+    // the structure check passed and the mutant had to be widened to fit it. Counting binds
+    // the gate to the message: 4 REFUSE branches in the precondition, 5 in the restore.
+    //
+    // HONEST LIMIT, in the name rather than the fine print: this is count-equality, not
+    // pairing. Softening one refusal to a warning while adding a stray `exit 1` elsewhere
+    // keeps the counts level and passes. Deleting a whole `if` also keeps them level — that
+    // one is correct (its REFUSE and its exit go together, see M9), and the behavioural
+    // tests are what catch it. Reformatting a refusal onto one line takes both counts to 0
+    // and trips the floor: a false red, which is the right direction to be wrong in.
     for (const block of [PRECONDITION, RESTORE]) {
       const lines = logicalLines(block);
       const refusals = lines.filter((l) => /^echo "REFUSE/.test(l)).length;
       const exits = lines.filter((l) => /^exit 1$/.test(l)).length;
-      expect(refusals).toBeGreaterThanOrEqual(2);
+      expect(refusals).toBeGreaterThanOrEqual(4);
       expect(exits).toBe(refusals);
       expect(lines.some((l) => l.includes('git status --porcelain'))).toBe(true);
     }
