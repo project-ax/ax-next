@@ -59,6 +59,7 @@
     { "path": "packages/memory-facts-contract" },
     { "path": "packages/memory-facts-sqlite" },
     { "path": "packages/memory-facts-postgres" },
+    { "path": "packages/embeddings" },
     { "path": "packages/validator-routine" },
     { "path": "packages/validator-service" },
     { "path": "packages/routines" },
