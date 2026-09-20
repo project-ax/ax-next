@@ -47,9 +47,15 @@ export interface RememberedSite {
   scope: 'global' | 'user';
   rememberedAt: string;
 }
-interface EgressAllowlistListOutput {
-  sites: RememberedSite[];
-}
+/**
+ * The hook's answer, mirrored (TASK-464). `sites` exists only on the `ok` arm,
+ * exactly as `@ax/tool-policy` declares it — an `unknown` read has no list to
+ * hand over, and giving this mirror an empty array for that case would rebuild
+ * the bug on our side of the bus.
+ */
+type EgressAllowlistListOutput =
+  | { status: 'ok'; sites: RememberedSite[] }
+  | { status: 'unknown' };
 
 interface EgressAllowlistRevokeInput {
   host: string;
@@ -86,14 +92,50 @@ export function makeRememberedSitesHandlers(deps: { bus: HookBus; initCtx: Agent
         // there is nothing to show — a quiet empty list is honest here (this
         // is a read; contrast the POST-add for host-grants, which 503s
         // because a grant that can't persist must not report success).
+        //
+        // THIS IS THE ONE EMPTY ARRAY THIS ROUTE IS STILL ALLOWED TO SEND, and
+        // it survived TASK-464 because it is a different claim from the one
+        // that card is about: no producer means no allowlist exists to have
+        // anything on it, which we KNOW. Not knowing is the case below.
         res.status(200).json({ sites: [] } satisfies RememberedSitesResponse);
         return;
       }
-      const r = await bus.call<EgressAllowlistListInput, EgressAllowlistListOutput>(
-        'egress-allowlist:list',
-        ctx,
-        {},
-      );
+
+      // ONE SPELLING PER MEANING, CARRIED ACROSS THE WIRE (TASK-464): a 200
+      // body means "this is the list, however short"; a 503 means "we could not
+      // read it". The client never has to guess which an empty array was, and
+      // an intermediary — a log, a probe, a dashboard — sees a failed read as a
+      // failure rather than as a cheerful 200.
+      //
+      // 503 and not 500: nothing here malfunctioned in a way a stack trace
+      // would explain. The store we depend on could not answer, which is what
+      // 503 is for, and it is the status every other degraded read in this BFF
+      // already uses (`workspace-unavailable`, `memory-unavailable`, …).
+      let r: EgressAllowlistListOutput;
+      try {
+        r = await bus.call<EgressAllowlistListInput, EgressAllowlistListOutput>(
+          'egress-allowlist:list',
+          ctx,
+          {},
+        );
+      } catch {
+        // The hook promises not to throw, so this is the shape of a promise
+        // being broken — a newer producer, a transport error, a `returns`
+        // re-parse that rejected the body. Deliberate rather than delegated:
+        // an uncaught throw here becomes whatever the HTTP layer decides, and
+        // "we do not know" is a decision this route owns.
+        res.status(503).json({ error: 'remembered-sites-unreadable' });
+        return;
+      }
+      // `!== 'ok'` and not `=== 'unknown'`. This mirror is hand-declared, so
+      // tsc cannot warn us if the real hook grows a third arm — and an arm we
+      // have never heard of is, by definition, one we cannot describe to a
+      // reader. Unknown is the safe reading of a shape we do not recognise;
+      // "empty" is the unsafe one, and it is the one the old code picked.
+      if (r.status !== 'ok') {
+        res.status(503).json({ error: 'remembered-sites-unreadable' });
+        return;
+      }
       res.status(200).json({ sites: r.sites } satisfies RememberedSitesResponse);
     },
 

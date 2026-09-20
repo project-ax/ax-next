@@ -24,7 +24,16 @@ export interface RememberedSite {
   rememberedAt: string;
 }
 
-/** Every site `web_extract` may read without asking — this user's grants plus any admin-set global ones. */
+/**
+ * Every site `web_extract` may read without asking — this user's grants plus
+ * any admin-set global ones.
+ *
+ * RESOLVING IS THE ONLY WAY THIS SAYS "THE LIST IS EMPTY" (TASK-464). A
+ * non-200 throws, and the server now answers 503 when the allowlist could not
+ * be read at all, so a caller can never mistake a failed read for a short one.
+ * The corollary is a rule for callers: a rejection means UNKNOWN, and a
+ * surface that renders it as "nothing allowed" has put the bug back.
+ */
 export async function listRememberedSites(): Promise<RememberedSite[]> {
   const res = await httpFetch('/api/chat/remembered-sites', { credentials: 'include' });
   if (!res.ok) throw new HttpError('/api/chat/remembered-sites', res.status);

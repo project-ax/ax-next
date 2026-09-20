@@ -2,12 +2,33 @@ import { useCallback, useEffect, useState } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { logRequestFailure } from '@/lib/http';
 import {
   listRememberedSites,
   forgetRememberedSite,
   type RememberedSite,
 } from '@/lib/remembered-sites';
+
+/**
+ * What we know about the list right now — three states, and the reason this is
+ * a union rather than `sites: RememberedSite[] | null` plus an error string
+ * beside it (TASK-464).
+ *
+ * The old pair could hold `{ sites: [], error: '…' }`, and it did: the catch
+ * set BOTH, so a failed read rendered the empty-state sentence with a banner
+ * over it. Two claims about the same fact, one of them false. Here `sites`
+ * exists only in `ok`, so "we could not read it" has no empty list to be
+ * confused with and the renderer cannot draw one.
+ *
+ * `unknown` is the state, not the reason. The reason is a status code and a
+ * request path; it goes to the console via `logRequestFailure`, because that is
+ * where it helps and a screen is where it does not.
+ */
+type ListState =
+  | { status: 'loading' }
+  | { status: 'ok'; sites: RememberedSite[] }
+  | { status: 'unknown' };
 
 /**
  * "Sites we read without asking" — the durable per-user set of hosts
@@ -20,12 +41,15 @@ import {
  * button renders for one, and the server would decline (`revoked: false`)
  * if asked anyway.
  *
+ * THREE STATES, NOT TWO (TASK-464): loading, the list, and "we could not read
+ * it". The third is not a decoration on the second — see `ListState`, and see
+ * the render branch, which draws no list at all when it does not have one.
+ *
  * shadcn primitives + semantic tokens only (invariant #6). Hosts render
  * through React text nodes (auto-escaped); never raw inner HTML.
  */
 export function RememberedSitesPanel() {
-  const [sites, setSites] = useState<RememberedSite[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [list, setList] = useState<ListState>({ status: 'loading' });
   // Lives HERE, not in a per-row component. A successful revoke removes the
   // ROW that triggered it (the panel re-reads and that host is gone), but the
   // PANEL itself survives its own revoke — so the notice has to be state this
@@ -38,17 +62,22 @@ export function RememberedSitesPanel() {
 
   const load = useCallback(() => {
     return listRememberedSites()
-      .then((s) => {
-        setSites(s);
-        // Clear a previous failure on a read that worked. A stale "couldn't
-        // load" banner sitting above a freshly-read list is a claim about data
-        // that is no longer on screen — the same reason the agent rail drops
-        // its rows when a read fails rather than showing them beside an error.
-        setError(null);
+      .then((sites) => {
+        // A read that worked replaces whatever came before it, failure
+        // included. A stale "couldn't load" banner sitting above a freshly-read
+        // list is a claim about data that is no longer on screen — the same
+        // reason the agent rail drops its rows when a read fails rather than
+        // showing them beside an error.
+        setList({ status: 'ok', sites });
       })
       .catch((e: unknown) => {
-        setError(e instanceof Error ? e.message : String(e));
-        setSites([]);
+        // UNKNOWN, NEVER EMPTY (TASK-464). The old line here was
+        // `setSites([])`, which handed the renderer the exact value a person
+        // with nothing remembered produces — so a failed read of a security
+        // allowlist drew "Nothing here yet". There is no `sites` to set on this
+        // arm, which is the point of the union above.
+        logRequestFailure(e, 'remembered-sites');
+        setList({ status: 'unknown' });
       });
   }, []);
 
@@ -97,22 +126,57 @@ export function RememberedSitesPanel() {
         </p>
       </div>
 
-      {error && (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
+      {/*
+        THE UNKNOWN STATE STANDS IN FOR THE LIST — it is not drawn above one
+        (TASK-464). A banner over an empty card would still be showing somebody
+        an empty list, and the empty list is the false claim. So on `unknown`
+        there is no Card at all: nothing on screen asserts what is or is not
+        allowed, because we do not know.
 
+        `destructive` follows `lib/read-register.ts`: a failed read that no
+        automatic retry is coming back for stays red until the reader acts, and
+        the button below is that action. It gets an `AlertTitle` because the
+        surface holds positive evidence for exactly the claim the title makes —
+        its own read failed — and the title asserts nothing about the list.
+      */}
+      {list.status === 'unknown' ? (
+        <Alert variant="destructive">
+          <AlertTitle>We couldn’t load your list</AlertTitle>
+          <AlertDescription className="flex flex-col items-start gap-2">
+            {/*
+              "Not the same as empty" is the whole message and it is said first,
+              because the reader's default reading of a blank settings panel is
+              "there is nothing here" and that is the reading we have to undo.
+              No status code, no request path, no exception text — none of it is
+              something a person can act on (TASK-358's standing bar). What they
+              can act on is the button.
+            */}
+            <span>
+              That’s not the same as your list being empty — we just can’t see it right
+              now. Nothing has changed. Try again in a moment.
+            </span>
+            <Button variant="outline" size="sm" onClick={() => void load()}>
+              Try again
+            </Button>
+          </AlertDescription>
+        </Alert>
+      ) : (
       <Card className="divide-y divide-border">
-        {sites === null && !error && (
+        {list.status === 'loading' && (
           <div className="px-4 py-3 text-sm text-muted-foreground">Loading…</div>
         )}
-        {sites !== null && sites.length === 0 && (
+        {list.status === 'ok' && list.sites.length === 0 && (
           <div className="px-4 py-3 text-sm text-muted-foreground">
+            {/*
+              THE ONLY PLACE THIS SENTENCE IS ALLOWED, and it is reachable from
+              exactly one state: a read that came back. "Nothing here yet" is a
+              claim about what this person has agreed to, and we may only make
+              it when we have actually seen the list.
+            */}
             Nothing here yet — we’ll ask the first time your assistant wants to read a new site.
           </div>
         )}
-        {(sites ?? []).map((site) => {
+        {(list.status === 'ok' ? list.sites : []).map((site) => {
           const date = rememberedDate(site.rememberedAt);
           return (
             <div
@@ -148,10 +212,20 @@ export function RememberedSitesPanel() {
             </div>
           );
         })}
-        {notice && (
-          <div className="px-4 py-2.5 text-xs text-muted-foreground">{notice}</div>
-        )}
       </Card>
+      )}
+
+      {/*
+        OUTSIDE THE CARD, and outside the unknown/ok branch with it. The notice
+        reports what the DELETE did, which is a fact about the revoke and not
+        about the list — so it must not unmount when the list changes shape.
+        Inside the Card it did: a revoke that succeeded and was followed by a
+        re-read that failed swapped the whole Card for the alert and took the
+        confirmation with it, leaving somebody who had just clicked "Ask again"
+        with no word on whether it worked. That is the #611 lesson one level up
+        — the notice belongs to the PANEL, not to the row and not to the Card.
+      */}
+      {notice && <p className="px-1 text-xs text-muted-foreground">{notice}</p>}
     </section>
   );
 }

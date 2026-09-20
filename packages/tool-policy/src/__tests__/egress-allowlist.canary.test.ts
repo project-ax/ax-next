@@ -194,13 +194,28 @@ async function verdict(h: TestHarness, userId: string, url: string): Promise<str
   return out.verdict;
 }
 
-/** What the settings panel would show this person, as `[host, scope]` pairs. */
+/**
+ * What the settings panel would show this person, as `[host, scope]` pairs.
+ *
+ * THE NARROWING IS THE ANTI-VACUITY GUARD (TASK-464), and it replaces an
+ * ordering trick with a type. TASK-469 found that `expect(await sites(...))
+ * .toEqual([])` could pass over a read that never reached Postgres — mutant M13
+ * made `listFor` throw and the hook swallowed it into `{ sites: [] }` — and
+ * worked around it by reading the list BEFORE the revoke, so that `[]`
+ * afterwards meant the row went away. That workaround is still below and still
+ * worth having, but it was defending against a value this hook can no longer
+ * produce: an unreadable list is `status: 'unknown'` now, and it stops the test
+ * here instead of quietly satisfying it.
+ */
 async function sites(h: TestHarness, userId: string): Promise<[string, string][]> {
   const out = await h.bus.call<unknown, EgressListOutput>(
     'egress-allowlist:list',
     h.ctx({ userId }),
     {},
   );
+  if (out.status !== 'ok') {
+    throw new Error(`expected a readable list for ${userId}, got status=${out.status}`);
+  }
   return out.sites.map((s) => [s.host, s.scope]);
 }
 
@@ -640,12 +655,11 @@ describe('egress allowlist canary', () => {
       }),
     ).toEqual({ remembered: true });
 
-    const out = await h.bus.call<unknown, EgressListOutput>(
-      'egress-allowlist:list',
-      h.ctx({ userId: 'alice' }),
-      {},
-    );
-    expect(out.sites.map((s) => [s.host, s.scope])).toEqual([['example.com', 'global']]);
+    // Through the narrowing helper rather than a bare call, so this one is
+    // covered by the same anti-vacuity guard as every other list read here: a
+    // read that failed cannot arrive as a one-row answer, and cannot arrive as
+    // an empty one either.
+    expect(await sites(h, 'alice')).toEqual([['example.com', 'global']]);
   });
 
   it('leaves the rail row honest about the contingency', async () => {
