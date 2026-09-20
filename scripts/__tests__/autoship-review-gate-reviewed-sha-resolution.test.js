@@ -51,19 +51,26 @@
 //
 // The doc IS the implementation -- there is no second copy in a script to drift from it.
 //
-// MUTANTS RUN, NOT REASONED ABOUT (2026-09-20, macOS, bash 3.2 + zsh 5.9; this file's
-// baseline is 19 passed, and 26 when the sibling text-scan guard is collected with it,
-// which is how the counts below were taken -- every mutant still collects 26, so none
-// of them reddened by making the suite smaller):
+// MUTANTS RUN, NOT REASONED ABOUT (re-derived 2026-09-20 on git 2.52.0, macOS, bash 3.2
+// + zsh 5.9; this file's baseline is 21 passed, and 28 when the sibling text-scan guard
+// is collected with it, which is how the counts below were taken -- every mutant still
+// collects 28, so none of them reddened by making the suite smaller. An earlier draft of
+// this note recorded 19/26 and the counts that go with them; it was written before the
+// failed-fetch test existed, and two of its numbers were wrong. Both corrections are
+// called out inline below, because a stale mutant table is worse than none: it reads as
+// evidence):
 //
 //   - revert the whole Q2 block to its pre-TASK-479 text (`REVIEWED_SHA=<reviewed-sha>`
-//     spliced straight into the two ranges) -> 12 red: abbreviation, `-`, empty,
-//     unknown-sha, ambiguous and off-branch, x both shells. The full-sha and vacuity
-//     cases stay green, which is the point -- the fix changed no behaviour for a
-//     well-formed handoff.
+//     spliced straight into the two ranges) -> 14 red: abbreviation, `-`, empty,
+//     unknown-sha, ambiguous, off-branch and failed-fetch, x both shells. (The earlier
+//     note said 12, counting the six cases that predated the fetch guard.) The full-sha
+//     and the two vacuity cases stay green, which is the point -- the fix changed no
+//     behaviour for a well-formed handoff.
 //   - delete ONLY the `merge-base --is-ancestor` arm (keep resolution + the 40-char
 //     assert) -> 2 red: the off-branch case x both shells. Nothing else moves, so that
-//     arm is carrying its own property and is not decoration on the resolve.
+//     arm is carrying its own property and is not decoration on the resolve. It is also
+//     the only arm with no single-mutant substitute -- see the bare-`rev-parse` entry
+//     below, where it silently covers a case the resolve was credited with.
 //   - drop the `|| { … exit 1; }` guard from the `git fetch` line -> 2 red: the
 //     failed-fetch case x both shells. Added after review; the two stale directions are
 //     not symmetric, and the one that hides work is the one this gate exists to close.
@@ -75,16 +82,21 @@
 //     queue moving through an independent pass instead of stalling every card behind a
 //     typo. (The off-branch case joined this list at review: see its test.)
 //   - swap `--verify --quiet "${RAW_REVIEWED}^{commit}"` for a bare
-//     `git rev-parse "${RAW_REVIEWED}"` -- dropping the flags AND the `^{commit}` peel,
-//     which matters -> 2 red, NOT the 4 predicted. Only the unknown-sha case x both
-//     shells. The prediction assumed ambiguity rides on `--verify`; it does not -- bare
-//     `rev-parse` fails on an ambiguous prefix too, so the `||` arm still fires and that
-//     case stays green. What `--verify` uniquely buys is the 40-hex-looking string that
-//     names nothing: bare `rev-parse` assumes anything sha-shaped IS a sha, echoes it
-//     back and exits 0, so `REVIEWED_SHA` ends up holding the garbage it was handed.
-//     One property, not two. Keep the peel while dropping the flags and you measure 0
-//     red instead, because `<unknown40hex>^{commit}` forces a lookup and errors --
-//     a mutant is a claim about an EDIT, and this one is two edits.
+//     `git rev-parse "${RAW_REVIEWED}"` -- dropping the flags AND the `^{commit}` peel
+//     -> 0 red. The earlier note claimed 2 (the unknown-sha case); re-running it measures
+//     0, and the correction is worth more than the number. The premise is right: bare
+//     `rev-parse` assumes anything sha-shaped IS a sha, so `rev-parse
+//     dead0beefdead0beefdead0beefdead0beefdead` echoes it back at rc 0 (measured, git
+//     2.52.0) and `REVIEWED_SHA` ends up holding garbage. The conclusion was wrong,
+//     because the garbage does not survive the next line: a nonexistent object is not an
+//     ancestor of anything, so the `merge-base --is-ancestor` arm rejects it and fails
+//     closed. The two arms OVERLAP on this case, and the ancestry arm wins. Keep the
+//     peel while dropping the flags and it is still 0 red. So the flags buy DIAGNOSIS,
+//     not the property: `--verify --quiet` yields an empty string and the
+//     "missing/ambiguous/unknown" line, where the bare form gets there via a `merge-base`
+//     error on stderr and the wordier non-ancestor line. They stay for the message.
+//     (Note the shape of the error this replaces: a mutant table quoted, not re-run,
+//     that says a line is load-bearing when it is not.)
 //   - delete the `[ ${#REVIEWED_SHA} -eq 40 ]` assert alone -> 0 red. Recorded because
 //     a passing mutant is data too: with resolution in place that assert is genuinely
 //     belt-and-braces, and it is kept because it is the line that stops a future edit
