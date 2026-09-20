@@ -556,9 +556,11 @@ describe('reclaimGrantDeclines', () => {
   */
   it('does not destroy a decline written after the snapshot it is deleting from', async () => {
     const ctx = makeCtx(() => {});
-    let kv: Kv;
     const raced: string[] = [];
-    kv = kvBus({
+    // Declared `const` and closed over BEFORE it is assigned: `onDelete` only
+    // runs once the reclaim is in flight, which is strictly after `kvBus`
+    // returns.
+    const kv: Kv = kvBus({
       onDelete: async (k) => {
         // Once, and only for the key under test: the person presses "Not now"
         // again while this very delete is in flight.
