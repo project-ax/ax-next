@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { logRequestFailure } from '@/lib/http';
 import {
   listRememberedSites,
@@ -135,26 +135,37 @@ export function RememberedSitesPanel() {
 
         `destructive` follows `lib/read-register.ts`: a failed read that no
         automatic retry is coming back for stays red until the reader acts, and
-        the button below is that action. It gets an `AlertTitle` because the
-        surface holds positive evidence for exactly the claim the title makes —
-        its own read failed — and the title asserts nothing about the list.
+        the button below is that action.
+
+        NO `AlertTitle`, and that is a decision rather than an omission. Two of
+        them, actually. `read-register.ts` already warns against handing every
+        alert a heading — this section's own `h2` names the thing, and a second
+        heading inside it says nothing the sentence does not. And mechanically,
+        `ui/alert.tsx` hardcodes `AlertTitle` to `<h5>`, so one here lands as an
+        h2 → h5 jump in the outline TASK-446 shipped; `ConnectorsTab.test.tsx`
+        catches it, which is how this comment came to exist.
       */}
       {list.status === 'unknown' ? (
         <Alert variant="destructive">
-          <AlertTitle>We couldn’t load your list</AlertTitle>
           <AlertDescription className="flex flex-col items-start gap-2">
             {/*
-              "Not the same as empty" is the whole message and it is said first,
-              because the reader's default reading of a blank settings panel is
-              "there is nothing here" and that is the reading we have to undo.
-              No status code, no request path, no exception text — none of it is
-              something a person can act on (TASK-358's standing bar). What they
-              can act on is the button.
+              "Not the same as empty" is the whole message, and it comes
+              immediately after the admission, because the reader's default
+              reading of a blank settings panel is "there is nothing here" — and
+              that is the reading we have to undo. No status code, no request
+              path, no exception text: none of it is something a person can act
+              on (TASK-358's standing bar). What they can act on is the button.
+
+              "Nothing has changed" is the reassurance we are actually entitled
+              to. A failed read changes nothing, and it is deliberately NOT the
+              stronger-sounding "your sites are still allowed" — during a
+              storage outage the enforcement read fails closed too, and we would
+              be promising the opposite of what happens.
             */}
-            <span>
-              That’s not the same as your list being empty — we just can’t see it right
-              now. Nothing has changed. Try again in a moment.
-            </span>
+            <p>
+              <strong>We couldn’t load your list.</strong> That’s not the same as it
+              being empty — we just can’t see it right now. Nothing has changed.
+            </p>
             <Button variant="outline" size="sm" onClick={() => void load()}>
               Try again
             </Button>

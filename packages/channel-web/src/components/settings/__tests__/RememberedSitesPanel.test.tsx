@@ -94,8 +94,10 @@ describe('RememberedSitesPanel', () => {
    * assert is real in jsdom: which strings the component was handed, and the
    * accessibility tree (`role="alert"`, the button's accessible name).
    */
-  const UNKNOWN_COPY =
-    /That’s not the same as your list being empty — we just can’t see it right\s+now\./;
+  // A matcher, not a literal: the sentence is split across a `<strong>` and JSX
+  // whitespace, so `getByText('…')` on the whole thing would never match. The
+  // distinctive clause is enough and it is the clause that carries the meaning.
+  const UNKNOWN_COPY = /That’s not the same as it being empty/;
   const EMPTY_COPY =
     'Nothing here yet — we’ll ask the first time your assistant wants to read a new site.';
 
@@ -155,6 +157,17 @@ describe('RememberedSitesPanel', () => {
     expect(screen.queryAllByTestId(/^remembered-site-/)).toHaveLength(0);
     expect(screen.queryByText(EMPTY_COPY)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Ask again' })).toBeNull();
+
+    // AND IT ADDS NO HEADING. `ui/alert.tsx` hardcodes `AlertTitle` to `<h5>`,
+    // so the obvious "We couldn't load your list" title lands as an h2 → h5
+    // jump under this section's own heading — `ConnectorsTab.test.tsx` caught
+    // exactly that while this was being built. Pinned here as well, because the
+    // temptation to add the title back lives in THIS file, and the test that
+    // would object is three directories away.
+    expect(
+      within(screen.getByRole('alert')).queryAllByRole('heading', { hidden: true }),
+    ).toHaveLength(0);
+    expect(screen.getByRole('heading', { name: 'Sites we read without asking' })).toBeInTheDocument();
   });
 
   it('keeps the revoke notice when the re-read afterwards fails', async () => {
