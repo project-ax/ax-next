@@ -212,7 +212,7 @@ ONE=$(git -c core.quotePath=false ls-files -- "$P")
 if [ "$ONE" != "$F" ]; then
   N=$(printf '%s\n' "$ONE" | wc -l | tr -d ' ')
   echo "REFUSE: that pathspec is not the one file you named."
-  echo "  matched $N path(s): $(printf '%s' "$ONE" | tr '\n' ' ' | cut -c1-120)"
+  echo "  matched $N path(s): $(printf '%s' "$ONE" | tr '\n' ' ' | cut -c1-120)…"
   echo "  Name ONE tracked file, spelled relative to the worktree root — not an"
   echo "  absolute path, not a directory. The same path repeated means it is"
   echo "  unmerged; resolve the conflict first."
@@ -256,7 +256,7 @@ ONE=$(git -c core.quotePath=false ls-files -- "$P")
 if [ "$ONE" != "$F" ]; then
   N=$(printf '%s\n' "$ONE" | wc -l | tr -d ' ')
   echo "REFUSE: that pathspec is not the one file you named."
-  echo "  matched $N path(s): $(printf '%s' "$ONE" | tr '\n' ' ' | cut -c1-120)"
+  echo "  matched $N path(s): $(printf '%s' "$ONE" | tr '\n' ' ' | cut -c1-120)…"
   echo "  Name ONE tracked file, spelled relative to the worktree root — not an"
   echo "  absolute path, not a directory. The same path repeated means it is"
   echo "  unmerged; resolve the conflict first."

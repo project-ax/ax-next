@@ -136,8 +136,8 @@
 //     block in the dispatch prompt to execute; what the prompt must carry is the pointer
 //     and the per-role rule, and text is the only surface that has ever carried those.
 //
-// MUTANTS RUN, NOT REASONED ABOUT (2026-09-19, macOS + zsh + git 2.52.0; baseline **64
-// passed**). Re-measured **in full after each of five review rounds**, because a round
+// MUTANTS RUN, NOT REASONED ABOUT (2026-09-19, macOS + zsh + git 2.52.0; baseline **68
+// passed**). Re-measured **in full after each of six review rounds**, because a round
 // changes the test set and a stale count is worse than none — a rule this file broke twice
 // and a reviewer caught both times. Every mutant was applied to the COMMITTED text and
 // restored with `git checkout --`; `git status --porcelain` was empty before and after each.
@@ -146,12 +146,14 @@
 // says which kind it is:
 //
 //   M1. RESTORED VERBATIM — `git show origin/main:.claude/skills/yolo-ship/SKILL.md >` the
-//       file, i.e. the pre-fix text, which carries NEITHER marked block -> **47 red of 64**.
+//       file, i.e. the pre-fix text, which carries NEITHER marked block -> **47 red of 68**.
 //       The extractor finds 0 of each, `runBlock` throws by design naming the reason, and
-//       every behavioural case plus every block-structure check reds out. The 17 survivors
-//       are the 13 predicate table cases (which read no file), `logicalLines keeps a command
-//       a comment tried to swallow`, and the three templates.md text checks. This is the
-//       mutant the card asks for: the guard fails against the text as it stands on `main`.
+//       every behavioural case plus every block-structure check reds out. The **21**
+//       survivors are the 17 predicate table rows (which read no file), `logicalLines keeps
+//       a command a comment tried to swallow`, and the three templates.md text checks. The
+//       survivor count grows whenever a table row is added, which is expected rather than a
+//       regression. This is the mutant the card asks for: the guard fails against the text
+//       as it stands on `main`.
 //   M2. CONSTRUCTED, one token: drop ONLY the dirty-branch `exit 1` from the precondition
 //       -> **5 red**. The plausible regression: someone "softens" a refusal into a warning.
 //       **This mutant is why the structure check counts instead of using `.some()`.** In an
@@ -239,6 +241,18 @@
 //       is why both `$F` predicates are now named functions with a TABLE TEST: as bare
 //       loops over clean block text they passed VACUOUSLY, so a widened predicate was
 //       invisible. The guard's own guard had the defect the guard exists to catch.
+//  M17. CONSTRUCTED, of THIS FILE: NARROW both predicates from `\$\{?F\b` to `\$F\b`,
+//       dropping the `${F}` brace form -> **2 red**, the two brace rows. Before those rows
+//       existed this narrowing reddened NOTHING: the table caught widenings (M16) and was
+//       blind to the other direction. A table of known-bad inputs only guards one way.
+//  M18. CONSTRUCTED, of THIS FILE: drop `isWholeEcho`'s `$(`/backtick clause -> **1 red**.
+//       `echo "$(git checkout -- $F)"` starts with `echo` but RUNS git; without the clause
+//       it was flagged by the MESSAGE rule, so the red named the wrong cause. Not a safety
+//       hole — it was still flagged — which is why only an attribution test finds it.
+//  M19. CONSTRUCTED, of THIS FILE: drop `withoutRedirections`'s `&>` clause -> **1 red**.
+//       Its sibling `\d?>&\d?` clause was already pinned; a third, `\d?>>?`, was measured
+//       DEAD (it can neither introduce nor remove a `[;&|]`) and has been deleted rather
+//       than left looking load-bearing.
 //
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally — no network,
 // no Docker, no build. Every git repository it touches is created under a temp dir and
@@ -337,13 +351,28 @@ function logicalLines(block) {
     .filter(Boolean);
 }
 
-/** A logical line with its shell redirections removed, so `>&2` is not a separator. */
+/**
+ * A logical line with the `&` that belongs to a REDIRECTION removed, so `>&2` and `&>log`
+ * do not read as command separators.
+ *
+ * Only the two clauses that can carry an `&` are here. A third, `.replace(/\d?>>?/g, ' ')`,
+ * was measured DEAD: it removes only `>` and digits, neither of which is in `[;&|]`, and it
+ * substitutes a space so it cannot join anything into `&&` either. Deleting it reddened
+ * nothing, so it is gone rather than left looking load-bearing.
+ */
 function withoutRedirections(line) {
-  return line.replace(/\d?>&\d?/g, ' ').replace(/&>/g, ' ').replace(/\d?>>?/g, ' ');
+  return line.replace(/\d?>&\d?/g, ' ').replace(/&>/g, ' ');
 }
 
-/** Is `line` a single `echo` and nothing else? */
+/**
+ * Is `line` a single `echo` and nothing else — i.e. a MESSAGE rather than a command?
+ *
+ * Command substitution disqualifies it: `echo "$(git checkout -- $F)"` starts with `echo`
+ * but RUNS git, so it belongs to `gitInvocationTakesBareF`. Without the `$(`/backtick
+ * clause it was flagged by the message rule instead, and the red named the wrong cause.
+ */
 function isWholeEcho(line) {
+  if (/\$\(|`/.test(line)) return false;
   return /^echo\b/.test(line) && !/[;&|]/.test(withoutRedirections(line));
 }
 
@@ -383,11 +412,15 @@ function gitInvocationTakesBareF(line) {
  */
 function messageOffersBareF(line) {
   // `isWholeEcho`, not `^echo`: a line that merely STARTS with echo and then invokes git
-  // is an invocation, and belongs to `gitInvocationTakesBareF` so the red names one cause.
+  // — by separator or by command substitution — is an invocation, and belongs to
+  // `gitInvocationTakesBareF` so the red names one cause.
   if (!isWholeEcho(line)) return false;
   const at = line.search(/\bgit\b/);
   if (at === -1) return false;
-  return /\$\{?F\b|\\\$\{?F\b/.test(line.slice(at));
+  // `\$\{?F\b` covers `$F` and `${F}`. (An earlier `|\\\$\{?F\b` alternative was
+  // unreachable: any string matching it contains `$F`, which the first alternative matches
+  // one character later.)
+  return /\$\{?F\b/.test(line.slice(at));
 }
 
 const PRECONDITION_MARK = '# ax-mutation-restore: precondition';
@@ -723,9 +756,13 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
   });
 
   it.each([
-    ['precondition', () => PRECONDITION, PRECONDITION_MARK],
-    ['restore', () => RESTORE, RESTORE_MARK],
-  ])('%s refuses a DELETED directory — the filesystem test cannot see it', (_name, block, mark) => {
+    // The 4th element is the block's OWN competing refusal — the one that would fire if the
+    // scope gate were gone. Per-half, because the two blocks have different competitors.
+    ['precondition', () => PRECONDITION, PRECONDITION_MARK, /carries uncommitted work/],
+    ['restore', () => RESTORE, RESTORE_MARK, /already clean/],
+  ])(
+    '%s refuses a DELETED directory — the filesystem test cannot see it',
+    (_name, block, mark, competing) => {
     // The reason the scope gate asks GIT rather than the filesystem. A `[ -d "$F" ]` test
     // is FALSE for a directory that has been removed from disk — and "delete the whole
     // module and watch the canary go red" is an ordinary mutant here, blessed explicitly by
@@ -755,20 +792,27 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
 
     const r = runBlock(shell, block(), { cwd: dir, file: 'sub', mark });
 
+    // WHICH gate refused matters here, and the order of these two lines is the point. A
+    // deleted directory is dirty, so the precondition's dirty-branch refuses it even with
+    // the scope gate gone — the precondition half can only ever red on the MESSAGE, never
+    // on the exit status. So the competing refusal is excluded FIRST, and it is the
+    // block's OWN competitor, passed in per parameterisation.
+    //
+    // An earlier version of this put a single `not.toMatch(/carries uncommitted work/)`
+    // AFTER the positive assertion and in the shared body. It did nothing twice over: the
+    // positive assertion throws first under M14 so the line never executed, and the restore
+    // block cannot emit that string at all, so 2 of the 4 cases asserted an unreachable
+    // one. Caught in review — the vacuity class this file is about, in the assertion added
+    // to close it.
+    expect(r.out).not.toMatch(competing);
     expect(r.status).not.toBe(0);
     expect(r.out).toMatch(/not the one file you named/);
     expect(r.out).not.toMatch(/^ok:/m);
-    // WHICH gate refused matters here. A deleted directory is dirty, so the precondition's
-    // dirty-branch would refuse it even with the scope gate gone — which is why the
-    // precondition half of this case can only ever red on the MESSAGE, never on the exit
-    // status (measured; an earlier version of the M14 entry claimed otherwise). Asserting
-    // the dirty-branch did NOT fire is what stops that message red being satisfied by the
-    // wrong refusal.
-    expect(r.out).not.toMatch(/carries uncommitted work/);
     // The block restored NOTHING: an agent mutating by deletion keeps its mutant, and a
     // bystander's deletions under the same subtree are not silently undone either.
     expect(existsSync(join(dir, 'sub'))).toBe(false);
-  });
+    },
+  );
 
   it.each([
     ['precondition', () => PRECONDITION, PRECONDITION_MARK],
@@ -926,8 +970,20 @@ describe('the blocks in yolo-ship Phase 4', () => {
     ['echo "  recover with git --no-pager checkout -- $F"', false, true],
     ['echo "  recover with git -C . checkout -- $F"', false, true],
     // A refusal routed to stderr is a WHOLE echo: the `&` belongs to the redirection, not
-    // to a command separator, and rejecting it would punish a reasonable future edit.
+    // to a command separator, and rejecting it would punish a reasonable future edit. Both
+    // redirection forms, because each is a separate clause of `withoutRedirections` and
+    // deleting the `&>` one reddened nothing until this row existed.
     ['echo "REFUSE: $F bad - git says no" >&2', false, false],
+    ['echo "REFUSE: $F bad - git says no" &> log', false, false],
+    // The BRACE form of both predicates. Without these two rows, NARROWING both regexes
+    // from `\$\{?F\b` to `\$F\b` reddened nothing — the table caught widenings but was
+    // blind to the other direction.
+    ['git checkout -- "${F}"', true, false],
+    ['echo "  recover with git checkout -- ${F}"', false, true],
+    // Command substitution RUNS git, so it is an invocation however it starts. Before
+    // `isWholeEcho` rejected `$(`, this was flagged by the message rule and the red named
+    // the wrong cause.
+    ['echo "$(git checkout -- $F)"', true, false],
   ])('predicates classify %s', (line, invocation, message) => {
     expect({ invocation: gitInvocationTakesBareF(line), message: messageOffersBareF(line) })
       .toEqual({ invocation, message });
