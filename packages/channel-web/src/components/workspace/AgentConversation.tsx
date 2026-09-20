@@ -1095,16 +1095,30 @@ function Message({
       `whitespace-pre-line` because that helper may join an authored label and
       the optional untrusted `detail` line with a newline. It is a text node,
       never markup.
+
+      IT KEEPS ITS CLOCK, like the agent bubble it stands in for — and for the
+      same reason the row is not hoisted: WHEN a turn failed is most of what
+      makes it legible as history rather than as now. `localTime` returns null
+      for a missing or unparseable instant and the row is then drawn without
+      one, which is the honest render of "we do not have a time to show".
     */
+    const failedAt = localTime(m.at);
     return (
       <div className="flex gap-3">
         <AgentTile agent={agent} />
-        <Alert variant="destructive" className="max-w-[80%]">
-          <AlertTriangle size={14} />
-          <AlertDescription className="whitespace-pre-line">
-            {turnErrorText(m.reason, m.detail)}
-          </AlertDescription>
-        </Alert>
+        <div className="min-w-0 flex-1">
+          <Alert variant="destructive" className="max-w-[600px]">
+            <AlertTriangle size={14} />
+            <AlertDescription className="whitespace-pre-line">
+              {turnErrorText(m.reason, m.detail)}
+            </AlertDescription>
+          </Alert>
+          {failedAt !== null && (
+            <div className="mt-1.5 text-[11.5px] text-muted-foreground">
+              {failedAt}
+            </div>
+          )}
+        </div>
       </div>
     );
   }
