@@ -131,6 +131,93 @@ Per-phase line catalogue (prefix exceptions with `⚠`):
 - **Did a stale line generate this card?** If so it is fixed in this branch (contract rule 5) — verify it is actually in the diff before the gate passes.
 - **Progress:** `build+test+lint green` (or `⚠ gate red — <tool/suite>`).
 
+#### Mutation testing: restore without clobbering (REQUIRED whenever you mutate a file)
+
+Proving a guard reddens means writing a mutant into a real file and then putting the file
+back. **Putting it back is where the damage has happened** — four measured incidents on
+2026-09-18/19, across three different restore mechanisms, and the two obvious remedies
+point in opposite directions:
+
+- A builder restored a mutated file **from a file copy** and silently reverted a fix another
+  agent had **committed** to the same worktree in between. Caught only because a checksum
+  moved underneath it (TASK-406; the clobber never reached a commit).
+- A **reviewer subagent runs in the builder's worktree**, and its `git checkout -- <file>`
+  silently reverted **six of the builder's uncommitted edits**. The builder then debugged the
+  reviewer's mutant as its own code. (TASK-471 owns the reviewer-side dispatch protocol; this
+  section owns the per-role rule it builds on.)
+- Two builders, independently, lost work to `git checkout -- <path>` because **it reverts the
+  WHOLE file, not just your mutation** — one a 25-line comment, one its entire uncommitted fix.
+- One reviewer, handed the hazard in its brief, restored from its own copy with
+  `git status --porcelain` clean before, between and after every mutation. The behaviour is
+  achievable; what was missing is that it only happened because a human typed it into a brief.
+
+**The rule is one rule, not one per mechanism:**
+
+> **`git checkout -- <path>` restores exactly what you mutated and nothing else, if and only
+> if that path was committed-clean *before* you mutated it.** Make it clean first, or do not
+> mutate it.
+
+That precondition — not the choice of restore command — is what the four cases disagree about:
+
+| you are | the path is | do |
+| --- | --- | --- |
+| the worktree **owner** | clean | mutate; restore with `git checkout -- <path>` |
+| the worktree **owner** | carrying uncommitted work | **commit it first**, then mutate. `git checkout --` would take the uncommitted work with the mutant; a file copy would revert whatever lands while you mutate. |
+| a **subagent in someone else's worktree** (reviewer, helper) | clean | mutate; restore with `git checkout -- <path>` |
+| a **subagent in someone else's worktree** | carrying uncommitted work | **do not mutate it.** You may not commit someone else's work-in-progress onto their branch, and you may not restore over it. Stop and say so. |
+
+So *"commit before you mutate"* is the **owner's** way of satisfying the precondition, and for
+the owner it is the right instruction — it is the one sentence that covers all four incidents
+from the owner's chair. It is the **wrong** instruction for a subagent in a tree it does not
+own, which is the whole reason this is stated as the precondition rather than as the commit.
+And a guard that only says "use `git checkout --`" is half the problem restated: that is the
+recommended restore for an owner who committed first and the destructive one for everybody else.
+
+**A file copy is never the restore.** A copy writes back whatever the file looked like when the
+copy was taken, so anything committed in between is silently undone and nothing reports it.
+`git checkout --` restores the *committed* content, so a concurrent commit survives it.
+
+Run this **before** you write the mutant, from your worktree root:
+
+```bash
+# ax-mutation-restore: precondition — run BEFORE you write the mutant.
+F="<the file you are about to mutate>"
+
+if [ -n "$(git status --porcelain -- "$F")" ]; then
+  echo "REFUSE: $F carries uncommitted work — every restore from here is lossy."
+  echo "  owner of this worktree: commit $F first, then mutate."
+  echo "  subagent in someone else's worktree: do NOT commit it and do NOT restore it;"
+  echo "  stop and ask the owner to commit before you mutate."
+  exit 1
+fi
+echo "ok: $F is committed-clean — git checkout -- $F restores it exactly."
+```
+
+and this **after** the suite has gone red, in the same shell:
+
+```bash
+# ax-mutation-restore: restore — never from a file copy.
+git checkout -- "$F"
+
+if [ -n "$(git status --porcelain -- "$F")" ]; then
+  echo "REFUSE: $F is still dirty after restore — look before you commit anything."
+  exit 1
+fi
+echo "ok: $F restored, working tree clean."
+```
+
+**Which direction does this fail in? Closed.** Both blocks refuse and change nothing when they
+cannot prove the tree is in the state the restore assumes; neither has a branch that proceeds
+on a failed check. What they do **not** cover, stated rather than implied away: a second writer
+that touches the path *during* your mutation window. No restore protocol can fix that — the fix
+is that a mutation window has one writer, which is what TASK-471 is for.
+
+`scripts/__tests__/mutation-restore-protocol.test.js` EXTRACTS both blocks from this file and
+RUNS them, under bash and zsh, against throwaway git repositories built to each of the four
+shapes above. It does not scan this prose for the right words: the prose quotes the dangerous
+commands on purpose, so a text scan would pass against the broken text (the TASK-392 vacuity
+mistake). Delete or weaken either block and the guard reddens.
+
 ### Phase 5 — Local review (before the PR exists)
 This replaces waiting on a hosted reviewer. Review the **whole branch** locally with the **`ax-code-reviewer`** subagent *before* any PR is opened, and address findings in a loop until the review is clean.
 

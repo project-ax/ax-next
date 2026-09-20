@@ -101,6 +101,21 @@ afford — heed it rather than dispatching and hoping.
 >   and no CI check can see it. (`scripts/__tests__/autoship-dispatch-scratch-scoping.test.js` fails if
 >   this bullet leaves the prompt, loses its `<TASK-ID>` path segment, or drifts up
 >   into the orchestrator-facing prose above.)
+> - **Mutation testing: commit before you mutate, and restore with git — never from a file
+>   copy.** Proving a guard reddens writes a mutant into a real file, and putting the file
+>   back is what has gone wrong four times on 2026-09-18/19.
+>   `git checkout -- <path>` restores exactly your mutation **if and only if that path was
+>   committed-clean before you mutated it**, so as the owner of your worktree, commit first.
+>   It is lossy when the file carries other uncommitted work (two builders lost work that
+>   way, one its entire fix), and it is destructive when you are a subagent in someone
+>   ELSE'S worktree and the uncommitted work is theirs (a reviewer silently reverted six of
+>   its builder's edits) — there, do not mutate that file at all; say so instead. A file copy
+>   is never the restore: it writes back whatever the file looked like when the copy was
+>   taken, silently reverting anything committed in between — the original incident.
+>   **And if you dispatch a reviewer, commit first: it runs in YOUR worktree.** The runnable
+>   before/after blocks live in yolo-ship Phase 4 › *Mutation testing: restore without
+>   clobbering*; `scripts/__tests__/mutation-restore-protocol.test.js` executes them, and
+>   also fails if this bullet leaves the builder-facing prompt.
 > - Branch: `auto-ship/<TASK-ID>-<short-slug>`. PR title MUST start with
 >   `[<TASK-ID>] `. Base `main`.
 > - **Do NOT merge.** Stop at a green, verified-mergeable PR (yolo-ship ends at
