@@ -107,8 +107,14 @@
 //                                (An earlier revision of this table claimed it "works, no
 //                                guard needed". True before the scope gate; false after.)
 //       * a CONFLICTED path   -> `ls-files` prints one line per stage, three for an
-//                                unmerged file -> REFUSED by the same comparison, with
-//                                the same self-diagnosing message. Not separately tested.
+//                                unmerged file -> REFUSED by the same comparison. Measured
+//                                on a real merge conflict, and it is why the refusal
+//                                COLLAPSES `$ONE` onto one line: interpolated raw it
+//                                sprayed `c.js / c.js / c.js` across three lines inside a
+//                                parenthesis, while telling the agent it had mis-spelled a
+//                                path it had spelled correctly. The message now reports
+//                                what git matched and names the unmerged case. Refusal
+//                                verified under bash and zsh; no fixture in the suite.
 //       * `../escape`         -> rc=128 -> REFUSED by the tracked check.
 //       * a name starting `:` -> resolves to itself; `status` reports only it, and
 //                                `checkout --` restores only it, leaving siblings alone.
@@ -631,10 +637,10 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
     const r = runBlock(shell, block(), { cwd: dir, file: 'sub', mark });
 
     expect(r.status).not.toBe(0);
-    expect(r.out).toMatch(/does not spell this path the way you did/);
-    // It names what git actually matched, which for a directory is a path INSIDE it —
-    // the whole point: the pathspec was never addressing the thing the agent typed.
-    expect(r.out).toMatch(/sub\/nested\.js/);
+    expect(r.out).toMatch(/not the one file you named/);
+    // It reports what git actually matched, which for a directory is the paths INSIDE
+    // it — the whole point: the pathspec was never addressing the thing the agent typed.
+    expect(r.out.includes('matched: sub/nested.js')).toBe(true);
     expect(r.out).not.toMatch(/^ok:/m);
     expect(read(dir, join('sub', 'nested.js'))).toBe(theirs);
   });
@@ -673,7 +679,7 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
     const r = runBlock(shell, block(), { cwd: dir, file: 'sub', mark });
 
     expect(r.status).not.toBe(0);
-    expect(r.out).toMatch(/does not spell this path the way you did|more than one tracked/);
+    expect(r.out).toMatch(/not the one file you named/);
     expect(r.out).not.toMatch(/^ok:/m);
     // The block restored NOTHING: an agent mutating by deletion keeps its mutant, and a
     // bystander's deletions under the same subtree are not silently undone either.
@@ -694,10 +700,12 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
     const r = runBlock(shell, block(), { cwd: dir, file: join(dir, TARGET), mark });
 
     expect(r.status).not.toBe(0);
-    expect(r.out).toMatch(/does not spell this path the way you did/);
-    // It names git's spelling and tells the agent what to do about it, rather than
-    // asserting a cause ("more than one path") it has not established.
-    expect(r.out).toMatch(new RegExp(`git says: ${TARGET}`));
+    expect(r.out).toMatch(/not the one file you named/);
+    // It reports what git ACTUALLY matched and tells the agent what to do, rather than
+    // asserting a cause ("more than one path") it has not established. Asserted with
+    // `includes` on a plain string, not a RegExp built from a filename: `guard.js` has
+    // a `.` in it, and a fixture name should never quietly double as a pattern.
+    expect(r.out.includes(`matched: ${TARGET}`)).toBe(true);
     expect(r.out).toMatch(/relative to the worktree root/);
     expect(read(dir)).toBe(MUTANT);
   });

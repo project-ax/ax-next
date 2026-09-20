@@ -210,8 +210,11 @@ fi
 # disk is still a directory to git. Measured on git 2.52.0.
 ONE=$(git -c core.quotePath=false ls-files -- "$P")
 if [ "$ONE" != "$F" ]; then
-  echo "REFUSE: git does not spell this path the way you did (git says: $ONE)."
-  echo "  Name ONE tracked file, spelled relative to the worktree root, and re-run."
+  echo "REFUSE: that pathspec is not the one file you named."
+  echo "  matched: $(printf '%s' "$ONE" | tr '\n' ' ')"
+  echo "  Name ONE tracked file, spelled relative to the worktree root — not an"
+  echo "  absolute path, not a directory. Several identical lines mean the path is"
+  echo "  unmerged; resolve the conflict first."
   exit 1
 fi
 
@@ -250,8 +253,11 @@ fi
 # See the precondition block: ask GIT what the pathspec addresses, not the filesystem.
 ONE=$(git -c core.quotePath=false ls-files -- "$P")
 if [ "$ONE" != "$F" ]; then
-  echo "REFUSE: git does not spell this path the way you did (git says: $ONE)."
-  echo "  Name ONE tracked file, spelled relative to the worktree root, and re-run."
+  echo "REFUSE: that pathspec is not the one file you named."
+  echo "  matched: $(printf '%s' "$ONE" | tr '\n' ' ')"
+  echo "  Name ONE tracked file, spelled relative to the worktree root — not an"
+  echo "  absolute path, not a directory. Several identical lines mean the path is"
+  echo "  unmerged; resolve the conflict first."
   exit 1
 fi
 
