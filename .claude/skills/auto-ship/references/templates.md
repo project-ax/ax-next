@@ -108,8 +108,11 @@ afford — heed it rather than dispatching and hoping.
 >   committed-clean before you mutated it**, so as the owner of your worktree, commit first.
 >   It is lossy when the file carries other uncommitted work (two builders lost work that
 >   way, one its entire fix), and it is destructive when you are a subagent in someone
->   ELSE'S worktree and the uncommitted work is theirs (a reviewer silently reverted six of
->   its builder's edits) — there, do not mutate that file at all; say so instead. A file copy
+>   ELSE'S worktree (a reviewer silently reverted six of its builder's edits) — **in a tree
+>   you do not own, do not mutate at all: say what you would have mutated and let the owner
+>   run it.** That holds even when the path looks clean, because the owner is a live writer
+>   and may be running a build that picks up your mutant; the sole exception is a brief that
+>   explicitly says the owner is parked for your window. A file copy
 >   is never the restore: it writes back whatever the file looked like when the copy was
 >   taken, silently reverting anything committed in between — the original incident.
 >   **And if you dispatch a reviewer, commit first: it runs in YOUR worktree.** The runnable

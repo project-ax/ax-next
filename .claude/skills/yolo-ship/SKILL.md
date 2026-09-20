@@ -161,7 +161,7 @@ That precondition — not the choice of restore command — is what the four cas
 
 | you are | the path is | do |
 | --- | --- | --- |
-| the worktree **owner** | clean | mutate; restore with `git checkout -- <path>` |
+| the worktree **owner** | clean | mutate; restore with the **restore block** below — not with a hand-typed `git checkout -- <path>`, which skips the gates that catch a committed or staged mutant |
 | the worktree **owner** | carrying uncommitted work | **commit it first**, then mutate. `git checkout --` would take the uncommitted work with the mutant; a file copy would revert whatever lands while you mutate. |
 | a **subagent in someone else's worktree** (reviewer, helper) | clean | **don't — report instead.** "Clean" is a snapshot, not a property: in a shared tree the owner is a live writer by definition, and even when nothing clobbers your file the owner may be running a build off that tree and will debug *your* mutant as their own code (TASK-426, measured — *"the run I had just debugged was executing ITS mutant"*). The **only** exception is a dispatching brief that explicitly says the owner is parked for your window — a yes/no you can check, not a judgement call. Absent that, say what you would have mutated and why, and let the owner run it. |
 | a **subagent in someone else's worktree** | carrying uncommitted work | **do not mutate it.** You may not commit someone else's work-in-progress onto their branch, and you may not restore over it. Stop and say so. |
@@ -185,15 +185,8 @@ Run this **before** you write the mutant, from your worktree root:
 # ax-mutation-restore: precondition — run BEFORE you write the mutant.
 F="<the file you are about to mutate>"
 
-# ONE named file, and a non-empty one. An empty $F, or a directory, is a pathspec that
-# addresses everything under it — the restore below would then revert work you never
-# touched and report success. Measured on git 2.52.0.
 if [ -z "$F" ]; then
   echo "REFUSE: \$F is empty — that pathspec addresses the WHOLE worktree."
-  exit 1
-fi
-if [ -d "$F" ]; then
-  echo "REFUSE: $F is a directory — name the single file you are mutating."
   exit 1
 fi
 
@@ -204,7 +197,20 @@ P=":(literal)$F"
 # `git status` on a path git does not know prints NOTHING and errors, which reads as
 # "clean" — so an unsubstituted $F would sail through the check below. Fail closed first.
 if ! git ls-files --error-unmatch -- "$P" >/dev/null 2>&1; then
-  echo "REFUSE: $F is not a tracked file — git cannot restore it. Did you substitute \$F?"
+  echo "REFUSE: $F is not a tracked file here — git cannot restore it. Did you substitute"
+  echo "  \$F? If the path IS in HEAD, you have staged a delete: recover it with"
+  echo "  git restore --staged --worktree -- <that path>, not with this block."
+  exit 1
+fi
+
+# ONE named path. Ask GIT what the pathspec addresses rather than asking the filesystem
+# what $F looks like: `:(literal)` restricts wildcards, not SCOPE, so a directory — or an
+# empty $F — expands to everything under it and the restore would revert work you never
+# touched and print `ok`. A `[ -d ]` test cannot see this, because a directory DELETED from
+# disk is still a directory to git. Measured on git 2.52.0.
+ONE=$(git ls-files -- "$P")
+if [ "$ONE" != "$F" ]; then
+  echo "REFUSE: $F addresses more than one tracked path — name the single file you mutated."
   exit 1
 fi
 
@@ -230,15 +236,20 @@ if [ -z "$F" ]; then
   echo "REFUSE: \$F is empty — that pathspec addresses the WHOLE worktree."
   exit 1
 fi
-if [ -d "$F" ]; then
-  echo "REFUSE: $F is a directory — name the single file you mutated."
-  exit 1
-fi
 
 P=":(literal)$F"
 
 if ! git ls-files --error-unmatch -- "$P" >/dev/null 2>&1; then
-  echo "REFUSE: $F is not a tracked file — nothing for git to restore. Did you substitute \$F?"
+  echo "REFUSE: $F is not a tracked file here — nothing for git to restore. Did you"
+  echo "  substitute \$F? If the path IS in HEAD, you have staged a delete: recover it"
+  echo "  with git restore --staged --worktree -- <that path>, not with this block."
+  exit 1
+fi
+
+# See the precondition block: ask GIT what the pathspec addresses, not the filesystem.
+ONE=$(git ls-files -- "$P")
+if [ "$ONE" != "$F" ]; then
+  echo "REFUSE: $F addresses more than one tracked path — name the single file you mutated."
   exit 1
 fi
 
