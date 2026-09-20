@@ -738,10 +738,40 @@ this way:
   The direction of failure is the point: the old code destroyed the body and printed
   success. **The claim is bounded, deliberately**: the gate proves a helper cannot
   silently write an *empty or shorter* body — it is a length-and-markers check, not an
-  integrity proof. What closes the rest of the gap sits upstream of it: the END marker
-  is anchored to the **START** (so a human note that merely quotes the end marker above
-  the block cannot capture the splice — `awk '$0==end'` matched whole lines and never
-  could), and an entry carrying a marker of its own is refused before anything is built.
+  integrity proof. Two things narrow the gap upstream of it: the END marker is anchored
+  to the **START** (so a human note that merely quotes the end marker above the block
+  cannot capture the splice — `awk '$0==end'` matched whole lines and never could), and
+  an entry carrying a marker of its own is refused before anything is built.
+
+  **They narrow it; they do not close it, and here is the case that is left.** If an END
+  marker is already sitting *inside* the block — written before this fix, or typed by a
+  human — the splice still lands at that marker instead of the real one, and the helper
+  still returns 0 and prints its success line. Falsified by construction against the
+  **fixed** helper, so this is a measured residual, not a worry:
+
+  ```
+  ### Progress
+  - 10:00 discussed the - 22:14 landed
+  <!-- AUTOSHIP-PROGRESS:END --> marker
+  <!-- AUTOSHIP-PROGRESS:END -->
+  ```
+
+  The damage is contained — the entry stays inside the block and the human-authored
+  text outside the markers is untouched — but the block's own ordering is wrong and
+  nothing detects it. **This is inherent**, not an oversight: a substring-delimited
+  block whose content can contain the delimiter is ambiguous, and there is no
+  splice-side resolution. Taking the *last* END breaks the "END quoted below the block"
+  case instead; taking the first-after-START is what leaves this one. If you want it
+  gone, the fix is a refusal when the region after the first START holds more than one
+  END — which needs its own bash+zsh test and must not fire on a START quoted *above*
+  the block, which splices correctly today.
+
+  **Scope the refusal contract to what this is.** A refused write is loud on stderr and
+  **silent on the card**: nothing machine-reads `return 3` / `exit 7`, so it reaches a
+  human only through the dispatched agent's `progress:` handoff field. That trade is
+  acceptable here *only* because this block is best-effort observability. If this
+  helper shape is ever reused for durable or user-facing content, refusing without
+  leaving a visible record would be the wrong trade — write a marked record instead.
 - **`skip (not a draft-issue card)` is a different thing and stays put.** It needs
   `gh` to exit **0** with an empty content id — a *resolvable* node of the wrong
   type, i.e. a card that is a linked real issue/PR. A malformed id cannot reach it
