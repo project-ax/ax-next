@@ -184,6 +184,22 @@ kubectl wait -n ax-next --for=condition=Ready pod \
 
 For more elaborate scenarios (multi-replica + `workspace.backend=http`, channel-web, etc.) the helm flags differ — copy the matching block from `deploy/MANUAL-ACCEPTANCE.md` if it covers your case, or adapt from `deploy/charts/ax-next/values.yaml`.
 
+**Keep `-f kind-dev-values.yaml` — it is what turns the workspace surface on.**
+The agent workspace (`/`, `/workspace`) is gated end to end on
+`channelWeb.agentWorkspace`, which `values.yaml` deliberately defaults to `false`
+(with it off the preset never registers `/api/workspace/*`, so the surface does not
+exist on the wire). `kind-dev-values.yaml` sets it to `true` for exactly this loop.
+Build a cluster from a bespoke values file without it and **nothing will look
+broken**: the pod is Ready, `/api/features` returns HTTP 200 with
+`{"agentWorkspacePreview":false}`, the page loads — and you are driving the legacy
+chat shell while believing you are walking the workspace. If you must roll your own
+values, add `--set channelWeb.agentWorkspace=true`. Either way, confirm it once the
+port-forward from §4 is up and before you drive anything:
+
+```bash
+curl -fsS http://localhost:9090/api/features | jq .agentWorkspacePreview   # must be true
+```
+
 ---
 
 ## 4. Browser entry point + Playwright driver
