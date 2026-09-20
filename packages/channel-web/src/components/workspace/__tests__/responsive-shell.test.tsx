@@ -35,6 +35,13 @@ import { WorkspaceShell } from '../WorkspaceShell';
 import { AgentView } from '../AgentView';
 import { workspaceGrantActions } from '@/lib/workspace-grant-store';
 import { rail as railFixture } from './rail-fixture';
+/*
+  THE VIEWPORT STUB, shared (TASK-455). jsdom ships no `matchMedia` at all,
+  which is why `use-compact.ts` guards for its absence and reads `false` — so
+  every suite in this package that does not opt in keeps rendering the desktop
+  tree untouched. See `viewport.ts` for what the stub has to get right.
+*/
+import { clearViewport, setViewport } from './viewport';
 
 /**
  * See `AgentView.test.tsx` for why this is computed off `Date.now()` rather
@@ -73,31 +80,6 @@ const agentMock = vi.mocked(workspaceApi.agent);
 const activityMock = vi.mocked(workspaceApi.activity);
 const decisionsMock = vi.mocked(workspaceApi.decisions);
 const grantsMock = vi.mocked(workspaceApi.grants);
-
-/**
- * THE VIEWPORT STUB. jsdom ships no `matchMedia` at all, which is exactly why
- * `use-compact.ts` guards for its absence and reads `false` — so every other
- * suite in this package keeps rendering the desktop tree untouched. Here we
- * install one deliberately.
- *
- * Only the compact query is answered from `compact`; everything else (notably
- * `theme.ts`'s `prefers-color-scheme`) gets a flat `false`, so widening the
- * viewport in a test cannot accidentally flip the palette as a side effect.
- */
-const COMPACT_QUERY = 'not all and (min-width: 768px)';
-
-function setViewport(compact: boolean): void {
-  window.matchMedia = ((query: string) => ({
-    media: query,
-    matches: query === COMPACT_QUERY ? compact : false,
-    onchange: null,
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    addListener: () => {},
-    removeListener: () => {},
-    dispatchEvent: () => false,
-  })) as unknown as typeof window.matchMedia;
-}
 
 const quill: WorkspaceAgent = {
   id: 'a-quill',
@@ -187,12 +169,12 @@ beforeEach(() => {
 
 afterEach(() => {
   /*
-    `matchMedia` is a property we ADDED to jsdom's window — deleting it restores
-    "no matchMedia at all", which is the state every other suite in this package
-    renders under. Leaving a stub behind would silently put the next file on a
-    desktop-or-compact viewport it never asked for.
+    `matchMedia` is a property the stub ADDED to jsdom's window — clearing it
+    restores "no matchMedia at all", which is the state every other suite in
+    this package renders under. Leaving a stub behind would silently put the
+    next file on a desktop-or-compact viewport it never asked for.
   */
-  delete (window as Partial<Window>).matchMedia;
+  clearViewport();
 });
 
 describe('the workspace shell below md', () => {
