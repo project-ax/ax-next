@@ -701,14 +701,34 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       void bus
         .call<AgentInvokeInput, unknown>('agent:invoke', agentInvokeCtx, { message })
         .catch(async (err: unknown) => {
-          agentInvokeCtx.logger.warn('chat_run_dispatch_failed', {
-            plugin: PLUGIN_NAME,
-            conversationId,
-            err:
-              err instanceof Error
-                ? { name: err.name, message: err.message }
-                : String(err),
-          });
+          /*
+            EVERYTHING IN HERE IS GUARDED, including the logging (TASK-512).
+            This body is the last frame on a rejected promise — there is no
+            `.catch` above it — so ANY throw from here becomes an unhandled
+            rejection that takes the host down over a failure we were in the
+            middle of reporting. A logger is not exempt from that: TASK-512 is
+            an open bug where exactly this shape (an unguarded log line on a
+            failure path) throws under a logger-less ctx and surfaces under the
+            wrong error's name. The inner `try` below guards the FIRE; this one
+            guards the two `warn`s, which the inner one cannot.
+
+            The outermost catch is deliberately empty, and it is the one place
+            in this file where that is right: it catches the failure of the
+            failure-reporter, so there is by construction nothing left to
+            report it with.
+          */
+          try {
+            agentInvokeCtx.logger.warn('chat_run_dispatch_failed', {
+              plugin: PLUGIN_NAME,
+              conversationId,
+              err:
+                err instanceof Error
+                  ? { name: err.name, message: err.message }
+                  : String(err),
+            });
+          } catch {
+            /* the logger itself is gone; the fire below is still worth trying */
+          }
           /*
             A STABLE REASON CODE, never the thrown message. `err` here is host
             vocabulary — a hook name and a millisecond count — and the client
@@ -728,14 +748,18 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
               reason: 'chat-run-dispatch-failed',
             });
           } catch (fireErr: unknown) {
-            agentInvokeCtx.logger.warn('chat_run_dispatch_error_unreported', {
-              plugin: PLUGIN_NAME,
-              conversationId,
-              err:
-                fireErr instanceof Error
-                  ? { name: fireErr.name, message: fireErr.message }
-                  : String(fireErr),
-            });
+            try {
+              agentInvokeCtx.logger.warn('chat_run_dispatch_error_unreported', {
+                plugin: PLUGIN_NAME,
+                conversationId,
+                err:
+                  fireErr instanceof Error
+                    ? { name: fireErr.name, message: fireErr.message }
+                    : String(fireErr),
+              });
+            } catch {
+              /* nothing left to report the reporter's failure with */
+            }
           }
         });
 
