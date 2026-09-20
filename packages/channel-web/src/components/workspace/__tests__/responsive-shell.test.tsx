@@ -36,6 +36,14 @@ import { AgentView } from '../AgentView';
 import { workspaceGrantActions } from '@/lib/workspace-grant-store';
 import { rail as railFixture } from './rail-fixture';
 
+/**
+ * See `AgentView.test.tsx` for why this is computed off `Date.now()` rather
+ * than fixed: nothing here asserts the `relativeDay(...)` string, only the
+ * conversation's own title, so any past instant works and a moving one can't
+ * silently drift stale.
+ */
+const TEN_DAYS_AGO = new Date(Date.now() - 10 * 86_400_000).toISOString();
+
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>(
     '@/lib/workspace-api',
@@ -261,7 +269,7 @@ describe('the agent pane below md', () => {
     */
     setViewport(true);
     agentMock.mockResolvedValue(
-      detail({ past: [{ id: 'c-old', title: 'March', meta: 'last week' }] }),
+      detail({ past: [{ id: 'c-old', title: 'March', lastActivityAt: TEN_DAYS_AGO }] }),
     );
     renderAgentView();
 

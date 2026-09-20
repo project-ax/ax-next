@@ -20,7 +20,7 @@ const agentMsg = (id: string, text: string): ThreadMessage => ({
   kind: 'agent',
   id,
   text,
-  time: '10:04',
+  at: '2026-09-17T10:04:00.000Z',
 });
 
 /**

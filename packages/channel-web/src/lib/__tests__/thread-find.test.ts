@@ -110,7 +110,7 @@ describe('findRanges', () => {
 
 const thread: ThreadMessage[] = [
   { kind: 'user', id: 'u1', text: 'can you deploy the site' },
-  { kind: 'agent', id: 'a1', text: 'deploy done — deploy took 4s', time: '4:12 PM' },
+  { kind: 'agent', id: 'a1', text: 'deploy done — deploy took 4s', at: '2026-09-17T16:12:00.000Z' },
   { kind: 'approval', id: 'p1', decisionId: 'd-deploy' },
   { kind: 'status', id: 'pending-status', text: 'Thinking…' },
   { kind: 'fold', id: 'f1', text: '12 messages folded' },
@@ -163,7 +163,7 @@ describe('threadFindFields', () => {
         kind: 'steps',
         id: 's1',
         text: 'here is what I did',
-        time: '4:13 PM',
+        at: '2026-09-17T16:13:00.000Z',
         stepsLabel: 'four steps',
         steps: [
           { text: 'read the file', status: 'done' },
@@ -320,7 +320,7 @@ describe('buildFindIndex', () => {
     */
     const collided: ThreadMessage[] = [
       { kind: 'user', id: 'same', text: 'deploy once' },
-      { kind: 'agent', id: 'same', text: 'deploy twice deploy', time: '4:12 PM' },
+      { kind: 'agent', id: 'same', text: 'deploy twice deploy', at: '2026-09-17T16:12:00.000Z' },
     ];
     const { total, firstMatch } = buildFindIndex(collided, [], [], 'deploy');
     expect(total).toBe(3);

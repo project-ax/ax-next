@@ -575,7 +575,22 @@ export interface ThreadAttachment {
 }
 
 export type ThreadMessage =
-  | { kind: 'agent'; id: string; text: string; time: string }
+  | {
+      kind: 'agent';
+      id: string;
+      text: string;
+      /**
+       * An ISO-8601 instant, the same vocabulary `ActivityEvent.at` uses
+       * (TASK-435) — the client formats it, the server never does (see that
+       * type's doc comment for why: "a display string is a rendering
+       * decision, and rendering decisions do not belong on the wire"). The
+       * empty string means "no committed instant yet": the LIVE streaming
+       * frame has no server-assigned `createdAt` until the turn commits, and
+       * a renderer must draw no clock at all for it rather than a clock
+       * reading midnight-UTC-epoch or an empty row.
+       */
+      at: string;
+    }
   | {
       kind: 'user';
       id: string;
@@ -590,7 +605,8 @@ export type ThreadMessage =
       kind: 'steps';
       id: string;
       text: string;
-      time: string;
+      /** See `at` on the `agent` variant above — same field, same rule. */
+      at: string;
       stepsLabel: string;
       steps: WorkspaceStep[];
     }
@@ -766,7 +782,15 @@ export interface WorkspaceFileBody {
 export interface PastConversation {
   id: string;
   title: string;
-  meta: string;
+  /**
+   * An ISO-8601 instant, not a formatted string (TASK-435): this used to be
+   * `meta`, a `relativeDay(...)` string the SERVER computed in its own
+   * timezone. Same defect and same fix as `ThreadMessage.at` above — see
+   * `ActivityEvent`'s doc comment for the rule both are following. The
+   * renderer turns this into "today" / "3 days ago" via `relativeDay` in
+   * `lib/workspace-time.ts`, now run on the reader's clock.
+   */
+  lastActivityAt: string;
 }
 
 /**

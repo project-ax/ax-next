@@ -33,6 +33,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { ActivityEvent, WorkspaceAgent } from '@/lib/workspace-api';
+import { localDayKey, localDayLabel, localTime } from '@/lib/workspace-time';
 
 const KIND: Record<ActivityEvent['kind'], { Icon: LucideIcon; tone: string }> = {
   done: { Icon: Check, tone: 'text-primary' },
@@ -61,31 +62,6 @@ interface Props {
   error?: string | null;
 }
 
-/** Local Y-M-D. Two ISO instants on the same calendar day here share a bucket. */
-function localDayKey(d: Date): string {
-  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-}
-
-/** `Today`, `Yesterday`, or a plain local date — never anything the server said. */
-function dayLabel(d: Date, now: Date): string {
-  if (localDayKey(d) === localDayKey(now)) return 'Today';
-  const yesterday = new Date(now);
-  yesterday.setDate(yesterday.getDate() - 1);
-  if (localDayKey(d) === localDayKey(yesterday)) return 'Yesterday';
-  return d.toLocaleDateString(undefined, {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-  });
-}
-
-/** `null` on an unparseable `at` — the row renders without a clock, not "Invalid Date". */
-function localTime(at: string): string | null {
-  const d = new Date(at);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-}
-
 interface Bucket {
   key: string;
   label: string;
@@ -111,7 +87,7 @@ function bucket(rows: ActivityEvent[]): Bucket[] {
     if (!byKey.has(key)) {
       order.push(key);
       byKey.set(key, []);
-      labelFor.set(key, Number.isNaN(d.getTime()) ? 'Unknown date' : dayLabel(d, now));
+      labelFor.set(key, Number.isNaN(d.getTime()) ? 'Unknown date' : localDayLabel(d, now));
     }
     byKey.get(key)!.push(e);
   }

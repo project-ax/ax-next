@@ -44,8 +44,8 @@ const QUIET_LINE = 'nothing else to report';
 
 const thread: ThreadMessage[] = [
   { kind: 'user', id: 'u1', text: USER_LINE },
-  { kind: 'agent', id: 'a1', text: AGENT_LINE, time: '4:12 PM' },
-  { kind: 'agent', id: 'a2', text: QUIET_LINE, time: '4:13 PM' },
+  { kind: 'agent', id: 'a1', text: AGENT_LINE, at: '2026-09-17T16:12:00.000Z' },
+  { kind: 'agent', id: 'a2', text: QUIET_LINE, at: '2026-09-17T16:13:00.000Z' },
 ];
 
 function conversation(
@@ -364,7 +364,7 @@ describe('finding something in an agent thread', () => {
           kind: 'agent',
           id: 'a1',
           text: 'thinking about the deploy',
-          time: '4:12 PM',
+          at: '2026-09-17T16:12:00.000Z',
         },
         { kind: 'status', id: 'pending-status', text: 'Thinking…' },
       ],
@@ -434,7 +434,7 @@ describe('finding something in an agent thread', () => {
             kind: 'agent',
             id: 'same',
             text: 'deploy twice deploy',
-            time: '4:12 PM',
+            at: '2026-09-17T16:12:00.000Z',
           },
         ],
       });

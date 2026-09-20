@@ -839,7 +839,10 @@ describe('channel-web agent-workspace BFF', () => {
       // The host-authored phrase, not `mcp__gmail__gmail_list`.
       steps: [{ text: 'Checking your inbox', status: 'done' }],
     });
-    expect(String(body.thread[1]!.time)).toMatch(/^\d{1,2}:\d{2}\s?(AM|PM)$/);
+    // TASK-435: the wire now carries the instant verbatim, not a
+    // server-formatted clock string — formatting is the client's job
+    // (`lib/workspace-time.ts`), done in the READER's timezone.
+    expect(body.thread[1]!.at).toBe('2026-08-01T10:00:05.000Z');
     // No result row for tu2, so it is honestly still running rather than done.
     expect(body.thread[2]).toMatchObject({
       kind: 'steps',
@@ -985,17 +988,20 @@ describe('channel-web agent-workspace BFF', () => {
     await h.agentDetail(mkReq({ agentId: 'a1' }), res);
     const body = captured.body as {
       conversationId: string | null;
-      past: Array<{ id: string; title: string; meta: string }>;
+      past: Array<{ id: string; title: string; lastActivityAt: string }>;
     };
     expect(body.conversationId).toBe('newest');
     expect(body.past.map((p) => p.id)).toEqual(['middle', 'old']);
     expect(body.past[0]!.title).toBe('Untitled conversation');
-    expect(body.past[0]!.meta.length).toBeGreaterThan(0);
+    // TASK-435: `meta` (a server-formatted "3 days ago") is gone — the wire
+    // carries the instant itself, falling back to `createdAt` when
+    // `lastActivityAt` is unset, same as the row's own fallback expression.
+    expect(body.past[0]!.lastActivityAt).toBe('2026-07-15T10:00:00.000Z');
     // A past row carries NO transcript and NO fold count. Both were fixtures:
     // `msgs: []` rendered as "an empty conversation" and `folded: 0` as
     // "0 messages were summarised". The excerpt now comes from a real re-read
     // through `?conversationId=`.
-    expect(Object.keys(body.past[0]!)).toEqual(['id', 'title', 'meta']);
+    expect(Object.keys(body.past[0]!)).toEqual(['id', 'title', 'lastActivityAt']);
   });
 
   it('fences a past conversation title like every other label out of this file', async () => {

@@ -39,7 +39,7 @@ const agentTurn = (text: string): ThreadMessage => ({
   kind: 'agent',
   id: 'a1',
   text,
-  time: '4:12 PM',
+  at: '2026-09-17T16:12:00.000Z',
 });
 
 function conversation(

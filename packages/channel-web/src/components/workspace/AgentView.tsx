@@ -23,6 +23,7 @@ import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useIsCompact } from '@/lib/use-compact';
+import { relativeDay } from '@/lib/workspace-time';
 import { HTTP_SESSION_ENDED, logRequestFailure } from '@/lib/http';
 import {
   readAlertVariant,
@@ -830,12 +831,12 @@ export function AgentView({
     if (hasLiveContent) {
       liveThread.push(
         livePanel === null
-          ? { kind: 'agent', id: 'pending-agent', text: streamed, time: '' }
+          ? { kind: 'agent', id: 'pending-agent', text: streamed, at: '' }
           : {
               kind: 'steps',
               id: 'pending-agent',
               text: streamed,
-              time: '',
+              at: '',
               stepsLabel: livePanel.label,
               steps: livePanel.steps,
             },
@@ -1085,9 +1086,9 @@ export function AgentView({
                   <Archive size={13} className="text-muted-foreground" />
                   <span
                     className="min-w-0 flex-1 truncate text-[12.5px] text-muted-foreground"
-                    title={`${past.title} · ${past.meta} · read-only`}
+                    title={`${past.title} · ${relativeDay(past.lastActivityAt)} · read-only`}
                   >
-                    {past.title} · {past.meta} · read-only
+                    {past.title} · {relativeDay(past.lastActivityAt)} · read-only
                   </span>
                   <Button
                     variant="ghost"

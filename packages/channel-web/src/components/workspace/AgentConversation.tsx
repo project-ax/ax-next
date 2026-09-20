@@ -44,6 +44,7 @@ import { ATTACHMENT_ACCEPT } from '@/lib/attachment-upload';
 import { signInWithGoogle } from '@/lib/auth';
 import { readAlertVariant } from '@/lib/read-register';
 import { getDraft, setDraft as saveDraft } from '@/lib/workspace-draft-store';
+import { localTime } from '@/lib/workspace-time';
 import {
   activeMatch,
   buildFindIndex,
@@ -1097,7 +1098,20 @@ function Message({
           </div>
         )}
         {m.kind === 'steps' && <Steps label={m.stepsLabel} steps={m.steps} />}
-        <div className="mt-1.5 text-[11.5px] text-muted-foreground">{m.time}</div>
+        {/*
+          `at` is `''` on the live streaming frame (no committed instant until
+          the turn ends) and can be an unparseable instant in principle — either
+          way `localTime` returns `null`, and the row is dropped entirely
+          rather than drawn as an empty div. An empty clock row used to render
+          (an empty string is still a child), which left a sliver of dead
+          whitespace under the live bubble; no row at all is the honest render
+          of "we don't have a time to show yet" (TASK-435).
+        */}
+        {localTime(m.at) !== null && (
+          <div className="mt-1.5 text-[11.5px] text-muted-foreground">
+            {localTime(m.at)}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -188,7 +188,7 @@ describe('AgentConversation — the zero-turn thread', () => {
         kind: 'steps',
         id: 'm-1',
         text: '',
-        time: '09:20',
+        at: '2026-09-17T09:20:00.000Z',
         stepsLabel: 'Read 2 files',
         steps: [
           { text: 'Read roof-quote.pdf', status: 'done' },
@@ -208,7 +208,7 @@ describe('AgentConversation — the zero-turn thread', () => {
   it('is gone the moment the thread has anything in it', () => {
     const thread: ThreadMessage[] = [
       { kind: 'user', id: 'm-1', text: 'morning' },
-      { kind: 'agent', id: 'm-2', text: 'Morning — what do you need?', time: '' },
+      { kind: 'agent', id: 'm-2', text: 'Morning — what do you need?', at: '' },
     ];
     renderConversation({ thread, readOnly: false });
 

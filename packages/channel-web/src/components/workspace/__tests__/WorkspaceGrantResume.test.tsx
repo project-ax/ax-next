@@ -130,7 +130,7 @@ const detailFor = (
  */
 const stoppedThread = (): ThreadMessage[] => [
   { kind: 'user', id: 't1', text: ASK },
-  { kind: 'agent', id: 't2', text: STOPPED, time: '10:04' },
+  { kind: 'agent', id: 't2', text: STOPPED, at: '2026-09-17T10:04:00.000Z' },
 ];
 
 /** Per-conversation transcript, as the server would hold it. Mutated as turns land. */
@@ -255,7 +255,7 @@ describe('a grant answered in the thread', () => {
       threads['cnv-1'] = [
         ...stoppedThread(),
         { kind: 'user', id: 't3', text: ASK },
-        { kind: 'agent', id: 't4', text: ANSWER, time: '10:06' },
+        { kind: 'agent', id: 't4', text: ANSWER, at: '2026-09-17T10:06:00.000Z' },
       ];
       h.onText(ANSWER);
       h.onDone();
