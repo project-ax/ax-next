@@ -101,13 +101,41 @@ function arrowStep(key: string): number | 'first' | 'last' | null {
  * moved focus to "Working" and left `aria-checked` on "Needs you": a screen
  * reader announced a segment that was not selected, and nothing the person did
  * next would make the two agree. For a radiogroup the arrow keys move selection
- * and focus TOGETHER (WAI-ARIA APG), which is what `onKeyDown` below does.
+ * and focus TOGETHER (WAI-ARIA APG), which is what `moveSelection` below does.
  *
- * It takes the keys off Radix rather than racing it. Radix composes our handler
- * ahead of its own roving one with `checkForDefaultPrevented`, so our
- * `preventDefault()` stands its handler down — otherwise both would run, ours
- * synchronously and its own inside a `setTimeout`, and they disagree about the
- * target whenever focus is on the group rather than on an item.
+ * WHY THE HANDLER IS ON THE *ITEM* AND NOT ON THE GROUP. This is the whole
+ * trick, and getting it wrong looks identical in this app's configuration —
+ * verified against the installed `@radix-ui/react-roving-focus@1.1.11` dist,
+ * not from memory:
+ *
+ *   - The roving group's ROOT installs no `onKeyDown` at all — only
+ *     `onMouseDown` / `onFocus` / `onBlur`. The arrow handling lives on each
+ *     ITEM, as `composeEventHandlers(itemProps.onKeyDown, rovingHandler)`.
+ *   - `RovingFocusGroup.Item` wraps our button with `asChild`, and Radix's
+ *     `Slot` calls the CHILD's handler first and the slot's second. The slot's
+ *     is the composed one, and `composeEventHandlers` skips its own half when
+ *     `event.defaultPrevented`.
+ *
+ * So an `onKeyDown` on the ITEM runs first and its `preventDefault()` genuinely
+ * stands Radix's roving handler down. The same handler on the GROUP does not:
+ * keydown reaches the item first, Radix has already queued its
+ * `setTimeout(focusFirst)`, and both then run — agreeing only by coincidence,
+ * because our target arithmetic happens to match Radix's for an LTR set of
+ * all-focusable segments. Change any of that and focus and selection split
+ * again, which is the bug this card exists to close.
+ *
+ * The group keeps a handler for one case the items cannot see: the track itself
+ * holding focus with no item focused. It is guarded on
+ * `event.target === event.currentTarget` so an item's own keydown does not
+ * bubble up and move twice.
+ *
+ * IT ASSUMES LTR, DELIBERATELY AND NOT SILENTLY. Radix RTL-swaps Left/Right
+ * (`getDirectionAwareKey`); we do not, because Radix resolves direction from a
+ * `DirectionProvider` context rather than the DOM, this app installs none, and
+ * a mirror we cannot exercise is a mirror that rots. Because we preempt Radix
+ * rather than race it, an RTL deployment gets arrows that are visually
+ * backwards — not arrows that move focus and selection to different segments.
+ * Worth fixing before this app ever ships RTL.
  */
 export function Segmented<T extends string>({
   value,
@@ -123,42 +151,50 @@ export function Segmented<T extends string>({
 }) {
   const track = useRef<HTMLDivElement>(null);
 
-  function onKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+  function moveSelection(event: React.KeyboardEvent<HTMLElement>) {
     const step = arrowStep(event.key);
     if (step === null) return;
-    // A modified arrow is somebody else's shortcut, not ours.
+    // A modified arrow is somebody else's shortcut, not ours. Radix bails on
+    // the same set, so leaving these alone changes nothing about who handles
+    // them — it just means we are not the one who broke the shortcut.
     if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
-    if (options.length === 0) return;
 
+    // FIRST, before any early return below: this is what makes Radix's roving
+    // handler stand down (see the header). Suppressing the browser's own arrow
+    // scrolling is the lesser half of what it buys.
     event.preventDefault();
 
-    // Move from whichever segment has focus, falling back to the checked one
-    // when focus is still on the track itself. Reading focus rather than
-    // `value` is what keeps us honest if anything ever focuses an item without
-    // selecting it.
+    // The DOM is the source of truth for both the order and the values, so a
+    // segment that cannot be focused is simply not in the list — indexing a
+    // parallel `options` array would have gone out of step the first time one
+    // was disabled. Move from whichever segment has focus, falling back to the
+    // checked one when focus is still on the track itself.
     const items = Array.from(
-      track.current?.querySelectorAll<HTMLElement>('[data-segment]') ?? [],
+      track.current?.querySelectorAll<HTMLElement>('[data-segment]:not([disabled])') ?? [],
     );
-    const focused = items.findIndex((el) => el === document.activeElement);
-    const current = focused >= 0 ? focused : options.findIndex((o) => o.value === value);
-    const from = current >= 0 ? current : 0;
+    if (items.length === 0) return;
 
-    const next =
+    const focused = items.findIndex((el) => el === document.activeElement);
+    const checked = items.findIndex((el) => el.dataset.segment === value);
+    const from = focused >= 0 ? focused : checked >= 0 ? checked : 0;
+
+    const index =
       step === 'first'
         ? 0
         : step === 'last'
-          ? options.length - 1
+          ? items.length - 1
           : // Wraps, as a radiogroup does.
-            (from + step + options.length) % options.length;
+            (from + step + items.length) % items.length;
 
-    // `next` is always in range — `options` is non-empty by the guard above,
-    // and every branch either clamps to an end or takes a modulus. The lookup
-    // is written defensively anyway because `noUncheckedIndexedAccess` is on,
-    // and a silent no-op beats an exception thrown out of a key handler.
-    const target = options[next];
-    if (target === undefined) return;
-    onValueChange(target.value);
-    items[next]?.focus();
+    // `index` is always in range — `items` is non-empty by the guard above, and
+    // every branch either clamps to an end or takes a modulus. Written
+    // defensively because `noUncheckedIndexedAccess` is on, and a silent no-op
+    // beats an exception thrown out of a key handler.
+    const target = items[index];
+    const next = target?.dataset.segment;
+    if (target === undefined || next === undefined) return;
+    onValueChange(next as T);
+    target.focus();
   }
 
   return (
@@ -167,7 +203,11 @@ export function Segmented<T extends string>({
       type="single"
       value={value}
       onValueChange={(v) => v && onValueChange(v as T)}
-      onKeyDown={onKeyDown}
+      // Only when the TRACK itself holds the key. An item's own keydown bubbles
+      // through here too, and it has already been handled below.
+      onKeyDown={(event) => {
+        if (event.target === event.currentTarget) moveSelection(event);
+      }}
       role="radiogroup"
       aria-label={label}
       className="gap-0.5 rounded-lg bg-muted p-[3px]"
@@ -177,6 +217,7 @@ export function Segmented<T extends string>({
           key={o.value}
           value={o.value}
           data-segment={o.value}
+          onKeyDown={moveSelection}
           className="h-7 rounded-md px-3 text-[12.5px] font-medium text-muted-foreground hover:bg-transparent hover:text-foreground data-[state=on]:bg-background data-[state=on]:text-foreground data-[state=on]:shadow-sm"
         >
           {o.label}
