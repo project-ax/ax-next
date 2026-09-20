@@ -1,6 +1,7 @@
 import type { FC } from 'react';
 import { Download, File as FileIcon, FileText, Image as ImageIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { clampAttachmentName } from '@/lib/attachment-name';
 import { cn } from '@/lib/utils';
 
 /**
@@ -19,6 +20,17 @@ import { cn } from '@/lib/utils';
  *     path rewrites attachments into `file` parts carrying
  *     `ax://attachment-path/<base64(path)>`, and the chip becomes the
  *     downloadable variant.
+ *
+ * `displayName` is CLAMPED here, in the component, rather than at each call
+ * site. A filename comes off a person's own disk and has no length limit, and
+ * this component spends it on an `<img alt>` and two `aria-label`s — a screen
+ * reader announcing four hundred characters is its own kind of broken, and the
+ * CSS `truncate` on the visible row does nothing about it, because CSS does not
+ * touch the accessibility tree. Three call sites render this chip (chat's
+ * `UserFilePart` and `LiveAttachmentChip`, the agent view's
+ * `AgentConversation`) and TASK-431 exists precisely because a clamp that lived
+ * at the call sites reached only one of the three. The sink is the one place
+ * that cannot be forgotten.
  */
 export type AttachmentChipProps =
   | {
@@ -54,6 +66,8 @@ function downloadUrl(path: string, conversationId: string): string {
 }
 
 export const AttachmentChip: FC<AttachmentChipProps> = (props) => {
+  const displayName = clampAttachmentName(props.displayName);
+
   if (props.variant === 'pending') {
     const Icon = pickIcon(props.mediaType);
     return (
@@ -70,13 +84,13 @@ export const AttachmentChip: FC<AttachmentChipProps> = (props) => {
           <Icon className="size-3.5" strokeWidth={1.5} aria-hidden="true" />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="truncate font-medium">{props.displayName}</div>
+          <div className="truncate font-medium">{displayName}</div>
         </div>
       </div>
     );
   }
 
-  const { path, displayName, mediaType, conversationId, sizeBytes } = props;
+  const { path, mediaType, conversationId, sizeBytes } = props;
   const isImage = mediaType.startsWith('image/');
   const Icon = pickIcon(mediaType);
   const href = downloadUrl(path, conversationId);

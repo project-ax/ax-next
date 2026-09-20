@@ -8,6 +8,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { cn } from '@/lib/utils';
+import { clampAttachmentName } from '@/lib/attachment-name';
 import type { WorkspaceAttachment } from '@/lib/workspace-attachments';
 
 /**
@@ -21,20 +22,6 @@ import type { WorkspaceAttachment } from '@/lib/workspace-attachments';
  * the server refused had nowhere to say so. Here it says so, in a sentence,
  * with a Retry next to it.
  */
-
-/**
- * Filenames come off the person's own disk, so they can be any length at all.
- * `truncate` would hide the overflow visually while leaving the whole thing in
- * the accessibility tree and in the `aria-label` — a screen reader announcing
- * four hundred characters is its own kind of broken. Clamp first, then
- * truncate for the ordinary case.
- */
-export const ATTACHMENT_NAME_MAX_CHARS = 120;
-
-export function clampAttachmentName(name: string): string {
-  if (name.length <= ATTACHMENT_NAME_MAX_CHARS) return name;
-  return `${name.slice(0, ATTACHMENT_NAME_MAX_CHARS - 1)}…`;
-}
 
 function pickIcon(mediaType: string) {
   if (mediaType.startsWith('image/')) return ImageIcon;
