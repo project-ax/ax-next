@@ -131,6 +131,195 @@ Per-phase line catalogue (prefix exceptions with `⚠`):
 - **Did a stale line generate this card?** If so it is fixed in this branch (contract rule 5) — verify it is actually in the diff before the gate passes.
 - **Progress:** `build+test+lint green` (or `⚠ gate red — <tool/suite>`).
 
+#### Mutation testing: restore without clobbering (REQUIRED whenever you mutate a file)
+
+Proving a guard reddens means writing a mutant into a real file and then putting the file
+back. **Putting it back is where the damage has happened** — **five measured instances** on
+2026-09-18/19, in **four** distinct shapes, across **two** restore mechanisms (a file copy,
+and `git checkout --`), and the two obvious remedies point in opposite directions:
+
+- A builder restored a mutated file **from a file copy** and silently reverted a fix another
+  agent had **committed** to the same worktree in between. Caught only because a checksum
+  moved underneath it (TASK-406; the clobber never reached a commit).
+- A **reviewer subagent runs in the builder's worktree**, and its `git checkout -- <file>`
+  silently reverted **six of the builder's uncommitted edits**. The builder then debugged the
+  reviewer's mutant as its own code. (TASK-471 owns the reviewer-side dispatch protocol; this
+  section owns the per-role rule it builds on.)
+- Two builders, independently, lost work to `git checkout -- <path>` because **it reverts the
+  WHOLE file, not just your mutation** — one a 25-line comment, one its entire uncommitted fix.
+- One reviewer, handed the hazard in its brief, restored from its own copy with
+  `git status --porcelain` clean before, between and after every mutation. The behaviour is
+  achievable; what was missing is that it only happened because a human typed it into a brief.
+
+**The rule is one rule, not one per mechanism:**
+
+> **`git checkout -- <path>` restores exactly what you mutated and nothing else, if and only
+> if that path was committed-clean *before* you mutated it.** Make it clean first, or do not
+> mutate it.
+
+That precondition — not the choice of restore command — is what the four cases disagree about:
+
+| you are | the path is | do |
+| --- | --- | --- |
+| the worktree **owner** | clean | mutate; restore with the **restore block** below — not with a hand-typed `git checkout -- <path>`, which skips the gates that catch a committed or staged mutant |
+| the worktree **owner** | carrying uncommitted work | **commit it first**, then mutate. `git checkout --` would take the uncommitted work with the mutant; a file copy would revert whatever lands while you mutate. |
+| a **subagent in someone else's worktree** (reviewer, helper) | clean | **don't — report instead.** "Clean" is a snapshot, not a property: in a shared tree the owner is a live writer by definition, and even when nothing clobbers your file the owner may be running a build off that tree and will debug *your* mutant as their own code (TASK-426, measured — *"the run I had just debugged was executing ITS mutant"*). The **only** exception is a dispatching brief that explicitly says the owner is parked for your window — a yes/no you can check, not a judgement call. Absent that, say what you would have mutated and why, and let the owner run it. |
+| a **subagent in someone else's worktree** | carrying uncommitted work | **do not mutate it.** You may not commit someone else's work-in-progress onto their branch, and you may not restore over it. Stop and say so. |
+
+So *"commit before you mutate"* is the **owner's** way of satisfying the precondition, and for
+the owner it is the right instruction — it is the one sentence that covers all four shapes
+from the owner's chair. It is the **wrong** instruction for a subagent in a tree it does not
+own, which is the whole reason this is stated as the precondition rather than as the commit.
+And a guard that only says "use `git checkout --`" is half the problem restated: that is the
+recommended restore for an owner who committed first and the destructive one for everybody else.
+
+**A file copy is never the restore.** A copy writes back whatever the file looked like when the
+copy was taken, so anything committed in between is silently undone and nothing reports it.
+`git checkout --` restores from the **index** — which is the content you committed, once the
+precondition has passed and you have staged nothing since — so it cannot write back a snapshot
+older than your own baseline.
+
+Run this **before** you write the mutant, from your worktree root:
+
+```bash
+# ax-mutation-restore: precondition — run BEFORE you write the mutant.
+F="<the file you are about to mutate>"
+
+if [ -z "$F" ]; then
+  echo "REFUSE: \$F is empty — that pathspec addresses the WHOLE worktree."
+  exit 1
+fi
+
+# `:(literal)` so a filename containing [ * or ? is a NAME, not a pattern that could match
+# — and silently check, or restore, a sibling file instead.
+P=":(literal)$F"
+
+# `git status` on a path git does not know prints NOTHING and errors, which reads as
+# "clean" — so an unsubstituted $F would sail through the check below. Fail closed first.
+if ! git ls-files --error-unmatch -- "$P" >/dev/null 2>&1; then
+  echo "REFUSE: $F is not a tracked file here — git cannot restore it. Did you substitute"
+  echo "  \$F? If the path IS in HEAD, you have staged a delete: recover it with"
+  echo "  git restore --staged --worktree -- <that path>, not with this block."
+  exit 1
+fi
+
+# ONE named path. Ask GIT what the pathspec addresses rather than asking the filesystem
+# what $F looks like: `:(literal)` restricts wildcards, not SCOPE, so a directory — or an
+# empty $F — expands to everything under it and the restore would revert work you never
+# touched and print `ok`. A `[ -d ]` test cannot see this, because a directory DELETED from
+# disk is still a directory to git. Measured on git 2.52.0.
+ONE=$(git -c core.quotePath=false ls-files -- "$P")
+if [ "$ONE" != "$F" ]; then
+  N=$(printf '%s\n' "$ONE" | wc -l | tr -d ' ')
+  echo "REFUSE: that pathspec is not the one file you named."
+  LIST=$(printf '%s' "$ONE" | tr '\n' ' ')
+  SHORT=$(printf '%s' "$LIST" | cut -c1-120)
+  [ "$SHORT" = "$LIST" ] || SHORT="$SHORT (truncated)"
+  echo "  matched $N path(s): $SHORT"
+  echo "  Name ONE tracked file, spelled relative to the worktree root — not an"
+  echo "  absolute path, not a directory. The same path repeated means it is"
+  echo "  unmerged; resolve the conflict first."
+  exit 1
+fi
+
+if [ -n "$(git status --porcelain -- "$P")" ]; then
+  echo "REFUSE: $F carries uncommitted work — every restore from here is lossy."
+  echo "  owner of this worktree: commit $F first, then mutate."
+  echo "  subagent in someone else's worktree: do NOT commit it and do NOT restore it;"
+  echo "  stop and ask the owner to commit before you mutate."
+  exit 1
+fi
+echo "ok: $F is committed-clean — restore it with the restore block below, not by hand."
+```
+
+and this **after** the suite has gone red. It binds `$F` again on purpose: an agent's Bash
+calls do not share shell state, and the restore happens a red test-run and several minutes
+after the precondition, which is always a new shell.
+
+```bash
+# ax-mutation-restore: restore — never from a file copy.
+F="<the file you are about to mutate>"
+
+if [ -z "$F" ]; then
+  echo "REFUSE: \$F is empty — that pathspec addresses the WHOLE worktree."
+  exit 1
+fi
+
+P=":(literal)$F"
+
+if ! git ls-files --error-unmatch -- "$P" >/dev/null 2>&1; then
+  echo "REFUSE: $F is not a tracked file here — nothing for git to restore. Did you"
+  echo "  substitute \$F? If the path IS in HEAD, you have staged a delete: recover it"
+  echo "  with git restore --staged --worktree -- <that path>, not with this block."
+  exit 1
+fi
+
+# See the precondition block: ask GIT what the pathspec addresses, not the filesystem.
+ONE=$(git -c core.quotePath=false ls-files -- "$P")
+if [ "$ONE" != "$F" ]; then
+  N=$(printf '%s\n' "$ONE" | wc -l | tr -d ' ')
+  echo "REFUSE: that pathspec is not the one file you named."
+  LIST=$(printf '%s' "$ONE" | tr '\n' ' ')
+  SHORT=$(printf '%s' "$LIST" | cut -c1-120)
+  [ "$SHORT" = "$LIST" ] || SHORT="$SHORT (truncated)"
+  echo "  matched $N path(s): $SHORT"
+  echo "  Name ONE tracked file, spelled relative to the worktree root — not an"
+  echo "  absolute path, not a directory. The same path repeated means it is"
+  echo "  unmerged; resolve the conflict first."
+  exit 1
+fi
+
+# A path with nothing to restore is the dangerous case, not the harmless one: `git checkout
+# --` over a mutant you COMMITTED is a no-op that reports success.
+if [ -z "$(git status --porcelain -- "$P")" ]; then
+  echo "REFUSE: $F is already clean — there is no mutation here to put back."
+  echo "  Either you never wrote it, or you COMMITTED it (check git log), or someone else"
+  echo "  in this worktree has already written over it. Do not proceed as if restored."
+  exit 1
+fi
+
+git checkout -- "$P"
+
+if [ -n "$(git status --porcelain -- "$P")" ]; then
+  echo "REFUSE: $F is still dirty after restore — look before you commit anything."
+  exit 1
+fi
+echo "ok: $F restored, working tree clean."
+```
+
+Three things the second block is really for, none of them obvious:
+
+- **`git checkout -- <path>` restores from the INDEX, not from `HEAD`.** If you ever
+  `git add`ed the mutant it comes straight back, exit status 0, looking restored.
+- **A mutant you COMMITTED makes the restore a no-op that reports success.** `git commit -am
+  wip` after a red run is an ordinary habit; do it here and `git checkout --` has nothing to
+  undo, `git status` is empty, and the block would print `ok` over a mutant headed for your
+  PR. That is why the restore refuses a path that is *already clean*.
+- **`git status` on a path git does not know prints nothing**, which is indistinguishable from
+  "clean" — which is why both blocks establish the path is tracked before trusting a clean
+  answer, and why an unsubstituted `$F` stops there instead of sailing through.
+
+**Which direction does this fail in? Closed** — for every state the blocks can observe. Neither
+has a branch that proceeds on a failed check, and each of the three traps above is a refusal
+rather than an `ok`. Two things they still cannot see, stated rather than implied away:
+
+- **A second writer touching the path *during* your window.** No restore protocol fixes that;
+  the fix is one writer per window, which is TASK-471's scope. Note the hazard runs both ways
+  — a second **reader** is enough, because the owner's build can pick up your live mutant and
+  the owner will debug it as their own code.
+- **`git update-index --assume-unchanged` / `--skip-worktree` on the path.** `ls-files`
+  succeeds and `status` stays empty, so the block reports clean over a live mutant. Nothing
+  here sets those; if you have, you already know.
+
+`scripts/__tests__/mutation-restore-protocol.test.js` EXTRACTS both blocks from this file and
+RUNS them against throwaway git repositories built to three of the four incident shapes above
+(the fourth, the reviewer that kept `git status` clean, is the *absence* of a failure and has
+no fixture). It runs them under bash and, **when the machine has zsh, under zsh too** — the CI
+runner does not, so the zsh half is a local result and only the bash half is continuously
+enforced. It does not scan this prose for the right words: the prose quotes the dangerous
+commands on purpose, so a text scan would pass against the broken text (the TASK-392 vacuity
+mistake). Delete either block, or drop any single gate inside one, and the guard reddens.
+
 ### Phase 5 — Local review (before the PR exists)
 This replaces waiting on a hosted reviewer. Review the **whole branch** locally with the **`ax-code-reviewer`** subagent *before* any PR is opened, and address findings in a loop until the review is clean.
 
