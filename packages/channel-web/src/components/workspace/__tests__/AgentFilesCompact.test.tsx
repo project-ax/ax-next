@@ -309,6 +309,51 @@ describe('the Files tab below md', () => {
     expect(screen.queryByText('the body of the file')).toBeNull();
   });
 
+  it('reports a vanished folder on the LIST, not as a file that would not open', async () => {
+    /*
+      THE DIVERGENCE THAT MAKES "a folder is not a file" OBSERVABLE, and the
+      reason the happy-path folder tests above cannot see it.
+
+      A folder read goes through `durable.openDir` → `loadDir`, so a 404 sets
+      `error{kind:'missing'}` and the LIST renders "That folder isn't here any
+      more." with a **Go back** that climbs to the missing path's PARENT. Route
+      the same tap through `selectDurable` instead and the fetch lands in the
+      BODY effect: `filePath` is set, `showViewer` goes true, and the reader
+      gets the VIEWER saying "We could not open that file." with a Back button.
+      Different pane, different sentence, different affordance — for a folder
+      that was deleted since the listing was drawn, which is precisely the case
+      the `missing` handling exists for.
+
+      A folder mock that always succeeds cannot tell those apart, which is why
+      every other folder case here was blind to it. This is also the first test
+      in the file to exercise the `missing` branch and its `parentDirOf` climb
+      at all.
+    */
+    setViewport(true);
+    durableTree({
+      // `reports` is listed but NOT defined, so reading it 404s — the folder
+      // was deleted between the listing and the tap.
+      '': {
+        kind: 'dir',
+        path: '',
+        name: '',
+        entries: [{ path: 'reports', name: 'reports', kind: 'dir' }],
+        truncated: false,
+      },
+    });
+    renderTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'reports' }));
+
+    // The LIST says it, and offers the climb out.
+    expect(await screen.findByText(/isn.t here any more/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Go back' })).toBeTruthy();
+    // Not the viewer's sentence, and not the viewer at all.
+    expect(screen.queryByText(/could not open that file/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Back' })).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Agent workspace' })).toBeTruthy();
+  });
+
   it('keeps the way out on a viewer that could not open the file', async () => {
     /*
       The list is unmounted, so this control is the ENTIRE exit. Tying it to a
