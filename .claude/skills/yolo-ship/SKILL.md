@@ -210,7 +210,8 @@ fi
 # disk is still a directory to git. Measured on git 2.52.0.
 ONE=$(git -c core.quotePath=false ls-files -- "$P")
 if [ "$ONE" != "$F" ]; then
-  echo "REFUSE: $F addresses more than one tracked path — name the single file you mutated."
+  echo "REFUSE: git does not spell this path the way you did (git says: $ONE)."
+  echo "  Name ONE tracked file, spelled relative to the worktree root, and re-run."
   exit 1
 fi
 
@@ -249,7 +250,8 @@ fi
 # See the precondition block: ask GIT what the pathspec addresses, not the filesystem.
 ONE=$(git -c core.quotePath=false ls-files -- "$P")
 if [ "$ONE" != "$F" ]; then
-  echo "REFUSE: $F addresses more than one tracked path — name the single file you mutated."
+  echo "REFUSE: git does not spell this path the way you did (git says: $ONE)."
+  echo "  Name ONE tracked file, spelled relative to the worktree root, and re-run."
   exit 1
 fi
 

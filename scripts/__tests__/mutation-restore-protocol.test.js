@@ -98,8 +98,17 @@
 //       * a name with a space  -> printed unquoted, compares equal. Fine.
 //       * `./a.js`             -> `ls-files` prints `a.js` -> REFUSED. Fail-closed, and
 //                                the blocks already say "from your worktree root".
-//       * an ABSOLUTE path    -> rc=0, `status` reports exactly the one file. Works; no
-//                                guard needed, and none added.
+//       * an ABSOLUTE path    -> `ls-files` answers REPO-RELATIVE, so the scope gate's
+//                                byte comparison fails -> REFUSED. Fail-closed, and the
+//                                LIKELY wrong spelling rather than an exotic one, since
+//                                agents here are told to use absolute paths. It has a
+//                                behavioural test, and the refusal names git's spelling
+//                                instead of asserting a cause it has not established.
+//                                (An earlier revision of this table claimed it "works, no
+//                                guard needed". True before the scope gate; false after.)
+//       * a CONFLICTED path   -> `ls-files` prints one line per stage, three for an
+//                                unmerged file -> REFUSED by the same comparison, with
+//                                the same self-diagnosing message. Not separately tested.
 //       * `../escape`         -> rc=128 -> REFUSED by the tracked check.
 //       * a name starting `:` -> resolves to itself; `status` reports only it, and
 //                                `checkout --` restores only it, leaving siblings alone.
@@ -111,20 +120,17 @@
 //     block in the dispatch prompt to execute; what the prompt must carry is the pointer
 //     and the per-role rule, and text is the only surface that has ever carried those.
 //
-// MUTANTS RUN, NOT REASONED ABOUT (2026-09-19, macOS + zsh + git 2.52.0; baseline **47
-// passed**; M1-M14 measured at the 45-test baseline, before M15's two cases were added,
-// and none of them touches a line those two read). Re-measured in full after EACH round —
-// three of them — because a round
-// changes the test set and a stale count is worse than none. (Round 3 caught this file
-// breaking its own rule: two tests had been added without re-running the table.) Each
-// mutant was applied to the COMMITTED text and restored with `git checkout --` afterwards,
-// which is the rule this file is about; `git status --porcelain` was empty before and after
-// every one. Every mutant still COLLECTS 45 — the number to distrust is a red count that
-// arrives with a shrunken total. A mutant's CONSTRUCTION is a claim as much as its count
-// is, so each says which kind it is:
+// MUTANTS RUN, NOT REASONED ABOUT (2026-09-19, macOS + zsh + git 2.52.0; baseline **51
+// passed**). Re-measured **in full after each of four review rounds**, because a round
+// changes the test set and a stale count is worse than none — a rule this file broke twice
+// and a reviewer caught both times. Every mutant was applied to the COMMITTED text and
+// restored with `git checkout --`; `git status --porcelain` was empty before and after each.
+// Every mutant still COLLECTS 51 — the number to distrust is a red count that arrives with
+// a shrunken total. A mutant's CONSTRUCTION is a claim as much as its count is, so each
+// says which kind it is:
 //
 //   M1. RESTORED VERBATIM — `git show origin/main:.claude/skills/yolo-ship/SKILL.md >` the
-//       file, i.e. the pre-fix text, which carries NEITHER marked block -> **41 red of 45**.
+//       file, i.e. the pre-fix text, which carries NEITHER marked block -> **47 red of 51**.
 //       The extractor finds 0 of each, `runBlock` throws by design naming the reason, and
 //       every behavioural case plus every block-structure check reds out. The 4 survivors
 //       are `logicalLines keeps a command a comment tried to swallow` and the three
@@ -137,16 +143,17 @@
 //       `some(/^exit 1$/)` — and the mutant had been WIDENED to "drop both" so that it would
 //       redden. That is measuring backwards: the test was shaping the mutant.
 //   M3. CONSTRUCTED: replace the restore's `git checkout -- "$P"` with `cp "$BACKUP" "$F"`,
-//       recorded here WITH ITS FLAW rather than as a result. It did NOT redden the
-//       incident-1 case: `$BACKUP` is unbound in the harness, so the copy fails and leaves
-//       the file where it was — the right answer by accident. **A mutant that errors out is
-//       a no-op in a mutant's costume.** Hence M3b. (The same trap bit M8 in round 3: a
+//       recorded WITH ITS FLAW rather than as a result. It did NOT redden the incident-1
+//       case: `$BACKUP` is unbound in the harness, so the copy fails and leaves the file
+//       where it was — the right answer by accident. **A mutant that errors out is a no-op
+//       in a mutant's costume.** Hence M3b. The same trap bit M8 and M14 later: a
 //       line-count-based deletion left a dangling `fi`, every block failed to parse, and
-//       the "33 red" it produced measured a syntax error rather than the missing gate.
-//       Re-done brace-matched, it is 5.)
+//       the 33 and 37 red those produced measured a syntax error rather than a missing
+//       gate. Both re-done brace-matched. **Three separate mutants in this file have lied
+//       by being broken rather than by being wrong.**
 //   M3b.CONSTRUCTED, the honest version of M3: `git show HEAD~1:"$F" > "$F"`, a restore that
 //       SUCCEEDS at writing back a stale snapshot, i.e. what a copy taken before a sibling's
-//       commit does -> **12 red**, including `keeps a commit that landed during the window`
+//       commit does -> **14 red**, including `keeps a commit that landed during the window`
 //       x2. Incident (1) re-introduced.
 //   M4. CONSTRUCTED: delete the restore's post-restore `git status --porcelain` check ->
 //       **3 red**. Without it, a restore that brought the mutant straight back out of the
@@ -171,38 +178,51 @@
 //       calls do not share shell state, so the restore — a red test-run later — would run
 //       with `$F` unset.
 //  M11. CONSTRUCTED: drop the `:(literal)` pathspec, addressing `"$F"` directly -> **6 red**,
-//       FOUR of them behavioural (the `[`-bracketed name, both blocks x both shells). In
-//       round 2 this mutant reddened only text checks; a reviewer was right that a claim
-//       enforced by a text match is not enforced, and the two glob fixtures are what closed
-//       it. The precondition half fails OPEN without it — `status --porcelain "we[i]rd.js"`
-//       matches the CLEAN sibling, prints nothing, and the block announces `committed-clean`
-//       over a dirty file.
-//  M12. CONSTRUCTED: delete the empty-`$F` guard from both blocks -> **5 red**. The CRITICAL
-//       a reviewer caught in my own hardening: with `$F` empty, `":(literal)"` addresses
-//       EVERY tracked file, so the restore block exits **0** having reverted a bystander's
-//       uncommitted work, and prints `ok`. Literal magic disables wildcards, not scope. The
-//       unhardened `-- ""` failed CLOSED, so the hardening had converted a refusal into a
-//       silent whole-worktree revert.
-//  M14. CONSTRUCTED: delete the git-side scope gate (`ONE=$(git ls-files -- "$P")`) from
-//       both blocks -> **9 red**, including the deleted-directory case x2 blocks x2 shells.
-//       This replaced an earlier `[ -d "$F" ]` filesystem guard (M13, retired) that a
-//       reviewer showed was blind in exactly the Critical's shape: `[ -d ]` is FALSE for a
-//       directory removed from disk, while git still expands the pathspec to the whole
-//       subtree — so the restore reverted a bystander's work and printed `ok`, at subtree
-//       scale. Ask git what the pathspec addresses, not the filesystem what `$F` looks like.
+//       four of them behavioural (the `[`-bracketed name, both blocks x both shells). In an
+//       earlier round it reddened only text checks; a reviewer was right that a claim
+//       enforced by a text match is not enforced, and the two glob fixtures closed it.
+//       **Its failure mode today is DEFENCE IN DEPTH, not fail-open** — the scope gate
+//       catches this input first. The fail-open story (`status --porcelain "we[i]rd.js"`
+//       matching the CLEAN sibling and the block announcing `committed-clean` over a dirty
+//       file) was measured against the PRE-scope-gate block, and is why `:(literal)` stayed
+//       rather than being deleted as redundant.
+//  M12. CONSTRUCTED: delete the empty-`$F` guard from both blocks -> **5 red**, all on the
+//       refusal MESSAGE. Same correction as M11: the CRITICAL it was written for — with
+//       `$F` empty, `":(literal)"` addresses EVERY tracked file, so the restore exited **0**
+//       having reverted a bystander's uncommitted work and printed `ok` — was measured
+//       against the pre-scope-gate block. `[ -z ]` now survives for its message rather than
+//       its reach. The original measurement is kept because it is why this branch exists,
+//       not because it describes today's failure mode.
+//  M14. CONSTRUCTED: delete the git-side scope gate from both blocks -> **13 red**,
+//       including the deleted-directory case x2 blocks x2 shells, on EXIT STATUS rather
+//       than on a message. It replaced an earlier `[ -d "$F" ]` filesystem guard (M13,
+//       retired) that a reviewer showed was blind in the Critical's exact shape: `[ -d ]`
+//       is FALSE for a directory removed from disk, while git still expands the pathspec to
+//       the whole subtree, so the restore reverted a bystander's work and printed `ok`.
+//       **The first version of that regression test did not reproduce the bug** — it
+//       removed a file INSIDE the directory, leaving `[ -d ]` true, so it reddened only on
+//       the message string and was a duplicate of the plain-directory case. Also caught in
+//       review. Ask git what the pathspec addresses, not the filesystem what `$F` looks like.
 //  M15. CONSTRUCTED: drop `-c core.quotePath=false` from the scope gate -> **2 red**, the
 //       non-ASCII case x2 shells. The gate compares bytes, and `ls-files` quotes a
 //       non-ASCII path by default, so `café.js` came back as `"caf\303\251.js"` and an
-//       ordinary file was refused. Fail-CLOSED, and still a defect: it locks an agent out
-//       of mutating that file, and the block gets blamed. **A byte-comparison gate is only
-//       as good as the spelling the command on the other side of it chooses.**
+//       ordinary file was refused. Fail-CLOSED, and still a defect: it locks an agent out of
+//       mutating that file, and the block gets blamed. **A byte-comparison gate is only as
+//       good as the spelling the command on the other side of it chooses.**
 //
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally — no network,
 // no Docker, no build. Every git repository it touches is created under a temp dir and
 // removed afterwards; it never runs git against this repository.
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -509,9 +529,9 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
   });
 
   it('restore brings back a DELETED file — "remove it and watch it go red" is a legal mutant', () => {
-    // The guard above is `[ -d "$F" ]`, deliberately not `[ -f "$F" ]`: deleting the file
-    // the guard covers is one of the commonest mutants on this board, and an existence
-    // check would refuse it. Nothing asserted that the rest of the block survives a path
+    // Deleting the file a guard covers is one of the commonest mutants on this board, and
+    // any existence test in the block would refuse it — which is why the scope gate asks
+    // git rather than the filesystem. Nothing asserted that the rest of the block survives a path
     // that is tracked but absent from disk, so this walks it: `ls-files` answers from the
     // index (tracked), `status --porcelain` reports ` D` (dirty, so not "already clean"),
     // and `checkout --` recreates the file.
@@ -611,7 +631,10 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
     const r = runBlock(shell, block(), { cwd: dir, file: 'sub', mark });
 
     expect(r.status).not.toBe(0);
-    expect(r.out).toMatch(/more than one tracked path/);
+    expect(r.out).toMatch(/does not spell this path the way you did/);
+    // It names what git actually matched, which for a directory is a path INSIDE it —
+    // the whole point: the pathspec was never addressing the thing the agent typed.
+    expect(r.out).toMatch(/sub\/nested\.js/);
     expect(r.out).not.toMatch(/^ok:/m);
     expect(read(dir, join('sub', 'nested.js'))).toBe(theirs);
   });
@@ -623,26 +646,60 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
     // The reason the scope gate asks GIT rather than the filesystem. A `[ -d "$F" ]` test
     // is FALSE for a directory that has been removed from disk — and "delete the whole
     // module and watch the canary go red" is an ordinary mutant here, blessed explicitly by
-    // the deleted-FILE case below. To git the path is still a directory: `ls-files` answers
+    // the deleted-FILE case above. To git the path is still a directory: `ls-files` answers
     // `sub/nested.js` from the index, `status` reports ` D`, and `checkout --` recreates the
     // entire subtree, wiping a bystander's uncommitted work with exit 0 and an `ok` line.
     // Measured on git 2.52.0 — same signature as the empty-`$F` Critical, narrower reach.
+    //
+    // The directory must be **wholly** gone for this to test anything. An earlier version of
+    // this fixture removed one file INSIDE `sub/` and left the directory standing, so
+    // `[ -d "sub" ]` was still TRUE and the very guard this test exists to indict fired
+    // against it. It reddened only on the message string, and would not have caught round
+    // 3's finding — a duplicate of the directory case above, wearing this one's name. Caught
+    // in review. There is also no "bystander's uncommitted work" to assert here: content
+    // under a removed directory cannot exist, so what git reports is a pure ` D` per path.
     const dir = makeRepo();
     mkdirSync(join(dir, 'sub'));
     writeFileSync(join(dir, 'sub', 'nested.js'), V1);
     writeFileSync(join(dir, 'sub', 'other.js'), V1);
     git(dir, 'add', 'sub');
     git(dir, 'commit', '-q', '-m', 'subtree');
-    const theirs = `${V1}// someone else's uncommitted work under sub/\n`;
-    writeFileSync(join(dir, 'sub', 'nested.js'), theirs);
-    rmSync(join(dir, 'sub', 'other.js'));
+    rmSync(join(dir, 'sub'), { recursive: true });
+    expect(existsSync(join(dir, 'sub'))).toBe(false);
+    // `porcelain()` trims, which eats the leading space of the first row, so match on the
+    // status letter rather than the column.
+    expect(porcelain(dir).split('\n').filter((l) => /^\s?D\s/.test(l))).toHaveLength(2);
 
     const r = runBlock(shell, block(), { cwd: dir, file: 'sub', mark });
 
     expect(r.status).not.toBe(0);
-    expect(r.out).toMatch(/more than one tracked path/);
+    expect(r.out).toMatch(/does not spell this path the way you did|more than one tracked/);
     expect(r.out).not.toMatch(/^ok:/m);
-    expect(read(dir, join('sub', 'nested.js'))).toBe(theirs);
+    // The block restored NOTHING: an agent mutating by deletion keeps its mutant, and a
+    // bystander's deletions under the same subtree are not silently undone either.
+    expect(existsSync(join(dir, 'sub'))).toBe(false);
+  });
+
+  it.each([
+    ['precondition', () => PRECONDITION, PRECONDITION_MARK],
+    ['restore', () => RESTORE, RESTORE_MARK],
+  ])('%s refuses an ABSOLUTE path, and says git spells it differently', (_name, block, mark) => {
+    // Agents in this environment are told to use absolute paths, so this is the LIKELY
+    // wrong spelling, not an exotic one. `git ls-files` answers repo-relative, so the scope
+    // gate's byte comparison fails and the block refuses — fail-closed, which is right, but
+    // the agent did name a single file and deserves to be told what actually happened.
+    const dir = makeRepo();
+    writeFileSync(join(dir, TARGET), MUTANT);
+
+    const r = runBlock(shell, block(), { cwd: dir, file: join(dir, TARGET), mark });
+
+    expect(r.status).not.toBe(0);
+    expect(r.out).toMatch(/does not spell this path the way you did/);
+    // It names git's spelling and tells the agent what to do about it, rather than
+    // asserting a cause ("more than one path") it has not established.
+    expect(r.out).toMatch(new RegExp(`git says: ${TARGET}`));
+    expect(r.out).toMatch(/relative to the worktree root/);
+    expect(read(dir)).toBe(MUTANT);
   });
 
   it('restore addresses the named file literally — a `[`-bracketed name is not a pattern', () => {
@@ -748,11 +805,14 @@ describe('the blocks in yolo-ship Phase 4', () => {
     // `ok: committed-clean` over a dirty file. Comparisons against `$F` live on non-git
     // lines (`[ "$ONE" != "$F" ]`), so this costs nothing.
     //
-    // `echo` lines are excluded here and checked separately below, because a refusal
-    // message legitimately says both `$F` (naming the file for the reader) and the word
-    // "git" (explaining what git did). They get the narrower rule that matters for them.
+    // Lines that are ENTIRELY an echo are excluded here and checked separately below,
+    // because a refusal message legitimately says both `$F` (naming the file for the
+    // reader) and the word "git" (explaining what git did). The `!/[;&|]/` qualifier is
+    // load-bearing: `echo "checking"; git diff --quiet -- "$F"` starts with `echo` but is
+    // two commands, and a bare-`$F` git invocation hiding behind a leading echo is exactly
+    // the class round 3 measured as surviving the whole suite.
     for (const l of [...logicalLines(PRECONDITION), ...logicalLines(RESTORE)]) {
-      if (/^echo\b/.test(l) || !/\bgit\b/.test(l)) continue;
+      if ((/^echo\b/.test(l) && !/[;&|]/.test(l)) || !/\bgit\b/.test(l)) continue;
       expect(l).not.toMatch(/\$\{?F\b/);
     }
   });
@@ -763,10 +823,17 @@ describe('the blocks in yolo-ship Phase 4', () => {
     // unquoted. An agent that reads an `ok:`/`REFUSE:` line naming a command runs that
     // command, and `git checkout -- we[i]rd.js` reverts the SIBLING. A message may name a
     // command, but it must spell the path as a placeholder, never as `$F`.
+    // The rule is POSITIONAL, not an allow-list of verbs. An allow-list of
+    // `checkout|restore|status|ls-files` let `git reset --hard -- $F` and `git clean -fd $F`
+    // through — the two most destructive things a refusal could hand someone — while
+    // matching ANY word after `git` flags ordinary prose like "git cannot restore it".
+    // What makes a mention dangerous is `$F` sitting AFTER the git token, i.e. in argument
+    // position. A `$F` before it is the message naming the file, which is the whole job.
     for (const l of [...logicalLines(PRECONDITION), ...logicalLines(RESTORE)]) {
       if (!/^echo\b/.test(l)) continue;
-      if (!/\bgit\s+(checkout|restore|status|ls-files)\b/.test(l)) continue;
-      expect(l).not.toMatch(/\$\{?F\b|\\\$\{?F\b/);
+      const git = l.search(/\bgit\s+[a-z][a-z-]*/);
+      if (git === -1) continue;
+      expect(l.slice(git)).not.toMatch(/\$\{?F\b|\\\$\{?F\b/);
     }
   });
 
@@ -805,7 +872,8 @@ describe('the blocks in yolo-ship Phase 4', () => {
     //   - `echo "REFUSE: …" && exit 1` keeps `refusals` (the line still starts `echo
     //     "REFUSE`) and drops `exits` -> caught by the EQUALITY, not the floor.
     //   - Collapsing a whole `if` onto one line drops both by one -> caught by the floor
-    //     only because the floor is per-block and exact. It was a single shared `>= 4`
+    //     only because the floor is per-block. (It is a FLOOR, not an exact count: a NEW
+    //     refusal branch raises both numbers and still passes.) It was a single shared `>= 4`
     //     before, which pinned the precondition and left the restore's fifth refusal free.
     const FLOORS = new Map([
       [PRECONDITION, 4],

@@ -103,7 +103,7 @@ afford — heed it rather than dispatching and hoping.
 >   into the orchestrator-facing prose above.)
 > - **Mutation testing: commit before you mutate, and restore with git — never from a file
 >   copy.** Proving a guard reddens writes a mutant into a real file, and putting the file
->   back is what has gone wrong four times on 2026-09-18/19.
+>   back is what has gone wrong five times, in four distinct shapes, on 2026-09-18/19.
 >   `git checkout -- <path>` restores exactly your mutation **if and only if that path was
 >   committed-clean before you mutated it**, so as the owner of your worktree, commit first.
 >   It is lossy when the file carries other uncommitted work (two builders lost work that
