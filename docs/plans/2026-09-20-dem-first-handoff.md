@@ -32,8 +32,25 @@ block, `memory_recall`, `memory_note`, export, UI, `memory:recall/remember/forge
 not exist and is **not decomposed into cards**. That is the largest remaining build.
 
 **Rung 4 is the gate that decides everything** (accuracy ≥ 76.0% replicated across two
-answer arms) and it **cannot run without TASK-434** — you cannot hit LongMemEval accuracy
-with a filtered listing. TASK-434 is therefore the critical path.
+answer arms) — and be precise about what blocks it, because the obvious answer is only
+half of it.
+
+§8 measures rung 4 through *"an **agent** holding `memory_recall`"*. `memory_recall` is a
+**rung-3 deliverable**. So **rung 4 is gated on the whole product layer, not just on
+retrieval** — finishing TASK-434 does not unblock the measurement, and rung 3 is the far
+larger blocker of the two. The ladder runs **3 before 4**, in order; there is no shortcut
+where a finished engine gets you a number.
+
+What TASK-434 *is*: the last card of **rung 2**, and a hard prerequisite for a rung-4 run
+that means anything (you cannot hit LongMemEval accuracy through an `about`-only filtered
+listing). Both are true — it is on the critical path and it is nowhere near sufficient.
+
+**One coupling to notice before building it.** §3.3 puts the normalizer's **write-path**
+embedder in `@ax/memory` (rung 3), while TASK-434 needs a **read-path** embedder injected
+into the engine. Two embedder seams, two layers, one deployment that has to configure both.
+Nobody has designed how they relate. If TASK-434 picks a config shape in isolation, rung 3
+may have to rework it — so it is worth a paragraph of thought at 434's Phase 1, or a quick
+rung-3 decomposition first if you want that answered before you commit to a seam.
 
 ---
 
@@ -230,8 +247,8 @@ a short-circuit; confirm by reading the job's step list, not its duration.
 | Card | Status | Note |
 |---|---|---|
 | TASK-420/421/422/448/423 | **Done** | rung 2's gate |
-| **TASK-434** | To Do, **ready** | RRF recall, sqlite — **critical path to rung 4** |
+| **TASK-434** | To Do, **ready** | RRF recall, sqlite — **last card of rung 2**; prerequisite for a meaningful rung 4, but does NOT unblock it (see §1) |
 | TASK-457 | To Do (deps 434) | same channels on postgres; owns the tsvector/pgvector call |
 | TASK-458 | To Do | pgvector bootstrap swallows its failure |
 | TASK-459 | To Do | NUL/control chars — the backends disagree until this lands |
-| rung 3 (`@ax/memory`) | **no cards** | the largest remaining build |
+| rung 3 (`@ax/memory`) | **no cards** | the largest remaining build — **and what actually gates rung 4**, since the measurement runs through an agent holding `memory_recall` |
