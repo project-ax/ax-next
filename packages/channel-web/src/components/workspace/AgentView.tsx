@@ -21,7 +21,7 @@ import { Archive, ArrowRight, ChevronLeft, Menu, PanelRight } from 'lucide-react
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useIsCompact } from '@/lib/use-compact';
 import { HTTP_SESSION_ENDED, logRequestFailure } from '@/lib/http';
 import {
@@ -904,7 +904,20 @@ export function AgentView({
         : shownRead;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    /*
+      THE `Tabs` ROOT SPANS THE WHOLE PANE (TASK-437), header and body together,
+      rather than wrapping the strip of triggers alone.
+
+      It has to: `TabsContent` finds its tab through React context, so a root
+      that closes at the bottom of the `<header>` can have no panels under it —
+      which is precisely the bug this card fixes. `Tabs` renders a plain `div`,
+      so it takes over the outer element's classes and adds no node.
+    */
+    <Tabs
+      value={tab}
+      onValueChange={(v) => onTab(v as AgentTab)}
+      className="flex min-h-0 flex-1 flex-col"
+    >
       <header className="border-b border-border px-6 pt-4">
         {/*
           `flex-wrap` + `min-w-0`, not `truncate`. A long agent name in a narrow
@@ -986,45 +999,64 @@ export function AgentView({
           )}
         </div>
 
-        <Tabs
-          value={tab}
-          onValueChange={(v) => onTab(v as AgentTab)}
-          className="mt-3"
-        >
-          {/*
-            The four triggers are ~309px of intrinsic width and they do not
-            shrink, so on a narrow header the last of them is simply unreachable
-            — the bug the TASK-356 walk measured. The negative margin cancels
-            the header's `px-6` so the rail scrolls edge to edge rather than
-            inside a 24px inset, and the padding puts the inset back on the
-            content; without the pair, the first and last tab sit flush against
-            the viewport when scrolled.
+        {/*
+          The four triggers are ~309px of intrinsic width and they do not
+          shrink, so on a narrow header the last of them is simply unreachable
+          — the bug the TASK-356 walk measured. The negative margin cancels
+          the header's `px-6` so the rail scrolls edge to edge rather than
+          inside a 24px inset, and the padding puts the inset back on the
+          content; without the pair, the first and last tab sit flush against
+          the viewport when scrolled.
 
-            Scrollbar hidden both ways because Firefox honours only the first
-            and WebKit/Blink only the second. This is a strip of four words that
-            fits on any real desktop — a permanent horizontal bar under it would
-            be visible chrome bought for a case that mostly does not happen.
-          */}
-          <div className="-mx-6 overflow-x-auto px-6 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            {/* `w-max` so the list keeps its intrinsic width and overflows into
-                the scroller above, instead of shrinking to fit and clipping. */}
-            <TabsList className="h-auto w-max bg-transparent p-0">
-              {WORKSPACE_AGENT_TABS.map((v) => (
-                <TabsTrigger
-                  key={v}
-                  value={v}
-                  className="rounded-none border-b-2 border-transparent bg-transparent px-0 pb-3 pt-0 text-[13px] text-muted-foreground shadow-none data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none [&:not(:first-child)]:ml-6"
-                >
-                  {TAB_LABELS[v]}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </div>
-        </Tabs>
+          Scrollbar hidden both ways because Firefox honours only the first
+          and WebKit/Blink only the second. This is a strip of four words that
+          fits on any real desktop — a permanent horizontal bar under it would
+          be visible chrome bought for a case that mostly does not happen.
+
+          `mt-3` moved here off the `Tabs` root when that root grew to span the
+          whole pane (TASK-437) — it was always spacing the STRIP off the title
+          row, and on the root it would now be spacing the pane off its header.
+        */}
+        <div className="-mx-6 mt-3 overflow-x-auto px-6 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {/* `w-max` so the list keeps its intrinsic width and overflows into
+              the scroller above, instead of shrinking to fit and clipping. */}
+          <TabsList className="h-auto w-max bg-transparent p-0">
+            {WORKSPACE_AGENT_TABS.map((v) => (
+              <TabsTrigger
+                key={v}
+                value={v}
+                className="rounded-none border-b-2 border-transparent bg-transparent px-0 pb-3 pt-0 text-[13px] text-muted-foreground shadow-none data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none [&:not(:first-child)]:ml-6"
+              >
+                {TAB_LABELS[v]}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </div>
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <div className="flex min-w-0 flex-1 flex-col">
+        {/*
+          THE OPEN TAB'S PANEL (TASK-437). This element used to be a bare `div`,
+          which is why the four triggers advertised `aria-controls` ids that
+          resolved to nothing: `TabsTrigger` emits `aria-controls` whether or not
+          a matching `TabsContent` exists, so the strip claimed a tab/panel
+          relationship the DOM did not keep. It is the same container it always
+          was — `TabsContent` renders a `div` — now carrying `role="tabpanel"`,
+          the id the open trigger points at, `aria-labelledby` back to that
+          trigger, and `tabIndex={0}` so Tab out of the strip lands in here.
+
+          `forceMount` because without it Radix drops the panel from the DOM
+          whenever its tab is closed, which is the whole defect in miniature —
+          see the three closed panels below for why that matters even here.
+
+          `mt-0` cancels the `mt-2` shadcn's `TabsContent` ships. This panel butts
+          straight up against the header, as the `div` it replaces did.
+        */}
+        <TabsContent
+          value={tab}
+          forceMount
+          className="mt-0 flex min-w-0 flex-1 flex-col"
+        >
           {/*
             THE OPEN PANEL'S HEADING (TASK-446) — the `h2` between the page's
             `h1` (the agent's name, above) and the `SectionLabel` `h3`s that
@@ -1278,7 +1310,31 @@ export function AgentView({
               }}
             />
           )}
-        </div>
+        </TabsContent>
+
+        {/*
+          THE THREE CLOSED PANELS (TASK-437) — empty on purpose, and present on
+          purpose.
+
+          `TabsTrigger` sets `aria-controls` on all four tabs unconditionally,
+          but a `TabsContent` renders NOTHING while its tab is closed. So fitting
+          the open tab with a panel and stopping there would still leave three
+          ids pointing at nowhere — a fix that looks complete and is three
+          quarters of the way there. These keep every `aria-controls` resolvable.
+
+          They hold no children, so opening this pane does not mount
+          `ActivityFeed`, `AgentFiles` and `AgentMemory` side by side or fire
+          their reads. An empty `div` is what a closed panel costs.
+
+          `hidden` WITHOUT a display class, deliberately: Tailwind preflight's
+          `[hidden] { display: none }` and a utility like `flex` have the same
+          specificity, and the utilities win on source order — so `class="flex"
+          hidden` renders visible. The open panel above needs its `flex`; these
+          must not have one.
+        */}
+        {WORKSPACE_AGENT_TABS.filter((v) => v !== tab).map((v) => (
+          <TabsContent key={v} value={v} forceMount hidden className="mt-0" />
+        ))}
 
         {/*
           Above `md` the rail is a column. Below it the rail is a `Sheet` and
@@ -1345,6 +1401,6 @@ export function AgentView({
             />
           ))}
       </div>
-    </div>
+    </Tabs>
   );
 }
