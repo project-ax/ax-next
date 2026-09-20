@@ -51,7 +51,7 @@ import { AgentView } from '@/components/workspace/AgentView';
 import { workspaceApi } from '@/lib/workspace-api';
 import { uploadAttachment } from '@/lib/attachment-upload';
 import type { AgentDetail, WorkspaceAgent } from '@/lib/workspace-api';
-import { ATTACHMENT_NAME_MAX_CHARS } from '@/components/workspace/WorkspaceAttachmentChip';
+import { ATTACHMENT_NAME_MAX_CHARS } from '@/lib/attachment-name';
 import { rail as railFixture } from '@/components/workspace/__tests__/rail-fixture';
 
 /**

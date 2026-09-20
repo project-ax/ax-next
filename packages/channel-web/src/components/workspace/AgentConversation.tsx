@@ -81,10 +81,7 @@ import {
   ThreadFindToggle,
   type FindView,
 } from './ThreadFind';
-import {
-  clampAttachmentName,
-  WorkspaceAttachmentChip,
-} from './WorkspaceAttachmentChip';
+import { WorkspaceAttachmentChip } from './WorkspaceAttachmentChip';
 import { AttachmentChip } from '@/components/AttachmentChip';
 
 /**
@@ -941,15 +938,18 @@ function Message({
           <div className="flex max-w-[80%] flex-col items-end gap-1.5">
             {attachments.map((a, i) => {
               /*
-                CLAMPED, not merely truncated. A filename comes off the
-                person's own disk and can be any length at all, and the chip's
-                CSS `truncate` hides the overflow visually while leaving the
-                whole string in the accessibility tree and in the chip's
-                `aria-label` / `alt` — a screen reader reading four hundred
-                characters is its own kind of broken. Same rule, and the same
-                function, the composer's own chips already use.
+                The name is CLAMPED, not merely truncated — but TASK-431 moved
+                that clamp INTO `AttachmentChip`, so this call site no longer
+                does it by hand. A filename comes off the person's own disk and
+                can be any length at all, and the chip's CSS `truncate` hides
+                the overflow visually while leaving the whole string in the
+                accessibility tree and in the chip's `aria-label` / `alt` — a
+                screen reader reading four hundred characters is its own kind
+                of broken. Chat's two call sites had forgotten the clamp
+                entirely, which is the argument for doing it at the sink: one
+                place, and a fourth call site inherits it for free.
 
-                This is also the honest place to say what CANNOT reach here.
+                This is still the honest place to say what CANNOT reach here.
                 `turnAttachments` runs on `turn.role === 'user'` ONLY, and user
                 turns are persisted host-side by `@ax/chat-orchestrator` from
                 the person's own content blocks — the runner never writes one
@@ -961,7 +961,6 @@ function Message({
                 here is safe to draw when a step label built from tool input
                 would not be.
               */
-              const name = clampAttachmentName(a.displayName);
               return (
               <AttachmentChip
                 /*
@@ -974,7 +973,7 @@ function Message({
                   ? {
                       path: a.path,
                       conversationId,
-                      displayName: name,
+                      displayName: a.displayName,
                       mediaType: a.mediaType,
                       ...(a.sizeBytes === undefined
                         ? {}
@@ -988,7 +987,7 @@ function Message({
                         this card is about, in a smaller window.
                       */
                       variant: 'pending' as const,
-                      displayName: name,
+                      displayName: a.displayName,
                       mediaType: a.mediaType,
                     })}
                 />

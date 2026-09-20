@@ -25,6 +25,7 @@ import type { ThreadMessageLike } from '@assistant-ui/react';
 import { useEffect, type ReactNode } from 'react';
 import { Thread } from '../components/Thread';
 import { setActiveConversationId } from '../lib/use-conversation-id';
+import { ATTACHMENT_NAME_MAX_CHARS } from '../lib/attachment-name';
 
 function ProviderWithSeededMessages({ children }: { children: ReactNode }) {
   // Publish a non-null conversation id so AttachmentChip can build the
@@ -180,5 +181,128 @@ describe('Thread live-frame attachment rendering', () => {
     expect(screen.getByText('live.pdf')).toBeTruthy();
     // No download button in the pending variant.
     expect(screen.queryByLabelText(/Download/)).toBeNull();
+  });
+});
+
+/*
+  TASK-431 — the chat transcript floods `alt` / `aria-label` with an unclamped
+  filename.
+
+  TASK-424 (#596) fixed exactly this for the AGENT-VIEW transcript, and the
+  review pass on it found chat's two call sites by reading the siblings rather
+  than the diff. Both handed `AttachmentChip` the raw `filename` off the file
+  part.
+
+  jsdom has no CSS and no layout, so nothing here can assert the VISUAL
+  truncation — `truncate` is a no-op in this environment by construction. That
+  is fine, because the visual truncation was never the bug: the bug is what
+  lands in the accessibility tree, and the accessibility tree IS real in jsdom.
+  So these assert the attributes against the source string.
+*/
+describe('Thread clamps an attachment filename before it reaches the a11y tree', () => {
+  const LONG_STEM = 'z'.repeat(400);
+
+  it('clamps the history-load path (UserFilePart): alt and the download label', () => {
+    const source = `${LONG_STEM}.png`;
+    function Provider({ children }: { children: ReactNode }) {
+      setActiveConversationId('c1');
+      useEffect(() => () => setActiveConversationId(null), []);
+      const seeded: ThreadMessageLike[] = [
+        {
+          id: 'm-user-long',
+          role: 'user',
+          content: [
+            {
+              type: 'file',
+              data: 'ax://attachment-path/' + btoa('.ax/uploads/c1/t1/z.png'),
+              mimeType: 'image/png',
+              filename: source,
+            },
+          ],
+        },
+      ];
+      const runtime = useExternalStoreRuntime({
+        messages: seeded,
+        convertMessage: (m) => m,
+        async onNew() {},
+      });
+      return (
+        <AssistantRuntimeProvider runtime={runtime}>
+          {children}
+        </AssistantRuntimeProvider>
+      );
+    }
+    const { container } = render(
+      <Provider>
+        <Thread />
+      </Provider>,
+    );
+    const img = container.querySelector('img');
+    expect(img).not.toBeNull();
+    const alt = img?.getAttribute('alt') ?? '';
+    // The whole point: bounded by the cap, and shorter than what came in.
+    expect(alt.length).toBeLessThanOrEqual(ATTACHMENT_NAME_MAX_CHARS);
+    expect(alt.length).toBeLessThan(source.length);
+    expect(alt.startsWith('zzz')).toBe(true);
+    // The image variant's own button is labelled from the same string.
+    const label =
+      container.querySelector('button')?.getAttribute('aria-label') ?? '';
+    expect(label).toBe(`Download ${alt}`);
+  });
+
+  it('clamps the live-frame path (LiveAttachmentChip)', () => {
+    const source = `${LONG_STEM}.pdf`;
+    const seeded: ThreadMessageLike[] = [
+      {
+        id: 'm-user-live-long',
+        role: 'user',
+        content: [{ type: 'text', text: 'see attached' }],
+        attachments: [
+          {
+            id: 'att-long',
+            type: 'document',
+            name: source,
+            contentType: 'application/pdf',
+            status: { type: 'complete' },
+            content: [
+              {
+                type: 'file',
+                data: 'ax://attachment/att-long',
+                mimeType: 'application/pdf',
+                filename: source,
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    function Provider({ children }: { children: ReactNode }) {
+      const runtime = useExternalStoreRuntime({
+        messages: seeded,
+        convertMessage: (m) => m,
+        async onNew() {},
+      });
+      return (
+        <AssistantRuntimeProvider runtime={runtime}>
+          {children}
+        </AssistantRuntimeProvider>
+      );
+    }
+    const { container } = render(
+      <Provider>
+        <Thread />
+      </Provider>,
+    );
+    const chip = container.querySelector('[data-variant="pending"]');
+    expect(chip).not.toBeNull();
+    // The pending variant has no `alt` and no `aria-label` — the name is a
+    // text node, which a screen reader reads just as faithfully.
+    const text = chip?.textContent ?? '';
+    expect(text.length).toBeLessThanOrEqual(ATTACHMENT_NAME_MAX_CHARS);
+    expect(text.length).toBeLessThan(source.length);
+    expect(text.startsWith('zzz')).toBe(true);
+    // Sanity: the unclamped name is nowhere in the rendered tree, so this is
+    // not passing because the chip failed to render a name at all.
+    expect(container.innerHTML).not.toContain(source);
   });
 });
