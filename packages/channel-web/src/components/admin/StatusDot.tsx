@@ -14,12 +14,16 @@ export interface StatusDotProps {
  * floor. They are `bg-state-quiet` now.
  *
  * Worth being honest about what that buys, because it is less than the card
- * that asked for it assumed: this dot never renders alone. All four render
- * sites — `ProviderRow`, and the three in `ConnectorsTab` — put a plain-English
- * label immediately beside it ("Not configured", "Validating…", "Awaiting your
- * approval"), and the dot is `aria-hidden`. So nobody was ever relying on the
- * colour to know the state, and the pulse gives `pending` a second channel on
- * top. The defect being fixed is therefore a faint mark, not a lost meaning.
+ * that asked for it assumed: this dot never renders alone. All three LIVE
+ * render sites are in `ConnectorsTab`, and each puts a plain-English label
+ * immediately beside the dot ("Ready", "Needs a key", "Awaiting your
+ * approval"), with the dot itself `aria-hidden`. So nobody was ever relying on
+ * the colour to know the state, and the pulse gives `pending` a second channel
+ * on top. The defect being fixed is a faint mark, not a lost meaning.
+ *
+ * `ProviderRow` pairs its dot with `DEFAULT_LABEL` in exactly the same way, and
+ * is named here precisely because it does NOT count — nothing in the running UI
+ * renders it, only its own unit test. Saying so beats re-grepping it.
  *
  * `theme-contrast.test.ts` reads these classes back out of this file and
  * measures whatever it finds, so reverting one fails with a ratio.

@@ -1205,12 +1205,15 @@ describe("ApprovalCard's tinted surface", () => {
  * THREE THINGS ABOUT THAT CARD DID NOT SURVIVE CONTACT, recorded here because
  * each one changes what this section is allowed to claim:
  *
- *   1. `StatusDot`'s dots are NOT the sole carrier of their state. All four
- *      render sites put a plain-English label immediately beside the dot —
- *      `ProviderRow` ("Not configured" / "Validating…"), and three in
- *      `ConnectorsTab` (`STATUS_COPY`, `testLabel`, "Awaiting your approval") —
- *      and the dot is `aria-hidden`. Where the information is duplicated in
- *      adjacent text, the mark is decorative and 1.4.11 does not reach it. They
+ *   1. `StatusDot`'s dots are NOT the sole carrier of their state. All THREE
+ *      live render sites put a plain-English label immediately beside the dot —
+ *      `ConnectorsTab`'s `STATUS_COPY`, its `testLabel`, and "Awaiting your
+ *      approval" — and the dot is `aria-hidden`. (`ProviderRow` pairs its dot
+ *      with `DEFAULT_LABEL` the same way, and is worth naming precisely because
+ *      it does NOT count: nothing in the running UI renders it, only its own
+ *      unit test. It is listed here so the next reader does not re-grep it.)
+ *      Where the information is duplicated in adjacent text, the mark is
+ *      decorative and 1.4.11 does not reach it. They
  *      were raised anyway, because they shared a token with a dot that IS the
  *      sole carrier and splitting them apart would buy nothing but a third
  *      token. The rows below are therefore a floor these two do not strictly
@@ -1246,12 +1249,21 @@ const AA_NON_TEXT = 3;
 /**
  * A surface a dot is painted on: a token, optionally at `alpha` over another.
  *
- * FIVE of them, because a dot moves around more than a paragraph does. The
+ * SIX of them, because a dot moves around more than a paragraph does. The
  * sidebar row is the page by default, `bg-muted/60` on hover and
  * `bg-primary-soft` when selected; `StatusDot` lives inside `RoleCard`'s
- * `bg-card`. `--primary-soft` is the tightest of the five in BOTH themes, and
- * it is the one nobody would think to check, because "the selected row" reads
- * as a state of the row rather than as a place a dot lives.
+ * `bg-card`; and `DecisionRow`'s STALE row tints itself `bg-destructive-soft/50`
+ * over that card while still rendering a dot. `--primary-soft` is the tightest
+ * of the six in BOTH themes, and it is the one nobody would think to check,
+ * because "the selected row" reads as a state of the row rather than as a place
+ * a dot lives.
+ *
+ * The stale row is here for the same reason, one card later: review found it
+ * missing from a list whose own comment claimed "every surface a dot lands on",
+ * which is this file's signature defect — a completeness claim nobody checked.
+ * It measures clear today (the `stopped` dot that actually lands there is
+ * 4.85:1 light / 4.90:1 dark), so it is a bound rather than a fix. Listing a
+ * passing surface costs one line; NOT listing it is how the next defect hides.
  */
 interface DotBackdrop {
   label: string;
@@ -1271,6 +1283,12 @@ const DOT_BACKDROPS: readonly DotBackdrop[] = [
     token: '--muted',
     alpha: 0.6,
     over: '--background',
+  },
+  {
+    label: 'bg-destructive-soft/50 over --card (the stale decision row)',
+    token: '--destructive-soft',
+    alpha: 0.5,
+    over: '--card',
   },
 ];
 
@@ -1312,16 +1330,33 @@ const STATUS_DOT_FILE = 'components/admin/StatusDot.tsx';
  * Comments are stripped first, because that component's doc comment now
  * discusses `bg-ink-ghost` in prose and a raw scan would count it as paint —
  * the same trap `parseTint` documents one section up.
+ *
+ * The state name is `[\w-]+`, NOT `[a-z]+`, and the width is the whole point.
+ * `AgentRunState` is all-lowercase today, so a narrower class would look
+ * identical — right up until someone adds an `in-progress`, at which point the
+ * arm simply would not match, `DOT_FILLS` would omit it, and the exact-list
+ * anchor below would stay GREEN because its expectation would not mention the
+ * variant either. An unmeasured dot with a clean suite. Matching wider means a
+ * new state shows up as a red anchor asking for a measurement, which is the
+ * failure direction this whole section is built around.
  */
 function parseStateDotArms(source: string): Map<string, string> {
   const out = new Map<string, string>();
-  for (const m of stripComments(source).matchAll(/state === '([a-z]+)' && '([^']+)'/g)) {
+  for (const m of stripComments(source).matchAll(/state === '([\w-]+)' && '([^']+)'/g)) {
     out.set(m[1]!, m[2]!);
   }
   return out;
 }
 
-/** `StatusDot`'s `VARIANT_CLASS` record, brace-matched and then read key by key. */
+/**
+ * `StatusDot`'s `VARIANT_CLASS` record, brace-matched and then read key by key.
+ *
+ * The key pattern allows hyphens and optional surrounding quotes for the reason
+ * `parseStateDotArms` spells out: a `'needs-key'` variant is spelled with
+ * quotes in a TS object literal, and a narrower pattern would skip it silently
+ * rather than loudly. `StatusDotVariant` has no such member today; the point is
+ * that it can grow one without this going quietly blind.
+ */
 function parseVariantClass(source: string): Map<string, string> {
   const src = stripComments(source);
   const at = src.indexOf('VARIANT_CLASS');
@@ -1334,7 +1369,7 @@ function parseVariantClass(source: string): Map<string, string> {
     else if (src[i] === '}' && --depth === 0) break;
   }
   const out = new Map<string, string>();
-  for (const m of src.slice(start, i).matchAll(/([a-z][\w]*)\s*:\s*'([^']+)'/g)) {
+  for (const m of src.slice(start, i).matchAll(/'?([\w-]+)'?\s*:\s*'([^']+)'/g)) {
     out.set(m[1]!, m[2]!);
   }
   return out;
@@ -1506,6 +1541,28 @@ describe('state dots clear the 3:1 non-text floor', () => {
   });
 
   /**
+   * The hyphen case, which is the one that would have gone QUIETLY wrong: an
+   * unmatched variant is simply absent from `DOT_FILLS`, and the exact-list
+   * anchor would not miss it because the anchor would not name it either. Both
+   * parsers are pinned on a hyphenated member so the width cannot be narrowed
+   * back without a red test.
+   */
+  it('sees a hyphenated state or variant, quoted or not', () => {
+    const arms = parseStateDotArms("state === 'in-progress' && 'bg-primary',");
+    expect([...arms]).toEqual([['in-progress', 'bg-primary']]);
+
+    const variants = parseVariantClass(
+      [
+        'const VARIANT_CLASS = {',
+        "  'needs-key': 'bg-destructive',",
+        "  ok: 'bg-primary',",
+        '};',
+      ].join('\n'),
+    );
+    expect([...variants.keys()]).toEqual(['needs-key', 'ok']);
+  });
+
+  /**
    * `bgFill` is what turns a class into a measured token, so pin it on the
    * shapes this tree actually contains — including the `ok` variant's
    * `shadow-[…color-mix(…)]`, the one string here that looks like it might
@@ -1530,23 +1587,31 @@ describe('state dots clear the 3:1 non-text floor', () => {
   });
 
   /**
-   * The composited hover row is the one backdrop with arithmetic in it, and a
-   * broken `composite` fails SAFE in light mode: everything drifts toward white
-   * and passes. `composite` has its own fixtures above; this pins that the
-   * BACKDROP LIST actually uses them, by checking the fractional row lands
-   * between the two surfaces it blends.
+   * The composited rows are the backdrops with arithmetic in them, and a broken
+   * `composite` fails SAFE in light mode: everything drifts toward white and
+   * passes. `composite` has its own fixtures above; this pins that the BACKDROP
+   * LIST actually uses them, by checking each fractional row lands between the
+   * two surfaces it blends.
+   *
+   * EVERY fractional row, not the first one. This was a `find()` when there was
+   * one of them, which review flagged the moment a second arrived: `find()` does
+   * not fail when the list grows, it just quietly stops covering the rest. The
+   * count is asserted below for the same reason.
    */
-  it('resolves the fractional hover backdrop between its two layers', () => {
+  it('resolves every fractional backdrop between its two layers', () => {
+    const fractional = DOT_BACKDROPS.filter((b) => b.alpha < 1);
+    expect(fractional.length, 'no fractional backdrop left to check').toBe(2);
     for (const [, selector] of THEMES) {
       const tokens = tokensAfter(selector);
-      const hover = DOT_BACKDROPS.find((b) => b.alpha < 1)!;
-      const blended = luminance(rgbOf(resolveBackdrop(tokens, hover)));
-      const ends = [
-        luminance(rgbOf(tokens.get(hover.token)!)),
-        luminance(rgbOf(tokens.get(hover.over!)!)),
-      ].sort((a, b) => a - b);
-      expect(blended).toBeGreaterThanOrEqual(ends[0]!);
-      expect(blended).toBeLessThanOrEqual(ends[1]!);
+      for (const b of fractional) {
+        const blended = luminance(rgbOf(resolveBackdrop(tokens, b)));
+        const ends = [
+          luminance(rgbOf(tokens.get(b.token)!)),
+          luminance(rgbOf(tokens.get(b.over!)!)),
+        ].sort((x, y) => x - y);
+        expect(blended, `${b.label} in ${selector}`).toBeGreaterThanOrEqual(ends[0]!);
+        expect(blended, `${b.label} in ${selector}`).toBeLessThanOrEqual(ends[1]!);
+      }
     }
   });
 
