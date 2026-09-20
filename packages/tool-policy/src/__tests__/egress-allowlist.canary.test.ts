@@ -11,6 +11,49 @@
  * other way — the returns zod, the `null` ↔ `''` owner sentinel, a query that
  * forgot to name the owner — and the failure mode of each is an allow somebody
  * did not grant. Hence a canary rather than a unit test with a fake store.
+ *
+ * ---------------------------------------------------------------------------
+ * VACUITY LEDGER (TASK-469, 2026-09-19) — why this green is worth believing
+ *
+ * #618 left this suite green at 12/12 with its vacuity never demonstrated: the
+ * one mutant that mattered died on a Docker flap. A canary that has never been
+ * made to go red is decoration, so every claim below was mutated and RUN, on a
+ * daemon proved alive by starting a container rather than by reading `rc=0`.
+ * Each mutant was restored with `git checkout --` and the file re-hashed to
+ * confirm the restore was byte-identical.
+ *
+ *   mutant (what was broken)                          result   counts
+ *   M1  db revoke returns true over an UNTOUCHED table KILLED   1 red / 11 pass
+ *   M4  the read stops naming its owner                KILLED   2 red / 10 pass
+ *   M5  listFor stops deduping                         KILLED   1 red / 11 pass
+ *   M6  normalizeHost accepts anything non-empty       KILLED   1 red / 11 pass
+ *   M7  a non-person id may own an entry               KILLED   1 red / 11 pass
+ *   M8  the plugin falls back to the in-memory store   KILLED   1 red / 11 pass
+ *   M9  an unreadable payload stops being a deny       KILLED   1 red / 11 pass
+ *   M10 remember files under the payload's ownerId     KILLED   1 red / 11 pass
+ *   M11 the database is unreachable                    KILLED  12 red /  0 pass
+ *   M12 every read returns zero rows                   KILLED   7 red /  5 pass
+ *   M13 listFor throws (hook swallows -> { sites: [] })KILLED   1 red / 11 pass
+ *   M2  revoke may also delete the GLOBAL row        SURVIVED  167/167 green
+ *   M3  revoke stops naming the owner                SURVIVED  167/167 green
+ *
+ * M1 is the one #618 could not run; it dies, so the DELETE really does reach
+ * Postgres. The total never shrank — every mutant reddened tests rather than
+ * removing them, which is the failure mode that makes a mutation run lie.
+ *
+ * WHICH DIRECTION DOES THE CANARY ITSELF FAIL IN? Red, on all three of the
+ * shapes worth fearing: an unreachable database (M11), a table that answers
+ * nothing (M12), and a read that throws into a soft-fail `{ sites: [] }`
+ * (M13). It does NOT silently pass on the in-memory store either (M8) — the
+ * restart case is what holds that door, which is worth knowing before anyone
+ * "simplifies" it away.
+ *
+ * M2 and M3 are the two holes this found, both on `revoke` and both invisible
+ * to all 167 tests in this package. They are closed by the two TASK-469 cases
+ * below. Re-proving any of this is a local job, not a CI-only one: mutate,
+ * `npx vitest run src/__tests__/egress-allowlist.canary.test.ts` from this
+ * package, `git checkout --` the file. ~6 s a round on a warm image.
+ * ---------------------------------------------------------------------------
  */
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createTestHarness, stopPostgresContainer, type TestHarness } from '@ax/test-harness';
@@ -69,6 +112,16 @@ async function verdict(h: TestHarness, userId: string, url: string): Promise<str
     EXTRACT(url),
   );
   return out.verdict;
+}
+
+/** What the settings panel would show this person, as `[host, scope]` pairs. */
+async function sites(h: TestHarness, userId: string): Promise<[string, string][]> {
+  const out = await h.bus.call<unknown, EgressListOutput>(
+    'egress-allowlist:list',
+    h.ctx({ userId }),
+    {},
+  );
+  return out.sites.map((s) => [s.host, s.scope]);
 }
 
 describe('egress allowlist canary', () => {
@@ -235,6 +288,17 @@ describe('egress allowlist canary', () => {
     });
     expect(await verdict(h, 'alice', 'https://docs.example.com/guide')).toBe('allow');
 
+    // READ THE LIST BEFORE THE REVOKE, and this is not ceremony (TASK-469).
+    //
+    // The `toEqual([])` below was vacuous on its own, proved by construction:
+    // mutant M13 made `listFor` THROW, `egress-allowlist:list` swallowed it
+    // into its deliberate `{ sites: [] }` soft-fail, and the assertion passed
+    // over a read that never reached the table. That is the same shape a
+    // sibling panel shipped — a store throw rendered as a reassuring "nothing
+    // here yet". With this line first, `[]` afterwards means the ROW WENT
+    // AWAY, because the identical read returned it a moment ago.
+    expect(await sites(h, 'alice')).toEqual([['docs.example.com', 'user']]);
+
     expect(
       await h.bus.call('egress-allowlist:revoke', h.ctx({ userId: 'alice' }), {
         host: 'docs.example.com',
@@ -245,12 +309,7 @@ describe('egress allowlist canary', () => {
     // the person sees, and a panel that still shows a revoked site is a panel
     // nobody can trust.
     expect(await verdict(h, 'alice', 'https://docs.example.com/guide')).toBe('hold');
-    const after = await h.bus.call<unknown, EgressListOutput>(
-      'egress-allowlist:list',
-      h.ctx({ userId: 'alice' }),
-      {},
-    );
-    expect(after.sites).toEqual([]);
+    expect(await sites(h, 'alice')).toEqual([]);
 
     // Nothing to delete the second time — and no error either.
     expect(
@@ -258,6 +317,86 @@ describe('egress allowlist canary', () => {
         host: 'docs.example.com',
       }),
     ).toEqual({ revoked: false });
+  });
+
+  it('cannot revoke the operator’s global entry, whoever asks (TASK-469)', async () => {
+    // A HOLE THE CANARY HAD, found by mutation rather than by reading.
+    //
+    // `revoke` hard-codes `scope: 'user'` inside the store, and the interface
+    // calls that "the security decision rather than a simplification" — a
+    // scope parameter would put every caller one typo away from deleting the
+    // deployment-wide list. Nothing asserted it. Mutant M2 rewrote the DELETE
+    // to `owner_user_id in [ownerId, '']` with the scope filter dropped, so a
+    // person's revoke also took out the operator's row, and ALL 167 TESTS IN
+    // THIS PACKAGE STAYED GREEN. The in-memory store cannot be asked this
+    // question at all — its only global bucket lives under a key `revoke`
+    // cannot produce — so the db store is the one that needs the test, and
+    // this is the file that has a db.
+    const h = await boot({ globalEgressHosts: ['intranet.example.com'] });
+    expect(await verdict(h, 'alice', 'https://intranet.example.com/x')).toBe('allow');
+
+    // Nothing of hers to take back: `false` is the whole answer, and she is
+    // deliberately not told that a row she cannot delete exists.
+    expect(
+      await h.bus.call('egress-allowlist:revoke', h.ctx({ userId: 'alice' }), {
+        host: 'intranet.example.com',
+      }),
+    ).toEqual({ revoked: false });
+
+    // The operator's list is untouched — for her and for everybody else. This
+    // is the assertion M2 reddens: under it the global row is gone and both
+    // verdicts fall back to `hold`.
+    expect(await verdict(h, 'alice', 'https://intranet.example.com/x')).toBe('allow');
+    expect(await verdict(h, 'bob', 'https://intranet.example.com/x')).toBe('allow');
+    expect(await sites(h, 'alice')).toEqual([['intranet.example.com', 'global']]);
+
+    // And the same once she ALSO has a personal row for that host — the
+    // routine overlap, since `web_extract` remembers even the silent fetches.
+    // Her revoke takes hers; the operator's still stands.
+    expect(
+      await h.bus.call('egress-allowlist:remember', h.ctx({ userId: 'alice' }), {
+        host: 'intranet.example.com',
+      }),
+    ).toEqual({ remembered: true });
+    expect(
+      await h.bus.call('egress-allowlist:revoke', h.ctx({ userId: 'alice' }), {
+        host: 'intranet.example.com',
+      }),
+    ).toEqual({ revoked: true });
+    expect(await verdict(h, 'alice', 'https://intranet.example.com/x')).toBe('allow');
+    expect(await verdict(h, 'bob', 'https://intranet.example.com/x')).toBe('allow');
+  });
+
+  it('cannot revoke somebody else’s entry — the DELETE names its owner (TASK-469)', async () => {
+    // The second hole, same method. Mutant M3 dropped
+    // `.where('owner_user_id', '=', ownerId)` from the DELETE, leaving the
+    // host match and the scope filter, and all 167 tests stayed green — one
+    // person's revoke would have reached into everybody's list for that host.
+    //
+    // Deleting a grant fails CLOSED for egress, so this is not a way to widen
+    // anybody's reach. It is still somebody else's decision being thrown away
+    // without them asking, on the one surface whose job is to tell a person
+    // what they agreed to.
+    const h = await boot();
+    for (const who of ['alice', 'bob']) {
+      expect(
+        await h.bus.call('egress-allowlist:remember', h.ctx({ userId: who }), {
+          host: 'docs.example.com',
+        }),
+      ).toEqual({ remembered: true });
+    }
+
+    expect(
+      await h.bus.call('egress-allowlist:revoke', h.ctx({ userId: 'bob' }), {
+        host: 'docs.example.com',
+      }),
+    ).toEqual({ revoked: true });
+
+    // Bob's is gone; Alice's is exactly as she left it.
+    expect(await verdict(h, 'bob', 'https://docs.example.com/x')).toBe('hold');
+    expect(await sites(h, 'bob')).toEqual([]);
+    expect(await verdict(h, 'alice', 'https://docs.example.com/x')).toBe('allow');
+    expect(await sites(h, 'alice')).toEqual([['docs.example.com', 'user']]);
   });
 
   it('reports a host on BOTH lists once, as global, against a real database (TASK-406)', async () => {
