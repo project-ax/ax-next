@@ -77,6 +77,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createToolPolicyPlugin } from '../plugin.js';
+import { MAX_USER_HOSTS } from '../egress-allowlist.js';
 import type {
   EgressListOutput,
   EvaluateResult,
@@ -419,6 +420,79 @@ describe('egress allowlist canary', () => {
     expect(await sites(h, 'bob')).toEqual([]);
     expect(await verdict(h, 'alice', 'https://docs.example.com/x')).toBe('allow');
     expect(await sites(h, 'alice')).toEqual([['docs.example.com', 'user']]);
+  });
+
+  it('counts the per-person cap on the real backend, and never caps the operator (TASK-469)', async () => {
+    // RAISED BY REVIEW as a gap, and it is the same hazard as the revoke one
+    // rather than a neighbouring tidy-up, which is why it is closed here and
+    // not deferred. The db store decides the cap with
+    // `Number(count) >= MAX_USER_HOSTS` over an `eb.fn.countAll()` — a
+    // pg-driver value crossing into JS arithmetic, exactly the shape that made
+    // `numDeletedRows` worth a canary. Read it wrong and you get a cheerful
+    // number rather than an error: `'513' >= 512` is a string/number
+    // comparison, and an off-by-one lets everybody past the cap forever. The
+    // memory store's version is `hosts.size`, a plain number, so it cannot be
+    // asked this question either.
+    //
+    // Rows are seeded with SQL rather than 510 bus calls — the assertion is
+    // about the COUNT query, not about the insert path that the rest of this
+    // file already exercises, and a few hundred round trips would put seconds
+    // on every run of this suite for nothing.
+    const h = await boot({ globalEgressHosts: ['intranet.example.com'] });
+    const seed = new pg.Client({ connectionString });
+    await seed.connect();
+    try {
+      await seed.query(
+        `INSERT INTO tool_policy_v1_egress_allowlist (scope, owner_user_id, host, created_at)
+         SELECT 'user', 'alice', 'h' || g || '.example.com', NOW()
+         FROM generate_series(1, $1) AS g`,
+        [MAX_USER_HOSTS - 2],
+      );
+    } finally {
+      await seed.end().catch(() => {});
+    }
+
+    // Below the cap: accepted.
+    expect(
+      await h.bus.call('egress-allowlist:remember', h.ctx({ userId: 'alice' }), {
+        host: 'first.example.com',
+      }),
+    ).toEqual({ remembered: true });
+
+    // Still below the cap, so THIS `false` is the existence check and not the
+    // cap — the two answers are deliberately indistinguishable to a caller, so
+    // the test has to separate them by position instead. (The second gap
+    // review named: `remember` idempotence on the db path.)
+    expect(
+      await h.bus.call('egress-allowlist:remember', h.ctx({ userId: 'alice' }), {
+        host: 'first.example.com',
+      }),
+    ).toEqual({ remembered: false });
+
+    // The last one that fits.
+    expect(
+      await h.bus.call('egress-allowlist:remember', h.ctx({ userId: 'alice' }), {
+        host: 'last.example.com',
+      }),
+    ).toEqual({ remembered: true });
+
+    // And one past it. THIS is the cap.
+    expect(
+      await h.bus.call('egress-allowlist:remember', h.ctx({ userId: 'alice' }), {
+        host: 'overflow.example.com',
+      }),
+    ).toEqual({ remembered: false });
+
+    // The rows are real, not just a number that went up: the one accepted at
+    // the boundary is genuinely readable back, and the refused one is not.
+    expect(await verdict(h, 'alice', 'https://last.example.com/x')).toBe('allow');
+    expect(await verdict(h, 'alice', 'https://overflow.example.com/x')).toBe('hold');
+
+    // A person at their cap does not lose the operator's list — the cap is
+    // `scope === 'user'` only, and an operator whose deployment-wide hosts
+    // stopped applying to the busiest people would fail in the confusing
+    // direction rather than the safe one.
+    expect(await verdict(h, 'alice', 'https://intranet.example.com/x')).toBe('allow');
   });
 
   it('reports a host on BOTH lists once, as global, against a real database (TASK-406)', async () => {
