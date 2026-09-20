@@ -39,18 +39,19 @@
  *   M12 every read returns zero rows                   KILLED   9 red /  5 pass
  *   M13 listFor throws (hook swallows -> { sites: [] })KILLED   4 red / 10 pass
  *
- * M1 is the one #618 could not run; it dies, so the DELETE really does reach
- * Postgres. The total never shrank in any round — every mutant reddened tests
- * rather than removing them, which is the failure mode that makes a mutation
- * run lie.
+ * M1 here is the mutant TASK-469's card calls M4 — the one #618 could not run.
+ * It dies, so the DELETE really does reach Postgres. The total never shrank in
+ * any round either: every mutant reddened tests rather than removing them,
+ * which is the failure mode that makes a mutation run lie.
  *
  * M2, M3 and M13 tell a second story, and it is the reason this card existed
  * rather than a footnote to it. Against the suite AS #618 LEFT IT, M2 and M3
  * SURVIVED — all 167 tests in `@ax/tool-policy` stayed green with a `revoke`
  * that could delete the operator's deployment-wide row, or anybody else's —
  * and M13 was caught only by the overlap case, leaving `revoke`'s own list
- * assertion blind to a read that never happened. The three cases those
- * findings produced are tagged TASK-469 below.
+ * assertion blind to a read that never happened. M2 and M3 produced the two
+ * cases titled TASK-469 below; M13 produced the `sites()` read added INSIDE
+ * the TASK-406 revoke case, which is commented there.
  *
  * WHICH DIRECTION DOES THE CANARY ITSELF FAIL IN? Red, on all three of the
  * shapes worth fearing: an unreachable database (M11), a table that answers
