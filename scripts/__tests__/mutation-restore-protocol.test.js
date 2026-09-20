@@ -50,8 +50,10 @@
 //
 // So the fix is not prose. Phase 4 carries two fenced, runnable blocks, marked
 // `# ax-mutation-restore: precondition` and `# ax-mutation-restore: restore`. The tests
-// below EXTRACT those blocks and RUN them, under bash AND zsh, against throwaway git
-// repositories built to each of the four shapes above. The doc is the single
+// below EXTRACT those blocks and RUN them, under bash (and under zsh when the machine has
+// it — see below) against throwaway git repositories built to THREE of the four shapes
+// above: incidents (2) and (3) share the dirty-path fixture, and incident (4) is the
+// *absence* of a failure, so it has no fixture at all. The doc is the single
 // implementation; there is no second copy in a script for it to drift from. Modelled on
 // `yolo-ship-review-range-origin-main.test.js`, which pins Phase 5's block the same way.
 //
@@ -75,59 +77,69 @@
 //     block in the dispatch prompt to execute; what the prompt must carry is the pointer
 //     and the per-role rule, and text is the only surface that has ever carried those.
 //
-// MUTANTS RUN, NOT REASONED ABOUT (2026-09-19, macOS + zsh + git 2.52.0; baseline **23
-// passed**). Each was applied to the COMMITTED text and restored with `git checkout --`
-// afterwards, which is the rule this file is about; `git status --porcelain` was empty
-// before and after every one. Every mutant still COLLECTS 23 — the number to distrust is a
-// red count that arrives with a shrunken total. A mutant's CONSTRUCTION is a claim as much
-// as its count is, so each says which kind it is:
+// MUTANTS RUN, NOT REASONED ABOUT (2026-09-19, macOS + zsh + git 2.52.0; baseline **25
+// passed**). Re-measured in full after the review, because the review changed the test set
+// and a stale count is worse than none. Each was applied to the COMMITTED text and restored
+// with `git checkout --` afterwards, which is the rule this file is about; `git status
+// --porcelain` was empty before and after every one. Every mutant still COLLECTS 25 — the
+// number to distrust is a red count that arrives with a shrunken total. A mutant's
+// CONSTRUCTION is a claim as much as its count is, so each says which kind it is:
 //
 //   M1. RESTORED VERBATIM — `git show origin/main:.claude/skills/yolo-ship/SKILL.md >` the
-//       file, i.e. the pre-fix text, which carries NEITHER marked block -> **19 red of 23**.
+//       file, i.e. the pre-fix text, which carries NEITHER marked block -> **21 red of 25**.
 //       The extractor finds 0 of each, `runBlock` throws by design naming the reason, and
-//       every behavioural case plus all four block-structure checks red out. The 4
-//       survivors are `logicalLines keeps a command a comment tried to swallow` and the
-//       three templates.md text checks — none of which read this skill file. This is the
-//       mutant the card asks for: the guard fails against the text as it stands on `main`.
-//   M2. CONSTRUCTED: drop both `exit 1`s from the precondition block -> **5 red** (`refuses
-//       a path carrying uncommitted work` and `refuses a path git does not track` x2 shells
-//       each, plus the `exit non-zero on both refusals` structure check). The plausible
-//       regression: someone "softens" a refusal into a warning, and every subagent in
-//       someone else's tree proceeds to mutate a file whose dirt is not its own.
-//   M3. CONSTRUCTED: replace the restore block's `git checkout -- "$F"` with
-//       `cp "$BACKUP" "$F"` -> 3 red, and recorded here WITH ITS FLAW rather than as a
-//       result. It did NOT redden `keeps a commit that landed during the window`, and the
-//       reason is the mutant, not the test: `$BACKUP` is unbound in the harness, so the
-//       copy fails and leaves the file at HEAD — the right answer by accident. **A mutant
-//       that errors out is a no-op in a mutant's costume.** Hence M3b.
-//   M3b.CONSTRUCTED, the honest version of M3: `git show HEAD~1:"$F" > "$F"`, a restore
-//       that SUCCEEDS at writing back a stale snapshot, i.e. exactly what a copy taken
-//       before a sibling's commit does -> **7 red**, now including `keeps a commit that
-//       landed during the window` x2. That is incident (1) re-introduced, and it is what
-//       proves the CONTROL beside that assertion is not decorative.
-//   M4. CONSTRUCTED: delete the restore block's post-restore `git status --porcelain`
-//       check -> **3 red** (`refuses when the mutant was staged` x2, plus the structure
-//       check). Without it a restore that silently did nothing reports success.
-//   M5. CONSTRUCTED: delete the dispatch-prompt bullet -> **2 red**, both templates.md text
-//       checks and nothing else. That is the honest scope of a text check, and the reason
-//       it is labelled weaker rather than presented as equal cover.
-//   M6. CONSTRUCTED: pipe a git invocation inside both blocks (`git status --porcelain --
-//       "$F" | cat`) -> **1 red**, `pipe no git invocation`, and nothing else. Deliberately
-//       the shape no behavioural test here can see: a pipe launders git's exit status, so a
-//       FAILED status call reads as "clean" — a plausible-looking answer, in the fail-OPEN
-//       direction.
-//   M7. CONSTRUCTED, and a mutant of THIS FILE rather than of the doc: put `logicalLines`
-//       back to join-continuations-then-filter-comments, the ordering TASK-454 found in two
-//       sibling guards -> **1 red**, `logicalLines keeps a command a comment tried to
-//       swallow`. The helper every structural check reads through could otherwise DELETE a
-//       command line before the check ever saw it.
+//       every behavioural case plus all four block-structure checks red out. The 4 survivors
+//       are `logicalLines keeps a command a comment tried to swallow` and the three
+//       templates.md text checks — none of which read this skill file. This is the mutant
+//       the card asks for: the guard fails against the text as it stands on `main`.
+//   M2. CONSTRUCTED, one token: drop ONLY the dirty-branch `exit 1` from the precondition
+//       -> **3 red** (`refuses a path carrying uncommitted work` x2 shells, plus `exit
+//       non-zero on EVERY refusal`). The plausible regression: someone "softens" a refusal
+//       into a warning, and a subagent proceeds to mutate a file whose dirt is not its own.
+//       **This mutant is why the structure check counts instead of using `.some()`.** In the
+//       reviewed version it passed the structure check — one surviving `exit 1` satisfied
+//       `some(/^exit 1$/)` — and the mutant had been WIDENED to "drop both" so that it would
+//       redden. That is measuring backwards: the test was shaping the mutant. Counting
+//       refusals and exits and requiring them equal lets M2 go back to one token.
+//   M3. CONSTRUCTED: replace the restore's `git checkout -- "$P"` with `cp "$BACKUP" "$F"`
+//       -> 3 red, and recorded here WITH ITS FLAW rather than as a result. It did NOT redden
+//       `keeps a commit that landed during the window`: `$BACKUP` is unbound in the harness,
+//       so the copy fails and leaves the file where it was — the right answer by accident.
+//       **A mutant that errors out is a no-op in a mutant's costume.** Hence M3b.
+//   M3b.CONSTRUCTED, the honest version of M3: `git show HEAD~1:"$F" > "$F"`, a restore that
+//       SUCCEEDS at writing back a stale snapshot, i.e. what a copy taken before a sibling's
+//       commit does -> **7 red**, including `keeps a commit that landed during the window`
+//       x2. Incident (1) re-introduced.
+//   M4. CONSTRUCTED: delete the restore's post-restore `git status --porcelain` check ->
+//       **2 red**, `refuses when the mutant was staged` x2. Without it, a restore that
+//       brought the mutant straight back out of the index reports success.
+//   M5. CONSTRUCTED: delete the dispatch-prompt bullet -> **2 red**, two of the three
+//       templates.md text checks. The third passes either way and says so.
+//   M6. CONSTRUCTED: pipe a git invocation inside both blocks -> **1 red**, `pipe no git
+//       invocation`, and nothing else. Deliberately the shape no behavioural test here can
+//       see: a pipe launders git's exit status, so a FAILED status call reads as "clean".
+//   M7. CONSTRUCTED, a mutant of THIS FILE rather than of the doc: put `logicalLines` back
+//       to join-continuations-then-filter-comments, the ordering TASK-454 found in two
+//       sibling guards -> **1 red**. The helper every structural check reads through could
+//       otherwise DELETE a command line before the check ever saw it.
 //   M8. CONSTRUCTED: delete the `git ls-files --error-unmatch` tracked check from both
-//       blocks -> **4 red**, `refuses a path git does not track` for both blocks x2 shells.
-//       That check exists because running the mutants found a fail-OPEN in the blocks
-//       themselves: `git status` on a path git does not know prints nothing and errors,
-//       which is indistinguishable from "clean", so an UNSUBSTITUTED `F="<the file you are
-//       about to mutate>"` sailed straight through and the agent mutated on a guarantee
-//       nothing had checked.
+//       blocks -> **5 red** (`refuses a path git does not track` x2 blocks x2 shells, plus
+//       the refusal/exit count). Found by running mutants, not by reading: `git status` on a
+//       path git does not know prints nothing and errors, which is indistinguishable from
+//       "clean", so an UNSUBSTITUTED `F="<the file you are about to mutate>"` sailed through.
+//   M9. CONSTRUCTED: delete the restore's already-clean gate -> **2 red**, `refuses a mutant
+//       that was COMMITTED` x2. Raised by the reviewer and confirmed here: `git commit -am
+//       wip` between mutating and restoring makes `git checkout --` a genuine no-op, leaves
+//       `git status` empty, and the block would print `ok` over a mutant on the branch.
+//       Note the refusal/exit count check does NOT redden — deleting a whole `if` removes
+//       its REFUSE and its exit together, which is the correct, paired behaviour.
+//  M10. CONSTRUCTED: take the restore block's own `F=` binding away (its pre-review shape)
+//       -> **1 red**, the binding structure check. Agent Bash calls do not share shell
+//       state, so the restore — a red test-run later — would run with `$F` unset.
+//  M11. CONSTRUCTED: drop the `:(literal)` pathspec, addressing `"$F"` directly -> **2 red**.
+//       A filename containing `[`, `*` or `?` is a PATTERN to git, so the block could check,
+//       and restore, a sibling file while the mutant survived — and print `ok`. Latent in
+//       this repo (`git ls-files | grep -cE '[][?*]'` -> 0), closed anyway.
 //
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally — no network,
 // no Docker, no build. Every git repository it touches is created under a temp dir and
