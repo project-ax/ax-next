@@ -347,6 +347,37 @@ describe('registerWorkspaceApplyFacade', () => {
       actualParent: 'v0',
     });
   });
+
+  it('TASK-486: the host-side human-tier write is NOT affected by the runner guard', async () => {
+    // The Rules UI saves through `memory:rules:write` → `applyTierChanges` →
+    // this facade. TASK-486 refuses that same path when it arrives from a
+    // SANDBOX, on the commit-notify handler. If the guard had been put in a
+    // `workspace:pre-apply` subscriber instead, it would have fired here too
+    // and the Save button would have stopped working — which is precisely why
+    // the guard is on the commit path and not on the shared hook.
+    const bus = new HookBus();
+    const internal = vi.fn(async () => makeOutput('v-rules'));
+    bus.registerService<WorkspaceApplyInput, WorkspaceApplyOutput>(
+      'workspace:apply-internal',
+      FACADE_PLUGIN,
+      internal,
+    );
+    registerWorkspaceApplyFacade(bus, FACADE_PLUGIN);
+
+    const rulesChange: FileChange = {
+      path: 'memory/system/rules.md',
+      kind: 'put',
+      content: enc.encode('Call me Vinay.\n'),
+    };
+    const out = await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
+      'workspace:apply',
+      silentCtx(),
+      { changes: [rulesChange], parent: null, reason: 'memory:rules:write' },
+    );
+
+    expect(out.version).toBe('v-rules');
+    expect(internal).toHaveBeenCalledTimes(1);
+  });
 });
 
 // Type-only assert that the facade signature matches what backends call.

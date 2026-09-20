@@ -1,5 +1,6 @@
 import {
   PluginError,
+  findRunnerImmutableViolations,
   type FileChange,
   type WorkspaceApplyOutput,
   type WorkspaceVersion,
@@ -70,6 +71,11 @@ function resyncEnvelopeFromCause(cause: unknown): { actualParent?: string } {
 //   5. verifyBundleAuthor: walk every commit in baseline..HEAD and check author
 //      + committer == ax-runner. Reject loud on drift.
 //   6. walkBundleChanges: build the canonical FileChange[] for the per-turn diff.
+//   6b. findRunnerImmutableViolations: refuse the turn outright if it touches
+//      a path a sandbox may never author (`memory/system/rules.md`, the
+//      human-owned memory tier — see RUNNER_IMMUTABLE_PATHS in @ax/core). NOT
+//      a subscriber veto: it runs ahead of the pre-apply fire and returns, so
+//      nothing downstream can swallow it.
 //   7. filterToPolicy: narrow that diff to the policy-visible paths — the
 //      `.ax/**` and `.claude/**` prefixes PLUS the root exact paths `CLAUDE.md`
 //      and `CLAUDE.local.md`. Validators are policy, and policy covers the
@@ -297,6 +303,66 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
     } catch (err) {
       logInternalError(ctx.logger, 'workspace.commit-notify', err);
       return internalError();
+    }
+
+    // ---- runner-immutable guard (TASK-486): refuse before anything else
+    //      gets a say. ----
+    //
+    // This handler is the ONE apply path a sandbox can originate, so it is the
+    // one place the human-owned memory tier can be defended.
+    // `/agent/memory/system/rules.md` is injected verbatim at the top of every
+    // prompt (@ax/memory-strata's `inject.ts`, "## Rules From Your User"), the
+    // runner's whole-tree stage picks it up, and `filterToPolicy` below does
+    // NOT match it — so before this block existed, a change to it reached
+    // `workspace:apply-bundle` without a single subscriber having seen it.
+    // Content injected into one conversation that steers one file write became
+    // a permanent instruction.
+    //
+    // Deliberately AHEAD of the `workspace:pre-apply` fire, and not inside a
+    // subscriber. `HookBus.fire` reads a subscriber throw as a clean pass, so
+    // a guard that lives in a subscriber and throws is a guard that silently
+    // isn't one. A subscriber could not tell this apply from the Rules UI's
+    // host-side write anyway — its only discriminator would be `reason`, which
+    // the runner supplies, i.e. the lock's key handed to the thing it locks
+    // out. An inline `return` here is unbypassable by construction.
+    //
+    // Refuse rather than strip, because stripping is not available on this
+    // path: `workspace:apply-bundle` takes the runner's opaque bundle, not a
+    // change list, so there is no set to subtract from. The refusal takes the
+    // same shape as the pre-apply veto below, `discardPaths` included, so the
+    // runner reverts exactly this file to its baseline and keeps the rest of
+    // the turn's work (TASK-287) — which also means the next turn's re-stage
+    // cannot re-submit it and wedge the agent (B1).
+    const immutableHits = findRunnerImmutableViolations(allChanges);
+    if (immutableHits.length > 0) {
+      ctx.logger.warn('workspace_runner_immutable_refused', {
+        action: 'workspace.commit-notify',
+        paths: immutableHits,
+      });
+      const body = {
+        accepted: false as const,
+        // Named, not vague: `recoverable: false` makes this reason the one
+        // channel by which the agent learns what it did wrong (see
+        // `rejectionReason` in the runner's commit-notify-resync). The path is
+        // one the runner already holds, so naming it leaks nothing.
+        reason:
+          `refused: ${immutableHits.join(', ')} belongs to the user, not the agent — ` +
+          'only a person can change it, from the Memory tab',
+        recoverable: false as const,
+        discardPaths: immutableHits,
+      };
+      const checked = WorkspaceCommitNotifyResponseSchema.safeParse(body);
+      if (!checked.success) {
+        logInternalError(
+          ctx.logger,
+          'workspace.commit-notify',
+          new Error(
+            `response shape drift (runner-immutable): ${checked.error.message}`,
+          ),
+        );
+        return internalError();
+      }
+      return { status: 200, body: checked.data };
     }
 
     // Filter to policy-visible paths for the pre-apply hook — the `.ax/**` and

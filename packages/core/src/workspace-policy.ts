@@ -68,3 +68,84 @@ export function filterToPolicy(changes: readonly FileChange[]): FileChange[] {
       POLICY_PREFIXES.some((p) => c.path.startsWith(p)),
   );
 }
+
+// ---------------------------------------------------------------------------
+// Runner-immutable paths — the write the sandbox may never author (TASK-486).
+//
+// Separate from the policy-visible set above, and deliberately so. That set
+// answers "which changes do pre-apply subscribers get to look at"; this one
+// answers "which changes may a RUNNER-ORIGINATED apply contain at all". The
+// second question has no subscriber, no veto knob and no transform step — the
+// host refuses the turn.
+//
+// THE HOLE THIS CLOSES. `permanent/memory/system/rules.md` is the human-owned
+// memory tier (@ax/memory-strata's `human-tier.ts`). It materializes into the
+// runner's sandbox at `/agent/memory/system/rules.md`, and @ax/memory-strata's
+// `inject.ts` puts it FIRST in the injected memory block, last to be truncated,
+// under "## Rules From Your User". So a sentence that lands in that file is a
+// standing top-of-prompt instruction for every future turn.
+//
+// The sandbox could write it. `commitTurnAndBundle` stages `/agent` with
+// `git add -A` and `memory/` is not in the runner's gitignore, so the file rode
+// the per-turn bundle to `workspace.commit-notify`. `filterToPolicy` does not
+// match it, so no `workspace:pre-apply` subscriber ever saw it — and the apply
+// lands the FULL change set. Net: content injected into one conversation (a
+// web page, a tool result, a pasted file) that talks the agent into one file
+// write becomes a permanent instruction. Design doc § 6.3's persistence vector.
+//
+// WHY A COMMIT-PATH GUARD AND NOT A `workspace:pre-apply` SUBSCRIBER. A
+// subscriber sees `{changes, parent, reason}` and cannot tell a runner-
+// originated apply from a host-originated one except by `reason` — which comes
+// straight off the runner's own wire request. An allowlist on it would hand the
+// sandbox the key to its own lock. Origin has to be structural: it is decided
+// by WHICH code path is running, and the only runner-originated apply path is
+// `workspace.commit-notify`. The host's own writer (the Rules UI, via
+// `memory:rules:write` → `workspace:apply`) goes through the in-process facade
+// and is untouched by this list, which is exactly the intended split.
+//
+// WHY THE LITERAL LIVES HERE. @ax/memory-strata owns the concept, but
+// @ax/ipc-core may not import a plugin (Invariant 2) and this module is already
+// the one place workspace path policy lives (Invariant 4). So the tier-relative
+// literal lives here and `human-tier.ts` DERIVES `HUMAN_TIER_TIER_PATHS` from
+// it — one literal, consumed in both directions, with a drift pin in
+// memory-strata's `human-tier.test.ts` that fails if its own
+// `permanent/`-prefixed list stops agreeing.
+//
+// SCOPE. `system/rules.md` only, not `memory/**`. The other always-injected
+// system files (`user.md`, `recent.md`, `map.md`) are the AGENT's own memory —
+// it is supposed to write those, and the consolidator regenerates them
+// end-to-end each pass, so a sandbox write there does not persist. `rules.md`
+// is the one file nothing ever rewrites, which is what makes it the durable
+// vector.
+//
+// Paths are `/agent`-tier-relative and posix — the exact shape
+// `walkBundleChanges` emits (`git diff-tree -r --name-status -z` reports
+// repo-relative paths with no `./` prefix), so an exact-set match is the whole
+// comparison. No prefix matching, no globs: the rule is one file.
+// ---------------------------------------------------------------------------
+
+export const RUNNER_IMMUTABLE_PATHS: ReadonlySet<string> = new Set<string>([
+  'memory/system/rules.md',
+]);
+
+/**
+ * The paths in `changes` a runner-originated apply may not author, sorted and
+ * de-duplicated.
+ *
+ * Empty array = nothing to refuse. Matches BOTH `put` and `delete`: deleting
+ * the human's rules file is the same loss as overwriting it, and `git add -A`
+ * stages a deletion just as readily.
+ *
+ * Returns the offending paths (rather than a boolean) so the caller can hand
+ * them back as `discardPaths` — the refusal is then scoped to exactly this file
+ * and the rest of the turn's work survives in the sandbox (TASK-287).
+ */
+export function findRunnerImmutableViolations(
+  changes: readonly FileChange[],
+): string[] {
+  const hits = new Set<string>();
+  for (const c of changes) {
+    if (RUNNER_IMMUTABLE_PATHS.has(c.path)) hits.add(c.path);
+  }
+  return [...hits].sort();
+}
