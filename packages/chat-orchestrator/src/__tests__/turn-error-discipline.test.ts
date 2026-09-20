@@ -60,7 +60,23 @@ function exits(): Array<{ line: number; terminated: boolean; surfaced: boolean }
       out.push({ line: i + 1, terminated: true, surfaced: false });
       return;
     }
-    const between = lines.slice(literal, i).join('\n');
+    /*
+      COMMENT LINES ARE STRIPPED FIRST, because the scan's one false-NEGATIVE
+      mode is a comment that quotes the call it is looking for: a deleted
+      `fireTurnError(...)` whose explanatory comment still says the words would
+      read as surfaced, and a test that passes for prose is worse than no test.
+      No such comment exists today (they write the name without a paren), which
+      is exactly why the guard belongs here now rather than after one does.
+
+      Crude on purpose — leading `//`, `*` and `/*` only. A `//` inside a
+      string literal is not a comment, and this is not a parser; mistaking one
+      of those for a comment could only ever LOSE a match, which fails the
+      scan closed rather than open.
+    */
+    const between = lines
+      .slice(literal, i)
+      .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+      .join('\n');
     out.push({
       line: i + 1,
       terminated: between.includes("kind: 'terminated'"),
