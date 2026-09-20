@@ -85,10 +85,15 @@ describe('Segmented — arrow keys move selection and focus together', () => {
 
     needs.focus();
     fireEvent.keyDown(needs, { key: 'ArrowRight' });
+    // Pinned, or the rest of this test is vacuous: against the unfixed
+    // component the selection never leaves "Needs you", so the closing
+    // assertion below would hold without a single thing having worked.
+    expect(working).toHaveAttribute('aria-checked', 'true');
     await waitFor(() => expect(document.activeElement).toBe(working));
 
     fireEvent.keyDown(working, { key: 'ArrowLeft' });
     expect(needs).toHaveAttribute('aria-checked', 'true');
+    expect(working).toHaveAttribute('aria-checked', 'false');
     await waitFor(() => expect(document.activeElement).toBe(needs));
   });
 
