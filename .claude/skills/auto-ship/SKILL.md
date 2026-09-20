@@ -404,9 +404,53 @@ about to merge.
 ```bash
 # The post-review delta: everything no reviewer has seen.
 BRANCH=$(gh pr view <n> --json headRefName --jq .headRefName)
-REVIEWED_SHA=<reviewed-sha>   # from the handoff. MISSING or `-` fails CLOSED:
-                              # use origin/main, i.e. the whole branch is unreviewed.
-git fetch origin "${BRANCH}"
+# BOTH endpoints, same rule as Q1: this block's fail-closed path ranges from
+# origin/main, so a stale origin/main here would quietly widen the "unreviewed" set.
+git fetch origin main "${BRANCH}"
+
+RAW_REVIEWED=<reviewed-sha>   # from the handoff, VERBATIM — do not trim, do not retype.
+
+# ⚠ NORMALIZE IT BEFORE YOU RANGE OVER IT. `HEAD_SHA` above is length-checked and this
+# one was not, so an ABBREVIATION was a third state neither branch of this gate named —
+# and it is the state that arrives. Measured 2026-09-20, three handoffs in one run:
+# TASK-436 returned `79940789`, PR #650 `a46a874f`, PR #652 `78d43240`, all 8 chars, all
+# under an honest `reviewer: clean`. Every one of them WORKED, which is the problem:
+# `git log 79940789..origin/<branch>` resolves an unambiguous abbreviation locally and
+# prints a plausible delta, so nothing fails and nobody looks. The two ways that stops
+# being harmless are silent in opposite directions — an AMBIGUOUS prefix errors with a
+# message about object names rather than about the gate, and a prefix that resolves to a
+# commit on a DIFFERENT branch computes the delta against the wrong base, which can
+# report an EMPTY delta for code no reviewer read. That is this gate reporting "a
+# reviewer saw the head" about a branch it never looked at.
+#
+# ASKING git to expand an abbreviation is safe. RECONSTRUCTING one by hand is not — the
+# merge queue's "never RETYPE a sha" note above still stands, and `rev-parse` is how you
+# obey it: it either prints the full 40 characters or it fails.
+#
+# `--verify` + `^{commit}` is what turns ambiguity into an ERROR instead of a guess, and
+# with `--quiet` an unresolvable or ambiguous name yields an empty string and rc 1.
+case "${RAW_REVIEWED}" in
+  ''|'-') REVIEWED_SHA="" ;;
+  *) REVIEWED_SHA=$(git rev-parse --verify --quiet "${RAW_REVIEWED}^{commit}") || REVIEWED_SHA="" ;;
+esac
+
+if [ -z "${REVIEWED_SHA}" ]; then
+  # MISSING, `-`, ambiguous, or unknown to this clone — all four fail CLOSED to
+  # origin/main, i.e. treat the WHOLE branch as unreviewed. Never fail open.
+  echo "⚠ #<n>: reviewed-sha '${RAW_REVIEWED}' is missing/ambiguous/unknown — failing CLOSED: whole branch is unreviewed"
+  REVIEWED_SHA=$(git rev-parse --verify "origin/main^{commit}")
+elif ! git merge-base --is-ancestor "${REVIEWED_SHA}" "origin/${BRANCH}"; then
+  # It resolved — to something that is NOT on this branch. Do not fall back and do not
+  # proceed: a base off the branch makes the delta below meaningless in the direction
+  # that looks reassuring. Ask the builder which sha it meant.
+  echo "HALT #<n>: reviewed-sha ${REVIEWED_SHA} is not an ancestor of origin/${BRANCH} — the delta would be measured against the wrong base"
+  exit 1
+fi
+
+# Same assertion `HEAD_SHA` gets, for the same reason: the two shas this gate compares
+# are now checked by one rule, so neither can drift back to an abbreviation alone.
+[ ${#REVIEWED_SHA} -eq 40 ] || { echo "HALT #<n>: resolved reviewed-sha '${REVIEWED_SHA}' is not a full 40-char sha"; exit 1; }
+
 git log  --oneline   "${REVIEWED_SHA}..origin/${BRANCH}"   # the unseen commits
 git diff --name-only "${REVIEWED_SHA}..origin/${BRANCH}"   # the unseen FILES
 ```
