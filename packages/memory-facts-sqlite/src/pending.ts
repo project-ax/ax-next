@@ -88,6 +88,13 @@ export function semanticStatus(denseContributed: boolean): DegradedFlag[] {
  * §4.4's `'ranking'`: the rerank step did not run, so the answer keeps raw
  * fusion order — the lexical fallback the design asks for. Same three causes,
  * same reason they collapse.
+ *
+ * The CALLER carves out one case this helper cannot see: an empty candidate
+ * pool. `rerankDocuments` returns early on zero documents without ever
+ * invoking the producer, so "did not run" is true but nothing was degraded —
+ * `recall` passes `true` there rather than letting a day-one empty store
+ * report ranking degradation on every query. Keep that decision at the call
+ * site: this helper stays a pure `boolean -> flag` mapping.
  */
 export function rankingStatus(reranked: boolean): DegradedFlag[] {
   return reranked ? [] : ['ranking'];

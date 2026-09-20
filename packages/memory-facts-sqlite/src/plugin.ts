@@ -434,7 +434,8 @@ export interface MemoryFactsSqliteConfig {
   embedder?: ProducerRef;
   /**
    * Which service hook reranks a candidate pool. Absent means the fused order
-   * stands and every `query` recall reports `degraded: ['ranking']`.
+   * stands and a `query` recall reports `degraded: ['ranking']` — except when
+   * the answer is empty, where there was no pool to rank and nothing was lost.
    */
   reranker?: ProducerRef;
 }

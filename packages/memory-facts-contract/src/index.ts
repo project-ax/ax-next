@@ -298,7 +298,18 @@ export const PENDING_SLOT = 'pending';
  *   `query` recall: an `about`-only listing runs no channels, so flagging it
  *   there would be noise rather than signal.
  * - `'ranking'` — the rerank step did not run, for the same two reasons, and
- *   the fused order stands. Same two conditions on when it is raised.
+ *   the fused order stands. Same two conditions on when it is raised, plus one
+ *   CARVE-OUT a second backend must match: an **empty answer does not raise
+ *   it**. With no candidates there is nothing to rank, the reranker is never
+ *   invoked, and a flag fired there would report degradation on every recall
+ *   against a day-one empty store — the opposite of a signal.
+ *
+ *   Note the resulting asymmetry, which is deliberate rather than an
+ *   oversight: on an empty store with no providers configured, a fusion
+ *   backend raises `'semantic'` but NOT `'ranking'`. Embedding is
+ *   store-independent (the *query* is embedded, so the call happens and its
+ *   absence is real), while reranking is pool-dependent (there is no pool, so
+ *   nothing was lost).
  *
  * Don't read a `degraded: []` from a backend WITHOUT fusion recall as
  * "semantic recall worked" — it has no dense channel to skip.
@@ -2123,6 +2134,34 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         // reads the flags as "memory is unhealthy" would read it wrong.
         const listing = await recall({ about: 'user', limit: 10 });
         expect(listing.degraded).toEqual([]);
+      });
+
+      // The empty-answer carve-out, pinned in the CONTRACT so a second fusion
+      // backend cannot diverge on it silently. Without this case the suite
+      // stays green whether a backend raises `'ranking'` on an empty answer or
+      // not — every other fusion case records a row first, so none of them
+      // ever exercises an empty pool — and TASK-457 would be free to implement
+      // it from the flag's one-line description and disagree with sqlite on
+      // day one of every deployment (Invariant 4: the two engines must not
+      // differ in ways the contract cannot see).
+      it("does not raise 'ranking' on an empty answer, but still raises 'semantic'", async (t) => {
+        needsFusion(t);
+
+        // Deliberately record NOTHING. This is the day-one state of every
+        // deployment, not an edge case.
+        const empty = await recall({ query: 'Khalid', limit: 10 });
+        expect(empty.statements).toEqual([]);
+
+        // Nothing to rank: the reranker is never reached, so nothing was lost
+        // and there is nothing to report.
+        expect(empty.degraded).not.toContain('ranking');
+
+        // ...but the dense channel IS reported absent, and the asymmetry is
+        // the point: embedding is store-independent (the QUERY is embedded, so
+        // the missing producer really did cost the answer a channel), while
+        // reranking is pool-dependent. A backend that reports both, or
+        // neither, has got one of the two wrong.
+        expect(empty.degraded).toContain('semantic');
       });
 
       it('accumulates the query flags ALONGSIDE pending rather than replacing them', async (t) => {
