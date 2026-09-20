@@ -218,6 +218,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/llm-openrouter',
         '@ax/mcp-client',
         '@ax/mcp-oauth',
+        '@ax/memory-facts-postgres',
         '@ax/onboarding',
         '@ax/routines',
         '@ax/routines-admin-routes',
@@ -244,6 +245,44 @@ describe('@ax/preset-k8s wiring', () => {
     const vs = plugins.find((p) => p.manifest.name === '@ax/validator-service');
     expect(vs).toBeDefined();
     expect(vs!.manifest.registers).toEqual(['services:validate']);
+  });
+
+  it('loads @ax/memory-facts-postgres and registers all FIVE facts hooks (TASK-423)', () => {
+    // Invariant 3, and the window this card closes: before TASK-423 the
+    // preset loaded NO facts engine, so `memory:facts:*` was unreachable in
+    // production no matter what the CLI did. The assertion that matters is
+    // the config used here — `stubConfig` sets NO `hostLlmTools`, so this
+    // goes red the moment someone moves the push inside that gate (where the
+    // memory-STRATA bundle correctly lives, because it needs an Anthropic
+    // key; a facts engine has no LLM dependency).
+    //
+    // All five hooks are listed by name on purpose, the same way
+    // packages/cli/src/__tests__/memory-facts-wiring.test.ts lists them: a
+    // hook that exists only in its own package's contract test is exactly the
+    // half-wired shape this pins against, and `toEqual` means the SIXTH hook
+    // someone adds has to be added here too rather than quietly not being.
+    const plugins = createK8sPlugins(stubConfig);
+    const facts = plugins.find(
+      (p) => p.manifest.name === '@ax/memory-facts-postgres',
+    );
+    expect(facts, 'preset loads @ax/memory-facts-postgres').toBeDefined();
+    expect(facts!.manifest.registers).toEqual([
+      'memory:facts:record',
+      'memory:facts:recall',
+      'memory:facts:supersede',
+      'memory:facts:clear',
+      'memory:facts:reindex',
+    ]);
+    // It borrows the shared Kysely rather than owning a pool, so the push has
+    // to land somewhere `database:get-instance` has a registrant. The generic
+    // "every call is satisfied" test above covers the whole list; this states
+    // the dependency locally so a future move of the push reads as a real
+    // constraint and not a style preference.
+    expect(facts!.manifest.calls).toEqual(['database:get-instance']);
+    expect(
+      plugins.some((p) => p.manifest.registers.includes('database:get-instance')),
+      'something in the preset registers database:get-instance',
+    ).toBe(true);
   });
 
   it('loads @ax/tool-policy and registers its three hooks (TASK-224/TASK-330)', () => {

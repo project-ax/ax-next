@@ -261,6 +261,13 @@ const PLUGINS_TO_DROP = new Set<string>([
   // preset.test.ts; runtime behavior in @ax/conversation-titles' own suite.
   '@ax/llm-anthropic',
   '@ax/conversation-titles',
+  // Memory facts engine (TASK-423): postgres-backed — it `calls`
+  // database:get-instance, and the postgres trio comes off at the top of this
+  // list, so leaving it in would fail the kernel's verifyCalls before a single
+  // canary ran. Not on the chat path either (no consumer calls memory:facts:*
+  // yet). Its static wiring + all five hooks are pinned in preset.test.ts, and
+  // it boots for real against a testcontainer in prod-bootstrap.test.ts.
+  '@ax/memory-facts-postgres',
 ]);
 
 // Stub `agents:resolve` — production presets register `@ax/agents` (postgres-

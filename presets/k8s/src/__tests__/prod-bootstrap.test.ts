@@ -228,6 +228,12 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
     '@ax/attachments',
     '@ax/blob-store-fs',
     '@ax/channel-web',
+    // TASK-423 — the facts engine is UNCONDITIONAL (it borrows the shared
+    // Kysely and has no LLM dependency), so it belongs in this list rather
+    // than with the ANTHROPIC_API_KEY-gated memory-strata pair below. This
+    // lane is also where its migration actually runs: the boot test below
+    // inits it against the real testcontainer.
+    '@ax/memory-facts-postgres',
   ] as const;
 
   it(
@@ -284,6 +290,18 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
         expect(bus.hasService('sandbox:open-session')).toBe(true);
         expect(bus.hasService('auth:require-user')).toBe(true);
         expect(bus.hasService('conversations:create')).toBe(true);
+        // TASK-423: the facts engine's init ran against the real postgres —
+        // it borrows the shared Kysely via `database:get-instance` and
+        // creates `memory_facts_v1` + its indexes there. A migration that
+        // only ever ran under its own package's testcontainer would be
+        // unproven against the production assembly's shared database, which
+        // is the gap this lane exists for. All five hooks, for the same
+        // reason preset.test.ts lists all five.
+        expect(bus.hasService('memory:facts:record')).toBe(true);
+        expect(bus.hasService('memory:facts:recall')).toBe(true);
+        expect(bus.hasService('memory:facts:supersede')).toBe(true);
+        expect(bus.hasService('memory:facts:clear')).toBe(true);
+        expect(bus.hasService('memory:facts:reindex')).toBe(true);
       } finally {
         await handle.shutdown();
       }

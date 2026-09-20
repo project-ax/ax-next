@@ -382,6 +382,42 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
       return (await record({ batchKey, statements }, ctx)).records;
     }
 
+    /**
+     * The control character the two "colliding group key" cases below hide
+     * inside `about` and `slot`.
+     *
+     * ## Why it is U+0001 and not U+0000 (TASK-423)
+     *
+     * It used to be U+0000, because the bug those cases pin is a group map
+     * that keyed on `${about}\u0000${slot}` — a NUL join is only injective if
+     * neither field can contain a NUL, and `about` is free text carrying model
+     * output. Under sqlite that fixture worked, because sqlite `TEXT` stores an
+     * embedded NUL happily.
+     *
+     * Postgres `TEXT` does not. A parameter carrying U+0000 is rejected by the
+     * SERVER with SQLSTATE 22021 (`invalid byte sequence for encoding "UTF8":
+     * 0x00`), so on `@ax/memory-facts-postgres` those two cases did not test
+     * the group key at all — they failed at the INSERT, three statements before
+     * the map was consulted. That made the contract quietly
+     * storage-SPECIFIC: it demanded a capability only one backend has, which is
+     * exactly what Invariant 1 exists to stop, and it only became visible when
+     * a second backend arrived.
+     *
+     * U+0001 keeps the property under test intact and makes it true of any text
+     * store: the fields still contain an in-band control character, the two
+     * `(about, slot)` pairs still produce the SAME delimiter-joined string, and
+     * a map keyed on that join still collapses them into one entry. Only a
+     * STRUCTURAL key (`JSON.stringify([about, slot])`) survives.
+     *
+     * What is knowingly given up: this no longer regresses the NUL join
+     * specifically. It cannot — a NUL-joined key is unreachable on postgres for
+     * the same reason the fixture is, since no field can hold the delimiter
+     * there. The general claim ("any in-band delimiter is unsafe") is the one
+     * both backends can be held to, and it is the claim the implementations
+     * actually make in their comments.
+     */
+    const COLLIDING_CHAR = '\u0001';
+
     const JAN = '2023-01-01T00:00:00.000Z';
     const JUN = '2023-06-01T00:00:00.000Z';
     const SEP = '2023-09-01T00:00:00.000Z';
@@ -1243,22 +1279,23 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
           expect(await reread(KEY, CHAIN)).toEqual(afterFirst);
         });
 
-        // The group map inside `supersedeIds` used to key on `${about}\u0000
-        // ${slot}`, which only distinguishes the two fields when neither
-        // contains a NUL — and `about` is free text (TASK-448). These two
-        // groups produce the SAME NUL-joined string:
-        //   about = "x\u0000y", slot = "z"      -> "x\u0000y\u0000z"
-        //   about = "x",        slot = "y\u0000z" -> "x\u0000y\u0000z"
+        // The group map inside `supersedeIds` used to key on
+        // `${about}<delimiter>${slot}`, which only distinguishes the two fields
+        // when neither contains the delimiter — and `about` is free text
+        // (TASK-448). These two groups produce the SAME joined string
+        // (`<C>` = {@link COLLIDING_CHAR}):
+        //   about = "x<C>y", slot = "z"    -> "x<C>y<C>z"
+        //   about = "x",     slot = "y<C>z" -> "x<C>y<C>z"
         // so a bug in that key collapses them to one Map entry and only one
         // chain gets re-settled. One `supersede` call retracts a closer in
         // BOTH groups; both older rows must re-open.
-        it('re-settles BOTH groups when their old NUL-joined keys would collide', async () => {
-          const KEY1 = 'nul-collision-group-1';
-          const KEY2 = 'nul-collision-group-2';
-          const ABOUT1 = 'x\u0000y';
+        it('re-settles BOTH groups when their delimiter-joined keys would collide', async () => {
+          const KEY1 = 'delimiter-collision-group-1';
+          const KEY2 = 'delimiter-collision-group-2';
+          const ABOUT1 = `x${COLLIDING_CHAR}y`;
           const SLOT1 = 'z';
           const ABOUT2 = 'x';
-          const SLOT2 = 'y\u0000z';
+          const SLOT2 = `y${COLLIDING_CHAR}z`;
 
           const stmts1: FactStatementInput[] = [
             { about: ABOUT1, relation: 'r', value: 'old1', when: JAN, slot: SLOT1 },
@@ -2768,19 +2805,20 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         expect(await reread(KEY, statements)).toEqual(afterFirst);
       });
 
-      // Same NUL-joined-key collision as the `supersede` case above
-      // (TASK-448), but through the drain's own group map in `plugin.ts`:
-      //   about = "x\u0000y", slot = "z"      -> "x\u0000y\u0000z"
-      //   about = "x",        slot = "y\u0000z" -> "x\u0000y\u0000z"
+      // Same delimiter-joined-key collision as the `supersede` case above
+      // (TASK-448), but through the drain's own group map in `plugin.ts`
+      // (`<C>` = {@link COLLIDING_CHAR}):
+      //   about = "x<C>y", slot = "z"    -> "x<C>y<C>z"
+      //   about = "x",     slot = "y<C>z" -> "x<C>y<C>z"
       // One `reindex` call resolves a pending row in EACH group. Against the
       // unfixed key, only one group's older row gets re-derived and closed.
-      it('settles BOTH groups when their old NUL-joined keys would collide', async () => {
-        const KEY1 = 'reindex-nul-collision-1';
-        const KEY2 = 'reindex-nul-collision-2';
-        const ABOUT1 = 'x\u0000y';
+      it('settles BOTH groups when their delimiter-joined keys would collide', async () => {
+        const KEY1 = 'reindex-delimiter-collision-1';
+        const KEY2 = 'reindex-delimiter-collision-2';
+        const ABOUT1 = `x${COLLIDING_CHAR}y`;
         const SLOT1 = 'z';
         const ABOUT2 = 'x';
-        const SLOT2 = 'y\u0000z';
+        const SLOT2 = `y${COLLIDING_CHAR}z`;
 
         const older1Stmt: FactStatementInput = {
           about: ABOUT1,

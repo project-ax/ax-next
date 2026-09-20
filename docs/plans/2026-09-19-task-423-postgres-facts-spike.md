@@ -1,6 +1,11 @@
 # TASK-423 spike — what `@ax/memory-facts-postgres` actually needs decided
 
-**Date:** 2026-09-19 · **Status:** spike complete; TASK-423 recommended **un-gated**.
+**Date:** 2026-09-19 · **Status:** spike complete; TASK-423 recommended **un-gated** —
+**recommendation EXECUTED 2026-09-19**. The card was un-gated, built, and merged:
+`@ax/memory-facts-postgres` exists and `presets/k8s` loads it unconditionally. The
+sparse/dense channels went to **TASK-457** exactly as §5 recommends. Implementation plan:
+`docs/plans/2026-09-19-task-423-postgres-facts-plan.md`. Everything below is the spike as
+written, kept for its reasoning — read §0's tense as historical.
 **Card:** `[TASK-423] memory-facts-postgres engine (gated — needs FTS/vector design spike)`
 **Reads:** `docs/plans/2026-09-18-dem-first-memory-design.md`, `docs/plans/2026-09-19-dem-first-handoff.md`
 
@@ -31,10 +36,13 @@ from its scope**, and let the card that ports TASK-434's channels to postgres ow
 that decision, when there is a sqlite implementation to match. That card does not
 exist yet and is filed as part of this spike (§5).
 
-This matters beyond tidiness: `presets/k8s` loads **no facts backend at all**, so
-`memory:facts:*` is unreachable in production. TASK-423 is the only card that
-closes that window, and it has been blocked on a question it does not need to
-answer.
+This matters beyond tidiness: at the time of this spike `presets/k8s` loaded **no
+facts backend at all**, so `memory:facts:*` was unreachable in production. TASK-423
+was the only card that closed that window, and it had been blocked on a question it
+does not need to answer. *(Closed: the preset now pushes `@ax/memory-facts-postgres`
+unconditionally — not behind `config.hostLlmTools`, which gates the memory-strata
+bundle because that bundle needs an `ANTHROPIC_API_KEY` and a facts engine needs no
+LLM at all.)*
 
 ## 1. What TASK-423 *does* need decided
 
@@ -50,9 +58,19 @@ Store both as `TEXT`, exactly as sqlite does, including the
 The instinct is that postgres `TEXT` ordering is collation-dependent and therefore
 dangerous. **It is not load-bearing here.** Every ordering comparison in the
 closure rules runs **in JavaScript**, inside `settleArrival` — `peer.valid_start <=
-arrival.when`, `peer.valid_end > arrival.when`, and a `localeCompare` tiebreak. The
-SQL only ever compares the sentinel by **equality** (`valid_end = ?`). So the rules
-are collation-immune by construction, on any backend.
+arrival.when`, `peer.valid_end > arrival.when`, and a `localeCompare` tiebreak. So
+the closure *rules* are collation-immune because they never reach the database.
+
+> **Corrected during TASK-423's review.** This section originally added "the SQL only
+> ever compares the sentinel by equality", and that is **false** — `recall` orders by
+> `valid_start` in SQL, on both backends. The conclusion survives but the reason is
+> different: what makes the ordering safe is that every stored instant is canonical
+> fixed-width `YYYY-MM-DDTHH:MM:SS.sssZ` (enforced by `normalizeIsoInstant`), with
+> the sentinel in the identical shape, so lexicographic order agrees with
+> chronological order under any collation. It matters because the revisit trigger
+> below was written as "if ordering moves into SQL" — which had *already happened*,
+> so as written it could never fire. The accurate trigger, and the accurate reason,
+> are in `packages/memory-facts-postgres/src/schema.ts`.
 
 `timestamptz` would buy collation-independent `ORDER BY` — but it costs more than it
 buys:
@@ -179,8 +197,9 @@ parameter parsing has already bitten once on 16.
 ## 5. Cards this spike produces
 
 - **TASK-423** — un-gate to To Do, FTS/vector removed from scope, canary corrected to
-  five hooks, §1's decisions folded into the body.
+  five hooks, §1's decisions folded into the body. **DONE** — un-gated, built and
+  merged 2026-09-19; the canary asserts all five hooks.
 - **New** — port TASK-434's sparse + dense channels to postgres. Gated on TASK-434,
-  and *that* is where the `tsvector`/pgvector decision belongs.
+  and *that* is where the `tsvector`/pgvector decision belongs. **Filed as TASK-457.**
 - **New** — prove or disprove pgvector on the embedded image, and stop the init Job
   swallowing the answer (§4).

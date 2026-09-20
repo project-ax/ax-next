@@ -54,6 +54,7 @@ import {
   DEFAULT_ORCHESTRATOR_MODEL,
 } from '@ax/memory-strata';
 import { createMemoryStrataIndexPostgresPlugin } from '@ax/memory-strata-index-postgres';
+import { createMemoryFactsPostgresPlugin } from '@ax/memory-facts-postgres';
 import { createWebToolsPlugin } from '@ax/web-tools';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
 import { createOnboardingPlugin, type OnboardingConfig } from '@ax/onboarding';
@@ -1427,6 +1428,28 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
     );
     plugins.push(createMemoryStrataIndexPostgresPlugin());
   }
+
+  // ----- 9e. memory facts engine (UNCONDITIONAL, outside the block above) -
+  // @ax/memory-facts-postgres registers memory:facts:record|recall|supersede|
+  // clear|reindex against the shared pool it borrows via
+  // `database:get-instance` (pushed in section 1 — no direct import,
+  // invariant I2; the kernel's topo-sort inits database-postgres first).
+  //
+  // Deliberately NOT gated on `config.hostLlmTools`, unlike the
+  // memory-strata bundle two lines up. That gate exists because those plugins
+  // build their own Anthropic client from a boot-env ANTHROPIC_API_KEY. A
+  // facts engine has NO LLM dependency at all — it is storage plus closure
+  // rules — and the CLI pushes its sqlite twin (@ax/memory-facts-sqlite)
+  // unconditionally for the same reason. Gating it here would leave
+  // `memory:facts:*` unreachable on any deployment without an API key, which
+  // is the exact half-wired window TASK-423 exists to close.
+  //
+  // Still open, and honestly so: there is no product-layer CONSUMER yet
+  // (@ax/memory — observer, tools, export — doesn't exist), so nothing in
+  // this preset CALLS these hooks. What this push buys is that the engine is
+  // reachable the day a consumer lands, on every deployment, rather than on
+  // the subset that happens to have a host LLM key.
+  plugins.push(createMemoryFactsPostgresPlugin());
 
   // ----- 10. channel-web HTTP surface -----------------------------------
   // Mounts /api/chat/messages, /api/chat/conversations[/:id],

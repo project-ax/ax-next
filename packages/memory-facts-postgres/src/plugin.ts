@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { PluginError, type Plugin } from '@ax/core';
+import { makeAgentContext, PluginError, type Plugin } from '@ax/core';
+import type { Kysely } from 'kysely';
 import type {
   RecordInput,
   RecordOutput,
@@ -16,22 +17,33 @@ import type {
   ReindexOutput,
   ResolvedSlot,
 } from '@ax/memory-facts-contract';
-import { openDatabase, TABLE, INFINITY_SENTINEL, type FactRow } from './schema.js';
+import {
+  runFactsMigration,
+  TABLE,
+  INFINITY_SENTINEL,
+  type FactRow,
+  type MemoryFactsDatabase,
+} from './schema.js';
 import {
   insertWithSlotClosure,
   resettleSlotGroups,
   supersedeIds,
+  type FactsDatabase,
+  type FactsTransaction,
   type SlotGroup,
 } from './closure.js';
 import { PENDING_SLOT, pendingStatus } from './pending.js';
 import { agentScopeKey } from './agent-scope-key.js';
-import type { Database as BetterSqliteDb } from 'better-sqlite3';
 
-const PLUGIN_NAME = '@ax/memory-facts-sqlite';
+const PLUGIN_NAME = '@ax/memory-facts-postgres';
 
-// Hard upper bound on `limit`, mirroring `@ax/memory-strata-index-sqlite`'s
-// MAX_TOP_K — a non-positive limit is a real risk to clamp/reject rather
-// than let through to `LIMIT -1` (unbounded in SQLite).
+// Hard upper bound on `limit`, mirroring @ax/memory-facts-sqlite's MAX_LIMIT
+// (and @ax/memory-strata-index-*'s MAX_TOP_K) — a non-positive limit is a
+// real risk to clamp/reject rather than let through to the driver.
+//
+// Duplicated rather than imported: Invariant 2 forbids cross-plugin imports
+// even for a pure constant. Drift between the two backends is caught by the
+// shared contract's clamp case.
 const MAX_LIMIT = 200;
 
 const PROVENANCES: readonly Provenance[] = ['extracted', 'agent', 'human'];
@@ -46,6 +58,11 @@ function isNonEmptyString(v: unknown): v is string {
 // would silently mis-bound the (about, slot) chain with no error. `record`
 // is the observer's door (default provenance `extracted` = model output),
 // so this is a real trust-boundary check (Invariant 5), not decoration.
+//
+// It is also what lets `valid_start`/`valid_end` stay `TEXT` on postgres
+// without inheriting a collation question: every stored instant is canonical
+// fixed-width, so lexicographic and chronological order agree under any
+// collation (see `schema.ts`'s REVISIT trigger).
 //
 // The offset must be EXPLICIT (`Z` or `+HH:MM`/`-HH:MM`) rather than just
 // "whatever Date.parse accepts": a bare local-time string like
@@ -147,7 +164,7 @@ function validateRecordInput(input: RecordInput): ValidatedRecordInput {
   }
   // Same shape as every other optional string on the payload. An EMPTY
   // batchKey is rejected rather than treated as absent: `''` is falsy in JS
-  // but a perfectly good TEXT value in SQLite, so letting it through would
+  // but a perfectly good TEXT value in postgres, so letting it through would
   // silently pool every accidentally-empty-keyed batch in a tenant into one
   // dedup bucket and make the second such call a no-op.
   if (input.batchKey !== undefined && !isNonEmptyString(input.batchKey)) {
@@ -168,11 +185,7 @@ function validateRecallInput(input: RecallInput): {
   limit: number;
   activeOnly: boolean;
 } {
-  if (
-    typeof input.limit !== 'number' ||
-    !Number.isFinite(input.limit) ||
-    input.limit < 1
-  ) {
+  if (typeof input.limit !== 'number' || !Number.isFinite(input.limit) || input.limit < 1) {
     throw new PluginError({
       code: 'invalid-payload',
       plugin: PLUGIN_NAME,
@@ -187,9 +200,12 @@ function validateRecallInput(input: RecallInput): {
     });
   }
   // `query` (free-text search) is on the contract's type for forward-compat
-  // (TASK-434's fusion recall) but this engine doesn't implement it yet.
-  // Rejecting it loudly beats silently returning an unfiltered result set to
-  // a caller who read the type and expected it to narrow the answer.
+  // (TASK-434's fusion recall) but this engine doesn't implement it yet —
+  // there is no tsvector, no GIN index and no pgvector here, deliberately
+  // (TASK-457 owns those channels, and owns the decision of what they should
+  // be). Rejecting it loudly beats silently returning an unfiltered result
+  // set to a caller who read the type and expected it to narrow the answer,
+  // and it keeps the two backends saying the same thing about the same input.
   if (input.query !== undefined) {
     throw new PluginError({
       code: 'invalid-payload',
@@ -290,6 +306,10 @@ function rowToFactRecord(row: FactRow): FactRecord {
     value: row.value,
     when: row.valid_start,
     provenance: row.provenance,
+    // A STRING comparison — which is the second half of why the two validity
+    // columns are `TEXT`. A `timestamptz` round-trip would hand back a `Date`
+    // and this predicate would be true for every row, so every active row
+    // would report `until`.
     ...(row.valid_end !== INFINITY_SENTINEL ? { until: row.valid_end } : {}),
     ...(row.closed_by !== null ? { closedBy: row.closed_by } : {}),
   };
@@ -299,11 +319,18 @@ function rowToFactRecord(row: FactRow): FactRecord {
  * Run a STORE-ACCESS region and make sure any failure inside it leaves the
  * caller holding an error, never a plausible-looking empty answer (design
  * §4.4: "an empty table is a valid answer; a failed store is not"). Without
- * this, a `SELECT` that throws mid-handler would propagate a raw
- * `SqliteError`/`TypeError` that nothing downstream recognises as "the memory
+ * this, a `SELECT` that rejected mid-handler would propagate a raw
+ * `DatabaseError`/`Error` that nothing downstream recognises as "the memory
  * was unreachable" — and the temptation on the calling side is always to
  * catch-and-continue with zero facts, which silently rewrites the user's
  * memory to empty.
+ *
+ * The postgres shape of "the store went away" is worth naming, because this
+ * plugin does NOT own the pool: when `@ax/database-postgres` shuts down it
+ * destroys the shared Kysely, and every later query rejects from Kysely's own
+ * `RuntimeDriver` with a plain `Error('driver has already been destroyed')` —
+ * no `code`, no plugin, nothing a caller could act on. That is precisely the
+ * outage this wrapper is here to translate.
  *
  * Two deliberate choices:
  *
@@ -317,10 +344,27 @@ function rowToFactRecord(row: FactRow): FactRecord {
  *    row isn't". The distinction has no caller today, and collapsing it keeps
  *    the promise simple: if `record`/`recall` returns, it touched the store.
  *    The original error is preserved on `cause` for whoever is debugging.
+ *
+ * ## One input the sqlite twin accepts and this backend cannot
+ *
+ * A string carrying U+0000 (a NUL byte). sqlite `TEXT` stores it; postgres
+ * `TEXT` cannot hold it at all and the SERVER rejects the parameter with
+ * SQLSTATE 22021 (`invalid byte sequence for encoding "UTF8": 0x00`). So a
+ * `record` whose `about`/`relation`/`value`/`slot` contains a NUL succeeds on
+ * sqlite and comes back here as `store-unavailable` — the same collapse the
+ * second bullet above describes for any other constraint violation, applied to
+ * an input the caller could plausibly send, since `about` is free text carrying
+ * model output.
+ *
+ * Not "fixed" by rejecting NUL up front with `invalid-payload`: that would make
+ * the two backends disagree about a payload the contract says is valid, which
+ * is a worse divergence than the one it replaces. If a caller ever needs to
+ * store NUL-bearing text, the fix is a decision for BOTH engines (reject at the
+ * shared write door, or escape on the way in) — not a local patch here.
  */
-function inStore<T>(hookName: string, run: () => T): T {
+async function inStore<T>(hookName: string, run: () => Promise<T>): Promise<T> {
   try {
-    return run();
+    return await run();
   } catch (err) {
     if (err instanceof PluginError) throw err;
     throw new PluginError({
@@ -345,63 +389,106 @@ function inStore<T>(hookName: string, run: () => T): T {
  * random UUID, so `batch_seq` is the tiebreak that makes this deterministic.
  * See `FactRow.batch_seq`.
  *
+ * ## ⚠ TWO queries, never one-per-row
+ *
+ * `closes` is not a stored column — it is the inverse of `closed_by`. The
+ * sqlite twin re-derives it with a prepared statement executed once per row
+ * inside a `.map()`, which is free in-process and N NETWORK ROUND TRIPS here:
+ * a 40-statement batch replay would be 41 queries against the shared
+ * production database, inside an open transaction. So the inverse is fetched
+ * for the WHOLE batch in one `closed_by IN (...)` read and grouped in memory.
+ *
  * One honest difference from the first call's response: these are the rows as
  * they stand NOW, not a recording of what was returned then. A row that a
  * LATER statement closed comes back carrying `until`/`closedBy`, and `closes`
  * is whatever currently points at it. That is the more truthful answer — and
  * it is the only one available, since the original response was never stored.
  */
-function rebuildBatch(
-  db: BetterSqliteDb,
+async function rebuildBatch(
+  db: FactsDatabase,
   agentKey: string,
   batchKey: string,
-): RecordedStatement[] {
-  const rows = db
-    .prepare(
-      `SELECT * FROM ${TABLE}
-        WHERE agent_key = ? AND batch_key = ?
-        ORDER BY batch_seq`,
-    )
-    .all(agentKey, batchKey) as FactRow[];
+): Promise<RecordedStatement[]> {
+  const rows = (await db
+    .selectFrom(TABLE)
+    .selectAll()
+    .where('agent_key', '=', agentKey)
+    .where('batch_key', '=', batchKey)
+    .orderBy('batch_seq')
+    .execute()) as FactRow[];
 
-  // `closes` is not a stored column — it is the inverse of `closed_by`,
-  // re-derived per row and tenant-scoped like every other read here.
-  const closesOf = db.prepare(
-    `SELECT id FROM ${TABLE} WHERE agent_key = ? AND closed_by = ?`,
-  );
+  if (rows.length === 0) return [];
+
+  // Tenant-scoped like every other read here. `closed_by` is ordered so the
+  // grouped lists are stable run to run; the sqlite twin's per-row query has
+  // no ORDER BY and is only incidentally stable.
+  const closers = await db
+    .selectFrom(TABLE)
+    .select(['id', 'closed_by'])
+    .where('agent_key', '=', agentKey)
+    .where(
+      'closed_by',
+      'in',
+      rows.map((row) => row.id),
+    )
+    .orderBy('id')
+    .execute();
+
+  const closesByRow = new Map<string, string[]>();
+  for (const closer of closers) {
+    if (closer.closed_by === null) continue;
+    const bucket = closesByRow.get(closer.closed_by);
+    if (bucket === undefined) closesByRow.set(closer.closed_by, [closer.id]);
+    else bucket.push(closer.id);
+  }
 
   return rows.map((row) => ({
     ...rowToFactRecord(row),
-    closes: (closesOf.all(agentKey, row.id) as Array<{ id: string }>).map((r) => r.id),
+    closes: closesByRow.get(row.id) ?? [],
   }));
 }
 
-export interface MemoryFactsSqliteConfig {
-  databasePath: string;
-}
-
-export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): Plugin {
-  let driver: BetterSqliteDb | undefined;
+/**
+ * `@ax/memory-facts-postgres` — postgres-backed peer of
+ * `@ax/memory-facts-sqlite`.
+ *
+ * Same five hook contract (`runFactsContract` runs against both), different
+ * backend. It uses the shared Kysely instance owned by `@ax/database-postgres`
+ * via `database:get-instance`; per Invariant 2 it does NOT direct-import that
+ * package at runtime — the bus is the only inter-plugin API.
+ *
+ * Deliberately NOT implemented here: free-text (`tsvector`/`pg_trgm`) and
+ * dense (`pgvector`) recall. The contract has neither, the sqlite twin has
+ * neither, and `recall` REJECTS a `query` field with `invalid-payload` on
+ * both. TASK-457 owns those channels and owns choosing what they should be,
+ * when there is a sqlite implementation to match.
+ */
+export function createMemoryFactsPostgresPlugin(): Plugin {
+  let db: Kysely<MemoryFactsDatabase> | undefined;
 
   /**
-   * The one legal way to reach the driver from a handler.
+   * The one legal way to reach the shared Kysely from a handler.
    *
-   * `driver` is `undefined` before `init` and after `shutdown`, and a
-   * better-sqlite3 handle can also be closed underneath us (`.open === false`)
-   * — the previous `driver!.prepare(...)` turned both into a bare
-   * `TypeError: Cannot read properties of undefined`, which carries no code,
-   * no plugin name, and nothing to tell a caller apart from a genuine bug in
-   * the handler. This is the same outage, said out loud.
+   * `db` is `undefined` before `init` — a bare `db!.selectFrom(...)` would
+   * turn that into a `TypeError: Cannot read properties of undefined`, which
+   * carries no code, no plugin name, and nothing to tell a caller apart from
+   * a genuine bug in the handler. This is the same outage, said out loud.
+   *
+   * It deliberately does NOT try to detect a DESTROYED Kysely — there is no
+   * public predicate for that, and guessing at one would be a second, quietly
+   * different definition of "the store is down". A destroyed instance rejects
+   * on use with a plain `Error`, and `inStore` turns that into the same
+   * `store-unavailable` this throws.
    */
-  function requireDriver(): BetterSqliteDb {
-    if (driver === undefined || !driver.open) {
+  function requireDb(): FactsDatabase {
+    if (db === undefined) {
       throw new PluginError({
         code: 'store-unavailable',
         plugin: PLUGIN_NAME,
-        message: 'the fact store is not open (plugin not initialised, or already shut down)',
+        message: 'the fact store is not open (plugin not initialised)',
       });
     }
-    return driver;
+    return db;
   }
 
   return {
@@ -415,19 +502,36 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
         'memory:facts:clear',
         'memory:facts:reindex',
       ],
-      calls: [],
+      calls: ['database:get-instance'],
       subscribes: [],
     },
 
-    init({ bus }) {
-      const opened = openDatabase(config.databasePath);
-      driver = opened.driver;
+    async init({ bus }) {
+      // bootstrap()'s topological order ensures database-postgres has already
+      // registered `database:get-instance` before we run. Synthesize an init
+      // context for log correlation; the underlying handler ignores it.
+      const initCtx = makeAgentContext({
+        sessionId: 'init',
+        agentId: PLUGIN_NAME,
+        userId: 'system',
+      });
+      // The bus contract is Kysely<unknown>; we cast at the edge to our typed
+      // schema. The shared instance IS just a Kysely over the pool — the type
+      // param is a compile-time witness for which tables exist, namespaced by
+      // our `memory_facts_v1` table name.
+      const { db: shared } = await bus.call<unknown, { db: Kysely<unknown> }>(
+        'database:get-instance',
+        initCtx,
+        {},
+      );
+      db = shared as Kysely<MemoryFactsDatabase>;
+      await runFactsMigration(db);
 
       // Every handler derives the per-agent scope key from the calling ctx
-      // so the single shared sqlite db is partitioned by agentId alone
-      // (mirrors @ax/memory-strata-index-sqlite's TASK-257 partition). The
-      // hook I/O payloads stay unchanged — the key is ambient (from ctx),
-      // never a wire field.
+      // so the single shared table is partitioned by agentId alone (mirrors
+      // @ax/memory-facts-sqlite, and @ax/memory-strata-index-*'s TASK-257
+      // partition). The hook I/O payloads stay unchanged — the key is
+      // ambient (from ctx), never a wire field.
       bus.registerService<RecordInput, RecordOutput>(
         'memory:facts:record',
         PLUGIN_NAME,
@@ -444,20 +548,15 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           // exist: `transaction_time` cannot order rows that all share it.
           const now = new Date().toISOString();
 
-          const records = inStore('memory:facts:record', () => {
-            const db = requireDriver();
+          const records = await inStore('memory:facts:record', async () => {
+            const store = requireDb();
 
-            // The WHOLE batch settles in ONE transaction (design §3.5).
-            // Previously each statement got its own, so a batch that died on
-            // statement 3 left 1 and 2 committed — and a retry under the same
-            // `batchKey` would then see "already recorded" and return a
-            // permanently half-written batch. Atomicity is what makes the
-            // idempotency key safe, not a separate nicety.
-            //
-            // `insertWithSlotClosure` opens its own transaction inside this
-            // one; better-sqlite3 renders a nested transaction function as a
-            // SAVEPOINT, so the outer BEGIN/COMMIT still bounds the batch.
-            const settleBatch = db.transaction((): RecordedStatement[] => {
+            // The WHOLE batch settles in ONE transaction (design §3.5). A
+            // batch that died on statement 3 leaving 1 and 2 committed would
+            // make a retry under the same `batchKey` see "already recorded"
+            // and return a permanently half-written batch. Atomicity is what
+            // makes the idempotency key safe, not a separate nicety.
+            return store.transaction().execute(async (trx: FactsTransaction) => {
               // The dedup read lives INSIDE the transaction so the
               // check-then-write is not a race: two concurrent replays of the
               // same key cannot both decide the batch is new.
@@ -467,13 +566,17 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
               // re-runnable forever — correct, because it stored nothing, so
               // there is nothing to be idempotent about.
               if (batchKey !== undefined) {
-                const existing = rebuildBatch(db, agentKey, batchKey);
+                const existing = await rebuildBatch(trx, agentKey, batchKey);
                 if (existing.length > 0) return existing;
               }
 
-              return statements.map((statement, index) => {
+              const written: RecordedStatement[] = [];
+              // Sequential, not `Promise.all`: one transaction means one
+              // connection, and each statement's closure decisions depend on
+              // the rows the previous ones just wrote.
+              for (const [index, statement] of statements.entries()) {
                 const id = randomUUID();
-                const closure = insertWithSlotClosure(db, agentKey, {
+                const closure = await insertWithSlotClosure(trx, agentKey, {
                   id,
                   about: statement.about,
                   relation: statement.relation,
@@ -492,7 +595,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
                     : {}),
                 });
 
-                return {
+                written.push({
                   id,
                   about: statement.about,
                   relation: statement.relation,
@@ -502,11 +605,10 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
                   closes: closure.closed,
                   ...(closure.selfClosedAt !== null ? { until: closure.selfClosedAt } : {}),
                   ...(closure.selfClosedBy !== null ? { closedBy: closure.selfClosedBy } : {}),
-                };
-              });
+                });
+              }
+              return written;
             });
-
-            return settleBatch();
           });
 
           return { records };
@@ -525,7 +627,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           // omitted/`true` keeps the TASK-421 behavior of only currently-
           // active rows; `false` drops the predicate entirely, so active AND
           // closed rows both come back. `input.query` is never consulted
-          // here regardless — no FTS/dense/RRF/rerank (TASK-434).
+          // here regardless — no FTS/dense/RRF/rerank (TASK-434/457).
           //
           // Recall is the handler where swallowing a store failure would be
           // most tempting and most harmful: "no facts" and "could not read the
@@ -533,40 +635,27 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           // `degraded` is read from the SAME store region for the same
           // reason — a failed pending count must surface as `store-
           // unavailable`, not silently report a clean tenant.
-          const { rows, degraded } = inStore('memory:facts:recall', () => {
-            const db = requireDriver();
+          const { rows, degraded } = await inStore('memory:facts:recall', async () => {
+            const store = requireDb();
 
-            const conditions = ['agent_key = ?'];
-            const params: unknown[] = [agentKey];
-            if (about !== undefined) {
-              conditions.push('about = ?');
-              params.push(about);
-            }
-            if (activeOnly) {
-              conditions.push('valid_end = ?');
-              params.push(INFINITY_SENTINEL);
-            }
-            params.push(limit);
+            let query = store.selectFrom(TABLE).selectAll().where('agent_key', '=', agentKey);
+            if (about !== undefined) query = query.where('about', '=', about);
+            if (activeOnly) query = query.where('valid_end', '=', INFINITY_SENTINEL);
 
-            // `, id DESC` is a tiebreak the postgres twin needed and this one
-            // gets for parity (Invariant 4 — two backends behind one contract
-            // must not differ in ways the contract cannot see). SQLite has no
-            // documented promise about row order for rows tied on
-            // `valid_start` either; it is only STABLE by rowid in practice,
-            // which is an implementation detail, not a guarantee. Under a
-            // `LIMIT` a nondeterministic order is a nondeterministic result
-            // SET, not merely a nondeterministic order, so this closes the
-            // same gap postgres's `.orderBy('id', 'desc')` does — no contract
-            // case can observe it (see the sibling comment there).
-            const rows = db
-              .prepare(
-                `SELECT * FROM ${TABLE}
-                WHERE ${conditions.join(' AND ')}
-                ORDER BY valid_start DESC, id DESC LIMIT ?`,
-              )
-              .all(...params) as FactRow[];
+            const rows = (await query
+              .orderBy('valid_start', 'desc')
+              // A tiebreak the sqlite twin does not have, and that no contract
+              // case can observe (every multi-row ordering assertion there
+              // uses distinct `when`s, or sorts). It is here because postgres
+              // promises NO order for rows tied on `valid_start` — under a
+              // `LIMIT` that is a nondeterministic result SET, not just a
+              // nondeterministic order. sqlite happens to be stable by rowid;
+              // this makes the same promise on purpose.
+              .orderBy('id', 'desc')
+              .limit(limit)
+              .execute()) as FactRow[];
 
-            return { rows, degraded: pendingStatus(db, agentKey).degraded };
+            return { rows, degraded: (await pendingStatus(store, agentKey)).degraded };
           });
 
           return { statements: rows.map(rowToFactRecord), degraded };
@@ -599,7 +688,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           // `SupersedeOutput` are the same two fields, one in engine terms and
           // one in the hook's.
           return inStore('memory:facts:supersede', () =>
-            supersedeIds(requireDriver(), agentKey, input.ids, at),
+            supersedeIds(requireDb(), agentKey, input.ids, at),
           );
         },
       );
@@ -612,8 +701,8 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           // `clear` returns void, so a swallowed failure would report success
           // for a tenant whose data is still there — the worst possible lie
           // for a "forget this" operation.
-          inStore('memory:facts:clear', () => {
-            requireDriver().prepare(`DELETE FROM ${TABLE} WHERE agent_key = ?`).run(agentKey);
+          await inStore('memory:facts:clear', async () => {
+            await requireDb().deleteFrom(TABLE).where('agent_key', '=', agentKey).execute();
           });
         },
       );
@@ -626,8 +715,8 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           const slots = validateReindexInput(input);
           const agentKey = agentScopeKey(ctx);
 
-          return inStore('memory:facts:reindex', () => {
-            const db = requireDriver();
+          return inStore('memory:facts:reindex', async () => {
+            const store = requireDb();
 
             // ONE transaction for the whole drain. Writing a resolved slot and
             // re-settling the chain that row just joined are halves of the
@@ -637,73 +726,72 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
             // corruption pending exists to avoid. It is also what makes the
             // reported `resolved`/`resettled`/`pending` numbers describe one
             // consistent snapshot rather than three moments.
-            const drain = db.transaction((): ReindexOutput => {
-              // Tenant-scoped AND still-pending, in one predicate: a foreign
-              // id, a missing id, and an already-resolved id are all just "no
-              // row", and all three are silently ignored — the same forgiving
-              // shape `supersede` has, because the caller is draining a list
-              // it built earlier and a racing second drain is normal.
-              const findPending = db.prepare(
-                `SELECT about FROM ${TABLE} WHERE id = ? AND agent_key = ? AND slot = ?`,
-              );
-              const resolveSlot = db.prepare(
-                `UPDATE ${TABLE} SET slot = ? WHERE id = ? AND agent_key = ? AND slot = ?`,
-              );
-
+            return store.transaction().execute(async (trx: FactsTransaction) => {
               let resolved = 0;
               // Deduped by `(about, slot)`: two rows resolved into the same
               // chain re-derive it once, not twice. A Map keyed structurally
               // (`JSON.stringify([about, slot])`), not by joining the two
               // fields with a delimiter: `about` is free text that can carry
-              // model output, and ANY in-band delimiter — including NUL — is
-              // only injective if the fields are guaranteed not to contain
-              // it, which nothing here guarantees. `about = "x\u0000y", slot
-              // = "z"` and `about = "x", slot = "y\u0000z"` produce the same
-              // NUL-joined string but different JSON arrays (same reasoning
-              // as `supersedeIds`'s group map in `closure.ts`).
+              // model output, and ANY in-band delimiter is only injective if
+              // the fields are guaranteed not to contain it, which nothing
+              // here guarantees. `about = "x\u0001y", slot = "z"` and `about
+              // = "x", slot = "y\u0001z"` produce the same joined string but
+              // different JSON arrays (same reasoning as `supersedeIds`'s
+              // group map in `closure.ts`).
               const groups = new Map<string, SlotGroup>();
 
               for (const entry of slots) {
-                const row = findPending.get(entry.id, agentKey, PENDING_SLOT) as
-                  | { about: string }
-                  | undefined;
-                if (row === undefined) continue;
-                // A repeated id in one call therefore resolves ONCE: the
-                // second occurrence no longer finds a pending row. First
-                // entry wins, deterministically.
-                const { changes } = resolveSlot.run(entry.slot, entry.id, agentKey, PENDING_SLOT);
-                if (changes === 0) continue;
-                resolved += changes;
+                // Find-and-resolve in ONE statement, with `RETURNING` as the
+                // authority on whether anything moved. The sqlite twin SELECTs
+                // then UPDATEs and reads `.changes === 0`; Kysely's postgres
+                // equivalent, `numUpdatedRows`, is a **bigint**, so `=== 0`
+                // against a number is ALWAYS false and every entry would look
+                // resolved — inflating `resolved` and re-settling chains that
+                // never changed. `RETURNING` cannot be got wrong that way, and
+                // it halves the round trips.
+                //
+                // Tenant-scoped AND still-pending, in one predicate: a foreign
+                // id, a missing id, and an already-resolved id are all just "no
+                // row", and all three are silently ignored — the same forgiving
+                // shape `supersede` has, because the caller is draining a list
+                // it built earlier and a racing second drain is normal. A
+                // repeated id in one call therefore resolves ONCE: the second
+                // occurrence no longer finds a pending row. First entry wins,
+                // deterministically.
+                const touched = await trx
+                  .updateTable(TABLE)
+                  .set({ slot: entry.slot })
+                  .where('id', '=', entry.id)
+                  .where('agent_key', '=', agentKey)
+                  .where('slot', '=', PENDING_SLOT)
+                  .returning('about')
+                  .execute();
+
+                if (touched.length === 0) continue;
+                resolved += touched.length;
                 // `slot: null` is "no slot after all" — the row is inert
                 // forever, joins no chain, and so touches nothing to re-settle.
                 if (entry.slot !== null) {
-                  groups.set(JSON.stringify([row.about, entry.slot]), {
-                    about: row.about,
-                    slot: entry.slot,
-                  });
+                  const about = touched[0]!.about;
+                  groups.set(JSON.stringify([about, entry.slot]), { about, slot: entry.slot });
                 }
               }
 
-              const resettled = resettleSlotGroups(db, agentKey, [...groups.values()]);
+              const resettled = await resettleSlotGroups(trx, agentKey, [...groups.values()]);
               // Counted AFTER the writes, inside the same transaction, so the
               // number is the state this call left behind — not the one it
               // found. Called with no `slots` this is the whole hook: a status
               // read (design §2.2). A whole-tenant repair sweep is deliberately
               // NOT built — it has no caller (plan §6).
-              return { resolved, resettled, ...pendingStatus(db, agentKey) };
+              return { resolved, resettled, ...(await pendingStatus(trx, agentKey)) };
             });
-
-            return drain();
           });
         },
       );
     },
 
-    shutdown() {
-      if (driver !== undefined && driver.open) {
-        driver.close();
-      }
-      driver = undefined;
-    },
+    // NO shutdown() — the shared Kysely instance is owned and destroyed by
+    // @ax/database-postgres. Calling db.destroy() here would tear down the
+    // pool for every other postgres-backed plugin in the process.
   };
 }

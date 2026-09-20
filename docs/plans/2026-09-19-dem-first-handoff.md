@@ -53,12 +53,14 @@ split into **four board cards**, in dependency order:
 - **TASK-434** (To Do, depends on 421+422) — the full three-channel RRF recall (sparse FTS5 +
   dense `sqlite-vec` + rerank) that TASK-421 deliberately cut. Renamed from TASK-424 mid-build
   after a board-ID collision with an unrelated concurrent card — see §4.
-- **TASK-423** (Backlog, gated) — the postgres backend. Genuinely unscoped: `dem-memory` has
-  **never** had a postgres implementation (sqlite/better-sqlite3 only), unlike the sibling
-  `memory-strata-index-{sqlite,postgres}` pair which already has both. Also now carries the
-  k8s-wiring + `preset.test.ts` canary requirement (round 2 of TASK-421's review found that
-  `presets/k8s` loads no facts backend at all, so `memory:facts:*` is unreachable in
-  production until this card ships — see its card body for the exact requirement).
+- **TASK-423** (**Done**, 2026-09-19) — the postgres backend, plus the k8s wiring it carried.
+  It was filed as genuinely unscoped (`dem-memory` has **never** had a postgres
+  implementation — sqlite/better-sqlite3 only — unlike the sibling
+  `memory-strata-index-{sqlite,postgres}` pair which already has both), and the spike
+  (`docs/plans/2026-09-19-task-423-postgres-facts-spike.md`, merged as #615) removed the
+  gate by showing the FTS/vector question wasn't this card's to answer. `presets/k8s` now
+  pushes `@ax/memory-facts-postgres` **unconditionally**, so `memory:facts:*` is reachable
+  in production.
 
 ---
 
@@ -143,14 +145,31 @@ dense `sqlite-vec` cosine + temporal channels — **not** graph, that's gone) in
 injected via plugin config (no shape decided yet), and a new native dependency (`sqlite-vec`)
 that wants a `security-checklist` pass before it ships (Invariant 5, new dependency).
 
-### 3.3 TASK-423 — postgres backend (blocked, Backlog)
+### 3.3 TASK-423 — postgres backend — **BUILT**
 
-Don't start this without a short design/spike first — the FTS-equivalent (`tsvector`/
-`pg_trgm`?) and vector-search-equivalent (`pgvector`?) choices aren't made. Once TASK-422
-lands, this card's acceptance criteria also require wiring the postgres backend into
-`presets/k8s/src/index.ts` with a `preset.test.ts` canary — **this is the only way
-`memory:facts:*` becomes reachable in production**, so don't let it slip further down the
-backlog than it has to.
+> **As built, 2026-09-19.** Plan:
+> `docs/plans/2026-09-19-task-423-postgres-facts-plan.md`; spike:
+> `docs/plans/2026-09-19-task-423-postgres-facts-spike.md`; decisions:
+> `.claude/memory/decisions/2026-09-19-TASK-423.md`.
+
+The gate this section warned about turned out to be the wrong question. The FTS-equivalent
+(`tsvector`/`pg_trgm`) and vector-equivalent (`pgvector`) choices did **not** have to be made
+here: `runFactsContract` — the whole of what a second backend must satisfy — has neither, and
+`recall` *rejects* a `query` field with `invalid-payload` on both backends. Those channels
+went to **TASK-457**, where there is a sqlite implementation to match. See the spike.
+
+What shipped: `@ax/memory-facts-postgres` (same five hooks, `settleArrival` ported unchanged
+from TASK-422's extraction, `valid_start`/`valid_end` as `TEXT` — safe not because TEXT
+ordering is collation-independent (it is not) but because every stored instant is
+canonical fixed-width, so lexicographic order matches chronological order under any
+collation; `schema.ts` carries the real revisit trigger — borrowing the shared Kysely via `database:get-instance` with no
+`shutdown()` of its own) and the `presets/k8s` wiring. The push is **unconditional** —
+deliberately *not* behind `config.hostLlmTools`, which gates the memory-STRATA bundle because
+that bundle needs an `ANTHROPIC_API_KEY`. A facts engine has no LLM dependency, so gating it
+would have left `memory:facts:*` unreachable on every deployment without an API key, which is
+the window this card existed to close. Pinned by `presets/k8s/src/__tests__/preset.test.ts`
+(all five hooks, with no `hostLlmTools` set) and booted for real against a postgres
+testcontainer in `prod-bootstrap.test.ts`.
 
 ### 3.4 Not yet a card: the product layer
 
@@ -262,12 +281,14 @@ test` is unaffected by anything in it — unchanged from before.
 | TASK-421 | Done | TASK-420 |
 | TASK-422 | Done (2026-09-19) | TASK-421 |
 | TASK-434 | To Do (**ready** — both deps Done) | TASK-421, TASK-422 |
-| TASK-423 | Backlog (gated — needs FTS/vector design spike; deps now Done) | TASK-421, TASK-422 |
+| TASK-423 | Done (2026-09-19) | TASK-421, TASK-422 |
 
 `@ax/memory` (rung 3, the product layer) has no cards yet.
 
-**Engine hook surface as of TASK-422** — `memory:facts:record | recall | supersede | clear |
-reindex`, all registered by `@ax/memory-facts-sqlite` and pinned on a real CLI boot by
-`packages/cli/src/__tests__/memory-facts-wiring.test.ts`. Still unreachable in k8s: the
-`presets/k8s` preset loads no facts backend at all, which is TASK-423's job and the reason
-that card shouldn't slip (§3.3).
+**Engine hook surface as of TASK-423** — `memory:facts:record | recall | supersede | clear |
+reindex`, registered by `@ax/memory-facts-sqlite` in the CLI (pinned on a real boot by
+`packages/cli/src/__tests__/memory-facts-wiring.test.ts`) and by
+`@ax/memory-facts-postgres` in `presets/k8s` (pinned by its `preset.test.ts` canary and
+booted against a testcontainer in `prod-bootstrap.test.ts`). Both pushes are unconditional,
+so the surface is reachable everywhere. What is still missing is a **consumer**: `@ax/memory`
+doesn't exist, so nothing calls these hooks yet (§3.4).
