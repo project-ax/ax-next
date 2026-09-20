@@ -11,6 +11,7 @@
  * sidebar, where the shipping app already puts it — a second home for one
  * setting is how two controls end up disagreeing.
  */
+import { useRef } from 'react';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 
 export function WorkspaceHeader({
@@ -65,31 +66,111 @@ export function WorkspaceHeader({
   );
 }
 
+/** Which way an arrow key moves, or `null` for a key we do not own. */
+function arrowStep(key: string): number | 'first' | 'last' | null {
+  switch (key) {
+    case 'ArrowRight':
+    case 'ArrowDown':
+      return 1;
+    case 'ArrowLeft':
+    case 'ArrowUp':
+      return -1;
+    case 'Home':
+      return 'first';
+    case 'End':
+      return 'last';
+    default:
+      return null;
+  }
+}
+
 /**
  * The segmented control from the source design: one recessed track, the active
  * segment raised out of it. Distinct from a row of buttons — the raised segment
  * is what tells you these are views of one list rather than three actions.
+ *
+ * IT IS A RADIOGROUP, AND UNTIL TASK-429 IT ONLY HALF-ADMITTED IT. Radix's
+ * `ToggleGroup type="single"` gives each item `role="radio"` + `aria-checked`
+ * but roots the set at `role="group"` — so the radios had no radiogroup owning
+ * them, and the group had no accessible name. Both are set below; `role` and
+ * `aria-label` reach Radix's own `<div>` because it spreads caller props after
+ * its hardcoded `role="group"`.
+ *
+ * SELECTION FOLLOWS FOCUS, which is the half that was a real defect rather than
+ * a mislabel. Radix wires the items into a RovingFocusGroup, so `ArrowRight`
+ * moved focus to "Working" and left `aria-checked` on "Needs you": a screen
+ * reader announced a segment that was not selected, and nothing the person did
+ * next would make the two agree. For a radiogroup the arrow keys move selection
+ * and focus TOGETHER (WAI-ARIA APG), which is what `onKeyDown` below does.
+ *
+ * It takes the keys off Radix rather than racing it. Radix composes our handler
+ * ahead of its own roving one with `checkForDefaultPrevented`, so our
+ * `preventDefault()` stands its handler down — otherwise both would run, ours
+ * synchronously and its own inside a `setTimeout`, and they disagree about the
+ * target whenever focus is on the group rather than on an item.
  */
 export function Segmented<T extends string>({
   value,
   onValueChange,
   options,
+  label,
 }: {
   value: T;
   onValueChange: (v: T) => void;
   options: Array<{ value: T; label: string; count?: number }>;
+  /** The group's accessible name — a radiogroup with no name announces as one. */
+  label: string;
 }) {
+  const track = useRef<HTMLDivElement>(null);
+
+  function onKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    const step = arrowStep(event.key);
+    if (step === null) return;
+    // A modified arrow is somebody else's shortcut, not ours.
+    if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+    if (options.length === 0) return;
+
+    event.preventDefault();
+
+    // Move from whichever segment has focus, falling back to the checked one
+    // when focus is still on the track itself. Reading focus rather than
+    // `value` is what keeps us honest if anything ever focuses an item without
+    // selecting it.
+    const items = Array.from(
+      track.current?.querySelectorAll<HTMLElement>('[data-segment]') ?? [],
+    );
+    const focused = items.findIndex((el) => el === document.activeElement);
+    const current = focused >= 0 ? focused : options.findIndex((o) => o.value === value);
+    const from = current >= 0 ? current : 0;
+
+    const next =
+      step === 'first'
+        ? 0
+        : step === 'last'
+          ? options.length - 1
+          : // Wraps, as a radiogroup does.
+            (from + step + options.length) % options.length;
+
+    onValueChange(options[next].value);
+    items[next]?.focus();
+  }
+
   return (
     <ToggleGroup
+      ref={track}
       type="single"
       value={value}
       onValueChange={(v) => v && onValueChange(v as T)}
+      onKeyDown={onKeyDown}
+      role="radiogroup"
+      aria-label={label}
       className="gap-0.5 rounded-lg bg-muted p-[3px]"
     >
       {options.map((o) => (
         <ToggleGroupItem
           key={o.value}
           value={o.value}
+          data-segment={o.value}
           className="h-7 rounded-md px-3 text-[12.5px] font-medium text-muted-foreground hover:bg-transparent hover:text-foreground data-[state=on]:bg-background data-[state=on]:text-foreground data-[state=on]:shadow-sm"
         >
           {o.label}
