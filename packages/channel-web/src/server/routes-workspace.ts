@@ -2290,8 +2290,18 @@ function errorMessages(
   const out: Array<{ at: string; msg: ThreadMessage }> = [];
   for (const ev of events) {
     if (ev.kind !== 'turn-error') continue;
-    // Every field checked, never spread: this payload is an opaque JSONB blob
-    // and a half-shaped row reaching the client is a renderer guessing.
+    /*
+      Every field checked, never spread: this payload is an opaque JSONB blob
+      and a half-shaped row reaching the client is a renderer guessing.
+
+      `key` and `createdAt` are checked too, and not out of politeness — `key`
+      becomes the row's React id, and `createdAt` is what the merge below sorts
+      on, so a missing one would silently park the failure at the end of the
+      thread wearing a `turn-error:undefined` key it could share with the next
+      malformed row.
+    */
+    if (typeof ev.key !== 'string' || ev.key.length === 0) continue;
+    if (typeof ev.createdAt !== 'string' || ev.createdAt.length === 0) continue;
     const reason = ev.payload.error;
     if (typeof reason !== 'string' || reason.length === 0) continue;
     /*

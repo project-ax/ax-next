@@ -216,10 +216,12 @@ export function TodayView({
 
     This line used to read "0 agents working · 0 waiting on you" beside a green
     tick whenever the workspace was quiet — a reassuring report on a system we
-    had not measured. `working` is derived from `session:is-alive`, and when
-    that service is not registered every agent reads `resting`, so the zero is
-    not even "nothing is happening": it is "we did not look". A zero is a
-    claim; an absent line is the truth.
+    had not measured. `working` is derived from the activity record
+    (`agent-activity:get` — TASK-498 moved it off sandbox liveness, which
+    stayed true through every warm idle gap), and when that service is not
+    registered every agent reads `resting`, so the zero is not even "nothing
+    is happening": it is "we did not look". A zero is a claim; an absent line
+    is the truth.
   */
   const summary: string[] = [];
   if (working.length > 0) {

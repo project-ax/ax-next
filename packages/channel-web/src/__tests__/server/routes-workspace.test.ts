@@ -955,6 +955,11 @@ describe('channel-web agent-workspace BFF', () => {
       // a claim, not a reading.
       { kind: 'turn-error', key: 'k', payload: { reqId: 'r' }, createdAt: '2026-08-01T10:00:00.000Z' },
       { kind: 'turn-error', key: 'k2', payload: { error: 42 }, createdAt: '2026-08-01T10:00:01.000Z' },
+      // `key` becomes the row's id and `createdAt` is what the merge sorts on.
+      // A row missing either would park itself at the end of the thread under
+      // an id it could share with the next malformed one.
+      { kind: 'turn-error', key: '', payload: { error: 'chat-run-timeout' }, createdAt: '2026-08-01T10:00:02.000Z' },
+      { kind: 'turn-error', key: 'k4', payload: { error: 'chat-run-timeout' }, createdAt: '' },
     ]);
     const h = makeWorkspaceHandlers({ bus, initCtx });
     const { res, captured } = mkRes();
