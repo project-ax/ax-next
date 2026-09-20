@@ -242,6 +242,18 @@ export function createChannelWebServerPlugin(
             'neither GET /api/workspace/grants nor the chat stream can tell which grants were already declined, so every pending grant is offered again on each workspace mount and each stream open',
         },
         {
+          // TASK-482 — housekeeping for the same markers. A "Not now" stops
+          // meaning anything once the card it answered is gone or has been
+          // re-raised, and GET /api/workspace/grants drops those rows on the
+          // scan it was already doing. An EXACT-key delete, deliberately:
+          // `storage:delete-prefix` on one of these keys would also take every
+          // key that extends it (`…:abc` is a prefix of `…:abcd`), which is a
+          // sibling grant's refusal.
+          hook: 'storage:delete',
+          degradation:
+            'declined-grant markers are never reclaimed, so the per-user prefix scan behind GET /api/workspace/grants grows with every "Not now" ever given (correct answers, slower reads)',
+        },
+        {
           // TASK-230 — the agent-workspace roster derives each agent's
           // working/resting state from whether one of its conversations holds a
           // session the backend still calls alive. Without the probe we do not

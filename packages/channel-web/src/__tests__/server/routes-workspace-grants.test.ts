@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
 import { makeWorkspaceHandlers } from '../../server/routes-workspace.js';
 import { createChunkBuffer, type ChunkBuffer } from '../../server/chunk-buffer.js';
+import { grantDeclineKey } from '../../server/grant-declines.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
 
 function mkReq(params: Record<string, string> = {}): RouteRequest {
@@ -142,10 +143,18 @@ describe('GET /api/workspace/grants', () => {
     return captured;
   }
 
+  /**
+   * How many rows each `storage:list-prefix` had to hand back, in order. This
+   * is the cost TASK-482 is about — the scan behind the read, not a proxy for
+   * it.
+   */
+  let scans: number[];
+
   /** A KV store on the bus, the same shape @ax/storage-sqlite registers. */
   function registerStorage(
-    opts: { listThrows?: boolean; noSet?: boolean } = {},
+    opts: { listThrows?: boolean; noSet?: boolean; noDelete?: boolean } = {},
   ): Map<string, Uint8Array> {
+    scans = [];
     const store = new Map<string, Uint8Array>();
     if (opts.noSet !== true) {
       bus.registerService<{ key: string; value: Uint8Array }, void>(
@@ -161,12 +170,24 @@ describe('GET /api/workspace/grants', () => {
       { entries: Array<{ key: string; value: Uint8Array }> }
     >('storage:list-prefix', 'storage', async (_ctx, { prefix }) => {
       if (opts.listThrows === true) throw new Error('kv is having a day');
+      scans.push(
+        [...store.keys()].filter((k) => k.startsWith(prefix)).length,
+      );
       return {
         entries: [...store.entries()]
           .filter(([k]) => k.startsWith(prefix))
           .map(([key, value]) => ({ key, value })),
       };
     });
+    // TASK-482 — the exact-key delete the reclaim path needs. `noDelete`
+    // stands in for a deployment whose KV store predates it.
+    if (opts.noDelete !== true) {
+      bus.registerService<{ key: string }, { deleted: number }>(
+        'storage:delete',
+        'storage',
+        async (_ctx, { key }) => ({ deleted: store.delete(key) ? 1 : 0 }),
+      );
+    }
     return store;
   }
 
@@ -570,6 +591,172 @@ describe('GET /api/workspace/grants', () => {
       });
       expect(captured.statusCode).toBe(401);
       expect(store.size).toBe(0);
+    });
+  });
+
+
+  // -------------------------------------------------------------------------
+  // Reclaiming the markers (TASK-482), through the route that does it.
+  //
+  // The unit tests next door own the rules; these own the wiring — that the
+  // mount read-back really is the path that prunes, that it prunes against the
+  // COMPLETE user-wide pending set, and that the read it rides is the same one
+  // it was before.
+  // -------------------------------------------------------------------------
+  describe('reclaiming dead decline markers', () => {
+    /** Every marker in the store, oldest-written first. */
+    const keys = (store: Map<string, Uint8Array>): string[] =>
+      [...store.keys()].sort();
+
+    /** Decline `subjectId`, asserting the route actually recorded it. */
+    async function declineOk(subjectId: string): Promise<void> {
+      const res = await decline(
+        { id: 'u-ann' },
+        { agentId: 'a-quill', kind: 'skill', subjectId },
+      );
+      expect(res.statusCode).toBe(200);
+    }
+
+    /*
+      THE CARD'S FIRST ACCEPTANCE, end to end. Two refusals; then one of the
+      two cards is resolved (the grant was applied, so the buffer evicts it).
+      That refusal now answers nothing and can never answer anything again —
+      a re-raise carries a newer `raisedAt` — and the next mount read drops it.
+      The OTHER one is still answering a live card and survives, which is the
+      half that makes this a reclamation rather than a wipe.
+    */
+    it('drops the marker whose card is gone and keeps the one still answering', async () => {
+      const store = registerStorage();
+      buffer.appendPermissionCard('cnv-ann', skill('linear'), {
+        userId: 'u-ann',
+        agentId: 'a-quill',
+      });
+      buffer.appendPermissionCard('cnv-ann', skill('github'), {
+        userId: 'u-ann',
+        agentId: 'a-quill',
+      });
+
+      clock += 1;
+      await declineOk('linear');
+      await declineOk('github');
+      expect(keys(store)).toHaveLength(2);
+
+      // The person went back and granted `linear` after all: the card is
+      // resolved and the buffer drops it.
+      buffer.evictPermissionCard('cnv-ann', 'linear');
+
+      const captured = await read({ id: 'u-ann' });
+      expect(captured.statusCode).toBe(200);
+      // `github` is still declined, so the list is empty either way — the
+      // answer is unchanged and only the housekeeping moved.
+      expect(captured.body).toEqual({ grants: [] });
+      expect(keys(store)).toEqual([
+        grantDeclineKey('u-ann', 'a-quill', 'skill', 'github'),
+      ]);
+    });
+
+    /*
+      THE SECOND COST, MEASURED. Not "a row went away" — the scan the person
+      waits on getting smaller. `scans` records what `storage:list-prefix`
+      actually handed back on each read.
+    */
+    it('shrinks the scan the next mount pays for', async () => {
+      const store = registerStorage();
+      buffer.appendPermissionCard('cnv-ann', skill('github'), {
+        userId: 'u-ann',
+        agentId: 'a-quill',
+      });
+      clock += 1;
+      await declineOk('github');
+      // Nine refusals for cards that are long gone — a year of "Not now".
+      for (let i = 0; i < 9; i += 1) {
+        store.set(
+          grantDeclineKey('u-ann', 'a-quill', 'skill', `gone-${i}`),
+          new TextEncoder().encode(JSON.stringify({ declinedAt: clock })),
+        );
+      }
+      expect(keys(store)).toHaveLength(10);
+
+      await read({ id: 'u-ann' });
+      await read({ id: 'u-ann' });
+
+      expect(scans).toEqual([10, 1]);
+      expect(keys(store)).toEqual([
+        grantDeclineKey('u-ann', 'a-quill', 'skill', 'github'),
+      ]);
+    });
+
+    /*
+      ONE PERSON'S HOUSEKEEPING IS NOT ANOTHER'S. The prefix scan is already
+      per-user, so this is really a check that nothing widened it on the way to
+      a delete — the failure mode being a reclaim that walks the namespace it
+      just proved it should not be reading.
+    */
+    it('never reclaims another user’s marker', async () => {
+      const store = registerStorage();
+      buffer.appendPermissionCard('cnv-ann', skill('github'), {
+        userId: 'u-ann',
+        agentId: 'a-quill',
+      });
+      clock += 1;
+      await declineOk('github');
+      const bobs = grantDeclineKey('u-bob', 'a-scout', 'skill', 'github');
+      store.set(
+        bobs,
+        new TextEncoder().encode(JSON.stringify({ declinedAt: clock })),
+      );
+
+      await read({ id: 'u-ann' });
+
+      expect(store.has(bobs)).toBe(true);
+    });
+
+    /*
+      THE GUARD TASK-444 LOST ONCE. A mount with nothing pending does not go to
+      the store at all — and pruning, which would dearly love a scan, does not
+      get to be the reason it starts. The markers stay; they are unread, so
+      they cost this read nothing.
+    */
+    it('does not scan — or prune — on a mount with nothing pending', async () => {
+      const store = registerStorage();
+      store.set(
+        grantDeclineKey('u-ann', 'a-quill', 'skill', 'gone'),
+        new TextEncoder().encode(JSON.stringify({ declinedAt: 1 })),
+      );
+
+      const captured = await read({ id: 'u-ann' });
+
+      expect(captured.body).toEqual({ grants: [] });
+      expect(scans).toEqual([]);
+      expect(keys(store)).toHaveLength(1);
+    });
+
+    /*
+      DEGRADATION DIRECTION. A KV store with no exact-key delete answers the
+      read exactly as it did before TASK-482 — the manifest says so, and this
+      is the assertion behind that sentence. What it must NOT do is fall back
+      to `storage:delete-prefix`, which would take a prefix-colliding sibling
+      with it; there is no delete-prefix registered here, so a fallback would
+      throw and fail the read rather than silently pass.
+    */
+    it('answers the read unchanged when the store cannot delete one key', async () => {
+      const store = registerStorage({ noDelete: true });
+      buffer.appendPermissionCard('cnv-ann', skill('github'), {
+        userId: 'u-ann',
+        agentId: 'a-quill',
+      });
+      clock += 1;
+      await declineOk('github');
+      store.set(
+        grantDeclineKey('u-ann', 'a-quill', 'skill', 'gone'),
+        new TextEncoder().encode(JSON.stringify({ declinedAt: clock })),
+      );
+
+      const captured = await read({ id: 'u-ann' });
+
+      expect(captured.statusCode).toBe(200);
+      expect(captured.body).toEqual({ grants: [] });
+      expect(keys(store)).toHaveLength(2);
     });
   });
 });

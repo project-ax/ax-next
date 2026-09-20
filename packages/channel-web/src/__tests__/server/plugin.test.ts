@@ -639,6 +639,11 @@ describe('@ax/channel-web server plugin (integration)', () => {
             'neither GET /api/workspace/grants nor the chat stream can tell which grants were already declined, so every pending grant is offered again on each workspace mount and each stream open',
         },
         {
+          hook: 'storage:delete',
+          degradation:
+            'declined-grant markers are never reclaimed, so the per-user prefix scan behind GET /api/workspace/grants grows with every "Not now" ever given (correct answers, slower reads)',
+        },
+        {
           hook: 'session:is-alive',
           degradation:
             'every agent in the workspace roster reads as resting (liveness cannot be probed, and a guess would be worse than a blank)',

@@ -42,6 +42,10 @@ export const StorageDeletePrefixOutputSchema = z.object({
   deleted: z.number(),
 });
 
+export const StorageDeleteOutputSchema = z.object({
+  deleted: z.number(),
+});
+
 export function createStoragePostgresPlugin(): Plugin {
   let db: Kysely<StorageDatabase> | undefined;
 
@@ -54,6 +58,7 @@ export function createStoragePostgresPlugin(): Plugin {
         'storage:set',
         'storage:list-prefix',
         'storage:delete-prefix',
+        'storage:delete',
         'db:transact',
       ],
       calls: ['database:get-instance'],
@@ -185,6 +190,33 @@ export function createStoragePostgresPlugin(): Plugin {
           return { deleted: Number(result.numDeletedRows ?? 0) };
         },
         { returns: StorageDeletePrefixOutputSchema },
+      );
+
+      // `storage:delete-prefix` on an exact key is a trap: 'k:abc' is a
+      // prefix of 'k:abcd', so a caller reaching for "delete this one row"
+      // by handing delete-prefix a full key silently takes out every key
+      // that extends it too. Variable-length ids (e.g. @ax/channel-web's
+      // decline-marker reclamation, TASK-482) need an exact-key delete that
+      // can never spill past its own row — hence an equality predicate,
+      // never LIKE.
+      bus.registerService<{ key: string }, { deleted: number }>(
+        'storage:delete',
+        PLUGIN_NAME,
+        async (_ctx, { key }) => {
+          if (typeof key !== 'string' || key.length === 0) {
+            throw new PluginError({
+              code: 'invalid-payload',
+              plugin: PLUGIN_NAME,
+              message: 'key is required',
+            });
+          }
+          const result = await db!
+            .deleteFrom('storage_postgres_v1_kv')
+            .where('key', '=', key)
+            .executeTakeFirst();
+          return { deleted: Number(result.numDeletedRows ?? 0) };
+        },
+        { returns: StorageDeleteOutputSchema },
       );
     },
   };

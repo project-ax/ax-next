@@ -174,3 +174,83 @@ describe('@ax/storage-postgres storage:list-prefix', () => {
     ).rejects.toMatchObject({ code: 'invalid-payload' });
   });
 });
+
+describe('@ax/storage-postgres storage:delete', () => {
+  it('deletes exactly the matching key, unlike storage:delete-prefix on the same key', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx();
+
+    // First half: storage:delete only ever touches the exact key — a key
+    // that merely extends it ('k:abcd' extends 'k:abc') must survive.
+    await h.bus.call('storage:set', ctx, { key: 'k:abc', value: new Uint8Array([1]) });
+    await h.bus.call('storage:set', ctx, { key: 'k:abcd', value: new Uint8Array([2]) });
+
+    const delResult = await h.bus.call<{ key: string }, { deleted: number }>(
+      'storage:delete',
+      ctx,
+      { key: 'k:abc' },
+    );
+    expect(delResult).toEqual({ deleted: 1 });
+
+    const gotAbc = await h.bus.call<{ key: string }, { value: Uint8Array | undefined }>(
+      'storage:get',
+      ctx,
+      { key: 'k:abc' },
+    );
+    expect(gotAbc.value).toBeUndefined();
+
+    const gotAbcd = await h.bus.call<{ key: string }, { value: Uint8Array | undefined }>(
+      'storage:get',
+      ctx,
+      { key: 'k:abcd' },
+    );
+    expect(gotAbcd.value).toBeDefined();
+    expect(Array.from(gotAbcd.value!)).toEqual([2]);
+
+    // Second half (contrast, re-seeded): storage:delete-prefix on the SAME
+    // exact key destroys the row that merely extends it too — this is the
+    // unsafe behavior storage:delete exists to avoid.
+    await h.bus.call('storage:set', ctx, { key: 'k:abc', value: new Uint8Array([1]) });
+
+    const prefixDelResult = await h.bus.call<{ prefix: string }, { deleted: number }>(
+      'storage:delete-prefix',
+      ctx,
+      { prefix: 'k:abc' },
+    );
+    expect(prefixDelResult.deleted).toBe(2);
+
+    const gotAbcdAfterPrefixDelete = await h.bus.call<
+      { key: string },
+      { value: Uint8Array | undefined }
+    >('storage:get', ctx, { key: 'k:abcd' });
+    expect(gotAbcdAfterPrefixDelete.value).toBeUndefined();
+  });
+
+  it('deleting an absent key returns { deleted: 0 } and throws nothing', async () => {
+    const h = await makeHarness();
+    const result = await h.bus.call<{ key: string }, { deleted: number }>(
+      'storage:delete',
+      h.ctx(),
+      { key: 'nope' },
+    );
+    expect(result).toEqual({ deleted: 0 });
+  });
+
+  it('rejects empty key with invalid-payload and deletes nothing', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    await h.bus.call('storage:set', ctx, { key: 'survivor', value: new Uint8Array([7]) });
+
+    await expect(h.bus.call('storage:delete', ctx, { key: '' })).rejects.toMatchObject({
+      code: 'invalid-payload',
+    });
+
+    const got = await h.bus.call<{ key: string }, { value: Uint8Array | undefined }>(
+      'storage:get',
+      ctx,
+      { key: 'survivor' },
+    );
+    expect(got.value).toBeDefined();
+    expect(Array.from(got.value!)).toEqual([7]);
+  });
+});

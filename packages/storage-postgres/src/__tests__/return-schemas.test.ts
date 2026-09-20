@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  StorageDeleteOutputSchema,
   StorageDeletePrefixOutputSchema,
   StorageGetOutputSchema,
   StorageListPrefixOutputSchema,
@@ -40,5 +41,13 @@ describe('storage-postgres return schemas', () => {
 
   it('storage:delete-prefix rejects a non-number deleted', () => {
     expect(StorageDeletePrefixOutputSchema.safeParse({ deleted: '4' }).success).toBe(false);
+  });
+
+  it('storage:delete round-trips', () => {
+    expect(StorageDeleteOutputSchema.parse({ deleted: 1 })).toEqual({ deleted: 1 });
+  });
+
+  it('storage:delete rejects a non-number deleted', () => {
+    expect(StorageDeleteOutputSchema.safeParse({ deleted: '1' }).success).toBe(false);
   });
 });

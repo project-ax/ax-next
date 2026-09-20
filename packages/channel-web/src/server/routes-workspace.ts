@@ -3894,7 +3894,22 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         // The filter is SHARED with the SSE replay (grant-declines.ts) — two
         // copies of the comparison is how the two paths drift apart.
         grants: (
-          await withoutDeclinedGrants(bus, initCtx, userId, rows)
+          await withoutDeclinedGrants(bus, initCtx, userId, rows, {
+            // AND THIS READ IS THE ONE THAT PRUNES (TASK-482). `rows` came
+            // from `pendingGrantsForUser`, which is every pending grant this
+            // person has across every conversation — the only set against
+            // which "this marker is not suppressing anything" means "this
+            // marker is dead". The SSE replay sees ONE conversation and so
+            // must never do this.
+            //
+            // The expression, rather than a bare `true`, is what makes the
+            // claim honest: with no buffer `rows` is the `[]` above, which is
+            // a statement about this handler's wiring and not about what is
+            // pending. Belt and braces today — the empty-list short-circuit
+            // inside already declines to prune an empty set — and the braces
+            // are the half that survives someone revisiting the belt.
+            reclaimAgainstCompleteSet: buffer !== undefined,
+          })
         ).map((g) => ({
           conversationId: g.conversationId,
           agentId: g.agentId,
