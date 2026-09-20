@@ -2485,11 +2485,16 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * record. That is the route's standing rule — "we don't know" must never
    * render as "it's busy" — and a restart is the case that proves it, because
    * nothing survives one still running.
+   *
+   * THE LINE IS THE WHOLE TEST, and `status` is deliberately not re-checked
+   * beside it: `readActivity` is the one producer of this value and carries a
+   * null line on every branch that is not `ok` (its own tests pin that, and so
+   * does "reports resting when the activity read FAILS"). A second condition
+   * that no input can falsify reads as a guard and is really dead code — the
+   * kind a mutant battery cannot kill, which is how it was found.
    */
   function deriveState(activity: AgentRailData['activity']): AgentRunState {
-    return activity.status === 'ok' && activity.activity !== null
-      ? 'working'
-      : 'resting';
+    return activity.activity !== null ? 'working' : 'resting';
   }
 
   /**
