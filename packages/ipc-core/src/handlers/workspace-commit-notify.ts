@@ -333,6 +333,14 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
     // runner reverts exactly this file to its baseline and keeps the rest of
     // the turn's work (TASK-287) — which also means the next turn's re-stage
     // cannot re-submit it and wedge the agent (B1).
+    //
+    // `discardPaths` becomes revert targets INSIDE the sandbox, so the
+    // pre-apply branch below re-checks that a subscriber only named paths we
+    // actually sent it. This branch needs no such check and deliberately has
+    // none: `findRunnerImmutableViolations` returns members of a fixed set in
+    // @ax/core, never a caller-chosen string, so what goes out here (and into
+    // the log line, and into the reason the agent reads) can only ever be that
+    // literal. Nothing the runner supplies reaches any of the three.
     const immutableHits = findRunnerImmutableViolations(allChanges);
     if (immutableHits.length > 0) {
       ctx.logger.warn('workspace_runner_immutable_refused', {
