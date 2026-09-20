@@ -439,7 +439,10 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
     <div className="flex flex-col gap-4 max-w-2xl">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h3 className="text-sm font-medium text-foreground">Connectors</h3>
+          {/* `h2` under the pane title's `h1` (TASK-446) — this and the two
+              site panels at the bottom of the tab are the tab's three top-level
+              sections; the shelves inside each one are `h3`. */}
+          <h2 className="text-sm font-medium text-foreground">Connectors</h2>
           <p className="text-xs text-muted-foreground">
             Services your assistant can reach. Each one bundles what it needs —
             a key, the data it talks to — behind a single name.
@@ -478,9 +481,9 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
           is at least one pending draft. */}
       {proposed.length > 0 && (
         <section className="flex flex-col gap-3.5">
-          <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
             Proposed by your assistant ({proposed.length})
-          </h4>
+          </h3>
           {proposed.map((d) => (
             <div key={d.connectorId} data-testid={`proposed-connector-${d.connectorId}`}>
               <RoleCard
@@ -515,9 +518,9 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
       {/* Connected shelf */}
       {connectors !== null && list.length > 0 && (
         <section className="flex flex-col gap-3.5">
-          <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
             Connected ({connectedList.length})
-          </h4>
+          </h3>
           {connectedList.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               Nothing connected yet — connect a service from Available below.
@@ -531,9 +534,9 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
       {/* Available shelf */}
       {connectors !== null && list.length > 0 && (
         <section className="flex flex-col gap-3.5 pt-1">
-          <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
             Available ({availableList.length})
-          </h4>
+          </h3>
           {availableList.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               Nothing left to connect.

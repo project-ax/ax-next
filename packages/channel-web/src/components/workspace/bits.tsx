@@ -408,11 +408,27 @@ function grantedDay(iso: string): string {
   return new Date(at).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
 }
 
+/**
+ * The workspace surface's one section heading — "Right now", "Granted by you",
+ * "Previous conversations", the Memory tiers, the Files shelves.
+ *
+ * AN `h3`, NOT A `div` (TASK-446). Every use of this sits one level inside a
+ * region that `AgentView` heads with an `h2` — a tab panel or the rail — so the
+ * level is fixed by where the component is allowed to appear, not guessed per
+ * call site. That is also why there is no `level` prop: a caller free to pick
+ * its own number is how a tree acquires an `h2` that skips to an `h4`, and the
+ * one honest alternative (a context-derived level) would be machinery for a
+ * surface that has exactly one depth.
+ *
+ * The typography is unchanged — Tailwind's preflight strips the browser's
+ * heading font-size, weight and margin, so this renders byte-for-byte as it
+ * did as a `div`.
+ */
 export function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="mb-2.5 mt-6 text-[11.5px] font-medium text-muted-foreground first:mt-0">
+    <h3 className="mb-2.5 mt-6 text-[11.5px] font-medium text-muted-foreground first:mt-0">
       {children}
-    </div>
+    </h3>
   );
 }
 
