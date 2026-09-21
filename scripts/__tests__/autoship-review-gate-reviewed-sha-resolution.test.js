@@ -272,7 +272,7 @@ const VALUE_FILE = join(WORKDIR, 'reviewed-sha-value');
  * executes is caught even if the delta it produced happens to look right.
  */
 const CANARIES = ['PWNED', 'PWNED_HEREDOC', 'PWNED_BACKTICK', 'PWNED_MULTILINE'];
-const CANARY_DIRS = () => [CLONE, STALE_CLONE, WORKDIR, process.cwd(), REPO_ROOT];
+const CANARY_DIRS = () => [CLONE, STALE_CLONE, WORKDIR];
 
 function sweepCanaries() {
   const found = [];
@@ -494,6 +494,14 @@ function runGate(shell, reviewedSha, { cwd = CLONE, deliver = 'file', script = q
 const FULL_SHA = /^[0-9a-f]{40}$/;
 
 // ---------------------------------------------------------------------------------
+
+describe('canary cleanup stays inside its owned fixture', () => {
+  it('never scans the checkout or process working directory', () => {
+    expect(CANARY_DIRS()).toEqual([CLONE, STALE_CLONE, WORKDIR]);
+    expect(CANARY_DIRS()).not.toContain(REPO_ROOT);
+    expect(CANARY_DIRS()).not.toContain(process.cwd());
+  });
+});
 
 describe('the Q2 block is where this guard thinks it is (TASK-479)', () => {
   it('extracts exactly one post-review-delta block from the skill', () => {
