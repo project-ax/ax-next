@@ -253,10 +253,39 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           );
 
           const result = requireEngineResult(raw, MEMORY_RECALL_HOOK, FACTS_RECALL_HOOK);
-          const statements = Array.isArray(result.statements) ? result.statements : [];
+
+          // A malformed `statements` is an ERROR, not an empty memory — the
+          // same call `requireEngineResult` just made one line up, and for the
+          // same reason. Coercing a non-array to `[]` here would render "the
+          // engine answered nonsense" and "you have no memories" identically
+          // to a person and to a model, and one of them is a lie. Only
+          // reachable through an engine contract violation, which is exactly
+          // when a loud failure is worth more than a plausible one.
+          //
+          // `undefined` is NOT tolerated: `statements` is the answer. That is
+          // the asymmetry with `degraded` below, which is a signal ABOUT the
+          // answer and whose absence honestly means "nothing was degraded".
+          if (!Array.isArray(result.statements)) {
+            throw new PluginError({
+              code: 'invalid-return',
+              plugin: PLUGIN_NAME,
+              hookName: MEMORY_RECALL_HOOK,
+              message: `${FACTS_RECALL_HOOK} returned a non-array statements; memory cannot report an empty answer for a store whose response it could not read`,
+            });
+          }
+          // A `degraded` that is present but not an array is malformed for the
+          // same reason. Absent is fine and means "nothing was degraded".
+          if (result.degraded !== undefined && !Array.isArray(result.degraded)) {
+            throw new PluginError({
+              code: 'invalid-return',
+              plugin: PLUGIN_NAME,
+              hookName: MEMORY_RECALL_HOOK,
+              message: `${FACTS_RECALL_HOOK} returned a non-array degraded; a degradation signal we cannot read is not the same as no degradation`,
+            });
+          }
 
           return {
-            statements: statements.map(toMemoryStatement),
+            statements: result.statements.map(toMemoryStatement),
             // Verbatim. Not re-derived, not re-ordered, not filtered, not
             // "corrected" — including the asymmetry where an empty store with
             // no providers raises `'semantic'` but not `'ranking'` (embedding
@@ -264,7 +293,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             // asymmetry is pinned by an engine contract case; a product layer
             // that normalized it would be overwriting a measurement with an
             // assumption.
-            degraded: Array.isArray(result.degraded) ? [...result.degraded] : [],
+            degraded: result.degraded === undefined ? [] : [...result.degraded],
           };
         },
       );

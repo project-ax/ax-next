@@ -184,6 +184,38 @@ describe('@ax/memory — degraded passes through untouched', () => {
     );
     expect(out.degraded).toEqual([]);
   });
+
+  // Absent and malformed are NOT the same thing. Absent honestly means
+  // "nothing was degraded"; a value we cannot read means we do not know
+  // whether anything was, and answering `[]` would state the opposite.
+  it.each([['a string', 'semantic'], ['an object', { semantic: true }], ['null', null]])(
+    'throws rather than reporting no degradation when degraded is %s',
+    async (_label, degraded) => {
+      const { bus } = await busWithEngine({ recall: { statements: [], degraded } });
+      await expect(
+        bus.call<Record<string, never>, MemoryRecallOutput>('memory:recall', ctx(), {}),
+      ).rejects.toThrow(/non-array degraded/);
+    },
+  );
+});
+
+// A malformed answer is an ERROR, not an empty memory. "No facts" and "could
+// not read the facts" render identically to a person and to a model, and one
+// of them is a lie — the same call `requireEngineResult` makes for a null
+// response, applied to a response that is non-null but nonsense. Before this,
+// every case below silently answered "you have no memories".
+describe('@ax/memory — a malformed statements is an error, not an empty memory', () => {
+  it.each([
+    ['omitted', {}],
+    ['null', { statements: null }],
+    ['a string', { statements: 'nope' }],
+    ['an object', { statements: { 0: { id: 'a' } } }],
+  ])('memory:recall throws when statements is %s', async (_label, recall) => {
+    const { bus } = await busWithEngine({ recall });
+    await expect(
+      bus.call<Record<string, never>, MemoryRecallOutput>('memory:recall', ctx(), {}),
+    ).rejects.toThrow(/non-array statements/);
+  });
 });
 
 describe('@ax/memory — boot', () => {
