@@ -1559,7 +1559,16 @@ describeIfHelm('ax-next chart: a quoted boolean cannot flip a gate (TASK-504)', 
     ]);
     expect(r.status, `helm rendered ${path}="false" instead of refusing it`).not.toBe(0);
     // helm's own words, not ours — a comment quoting this cannot satisfy it.
-    expect(r.stderr).toContain(`${path}: Invalid type. Expected: boolean, given: string`);
+    // Two shapes, because helm swapped JSON-schema libraries in 3.16: older
+    // helm says `a.b: Invalid type. Expected: boolean, given: string`, newer
+    // says `at '/a/b': got string, want boolean`. Both name THIS path and the
+    // expected type, and CI (3.21) and a dev box (3.13) disagree about which.
+    const dotted = `${path}: Invalid type. Expected: boolean, given: string`;
+    const pointer = `at '/${path.split('.').join('/')}': got string, want boolean`;
+    expect(
+      r.stderr.includes(dotted) || r.stderr.includes(pointer),
+      `helm refused ${path}="false" but never named it as a bad boolean:\n${r.stderr}`,
+    ).toBe(true);
   });
 
   // ── Layer 2: the ax-next.bool helper, with the schema out of the way ───────
