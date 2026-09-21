@@ -267,11 +267,19 @@ function decodeJsonObject(text: string): Record<string, unknown> | undefined {
 /**
  * A short, SAFE description of a value's shape for a repair message.
  *
- * Shape only — never the value. The repair message is built from model output
- * and goes back into a model prompt, so echoing a string's contents here
- * would be a second injection channel wearing an error message's clothes. The
- * one place the reply text IS echoed is `buildRepairPrompt`'s explicit,
- * length-capped "your previous reply" block, where it is labelled as such.
+ * Shape, never the value. The `detail` this builds goes to TWO sinks — back
+ * into a model prompt (`buildRepairPrompt`) and into the observer's failure
+ * log — so echoing a string's contents here would be a second injection
+ * channel wearing an error message's clothes. The one place the reply text IS
+ * echoed is `buildRepairPrompt`'s explicit, length-capped "your previous
+ * reply" block, where it is labelled as such.
+ *
+ * ⚠ **Object KEY NAMES are model-chosen**, which is the one place a value
+ * could sneak into a "shape" description: a reply of
+ * `{"facts": {"IGNORE PREVIOUS INSTRUCTIONS AND …": 1}}` would otherwise put
+ * that sentence in both sinks. Hence {@link safeKey} — the key is truncated
+ * and reduced to an identifier-ish charset, which is all a key name has to be
+ * for the diagnostic to do its job.
  */
 function describeShape(raw: unknown): string {
   if (raw === null || raw === undefined) return String(raw);
@@ -279,8 +287,21 @@ function describeShape(raw: unknown): string {
   if (typeof raw === 'object') {
     const keys = Object.keys(raw as Record<string, unknown>);
     return keys.length > 0
-      ? `an object with keys ${keys.slice(0, 5).join(', ')}`
+      ? `an object with keys ${keys.slice(0, 5).map(safeKey).join(', ')}`
       : 'an empty object';
   }
   return typeof raw;
+}
+
+/**
+ * A model-chosen key name, reduced to something that cannot carry a sentence.
+ *
+ * Everything outside `[A-Za-z0-9_.-]` becomes `?` — so whitespace, newlines
+ * and punctuation all collapse — and the result is capped at 32 characters.
+ * A real field name (`subject`, `validStart`, `network`) survives unchanged,
+ * which is the only case the diagnostic exists for.
+ */
+function safeKey(key: string): string {
+  const reduced = key.replace(/[^A-Za-z0-9_.-]/g, '?');
+  return reduced.length > 32 ? `${reduced.slice(0, 32)}…` : reduced;
 }
