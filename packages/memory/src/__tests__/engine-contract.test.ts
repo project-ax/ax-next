@@ -111,17 +111,22 @@ describe('@ax/memory — what actually goes down the wire', () => {
     expect(seen[0]!.input).not.toHaveProperty('batchKey');
   });
 
-  it('sends NO slot — slot derivation is a later card, and no slot is the safe direction', async () => {
+  it('sends NO slot for a relation the normalizer does not map — no slot is the safe direction', async () => {
     const { bus, seen } = await busWithEngine({ record: { records: [{ id: 'x' }] } });
+    // `r` is not in the synonym table, and the normalizer is the table alone
+    // (TASK-489) — there is no nearest-neighbour behind it to guess with.
     await bus.call('memory:remember', ctx(), { about: 'a', relation: 'r', value: 'v' });
     const record = seen[0]!.input as { statements: Array<Record<string, unknown>> };
     // A no-slot row is stored, retrievable and INERT: it closes nothing and
     // nothing closes it. That is under-closing, the measured baseline and the
     // safe direction — a false positive closes a true fact. It is NOT
     // `PENDING_SLOT` either: pending means "the normalizer could not derive
-    // one yet" and raises `degraded: ['pending']`, which would be a flag
-    // about a component that does not exist to drain it. Both decisions
-    // belong to the normalizer card.
+    // one yet", which cannot happen when derivation is a synchronous table
+    // lookup, and it would raise `degraded: ['pending']` — a flag about a
+    // component that does not exist to drain it.
+    //
+    // The mapped case, and the `slot` this same payload carries when the
+    // relation IS in the table, are in `slot-wiring.test.ts`.
     expect(record.statements[0]).not.toHaveProperty('slot');
   });
 

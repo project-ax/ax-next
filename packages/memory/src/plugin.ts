@@ -10,6 +10,7 @@ import {
 
 import { PLUGIN_NAME } from './plugin-name.js';
 import { resolveOwnerUserId } from './owner.js';
+import { deriveSlot } from './slots.js';
 import { rewriteSpeaker } from './subject.js';
 import {
   NO_CREDENTIAL_EVENT,
@@ -21,6 +22,12 @@ import {
 } from './failure.js';
 import { runObserver, type ObserverRecordInput, type ObserverResult } from './observer.js';
 import type { UntrustedMessage } from './transcript.js';
+import {
+  registerSystemPromptAugment,
+  RULES_READ_HOOK,
+  SYSTEM_PROMPT_AUGMENT_HOOK,
+  type MemoryBlockConfig,
+} from './augment.js';
 import {
   DEFAULT_RECALL_LIMIT,
   type MemoryForgetInput,
@@ -158,6 +165,11 @@ export interface MemoryPluginConfig {
    * by the time this is called.
    */
   onObserverDetached?: (work: Promise<void>) => void;
+  /**
+   * Sizing for the always-injected block (design §4.1). Every field defaults;
+   * see `augment.ts`'s `DEFAULTS`.
+   */
+  block?: MemoryBlockConfig;
 }
 
 const DEFAULT_MAX_RECALL_LIMIT = 100;
@@ -265,7 +277,12 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: PLUGIN_VERSION,
-      registers: [MEMORY_RECALL_HOOK, MEMORY_REMEMBER_HOOK, MEMORY_FORGET_HOOK],
+      registers: [
+        MEMORY_RECALL_HOOK,
+        MEMORY_REMEMBER_HOOK,
+        MEMORY_FORGET_HOOK,
+        SYSTEM_PROMPT_AUGMENT_HOOK,
+      ],
       // Hard dependencies, all three: this plugin has nothing to fall back
       // on. A memory surface with no store behind it cannot degrade into
       // anything honest — it can only answer "no memories" to a question it
@@ -284,17 +301,37 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
       // Failing the boot instead would mean a CI host, a canary or an
       // air-gapped install with no LLM provider could not load `@ax/memory`
       // at all.
+      //
+      // The human tier is a SOFT dependency too, and the distinction is
+      // deliberate. `memory:rules:*` stays the shared contract across memory
+      // implementations (design §10.4) but the provider is not part of this
+      // plugin, so a preset can legitimately load `@ax/memory` without one —
+      // and a hard `calls` entry would turn that configuration into a boot
+      // failure. Absent, the injected block simply has no Rules section. A
+      // provider that THROWS is a different story and is not swallowed; see
+      // `readRulesBody`.
       optionalCalls: [
         {
           hook: memoryOpsHook,
           degradation:
             'no memory is extracted from conversations at chat:end; memory:remember and memory:forget are unaffected, and every skipped turn emits memory_observer_failed',
         },
+        {
+          hook: RULES_READ_HOOK,
+          degradation:
+            "the always-injected memory block renders no '## Rules From Your User' section; the person's own standing instructions are not in the prompt, and nothing else changes",
+        },
       ],
       subscribes: [CHAT_END_HOOK],
     },
 
     init({ bus }: { bus: HookBus }) {
+      // ---------------------------------------------------------------
+      // system-prompt:augment — the always-injected block (design §4.1).
+      // A `call`, not a `fire`: see `registerSystemPromptAugment`.
+      // ---------------------------------------------------------------
+      registerSystemPromptAugment(bus, FACTS_RECALL_HOOK, config.block ?? {});
+
       // ---------------------------------------------------------------
       // memory:recall — the read path. Provenance: read.
       // ---------------------------------------------------------------
@@ -432,6 +469,12 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           // default, and the default is unambiguous by construction.
           const when = input.when ?? new Date().toISOString();
 
+          // Derived here, in the product layer, not in the engine: the engine
+          // takes a slot it is given (design §3.3/§3.5) and has no vocabulary
+          // of its own. Cannot throw and cannot reach a network — see
+          // `deriveSlot`.
+          const slot = deriveSlot(relation);
+
           const raw = await bus.call<unknown, EngineRecordOutput | null>(
             FACTS_RECORD_HOOK,
             ctx,
@@ -440,28 +483,29 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
               // fire twice on the same dialogue; a person pressing "remember"
               // twice means it twice, and dedup here would silently discard
               // the second one.
-              //
-              // And no `slot`. Slot derivation is the normalizer's job and
-              // the normalizer is a later card, so a statement recorded here
-              // is INERT for supersession — it closes nothing and nothing
-              // closes it, exactly like every other no-slot row. That is
-              // under-closing: the measured baseline, and the safe direction,
-              // because a false positive (`visited` -> `lives_in`) closes a
-              // true fact while a false negative merely leaves two.
-              //
-              // Not `PENDING_SLOT` either, though it would behave identically
-              // for closure. Pending additionally raises `degraded:
-              // ['pending']` on every recall, and a flag about a component
-              // that does not exist to drain it is noise rather than a signal
-              // — the same call TASK-422 made when it reserved `'semantic'`
-              // and `'ranking'` without raising them until the channels that
-              // could degrade existed.
               statements: [
                 {
                   about: rewriteSpeaker(about, ownerUserId),
                   relation,
                   value,
                   when,
+                  // The derived supersession key. OMITTED, not nulled, when
+                  // the relation has no slot: `FactStatementInput.slot` is
+                  // optional and absent means "no slot" — stored, retrievable,
+                  // inert. Sending `slot: null` would be a different (and
+                  // unsupported) claim.
+                  //
+                  // Most relations land here with no slot and that is the
+                  // measured baseline, not a gap: a false positive
+                  // (`visited` -> `lives_in`) CLOSES a true fact and no read
+                  // path recovers it, while a false negative merely leaves two
+                  // rows. See `slots.ts` for the rung-0 numbers that killed the
+                  // embedding half.
+                  //
+                  // Never `PENDING_SLOT` either — and here it is unreachable
+                  // rather than merely declined, because `deriveSlot` is a
+                  // synchronous table lookup with no producer to be unavailable.
+                  ...(slot !== null ? { slot } : {}),
                   // Hardcoded, and this line IS the provenance rule: `human`
                   // because this is the `memory:remember` hook, not because
                   // anybody asked for it. Nothing reachable from a payload

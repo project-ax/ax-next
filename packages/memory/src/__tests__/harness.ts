@@ -210,3 +210,48 @@ export async function engineRecall(
 }> {
   return bus.call('memory:facts:recall', ctx, input);
 }
+
+/**
+ * Write rows straight into the engine, bypassing `@ax/memory`'s product hooks.
+ *
+ * The injected block (design §4.1) reads `slot`, `conversationId` and
+ * `provenance`, and `memory:remember` deliberately sets none of them — it
+ * sends no slot, and it hardcodes `provenance: 'human'`. The block's fixtures
+ * therefore cannot be built through the product surface at all, so they are
+ * recorded here the way the observer and the normalizer will record them.
+ */
+export async function engineRecord(
+  bus: HookBus,
+  ctx: AgentContext,
+  statements: Array<{
+    about: string;
+    relation: string;
+    value: string;
+    when: string;
+    slot?: string;
+    provenance?: 'extracted' | 'agent' | 'human';
+    ownerUserId?: string;
+    conversationId?: string;
+  }>,
+): Promise<{ records: Array<{ id: string }> }> {
+  return bus.call('memory:facts:record', ctx, { statements });
+}
+
+/**
+ * Register a stand-in `memory:rules:read`.
+ *
+ * The human tier's provider is `@ax/memory-strata` today and is not part of
+ * this plugin (design §10.4 keeps `memory:rules:*` a shared contract), so the
+ * block reaches it through the bus. A test that wants a Rules section
+ * registers this; a test that wants the no-provider case simply does not.
+ */
+export function registerRulesStub(
+  bus: HookBus,
+  body: string | (() => Promise<string>),
+): void {
+  bus.registerService<{ agentId: string }, { body: string }>(
+    'memory:rules:read',
+    '@ax/test-rules-stub',
+    async () => ({ body: typeof body === 'string' ? body : await body() }),
+  );
+}

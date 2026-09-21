@@ -11,9 +11,18 @@ afterEach(async () => {
 });
 
 describe('@ax/memory — manifest', () => {
-  it('registers EXACTLY the three caller-facing hooks', () => {
+  it('registers EXACTLY the caller-facing hooks plus the injected block', () => {
     const { manifest } = createMemoryPlugin();
-    expect(manifest.registers).toEqual(['memory:recall', 'memory:remember', 'memory:forget']);
+    expect(manifest.registers).toEqual([
+      'memory:recall',
+      'memory:remember',
+      'memory:forget',
+      // TASK-491, design 4.1. A SINGLE-provider service hook, which is what
+      // makes `@ax/memory` and `@ax/memory-strata` mutually exclusive in a
+      // preset -- 10.4's "one memory plugin per preset" enforced by the bus
+      // rather than by a convention.
+      'system-prompt:augment',
+    ]);
   });
 
   it('declares the engine hooks it calls, and nothing else', () => {
@@ -31,10 +40,12 @@ describe('@ax/memory — manifest', () => {
     expect(manifest.subscribes).toEqual(['chat:end']);
   });
 
-  it('actually puts those three on the bus and no fourth', async () => {
+  it('actually puts exactly those on the bus and no fifth', async () => {
     const bus = new HookBus();
     await createMemoryPlugin().init({ bus, config: {} });
-    expect(bus.listServices()).toEqual(['memory:recall', 'memory:remember', 'memory:forget']);
+    expect([...bus.listServices()].sort()).toEqual(
+      ['memory:recall', 'memory:remember', 'memory:forget', 'system-prompt:augment'].sort(),
+    );
   });
 
   it('names the engine as a HARD dependency — there is no honest fallback', () => {
@@ -58,13 +69,19 @@ describe('@ax/memory — manifest', () => {
     // observer is skipped and everything a person writes explicitly still
     // works, so failing the boot would lock `@ax/memory` out of any host
     // without one — a CI host, a canary, an air-gapped install.
-    expect(manifest.optionalCalls?.map((oc) => oc.hook)).toEqual(['llm:call:openrouter']);
+    expect(manifest.optionalCalls?.map((oc) => oc.hook)).toEqual([
+      'llm:call:openrouter',
+      'memory:rules:read',
+    ]);
     expect(manifest.optionalCalls?.[0]?.degradation).toContain('chat:end');
   });
 
   it('derives the provider hook from the configured model ref, not a constant', () => {
     const { manifest } = createMemoryPlugin({ memoryOpsModel: 'anthropic/claude-haiku-4-5' });
-    expect(manifest.optionalCalls?.map((oc) => oc.hook)).toEqual(['llm:call:anthropic']);
+    expect(manifest.optionalCalls?.map((oc) => oc.hook)).toEqual([
+      'llm:call:anthropic',
+      'memory:rules:read',
+    ]);
   });
 
   it('refuses a model ref with no provider AT CONSTRUCTION, not per turn', () => {
@@ -72,6 +89,18 @@ describe('@ax/memory — manifest', () => {
     // starts working, so it is a boot-time refusal rather than a per-turn
     // degradation that would look like "memory is just quiet today".
     expect(() => createMemoryPlugin({ memoryOpsModel: 'glm-5.3-flash' })).toThrow();
+  });
+
+  // The human tier is the ONE soft dependency, and the asymmetry is the
+  // point: `memory:rules:*` stays a shared contract across memory
+  // implementations (§10.4) but the provider is not part of this plugin, so a
+  // preset may legitimately load `@ax/memory` without one. A hard `calls`
+  // entry would turn that configuration into a boot failure.
+  it('names the human tier as the one OPTIONAL dependency, with its degradation spelled out', () => {
+    const { manifest } = createMemoryPlugin();
+    expect(manifest.optionalCalls).toHaveLength(2);
+    expect(manifest.optionalCalls![1]!.hook).toBe('memory:rules:read');
+    expect(manifest.optionalCalls![1]!.degradation).toMatch(/Rules From Your User/);
   });
 });
 

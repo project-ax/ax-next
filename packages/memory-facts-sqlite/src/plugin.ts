@@ -187,10 +187,71 @@ function validateRecordInput(input: RecordInput): ValidatedRecordInput {
   };
 }
 
+/**
+ * Validate `RecallInput.slots` (design §4.1's profile filter).
+ *
+ * Three refusals, each because the alternative is a WRONG ANSWER the caller
+ * cannot detect — the same standard the empty-`query` and empty-`ownerUserId`
+ * rejections above are held to:
+ *
+ *  - a non-array, or an element that is not a non-empty string: `''` is a
+ *    perfectly good TEXT value, and silently dropping it would answer a
+ *    narrower filter than the caller wrote;
+ *  - an EMPTY array: it reads as "match nothing", and a caller who typed it
+ *    meant "do not filter" — two opposite readings of the same payload, so
+ *    neither is guessed;
+ *  - `slots` together with `query`: ranked retrieval fuses three channels and
+ *    this filter is not plumbed through them, so honouring the `query` and
+ *    dropping the `slots` would return an unfiltered ranked set dressed up as
+ *    a filtered one.
+ *
+ * Shared by both this backend and the postgres twin by CONVENTION rather than
+ * by import — `@ax/memory-facts-contract` carries `vitest` as a runtime
+ * dependency and eslint blocks `@ax/*` value imports from plugin code, so the
+ * contract suite's parity cases are what pin the two copies together (the
+ * precedent `PENDING_SLOT` already set).
+ */
+function validateSlotsFilter(input: RecallInput): void {
+  if (input.slots === undefined) return;
+  if (!Array.isArray(input.slots)) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'slots must be an array of non-empty strings when set',
+    });
+  }
+  if (input.slots.length === 0) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message:
+        'slots must not be empty: an empty list reads as "match nothing", and omitting the field is how you say "do not filter"',
+    });
+  }
+  for (const slot of input.slots) {
+    if (!isNonEmptyString(slot)) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        message: 'slots[] entries must be non-empty strings',
+      });
+    }
+  }
+  if (input.query !== undefined) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message:
+        'slots cannot be combined with query: the slot filter is not plumbed through the ranked-retrieval channels, and returning an unfiltered ranked set would answer a filter the caller cannot see was ignored',
+    });
+  }
+}
+
 function validateRecallInput(input: RecallInput): {
   about?: string;
   query?: string;
   ownerUserId?: string;
+  slots?: string[];
   limit: number;
   poolSize: number;
   activeOnly: boolean;
@@ -256,10 +317,12 @@ function validateRecallInput(input: RecallInput): {
       message: 'activeOnly must be a boolean when set',
     });
   }
+  validateSlotsFilter(input);
   return {
     ...(input.about !== undefined ? { about: input.about } : {}),
     ...(input.query !== undefined ? { query: input.query } : {}),
     ...(input.ownerUserId !== undefined ? { ownerUserId: input.ownerUserId } : {}),
+    ...(input.slots !== undefined ? { slots: [...input.slots] } : {}),
     limit: Math.min(Math.floor(input.limit), MAX_LIMIT),
     // Clamped by the same ceiling as `limit`, for the same reason: this one
     // sizes the payload handed to a third-party reranker, so an unbounded
@@ -350,6 +413,13 @@ function rowToFactRecord(row: FactRow): FactRecord {
     provenance: row.provenance,
     ...(row.valid_end !== INFINITY_SENTINEL ? { until: row.valid_end } : {}),
     ...(row.closed_by !== null ? { closedBy: row.closed_by } : {}),
+    // Echoed, never re-derived. Slot derivation lives in `@ax/memory`; a
+    // reader recomputing it from `relation` would be a second copy of the
+    // mapping (Invariant 4). `PENDING_SLOT` comes back as itself.
+    ...(row.slot !== null ? { slot: row.slot } : {}),
+    // Provenance only — nothing in `RecallInput` filters or ranks by it.
+    // `@ax/memory` groups design §4.1's Recent section by it.
+    ...(row.conversation_id !== null ? { conversationId: row.conversation_id } : {}),
   };
 }
 
@@ -919,7 +989,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
         PLUGIN_NAME,
         async (ctx, input) => {
           // Validation before the store region — see `record`.
-          const { about, query, ownerUserId, limit, poolSize, activeOnly } =
+          const { about, query, ownerUserId, slots, limit, poolSize, activeOnly } =
             validateRecallInput(input);
           const agentKey = agentScopeKey(ctx);
 
@@ -970,6 +1040,17 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
             if (ownerUserId !== undefined) {
               conditions.push('owner_user_id = ?');
               params.push(ownerUserId);
+            }
+            // Slot filter in the WHERE, for the same reason the owner scope
+            // is: a profile is ≤ ~10 rows out of a tenant that may hold
+            // thousands of slot-less ones, so cutting the page first and
+            // filtering after would answer an empty profile to a person whose
+            // slot rows are simply older. `validateSlotsFilter` has already
+            // proved this is a non-empty array of non-empty strings, so the
+            // placeholder list can never be empty (`IN ()` is a syntax error).
+            if (slots !== undefined) {
+              conditions.push(`slot IN (${slots.map(() => '?').join(', ')})`);
+              params.push(...slots);
             }
             if (activeOnly) {
               conditions.push('valid_end = ?');
