@@ -136,7 +136,11 @@ function firstRealLine(block, needle) {
 // Execution harness
 // ---------------------------------------------------------------------------
 
-/** Fixture: bare origin + primary clone on main + a stub `gh` on PATH. */
+/**
+ * Fixture: bare origin + primary clone on main + a stub `gh` on PATH.
+ * `mergedHeadRefs` is what the stubbed `gh pr list --state merged` prints; pass the
+ * string 'FAIL' instead of an array to make the stub exit nonzero.
+ */
 function makeFixture(name, mergedHeadRefs = []) {
   const base = mkdtempSync(join(tmpdir(), `sweepblk-${name}-`));
   trash.push(base);
@@ -165,7 +169,9 @@ function makeFixture(name, mergedHeadRefs = []) {
   mkdirSync(bin);
   writeFileSync(
     join(bin, 'gh'),
-    `#!/bin/sh\n${mergedHeadRefs.map((r) => `echo '${r}'`).join('\n') || 'true'}\n`,
+    mergedHeadRefs === 'FAIL'
+      ? '#!/bin/sh\necho "gh: rate limit exceeded" >&2\nexit 1\n'
+      : `#!/bin/sh\n${mergedHeadRefs.map((r) => `echo '${r}'`).join('\n') || 'true'}\n`,
   );
   chmodSync(join(bin, 'gh'), 0o755);
 
@@ -255,6 +261,9 @@ describe('auto-ship §7a cleanup block: run for real', () => {
     expect(localBranches(fx.repo)).toContain(branch);
     expect(remoteBranches(fx.origin)).toContain(branch);
     expect(git(fx.repo, 'rev-parse', `origin/${branch}`)).toBe(tip);
+    // The clean-tree preserve must ALSO release the checkout, or the branch it just
+    // saved is un-resumable by the normal dispatch path.
+    expect(git(fx.repo, 'worktree', 'list')).not.toContain(wt);
   });
 
   it('case D — genuinely empty: the sweep STILL happens (branch + worktree gone)', () => {
@@ -271,6 +280,97 @@ describe('auto-ship §7a cleanup block: run for real', () => {
     expect(remoteBranches(fx.origin)).not.toContain(branch);
     expect(existsSync(wt)).toBe(false);
     expect(r.stdout).toMatch(/sweeping/);
+  });
+
+  it('sweeps a LOCKED worktree — production worktrees are all harness-locked', () => {
+    // Every agent worktree carries `locked claude agent … (pid NNNNN)`, and a single
+    // `-f` exits 128 on one. Until this test, every fixture worktree was UNLOCKED, so
+    // `remove -f -f` -> `remove -f` was a mutant that survived the whole suite while
+    // removing nothing in production — the accumulation failure §7a exists to prevent.
+    const fx = makeFixture('locked');
+    const branch = 'auto-ship/TASK-999-nothing';
+    const wt = addAgentWorktree(fx, branch);
+    git(fx.repo, 'worktree', 'lock', wt, '--reason', 'claude agent (pid 12345)');
+
+    // The premise the block's comment rests on, asserted rather than assumed.
+    const oneF = spawnSync('git', ['worktree', 'remove', '-f', wt], {
+      cwd: fx.repo,
+      encoding: 'utf8',
+    });
+    expect(oneF.status).not.toBe(0);
+    expect(oneF.stderr).toMatch(/locked/i);
+    expect(existsSync(wt)).toBe(true);
+
+    runCleanup(fx, 'TASK-999');
+
+    expect(existsSync(wt)).toBe(false);
+    expect(localBranches(fx.repo)).not.toContain(branch);
+  });
+
+  it('preserves a LOCKED worktree without losing the release step', () => {
+    const fx = makeFixture('locked-preserve');
+    const branch = 'auto-ship/TASK-455-transcript';
+    const wt = addAgentWorktree(fx, branch);
+    writeFileSync(join(wt, 'wip.ts'), 'in flight\n');
+    git(fx.repo, 'worktree', 'lock', wt, '--reason', 'claude agent (pid 12345)');
+
+    runCleanup(fx, 'TASK-455');
+
+    expect(localBranches(fx.repo)).toContain(branch);
+    expect(git(fx.repo, 'ls-tree', '-r', '--name-only', `origin/${branch}`)).toContain('wip.ts');
+    expect(existsSync(wt)).toBe(false);
+  });
+
+  it('sweeps a branch with NO worktree — local AND remote refs go', () => {
+    // A real production state, produced by this very block: the preserve path removes
+    // the worktree but keeps the branch, so the next reconcile sees it worktree-less.
+    // The gate then prints `worktree=-`, and what makes the sweep work is the
+    // `[ "$wt" = "-" ] && wt=""` normalization. Without it, `git worktree remove "-"`
+    // errors, `continue` fires, and `git branch -D` never runs — a silent no-op sweep.
+    const fx = makeFixture('bare-sweep');
+    const branch = 'auto-ship/TASK-999-nothing';
+    git(fx.repo, 'branch', branch, 'main');
+    git(fx.repo, 'push', '-q', 'origin', `${branch}:${branch}`);
+    expect(git(fx.repo, 'worktree', 'list').split('\n')).toHaveLength(1);
+
+    const r = runCleanup(fx, 'TASK-999');
+
+    expect(localBranches(fx.repo)).not.toContain(branch);
+    expect(remoteBranches(fx.origin)).not.toContain(branch);
+    expect(r.stdout).toMatch(/sweeping/);
+  });
+
+  it('a failed merged-PR lookup is LOUD, not silently preserving', () => {
+    const fx = makeFixture('gh-fail', 'FAIL');
+    const branch = 'auto-ship/TASK-999-nothing';
+    addAgentWorktree(fx, branch);
+
+    const r = runCleanup(fx, 'TASK-999');
+
+    expect(r.stderr).toMatch(/MERGED LOOKUP FAILED/);
+    // It still fails in the safe direction: a nothing-unique branch is swept anyway,
+    // because the gate — not the lookup — is what authorizes that.
+    expect(localBranches(fx.repo)).not.toContain(branch);
+  });
+
+  it('matches merged branches whole, not by substring', () => {
+    // `case " $MERGED " in *" $b "*)` is correct BECAUSE of the space padding. Drop it
+    // and `…-a` cross-matches merged `…-ab`, sweeping a branch that still holds work.
+    const fx = makeFixture('substring', ['auto-ship/TASK-500-ab']);
+    const shipped = 'auto-ship/TASK-500-ab';
+    const stillLive = 'auto-ship/TASK-500-a';
+    const liveWt = addAgentWorktree(fx, stillLive);
+    writeFileSync(join(liveWt, 'wip.ts'), 'real work\n');
+    const shippedWt = addAgentWorktree(fx, shipped);
+    writeFileSync(join(shippedWt, 'shipped.ts'), '1\n');
+    git(shippedWt, 'add', '-A');
+    git(shippedWt, 'commit', '-q', '-m', 'shipped work');
+
+    runCleanup(fx, 'TASK-500');
+
+    expect(localBranches(fx.repo)).not.toContain(shipped);
+    expect(localBranches(fx.repo)).toContain(stillLive);
+    expect(git(fx.repo, 'ls-tree', '-r', '--name-only', `origin/${stillLive}`)).toContain('wip.ts');
   });
 
   it('a MERGED PR still sweeps, despite squash-orphaned commits reading as ahead', () => {
@@ -312,6 +412,12 @@ describe('auto-ship §7a cleanup block: run for real', () => {
   // character, and `for x in $VAR` not word-splitting). The block leans on `rc=$?`
   // immediately after a command-substitution assignment and on `case` glob matching,
   // so run the two decisive outcomes under zsh as well rather than reasoning about it.
+  // …and a `runIf` skip is silent, so on CI — where a missing zsh would delete exactly
+  // the coverage this commit exists for — assert the shell is there instead.
+  it.runIf(process.env.CI)('has zsh on CI, so the parity block cannot silently vanish', () => {
+    expect(commandExists('zsh')).toBe(true);
+  });
+
   describe.runIf(commandExists('zsh'))('under zsh (the shell the Bash tool actually uses)', () => {
     it('preserves case A', () => {
       const fx = makeFixture('zsh-caseA');

@@ -1056,7 +1056,15 @@ first:
 ```bash
 # Ground truth first (see above): a SQUASH-merged branch keeps commits main cannot
 # reach forever, so without this lookup the gate preserves everything already shipped.
-MERGED=$(gh pr list --state merged --search "[$TASK_ID] in:title" --json headRefName --jq '.[].headRefName' | tr '\n' ' ')
+# A FAILED lookup is indistinguishable from "no merged PRs" in the output, and it fails
+# in the preserving direction — safe, but silent, and "this block silently accomplished
+# nothing" is the named prior incident. Say so out loud. (Not piped into `tr` directly:
+# the pipeline's status would be tr's, which always succeeds.)
+if ! MERGED_RAW=$(gh pr list --state merged --search "[$TASK_ID] in:title" --json headRefName --jq '.[].headRefName'); then
+  echo "⚠ MERGED LOOKUP FAILED (gh) — nothing will be swept as shipped this pass; already-merged branches stay. Re-run when gh works." >&2
+  MERGED_RAW=""
+fi
+MERGED=$(printf '%s' "$MERGED_RAW" | tr '\n' ' ')
 
 for b in $(git branch --list "auto-ship/$TASK_ID-*" --format '%(refname:short)'); do
   # THE GATE. Exit 0 = nothing unique here. Anything else (10 preserve, 2 error) means
