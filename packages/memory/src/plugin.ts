@@ -5,6 +5,12 @@ import { resolveOwnerUserId } from './owner.js';
 import { deriveSlot } from './slots.js';
 import { rewriteSpeaker } from './subject.js';
 import {
+  registerSystemPromptAugment,
+  RULES_READ_HOOK,
+  SYSTEM_PROMPT_AUGMENT_HOOK,
+  type MemoryBlockConfig,
+} from './augment.js';
+import {
   DEFAULT_RECALL_LIMIT,
   type MemoryForgetInput,
   type MemoryForgetOutput,
@@ -85,6 +91,11 @@ export interface MemoryPluginConfig {
    * resource question to whichever backend happens to be loaded.
    */
   maxRecallLimit?: number;
+  /**
+   * Sizing for the always-injected block (design §4.1). Every field defaults;
+   * see `augment.ts`'s `DEFAULTS`.
+   */
+  block?: MemoryBlockConfig;
 }
 
 const DEFAULT_MAX_RECALL_LIMIT = 100;
@@ -174,17 +185,43 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: PLUGIN_VERSION,
-      registers: [MEMORY_RECALL_HOOK, MEMORY_REMEMBER_HOOK, MEMORY_FORGET_HOOK],
+      registers: [
+        MEMORY_RECALL_HOOK,
+        MEMORY_REMEMBER_HOOK,
+        MEMORY_FORGET_HOOK,
+        SYSTEM_PROMPT_AUGMENT_HOOK,
+      ],
       // Hard dependencies, all three: this plugin has nothing to fall back
       // on. A memory surface with no store behind it cannot degrade into
       // anything honest — it can only answer "no memories" to a question it
       // never asked anyone. Failing at boot with `missing-service` is the
       // outcome that gets noticed.
       calls: [FACTS_RECALL_HOOK, FACTS_RECORD_HOOK, FACTS_SUPERSEDE_HOOK],
+      // The human tier is a SOFT dependency, and the distinction is
+      // deliberate. `memory:rules:*` stays the shared contract across memory
+      // implementations (design §10.4) but the provider is not part of this
+      // plugin, so a preset can legitimately load `@ax/memory` without one —
+      // and a hard `calls` entry would turn that configuration into a boot
+      // failure. Absent, the injected block simply has no Rules section. A
+      // provider that THROWS is a different story and is not swallowed; see
+      // `readRulesBody`.
+      optionalCalls: [
+        {
+          hook: RULES_READ_HOOK,
+          degradation:
+            "the always-injected memory block renders no '## Rules From Your User' section; the person's own standing instructions are not in the prompt, and nothing else changes",
+        },
+      ],
       subscribes: [],
     },
 
     init({ bus }: { bus: HookBus }) {
+      // ---------------------------------------------------------------
+      // system-prompt:augment — the always-injected block (design §4.1).
+      // A `call`, not a `fire`: see `registerSystemPromptAugment`.
+      // ---------------------------------------------------------------
+      registerSystemPromptAugment(bus, FACTS_RECALL_HOOK, config.block ?? {});
+
       // ---------------------------------------------------------------
       // memory:recall — the read path. Provenance: read.
       // ---------------------------------------------------------------
