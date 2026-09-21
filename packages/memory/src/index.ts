@@ -9,6 +9,11 @@ export {
   FACTS_SUPERSEDE_HOOK,
 } from './plugin.js';
 export { SPEAKER_SUBJECT, rewriteSpeaker } from './subject.js';
+// `SLOT_SYNONYMS` and `relationToWords` are deliberately NOT re-exported:
+// they are how `deriveSlot` is implemented, no consumer outside this package
+// exists, and the in-package tests import them from `./slots.js` directly.
+export { SLOTS, PENDING_SLOT, deriveSlot } from './slots.js';
+export type { Slot } from './slots.js';
 export { resolveOwnerUserId } from './owner.js';
 export { DEFAULT_RECALL_LIMIT } from './types.js';
 export type {
