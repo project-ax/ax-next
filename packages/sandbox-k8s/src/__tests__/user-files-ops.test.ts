@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFINED_READ_LIMITS } from '@ax/user-files-read';
 import { HookBus, makeAgentContext, PluginError, type Logger } from '@ax/core';
 import type {
@@ -130,6 +130,31 @@ describe('cleanupUserFiles (k8s one-shot rm pod)', () => {
     expect(cmd).toMatch(/rm -rf -- "\/export\/\$SUBPATH"/);
     // The one-shot pod is deleted after it completes.
     expect(api.deletes).toHaveLength(1);
+  });
+
+  it.each([1, 7, 137])('reports a cleanup pod exit of %i as a failure and still deletes it', async (exitCode) => {
+    const api = makeMockK8sApi();
+    primeTerminal(api, undefined, exitCode);
+    const { bus } = busWithNfs();
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => undefined);
+    const info = vi.spyOn(log, 'info').mockImplementation(() => undefined);
+    try {
+      await expect(
+        cleanupUserFiles(ctx(), bus, api, CONFIG, ownerFromAgentId('agent-abc', 'u1'), log),
+      ).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(
+        'user_files_cleanup_failed',
+        expect.objectContaining({
+          agentId: 'agent-abc',
+          err: expect.stringContaining(`exited code=${exitCode}`),
+        }),
+      );
+      expect(info).not.toHaveBeenCalledWith('user_files_cleanup_done', expect.anything());
+      expect(api.deletes).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+    }
   });
 
   it('CROSS-TENANT: the subPath in the rm target is EXACTLY the deleted agent id', async () => {
