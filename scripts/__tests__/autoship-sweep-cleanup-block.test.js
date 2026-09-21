@@ -116,6 +116,12 @@ describe('auto-ship §7a cleanup block: found, and it is the gated one', () => {
   });
 });
 
+/** `command -v <name>` — true when the binary is on PATH. */
+function commandExists(name) {
+  const r = spawnSync('sh', ['-c', `command -v ${name}`], { stdio: 'ignore' });
+  return r.status === 0;
+}
+
 /** Index of the first non-comment line containing `needle`, or -1. */
 function firstRealLine(block, needle) {
   const lines = block.split('\n');
@@ -173,9 +179,9 @@ function addAgentWorktree(fx, branch) {
 }
 
 /** Run the doc's cleanup block for `taskId` inside the fixture. */
-function runCleanup(fx, taskId) {
+function runCleanup(fx, taskId, shell = 'bash') {
   const [block] = cleanupBlock().hits;
-  const r = spawnSync('bash', ['-c', block], {
+  const r = spawnSync(shell, ['-c', block], {
     cwd: fx.repo,
     encoding: 'utf8',
     env: { ...process.env, TASK_ID: taskId, PATH: `${fx.bin}:${process.env.PATH}` },
@@ -298,6 +304,38 @@ describe('auto-ship §7a cleanup block: run for real', () => {
     expect(localBranches(fx.repo)).not.toContain(mine);
     expect(localBranches(fx.repo)).toContain(theirs);
     expect(existsSync(join(otherWt, 'their-wip.ts'))).toBe(true);
+  });
+
+  // The Bash tool on this machine runs ZSH, so the shell that actually executes this
+  // block in production is zsh, not bash. That difference has bitten this repo twice
+  // already (see autoship-skill-shell-hazards.test.js: a `$var:u` modifier eating a
+  // character, and `for x in $VAR` not word-splitting). The block leans on `rc=$?`
+  // immediately after a command-substitution assignment and on `case` glob matching,
+  // so run the two decisive outcomes under zsh as well rather than reasoning about it.
+  describe.runIf(commandExists('zsh'))('under zsh (the shell the Bash tool actually uses)', () => {
+    it('preserves case A', () => {
+      const fx = makeFixture('zsh-caseA');
+      const branch = 'auto-ship/TASK-455-transcript';
+      const wt = addAgentWorktree(fx, branch);
+      writeFileSync(join(wt, 'wip.ts'), 'in flight\n');
+
+      runCleanup(fx, 'TASK-455', 'zsh');
+
+      expect(localBranches(fx.repo)).toContain(branch);
+      expect(remoteBranches(fx.origin)).toContain(branch);
+      expect(git(fx.repo, 'ls-tree', '-r', '--name-only', `origin/${branch}`)).toContain('wip.ts');
+    });
+
+    it('still sweeps case D', () => {
+      const fx = makeFixture('zsh-caseD');
+      const branch = 'auto-ship/TASK-999-nothing';
+      const wt = addAgentWorktree(fx, branch);
+
+      runCleanup(fx, 'TASK-999', 'zsh');
+
+      expect(localBranches(fx.repo)).not.toContain(branch);
+      expect(existsSync(wt)).toBe(false);
+    });
   });
 
   it('keeps the worktree when the push fails — never a single-copy sweep', () => {
