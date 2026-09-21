@@ -64,7 +64,7 @@
  * a copy (CLAUDE.md invariant 4). Adding a slot here makes it appear in the
  * injected profile block; removing one stops it closing rows. The consumer that
  * renders the profile block must import this, and
- * `__tests__/slot-vocabulary.test.ts` fails if a second copy of the list appears
+ * `__tests__/slots.test.ts` fails if a second copy of the list appears
  * anywhere under `packages/`.
  *
  * What each slot means, in words — kept as documentation rather than as an
@@ -111,7 +111,7 @@ export type Slot = (typeof SLOTS)[number];
  * "could not reach the embedder" state to defer — {@link deriveSlot} answers a
  * slot or `null`. The constant is declared anyway so the one rule that outlives
  * that fact is testable: `pending` must never be reusable as a real slot, and
- * `__tests__/slot-vocabulary.test.ts` pins that it is not in {@link SLOTS}.
+ * `__tests__/slots.test.ts` pins that it is not in {@link SLOTS}.
  *
  * DUPLICATED from `@ax/memory-facts-contract`'s `PENDING_SLOT`, deliberately and
  * following the precedent `@ax/memory-facts-sqlite`'s `src/pending.ts` already
