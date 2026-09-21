@@ -50,7 +50,7 @@ import type { PhaseKind } from '@/server/types';
 import { ActivityFeed } from './ActivityFeed';
 import { AgentConversation, type ApprovalRead } from './AgentConversation';
 import { AgentFiles } from './AgentFiles';
-import { AgentMemory } from './AgentMemory';
+import { MemorySurface } from './FactsMemory';
 import { AgentRail, AgentRailContent } from './AgentRail';
 import { AgentStateLabel, AgentTile } from './bits';
 import type {
@@ -1340,7 +1340,8 @@ export function AgentView({
           )}
 
           {tab === 'memory' && (
-            <AgentMemory
+            <MemorySurface
+              agentId={agent.id}
               memory={detail.memory}
               agentName={agent.name}
               /*

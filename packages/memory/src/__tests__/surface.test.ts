@@ -33,6 +33,7 @@ describe('@ax/memory — manifest', () => {
       'memory:facts:record',
       'memory:facts:supersede',
       'tool:register',
+      'agents:resolve',
     ]);
     // The observer, and nothing else. TASK-488 asserted `[]` here with the
     // note that an unused subscription would be the half-wired surface
@@ -181,15 +182,18 @@ describe('@ax/memory — memory:recall', () => {
     await harness.remember({ about: 'acme_corp', relation: 'stage', value: 'series B' });
     const { statements } = await harness.recall({ about: 'acme_corp' });
     // `provenance` would start the argument about writing it back IN;
-    // `closedBy` leaks another statement's id into a payload.
+    // `closedBy` is forwarded only when it names a row already in the same
+    // owner-scoped page — this active row has none.
     expect(statements[0]).not.toHaveProperty('provenance');
     expect(statements[0]).not.toHaveProperty('closedBy');
     expect(Object.keys(statements[0]!).sort()).toEqual([
       'about',
+      'aboutText',
       'id',
       'relation',
       'value',
       'when',
+      'whenText',
     ]);
   });
 

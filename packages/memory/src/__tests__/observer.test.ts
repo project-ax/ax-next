@@ -10,6 +10,7 @@ import {
   ALICE,
   BOB,
   capturingLogger,
+  engineRecall,
   eventsNamed,
   makeMemoryHarness,
   type LoggedEvent,
@@ -77,8 +78,9 @@ async function chatEnd(
 async function withLlm(
   llm: MemoryHarnessOptions['llm'],
   config: Parameters<typeof makeMemoryHarness>[0] = {},
+  options: Omit<MemoryHarnessOptions, 'llm'> = {},
 ): Promise<MemoryHarness> {
-  harness = await makeMemoryHarness(config, { llm });
+  harness = await makeMemoryHarness(config, { ...options, llm });
   return harness;
 }
 
@@ -131,14 +133,15 @@ describe('the observer records what chat:end produced', () => {
     expect(call?.messages[0]?.content).toContain('I moved to Boston');
   });
 
-  it('stamps every row with the caller as owner, so nobody else can read it', async () => {
+  it('stamps every row with the caller as owner, so a foreign caller cannot reach it', async () => {
     const h = await withLlm(() => reply(extraction([fact()])));
     await chatEnd(h, { ctx: h.ctx({ conversationId: 'conv-1', userId: ALICE }) });
 
     const mine = await h.recall({ limit: 20 }, h.ctx({ userId: ALICE }));
     expect(mine.statements).toHaveLength(1);
-    const theirs = await h.recall({ limit: 20 }, h.ctx({ userId: BOB }));
-    expect(theirs.statements).toHaveLength(0);
+    await expect(
+      h.recall({ limit: 20 }, h.ctx({ userId: BOB })),
+    ).rejects.toMatchObject({ code: 'forbidden' });
   });
 
   it('records as `extracted`, so a human correction is immune to it', async () => {
@@ -303,8 +306,11 @@ describe('chat:end does not wait for the extraction', () => {
 
     // The assertion that matters: `fire` settles while the model call is
     // still blocked. If the subscriber awaited its work, this would deadlock
-    // (the gate is only released below) and the test would time out.
+    // (the gate is only released below) and the test would time out. The
+    // access resolution ahead of the provider is itself an `await`, so one
+    // macrotask lets the detached run reach the model before we look.
     await fired;
+    await new Promise((resolve) => setImmediate(resolve));
     expect(extractionStarted).toBe(true);
     expect(readRows(h.databasePath)).toHaveLength(0);
 
@@ -384,9 +390,13 @@ describe('batch semantics', () => {
     // leaves open: `batchKey` is scoped by TENANT, not by owner. Two people
     // on the same team agent can produce the same transcript, and without
     // the owner in the key the second person writes NOTHING and gets rows
-    // stamped with somebody else's owner — rows their own owner-scoped
-    // recall can never see.
-    const h = await withLlm(() => reply(extraction([fact()])));
+    // stamped with somebody else's owner — misattributed rows on an agent
+    // whose members can now all see them.
+    const h = await withLlm(
+      () => reply(extraction([fact()])),
+      {},
+      { agent: { visibility: 'team' } },
+    );
 
     await chatEnd(h, { ctx: h.ctx({ conversationId: 'shared-conv', userId: ALICE }) });
     await chatEnd(h, { ctx: h.ctx({ conversationId: 'shared-conv', userId: BOB }) });
@@ -732,6 +742,75 @@ describe('every failure path emits an event', () => {
 
 // ---------------------------------------------------------------------------
 
+describe('the observer on a shared team agent', () => {
+  it("writes under the actual caller, visible to every member", async () => {
+    const h = await withLlm(
+      () => reply(extraction([fact()])),
+      {},
+      { agent: { visibility: 'team' } },
+    );
+    await chatEnd(h, { ctx: h.ctx({ conversationId: 'conv-1', userId: BOB }) });
+
+    const rows = readRows(h.databasePath);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.owner_user_id).toBe(BOB);
+    expect(rows[0]?.about).toBe(`user:${BOB}`);
+
+    const alice = await h.recall({ limit: 20 }, h.ctx({ userId: ALICE }));
+    expect(alice.statements.map((s) => s.value)).toEqual(['Boston']);
+  });
+
+  it('a revoked member records nothing, emits a failure, and chat:end still returns', async () => {
+    const h = await withLlm(
+      () => reply(extraction([fact()])),
+      {},
+      { agent: { visibility: 'team' } },
+    );
+    h.teamMembers.delete(BOB);
+
+    await h.bus.fire('chat:end', h.ctx({ conversationId: 'conv-1', userId: BOB }), {
+      outcome: { kind: 'complete', messages: DIALOGUE },
+    });
+    await h.settleObserver();
+
+    expect(h.llmCalls).toHaveLength(0);
+    expect(readRows(h.databasePath)).toHaveLength(0);
+    expect(eventsNamed(h.logs, OBSERVER_FAILED_EVENT)).toHaveLength(1);
+  });
+
+  it('re-resolves access before recording, so revocation during a slow extraction lands before the write', async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let extractionStarted = false;
+    const h = await withLlm(
+      async () => {
+        extractionStarted = true;
+        await gate;
+        return reply(extraction([fact()]));
+      },
+      {},
+      { agent: { visibility: 'team' } },
+    );
+
+    const fired = h.bus.fire('chat:end', h.ctx({ conversationId: 'conv-1', userId: BOB }), {
+      outcome: { kind: 'complete', messages: DIALOGUE },
+    });
+    await fired;
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(extractionStarted).toBe(true);
+
+    h.teamMembers.delete(BOB);
+    release?.();
+    await h.settleObserver();
+
+    expect(h.llmCalls).toHaveLength(1);
+    expect(readRows(h.databasePath)).toHaveLength(0);
+    expect(eventsNamed(h.logs, OBSERVER_FAILED_EVENT)).toHaveLength(1);
+  });
+});
+
 /** Every row in the store, closed ones included, bypassing owner scoping. */
 function readRows(databasePath: string): Array<{
   about: string;
@@ -750,6 +829,9 @@ function readRows(databasePath: string): Array<{
 }
 
 async function countFor(h: MemoryHarness, userId: string): Promise<number> {
-  const { statements } = await h.recall({ limit: 50 }, h.ctx({ userId }));
+  const { statements } = await engineRecall(h.bus, h.ctx(), {
+    limit: 50,
+    ownerUserId: userId,
+  });
   return statements.length;
 }

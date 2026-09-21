@@ -67,6 +67,8 @@ import type {
   AgentRailData,
   CounterRow,
   Decision,
+  FactMemoryPage,
+  FactMemoryStatement,
   GrantRef,
   GrantRow,
   MemoryDoc,
@@ -89,6 +91,8 @@ export type {
   AgentRailData,
   CounterRow,
   Decision,
+  FactMemoryPage,
+  FactMemoryStatement,
   GrantRef,
   GrantRow,
   MemoryDoc,
@@ -368,6 +372,47 @@ function checkedRead<T>(path: string, body: unknown, ok: (b: unknown) => boolean
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
+}
+
+export interface FactRecallQuery {
+  query?: string;
+  profile?: boolean;
+  history?: boolean;
+}
+
+const OPTIONAL_STATEMENT_STRINGS = [
+  'until',
+  'kind',
+  'slot',
+  'closedBy',
+  'whenText',
+  'aboutText',
+] as const;
+
+function isFactMemoryStatement(v: unknown): v is FactMemoryStatement {
+  if (!isRecord(v) || Array.isArray(v)) return false;
+  for (const field of ['id', 'about', 'relation', 'value', 'when'] as const) {
+    if (typeof v[field] !== 'string') return false;
+  }
+  for (const field of OPTIONAL_STATEMENT_STRINGS) {
+    if (v[field] !== undefined && typeof v[field] !== 'string') return false;
+  }
+  if (v.closure !== undefined && v.closure !== 'replaced' && v.closure !== 'forgotten') {
+    return false;
+  }
+  return true;
+}
+
+function isFactMemoryPage(b: unknown): b is FactMemoryPage {
+  return (
+    isRecord(b) &&
+    !Array.isArray(b) &&
+    Array.isArray(b.statements) &&
+    b.statements.every(isFactMemoryStatement) &&
+    Array.isArray(b.degraded) &&
+    b.degraded.every((d) => typeof d === 'string') &&
+    (b.visibility === undefined || b.visibility === 'personal' || b.visibility === 'team')
+  );
 }
 
 async function req<T>(
@@ -834,6 +879,47 @@ export const workspaceApi = {
     req<{ saved: true; body: string }>(
       `/agents/${encodeURIComponent(agentId)}/memory/rules`,
       { method: 'PUT', body: { body } },
+    ),
+
+  recallMemory: (agentId: string, input: FactRecallQuery) =>
+    req<unknown>(`/agents/${encodeURIComponent(agentId)}/memory/recall`, {
+      method: 'POST',
+      body: input,
+    }).then((body) =>
+      checkedRead<FactMemoryPage>(
+        `/agents/${encodeURIComponent(agentId)}/memory/recall`,
+        body,
+        isFactMemoryPage,
+      ),
+    ),
+
+  rememberMemory: (
+    agentId: string,
+    input: { about: string; relation: string; value: string; when?: string },
+  ) =>
+    req<unknown>(`/agents/${encodeURIComponent(agentId)}/memory/remember`, {
+      method: 'POST',
+      body: input,
+    }).then((body) =>
+      checkedRead<{ id: string }>(
+        `/agents/${encodeURIComponent(agentId)}/memory/remember`,
+        body,
+        (v): v is { id: string } =>
+          isRecord(v) && !Array.isArray(v) && typeof v.id === 'string' && v.id.trim() !== '',
+      ),
+    ),
+
+  forgetMemory: (agentId: string, ids: string[]) =>
+    req<unknown>(`/agents/${encodeURIComponent(agentId)}/memory/forget`, {
+      method: 'POST',
+      body: { ids },
+    }).then((body) =>
+      checkedRead<{ forgotten: true }>(
+        `/agents/${encodeURIComponent(agentId)}/memory/forget`,
+        body,
+        (v): v is { forgotten: true } =>
+          isRecord(v) && !Array.isArray(v) && v.forgotten === true,
+      ),
     ),
 
   /**

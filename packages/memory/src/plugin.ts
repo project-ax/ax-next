@@ -9,8 +9,8 @@ import {
 } from '@ax/core';
 
 import { PLUGIN_NAME } from './plugin-name.js';
-import { resolveOwnerUserId } from './owner.js';
-import { deriveSlot } from './slots.js';
+import { AGENTS_RESOLVE_HOOK, memoryReadScope, resolveMemoryAccess } from './access.js';
+import { deriveSlot, SLOTS } from './slots.js';
 import { rewriteSpeaker } from './subject.js';
 import {
   NO_CREDENTIAL_EVENT,
@@ -21,6 +21,8 @@ import {
   noCredentialFields,
 } from './failure.js';
 import { runObserver, type ObserverRecordInput, type ObserverResult } from './observer.js';
+import { selectProfileRows } from './profile.js';
+import { formatEvidenceWhen } from './evidence.js';
 import { MEMORY_RECALL_TOOL_HOOK, registerMemoryRecall } from './recall-tool.js';
 import type { UntrustedMessage } from './transcript.js';
 import {
@@ -96,7 +98,8 @@ const MEMORY_OPS_REASONING = 'minimal' as const;
 /**
  * Field names a caller may NOT set, on any caller-facing payload.
  *
- * Both are privilege fields and both are taken from `ctx` instead:
+ * Every one is a privilege field and every one is taken from `ctx` — and for
+ * the sharing fields, from `agents:resolve` — instead:
  *
  * - `provenance` decides whether a statement can be overwritten by the next
  *   chat mention. Design §3.4's immunity ordering is `human > agent >
@@ -104,7 +107,14 @@ const MEMORY_OPS_REASONING = 'minimal' as const;
  *   survive. A caller that could write `provenance: 'human'` could make its
  *   own note immune to correction — so provenance is a property of WHICH HOOK
  *   was called, full stop.
- * - `ownerUserId` decides who can read and retract the row.
+ * - `ownerUserId` decides who a row is attributed to and, on a personal
+ *   agent, who can read and retract it.
+ * - `scope`, `visibility`, `ownerType`, `teamId` and `agentId` are the
+ *   authority fields a caller would reach for to widen a personal agent into
+ *   a shared one, borrow another owner, or point at another agent. Sharing
+ *   is a property of the RESOLVED agent — `resolveMemoryAccess` asks
+ *   `agents:resolve` on every operation — and never of the request, so the
+ *   payload cannot carry it.
  *
  * We REFUSE rather than ignore. Ignoring is the shape that reads as working:
  * a caller (or an injected tool argument) sets the field, gets a `200`, and
@@ -112,7 +122,15 @@ const MEMORY_OPS_REASONING = 'minimal' as const;
  * identically whether the field was stripped or never supported. A refusal is
  * the assertion.
  */
-const FORBIDDEN_PAYLOAD_FIELDS = ['provenance', 'ownerUserId'] as const;
+const FORBIDDEN_PAYLOAD_FIELDS = [
+  'provenance',
+  'ownerUserId',
+  'scope',
+  'visibility',
+  'ownerType',
+  'teamId',
+  'agentId',
+] as const;
 
 /**
  * The subset of the engine's `FactRecord` this plugin reads back.
@@ -122,8 +140,10 @@ const FORBIDDEN_PAYLOAD_FIELDS = ['provenance', 'ownerUserId'] as const;
  * (it ships the shared contract suite), so it is a devDependency and only
  * `import type` is allowed from it here anyway — and a structural local
  * declaration keeps the production graph honest about what actually crosses
- * the bus. Only the fields this plugin forwards are named; `provenance` and
- * `closedBy` are engine-side columns that deliberately do not reach a caller.
+ * the bus. `provenance` and `closedBy` reach a caller only through the bounded
+ * paths in the recall handler: `provenance` feeds profile selection and
+ * `closedBy` is forwarded only when it names a row already in the same
+ * returned page — never verbatim.
  */
 interface EngineFactRecord {
   id: string;
@@ -133,6 +153,9 @@ interface EngineFactRecord {
   when: string;
   until?: string;
   kind?: MemoryStatementKind;
+  slot?: string;
+  closedBy?: string;
+  provenance?: string;
 }
 
 interface EngineRecallOutput {
@@ -287,12 +310,18 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         SYSTEM_PROMPT_AUGMENT_HOOK,
         MEMORY_RECALL_TOOL_HOOK,
       ],
-      // Hard dependencies, all four: this plugin has nothing to fall back
+      // Hard dependencies, all five: this plugin has nothing to fall back
       // on. A memory surface with no store behind it cannot degrade into
       // anything honest — it can only answer "no memories" to a question it
       // never asked anyone. Failing at boot with `missing-service` is the
       // outcome that gets noticed.
-      calls: [FACTS_RECALL_HOOK, FACTS_RECORD_HOOK, FACTS_SUPERSEDE_HOOK, 'tool:register'],
+      calls: [
+        FACTS_RECALL_HOOK,
+        FACTS_RECORD_HOOK,
+        FACTS_SUPERSEDE_HOOK,
+        'tool:register',
+        AGENTS_RESOLVE_HOOK,
+      ],
       // The extraction provider is OPTIONAL, and that asymmetry with the
       // three engine hooks above is deliberate. A memory surface with no
       // STORE behind it cannot degrade into anything honest — it can only
@@ -344,7 +373,8 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         PLUGIN_NAME,
         async (ctx: AgentContext, rawInput: MemoryRecallInput) => {
           rejectPrivilegeFields(rawInput, MEMORY_RECALL_HOOK);
-          const ownerUserId = resolveOwnerUserId(ctx);
+          const access = await resolveMemoryAccess(bus, ctx);
+          const ownerUserId = access.userId;
 
           // Every field on this payload is optional, so `{}` is the ordinary
           // call and a caller that sends nothing at all means the same thing.
@@ -367,6 +397,15 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           if (input.activeOnly !== undefined && typeof input.activeOnly !== 'boolean') {
             throw invalid('activeOnly must be a boolean when set', MEMORY_RECALL_HOOK);
           }
+          if (input.profile !== undefined && typeof input.profile !== 'boolean') {
+            throw invalid('profile must be a boolean when set', MEMORY_RECALL_HOOK);
+          }
+          if (
+            input.profile === true &&
+            (input.query !== undefined || input.about !== undefined)
+          ) {
+            throw invalid('profile scopes itself and cannot combine with query or about', MEMORY_RECALL_HOOK);
+          }
           if (
             input.limit !== undefined &&
             (typeof input.limit !== 'number' || !Number.isFinite(input.limit) || input.limit < 1)
@@ -379,11 +418,12 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             maxRecallLimit,
           );
 
+          const asOf = new Date().toISOString();
           const raw = await bus.call<unknown, EngineRecallOutput | null>(
             FACTS_RECALL_HOOK,
             ctx,
             {
-              limit,
+              limit: input.profile === true ? Math.max(32, limit) : limit,
               // Owner scope, pushed DOWN into the engine's query rather than
               // applied to the rows that come back. A post-filter under a
               // `limit` silently returns fewer rows than asked for — ask for
@@ -391,14 +431,21 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
               // design §6.1's "never post-filter a widened pool". It is also
               // the only version that works at all: the engine's `FactRecord`
               // does not carry an owner, so there is nothing here to filter
-              // ON.
-              ownerUserId,
+              // ON. A team agent widens the same push-down deliberately:
+              // `memoryReadScope` omits the owner filter only after
+              // `agents:resolve` proved this caller is a current member of a
+              // team agent, and the rows are that agent's shared knowledge —
+              // never another agent's, never another person's under a
+              // personal agent.
+              ...memoryReadScope(access),
               // `about: 'user'` means "the person talking", and what a write
               // stored under that is `user:<userId>`. Same rewrite, both
               // directions — see `subject.ts`.
-              ...(input.about !== undefined
-                ? { about: rewriteSpeaker(input.about, ownerUserId) }
-                : {}),
+              ...(input.profile === true
+                ? { about: rewriteSpeaker('user', ownerUserId), slots: [...SLOTS] }
+                : input.about !== undefined
+                  ? { about: rewriteSpeaker(input.about, ownerUserId) }
+                  : {}),
               ...(input.query !== undefined ? { query: input.query } : {}),
               ...(input.query !== undefined
                 ? { poolSize: Math.min(200, Math.max(40, Math.ceil(limit * 40 / 15))) }
@@ -439,8 +486,33 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             });
           }
 
+          for (const row of result.statements) {
+            toMemoryStatement(row);
+          }
+          const page =
+            input.profile === true && input.activeOnly !== false
+              ? selectProfileRows(result.statements, limit)
+              : result.statements.slice(0, limit);
+          const visibleIds = new Set(page.map((row) => row.id));
+
           return {
-            statements: result.statements.map(toMemoryStatement),
+            statements: page.map((row) => {
+              const mapped = toMemoryStatement(row);
+              return {
+                ...mapped,
+                aboutText:
+                  row.about === rewriteSpeaker('user', ownerUserId)
+                    ? 'you'
+                    : row.about.replace(/_/g, ' '),
+                whenText: formatEvidenceWhen(mapped, asOf),
+                ...(row.until !== undefined
+                  ? { closure: row.closedBy === undefined ? ('forgotten' as const) : ('replaced' as const) }
+                  : {}),
+                ...(typeof row.closedBy === 'string' && visibleIds.has(row.closedBy)
+                  ? { closedBy: row.closedBy }
+                  : {}),
+              };
+            }),
             // Verbatim. Not re-derived, not re-ordered, not filtered, not
             // "corrected" — including the asymmetry where an empty store with
             // no providers raises `'semantic'` but not `'ranking'` (embedding
@@ -449,6 +521,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             // that normalized it would be overwriting a measurement with an
             // assumption.
             degraded: result.degraded === undefined ? [] : [...result.degraded],
+            visibility: access.visibility,
           };
         },
       );
@@ -461,7 +534,8 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         PLUGIN_NAME,
         async (ctx: AgentContext, input: MemoryRememberInput) => {
           rejectPrivilegeFields(input, MEMORY_REMEMBER_HOOK);
-          const ownerUserId = resolveOwnerUserId(ctx);
+          const access = await resolveMemoryAccess(bus, ctx);
+          const ownerUserId = access.userId;
 
           const about = requireNonEmptyString(input?.about, 'about', MEMORY_REMEMBER_HOOK);
           const relation = requireNonEmptyString(input?.relation, 'relation', MEMORY_REMEMBER_HOOK);
@@ -552,7 +626,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         PLUGIN_NAME,
         async (ctx: AgentContext, input: MemoryForgetInput) => {
           rejectPrivilegeFields(input, MEMORY_FORGET_HOOK);
-          const ownerUserId = resolveOwnerUserId(ctx);
+          const access = await resolveMemoryAccess(bus, ctx);
 
           if (!Array.isArray(input?.ids)) {
             throw invalid('ids must be an array', MEMORY_FORGET_HOOK);
@@ -566,14 +640,15 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
 
           // Both scopes go down with the call, and BOTH are refusals rather
           // than filters: the engine closes an id only when it belongs to
-          // this tenant AND this owner, so a foreign id has no effect. We do
-          // not report which ids were refused — see `MemoryForgetOutput`; an
-          // honest caller can never hold one, because `memory:recall` is
-          // owner-scoped, and reporting it would hand a hostile caller an
-          // existence oracle over other people's statements.
+          // this tenant AND this owner, so a foreign id has no effect. On a
+          // team agent the owner scope is omitted ON PURPOSE — a member may
+          // retract any row of the agent's shared memory — while the tenant
+          // check still refuses ids from another agent. We do not report
+          // which ids were refused — see `MemoryForgetOutput`; reporting it
+          // would hand a hostile caller an existence oracle.
           await bus.call<unknown, unknown>(FACTS_SUPERSEDE_HOOK, ctx, {
             ids: input.ids,
-            ownerUserId,
+            ...memoryReadScope(access),
           });
 
           return {};
@@ -664,11 +739,15 @@ async function observeChatEnd(
     const { kind, messages } = outcome as { kind?: unknown; messages?: unknown };
     if (kind !== 'complete' || !Array.isArray(messages) || messages.length === 0) return;
 
-    // Owner scope from `ctx`. This THROWS for a context with no owner (an
-    // owner-less canary session), which is correct and is why it is inside
-    // the try: a statement stored under an owner-less id could never be read
-    // back by anyone, so the honest outcome is to record nothing and say so.
-    const ownerUserId = resolveOwnerUserId(ctx);
+    // Access from `ctx`, resolved through `agents:resolve` BEFORE any
+    // provider or engine call. This THROWS for a context with no owner (an
+    // owner-less canary session) and for a caller whose membership was
+    // revoked between turns — both correct, and both inside the try: a
+    // statement stored under an owner-less id could never be read back by
+    // anyone, and a revoked member's statement must never land at all, so
+    // the honest outcome is to record nothing and say so.
+    const access = await resolveMemoryAccess(bus, ctx);
+    const ownerUserId = access.userId;
 
     if (!bus.hasService(cfg.memoryOpsHook)) {
       // The `optionalCalls` degradation, realized. `warn` rather than
@@ -692,12 +771,14 @@ async function observeChatEnd(
           // operation cannot forget it.
           reasoningEffort: MEMORY_OPS_REASONING,
         }),
-      record: (input: ObserverRecordInput) =>
-        bus.call<ObserverRecordInput, { records?: Array<{ id?: unknown }> } | null>(
+      record: async (input: ObserverRecordInput) => {
+        await resolveMemoryAccess(bus, ctx);
+        return bus.call<ObserverRecordInput, { records?: Array<{ id?: unknown }> } | null>(
           FACTS_RECORD_HOOK,
           ctx,
           input,
-        ),
+        );
+      },
       ownerUserId,
       conversationId: ctx.conversationId,
       model: cfg.model,
@@ -808,9 +889,11 @@ const MEMORY_STATEMENT_KINDS: readonly MemoryStatementKind[] = [
  * An explicit field list, not a spread. Two reasons, and the second is the
  * load-bearing one:
  *
- * 1. `provenance` and `closedBy` are engine-side columns. Handing `closedBy`
- *    to a caller leaks another statement's id into a payload; handing
- *    `provenance` out starts the argument about whether it can be handed back
+ * 1. `provenance` and `closedBy` are engine-side columns. `closedBy` reaches a
+ *    caller only through the recall handler's bounded visibility check — it
+ *    names a row only when that row is already in the same returned page, never
+ *    verbatim — and `provenance` feeds profile selection without being handed
+ *    out, which would start the argument about whether it can be handed back
  *    IN.
  * 2. A spread would silently widen this surface every time the engine's
  *    `FactRecord` grows a column — which is how a storage detail ends up in a
@@ -871,6 +954,12 @@ function toMemoryStatement(row: EngineFactRecord): MemoryStatement {
   if (row.until !== undefined && typeof row.until !== 'string') {
     malformed('until is present but not a string');
   }
+  if (row.slot !== undefined && typeof row.slot !== 'string') {
+    malformed('slot is present but not a string');
+  }
+  if (row.closedBy !== undefined && typeof row.closedBy !== 'string') {
+    malformed('closedBy is present but not a string');
+  }
   if (
     row.kind !== undefined &&
     !MEMORY_STATEMENT_KINDS.includes(row.kind as MemoryStatementKind)
@@ -886,5 +975,6 @@ function toMemoryStatement(row: EngineFactRecord): MemoryStatement {
     when: row.when,
     ...(row.until !== undefined ? { until: row.until } : {}),
     ...(row.kind !== undefined ? { kind: row.kind } : {}),
+    ...(row.slot !== undefined ? { slot: row.slot } : {}),
   };
 }

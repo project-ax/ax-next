@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import {
   HookBus,
   makeAgentContext,
+  PluginError,
   type AgentContext,
   type LlmCallInput,
   type LlmCallOutput,
@@ -13,6 +14,7 @@ import {
 } from '@ax/core';
 import { createMemoryFactsSqlitePlugin } from '@ax/memory-facts-sqlite';
 
+import { AGENTS_RESOLVE_HOOK } from '../access.js';
 import { createMemoryPlugin, type MemoryPluginConfig } from '../plugin.js';
 import type {
   MemoryForgetInput,
@@ -79,6 +81,7 @@ export interface MemoryHarness {
    * the detached promise rather than sleeping.
    */
   settleObserver: () => Promise<void>;
+  teamMembers: Set<string>;
   teardown: () => Promise<void>;
 }
 
@@ -94,6 +97,11 @@ export interface MemoryHarnessOptions {
    * `optionalCalls` entry describes.
    */
   llm?: (input: LlmCallInput, call: number) => Promise<LlmCallOutput> | LlmCallOutput;
+  agent?: {
+    visibility?: 'personal' | 'team';
+    ownerUserId?: string;
+    members?: Set<string>;
+  };
 }
 
 export async function makeMemoryHarness(
@@ -119,6 +127,14 @@ export async function makeMemoryHarness(
       return { ok: true };
     },
   );
+
+  const teamMembers =
+    options.agent?.members ?? new Set<string>([ALICE, BOB]);
+  registerMemoryAgents(bus, {
+    visibility: options.agent?.visibility,
+    ownerUserId: options.agent?.ownerUserId,
+    members: teamMembers,
+  });
 
   if (options.llm !== undefined) {
     const llm = options.llm;
@@ -162,6 +178,7 @@ export async function makeMemoryHarness(
     logs,
     llmCalls,
     toolDescriptors,
+    teamMembers,
     settleObserver: async () => {
       // Loop: a settle can race a run that starts another. Bounded so a
       // pathological test cannot hang the suite.
@@ -182,6 +199,42 @@ export async function makeMemoryHarness(
       await rm(dir, { recursive: true, force: true });
     },
   };
+}
+
+export function registerMemoryAgents(
+  bus: HookBus,
+  options: {
+    visibility?: 'personal' | 'team';
+    ownerUserId?: string;
+    members?: Set<string>;
+  } = {},
+): void {
+  const visibility = options.visibility ?? 'personal';
+  const ownerUserId = options.ownerUserId ?? ALICE;
+  const members = options.members ?? new Set<string>([ALICE, BOB]);
+  bus.registerService<
+    { agentId: string; userId: string },
+    { agent: { id: string; ownerId: string; ownerType: string; visibility: string } }
+  >(AGENTS_RESOLVE_HOOK, '@ax/test-agents', async (_ctx, input) => {
+    const allowed =
+      visibility === 'personal' ? input.userId === ownerUserId : members.has(input.userId);
+    if (!allowed) {
+      throw new PluginError({
+        code: 'forbidden',
+        plugin: '@ax/test-agents',
+        hookName: AGENTS_RESOLVE_HOOK,
+        message: 'Caller is not authorized for this agent',
+      });
+    }
+    return {
+      agent: {
+        id: input.agentId,
+        ownerId: visibility === 'team' ? 'team-1' : ownerUserId,
+        ownerType: visibility === 'team' ? 'team' : 'user',
+        visibility,
+      },
+    };
+  });
 }
 
 export function capturingLogger(sink: LoggedEvent[]): Logger {
@@ -216,7 +269,7 @@ export function eventsNamed(logs: readonly LoggedEvent[], event: string): Logged
 export async function engineRecall(
   bus: HookBus,
   ctx: AgentContext,
-  input: { about?: string; limit: number; activeOnly?: boolean },
+  input: { about?: string; limit: number; activeOnly?: boolean; ownerUserId?: string },
 ): Promise<{
   statements: Array<{ id: string; about: string; until?: string }>;
   degraded: string[];

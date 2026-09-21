@@ -3,6 +3,7 @@ import { HookBus, makeAgentContext, type AgentContext } from '@ax/core';
 
 import { createMemoryPlugin } from '../plugin.js';
 import type { MemoryRecallOutput, MemoryRememberOutput } from '../types.js';
+import { registerMemoryAgents } from './harness.js';
 
 // ---------------------------------------------------------------------------
 // What `@ax/memory` does with what the engine hands back.
@@ -43,6 +44,7 @@ async function busWithEngine(responses: {
   bus.registerService('memory:facts:record', 'stub', stub('record', responses.record));
   bus.registerService('memory:facts:supersede', 'stub', stub('supersede', responses.supersede));
   bus.registerService('tool:register', 'stub-catalog', async () => ({}));
+  registerMemoryAgents(bus);
   await createMemoryPlugin().init({ bus, config: {} });
   return { bus, seen };
 }

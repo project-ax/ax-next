@@ -38,6 +38,8 @@ export { SPEAKER_SUBJECT, rewriteSpeaker } from './subject.js';
 // fails if a second copy appears.
 export { SLOTS, PENDING_SLOT, deriveSlot } from './slots.js';
 export type { Slot } from './slots.js';
+export { selectProfileRows } from './profile.js';
+export type { ProfileRow } from './profile.js';
 export {
   escapeStatementText,
   approxTokens,

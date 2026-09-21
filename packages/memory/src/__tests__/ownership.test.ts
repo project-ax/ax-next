@@ -2,7 +2,15 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { ownerlessIdFor } from '@ax/core';
 
 import { rewriteSpeaker, SPEAKER_SUBJECT } from '../subject.js';
-import { ALICE, BOB, DEFAULT_AGENT, engineRecall, makeMemoryHarness, type MemoryHarness } from './harness.js';
+import {
+  ALICE,
+  BOB,
+  DEFAULT_AGENT,
+  engineRecall,
+  engineRecord,
+  makeMemoryHarness,
+  type MemoryHarness,
+} from './harness.js';
 
 let harness: MemoryHarness | undefined;
 afterEach(async () => {
@@ -63,16 +71,6 @@ describe('@ax/memory — speaker rewrite and the ownership stamp', () => {
   });
 
   it('gives two people on ONE agent two different speaker subjects', async () => {
-    harness = await makeMemoryHarness();
-    await harness.remember(
-      { about: 'user', relation: 'lives_in', value: 'Berlin' },
-      harness.ctx({ userId: ALICE }),
-    );
-    await harness.remember(
-      { about: 'user', relation: 'lives_in', value: 'Lisbon' },
-      harness.ctx({ userId: BOB }),
-    );
-
     // The point of §3.2, asserted as the SUBJECT KEYS and not as a row count.
     //
     // This assertion was rewritten after a mutation pass: making
@@ -86,6 +84,20 @@ describe('@ax/memory — speaker rewrite and the ownership stamp', () => {
     //
     // The keys are the property that actually exists right now, and they are
     // what the normalizer card will hang closure off later.
+    //
+    // The fixture is a TEAM agent because a second person needs a legal write
+    // at all: on a personal agent Bob is refused at `agents:resolve` and the
+    // subject keys never get made. Sharing the agent is exactly what makes
+    // collapsing the two speakers into one a bug instead of a boundary.
+    harness = await makeMemoryHarness({}, { agent: { visibility: 'team' } });
+    await harness.remember(
+      { about: 'user', relation: 'lives_in', value: 'Berlin' },
+      harness.ctx({ userId: ALICE }),
+    );
+    await harness.remember(
+      { about: 'user', relation: 'lives_in', value: 'Lisbon' },
+      harness.ctx({ userId: BOB }),
+    );
     const all = await engineRecall(harness.bus, harness.ctx(), { limit: 10 });
     expect(all.statements).toHaveLength(2);
     expect(new Set(all.statements.map((s) => s.about))).toEqual(
@@ -95,10 +107,11 @@ describe('@ax/memory — speaker rewrite and the ownership stamp', () => {
   });
 
   it('records a ROUTINE turn under the routine owner\'s real userId', async () => {
-    harness = await makeMemoryHarness();
     // A routine fire mints its ctx with `source: 'routine'` and the routine
     // OWNER's real userId — there is no live person, and no synthetic actor
     // is invented for one either. `@ax/memory` must not branch on `source`.
+    // The agent is Bob's personal one, so Bob's routine ctx is the owner.
+    harness = await makeMemoryHarness({}, { agent: { ownerUserId: BOB } });
     const routineCtx = harness.ctx({
       userId: BOB,
       source: 'routine',
@@ -112,9 +125,12 @@ describe('@ax/memory — speaker rewrite and the ownership stamp', () => {
     const { statements } = await engineRecall(harness.bus, harness.ctx(), { limit: 10 });
     expect(statements.map((s) => s.id)).toEqual([id]);
     // Stored under BOB, and reachable by BOB — which is the whole test: a
-    // synthetic owner would store it somewhere nobody can read.
+    // synthetic owner would store it somewhere nobody can read. On a personal
+    // agent a foreign caller is refused outright, not merely filtered.
     expect((await harness.recall({}, harness.ctx({ userId: BOB }))).statements).toHaveLength(1);
-    expect((await harness.recall({}, harness.ctx({ userId: ALICE }))).statements).toEqual([]);
+    await expect(
+      harness.recall({}, harness.ctx({ userId: ALICE })),
+    ).rejects.toMatchObject({ code: 'forbidden' });
   });
 
   it('REFUSES an owner-less session rather than minting a private partition', async () => {
@@ -144,16 +160,17 @@ describe('@ax/memory — speaker rewrite and the ownership stamp', () => {
 // Tenancy — design §6.1
 // ---------------------------------------------------------------------------
 
-describe('@ax/memory — reads are owner-scoped by default', () => {
-  it("a second owner's rows are invisible", async () => {
+describe('@ax/memory — personal reads are owner-scoped and foreign callers refused', () => {
+  it('refuses a foreign caller on a personal agent, before any engine call', async () => {
     harness = await makeMemoryHarness();
     await harness.remember(
       { about: 'acme_corp', relation: 'stage', value: 'series B' },
       harness.ctx({ userId: ALICE }),
     );
 
-    const bobSees = await harness.recall({ about: 'acme_corp' }, harness.ctx({ userId: BOB }));
-    expect(bobSees.statements).toEqual([]);
+    await expect(
+      harness.recall({ about: 'acme_corp' }, harness.ctx({ userId: BOB })),
+    ).rejects.toMatchObject({ code: 'forbidden' });
 
     // ...and it is genuinely still there, which is what makes this an
     // ISOLATION test rather than a "nothing was stored" test.
@@ -161,16 +178,18 @@ describe('@ax/memory — reads are owner-scoped by default', () => {
     expect(aliceSees.statements).toHaveLength(1);
   });
 
-  it('scopes the ranked-retrieval path too, not just the listing', async () => {
+  it('refuses a foreign caller on the ranked-retrieval path too, not just the listing', async () => {
     harness = await makeMemoryHarness();
     await harness.remember(
       { about: 'acme_corp', relation: 'headquartered_in', value: 'Berlin' },
       harness.ctx({ userId: ALICE }),
     );
     // The `query` path runs through fusion channels rather than the filtered
-    // listing, so it is a different SQL path and a separate hole.
-    const bobSees = await harness.recall({ query: 'Berlin' }, harness.ctx({ userId: BOB }));
-    expect(bobSees.statements).toEqual([]);
+    // listing, so it is a different SQL path — and the same `agents:resolve`
+    // denial lands before either of them runs.
+    await expect(
+      harness.recall({ query: 'Berlin' }, harness.ctx({ userId: BOB })),
+    ).rejects.toMatchObject({ code: 'forbidden' });
     const aliceSees = await harness.recall({ query: 'Berlin' }, harness.ctx({ userId: ALICE }));
     expect(aliceSees.statements.map((s) => s.value)).toEqual(['Berlin']);
   });
@@ -187,18 +206,17 @@ describe('@ax/memory — reads are owner-scoped by default', () => {
 });
 
 describe('@ax/memory — memory:forget refuses a foreign id', () => {
-  it("does not retract another OWNER's statement", async () => {
+  it("denies a foreign caller on a personal agent before any engine call", async () => {
     harness = await makeMemoryHarness();
     const { id } = await harness.remember(
       { about: 'acme_corp', relation: 'stage', value: 'series B' },
       harness.ctx({ userId: ALICE }),
     );
 
-    // Returns `{}` and takes no effect. Refusal is enforcement, not a signal:
-    // reporting which ids were refused would hand a caller an existence
-    // oracle over other people's statements, and an honest caller can never
-    // hold a foreign id because recall is owner-scoped.
-    await expect(harness.forget({ ids: [id] }, harness.ctx({ userId: BOB }))).resolves.toEqual({});
+    // The ACL denial is the primary refusal: Bob never reaches the engine.
+    await expect(
+      harness.forget({ ids: [id] }, harness.ctx({ userId: BOB })),
+    ).rejects.toMatchObject({ code: 'forbidden' });
 
     const aliceSees = await harness.recall({ about: 'acme_corp' }, harness.ctx({ userId: ALICE }));
     expect(aliceSees.statements.map((s) => s.id)).toEqual([id]);
@@ -221,38 +239,51 @@ describe('@ax/memory — memory:forget refuses a foreign id', () => {
     expect(still.statements[0]!.until).toBeUndefined();
   });
 
-  it('a mixed batch retracts only the ids this owner owns', async () => {
+  it('a mixed batch retracts only the ids this owner owns (raw-engine defense in depth)', async () => {
     harness = await makeMemoryHarness();
     const mine = await harness.remember(
       { about: 'acme_corp', relation: 'stage', value: 'series B' },
-      harness.ctx({ userId: BOB }),
-    );
-    const theirs = await harness.remember(
-      { about: 'acme_corp', relation: 'stage', value: 'seed' },
       harness.ctx({ userId: ALICE }),
     );
+    const foreign = await engineRecord(harness.bus, harness.ctx(), [
+      {
+        about: 'acme_corp',
+        relation: 'stage',
+        value: 'seed',
+        when: '2026-01-01T00:00:00Z',
+        ownerUserId: BOB,
+      },
+    ]);
+    const foreignId = foreign.records[0]!.id;
 
-    await harness.forget({ ids: [mine.id, theirs.id] }, harness.ctx({ userId: BOB }));
+    await harness.forget({ ids: [mine.id, foreignId] }, harness.ctx({ userId: ALICE }));
 
-    expect((await harness.recall({}, harness.ctx({ userId: BOB }))).statements).toEqual([]);
-    expect(
-      (await harness.recall({}, harness.ctx({ userId: ALICE }))).statements.map((s) => s.id),
-    ).toEqual([theirs.id]);
+    expect((await harness.recall({}, harness.ctx({ userId: ALICE }))).statements).toEqual([]);
+    const bobsRows = await engineRecall(harness.bus, harness.ctx(), {
+      limit: 10,
+      ownerUserId: BOB,
+    });
+    expect(bobsRows.statements.map((s) => s.id)).toEqual([foreignId]);
+    expect(bobsRows.statements[0]!.until).toBeUndefined();
   });
 });
 
 describe('@ax/memory — the tenant is ambient', () => {
-  it('ignores an agentId a caller tries to smuggle in a payload', async () => {
+  it('REFUSES an agentId a caller tries to smuggle in a payload', async () => {
     harness = await makeMemoryHarness();
     await harness.remember(
       { about: 'acme_corp', relation: 'stage', value: 'series B' },
       harness.ctx({ agentId: DEFAULT_AGENT, userId: ALICE }),
     );
 
-    const smuggled = { about: 'acme_corp', agentId: DEFAULT_AGENT } as unknown as {
+    const smuggled = { about: 'acme_corp', agentId: 'agent-other' } as unknown as {
       about: string;
     };
-    const seen = await harness.recall(smuggled, harness.ctx({ agentId: 'agent-other', userId: ALICE }));
-    expect(seen.statements).toEqual([]);
+    await expect(
+      harness.recall(smuggled, harness.ctx({ agentId: 'agent-other', userId: ALICE })),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
+    expect(
+      (await harness.recall({}, harness.ctx({ agentId: 'agent-other', userId: ALICE }))).statements,
+    ).toEqual([]);
   });
 });

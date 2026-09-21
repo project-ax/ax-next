@@ -351,16 +351,58 @@ function memoryMockPlugin(state: {
   learned: Array<{ name: string; body: string }>;
   writeCtx: Array<{ agentId: string; userId: string; payloadAgentId: string }>;
   failWrite?: PluginError;
+  facts?: {
+    statements: Array<Record<string, unknown>>;
+    degraded: string[];
+    calls: Array<{ hook: string; agentId: string; userId: string; input: unknown }>;
+  };
 }): Plugin {
   return {
     manifest: {
       name: 'mock-memory',
       version: '0.0.0',
-      registers: ['memory:rules:read', 'memory:rules:write', 'memory:learned:read'],
+      registers: [
+        'memory:rules:read',
+        'memory:rules:write',
+        'memory:learned:read',
+        ...(state.facts === undefined
+          ? []
+          : ['memory:recall', 'memory:remember', 'memory:forget']),
+      ],
       calls: [],
       subscribes: [],
     },
     init({ bus }) {
+      if (state.facts !== undefined) {
+        const facts = state.facts;
+        bus.registerService('memory:recall', 'mock-memory', async (ctx, input) => {
+          facts.calls.push({
+            hook: 'recall',
+            agentId: ctx.agentId,
+            userId: ctx.userId ?? '',
+            input,
+          });
+          return { statements: facts.statements, degraded: facts.degraded };
+        });
+        bus.registerService('memory:remember', 'mock-memory', async (ctx, input) => {
+          facts.calls.push({
+            hook: 'remember',
+            agentId: ctx.agentId,
+            userId: ctx.userId ?? '',
+            input,
+          });
+          return { id: 'mem-new' };
+        });
+        bus.registerService('memory:forget', 'mock-memory', async (ctx, input) => {
+          facts.calls.push({
+            hook: 'forget',
+            agentId: ctx.agentId,
+            userId: ctx.userId ?? '',
+            input,
+          });
+          return { forgotten: true };
+        });
+      }
       bus.registerService('memory:rules:read', 'mock-memory', async () => ({
         body: state.rules,
       }));
@@ -1070,6 +1112,83 @@ describe('@ax/channel-web server plugin (integration)', () => {
       expect(put.status).toBe(404);
       // The ACL ran BEFORE any storage was touched.
       expect(memory.writeCtx).toEqual([]);
+    });
+
+    it('mounts the facts recall route and gates the writes on CSRF', async () => {
+      const memory = {
+        rules: '',
+        learned: [],
+        writeCtx: [] as Array<{ agentId: string; userId: string; payloadAgentId: string }>,
+        facts: {
+          statements: [
+            {
+              id: 'mem-1',
+              about: 'user',
+              relation: 'lives_in',
+              value: 'Boston',
+              when: '2026-09-01T00:00:00.000Z',
+            },
+          ],
+          degraded: [] as string[],
+          calls: [] as Array<{ hook: string; agentId: string; userId: string; input: unknown }>,
+        },
+      };
+      const booted = await boot({
+        agentWorkspacePreview: true,
+        conversationRows: [],
+        memory,
+      });
+      harness = booted.harness;
+      const base = `http://127.0.0.1:${booted.port}/api/workspace/agents/agt_test/memory`;
+
+      const detail = (await (
+        await fetch(`http://127.0.0.1:${booted.port}/api/workspace/agents/agt_test`)
+      ).json()) as { memory: AgentMemoryRead };
+      expect(detail.memory.factsAvailable).toBe(true);
+
+      const recall = await fetch(`${base}/recall`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+        body: JSON.stringify({ query: 'boston' }),
+      });
+      expect(recall.status).toBe(200);
+      expect(await recall.json()).toEqual({
+        statements: [memory.facts.statements[0]],
+        degraded: [],
+      });
+      expect(memory.facts.calls).toEqual([
+        {
+          hook: 'recall',
+          agentId: 'agt_test',
+          userId: 'userA',
+          input: { query: 'boston', activeOnly: true, limit: 40 },
+        },
+      ]);
+
+      const noCsrf = await fetch(`${base}/remember`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ about: 'user', relation: 'likes', value: 'tea' }),
+      });
+      expect(noCsrf.status).toBe(403);
+
+      const remember = await fetch(`${base}/remember`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+        body: JSON.stringify({ about: 'user', relation: 'likes', value: 'tea' }),
+      });
+      expect(remember.status).toBe(200);
+      expect(await remember.json()).toEqual({ id: 'mem-new' });
+
+      const forget = await fetch(`${base}/forget`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+        body: JSON.stringify({ ids: ['mem-1'] }),
+      });
+      expect(forget.status).toBe(200);
+      expect(await forget.json()).toEqual({ forgotten: true });
+      expect(memory.facts.calls[1]).toMatchObject({ hook: 'remember', userId: 'userA' });
+      expect(memory.facts.calls[2]).toMatchObject({ hook: 'forget', userId: 'userA' });
     });
 
     it('leaves the flagged /api/workspace/* routes unmounted when the preview is off, but keeps the whole decisions collection reachable', async () => {
