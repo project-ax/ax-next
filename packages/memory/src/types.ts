@@ -51,6 +51,11 @@ export interface MemoryStatement {
   until?: string;
   /** See {@link MemoryStatementKind} — absent when the row has none. */
   kind?: MemoryStatementKind;
+  slot?: string;
+  closedBy?: string;
+  closure?: 'replaced' | 'forgotten';
+  whenText?: string;
+  aboutText?: string;
 }
 
 /**
@@ -86,6 +91,7 @@ export interface MemoryRecallInput {
   about?: string;
   /** Defaults to `true` — only currently-active statements. */
   activeOnly?: boolean;
+  profile?: boolean;
   /** Defaults to {@link DEFAULT_RECALL_LIMIT}. */
   limit?: number;
 }

@@ -131,6 +131,7 @@ import {
 import type {
   ActivityEvent,
   AgentMemoryRead,
+  FactMemoryPage,
   AgentRailData,
   AgentRunState,
   CapabilityEffect,
@@ -2967,7 +2968,11 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
     }
 
-    return { rules, learned };
+    return {
+      rules,
+      learned,
+      ...(bus.hasService('memory:recall') ? { factsAvailable: true } : {}),
+    };
   }
 
   async function listAgents(userId: string): Promise<AgentsListForUserOutput['agents']> {
@@ -5159,6 +5164,190 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       res.status(200).json({ saved: true, body: stored } satisfies SaveRulesResult);
     },
 
+    async recallFacts(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+      if (agent === null) return;
+
+      if (!bus.hasService('memory:recall')) {
+        res.status(503).json({ error: 'memory-unavailable' });
+        return;
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(req.body.toString('utf-8'));
+      } catch {
+        res.status(400).json({ error: 'invalid-json' });
+        return;
+      }
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        res.status(400).json({ error: 'invalid-memory-request' });
+        return;
+      }
+      const body = parsed as Record<string, unknown>;
+      if (Object.keys(body).some((k) => k !== 'query' && k !== 'profile' && k !== 'history')) {
+        res.status(400).json({ error: 'invalid-memory-request' });
+        return;
+      }
+      if (body.query !== undefined && (typeof body.query !== 'string' || body.query.trim() === '')) {
+        res.status(400).json({ error: 'invalid-memory-request' });
+        return;
+      }
+      if (body.profile !== undefined && typeof body.profile !== 'boolean') {
+        res.status(400).json({ error: 'invalid-memory-request' });
+        return;
+      }
+      if (body.history !== undefined && typeof body.history !== 'boolean') {
+        res.status(400).json({ error: 'invalid-memory-request' });
+        return;
+      }
+
+      try {
+        const out = await bus.call<unknown, FactMemoryPage>(
+          'memory:recall',
+          agentWorkspaceCtx(agentId, userId),
+          {
+            ...(body.query !== undefined ? { query: body.query } : {}),
+            ...(body.profile === true ? { profile: true } : {}),
+            activeOnly: body.history !== true,
+            limit: body.profile === true ? 100 : 40,
+          },
+        );
+        res.status(200).json(out);
+      } catch (err) {
+        if (err instanceof PluginError && err.code === 'invalid-payload') {
+          res.status(400).json({ error: 'invalid-memory-request' });
+          return;
+        }
+        throw err;
+      }
+    },
+
+    async rememberFact(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+      if (agent === null) return;
+
+      if (!bus.hasService('memory:remember')) {
+        res.status(503).json({ error: 'memory-unavailable' });
+        return;
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(req.body.toString('utf-8'));
+      } catch {
+        res.status(400).json({ error: 'invalid-json' });
+        return;
+      }
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        res.status(400).json({ error: 'invalid-memory-request' });
+        return;
+      }
+      const body = parsed as Record<string, unknown>;
+      if (
+        Object.keys(body).some((k) => k !== 'about' && k !== 'relation' && k !== 'value' && k !== 'when') ||
+        typeof body.about !== 'string' ||
+        body.about.trim() === '' ||
+        typeof body.relation !== 'string' ||
+        body.relation.trim() === '' ||
+        typeof body.value !== 'string' ||
+        body.value.trim() === '' ||
+        (body.when !== undefined && typeof body.when !== 'string')
+      ) {
+        res.status(400).json({ error: 'invalid-memory-request' });
+        return;
+      }
+
+      try {
+        const out = await bus.call<unknown, { id: string }>(
+          'memory:remember',
+          agentWorkspaceCtx(agentId, userId),
+          {
+            about: body.about,
+            relation: body.relation,
+            value: body.value,
+            ...(body.when !== undefined ? { when: body.when } : {}),
+          },
+        );
+        res.status(200).json({ id: out.id });
+      } catch (err) {
+        if (err instanceof PluginError && err.code === 'invalid-payload') {
+          res.status(400).json({ error: 'invalid-memory-request' });
+          return;
+        }
+        throw err;
+      }
+    },
+
+    async forgetFacts(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+      if (agent === null) return;
+
+      if (!bus.hasService('memory:forget')) {
+        res.status(503).json({ error: 'memory-unavailable' });
+        return;
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(req.body.toString('utf-8'));
+      } catch {
+        res.status(400).json({ error: 'invalid-json' });
+        return;
+      }
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        res.status(400).json({ error: 'invalid-memory-request' });
+        return;
+      }
+      const body = parsed as Record<string, unknown>;
+      if (
+        Object.keys(body).some((k) => k !== 'ids') ||
+        !Array.isArray(body.ids) ||
+        body.ids.length === 0 ||
+        body.ids.length > 100 ||
+        body.ids.some((id) => typeof id !== 'string' || id === '')
+      ) {
+        res.status(400).json({ error: 'invalid-memory-request' });
+        return;
+      }
+
+      try {
+        await bus.call<unknown, unknown>(
+          'memory:forget',
+          agentWorkspaceCtx(agentId, userId),
+          { ids: body.ids },
+        );
+        res.status(200).json({ forgotten: true });
+      } catch (err) {
+        if (err instanceof PluginError && err.code === 'invalid-payload') {
+          res.status(400).json({ error: 'invalid-memory-request' });
+          return;
+        }
+        throw err;
+      }
+    },
+
     /**
      * POST /api/workspace/route — "I typed something; who should hear it?"
      *
@@ -5458,6 +5647,21 @@ export async function registerWorkspaceRoutes(
         method: 'PUT',
         path: '/api/workspace/agents/:agentId/memory/rules',
         handler: handlers.saveRules as unknown as RouteHandler,
+      },
+      {
+        method: 'POST',
+        path: '/api/workspace/agents/:agentId/memory/recall',
+        handler: handlers.recallFacts as unknown as RouteHandler,
+      },
+      {
+        method: 'POST',
+        path: '/api/workspace/agents/:agentId/memory/remember',
+        handler: handlers.rememberFact as unknown as RouteHandler,
+      },
+      {
+        method: 'POST',
+        path: '/api/workspace/agents/:agentId/memory/forget',
+        handler: handlers.forgetFacts as unknown as RouteHandler,
       },
       {
         method: 'POST',

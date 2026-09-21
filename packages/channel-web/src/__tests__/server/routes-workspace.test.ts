@@ -3712,4 +3712,249 @@ describe('channel-web agent-workspace BFF', () => {
       expect(body.decisions).toEqual({ status: 'unavailable' });
     });
   });
+
+  describe('facts memory routes', () => {
+    function registerFacts(state: {
+      calls: Array<{ hook: string; agentId: string; userId: string; input: unknown }>;
+      recall?: unknown;
+      recallThrows?: PluginError;
+      rememberThrows?: PluginError;
+      forgetThrows?: PluginError;
+    }): void {
+      bus.registerService('memory:recall', 'memory', async (ctx, input) => {
+        state.calls.push({
+          hook: 'recall',
+          agentId: ctx.agentId,
+          userId: ctx.userId ?? '',
+          input,
+        });
+        if (state.recallThrows !== undefined) throw state.recallThrows;
+        return state.recall ?? { statements: [], degraded: [] };
+      });
+      bus.registerService('memory:remember', 'memory', async (ctx, input) => {
+        state.calls.push({
+          hook: 'remember',
+          agentId: ctx.agentId,
+          userId: ctx.userId ?? '',
+          input,
+        });
+        if (state.rememberThrows !== undefined) throw state.rememberThrows;
+        return { id: 'mem-1' };
+      });
+      bus.registerService('memory:forget', 'memory', async (ctx, input) => {
+        state.calls.push({
+          hook: 'forget',
+          agentId: ctx.agentId,
+          userId: ctx.userId ?? '',
+          input,
+        });
+        if (state.forgetThrows !== undefined) throw state.forgetThrows;
+        return { forgotten: true };
+      });
+    }
+
+    it('401s every facts route for an unauthenticated caller', async () => {
+      registerAuth(null);
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      for (const [handler, body] of [
+        [h.recallFacts, {}],
+        [h.rememberFact, { about: 'u', relation: 'r', value: 'v' }],
+        [h.forgetFacts, { ids: ['m1'] }],
+      ] as const) {
+        const { res, captured } = mkRes();
+        await handler(mkReq({ agentId: 'a1' }, body), res);
+        expect(captured.statusCode).toBe(401);
+      }
+    });
+
+    it('404s an unreachable agent before touching any memory hook', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      const state = { calls: [] as Array<{ hook: string }> };
+      registerFacts(state as never);
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      for (const [handler, body] of [
+        [h.recallFacts, {}],
+        [h.rememberFact, { about: 'u', relation: 'r', value: 'v' }],
+        [h.forgetFacts, { ids: ['m1'] }],
+      ] as const) {
+        const { res, captured } = mkRes();
+        await handler(mkReq({ agentId: 'a9' }, body), res);
+        expect(captured.statusCode).toBe(404);
+      }
+      expect(state.calls).toEqual([]);
+    });
+
+    it('503s when the matching memory service is absent', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const cases: Array<
+        [(req: RouteRequest, res: RouteResponse) => Promise<void>, unknown]
+      > = [
+        [h.recallFacts, {}],
+        [h.rememberFact, { about: 'u', relation: 'r', value: 'v' }],
+        [h.forgetFacts, { ids: ['m1'] }],
+      ];
+      for (const [handler, body] of cases) {
+        const { res, captured } = mkRes();
+        await handler(mkReq({ agentId: 'a1' }, body), res);
+        expect(captured.statusCode).toBe(503);
+        expect(captured.body).toEqual({ error: 'memory-unavailable' });
+      }
+    });
+
+    it.each([
+      ['not an object', 42],
+      ['an array', [1]],
+      ['an unknown field', { ownerUserId: 'user-x' }],
+      ['a blank query', { query: '  ' }],
+      ['a non-boolean profile', { profile: 'yes' }],
+      ['a non-boolean history', { history: 'false' }],
+    ])('400s a recall body that is %s', async (_name, body) => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      const state = { calls: [] as Array<unknown> };
+      registerFacts(state as never);
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.recallFacts(mkReq({ agentId: 'a1' }, body), res);
+      expect(captured.statusCode).toBe(400);
+      expect(state.calls).toEqual([]);
+    });
+
+    it('maps profile and history to the product recall call on the agent ctx', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      const state = {
+        calls: [] as Array<{ hook: string; agentId: string; userId: string; input: unknown }>,
+        recall: { statements: [], degraded: [] },
+      };
+      registerFacts(state);
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+
+      const { res, captured } = mkRes();
+      await h.recallFacts(mkReq({ agentId: 'a1' }, { profile: true, history: true }), res);
+      expect(captured.statusCode).toBe(200);
+      expect(state.calls).toEqual([
+        {
+          hook: 'recall',
+          agentId: 'a1',
+          userId: 'u1',
+          input: { profile: true, activeOnly: false, limit: 100 },
+        },
+      ]);
+
+      const second = mkRes();
+      await h.recallFacts(mkReq({ agentId: 'a1' }, { query: 'tea' }), second.res);
+      expect(state.calls[1]?.input).toEqual({ query: 'tea', activeOnly: true, limit: 40 });
+    });
+
+    it('turns a product invalid-payload into a 400, never echoing the detail', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      const state = {
+        calls: [] as Array<unknown>,
+        recallThrows: new PluginError({
+          code: 'invalid-payload',
+          plugin: 'memory',
+          message: 'profile cannot be combined with query',
+        }),
+      };
+      registerFacts(state as never);
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.recallFacts(mkReq({ agentId: 'a1' }, {}), res);
+      expect(captured.statusCode).toBe(400);
+      expect(captured.body).toEqual({ error: 'invalid-memory-request' });
+    });
+
+    it.each([
+      ['missing value', { about: 'u', relation: 'r' }],
+      ['a blank about', { about: ' ', relation: 'r', value: 'v' }],
+      ['an authority field', { about: 'u', relation: 'r', value: 'v', agentId: 'a2' }],
+      ['a non-string when', { about: 'u', relation: 'r', value: 'v', when: 5 }],
+    ])('400s a remember body with %s', async (_name, body) => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      const state = { calls: [] as Array<unknown> };
+      registerFacts(state as never);
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.rememberFact(mkReq({ agentId: 'a1' }, body), res);
+      expect(captured.statusCode).toBe(400);
+      expect(state.calls).toEqual([]);
+    });
+
+    it('remembers on the agent ctx and returns only the new id', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      const state = {
+        calls: [] as Array<{ hook: string; agentId: string; userId: string; input: unknown }>,
+      };
+      registerFacts(state);
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.rememberFact(
+        mkReq({ agentId: 'a1' }, { about: 'user', relation: 'likes', value: 'tea', when: '2026-01-01T00:00:00Z' }),
+        res,
+      );
+      expect(captured.statusCode).toBe(200);
+      expect(captured.body).toEqual({ id: 'mem-1' });
+      expect(state.calls).toEqual([
+        {
+          hook: 'remember',
+          agentId: 'a1',
+          userId: 'u1',
+          input: {
+            about: 'user',
+            relation: 'likes',
+            value: 'tea',
+            when: '2026-01-01T00:00:00Z',
+          },
+        },
+      ]);
+    });
+
+    it.each([
+      ['a missing ids', {}],
+      ['an empty ids', { ids: [] }],
+      ['a blank id', { ids: [''] }],
+      ['101 ids', { ids: Array.from({ length: 101 }, (_, i) => `m${i}`) }],
+      ['an extra field', { ids: ['m1'], ownerUserId: 'user-x' }],
+    ])('400s a forget body with %s', async (_name, body) => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      const state = { calls: [] as Array<unknown> };
+      registerFacts(state as never);
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.forgetFacts(mkReq({ agentId: 'a1' }, body), res);
+      expect(captured.statusCode).toBe(400);
+      expect(state.calls).toEqual([]);
+    });
+
+    it('forgets on the agent ctx and says so only after the hook returns', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      const state = {
+        calls: [] as Array<{ hook: string; agentId: string; userId: string; input: unknown }>,
+      };
+      registerFacts(state);
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.forgetFacts(mkReq({ agentId: 'a1' }, { ids: ['m1', 'm2'] }), res);
+      expect(captured.statusCode).toBe(200);
+      expect(captured.body).toEqual({ forgotten: true });
+      expect(state.calls).toEqual([
+        { hook: 'forget', agentId: 'a1', userId: 'u1', input: { ids: ['m1', 'm2'] } },
+      ]);
+    });
+
+    it('propagates a product failure rather than claiming it forgot', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      const state = {
+        calls: [] as Array<unknown>,
+        forgetThrows: new Error('store down'),
+      };
+      registerFacts(state as never);
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await expect(
+        h.forgetFacts(mkReq({ agentId: 'a1' }, { ids: ['m1'] }), res),
+      ).rejects.toThrow('store down');
+      expect(captured.statusCode).toBe(0);
+    });
+  });
 });

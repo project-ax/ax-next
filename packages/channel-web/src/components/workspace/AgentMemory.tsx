@@ -142,7 +142,7 @@ export function AgentMemory({
  * the reader's is at risk — but that is now argued there rather than assumed
  * here.
  */
-function RulesWithoutEditor({
+export function RulesWithoutEditor({
   agentName,
   status,
   onRetry,
@@ -186,7 +186,7 @@ function RulesWithoutEditor({
   );
 }
 
-function RulesEditor({
+export function RulesEditor({
   agentName,
   initial,
   onSave,

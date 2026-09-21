@@ -54,6 +54,7 @@ import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
 // The profile whitelist IS the normalizer's slot list — the same constant, not
 // a copy (design 3.3/4.1, Invariant 4). `__tests__/slots.test.ts` fails if a
 // second copy of the eight ever appears in production source.
+import { selectProfileRows } from './profile.js';
 import { SLOTS } from './slots.js';
 import {
   approxTokens,
@@ -187,43 +188,7 @@ const STORE_SECTION_PREAMBLE = [
 ].join('\n');
 
 /** Provenance values the engine can emit, in descending trust (design §3.4). */
-/**
- * The order the profile renders in - `SLOTS` declaration order, frozen into a
- * lookup so the block is byte-stable across runs.
- *
- * The store answers the profile query in RECENCY order, which is the wrong
- * order for a profile: it makes the block churn every time any single fact is
- * re-stated, and a prompt that changes for no reason is one that cannot be
- * cached or diffed. Slot order is arbitrary but stable, which is the property
- * that matters.
- *
- * It lives here rather than in `slots.ts` because it is a RENDERING concern.
- * `slots.ts` owns the vocabulary and the derivation; how the injected block
- * sorts them is this file's business.
- */
-const SLOT_RANK = new Map<string, number>(SLOTS.map((slot, i) => [slot, i]));
-
-/** Sort comparator over slot names; unknown slots sort last, then by name. */
-function compareSlots(a: string, b: string): number {
-  const ra = SLOT_RANK.get(a) ?? SLOTS.length;
-  const rb = SLOT_RANK.get(b) ?? SLOTS.length;
-  return ra - rb || a.localeCompare(b);
-}
-
 const KNOWN_PROVENANCE = new Set(['human', 'agent', 'extracted']);
-
-/**
- * Trust rank for picking ONE active row per slot. Higher wins.
- *
- * Two active rows can legitimately share a slot: §3.4's rule 3 closes a row
- * only with one of equal-or-higher provenance, so a `human` row and a later
- * `extracted` row about the same slot both stay active — that immunity is the
- * whole reason a person's correction survives the next chat mention. The
- * profile renders one line per slot, so it has to pick, and picking anything
- * other than the highest-provenance row would undo the immunity at render
- * time and show the person the correction they already overrode.
- */
-const PROVENANCE_RANK: Record<string, number> = { human: 3, agent: 2, extracted: 1 };
 
 /**
  * Reciprocal-rank constant for the digest's ranking — the same `k = 60` the
@@ -267,18 +232,9 @@ function renderSubject(about: string, ownerUserId: string): string {
  * from `relation` — that mapping has one owner and it is not this file.
  */
 function renderProfile(rows: EngineFactRecord[], maxRows: number): string {
-  const bySlot = new Map<string, EngineFactRecord>();
-  for (const row of rows) {
-    const slot = row.slot;
-    if (typeof slot !== 'string' || slot === '') continue;
-    const held = bySlot.get(slot);
-    if (held === undefined || beatsForSlot(row, held)) bySlot.set(slot, row);
-  }
-
-  const lines = [...bySlot.entries()]
-    .sort(([a], [b]) => compareSlots(a, b))
-    .slice(0, maxRows)
-    .map(([slot, row]) => {
+  const lines = selectProfileRows(rows, maxRows)
+    .map((row) => {
+      const slot = row.slot!;
       const value = escapeStatementText(row.value);
       if (value === '') return null;
       return `- ${escapeStatementText(slot)}: ${value}${renderNotedAt(row.when)} ${provenanceTag(row.provenance)}`;
@@ -290,15 +246,6 @@ function renderProfile(rows: EngineFactRecord[], maxRows: number): string {
   // that is what the query asked for — so repeating "you" on ten consecutive
   // lines would be ten tokens saying nothing.
   return ['### Profile', '', ...lines].join('\n');
-}
-
-/** Higher provenance wins; equal provenance, the later `when`; then the id, for stability. */
-function beatsForSlot(candidate: EngineFactRecord, held: EngineFactRecord): boolean {
-  const rc = PROVENANCE_RANK[String(candidate.provenance)] ?? 0;
-  const rh = PROVENANCE_RANK[String(held.provenance)] ?? 0;
-  if (rc !== rh) return rc > rh;
-  if (candidate.when !== held.when) return candidate.when > held.when;
-  return candidate.id > held.id;
 }
 
 /**

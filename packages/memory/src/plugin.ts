@@ -10,7 +10,7 @@ import {
 
 import { PLUGIN_NAME } from './plugin-name.js';
 import { resolveOwnerUserId } from './owner.js';
-import { deriveSlot } from './slots.js';
+import { deriveSlot, SLOTS } from './slots.js';
 import { rewriteSpeaker } from './subject.js';
 import {
   NO_CREDENTIAL_EVENT,
@@ -21,6 +21,8 @@ import {
   noCredentialFields,
 } from './failure.js';
 import { runObserver, type ObserverRecordInput, type ObserverResult } from './observer.js';
+import { selectProfileRows } from './profile.js';
+import { formatEvidenceWhen } from './evidence.js';
 import { MEMORY_RECALL_TOOL_HOOK, registerMemoryRecall } from './recall-tool.js';
 import type { UntrustedMessage } from './transcript.js';
 import {
@@ -122,8 +124,10 @@ const FORBIDDEN_PAYLOAD_FIELDS = ['provenance', 'ownerUserId'] as const;
  * (it ships the shared contract suite), so it is a devDependency and only
  * `import type` is allowed from it here anyway — and a structural local
  * declaration keeps the production graph honest about what actually crosses
- * the bus. Only the fields this plugin forwards are named; `provenance` and
- * `closedBy` are engine-side columns that deliberately do not reach a caller.
+ * the bus. `provenance` and `closedBy` reach a caller only through the bounded
+ * paths in the recall handler: `provenance` feeds profile selection and
+ * `closedBy` is forwarded only when it names a row already in the same
+ * owner-scoped page — never verbatim.
  */
 interface EngineFactRecord {
   id: string;
@@ -133,6 +137,9 @@ interface EngineFactRecord {
   when: string;
   until?: string;
   kind?: MemoryStatementKind;
+  slot?: string;
+  closedBy?: string;
+  provenance?: string;
 }
 
 interface EngineRecallOutput {
@@ -367,6 +374,15 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           if (input.activeOnly !== undefined && typeof input.activeOnly !== 'boolean') {
             throw invalid('activeOnly must be a boolean when set', MEMORY_RECALL_HOOK);
           }
+          if (input.profile !== undefined && typeof input.profile !== 'boolean') {
+            throw invalid('profile must be a boolean when set', MEMORY_RECALL_HOOK);
+          }
+          if (
+            input.profile === true &&
+            (input.query !== undefined || input.about !== undefined)
+          ) {
+            throw invalid('profile scopes itself and cannot combine with query or about', MEMORY_RECALL_HOOK);
+          }
           if (
             input.limit !== undefined &&
             (typeof input.limit !== 'number' || !Number.isFinite(input.limit) || input.limit < 1)
@@ -379,11 +395,12 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             maxRecallLimit,
           );
 
+          const asOf = new Date().toISOString();
           const raw = await bus.call<unknown, EngineRecallOutput | null>(
             FACTS_RECALL_HOOK,
             ctx,
             {
-              limit,
+              limit: input.profile === true ? Math.max(32, limit) : limit,
               // Owner scope, pushed DOWN into the engine's query rather than
               // applied to the rows that come back. A post-filter under a
               // `limit` silently returns fewer rows than asked for — ask for
@@ -396,9 +413,11 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
               // `about: 'user'` means "the person talking", and what a write
               // stored under that is `user:<userId>`. Same rewrite, both
               // directions — see `subject.ts`.
-              ...(input.about !== undefined
-                ? { about: rewriteSpeaker(input.about, ownerUserId) }
-                : {}),
+              ...(input.profile === true
+                ? { about: rewriteSpeaker('user', ownerUserId), slots: [...SLOTS] }
+                : input.about !== undefined
+                  ? { about: rewriteSpeaker(input.about, ownerUserId) }
+                  : {}),
               ...(input.query !== undefined ? { query: input.query } : {}),
               ...(input.query !== undefined
                 ? { poolSize: Math.min(200, Math.max(40, Math.ceil(limit * 40 / 15))) }
@@ -439,8 +458,33 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             });
           }
 
+          for (const row of result.statements) {
+            toMemoryStatement(row);
+          }
+          const ownedIds = new Set(result.statements.map((row) => row.id));
+          const page =
+            input.profile === true && input.activeOnly !== false
+              ? selectProfileRows(result.statements, limit)
+              : result.statements.slice(0, limit);
+
           return {
-            statements: result.statements.map(toMemoryStatement),
+            statements: page.map((row) => {
+              const mapped = toMemoryStatement(row);
+              return {
+                ...mapped,
+                aboutText:
+                  row.about === rewriteSpeaker('user', ownerUserId)
+                    ? 'you'
+                    : row.about.replace(/_/g, ' '),
+                whenText: formatEvidenceWhen(mapped, asOf),
+                ...(row.until !== undefined
+                  ? { closure: row.closedBy === undefined ? ('forgotten' as const) : ('replaced' as const) }
+                  : {}),
+                ...(typeof row.closedBy === 'string' && ownedIds.has(row.closedBy)
+                  ? { closedBy: row.closedBy }
+                  : {}),
+              };
+            }),
             // Verbatim. Not re-derived, not re-ordered, not filtered, not
             // "corrected" — including the asymmetry where an empty store with
             // no providers raises `'semantic'` but not `'ranking'` (embedding
@@ -808,9 +852,11 @@ const MEMORY_STATEMENT_KINDS: readonly MemoryStatementKind[] = [
  * An explicit field list, not a spread. Two reasons, and the second is the
  * load-bearing one:
  *
- * 1. `provenance` and `closedBy` are engine-side columns. Handing `closedBy`
- *    to a caller leaks another statement's id into a payload; handing
- *    `provenance` out starts the argument about whether it can be handed back
+ * 1. `provenance` and `closedBy` are engine-side columns. `closedBy` reaches a
+ *    caller only through the recall handler's bounded owner check — it names a
+ *    row only when that row is already in the same owner-scoped page, never
+ *    verbatim — and `provenance` feeds profile selection without being handed
+ *    out, which would start the argument about whether it can be handed back
  *    IN.
  * 2. A spread would silently widen this surface every time the engine's
  *    `FactRecord` grows a column — which is how a storage detail ends up in a
@@ -871,6 +917,12 @@ function toMemoryStatement(row: EngineFactRecord): MemoryStatement {
   if (row.until !== undefined && typeof row.until !== 'string') {
     malformed('until is present but not a string');
   }
+  if (row.slot !== undefined && typeof row.slot !== 'string') {
+    malformed('slot is present but not a string');
+  }
+  if (row.closedBy !== undefined && typeof row.closedBy !== 'string') {
+    malformed('closedBy is present but not a string');
+  }
   if (
     row.kind !== undefined &&
     !MEMORY_STATEMENT_KINDS.includes(row.kind as MemoryStatementKind)
@@ -886,5 +938,6 @@ function toMemoryStatement(row: EngineFactRecord): MemoryStatement {
     when: row.when,
     ...(row.until !== undefined ? { until: row.until } : {}),
     ...(row.kind !== undefined ? { kind: row.kind } : {}),
+    ...(row.slot !== undefined ? { slot: row.slot } : {}),
   };
 }

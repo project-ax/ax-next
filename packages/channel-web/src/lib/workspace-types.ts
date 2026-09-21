@@ -717,6 +717,27 @@ export interface MemoryDoc {
 export interface AgentMemoryRead {
   rules: { status: WorkspaceReadStatus; doc: MemoryDoc | null };
   learned: { status: WorkspaceReadStatus; docs: MemoryDoc[] };
+  factsAvailable?: boolean;
+}
+
+export interface FactMemoryStatement {
+  id: string;
+  about: string;
+  relation: string;
+  value: string;
+  when: string;
+  until?: string;
+  kind?: string;
+  slot?: string;
+  closedBy?: string;
+  closure?: 'replaced' | 'forgotten';
+  whenText?: string;
+  aboutText?: string;
+}
+
+export interface FactMemoryPage {
+  statements: FactMemoryStatement[];
+  degraded: string[];
 }
 
 /**
