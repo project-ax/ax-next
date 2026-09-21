@@ -9,6 +9,8 @@ export {
   FACTS_SUPERSEDE_HOOK,
 } from './plugin.js';
 export { SPEAKER_SUBJECT, rewriteSpeaker } from './subject.js';
+export { SLOTS, PENDING_SLOT, SLOT_SYNONYMS, deriveSlot, relationToWords } from './slots.js';
+export type { Slot } from './slots.js';
 export { resolveOwnerUserId } from './owner.js';
 export { DEFAULT_RECALL_LIMIT } from './types.js';
 export type {
