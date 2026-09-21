@@ -1462,6 +1462,14 @@ describeIfHelm('ax-next chart: previously unstampable env (TASK-347)', () => {
 // The list of gates is DERIVED from values.yaml, not typed out here: a boolean
 // added tomorrow is covered the day it lands, and no comment can add or remove
 // an entry.
+//
+// KNOWN COVERAGE GAP, stated so nobody assumes otherwise: `helm template` does
+// not emit NOTES.txt, so the whole-render comparison below never observes the
+// five gate rewrites in that file. Closing it would need `helm install
+// --dry-run`, which demands a reachable cluster — neither this suite nor CI has
+// one. NOTES.txt is operator-facing text with no capability behind it, so the
+// exposure is a misleading install message, not a grant. If a NOTES.txt gate
+// ever starts deciding something real, it needs a different guard, not this one.
 function booleanValuePaths(node: unknown, prefix = ''): string[] {
   if (typeof node === 'boolean') return prefix ? [prefix] : [];
   if (node !== null && typeof node === 'object' && !Array.isArray(node)) {
