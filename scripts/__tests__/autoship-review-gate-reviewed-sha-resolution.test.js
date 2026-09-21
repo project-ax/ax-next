@@ -89,36 +89,50 @@
 //
 // The doc IS the implementation -- there is no second copy in a script to drift from it.
 //
-// MUTANTS RUN, NOT REASONED ABOUT. Re-derived 2026-09-21 on git 2.52.0, macOS, bash 3.2
-// + zsh 5.9, against the head this file ships with -- baseline 38 here, 45 with the
+// MUTANTS RUN, NOT REASONED ABOUT. Measured 2026-09-21 on git 2.52.0, macOS, bash 3.2
+// + zsh 5.9, against the head this file ships with -- baseline 45 here, 52 with the
 // sibling text-scan guard collected, which is how the counts below were taken. Every
-// mutant still collects 45, so none of them reddened by making the suite smaller.
+// mutant still collects 52, so none of them reddened by making the suite smaller.
 // (The two earlier tables in this file's history were both wrong in the flattering
 // direction, both because they were measured against an INTERMEDIATE state of the patch
 // and carried forward unedited. A mutant table is a claim about a specific head. Re-run
-// it against the head you ship, or delete it -- a stale table reads as evidence.)
+// it against the head you ship, or delete it -- a stale table reads as evidence. Every
+// number below was re-measured for TASK-507, including the ones inherited from 479, and
+// three of them moved.)
 //
-//   - replace the file transport with the pre-TASK-507 raw splice
-//     (`RAW_REVIEWED=$(cat ...)` -> `RAW_REVIEWED=<the value>`, substituted in) -> 8
-//     red: the four injection payloads x both shells. Two of them redden on the canary
-//     (a file appeared on disk), two on the base (the gate ranged from the head, i.e.
-//     reported "fully reviewed" for unreviewed code). Nothing else moves -- the fix
-//     changed no behaviour for a well-formed handoff.
-//   - replace the file transport with a quoted-delimiter here-doc
-//     (`IFS= read -r RAW_REVIEWED <<'SHA'` / value / `SHA`) -> 4 red: the
-//     newline+delimiter payload and the multi-line payload x both shells. The one-line
-//     `$(...)` and backtick cases stay GREEN, which is the entire point of recording
-//     this mutant: a here-doc passes the test you would have thought to write.
+//   - restore the pre-TASK-507 raw splice: `RAW_REVIEWED=$(cat -- "$f")` becomes
+//     `eval "RAW_REVIEWED=$(cat -- "$f")"`, which is byte-for-byte what the orchestrator
+//     pasting the value into the assignment did -> 10 red: all five injection cases x
+//     both shells. Four redden on the canary sweep (a file appeared on disk) and the
+//     fifth, `$(git rev-parse origin/feat)`, reddens on the BASE: it creates no file,
+//     resolves to the head, and makes the gate report "fully reviewed" for unreviewed
+//     code. Nothing else moves -- the fix changed no behaviour for a well-formed
+//     handoff.
+//   - replace the transport with a quoted-delimiter here-doc (`IFS= read -r
+//     RAW_REVIEWED <<'SHA'` / value / `SHA`, eval'd so the value is spliced between the
+//     delimiters the way an operator would splice it) -> 3 red: the newline+delimiter
+//     payload x both shells, plus the static here-doc scan.
+//     READ THIS ONE BEFORE CHANGING THE TRANSPORT. The one-line `$(...)`, the backtick,
+//     the QUIET `$(git rev-parse …)` and the multi-line payloads all stay GREEN under
+//     the here-doc, because `read` takes the first line and the rest is inert. A
+//     here-doc passes every test you would have thought to write. Exactly one payload
+//     in this file separates it from a real fix, and that is why it is here.
 //   - delete the hex whitelist arm (`'' | *[!0-9a-fA-F]*)`), keeping the transport ->
-//     8 red: `-`, empty, whitespace, multi-line, x both shells. The injection payloads
-//     stay green, because the transport alone already makes them inert. The two halves
-//     cover different things and neither is decoration on the other.
+//     3 red: the `HEAD` case x both shells, plus the static hex scan. Stated honestly
+//     rather than inflated: with the transport in place, `-`, empty, whitespace and the
+//     multi-line values all still fail closed, because `rev-parse --verify` cannot
+//     resolve them either. What the whitelist uniquely closes is the COMMIT-ISH class
+//     -- `HEAD`, a branch name, `origin/feat` -- which resolves, IS an ancestor, and
+//     yields an EMPTY delta. That was named as an open residual by TASK-479 and this
+//     is the arm that closes it. It is also the layer that survives a future change of
+//     transport, which is the other reason it stays.
 //   - delete ONLY the `merge-base --is-ancestor` arm -> 2 red: the off-branch case x
-//     both shells.
+//     both shells. Carrying its own property, not decoration on the resolve.
 //   - drop the `|| { ... exit 1; }` guard from the `git fetch` line -> 2 red: the
-//     failed-fetch case x both shells.
-//   - change the fail-closed arm to `exit 1` instead of falling back to origin/main
-//     -> 16 red. Recorded because it is the mutant a reader expects to PASS ("halting
+//     failed-fetch case x both shells. The two stale directions are not symmetric, and
+//     the one that hides work is the one this gate exists to close.
+//   - change both fail-closed arms to `exit 1` instead of widening to origin/main
+//     -> 26 red. Recorded because it is the mutant a reader expects to PASS ("halting
 //     is also closed"). It is not what the gate is specified to do: Q2's contract is
 //     that an unusable reviewed-sha means the whole branch is unreviewed, which keeps
 //     the SERIALIZED queue moving through an independent pass instead of stalling every
@@ -134,8 +148,7 @@
 //     belt-and-braces, kept because it is the visible assertion a future edit would have
 //     to delete on purpose in order to reintroduce a raw splice.
 //   - revert the handoff field line to `reviewed-sha: <sha> | -` -> 1 red (the
-//     field-line test). Revert the builder-prompt bullet to its pre-TASK-479 wording ->
-//     1 red (the bullet test). The two contract halves are independently pinned.
+//     field-line test).
 //
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally -- no
 // network, no Docker, no build.
