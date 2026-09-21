@@ -559,9 +559,9 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
       // break it, at the cost of every failure being invisible unless it
       // emits an event — which is why `failure.ts` exists and why the tests
       // assert an event on every failure path, not only on the happy one.
-      // eslint-disable-next-line @typescript-eslint/require-await -- the whole
-      // point is that nothing here is awaited; `SubscriberHandler` is typed as
-      // returning a promise, so the handler is `async` and the body is not.
+      // `async` with nothing awaited inside, deliberately: `SubscriberHandler`
+      // is typed as returning a promise, and the whole point of this handler
+      // is that it awaits nothing.
       bus.subscribe<{ outcome?: unknown }>(CHAT_END_HOOK, PLUGIN_NAME, async (ctx, payload) => {
         // Fire-and-forget. `void` rather than `await`, and the whole body is
         // already non-throwing, so there is nothing here for `fire` to log.
