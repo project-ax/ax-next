@@ -207,20 +207,22 @@ function realLines(block) {
 }
 
 /**
- * The Q2 post-review-delta block: the one that binds `REVIEWED_SHA` and scans the
- * delta's FILES over a two-dot range.
+ * The Q2 post-review-delta block: the one that scans the delta's FILES over a two-dot
+ * range ending at the PR's branch.
  *
- * Located structurally rather than by any line this file is asserting about, so that
- * mutating the code under test cannot make the extraction return nothing. That coupling
+ * Located by its OUTPUT — the two lines that are the gate's whole product and that no
+ * mutant below touches — rather than by any line this file asserts about. That coupling
  * is the trap `autoship-ci-run-lookup-full-sha.test.js` hit and documented: a guard
  * whose extractor keys on the line it is guarding reports "vacuous", not "broken", when
- * that line dies. In particular it does NOT key on the transport (`REVIEWED_SHA_FILE`,
- * `cat`), because the transport is the thing every mutant below replaces.
+ * that line dies. Measured here, not assumed: an earlier draft keyed on `^REVIEWED_SHA=`
+ * and the "fail closed by exiting instead of widening" mutant deleted both of those
+ * lines, so the whole file collapsed to one vacuity failure instead of the 16
+ * behavioural ones it should report.
  */
 function q2Block() {
   const md = readFileSync(AUTO_SHIP_DOC, 'utf8');
   const blocks = bashBlocks(md).filter(
-    (b) => /^\s*REVIEWED_SHA=/m.test(b) && /--name-only[^\n]*\.\.(?!\.)/.test(b),
+    (b) => /--name-only[^\n]*\.\.(?!\.)/.test(b) && /origin\/\$\{BRANCH\}/.test(b),
   );
   return blocks.length === 1 ? blocks[0] : undefined;
 }
@@ -484,7 +486,7 @@ describe('the Q2 block is where this guard thinks it is (TASK-479)', () => {
   it('extracts exactly one post-review-delta block from the skill', () => {
     expect(
       Q2,
-      `${SKILL_PATH}: could not find exactly one fenced bash block that binds \`REVIEWED_SHA\` and scans a two-dot range with \`--name-only\`. Every assertion below runs that block, so a broken extraction would pass all of them`,
+      `${SKILL_PATH}: could not find exactly one fenced bash block that scans a two-dot \`--name-only\` range ending at \`origin/\${BRANCH}\`. Every assertion below runs that block, so a broken extraction would pass all of them`,
     ).not.toBeUndefined();
   });
 
