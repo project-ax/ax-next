@@ -247,7 +247,7 @@ describe('@ax/preset-k8s wiring', () => {
     expect(vs!.manifest.registers).toEqual(['services:validate']);
   });
 
-  it('loads @ax/memory-facts-postgres and registers all FIVE facts hooks (TASK-423)', () => {
+  it('loads @ax/memory-facts-postgres and registers all SIX facts hooks (TASK-423)', () => {
     // Invariant 3, and the window this card closes: before TASK-423 the
     // preset loaded NO facts engine, so `memory:facts:*` was unreachable in
     // production no matter what the CLI did. The assertion that matters is
@@ -256,10 +256,10 @@ describe('@ax/preset-k8s wiring', () => {
     // memory-STRATA bundle correctly lives, because it needs an Anthropic
     // key; a facts engine has no LLM dependency).
     //
-    // All five hooks are listed by name on purpose, the same way
+    // All six hooks are listed by name on purpose, the same way
     // packages/cli/src/__tests__/memory-facts-wiring.test.ts lists them: a
     // hook that exists only in its own package's contract test is exactly the
-    // half-wired shape this pins against, and `toEqual` means the SIXTH hook
+    // half-wired shape this pins against, and `toEqual` means the SEVENTH hook
     // someone adds has to be added here too rather than quietly not being.
     const plugins = createK8sPlugins(stubConfig);
     const facts = plugins.find(
@@ -269,6 +269,7 @@ describe('@ax/preset-k8s wiring', () => {
     expect(facts!.manifest.registers).toEqual([
       'memory:facts:record',
       'memory:facts:recall',
+      'memory:facts:scan',
       'memory:facts:supersede',
       'memory:facts:clear',
       'memory:facts:reindex',
