@@ -1,7 +1,15 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { HookBus, makeAgentContext, type AgentContext, type Plugin } from '@ax/core';
+import {
+  HookBus,
+  makeAgentContext,
+  type AgentContext,
+  type LlmCallInput,
+  type LlmCallOutput,
+  type Logger,
+  type Plugin,
+} from '@ax/core';
 import { createMemoryFactsSqlitePlugin } from '@ax/memory-facts-sqlite';
 
 import { createMemoryPlugin, type MemoryPluginConfig } from '../plugin.js';
@@ -35,6 +43,13 @@ import type {
  * not the production graph. `src/` must reach the engine through the bus, and
  * does.
  */
+/** One log line a test can assert on. */
+export interface LoggedEvent {
+  level: 'debug' | 'info' | 'warn' | 'error';
+  event: string;
+  bindings: Record<string, unknown>;
+}
+
 export interface MemoryHarness {
   bus: HookBus;
   ctx: (opts?: { agentId?: string; userId?: string; conversationId?: string; source?: 'routine' | 'user'; sessionId?: string }) => AgentContext;
@@ -42,6 +57,26 @@ export interface MemoryHarness {
   remember: (input: MemoryRememberInput, ctx?: AgentContext) => Promise<MemoryRememberOutput>;
   forget: (input: MemoryForgetInput, ctx?: AgentContext) => Promise<MemoryForgetOutput>;
   memoryPlugin: Plugin;
+  /**
+   * The engine's sqlite file. Exposed so a test can open a SECOND connection
+   * and count EVERY row, closed ones included — `memory:recall` only ever
+   * shows active, owner-scoped rows, and "the batch rolled back" is a
+   * question about every row.
+   */
+  databasePath: string;
+  /** Every log line any harness ctx emitted, in order. */
+  logs: LoggedEvent[];
+  /** Every `llm:call:openrouter` request the observer made, in order. */
+  llmCalls: LlmCallInput[];
+  /**
+   * Await every DETACHED observer run started so far.
+   *
+   * The observer returns to `chat:end` before its work finishes — that is the
+   * property the card is about — so a test that asserted on the store right
+   * after `fire` would be racing it. This awaits the plugin's own handle on
+   * the detached promise rather than sleeping.
+   */
+  settleObserver: () => Promise<void>;
   teardown: () => Promise<void>;
 }
 
@@ -49,16 +84,52 @@ export const DEFAULT_AGENT = 'agent-1';
 export const ALICE = 'user-alice';
 export const BOB = 'user-bob';
 
+export interface MemoryHarnessOptions {
+  /**
+   * The stub extraction provider. Registered as `llm:call:openrouter` — the
+   * provider `DEFAULT_MEMORY_OPS_MODEL` routes to. Omit it entirely to build
+   * a harness with NO provider registered, which is the degraded shape the
+   * `optionalCalls` entry describes.
+   */
+  llm?: (input: LlmCallInput, call: number) => Promise<LlmCallOutput> | LlmCallOutput;
+}
+
 export async function makeMemoryHarness(
   config: MemoryPluginConfig = {},
+  options: MemoryHarnessOptions = {},
 ): Promise<MemoryHarness> {
   const bus = new HookBus();
   const dir = await mkdtemp(join(tmpdir(), 'ax-memory-'));
-  const engine = createMemoryFactsSqlitePlugin({ databasePath: join(dir, 'facts.db') });
+  const databasePath = join(dir, 'facts.db');
+  const engine = createMemoryFactsSqlitePlugin({ databasePath });
   await engine.init({ bus, config: {} });
 
-  const memoryPlugin = createMemoryPlugin(config);
+  const logs: LoggedEvent[] = [];
+  const llmCalls: LlmCallInput[] = [];
+  const detached: Array<Promise<void>> = [];
+
+  if (options.llm !== undefined) {
+    const llm = options.llm;
+    bus.registerService<LlmCallInput, LlmCallOutput>(
+      'llm:call:openrouter',
+      'stub-llm',
+      async (_ctx, input) => {
+        llmCalls.push(input);
+        return llm(input, llmCalls.length);
+      },
+    );
+  }
+
+  const memoryPlugin = createMemoryPlugin({
+    ...config,
+    onObserverDetached: (work) => {
+      detached.push(work);
+      config.onObserverDetached?.(work);
+    },
+  });
   await memoryPlugin.init({ bus, config: {} });
+
+  const logger = capturingLogger(logs);
 
   const ctx: MemoryHarness['ctx'] = (opts = {}) =>
     makeAgentContext({
@@ -66,6 +137,7 @@ export async function makeMemoryHarness(
       agentId: opts.agentId ?? DEFAULT_AGENT,
       userId: opts.userId ?? ALICE,
       workspace: { rootPath: '/tmp' },
+      logger,
       ...(opts.conversationId !== undefined ? { conversationId: opts.conversationId } : {}),
       ...(opts.source !== undefined ? { source: opts.source } : {}),
     });
@@ -74,6 +146,19 @@ export async function makeMemoryHarness(
     bus,
     ctx,
     memoryPlugin,
+    databasePath,
+    logs,
+    llmCalls,
+    settleObserver: async () => {
+      // Loop: a settle can race a run that starts another. Bounded so a
+      // pathological test cannot hang the suite.
+      for (let i = 0; i < 100; i++) {
+        const pending = [...detached];
+        if (pending.length === 0) return;
+        await Promise.all(pending);
+        if (detached.length === pending.length) return;
+      }
+    },
     recall: (input, c) => bus.call<MemoryRecallInput, MemoryRecallOutput>('memory:recall', c ?? ctx(), input),
     remember: (input, c) =>
       bus.call<MemoryRememberInput, MemoryRememberOutput>('memory:remember', c ?? ctx(), input),
@@ -84,6 +169,27 @@ export async function makeMemoryHarness(
       await rm(dir, { recursive: true, force: true });
     },
   };
+}
+
+export function capturingLogger(sink: LoggedEvent[]): Logger {
+  const at =
+    (level: LoggedEvent['level']) =>
+    (event: string, bindings?: Record<string, unknown>): void => {
+      sink.push({ level, event, bindings: bindings ?? {} });
+    };
+  const logger: Logger = {
+    debug: at('debug'),
+    info: at('info'),
+    warn: at('warn'),
+    error: at('error'),
+    child: () => logger,
+  };
+  return logger;
+}
+
+/** Find every captured line with this event name. */
+export function eventsNamed(logs: readonly LoggedEvent[], event: string): LoggedEvent[] {
+  return logs.filter((line) => line.event === event);
 }
 
 /**
