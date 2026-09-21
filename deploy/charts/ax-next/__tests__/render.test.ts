@@ -1505,6 +1505,18 @@ const QUOTED_BOOL_CONTEXT: readonly string[] = [
   '--kube-version', '1.28.0',
 ];
 
+/**
+ * Per-gate additions to the context above, for gates whose only observable
+ * effect is on ANOTHER gate. `sandbox.devServices.enabled` renders no manifest
+ * of its own — its teeth are the 1.29+ SidecarContainers guard — so it is only
+ * measurable with the skip flag off. The shared context has to leave that flag
+ * ON (or every other row in the matrix would fail the guard and compare one
+ * error against another), hence the override.
+ */
+const PER_GATE_CONTEXT: Readonly<Record<string, readonly string[]>> = {
+  'sandbox.devServices.enabled': ['--set', 'sandbox.devServices.skipKubeVersionCheck=false'],
+};
+
 describeIfHelm('ax-next chart: a quoted boolean cannot flip a gate (TASK-504)', () => {
   // Non-vacuity. Every guard below is an `it.each` over BOOLEAN_PATHS, and an
   // empty list would register zero tests and report a green suite — the exact
@@ -1631,8 +1643,9 @@ describeIfHelm('ax-next chart: a quoted boolean cannot flip a gate (TASK-504)', 
     it.each(BOOLEAN_PATHS.filter((p) => !SCHEMA_ONLY_PATHS.has(p)))(
       `renders %s="${value}" exactly as the bare boolean ${value}`,
       (path) => {
-        const asBool = renderNoSchema(['--set', `${path}=${value}`]);
-        const asString = renderNoSchema(['--set-string', `${path}=${value}`]);
+        const extra = PER_GATE_CONTEXT[path] ?? [];
+        const asBool = renderNoSchema([...extra, '--set', `${path}=${value}`]);
+        const asString = renderNoSchema([...extra, '--set-string', `${path}=${value}`]);
         // Whole-render equality, not "the env var is absent": a gate that
         // fails open pulls in entire Deployments, Services and
         // NetworkPolicies, and this card is about the class, not one env var.
