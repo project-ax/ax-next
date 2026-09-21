@@ -22,6 +22,7 @@ describe('@ax/memory — manifest', () => {
       // preset -- 10.4's "one memory plugin per preset" enforced by the bus
       // rather than by a convention.
       'system-prompt:augment',
+      'tool:execute:memory_recall',
     ]);
   });
 
@@ -31,6 +32,7 @@ describe('@ax/memory — manifest', () => {
       'memory:facts:recall',
       'memory:facts:record',
       'memory:facts:supersede',
+      'tool:register',
     ]);
     // The observer, and nothing else. TASK-488 asserted `[]` here with the
     // note that an unused subscription would be the half-wired surface
@@ -40,24 +42,33 @@ describe('@ax/memory — manifest', () => {
     expect(manifest.subscribes).toEqual(['chat:end']);
   });
 
-  it('actually puts exactly those on the bus and no fifth', async () => {
+  it('actually puts exactly those on the bus and no sixth', async () => {
     const bus = new HookBus();
+    bus.registerService('tool:register', 'stub-catalog', async () => ({}));
     await createMemoryPlugin().init({ bus, config: {} });
     expect([...bus.listServices()].sort()).toEqual(
-      ['memory:recall', 'memory:remember', 'memory:forget', 'system-prompt:augment'].sort(),
+      [
+        'memory:recall',
+        'memory:remember',
+        'memory:forget',
+        'system-prompt:augment',
+        'tool:register',
+        'tool:execute:memory_recall',
+      ].sort(),
     );
   });
 
   it('names the engine as a HARD dependency — there is no honest fallback', () => {
     const { manifest } = createMemoryPlugin();
     // A memory surface with no store behind it can only answer "no memories"
-    // to a question it never asked anyone. If any of these three ever move to
+    // to a question it never asked anyone. If any of these four ever move to
     // `optionalCalls`, that answer ships.
     const optional = (manifest.optionalCalls ?? []).map((oc) => oc.hook);
     for (const engineHook of [
       'memory:facts:recall',
       'memory:facts:record',
       'memory:facts:supersede',
+      'tool:register',
     ]) {
       expect(optional).not.toContain(engineHook);
     }
@@ -182,15 +193,15 @@ describe('@ax/memory — memory:recall', () => {
     ]);
   });
 
-  it('does not populate `kind` — no engine stores one yet', async () => {
+  it('does not invent a `kind` for a human write — no classification was made', async () => {
     harness = await makeMemoryHarness();
     await harness.remember({ about: 'acme_corp', relation: 'stage', value: 'series B' });
     const { statements } = await harness.recall({ about: 'acme_corp' });
-    // Pinning the ABSENCE so nobody reads it as a bug. `kind` is declared on
-    // `MemoryStatement` for the observer card's benefit, but neither
-    // `FactStatementInput` nor `FactRecord` carries it, so there is nothing
-    // to forward. When the observer card adds the column, this test is the
-    // one that should change.
+    // Pinning the ABSENCE so nobody reads it as a bug. `memory:remember` is
+    // the human-provenance write path and no human declared a knowledge
+    // kind; the engine now CAN carry one (the extractor's `network` maps to
+    // it), but an engine that invents a classification a caller never made
+    // is fabricating provenance.
     expect(statements[0]).not.toHaveProperty('kind');
   });
 

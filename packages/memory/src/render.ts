@@ -30,7 +30,7 @@
  *    and one prose sentence — so nothing an escaped pipe protects is reachable
  *    from `augment.ts` alone. The escape is here because this helper is the
  *    shared owner for the two sinks that DO emit a pipe-delimited table: the
- *    `memory_recall` tool result, whose `Kind | When | Statement` shape is the
+ *    `memory_recall` tool result, whose `Network | When | Statement` shape is the
  *    artifact behind temporal-reasoning 90.2 vs 59.3, and the markdown export.
  *    Escaping in the shared helper rather than in each table sink is the whole
  *    point of there being one owner; a reader auditing only this sink should

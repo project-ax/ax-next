@@ -28,6 +28,7 @@ import type {
   ReindexOutput,
 } from '@ax/memory-facts-contract';
 import { createMemoryFactsPostgresPlugin } from '../plugin.js';
+import { agentScopeKey } from '../agent-scope-key.js';
 import { runFactsMigration } from '../schema.js';
 
 const JAN = '2023-01-01T00:00:00.000Z';
@@ -254,5 +255,64 @@ describe('a destroyed shared Kysely reads as store-unavailable', () => {
     expect(cause).toBeInstanceOf(Error);
     expect(cause).not.toBeInstanceOf(PluginError);
     expect((cause as Error).message).toBe('driver has already been destroyed');
+  });
+});
+
+describe('the kind-column migration', () => {
+  it('adds `kind` to a pre-TASK-492 table, and the row it already held keeps NULL', async () => {
+    await sql`DROP TABLE memory_facts_v1`.execute(db);
+    await sql`
+      CREATE TABLE memory_facts_v1 (
+        id               TEXT PRIMARY KEY,
+        agent_key        TEXT NOT NULL,
+        about            TEXT NOT NULL,
+        relation         TEXT NOT NULL,
+        value            TEXT NOT NULL,
+        slot             TEXT,
+        provenance       TEXT NOT NULL,
+        owner_user_id    TEXT,
+        conversation_id  TEXT,
+        valid_start      TEXT NOT NULL,
+        valid_end        TEXT NOT NULL,
+        transaction_time TEXT NOT NULL,
+        closed_by        TEXT,
+        batch_key        TEXT,
+        batch_seq        INTEGER
+      )
+    `.execute(db);
+    await sql`
+      INSERT INTO memory_facts_v1
+        (id, agent_key, about, relation, value, provenance,
+         valid_start, valid_end, transaction_time)
+      VALUES
+        ('legacy-1', ${agentScopeKey(ctx)}, 'user', 'likes_artist', 'Khalid', 'extracted',
+         '2023-01-01T00:00:00.000Z', '9999-12-31T23:59:59.999Z', '2023-01-01T00:00:00.000Z')
+    `.execute(db);
+
+    await runFactsMigration(db);
+
+    const legacy = await sql<{ kind: string | null }>`
+      SELECT kind FROM memory_facts_v1 WHERE id = 'legacy-1'
+    `.execute(db);
+    expect(legacy.rows[0]!.kind).toBeNull();
+
+    const out = await record({
+      statements: [
+        {
+          about: 'user',
+          relation: 'opined',
+          value: 'the food was overpriced',
+          when: JAN,
+          kind: 'opinion',
+        },
+      ],
+    });
+    expect(out.records[0]!.kind).toBe('opinion');
+
+    const recalled = await recall({ about: 'user', limit: 10 });
+    const legacyRow = recalled.statements.find((s) => s.value === 'Khalid')!;
+    const freshRow = recalled.statements.find((s) => s.value === 'the food was overpriced')!;
+    expect(legacyRow).not.toHaveProperty('kind');
+    expect(freshRow.kind).toBe('opinion');
   });
 });

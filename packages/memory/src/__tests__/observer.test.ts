@@ -168,6 +168,40 @@ describe('the observer records what chat:end produced', () => {
 
 // ---------------------------------------------------------------------------
 
+describe('the extractor\'s `network` lands as the stored `kind`, verbatim', () => {
+  it.each(['world', 'experience', 'observation', 'opinion'] as const)(
+    'stores `%s` and recalls it back as kind `%s`',
+    async (network) => {
+      const h = await withLlm(() => reply(extraction([fact({ network })])));
+      await chatEnd(h);
+
+      const { statements } = await h.recall({ limit: 20 }, h.ctx({ userId: ALICE }));
+      expect(statements).toHaveLength(1);
+      expect(statements[0]!.kind).toBe(network);
+    },
+  );
+
+  it('stores NO kind for a fact with no network field', async () => {
+    const h = await withLlm(() => reply(extraction([fact({ network: undefined })])));
+    await chatEnd(h);
+
+    const { statements } = await h.recall({ limit: 20 }, h.ctx({ userId: ALICE }));
+    expect(statements).toHaveLength(1);
+    expect(statements[0]).not.toHaveProperty('kind');
+  });
+
+  it('retries a malformed network once, then fails loud and stores nothing', async () => {
+    const h = await withLlm(() => reply(extraction([fact({ network: 'hunch' })])));
+    await chatEnd(h);
+
+    expect(h.llmCalls).toHaveLength(2);
+    expect(readRows(h.databasePath)).toHaveLength(0);
+    const failures = eventsNamed(h.logs, OBSERVER_FAILED_EVENT);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.bindings.reason).toBe('extraction-schema-failure');
+  });
+});
+
 describe('the observer never sees a tool result or an attachment body', () => {
   it('drops them all, and the extraction input contains NEITHER', async () => {
     const h = await withLlm(() => reply(extraction([fact()])));
@@ -642,6 +676,7 @@ describe('every failure path emits an event', () => {
       bus.registerService('llm:call:openrouter', 'stub-llm', async () =>
         reply(extraction([fact()])),
       );
+      bus.registerService('tool:register', 'stub-catalog', async () => ({}));
       const detached: Array<Promise<void>> = [];
       await createMemoryPlugin({ onObserverDetached: (w) => detached.push(w) }).init({
         bus,

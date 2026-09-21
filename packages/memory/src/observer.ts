@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { extractFacts, type ExtractedFact, type LlmCallFn } from './extract.js';
 import { rewriteSpeaker } from './subject.js';
+import type { MemoryStatementKind } from './types.js';
 import {
   filterDialogue,
   hasUserContent,
@@ -30,6 +31,7 @@ export interface ObserverStatement {
   provenance: 'extracted';
   ownerUserId: string;
   conversationId?: string;
+  kind?: MemoryStatementKind;
 }
 
 export interface ObserverRecordInput {
@@ -254,6 +256,7 @@ export function toStatements(
       // Provenance only, never a retrieval key — and absent rather than faked
       // when the turn has no conversation.
       ...(opts.conversationId !== undefined ? { conversationId: opts.conversationId } : {}),
+      ...(fact.kind !== undefined ? { kind: fact.kind } : {}),
     });
     // No `slot`. Slot derivation is the normalizer's job (design §3.3,
     // TASK-489), so a statement recorded here is INERT for supersession: it

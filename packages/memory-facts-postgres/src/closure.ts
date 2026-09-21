@@ -1,5 +1,5 @@
 import { sql, type Kysely, type Transaction } from 'kysely';
-import type { Provenance } from '@ax/memory-facts-contract';
+import type { FactKind, Provenance } from '@ax/memory-facts-contract';
 import { TABLE, INFINITY_SENTINEL, type MemoryFactsDatabase } from './schema.js';
 import { PENDING_SLOT } from './pending.js';
 
@@ -29,6 +29,7 @@ export interface StatementToInsert {
   provenance: Provenance;
   ownerUserId?: string;
   conversationId?: string;
+  kind?: FactKind;
   transactionTime: string;
   /** The batch's idempotency key, or absent when the caller passed none. */
   batchKey?: string;
@@ -175,6 +176,7 @@ export async function insertWithSlotClosure(
       provenance: statement.provenance,
       owner_user_id: statement.ownerUserId ?? null,
       conversation_id: statement.conversationId ?? null,
+      kind: statement.kind ?? null,
       valid_start: statement.when,
       valid_end: INFINITY_SENTINEL,
       transaction_time: statement.transactionTime,

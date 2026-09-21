@@ -50,6 +50,7 @@ async function busWatchingRecord(): Promise<{
     },
   );
   bus.registerService('memory:facts:supersede', 'stub', async () => ({ closed: [], resettled: [] }));
+  bus.registerService('tool:register', 'stub-catalog', async () => ({}));
   await createMemoryPlugin().init({ bus, config: {} });
   return {
     recorded,

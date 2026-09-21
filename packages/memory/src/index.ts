@@ -63,6 +63,17 @@ export type {
   AssembledBlock,
 } from './augment.js';
 export { resolveOwnerUserId } from './owner.js';
+export {
+  MEMORY_RECALL_DESCRIPTOR,
+  MEMORY_RECALL_TOOL_HOOK,
+  registerMemoryRecall,
+} from './recall-tool.js';
+export {
+  formatEvidenceWhen,
+  relativeTime,
+  renderEvidenceTable,
+  renderRecallResult,
+} from './evidence.js';
 export { DEFAULT_RECALL_LIMIT } from './types.js';
 export type {
   MemoryStatement,
