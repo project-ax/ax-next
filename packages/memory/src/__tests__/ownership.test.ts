@@ -73,10 +73,24 @@ describe('@ax/memory — speaker rewrite and the ownership stamp', () => {
       harness.ctx({ userId: BOB }),
     );
 
-    // The point of §3.2: without the rewrite these are one subject, one slot
-    // chain, and Bob's arrival CLOSES Alice's `lives_in`.
+    // The point of §3.2, asserted as the SUBJECT KEYS and not as a row count.
+    //
+    // This assertion was rewritten after a mutation pass: making
+    // `rewriteSpeaker` the identity function left the old version GREEN. Its
+    // comment claimed that without the rewrite "these are one subject, one
+    // slot chain, and Bob's arrival CLOSES Alice's `lives_in`" — true of the
+    // design, but not reachable from THIS hook today, because
+    // `memory:remember` sends no `slot` and a slotless row closes nothing
+    // whatever its subject is. So "2 rows, both active" held either way and
+    // the test passed for a reason unrelated to the thing it names.
+    //
+    // The keys are the property that actually exists right now, and they are
+    // what the normalizer card will hang closure off later.
     const all = await engineRecall(harness.bus, harness.ctx(), { limit: 10 });
     expect(all.statements).toHaveLength(2);
+    expect(new Set(all.statements.map((s) => s.about))).toEqual(
+      new Set([`user:${ALICE}`, `user:${BOB}`]),
+    );
     expect(all.statements.every((s) => (s as { until?: string }).until === undefined)).toBe(true);
   });
 

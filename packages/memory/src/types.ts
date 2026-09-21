@@ -54,6 +54,24 @@ export interface MemoryStatement {
   kind?: MemoryStatementKind;
 }
 
+/**
+ * ⚠ **`at` is deliberately absent, and the design table is why it looks
+ * missing.** Design §2.2's hook row reads `{query?, about?, at?, activeOnly?,
+ * limit}`, but §4.2 is the section that decides: point-in-time travel
+ * (`at`/`temporalAnchor`) is "the footgun §4.2 keeps off the agent-facing
+ * tool", and neither engine implements it — `@ax/memory-facts-contract`'s
+ * `RecallInput` has no `at` and says so in as many words. Declaring one here
+ * would be a field with nothing behind it: a caller sets it, gets a `200`, and
+ * silently receives the un-travelled answer.
+ *
+ * `activeOnly: false` is the supported neighbour — history, not time travel.
+ * It returns closed rows alongside active ones so a question about a
+ * TRANSITION ("when did I change jobs") is answerable, without letting a
+ * caller ask what we believed on some particular Tuesday.
+ *
+ * Re-adding `at` is a hook-surface change and needs the engines first. Do not
+ * add it here as a passthrough.
+ */
 export interface MemoryRecallInput {
   /**
    * Free text to retrieve by. Present, the answer is ranked by relevance;

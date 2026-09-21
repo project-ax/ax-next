@@ -98,6 +98,9 @@ export async function engineRecall(
   bus: HookBus,
   ctx: AgentContext,
   input: { about?: string; limit: number; activeOnly?: boolean },
-): Promise<{ statements: Array<{ id: string; until?: string }>; degraded: string[] }> {
+): Promise<{
+  statements: Array<{ id: string; about: string; until?: string }>;
+  degraded: string[];
+}> {
   return bus.call('memory:facts:recall', ctx, input);
 }

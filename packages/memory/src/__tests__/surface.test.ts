@@ -193,3 +193,34 @@ describe('@ax/memory — memory:forget', () => {
     await expect(harness.forget(input)).rejects.toThrow(/ids/);
   });
 });
+
+describe('@ax/memory — an absent payload', () => {
+  // `memory:recall` has no required field, so a caller sending nothing means
+  // the same thing as one sending `{}`. Before this test, `{}` worked and
+  // `undefined` produced a bare `TypeError` — no plugin, no hook name, no
+  // `code` — while `memory:remember` and `memory:forget` both raised a proper
+  // `PluginError` for the identical mistake. `HookBus` types `input` as
+  // required, so the caller who can actually reach this is one crossing a
+  // boundary that erases types (an IPC action, a tool argument), which is the
+  // caller least equipped to do anything with a `TypeError`.
+  it('reads as `{}` on memory:recall rather than throwing a TypeError', async () => {
+    harness = await makeMemoryHarness();
+    await harness.remember({ about: 'acme_corp', relation: 'stage', value: 'series B' });
+    const result = await harness.bus.call<undefined, { statements: unknown[] }>(
+      'memory:recall',
+      harness.ctx(),
+      undefined,
+    );
+    expect(result.statements).toHaveLength(1);
+  });
+
+  it.each([
+    ['memory:remember', /non-empty string/],
+    ['memory:forget', /ids must be an array/],
+  ])('is still refused on %s, which DOES have required fields', async (hook, message) => {
+    harness = await makeMemoryHarness();
+    await expect(
+      harness.bus.call(hook, harness.ctx(), undefined as unknown as Record<string, unknown>),
+    ).rejects.toThrow(message);
+  });
+});

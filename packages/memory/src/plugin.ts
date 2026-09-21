@@ -190,9 +190,21 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
       bus.registerService<MemoryRecallInput, MemoryRecallOutput>(
         MEMORY_RECALL_HOOK,
         PLUGIN_NAME,
-        async (ctx: AgentContext, input: MemoryRecallInput) => {
-          rejectPrivilegeFields(input, MEMORY_RECALL_HOOK);
+        async (ctx: AgentContext, rawInput: MemoryRecallInput) => {
+          rejectPrivilegeFields(rawInput, MEMORY_RECALL_HOOK);
           const ownerUserId = resolveOwnerUserId(ctx);
+
+          // Every field on this payload is optional, so `{}` is the ordinary
+          // call and a caller that sends nothing at all means the same thing.
+          // Normalized rather than dereferenced: `rawInput.query` on an absent
+          // payload is a raw `TypeError` carrying no plugin, no hook name and
+          // no `code` — a different error shape from the `PluginError` the
+          // other two hooks raise for the identical mistake, on the one hook
+          // where the mistake is harmless. `HookBus` types `input` as
+          // required, so only a caller crossing a boundary that erases types
+          // (an IPC action, a tool argument) reaches this, which is exactly
+          // the caller least able to do anything with a `TypeError`.
+          const input: MemoryRecallInput = rawInput ?? {};
 
           if (input.query !== undefined && !isUsableString(input.query)) {
             throw invalid('query must be a non-empty string when set', MEMORY_RECALL_HOOK);
