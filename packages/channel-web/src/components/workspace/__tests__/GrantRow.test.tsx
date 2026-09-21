@@ -695,3 +695,25 @@ describe('a half-typed value surviving the row leaving and re-entering the threa
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
   });
 });
+
+describe('invalid caller-id credential floor', () => {
+  test.each(['skill', 'connector'] as const)('does not submit a blank %s destination floor', async (kind) => {
+    const fetchMock = okFetch();
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const slots = [{ slot: 'api_key', kind: 'api-key' as const }];
+    const request: PermissionRequest = kind === 'skill'
+      ? { ...skillReq, skillId: '   ', slots }
+      : { ...connectorReq, connectorId: '   ', slots };
+    const { onResolved, onGranted } = row(request);
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'test-only-key' } });
+    const connect = screen.getByRole('button', { name: /^connect$/i });
+    expect(connect).toBeEnabled();
+    fireEvent.click(connect);
+    const error = await screen.findByRole('alert');
+    expect(error.textContent?.trim()).not.toBe('');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(onResolved).not.toHaveBeenCalled();
+    expect(onGranted).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: /^connect$/i })).toBeEnabled();
+  });
+});

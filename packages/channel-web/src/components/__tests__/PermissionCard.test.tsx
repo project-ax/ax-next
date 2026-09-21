@@ -16,7 +16,7 @@
  * `workspace/__tests__/GrantRow.test.tsx`.
  */
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { PermissionCard } from '../PermissionCard';
 import {
   permissionCardActions,
@@ -394,5 +394,25 @@ describe('a payload the producer lets through with no shape guard at all', () =>
     expect(screen.getByText(REACH_LEAD_IN)).toBeTruthy();
     expect(screen.getByText('api.linear.app')).toBeTruthy();
     expect(screen.queryByText(/evil.example/)).toBeNull();
+  });
+});
+
+describe('invalid caller-id credential floor', () => {
+  test.each(['skill', 'connector'] as const)('keeps a malformed %s request local', async (kind) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const slots = [{ slot: 'api_key', kind: 'api-key' as const }];
+    const request = (kind === 'skill'
+      ? { ...skillReq, skillId: {}, slots }
+      : { ...connectorReq, connectorId: {}, slots }) as unknown as PermissionRequest;
+    show(request);
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'test-only-key' } });
+    const connect = screen.getByRole('button', { name: /^connect$/i });
+    expect(connect).toBeEnabled();
+    fireEvent.click(connect);
+    const error = await screen.findByRole('alert');
+    expect(error.textContent?.trim()).not.toBe('');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: /^connect$/i })).toBeEnabled();
   });
 });
