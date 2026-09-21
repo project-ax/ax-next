@@ -1,8 +1,26 @@
-import { PluginError, type AgentContext, type HookBus, type Plugin } from '@ax/core';
+import {
+  PluginError,
+  parseModelRef,
+  type AgentContext,
+  type HookBus,
+  type LlmCallInput,
+  type LlmCallOutput,
+  type Plugin,
+} from '@ax/core';
 
 import { PLUGIN_NAME } from './plugin-name.js';
 import { resolveOwnerUserId } from './owner.js';
 import { rewriteSpeaker } from './subject.js';
+import {
+  NO_CREDENTIAL_EVENT,
+  OBSERVER_FAILED_EVENT,
+  OBSERVER_RUN_EVENT,
+  isMissingCredential,
+  memoryFailureEvent,
+  noCredentialFields,
+} from './failure.js';
+import { runObserver, type ObserverRecordInput, type ObserverResult } from './observer.js';
+import type { UntrustedMessage } from './transcript.js';
 import {
   DEFAULT_RECALL_LIMIT,
   type MemoryForgetInput,
@@ -25,6 +43,46 @@ export const FACTS_SUPERSEDE_HOOK = 'memory:facts:supersede';
 export const MEMORY_RECALL_HOOK = 'memory:recall';
 export const MEMORY_REMEMBER_HOOK = 'memory:remember';
 export const MEMORY_FORGET_HOOK = 'memory:forget';
+
+/** The hook the observer observes. */
+export const CHAT_END_HOOK = 'chat:end';
+
+/**
+ * The model every memory operation runs on — design §3.0's extractor, pinned.
+ *
+ * A `provider/model-id` REF: `parseModelRef` splits on the FIRST slash, so the
+ * provider is `openrouter` and the model id is `z-ai/glm-5.3-flash:nitro`. A
+ * two-slash value is expected here.
+ *
+ * **Pinned, not inherited from the calling agent.** The extractor is worth
+ * ~57 points (gpt-4.1-nano 26.0% vs glm-5.3-flash 83-88% on identical
+ * questions and answerer), so letting it follow whatever model a user picked
+ * for chat would make memory quality unstatable — and would silently move it
+ * every time somebody changed their chat model. Same call `@ax/memory-strata`
+ * made on 2026-09-14, and the same model, which is the one every number in
+ * the design was measured on.
+ */
+export const DEFAULT_MEMORY_OPS_MODEL = 'openrouter/z-ai/glm-5.3-flash:nitro';
+
+/**
+ * Hard deadline for the extraction round trip, retry included.
+ *
+ * The observer is detached from `chat:end`, so nothing else would ever stop
+ * it. `LlmCallInput` carries no `AbortSignal`, so this bounds the WAIT rather
+ * than the round trip — see `raceTimeout` in `observer.ts`.
+ */
+export const DEFAULT_OBSERVER_TIMEOUT_MS = 30_000;
+
+/**
+ * Deliberation level for the extraction call.
+ *
+ * `minimal` because this is a schema-constrained extraction job with a hard
+ * deadline, and GLM reasons by DEFAULT: `@ax/memory-strata` measured p50 ~3.4s
+ * with the field absent versus ~865ms with it. Blowing the deadline degrades
+ * silently (a dropped batch), which is precisely the failure mode that hides a
+ * slow model.
+ */
+const MEMORY_OPS_REASONING = 'minimal' as const;
 
 /**
  * Field names a caller may NOT set, on any caller-facing payload.
@@ -84,6 +142,22 @@ export interface MemoryPluginConfig {
    * resource question to whichever backend happens to be loaded.
    */
   maxRecallLimit?: number;
+  /**
+   * `provider/model-id` ref the observer's extraction call routes to.
+   * Defaults to {@link DEFAULT_MEMORY_OPS_MODEL}. Always a REF — a bare id
+   * has no provider to route by and is refused at construction.
+   */
+  memoryOpsModel?: string;
+  /** Defaults to {@link DEFAULT_OBSERVER_TIMEOUT_MS}. */
+  observerTimeoutMs?: number;
+  /**
+   * Test-only seam. The plugin hands every DETACHED observer promise here,
+   * already `.catch()`-ed, so a test can await the extraction chain
+   * deterministically instead of sleeping. Never read by production code, and
+   * never a way to make `chat:end` wait: the subscriber has already returned
+   * by the time this is called.
+   */
+  onObserverDetached?: (work: Promise<void>) => void;
 }
 
 const DEFAULT_MAX_RECALL_LIMIT = 100;
@@ -169,6 +243,24 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
     });
   }
 
+  const observerTimeoutMs = config.observerTimeoutMs ?? DEFAULT_OBSERVER_TIMEOUT_MS;
+  if (!Number.isFinite(observerTimeoutMs) || observerTimeoutMs < 1) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: `observerTimeoutMs must be a positive number (got ${String(config.observerTimeoutMs)})`,
+    });
+  }
+
+  // Resolved ONCE, at construction, so a malformed ref throws HERE rather than
+  // degrading on every turn: an unparseable model ref is a static
+  // misconfiguration and there is no turn at which it starts working. It also
+  // has to be resolved before the manifest is built, because the provider hook
+  // it derives is what the manifest declares.
+  const memoryOpsModel = config.memoryOpsModel ?? DEFAULT_MEMORY_OPS_MODEL;
+  const parsedMemoryOps = parseModelRef(memoryOpsModel);
+  const memoryOpsHook = `llm:call:${parsedMemoryOps.provider}`;
+
   return {
     manifest: {
       name: PLUGIN_NAME,
@@ -180,7 +272,26 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
       // never asked anyone. Failing at boot with `missing-service` is the
       // outcome that gets noticed.
       calls: [FACTS_RECALL_HOOK, FACTS_RECORD_HOOK, FACTS_SUPERSEDE_HOOK],
-      subscribes: [],
+      // The extraction provider is OPTIONAL, and that asymmetry with the
+      // three engine hooks above is deliberate. A memory surface with no
+      // STORE behind it cannot degrade into anything honest — it can only
+      // answer "no memories" to a question it never asked anyone, so that
+      // fails the boot. A memory surface with no extraction PROVIDER degrades
+      // into something perfectly honest: everything a person or an agent
+      // writes explicitly still works, and the turn-boundary observer is
+      // skipped with a loud, greppable event on every turn.
+      //
+      // Failing the boot instead would mean a CI host, a canary or an
+      // air-gapped install with no LLM provider could not load `@ax/memory`
+      // at all.
+      optionalCalls: [
+        {
+          hook: memoryOpsHook,
+          degradation:
+            'no memory is extracted from conversations at chat:end; memory:remember and memory:forget are unaffected, and every skipped turn emits memory_observer_failed',
+        },
+      ],
+      subscribes: [CHAT_END_HOOK],
     },
 
     init({ bus }: { bus: HookBus }) {
@@ -417,8 +528,200 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           return {};
         },
       );
+
+      // ---------------------------------------------------------------
+      // chat:end — the observer. Provenance: extracted.
+      // ---------------------------------------------------------------
+      //
+      // ## Why this subscriber returns before its work finishes
+      //
+      // Design §3.0: `chat:end` must not block on a ~30s call. That is not
+      // only a latency preference — `HookBus.fire` puts NO CLOCK on a
+      // subscriber (documented in `hook-bus.ts`: "`fire` has no timeout —
+      // deliberately, since a subscriber's slowness must not fail the thing
+      // it is observing"), so a subscriber that awaited an extraction would
+      // hold the turn open for as long as the provider took, with nothing
+      // outside it able to end the wait. Detaching is what makes the
+      // observer's slowness cost nothing.
+      //
+      // ## Why it also never throws
+      //
+      // `fire`'s failure log is NOT guarded: `ctx.logger.error(...)` in the
+      // catch block raises a `TypeError` under a ctx with no logger, and that
+      // `TypeError` escapes `fire()` — skipping every REMAINING subscriber on
+      // `chat:end` and reaching the caller wearing the wrong error's name.
+      // (That is a real, filed defect, and this card deliberately does not
+      // fix it.) A handler that cannot throw cannot reach that path, so
+      // everything below is inside a try/catch and the detached promise
+      // carries its own `.catch`.
+      //
+      // The net posture: this subscriber can neither stall `chat:end` nor
+      // break it, at the cost of every failure being invisible unless it
+      // emits an event — which is why `failure.ts` exists and why the tests
+      // assert an event on every failure path, not only on the happy one.
+      // eslint-disable-next-line @typescript-eslint/require-await -- the whole
+      // point is that nothing here is awaited; `SubscriberHandler` is typed as
+      // returning a promise, so the handler is `async` and the body is not.
+      bus.subscribe<{ outcome?: unknown }>(CHAT_END_HOOK, PLUGIN_NAME, async (ctx, payload) => {
+        // Fire-and-forget. `void` rather than `await`, and the whole body is
+        // already non-throwing, so there is nothing here for `fire` to log.
+        //
+        // NOTE this deliberately does NOT skip `ctx.source === 'routine'` the
+        // way `@ax/memory-strata`'s observer does. Strata's memory is the
+        // agent's own episodic tree, which a scheduled fire would pollute
+        // with its own internal work. This store is owner-scoped statements,
+        // and design §3.2 settles the case explicitly: "Conversations with no
+        // live person — a routine run — carry the routine owner's id", which
+        // is a rule for how a routine's statements are STORED, not a reason
+        // not to store them. `owner.ts` says the same in as many words and
+        // does not branch on `source`.
+        const work = observeChatEnd(bus, ctx, payload, {
+          memoryOpsHook,
+          model: parsedMemoryOps.modelId,
+          observerTimeoutMs,
+        }).catch(() => {
+          // Unreachable: `observeChatEnd` catches everything and logs it.
+          // Present because a detached promise that CAN reject is an
+          // unhandled rejection, and "unreachable" is a claim about today's
+          // code rather than tomorrow's.
+        });
+        config.onObserverDetached?.(work);
+        return undefined;
+      });
     },
   };
+}
+
+/**
+ * Run one observation. **Never throws** — see the subscriber's comment for
+ * why that is load-bearing rather than tidy.
+ */
+async function observeChatEnd(
+  bus: HookBus,
+  ctx: AgentContext,
+  payload: { outcome?: unknown } | undefined,
+  cfg: { memoryOpsHook: string; model: string; observerTimeoutMs: number },
+): Promise<void> {
+  try {
+    // A terminated outcome (a `chat:start` veto, a runner crash, a timeout)
+    // carries no transcript, and a malformed payload carries nothing we can
+    // read. Both skip silently: neither is a failure of the memory path.
+    const outcome = payload?.outcome;
+    if (outcome === null || typeof outcome !== 'object') return;
+    const { kind, messages } = outcome as { kind?: unknown; messages?: unknown };
+    if (kind !== 'complete' || !Array.isArray(messages) || messages.length === 0) return;
+
+    // Owner scope from `ctx`. This THROWS for a context with no owner (an
+    // owner-less canary session), which is correct and is why it is inside
+    // the try: a statement stored under an owner-less id could never be read
+    // back by anyone, so the honest outcome is to record nothing and say so.
+    const ownerUserId = resolveOwnerUserId(ctx);
+
+    if (!bus.hasService(cfg.memoryOpsHook)) {
+      // The `optionalCalls` degradation, realized. `warn` rather than
+      // `error`: unlike a missing credential this is a preset-shape fact, not
+      // a per-turn surprise, and it is the same on every turn of the host's
+      // life.
+      ctx.logger.warn(OBSERVER_FAILED_EVENT, {
+        agentId: ctx.agentId,
+        reason: 'llm-provider-unregistered',
+        hook: cfg.memoryOpsHook,
+      });
+      return;
+    }
+
+    const result = await runObserver({
+      messages: messages as UntrustedMessage[],
+      llmCall: (input: LlmCallInput) =>
+        bus.call<LlmCallInput, LlmCallOutput>(cfg.memoryOpsHook, ctx, {
+          ...input,
+          // Applied HERE rather than at the call site, so a future memory
+          // operation cannot forget it.
+          reasoningEffort: MEMORY_OPS_REASONING,
+        }),
+      record: (input: ObserverRecordInput) =>
+        bus.call<ObserverRecordInput, { records?: Array<{ id?: unknown }> } | null>(
+          FACTS_RECORD_HOOK,
+          ctx,
+          input,
+        ),
+      ownerUserId,
+      conversationId: ctx.conversationId,
+      model: cfg.model,
+      now: new Date(),
+      timeoutMs: cfg.observerTimeoutMs,
+    });
+
+    logObserverResult(ctx, result);
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    // A missing credential will not fix itself and costs every turn until
+    // somebody stores a key, so it gets its own event at `error` volume —
+    // the "memory paused" state. Everything else keeps the path's `warn`.
+    if (isMissingCredential(err)) {
+      ctx.logger.error(NO_CREDENTIAL_EVENT, {
+        err: error,
+        agentId: ctx.agentId,
+        path: 'observer',
+        ...noCredentialFields(),
+      });
+      return;
+    }
+    ctx.logger.warn(memoryFailureEvent(err, OBSERVER_FAILED_EVENT), {
+      err: error,
+      agentId: ctx.agentId,
+      reason: 'observer-threw',
+    });
+  }
+}
+
+/**
+ * The observer's audit line. COUNTS AND KINDS ONLY — never a statement, never
+ * a fragment of dialogue, never the model's reply. The whole input to this
+ * path is untrusted content, and a log is a sink like any other.
+ *
+ * Every non-`recorded` outcome is reported, because the whole path is
+ * detached: a batch that was dropped is otherwise indistinguishable from a
+ * conversation that had nothing worth remembering.
+ */
+function logObserverResult(ctx: AgentContext, result: ObserverResult): void {
+  const base = { agentId: ctx.agentId, sessionId: ctx.sessionId };
+  switch (result.kind) {
+    case 'skipped':
+      // `debug`: an ordinary turn with nothing durable in it is the common
+      // case, not a problem.
+      ctx.logger.debug(OBSERVER_RUN_EVENT, { ...base, outcome: 'skipped', reason: result.reason });
+      return;
+    case 'timeout':
+      ctx.logger.warn(OBSERVER_FAILED_EVENT, {
+        ...base,
+        reason: 'extraction-timeout',
+        timeoutMs: result.timeoutMs,
+      });
+      return;
+    case 'schema-failure':
+      // `detail` is the SHAPE description built by `parseFacts` — field names
+      // and types, never a value out of the model. See `describeShape`.
+      ctx.logger.warn(OBSERVER_FAILED_EVENT, {
+        ...base,
+        reason: 'extraction-schema-failure',
+        detail: result.detail,
+      });
+      return;
+    case 'recorded':
+      ctx.logger.info(OBSERVER_RUN_EVENT, {
+        ...base,
+        outcome: 'recorded',
+        recorded: result.recorded,
+        // A persistent non-zero here means the extractor is emitting dates
+        // nothing can read — never silent, because the facts are lost.
+        unusable: result.unusable,
+        // A persistent `true` means the prompt and the model have drifted
+        // apart; one retry is the budget, and it is being spent every turn.
+        retried: result.retried,
+      });
+      return;
+  }
 }
 
 function isUsableString(v: unknown): v is string {
