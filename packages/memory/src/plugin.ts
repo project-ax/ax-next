@@ -26,6 +26,20 @@ import { formatEvidenceWhen } from './evidence.js';
 import { MEMORY_RECALL_TOOL_HOOK, registerMemoryRecall } from './recall-tool.js';
 import type { UntrustedMessage } from './transcript.js';
 import {
+  createMemoryExporter,
+  FACTS_SCAN_HOOK,
+  MEMORY_EXPORT_FLUSH_HOOK,
+  type MemoryExportConfig,
+} from './exporter.js';
+import {
+  memoryMountSpec,
+  validateVolumeConfig,
+} from './export-volume.js';
+import type {
+  ResolveMountsInput,
+  ResolveMountsOutput,
+} from '@ax/sandbox-mount-protocol';
+import {
   registerSystemPromptAugment,
   RULES_READ_HOOK,
   SYSTEM_PROMPT_AUGMENT_HOOK,
@@ -196,6 +210,7 @@ export interface MemoryPluginConfig {
    * see `augment.ts`'s `DEFAULTS`.
    */
   block?: MemoryBlockConfig;
+  exports?: MemoryExportConfig;
 }
 
 const DEFAULT_MAX_RECALL_LIMIT = 100;
@@ -299,6 +314,10 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
   const parsedMemoryOps = parseModelRef(memoryOpsModel);
   const memoryOpsHook = `llm:call:${parsedMemoryOps.provider}`;
 
+  const exportsCfg = config.exports;
+  if (exportsCfg?.volume !== undefined) validateVolumeConfig(exportsCfg.volume);
+  let exporterRef: ReturnType<typeof createMemoryExporter> | undefined;
+
   return {
     manifest: {
       name: PLUGIN_NAME,
@@ -309,9 +328,12 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         MEMORY_FORGET_HOOK,
         SYSTEM_PROMPT_AUGMENT_HOOK,
         MEMORY_RECALL_TOOL_HOOK,
+        ...(exportsCfg !== undefined ? [MEMORY_EXPORT_FLUSH_HOOK] : []),
+        ...(exportsCfg?.volume !== undefined ? ['sandbox:memory-mounts'] : []),
       ],
-      // Hard dependencies, all five: this plugin has nothing to fall back
-      // on. A memory surface with no store behind it cannot degrade into
+      // Hard dependencies, all five — plus the export projection's four when
+      // `exports` is configured (TASK-494): this plugin has nothing to fall
+      // back on. A memory surface with no store behind it cannot degrade into
       // anything honest — it can only answer "no memories" to a question it
       // never asked anyone. Failing at boot with `missing-service` is the
       // outcome that gets noticed.
@@ -321,6 +343,9 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         FACTS_SUPERSEDE_HOOK,
         'tool:register',
         AGENTS_RESOLVE_HOOK,
+        ...(exportsCfg !== undefined
+          ? [FACTS_SCAN_HOOK, 'workspace:list', 'workspace:read', 'workspace:apply']
+          : []),
       ],
       // The extraction provider is OPTIONAL, and that asymmetry with the
       // three engine hooks above is deliberate. A memory surface with no
@@ -359,6 +384,49 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
     },
 
     async init({ bus }: { bus: HookBus }) {
+      const exporter =
+        exportsCfg === undefined ? undefined : createMemoryExporter(bus, exportsCfg);
+      exporterRef = exporter;
+      const onFactsChanged = (ctx: AgentContext): void => {
+        exporter?.schedule(ctx);
+      };
+
+      if (exporter !== undefined) {
+        bus.registerService<Record<string, never>, { changed: boolean }>(
+          MEMORY_EXPORT_FLUSH_HOOK,
+          PLUGIN_NAME,
+          async (ctx) => exporter.flush(ctx),
+        );
+      }
+      if (exportsCfg?.volume !== undefined && exporter !== undefined) {
+        const volume = exportsCfg.volume;
+        bus.registerService<ResolveMountsInput, ResolveMountsOutput>(
+          'sandbox:memory-mounts',
+          PLUGIN_NAME,
+          async (ctx, input) => {
+            const owner = input?.owner;
+            if (
+              owner === null ||
+              typeof owner !== 'object' ||
+              typeof owner.agentId !== 'string' ||
+              owner.agentId.trim() === '' ||
+              typeof owner.userId !== 'string' ||
+              owner.userId.trim() === ''
+            ) {
+              throw invalid('owner must carry an agentId and userId', 'sandbox:memory-mounts');
+            }
+            const ownerCtx: AgentContext = {
+              ...ctx,
+              agentId: owner.agentId,
+              userId: owner.userId,
+            };
+            await resolveMemoryAccess(bus, ownerCtx);
+            await exporter.flush(ownerCtx);
+            return { mounts: [memoryMountSpec(owner.agentId, volume)] };
+          },
+        );
+      }
+
       // ---------------------------------------------------------------
       // system-prompt:augment — the always-injected block (design §4.1).
       // A `call`, not a `fire`: see `registerSystemPromptAugment`.
@@ -614,6 +682,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
               message: `${FACTS_RECORD_HOOK} recorded no statement for a single-statement batch`,
             });
           }
+          onFactsChanged(ctx);
           return { id };
         },
       );
@@ -651,6 +720,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             ...memoryReadScope(access),
           });
 
+          onFactsChanged(ctx);
           return {};
         },
       );
@@ -705,6 +775,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           memoryOpsHook,
           model: parsedMemoryOps.modelId,
           observerTimeoutMs,
+          onFactsChanged,
         }).catch(() => {
           // Unreachable: `observeChatEnd` catches everything and logs it.
           // Present because a detached promise that CAN reject is an
@@ -717,6 +788,10 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
 
       await registerMemoryRecall(bus);
     },
+
+    async shutdown() {
+      await exporterRef?.shutdown();
+    },
   };
 }
 
@@ -728,7 +803,12 @@ async function observeChatEnd(
   bus: HookBus,
   ctx: AgentContext,
   payload: { outcome?: unknown } | undefined,
-  cfg: { memoryOpsHook: string; model: string; observerTimeoutMs: number },
+  cfg: {
+    memoryOpsHook: string;
+    model: string;
+    observerTimeoutMs: number;
+    onFactsChanged?: (ctx: AgentContext) => void;
+  },
 ): Promise<void> {
   try {
     // A terminated outcome (a `chat:start` veto, a runner crash, a timeout)
@@ -773,11 +853,13 @@ async function observeChatEnd(
         }),
       record: async (input: ObserverRecordInput) => {
         await resolveMemoryAccess(bus, ctx);
-        return bus.call<ObserverRecordInput, { records?: Array<{ id?: unknown }> } | null>(
+        const out = await bus.call<ObserverRecordInput, { records?: Array<{ id?: unknown }> } | null>(
           FACTS_RECORD_HOOK,
           ctx,
           input,
         );
+        cfg.onFactsChanged?.(ctx);
+        return out;
       },
       ownerUserId,
       conversationId: ctx.conversationId,

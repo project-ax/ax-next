@@ -2,9 +2,11 @@ import { describe, it, expect } from 'vitest';
 import {
   filterToPolicy,
   findRunnerImmutableViolations,
+  MEMORY_FACTS_EXPORT_ROOT,
   POLICY_EXACT_PATHS,
   POLICY_PREFIXES,
   RUNNER_IMMUTABLE_PATHS,
+  RUNNER_IMMUTABLE_PREFIXES,
 } from '../workspace-policy.js';
 import type { FileChange } from '../workspace.js';
 
@@ -103,5 +105,60 @@ describe('findRunnerImmutableViolations', () => {
 
   it('exports the list so @ax/memory-strata can share the literal', () => {
     expect([...RUNNER_IMMUTABLE_PATHS]).toEqual(['memory/system/rules.md']);
+  });
+});
+
+describe('runner-immutable facts-export subtree (TASK-494)', () => {
+  it('names a put under the export root', () => {
+    expect(
+      findRunnerImmutableViolations([put('permanent/memory/facts/profile.md')]),
+    ).toEqual(['permanent/memory/facts/profile.md']);
+  });
+
+  it('names a delete under the export root', () => {
+    expect(
+      findRunnerImmutableViolations([del('permanent/memory/facts/user/2026-09.md')]),
+    ).toEqual(['permanent/memory/facts/user/2026-09.md']);
+  });
+
+  it('names a write that replaces the bare root itself', () => {
+    expect(
+      findRunnerImmutableViolations([put(MEMORY_FACTS_EXPORT_ROOT)]),
+    ).toEqual([MEMORY_FACTS_EXPORT_ROOT]);
+  });
+
+  it('names puts and deletes that would replace a reserved ancestor directory', () => {
+    expect(
+      findRunnerImmutableViolations([
+        put('permanent'),
+        del('permanent/memory'),
+        put('permanent/memory'),
+      ]),
+    ).toEqual(['permanent', 'permanent/memory']);
+    expect(findRunnerImmutableViolations([put('permanent/other.md')])).toEqual([]);
+  });
+
+  it('leaves sibling subtrees alone', () => {
+    expect(
+      findRunnerImmutableViolations([
+        put('permanent/memory/facts-backup/profile.md'),
+        put('permanent/memory/system/user.md'),
+        put('permanent/memory/factsx/x.md'),
+      ]),
+    ).toEqual([]);
+  });
+
+  it('still allows legitimate workspace writes alongside the root', () => {
+    expect(
+      findRunnerImmutableViolations([
+        put('src/main.ts'),
+        put('memory/system/user.md'),
+      ]),
+    ).toEqual([]);
+  });
+
+  it('exports the constants so consumers share one literal', () => {
+    expect(MEMORY_FACTS_EXPORT_ROOT).toBe('permanent/memory/facts');
+    expect([...RUNNER_IMMUTABLE_PREFIXES]).toEqual(['permanent/memory/facts/']);
   });
 });

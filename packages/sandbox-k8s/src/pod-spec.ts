@@ -15,6 +15,7 @@
 // ---------------------------------------------------------------------------
 
 import { createHash } from 'node:crypto';
+import { posix } from 'node:path';
 import { buildGitCredentialEnv, type ServiceDescriptorParsed } from '@ax/sandbox-protocol';
 import type { MountSpec } from '@ax/sandbox-mount-protocol';
 import type { ResolvedSandboxK8sConfig } from './config.js';
@@ -368,6 +369,7 @@ interface RealizedMounts {
   }>;
   /** The realized in-pod path of the `role:'user-files'` mount, if any. */
   userFilesRoot?: string;
+  memoryRoot?: string;
   /**
    * Root chown init containers — one per WRITABLE `role:'user-files'` mount —
    * that align the kubelet-created per-agent `subPath` dir to the runner
@@ -449,6 +451,24 @@ function buildUserFilesChownInit(
  * never collide with the fixed tier volumes (`tmp`/`home`/`agent`/`ephemeral`)
  * or the `svc-*` service volumes.
  */
+function isPathOverlap(a: string, b: string): boolean {
+  return a === '/' || b === '/' || a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+}
+
+function normalizeContainerPath(path: string): string {
+  return posix.resolve('/', path);
+}
+
+function nfsSourcePath(exportPath: string, subPath: string): string {
+  return posix.resolve('/', exportPath, subPath);
+}
+
+function validNfsSubPath(subPath: string): boolean {
+  if (subPath.length === 0 || subPath.includes('\0')) return false;
+  if (posix.isAbsolute(subPath)) return false;
+  return !subPath.split('/').some((seg) => seg === '' || seg === '.' || seg === '..');
+}
+
 function realizeMounts(mounts: MountSpec[], image: string): RealizedMounts {
   const out: RealizedMounts = { volumes: [], volumeMounts: [], chownInits: [] };
   mounts.forEach((mount, i) => {
@@ -477,13 +497,29 @@ function realizeMounts(mounts: MountSpec[], image: string): RealizedMounts {
             );
           }
         }
+        if (mount.role === 'memory') {
+          if (mount.readOnly !== true) {
+            throw new Error("a role:'memory' mount must be read-only");
+          }
+          if (mount.mountPath !== '/memory') {
+            throw new Error("a role:'memory' mount must mount at /memory");
+          }
+          if (out.memoryRoot !== undefined) {
+            throw new Error('only one role:\'memory\' mount may be realized');
+          }
+          if (!validNfsSubPath(mount.subPath)) {
+            throw new Error("a role:'memory' mount subPath must be a clean relative path");
+          }
+          out.memoryRoot = mount.mountPath;
+        }
         break;
       }
-      case 'localDir':
+      case 'localDir': {
         throw new Error(
           `k8s sandbox cannot realize a 'localDir' mount (no host-FS share inside a pod). ` +
             `Load @ax/workspace-filestore for the k8s preset instead of @ax/workspace-localdir.`,
         );
+      }
       default: {
         const _exhaustive: never = mount;
         throw new Error(
@@ -492,6 +528,33 @@ function realizeMounts(mounts: MountSpec[], image: string): RealizedMounts {
       }
     }
   });
+
+  const memoryMounts = mounts.filter(
+    (m): m is Extract<MountSpec, { kind: 'nfs' }> => m.kind === 'nfs' && m.role === 'memory',
+  );
+  const writableNfs = mounts.filter(
+    (m): m is Extract<MountSpec, { kind: 'nfs' }> => m.kind === 'nfs' && !m.readOnly,
+  );
+  for (const memory of memoryMounts) {
+    for (const other of mounts) {
+      if (other === memory) continue;
+      if (isPathOverlap(normalizeContainerPath(memory.mountPath), normalizeContainerPath(other.mountPath))) {
+        throw new Error(
+          `role:'memory' mount path ${memory.mountPath} overlaps another mount at ${other.mountPath}`,
+        );
+      }
+    }
+    const memorySource = nfsSourcePath(memory.exportPath, memory.subPath);
+    for (const writable of writableNfs) {
+      if (writable === memory) continue;
+      if (memory.server !== writable.server) continue;
+      if (isPathOverlap(memorySource, nfsSourcePath(writable.exportPath, writable.subPath))) {
+        throw new Error(
+          `role:'memory' mount aliases a writable NFS export (${writable.exportPath}/${writable.subPath})`,
+        );
+      }
+    }
+  }
   return out;
 }
 
@@ -766,6 +829,9 @@ export function buildPodSpec(
   // alone is inert until the runner reads this. Appended to `env` below.
   if (realizedMounts.userFilesRoot !== undefined) {
     env.push({ name: 'AX_USERFILES_ROOT', value: realizedMounts.userFilesRoot });
+  }
+  if (realizedMounts.memoryRoot !== undefined) {
+    env.push({ name: 'AX_MEMORY_ROOT', value: realizedMounts.memoryRoot });
   }
 
   const spec: Record<string, unknown> = {

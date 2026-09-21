@@ -472,6 +472,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
               env.workspaceRoot,
               env.ephemeralRoot,
               env.userFilesRoot,
+              env.memoryRoot,
             ]) {
               if (dir !== undefined && dir !== sdkHome && !extra.includes(dir)) {
                 extra.push(dir);

@@ -111,22 +111,34 @@ export function filterToPolicy(changes: readonly FileChange[]): FileChange[] {
 // memory-strata's `human-tier.test.ts` that fails if its own
 // `permanent/`-prefixed list stops agreeing.
 //
-// SCOPE. `system/rules.md` only, not `memory/**`. The other always-injected
-// system files (`user.md`, `recent.md`, `map.md`) are the AGENT's own memory —
-// it is supposed to write those, and the consolidator regenerates them
-// end-to-end each pass, so a sandbox write there does not persist. `rules.md`
-// is the one file nothing ever rewrites, which is what makes it the durable
-// vector.
+// SCOPE. `system/rules.md` plus the derived facts-export subtree
+// (`permanent/memory/facts/**`, TASK-494), not `memory/**`. The other
+// always-injected system files (`user.md`, `recent.md`, `map.md`) are the
+// AGENT's own memory — it is supposed to write those, and the consolidator
+// regenerates them end-to-end each pass, so a sandbox write there does not
+// persist. `rules.md` is the one file nothing ever rewrites, which is what
+// makes it the durable vector. The facts export is the mirror-image case: it
+// is a host-owned read-only projection of the fact store, regenerated
+// wholesale, so a runner write under it is never legitimate — the prefix rule
+// covers the subtree and the bare root, while leaving `permanent/memory/`
+// siblings like `facts-backup/` untouched. The ANCESTORS of the export root
+// (`permanent`, `permanent/memory`) are refused too: a runner `put` of a
+// file or symlink at one of those paths would otherwise replace the
+// directory the export must own before the first export ever lands.
 //
-// Paths are `/agent`-tier-relative and posix — the exact shape
-// `walkBundleChanges` emits (`git diff-tree -r --name-status -z` reports
-// repo-relative paths with no `./` prefix), so an exact-set match is the whole
-// comparison. No prefix matching, no globs: the rule is one file.
+// Paths are posix — the exact shape `walkBundleChanges` emits
+// (`git diff-tree -r --name-status -z` reports repo-relative paths with no
+// `./` prefix), so an exact-set match plus a literal prefix match is the
+// whole comparison. No globs.
 // ---------------------------------------------------------------------------
 
 export const RUNNER_IMMUTABLE_PATHS: ReadonlySet<string> = new Set<string>([
   'memory/system/rules.md',
 ]);
+
+export const MEMORY_FACTS_EXPORT_ROOT = 'permanent/memory/facts' as const;
+
+export const RUNNER_IMMUTABLE_PREFIXES = [`${MEMORY_FACTS_EXPORT_ROOT}/`] as const;
 
 /**
  * The paths in `changes` a runner-originated apply may not author, sorted and
@@ -145,7 +157,17 @@ export function findRunnerImmutableViolations(
 ): string[] {
   const hits = new Set<string>();
   for (const c of changes) {
-    if (RUNNER_IMMUTABLE_PATHS.has(c.path)) hits.add(c.path);
+    if (
+      RUNNER_IMMUTABLE_PATHS.has(c.path) ||
+      RUNNER_IMMUTABLE_PREFIXES.some(
+        (p) =>
+          c.path === p.slice(0, -1) ||
+          c.path.startsWith(p) ||
+          p.slice(0, -1).startsWith(`${c.path}/`),
+      )
+    ) {
+      hits.add(c.path);
+    }
   }
   return [...hits].sort();
 }

@@ -772,4 +772,75 @@ describe('workspace.commit-notify handler — runner-immutable paths (TASK-486)'
     expect(result.body).toMatchObject({ accepted: true });
     expect(applyBundle).toHaveBeenCalledTimes(1);
   });
+
+  it('refuses a runner-originated write under the facts export root (TASK-494)', async () => {
+    const { result, applyBundle } = await driveTurn(
+      [
+        {
+          path: 'permanent/memory/facts/profile.md',
+          kind: 'put',
+          content: new TextEncoder().encode('# forged\n'),
+        },
+      ],
+      'immutable-facts-put',
+    );
+
+    expect(result.body).toMatchObject({
+      accepted: false,
+      recoverable: false,
+      discardPaths: ['permanent/memory/facts/profile.md'],
+    });
+    expect(applyBundle).not.toHaveBeenCalled();
+  });
+
+  it('refuses a delete and a bare-root replacement under the facts export root', async () => {
+    const { result, applyBundle } = await driveTurn(
+      [
+        { path: 'permanent/memory/facts/user/2026-09.md', kind: 'delete' },
+        { path: 'permanent/memory/facts', kind: 'put', content: new Uint8Array([1]) },
+      ],
+      'immutable-facts-del-root',
+    );
+
+    expect(result.body).toMatchObject({
+      accepted: false,
+      recoverable: false,
+      discardPaths: [
+        'permanent/memory/facts',
+        'permanent/memory/facts/user/2026-09.md',
+      ],
+    });
+    expect(applyBundle).not.toHaveBeenCalled();
+  });
+
+  it('refuses a runner write that would replace a reserved ancestor directory', async () => {
+    const { result, applyBundle } = await driveTurn(
+      [
+        { path: 'permanent', kind: 'put', content: new Uint8Array([1]) },
+        { path: 'permanent/memory', kind: 'delete' },
+        { path: 'src/ok.ts', kind: 'put', content: new Uint8Array([2]) },
+      ],
+      'immutable-facts-ancestors',
+    );
+
+    expect(result.body).toMatchObject({
+      accepted: false,
+      recoverable: false,
+      discardPaths: ['permanent', 'permanent/memory'],
+    });
+    expect(applyBundle).not.toHaveBeenCalled();
+  });
+
+  it('leaves neighbouring permanent-memory writes alone', async () => {
+    const { result, applyBundle } = await driveTurn(
+      [
+        { path: 'permanent/memory/facts-backup/profile.md', kind: 'put', content: new Uint8Array([1]) },
+        { path: 'permanent/memory/system/user.md', kind: 'put', content: new Uint8Array([2]) },
+      ],
+      'immutable-facts-sibling',
+    );
+
+    expect(result.body).toMatchObject({ accepted: true });
+    expect(applyBundle).toHaveBeenCalledTimes(1);
+  });
 });

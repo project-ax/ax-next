@@ -56,7 +56,9 @@ import type { OpenSessionInput } from '@ax/sandbox-protocol';
 // `mountPath`, `readOnly`, and the optional `role` are the only fields shared
 // across every member — the backend-neutral surface a consumer can read
 // without narrowing. `role: 'user-files'` tells the provider which mount to
-// expose as `AX_USERFILES_ROOT` in the runner env.
+// expose as `AX_USERFILES_ROOT` in the runner env; `role: 'memory'` marks the
+// TASK-494 facts-export projection, which the provider exposes as
+// `AX_MEMORY_ROOT` and realizes read-only only.
 // ---------------------------------------------------------------------------
 
 /**
@@ -80,8 +82,8 @@ export interface NfsMountSpec {
   subPath: string;
   /** Mount the export read-only. The runner uses `false`; a future host-read realization uses `true`. */
   readOnly: boolean;
-  /** When set, the provider exports this mount's path as `AX_USERFILES_ROOT`. */
-  role?: 'user-files';
+  /** When set, the provider exports this mount's path as `AX_USERFILES_ROOT` (`user-files`) or `AX_MEMORY_ROOT` (`memory`). */
+  role?: 'user-files' | 'memory';
 }
 
 /**

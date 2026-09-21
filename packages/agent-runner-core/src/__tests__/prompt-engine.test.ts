@@ -14,6 +14,7 @@ import {
   capabilityHandoffNote,
   communicationNote,
   ephemeralScratchNote,
+  memoryExportNote,
   pythonVenvNote,
   skillAuthoringNote,
   workPolicyNote,
@@ -375,5 +376,35 @@ describe('buildSystemPrompt — displayName fallback identity (no .ax/ files)', 
     expect(typeof out).toBe('string');
     expect(out).toContain(fallbackIdentityLine('Helper'));
     expect(out).toContain(safetyFloorNote());
+  });
+});
+
+describe('buildSystemPrompt — memoryRoot forwarding', () => {
+  it('appends the exact memoryExportNote when the final memoryRoot argument is provided', async () => {
+    const out = (await buildSystemPrompt(
+      'Helper',
+      '',
+      dir,
+      undefined,
+      false,
+      undefined,
+      dir,
+      '/memory',
+    )) as string;
+    expect(out).toContain(memoryExportNote('/memory'));
+  });
+
+  it('carries no memory note when memoryRoot is absent', async () => {
+    const out = (await buildSystemPrompt(
+      'Helper',
+      '',
+      dir,
+      undefined,
+      false,
+      undefined,
+      dir,
+    )) as string;
+    expect(out).not.toContain('Memory files:');
+    expect(out).not.toContain(memoryExportNote('/memory'));
   });
 });

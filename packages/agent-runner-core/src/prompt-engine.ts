@@ -292,6 +292,7 @@ export async function buildSystemPrompt(
   // working dir and the governed root. `.ax/` identity reads always use
   // `workspaceRoot` regardless — the governed tier never moves.
   cwd: string = workspaceRoot,
+  memoryRoot: string | undefined = undefined,
 ): Promise<SdkSystemPrompt> {
   const files = await readAxIdentityFiles(workspaceRoot);
 
@@ -324,6 +325,7 @@ export async function buildSystemPrompt(
     pythonVenvActive,
     userFilesRoot,
     cwd,
+    memoryRoot,
   );
   const identity = files.identity ?? fallbackIdentityLine(displayName);
   return composeNormalModePrompt({

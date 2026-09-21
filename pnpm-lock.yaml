@@ -1563,6 +1563,9 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      '@ax/sandbox-mount-protocol':
+        specifier: workspace:*
+        version: link:../sandbox-mount-protocol
     devDependencies:
       '@ax/memory-facts-contract':
         specifier: workspace:*
@@ -1570,6 +1573,9 @@ importers:
       '@ax/memory-facts-sqlite':
         specifier: workspace:*
         version: link:../memory-facts-sqlite
+      '@ax/workspace-git':
+        specifier: workspace:*
+        version: link:../workspace-git
       '@types/better-sqlite3':
         specifier: ^7.6.12
         version: 7.6.13
