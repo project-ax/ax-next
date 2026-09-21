@@ -89,10 +89,10 @@
 //
 // The doc IS the implementation -- there is no second copy in a script to drift from it.
 //
-// MUTANTS RUN, NOT REASONED ABOUT. Measured 2026-09-21 on git 2.52.0, macOS, bash 3.2
-// + zsh 5.9, against the head this file ships with -- baseline 45 here, 52 with the
-// sibling text-scan guard collected, which is how the counts below were taken. Every
-// mutant still collects 52, so none of them reddened by making the suite smaller.
+// MUTANTS RUN, NOT REASONED ABOUT. Historical builder measurements at commit
+// 64a3129e94c0789fcb128c8094ec295e2a1615e9 (2026-09-21; git 2.52.0, macOS, bash 3.2
+// + zsh 5.9): baseline 45 here, 52 with the sibling guard; every mutant collected 52.
+// Counts and layer-specific claims below apply to that revision, not the current resolver.
 // (The two earlier tables in this file's history were both wrong in the flattering
 // direction, both because they were measured against an INTERMEDIATE state of the patch
 // and carried forward unedited. A mutant table is a claim about a specific head. Re-run
