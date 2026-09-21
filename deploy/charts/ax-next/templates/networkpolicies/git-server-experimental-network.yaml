@@ -1,4 +1,4 @@
-{{- if and .Values.networkPolicies.enabled .Values.gitServer.enabled }}
+{{- if and (include "ax-next.bool" .Values.networkPolicies.enabled) (include "ax-next.bool" .Values.gitServer.enabled) }}
 {{/*
 Experimental git-server StatefulSet NetworkPolicy.
 

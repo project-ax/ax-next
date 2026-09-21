@@ -1,4 +1,4 @@
-{{- if .Values.ingress.backendConfig.enabled }}
+{{- if (include "ax-next.bool" .Values.ingress.backendConfig.enabled) }}
 # GKE BackendConfig (TASK-168) — raises the GCE Application LB backend timeout.
 #
 # The GCE LB defaults backend `timeoutSec` to 30s and applies it to the WHOLE

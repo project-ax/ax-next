@@ -1,4 +1,4 @@
-{{- if .Values.networkPolicies.enabled }}
+{{- if (include "ax-next.bool" .Values.networkPolicies.enabled) }}
 {{/*
 Restricts runner pod traffic.
 
@@ -53,7 +53,7 @@ spec:
       ports:
         - port: {{ .Values.host.ports.ipc }}
           protocol: TCP
-    {{- if .Values.credentialProxy.tcp.enabled }}
+    {{- if (include "ax-next.bool" .Values.credentialProxy.tcp.enabled) }}
     # TASK-149 — credential-proxy TCP Service (production gVisor). In TCP
     # mode the runner reaches the proxy over a ClusterIP Service instead of
     # a hostPath socket, so it needs an egress hole to the proxy port on the

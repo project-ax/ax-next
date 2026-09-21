@@ -1,4 +1,4 @@
-{{- if .Values.minio.enabled }}
+{{- if (include "ax-next.bool" .Values.minio.enabled) }}
 {{/*
 ClusterIP Service fronting the dev/test MinIO (out-of-git design Part A).
 The host's @ax/blob-store-s3 client reaches it at

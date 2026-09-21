@@ -24,6 +24,41 @@ because some Kubernetes name fields are limited to that length.
 {{- end }}
 
 {{/*
+ax-next.bool — the chart's one boolean gate (TASK-504).
+
+Go templates treat ANY non-empty string as true, so a quoted boolean in a
+values file — `agentWorkspace: "false"`, or anything arriving through
+`helm --set-string` or an env-var-derived templating layer — turns a gate ON
+while the operator reading their own values file believes it is off. Several
+of this chart's gates are capability boundaries (the `/api/workspace/*`
+routes, `/admin/credentials*`, the Ingress, the TCP credential proxy), so
+that failure lands in the OPEN direction: the accident GRANTS reach. That is
+CLAUDE.md invariant 5, not a style nit.
+
+`values.schema.json` is the first line of defence — it rejects a quoted
+boolean at install time with helm's own error, before anything renders. This
+helper is the second: it keeps the RENDER honest wherever the schema is
+bypassed (helm 3.14+ `--skip-schema-validation`, or a third-party renderer
+that ignores schemas entirely).
+
+Returns the string "true" (truthy in a template `if`) or "" (falsy):
+  - a real YAML boolean            → unchanged semantics
+  - the string "true" (any case)   → on   — what the operator plainly meant
+  - the string "false" (any case)  → off  — the bug this exists to kill
+  - any other non-boolean          → off  — fail CLOSED, never open
+  - nil / absent                   → off
+
+Usage: {{- if (include "ax-next.bool" .Values.some.flag) }} … {{- end }}
+`not`, `and` and `or` compose with it as usual. `ternary` demands a real
+bool, so compare there: (eq (include "ax-next.bool" .Values.x) "true").
+*/}}
+{{- define "ax-next.bool" -}}
+{{- if kindIs "string" . -}}
+{{- if eq (lower (trim .)) "true" -}}true{{- end -}}
+{{- else if . -}}true{{- end -}}
+{{- end -}}
+
+{{/*
 Chart name and version label value.
 */}}
 {{- define "ax-next.chart" -}}
@@ -186,7 +221,7 @@ posture. Setting both is a config error — the runner can't key off an
 ambiguous transport.
 */}}
 {{- define "ax-next.validateProxyTransport" -}}
-{{- if and .Values.sandbox.proxySocketHostPath .Values.credentialProxy.tcp.enabled -}}
+{{- if and .Values.sandbox.proxySocketHostPath (include "ax-next.bool" .Values.credentialProxy.tcp.enabled) -}}
 {{- fail "credential-proxy: sandbox.proxySocketHostPath (hostPath) and credentialProxy.tcp.enabled (TCP Service) are mutually exclusive — pick exactly one proxy transport. hostPath is kind/single-node; TCP is the production-gVisor posture (GKE Sandbox bans hostPath)." -}}
 {{- end -}}
 {{- end -}}
@@ -229,8 +264,8 @@ kubelet) satisfy `>=1.29.0`; without it semver excludes pre-releases.
 Invoked from host/deployment.yaml, which always renders.
 */}}
 {{- define "ax-next.validateDevServicesKubeVersion" -}}
-{{- if .Values.sandbox.devServices.enabled -}}
-{{- if not .Values.sandbox.devServices.skipKubeVersionCheck -}}
+{{- if (include "ax-next.bool" .Values.sandbox.devServices.enabled) -}}
+{{- if not (include "ax-next.bool" .Values.sandbox.devServices.skipKubeVersionCheck) -}}
 {{- if not (semverCompare ">=1.29.0-0" .Capabilities.KubeVersion.Version) -}}
 {{- fail (printf "sandbox.devServices.enabled=true requires Kubernetes 1.29+ (SidecarContainers GA), but this cluster reports %s. On older kubelets the service sidecar's `restartPolicy: Always` is ignored, so the service runs as a BLOCKING init container and the runner pod hangs in Init until the 6h deadline reaps it — silently. Upgrade the cluster to 1.29+, or (if you've confirmed 1.29+ another way) set sandbox.devServices.skipKubeVersionCheck=true. NOTE: `helm template` reports helm's built-in stub version, not your cluster — pass --kube-version <your-cluster-version> to template as the cluster sees it." .Capabilities.KubeVersion.Version) -}}
 {{- end -}}
@@ -312,7 +347,7 @@ Invoked from `host/deployment.yaml`, which always renders.
 */}}
 {{- define "ax-next.validateWorkspaceBackend" -}}
 {{- if eq .Values.workspace.backend "git-protocol" -}}
-{{- if not .Values.gitServer.enabled -}}
+{{- if not (include "ax-next.bool" .Values.gitServer.enabled) -}}
 {{- fail "workspace.backend=git-protocol requires gitServer.enabled=true" -}}
 {{- end -}}
 {{- end -}}
@@ -412,10 +447,10 @@ validator). Invoked from host/deployment.yaml, which always renders.
 */}}
 {{- define "ax-next.validateBlobBackend" -}}
 {{- if eq .Values.blob.backend "s3" -}}
-{{- if and (not .Values.blob.s3.endpoint) (not .Values.minio.enabled) -}}
+{{- if and (not .Values.blob.s3.endpoint) (not (include "ax-next.bool" .Values.minio.enabled)) -}}
 {{- fail "blob.backend=s3 requires either blob.s3.endpoint (e.g. https://storage.googleapis.com for GCS) or minio.enabled=true (in-cluster dev MinIO)" -}}
 {{- end -}}
-{{- if and (not .Values.blob.s3.bucket) (not .Values.minio.enabled) -}}
+{{- if and (not .Values.blob.s3.bucket) (not (include "ax-next.bool" .Values.minio.enabled)) -}}
 {{- fail "blob.backend=s3 requires blob.s3.bucket to be set" -}}
 {{- end -}}
 {{- end -}}

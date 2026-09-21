@@ -6,11 +6,11 @@ Runner ns: {{ include "ax-next.runnerNamespace" . }}
 
 Components:
   - Host pod:      {{ .Values.replicas | default 1 }} replica(s)
-  - PostgreSQL:    {{ if .Values.postgres.external.enabled }}external{{ else }}in-cluster (subchart){{ end }}
-  - NetworkPolicy: {{ if .Values.networkPolicies.enabled }}enforced{{ else }}DISABLED — host/runner traffic is unrestricted{{ end }}
+  - PostgreSQL:    {{ if (include "ax-next.bool" .Values.postgres.external.enabled) }}external{{ else }}in-cluster (subchart){{ end }}
+  - NetworkPolicy: {{ if (include "ax-next.bool" .Values.networkPolicies.enabled) }}enforced{{ else }}DISABLED — host/runner traffic is unrestricted{{ end }}
   - gVisor:        {{ if .Values.sandbox.runtimeClassName }}runtimeClassName={{ .Values.sandbox.runtimeClassName }}{{ else }}NOT SET — runner pods use the host kernel{{ end }}
 
-{{- if .Values.ingress.enabled }}
+{{- if (include "ax-next.bool" .Values.ingress.enabled) }}
 
 Ingress: https://{{ .Values.ingress.host }}
 {{- else }}
@@ -31,12 +31,12 @@ A few things worth double-checking on the way out:
 
   3. If NetworkPolicies are disabled, runner pods can reach anything on the
      cluster. That's the kind-dev default — not a production stance.
-{{- if .Values.sandbox.devServices.enabled }}
+{{- if (include "ax-next.bool" .Values.sandbox.devServices.enabled) }}
 
   4. Dev-services are ENABLED (sandbox.devServices.enabled=true). These render
      as native sidecars and REQUIRE Kubernetes 1.29+ (SidecarContainers GA).
      This cluster reports {{ .Capabilities.KubeVersion.Version }}.
-{{- if .Values.sandbox.devServices.skipKubeVersionCheck }}
+{{- if (include "ax-next.bool" .Values.sandbox.devServices.skipKubeVersionCheck) }}
      The 1.29+ preflight is SKIPPED (skipKubeVersionCheck=true). On a kubelet
      older than 1.29 a service sidecar runs as a BLOCKING init container and the
      runner pod hangs in Init — make sure every node is actually 1.29+.

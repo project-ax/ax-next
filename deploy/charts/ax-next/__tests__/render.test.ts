@@ -13,12 +13,13 @@
 // the StatefulSet, when `gitServer.enabled=true`.
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { loadAll } from 'js-yaml';
-import { describe, expect, it } from 'vitest';
+import { load, loadAll } from 'js-yaml';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { HELM_REQUIRED_MESSAGE, resolveHelmGate } from './helm-required.js';
 
@@ -1432,4 +1433,213 @@ describeIfHelm('ax-next chart: previously unstampable env (TASK-347)', () => {
     ]).find((e) => e.name === 'AX_WEB_EXTRACT_ALLOWED_HOSTS');
     expect(found?.value).toBe('docs.example.com,intranet.example.com');
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TASK-504 — a QUOTED boolean must never turn a gate ON.
+//
+// Go templates treat any non-empty string as true, so `enabled: "false"` in a
+// values file (or a `--set-string`, or anything routed through an env var by a
+// templating layer) used to read as OFF to the operator and render as ON. A
+// probe of this chart before the fix found that 15 of its 16 boolean values
+// behaved that way; the dangerous ones grant reach — `/api/workspace/*`,
+// `/admin/credentials*`, the Ingress, the TCP credential proxy, user-installed
+// skills. Failing OPEN on a capability gate is CLAUDE.md invariant 5, not a
+// footgun.
+//
+// Two independent layers, so these are two independent guards:
+//   1. values.schema.json rejects a quoted boolean at INSTALL time, before a
+//      single template runs. It is the only layer that can cover
+//      `postgres.embedded.enabled`, because that value is also the postgresql
+//      subchart's `condition:` in Chart.yaml and helm's condition resolver
+//      keeps a dependency ENABLED when the value isn't a real bool (it warns —
+//      "returned non-bool value" — and carries on).
+//   2. `ax-next.bool` keeps the RENDER honest where the schema is bypassed
+//      (helm 3.14+ `--skip-schema-validation`, or a renderer that ignores
+//      schemas). Tested against a schema-less copy of the chart, which is the
+//      only way to reach layer 2 while layer 1 is doing its job.
+//
+// The list of gates is DERIVED from values.yaml, not typed out here: a boolean
+// added tomorrow is covered the day it lands, and no comment can add or remove
+// an entry.
+function booleanValuePaths(node: unknown, prefix = ''): string[] {
+  if (typeof node === 'boolean') return prefix ? [prefix] : [];
+  if (node !== null && typeof node === 'object' && !Array.isArray(node)) {
+    return Object.entries(node as Record<string, unknown>).flatMap(([k, v]) =>
+      booleanValuePaths(v, prefix ? `${prefix}.${k}` : k),
+    );
+  }
+  return [];
+}
+
+const BOOLEAN_PATHS: string[] = booleanValuePaths(
+  load(readFileSync(resolve(chartDir, 'values.yaml'), 'utf8')),
+).sort();
+
+/**
+ * Pinned inputs for every secret the chart would otherwise generate at random,
+ * so two renders of the same values are byte-identical and a diff means a real
+ * difference. Without these, MinIO's root password, the git-server token, the
+ * auth secret and the `checksum/*` annotations derived from them differ on
+ * every invocation. The rest supplies what makes each gate REACHABLE:
+ * `ingress.tls` renders nothing unless the Ingress does, the MinIO `ternary`
+ * is only evaluated on the s3 blob backend, and the dev-services skip flag is
+ * only consulted when dev-services are on.
+ */
+const QUOTED_BOOL_CONTEXT: readonly string[] = [
+  '--set', 'gitServer.auth.token=pinned-token',
+  '--set', 'minio.auth.rootPassword=pinned-password',
+  '--set', 'auth.secret=pinned-auth-secret',
+  '--set', 'postgresql.auth.password=pinned-pg',
+  '--set', 'postgresql.auth.postgresPassword=pinned-pg-admin',
+  '--set', 'ingress.enabled=true',
+  '--set', 'ingress.host=h.example.com',
+  '--set', 'postgres.external.existingSecret=pinned-pg-secret',
+  '--set', 'blob.backend=s3',
+  '--set', 'blob.s3.bucket=pinned-bucket',
+  '--set', 'blob.s3.endpoint=https://s3.example.com',
+  '--set', 'sandbox.devServices.enabled=true',
+  '--set', 'sandbox.devServices.skipKubeVersionCheck=true',
+  // 1.28 keeps the SidecarContainers guard live, so `skipKubeVersionCheck` is
+  // a gate with observable consequences rather than a no-op in this matrix.
+  '--kube-version', '1.28.0',
+];
+
+describeIfHelm('ax-next chart: a quoted boolean cannot flip a gate (TASK-504)', () => {
+  // Non-vacuity. Every guard below is an `it.each` over BOOLEAN_PATHS, and an
+  // empty list would register zero tests and report a green suite — the exact
+  // green-but-empty shape this file's helm gate already exists to prevent.
+  it('enumerates the chart booleans from values.yaml', () => {
+    expect(BOOLEAN_PATHS.length).toBeGreaterThanOrEqual(15);
+    // Spot-check the two ends of the risk range: the capability gate this card
+    // came from, and the one only the schema can defend.
+    expect(BOOLEAN_PATHS).toContain('channelWeb.agentWorkspace');
+    expect(BOOLEAN_PATHS).toContain('postgres.embedded.enabled');
+  });
+
+  // ── Layer 1: values.schema.json ────────────────────────────────────────────
+  const schema = JSON.parse(
+    readFileSync(resolve(chartDir, 'values.schema.json'), 'utf8'),
+  ) as Record<string, unknown>;
+
+  /** The declared JSON-schema `type` at a dotted values path, or undefined. */
+  function schemaTypeAt(path: string): unknown {
+    let node: Record<string, unknown> | undefined = schema;
+    for (const seg of path.split('.')) {
+      const props = node?.properties as Record<string, Record<string, unknown>> | undefined;
+      node = props?.[seg];
+      if (!node) return undefined;
+    }
+    return node.type;
+  }
+
+  it.each(BOOLEAN_PATHS)('values.schema.json types %s as boolean', (path) => {
+    // Drift guard: a boolean added to values.yaml without a schema entry is a
+    // gate with no install-time defence — and for a subchart `condition:`,
+    // with no defence at all.
+    expect(schemaTypeAt(path), `values.schema.json is missing ${path}`).toBe('boolean');
+  });
+
+  it.each(BOOLEAN_PATHS)('helm REJECTS the quoted string "false" for %s', (path) => {
+    const r = helmTemplateExpectFailure([
+      ...QUOTED_BOOL_CONTEXT,
+      '--set-string', `${path}=false`,
+    ]);
+    expect(r.status, `helm rendered ${path}="false" instead of refusing it`).not.toBe(0);
+    // helm's own words, not ours — a comment quoting this cannot satisfy it.
+    expect(r.stderr).toContain(`${path}: Invalid type. Expected: boolean, given: string`);
+  });
+
+  // ── Layer 2: the ax-next.bool helper, with the schema out of the way ───────
+  // A copy of the chart minus values.schema.json. Layer 1 refuses every quoted
+  // boolean, so this copy is the only way to observe what the TEMPLATES do with
+  // one — which is exactly what a `--skip-schema-validation` install gets.
+  let noSchemaChart = '';
+
+  beforeAll(() => {
+    if (GATE.mode !== 'run') return;
+    noSchemaChart = mkdtempSync(join(tmpdir(), 'ax-next-chart-noschema-'));
+    for (const entry of ['Chart.yaml', 'Chart.lock', 'values.yaml', 'templates', 'charts']) {
+      cpSync(resolve(chartDir, entry), join(noSchemaChart, entry), { recursive: true });
+    }
+    // Belt and braces: the copy must not carry the schema, or layer 2 would be
+    // untested and this block would silently re-assert layer 1.
+    rmSync(join(noSchemaChart, 'values.schema.json'), { force: true });
+  });
+
+  afterAll(() => {
+    if (noSchemaChart) rmSync(noSchemaChart, { recursive: true, force: true });
+  });
+
+  /**
+   * Render the schema-less copy, capturing the full outcome — failures
+   * included, so "both renders fail the same way" counts as agreement.
+   */
+  function renderNoSchema(extraArgs: readonly string[]): {
+    status: number;
+    stdout: string;
+    stderr: string;
+  } {
+    const r = spawnSync(
+      HELM as string,
+      [
+        'template', 'ax-test', noSchemaChart, '--namespace', 'default',
+        ...REQUIRED, ...QUOTED_BOOL_CONTEXT, ...extraArgs,
+      ],
+      { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
+    );
+    return {
+      status: r.status ?? -1,
+      stdout: r.stdout ?? '',
+      // helm prefixes some warnings with their own source location; drop it so
+      // a cosmetic difference can't fail the comparison.
+      stderr: (r.stderr ?? '').replace(/^\S+\.go:\d+:\s*/gm, ''),
+    };
+  }
+
+  // The one gate no template can defend. `postgres.embedded.enabled` is the
+  // postgresql subchart's `condition:` in Chart.yaml, and helm decides whether
+  // to render a dependency BEFORE any template runs: a non-bool condition value
+  // is warned about and the dependency stays ENABLED. There is no template to
+  // fix, which is the single strongest argument for shipping the schema and not
+  // just the helper. Asserted below rather than waved at.
+  const SCHEMA_ONLY_PATHS = new Set(['postgres.embedded.enabled']);
+
+  it('postgres.embedded.enabled is defensible ONLY by the schema', () => {
+    // Schema-less render: the quoted "false" leaves the subchart switched on.
+    // If a future helm starts honouring the string (or erroring on it), this
+    // fails — and the exemption above can be retired.
+    const r = renderNoSchema(['--set-string', 'postgres.embedded.enabled=false']);
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain(
+      "Condition path 'postgres.embedded.enabled' for chart postgresql returned non-bool value",
+    );
+    const stillRendered = (loadAll(r.stdout) as Array<K8sDoc | null>).some(
+      (d) => d?.metadata?.name === 'ax-test-postgresql',
+    );
+    expect(stillRendered, 'helm dropped the subchart — the exemption can go').toBe(true);
+
+    // And the layer that does hold: the real chart refuses the install.
+    const gated = helmTemplateExpectFailure([
+      ...QUOTED_BOOL_CONTEXT,
+      '--set-string', 'postgres.embedded.enabled=false',
+    ]);
+    expect(gated.status).not.toBe(0);
+  });
+
+  for (const value of ['false', 'true'] as const) {
+    it.each(BOOLEAN_PATHS.filter((p) => !SCHEMA_ONLY_PATHS.has(p)))(
+      `renders %s="${value}" exactly as the bare boolean ${value}`,
+      (path) => {
+        const asBool = renderNoSchema(['--set', `${path}=${value}`]);
+        const asString = renderNoSchema(['--set-string', `${path}=${value}`]);
+        // Whole-render equality, not "the env var is absent": a gate that
+        // fails open pulls in entire Deployments, Services and
+        // NetworkPolicies, and this card is about the class, not one env var.
+        expect(asString.status, `${path}="${value}" changed the exit status`).toBe(asBool.status);
+        expect(asString.stdout, `${path}="${value}" rendered differently`).toBe(asBool.stdout);
+        expect(asString.stderr, `${path}="${value}" failed differently`).toBe(asBool.stderr);
+      },
+    );
+  }
 });
