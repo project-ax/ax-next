@@ -4,20 +4,39 @@
 // handed in through plugin config. That is the in-repo precedent twice over —
 // `presets/k8s` hands `@ax/memory-strata` `orchestrator: { hook, model }`, and
 // `@ax/llm-anthropic` declares `credentials:get` under `optionalCalls` and
-// falls back cleanly when nothing registers it — and it is what keeps this
-// read-path embedder and §3.3's write-path (slot-normalization) one the SAME
-// seam: one hook, one provider plugin, one credential, one egress host.
-// Handing in a closure instead would have produced the "two embedder seams,
-// two layers" the 2026-09-20 handoff §1 warned about.
+// falls back cleanly when nothing registers it — and it kept the read-path
+// embedder and §3.3's write-path (slot-normalization) one on the SAME seam:
+// one hook, one provider plugin, one credential, one egress host. Handing in
+// a closure instead would have produced the "two embedder seams, two layers"
+// the 2026-09-20 handoff §1 warned about.
 //
-// NOTHING REGISTERS THESE YET, and that is the designed state rather than
-// half-wired code: with no producer the dense and rerank channels are absent
-// and `recall` reports `degraded: ['semantic', 'ranking']` — §4.4's
-// observable degraded mode. `bootstrap.ts`'s `verifyCalls` deliberately skips
-// `optionalCalls`, so an absent producer is non-fatal at boot. A real provider
-// needs credential-store keys, egress-lock allowlisting and a
-// `PROVIDER_ENDPOINTS` entry, which is its own card with its own security
-// review.
+// CORRECTION (TASK-487, 2026-09-20) to the sentence above: there is no
+// write-path embedder to share the seam with. §3.3's slot normalizer was
+// MEASURED and killed at rung 0 — calibrated on the synonym table's own
+// canonical keys the nearest slot disagrees on 6/32, and hand-checked
+// precision at threshold 0.78 is 13.2%/20.9% (`dem-memory/bench/normalizer-eval.ts`,
+// `docs/plans/2026-09-18-dem-rung0-report.md` §2). It ships as a synonym table
+// with no embedder at all. The hook-name seam is still the right shape; the
+// two-layers argument for it is now historical rather than live.
+//
+// A PRODUCER NOW EXISTS: `@ax/embeddings` registers both hooks
+// (`packages/embeddings/src/wire.ts` carries the peer copy of the four
+// interfaces below). It is NOT yet loaded by any preset — switching the dense
+// channel on is an unmeasured change to retrieval quality and belongs with the
+// measurement, on this epic's preset + canary card — so the no-producer path
+// below is still the live one on every boot today. With no producer the dense
+// and rerank channels are absent and `recall` reports
+// `degraded: ['semantic', 'ranking']` — §4.4's observable degraded mode.
+// `bootstrap.ts`'s `verifyCalls` deliberately skips `optionalCalls`, so an
+// absent producer is non-fatal at boot.
+//
+// One more correction while we are here: this comment used to say a real
+// provider needs "a `PROVIDER_ENDPOINTS` entry". It does not, and TASK-487
+// deliberately did not add one. That table is the sandbox-egress / in-sandbox
+// runner-dialing table (`packages/core/src/providers.ts`); a host-side
+// producer needs none of its three fields, and a row there would have been
+// auto-derived into `chat-orchestrator`'s public `KNOWN_PROVIDERS` list of
+// known *LLM* providers. Credential-store keys, yes — via a configured ref.
 
 import type { AgentContext, HookBus } from '@ax/core';
 
