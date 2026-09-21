@@ -46,9 +46,8 @@
 // and never sees a path.
 // ---------------------------------------------------------------------------
 
-import { posix } from 'node:path';
-import { PluginError } from '@ax/core';
-import { AGENT_TIER_MEMORY_ROOT, MEMORY_ROOT, rulesFile } from './paths.js';
+import { PluginError, RUNNER_IMMUTABLE_PATHS } from '@ax/core';
+import { rulesFile } from './paths.js';
 
 const PLUGIN_NAME = '@ax/memory-strata';
 
@@ -59,12 +58,24 @@ const PLUGIN_NAME = '@ax/memory-strata';
  */
 export const HUMAN_TIER_PATHS: readonly string[] = Object.freeze([rulesFile()]);
 
-/** The same file inside the per-agent `/agent` git tier (`memory/system/rules.md`). */
-export const HUMAN_TIER_TIER_PATHS: readonly string[] = Object.freeze(
-  HUMAN_TIER_PATHS.map((rel) =>
-    posix.join(AGENT_TIER_MEMORY_ROOT, rel.slice(MEMORY_ROOT.length + 1)),
-  ),
-);
+/**
+ * The same file inside the per-agent `/agent` tier (`memory/system/rules.md`).
+ *
+ * Taken FROM `@ax/core`'s `RUNNER_IMMUTABLE_PATHS` rather than re-derived from
+ * `HUMAN_TIER_PATHS` (TASK-486). That list is what the host's commit path
+ * checks a runner-originated apply against, and this one is what every writer
+ * in this package checks itself against — two enforcement points for one
+ * concept, so they share the literal instead of agreeing by coincidence
+ * (Invariant 4). The core module owns it because `@ax/ipc-core` may not import
+ * a plugin (Invariant 2).
+ *
+ * `human-tier.test.ts` pins that this still equals the `permanent/`-stripped
+ * form of {@link HUMAN_TIER_PATHS}: adding a second human-owned file here
+ * without adding it to core would otherwise leave the sandbox able to write it.
+ */
+export const HUMAN_TIER_TIER_PATHS: readonly string[] = Object.freeze([
+  ...RUNNER_IMMUTABLE_PATHS,
+]);
 
 /**
  * Is this path human-owned?

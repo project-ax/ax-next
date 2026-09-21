@@ -35,10 +35,15 @@ export type SystemFileName = 'agent' | 'rules' | 'user' | 'session';
  * local scratch; the tier drops the `permanent/` host-layout prefix so the
  * runner reads `/agent/memory/system/recent.md`.
  *
- * Lives here rather than in `agent-tier-sync.ts` so `human-tier.ts` — which
- * every writer in the package imports — can derive the tier-side path of the
- * human tier without importing the sync module and making a cycle out of the
- * guard. `agent-tier-sync.ts` re-exports it, so its importers are unchanged.
+ * Lives here rather than in `agent-tier-sync.ts` so a module that needs the
+ * tier prefix does not have to import the sync module to get it.
+ * `agent-tier-sync.ts` re-exports it, so its importers are unchanged.
+ *
+ * It used to be `human-tier.ts` that needed exactly that — it derived the
+ * human tier's tier-side path from this constant. TASK-486 moved that literal
+ * to `@ax/core`'s `RUNNER_IMMUTABLE_PATHS` (the host's commit path has to check
+ * the same one, and `@ax/ipc-core` may not import a plugin), so `human-tier.ts`
+ * no longer reads this at all.
  */
 export const AGENT_TIER_MEMORY_ROOT = 'memory';
 

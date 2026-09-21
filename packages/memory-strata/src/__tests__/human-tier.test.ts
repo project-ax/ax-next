@@ -18,9 +18,14 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { HookBus, makeAgentContext, PluginError } from '@ax/core';
+import {
+  HookBus,
+  makeAgentContext,
+  PluginError,
+  RUNNER_IMMUTABLE_PATHS,
+} from '@ax/core';
 import type { FileChange, WorkspaceApplyInput, WorkspaceListOutput, WorkspaceReadInput, WorkspaceReadOutput } from '@ax/core';
 import { runConsolidation, type ConsolidationLogger } from '../consolidator.js';
 import { buildMarkdownFile } from '../frontmatter.js';
@@ -399,5 +404,23 @@ describe('HUMAN_TIER_PATHS', () => {
   it('names the file the design promises', () => {
     expect(HUMAN_TIER_PATHS).toEqual(['permanent/memory/system/rules.md']);
     expect(HUMAN_TIER_TIER_PATHS).toEqual(['memory/system/rules.md']);
+  });
+
+  it('TASK-486: the tier list is the same literal the host refuses the runner', () => {
+    // Two enforcement points, one concept (Invariant 4). This package guards
+    // its OWN automatic writers; `@ax/core`'s `RUNNER_IMMUTABLE_PATHS` is what
+    // the host's commit path checks a SANDBOX-originated apply against. The
+    // list is shared rather than duplicated, and this pins that it stays so.
+    expect(HUMAN_TIER_TIER_PATHS).toEqual([...RUNNER_IMMUTABLE_PATHS]);
+  });
+
+  it('TASK-486: a second human-owned file would have to be added to core too', () => {
+    // The derivation that USED to produce HUMAN_TIER_TIER_PATHS, kept as the
+    // drift check. Adding an entry to HUMAN_TIER_PATHS without adding it to
+    // core's list would leave the sandbox free to write it — this fails first.
+    const derived = HUMAN_TIER_PATHS.map((rel) =>
+      posix.join('memory', rel.slice(MEMORY_ROOT.length + 1)),
+    );
+    expect([...RUNNER_IMMUTABLE_PATHS]).toEqual(derived);
   });
 });

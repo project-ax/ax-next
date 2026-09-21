@@ -24,8 +24,10 @@ export {
 } from './workspace.js';
 export {
   filterToPolicy,
+  findRunnerImmutableViolations,
   POLICY_PREFIXES,
   POLICY_EXACT_PATHS,
+  RUNNER_IMMUTABLE_PATHS,
 } from './workspace-policy.js';
 export { registerWorkspaceApplyFacade } from './workspace-apply-facade.js';
 export { safePath, assertWithinBase } from './util/safe-path.js';
