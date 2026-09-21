@@ -11,7 +11,7 @@ import {
   type MemoryHarness,
 } from './harness.js';
 import { buildMemoryBlock, assembleUnderCap, rankDigestSubjects } from '../augment.js';
-import { PROFILE_SLOTS } from '../slots.js';
+import { SLOTS } from '../slots.js';
 import { escapeStatementText, MAX_VALUE_CHARS } from '../render.js';
 import { FACTS_RECALL_HOOK } from '../plugin.js';
 
@@ -197,7 +197,7 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
     // §3.3/§4.1, Invariant 4: "This list IS the profile whitelist — same
     // constant, one owner." The query is what proves it: the block asks the
     // store for exactly the normalizer's eight, so a ninth slot added to
-    // `PROFILE_SLOTS` shows up in the profile with no change here.
+    // `SLOTS` shows up in the profile with no change here.
     it('asks the store for exactly the shared slot constant, not a second list', async () => {
       const h = await makeHarness();
       const spy = vi.spyOn(h.bus, 'call');
@@ -208,7 +208,7 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
           hook === FACTS_RECALL_HOOK && (input as Record<string, unknown>).slots !== undefined,
       );
       expect(profileQuery).toBeDefined();
-      expect((profileQuery![2] as { slots: string[] }).slots).toEqual([...PROFILE_SLOTS]);
+      expect((profileQuery![2] as { slots: string[] }).slots).toEqual([...SLOTS]);
     });
 
     it('scopes the profile to the caller and to slot rows only', async () => {
@@ -282,6 +282,94 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
       const body = await augment(h, ctx);
       expect(body).toContain('- lives_in: Seattle');
       expect(body).not.toContain('Portland');
+    });
+
+    // The regression the case above does NOT catch, because two rows fit under
+    // any limit. The profile query's FETCH limit has to be wider than the
+    // RENDER limit: a slot can hold three active rows (§3.4 rule 3 closes a
+    // row only with equal-or-higher provenance), the store answers in recency
+    // order, and a person's own correction is stated once and is therefore the
+    // OLDEST row in its slot. With a fetch limit equal to the render limit the
+    // page is cut before the per-slot pick runs, and the human row — the one
+    // thing provenance immunity exists to protect — falls off the end.
+    //
+    // Fixture: every one of the eight slots carries a newer `extracted` row,
+    // so 8 human rows sit at positions 9-16 of a recency-ordered page while
+    // the render limit is 10.
+    it('fetches wider than it renders, so an older human correction is not cut off the page', async () => {
+      const h = await makeHarness();
+      const ctx = h.ctx();
+
+      await engineRecord(
+        h.bus,
+        ctx,
+        SLOTS.flatMap((slot) => [
+          {
+            about: `user:${ALICE}`,
+            relation: slot,
+            value: `corrected-${slot}`,
+            when: JAN,
+            slot,
+            provenance: 'human' as const,
+            ownerUserId: ALICE,
+          },
+          {
+            about: `user:${ALICE}`,
+            relation: slot,
+            value: `guessed-${slot}`,
+            when: SEP,
+            slot,
+            provenance: 'extracted' as const,
+            ownerUserId: ALICE,
+          },
+        ]),
+      );
+
+      const body = await augment(h, ctx);
+      // Every slot shows the person's own value, and none shows the guess.
+      for (const slot of SLOTS) {
+        expect(body).toContain(`- ${slot}: corrected-${slot}`);
+        expect(body).not.toContain(`guessed-${slot}`);
+      }
+    });
+
+    // And the proof that the width is what does it: squeeze the scan down to
+    // the render limit and the bug comes back. This is the assertion that
+    // fails if `profileScanRows` is ever collapsed into `profileRows`.
+    it('loses the human correction when the scan is narrowed to the render limit', async () => {
+      const h = await makeHarness();
+      const ctx = h.ctx();
+
+      await engineRecord(
+        h.bus,
+        ctx,
+        SLOTS.flatMap((slot) => [
+          {
+            about: `user:${ALICE}`,
+            relation: slot,
+            value: `corrected-${slot}`,
+            when: JAN,
+            slot,
+            provenance: 'human' as const,
+            ownerUserId: ALICE,
+          },
+          {
+            about: `user:${ALICE}`,
+            relation: slot,
+            value: `guessed-${slot}`,
+            when: SEP,
+            slot,
+            provenance: 'extracted' as const,
+            ownerUserId: ALICE,
+          },
+        ]),
+      );
+
+      const narrowed = await buildMemoryBlock(h.bus, ctx, FACTS_RECALL_HOOK, {
+        profileScanRows: 8,
+        maxTokens: 10_000,
+      });
+      expect(narrowed).toContain('guessed-');
     });
   });
 
@@ -644,6 +732,23 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
           ch.charCodeAt(0),
         );
       }
+    });
+
+    // A truncation that can corrupt its own output is one a caller cannot
+    // reason about: a UTF-16 `.slice()` can cut between the halves of a
+    // surrogate pair and leave a lone surrogate, which renders as U+FFFD.
+    it('truncates on code points, never through the middle of a surrogate pair', () => {
+      const emoji = String.fromCodePoint(0x1f600);
+      const escaped = escapeStatementText(emoji.repeat(MAX_VALUE_CHARS + 10));
+      for (const unit of escaped) {
+        const code = unit.charCodeAt(0);
+        expect(code >= 0xd800 && code <= 0xdfff && escaped.length === 1).toBe(false);
+      }
+      expect(escaped).not.toContain('�');
+      expect(escaped).toContain('[truncated]');
+      // The kept prefix is whole emoji, so it round-trips through code points.
+      const kept = escaped.slice(0, escaped.indexOf('…'));
+      expect(Array.from(kept).every((c) => c === emoji)).toBe(true);
     });
 
     it('escapes a trailing backslash so it cannot swallow the pipe escape', () => {

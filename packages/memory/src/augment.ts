@@ -103,6 +103,8 @@ export interface MemoryBlockConfig {
   maxTokens?: number;
   /** Most profile rows rendered. Design §4.1: ≤ ~10. */
   profileRows?: number;
+  /** Rows the Profile query scans before the per-slot pick. See {@link DEFAULTS}. */
+  profileScanRows?: number;
   /** Conversations in the Recent section. Design §4.1: 3. */
   recentConversations?: number;
   /** Statements per conversation in Recent. Design §4.1: 3. */
@@ -118,6 +120,23 @@ export interface MemoryBlockConfig {
 export const DEFAULTS = {
   maxTokens: 800,
   profileRows: 10,
+  // ⚠ The SCAN is deliberately wider than the render, and this is the same
+  // "never post-filter a widened pool" argument the `slots` filter makes in
+  // the engine — one level up, where it is easier to miss.
+  //
+  // §3.4 rule 3 closes a row only with one of equal-or-higher provenance, so a
+  // slot can legitimately hold up to three active rows at once (`human`,
+  // `agent`, `extracted`). The store answers this query in RECENCY order, and
+  // a person's own correction is stated once and is therefore usually the
+  // OLDEST row in its slot — so a fetch limit equal to the render limit cuts
+  // the page before {@link beatsForSlot} ever runs, and the renderer then
+  // shows the model the exact value the person overrode. That is the failure
+  // provenance immunity exists to prevent, reintroduced by a `LIMIT`.
+  //
+  // 8 slots x 3 provenance tiers = 24 is the true ceiling on active slot rows
+  // for one subject; 32 leaves headroom without asking for a page nobody
+  // reads. The engine clamps to its own maximum anyway.
+  profileScanRows: 32,
   recentConversations: 3,
   recentPerConversation: 3,
   // One `chat:end` emits ~12 statements, so three conversations is ~36 rows.
@@ -439,7 +458,11 @@ function renderDegraded(degraded: unknown[]): string {
     .filter((d) => d !== '');
   if (flags.length === 0) return '';
   return [
-    '### Memory retrieval was degraded',
+    // A top-level `##`, not a `###`, because this section has no parent: it is
+    // in the never-dropped tier and survives when every store section has
+    // gone, so nesting it under `## What I Remember` would emit a dangling h3
+    // under no h2 in exactly the case it matters most.
+    '## Memory retrieval was degraded',
     '',
     `Some of what I remember may be missing from this block: ${flags.join(', ')}.`,
     'Use the memory tool if an answer depends on being sure.',
@@ -569,7 +592,11 @@ export async function buildMemoryBlock(
   // Three store queries. No embedding, no rerank, no model call — none of the
   // three passes a `query`, so not one of them reaches a retrieval channel.
   const [profileOut, recentOut, digestOut] = await Promise.all([
-    recall({ about: speakerSubject, limit: cfg.profileRows, slots: [...SLOTS] }),
+    // `profileScanRows`, NOT `profileRows` — the per-slot pick below has to
+    // see every active row of a slot to apply provenance immunity, and a
+    // fetch limit equal to the render limit would cut the person's own older
+    // correction out of the page first. See `DEFAULTS.profileScanRows`.
+    recall({ about: speakerSubject, limit: cfg.profileScanRows, slots: [...SLOTS] }),
     recall({ limit: cfg.recentScanRows }),
     recall({ limit: cfg.digestScanRows }),
   ]);
