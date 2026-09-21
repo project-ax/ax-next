@@ -489,11 +489,11 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           for (const row of result.statements) {
             toMemoryStatement(row);
           }
-          const visibleIds = new Set(result.statements.map((row) => row.id));
           const page =
             input.profile === true && input.activeOnly !== false
               ? selectProfileRows(result.statements, limit)
               : result.statements.slice(0, limit);
+          const visibleIds = new Set(page.map((row) => row.id));
 
           return {
             statements: page.map((row) => {

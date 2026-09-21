@@ -106,6 +106,25 @@ describe('@ax/memory — profile recall', () => {
     expect(statements[0]).not.toHaveProperty('closedBy');
   });
 
+  it('omits a closedBy that is in the engine page but outside the returned page', async () => {
+    const { bus } = await busWithEngine({
+      statements: [
+        { ...GOOD_ROW, id: 'z', slot: 'lives_in', until: GOOD_ROW.when, closedBy: 'a' },
+        { ...GOOD_ROW, id: 'a', slot: 'lives_in' },
+      ],
+      degraded: [],
+    });
+    const { statements } = await bus.call('memory:recall', STUB_CTX, {
+      profile: true,
+      activeOnly: false,
+      limit: 1,
+    });
+    expect(statements).toHaveLength(1);
+    expect(statements[0]?.id).toBe('z');
+    expect(statements[0]?.closure).toBe('replaced');
+    expect(statements[0]).not.toHaveProperty('closedBy');
+  });
+
   it('marks a closed row with no closedBy as forgotten', async () => {
     const { bus } = await busWithEngine({
       statements: [{ ...GOOD_ROW, until: '2023-02-01T00:00:00.000Z' }],
