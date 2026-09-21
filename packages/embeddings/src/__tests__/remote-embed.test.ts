@@ -368,3 +368,47 @@ describe('remote embed — the input payload is still loud', () => {
     expect(stub.calls).toHaveLength(0);
   });
 });
+
+describe('remote embed — a non-2xx is not an answer, however well-formed its body', () => {
+  // ADDED BY THE TASK-487 MUTATION PASS. Deleting `if (!response.ok) return
+  // undefined` from `postJson` left the whole suite GREEN, because every
+  // non-2xx fixture in the failure table above also happens to carry a body
+  // that fails the shape check a moment later. So the status check was being
+  // credited for work the shape check was doing, and it could have been
+  // refactored away with 137 tests still passing.
+  //
+  // The case that separates them is a non-2xx carrying a PERFECTLY VALID body,
+  // which is not hypothetical: an authenticating proxy answering 403 with a
+  // cached payload, a gateway's 503 echoing the last good response, or a
+  // provider returning 429 alongside a partial result. Accepting any of those
+  // would write a rate-limiter's leftovers into the vector column as though
+  // the model had produced them.
+  it.each([
+    ['403', 403],
+    ['429', 429],
+    ['500', 500],
+    ['503', 503],
+  ])('resolves to undefined for HTTP %s with a valid predictions body', async (_label, status) => {
+    const stub = fetchStub((call) => jsonResponse(predictionsFor(call), status));
+    const bus = await busWithPlugin(configWith(stub), { credential: TOKEN });
+
+    await expect(embed(bus, { texts: texts(2), task: 'document' })).resolves.toBeUndefined();
+    // We still dialed — the point is that we refused what came back, not that
+    // we never asked.
+    expect(stub.calls).toHaveLength(1);
+  });
+
+  it('accepts that same body at 200, so the fixture itself is not the reason', async () => {
+    // The control. Without it, the four cases above would also pass against a
+    // driver that refuses this body at EVERY status.
+    const stub = fetchStub((call) => jsonResponse(predictionsFor(call), 200));
+    const bus = await busWithPlugin(configWith(stub), { credential: TOKEN });
+
+    await expect(embed(bus, { texts: texts(2), task: 'document' })).resolves.toEqual({
+      vectors: [
+        [0, 0, 0, 0],
+        [1, 0, 0, 0],
+      ],
+    });
+  });
+});

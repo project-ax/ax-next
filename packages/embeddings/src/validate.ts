@@ -25,6 +25,19 @@
  * exact bug, on the consumer side, briefly turned one misconfigured provider
  * into a deployment-wide WRITE outage on TASK-434 — see the same comment on
  * `packages/memory-facts-sqlite/src/producers.ts`'s `embedTexts`.
+ *
+ * HONESTY ABOUT WHICH GUARD ACTUALLY FIRES (TASK-487 mutation pass): today it
+ * is not this one. Every call site below reads `isNullish(x) || !Array.isArray(x)`,
+ * and `Array.isArray` is already `false` for `null` — so flipping this function
+ * to `=== undefined` changes no observable behavior and no test can catch it.
+ * It is an equivalent mutant, not a coverage gap.
+ *
+ * It stays anyway, and the reason is the one above: the moment a call site
+ * stops being an array check — a scalar score, a `{ data: [...] }` envelope, a
+ * `.length` read — `Array.isArray` stops covering `null` and this becomes the
+ * only thing standing between a provider's `null` and a TypeError that escapes
+ * the handler. `validate.test.ts` pins the PAIR jointly: remove both and it
+ * goes red on the throw.
  */
 function isNullish(value: unknown): boolean {
   return value == null;

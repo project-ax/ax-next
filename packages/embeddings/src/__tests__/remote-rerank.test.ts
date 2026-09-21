@@ -2,7 +2,7 @@
 //
 // The two tests that carry this file are the SHUFFLE one (Cohere answers
 // sorted by score, so scores must be placed by `index` and never by iteration
-// order) and the MISSING-INDEX one (a short answer is refused outright, not
+// order) and the SHORT-ANSWER one (a short answer is refused outright, not
 // padded with zeros). Everything else is the failure table.
 
 import { describe, expect, it } from 'vitest';
@@ -115,7 +115,15 @@ describe('remote rerank — the happy path', () => {
 });
 
 describe('remote rerank — full coverage or nothing', () => {
-  it('refuses a missing index instead of padding that slot with zero', async () => {
+  // NOTE ON WHAT THIS ACTUALLY PINS (TASK-487 mutation pass). It pins the
+  // OUTCOME — a short answer is refused, never padded — and that outcome is
+  // worth pinning, because `dem-memory` padded and we deliberately do not.
+  // What it does NOT pin is WHICH of `cohereRerank`'s three guards refuses it:
+  // deleting the arity check leaves this test green, because the missing slot
+  // then survives as a hole and `validateScores` catches it instead. Same for
+  // the `seen` check and the duplicated-index case below. See the comment at
+  // the end of `cohereRerank`.
+  it('refuses a short answer instead of padding the missing slot with zero', async () => {
     const stub = fetchStub(() =>
       jsonResponse({ results: SHUFFLED_RESULTS.filter((r) => r.index !== 1) }),
     );
@@ -255,5 +263,36 @@ describe('remote rerank — no credential means no call', () => {
       rerank(bus, { query: 'q', documents: DOCS, model: '../../../x' }),
     ).resolves.toBeUndefined();
     expect(stub.calls).toHaveLength(0);
+  });
+});
+
+describe('remote rerank — a non-2xx is not an answer, however well-formed its body', () => {
+  // The rerank half of the same TASK-487 mutation finding — see the matching
+  // block in `remote-embed.test.ts`. Every non-2xx fixture in the failure
+  // table above carries a body that ALSO fails the shape check, so deleting
+  // `if (!response.ok)` left the suite green. A 429 from Cohere that still
+  // carries a usable `results` array is the case that tells the two guards
+  // apart, and accepting it would let a throttled response silently reorder
+  // somebody's recall.
+  it.each([
+    ['403', 403],
+    ['429', 429],
+    ['500', 500],
+    ['503', 503],
+  ])('resolves to undefined for HTTP %s with a valid results body', async (_label, status) => {
+    const stub = fetchStub(() => jsonResponse({ results: SHUFFLED_RESULTS }, status));
+    const bus = await busWithPlugin(configWith(stub), { credential: TOKEN });
+
+    await expect(rerank(bus, { query: 'q', documents: DOCS })).resolves.toBeUndefined();
+    expect(stub.calls).toHaveLength(1);
+  });
+
+  it('accepts that same body at 200, so the fixture itself is not the reason', async () => {
+    const stub = fetchStub(() => jsonResponse({ results: SHUFFLED_RESULTS }, 200));
+    const bus = await busWithPlugin(configWith(stub), { credential: TOKEN });
+
+    await expect(rerank(bus, { query: 'q', documents: DOCS })).resolves.toEqual({
+      scores: [0.7, 0.1, 0.9, 0.4],
+    });
   });
 });

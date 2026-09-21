@@ -201,8 +201,19 @@ export async function cohereRerank(
     if (typeof score !== 'number' || !Number.isFinite(score)) return undefined;
     scores[index] = score;
   }
-  // Belt and braces: `seen` already proves full, distinct coverage, so this
-  // can only fire if the loop above stops doing what it says. It costs one
-  // pass and it is the last thing between a hole and the ranking channel.
+  // This is NOT belt-and-braces, whatever it looks like — it is the guard that
+  // actually fires. The TASK-487 mutation pass deleted the arity check and the
+  // `seen` check, one at a time, and the whole suite stayed green both times:
+  // a short answer leaves a HOLE in this sparse array, a duplicated index
+  // leaves one too (pigeonhole), and `for..of` yields `undefined` for a hole,
+  // which fails the number check right here.
+  //
+  // So the three guards are genuinely redundant, and this is the backstop that
+  // makes the other two redundant rather than the other way round. All three
+  // stay — the earlier two fail fast and say which provider misbehaved, and a
+  // reader deserves to know the ordering is defense in depth rather than a
+  // chain where each link is load-bearing. `validate.test.ts` pins the hole
+  // case on `validateScores` directly, since no through-the-bus test can tell
+  // the three apart.
   return validateScores(scores, args.documents.length);
 }
