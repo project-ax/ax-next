@@ -11,9 +11,18 @@ afterEach(async () => {
 });
 
 describe('@ax/memory — manifest', () => {
-  it('registers EXACTLY the three caller-facing hooks', () => {
+  it('registers EXACTLY the caller-facing hooks plus the injected block', () => {
     const { manifest } = createMemoryPlugin();
-    expect(manifest.registers).toEqual(['memory:recall', 'memory:remember', 'memory:forget']);
+    expect(manifest.registers).toEqual([
+      'memory:recall',
+      'memory:remember',
+      'memory:forget',
+      // TASK-491, design 4.1. A SINGLE-provider service hook, which is what
+      // makes `@ax/memory` and `@ax/memory-strata` mutually exclusive in a
+      // preset -- 10.4's "one memory plugin per preset" enforced by the bus
+      // rather than by a convention.
+      'system-prompt:augment',
+    ]);
   });
 
   it('declares the engine hooks it calls, and nothing else', () => {
@@ -29,18 +38,35 @@ describe('@ax/memory — manifest', () => {
     expect(manifest.subscribes).toEqual([]);
   });
 
-  it('actually puts those three on the bus and no fourth', async () => {
+  it('actually puts exactly those on the bus and no fifth', async () => {
     const bus = new HookBus();
     await createMemoryPlugin().init({ bus, config: {} });
-    expect(bus.listServices()).toEqual(['memory:recall', 'memory:remember', 'memory:forget']);
+    expect([...bus.listServices()].sort()).toEqual(
+      ['memory:recall', 'memory:remember', 'memory:forget', 'system-prompt:augment'].sort(),
+    );
   });
 
   it('names the engine as a HARD dependency — there is no honest fallback', () => {
     const { manifest } = createMemoryPlugin();
     // A memory surface with no store behind it can only answer "no memories"
-    // to a question it never asked anyone. If this ever moves to
-    // `optionalCalls`, that answer ships.
-    expect(manifest.optionalCalls ?? []).toEqual([]);
+    // to a question it never asked anyone. The engine hooks stay in `calls`;
+    // if one ever moves to `optionalCalls`, that answer ships.
+    const optionalHooks = (manifest.optionalCalls ?? []).map((o) => o.hook);
+    expect(optionalHooks).not.toContain('memory:facts:recall');
+    expect(optionalHooks).not.toContain('memory:facts:record');
+    expect(optionalHooks).not.toContain('memory:facts:supersede');
+  });
+
+  // The human tier is the ONE soft dependency, and the asymmetry is the
+  // point: `memory:rules:*` stays a shared contract across memory
+  // implementations (§10.4) but the provider is not part of this plugin, so a
+  // preset may legitimately load `@ax/memory` without one. A hard `calls`
+  // entry would turn that configuration into a boot failure.
+  it('names the human tier as the one OPTIONAL dependency, with its degradation spelled out', () => {
+    const { manifest } = createMemoryPlugin();
+    expect(manifest.optionalCalls).toHaveLength(1);
+    expect(manifest.optionalCalls![0]!.hook).toBe('memory:rules:read');
+    expect(manifest.optionalCalls![0]!.degradation).toMatch(/Rules From Your User/);
   });
 });
 
