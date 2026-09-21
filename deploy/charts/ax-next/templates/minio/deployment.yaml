@@ -1,4 +1,4 @@
-{{- if .Values.minio.enabled }}
+{{- if (include "ax-next.bool" .Values.minio.enabled) }}
 {{/*
 MinIO server (out-of-git design Part A — dev/test blob backend).
 

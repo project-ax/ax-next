@@ -1,0 +1,162 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ax-next chart values",
+  "description": "Type-checks the chart's boolean flags so a QUOTED boolean fails the install loudly instead of silently flipping a capability on. Go templates treat any non-empty string as true, so `enabled: \"false\"` (or `--set-string enabled=false`) reads as OFF to the operator and renders as ON. Several of these flags are capability boundaries — the /api/workspace/* routes, /admin/credentials*, the Ingress, the TCP credential proxy — so the accident grants reach (CLAUDE.md invariant 5). Everything not listed here is deliberately unconstrained: this schema exists to close one failure mode, not to become a second copy of values.yaml. Adding a new boolean to values.yaml? Add it here too — __tests__/render.test.ts fails the build if you don't.",
+  "type": "object",
+  "properties": {
+    "blob": {
+      "type": "object",
+      "properties": {
+        "s3": {
+          "type": "object",
+          "properties": {
+            "forcePathStyle": {
+              "type": "boolean",
+              "description": "Path-style S3 addressing. Stamped straight onto AX_BLOB_S3_FORCE_PATH_STYLE as a string, so quoting it happens to survive — typed here anyway so the whole boolean surface is consistent."
+            }
+          }
+        }
+      }
+    },
+    "channelWeb": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Serve the channel-web SPA from the host pod."
+        },
+        "agentWorkspace": {
+          "type": "boolean",
+          "description": "CAPABILITY GATE. Off means the k8s preset never registers /api/workspace/* — the routes do not exist on the wire."
+        }
+      }
+    },
+    "credentialProxy": {
+      "type": "object",
+      "properties": {
+        "tcp": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "CAPABILITY GATE. Renders the credential-proxy TCP Service and the NetworkPolicy egress that reaches it."
+            }
+          }
+        }
+      }
+    },
+    "credentials": {
+      "type": "object",
+      "properties": {
+        "admin": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "CAPABILITY GATE. Mounts /admin/credentials* and /settings/credentials*."
+            }
+          }
+        }
+      }
+    },
+    "gitServer": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Deploy the git-server storage tier (StatefulSet, Services, auth Secret, NetworkPolicy)."
+        }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "CAPABILITY GATE. Publishes an Ingress — this is what puts the host on the internet."
+        },
+        "tls": {
+          "type": "boolean",
+          "description": "Add the TLS block to the Ingress."
+        },
+        "backendConfig": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Render the GKE BackendConfig and bind the host Service to it."
+            }
+          }
+        }
+      }
+    },
+    "minio": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Deploy the in-cluster dev MinIO (Deployment, Service, generated root password) and point the blob backend at it."
+        }
+      }
+    },
+    "networkPolicies": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enforce the sandbox/runtime NetworkPolicies."
+        }
+      }
+    },
+    "postgres": {
+      "type": "object",
+      "properties": {
+        "embedded": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Run the bundled Bitnami PostgreSQL subchart. This one is schema-ONLY: it is also the subchart's `condition:` in Chart.yaml, and helm's condition resolver silently keeps a dependency ENABLED when the value is not a real bool — no template can intercept that."
+            }
+          }
+        },
+        "external": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Take the database URL from an existing Secret instead of the subchart."
+            }
+          }
+        }
+      }
+    },
+    "sandbox": {
+      "type": "object",
+      "properties": {
+        "devServices": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Allow dev-service sidecars in runner pods."
+            },
+            "skipKubeVersionCheck": {
+              "type": "boolean",
+              "description": "Bypass the 1.29+ SidecarContainers guard. A quoted value used to SKIP the safety check."
+            }
+          }
+        }
+      }
+    },
+    "skills": {
+      "type": "object",
+      "properties": {
+        "allowUserInstalled": {
+          "type": "boolean",
+          "description": "CAPABILITY GATE. Ships the starter skill-creator skill, i.e. authoring capability."
+        }
+      }
+    }
+  }
+}

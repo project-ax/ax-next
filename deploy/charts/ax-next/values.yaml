@@ -5,6 +5,17 @@
 # tight RBAC + NetworkPolicies. We pin everything we can; placeholders are
 # explicitly empty so `helm install` fails loudly rather than booting with a
 # bad default.
+#
+# One house rule about the true/false flags below: write them unquoted. A
+# quoted `enabled: "false"` is a string, and to a Go template every non-empty
+# string is true — so the flag you just read as OFF would have rendered as ON.
+# Some of these flags are capability boundaries (the workspace routes, the
+# credentials admin UI, the Ingress, the credential proxy), and failing in the
+# generous direction is the one failure we're not willing to leave lying
+# around. `values.schema.json` now type-checks every one of them, so a quoted
+# boolean stops the install with a clear message instead of quietly granting
+# something. Adding a new flag here? Add it to that file too — the chart tests
+# fail the build if you don't.
 
 nameOverride: ""
 fullnameOverride: ""

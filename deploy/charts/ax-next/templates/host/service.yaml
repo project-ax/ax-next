@@ -5,7 +5,7 @@ metadata:
   namespace: {{ include "ax-next.hostNamespace" . }}
   labels:
     {{- include "ax-next.componentLabels" (dict "component" "host" "context" $) | nindent 4 }}
-  {{- if .Values.ingress.backendConfig.enabled }}
+  {{- if (include "ax-next.bool" .Values.ingress.backendConfig.enabled) }}
   annotations:
     # GKE-only (TASK-168): binds the GCE LB backend for this Service to the
     # BackendConfig (backendconfig.yaml) that raises timeoutSec, so long-lived

@@ -97,7 +97,7 @@ spec:
             - name: public-http
               containerPort: {{ .Values.host.ports.publicHttp }}
               protocol: TCP
-            {{- if .Values.credentialProxy.tcp.enabled }}
+            {{- if (include "ax-next.bool" .Values.credentialProxy.tcp.enabled) }}
             # @ax/credential-proxy TCP listener (TASK-149, production gVisor).
             # The credential-proxy-service.yaml ClusterIP Service targets this
             # named port so runner pods reach the proxy over the cluster
@@ -181,7 +181,7 @@ spec:
             # preset's `AX_STATIC_FILES_DIR` gate (set-and-non-empty) would
             # silently skip loading the static-files plugin — operator
             # explicitly enabled the SPA, fail loudly instead.
-            {{- if .Values.channelWeb.enabled }}
+            {{- if (include "ax-next.bool" .Values.channelWeb.enabled) }}
             - name: AX_STATIC_FILES_DIR
               value: {{ required "channelWeb.bundleDir is required when channelWeb.enabled=true" .Values.channelWeb.bundleDir | quote }}
             {{- end }}
@@ -198,7 +198,7 @@ spec:
             # The env-shape guard's two gates are "every REQUIRED var is
             # stamped" and "every stamped var is read"; an optional var that
             # is read and never stamped falls between them.
-            {{- if .Values.channelWeb.agentWorkspace }}
+            {{- if (include "ax-next.bool" .Values.channelWeb.agentWorkspace) }}
             - name: AX_AGENT_WORKSPACE_PREVIEW
               value: "1"
             {{- end }}
@@ -233,7 +233,7 @@ spec:
             # private filesystem and the runner can't reach it.
             - name: AX_PROXY_CA_DIR
               value: "/var/run/ax/proxy-ca"
-            {{- else if .Values.credentialProxy.tcp.enabled }}
+            {{- else if (include "ax-next.bool" .Values.credentialProxy.tcp.enabled) }}
             # TASK-149 — TCP-Service proxy posture (production gVisor). The
             # credential-proxy listens on a TCP port (AX_PROXY_TCP_PORT) and
             # advertises the cluster Service URL (AX_PROXY_ADVERTISED_ENDPOINT)
@@ -309,9 +309,9 @@ spec:
             # static keys are OMITTED so the SDK uses Workload Identity — NO
             # static keys in the tree.
             - name: AX_BLOB_S3_BUCKET
-              value: {{ (.Values.minio.enabled | ternary .Values.minio.bucket .Values.blob.s3.bucket) | quote }}
+              value: {{ ((eq (include "ax-next.bool" .Values.minio.enabled) "true") | ternary .Values.minio.bucket .Values.blob.s3.bucket) | quote }}
             - name: AX_BLOB_S3_ENDPOINT
-              value: {{ (.Values.minio.enabled | ternary (include "ax-next.minioEndpointUrl" .) .Values.blob.s3.endpoint) | quote }}
+              value: {{ ((eq (include "ax-next.bool" .Values.minio.enabled) "true") | ternary (include "ax-next.minioEndpointUrl" .) .Values.blob.s3.endpoint) | quote }}
             - name: AX_BLOB_S3_REGION
               value: {{ .Values.blob.s3.region | quote }}
             - name: AX_BLOB_S3_FORCE_PATH_STYLE
@@ -320,7 +320,7 @@ spec:
             - name: AX_BLOB_S3_KEY_PREFIX
               value: {{ .Values.blob.s3.keyPrefix | quote }}
             {{- end }}
-            {{- if .Values.minio.enabled }}
+            {{- if (include "ax-next.bool" .Values.minio.enabled) }}
             # DEV / MinIO static keys from the generated Secret — never
             # committed. Prod (GCS) leaves these UNSET (Workload Identity).
             - name: AX_BLOB_S3_ACCESS_KEY_ID
@@ -391,7 +391,7 @@ spec:
             # by loading @ax/credentials-admin-routes. Off by default; the
             # preset reads this env var (loadK8sConfigFromEnv) and only loads
             # the plugin when it's literally 'true'.
-            {{- if .Values.credentials.admin.enabled }}
+            {{- if (include "ax-next.bool" .Values.credentials.admin.enabled) }}
             - name: AX_CREDENTIALS_ADMIN_ENABLED
               value: "true"
             {{- end }}
@@ -403,7 +403,7 @@ spec:
             # gated only by the read-only host projection + the Phase-2 quarantine
             # scan, NOT by this flag. Set skills.allowUserInstalled=false to omit
             # the starter skill (curated mode); discovery still runs.
-            {{- if .Values.skills.allowUserInstalled }}
+            {{- if (include "ax-next.bool" .Values.skills.allowUserInstalled) }}
             - name: AX_ALLOW_USER_INSTALLED_SKILLS
               value: "true"
             {{- end }}
@@ -472,7 +472,7 @@ spec:
 
             # Database URL — sourced from external secret OR built from
             # the embedded subchart's secret.
-            {{- if .Values.postgres.external.enabled }}
+            {{- if (include "ax-next.bool" .Values.postgres.external.enabled) }}
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

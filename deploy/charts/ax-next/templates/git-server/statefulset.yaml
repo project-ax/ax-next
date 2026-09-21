@@ -1,4 +1,4 @@
-{{- if .Values.gitServer.enabled }}
+{{- if (include "ax-next.bool" .Values.gitServer.enabled) }}
 {{/*
 Experimental sharded git-server StatefulSet (Phase 1 of workspace redesign).
 

@@ -1,4 +1,4 @@
-{{- if .Values.networkPolicies.enabled }}
+{{- if (include "ax-next.bool" .Values.networkPolicies.enabled) }}
 {{/*
 Allows the host pod to do its job:
   - INGRESS from runner pods (so they can connect to the host's IPC port)
@@ -45,7 +45,7 @@ spec:
       ports:
         - port: {{ .Values.host.ports.ipc }}
           protocol: TCP
-        {{- if .Values.credentialProxy.tcp.enabled }}
+        {{- if (include "ax-next.bool" .Values.credentialProxy.tcp.enabled) }}
         # TASK-149 — credential-proxy TCP Service (production gVisor). The
         # proxy listens inside THIS host pod, so runner pods reaching it over
         # the proxy Service must be admitted here too. The matching runner
@@ -127,7 +127,7 @@ spec:
         - port: 111
           protocol: UDP
     {{- end }}
-    {{- if and (eq .Values.workspace.backend "git-protocol") .Values.gitServer.enabled }}
+    {{- if and (eq .Values.workspace.backend "git-protocol") (include "ax-next.bool" .Values.gitServer.enabled) }}
     # Sharded git-server StatefulSet (workspace.backend == git-protocol).
     # Same-namespace, pinned by the git-server-experimental component
     # label. Without this rule the host's @ax/workspace-git-server traffic
