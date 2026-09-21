@@ -58,6 +58,16 @@ export const MAX_DIMENSIONS = 4096;
  * budgets on purpose: the consumer's race is the deadline that matters, and
  * this one is only a backstop so a hung socket cannot pin a request forever
  * after the caller has walked away.
+ *
+ * PER REQUEST, NOT PER CALL — and the difference is bigger than it looks.
+ * `vertexEmbed` chunks a batch at `maxInstancesPerCall` (5) and awaits the
+ * chunks in sequence, so a maximum 256-text batch is up to 52 sequential
+ * requests and this 5s backstop bounds one `embeddings:embed` call at roughly
+ * 260s, not 5s. That is safe for the in-repo caller, which races every
+ * producer against its own 1.5s budget and stops waiting long before — but a
+ * future caller that reads this constant as a total-call ceiling would be
+ * badly surprised. If a total-call ceiling is ever wanted, it belongs as its
+ * own deadline around the chunk loop; do not just lower this number.
  */
 export const DEFAULT_TIMEOUT_MS = 5_000;
 
@@ -314,11 +324,22 @@ export function createEmbeddingsPlugin(config: EmbeddingsConfig = {}): Plugin {
       //
       // The output type is widened to `| undefined` because that is the whole
       // remote contract: a malformed INPUT payload still throws
-      // `invalid-payload` loudly (it is the caller's bug, and a caller sending
-      // garbage should find out now), while every failure DOWNSTREAM of that —
-      // no credential, a 500, a timeout, a wrong-shaped body — answers
+      // `invalid-payload`, while every failure DOWNSTREAM of that — no
+      // credential, a 500, a timeout, a wrong-shaped body — answers
       // `undefined`, which is the nullish "no answer" the consumer's `== null`
       // check is built to degrade on.
+      //
+      // That throw is an INTENT claim, not a promise that anybody hears it
+      // today. It would be easy to read it as "a caller sending garbage finds
+      // out immediately", and for the one in-repo caller that is FALSE:
+      // `producers.ts`'s `callProducer` wraps the `bus.call` in try/catch (plus
+      // a no-op `pending.catch`) and `HookBus.call` does not log, so an
+      // `invalid-payload` degrades to `undefined` indistinguishably from a
+      // timeout. We throw anyway because the distinction is real at the bus —
+      // a different caller, or the failure-category telemetry this package
+      // should eventually grow, can tell "you sent nonsense" from "the provider
+      // was down", and collapsing them at the source would throw that away
+      // permanently.
       bus.registerService<EmbedInput, EmbedOutput | undefined>(
         EMBED_HOOK,
         PLUGIN_NAME,

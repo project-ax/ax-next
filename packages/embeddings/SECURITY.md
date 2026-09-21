@@ -31,6 +31,16 @@ project id. Both are checked against a strict grammar before anything is interpo
 "Deployment-supplied" is not the same as "trusted": a model id of `../../../somewhere`
 is a path-traversal primitive against an API URL, and it would have worked.
 
+One more thing worth naming before someone finds it and wonders: `EmbeddingsConfig` has
+a `fetchImpl` field, and yes, that is technically a dial-anywhere hole in the package
+that ships your memory off-cluster. It is a **test seam** — it exists so the suite can
+prove every failure path without a network — and it is not the hole it looks like,
+because it takes a *function*, not a string. Setting it means writing first-party code
+into the preset that constructs this plugin, which is the same level of trust as editing
+the frozen host table two paragraphs up. A compromised settings row cannot reach it.
+`@ax/llm-anthropic` has the same shape in its `clientFactory`. Production leaves it
+unset and gets the platform `fetch`.
+
 ## Credentials come from the credential store. Only.
 
 No `process.env` read anywhere in this package, no key in config, no fallback chain
