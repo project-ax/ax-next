@@ -374,6 +374,20 @@ describe('a read that FAILED is never reported as an absence', () => {
     );
   });
 
+  it('throws after a partial read followed by EIO instead of returning the prefix', async () => {
+    const handle = await fs.open(path.join(root, 'hello.txt'), 'r');
+    const read = vi.spyOn(handle, 'read')
+      .mockResolvedValueOnce({ bytesRead: 1, buffer: Buffer.from('h') })
+      .mockRejectedValueOnce(errno('EIO'));
+    const close = vi.spyOn(handle, 'close');
+    vi.spyOn(fs, 'open').mockResolvedValue(handle);
+    const result = readConfinedUserFiles(root, 'hello.txt');
+    await expect(result).rejects.toBeInstanceOf(UserFilesReadError);
+    await expect(result).rejects.toMatchObject({ code: 'EIO' });
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it('SECURITY: ELOOP stays an absence — that is O_NOFOLLOW doing its job', async () => {
     /*
       The final component swapped for a symlink after confinement passed. We

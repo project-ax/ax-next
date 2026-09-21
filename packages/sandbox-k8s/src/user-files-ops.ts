@@ -456,7 +456,18 @@ export function buildReadCommand(): string {
     // byte to tell a file of exactly the cap from a file that is longer, then
     // drops it. A prefix that cannot say it is a prefix is a corrupt file that
     // looks like a whole one to whoever is handed it.
-    `  printf "FILE "; head -c ${READ_MAX_FILE_BYTES + 1} < "$target" | base64 | tr -d "\\n"; echo`,
+    '  printf "FILE "',
+    '  exec 3>&1',
+    '  file_status=$(',
+    '    {',
+    `      { head -c ${READ_MAX_FILE_BYTES + 1} < "$target" && printf h >&4; } |`,
+    '      { base64 && printf b >&4; } |',
+    '      tr -d "\\n" >&3',
+    '    } 4>&1',
+    '  ) || exit 1',
+    '  exec 3>&-',
+    '  case "$file_status" in hb|bh) : ;; *) exit 1 ;; esac',
+    '  echo',
     '  exit 0',
     'fi',
     'echo ABSENT',
@@ -555,9 +566,9 @@ export async function readUserFiles(
 
   await api.createNamespacedPod({ namespace: config.namespace, body: pod });
   try {
-    // THE EXIT CODE IS CHECKED, and it was not before. The reader script runs
-    // under `set -eu`, so a failing `realpath`/`base64`/`head` kills the pod
-    // with an empty log — which `parseReadOutput` then read as `ABSENT`. A
+    // THE EXIT CODE IS CHECKED, and it was not before. A failed FILE read
+    // can leave a partial, parseable log; upstream completion is checked
+    // explicitly because `set -eu` alone does not cover pipelines. A
     // dead reader answering "this agent has no files" is the TASK-403 lie with
     // a pod in front of it.
     const exit = await watchPodExit({
