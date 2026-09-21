@@ -551,7 +551,12 @@ describe('every failure path emits an event', () => {
     // `ownerlessIdFor(sessionId)` is what the kernel stamps for a canary.
     await chatEnd(h, { ctx: h.ctx({ userId: 'ownerless:session-1' }) });
     // No model call was even made — the refusal is ahead of the spend.
+    expect(h.llmCalls).toHaveLength(0);
     expect(readRows(h.databasePath)).toHaveLength(0);
+    // "Says so" is the half that matters: a row stored under an owner-less id
+    // could never be read back by anyone, so a SILENT skip here would be a
+    // deployment quietly not remembering anything with nothing to grep for.
+    expect(eventsNamed(h.logs, OBSERVER_FAILED_EVENT)).toHaveLength(1);
   });
 
   it('a terminated outcome is not a failure — it simply carries no transcript', async () => {
