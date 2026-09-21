@@ -163,6 +163,18 @@ jobs:
               exit 1
             fi
           done
+      # The auto-ship skill's runnable shell blocks are executed by the Bash tool,
+      # which runs ZSH — and bash/zsh divergence is how two defects (a `$var:u`
+      # modifier eating a character; `for x in $VAR` not word-splitting) lived in
+      # those very blocks for months. `autoship-sweep-cleanup-block.test.js` runs the
+      # §7a cleanup block under zsh to close that class. But a `runIf` skip is SILENT,
+      # and MEASURED on this runner: the GitHub image ships no zsh, so that coverage
+      # was quietly skipping in CI while passing locally — a guard that only ever ran
+      # on the author's laptop. One apt line makes it real. The suite asserts zsh is
+      # present whenever `CI` is set, so removing this step fails loudly rather than
+      # deleting the coverage again.
+      - name: Install zsh (the shell the skill blocks actually run under)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
       # Tests: affected packages + dependents on PRs (fast feedback); full suite on
       # push to main (cross-package backstop — a shared-table break only shows on the
       # full run; auto-merge relies on this main gate, see auto-ship merge queue).
