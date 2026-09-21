@@ -692,6 +692,17 @@ function logObserverResult(ctx: AgentContext, result: ObserverResult): void {
       // case, not a problem.
       ctx.logger.debug(OBSERVER_RUN_EVENT, { ...base, outcome: 'skipped', reason: result.reason });
       return;
+    case 'all-unusable':
+      // `warn`, not `debug`: the extractor produced facts and every one was
+      // unreadable. A partial version of this shows up as `recorded` with a
+      // non-zero `unusable`; the total version is the systematic one, and it
+      // must not be the quietest line in the system.
+      ctx.logger.warn(OBSERVER_FAILED_EVENT, {
+        ...base,
+        reason: 'all-facts-unusable',
+        unusable: result.unusable,
+      });
+      return;
     case 'timeout':
       ctx.logger.warn(OBSERVER_FAILED_EVENT, {
         ...base,

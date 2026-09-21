@@ -45,14 +45,35 @@ export type ObserverRecordFn = (input: ObserverRecordInput) => Promise<{
 export type ObserverResult =
   /** Nothing worth extracting; no call was made and nothing was written. */
   | { kind: 'skipped'; reason: 'no-dialogue' | 'no-user-content' | 'no-facts' }
+  /**
+   * The extractor produced facts and EVERY ONE of them was unusable, so the
+   * batch is empty for a reason.
+   *
+   * Distinct from `skipped: 'no-facts'` on purpose. Folding the two together
+   * made the quietest line in the system describe the loudest failure: a
+   * PARTIAL date regression surfaced as `recorded` with `unusable: N`, while a
+   * TOTAL one — the systematic case, where the extractor has started emitting
+   * dates nothing can read — logged as an ordinary "nothing durable was said"
+   * at `debug` and threw the count away.
+   */
+  | { kind: 'all-unusable'; unusable: number }
   /** The extraction call did not return within the deadline. Nothing written. */
   | { kind: 'timeout'; timeoutMs: number }
   /** Both extraction attempts failed the schema. The batch is dropped. */
   | { kind: 'schema-failure'; detail: string }
   | {
       kind: 'recorded';
+      /**
+       * Rows the engine reports for this `batchKey`.
+       *
+       * ⚠ On a DEDUP'd re-fire this is the ORIGINAL batch's size, not what
+       * this fire wrote — the engine returns the rows it already holds and
+       * gives us no way to tell a fresh write from a replay. So this is "rows
+       * this conversation's batch has", not "rows this call inserted", and an
+       * alert keyed on it would count a double-fire twice.
+       */
       recorded: number;
-      /** Facts the extractor produced that could not be stored, by reason. */
+      /** Facts the extractor produced that could not be stored. */
       unusable: number;
       retried: boolean;
       batchKey: string;
@@ -105,7 +126,12 @@ export async function runObserver(input: RunObserverInput): Promise<ObserverResu
     conversationId: input.conversationId,
   });
   if (mapped.statements.length === 0) {
-    return { kind: 'skipped', reason: 'no-facts' };
+    // "The extractor found nothing durable" and "the extractor found things
+    // and every one was unreadable" are different events, and only the first
+    // is ordinary.
+    return mapped.unusable > 0
+      ? { kind: 'all-unusable', unusable: mapped.unusable }
+      : { kind: 'skipped', reason: 'no-facts' };
   }
 
   const batchKey = buildBatchKey({

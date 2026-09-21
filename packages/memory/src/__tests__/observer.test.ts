@@ -3,6 +3,8 @@ import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/c
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createMemoryPlugin } from '../plugin.js';
+import { buildBatchKey } from '../observer.js';
+import { EXTRACTION_SYSTEM_PROMPT } from '../extraction-prompt.js';
 import { OBSERVER_FAILED_EVENT, NO_CREDENTIAL_EVENT, OBSERVER_RUN_EVENT } from '../failure.js';
 import {
   ALICE,
@@ -107,6 +109,28 @@ describe('the observer records what chat:end produced', () => {
     expect(h.llmCalls).toHaveLength(1);
   });
 
+  it('sends the PINNED prompt and the pinned deliberation level on the wire', async () => {
+    // The fingerprint test pins the prompt as a CONSTANT; this pins that the
+    // call actually carries it. Without this a mutant setting `system: ''`
+    // passes every other test in the file.
+    //
+    // `reasoningEffort` is pinned for the same reason and it is load-bearing:
+    // GLM reasons by default (~3.4s p50 vs ~865ms with `minimal`), and the
+    // whole 30s-deadline argument rests on the cheap setting. Dropping it is
+    // exactly the silent latency drift the timeout would then start eating.
+    const h = await withLlm(() => reply(extraction([fact()])));
+    await chatEnd(h);
+
+    const call = h.llmCalls[0];
+    expect(call?.system).toBe(EXTRACTION_SYSTEM_PROMPT);
+    expect(call?.reasoningEffort).toBe('minimal');
+    expect(call?.model).toBe('z-ai/glm-5.3-flash:nitro');
+    // The dialogue rides the USER message, never the system prompt — the
+    // system half is fixed text and must stay untrusted-content-free.
+    expect(call?.system).not.toContain('I moved to Boston');
+    expect(call?.messages[0]?.content).toContain('I moved to Boston');
+  });
+
   it('stamps every row with the caller as owner, so nobody else can read it', async () => {
     const h = await withLlm(() => reply(extraction([fact()])));
     await chatEnd(h, { ctx: h.ctx({ conversationId: 'conv-1', userId: ALICE }) });
@@ -190,6 +214,22 @@ describe('the observer never sees a tool result or an attachment body', () => {
     // And the `tool`-role turn is gone even though its `content` was a
     // perfectly ordinary string — the role filter is what dropped it.
     expect(h.llmCalls[0]?.messages[0]?.content).not.toContain('tool:');
+  });
+
+  it('drops an empty or whitespace-only turn rather than sending a bare `user:` line', async () => {
+    const h = await withLlm(() => reply(extraction([fact()])));
+    await chatEnd(h, {
+      messages: [
+        { role: 'user', content: '   \n  ' },
+        { role: 'assistant', content: '' },
+        { role: 'user', content: 'I moved to Boston last week.' },
+      ],
+    });
+    const sent = h.llmCalls[0]?.messages[0]?.content ?? '';
+    // Exactly one rendered turn — an empty one would appear as a `user:` line
+    // with nothing after it, which the model has to guess at.
+    expect(sent).toContain('user: I moved to Boston last week.');
+    expect(sent).not.toMatch(/^(user|assistant):\s*$/m);
   });
 
   it('skips a transcript that is nothing BUT tool output, without calling the model', async () => {
@@ -319,6 +359,23 @@ describe('batch semantics', () => {
 
     expect(await countFor(h, ALICE)).toBe(1);
     expect(await countFor(h, BOB)).toBe(1);
+  });
+
+  it('separates the key parts with something none of them can contain', async () => {
+    // Adjacent-boundary probe. Without a separator that cannot appear in any
+    // part, `('conv-1', 'ab')` and `('conv-1a', 'b')` would hash identically
+    // and the second person's batch would be suppressed by the first's. The
+    // docstring in `buildBatchKey` claims NUL does that job; this pins it.
+    const base = { dialogue: 'user: hi' };
+    expect(buildBatchKey({ ...base, conversationId: 'conv-1', ownerUserId: 'ab' })).not.toBe(
+      buildBatchKey({ ...base, conversationId: 'conv-1a', ownerUserId: 'b' }),
+    );
+    // And an ABSENT conversation is not the same as one literally named ''.
+    // (It is the same key, deliberately — both mean "no conversation" — so
+    // this pins the intent rather than an accident.)
+    expect(buildBatchKey({ ...base, ownerUserId: 'a' })).toBe(
+      buildBatchKey({ ...base, conversationId: '', ownerUserId: 'a' }),
+    );
   });
 
   it('leaves NO rows when the store fails part-way through the batch', async () => {
@@ -475,6 +532,32 @@ describe('extraction schema failures', () => {
     const run = eventsNamed(h.logs, OBSERVER_RUN_EVENT).find((l) => l.bindings.outcome === 'recorded');
     expect(run?.bindings.recorded).toBe(1);
     expect(run?.bindings.unusable).toBe(1);
+  });
+
+  it('reports an ALL-unusable extraction loudly, not as "nothing durable was said"', async () => {
+    // The partial version above surfaces at `info` with `unusable: 1`. The
+    // total version is the systematic failure — the extractor has started
+    // emitting dates nothing can read — and folding it into the ordinary
+    // empty-extraction skip made it the quietest line in the system.
+    const h = await withLlm(() =>
+      reply(
+        extraction([
+          fact({ validStart: 'whenever' }),
+          fact({ predicate: 'works_at', object: 'Acme', validStart: 'soon' }),
+        ]),
+      ),
+    );
+    await chatEnd(h);
+
+    expect(readRows(h.databasePath)).toHaveLength(0);
+    const failures = eventsNamed(h.logs, OBSERVER_FAILED_EVENT);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.bindings.reason).toBe('all-facts-unusable');
+    expect(failures[0]?.bindings.unusable).toBe(2);
+    // And it is NOT filed as a benign skip.
+    expect(
+      eventsNamed(h.logs, OBSERVER_RUN_EVENT).filter((l) => l.bindings.outcome === 'skipped'),
+    ).toHaveLength(0);
   });
 });
 
