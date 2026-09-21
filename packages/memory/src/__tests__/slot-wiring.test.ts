@@ -3,7 +3,7 @@ import { HookBus, makeAgentContext, type AgentContext } from '@ax/core';
 
 import { createMemoryPlugin } from '../plugin.js';
 import type { MemoryRememberOutput } from '../types.js';
-import { makeMemoryHarness, type MemoryHarness } from './harness.js';
+import { ALICE, BOB, engineRecall, makeMemoryHarness, type MemoryHarness } from './harness.js';
 
 // ---------------------------------------------------------------------------
 // The normalizer's WIRING, not the normalizer.
@@ -165,6 +165,34 @@ describe('a derived slot closes the previous statement — and a no-slot one doe
 
     const active = await harness.recall({ limit: 10 });
     expect(active.statements.map((s) => s.value).sort()).toEqual(['Acme', 'Seattle']);
+  });
+
+  it('does not let one PERSON close another person\'s lives_in', async () => {
+    // Design §3.2's whole reason for the speaker rewrite, and this card is the
+    // first time it has consequences: before slot derivation nothing closed
+    // anything, so `about: 'user'` collapsing every person into one subject was
+    // invisible. Now it would delete Bob's home the moment Alice mentions hers.
+    harness = await makeMemoryHarness();
+    await harness.remember(
+      { about: 'user', relation: 'lives_in', value: 'Seattle', when: JAN },
+      harness.ctx({ userId: ALICE }),
+    );
+    await harness.remember(
+      { about: 'user', relation: 'lives_in', value: 'Austin', when: JUN },
+      harness.ctx({ userId: BOB }),
+    );
+
+    // Read straight out of the engine, bypassing owner scoping: "Bob cannot
+    // see it" and "the row was closed" are otherwise the same observation.
+    const rows = await engineRecall(harness.bus, harness.ctx(), {
+      limit: 10,
+      activeOnly: false,
+    });
+    expect(rows.statements).toHaveLength(2);
+    expect(rows.statements.every((r) => r.until === undefined)).toBe(true);
+    expect(new Set(rows.statements.map((r) => r.about))).toEqual(
+      new Set([`user:${ALICE}`, `user:${BOB}`]),
+    );
   });
 
   it('does not raise the pending degraded flag — nothing here records a pending row', async () => {
