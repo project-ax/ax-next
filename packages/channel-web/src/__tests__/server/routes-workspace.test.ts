@@ -695,6 +695,44 @@ describe('channel-web agent-workspace BFF', () => {
     ]);
   });
 
+  it('emits factsVisibility from the RESOLVED agent, never the request', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerMemory({ rules: '', learned: [], calls: [] });
+    bus.registerService('memory:recall', 'memory', async () => ({
+      statements: [],
+      degraded: [],
+    }));
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toMatchObject({
+      memory: { factsAvailable: true, factsVisibility: 'personal' },
+    });
+
+    bus = new HookBus();
+    registerAuth({ id: 'u1', isAdmin: false });
+    bus.registerService('agents:list-for-user', 'agents', async () => ({ agents: [] }));
+    bus.registerService('agents:resolve', 'agents', async () => ({
+      agent: { id: 'a1', displayName: 'Inbox', visibility: 'team' },
+    }));
+    bus.registerService('conversations:list', 'conversations', async () => []);
+    bus.registerService('conversations:get', 'conversations', async () => {
+      throw notFound();
+    });
+    bus.registerService('memory:recall', 'memory', async () => ({
+      statements: [],
+      degraded: [],
+    }));
+    const h2 = makeWorkspaceHandlers({ bus, initCtx });
+    const second = mkRes();
+    await h2.agentDetail(mkReq({ agentId: 'a1' }), second.res);
+    expect(second.captured.body).toMatchObject({
+      memory: { factsAvailable: true, factsVisibility: 'team' },
+    });
+  });
+
   it('ships no rules doc when the read failed, and says the read FAILED', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerMemory({
@@ -3806,6 +3844,9 @@ describe('channel-web agent-workspace BFF', () => {
       ['not an object', 42],
       ['an array', [1]],
       ['an unknown field', { ownerUserId: 'user-x' }],
+      ['a smuggled team scope', { scope: 'team' }],
+      ['a smuggled visibility', { visibility: 'team' }],
+      ['a smuggled agent id', { agentId: 'a2' }],
       ['a blank query', { query: '  ' }],
       ['a non-boolean profile', { profile: 'yes' }],
       ['a non-boolean history', { history: 'false' }],

@@ -222,6 +222,7 @@ interface ResolvedAgent {
   mcpConfigIds?: string[];
   skillAttachments?: Array<{ skillId?: string }>;
   connectorAttachments?: string[];
+  visibility?: 'personal' | 'team';
 }
 interface AgentsResolveOutput {
   agent: ResolvedAgent;
@@ -2971,7 +2972,14 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     return {
       rules,
       learned,
-      ...(bus.hasService('memory:recall') ? { factsAvailable: true } : {}),
+      ...(bus.hasService('memory:recall')
+        ? {
+            factsAvailable: true,
+            ...(agent.visibility === 'personal' || agent.visibility === 'team'
+              ? { factsVisibility: agent.visibility }
+              : {}),
+          }
+        : {}),
     };
   }
 

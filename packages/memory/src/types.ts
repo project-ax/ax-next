@@ -14,7 +14,11 @@
  * - **`ownerUserId` is not a payload field either.** It is a SCOPE taken from
  *   `ctx`, not a hint taken from a caller (the `@ax/decisions` phrasing). A
  *   caller that could name an owner could read or retract another person's
- *   memory.
+ *   memory. On a personal agent it is also the READ filter; on a team agent
+ *   the read filter is the agent itself and `ownerUserId` is attribution.
+ * - **Sharing is never a payload field either.** No `scope`, `visibility`,
+ *   `teamId` or `agentId` below: whether memory is shared is a property of
+ *   the resolved agent (`agents:resolve` on every call), not of the request.
  * - **The tenant (`agentId`) is likewise ambient**, from `ctx`.
  *
  * Nothing here names a backend. No `validStart`, `valid_end`, `bankId`,
@@ -115,6 +119,7 @@ export interface MemoryRecallOutput {
    * reorder). It is pinned by an engine contract case.
    */
   degraded: string[];
+  visibility?: 'personal' | 'team';
 }
 
 export interface MemoryRememberInput {
@@ -135,10 +140,11 @@ export interface MemoryForgetInput {
 
 /**
  * Deliberately empty. `memory:forget` reports no per-id outcome: an id this
- * caller does not own is REFUSED by not taking effect, and saying which ids
- * were refused would hand a caller an existence oracle for other people's
- * statements. The honest caller cannot hit the case — `memory:recall` is
- * owner-scoped, so the only ids it has ever seen are its own.
+ * caller may not touch is REFUSED by not taking effect, and saying which ids
+ * were refused would hand a caller an existence oracle. The honest caller
+ * cannot hit the case — on a personal agent `memory:recall` is owner-scoped
+ * so the only ids it has ever seen are its own, and on a team agent every id
+ * it has seen is one it may retract.
  */
 export type MemoryForgetOutput = Record<string, never>;
 

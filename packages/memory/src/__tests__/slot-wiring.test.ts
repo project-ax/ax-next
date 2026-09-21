@@ -3,7 +3,14 @@ import { HookBus, makeAgentContext, type AgentContext } from '@ax/core';
 
 import { createMemoryPlugin } from '../plugin.js';
 import type { MemoryRememberOutput } from '../types.js';
-import { ALICE, BOB, engineRecall, makeMemoryHarness, type MemoryHarness } from './harness.js';
+import {
+  ALICE,
+  BOB,
+  engineRecall,
+  makeMemoryHarness,
+  registerMemoryAgents,
+  type MemoryHarness,
+} from './harness.js';
 
 // ---------------------------------------------------------------------------
 // The normalizer's WIRING, not the normalizer.
@@ -51,6 +58,7 @@ async function busWatchingRecord(): Promise<{
   );
   bus.registerService('memory:facts:supersede', 'stub', async () => ({ closed: [], resettled: [] }));
   bus.registerService('tool:register', 'stub-catalog', async () => ({}));
+  registerMemoryAgents(bus);
   await createMemoryPlugin().init({ bus, config: {} });
   return {
     recorded,
@@ -173,7 +181,9 @@ describe('a derived slot closes the previous statement — and a no-slot one doe
     // first time it has consequences: before slot derivation nothing closed
     // anything, so `about: 'user'` collapsing every person into one subject was
     // invisible. Now it would delete Bob's home the moment Alice mentions hers.
-    harness = await makeMemoryHarness();
+    // A TEAM agent is what makes both writes legal — a personal agent would
+    // refuse Bob at `agents:resolve` before the slot was ever reached.
+    harness = await makeMemoryHarness({}, { agent: { visibility: 'team' } });
     await harness.remember(
       { about: 'user', relation: 'lives_in', value: 'Seattle', when: JAN },
       harness.ctx({ userId: ALICE }),

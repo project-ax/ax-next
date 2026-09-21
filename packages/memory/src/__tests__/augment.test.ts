@@ -4,12 +4,15 @@ import { HookBus, makeAgentContext, ownerlessIdFor } from '@ax/core';
 import {
   makeMemoryHarness,
   engineRecord,
+  registerMemoryAgents,
   registerRulesStub,
   ALICE,
   BOB,
   DEFAULT_AGENT,
   type MemoryHarness,
+  type MemoryHarnessOptions,
 } from './harness.js';
+import { AGENTS_RESOLVE_HOOK } from '../access.js';
 import { buildMemoryBlock, assembleUnderCap, rankDigestSubjects } from '../augment.js';
 import { SLOTS } from '../slots.js';
 import { escapeStatementText, MAX_VALUE_CHARS } from '../render.js';
@@ -28,8 +31,8 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-async function makeHarness(): Promise<MemoryHarness> {
-  harness = await makeMemoryHarness();
+async function makeHarness(options: MemoryHarnessOptions = {}): Promise<MemoryHarness> {
+  harness = await makeMemoryHarness({}, options);
   return harness;
 }
 
@@ -102,6 +105,7 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
 
       const calls = spy.mock.calls.filter(([hook]) => hook !== 'system-prompt:augment');
       expect(calls.map(([hook]) => hook)).toEqual([
+        AGENTS_RESOLVE_HOOK,
         FACTS_RECALL_HOOK,
         FACTS_RECALL_HOOK,
         FACTS_RECALL_HOOK,
@@ -932,6 +936,7 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
         '@ax/test-engine',
         async () => ({ statements, degraded }),
       );
+      registerMemoryAgents(bus);
       return {
         bus,
         ctx: makeAgentContext({
@@ -1022,6 +1027,7 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
     it('throws rather than reporting an empty memory when the engine answers nothing', async () => {
       const bus = new HookBus();
       bus.registerService<unknown, unknown>(FACTS_RECALL_HOOK, '@ax/test-engine', async () => null);
+      registerMemoryAgents(bus);
       const ctx = makeAgentContext({
         sessionId: 's',
         agentId: DEFAULT_AGENT,
@@ -1032,5 +1038,74 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
         /no readable statements/,
       );
     });
+  });
+});
+
+describe('system-prompt:augment — shared team agents', () => {
+  it("includes another member's facts in Recent and Digest on a team agent", async () => {
+    const h = await makeHarness({ agent: { visibility: 'team' } });
+    await engineRecord(h.bus, h.ctx({ userId: BOB }), [
+      {
+        about: 'acme_corp',
+        relation: 'raised',
+        value: 'a series B',
+        when: JUN,
+        ownerUserId: BOB,
+        conversationId: 'conv-bob',
+      },
+    ]);
+
+    const body = await augment(h, h.ctx({ userId: ALICE }));
+    const recent = body.slice(body.indexOf('### Recent'), body.indexOf('### Digest'));
+    expect(recent).toContain('a series B');
+    expect(body).toContain('acme_corp');
+  });
+
+  it('keeps the caller as "you" while a teammate\'s own-speaker row stays literal', async () => {
+    const h = await makeHarness({ agent: { visibility: 'team' } });
+    await engineRecord(h.bus, h.ctx({ userId: BOB }), [
+      {
+        about: `user:${BOB}`,
+        relation: 'mentioned',
+        value: 'a thing Bob said',
+        when: JUN,
+        ownerUserId: BOB,
+        conversationId: 'conv-bob',
+      },
+    ]);
+
+    const body = await augment(h, h.ctx({ userId: ALICE }));
+    expect(body).toContain('user:user-bob');
+    expect(body).not.toContain('you mentioned: a thing Bob said');
+  });
+
+  it('excludes a foreign-owner raw-engine row on a personal agent', async () => {
+    const h = await makeHarness();
+    await engineRecord(h.bus, h.ctx(), [
+      {
+        about: 'acme_corp',
+        relation: 'raised',
+        value: 'a series B',
+        when: JUN,
+        ownerUserId: BOB,
+        conversationId: 'conv-bob',
+      },
+    ]);
+
+    const body = await augment(h, h.ctx({ userId: ALICE }));
+    expect(body).not.toContain('a series B');
+    expect(body).not.toContain('acme_corp');
+  });
+
+  it('denies a revoked team member before any engine call', async () => {
+    const h = await makeHarness({ agent: { visibility: 'team' } });
+    h.teamMembers.delete(BOB);
+    const spy = vi.spyOn(h.bus, 'call');
+    await expect(augment(h, h.ctx({ userId: BOB }))).rejects.toMatchObject({
+      code: 'forbidden',
+    });
+    expect(
+      spy.mock.calls.filter(([hook]) => hook === FACTS_RECALL_HOOK),
+    ).toHaveLength(0);
   });
 });

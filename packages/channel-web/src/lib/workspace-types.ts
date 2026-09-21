@@ -718,6 +718,7 @@ export interface AgentMemoryRead {
   rules: { status: WorkspaceReadStatus; doc: MemoryDoc | null };
   learned: { status: WorkspaceReadStatus; docs: MemoryDoc[] };
   factsAvailable?: boolean;
+  factsVisibility?: 'personal' | 'team';
 }
 
 export interface FactMemoryStatement {
@@ -738,6 +739,7 @@ export interface FactMemoryStatement {
 export interface FactMemoryPage {
   statements: FactMemoryStatement[];
   degraded: string[];
+  visibility?: 'personal' | 'team';
 }
 
 /**

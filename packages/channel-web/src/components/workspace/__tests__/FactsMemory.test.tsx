@@ -32,13 +32,17 @@ const fact = (over: Partial<FactMemoryStatement> & { id: string }): FactMemorySt
   ...over,
 });
 
-const read = (factsAvailable: boolean): AgentMemoryRead => ({
+const read = (
+  factsAvailable: boolean,
+  factsVisibility?: 'personal' | 'team',
+): AgentMemoryRead => ({
   rules: {
     status: 'ok',
     doc: { name: 'Your rules', scope: 'rules', body: '- Always cc Priya' },
   },
   learned: { status: 'ok', docs: [] },
   ...(factsAvailable ? { factsAvailable: true } : {}),
+  ...(factsVisibility !== undefined ? { factsVisibility } : {}),
 });
 
 beforeEach(() => {
@@ -434,5 +438,79 @@ describe('MemorySurface', () => {
 
     release?.();
     await waitFor(() => expect(screen.queryByText('Forget this memory?')).toBeNull());
+  });
+
+  it('discloses a shared agent\'s team visibility before any write', async () => {
+    recallMock.mockResolvedValue({ statements: [fact({ id: 'm1' })], degraded: [] });
+    render(
+      <MemorySurface
+        agentId="a1"
+        agentName="Quill"
+        memory={read(true, 'team')}
+      />,
+    );
+    expect(
+      screen.getByText(
+        /Memories saved with this shared agent are visible to its team\. Team members can correct or forget them\./,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('These details are about you and are visible to the team.'),
+    ).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit: Boston' }));
+    expect(
+      await screen.findByText(
+        'Saving replaces the current value for the team. The earlier memory stays in History.',
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Forget: Boston' }));
+    expect(
+      await screen.findByText(
+        'This memory will be removed from active results for the team. It stays in History, and past conversations do not change.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('discloses a personal agent\'s private scope and keeps personal wording', async () => {
+    recallMock.mockResolvedValue({ statements: [fact({ id: 'm1' })], degraded: [] });
+    render(
+      <MemorySurface
+        agentId="a1"
+        agentName="Quill"
+        memory={read(true, 'personal')}
+      />,
+    );
+    expect(
+      screen.getByText('Memories saved with this personal agent are private to you.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/visible to its team|visible to the team/),
+    ).toBeNull();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Forget: Boston' }));
+    expect(
+      await screen.findByText(
+        /This memory will be removed from active results\. It stays in History, and past conversations do not change\./,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/for the team/)).toBeNull();
+  });
+
+  it('labels no scope when the deployment does not report one', async () => {
+    recallMock.mockResolvedValue({ statements: [fact({ id: 'm1' })], degraded: [] });
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    expect(await screen.findByText('Boston')).toBeInTheDocument();
+    expect(
+      screen.queryByText(/private to you|visible to its team/),
+    ).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Forget: Boston' }));
+    expect(
+      await screen.findByText(
+        /This memory will be removed from active results\. It stays in History, and past conversations do not change\./,
+      ),
+    ).toBeInTheDocument();
   });
 });

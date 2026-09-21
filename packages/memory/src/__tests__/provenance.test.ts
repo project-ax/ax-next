@@ -110,11 +110,14 @@ describe('@ax/memory — provenance is a property of the hook', () => {
 
   it('stamps the owner from ctx even when a hostile subject names another user', async () => {
     harness = await makeMemoryHarness();
-    // Subject naming is organization; ownership is the barrier. Writing
-    // `about: user:<someone-else>` is allowed (it is free text) and buys
-    // nothing: the row is still owned by, and visible only to, the caller.
+    // Subject naming is organization; `agents:resolve` is the barrier.
+    // Writing `about: user:<someone-else>` is allowed (it is free text) and
+    // buys nothing: the row is still stamped with the caller's ownerUserId,
+    // and on this personal agent the named user cannot even reach the store.
     await harness.remember({ about: 'user:user-bob', relation: 'lives_in', value: 'Lisbon' });
-    expect((await harness.recall({}, harness.ctx({ userId: 'user-bob' }))).statements).toEqual([]);
+    await expect(
+      harness.recall({}, harness.ctx({ userId: 'user-bob' })),
+    ).rejects.toMatchObject({ code: 'forbidden' });
     expect(
       (await harness.recall({}, harness.ctx({ userId: ALICE }))).statements,
     ).toHaveLength(1);

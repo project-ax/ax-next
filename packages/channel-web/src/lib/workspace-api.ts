@@ -410,7 +410,8 @@ function isFactMemoryPage(b: unknown): b is FactMemoryPage {
     Array.isArray(b.statements) &&
     b.statements.every(isFactMemoryStatement) &&
     Array.isArray(b.degraded) &&
-    b.degraded.every((d) => typeof d === 'string')
+    b.degraded.every((d) => typeof d === 'string') &&
+    (b.visibility === undefined || b.visibility === 'personal' || b.visibility === 'team')
   );
 }
 

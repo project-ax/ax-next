@@ -6,12 +6,13 @@ import { PLUGIN_NAME } from './plugin-name.js';
  * Resolve the owner of the statements this call reads or writes — design
  * §3.2 and §6.1.
  *
- * Ownership is **always** `ctx.userId`, and that is the whole rule. It is a
- * SCOPE, not a hint (the `@ax/decisions` phrasing): every row `@ax/memory`
- * writes is stamped with it and every read is filtered by it, so a person
- * sees the statements they own and nobody else's — behaviourally identical to
- * what Strata's per-(caller, agent) keying gives today, now that the store
- * itself is keyed by `agentId` alone.
+ * Ownership is **always** `ctx.userId`, and that is the whole rule for the
+ * WRITER. It is a SCOPE, not a hint (the `@ax/decisions` phrasing): every row
+ * `@ax/memory` writes is stamped with it, so a row's owner is always a real
+ * caller. Whether it is also the READ filter is `resolveMemoryAccess`'s call,
+ * not this function's: a personal agent filters reads and retracts by it; a
+ * team agent shares the agent's rows across its current members and the
+ * stamp is attribution only.
  *
  * It is taken from `ctx` and never from a payload, which is the security
  * property: a caller that could name an owner could read or retract another

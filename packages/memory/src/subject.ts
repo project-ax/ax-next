@@ -28,14 +28,16 @@ export const SPEAKER_SUBJECT = 'user';
  * `user:bob` arriving from an extractor would become `user:bob:<userId>` under
  * a prefix rule, and the subject of a statement about "User Research" would be
  * mangled under a case-folding one. Narrow and literal is the safe direction:
- * a missed rewrite stores a fact under the shared subject (visible only to its
- * owner anyway, because reads are owner-scoped), while an over-eager one
- * corrupts a subject key permanently.
+ * a missed rewrite can collapse two team members into one subject, while an
+ * over-eager one corrupts a subject key permanently.
  *
  * Note this is NOT an access-control boundary. A caller can still write any
- * `about` it likes, including `user:someone-else`; what stops that from
- * reaching anyone is that the row is stamped with the CALLER's `ownerUserId`
- * and reads are scoped by it. Subject naming is organization; ownership is the
+ * `about` it likes, including `user:someone-else`. What limits where that
+ * row lands is `resolveMemoryAccess`: on a personal agent only the owner
+ * ever reads it; on a team agent it is shared knowledge and a
+ * `user:someone-else` subject is visible to teammates as written — so the
+ * rewrite must stay per-CALLER (`user:alice` and `user:bob` never collapse
+ * into one speaker). Subject naming is organization; `agents:resolve` is the
  * barrier.
  */
 export function rewriteSpeaker(about: string, userId: string): string {

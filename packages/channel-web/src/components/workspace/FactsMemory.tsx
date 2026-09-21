@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import {
   Card,
   CardContent,
+  CardDescription,
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
@@ -182,6 +183,10 @@ interface MutationTarget {
 
 function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry }: MemorySurfaceProps) {
   const { rules } = memory;
+  const visibility =
+    memory.factsVisibility === 'team' || memory.factsVisibility === 'personal'
+      ? memory.factsVisibility
+      : undefined;
   const [refresh, setRefresh] = useState(0);
   const bump = () => setRefresh((n) => n + 1);
   const [editTarget, setEditTarget] = useState<MutationTarget | null>(null);
@@ -202,9 +207,25 @@ function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry }: Memor
           {...(onRetry ? { onRetry } : {})}
         />
       )}
+      {visibility === 'team' && (
+        <Alert>
+          <AlertDescription>
+            Memories saved with this shared agent are visible to its team. Team members
+            can correct or forget them.
+          </AlertDescription>
+        </Alert>
+      )}
+      {visibility === 'personal' && (
+        <Alert>
+          <AlertDescription>
+            Memories saved with this personal agent are private to you.
+          </AlertDescription>
+        </Alert>
+      )}
       <ProfileCard
         agentId={agentId}
         refresh={refresh}
+        visibility={visibility}
         onEdit={(row) => setEditTarget({ row })}
         onForget={(row) => setForgetTarget({ row })}
       />
@@ -216,6 +237,7 @@ function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry }: Memor
       <EditDialog
         target={editTarget}
         agentId={agentId}
+        visibility={visibility}
         onClose={() => setEditTarget(null)}
         onSaved={() => {
           setEditTarget(null);
@@ -225,6 +247,7 @@ function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry }: Memor
       <ForgetDialog
         target={forgetTarget}
         agentId={agentId}
+        visibility={visibility}
         onClose={() => setForgetTarget(null)}
         onForgotten={() => {
           setForgetTarget(null);
@@ -235,14 +258,18 @@ function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry }: Memor
   );
 }
 
+type FactsVisibility = 'personal' | 'team' | undefined;
+
 function ProfileCard({
   agentId,
   refresh,
+  visibility,
   onEdit,
   onForget,
 }: {
   agentId: string;
   refresh: number;
+  visibility: FactsVisibility;
   onEdit: (row: FactMemoryStatement) => void;
   onForget: (row: FactMemoryStatement) => void;
 }) {
@@ -276,6 +303,11 @@ function ProfileCard({
     <Card>
       <CardHeader>
         <CardTitle>Profile</CardTitle>
+        {visibility === 'team' && (
+          <CardDescription>
+            These details are about you and are visible to the team.
+          </CardDescription>
+        )}
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         <HistoryToggle id="profile-history" checked={history} onChange={setHistory} />
@@ -511,11 +543,13 @@ function SearchCard({
 function EditDialog({
   target,
   agentId,
+  visibility,
   onClose,
   onSaved,
 }: {
   target: MutationTarget | null;
   agentId: string;
+  visibility: FactsVisibility;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -566,7 +600,9 @@ function EditDialog({
         <DialogHeader>
           <DialogTitle>Edit remembered detail</DialogTitle>
           <DialogDescription>
-            Saving replaces the current value. The earlier memory stays in History.
+            {visibility === 'team'
+              ? 'Saving replaces the current value for the team. The earlier memory stays in History.'
+              : 'Saving replaces the current value. The earlier memory stays in History.'}
           </DialogDescription>
         </DialogHeader>
         <FieldGroup>
@@ -607,11 +643,13 @@ function EditDialog({
 function ForgetDialog({
   target,
   agentId,
+  visibility,
   onClose,
   onForgotten,
 }: {
   target: MutationTarget | null;
   agentId: string;
+  visibility: FactsVisibility;
   onClose: () => void;
   onForgotten: () => void;
 }) {
@@ -656,8 +694,9 @@ function ForgetDialog({
         <DialogHeader>
           <DialogTitle>Forget this memory?</DialogTitle>
           <DialogDescription>
-            This memory will be removed from active results. It stays in History, and past
-            conversations do not change.
+            {visibility === 'team'
+              ? 'This memory will be removed from active results for the team. It stays in History, and past conversations do not change.'
+              : 'This memory will be removed from active results. It stays in History, and past conversations do not change.'}
           </DialogDescription>
         </DialogHeader>
         {target !== null && <p className="text-sm">{statementText(target.row)}</p>}

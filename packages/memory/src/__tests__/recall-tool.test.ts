@@ -4,7 +4,7 @@ import type { RecallOutput } from '@ax/memory-facts-contract';
 
 import { MEMORY_RECALL_DESCRIPTOR, MEMORY_RECALL_TOOL_HOOK } from '../recall-tool.js';
 import { createMemoryPlugin } from '../plugin.js';
-import { makeMemoryHarness, type MemoryHarness } from './harness.js';
+import { makeMemoryHarness, registerMemoryAgents, type MemoryHarness } from './harness.js';
 
 let harness: MemoryHarness | undefined;
 afterEach(async () => {
@@ -34,6 +34,7 @@ async function busWithEngine(
   bus.registerService('memory:facts:record', 'stub', stub('record', { records: [] }));
   bus.registerService('memory:facts:supersede', 'stub', stub('supersede', { closed: [], resettled: [] }));
   bus.registerService('tool:register', 'stub-catalog', stub('tool:register', { ok: true }));
+  registerMemoryAgents(bus, { ownerUserId: 'owner-alice' });
   await createMemoryPlugin().init({ bus, config: {} });
   return { bus, seen };
 }
@@ -178,6 +179,7 @@ describe('@ax/memory — the memory_recall tool', () => {
     bus.registerService('memory:facts:record', 'stub', async () => ({ records: [] }));
     bus.registerService('memory:facts:supersede', 'stub', async () => ({ closed: [], resettled: [] }));
     bus.registerService('tool:register', 'stub-catalog', async () => ({}));
+    registerMemoryAgents(bus, { ownerUserId: 'owner-alice' });
     await createMemoryPlugin().init({ bus, config: {} });
 
     await expect(recallCall(bus, { query: 'q' })).rejects.toMatchObject({
@@ -268,7 +270,7 @@ describe('@ax/memory — the memory_recall tool against a real store', () => {
     expect(table.split('\n').filter((l) => l.startsWith('#'))).toHaveLength(0);
   });
 
-  it('scopes to the caller: another owner and another agent see nothing', async () => {
+  it('scopes to the caller: a foreign owner is forbidden and another agent sees nothing', async () => {
     harness = await makeMemoryHarness();
     await harness.remember({
       about: 'user',
@@ -279,17 +281,18 @@ describe('@ax/memory — the memory_recall tool against a real store', () => {
     const mine = await recallCall(harness.bus, { query: 'Boston' }, harness.ctx());
     expect(mine).toContain('Boston');
 
-    const otherOwner = await recallCall(
-      harness.bus,
-      { query: 'Boston' },
-      makeAgentContext({
-        sessionId: 's2',
-        agentId: 'agent-1',
-        userId: 'owner-bob',
-        workspace: { rootPath: '/tmp' },
-      }),
-    );
-    expect(otherOwner).not.toContain('Boston');
+    await expect(
+      recallCall(
+        harness.bus,
+        { query: 'Boston' },
+        makeAgentContext({
+          sessionId: 's2',
+          agentId: 'agent-1',
+          userId: 'owner-bob',
+          workspace: { rootPath: '/tmp' },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'forbidden' });
 
     const otherAgent = await recallCall(
       harness.bus,

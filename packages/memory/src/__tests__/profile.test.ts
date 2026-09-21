@@ -6,6 +6,7 @@ import { formatEvidenceWhen } from '../evidence.js';
 import {
   makeMemoryHarness,
   engineRecord,
+  registerMemoryAgents,
   ALICE,
   BOB,
   type MemoryHarness,
@@ -37,6 +38,7 @@ async function busWithEngine(recall: unknown): Promise<{
   bus.registerService('memory:facts:record', 'stub', async () => ({ records: [] }));
   bus.registerService('memory:facts:supersede', 'stub', async () => ({ closed: [], resettled: [] }));
   bus.registerService('tool:register', 'stub-catalog', async () => ({}));
+  registerMemoryAgents(bus);
   await createMemoryPlugin().init({ bus, config: {} });
   return { bus, seen };
 }
@@ -225,7 +227,7 @@ describe('@ax/memory — profile recall against a real store', () => {
     expect(other?.aboutText).not.toContain('user-alice');
   });
 
-  it('a cross-owner replacement closes the row without leaking the foreign id', async () => {
+  it('a raw-engine foreign-owner row closes the slot without leaking the foreign id (personal)', async () => {
     harness = await makeMemoryHarness();
     await harness.remember({
       about: 'user',

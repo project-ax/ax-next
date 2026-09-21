@@ -33,6 +33,7 @@ describe('@ax/memory — manifest', () => {
       'memory:facts:record',
       'memory:facts:supersede',
       'tool:register',
+      'agents:resolve',
     ]);
     // The observer, and nothing else. TASK-488 asserted `[]` here with the
     // note that an unused subscription would be the half-wired surface

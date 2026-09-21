@@ -38,12 +38,20 @@ describe('workspaceApi facts memory boundary', () => {
     ['a non-string degraded flag', { statements: [], degraded: [42] }],
     ['a bad closure value', { statements: [{ ...goodStatement, closure: 'hidden' }], degraded: [] }],
     ['a non-string aboutText', { statements: [{ ...goodStatement, aboutText: 9 }], degraded: [] }],
+    ['a non-enum page visibility type', { statements: [], degraded: [], visibility: 3 }],
     ['a missing degraded', { statements: [] }],
+    ['an invalid page visibility', { statements: [], degraded: [], visibility: 'world' }],
   ])('recallMemory rejects %s instead of coercing it empty', async (_n, body) => {
     respondWith(body);
     await expect(workspaceApi.recallMemory('a1', {})).rejects.toBeInstanceOf(
       WorkspaceShapeError,
     );
+  });
+
+  it('recallMemory passes through a validated page visibility', async () => {
+    respondWith({ statements: [goodStatement], degraded: [], visibility: 'team' });
+    const page = await workspaceApi.recallMemory('a1', {});
+    expect(page.visibility).toBe('team');
   });
 
   it('rememberMemory resolves only a body carrying a nonblank id', async () => {

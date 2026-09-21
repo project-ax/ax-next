@@ -49,7 +49,7 @@
 import { isOwnerlessId, PluginError, type AgentContext, type HookBus } from '@ax/core';
 
 import { PLUGIN_NAME } from './plugin-name.js';
-import { resolveOwnerUserId } from './owner.js';
+import { memoryReadScope, resolveMemoryAccess } from './access.js';
 import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
 // The profile whitelist IS the normalizer's slot list — the same constant, not
 // a copy (design 3.3/4.1, Invariant 4). `__tests__/slots.test.ts` fails if a
@@ -511,12 +511,14 @@ export async function buildMemoryBlock(
   config: MemoryBlockConfig = {},
 ): Promise<string> {
   const cfg = { ...DEFAULTS, ...config };
-  const ownerUserId = resolveOwnerUserId(ctx);
+  const access = await resolveMemoryAccess(bus, ctx);
+  const ownerUserId = access.userId;
   const speakerSubject = rewriteSpeaker(SPEAKER_SUBJECT, ownerUserId);
+  const ownerScope = memoryReadScope(access);
 
   const recall = async (input: Record<string, unknown>): Promise<EngineRecallOutput> => {
     const raw = await bus.call<unknown, EngineRecallOutput | null>(factsRecallHook, ctx, {
-      ownerUserId,
+      ...ownerScope,
       activeOnly: true,
       ...input,
     });
@@ -628,11 +630,12 @@ export function registerSystemPromptAugment(
     PLUGIN_NAME,
     async (ctx: AgentContext) => {
       // A session with no owner gets no memory, and that is the right answer
-      // rather than a degraded one: memory is owner-scoped, so there is no
-      // person here whose memory this would be. Checked with the kernel's own
-      // predicate instead of catching `resolveOwnerUserId`'s refusal, so the
-      // canary and `ax serve` do not log a warning on every spawn for a
-      // configuration that is working exactly as designed.
+      // rather than a degraded one: memory is attributed to a person, so
+      // there is no caller here whose access this would resolve. Checked
+      // with the kernel's own predicate instead of catching
+      // `resolveMemoryAccess`'s refusal, so the canary and `ax serve` do not
+      // log a warning on every spawn for a configuration that is working
+      // exactly as designed.
       if (typeof ctx.userId !== 'string' || ctx.userId === '' || isOwnerlessId(ctx.userId)) {
         return { contributions: [] };
       }
