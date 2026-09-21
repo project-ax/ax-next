@@ -138,6 +138,39 @@ export interface FactRecord {
    * ("forgotten") apart from a rule-closure ("superseded by that row").
    */
   closedBy?: string;
+  /**
+   * The slot this row was stored under, echoed back exactly as
+   * {@link FactStatementInput.slot} supplied it — including
+   * {@link PENDING_SLOT}. Absent means the row has no slot: inert, closing
+   * nothing and closed by nothing.
+   *
+   * It is returned, not re-derived. Derivation lives in `@ax/memory` and a
+   * reader that recomputed a slot from `relation` would be a SECOND copy of
+   * the mapping under another name — the rule the `slot` column exists to
+   * make unnecessary (Invariant 4). `@ax/memory`'s injected profile block
+   * (design §4.1) renders the slot NAME rather than the free-text relation,
+   * so `works_at` and a synonym relation that mapped to it read as one line
+   * shape; without this field it could only render the relation and the two
+   * would diverge.
+   */
+  slot?: string;
+  /**
+   * The conversation this row was recorded from, when it had one — echoed
+   * back exactly as {@link FactStatementInput.conversationId} supplied it.
+   *
+   * ⚠ **Provenance, never a retrieval key** (design §3.1), and returning it
+   * does not change that: no input on this contract filters or ranks by it,
+   * and none should. It is returned because one `chat:end` emits ~12
+   * statements, so a flat last-N recency listing is the tail of ONE topic;
+   * design §4.1's Recent section is grouped by conversation precisely to
+   * avoid that, and grouping is not possible without this field. A row
+   * recorded outside a conversation (a UI write, an admin probe) has none.
+   *
+   * It does NOT reach a caller-facing `@ax/memory` payload — `MemoryStatement`
+   * deliberately omits it. This is the engine contract, whose consumer is the
+   * product layer.
+   */
+  conversationId?: string;
 }
 
 export interface RecordedStatement extends FactRecord {
@@ -232,6 +265,32 @@ export interface RecallInput {
    * all (Appendix B).
    */
   poolSize?: number;
+  /**
+   * Restrict the FILTERED LISTING to rows whose {@link FactRecord.slot} is one
+   * of these. Omitted = no slot restriction, which is every existing case in
+   * this contract.
+   *
+   * It exists for design §4.1's profile section — "active rows, `about =
+   * user:<caller>`, slot rows only, ≤ ~10". Pushed into the store's own
+   * predicate for the same reason {@link ownerUserId} is: `limit` has to count
+   * rows the caller asked for, and a slot filter applied to a page that has
+   * already been cut returns an empty profile to a person whose eight slot
+   * rows happen to be older than a hundred slot-less ones. Design §6.1,
+   * "Never post-filter a widened pool."
+   *
+   * **Rejected, not ignored, alongside {@link query}.** Ranked retrieval fuses
+   * three channels and this filter is not plumbed through them; answering a
+   * `{query, slots}` call with an unfiltered ranked set would hand a caller
+   * who asked for eight slots a result set dressed up as filtered. Same call
+   * this contract already makes for an empty `query` on a backend without
+   * fusion: a rejection the caller can detect beats a wrong answer it cannot.
+   *
+   * {@link PENDING_SLOT} is a legal entry and matches literally — a caller
+   * that wants the unresolved rows asks for them by name. An empty array is
+   * rejected: it would mean "match nothing", and a caller who wrote it meant
+   * "do not filter".
+   */
+  slots?: string[];
 }
 
 export interface RecallOutput {
@@ -1698,6 +1757,135 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
     // which is deliberate: `ctx.userId` is not the partition (see above), so
     // it cannot be the thing separating these rows, and a backend that somehow
     // passed by keying off it would be caught here rather than flattered.
+    // -----------------------------------------------------------------------
+    // What a returned row carries, and the slot filter that reads it
+    //
+    // Both halves exist for design §4.1's always-injected block, and neither
+    // is reachable without the other: the profile section is "active rows,
+    // `about = user:<caller>`, slot rows only" (so the filter) rendered as
+    // `- lives_in: Seattle (noted Mar 2024)` (so the slot NAME on the row),
+    // and the recent section is grouped by conversation (so the
+    // conversationId on the row) because one `chat:end` emits ~12 statements
+    // and a flat last-N is the tail of one topic.
+    // -----------------------------------------------------------------------
+    describe('row slot + conversationId, and the slots filter', () => {
+      it('echoes the stored slot and conversationId back on a recalled row', async () => {
+        await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JAN,
+          slot: 'lives_in',
+          conversationId: 'conv-1',
+        });
+
+        const out = await recall({ about: 'user', limit: 10 });
+        expect(out.statements).toHaveLength(1);
+        expect(out.statements[0]!.slot).toBe('lives_in');
+        expect(out.statements[0]!.conversationId).toBe('conv-1');
+      });
+
+      // Absent, not null and not `''`. A consumer branches on presence, and a
+      // row that never had either is the overwhelming majority of rows.
+      it('omits both fields entirely on a row that carries neither', async () => {
+        await recordOne({ about: 'user', relation: 'stated', value: 'hello', when: JAN });
+
+        const out = await recall({ about: 'user', limit: 10 });
+        expect(out.statements[0]).not.toHaveProperty('slot');
+        expect(out.statements[0]).not.toHaveProperty('conversationId');
+      });
+
+      // PENDING_SLOT comes back as ITSELF rather than being smoothed into
+      // "no slot". A caller that wants to know a slot has not been derived
+      // yet can only learn it from the row, and the `degraded: ['pending']`
+      // flag is tenant-wide, not per-row.
+      it('returns PENDING_SLOT as itself, not as an absent slot', async () => {
+        await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JAN,
+          slot: PENDING_SLOT,
+        });
+
+        const out = await recall({ about: 'user', limit: 10 });
+        expect(out.statements[0]!.slot).toBe(PENDING_SLOT);
+      });
+
+      it('filters the listing to the named slots, and drops slot-less rows', async () => {
+        await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JAN,
+          slot: 'lives_in',
+        });
+        await recordOne({
+          about: 'user',
+          relation: 'works_at',
+          value: 'Acme',
+          when: JAN,
+          slot: 'works_at',
+        });
+        await recordOne({ about: 'user', relation: 'stated', value: 'hello', when: JAN });
+
+        const out = await recall({ about: 'user', limit: 10, slots: ['lives_in', 'works_at'] });
+        expect(out.statements.map((r) => r.value).sort()).toEqual(['Acme', 'Seattle']);
+
+        const one = await recall({ about: 'user', limit: 10, slots: ['lives_in'] });
+        expect(one.statements.map((r) => r.value)).toEqual(['Seattle']);
+      });
+
+      // The push-down case, and the whole reason the predicate cannot live in
+      // application code — the same argument as the owner scope's. The
+      // slot-less row is NEWER, so it wins the recency order: a `limit: 1`
+      // read that took the top row and filtered afterwards would hand back an
+      // EMPTY profile while the slot row sat there active and visible.
+      it('counts `limit` against the slot-filtered rows, not a widened pool', async () => {
+        const seattle = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JAN,
+          slot: 'lives_in',
+        });
+        await recordOne({ about: 'user', relation: 'stated', value: 'hello', when: JUN });
+
+        const out = await recall({ about: 'user', limit: 1, slots: ['lives_in'] });
+        expect(out.statements.map((r) => r.id)).toEqual([seattle.id]);
+      });
+
+      it('rejects a non-array slots', async () => {
+        await expectCode('invalid-payload', () =>
+          recall({ about: 'user', limit: 10, slots: 'lives_in' as unknown as string[] }),
+        );
+      });
+
+      // "Match nothing" and "do not filter" are opposite readings of the same
+      // payload, so neither is guessed.
+      it('rejects an empty slots array', async () => {
+        await expectCode('invalid-payload', () => recall({ about: 'user', limit: 10, slots: [] }));
+      });
+
+      it('rejects an empty-string slot entry', async () => {
+        await expectCode('invalid-payload', () =>
+          recall({ about: 'user', limit: 10, slots: ['lives_in', ''] }),
+        );
+      });
+
+      // Refused rather than ignored, on BOTH backends and for the same reason
+      // the empty `query` is: honouring the query and dropping the filter
+      // returns an unfiltered ranked set dressed up as a filtered one, which
+      // is a wrong answer the caller cannot detect. (On a backend with no
+      // fusion recall the `query` is rejected first — same code, so the case
+      // holds either way, which is what makes it a parity case.)
+      it('rejects slots combined with query', async () => {
+        await expectCode('invalid-payload', () =>
+          recall({ query: 'where do I live', limit: 10, slots: ['lives_in'] }),
+        );
+      });
+    });
+
     describe('owner scope (ownerUserId)', () => {
       const OWNER_A = 'owner-alice';
       const OWNER_B = 'owner-bob';
