@@ -2546,8 +2546,17 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * `chat:end` it sees for that agent — there is no refcount. So an agent
    * running two turns at once (a routine fire beside a chat, two open threads)
    * reads `resting` from the moment the first of them ends until the other's
-   * next tool call re-creates the record. The reload test below pins exactly
-   * that, so it is a known shape and not an accident.
+   * next tool call re-creates the record.
+   *
+   * IT IS PINNED, BUT NOT HERE, and the reason is worth a line. This route
+   * cannot tell the two-turns case apart from a single turn that simply
+   * ended — both arrive as one absent activity record — so an assertion
+   * written here would be indistinguishable from the `resting` tests beside
+   * it and would pin nothing. The characterization lives with the PRODUCER
+   * instead: "forgets the whole agent on the FIRST end, even with a second
+   * turn still running" and "recovers the running turn on its next step",
+   * both in `@ax/agent-activity`'s `plugin.test.ts`. A future refcount has to
+   * change those, which is exactly where that decision belongs.
    *
    * IT IS LEFT THAT WAY ON PURPOSE, and the direction is the argument. This
    * route's standing rule is that "we don't know" renders as `resting`, and an

@@ -3,11 +3,14 @@
  *
  * A wire turn-error reason code in, an authored user-facing sentence out. This
  * module knows the wording; it does not know the wire, the store, the AI SDK or
- * React. Both surfaces that read an SSE `error` frame render from this one
- * table:
+ * React. Every surface that renders a turn failure goes through
+ * `turnErrorText` below — there are no hand-copies of the rule left, as of
+ * TASK-498:
  *
  *   - `lib/transport.ts`     — chat, into an AI-SDK `error` chunk.
  *   - `lib/workspace-api.ts` — the agent workspace, into an `onError` callback.
+ *   - `components/workspace/AgentConversation.tsx` — the workspace again, for
+ *     a failure REPLAYED out of the durable record after a reload.
  *
  * WHY IT LIVES HERE, AND NOT IN `transport.ts` WHERE IT STARTED. Fault A put
  * the table in `transport.ts` when chat was the only surface. TASK-296 found
@@ -108,12 +111,14 @@ export function turnErrorText(reason: string, detail?: string | null): string {
     never fires, and the template below stringifies it into the reader's alert
     as `function Object() { [native code] }`.
     No producer emits such a reason today (the codes are host vocabulary), so
-    this is a latent defect rather than a live one. It is fixed HERE, in the
-    one function both the live SSE frame and the replayed row now read, because
-    that is the whole reason this function exists — before TASK-498 the same
-    lookup was hand-copied at each reader and each copy had its own version of
-    this hole. `typeof` answers it completely: a non-string is not a label,
-    whatever it is and wherever it came from.
+    this is a latent defect rather than a live one. It is fixed HERE because
+    HERE is now the only place the rule is written: every reader of an error
+    frame calls this function, so one guard covers all of them. That was not
+    true when the guard was first written — `lib/transport.ts` still had its
+    own hand-copy, and therefore its own copy of this hole, until a reviewer
+    caught the gap between the claim and the code. `typeof` answers it
+    completely: a non-string is not a label, whatever it is and wherever it
+    came from.
   */
   const found: unknown = ERROR_LABELS[reason];
   const label = typeof found === 'string' ? found : DEFAULT_TURN_ERROR;

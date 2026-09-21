@@ -55,11 +55,7 @@ import { decisionRaisedActions } from './decision-raised-store';
 import { continuationActions } from './continuation-actions';
 import { HttpError, httpFetch } from './http';
 import { readSseFrames } from './sse-frames';
-import {
-  DEFAULT_TURN_ERROR,
-  ERROR_LABELS,
-  MAX_DETAIL_CHARS,
-} from './turn-error-labels';
+import { turnErrorText } from './turn-error-labels';
 import type { SseFrame } from '../server/types';
 
 const DEFAULT_USER = 'guest';
@@ -782,20 +778,37 @@ async function consumeSseAttempt(
     // a connection drop: a reconnect wouldn't help, so we surface it.
     if ('error' in frame && typeof frame.error === 'string') {
       ctx.closeOpen(controller);
-      const label = ERROR_LABELS[frame.error] ?? DEFAULT_TURN_ERROR;
-      // TASK-160 — append the optional author-facing `detail` line (e.g. a
-      // dev-service-sidecar self-diagnosis). It's UNTRUSTED text: already
-      // bounded + control-char-stripped server-side, we clamp it once more
-      // and render it as plain text (it is never interpreted as markup —
-      // the AgentStatus error row shows the string verbatim).
-      const detail =
-        'detail' in frame && typeof frame.detail === 'string'
-          ? frame.detail.slice(0, MAX_DETAIL_CHARS).trim()
-          : '';
-      controller.enqueue({
-        type: 'error',
-        errorText: detail.length > 0 ? `${label}\n${detail}` : label,
-      });
+      /*
+        THE LAST HAND-COPY OF THE LABEL RULE, now gone (TASK-498).
+
+        This was `ERROR_LABELS[frame.error] ?? DEFAULT_TURN_ERROR` plus its own
+        clamp-and-join of the TASK-160 `detail` line — the same four lines as
+        the workspace reader, kept in step by hand. `turnErrorText` was
+        extracted for the workspace's live and reloaded paths; a reviewer
+        pointed out this file was still copying it, which made the claim that
+        the rule lives in one place simply untrue, and left THIS reader with
+        its own copy of a defect the other copies had just been fixed for: the
+        label table is an object literal, so a reason code of `toString` (or
+        `constructor`) resolves up the prototype chain to a FUNCTION, the `??`
+        never fires, and the template stringifies it into the chunk a person
+        reads. Latent — reason codes are host vocabulary — but this is the
+        surface real users are on today.
+
+        Yes, TASK-360 deletes this file with the rest of the chat tree. That
+        argues against BUILDING here; it does not argue for keeping a duplicate
+        of a rule we just centralised, and this change is net fewer lines in
+        the doomed tree, not more.
+
+        `detail` is UNTRUSTED text — bounded and control-char-stripped
+        server-side, clamped again inside `turnErrorText`, and rendered as
+        plain text (never markup: the AgentStatus error row shows the string
+        verbatim).
+      */
+      const errorText = turnErrorText(
+        frame.error,
+        'detail' in frame && typeof frame.detail === 'string' ? frame.detail : null,
+      );
+      controller.enqueue({ type: 'error', errorText });
       terminal = 'server-error';
       return 'stop';
     }
