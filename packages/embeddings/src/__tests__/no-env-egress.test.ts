@@ -29,11 +29,28 @@ import { EMBED_ENDPOINTS, RERANK_ENDPOINTS } from '../endpoints.js';
 
 const SRC = dirname(dirname(fileURLToPath(import.meta.url)));
 
-/** Every `.ts` file in `src/`, excluding the test directory. */
-function sourceFiles(): string[] {
-  return readdirSync(SRC, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith('.ts'))
-    .map((entry) => join(SRC, entry.name));
+/**
+ * Every `.ts` file under `src/`, at any depth, excluding the test directory.
+ *
+ * RECURSIVE ON PURPOSE. The first version of this read only the top level,
+ * which meant a future `src/drivers/vertex.ts` — exactly where a new provider
+ * driver would go, and exactly the file most likely to reach for an env var —
+ * would have been silently unchecked while every assertion here still passed
+ * green. A guard with a blind spot over the code it is guarding is worse than
+ * no guard, because it also stops anyone from looking.
+ */
+function sourceFiles(dir: string = SRC): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === '__tests__') continue;
+      out.push(...sourceFiles(full));
+    } else if (entry.isFile() && entry.name.endsWith('.ts')) {
+      out.push(full);
+    }
+  }
+  return out.sort();
 }
 
 /** Source with line comments and block comments stripped, so prose about `process.env` does not trip us. */
