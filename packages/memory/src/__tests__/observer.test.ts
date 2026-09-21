@@ -361,20 +361,31 @@ describe('batch semantics', () => {
     expect(await countFor(h, BOB)).toBe(1);
   });
 
-  it('separates the key parts with something none of them can contain', async () => {
-    // Adjacent-boundary probe. Without a separator that cannot appear in any
-    // part, `('conv-1', 'ab')` and `('conv-1a', 'b')` would hash identically
+  it('keeps adjacent key fields separate', async () => {
+    // Adjacent-boundary probe. Without unambiguous tuple boundaries,
+    // `('conv-1', 'ab')` and `('conv-1a', 'b')` would hash identically
     // and the second person's batch would be suppressed by the first's. The
-    // docstring in `buildBatchKey` claims NUL does that job; this pins it.
+    // docstring in `buildBatchKey` claims JSON tuple framing does that job;
+    // this pins it.
     const base = { dialogue: 'user: hi' };
     expect(buildBatchKey({ ...base, conversationId: 'conv-1', ownerUserId: 'ab' })).not.toBe(
       buildBatchKey({ ...base, conversationId: 'conv-1a', ownerUserId: 'b' }),
     );
-    // And an ABSENT conversation is not the same as one literally named ''.
-    // (It is the same key, deliberately — both mean "no conversation" — so
-    // this pins the intent rather than an accident.)
+    // An ABSENT conversation and one literally named '' intentionally produce
+    // the same key — both mean "no conversation" — so this pins the intent
+    // rather than an accident.
     expect(buildBatchKey({ ...base, ownerUserId: 'a' })).toBe(
       buildBatchKey({ ...base, conversationId: '', ownerUserId: 'a' }),
+    );
+  });
+
+  it('keeps embedded NULs within their own batch-key field', () => {
+    const dialogue = 'user: hi';
+    expect(buildBatchKey({ conversationId: 'conv\u0000owner', ownerUserId: 'alice', dialogue })).not.toBe(
+      buildBatchKey({ conversationId: 'conv', ownerUserId: 'owner\u0000alice', dialogue }),
+    );
+    expect(buildBatchKey({ conversationId: 'conv', ownerUserId: 'alice\u0000user: hi', dialogue })).not.toBe(
+      buildBatchKey({ conversationId: 'conv', ownerUserId: 'alice', dialogue: 'user: hi\u0000user: hi' }),
     );
   });
 

@@ -188,9 +188,9 @@ export async function runObserver(input: RunObserverInput): Promise<ObserverResu
  *   `ownerUserId` — rows that person's own owner-scoped recall can never see.
  *   That is silent memory loss for the second person, so the owner is hashed.
  *
- * Hashing rather than concatenating: the parts are joined with a NUL, which
- * cannot appear in a JSON string the extractor read, so no two distinct
- * triples can produce one key by boundary confusion.
+ * Hashing rather than exposing the parts: JSON encodes the string tuple with
+ * unambiguous boundaries, including embedded NULs, so distinct triples cannot
+ * produce one key by boundary confusion.
  */
 export function buildBatchKey(input: {
   conversationId?: string | undefined;
@@ -198,7 +198,7 @@ export function buildBatchKey(input: {
   dialogue: string;
 }): string {
   const digest = createHash('sha256')
-    .update([input.conversationId ?? '', input.ownerUserId, input.dialogue].join('\u0000'))
+    .update(JSON.stringify([input.conversationId ?? '', input.ownerUserId, input.dialogue]))
     .digest('hex');
   return `memory-observer:${digest}`;
 }
