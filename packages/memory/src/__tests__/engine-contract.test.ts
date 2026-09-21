@@ -204,6 +204,15 @@ describe('@ax/memory — degraded passes through untouched', () => {
 // of them is a lie — the same call `requireEngineResult` makes for a null
 // response, applied to a response that is non-null but nonsense. Before this,
 // every case below silently answered "you have no memories".
+/** A row shaped exactly as the engine's `FactRecord` promises. */
+const GOOD_ROW = {
+  id: 'a',
+  about: 'user:user-alice',
+  relation: 'lives_in',
+  value: 'Berlin',
+  when: '2026-01-01T00:00:00.000Z',
+};
+
 describe('@ax/memory — a malformed statements is an error, not an empty memory', () => {
   it.each([
     ['omitted', {}],
@@ -215,6 +224,51 @@ describe('@ax/memory — a malformed statements is an error, not an empty memory
     await expect(
       bus.call<Record<string, never>, MemoryRecallOutput>('memory:recall', ctx(), {}),
     ).rejects.toThrow(/non-array statements/);
+  });
+
+  // Proving the ARRAY is an array is not proving its ELEMENTS are rows. Before
+  // these cases, the shape guard above passed and `toMemoryStatement` — a bare
+  // field-copy — then produced a statement-shaped object full of `undefined`s,
+  // which is the very defect this block exists to kill, one level down. That
+  // is worse than the `[]` it replaced: a UI renders it as a real-but-blank
+  // memory rather than obviously failing. A `null` element was worse still — a
+  // bare `TypeError` with no `plugin`, no `hookName` and no `code`, exactly the
+  // error shape this plugin documents at length that it does not emit.
+  it.each([
+    ['null', [null]],
+    ['a string', ['nope']],
+    ['a number', [42]],
+    ['a partial row (schema drift)', [{ id: 'a' }]],
+    ['a row whose field is the wrong type', [{ id: 'a', about: 'b', relation: 'c', value: 4, when: 'd' }]],
+    ['a good row followed by a bad one', [GOOD_ROW, { id: 'b' }]],
+  ])('memory:recall throws when a statements element is %s', async (_label, statements) => {
+    const { bus } = await busWithEngine({ recall: { statements, degraded: [] } });
+    await expect(
+      bus.call<Record<string, never>, MemoryRecallOutput>('memory:recall', ctx(), {}),
+    ).rejects.toThrow(/malformed statement/);
+  });
+
+  it('still accepts a well-formed row, with and without `until`', async () => {
+    const { bus } = await busWithEngine({
+      recall: { statements: [GOOD_ROW, { ...GOOD_ROW, id: 'b', until: '2026-02-01T00:00:00Z' }] },
+    });
+    const out = await bus.call<Record<string, never>, MemoryRecallOutput>(
+      'memory:recall',
+      ctx(),
+      {},
+    );
+    expect(out.statements.map((s) => s.id)).toEqual(['a', 'b']);
+    expect(out.statements[0]).not.toHaveProperty('until');
+    expect(out.statements[1]!.until).toBe('2026-02-01T00:00:00Z');
+  });
+
+  it('rejects a non-string `until` rather than passing it through', async () => {
+    const { bus } = await busWithEngine({
+      recall: { statements: [{ ...GOOD_ROW, until: 7 }] },
+    });
+    await expect(
+      bus.call<Record<string, never>, MemoryRecallOutput>('memory:recall', ctx(), {}),
+    ).rejects.toThrow(/malformed statement/);
   });
 });
 

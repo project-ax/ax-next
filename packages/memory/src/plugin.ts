@@ -425,6 +425,9 @@ function isUsableString(v: unknown): v is string {
   return typeof v === 'string' && v.trim() !== '';
 }
 
+/** The fields every engine row must carry, per `FactRecord`. */
+const REQUIRED_ROW_FIELDS = ['id', 'about', 'relation', 'value', 'when'] as const;
+
 /**
  * Engine row -> caller statement.
  *
@@ -442,8 +445,57 @@ function isUsableString(v: unknown): v is string {
  *
  * `kind` is not read here because no engine stores one; see
  * `MemoryStatementKind`.
+ *
+ * ## Why this validates instead of copying
+ *
+ * Proving `statements` is an array is not proving its ELEMENTS are rows, and a
+ * bare field-copy over an unchecked element reproduces one level down the exact
+ * defect the array guard was added to kill:
+ *
+ * - A non-object element (`'nope'`, `42`) copies to a statement-shaped object
+ *   full of `undefined`s. That is WORSE than the `[]` it replaced — a caller or
+ *   a UI renders it as a real-but-blank memory instead of failing visibly.
+ * - A partial row (`{ id }`, the shape schema drift actually produces) does the
+ *   same thing while looking even more plausible.
+ * - A `null` element threw a bare `TypeError` carrying no `plugin`, no
+ *   `hookName` and no `code` — precisely the error shape this plugin says at
+ *   length that it does not emit.
+ *
+ * The check lives HERE, at the single choke point every row passes through,
+ * rather than in the recall handler: a future call site that maps rows without
+ * remembering to validate them cannot exist if the mapper IS the validator.
+ * Same reachability bar as the array guard — only an engine contract violation
+ * gets here — and the same answer for the same reason: this file is the
+ * template the rest of the epic copies, so the version they copy should be the
+ * one that fails loudly.
  */
 function toMemoryStatement(row: EngineFactRecord): MemoryStatement {
+  const malformed = (why: string): never => {
+    throw new PluginError({
+      code: 'invalid-return',
+      plugin: PLUGIN_NAME,
+      hookName: MEMORY_RECALL_HOOK,
+      message: `${FACTS_RECALL_HOOK} returned a malformed statement (${why}); a statement we cannot read is not a statement we may hand a caller`,
+    });
+  };
+
+  // `typeof null === 'object'`, so the null check is not redundant — and null
+  // is the element that used to produce the raw `TypeError`.
+  if (row === null || typeof row !== 'object' || Array.isArray(row)) {
+    malformed('not an object');
+  }
+  for (const field of REQUIRED_ROW_FIELDS) {
+    if (typeof row[field] !== 'string') {
+      malformed(`${field} is not a string`);
+    }
+  }
+  // Optional, but if present it must be readable. Passing a non-string `until`
+  // through would put a wrong-typed value on the caller-facing payload while
+  // every other field had been checked.
+  if (row.until !== undefined && typeof row.until !== 'string') {
+    malformed('until is present but not a string');
+  }
+
   return {
     id: row.id,
     about: row.about,
