@@ -268,14 +268,15 @@ describe('AgentMemory', () => {
       // And no prose retry either — the wording is the whole bug.
       expect(screen.queryByText(/try again in a moment/iu)).toBeNull();
       expect(
-        screen.getByText(/isn't set up to keep rules for Quill/u),
+        screen.getByText(/Memory rules for Quill aren't switched on for this workspace yet/u),
       ).toBeInTheDocument();
+      expect(screen.queryByText(/This copy of AX/iu)).toBeNull();
     });
 
     it('does not make the reader feel they broke something', () => {
       render(<AgentMemory agentName="Quill" memory={unavailable()} />);
       expect(
-        screen.getByText(/Nothing is broken and nothing of yours is missing/u),
+        screen.getByText(/Ask your workspace administrator about enabling them/u),
       ).toBeInTheDocument();
       // A setup choice on the server, not a malfunction: register stays neutral.
       expect(screen.getByRole('alert').className).not.toContain('destructive');

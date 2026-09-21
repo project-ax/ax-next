@@ -163,10 +163,8 @@ function RulesWithoutEditor({
         <AlertDescription className="flex flex-col items-start gap-2">
           {status === 'unavailable' ? (
             <span>
-              This copy of AX isn&apos;t set up to keep rules for {agentName}, so
-              there&apos;s nowhere for us to put them. Nothing is broken and
-              nothing of yours is missing — whoever runs this server can switch
-              memory on, and the editor turns up here when they do.
+              Memory rules for {agentName} aren&apos;t switched on for this
+              workspace yet. Ask your workspace administrator about enabling them.
             </span>
           ) : (
             <span>
