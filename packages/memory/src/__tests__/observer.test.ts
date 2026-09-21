@@ -1,13 +1,16 @@
 import Database from 'better-sqlite3';
-import { PluginError, type AgentContext } from '@ax/core';
+import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { createMemoryPlugin } from '../plugin.js';
 import { OBSERVER_FAILED_EVENT, NO_CREDENTIAL_EVENT, OBSERVER_RUN_EVENT } from '../failure.js';
 import {
   ALICE,
   BOB,
+  capturingLogger,
   eventsNamed,
   makeMemoryHarness,
+  type LoggedEvent,
   type MemoryHarness,
   type MemoryHarnessOptions,
 } from './harness.js';
@@ -493,6 +496,55 @@ describe('every failure path emits an event', () => {
     expect(eventsNamed(h.logs, OBSERVER_FAILED_EVENT)).toHaveLength(1);
     expect(readRows(h.databasePath)).toHaveLength(0);
   });
+
+  /**
+   * Found by mutation: deleting the `record` result guard in `observer.ts`
+   * reddened NOTHING, because the real sqlite engine always answers with a
+   * records array. The gap matters — `HookBus.call` returns a handler's RAW
+   * value when the hook declares no `returns` schema, and
+   * `memory:facts:record` declares none — so a stub engine is the right tool
+   * here, exactly as `engine-contract.test.ts` argues.
+   */
+  it.each([null, undefined, {}, { records: 'nope' }])(
+    'reports a batch the engine did not confirm (%s) instead of logging it as remembered',
+    async (response) => {
+      const bus = new HookBus();
+      const logs: LoggedEvent[] = [];
+      const logger = capturingLogger(logs);
+      const noop = async (): Promise<unknown> => undefined;
+      bus.registerService('memory:facts:recall', 'stub', noop);
+      bus.registerService('memory:facts:record', 'stub', async () => response);
+      bus.registerService('memory:facts:supersede', 'stub', noop);
+      bus.registerService('llm:call:openrouter', 'stub-llm', async () =>
+        reply(extraction([fact()])),
+      );
+      const detached: Array<Promise<void>> = [];
+      await createMemoryPlugin({ onObserverDetached: (w) => detached.push(w) }).init({
+        bus,
+        config: {},
+      });
+
+      await bus.fire(
+        'chat:end',
+        makeAgentContext({
+          sessionId: 's',
+          agentId: 'agent-1',
+          userId: ALICE,
+          conversationId: 'conv-1',
+          workspace: { rootPath: '/tmp' },
+          logger,
+        }),
+        { outcome: { kind: 'complete', messages: DIALOGUE } },
+      );
+      await Promise.all(detached);
+
+      expect(eventsNamed(logs, OBSERVER_FAILED_EVENT)).toHaveLength(1);
+      // And crucially NOT an audit line claiming rows were recorded.
+      expect(
+        eventsNamed(logs, OBSERVER_RUN_EVENT).filter((l) => l.bindings.outcome === 'recorded'),
+      ).toHaveLength(0);
+    },
+  );
 
   it('an owner-less session records nothing, and says so', async () => {
     const h = await withLlm(() => reply(extraction([fact()])));

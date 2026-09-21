@@ -129,7 +129,7 @@ export async function makeMemoryHarness(
   });
   await memoryPlugin.init({ bus, config: {} });
 
-  const logger = makeCapturingLogger(logs);
+  const logger = capturingLogger(logs);
 
   const ctx: MemoryHarness['ctx'] = (opts = {}) =>
     makeAgentContext({
@@ -171,7 +171,7 @@ export async function makeMemoryHarness(
   };
 }
 
-function makeCapturingLogger(sink: LoggedEvent[]): Logger {
+export function capturingLogger(sink: LoggedEvent[]): Logger {
   const at =
     (level: LoggedEvent['level']) =>
     (event: string, bindings?: Record<string, unknown>): void => {
