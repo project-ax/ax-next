@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { DEFAULT_CONFINED_READ_LIMITS } from '@ax/user-files-read';
 import { buildReadCommand, parseReadOutput } from '../user-files-ops.js';
 
 // ---------------------------------------------------------------------------
@@ -26,6 +27,8 @@ import { buildReadCommand, parseReadOutput } from '../user-files-ops.js';
 
 const EXPORT_MOUNT = '/export';
 const SUBPATH = 'agent-abc';
+const READ_SHELLS = ['/bin/sh'];
+if (spawnSync('/bin/dash', ['-c', ':']).status === 0) READ_SHELLS.push('/bin/dash');
 
 let root: string;
 /** The agent's own subtree — `$EXPORT/$SUBPATH` in the shipped script. */
@@ -62,11 +65,13 @@ function runRaw(
   relPath: string,
   subPath: string,
   exportPath: string = root,
+  options: { shell?: string; envPath?: string } = {},
 ): { out: string; code: number } {
   const script = buildReadCommand().split(EXPORT_MOUNT).join(exportPath);
-  const r = spawnSync('/bin/sh', ['-c', script], {
-    env: { SUBPATH: subPath, RELPATH: relPath, PATH: process.env.PATH ?? '' },
+  const r = spawnSync(options.shell ?? '/bin/sh', ['-c', script], {
+    env: { SUBPATH: subPath, RELPATH: relPath, PATH: options.envPath ?? process.env.PATH ?? '' },
     encoding: 'utf-8',
+    maxBuffer: 8 * 1024 * 1024,
   });
   return { out: r.stdout ?? '', code: r.status ?? -1 };
 }
@@ -333,5 +338,39 @@ describe('the reader script, through a real shell', () => {
     const byName = listing('.');
     expect(byName.has('pipe')).toBe(false);
     expect(byName.get('real.txt')).toBe('file');
+  });
+});
+
+describe.each(READ_SHELLS)('FILE pipeline status under %s', (shell) => {
+  it.each([
+    ['head', ''],
+    ['head', 'partial'],
+    ['base64', ''],
+    ['base64', 'cGFydGlhbA=='],
+  ])('rejects %s upstream failure with output %j', async (stage, output) => {
+    await fs.writeFile(path.join(agentDir, 'file.bin'), 'complete file');
+    const bin = path.join(root, 'bin');
+    await fs.mkdir(bin);
+    await fs.writeFile(path.join(bin, stage), `#!/bin/sh\nprintf '%s' '${output}'\nexit 7\n`, { mode: 0o755 });
+    const result = runRaw('file.bin', SUBPATH, root, {
+      shell,
+      envPath: `${bin}:${process.env.PATH ?? ''}`,
+    });
+    expect(result.code).not.toBe(0);
+  });
+
+  it.each([
+    ['empty', Buffer.alloc(0), false],
+    ['binary', Buffer.from([0, 255, 10, 9, 128, 0, 10]), false],
+    ['exact cap', Buffer.alloc(DEFAULT_CONFINED_READ_LIMITS.maxFileBytes, 0x41), false],
+    ['over cap', Buffer.alloc(DEFAULT_CONFINED_READ_LIMITS.maxFileBytes + 5, 0x42), true],
+  ] as const)('preserves successful %s reads', async (_name, bytes, truncated) => {
+    await fs.writeFile(path.join(agentDir, 'file.bin'), bytes);
+    const result = runRaw('file.bin', SUBPATH, root, { shell });
+    expect(result.code).toBe(0);
+    const parsed = parseReadOutput(result.out);
+    if (parsed.kind !== 'file') throw new Error('expected file');
+    expect(Buffer.from(parsed.contents)).toEqual(bytes.subarray(0, DEFAULT_CONFINED_READ_LIMITS.maxFileBytes));
+    expect(parsed.truncated).toBe(truncated);
   });
 });
