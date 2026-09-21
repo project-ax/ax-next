@@ -1,4 +1,5 @@
 import { sql, type Kysely } from 'kysely';
+import type { FactKind } from '@ax/memory-facts-contract';
 
 export const TABLE = 'memory_facts_v1';
 
@@ -15,6 +16,7 @@ export interface FactRow {
   provenance: 'extracted' | 'agent' | 'human';
   owner_user_id: string | null;
   conversation_id: string | null;
+  kind: FactKind | null;
   /**
    * ⚠ `TEXT`, not `timestamptz` — and so is {@link FactRow.valid_end}. See the
    * REVISIT trigger on {@link runFactsMigration}.
@@ -117,6 +119,7 @@ export async function runFactsMigration<DB>(db: Kysely<DB>): Promise<void> {
       provenance       TEXT NOT NULL CHECK (provenance IN ('extracted','agent','human')),
       owner_user_id    TEXT,
       conversation_id  TEXT,
+      kind             TEXT,
       valid_start      TEXT NOT NULL,
       valid_end        TEXT NOT NULL DEFAULT ${sql.lit(INFINITY_SENTINEL)},
       transaction_time TEXT NOT NULL,
@@ -135,6 +138,7 @@ export async function runFactsMigration<DB>(db: Kysely<DB>): Promise<void> {
   // string. Runs BEFORE the batch index, which indexes the column it adds.
   await sql`ALTER TABLE memory_facts_v1 ADD COLUMN IF NOT EXISTS batch_key TEXT`.execute(db);
   await sql`ALTER TABLE memory_facts_v1 ADD COLUMN IF NOT EXISTS batch_seq INTEGER`.execute(db);
+  await sql`ALTER TABLE memory_facts_v1 ADD COLUMN IF NOT EXISTS kind TEXT`.execute(db);
 
   // The slot chain — `insertWithSlotClosure`'s peer query and
   // `resettleSlotGroups`' group read.

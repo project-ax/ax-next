@@ -9,6 +9,7 @@ import {
   type LlmCallOutput,
   type Logger,
   type Plugin,
+  type ToolDescriptor,
 } from '@ax/core';
 import { createMemoryFactsSqlitePlugin } from '@ax/memory-facts-sqlite';
 
@@ -68,6 +69,7 @@ export interface MemoryHarness {
   logs: LoggedEvent[];
   /** Every `llm:call:openrouter` request the observer made, in order. */
   llmCalls: LlmCallInput[];
+  toolDescriptors: ToolDescriptor[];
   /**
    * Await every DETACHED observer run started so far.
    *
@@ -106,7 +108,17 @@ export async function makeMemoryHarness(
 
   const logs: LoggedEvent[] = [];
   const llmCalls: LlmCallInput[] = [];
+  const toolDescriptors: ToolDescriptor[] = [];
   const detached: Array<Promise<void>> = [];
+
+  bus.registerService<ToolDescriptor, { ok: true }>(
+    'tool:register',
+    '@ax/test-tool-catalog',
+    async (_ctx, descriptor) => {
+      toolDescriptors.push(descriptor);
+      return { ok: true };
+    },
+  );
 
   if (options.llm !== undefined) {
     const llm = options.llm;
@@ -149,6 +161,7 @@ export async function makeMemoryHarness(
     databasePath,
     logs,
     llmCalls,
+    toolDescriptors,
     settleObserver: async () => {
       // Loop: a settle can race a run that starts another. Bounded so a
       // pathological test cannot hang the suite.

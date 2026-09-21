@@ -12,6 +12,7 @@ import type {
   SupersedeInput,
   SupersedeOutput,
   ClearInput,
+  FactKind,
   Provenance,
   ReindexInput,
   ReindexOutput,
@@ -59,6 +60,8 @@ const PLUGIN_NAME = '@ax/memory-facts-sqlite';
 const MAX_LIMIT = 200;
 
 const PROVENANCES: readonly Provenance[] = ['extracted', 'agent', 'human'];
+
+const KINDS: readonly FactKind[] = ['world', 'experience', 'observation', 'opinion'];
 
 function isNonEmptyString(v: unknown): v is string {
   return typeof v === 'string' && v.length > 0;
@@ -151,6 +154,14 @@ function validateStatement(input: unknown): FactStatementInput {
       code: 'invalid-payload',
       plugin: PLUGIN_NAME,
       message: 'statement.conversationId must be a string when set',
+    });
+  }
+  if (s.kind !== undefined && !KINDS.includes(s.kind as FactKind)) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message:
+        "statement.kind must be 'world', 'experience', 'observation', or 'opinion' when set",
     });
   }
   return { ...s, when } as unknown as FactStatementInput;
@@ -420,6 +431,7 @@ function rowToFactRecord(row: FactRow): FactRecord {
     // Provenance only — nothing in `RecallInput` filters or ranks by it.
     // `@ax/memory` groups design §4.1's Recent section by it.
     ...(row.conversation_id !== null ? { conversationId: row.conversation_id } : {}),
+    ...(row.kind !== null ? { kind: row.kind } : {}),
   };
 }
 
@@ -942,6 +954,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
                   ...(statement.conversationId !== undefined
                     ? { conversationId: statement.conversationId }
                     : {}),
+                  ...(statement.kind !== undefined ? { kind: statement.kind } : {}),
                 });
 
                 // Derived indexes are written INSIDE the batch transaction, so
@@ -973,6 +986,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
                   closes: closure.closed,
                   ...(closure.selfClosedAt !== null ? { until: closure.selfClosedAt } : {}),
                   ...(closure.selfClosedBy !== null ? { closedBy: closure.selfClosedBy } : {}),
+                  ...(statement.kind !== undefined ? { kind: statement.kind } : {}),
                 };
               });
             });

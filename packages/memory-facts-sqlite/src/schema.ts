@@ -1,6 +1,7 @@
 import BetterSqlite3 from 'better-sqlite3';
 import type { Database as BetterSqliteDb } from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
+import type { FactKind } from '@ax/memory-facts-contract';
 
 export const TABLE = 'memory_facts_v1';
 
@@ -49,6 +50,7 @@ export interface FactRow {
   provenance: 'extracted' | 'agent' | 'human';
   owner_user_id: string | null;
   conversation_id: string | null;
+  kind: FactKind | null;
   valid_start: string;
   valid_end: string;
   transaction_time: string;
@@ -167,6 +169,7 @@ export function openDatabase(databasePath: string): OpenDatabaseResult {
       provenance TEXT NOT NULL CHECK(provenance IN ('extracted','agent','human')),
       owner_user_id TEXT,
       conversation_id TEXT,
+      kind TEXT,
       valid_start TEXT NOT NULL,
       valid_end TEXT NOT NULL DEFAULT '${INFINITY_SENTINEL}',
       transaction_time TEXT NOT NULL,
@@ -254,6 +257,9 @@ function migrateAddColumns(driver: BetterSqliteDb, vectorExtensionLoaded: boolea
   }
   if (!present.has('batch_seq')) {
     driver.exec(`ALTER TABLE ${TABLE} ADD COLUMN batch_seq INTEGER`);
+  }
+  if (!present.has('kind')) {
+    driver.exec(`ALTER TABLE ${TABLE} ADD COLUMN kind TEXT`);
   }
 
   // Sparse channel (TASK-434). `porter unicode61` matches both `dem-memory`

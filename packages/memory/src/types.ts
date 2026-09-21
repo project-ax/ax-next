@@ -26,17 +26,16 @@
 /**
  * The statement's epistemic category, straight from the extractor.
  *
- * ⚠ **Passthrough with nowhere to pass through, today.** `kind` is in the
- * extraction prompt that scored 87.4% and has no measured consumer, so design
- * §10.6 settled that it is neither consumed nor stripped. But the engine has
- * no `kind` column: neither `FactStatementInput` nor `FactRecord` in
- * `@ax/memory-facts-contract` carries it, so `memory:recall` can never
- * populate it at present and a test pins that absence so nobody reads it as a
- * bug. Declaring the field now means the observer card can start storing it
- * without a hook-surface change — the expensive kind of change once
- * subscribers exist.
+ * **Optional passthrough, end to end.** `kind` is in the extraction prompt
+ * that scored 87.4% and has no measured consumer beyond evidence rendering,
+ * so design §10.6 settled that it is carried rather than consumed: the
+ * extractor's `network` becomes `kind`, the engine stores it verbatim on
+ * `FactStatementInput`/`FactRecord`, and `memory:recall` forwards it. Absent
+ * means absent at every hop — a row recorded without one (a human
+ * `memory:remember`, a legacy row) comes back with no kind, never an invented
+ * `'world'`.
  */
-export type MemoryStatementKind = 'world' | 'experience' | 'opinion';
+export type MemoryStatementKind = 'world' | 'experience' | 'observation' | 'opinion';
 
 /** One recalled statement, as `memory:recall` renders it. */
 export interface MemoryStatement {
@@ -50,7 +49,7 @@ export interface MemoryStatement {
   when: string;
   /** Set only when this statement has been closed by a later one. */
   until?: string;
-  /** See {@link MemoryStatementKind} — never populated today. */
+  /** See {@link MemoryStatementKind} — absent when the row has none. */
   kind?: MemoryStatementKind;
 }
 

@@ -1,6 +1,7 @@
 import type { LlmCallInput, LlmCallOutput } from '@ax/core';
 
 import { EXTRACTION_SYSTEM_PROMPT, buildExtractionPrompt } from './extraction-prompt.js';
+import type { MemoryStatementKind } from './types.js';
 
 /** The `llm:call:<provider>` round trip, narrowed to what extraction needs. */
 export type LlmCallFn = (input: LlmCallInput) => Promise<LlmCallOutput>;
@@ -8,15 +9,16 @@ export type LlmCallFn = (input: LlmCallInput) => Promise<LlmCallOutput>;
 /**
  * One fact as the extractor emits it, after validation.
  *
- * Only the four fields the store actually reads are here. The prompt also
- * asks for `network` and `invalidatesPrevious`, and both are deliberately
- * DROPPED rather than carried:
+ * The four fields the store reads, plus the one it now carries. The prompt
+ * also asks for `invalidatesPrevious`, which is deliberately DROPPED rather
+ * than carried:
  *
- * - `network` is design §3.1's `kind`. `@ax/memory-facts-contract`'s
- *   `FactStatementInput` has no `kind` and no engine has the column, so
- *   carrying it would mean a field that a caller sets, gets a `200` for, and
- *   silently loses. See `MemoryStatementKind` in `types.ts`, which pins that
- *   absence.
+ * - `network` is design §3.1's `kind`. It is PASSED THROUGH, validated rather
+ *   than consumed: `FactStatementInput` carries `kind` and the engine stores
+ *   it verbatim, so a supported value survives to `memory:recall` and an
+ *   absent one stays absent. A present-but-unrecognized value is a parse
+ *   problem — see `parseFacts`, which marks the fact unusable rather than
+ *   storing a kind nobody can name. See `MemoryStatementKind` in `types.ts`.
  * - `invalidatesPrevious` is DEM's supersession flag, and design §3.3 lists
  *   it under "Not built": MEASURED over 130,779 facts it fails in both
  *   directions (91.8% of flags find no exact prior; the ones that match close
@@ -28,6 +30,7 @@ export interface ExtractedFact {
   predicate: string;
   object: string;
   validStart: string;
+  kind?: MemoryStatementKind;
 }
 
 export type ExtractionResult =
@@ -37,6 +40,13 @@ export type ExtractionResult =
 
 /** How many tokens an extraction may emit. */
 const MAX_EXTRACTION_TOKENS = 4096;
+
+const KNOWLEDGE_KINDS: readonly MemoryStatementKind[] = [
+  'world',
+  'experience',
+  'observation',
+  'opinion',
+];
 
 /**
  * Low but not zero. The prompt asks for a strict JSON shape and a verbatim
@@ -157,11 +167,12 @@ type ParseOutcome =
  * ## Which fields are required, and why it is not dem-memory's zod schema
  *
  * dem-memory's `ExtractedFactSchema` also requires `network` (enum) and
- * `invalidatesPrevious` (boolean). Both are load-bearing THERE and dead
- * HERE — see {@link ExtractedFact}. Requiring a field we immediately discard
- * would drop a whole batch of good facts over a value with no consumer, so
- * they are ignored rather than validated. Everything the store reads IS
- * validated, and a failure is a batch-level schema failure (one retry) rather
+ * `invalidatesPrevious` (boolean). `invalidatesPrevious` stays dead HERE —
+ * see {@link ExtractedFact}. `network` now has somewhere to go, so it is
+ * VALIDATED when present (a kind we cannot name is a fact we will not store)
+ * but not REQUIRED: an absent `network` stays compatible with extractors that
+ * never emit one. Everything the store reads IS validated, and a failure is a
+ * batch-level schema failure (one retry) rather
  * than a per-element drop, matching dem's behaviour: an element-level mistake
  * out of a model is almost always systematic, and the retry is what fixes a
  * systematic mistake.
@@ -218,12 +229,22 @@ export function parseFacts(text: string): ParseOutcome {
       }
       fields[field] = value;
     }
+    if (
+      record.network !== undefined &&
+      !KNOWLEDGE_KINDS.includes(record.network as MemoryStatementKind)
+    ) {
+      note('facts[].network: expected a supported knowledge kind');
+      usable = false;
+    }
     if (!usable) continue;
     facts.push({
       subject: fields.subject!,
       predicate: fields.predicate!,
       object: fields.object!,
       validStart: fields.validStart!,
+      ...(typeof record.network === 'string'
+        ? { kind: record.network as MemoryStatementKind }
+        : {}),
     });
   }
 

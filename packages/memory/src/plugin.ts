@@ -21,6 +21,7 @@ import {
   noCredentialFields,
 } from './failure.js';
 import { runObserver, type ObserverRecordInput, type ObserverResult } from './observer.js';
+import { MEMORY_RECALL_TOOL_HOOK, registerMemoryRecall } from './recall-tool.js';
 import type { UntrustedMessage } from './transcript.js';
 import {
   registerSystemPromptAugment,
@@ -37,6 +38,7 @@ import {
   type MemoryRememberInput,
   type MemoryRememberOutput,
   type MemoryStatement,
+  type MemoryStatementKind,
 } from './types.js';
 
 const PLUGIN_VERSION = '0.0.0';
@@ -130,6 +132,7 @@ interface EngineFactRecord {
   value: string;
   when: string;
   until?: string;
+  kind?: MemoryStatementKind;
 }
 
 interface EngineRecallOutput {
@@ -282,13 +285,14 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         MEMORY_REMEMBER_HOOK,
         MEMORY_FORGET_HOOK,
         SYSTEM_PROMPT_AUGMENT_HOOK,
+        MEMORY_RECALL_TOOL_HOOK,
       ],
-      // Hard dependencies, all three: this plugin has nothing to fall back
+      // Hard dependencies, all four: this plugin has nothing to fall back
       // on. A memory surface with no store behind it cannot degrade into
       // anything honest — it can only answer "no memories" to a question it
       // never asked anyone. Failing at boot with `missing-service` is the
       // outcome that gets noticed.
-      calls: [FACTS_RECALL_HOOK, FACTS_RECORD_HOOK, FACTS_SUPERSEDE_HOOK],
+      calls: [FACTS_RECALL_HOOK, FACTS_RECORD_HOOK, FACTS_SUPERSEDE_HOOK, 'tool:register'],
       // The extraction provider is OPTIONAL, and that asymmetry with the
       // three engine hooks above is deliberate. A memory surface with no
       // STORE behind it cannot degrade into anything honest — it can only
@@ -325,7 +329,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
       subscribes: [CHAT_END_HOOK],
     },
 
-    init({ bus }: { bus: HookBus }) {
+    async init({ bus }: { bus: HookBus }) {
       // ---------------------------------------------------------------
       // system-prompt:augment — the always-injected block (design §4.1).
       // A `call`, not a `fire`: see `registerSystemPromptAugment`.
@@ -396,6 +400,9 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
                 ? { about: rewriteSpeaker(input.about, ownerUserId) }
                 : {}),
               ...(input.query !== undefined ? { query: input.query } : {}),
+              ...(input.query !== undefined
+                ? { poolSize: Math.min(200, Math.max(40, Math.ceil(limit * 40 / 15))) }
+                : {}),
               ...(input.activeOnly !== undefined ? { activeOnly: input.activeOnly } : {}),
             },
           );
@@ -632,6 +639,8 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         config.onObserverDetached?.(work);
         return undefined;
       });
+
+      await registerMemoryRecall(bus);
     },
   };
 }
@@ -786,6 +795,13 @@ function isUsableString(v: unknown): v is string {
 /** The fields every engine row must carry, per `FactRecord`. */
 const REQUIRED_ROW_FIELDS = ['id', 'about', 'relation', 'value', 'when'] as const;
 
+const MEMORY_STATEMENT_KINDS: readonly MemoryStatementKind[] = [
+  'world',
+  'experience',
+  'observation',
+  'opinion',
+];
+
 /**
  * Engine row -> caller statement.
  *
@@ -801,7 +817,9 @@ const REQUIRED_ROW_FIELDS = ['id', 'about', 'relation', 'value', 'when'] as cons
  *    transport-agnostic payload without anybody deciding to put it there
  *    (invariant 1).
  *
- * `kind` is not read here because no engine stores one; see
+ * `kind` is optional passthrough: copied when the engine row carries one,
+ * absent when it does not. A human `memory:remember` write deliberately
+ * invents no classification, so its rows stay kind-less; see
  * `MemoryStatementKind`.
  *
  * ## Why this validates instead of copying
@@ -853,6 +871,12 @@ function toMemoryStatement(row: EngineFactRecord): MemoryStatement {
   if (row.until !== undefined && typeof row.until !== 'string') {
     malformed('until is present but not a string');
   }
+  if (
+    row.kind !== undefined &&
+    !MEMORY_STATEMENT_KINDS.includes(row.kind as MemoryStatementKind)
+  ) {
+    malformed('kind is present but not a supported knowledge kind');
+  }
 
   return {
     id: row.id,
@@ -861,5 +885,6 @@ function toMemoryStatement(row: EngineFactRecord): MemoryStatement {
     value: row.value,
     when: row.when,
     ...(row.until !== undefined ? { until: row.until } : {}),
+    ...(row.kind !== undefined ? { kind: row.kind } : {}),
   };
 }

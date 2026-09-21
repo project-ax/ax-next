@@ -42,6 +42,7 @@ async function busWithEngine(responses: {
   bus.registerService('memory:facts:recall', 'stub', stub('recall', responses.recall));
   bus.registerService('memory:facts:record', 'stub', stub('record', responses.record));
   bus.registerService('memory:facts:supersede', 'stub', stub('supersede', responses.supersede));
+  bus.registerService('tool:register', 'stub-catalog', async () => ({}));
   await createMemoryPlugin().init({ bus, config: {} });
   return { bus, seen };
 }
@@ -275,11 +276,28 @@ describe('@ax/memory — a malformed statements is an error, not an empty memory
       bus.call<Record<string, never>, MemoryRecallOutput>('memory:recall', ctx(), {}),
     ).rejects.toThrow(/malformed statement/);
   });
+
+  it.each([42, null, 'bogus'])('rejects a malformed engine `kind` (%s)', async (kind) => {
+    const { bus } = await busWithEngine({
+      recall: { statements: [{ ...GOOD_ROW, kind }], degraded: [] },
+    });
+    let caught: unknown;
+    await bus
+      .call<Record<string, never>, MemoryRecallOutput>('memory:recall', ctx(), {})
+      .catch((err: unknown) => {
+        caught = err;
+      });
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as { code?: string }).code).toBe('invalid-return');
+    expect((caught as Error).message).toContain('malformed statement');
+    expect((caught as Error).message).not.toContain(String(kind));
+  });
 });
 
 describe('@ax/memory — boot', () => {
   it('cannot boot without an engine (calls are hard dependencies)', async () => {
     const bus = new HookBus();
+    bus.registerService('tool:register', 'stub-catalog', async () => ({}));
     await createMemoryPlugin().init({ bus, config: {} });
     // The kernel's `verifyCalls()` is what actually refuses; at the bus level
     // the consequence is a `no-service` on first use rather than a silent

@@ -1,5 +1,5 @@
 import type { Database as BetterSqliteDb } from 'better-sqlite3';
-import type { Provenance } from '@ax/memory-facts-contract';
+import type { FactKind, Provenance } from '@ax/memory-facts-contract';
 import { TABLE, INFINITY_SENTINEL } from './schema.js';
 import { PENDING_SLOT } from './pending.js';
 
@@ -25,6 +25,7 @@ export interface StatementToInsert {
   provenance: Provenance;
   ownerUserId?: string;
   conversationId?: string;
+  kind?: FactKind;
   transactionTime: string;
   /** The batch's idempotency key, or absent when the caller passed none. */
   batchKey?: string;
@@ -148,9 +149,9 @@ export function insertWithSlotClosure(
       .prepare(
         `INSERT INTO ${TABLE}
            (id, agent_key, about, relation, value, slot, provenance, owner_user_id,
-            conversation_id, valid_start, valid_end, transaction_time, closed_by,
+            conversation_id, kind, valid_start, valid_end, transaction_time, closed_by,
             batch_key, batch_seq)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         statement.id,
@@ -162,6 +163,7 @@ export function insertWithSlotClosure(
         statement.provenance,
         statement.ownerUserId ?? null,
         statement.conversationId ?? null,
+        statement.kind ?? null,
         statement.when,
         INFINITY_SENTINEL,
         statement.transactionTime,

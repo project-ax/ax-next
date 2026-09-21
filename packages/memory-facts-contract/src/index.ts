@@ -72,6 +72,8 @@ export interface FactsBackendFactory {
  */
 export type Provenance = 'extracted' | 'agent' | 'human';
 
+export type FactKind = 'world' | 'experience' | 'observation' | 'opinion';
+
 export interface FactStatementInput {
   /** The entity the statement is about (dem-memory's `subject`). */
   about: string;
@@ -101,6 +103,7 @@ export interface FactStatementInput {
   slot?: string;
   /** Defaults to `extracted` — `record` is the observer's door. */
   provenance?: Provenance;
+  kind?: FactKind;
   ownerUserId?: string;
   conversationId?: string;
 }
@@ -171,6 +174,7 @@ export interface FactRecord {
    * product layer.
    */
   conversationId?: string;
+  kind?: FactKind;
 }
 
 export interface RecordedStatement extends FactRecord {
@@ -1882,6 +1886,69 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
       it('rejects slots combined with query', async () => {
         await expectCode('invalid-payload', () =>
           recall({ query: 'where do I live', limit: 10, slots: ['lives_in'] }),
+        );
+      });
+    });
+
+    describe('kind — the extractor\'s classification, verbatim', () => {
+      it.each(['world', 'experience', 'observation', 'opinion'] as const)(
+        'round-trips `%s` through record, listing recall, and dedup replay',
+        async (kind) => {
+          const written = await recordOne({
+            about: 'user',
+            relation: 'stated',
+            value: `kind-${kind}`,
+            when: JAN,
+            kind,
+          });
+          expect(written.kind).toBe(kind);
+
+          const out = await recall({ about: 'user', limit: 10 });
+          expect(out.statements[0]!.kind).toBe(kind);
+
+          const replayed = await record({
+            batchKey: `kind-replay-${kind}`,
+            statements: [
+              { about: 'user', relation: 'stated', value: `kind-${kind}`, when: JAN, kind },
+            ],
+          });
+          const again = await record({
+            batchKey: `kind-replay-${kind}`,
+            statements: [
+              { about: 'user', relation: 'stated', value: `kind-${kind}`, when: JAN, kind },
+            ],
+          });
+          expect(again.records.map((r) => r.id)).toEqual(replayed.records.map((r) => r.id));
+          expect(again.records[0]!.kind).toBe(kind);
+        },
+      );
+
+      it('omits `kind` entirely on a row that never carried one', async () => {
+        const written = await recordOne({
+          about: 'user',
+          relation: 'stated',
+          value: 'hello',
+          when: JAN,
+        });
+        expect(written).not.toHaveProperty('kind');
+
+        const out = await recall({ about: 'user', limit: 10 });
+        expect(out.statements[0]).not.toHaveProperty('kind');
+      });
+
+      it.each(['nonsense', '', 'World', 'null'])('rejects kind `%s`', async (kind) => {
+        await expectCode('invalid-payload', () =>
+          record({
+            statements: [
+              {
+                about: 'user',
+                relation: 'stated',
+                value: 'hello',
+                when: JAN,
+                kind: kind as 'world',
+              },
+            ],
+          }),
         );
       });
     });
