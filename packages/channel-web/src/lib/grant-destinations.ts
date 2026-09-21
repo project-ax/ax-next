@@ -38,19 +38,25 @@ export interface CardSlot {
  * absent tag (the collapsed `account` route, then `skill-slot`/`connectorId`),
  * so a malformed frame degrades onto the id the caller passed in.
  *
- * MIND THE FLOOR, THOUGH: that id is only a row somebody can NAME where the
- * caller's own producer vouched for it. The workspace's does
- * (`isRenderableGrant` requires a string `skillId`/`connectorId`); chat's
- * validates nothing, so a hostile frame can still hand us a non-string
- * subject id and this degrades onto that. Bounded rather than fixed: the
- * write is user-scoped and the server computes the ref, so the blast radius
- * is a garbage row in the person's OWN vault (or, more likely, a schema
- * rejection surfaced as an error on the card). Scrubbing the caller id too
- * is the honest completion of this guard and is deliberately left as a
- * follow-up rather than claimed here.
+ * The caller-id fallback is required only when no usable service/account
+ * tag supplied a destination. It must also be a non-blank string.
+ * Never stringify an invalid value or invent a placeholder identity:
+ * either would select a vault row the request did not name.
+ * An invalid floor throws before a credential write; both grant surfaces
+ * catch submission failures and keep the card visible.
+ * Both grant surfaces use the user-scoped settings endpoint. The server
+ * validates destinations, computes refs, and forces user scope with
+ * the authenticated actor as owner. This client check is defense in depth,
+ * not the authority for destination grammar or ownership.
  */
 function tag(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+}
+
+function requiredCallerId(value: unknown): string {
+  const id = tag(value);
+  if (id === undefined) throw new TypeError('Invalid credential caller identifier.');
+  return id;
 }
 
 /**
@@ -63,7 +69,7 @@ export function accountDestinationForConnectorSlot(
   s: CardSlot,
   connectorId: string,
 ): Destination {
-  const service = tag(s.service) ?? tag(s.account) ?? connectorId;
+  const service = tag(s.service) ?? tag(s.account) ?? requiredCallerId(connectorId);
   const slotTag = tag(s.slotTag);
   return {
     kind: 'account',
@@ -93,5 +99,5 @@ export function accountOrSkillDestination(s: CardSlot, skillId: string): Destina
   if (account !== undefined) {
     return { kind: 'account', service: account };
   }
-  return { kind: 'skill-slot', skillId, slot: s.slot };
+  return { kind: 'skill-slot', skillId: requiredCallerId(skillId), slot: s.slot };
 }

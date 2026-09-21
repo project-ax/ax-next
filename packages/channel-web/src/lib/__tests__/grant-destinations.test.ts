@@ -106,7 +106,7 @@ describe('accountDestinationForConnectorSlot', () => {
   });
 
   test('malformed service and account both fall through to the connector id', () => {
-    // The connector id is the caller's own value, so it is always a safe floor.
+    // A non-blank string caller id remains the floor when optional tags are malformed.
     const malformed = { slot: 'api_key', service: {}, account: 7 } as unknown as CardSlot;
 
     expect(accountDestinationForConnectorSlot(malformed, 'linear-connector')).toEqual({
@@ -126,5 +126,45 @@ describe('accountDestinationForConnectorSlot', () => {
       kind: 'account',
       service: 'linear',
     });
+  });
+});
+
+const invalidCallerIds = [
+  ['missing', undefined],
+  ['null', null],
+  ['empty', ''],
+  ['blank', ' \t\n '],
+  ['number', 42],
+  ['boolean', false],
+  ['object', {}],
+  ['empty array', []],
+  ['string array', ['linear']],
+] as const;
+
+describe.each([
+  { name: 'skill', build: accountOrSkillDestination },
+  { name: 'connector', build: accountDestinationForConnectorSlot },
+])('$name caller-id floor', ({ name, build }) => {
+  test.each(invalidCallerIds)('rejects a %s caller-id floor', (_label, value) => {
+    const invoke = () => build({ slot: 'api_key' }, value as unknown as string);
+    expect(invoke).toThrow(TypeError);
+    expect(invoke).toThrow('Invalid credential caller identifier.');
+  });
+
+  test('does not consume an invalid floor when a service or account is usable', () => {
+    const missing = undefined as unknown as string;
+    expect(build({ slot: 'api_key', service: 'linear', slotTag: 'READ' }, missing)).toEqual({
+      kind: 'account', service: 'linear', slot: 'READ',
+    });
+    expect(build({ slot: 'api_key', account: 'linear' }, missing)).toEqual({
+      kind: 'account', service: 'linear',
+    });
+  });
+
+  test('preserves a nonblank caller identifier verbatim', () => {
+    const id = ' caller-id ';
+    expect(build({ slot: 'api_key' }, id)).toEqual(name === 'skill'
+      ? { kind: 'skill-slot', skillId: id, slot: 'api_key' }
+      : { kind: 'account', service: id });
   });
 });
