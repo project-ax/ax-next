@@ -89,10 +89,10 @@
 //
 // The doc IS the implementation -- there is no second copy in a script to drift from it.
 //
-// MUTANTS RUN, NOT REASONED ABOUT. Measured 2026-09-21 on git 2.52.0, macOS, bash 3.2
-// + zsh 5.9, against the head this file ships with -- baseline 45 here, 52 with the
-// sibling text-scan guard collected, which is how the counts below were taken. Every
-// mutant still collects 52, so none of them reddened by making the suite smaller.
+// MUTANTS RUN, NOT REASONED ABOUT. Historical builder measurements at commit
+// 64a3129e94c0789fcb128c8094ec295e2a1615e9 (2026-09-21; git 2.52.0, macOS, bash 3.2
+// + zsh 5.9): baseline 45 here, 52 with the sibling guard; every mutant collected 52.
+// Counts and layer-specific claims below apply to that revision, not the current resolver.
 // (The two earlier tables in this file's history were both wrong in the flattering
 // direction, both because they were measured against an INTERMEDIATE state of the patch
 // and carried forward unedited. A mutant table is a claim about a specific head. Re-run
@@ -646,6 +646,74 @@ describe.each(SHELLS)('Q2 gate under %s: the base it ranges from (TASK-479)', (s
     ).toEqual([]);
     expect(rc, `${SKILL_PATH}: a failed fetch must halt the card, not produce a delta`).not.toBe(0);
     expect(out, 'the halt must say why').toMatch(/HALT/);
+  });
+});
+
+describe.each(SHELLS)('Q2 gate under %s: object ids cannot be shadowed by refs', (shell) => {
+  it.each(['refs/heads', 'refs/tags'])('a hex-only %s name is not a reviewed object id', (namespace) => {
+    const value = 'beef1234beef';
+    const ref = `${namespace}/${value}`;
+    expect(git('rev-parse', `--disambiguate=${value}`)).toBe('');
+    git('update-ref', ref, HEAD_SHA);
+    try {
+      const { rc, bases } = runGate(shell, value);
+      expect(rc).toBe(0);
+      expect(bases).toEqual([ORIGIN_MAIN_SHA, ORIGIN_MAIN_SHA]);
+    } finally {
+      git('update-ref', '-d', ref);
+    }
+  });
+
+  it.each(['refs/heads', 'refs/tags'])('a %s name cannot redirect a valid abbreviation', (namespace) => {
+    const value = R1_SHA.slice(0, 8);
+    const ref = `${namespace}/${value}`;
+    expect(git('rev-parse', `--disambiguate=${value}`)).toBe(R1_SHA);
+    git('update-ref', ref, HEAD_SHA);
+    try {
+      const { rc, bases } = runGate(shell, value);
+      expect(rc).toBe(0);
+      expect(bases).toEqual([R1_SHA, R1_SHA]);
+    } finally {
+      git('update-ref', '-d', ref);
+    }
+  });
+
+  it('a tag cannot hide ambiguous object ids', () => {
+    if (AMBIGUOUS_PREFIX === undefined) {
+      expect(git('rev-parse', '--show-object-format')).not.toBe('sha1');
+      return;
+    }
+    const ref = `refs/tags/${AMBIGUOUS_PREFIX}`;
+    git('update-ref', ref, HEAD_SHA);
+    try {
+      const { rc, bases } = runGate(shell, AMBIGUOUS_PREFIX);
+      expect(rc).toBe(0);
+      expect(bases).toEqual([ORIGIN_MAIN_SHA, ORIGIN_MAIN_SHA]);
+    } finally {
+      git('update-ref', '-d', ref);
+    }
+  });
+
+  it('a fetched hex-named tag cannot empty the delta', () => {
+    const value = 'face1234face';
+    const ref = `refs/tags/${value}`;
+    const remote = (...args) =>
+      execFileSync(REAL_GIT, ['--git-dir', join(WORKDIR, 'origin.git'), ...args], {
+        encoding: 'utf8',
+      }).trim();
+    expect(git('rev-parse', `--disambiguate=${value}`)).toBe('');
+    expect(git('tag', '--list', value)).toBe('');
+    remote('update-ref', ref, HEAD_SHA);
+    try {
+      git('fetch', 'origin', `${ref}:${ref}`);
+      const { rc, bases } = runGate(shell, value);
+      expect(git('rev-parse', '--verify', ref)).toBe(HEAD_SHA);
+      expect(rc).toBe(0);
+      expect(bases).toEqual([ORIGIN_MAIN_SHA, ORIGIN_MAIN_SHA]);
+    } finally {
+      git('update-ref', '-d', ref);
+      remote('update-ref', '-d', ref);
+    }
   });
 });
 

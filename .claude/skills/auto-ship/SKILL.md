@@ -409,6 +409,8 @@ come back empty and this gate announce "fully reviewed" for code nobody read. Pa
 your file-write tool, and let the block read it from there. The block's own comment has
 the measurements, including why double-quoting and a here-doc are both insufficient.
 
+Hex alone does not imply an object ID: Git can resolve a same-named tag or branch before a short object ID. Resolve through `git rev-parse --disambiguate` in the object database, require exactly one match, and only then peel that object to a commit. Zero matches, multiple matches, or an object that cannot be peeled to a commit widen the scope to `origin/main`. A tag fetched from the branch must never choose the review base.
+
 ```bash
 # The post-review delta: everything no reviewer has seen.
 BRANCH=$(gh pr view <n> --json headRefName --jq .headRefName)
@@ -491,7 +493,13 @@ RAW_REVIEWED=$(cat -- "${REVIEWED_SHA_FILE}" 2>/dev/null) || RAW_REVIEWED=""
 # everything they reject. They are here for a clean diagnostic, not for the property.
 case "${RAW_REVIEWED}" in
   '' | *[!0-9a-fA-F]*) REVIEWED_SHA="" ;;
-  *) REVIEWED_SHA=$(git rev-parse --verify --quiet --end-of-options "${RAW_REVIEWED}^{commit}") || REVIEWED_SHA="" ;;
+  *)
+    REVIEWED_OBJECTS=$(git rev-parse --disambiguate="${RAW_REVIEWED}") || REVIEWED_OBJECTS=""
+    case "${REVIEWED_OBJECTS}" in
+      '' | *[!0-9a-fA-F]*) REVIEWED_SHA="" ;;
+      *) REVIEWED_SHA=$(git rev-parse --verify --quiet --end-of-options "${REVIEWED_OBJECTS}^{commit}") || REVIEWED_SHA="" ;;
+    esac
+    ;;
 esac
 
 if [ -z "${REVIEWED_SHA}" ]; then
