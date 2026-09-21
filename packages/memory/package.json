@@ -11,7 +11,9 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc --build",
     "test": "vitest run",
@@ -23,7 +25,9 @@
   "devDependencies": {
     "@ax/memory-facts-contract": "workspace:*",
     "@ax/memory-facts-sqlite": "workspace:*",
+    "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^25.6.0",
+    "better-sqlite3": "13.0.3",
     "typescript": "^6.0.3",
     "vitest": "^5.0.1"
   }

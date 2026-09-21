@@ -23,10 +23,12 @@ describe('@ax/memory — manifest', () => {
       'memory:facts:record',
       'memory:facts:supersede',
     ]);
-    // Nothing yet. The observer (`chat:end`) is a separate card, and an
-    // unused subscription would be exactly the half-wired surface invariant 3
-    // forbids.
-    expect(manifest.subscribes).toEqual([]);
+    // The observer, and nothing else. TASK-488 asserted `[]` here with the
+    // note that an unused subscription would be the half-wired surface
+    // invariant 3 forbids — this card is the one that wires it, so the
+    // assertion moves rather than loosens: still EXACTLY one entry, still
+    // one that the tests below drive end to end.
+    expect(manifest.subscribes).toEqual(['chat:end']);
   });
 
   it('actually puts those three on the bus and no fourth', async () => {
@@ -38,9 +40,38 @@ describe('@ax/memory — manifest', () => {
   it('names the engine as a HARD dependency — there is no honest fallback', () => {
     const { manifest } = createMemoryPlugin();
     // A memory surface with no store behind it can only answer "no memories"
-    // to a question it never asked anyone. If this ever moves to
+    // to a question it never asked anyone. If any of these three ever move to
     // `optionalCalls`, that answer ships.
-    expect(manifest.optionalCalls ?? []).toEqual([]);
+    const optional = (manifest.optionalCalls ?? []).map((oc) => oc.hook);
+    for (const engineHook of [
+      'memory:facts:recall',
+      'memory:facts:record',
+      'memory:facts:supersede',
+    ]) {
+      expect(optional).not.toContain(engineHook);
+    }
+  });
+
+  it('names the extraction provider as an OPTIONAL dependency — that one does degrade', () => {
+    const { manifest } = createMemoryPlugin();
+    // The asymmetry with the engine is the point. With no LLM provider the
+    // observer is skipped and everything a person writes explicitly still
+    // works, so failing the boot would lock `@ax/memory` out of any host
+    // without one — a CI host, a canary, an air-gapped install.
+    expect(manifest.optionalCalls?.map((oc) => oc.hook)).toEqual(['llm:call:openrouter']);
+    expect(manifest.optionalCalls?.[0]?.degradation).toContain('chat:end');
+  });
+
+  it('derives the provider hook from the configured model ref, not a constant', () => {
+    const { manifest } = createMemoryPlugin({ memoryOpsModel: 'anthropic/claude-haiku-4-5' });
+    expect(manifest.optionalCalls?.map((oc) => oc.hook)).toEqual(['llm:call:anthropic']);
+  });
+
+  it('refuses a model ref with no provider AT CONSTRUCTION, not per turn', () => {
+    // A bare id has no provider to route by. There is no turn at which that
+    // starts working, so it is a boot-time refusal rather than a per-turn
+    // degradation that would look like "memory is just quiet today".
+    expect(() => createMemoryPlugin({ memoryOpsModel: 'glm-5.3-flash' })).toThrow();
   });
 });
 
