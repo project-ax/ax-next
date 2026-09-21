@@ -5,6 +5,7 @@ import { PermissionCard } from '../components/PermissionCard';
 import {
   getPermissionCardSnapshot,
   permissionCardActions,
+  type PermissionRequest,
 } from '../lib/permission-card-store';
 import { resumeActions } from '../lib/resume-actions';
 
@@ -539,6 +540,57 @@ describe('PermissionCard — host grant (TASK-37)', () => {
     expect(await screen.findByText(HTTP_SERVER_ERROR)).toBeInTheDocument();
     // Still pending — the user can retry.
     expect(getPermissionCardSnapshot().request).not.toBeNull();
+  });
+
+  it.each([
+    ['once', /just this once/i, false],
+    ['always', /always for this agent/i, true],
+  ] as const)('keeps the rendered host for %s approval rather than re-reading the request', async (_label, buttonName, persist) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ added: true }), { status: 200 }),
+    );
+    const request = { kind: 'host' as const, host: 'status.example.com', sessionId: 's1' };
+    render(<PermissionCard />);
+    permissionCardActions.show(request);
+    const title = await screen.findByText('Allow access to status.example.com?');
+    const displayedHost = title.textContent!.slice('Allow access to '.length, -1);
+    expect(displayedHost).toBe('status.example.com');
+    request.host = 'changed.example.com';
+    expect(title).toHaveTextContent('Allow access to status.example.com?');
+    fireEvent.click(screen.getByRole('button', { name: buttonName }));
+    await waitFor(() => expect(getPermissionCardSnapshot().request).toBeNull());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/chat/allow-host');
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      sessionId: 's1', host: displayedHost, persist,
+    });
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['object', { hostname: 'example.org' }],
+    ['empty', ''],
+    ['blank', ' \t\n '],
+  ] as const)('does not offer grants for a %s host', async (_label, host) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ added: true }), { status: 200 }),
+    );
+    render(<PermissionCard />);
+    permissionCardActions.show({ kind: 'host', host, sessionId: 's1' } as unknown as PermissionRequest);
+    expect(await screen.findByText('Allow access to this site?')).toBeInTheDocument();
+    const once = screen.getByRole('button', { name: /just this once/i });
+    const always = screen.getByRole('button', { name: /always for this agent/i });
+    expect(once).toBeDisabled();
+    expect(always).toBeDisabled();
+    expect(screen.getByText(/We could not identify the site for this request/u)).toBeInTheDocument();
+    fireEvent.click(once);
+    fireEvent.click(always);
+    expect(fetchMock).not.toHaveBeenCalled();
+    const reject = screen.getByRole('button', { name: /not now/i });
+    expect(reject).toBeEnabled();
+    fireEvent.click(reject);
+    await waitFor(() => expect(getPermissionCardSnapshot().request).toBeNull());
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
