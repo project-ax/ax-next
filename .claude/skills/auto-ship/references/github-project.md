@@ -1079,8 +1079,12 @@ for b in $(git branch --list "auto-ship/$TASK_ID-*" --format '%(refname:short)')
   if [ "$rc" != 0 ] && [ "$shipped" = no ]; then
     echo "⛔ PRESERVING $b — $gate" >&2
     if [ -n "$wt" ] && [ -d "$wt" ]; then
-      git -C "$wt" add -A || true
-      git -C "$wt" diff --cached --quiet || git -C "$wt" commit -q -m "WIP [$TASK_ID] stalled builder, preserved by auto-ship reconcile"
+      # Both halves fail SAFE — the release guard below re-reads the tree and keeps
+      # the worktree while anything is uncommitted, so a failure here retains the WIP
+      # rather than losing it. They must still be AUDIBLE: this was the last silent
+      # step in a block whose every other failure now names itself.
+      git -C "$wt" add -A || echo "⚠ WIP STAGE FAILED for $b — keeping its worktree" >&2
+      git -C "$wt" diff --cached --quiet || git -C "$wt" commit -q -m "WIP [$TASK_ID] stalled builder, preserved by auto-ship reconcile" || echo "⚠ WIP COMMIT FAILED for $b — keeping its worktree, work is uncommitted" >&2
     fi
     if ! git push -u origin "$b"; then
       echo "⚠ PRESERVE INCOMPLETE: $b is local-only — keeping its worktree, do NOT sweep" >&2

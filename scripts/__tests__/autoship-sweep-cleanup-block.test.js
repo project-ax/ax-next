@@ -340,6 +340,29 @@ describe('auto-ship §7a cleanup block: run for real', () => {
     expect(r.stdout).toMatch(/sweeping/);
   });
 
+  it('a failed WIP commit is LOUD, and the worktree is kept rather than released', () => {
+    // The last silent step in the block. It fails safe — the release guard re-reads
+    // the tree, sees it still dirty, and keeps the worktree — but "fails safe and
+    // silently" is how a cleanup block accomplishes nothing for a whole run.
+    const fx = makeFixture('commit-fail');
+    const branch = 'auto-ship/TASK-455-transcript';
+    const wt = addAgentWorktree(fx, branch);
+    writeFileSync(join(wt, 'wip.ts'), 'in flight\n');
+    const hooks = join(fx.base, 'hooks');
+    mkdirSync(hooks);
+    writeFileSync(join(hooks, 'pre-commit'), '#!/bin/sh\necho "nope" >&2\nexit 1\n');
+    chmodSync(join(hooks, 'pre-commit'), 0o755);
+    git(fx.repo, 'config', 'core.hooksPath', hooks);
+
+    const r = runCleanup(fx, 'TASK-455');
+
+    expect(r.stderr).toMatch(/WIP COMMIT FAILED/);
+    expect(localBranches(fx.repo)).toContain(branch);
+    // The uncommitted work is still on disk, in a worktree that was NOT released.
+    expect(existsSync(join(wt, 'wip.ts'))).toBe(true);
+    expect(git(fx.repo, 'worktree', 'list')).toContain(wt);
+  });
+
   it('a failed merged-PR lookup is LOUD, not silently preserving', () => {
     const fx = makeFixture('gh-fail', 'FAIL');
     const branch = 'auto-ship/TASK-999-nothing';
