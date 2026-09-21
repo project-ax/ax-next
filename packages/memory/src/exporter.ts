@@ -94,13 +94,12 @@ export function createMemoryExporter(bus: HookBus, config: MemoryExportConfig = 
     }
   }
 
-  function fail(ctx: AgentContext, err: unknown, fileCount: number): void {
+  function fail(ctx: AgentContext, err: unknown): void {
     try {
       const code = err instanceof PluginError ? err.code : 'unknown';
       ctx.logger.warn(MEMORY_EXPORT_FAILED_EVENT, {
         agentId: ctx.agentId,
         code,
-        files: fileCount,
       });
     } catch {
     }
@@ -243,7 +242,7 @@ export function createMemoryExporter(bus: HookBus, config: MemoryExportConfig = 
   async function attemptOnce(
     ctx: AgentContext,
     parentHint: string | null | undefined,
-  ): Promise<{ changed: boolean; files: number }> {
+  ): Promise<{ changed: boolean }> {
     const access = await resolveMemoryAccess(bus, ctx);
     const rows = await scanAll(ctx, memoryReadScope(access));
     const desired = buildFactsExport(rows, access);
@@ -292,10 +291,10 @@ export function createMemoryExporter(bus: HookBus, config: MemoryExportConfig = 
       await syncFactsVolume(config.volume, ctx.agentId, desired);
     }
 
-    return { changed: changes.length > 0, files: desired.size };
+    return { changed: changes.length > 0 };
   }
 
-  async function runPass(ctx: AgentContext): Promise<{ changed: boolean; files: number }> {
+  async function runPass(ctx: AgentContext): Promise<{ changed: boolean }> {
     let lastError: unknown;
     let parentHint: string | null | undefined;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -326,7 +325,7 @@ export function createMemoryExporter(bus: HookBus, config: MemoryExportConfig = 
             state.lastError = undefined;
           } catch (err) {
             state.lastError = err;
-            fail(passCtx, err, 0);
+            fail(passCtx, err);
           }
         }
         state.drainedChanged = anyChanged;
@@ -355,7 +354,6 @@ export function createMemoryExporter(bus: HookBus, config: MemoryExportConfig = 
             plugin: PLUGIN_NAME,
             message: 'memory exporter is shut down',
           }),
-          0,
         );
         return;
       }

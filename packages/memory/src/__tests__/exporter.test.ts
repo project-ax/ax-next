@@ -336,6 +336,7 @@ describe('createMemoryExporter', () => {
     const failures = logs.filter((l) => l.event === MEMORY_EXPORT_FAILED_EVENT);
     expect(failures).toHaveLength(1);
     expect(failures[0]!.bindings.agentId).toBe(AGENT);
+    expect(failures[0]!.bindings).not.toHaveProperty('files');
     expect(JSON.stringify(failures[0]!.bindings)).not.toContain('tea');
   });
 
