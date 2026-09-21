@@ -190,6 +190,7 @@ function validateRecordInput(input: RecordInput): ValidatedRecordInput {
 function validateRecallInput(input: RecallInput): {
   about?: string;
   query?: string;
+  ownerUserId?: string;
   limit: number;
   poolSize: number;
   activeOnly: boolean;
@@ -225,6 +226,19 @@ function validateRecallInput(input: RecallInput): {
       message: 'query must be a non-empty string when set',
     });
   }
+  // Owner scope (design §6.1). Same non-empty-string rule as `query` and
+  // `batchKey`, and it earns it harder than either: `''` is falsy in JS but a
+  // perfectly good TEXT value in SQLite, so treating it as absent would hand a
+  // caller who ASKED to be scoped the whole tenant instead — a read silently
+  // WIDER than the one it requested, which is the one direction a scope must
+  // never fail in. Rejecting is the only outcome the caller can detect.
+  if (input.ownerUserId !== undefined && !isNonEmptyString(input.ownerUserId)) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'ownerUserId must be a non-empty string when set',
+    });
+  }
   if (
     input.poolSize !== undefined &&
     (typeof input.poolSize !== 'number' || !Number.isFinite(input.poolSize) || input.poolSize < 1)
@@ -245,6 +259,7 @@ function validateRecallInput(input: RecallInput): {
   return {
     ...(input.about !== undefined ? { about: input.about } : {}),
     ...(input.query !== undefined ? { query: input.query } : {}),
+    ...(input.ownerUserId !== undefined ? { ownerUserId: input.ownerUserId } : {}),
     limit: Math.min(Math.floor(input.limit), MAX_LIMIT),
     // Clamped by the same ceiling as `limit`, for the same reason: this one
     // sizes the payload handed to a third-party reranker, so an unbounded
@@ -506,16 +521,24 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
       agentKey: string;
       query: string;
       about?: string;
+      ownerUserId?: string;
       limit: number;
       poolSize: number;
       activeOnly: boolean;
     },
   ): Promise<RecallOutput> {
+    // One scope object, every channel. The owner predicate goes in HERE rather
+    // than being applied to the fused result for the reason design §6.1 states
+    // as a rule: a channel contributes at most `CHANNEL_LIMIT` candidates, so
+    // filtering after the fact silently shrinks an owner's answer by however
+    // many of those slots another owner's rows took. Never post-filter a
+    // widened pool.
     const scope: ChannelScope = {
       agentKey: args.agentKey,
       activeOnly: args.activeOnly,
       limit: CHANNEL_LIMIT,
       ...(args.about !== undefined ? { about: args.about } : {}),
+      ...(args.ownerUserId !== undefined ? { ownerUserId: args.ownerUserId } : {}),
     };
 
     // No vec0 on this host means no dense channel whatever the embedder says,
@@ -549,6 +572,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           db,
           args.agentKey,
           fused.map((c) => c.id),
+          args.ownerUserId,
         ),
         pendingFlags: pendingStatus(db, args.agentKey).degraded,
       };
@@ -895,7 +919,8 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
         PLUGIN_NAME,
         async (ctx, input) => {
           // Validation before the store region — see `record`.
-          const { about, query, limit, poolSize, activeOnly } = validateRecallInput(input);
+          const { about, query, ownerUserId, limit, poolSize, activeOnly } =
+            validateRecallInput(input);
           const agentKey = agentScopeKey(ctx);
 
           if (query !== undefined) {
@@ -906,6 +931,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
               poolSize,
               activeOnly,
               ...(about !== undefined ? { about } : {}),
+              ...(ownerUserId !== undefined ? { ownerUserId } : {}),
             });
           }
 
@@ -931,6 +957,19 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
             if (about !== undefined) {
               conditions.push('about = ?');
               params.push(about);
+            }
+            // Owner scope, in the WHERE and not in a `.filter()` on the rows.
+            // The `LIMIT` below is the whole argument: cut the page first and
+            // filter after, and an owner whose rows are older than another
+            // owner's gets a short answer — or an empty one — while their rows
+            // sit there active and perfectly visible. Design §6.1, "Never
+            // post-filter a widened pool". Strict `=`, so an unstamped row
+            // (`owner_user_id IS NULL`) does not match a scoped read: unowned
+            // is not provably yours, and fail-closed is the only direction a
+            // scope may be wrong in (Invariant 5).
+            if (ownerUserId !== undefined) {
+              conditions.push('owner_user_id = ?');
+              params.push(ownerUserId);
             }
             if (activeOnly) {
               conditions.push('valid_end = ?');
@@ -975,6 +1014,17 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
               message: 'ids must be an array',
             });
           }
+          // Same rule and same reason as `recall`'s: `''` is storable, so
+          // treating it as absent would turn "close only MY rows" into "close
+          // any row in the tenant" — a scope failing OPEN, on the one hook
+          // that destroys state.
+          if (input.ownerUserId !== undefined && !isNonEmptyString(input.ownerUserId)) {
+            throw new PluginError({
+              code: 'invalid-payload',
+              plugin: PLUGIN_NAME,
+              message: 'ownerUserId must be a non-empty string when set',
+            });
+          }
           const agentKey = agentScopeKey(ctx);
           const at = new Date().toISOString();
           // A supersede that silently did nothing is indistinguishable from
@@ -989,7 +1039,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           // `SupersedeOutput` are the same two fields, one in engine terms and
           // one in the hook's.
           return inStore('memory:facts:supersede', () =>
-            supersedeIds(requireDriver(), agentKey, input.ids, at),
+            supersedeIds(requireDriver(), agentKey, input.ids, at, input.ownerUserId),
           );
         },
       );

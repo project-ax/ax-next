@@ -1558,6 +1558,28 @@ importers:
         specifier: ^5.0.1
         version: 5.0.1(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.2.1(@types/node@25.6.0)(esbuild@0.28.1)(jiti@1.21.7)(tsx@4.21.0)(yaml@2.8.3))
 
+  packages/memory:
+    dependencies:
+      '@ax/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@ax/memory-facts-contract':
+        specifier: workspace:*
+        version: link:../memory-facts-contract
+      '@ax/memory-facts-sqlite':
+        specifier: workspace:*
+        version: link:../memory-facts-sqlite
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^5.0.1
+        version: 5.0.1(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.2.1(@types/node@25.6.0)(esbuild@0.28.1)(jiti@1.21.7)(tsx@4.21.0)(yaml@2.8.3))
+
   packages/memory-facts-contract:
     dependencies:
       '@ax/core':
@@ -7562,10 +7584,6 @@ packages:
 
   picomatch@4.0.4:
     resolution: {integrity: sha512-QP88BAKvMam/3NxH6vj2o21R6MjxZUAd6nlwAS/pnGvN9IVLocLHxGYIzFhg6fUQ+5th6P4dv4eW9jX3DSIj7A==}
-    engines: {node: '>=12'}
-
-  picomatch@4.0.5:
-    resolution: {integrity: sha512-RvwwcruNjI1ncT5xRakeyS9Lf8lcItv34KD+aif+VH9kduAyfYBipGh12274xtenIPZ119/R9BdTBa8gAwSh0A==}
     engines: {node: '>=12'}
 
   picomatch@4.0.7:
@@ -13580,8 +13598,6 @@ snapshots:
 
   picomatch@4.0.4: {}
 
-  picomatch@4.0.5: {}
-
   picomatch@4.0.7: {}
 
   pify@2.3.0: {}
@@ -14691,7 +14707,7 @@ snapshots:
   vite@8.2.1(@types/node@25.6.0)(esbuild@0.28.1)(jiti@1.21.7)(tsx@4.21.0)(yaml@2.8.3):
     dependencies:
       lightningcss: 1.33.0
-      picomatch: 4.0.5
+      picomatch: 4.0.7
       postcss: 8.5.26
       rolldown: 1.2.3
       tinyglobby: 0.2.17

@@ -56,6 +56,7 @@
     { "path": "packages/memory-strata-index-contract" },
     { "path": "packages/memory-strata-index-sqlite" },
     { "path": "packages/memory-strata-index-postgres" },
+    { "path": "packages/memory" },
     { "path": "packages/memory-facts-contract" },
     { "path": "packages/memory-facts-sqlite" },
     { "path": "packages/memory-facts-postgres" },
