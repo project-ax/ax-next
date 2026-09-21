@@ -23,7 +23,10 @@ import type {
 import {
   createMockWorkspacePlugin,
   createTestHarness,
-  type TestHarness, stopPostgresContainer } from '@ax/test-harness';
+  type TestHarness,
+  stopPostgresContainer,
+  startTestContainer,
+} from '@ax/test-harness';
 import { createChannelWebServerPlugin } from '../../server/plugin';
 
 // ---------------------------------------------------------------------------
@@ -226,7 +229,7 @@ let container: StartedPostgreSqlContainer;
 let connectionString: string;
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   connectionString = container.getConnectionUri();
 }, 120_000);
 

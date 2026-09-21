@@ -13,6 +13,14 @@ export {
   type StoppableContainer,
 } from './stop-postgres-container.js';
 export {
+  preflightDocker,
+  startTestContainer,
+  DOCKER_PREFLIGHT_TIMEOUT_MS,
+  DOCKER_BUSY_CONTAINER_COUNT,
+  type DockerPreflightOptions,
+  type StartableTestContainer,
+} from './docker-preflight.js';
+export {
   StubRunnerScriptSchema,
   type StubRunnerScript,
   encodeScript,

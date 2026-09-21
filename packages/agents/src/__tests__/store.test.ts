@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
-import { stopPostgresContainer } from '@ax/test-harness';
+import {
+  stopPostgresContainer,
+  startTestContainer,
+} from '@ax/test-harness';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import {
   PostgreSqlContainer,
@@ -48,7 +51,7 @@ function makeInput(overrides: Partial<AgentInput> = {}): AgentInput {
 }
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   connectionString = container.getConnectionUri();
 }, 120_000);
 

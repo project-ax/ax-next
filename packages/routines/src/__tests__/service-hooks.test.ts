@@ -2,7 +2,12 @@ import { describe, expect, it, beforeAll, afterAll, afterEach } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
-import { createTestHarness, type TestHarness, stopPostgresContainer } from '@ax/test-harness';
+import {
+  createTestHarness,
+  type TestHarness,
+  stopPostgresContainer,
+  startTestContainer,
+} from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { PluginError } from '@ax/core';
 import { createRoutinesPlugin } from '../plugin.js';
@@ -63,7 +68,7 @@ async function harness(): Promise<TestHarness> {
 }
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   connectionString = container.getConnectionUri();
 }, 120_000);
 

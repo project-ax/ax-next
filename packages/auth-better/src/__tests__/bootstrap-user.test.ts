@@ -5,7 +5,12 @@ import {
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 import pg from 'pg';
-import { createTestHarness, type TestHarness, stopPostgresContainer } from '@ax/test-harness';
+import {
+  createTestHarness,
+  type TestHarness,
+  stopPostgresContainer,
+  startTestContainer,
+} from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { PluginError } from '@ax/core';
 import { createAuthBetterPlugin } from '../plugin.js';
@@ -38,7 +43,7 @@ let connectionString: string;
 let harness: TestHarness | undefined;
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   connectionString = container.getConnectionUri();
 }, 60_000);
 

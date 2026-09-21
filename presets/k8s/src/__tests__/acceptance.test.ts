@@ -61,6 +61,7 @@ import {
   createTestProxyPlugin,
   stubRunnerPath,
   type StubRunnerScript,
+  startTestContainer,
 } from '@ax/test-harness';
 import { workspaceIdFor } from '@ax/workspace-git-server';
 import {
@@ -376,7 +377,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
 
   async function ensurePostgresStarted(): Promise<string> {
     if (pgContainer === null) {
-      pgContainer = await new PostgreSqlContainer('postgres:16-alpine').start();
+      pgContainer = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
     }
     return pgContainer.getConnectionUri();
   }

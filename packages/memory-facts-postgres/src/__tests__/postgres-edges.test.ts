@@ -14,7 +14,10 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
-import { stopPostgresContainer } from '@ax/test-harness';
+import {
+  stopPostgresContainer,
+  startTestContainer,
+} from '@ax/test-harness';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
 import { HookBus, makeAgentContext, PluginError } from '@ax/core';
@@ -37,7 +40,7 @@ let container: StartedPostgreSqlContainer;
 let connectionString: string;
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   connectionString = container.getConnectionUri();
 }, 120_000);
 

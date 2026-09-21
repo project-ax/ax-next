@@ -7,6 +7,7 @@ import {
   createTestHarness,
   stopPostgresContainer,
   type TestHarness,
+  startTestContainer,
 } from '@ax/test-harness';
 import type { ServiceHandler } from '@ax/core';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
@@ -57,7 +58,7 @@ let connectionString: string;
 const harnesses: TestHarness[] = [];
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   connectionString = container.getConnectionUri();
 }, 120_000);
 

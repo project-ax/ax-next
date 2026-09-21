@@ -135,7 +135,12 @@
  * ---------------------------------------------------------------------------
  */
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
-import { createTestHarness, stopPostgresContainer, type TestHarness } from '@ax/test-harness';
+import {
+  createTestHarness,
+  stopPostgresContainer,
+  type TestHarness,
+  startTestContainer,
+} from '@ax/test-harness';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -161,7 +166,7 @@ async function boot(opts: ToolPolicyPluginOptions = {}): Promise<TestHarness> {
 }
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   connectionString = container.getConnectionUri();
 }, 120_000);
 

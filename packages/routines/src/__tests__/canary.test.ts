@@ -1,7 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
-import { createTestHarness, type TestHarness, stopPostgresContainer } from '@ax/test-harness';
+import {
+  createTestHarness,
+  type TestHarness,
+  stopPostgresContainer,
+  startTestContainer,
+} from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createRoutinesPlugin } from '../plugin.js';
 import { asWorkspaceVersion, type WorkspaceDelta } from '@ax/core';
@@ -112,7 +117,7 @@ async function makeHarness(captured: Captured, replyOnInvoke: { contentBlocks: u
 }
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   connectionString = container.getConnectionUri();
 }, 120_000);
 

@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { sql, type Kysely } from 'kysely';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
-import { createTestHarness, stopPostgresContainer } from '@ax/test-harness';
+import {
+  createTestHarness,
+  stopPostgresContainer,
+  startTestContainer,
+} from '@ax/test-harness';
 import { PluginError } from '@ax/core';
 import { createDatabasePostgresPlugin } from '../plugin.js';
 
@@ -11,7 +15,7 @@ let connectionString: string;
 const opened: Kysely<unknown>[] = [];
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   connectionString = container.getConnectionUri();
 });
 

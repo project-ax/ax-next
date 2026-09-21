@@ -27,7 +27,10 @@ import {
   createTestHarness,
   createMockWorkspacePlugin,
   mockBlobStoreServices,
-  type TestHarness, stopPostgresContainer } from '@ax/test-harness';
+  type TestHarness,
+  stopPostgresContainer,
+  startTestContainer,
+} from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { makeAgentContext } from '@ax/core';
 import { createSkillsPlugin } from '@ax/skills';
@@ -45,7 +48,7 @@ let connectionString: string;
 const harnesses: TestHarness[] = [];
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   connectionString = container.getConnectionUri();
 }, 120_000);
 

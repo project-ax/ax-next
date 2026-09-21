@@ -22,7 +22,13 @@ import {
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 import pg from 'pg';
-import { createTestHarness, signInAsAdmin, type TestHarness, stopPostgresContainer } from '@ax/test-harness';
+import {
+  createTestHarness,
+  signInAsAdmin,
+  type TestHarness,
+  stopPostgresContainer,
+  startTestContainer,
+} from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
@@ -37,7 +43,7 @@ let container: StartedPostgreSqlContainer;
 let connectionString: string;
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   connectionString = container.getConnectionUri();
   process.env.AX_CREDENTIALS_KEY = randomBytes(32).toString('hex');
   process.env.AX_HTTP_ALLOW_NO_ORIGINS = '1';

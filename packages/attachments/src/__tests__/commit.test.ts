@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
-import { stopPostgresContainer } from '@ax/test-harness';
+import {
+  stopPostgresContainer,
+  startTestContainer,
+} from '@ax/test-harness';
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { Kysely, PostgresDialect } from 'kysely';
 import {
@@ -83,7 +86,7 @@ async function freshSetup() {
 }
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   connectionString = container.getConnectionUri();
 }, 120_000);
 

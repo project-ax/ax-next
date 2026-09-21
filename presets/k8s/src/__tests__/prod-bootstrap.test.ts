@@ -17,6 +17,7 @@ import {
   loadK8sConfigFromEnv,
   type K8sPresetConfig,
 } from '../index.js';
+import { startTestContainer } from '@ax/test-harness';
 
 // ---------------------------------------------------------------------------
 // ARCH-8 — CI-grade production bootstrap lane.
@@ -123,7 +124,7 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
 
   async function ensurePostgresStarted(): Promise<string> {
     if (pgContainer === null) {
-      pgContainer = await new PostgreSqlContainer('postgres:16-alpine').start();
+      pgContainer = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
     }
     return pgContainer.getConnectionUri();
   }
