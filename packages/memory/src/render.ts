@@ -59,7 +59,6 @@ const LINE_BREAKS = /[\n\r\u2028\u2029\u0085]+/g;
  * reviewing the block while the model still reads it. Replaced, not deleted,
  * so two words do not silently fuse into one.
  */
-// eslint-disable-next-line no-control-regex
 const OTHER_CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\t]+/g;
 
 /**
