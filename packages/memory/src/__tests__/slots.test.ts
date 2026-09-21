@@ -101,6 +101,12 @@ describe('deriveSlot — degrades, never throws', () => {
   // relation was `constructor` would have carried a FUNCTION as its
   // supersession key onto the engine payload. `SLOT_SYNONYMS` is a `Map` for
   // exactly this reason.
+  // Of the list below, `constructor` is the only one that is STILL a real
+  // `Object.prototype` key after `relationToWords` runs: `__proto__` becomes
+  // `proto`, and every other prototype method is camelCase and dies under
+  // `.toLowerCase()` (`toString` -> `tostring`). One reachable key is enough,
+  // and the rest are kept as cheap insurance against a future change to the
+  // normalization.
   it('answers null for prototype keys — a relation cannot reach Object.prototype', () => {
     for (const relation of [
       'constructor',
@@ -216,7 +222,13 @@ function productionSources(dir: string, out: string[] = []): string[] {
     if (statSync(full).isDirectory()) {
       if (entry === '__tests__') continue;
       productionSources(full, out);
-    } else if (entry.endsWith('.ts') && !entry.endsWith('.test.ts')) {
+    } else if (
+      // `.tsx` too. The §4.1 profile block is a rendering surface, so the
+      // copy most worth catching is the one that lands in `channel-web`.
+      (entry.endsWith('.ts') || entry.endsWith('.tsx')) &&
+      !entry.endsWith('.test.ts') &&
+      !entry.endsWith('.test.tsx')
+    ) {
       out.push(full);
     }
   }
@@ -240,10 +252,18 @@ function stripComments(source: string): string {
  */
 const WINDOW = 200;
 
+/**
+ * Both spellings a copied list can take: a quoted literal (`'lives_in'`, in an
+ * array or a union) and a bare object key (`lives_in:`, in a
+ * `Record<Slot, …>`). Matching only the first is how a hand-copied
+ * `Record<Slot, string>` sails through.
+ */
+const SLOT_MENTION = /['"`]([A-Za-z_][A-Za-z_0-9]*)['"`]|\b([A-Za-z_][A-Za-z_0-9]*)\s*:/g;
+
 function densestSlotRun(code: string): string[] {
   const hits: Array<{ at: number; slot: string }> = [];
-  for (const match of code.matchAll(/['"`]([A-Za-z_]+)['"`]/g)) {
-    const slot = match[1];
+  for (const match of code.matchAll(SLOT_MENTION)) {
+    const slot = match[1] ?? match[2];
     if (slot !== undefined && (SLOTS as readonly string[]).includes(slot)) {
       hits.push({ at: match.index, slot });
     }
@@ -257,6 +277,24 @@ function densestSlotRun(code: string): string[] {
   return densest;
 }
 
+/**
+ * A run is a copy of the vocabulary when it is **dense** and contains
+ * `lives_in`.
+ *
+ * Density alone would be a coincidence detector: `name`, `role`, `language`
+ * and `timezone` are ordinary words, and three of them near each other in some
+ * unrelated package would fail THIS package's suite with a message about a
+ * vocabulary its author never heard of. `lives_in` is not an ordinary word and
+ * any real copy of the eight contains it. MEASURED over all 840 production
+ * `.ts`/`.tsx` files: **no file outside `slots.ts` reaches 3 by either rule**,
+ * so the extra condition costs nothing today and buys the margin.
+ */
+const ANCHOR: string = 'lives_in';
+
+function looksLikeACopy(run: readonly string[]): boolean {
+  return run.length >= 3 && run.includes(ANCHOR);
+}
+
 describe('the slot list has exactly one owner (invariant 4)', () => {
   it('appears in no production source but slots.ts', () => {
     const slotsFile = join(REPO_ROOT, 'packages', 'memory', 'src', 'slots.ts');
@@ -265,11 +303,7 @@ describe('the slot list has exactly one owner (invariant 4)', () => {
     for (const file of productionSources(join(REPO_ROOT, 'packages'))) {
       if (file === slotsFile) continue;
       const run = densestSlotRun(stripComments(readFileSync(file, 'utf8')));
-      // Three distinct slot names packed into 200 characters of code is a list
-      // of slots, not a coincidence: today the densest run anywhere outside
-      // `slots.ts` is two, in the shared engine-contract suite, where they are
-      // test data in unrelated cases.
-      if (run.length >= 3) {
+      if (looksLikeACopy(run)) {
         offenders.push(`${relative(REPO_ROOT, file)} (${run.join(', ')})`);
       }
     }
@@ -288,6 +322,25 @@ describe('the slot list has exactly one owner (invariant 4)', () => {
     expect(files.length).toBeGreaterThan(100);
     expect(files).toContain(join(REPO_ROOT, 'packages', 'memory', 'src', 'slots.ts'));
     expect(files.some((f) => f.includes('__tests__'))).toBe(false);
+    // …and `.tsx` is in scope, because the §4.1 profile block is a rendering
+    // surface and `channel-web` is where a hand-copied list would land.
+    expect(files.some((f) => f.endsWith('.tsx'))).toBe(true);
+  });
+
+  it('recognizes a copy in either spelling, and ignores an innocent cluster', () => {
+    // The detector itself, since the case above can only ever assert an empty
+    // list — a guard whose positive branch is never exercised is a guard
+    // nobody has seen work.
+    const asArray = "const WHITELIST = ['name', 'lives_in', 'works_at'] as const;";
+    const asRecord = 'const LABELS = { name: "Name", lives_in: "Home", works_at: "Employer" };';
+    const innocent = "type Field = 'name' | 'role' | 'language';";
+
+    expect(looksLikeACopy(densestSlotRun(asArray))).toBe(true);
+    expect(looksLikeACopy(densestSlotRun(asRecord))).toBe(true);
+    // Three slot names, but no `lives_in` — ordinary words that happen to
+    // collide, which is the false positive the anchor exists to refuse.
+    expect(densestSlotRun(innocent)).toHaveLength(3);
+    expect(looksLikeACopy(densestSlotRun(innocent))).toBe(false);
   });
 });
 
