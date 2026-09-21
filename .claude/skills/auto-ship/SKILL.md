@@ -753,7 +753,8 @@ decision only a human can own returns `outcome: blocked` with a `needs-input:` l
 (`references/templates.md`). This is **not** a failure: move the in-flight card →
 **Needs Input**, write the questions into its body with `set_needs_input`
 (`references/github-project.md` §8 — shell-side, so the body stays out of your
-context), clean up the abandoned worktree/branch (§7 cleanup — there's no PR), and
+context), run the **gated** abandoned-branch cleanup (§7a — there's no PR, but a
+blocked agent often leaves real work; the gate decides), and
 journal `blocked <id>`. It does **not** count as an attempt and the same-signature
 breaker doesn't apply (a human is now in the loop). It re-enters through the triage
 gate when the user answers and drags it back to To Do.
@@ -821,6 +822,7 @@ in-flight, and any walk-filed follow-ups.
 | "I'll read the body to judge if a new card is underspecified" | Triage's body read happens in the **dispatched triage agent**, never your context. You assign IDs from titles only and act on the agent's compact verdict + the journal. |
 | "This untagged To Do card looks ready, I'll dispatch it" | Un-triaged cards pass the triage gate first — ID assigned, walk-tagged, underspec routed to Needs Input. Never dispatch a card with no `triaged … clean` row. |
 | "Re-invoked after a crash — I'll just start dispatching" | Run the §7 reconcile **first**: orphaned In Progress / In Review cards (PR → merge queue; no PR → reset to To Do) before draining, or they wedge slots forever. |
+| "No PR, so the branch is empty — sweep it" | The watchdog fires on **silence, not failure**, so "no PR" says nothing about how far the builder got. Run `scripts/auto-ship-sweep-gate.sh <branch>` (§7a); only exit 0 authorizes the delete. And a *clean* tree is not an empty one — 3 of 2026-09-20's 4 saves had `git status --porcelain` EMPTY and 2–15 commits (merged as #653/#654/#656). Preserve ⇒ re-dispatch as a **RESUME**, not a restart. |
 | "An In-Progress card looks stuck, I'll re-dispatch it" | Only on a **run-start** wake (no live agents). On a board-change/agent-done wake those agents are live — reconciling would double-dispatch. |
 | "The agent didn't mention its heartbeat, so it was fine" | `progress:` is a REQUIRED handoff field for the same reason `reviewer:` is: nothing machine-reads the progress block, so silence is indistinguishable from a heartbeat that was dead all run (it was, for every builder, on 2026-08-23). A missing or `FAILED-*` value never blocks the merge — journal it. |
 | "I'll poll the board myself each minute" | That burns model tokens. The background poller is model-token-free (it still spends ~1 GraphQL pt/poll — see §5; never `gh project item-list`, that's ~102 pt) and re-invokes you on change. |

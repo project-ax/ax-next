@@ -982,10 +982,66 @@ gh pr list --state open --search "[$TASK_ID] in:title" \
 | Orphan | Action |
 |---|---|
 | PR exists (In Review, or In Progress) | move/keep → **In Review**; the serialized merge queue takes it (green+mergeable → merge; not-mergeable/red → rebase + re-green). `append_progress … "⚠ orchestrator restarted — PR #<n> found, routing to merge"`. |
-| In Progress, **no** PR | agent died pre-Phase-6 → move → **To Do** for a fresh re-dispatch; clean up the abandoned worktree/branch (below); `append_progress … "⚠ orchestrator restarted — no PR, reset to To Do"`. **Not** an attempt against the cap (a crash ≠ a task failure), but journal it (`recovered`) so the global breaker still bounds crash-loops. |
+| In Progress, **no** PR | agent died pre-Phase-6 → move → **To Do**; run the **sweep gate** (below) to decide whether the re-dispatch is a **RESUME** or a restart; `append_progress … "⚠ orchestrator restarted — no PR, reset to To Do"`. **Not** an attempt against the cap (a crash ≠ a task failure), but journal it (`recovered`) so the global breaker still bounds crash-loops. |
 
-**Abandoned-branch cleanup** (no-PR reset only — never when a PR exists, that work
-ships):
+### 7a. Abandoned-branch cleanup — gate it, never assume
+
+(No-PR reset only — never when a PR is open, that work ships through the queue.)
+
+**"No PR" is not evidence the branch is empty.** yolo-ship opens its PR in Phase 6, and
+the watchdog that reaps a stalled builder fires on **silence, not on failure** — so it
+has no relationship to how far the builder actually got. A quota stall (HTTP 429
+`session limit`) presents as exactly that: no crash, no error, no log line, an agent
+that simply stops. On 2026-09-20 the same protocol ran four times and produced **three
+different shapes of live work**, all of which the old unconditional sweep would have
+destroyed:
+
+| Measured case | `git status --porcelain` | Commits ahead | Outcome after preserving |
+|---|---|---|---|
+| TASK-455 | **5 paths** | 0 | resumed → merged as **#650** |
+| TASK-482 | *empty* | 2 | resumed → merged as **#653** |
+| TASK-479 | *empty* | 3 | resumed → merged as **#654** |
+| TASK-498 | *empty* | **15**, over 22 files, reviewer already run | resumed → merged as **#656** |
+
+Read the middle column twice. Checking `--porcelain` alone — the obvious fix, and the
+one originally filed — saves TASK-455 and shreds the other three. **A clean tree does
+not mean no work.** The question is the general one:
+
+> **Is there anything on this branch that does not exist anywhere else?**
+
+…which is true if *either* the worktree is dirty *or* the branch carries commits the
+base ref cannot reach. `scripts/auto-ship-sweep-gate.sh <branch>` answers it — pure git,
+no network, **exit 0 = sweep is safe, 10 = preserve, 2 = error**. Only exit 0
+authorizes destruction, so an internal error fails closed and `if gate; then destroy;
+fi` is safe to write. It prints one parseable line
+(`verdict= reason= branch= base= worktree= dirty= ahead= pushed=`) — echo it into the
+audit trail either way.
+
+The gate is deliberately blind to PRs, so **establish PR ground truth first**: this repo
+**squash-merges**, so a merged branch's commits are never reachable from `main`
+(`git merge-base --is-ancestor` is not a valid merged-test here — it called 49 of 51
+worktrees unmerged) and `ahead` stays >0 forever. Without the merged-PR lookup below,
+the gate answers `preserve` for every branch that already shipped and **nothing is ever
+swept again** — the opposite failure, and a real one: lingering worktrees redden
+`pnpm lint`, and this repo has watched a cleanup block silently accomplish nothing
+across a whole run.
+
+**PRESERVE ⇒ the re-dispatch is a RESUME, not a restart.** Say so on the card:
+`append_progress … "⚠ stalled with unpushed work — RESUME from auto-ship/<TASK-ID>-…,
+do NOT restart"`. A restart pays for the whole build a second time and usually
+re-derives the same diff.
+
+The preserve path **commits the WIP and pushes the branch to origin**, then releases the
+checkout. Both halves are load-bearing:
+
+- **Push.** A local WIP commit still leaves exactly one copy, in a worktree, on a volume
+  that has sat at 99%. Pushing removes the single-copy risk.
+- **Release the worktree (but keep the branch).** A fresh `isolation: "worktree"`
+  builder **physically cannot check out a branch another worktree already holds**, so a
+  branch left checked out is un-resumable by the normal dispatch path. Removing the
+  worktree *after* the work is committed and on origin loses nothing and makes the
+  resume possible. This is the one place the sweep still runs on a preserved card — and
+  it only runs once the push has succeeded and the tree reads clean.
 
 Agent worktrees are **harness-locked** (`git worktree list --porcelain` shows
 `locked claude agent … (pid NNNNN)`), and a single `--force` will not remove a locked
@@ -998,8 +1054,40 @@ suppression, and a `continue` so a second error's real cause is not masked by th
 first:
 
 ```bash
+# Ground truth first (see above): a SQUASH-merged branch keeps commits main cannot
+# reach forever, so without this lookup the gate preserves everything already shipped.
+MERGED=$(gh pr list --state merged --search "[$TASK_ID] in:title" --json headRefName --jq '.[].headRefName' | tr '\n' ' ')
+
 for b in $(git branch --list "auto-ship/$TASK_ID-*" --format '%(refname:short)'); do
-  wt=$(git worktree list --porcelain | awk -v b="$b" '/^worktree /{w=$2} /^branch /{if($2=="refs/heads/"b) print w}')
+  # THE GATE. Exit 0 = nothing unique here. Anything else (10 preserve, 2 error) means
+  # do not destroy. Never replace this with a bare `git status --porcelain` check: a
+  # clean tree is exactly the shape three of 2026-09-20's four saves had. Run it on
+  # EVERY branch (it only reads) so `gate` can never carry a previous branch's path.
+  gate=$(scripts/auto-ship-sweep-gate.sh "$b"); rc=$?
+  case " $MERGED " in *" $b "*) shipped=yes ;; *) shipped=no ;; esac
+  wt=$(printf '%s\n' "$gate" | sed -n 's/.* worktree=\(.*\) dirty=.*/\1/p')
+  [ "$wt" = "-" ] && wt=""
+
+  if [ "$rc" != 0 ] && [ "$shipped" = no ]; then
+    echo "⛔ PRESERVING $b — $gate" >&2
+    if [ -n "$wt" ] && [ -d "$wt" ]; then
+      git -C "$wt" add -A || true
+      git -C "$wt" diff --cached --quiet || git -C "$wt" commit -q -m "WIP [$TASK_ID] stalled builder, preserved by auto-ship reconcile"
+    fi
+    if ! git push -u origin "$b"; then
+      echo "⚠ PRESERVE INCOMPLETE: $b is local-only — keeping its worktree, do NOT sweep" >&2
+      continue
+    fi
+    # Release the checkout ONLY now: committed, and on origin. A fresh worktree builder
+    # cannot check out a branch another worktree holds, so this is what makes the
+    # RESUME dispatch possible. The branch itself is kept, local and remote.
+    if [ -n "$wt" ] && [ -d "$wt" ] && st=$(git -C "$wt" status --porcelain) && [ -z "$st" ]; then
+      git worktree remove -f -f "$wt" || echo "⚠ CLEANUP FAILED: worktree $wt still present (the branch is safe on origin)" >&2
+    fi
+    continue
+  fi
+  echo "🧹 sweeping $b (shipped=$shipped) — $gate"
+
   if [ -n "$wt" ]; then
     # -f -f: the second -f is what defeats the harness lock. One -f exits 128.
     git worktree remove -f -f "$wt" || { echo "⚠ CLEANUP FAILED: worktree $wt still present" >&2; continue; }
