@@ -43,6 +43,7 @@ import type {
 import { ATTACHMENT_ACCEPT } from '@/lib/attachment-upload';
 import { signInWithGoogle } from '@/lib/auth';
 import { readAlertVariant } from '@/lib/read-register';
+import { turnErrorText } from '@/lib/turn-error-labels';
 import { getDraft, setDraft as saveDraft } from '@/lib/workspace-draft-store';
 import { localTime } from '@/lib/workspace-time';
 import {
@@ -145,6 +146,15 @@ function threadGrowthKey(thread: readonly ThreadMessage[]): string {
         case 'status':
         case 'fold':
           return `${m.kind}:${m.id}:${m.text.length}`;
+        /*
+          A replayed failure (TASK-498). The id is NOT enough on its own: the
+          display log folds turn-errors per originating turn, so a re-fire
+          comes back under the SAME id carrying a different reason — and a
+          detail line appearing under the label is a row that grew. Same rule
+          as every sibling above, for the same reason.
+        */
+        case 'error':
+          return `error:${m.id}:${m.reason}:${(m.detail ?? '').length}`;
         /*
           THE EXHAUSTIVENESS IS ENFORCED, not merely intended. `tsconfig.base`
           does not set `noImplicitReturns`, so without this a seventh
@@ -1054,6 +1064,61 @@ function Message({
       <div className="flex items-center gap-2.5 text-[12.5px] text-muted-foreground">
         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
         {m.text}
+      </div>
+    );
+  }
+
+  if (m.kind === 'error') {
+    /*
+      A turn that died, replayed from the durable record (TASK-498).
+
+      IN THE THREAD, NOT OVER IT. The LIVE failure is a floating alert above
+      the composer with a Resend button on it (`AgentView`), and that is right
+      for a thing that just happened to the message you are still holding. This
+      is the same failure AFTER a reload, and by then it is history: it belongs
+      where it happened, between the message that asked and whatever came next.
+      Floating it again would put a "Resend" on a turn from last Tuesday, and
+      hoisting it out of order would make a two-day-old failure look like the
+      state of the conversation right now.
+
+      NO CONTROL ON IT AT ALL, deliberately. The composer below is live and the
+      person can simply say it again; a Resend here would have to re-send a
+      message whose attachment ids were spent when the POST landed, which is
+      the dead-button offer TASK-276 spent a card removing.
+
+      THE WORDING IS NOT OURS. `turnErrorText` maps the stable reason code
+      through the same table the live SSE frame reads, so a reloaded failure
+      says exactly what the live one said. An unknown code lands on the
+      generic sentence rather than putting `chat-run-dispatch-failed` in front
+      of a person.
+
+      `whitespace-pre-line` because that helper may join an authored label and
+      the optional untrusted `detail` line with a newline. It is a text node,
+      never markup.
+
+      IT KEEPS ITS CLOCK, like the agent bubble it stands in for — and for the
+      same reason the row is not hoisted: WHEN a turn failed is most of what
+      makes it legible as history rather than as now. `localTime` returns null
+      for a missing or unparseable instant and the row is then drawn without
+      one, which is the honest render of "we do not have a time to show".
+    */
+    const failedAt = localTime(m.at);
+    return (
+      <div className="flex gap-3">
+        <AgentTile agent={agent} />
+        <div className="min-w-0 flex-1">
+          <Alert variant="destructive" className="max-w-[600px]">
+            <AlertTriangle size={14} />
+            <AlertDescription className="whitespace-pre-line">
+              {turnErrorText(m.reason, m.detail)}
+            </AlertDescription>
+          </Alert>
+          {failedAt !== null && (
+            <div className="mt-1.5 text-[11.5px] text-muted-foreground">
+              {failedAt}
+            </div>
+          )}
+        </div>
       </div>
     );
   }

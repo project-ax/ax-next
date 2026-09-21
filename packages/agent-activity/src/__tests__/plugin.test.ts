@@ -235,6 +235,63 @@ describe('agent-activity:get', () => {
     expect((await get(bus, 'a2')).activity).toMatchObject({ phrase: 'Weekly digest' });
     expect((await get(bus, 'a3')).activity).toBeNull();
   });
+
+  /*
+    ONE LINE PER AGENT IS ALSO ONE **RECORD** PER AGENT, and that has a cost
+    worth pinning rather than discovering (TASK-498). There is no refcount:
+    the first `chat:end` for an agent forgets the whole record, even when a
+    second turn for that same agent is still running — a routine fire beside a
+    chat, or two open threads.
+
+    THIS TEST DOES NOT ENDORSE THAT, it fixes it in place so the next reader
+    knows it is a shape and not an accident. It matters because TASK-498 made
+    the workspace roster's working/resting word a reading of this record
+    (`deriveState` in channel-web's routes-workspace.ts), so the gap now
+    reaches a chip a person looks at: the agent reads "resting" while its
+    other turn is visibly streaming.
+
+    THE DIRECTION IS WHY IT IS LEFT ALONE FOR NOW. Under-reporting obeys the
+    reading surface's standing rule that "we don't know" renders as resting,
+    and it self-heals on the running turn's next step (see the second half).
+    A refcount fails the other way: one `chat:start` whose end never arrives
+    would pin the agent on "Working" with nothing running, which is precisely
+    the bug TASK-498 existed to end. Fixing it properly means owning that leak
+    story here, in this plugin, on its own card.
+  */
+  it('forgets the whole agent on the FIRST end, even with a second turn still running', async () => {
+    const bus = new HookBus();
+    await boot(bus);
+    await bus.fire('chat:start', ctx({ agentId: 'a1', triggerLabel: 'Morning email pass' }), {});
+    await bus.fire('chat:start', ctx({ agentId: 'a1', triggerLabel: 'Weekly digest' }), {});
+    expect((await get(bus, 'a1')).activity).not.toBeNull();
+
+    // One of the two ends. The other is still going.
+    await bus.fire('chat:end', ctx({ agentId: 'a1' }), {
+      outcome: { kind: 'complete', messages: [] },
+    });
+    expect((await get(bus, 'a1')).activity).toBeNull();
+  });
+
+  it('recovers the running turn on its next step — the gap is transient, not sticky', async () => {
+    const bus = new HookBus();
+    registerCatalog(bus, [descriptor({ name: 'read_email', activityPhrase: 'Reading email' })]);
+    await boot(bus);
+    await bus.fire('chat:start', ctx({ agentId: 'a1', triggerLabel: 'Morning email pass' }), {});
+    await bus.fire('chat:start', ctx({ agentId: 'a1', triggerLabel: 'Weekly digest' }), {});
+    await bus.fire('chat:end', ctx({ agentId: 'a1' }), {
+      outcome: { kind: 'complete', messages: [] },
+    });
+    expect((await get(bus, 'a1')).activity).toBeNull();
+
+    // The surviving turn calls a tool. `recordToolCall` starts a record for a
+    // step that arrived with no `chat:start` behind it, so the line — and the
+    // working/resting word read off it — comes back on its own.
+    await bus.fire('tool:pre-call', ctx({ agentId: 'a1' }), {
+      name: 'read_email',
+      input: {},
+    });
+    expect((await get(bus, 'a1')).activity).toMatchObject({ phrase: 'Reading email' });
+  });
 });
 
 describe('two tool calls in flight at once', () => {

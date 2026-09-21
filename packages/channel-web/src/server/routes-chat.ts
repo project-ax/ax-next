@@ -666,9 +666,29 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         turnId: userTurnId,
       };
 
-      // Fire-and-forget. A failure inside agent:invoke still emits a
+      // Fire-and-forget. A failure INSIDE agent:invoke still emits a
       // chat:end via the orchestrator (audit-log invariant); the SSE
       // stream surfaces the terminated outcome to the client.
+      //
+      // A REJECTION OF THE CALL ITSELF IS A DIFFERENT ANIMAL, and until
+      // TASK-498 this `.catch` only wrote a log line about it. The turn is
+      // dead — no handler ran, or the handler never settled — and the
+      // orchestrator, which owns every other `chat:turn-error` fire site,
+      // never got far enough to register a waiter. So nothing closed the turn
+      // out: the browser's SSE sat on "Thinking…" until the 25 s keepalives
+      // ran out of patience, no error was persisted, and after a reload the
+      // person's message sat alone with no reply and no failure beside it.
+      // The walk on TASK-357 found exactly that, and could not tell a turn
+      // that had DIED from one that was merely slow.
+      //
+      // We fire the same `chat:turn-error` the orchestrator does, with the
+      // originating reqId, and the three existing subscribers do the rest:
+      // our own SSE handler matches on the reqId and writes the error frame
+      // (so the spinner ends), `@ax/conversations` persists it as a display
+      // event (so it survives the reload), and `@ax/agent-activity` forgets
+      // the agent (so "Right now" stops claiming work). A duplicate from a
+      // late orchestrator fire is harmless: the SSE closes on the first error
+      // frame, and the display log folds on reqId.
       //
       // Log via agentInvokeCtx.logger (NOT initCtx.logger): the per-request
       // ctx carries this dispatch's reqId, and the kernel logger writes
@@ -680,15 +700,67 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       // conversationId is not reserved and is kept for cross-correlation.
       void bus
         .call<AgentInvokeInput, unknown>('agent:invoke', agentInvokeCtx, { message })
-        .catch((err: unknown) => {
-          agentInvokeCtx.logger.warn('chat_run_dispatch_failed', {
-            plugin: PLUGIN_NAME,
-            conversationId,
-            err:
-              err instanceof Error
-                ? { name: err.name, message: err.message }
-                : String(err),
-          });
+        .catch(async (err: unknown) => {
+          /*
+            EVERYTHING IN HERE IS GUARDED, including the logging (TASK-512).
+            This body is the last frame on a rejected promise — there is no
+            `.catch` above it — so ANY throw from here becomes an unhandled
+            rejection that takes the host down over a failure we were in the
+            middle of reporting. A logger is not exempt from that: TASK-512 is
+            an open bug where exactly this shape (an unguarded log line on a
+            failure path) throws under a logger-less ctx and surfaces under the
+            wrong error's name. The inner `try` below guards the FIRE; this one
+            guards the two `warn`s, which the inner one cannot.
+
+            The outermost catch is deliberately empty, and it is the one place
+            in this file where that is right: it catches the failure of the
+            failure-reporter, so there is by construction nothing left to
+            report it with.
+          */
+          try {
+            agentInvokeCtx.logger.warn('chat_run_dispatch_failed', {
+              plugin: PLUGIN_NAME,
+              conversationId,
+              err:
+                err instanceof Error
+                  ? { name: err.name, message: err.message }
+                  : String(err),
+            });
+          } catch {
+            /* the logger itself is gone; the fire below is still worth trying */
+          }
+          /*
+            A STABLE REASON CODE, never the thrown message. `err` here is host
+            vocabulary — a hook name and a millisecond count — and the client
+            maps codes to authored copy (`lib/turn-error-labels.ts`); an
+            unmapped one falls back to the generic "The agent stopped
+            unexpectedly. Retry to continue.", which is the right sentence for
+            this and is why no new copy was invented for it.
+
+            `HookBus.fire` swallows subscriber throws, but it can still reject
+            on its own, and this runs inside a `.catch` with nobody above it —
+            an unhandled rejection here would take the host down over a failure
+            we were in the middle of reporting.
+          */
+          try {
+            await bus.fire('chat:turn-error', agentInvokeCtx, {
+              reqId,
+              reason: 'chat-run-dispatch-failed',
+            });
+          } catch (fireErr: unknown) {
+            try {
+              agentInvokeCtx.logger.warn('chat_run_dispatch_error_unreported', {
+                plugin: PLUGIN_NAME,
+                conversationId,
+                err:
+                  fireErr instanceof Error
+                    ? { name: fireErr.name, message: fireErr.message }
+                    : String(fireErr),
+              });
+            } catch {
+              /* nothing left to report the reporter's failure with */
+            }
+          }
         });
 
       // 7) 202 Accepted — the browser uses { conversationId, reqId } to

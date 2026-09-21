@@ -1,5 +1,6 @@
 import type { AgentOutcome, Plugin } from '@ax/core';
 import {
+  AGENT_INVOKE_TIMEOUT_MS,
   createOrchestrator,
   PLUGIN_NAME,
   type ChatOrchestratorConfig,
@@ -144,24 +145,42 @@ export function createChatOrchestratorPlugin(
     init({ bus }) {
       const orch = createOrchestrator(bus, config);
 
-      // `stallWarnMs: Infinity` — opt OUT of the bus's stall watch, on purpose.
+      // `stallWarnMs: Infinity` (TASK-505) — opt OUT of the bus's stall watch,
+      // on purpose.
       //
       // This handler spans an entire turn: sandbox spawn, generation, the whole
       // tool loop. There is no duration that separates "healthy long turn" from
       // "hung", so any threshold here would either fire on the common case or be
-      // useless. And the outermost frame is the one thing an operator already
-      // knows is stuck — `service hook 'agent:invoke' exceeded 120000ms` says so
-      // loudly enough, and that is this hook's report.
+      // useless.
       //
       // The diagnosis lives one frame in. The subscribers and service calls
       // `runAgentInvoke` awaits keep the 15s default, so a turn that hangs
       // upstream of sandbox provisioning now names the plugin responsible
-      // instead of producing the silence TASK-505 is about.
+      // instead of producing the silence TASK-505 is about. What reports a turn
+      // that dies is the orchestrator's own `chat:turn-error`, which every early
+      // return fires (see `turn-error-discipline.test.ts`) — not this frame.
       bus.registerService<AgentInvokeInput, AgentOutcome>(
         'agent:invoke',
         PLUGIN_NAME,
         async (ctx, input) => orch.runAgentInvoke(ctx, input),
-        { stallWarnMs: Number.POSITIVE_INFINITY },
+        {
+          // NO SECOND CLOCK, AND A DEPENDENCY THAT IS NOW LOAD-BEARING:
+          // because nothing outside the handler is watching the clock, every
+          // exit that builds a `terminated` outcome MUST call fireTurnError
+          // before it fires chat:end, or that turn is invisible to the
+          // browser forever. `turn-error-discipline.test.ts` enforces that
+          // over all fifteen of them, rather than leaving it to be noticed.
+          //
+          // See AGENT_INVOKE_TIMEOUT_MS — the orchestrator
+          // bounds every phase of a turn itself and fires `chat:turn-error` on
+          // the way out of each one. The HookBus default (120 s) was a shorter,
+          // blinder bound that rejected calls whose turns were still streaming,
+          // and no finite replacement is safe: the bus clock starts at handler
+          // entry, the orchestrator's starts after a setup phase whose own
+          // budget is minutes.
+          timeoutMs: AGENT_INVOKE_TIMEOUT_MS,
+          stallWarnMs: Number.POSITIVE_INFINITY,
+        },
       );
 
       // JIT (design §7/§11.5) — apply a user-approved capability grant: attach

@@ -792,7 +792,62 @@ function newDeferred<T>(): Deferred<T> {
 // ---------------------------------------------------------------------------
 
 export const PLUGIN_NAME = '@ax/chat-orchestrator';
-const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60 * 1000;
+export const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * `agent:invoke` runs with NO HookBus timeout at all (TASK-498).
+ *
+ * WHAT WAS BROKEN. The hook was registered with no `timeoutMs`, so it used the
+ * HookBus default of 120 s — while `chatTimeoutMs` allows a turn ten minutes.
+ * `withTimeout` races the handler and does NOT cancel it, so every turn longer
+ * than two minutes had its `bus.call('agent:invoke')` rejected WHILE THE TURN
+ * WAS ALIVE AND STREAMING. channel-web only logged that rejection
+ * (`chat_run_dispatch_failed`), so nobody noticed — and it is why that log line
+ * could not be trusted as a failure signal, which is exactly what TASK-498
+ * needed it to be.
+ *
+ * WHY NOT SIMPLY A BIGGER NUMBER, which is where this landed first. The first
+ * fix was `chatTimeoutMs + 60 s`, on the reasoning that the bus must never fire
+ * before the orchestrator's own bound. A reviewer showed that does not hold:
+ * the `chatTimeoutMs` timer is armed only AFTER setup — `chat:start`
+ * subscribers, `agents:resolve`, `proxy:open-session` and `sandbox:open-session`
+ * (registered `timeoutMs: 300_000` by both providers) — while the bus clock
+ * starts at handler entry. A three-minute cold pod spawn therefore still put
+ * the bus deadline two minutes AHEAD of the orchestrator's, and now that
+ * channel-web surfaces the rejection it would have killed a healthy streaming
+ * turn's SSE and persisted a failure that never happened. Any finite slack has
+ * that shape, because `chat:start` subscribers are unbounded and no number
+ * dominates them.
+ *
+ * SO THE ORCHESTRATOR OWNS TURN DURATION, ALONE — which it is built to do, and
+ * this is not a backstop being removed so much as a second, wrong clock. Every
+ * phase it waits on is bounded by that phase's OWN hook timeout, and every
+ * early return fires `chat:turn-error` on the way out (see the `fireTurnError`
+ * call sites below); the streaming phase is bounded by `chatTimeoutMs`, which
+ * fires `chat:turn-error(chat-run-timeout)`. A turn cannot now be reported dead
+ * by a clock that was not watching the thing it timed.
+ *
+ * WHAT IS GENUINELY UNCOVERED, said plainly rather than left for the next
+ * reader to discover: a `chat:start` subscriber that hangs forever. `HookBus.
+ * fire` puts no clock on subscribers, so that turn hangs with nothing to end
+ * it. What the person sees is unchanged — it hung before this change too, and
+ * the 120 s rejection only wrote a log line that never reached the browser —
+ * so this is a pre-existing gap, not one opened here.
+ *
+ * WHAT THIS DOES COST, because "pre-existing" would otherwise read as "nothing
+ * changed": the OPERATOR loses a signal. That 120 s rejection did run the
+ * caller's `.catch` and wrote `chat_run_dispatch_failed`. With no timeout the
+ * call never settles, so the `.catch` never runs — and `agent:invoke` also
+ * opts out of TASK-505's stall watch (`stallWarnMs: Infinity`, on the same
+ * argument: no threshold separates a healthy long turn from a hung one). So a
+ * wedged `agent:invoke` now emits nothing of its own, ever. The diagnosis
+ * lives one frame in and is deliberately better there: the subscribers and
+ * service calls it awaits keep the default stall watch, so a hang names the
+ * plugin responsible instead of reporting the outermost frame — which was
+ * only ever the frame an operator already knew was stuck. Bounding
+ * `chat:start` is its own card.
+ */
+export const AGENT_INVOKE_TIMEOUT_MS = Number.POSITIVE_INFINITY;
 
 // ---------------------------------------------------------------------------
 // PR 2 (provider-agnostic runner, design doc §1) — runner id → binary path.

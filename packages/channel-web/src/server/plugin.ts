@@ -52,7 +52,11 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     any of them.
 //     TASK-230 adds no hard call: the agent-workspace routes read through
 //     conversations:list / conversations:get (already declared) plus the
-//     optional session:is-alive. TASK-231 adds no hard call either: the
+//     optional agent-activity:get. (It used to reach for session:is-alive as
+//     well; TASK-498 took that away — the roster's state word now comes off
+//     the activity record, because sandbox liveness was answering a different
+//     question. One fewer capability, and a smaller manifest for it.)
+//     TASK-231 adds no hard call either: the
 //     activity feed reads the optional routines:recent-fires-for-agent and
 //     routines:list, and degrades to an empty feed without them.
 //     TASK-234 (AW-13) adds no hard call either: the Memory tab's
@@ -261,15 +265,6 @@ export function createChannelWebServerPlugin(
             'declined-grant markers are never reclaimed, so the per-user prefix scan behind GET /api/workspace/grants grows with every "Not now" ever given (correct answers, slower reads)',
         },
         {
-          // TASK-230 — the agent-workspace roster derives each agent's
-          // working/resting state from whether one of its conversations holds a
-          // session the backend still calls alive. Without the probe we do not
-          // know, and "do not know" must never render as "it is busy".
-          hook: 'session:is-alive',
-          degradation:
-            'every agent in the workspace roster reads as resting (liveness cannot be probed, and a guess would be worse than a blank)',
-        },
-        {
           // TASK-231 — GET /api/workspace/activity is the one event feed, and
           // routine fires are what it is made of today. A preset without
           // @ax/routines records no routine history at all, so an empty feed
@@ -311,12 +306,13 @@ export function createChannelWebServerPlugin(
             'the rail cannot list third-party (MCP) tools or undescribed ones, and says the list is incomplete',
         },
         {
-          // TASK-235 — the "Right now" line. Without @ax/agent-activity the
-          // rail shows the agent's state word alone, which is honest: nothing
-          // is reporting.
+          // TASK-235 — the "Right now" line. TASK-498 widened it: the roster's
+          // working/resting word is read off this same record, because a
+          // running TURN is what "Working" means and sandbox liveness (the old
+          // signal) stayed true through every warm idle gap.
           hook: 'agent-activity:get',
           degradation:
-            'the rail shows the agent state word alone instead of a live activity line',
+            'every agent reads as resting and the rail shows that state word alone — nothing is reporting turns, and a guess would be worse than a blank',
         },
         {
           // TASK-235 — "Granted by you" also covers what a person approved at a

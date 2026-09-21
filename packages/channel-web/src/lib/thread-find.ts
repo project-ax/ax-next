@@ -300,6 +300,17 @@ export function threadFindFields(
         break;
       case 'status':
         break;
+      /*
+        A replayed turn failure (TASK-498). OUT, and for the mechanical reason
+        the `steps` panel is out rather than the editorial one `status` is:
+        the row does not paint marks. It renders authored copy straight from
+        `turnErrorText` with no `FindHighlight` around it, so counting it
+        would name a match the reader can never be walked to — the
+        count-vs-marks drift this file exists to prevent. Wiring the highlight
+        is what would earn it a place here, not adding a case.
+      */
+      case 'error':
+        break;
       case 'approval': {
         const d = decisions.find((x) => x.id === m.decisionId);
         if (d !== undefined && isOpenDecision(d)) {

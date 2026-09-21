@@ -3,11 +3,14 @@
  *
  * A wire turn-error reason code in, an authored user-facing sentence out. This
  * module knows the wording; it does not know the wire, the store, the AI SDK or
- * React. Both surfaces that read an SSE `error` frame render from this one
- * table:
+ * React. Every surface that renders a turn failure goes through
+ * `turnErrorText` below — there are no hand-copies of the rule left, as of
+ * TASK-498:
  *
  *   - `lib/transport.ts`     — chat, into an AI-SDK `error` chunk.
  *   - `lib/workspace-api.ts` — the agent workspace, into an `onError` callback.
+ *   - `components/workspace/AgentConversation.tsx` — the workspace again, for
+ *     a failure REPLAYED out of the durable record after a reload.
  *
  * WHY IT LIVES HERE, AND NOT IN `transport.ts` WHERE IT STARTED. Fault A put
  * the table in `transport.ts` when chat was the only surface. TASK-296 found
@@ -81,3 +84,45 @@ export const ERROR_LABELS: Record<string, string> = {
 /** Max chars of the untrusted `detail` line we render (defense-in-depth — it's
  *  already bounded + sanitized server-side; this is a final client-side clamp). */
 export const MAX_DETAIL_CHARS = 400;
+
+/**
+ * One turn-error frame's worth of readable text: the authored label for the
+ * reason code, and the optional `detail` line under it.
+ *
+ * WHY THIS IS A FUNCTION AND NOT THREE COPIES OF FOUR LINES. The mapping
+ * (`ERROR_LABELS[code] ?? DEFAULT_TURN_ERROR`, plus a clamped `detail` joined
+ * on a newline) was written out by hand at every reader of an error frame, and
+ * TASK-498 was about to add a fourth — the RELOADED error row, which reads the
+ * same reason code out of the persisted display-event log rather than off the
+ * live SSE. Four hand-copies of one rule is how the surfaces drift (invariant
+ * 4), and drift here means two readers being told different things about the
+ * same failure.
+ *
+ * `detail` is UNTRUSTED author-facing text — bounded and sanitized server-side
+ * per `server/types.ts`, clamped once more here, and rendered by every caller
+ * as a plain text node. It is never markup and never a reason code.
+ */
+export function turnErrorText(reason: string, detail?: string | null): string {
+  /*
+    A PLAIN OBJECT LOOKUP ANSWERS FOR THE PROTOTYPE TOO, which is a real way
+    for this table to put something absurd in front of a person. `ERROR_LABELS`
+    is an object literal, so `ERROR_LABELS['toString']` — or `'constructor'`,
+    or `'valueOf'` — is NOT undefined: it is an inherited function, the `??`
+    never fires, and the template below stringifies it into the reader's alert
+    as `function Object() { [native code] }`.
+    No producer emits such a reason today (the codes are host vocabulary), so
+    this is a latent defect rather than a live one. It is fixed HERE because
+    HERE is now the only place the rule is written: every reader of an error
+    frame calls this function, so one guard covers all of them. That was not
+    true when the guard was first written — `lib/transport.ts` still had its
+    own hand-copy, and therefore its own copy of this hole, until a reviewer
+    caught the gap between the claim and the code. `typeof` answers it
+    completely: a non-string is not a label, whatever it is and wherever it
+    came from.
+  */
+  const found: unknown = ERROR_LABELS[reason];
+  const label = typeof found === 'string' ? found : DEFAULT_TURN_ERROR;
+  const line =
+    typeof detail === 'string' ? detail.slice(0, MAX_DETAIL_CHARS).trim() : '';
+  return line.length > 0 ? `${label}\n${line}` : label;
+}
