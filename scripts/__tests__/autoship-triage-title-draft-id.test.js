@@ -461,7 +461,7 @@ describe('auto-ship triage: `item-edit --title` gets the DI_ draft-issue content
     ['gh project item-edit', /gh project item-edit/],
     ['gh api graphql draft-issue lookup', /gh api graphql/],
   ]) {
-    it(`the ${what} call is not piped, so its status is its own`, () => {
+    it(`enforcement: the ${what} call is not piped, so its status is its own`, () => {
       expectUnpipedCalls(BLOCK, what, needle);
     });
   }

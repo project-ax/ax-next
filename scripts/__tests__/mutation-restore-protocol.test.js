@@ -182,8 +182,8 @@
 //       invocation`, and nothing else. Deliberately the shape no behavioural test here can
 //       see: a pipe launders git's exit status, so a FAILED status call reads as "clean".
 //   M7. CONSTRUCTED, a mutant of THIS FILE rather than of the doc: put `logicalLines` back
-//       to join-continuations-then-filter-comments, the ordering TASK-454 found in two
-//       sibling guards -> **1 red**. The helper every structural check reads through could
+//       to join-continuations-then-filter-comments, the original triage guard's ordering
+//       confirmed by TASK-454 -> **1 red**. The helper every structural check reads through could
 //       otherwise DELETE a command line before the check ever saw it.
 //   M8. CONSTRUCTED: delete the `git ls-files --error-unmatch` tracked block from both
 //       blocks -> **5 red**. Found by running mutants, not by reading: `git status` on a
