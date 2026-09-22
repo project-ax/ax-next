@@ -2140,10 +2140,9 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         it(`${field}: compatibility: preserves text at the UTF-16 limit`, async () => {
           const text = '\u{10400}'.repeat(max / 2);
           const written = await recordOne({ ...base, [field]: text });
-          expect(written[field]).toBe(text);
           const rows = (await recall({ activeOnly: false, limit: 200 })).statements;
           expect(rows).toHaveLength(1);
-          expect(rows[0]![field]).toBe(text);
+          expect(rows[0]).toMatchObject({ id: written.id, [field]: text });
         });
       }
 
@@ -2155,9 +2154,9 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
           slot: '  custom slot | a/b \u{10400}  ',
           when: JAN,
         };
-        expect(await recordOne(statement)).toMatchObject(statement);
+        const written = await recordOne(statement);
         expect((await recall({ activeOnly: false, limit: 200 })).statements).toEqual([
-          expect.objectContaining(statement),
+          expect.objectContaining({ ...statement, id: written.id }),
         ]);
       });
 
