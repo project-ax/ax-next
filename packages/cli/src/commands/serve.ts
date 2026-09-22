@@ -28,6 +28,10 @@ import {
   createK8sPlugins,
   loadK8sConfigFromEnv,
 } from '@ax/preset-k8s';
+import {
+  createMemoryPlugins,
+  loadMemoryConfigFromEnv,
+} from '@ax/preset-memory';
 import { createServeRoutesPlugin } from './serve-routes-plugin.js';
 
 const USAGE = `usage: ax-next serve
@@ -45,12 +49,25 @@ env (required):
   AX_CREDENTIALS_KEY          used by @ax/credentials at init
 
 env (optional):
+  AX_PRESET                   'k8s' (default) | 'memory'
   AX_SERVE_TOKEN              if set, /chat requires Bearer <token>
                               if unset, /chat is unauthenticated (loud warn)
   AX_HTTP_ALLOWED_ORIGINS     comma-separated CSRF allow-list
   K8S_NAMESPACE / K8S_POD_IMAGE / K8S_RUNTIME_CLASS / K8S_IMAGE_PULL_SECRETS
   BIND_HOST / PORT            @ax/ipc-http listener (default 0.0.0.0:8080)
-  AX_RUNNER_BINARY / AX_CHAT_TIMEOUT_MS`;
+  AX_RUNNER_BINARY / AX_CHAT_TIMEOUT_MS
+
+env (required when AX_PRESET=memory):
+  AX_MEMORY_FACTS_DB_PATH     sqlite facts database path
+  AX_MEMORY_EXPORT_HOST_ROOT  host dir holding exported memory profiles
+  AX_MEMORY_EXPORT_NFS_SERVER export backing NFS server
+  AX_MEMORY_EXPORT_NFS_PATH   export backing NFS path
+  AX_MEMORY_VERTEX_PROJECT    vertex project for embeddings
+
+env (optional when AX_PRESET=memory):
+  AX_MEMORY_VERTEX_CREDENTIAL_REF   default 'provider:vertex'
+  AX_MEMORY_COHERE_CREDENTIAL_REF   default 'provider:cohere'
+  AX_AGENT_WORKSPACE_PREVIEW        '1'/'true' mounts the workspace preview routes (default off)`;
 
 export interface RunServeOptions {
   argv: string[];
@@ -140,14 +157,20 @@ export async function runServeCommand(opts: RunServeOptions): Promise<number> {
   if (opts.pluginsFactory !== undefined) {
     basePlugins = await opts.pluginsFactory(env);
   } else {
-    let cfg;
+    const preset = env.AX_PRESET ?? 'k8s';
     try {
-      cfg = loadK8sConfigFromEnv(env);
+      if (preset === 'k8s') {
+        basePlugins = createK8sPlugins(loadK8sConfigFromEnv(env));
+      } else if (preset === 'memory') {
+        basePlugins = createMemoryPlugins(loadMemoryConfigFromEnv(env));
+      } else {
+        err(`serve: unknown AX_PRESET value; expected 'k8s' or 'memory'`);
+        return 2;
+      }
     } catch (e) {
       err(`serve: ${e instanceof Error ? e.message : String(e)}`);
       return 2;
     }
-    basePlugins = createK8sPlugins(cfg);
   }
   const plugins: Plugin[] = [
     ...basePlugins,

@@ -58,6 +58,17 @@ export {
   registerSystemPromptAugment,
   DEFAULTS as MEMORY_BLOCK_DEFAULTS,
 } from './augment.js';
+export {
+  RULES_WRITE_HOOK,
+  MAX_RULES_CHARS,
+  registerRulesHooks,
+} from './rules.js';
+export type {
+  MemoryRulesReadInput,
+  MemoryRulesReadOutput,
+  MemoryRulesWriteInput,
+  MemoryRulesWriteOutput,
+} from './rules.js';
 export type {
   MemoryBlockConfig,
   SystemPromptAugmentInput,
@@ -66,6 +77,14 @@ export type {
   AssembledBlock,
 } from './augment.js';
 export { resolveOwnerUserId } from './owner.js';
+export type { MemoryExportConfig } from './exporter.js';
+export { MEMORY_EXPORT_FLUSH_HOOK } from './exporter.js';
+export {
+  MEMORY_MOUNT_PATH,
+  validateVolumeConfig,
+  volumeAgentKey,
+} from './export-volume.js';
+export type { MemoryVolumeConfig } from './export-volume.js';
 export {
   MEMORY_RECALL_DESCRIPTOR,
   MEMORY_RECALL_TOOL_HOOK,
