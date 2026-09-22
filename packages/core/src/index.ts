@@ -28,6 +28,8 @@ export {
   POLICY_PREFIXES,
   POLICY_EXACT_PATHS,
   RUNNER_IMMUTABLE_PATHS,
+  MEMORY_FACTS_EXPORT_ROOT,
+  RUNNER_IMMUTABLE_PREFIXES,
 } from './workspace-policy.js';
 export { registerWorkspaceApplyFacade } from './workspace-apply-facade.js';
 export { safePath, assertWithinBase } from './util/safe-path.js';

@@ -59,6 +59,16 @@ describe('readRunnerEnv', () => {
     ).toBe(false);
   });
 
+  it('reads memoryRoot when AX_MEMORY_ROOT is set, omits it otherwise', () => {
+    expect(
+      readRunnerEnv({ ...PROXY_TCP, AX_MEMORY_ROOT: '/memory' }).memoryRoot,
+    ).toBe('/memory');
+    expect('memoryRoot' in readRunnerEnv(PROXY_TCP)).toBe(false);
+    expect(
+      'memoryRoot' in readRunnerEnv({ ...PROXY_TCP, AX_MEMORY_ROOT: '' }),
+    ).toBe(false);
+  });
+
   it('reads proxyUnixSocket when only AX_PROXY_UNIX_SOCKET is set', () => {
     expect(readRunnerEnv(PROXY_UNIX)).toEqual({
       runnerEndpoint: 'unix:///tmp/ax.sock',

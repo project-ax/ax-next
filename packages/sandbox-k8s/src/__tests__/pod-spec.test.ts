@@ -1306,4 +1306,216 @@ describe('buildPodSpec', () => {
       ).toThrow(/localDir/);
     });
   });
+
+  describe('memory mounts (sandbox:memory-mounts realization)', () => {
+    const memoryMount = {
+      kind: 'nfs' as const,
+      mountPath: '/memory',
+      server: '10.0.0.3',
+      exportPath: '/vol1/memory',
+      subPath: 'deadbeef/permanent/memory/facts',
+      readOnly: true,
+      role: 'memory' as const,
+    };
+    const writableNfs = {
+      kind: 'nfs' as const,
+      mountPath: '/workspace',
+      server: '10.0.0.2',
+      exportPath: '/vol1/agents',
+      subPath: 'agent-abc',
+      readOnly: false,
+      role: 'user-files' as const,
+    };
+
+    function runnerEnv(spec: ReturnType<typeof buildPodSpec>) {
+      return Object.fromEntries(
+        (
+          spec.spec as {
+            containers: Array<{ env: Array<{ name: string; value: string }> }>;
+          }
+        ).containers[0]!.env.map((e) => [e.name, e.value]),
+      );
+    }
+    function initCs(spec: ReturnType<typeof buildPodSpec>) {
+      return (
+        spec.spec as { initContainers?: Array<{ name: string }> }
+      ).initContainers ?? [];
+    }
+    function runnerMounts(spec: ReturnType<typeof buildPodSpec>) {
+      return (
+        (
+          spec.spec as {
+            containers: Array<{
+              volumeMounts?: Array<{
+                name: string;
+                mountPath: string;
+                subPath?: string;
+                readOnly?: boolean;
+              }>;
+            }>;
+          }
+        ).containers[0]!.volumeMounts ?? []
+      );
+    }
+
+    it('realizes a read-only nfs mount at /memory and stamps AX_MEMORY_ROOT', () => {
+      const spec = buildPodSpec('m', { ...baseInput, mounts: [memoryMount] }, baseResolved());
+      const mount = runnerMounts(spec).find((m) => m.mountPath === '/memory');
+      expect(mount).toMatchObject({
+        mountPath: '/memory',
+        subPath: 'deadbeef/permanent/memory/facts',
+        readOnly: true,
+      });
+      expect(runnerEnv(spec).AX_MEMORY_ROOT).toBe('/memory');
+      expect(initCs(spec).every((c) => !c.name.endsWith('-chown'))).toBe(true);
+    });
+
+    it('leaves a pod with no memory mount byte-identical to before', () => {
+      const spec = buildPodSpec('m', baseInput, baseResolved());
+      expect(runnerEnv(spec).AX_MEMORY_ROOT).toBeUndefined();
+      expect(runnerMounts(spec).every((m) => m.mountPath !== '/memory')).toBe(true);
+    });
+
+    it('rejects a writable memory mount', () => {
+      expect(() =>
+        buildPodSpec(
+          'm',
+          { ...baseInput, mounts: [{ ...memoryMount, readOnly: false }] },
+          baseResolved(),
+        ),
+      ).toThrow(/read-only/);
+    });
+
+    it('rejects a memory mount anywhere but /memory', () => {
+      expect(() =>
+        buildPodSpec(
+          'm',
+          { ...baseInput, mounts: [{ ...memoryMount, mountPath: '/mem' }] },
+          baseResolved(),
+        ),
+      ).toThrow(/\/memory/);
+    });
+
+    it('rejects a second memory mount', () => {
+      expect(() =>
+        buildPodSpec(
+          'm',
+          {
+            ...baseInput,
+            mounts: [
+              memoryMount,
+              { ...memoryMount, subPath: 'other/permanent/memory/facts' },
+            ],
+          },
+          baseResolved(),
+        ),
+      ).toThrow(/only one/);
+    });
+
+    it('rejects a non-NFS memory mount (localDir)', () => {
+      expect(() =>
+        buildPodSpec(
+          'm',
+          {
+            ...baseInput,
+            mounts: [
+              {
+                kind: 'localDir' as const,
+                mountPath: '/memory',
+                hostPath: '/tmp/mem',
+                readOnly: true,
+                role: 'memory' as const,
+              } as never,
+            ],
+          },
+          baseResolved(),
+        ),
+      ).toThrow(/localDir/);
+    });
+
+    it('rejects a memory mount that overlaps another in-container mountPath', () => {
+      expect(() =>
+        buildPodSpec(
+          'm',
+          {
+            ...baseInput,
+            mounts: [memoryMount, { ...writableNfs, mountPath: '/memory/sub' }],
+          },
+          baseResolved(),
+        ),
+      ).toThrow(/overlaps/);
+    });
+
+    it('normalizes in-container mount paths before the overlap check', () => {
+      expect(() =>
+        buildPodSpec(
+          'm',
+          {
+            ...baseInput,
+            mounts: [memoryMount, { ...writableNfs, mountPath: '/tmp/../memory/sub' }],
+          },
+          baseResolved(),
+        ),
+      ).toThrow(/overlaps/);
+    });
+
+    it('rejects a memory mount aliasing a writable NFS source on the same server', () => {
+      const aliasing = {
+        ...memoryMount,
+        server: writableNfs.server,
+        exportPath: writableNfs.exportPath,
+        subPath: 'agent-abc/nested',
+      };
+      expect(() =>
+        buildPodSpec('m', { ...baseInput, mounts: [aliasing, writableNfs] }, baseResolved()),
+      ).toThrow(/aliases/);
+      const ancestor = { ...memoryMount, server: writableNfs.server, exportPath: '/vol1', subPath: 'agents' };
+      expect(() =>
+        buildPodSpec('m', { ...baseInput, mounts: [ancestor, writableNfs] }, baseResolved()),
+      ).toThrow(/aliases/);
+    });
+
+    it('normalizes NFS sources — dot segments, trailing slashes and a root export all still alias', () => {
+      const dotted = {
+        ...memoryMount,
+        server: writableNfs.server,
+        exportPath: '/vol1/x/../agents',
+        subPath: 'agent-abc',
+      };
+      expect(() =>
+        buildPodSpec('m', { ...baseInput, mounts: [dotted, writableNfs] }, baseResolved()),
+      ).toThrow(/aliases/);
+      const trailing = {
+        ...memoryMount,
+        server: writableNfs.server,
+        exportPath: '/vol1/agents/',
+        subPath: 'agent-abc',
+      };
+      expect(() =>
+        buildPodSpec('m', { ...baseInput, mounts: [trailing, writableNfs] }, baseResolved()),
+      ).toThrow(/aliases/);
+      const rootExport = { ...writableNfs, exportPath: '/', subPath: '' };
+      expect(() =>
+        buildPodSpec(
+          'm',
+          { ...baseInput, mounts: [{ ...memoryMount, server: writableNfs.server }, rootExport] },
+          baseResolved(),
+        ),
+      ).toThrow(/aliases/);
+    });
+
+    it('allows a memory mount on a different server or a disjoint export', () => {
+      expect(() =>
+        buildPodSpec('m', { ...baseInput, mounts: [memoryMount, writableNfs] }, baseResolved()),
+      ).not.toThrow();
+      const sameServerDisjoint = { ...memoryMount, server: '10.0.0.2', exportPath: '/vol2/memory' };
+      expect(() =>
+        buildPodSpec(
+          'm',
+          { ...baseInput, mounts: [sameServerDisjoint, writableNfs] },
+          baseResolved(),
+        ),
+      ).not.toThrow();
+    });
+  });
 });

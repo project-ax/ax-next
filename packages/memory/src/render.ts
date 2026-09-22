@@ -104,8 +104,13 @@ const TRUNCATION_MARKER = '…[truncated]';
  *
  * Returns `''` for an empty or whitespace-only input; the caller decides
  * whether an empty value is worth a line.
+ *
+ * `maxChars` defaults to {@link MAX_VALUE_CHARS}. The export projection
+ * (TASK-494) passes `Number.POSITIVE_INFINITY` — a file that must faithfully
+ * carry the fact cannot chop it, while every prompt/tool caller keeps the
+ * 400-char ceiling.
  */
-export function escapeStatementText(raw: string): string {
+export function escapeStatementText(raw: string, maxChars: number = MAX_VALUE_CHARS): string {
   // ⚠ The three flattening passes OVERLAP, on purpose, and a mutation run
   // measured it: deleting the `LINE_BREAKS` pass ALONE reddens no test.
   // JavaScript's `\s` already contains `\n`, `\r`, `\t`, `\v`, `\f`, U+2028 and
@@ -134,8 +139,8 @@ export function escapeStatementText(raw: string): string {
   // output is a truncation a caller cannot reason about.
   const points = Array.from(flattened);
   const truncated =
-    points.length > MAX_VALUE_CHARS
-      ? `${points.slice(0, MAX_VALUE_CHARS).join('')}${TRUNCATION_MARKER}`
+    points.length > maxChars
+      ? `${points.slice(0, maxChars).join('')}${TRUNCATION_MARKER}`
       : flattened;
   // Backslash first, then pipe: escaping the pipe first would let an input
   // ending in `\` swallow the escape we just added (`\` + `\|` reads as an

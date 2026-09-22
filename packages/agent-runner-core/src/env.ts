@@ -71,6 +71,7 @@ export interface RunnerEnv {
    * 32 lowercase hex chars at read time; a malformed value is ignored.
    */
   proxyToken?: string;
+  memoryRoot?: string;
 }
 
 export class MissingEnvError extends Error {
@@ -145,5 +146,7 @@ export function readRunnerEnv(env: NodeJS.ProcessEnv = process.env): RunnerEnv {
   if (proxyToken !== undefined && /^[0-9a-f]{32}$/.test(proxyToken)) {
     result.proxyToken = proxyToken;
   }
+  const memoryRoot = opt('AX_MEMORY_ROOT');
+  if (memoryRoot !== undefined) result.memoryRoot = memoryRoot;
   return result;
 }

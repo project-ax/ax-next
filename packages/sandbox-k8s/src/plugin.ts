@@ -92,6 +92,12 @@ export function createSandboxK8sPlugin(
             'no durable per-agent user-files mount; AX_USERFILES_ROOT unset; ' +
             'host-read returns absent and agent-delete cleanup is a no-op',
         },
+        {
+          hook: 'sandbox:memory-mounts',
+          degradation:
+            'no read-only memory-export mount; AX_MEMORY_ROOT unset and the ' +
+            'runner sees no /memory view',
+        },
       ],
       // filestore-user-files §11 cleanup: when an agent is deleted, reclaim its
       // durable user-files subtree via a short-lived mount-and-rm pod. Fired by

@@ -26,7 +26,7 @@
 // This file imports `@ax/core` types only — no plugin imports — so the
 // contract itself stays storage-agnostic (Invariant 1).
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { TestContext } from 'vitest';
 import { HookBus, makeAgentContext } from '@ax/core';
 import type { Plugin } from '@ax/core';
@@ -304,6 +304,21 @@ export interface RecallOutput {
    * §4.4). Never a reason to return fewer rows silently.
    */
   degraded: DegradedFlag[];
+}
+
+export interface FactScanInput {
+  ownerUserId?: string;
+  after?: string;
+  limit?: number;
+}
+
+export interface ScannedFactRecord extends FactRecord {
+  recordedAt: string;
+}
+
+export interface FactScanOutput {
+  statements: ScannedFactRecord[];
+  nextAfter?: string;
 }
 
 export interface SupersedeInput {
@@ -611,6 +626,10 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
 
     async function reindex(input: ReindexInput = {}, ctx = makeCtx()): Promise<ReindexOutput> {
       return bus.call<ReindexInput, ReindexOutput>('memory:facts:reindex', ctx, input);
+    }
+
+    async function scan(input: FactScanInput = {}, ctx = makeCtx()): Promise<FactScanOutput> {
+      return bus.call<FactScanInput, FactScanOutput>('memory:facts:scan', ctx, input);
     }
 
     /**
@@ -3876,6 +3895,232 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
             pending: 1,
             degraded: ['pending'],
           });
+        });
+      });
+    });
+
+    describe('memory:facts:scan', () => {
+      async function scanAll(input: FactScanInput = {}, ctx = makeCtx()): Promise<ScannedFactRecord[]> {
+        const out: ScannedFactRecord[] = [];
+        let after: string | undefined;
+        for (let i = 0; i < 100; i++) {
+          const next: FactScanInput = { ...input };
+          if (after !== undefined) next.after = after;
+          const page = await scan(next, ctx);
+          out.push(...page.statements);
+          if (page.nextAfter === undefined) return out;
+          after = page.nextAfter;
+        }
+        throw new Error('scan did not terminate within 100 pages');
+      }
+
+      it('pages a tenant larger than one page exhaustively, in id order, with no omissions or duplicates', async () => {
+        const total = 250;
+        const recorded = await record({
+          statements: Array.from({ length: total }, (_, i) => ({
+            about: 'user:u',
+            relation: 'noted',
+            value: `fact-${i}`,
+            when: JAN,
+          })),
+        });
+        const wantIds = recorded.records.map((r) => r.id);
+
+        const first = await scan();
+        expect(first.statements).toHaveLength(200);
+        expect(first.nextAfter).toBe(first.statements[199]!.id);
+        const second = await scan({ after: first.nextAfter! });
+        expect(second.statements).toHaveLength(50);
+        expect(second.nextAfter).toBeUndefined();
+
+        const ids = [...first.statements, ...second.statements].map((r) => r.id);
+        expect(new Set(ids).size).toBe(total);
+        expect([...ids].sort()).toEqual([...wantIds].sort());
+        expect(ids).toEqual([...ids].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
+      });
+
+      it('clamps a limit above the maximum to the default page size', async () => {
+        const total = 205;
+        const recorded = await record({
+          statements: Array.from({ length: total }, (_, i) => ({
+            about: 'user:u',
+            relation: 'noted',
+            value: `fact-${i}`,
+            when: JAN,
+          })),
+        });
+        const page = await scan({ limit: 500 });
+        expect(page.statements).toHaveLength(200);
+        expect(page.nextAfter).toBe(page.statements[199]!.id);
+        const rest = await scanAll({ after: page.nextAfter! });
+        expect(rest).toHaveLength(5);
+        const ids = [...page.statements, ...rest].map((r) => r.id);
+        expect(new Set(ids).size).toBe(total);
+        expect([...ids].sort()).toEqual([...recorded.records.map((r) => r.id)].sort());
+      });
+
+      it('honours a smaller explicit limit', async () => {
+        await record({
+          statements: Array.from({ length: 5 }, (_, i) => ({
+            about: 'user:u',
+            relation: 'noted',
+            value: `fact-${i}`,
+            when: JAN,
+          })),
+        });
+        const first = await scan({ limit: 2 });
+        expect(first.statements).toHaveLength(2);
+        expect(first.nextAfter).toBe(first.statements[1]!.id);
+        const rest = await scanAll({ after: first.nextAfter!, limit: 2 });
+        expect(rest).toHaveLength(3);
+      });
+
+      it('scopes strictly by ownerUserId, and the predicate applies before the page is cut', async () => {
+        const other = await record({
+          statements: Array.from({ length: 5 }, (_, i) => ({
+            about: 'user:v',
+            relation: 'noted',
+            value: `other-${i}`,
+            when: JAN,
+            ownerUserId: 'other-owner',
+          })),
+        });
+        await record({
+          statements: [{ about: 'user:w', relation: 'noted', value: 'unowned', when: JAN }],
+        });
+        const mine = await record({
+          statements: [
+            { about: 'user:u', relation: 'noted', value: 'mine-1', when: JAN, ownerUserId: 'u' },
+            { about: 'user:u', relation: 'noted', value: 'mine-2', when: JAN, ownerUserId: 'u' },
+          ],
+        });
+
+        const page = await scan({ ownerUserId: 'u', limit: 3 });
+        expect(page.nextAfter).toBeUndefined();
+        expect(page.statements.map((r) => r.id).sort()).toEqual(
+          mine.records.map((r) => r.id).sort(),
+        );
+        expect(page.statements.map((r) => r.id)).not.toContain(other.records[0]!.id);
+      });
+
+      it('isolates tenants by agent', async () => {
+        await recordOne(
+          { about: 'user:u', relation: 'noted', value: 'a-fact', when: JAN },
+          makeCtx('agent-a'),
+        );
+        await recordOne(
+          { about: 'user:u', relation: 'noted', value: 'b-fact', when: JAN },
+          makeCtx('agent-b'),
+        );
+        const a = await scanAll({}, makeCtx('agent-a'));
+        expect(a).toHaveLength(1);
+        expect(a[0]!.value).toBe('a-fact');
+      });
+
+      it('returns closed rows with until and closedBy', async () => {
+        const first = await recordOne({
+          about: 'user:u',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JAN,
+          slot: 'lives_in',
+        });
+        await recordOne({
+          about: 'user:u',
+          relation: 'lives_in',
+          value: 'Portland',
+          when: JUN,
+          slot: 'lives_in',
+        });
+        const rows = await scanAll();
+        const closed = rows.find((r) => r.id === first.id);
+        expect(closed).toBeDefined();
+        expect(closed!.until).toBeDefined();
+        expect(closed!.closedBy).toBeDefined();
+      });
+
+      it('stamps recordedAt with server time, independent of when', async () => {
+        const before = Date.now();
+        await record({
+          statements: [
+            { about: 'user:u', relation: 'noted', value: 'past', when: '1900-01-01T00:00:00.000Z' },
+            { about: 'user:u', relation: 'noted', value: 'future', when: '3000-01-01T00:00:00.000Z' },
+          ],
+        });
+        const after = Date.now();
+        const rows = await scanAll();
+        expect(rows).toHaveLength(2);
+        for (const row of rows) {
+          const ms = Date.parse(row.recordedAt);
+          expect(Number.isFinite(ms)).toBe(true);
+          expect(ms).toBeGreaterThanOrEqual(before);
+          expect(ms).toBeLessThanOrEqual(after);
+        }
+        expect(rows.find((r) => r.value === 'past')!.when).toBe('1900-01-01T00:00:00.000Z');
+        expect(rows.find((r) => r.value === 'future')!.when).toBe('3000-01-01T00:00:00.000Z');
+      });
+
+      it('treats after as an opaque cursor, bound as a value and never spliced into the query', async () => {
+        const recorded = await record({
+          statements: Array.from({ length: 4 }, (_, i) => ({
+            about: 'user:u',
+            relation: 'noted',
+            value: `fact-${i}`,
+            when: JAN,
+          })),
+        });
+        const ids = recorded.records.map((r) => r.id).sort();
+        const hostile = `${ids[1]}' OR '1'='1`;
+        const tail = await scan({ after: hostile });
+        expect(tail.statements.map((r) => r.id)).toEqual(ids.slice(2));
+        expect(tail.nextAfter).toBeUndefined();
+      });
+
+      it('returns the strict tail after a known cursor', async () => {
+        const recorded = await record({
+          statements: Array.from({ length: 4 }, (_, i) => ({
+            about: 'user:u',
+            relation: 'noted',
+            value: `fact-${i}`,
+            when: JAN,
+          })),
+        });
+        const ids = recorded.records.map((r) => r.id).sort();
+        const tail = await scan({ after: ids[1]! });
+        expect(tail.statements.map((r) => r.id)).toEqual(ids.slice(2));
+      });
+
+      it('reports an empty tenant as an empty page with no cursor', async () => {
+        expect(await scan()).toEqual({ statements: [] });
+      });
+
+      it('runs no semantic or ranking machinery — the scan is the only hook call', async () => {
+        await recordOne({ about: 'user:u', relation: 'noted', value: 'x', when: JAN });
+        const spy = vi.spyOn(bus, 'call');
+        const page = await scan({ limit: 10 });
+        expect(page.statements).toHaveLength(1);
+        expect((page as unknown as Record<string, unknown>).degraded).toBeUndefined();
+        expect(spy.mock.calls.map((c) => c[0])).toEqual(['memory:facts:scan']);
+        spy.mockRestore();
+      });
+
+      describe('invalid-payload rejection', () => {
+        it.each([
+          ['ownerUserId empty', { ownerUserId: '' }],
+          ['ownerUserId non-string', { ownerUserId: 5 }],
+          ['after empty', { after: '' }],
+          ['after non-string', { after: 5 }],
+          ['limit zero', { limit: 0 }],
+          ['limit negative', { limit: -1 }],
+          ['limit non-finite', { limit: Number.NaN }],
+          ['limit non-integer', { limit: 1.5 }],
+          ['limit non-number', { limit: '5' }],
+          ['input is an array', []],
+          ['input is null', null],
+        ])('rejects %s', async (_label, input) => {
+          await expectCode('invalid-payload', () =>
+            scan(input as unknown as FactScanInput),
+          );
         });
       });
     });
