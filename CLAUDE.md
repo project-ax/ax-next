@@ -51,6 +51,17 @@ Note these two traps point in **opposite** directions and are both quiet: the
 
 (Tooling lands in Week 1–2 per architecture doc Section 10.)
 
+### Docker-backed tests
+
+Container-starting tests require an explicit `DOCKER_HOST` shared by the Docker
+CLI and Testcontainers. CI uses `unix:///var/run/docker.sock`; local runs must
+name their intended socket or TCP endpoint with a port. Docker CLI contexts and
+automatic endpoint discovery are not used by the readiness check. Per-home
+Testcontainers override files are rejected rather than silently selecting a
+different daemon. For TCP TLS, use `DOCKER_TLS_VERIFY=1` and an absolute
+`DOCKER_CERT_PATH`; CLI-only `DOCKER_TLS` is unsupported. Keep these settings
+stable within a test process. The helper does not edit local Docker settings.
+
 ## Codex Memory Bootstrap
 
 Project-local memory lives in `.claude/memory/`. For any substantial Codex task,

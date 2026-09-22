@@ -15,6 +15,7 @@ jobs:
     permissions:
       contents: read
     env:
+      DOCKER_HOST: unix:///var/run/docker.sock
       # testcontainers starts a second container alongside EVERY `.start()`: the
       # Ryuk reaper, `testcontainers/ryuk:0.14.0`, created via
       # `new GenericContainer(REAPER_IMAGE)` and pulled through the same

@@ -58,6 +58,13 @@ for (const shell of ['bash', 'zsh']) {
       vi.stubEnv('BASH_ENV', '');
       vi.stubEnv('ZDOTDIR', dir);
       vi.stubEnv('NODE_OPTIONS', '');
+      vi.stubEnv('HOME', dir);
+      vi.stubEnv('USERPROFILE', dir);
+      vi.stubEnv('DOCKER_HOST', 'unix:///ax-preflight-test.sock');
+      vi.stubEnv('DOCKER_CONTEXT', 'different-daemon');
+      vi.stubEnv('DOCKER_TLS', undefined);
+      vi.stubEnv('DOCKER_TLS_VERIFY', undefined);
+      vi.stubEnv('DOCKER_CERT_PATH', undefined);
       vi.stubEnv('AX_DOCKER_TEST_NODE', process.execPath);
       vi.stubEnv('AX_DOCKER_TEST_TRACE', trace);
       vi.stubEnv('AX_DOCKER_TEST_MODE', 'healthy');
@@ -65,6 +72,10 @@ for (const shell of ['bash', 'zsh']) {
       start.mockClear();
       warn.mockClear();
       await writeFile(join(dir, 'docker'), `#!/usr/bin/env ${shell}
+[ "$1" = '--host=unix:///ax-preflight-test.sock' ] || exit 9
+[ "$DOCKER_HOST" = 'unix:///ax-preflight-test.sock' ] || exit 9
+[ -z "$DOCKER_CONTEXT" ] || exit 9
+shift
 printf '%s\\n' "$*" >> "$AX_DOCKER_TEST_TRACE"
 case "$1" in
   version)
@@ -72,6 +83,8 @@ case "$1" in
     case "$AX_DOCKER_TEST_MODE" in
       empty-version) exit 0 ;;
       failed-version) printf '%s\\n' 'PRIVATE_DIAGNOSTIC' >&2; exit 7 ;;
+      overflow-stdout) exec "$AX_DOCKER_TEST_NODE" -e 'process.stdout.write("PRIVATE_DIAGNOSTIC".repeat(2048))' ;;
+      overflow-stderr) exec "$AX_DOCKER_TEST_NODE" -e 'process.stderr.write("PRIVATE_DIAGNOSTIC".repeat(2048))' ;;
       hang-version) exec "$AX_DOCKER_TEST_NODE" -e 'setTimeout(() => process.exit(0), 20000)' ;;
     esac
     printf '%s\\n' '26.1.0'
@@ -122,7 +135,28 @@ esac
       expect(error).toBeInstanceOf(Error);
       expect(String(error)).toContain('Docker daemon readiness probe failed');
       expect(String(error)).not.toContain('PRIVATE_DIAGNOSTIC');
+      expect(Object.getOwnPropertyNames(error).sort()).toEqual(['message', 'stack']);
       expect(start).not.toHaveBeenCalled();
+    });
+
+    it.each(['overflow-stdout', 'overflow-stderr'])('bounds %s and does not attach raw diagnostics', async (mode) => {
+      vi.stubEnv('AX_DOCKER_TEST_MODE', mode);
+      const error = await startConsumer(start, warn).then(() => null, (reason: unknown) => reason);
+      expect(error).toBeInstanceOf(Error);
+      expect(String(error)).toContain('Docker daemon readiness probe failed');
+      expect(String(error)).not.toContain('PRIVATE_DIAGNOSTIC');
+      expect(Object.getOwnPropertyNames(error).sort()).toEqual(['message', 'stack']);
+      expect(start).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['19 19', 0],
+      ['20 20', 1],
+    ] as const)('keeps the advisory boundary explicit for %s', async (info, warnings) => {
+      vi.stubEnv('AX_DOCKER_TEST_INFO', info);
+      await expect(startConsumer(start, warn)).resolves.toBe(started);
+      expect(warn).toHaveBeenCalledTimes(warnings);
+      expect(start).toHaveBeenCalledTimes(1);
     });
 
     it.each(['hang-version', 'hang-info'])('bounds %s instead of inheriting the command hang', async (mode) => {
@@ -131,7 +165,7 @@ esac
       expect(start).not.toHaveBeenCalled();
     });
 
-    it.each(['', 'not-counts', '-1 0', '1 2', '999999999999999999999 1'])('does not report a clean host from invalid counts %j', async (info) => {
+    it.each(['', 'not-counts', '-1 0', '1 2', '2.0 1', '1e3 1', '3 1 extra', '999999999999999999999 1'])('does not report a clean host from invalid counts %j', async (info) => {
       vi.stubEnv('AX_DOCKER_TEST_INFO', info);
       await expect(startConsumer(start, warn)).rejects.toThrow(/Docker daemon returned unusable container counts/);
       expect(start).not.toHaveBeenCalled();
