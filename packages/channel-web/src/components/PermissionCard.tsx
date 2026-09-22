@@ -339,12 +339,12 @@ export function PermissionCard() {
     }
   }
 
-  async function allow(persist: boolean): Promise<void> {
+  async function allow(host: string, persist: boolean): Promise<void> {
     if (busy || request === null || request.kind !== 'host') return;
     setBusy(true);
     setError(null);
     try {
-      await grantHost({ sessionId: request.sessionId, host: request.host, persist });
+      await grantHost({ sessionId: request.sessionId, host, persist });
       close();
     } catch (err) {
       // `connect failed: 401` used to land in the Alert below (TASK-288).
@@ -515,19 +515,20 @@ export function PermissionCard() {
     // (`isRenderableGrant` requires `typeof r.host === 'string'`) where this
     // card cannot. NOT humanized: a hostname is already the thing we want the
     // person to read, and `humanizeId('api.linear.app')` would dress it up.
-    const hostLabel =
-      typeof request.host === 'string' && request.host.trim().length > 0
-        ? request.host
-        : 'this site';
+    const hostLabel = usableHosts([request.host])[0];
     return (
       <Card ref={cardRef} className="mb-3" data-testid="permission-card-host">
         <CardHeader>
-          <CardTitle>Allow access to {hostLabel}?</CardTitle>
-          <CardDescription>{HOST_WALL_EXPLANATION}</CardDescription>
+          <CardTitle>Allow access to {hostLabel ?? 'this site'}?</CardTitle>
+          <CardDescription>
+            {hostLabel === undefined
+              ? `We could not identify the site for this request. Choose ${GRANT_REJECT_LABEL} to dismiss it.`
+              : HOST_WALL_EXPLANATION}
+          </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <div className="flex flex-wrap gap-1.5">
-            <Badge variant="secondary">{hostLabel}</Badge>
+            <Badge variant="secondary">{hostLabel ?? 'this site'}</Badge>
           </div>
           {error !== null && (
             <Alert
@@ -546,19 +547,21 @@ export function PermissionCard() {
           </Button>
           <Button
             variant="outline"
-            disabled={busy}
+            disabled={busy || hostLabel === undefined}
             onClick={() => {
+              if (hostLabel === undefined) return;
               armForResolution();
-              void allow(true);
+              void allow(hostLabel, true);
             }}
           >
             {HOST_ALLOW_ALWAYS_LABEL}
           </Button>
           <Button
-            disabled={busy}
+            disabled={busy || hostLabel === undefined}
             onClick={() => {
+              if (hostLabel === undefined) return;
               armForResolution();
-              void allow(false);
+              void allow(hostLabel, false);
             }}
           >
             {busy ? HOST_ALLOWING_LABEL : HOST_ALLOW_ONCE_LABEL}
