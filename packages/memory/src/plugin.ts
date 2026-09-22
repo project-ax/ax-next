@@ -25,6 +25,7 @@ import { selectProfileRows } from './profile.js';
 import { formatEvidenceWhen } from './evidence.js';
 import { MEMORY_RECALL_TOOL_HOOK, registerMemoryRecall } from './recall-tool.js';
 import { MEMORY_NOTE_TOOL_HOOK, registerMemoryNote } from './note-tool.js';
+import { registerRulesHooks, RULES_WRITE_HOOK } from './rules.js';
 import type { UntrustedMessage } from './transcript.js';
 import {
   createMemoryExporter,
@@ -212,6 +213,7 @@ export interface MemoryPluginConfig {
    */
   block?: MemoryBlockConfig;
   exports?: MemoryExportConfig;
+  rules?: boolean;
 }
 
 const DEFAULT_MAX_RECALL_LIMIT = 100;
@@ -315,7 +317,25 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
   const parsedMemoryOps = parseModelRef(memoryOpsModel);
   const memoryOpsHook = `llm:call:${parsedMemoryOps.provider}`;
 
+  if (config.rules !== undefined && typeof config.rules !== 'boolean') {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: `rules must be a boolean when set (got ${typeof config.rules})`,
+    });
+  }
+
   const exportsCfg = config.exports;
+  if (
+    exportsCfg !== undefined &&
+    (exportsCfg === null || typeof exportsCfg !== 'object' || Array.isArray(exportsCfg))
+  ) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'exports must be an object when set',
+    });
+  }
   if (exportsCfg?.volume !== undefined) validateVolumeConfig(exportsCfg.volume);
   let exporterRef: ReturnType<typeof createMemoryExporter> | undefined;
 
@@ -332,6 +352,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         MEMORY_NOTE_TOOL_HOOK,
         ...(exportsCfg !== undefined ? [MEMORY_EXPORT_FLUSH_HOOK] : []),
         ...(exportsCfg?.volume !== undefined ? ['sandbox:memory-mounts'] : []),
+        ...(config.rules === true ? [RULES_READ_HOOK, RULES_WRITE_HOOK] : []),
       ],
       // Hard dependencies, all five — plus the export projection's four when
       // `exports` is configured (TASK-494): this plugin has nothing to fall
@@ -347,7 +368,9 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         AGENTS_RESOLVE_HOOK,
         ...(exportsCfg !== undefined
           ? [FACTS_SCAN_HOOK, 'workspace:list', 'workspace:read', 'workspace:apply']
-          : []),
+          : config.rules === true
+            ? ['workspace:read', 'workspace:apply']
+            : []),
       ],
       // The extraction provider is OPTIONAL, and that asymmetry with the
       // three engine hooks above is deliberate. A memory surface with no
@@ -788,6 +811,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         return undefined;
       });
 
+      if (config.rules === true) registerRulesHooks(bus);
       await registerMemoryRecall(bus);
       await registerMemoryNote(bus, onFactsChanged);
     },

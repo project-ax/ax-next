@@ -132,8 +132,10 @@ export function filterToPolicy(changes: readonly FileChange[]): FileChange[] {
 // whole comparison. No globs.
 // ---------------------------------------------------------------------------
 
+export const MEMORY_RULES_PATH = 'memory/system/rules.md' as const;
+
 export const RUNNER_IMMUTABLE_PATHS: ReadonlySet<string> = new Set<string>([
-  'memory/system/rules.md',
+  MEMORY_RULES_PATH,
 ]);
 
 export const MEMORY_FACTS_EXPORT_ROOT = 'permanent/memory/facts' as const;

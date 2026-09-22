@@ -157,6 +157,56 @@
           "description": "CAPABILITY GATE. Ships the starter skill-creator skill, i.e. authoring capability."
         }
       }
+    },
+    "host": {
+      "type": "object",
+      "properties": {
+        "preset": {
+          "type": "string",
+          "enum": [
+            "k8s",
+            "memory"
+          ],
+          "description": "Which plugin assembly `serve` boots. 'memory' requires the memory.* block and renders its env/mounts/PVC."
+        }
+      }
+    },
+    "memory": {
+      "type": "object",
+      "properties": {
+        "vertexProject": {
+          "type": "string",
+          "description": "Vertex AI project for the embeddings embed path. Required when host.preset=memory."
+        },
+        "vertexCredentialRef": {
+          "type": "string"
+        },
+        "cohereCredentialRef": {
+          "type": "string"
+        },
+        "facts": {
+          "type": "object",
+          "properties": {
+            "storage": {
+              "type": "string"
+            },
+            "storageClassName": {
+              "type": "string"
+            }
+          }
+        },
+        "exports": {
+          "type": "object",
+          "properties": {
+            "server": {
+              "type": "string"
+            },
+            "exportPath": {
+              "type": "string"
+            }
+          }
+        }
+      }
     }
   }
 }

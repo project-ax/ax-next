@@ -1,5 +1,6 @@
 {{- include "ax-next.validateWorkspaceBackend" . -}}
 {{- include "ax-next.validateHostReplicas" . -}}
+{{- include "ax-next.validatePreset" . -}}
 {{- include "ax-next.validateBlobBackend" . -}}
 {{- include "ax-next.validateProxyTransport" . -}}
 {{- include "ax-next.validateDevServicesKubeVersion" . -}}
@@ -370,6 +371,25 @@ spec:
             {{- end }}
             {{- end }}
 
+            {{- if eq (.Values.host.preset | default "k8s") "memory" }}
+            - name: AX_PRESET
+              value: "memory"
+            - name: AX_MEMORY_FACTS_DB_PATH
+              value: {{ printf "%s/facts.db" (include "ax-next.memoryFactsRoot" .) | quote }}
+            - name: AX_MEMORY_EXPORT_HOST_ROOT
+              value: {{ include "ax-next.memoryExportsRoot" . | quote }}
+            - name: AX_MEMORY_EXPORT_NFS_SERVER
+              value: {{ .Values.memory.exports.server | quote }}
+            - name: AX_MEMORY_EXPORT_NFS_PATH
+              value: {{ .Values.memory.exports.exportPath | quote }}
+            - name: AX_MEMORY_VERTEX_PROJECT
+              value: {{ .Values.memory.vertexProject | quote }}
+            - name: AX_MEMORY_VERTEX_CREDENTIAL_REF
+              value: {{ .Values.memory.vertexCredentialRef | quote }}
+            - name: AX_MEMORY_COHERE_CREDENTIAL_REF
+              value: {{ .Values.memory.cohereCredentialRef | quote }}
+            {{- end }}
+
             # Credentials key — encrypts secrets at rest. Required.
             - name: AX_CREDENTIALS_KEY
               valueFrom:
@@ -527,6 +547,12 @@ spec:
               mountPath: {{ .Values.sandbox.filestore.hostReadPath | quote }}
               readOnly: true
             {{- end }}
+            {{- if eq (.Values.host.preset | default "k8s") "memory" }}
+            - name: memory-facts
+              mountPath: {{ include "ax-next.memoryFactsRoot" . }}
+            - name: memory-exports
+              mountPath: {{ include "ax-next.memoryExportsRoot" . }}
+            {{- end }}
       volumes:
         - name: ax-config
           configMap:
@@ -568,4 +594,13 @@ spec:
             server: {{ .Values.sandbox.filestore.server | quote }}
             path: {{ .Values.sandbox.filestore.exportPath | quote }}
             readOnly: true
+        {{- end }}
+        {{- if eq (.Values.host.preset | default "k8s") "memory" }}
+        - name: memory-facts
+          persistentVolumeClaim:
+            claimName: {{ include "ax-next.fullname" . }}-memory-facts
+        - name: memory-exports
+          nfs:
+            server: {{ .Values.memory.exports.server | quote }}
+            path: {{ .Values.memory.exports.exportPath | quote }}
         {{- end }}

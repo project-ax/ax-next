@@ -29,6 +29,7 @@ export {
   POLICY_EXACT_PATHS,
   RUNNER_IMMUTABLE_PATHS,
   MEMORY_FACTS_EXPORT_ROOT,
+  MEMORY_RULES_PATH,
   RUNNER_IMMUTABLE_PREFIXES,
 } from './workspace-policy.js';
 export { registerWorkspaceApplyFacade } from './workspace-apply-facade.js';

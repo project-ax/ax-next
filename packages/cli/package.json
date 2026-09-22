@@ -51,6 +51,7 @@
     "@ax/memory-strata-index-sqlite": "workspace:*",
     "@ax/web-tools": "workspace:*",
     "@ax/preset-k8s": "workspace:*",
+    "@ax/preset-memory": "workspace:*",
     "@ax/test-harness": "workspace:*",
     "@ax/validator-identity": "workspace:*",
     "@ax/validator-routine": "workspace:*",

@@ -56,6 +56,7 @@ namespace:
 
 # ─── Host pod ────────────────────────────────────────────────────
 host:
+  preset: k8s
   ports:
     # @ax/ipc-http listener — runner pods reach back to the host here.
     # NOT public traffic. NetworkPolicy + the runner pod's own egress
@@ -728,6 +729,15 @@ skills:
 # cheap moves much faster than this chart does.
 memory:
   orchestratorModel: ""
+  vertexProject: ''
+  vertexCredentialRef: provider:vertex
+  cohereCredentialRef: provider:cohere
+  facts:
+    storage: 10Gi
+    storageClassName: ''
+  exports:
+    server: ''
+    exportPath: ''
 
 # ─── Web tools ────────────────────────────────────────────────────
 # Sites `web_extract` may read WITHOUT stopping to ask anybody — the operator's
