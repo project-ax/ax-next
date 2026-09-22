@@ -58,6 +58,12 @@ function configuration(): ProbeConfiguration {
   if (verify !== '' && verify !== '1') {
     throw configurationError('DOCKER_TLS_VERIFY must be 1 or unset so Docker CLI and Testcontainers agree.');
   }
+  if (tcp && url.port === '2376' && verify !== '1') {
+    throw configurationError('TCP port 2376 requires DOCKER_TLS_VERIFY=1 and an absolute DOCKER_CERT_PATH so Docker CLI and the SDK use the same TLS transport.');
+  }
+  if (verify !== '1' && (process.env.DOCKER_CERT_PATH ?? '') !== '') {
+    throw configurationError('DOCKER_CERT_PATH requires DOCKER_TLS_VERIFY=1; certificate settings without verification are unsupported.');
+  }
   const certPath = verify === '1' ? process.env.DOCKER_CERT_PATH : undefined;
   if (verify === '1' && (!tcp || certPath === undefined || !isAbsolute(certPath))) {
     throw configurationError('verified TLS requires a tcp DOCKER_HOST and an absolute DOCKER_CERT_PATH.');
@@ -145,5 +151,6 @@ export async function startTestContainer<T>(container: StartableTestContainer<T>
     throw configurationError('the Docker configuration changed before startup. Retry with stable endpoint and TLS settings.');
   }
   startedConfiguration = config.identity;
+  process.env.AX_TESTCONTAINERS_STRICT_ENDPOINT = 'true';
   return container.start();
 }

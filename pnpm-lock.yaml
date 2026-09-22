@@ -34,6 +34,11 @@ overrides:
   '@babel/core@<7.29.6': '>=7.29.6 <8.0.0'
   esbuild@>=0.27.3 <0.28.1: '>=0.28.1 <0.29.0'
 
+patchedDependencies:
+  testcontainers@11.14.0:
+    hash: 6a27f7c937ede2ce2f1895371b34773a210ec4d53061a1d3c0069e075c4be1e5
+    path: patches/testcontainers@11.14.0.patch
+
 importers:
 
   .:
@@ -11293,7 +11298,7 @@ snapshots:
 
   '@testcontainers/postgresql@11.14.0':
     dependencies:
-      testcontainers: 11.14.0
+      testcontainers: 11.14.0(patch_hash=6a27f7c937ede2ce2f1895371b34773a210ec4d53061a1d3c0069e075c4be1e5)
     transitivePeerDependencies:
       - bare-abort-controller
       - bare-buffer
@@ -14426,7 +14431,7 @@ snapshots:
 
   term-size@2.2.1: {}
 
-  testcontainers@11.14.0:
+  testcontainers@11.14.0(patch_hash=6a27f7c937ede2ce2f1895371b34773a210ec4d53061a1d3c0069e075c4be1e5):
     dependencies:
       '@balena/dockerignore': 1.0.2
       '@types/dockerode': 4.0.1

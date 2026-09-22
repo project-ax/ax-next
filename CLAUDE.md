@@ -61,6 +61,10 @@ Testcontainers override files are rejected rather than silently selecting a
 different daemon. For TCP TLS, use `DOCKER_TLS_VERIFY=1` and an absolute
 `DOCKER_CERT_PATH`; CLI-only `DOCKER_TLS` is unsupported. Keep these settings
 stable within a test process. The helper does not edit local Docker settings.
+TCP port 2376 requires verified TLS; certificate settings without verification
+are rejected. The checked-start wrapper enables the pinned SDK strict-selection
+patch, which fails instead of switching to a discovered socket and refuses a
+client cached under another configuration or outside strict mode.
 
 ## Codex Memory Bootstrap
 

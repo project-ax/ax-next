@@ -23,6 +23,7 @@ beforeEach(() => {
   vi.stubEnv('DOCKER_TLS', undefined);
   vi.stubEnv('DOCKER_TLS_VERIFY', undefined);
   vi.stubEnv('DOCKER_CERT_PATH', undefined);
+  vi.stubEnv('AX_TESTCONTAINERS_STRICT_ENDPOINT', undefined);
 });
 
 afterEach(() => {
@@ -35,7 +36,10 @@ describe('explicit Docker endpoint contract', () => {
   it('pins both probes to DOCKER_HOST instead of a conflicting CLI context', async () => {
     const { startTestContainer } = await import('../docker-preflight.js');
     const result = {};
-    const start = vi.fn(async () => result);
+    const start = vi.fn(async () => {
+      expect(process.env.AX_TESTCONTAINERS_STRICT_ENDPOINT).toBe('true');
+      return result;
+    });
     await expect(startTestContainer({ start })).resolves.toBe(result);
     expect(mocks.exec).toHaveBeenCalledTimes(2);
     for (const [command, args, options] of mocks.exec.mock.calls as [string, string[], ProbeOptions][]) {
@@ -127,6 +131,25 @@ describe('explicit Docker endpoint contract', () => {
     const { startTestContainer } = await import('../docker-preflight.js');
     const start = vi.fn(async () => ({}));
     await expect(startTestContainer({ start })).rejects.toThrow(/configuration changed during the preflight/);
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('rejects implicit TLS on port 2376', async () => {
+    vi.stubEnv('DOCKER_HOST', 'tcp://docker.example:2376');
+    const { startTestContainer } = await import('../docker-preflight.js');
+    const start = vi.fn(async () => ({}));
+    await expect(startTestContainer({ start })).rejects.toThrow(/port 2376 requires DOCKER_TLS_VERIFY=1/);
+    expect(mocks.exec).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('rejects certificate settings without verified TLS before the SDK can read them', async () => {
+    vi.stubEnv('DOCKER_HOST', 'tcp://docker.example:2375');
+    vi.stubEnv('DOCKER_CERT_PATH', process.cwd());
+    const { startTestContainer } = await import('../docker-preflight.js');
+    const start = vi.fn(async () => ({}));
+    await expect(startTestContainer({ start })).rejects.toThrow(/DOCKER_CERT_PATH requires DOCKER_TLS_VERIFY=1/);
+    expect(mocks.exec).not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();
   });
 });
