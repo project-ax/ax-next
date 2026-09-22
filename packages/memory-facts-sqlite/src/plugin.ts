@@ -69,6 +69,34 @@ function isNonEmptyString(v: unknown): v is string {
   return typeof v === 'string' && v.length > 0;
 }
 
+const FACT_TEXT_MAX_UNITS = { about: 1024, relation: 1024, value: 8192, slot: 256 } as const;
+
+function validateFactText(
+  field: keyof typeof FACT_TEXT_MAX_UNITS,
+  value: string,
+  label = `statement.${field}`,
+): void {
+  const maxUnits = FACT_TEXT_MAX_UNITS[field];
+  if (value.length > maxUnits) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: `${label} must not exceed ${maxUnits} UTF-16 code units`,
+    });
+  }
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    const control = code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+    if (control && !(field === 'value' && (code === 0x09 || code === 0x0a))) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        message: `${label} contains a disallowed control character`,
+      });
+    }
+  }
+}
+
 // Every closure decision (rules 1-4, closure.ts) and recall's ORDER BY compare
 // `when` lexicographically, which equals chronological order ONLY for a
 // normalized ISO-8601 Z-suffixed instant — an unpadded date or epoch millis
@@ -121,13 +149,15 @@ function validateStatement(input: unknown): FactStatementInput {
   }
   const s = input as Record<string, unknown>;
   for (const field of ['about', 'relation', 'value', 'when'] as const) {
-    if (!isNonEmptyString(s[field])) {
+    const value = s[field];
+    if (!isNonEmptyString(value)) {
       throw new PluginError({
         code: 'invalid-payload',
         plugin: PLUGIN_NAME,
         message: `statement.${field} must be a non-empty string`,
       });
     }
+    if (field !== 'when') validateFactText(field, value);
   }
   const when = normalizeIsoInstant('when', s.when as string);
   if (s.slot !== undefined && !isNonEmptyString(s.slot)) {
@@ -137,6 +167,7 @@ function validateStatement(input: unknown): FactStatementInput {
       message: 'statement.slot must be a non-empty string when set',
     });
   }
+  if (s.slot !== undefined) validateFactText('slot', s.slot as string);
   if (s.provenance !== undefined && !PROVENANCES.includes(s.provenance as Provenance)) {
     throw new PluginError({
       code: 'invalid-payload',
@@ -412,6 +443,7 @@ function validateReindexInput(input: ReindexInput): ResolvedSlot[] {
         message: `slots[].slot cannot be '${PENDING_SLOT}' — that is the unresolved sentinel, not a slot`,
       });
     }
+    if (e.slot !== null) validateFactText('slot', e.slot as string, 'slots[].slot');
     return { id: e.id, slot: e.slot as string | null };
   });
 }
@@ -1296,13 +1328,10 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
               // Deduped by `(about, slot)`: two rows resolved into the same
               // chain re-derive it once, not twice. A Map keyed structurally
               // (`JSON.stringify([about, slot])`), not by joining the two
-              // fields with a delimiter: `about` is free text that can carry
-              // model output, and ANY in-band delimiter — including NUL — is
-              // only injective if the fields are guaranteed not to contain
-              // it, which nothing here guarantees. `about = "x\u0000y", slot
-              // = "z"` and `about = "x", slot = "y\u0000z"` produce the same
-              // NUL-joined string but different JSON arrays (same reasoning
-              // as `supersedeIds`'s group map in `closure.ts`).
+              // fields with a delimiter: printable delimiters remain valid
+              // in both fields. `about = "x|y", slot = "z"` and `about = "x",
+              // slot = "y|z"` produce the same pipe-joined string but different
+              // JSON arrays (same reasoning as `supersedeIds` in `closure.ts`).
               const groups = new Map<string, SlotGroup>();
 
               for (const entry of slots) {

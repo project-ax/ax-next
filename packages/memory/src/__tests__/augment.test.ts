@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { HookBus, makeAgentContext, ownerlessIdFor } from '@ax/core';
+import Database from 'better-sqlite3';
 
 import {
   makeMemoryHarness,
@@ -761,16 +762,16 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
       expect(escapeStatementText('a\\|b')).toBe('a\\\\\\|b');
     });
 
-    // The token budget bounds the block; it cannot stop one enormous value
-    // from consuming the whole budget and evicting the person's real profile.
-    it('truncates one huge value rather than letting it evict every other row', async () => {
+    // The token budget bounds the block; a huge legacy value must still be
+    // truncated rather than evicting the person's other profile rows.
+    it('truncates one huge legacy value rather than letting it evict every other row', async () => {
       const h = await makeHarness();
       const ctx = h.ctx();
-      await engineRecord(h.bus, ctx, [
+      const { records } = await engineRecord(h.bus, ctx, [
         {
           about: `user:${ALICE}`,
           relation: 'lives_in',
-          value: 'x'.repeat(50_000),
+          value: 'legacy-placeholder',
           when: MAR,
           slot: 'lives_in',
           ownerUserId: ALICE,
@@ -784,6 +785,14 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
           ownerUserId: ALICE,
         },
       ]);
+      const legacy = new Database(h.databasePath);
+      try {
+        const updated = legacy.prepare('UPDATE memory_facts_v1 SET value = ? WHERE id = ?')
+          .run('x'.repeat(50_000), records[0]!.id);
+        expect(updated.changes).toBe(1);
+      } finally {
+        legacy.close();
+      }
 
       const body = await augment(h, ctx);
       expect(body).toContain('[truncated]');
