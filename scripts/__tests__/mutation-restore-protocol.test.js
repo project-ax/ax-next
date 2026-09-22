@@ -182,8 +182,8 @@
 //       invocation`, and nothing else. Deliberately the shape no behavioural test here can
 //       see: a pipe launders git's exit status, so a FAILED status call reads as "clean".
 //   M7. CONSTRUCTED, a mutant of THIS FILE rather than of the doc: put `logicalLines` back
-//       to join-continuations-then-filter-comments, the ordering TASK-454 found in two
-//       sibling guards -> **1 red**. The helper every structural check reads through could
+//       to join-continuations-then-filter-comments, the original triage guard's ordering
+//       confirmed by TASK-454 -> **1 red**. The helper every structural check reads through could
 //       otherwise DELETE a command line before the check ever saw it.
 //   M8. CONSTRUCTED: delete the `git ls-files --error-unmatch` tracked block from both
 //       blocks -> **5 red**. Found by running mutants, not by reading: `git status` on a
@@ -347,11 +347,12 @@ function bashBlocks(md) {
 /**
  * A block's lines with whole-line comments dropped and `\`-continuations joined.
  *
- * **In that order.** TASK-454 measured the opposite ordering as fail-OPEN in two sibling
- * guards: joining continuations first lets a comment line ending in a backslash absorb the
- * code line below it, the joined result starts with `#`, and the real command DISAPPEARS
- * from the scan — while both bash and zsh happily RUN it, because a `#` comment does not
- * continue across a backslash. Filtering first cannot lose code that way.
+ * **In that order.** TASK-452 measured the opposite ordering as fail-OPEN in its guard;
+ * TASK-454 confirmed it in the triage guard. Joining continuations first lets a comment
+ * line ending in a backslash absorb the code line below it. The joined result starts with
+ * `#`, and the real command DISAPPEARS from the scan — while both bash and zsh happily
+ * RUN it, because a `#` comment does not continue across a backslash. Filtering first
+ * cannot lose code that way.
  *
  * Pinned by `logicalLines keeps a command a comment tried to swallow` below.
  */

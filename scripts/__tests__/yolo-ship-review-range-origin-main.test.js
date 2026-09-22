@@ -127,8 +127,8 @@
 //       check that inspects one occurrence is a check on that occurrence, not on the
 //       property.** It now scans every `git` line in the block.
 //   M8. CONSTRUCTED, and it is a mutant of this FILE rather than of the doc: put
-//       `logicalLines` back to join-continuations-then-filter-comments, the order the two
-//       sibling guards use -> **1 red**, `logicalLines keeps a command a comment tried to
+//       `logicalLines` back to join-continuations-then-filter-comments, the original triage
+//       guard's order -> **1 red**, `logicalLines keeps a command a comment tried to
 //       swallow`. Found in review, and the same lesson as M7 one layer down: the helper
 //       every structural check reads through could DELETE a command line before the check
 //       ever saw it. See `logicalLines` for the measured shape.
@@ -197,11 +197,10 @@ function bashBlocks(md) {
 /**
  * A block's lines with whole-line comments dropped and `\`-continuations joined.
  *
- * **In that order, which is a deliberate divergence from the two sibling guards.** They
- * join continuations first and filter comments second, and that is fail-OPEN here: a
- * comment line ending in a backslash absorbs the line below it, and the joined result then
- * starts with `#` and is dropped — so a real command DISAPPEARS from the scan. Measured
- * during review on exactly the shape that matters:
+ * **In that order.** The original triage guard joined continuations first and filtered
+ * comments second, and that is fail-OPEN here: a comment line ending in a backslash
+ * absorbs the line below it. The joined result starts with `#` and is dropped — so a real
+ * command DISAPPEARS from the scan. Measured during review on exactly the shape that matters:
  *
  *     # a note \
  *     N=$(git diff --name-only "$R" | wc -l)
@@ -424,8 +423,8 @@ describe('yolo-ship Phase 5 scopes the reviewer range with origin/main (TASK-452
   });
 
   it('logicalLines keeps a command a comment tried to swallow', () => {
-    // Regression test for the helper's own bug, found in review. The two sibling guards
-    // join `\`-continuations BEFORE dropping comments, so a comment line ending in a
+    // Regression test for the helper's own bug, found in review. The original triage guard
+    // joined `\`-continuations BEFORE dropping comments, so a comment line ending in a
     // backslash absorbs the command below it and the joined line is then thrown away as a
     // comment. Both shells run that command — `#` does not continue across a backslash —
     // so the pipe check above would scan a block it had silently shortened.
