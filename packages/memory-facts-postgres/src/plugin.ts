@@ -57,6 +57,34 @@ function isNonEmptyString(v: unknown): v is string {
   return typeof v === 'string' && v.length > 0;
 }
 
+const FACT_TEXT_MAX_UNITS = { about: 1024, relation: 1024, value: 8192, slot: 256 } as const;
+
+function validateFactText(
+  field: keyof typeof FACT_TEXT_MAX_UNITS,
+  value: string,
+  label = `statement.${field}`,
+): void {
+  const maxUnits = FACT_TEXT_MAX_UNITS[field];
+  if (value.length > maxUnits) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: `${label} must not exceed ${maxUnits} UTF-16 code units`,
+    });
+  }
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    const control = code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+    if (control && !(field === 'value' && (code === 0x09 || code === 0x0a))) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        message: `${label} contains a disallowed control character`,
+      });
+    }
+  }
+}
+
 // Every closure decision (rules 1-4, closure.ts) and recall's ORDER BY compare
 // `when` lexicographically, which equals chronological order ONLY for a
 // normalized ISO-8601 Z-suffixed instant — an unpadded date or epoch millis
@@ -114,13 +142,15 @@ function validateStatement(input: unknown): FactStatementInput {
   }
   const s = input as Record<string, unknown>;
   for (const field of ['about', 'relation', 'value', 'when'] as const) {
-    if (!isNonEmptyString(s[field])) {
+    const value = s[field];
+    if (!isNonEmptyString(value)) {
       throw new PluginError({
         code: 'invalid-payload',
         plugin: PLUGIN_NAME,
         message: `statement.${field} must be a non-empty string`,
       });
     }
+    if (field !== 'when') validateFactText(field, value);
   }
   const when = normalizeIsoInstant('when', s.when as string);
   if (s.slot !== undefined && !isNonEmptyString(s.slot)) {
@@ -130,6 +160,7 @@ function validateStatement(input: unknown): FactStatementInput {
       message: 'statement.slot must be a non-empty string when set',
     });
   }
+  if (s.slot !== undefined) validateFactText('slot', s.slot as string);
   if (s.provenance !== undefined && !PROVENANCES.includes(s.provenance as Provenance)) {
     throw new PluginError({
       code: 'invalid-payload',
@@ -383,6 +414,7 @@ function validateReindexInput(input: ReindexInput): ResolvedSlot[] {
         message: `slots[].slot cannot be '${PENDING_SLOT}' — that is the unresolved sentinel, not a slot`,
       });
     }
+    if (e.slot !== null) validateFactText('slot', e.slot as string, 'slots[].slot');
     return { id: e.id, slot: e.slot as string | null };
   });
 }
@@ -488,22 +520,13 @@ function rowToFactRecord(row: FactRow): FactRecord {
  *    the promise simple: if `record`/`recall` returns, it touched the store.
  *    The original error is preserved on `cause` for whoever is debugging.
  *
- * ## One input the sqlite twin accepts and this backend cannot
+ * ## Text validation precedes the store
  *
- * A string carrying U+0000 (a NUL byte). sqlite `TEXT` stores it; postgres
- * `TEXT` cannot hold it at all and the SERVER rejects the parameter with
- * SQLSTATE 22021 (`invalid byte sequence for encoding "UTF8": 0x00`). So a
- * `record` whose `about`/`relation`/`value`/`slot` contains a NUL succeeds on
- * sqlite and comes back here as `store-unavailable` — the same collapse the
- * second bullet above describes for any other constraint violation, applied to
- * an input the caller could plausibly send, since `about` is free text carrying
- * model output.
- *
- * Not "fixed" by rejecting NUL up front with `invalid-payload`: that would make
- * the two backends disagree about a payload the contract says is valid, which
- * is a worse divergence than the one it replaces. If a caller ever needs to
- * store NUL-bearing text, the fix is a decision for BOTH engines (reject at the
- * shared write door, or escape on the way in) — not a local patch here.
+ * TASK-459 rejects forbidden controls and overlong statement text at both write
+ * doors. A NUL in about/relation/value/slot now reports invalid-payload on both
+ * engines rather than reaching postgres as a parameter error. Existing persisted
+ * rows are not migrated or sanitized; unrelated store errors still follow the
+ * classification above.
  */
 async function inStore<T>(hookName: string, run: () => Promise<T>): Promise<T> {
   try {
@@ -944,8 +967,8 @@ export function createMemoryFactsPostgresPlugin(): Plugin {
               // fields with a delimiter: `about` is free text that can carry
               // model output, and ANY in-band delimiter is only injective if
               // the fields are guaranteed not to contain it, which nothing
-              // here guarantees. `about = "x\u0001y", slot = "z"` and `about
-              // = "x", slot = "y\u0001z"` produce the same joined string but
+              // here guarantees. `about = "x|y", slot = "z"` and `about
+              // = "x", slot = "y|z"` produce the same joined string but
               // different JSON arrays (same reasoning as `supersedeIds`'s
               // group map in `closure.ts`).
               const groups = new Map<string, SlotGroup>();

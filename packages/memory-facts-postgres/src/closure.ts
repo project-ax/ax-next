@@ -562,7 +562,7 @@ export async function supersedeIds(
     // fields with a delimiter: `about` is free text that can carry model
     // output, and ANY in-band delimiter is only injective if the fields are
     // guaranteed not to contain it, which nothing here guarantees. `about =
-    // "x\u0001y", slot = "z"` and `about = "x", slot = "y\u0001z"` produce the
+    // "x|y", slot = "z"` and `about = "x", slot = "y|z"` produce the
     // same joined string but different JSON arrays; the shared contract pins
     // exactly that pair (same reasoning as the drain's group map in
     // `plugin.ts`).

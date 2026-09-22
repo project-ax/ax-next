@@ -485,7 +485,7 @@ export function supersedeIds(
     // (`JSON.stringify([about, slot])`), not by joining the two fields with a
     // delimiter: `about` is free text that can carry model output, and ANY
     // in-band delimiter — including NUL — is only injective if the fields are
-    // guaranteed not to contain it, which nothing here guarantees. `about =
+    // guaranteed not to contain it. Legacy stored fields may still contain NUL. `about =
     // "x\u0000y", slot = "z"` and `about = "x", slot = "y\u0000z"` produce the
     // same NUL-joined string but different JSON arrays (same reasoning as the
     // drain's group map in `plugin.ts`).

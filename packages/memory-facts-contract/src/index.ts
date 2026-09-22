@@ -75,11 +75,11 @@ export type Provenance = 'extracted' | 'agent' | 'human';
 export type FactKind = 'world' | 'experience' | 'observation' | 'opinion';
 
 export interface FactStatementInput {
-  /** The entity the statement is about (dem-memory's `subject`). */
+  /** Entity (dem-memory's subject): 1..1024 UTF-16 units; no C0, DEL or C1 controls. */
   about: string;
-  /** The relationship or property (dem-memory's `predicate`). */
+  /** Free-text relationship: 1..1024 UTF-16 units; no C0, DEL or C1 controls. */
   relation: string;
-  /** The asserted value (dem-memory's `object`). */
+  /** Value: 1..8192 UTF-16 units; TAB/LF allowed, other C0, DEL and C1 controls rejected. */
   value: string;
   /**
    * ISO-8601 instant the statement became true (dem-memory's `validStart`),
@@ -99,6 +99,11 @@ export interface FactStatementInput {
    * could not derive a slot yet" (design §3.5). It behaves exactly like an
    * absent slot — inert — until `memory:facts:reindex` resolves it. Pending
    * is the SAFE direction: under-closing, never mis-closing.
+   *
+   * When present: 1..256 UTF-16 units; no C0, DEL or C1 controls. The write
+   * validators reject, never trim or sanitize. These bounds apply to new and
+   * replayed payloads, not a migration of persisted rows: legacy rows remain
+   * readable and are not automatically rewritten or removed.
    */
   slot?: string;
   /** Defaults to `extracted` — `record` is the observer's door. */
@@ -454,6 +459,9 @@ export interface ResolvedSlot {
   /**
    * The derived slot, or `null` for "no slot after all" — a legitimate
    * outcome of the normalizer, and the row stays inert forever.
+   *
+   * Non-null values follow FactStatementInput.slot's length/control grammar;
+   * every entry is validated before any pending row is updated.
    */
   slot: string | null;
 }
@@ -693,40 +701,16 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
     }
 
     /**
-     * The control character the two "colliding group key" cases below hide
-     * inside `about` and `slot`.
+     * An admitted printable delimiter carried by the two group-key fixtures.
+     * TASK-448 originally used NUL; TASK-423 changed it to U+0001 because
+     * postgres cannot store NUL. TASK-459 rejects both controls on new writes,
+     * so these cases now use a pipe, which remains valid free text.
      *
-     * ## Why it is U+0001 and not U+0000 (TASK-423)
-     *
-     * It used to be U+0000, because the bug those cases pin is a group map
-     * that keyed on `${about}\u0000${slot}` — a NUL join is only injective if
-     * neither field can contain a NUL, and `about` is free text carrying model
-     * output. Under sqlite that fixture worked, because sqlite `TEXT` stores an
-     * embedded NUL happily.
-     *
-     * Postgres `TEXT` does not. A parameter carrying U+0000 is rejected by the
-     * SERVER with SQLSTATE 22021 (`invalid byte sequence for encoding "UTF8":
-     * 0x00`), so on `@ax/memory-facts-postgres` those two cases did not test
-     * the group key at all — they failed at the INSERT, three statements before
-     * the map was consulted. That made the contract quietly
-     * storage-SPECIFIC: it demanded a capability only one backend has, which is
-     * exactly what Invariant 1 exists to stop, and it only became visible when
-     * a second backend arrived.
-     *
-     * U+0001 keeps the property under test intact and makes it true of any text
-     * store: the fields still contain an in-band control character, the two
-     * `(about, slot)` pairs still produce the SAME delimiter-joined string, and
-     * a map keyed on that join still collapses them into one entry. Only a
-     * STRUCTURAL key (`JSON.stringify([about, slot])`) survives.
-     *
-     * What is knowingly given up: this no longer regresses the NUL join
-     * specifically. It cannot — a NUL-joined key is unreachable on postgres for
-     * the same reason the fixture is, since no field can hold the delimiter
-     * there. The general claim ("any in-band delimiter is unsafe") is the one
-     * both backends can be held to, and it is the claim the implementations
-     * actually make in their comments.
+     * They detect joining with THIS delimiter, not a NUL join. Legacy NUL
+     * supersede coverage stays sqlite-local; newly supplied NUL reindex slots
+     * are rejected at the write boundary before any group can be settled.
      */
-    const COLLIDING_CHAR = '\u0001';
+    const COLLIDING_CHAR = '|';
 
     const JAN = '2023-01-01T00:00:00.000Z';
     const JUN = '2023-06-01T00:00:00.000Z';
@@ -1626,7 +1610,7 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
 
           const result = await supersede([newer1.id, newer2.id]);
           expect(result.closed.slice().sort()).toEqual([newer1.id, newer2.id].sort());
-          // Against the unfixed NUL-joined key, only ONE of these two groups
+          // Against a key joined with COLLIDING_CHAR, only ONE of these two groups
           // survives in the Map, so exactly one of these ids is missing here.
           expect(result.resettled.slice().sort()).toEqual([older1.id, older2.id].sort());
 
@@ -2122,6 +2106,112 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
 
         const stillThere = await recall({ about: 'user', limit: 10, ownerUserId: OWNER_A }, team);
         expect(stillThere.statements.map((s) => s.id)).toEqual([a.id]);
+      });
+    });
+
+    describe('fact text write grammar', () => {
+      const limits = [['about', 1024], ['relation', 1024], ['value', 8192], ['slot', 256]] as const;
+      const controls = [
+        ...Array.from({ length: 0x20 }, (_, code) => code),
+        ...Array.from({ length: 0x21 }, (_, index) => 0x7f + index),
+      ];
+      const base: FactStatementInput = {
+        about: 'user', relation: 'r', value: 'v', when: JAN, slot: 'text-slot',
+      };
+
+      for (const [field, max] of limits) {
+        it(`${field}: rejects forbidden C0/C1 characters without storing a row`, async () => {
+          for (const code of controls) {
+            if (field === 'value' && (code === 0x09 || code === 0x0a)) continue;
+            await expectCode('invalid-payload', () => record({
+              statements: [{ ...base, [field]: `prefix${String.fromCharCode(code)}suffix` }],
+            }));
+          }
+          expect((await recall({ activeOnly: false, limit: 200 })).statements).toEqual([]);
+        });
+
+        it(`${field}: rejects text beyond the UTF-16 limit`, async () => {
+          for (const text of ['a'.repeat(max + 1), '\u{10400}'.repeat(max / 2) + 'x']) {
+            await expectCode('invalid-payload', () => record({ statements: [{ ...base, [field]: text }] }));
+          }
+          expect((await recall({ activeOnly: false, limit: 200 })).statements).toEqual([]);
+        });
+
+        it(`${field}: compatibility: preserves text at the UTF-16 limit`, async () => {
+          const text = '\u{10400}'.repeat(max / 2);
+          const written = await recordOne({ ...base, [field]: text });
+          expect(written[field]).toBe(text);
+          const rows = (await recall({ activeOnly: false, limit: 200 })).statements;
+          expect(rows).toHaveLength(1);
+          expect(rows[0]![field]).toBe(text);
+        });
+      }
+
+      it('compatibility: preserves Unicode, whitespace and free-text punctuation', async () => {
+        const statement: FactStatementInput = {
+          about: '  São 東京 | "quoted" \\ \u{10400}  ',
+          relation: '  enjoys a/b | "AND" \\ reading  ',
+          value: '  first\tcolumn\nnext | "quoted" \\ café \u{10400}  ',
+          slot: '  custom slot | a/b \u{10400}  ',
+          when: JAN,
+        };
+        expect(await recordOne(statement)).toMatchObject(statement);
+        expect((await recall({ activeOnly: false, limit: 200 })).statements).toEqual([
+          expect.objectContaining(statement),
+        ]);
+      });
+
+      it('rejects a later bad text field atomically and leaves the batch key retryable', async () => {
+        const batchKey = 'invalid-text-batch';
+        await expectCode('invalid-payload', () => record({
+          batchKey,
+          statements: [base, { ...base, value: `prefix${String.fromCharCode(0)}suffix` }],
+        }));
+        expect((await recall({ activeOnly: false, limit: 200 })).statements).toEqual([]);
+        expect((await record({ batchKey, statements: [base] })).records).toHaveLength(1);
+      });
+
+      it('reindex rejects forbidden controls in new slots without resolving a pending row', async () => {
+        const pending = await recordOne({ ...base, slot: PENDING_SLOT });
+        for (const code of controls) {
+          await expectCode('invalid-payload', () => reindex({
+            slots: [{ id: pending.id, slot: `prefix${String.fromCharCode(code)}suffix` }],
+          }));
+        }
+        const rows = (await recall({ activeOnly: false, limit: 200 })).statements;
+        expect(rows).toHaveLength(1);
+        expect(rows[0]!.slot).toBe(PENDING_SLOT);
+        expect((await reindex()).pending).toBe(1);
+      });
+
+      it('reindex rejects an overlong new slot', async () => {
+        const pending = await recordOne({ ...base, slot: PENDING_SLOT });
+        await expectCode('invalid-payload', () => reindex({
+          slots: [{ id: pending.id, slot: 'a'.repeat(257) }],
+        }));
+        expect((await recall({ activeOnly: false, limit: 200 })).statements[0]!.slot).toBe(PENDING_SLOT);
+      });
+
+      it('reindex compatibility: preserves a new slot at the exact UTF-16 limit', async () => {
+        const pending = await recordOne({ ...base, slot: PENDING_SLOT });
+        const slot = '\u{10400}'.repeat(128);
+        expect((await reindex({ slots: [{ id: pending.id, slot }] })).resolved).toBe(1);
+        expect((await recall({ activeOnly: false, limit: 200 })).statements[0]!.slot).toBe(slot);
+      });
+
+      it('reindex validates all new slots before resolving any of them', async () => {
+        const first = await recordOne({ ...base, slot: PENDING_SLOT });
+        const second = await recordOne({ ...base, value: 'second', slot: PENDING_SLOT });
+        await expectCode('invalid-payload', () => reindex({
+          slots: [
+            { id: first.id, slot: 'valid-slot' },
+            { id: second.id, slot: `bad${String.fromCharCode(0)}slot` },
+          ],
+        }));
+        const rows = (await recall({ activeOnly: false, limit: 200 })).statements;
+        expect(rows).toHaveLength(2);
+        expect(rows.every((row) => row.slot === PENDING_SLOT)).toBe(true);
+        expect((await reindex()).pending).toBe(2);
       });
     });
 
@@ -2817,6 +2907,14 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
           record({ statements: [{ about: '', relation: 'r', value: 'v', when: JAN }] }),
         );
         await expectCode('invalid-payload', () => reindex({ slots: [{ id: '', slot: 'lives_in' }] }));
+        for (const field of ['about', 'relation', 'value', 'slot'] as const) {
+          await expectCode('invalid-payload', () => record({
+            statements: [{ about: 'user', relation: 'r', value: 'v', when: JAN, [field]: `bad${String.fromCharCode(0)}text` }],
+          }));
+        }
+        await expectCode('invalid-payload', () => reindex({
+          slots: [{ id: 'x', slot: `bad${String.fromCharCode(0)}slot` }],
+        }));
       });
     });
 
@@ -3822,7 +3920,7 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
           ],
         });
         expect(out.resolved).toBe(2);
-        // Against the unfixed NUL-joined key, only ONE of these two groups
+        // Against a key joined with COLLIDING_CHAR, only ONE of these two groups
         // survives in the Map, so exactly one of these ids is missing here.
         expect(out.resettled.slice().sort()).toEqual([older1.id, older2.id].sort());
         expect(out.pending).toBe(0);
