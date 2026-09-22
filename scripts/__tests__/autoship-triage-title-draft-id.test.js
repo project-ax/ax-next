@@ -207,12 +207,28 @@ function idAssignmentBlocks(md) {
   );
 }
 
-/** A block's lines with `\`-continuations joined and comment lines dropped. */
+/** Remove whole-line comment text before joining continuations; keep its newline. */
 function logicalLines(block) {
   return block
-    .replace(/\\\n/g, ' ')
     .split('\n')
-    .filter((l) => !/^\s*#/.test(l));
+    .map((line) => (/^\s*#/.test(line) ? '' : line))
+    .join('\n')
+    .replace(/\\\n/g, ' ')
+    .split('\n');
+}
+
+function expectUnpipedCalls(block, what, needle) {
+  const lines = logicalLines(block).filter((line) => needle.test(line));
+  expect(lines.length, `no uncommented \`${what}\` line found`).toBeGreaterThan(0);
+  for (const line of lines) {
+    expect(
+      line.replace(/\|\|/g, ''),
+      `the \`${what}\` call is piped. \`$?\` then belongs to the pipeline tail, not ` +
+        'to gh -- which is exactly how the 2026-09-18 probe first read rc 0 off a ' +
+        'refusal, and how a transient API blip would be reported as "this card has ' +
+        'no draft issue".',
+    ).not.toMatch(/\|/);
+  }
 }
 
 const BLOCKS = idAssignmentBlocks(readFileSync(BOARD_DOC, 'utf8'));
@@ -351,6 +367,76 @@ const SHELLS = ['bash', ...(HAS_ZSH ? ['zsh'] : [])];
 
 // ---------------------------------------------------------------------------------
 
+describe('triage guard command scanning', () => {
+  it('logicalLines keeps a command after a comment ending in a backslash', () => {
+    const command = 'gh project item-edit --id "$DI" --title "$TITLE" | head -1';
+    const lines = logicalLines(`# a note \\\n${command}\nx=1`);
+    expect(lines).toContain(command);
+    expect(lines).toContain('x=1');
+    expect(lines.some((line) => /^\s*#/.test(line))).toBe(false);
+  });
+
+  it('extracts the title-assignment block after a comment ending in a backslash', () => {
+    const block = '# a note \\\ngh project item-edit \\\n  --id "$DI" --title "$TITLE"';
+    expect(idAssignmentBlocks('```bash\n' + block + '\n```')).toEqual([block]);
+  });
+
+  it('keeps a comment newline between a continued command and the next command', () => {
+    const lines = logicalLines('printf first \\\n# a note \\\nprintf second');
+    expect(lines.map((line) => line.trim()).filter(Boolean)).toEqual([
+      'printf first',
+      'printf second',
+    ]);
+  });
+
+  it('compatibility: joins genuine code continuations', () => {
+    const lines = logicalLines('gh project item-edit \\\n  --id "$DI" \\\n  --title "$TITLE" || echo FATAL');
+    expect(lines).toHaveLength(1);
+    expect(lines[0].replace(/\s+/g, ' ').trim()).toBe(
+      'gh project item-edit --id "$DI" --title "$TITLE" || echo FATAL',
+    );
+  });
+
+  for (const [what, needle, unpiped, piped] of [
+    [
+      'gh project item-edit',
+      /gh project item-edit/,
+      'gh project item-edit --id "$DI" --title "$TITLE" || echo FATAL',
+      'gh project item-edit --id "$DI" --title "$TITLE" | head -1 || echo FATAL',
+    ],
+    [
+      'gh api graphql draft-issue lookup',
+      /gh api graphql/,
+      'json=$(gh api graphql -f i="$ITEM_ID") || echo FATAL',
+      'json=$(gh api graphql -f i="$ITEM_ID" | head -1) || echo FATAL',
+    ],
+  ]) {
+    it(`${what}: rejects a later piped call after an unpiped call`, () => {
+      expect(() => expectUnpipedCalls(`${unpiped}\n${piped}`, what, needle)).toThrow(
+        /call is piped/,
+      );
+    });
+
+    it(`${what}: rejects a later piped call after a backslash-ending comment`, () => {
+      expect(() =>
+        expectUnpipedCalls(`${unpiped}\n# a note \\\n${piped}`, what, needle),
+      ).toThrow(/call is piped/);
+    });
+
+    it(`${what}: compatibility: accepts multiple unpiped calls and || guards`, () => {
+      expect(() =>
+        expectUnpipedCalls(`${unpiped}\n# a note \\\n${unpiped}`, what, needle),
+      ).not.toThrow();
+    });
+
+    it(`${what}: compatibility: refuses a comment-only match`, () => {
+      expect(() => expectUnpipedCalls(`# ${unpiped}`, what, needle)).toThrow(
+        /no uncommented/,
+      );
+    });
+  }
+});
+
 describe('auto-ship triage: `item-edit --title` gets the DI_ draft-issue content id', () => {
   it('extracts exactly one runnable ID-assignment block (the suite must not be vacuous)', () => {
     // Every execution test below runs BLOCK. If extraction breaks, they would all
@@ -376,15 +462,7 @@ describe('auto-ship triage: `item-edit --title` gets the DI_ draft-issue content
     ['gh api graphql draft-issue lookup', /gh api graphql/],
   ]) {
     it(`the ${what} call is not piped, so its status is its own`, () => {
-      const line = logicalLines(BLOCK).find((l) => needle.test(l));
-      expect(line, `no uncommented \`${what}\` line found`).toBeTruthy();
-      expect(
-        line.replace(/\|\|/g, ''),
-        `the \`${what}\` call is piped. \`$?\` then belongs to the pipeline tail, not ` +
-          'to gh -- which is exactly how the 2026-09-18 probe first read rc 0 off a ' +
-          'refusal, and how a transient API blip would be reported as "this card has ' +
-          'no draft issue".',
-      ).not.toMatch(/\|/);
+      expectUnpipedCalls(BLOCK, what, needle);
     });
   }
 

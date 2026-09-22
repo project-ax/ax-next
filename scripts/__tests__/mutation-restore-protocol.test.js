@@ -347,11 +347,12 @@ function bashBlocks(md) {
 /**
  * A block's lines with whole-line comments dropped and `\`-continuations joined.
  *
- * **In that order.** TASK-454 measured the opposite ordering as fail-OPEN in two sibling
- * guards: joining continuations first lets a comment line ending in a backslash absorb the
- * code line below it, the joined result starts with `#`, and the real command DISAPPEARS
- * from the scan — while both bash and zsh happily RUN it, because a `#` comment does not
- * continue across a backslash. Filtering first cannot lose code that way.
+ * **In that order.** TASK-452 measured the opposite ordering as fail-OPEN in its guard;
+ * TASK-454 confirmed it in the triage guard. Joining continuations first lets a comment
+ * line ending in a backslash absorb the code line below it. The joined result starts with
+ * `#`, and the real command DISAPPEARS from the scan — while both bash and zsh happily
+ * RUN it, because a `#` comment does not continue across a backslash. Filtering first
+ * cannot lose code that way.
  *
  * Pinned by `logicalLines keeps a command a comment tried to swallow` below.
  */
