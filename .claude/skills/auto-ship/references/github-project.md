@@ -440,26 +440,56 @@ It burns **no model tokens** while idle and `exit 0`s — re-invoking auto-ship 
 moment the To Do lane changes (a card added/removed/renamed, a dep edited, a
 Backlog→To Do promote). Re-launch it after every loop pass.
 
-> **⚠ KILL THE PREDECESSOR BEFORE EVERY RELAUNCH, AND ONCE AT RUN END.** The loop
-> relaunches this script after every pass and nothing reaps the old one, so each pass
-> **leaks a poller**. Measured 2026-08-24: two were still polling GitHub on a 60s
-> cadence *hours* after the drain finished — found only because a human asked about a
-> stale agent entry. Every leaked poller is an independent ~1 pt/60s drain that
-> outlives the run, so a long session silently multiplies its own idle cost and can
-> starve the next run's budget before it starts. The `REM < 500` pre-check does not
-> save you: it makes each leaked poller *quieter*, not gone, and N of them still race
-> for the same budget.
+> **⚠ KILL THE PREDECESSOR BEFORE EVERY RELAUNCH, AND ONCE AT RUN END.**
+>
+> A manual or agent-completion wake can leave the previous watcher running when a
+> new pass starts. A board-change wake is different: the watcher exits by itself.
+> Reap any predecessor before launching a replacement, and clean up at run end.
+>
+> The 2026-08-24 log reported two post-run process matches. It did not retain
+> parentage evidence, so that report cannot now prove two independent launch roots
+> or that every pass leaked one. TASK-456 reproduced the miscount with a bounded
+> local probe: one launched Bash process plus two nested command-substitution
+> shells gave three argv matches. That probe made no network call and exited
+> naturally. Genuine leftover roots can still spend API budget; raw match count
+> is not evidence of their number.
 >
 > ```bash
 > pkill -f auto-ship-board-poll.sh 2>/dev/null || true   # before EVERY relaunch
 > # … launch the poller (run_in_background: true) …
 > ```
 >
-> Run the same `pkill` **once when the run ends** — including when it ends on a
-> failure breaker, a spend limit, or a human stop. A run that dies without reaping is
-> exactly how the two survivors above got there. Verify with
-> `pgrep -fl auto-ship-board-poll.sh` — the correct steady state is **one** while
-> draining, **zero** afterwards.
+> Run the same `pkill` once when the run ends, including a failure breaker, spend
+> limit or human stop. Verify launch roots with the read-only command below, not
+> the number of raw `pgrep` matches.
+
+### Verify poller launch roots
+
+```bash
+# ax-poller: verify
+node scripts/auto-ship-poller-roots.mjs
+```
+
+The command prints one PID per matching launch root. A valid empty result means
+zero; one root is expected while draining and zero after cleanup. Two roots are
+not one poller with subshells. Inspect the existing run handles before deciding
+what to stop; the verifier never kills or restarts anything.
+
+It reads one process snapshot and follows parent chains, so attached pollers do
+not need parent PID 1. A 2026-09-22 live observation found a tool-owned poller with
+a non-init parent. Matching inherited-argv descendants count under their root;
+`bash -c` wrappers, non-shell filename mentions and similarly named scripts do
+not count as standalone pollers. This is a point-in-time check of the documented
+standalone Bash launch, not a race-free supervisor or an inference about every
+historical run.
+
+Node (already required by this repo) and the macOS/Linux `ps` fields are required.
+A failed, empty, malformed or cyclic snapshot, or an ambiguous flagged poller
+invocation, exits 2 with an unknown-count diagnostic. Never treat that error as
+zero. Plain script paths and this checkout's canonical absolute path with spaces are
+supported; other ambiguous space/argument forms, including unrecognized path aliases,
+fail closed. Do not source the poller into another shell or launch it from another
+poller.
 
 > **GraphQL budget — read this.** "Token-free" means **model** tokens. Each poll still
 > spends **GraphQL** points against the 5000/hr budget (§3). Do **not** poll with

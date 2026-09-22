@@ -1305,12 +1305,10 @@ describe('the poller is reaped, not just relaunched', () => {
   const md = readFileSync(GITHUB_PROJECT_MD, 'utf8');
   const POLLER = 'auto-ship-board-poll.sh';
 
-  // Why this guard (2026-08-24). The loop relaunches the poller after every pass and
-  // nothing reaped the predecessor, so every pass LEAKED one. Two were still polling
-  // GitHub on a 60s cadence hours after a drain finished -- found only because a human
-  // happened to ask about a stale agent entry. Each survivor is an independent
-  // ~1 pt/60s GraphQL drain that outlives the run and can starve the NEXT run's budget
-  // before it starts, and nothing in the loop or the doc noticed for an entire session.
+  // A non-board wake can leave the previous watcher alive; a board-change
+  // watcher exits by itself. Reap discipline still matters, but the old
+  // raw process-match report did not establish independent launch roots.
+  // TASK-456's executable verifier guard distinguishes roots from descendants.
   //
   // This is the mistakes.md TASK-298 lesson applied to itself: a doc code-block that is the
   // source of a runtime artifact is code, so the reap discipline gets a tracked test on
@@ -1327,9 +1325,9 @@ describe('the poller is reaped, not just relaunched', () => {
   it('tells the operator to pkill the predecessor before relaunching', () => {
     expect(
       md,
-      'The poller is relaunched after every loop pass. Without an explicit ' +
-        `\`pkill -f ${POLLER}\` before each relaunch, every pass leaks a poller that ` +
-        'keeps spending GraphQL points after the run ends.',
+      'A previous watcher can still be alive on a non-board wake. Keep the ' +
+        `\`pkill -f ${POLLER}\` instruction before relaunch so an extra root does ` +
+        'not continue polling after the run ends.',
       // A literal pattern, not one built from POLLER: escaping a filename into a
       // regex by replacing only `.` is incomplete escaping (CodeQL
       // js/incomplete-sanitization, and it is right -- `-` and `$` would survive).
@@ -1338,26 +1336,20 @@ describe('the poller is reaped, not just relaunched', () => {
   });
 
   it('requires the reap at run end too, not only between passes', () => {
-    // The between-passes kill alone still leaks the LAST poller of every run --
-    // which is precisely how the two survivors outlived their drain. The doc must
-    // say the reap also runs when the run ends, including abnormal ends.
+    // A watcher can remain alive when a run ends without a board-change wake.
+    // Keep cleanup at normal and abnormal run ends.
     const pkillIndex = md.search(/pkill\s+-f\s+auto-ship-board-poll/);
     expect(pkillIndex, 'no pkill guidance found at all').toBeGreaterThan(-1);
     const section = md.slice(pkillIndex - 1200, pkillIndex + 1200);
     expect(
       section,
-      'The reap must be documented for RUN END as well as between passes, or every ' +
-        'run leaks its final poller.',
+      'The reap must be documented for RUN END as well as between passes, ' +
+        'because a final watcher can remain alive.',
     ).toMatch(/run end|ends|end of the run/i);
   });
 
-  it('gives a way to verify the steady state', () => {
-    // A reap you cannot check is a reap nobody performs. pgrep is the cheap proof.
-    expect(
-      md,
-      'Document how to verify the poller count (e.g. `pgrep -fl ' +
-        `${POLLER}\`) -- one while draining, zero afterwards.`,
-    ).toContain('pgrep');
+  it('points at the executable parentage verifier', () => {
+    expect(md).toContain('node scripts/auto-ship-poller-roots.mjs');
   });
 });
 
