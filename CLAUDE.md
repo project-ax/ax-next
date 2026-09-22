@@ -51,6 +51,26 @@ Note these two traps point in **opposite** directions and are both quiet: the
 
 (Tooling lands in Week 1–2 per architecture doc Section 10.)
 
+### Docker-backed tests
+
+Container-starting tests require an explicit `DOCKER_HOST` shared by the Docker
+CLI and Testcontainers. CI uses `unix:///var/run/docker.sock`; local runs must
+name their intended socket or TCP endpoint with a port. Docker CLI contexts and
+automatic endpoint discovery are not used by the readiness check. Per-home
+Testcontainers override files are rejected rather than silently selecting a
+different daemon. For TCP TLS, use `DOCKER_TLS_VERIFY=1` and an absolute
+`DOCKER_CERT_PATH`; CLI-only `DOCKER_TLS` is unsupported. Keep these settings
+stable within a test process. The helper does not edit local Docker settings.
+TCP port 2376 requires verified TLS; certificate settings without verification
+are rejected. The checked-start wrapper enables the pinned SDK strict-selection
+patch, which fails instead of switching to a discovered socket and refuses a
+client cached under another configuration or outside strict mode.
+Socket path components after their fixed transport prefix must not contain
+empty/dot segments, escapes, or query/fragment delimiters. The fixed named-pipe
+namespace is preserved. Verified
+Docker TLS rejects Node's verification-disable override; the strict SDK transport
+also uses an HTTPS Agent with certificate verification explicitly enabled.
+
 ## Codex Memory Bootstrap
 
 Project-local memory lives in `.claude/memory/`. For any substantial Codex task,

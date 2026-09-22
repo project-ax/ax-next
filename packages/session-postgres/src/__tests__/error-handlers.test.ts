@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import pg from 'pg';
-import { createTestHarness, stopPostgresContainer } from '@ax/test-harness';
+import {
+  createTestHarness,
+  stopPostgresContainer,
+  startTestContainer,
+} from '@ax/test-harness';
 import { createSessionPostgresPlugin } from '../plugin.js';
 
 // ---------------------------------------------------------------------------
@@ -24,7 +28,7 @@ let connectionString: string;
 const harnesses: Awaited<ReturnType<typeof createTestHarness>>[] = [];
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   connectionString = container.getConnectionUri();
 });
 

@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
-import { createTestHarness, type TestHarness, stopPostgresContainer } from '@ax/test-harness';
+import {
+  createTestHarness,
+  type TestHarness,
+  stopPostgresContainer,
+  startTestContainer,
+} from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import pg from 'pg';
@@ -16,7 +21,7 @@ async function boot() {
   return h;
 }
 beforeAll(async () => {
-  container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   connectionString = container.getConnectionUri();
 }, 120_000);
 afterEach(async () => {

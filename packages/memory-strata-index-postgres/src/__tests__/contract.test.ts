@@ -1,5 +1,8 @@
 import { beforeAll, afterAll } from 'vitest';
-import { stopPostgresContainer } from '@ax/test-harness';
+import {
+  stopPostgresContainer,
+  startTestContainer,
+} from '@ax/test-harness';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
@@ -20,7 +23,7 @@ let connectionString: string;
 let adminDb: Kysely<unknown>;
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   connectionString = container.getConnectionUri();
   adminDb = new Kysely<unknown>({
     dialect: new PostgresDialect({

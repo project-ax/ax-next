@@ -4,7 +4,12 @@ import {
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 import { HookBus, PluginError, makeAgentContext } from '@ax/core';
-import { createTestHarness, type TestHarness, stopPostgresContainer } from '@ax/test-harness';
+import {
+  createTestHarness,
+  type TestHarness,
+  stopPostgresContainer,
+  startTestContainer,
+} from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createTeamsPlugin } from '@ax/teams';
 import type {
@@ -195,7 +200,7 @@ function teamAgentInput(overrides: Partial<AgentInput> = {}): AgentInput {
 
 describe('@ax/agents acl with @ax/teams loaded', () => {
   beforeAll(async () => {
-    container = await new PostgreSqlContainer('postgres:16-alpine').start();
+    container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
     connectionString = container.getConnectionUri();
   }, 120_000);
 

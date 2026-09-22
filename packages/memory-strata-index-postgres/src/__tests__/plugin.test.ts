@@ -2,7 +2,11 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
-import { createTestHarness, stopPostgresContainer } from '@ax/test-harness';
+import {
+  createTestHarness,
+  stopPostgresContainer,
+  startTestContainer,
+} from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createMemoryStrataIndexPostgresPlugin } from '../plugin.js';
 import type { UpsertInput, SearchInput, SearchOutput } from '@ax/memory-strata-index-contract';
@@ -13,7 +17,7 @@ let connectionString: string;
 let adminDb: Kysely<unknown>;
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   connectionString = container.getConnectionUri();
   adminDb = new Kysely<unknown>({
     dialect: new PostgresDialect({

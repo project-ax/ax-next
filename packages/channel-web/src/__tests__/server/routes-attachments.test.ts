@@ -22,7 +22,10 @@ import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
 import { createAttachmentsPlugin } from '@ax/attachments';
 import {
   createTestHarness,
-  type TestHarness, stopPostgresContainer } from '@ax/test-harness';
+  type TestHarness,
+  stopPostgresContainer,
+  startTestContainer,
+} from '@ax/test-harness';
 import { registerAttachmentsRoutes } from '../../server/routes-attachments.js';
 
 // TASK-68: @ax/attachments now calls blob:put/blob:get (not workspace:apply/
@@ -174,7 +177,7 @@ let container: StartedPostgreSqlContainer;
 let connectionString: string;
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   connectionString = container.getConnectionUri();
 }, 120_000);
 

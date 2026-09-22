@@ -9,7 +9,12 @@
  * the hold would stop happening and every test below would fail.
  */
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
-import { createTestHarness, stopPostgresContainer, type TestHarness } from '@ax/test-harness';
+import {
+  createTestHarness,
+  stopPostgresContainer,
+  type TestHarness,
+  startTestContainer,
+} from '@ax/test-harness';
 import {
   BUILTIN_RULES,
   createToolPolicyPlugin,
@@ -171,7 +176,7 @@ const IRREVERSIBLE_RULES = [
 ];
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   connectionString = container.getConnectionUri();
 }, 120_000);
 

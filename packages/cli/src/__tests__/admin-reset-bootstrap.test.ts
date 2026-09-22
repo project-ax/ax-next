@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
-import { stopPostgresContainer } from '@ax/test-harness';
+import {
+  stopPostgresContainer,
+  startTestContainer,
+} from '@ax/test-harness';
 import { randomBytes } from 'node:crypto';
 import {
   PostgreSqlContainer,
@@ -33,7 +36,7 @@ let connectionString: string;
 const ORIGINAL_CREDENTIALS_KEY = process.env.AX_CREDENTIALS_KEY;
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   connectionString = container.getConnectionUri();
   // The reset-bootstrap CLI now loads @ax/credentials so its
   // bootstrap:reset-cleanup subscriber chain runs end-to-end. The

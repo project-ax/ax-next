@@ -1,0 +1,122 @@
+diff --git a/build/container-runtime/clients/client.js b/build/container-runtime/clients/client.js
+index 1b63addacc056d9da10ff64d6b96032bdc1dc79f..6c11c76a53631a1f6cf0a2a68b2ca052898545fc 100644
+--- a/build/container-runtime/clients/client.js
++++ b/build/container-runtime/clients/client.js
+@@ -36,11 +36,32 @@ class ContainerRuntimeClient {
+ }
+ exports.ContainerRuntimeClient = ContainerRuntimeClient;
+ let containerRuntimeClient;
++let containerRuntimeClientConfiguration;
++function explicitRuntimeConfiguration() {
++    if (process.env.DOCKER_TLS_VERIFY === "1" && process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") {
++        throw new Error("Strict Testcontainers TLS requires server-certificate verification");
++    }
++    return {
++        dockerHost: process.env.DOCKER_HOST,
++        dockerTlsVerify: process.env.DOCKER_TLS_VERIFY || undefined,
++        dockerCertPath: process.env.DOCKER_CERT_PATH || undefined,
++    };
++}
+ async function getContainerRuntimeClient() {
++    const explicit = process.env.AX_TESTCONTAINERS_STRICT_ENDPOINT === "true"
++        ? explicitRuntimeConfiguration()
++        : undefined;
++    if (explicit && !explicit.dockerHost) {
++        throw new Error("Strict Testcontainers endpoint selection requires DOCKER_HOST");
++    }
++    const configurationKey = explicit ? JSON.stringify(explicit) : undefined;
+     if (containerRuntimeClient) {
++        if (explicit && containerRuntimeClientConfiguration !== configurationKey) {
++            throw new Error("Testcontainers endpoint configuration changed or was initialized outside strict mode; use a fresh process");
++        }
+         return containerRuntimeClient;
+     }
+-    const strategies = [
++    const strategies = explicit ? [new configuration_strategy_1.ConfigurationStrategy(explicit)] : [
+         new testcontainers_host_strategy_1.TestcontainersHostStrategy(),
+         new configuration_strategy_1.ConfigurationStrategy(),
+         new unix_socket_strategy_1.UnixSocketStrategy(),
+@@ -52,8 +73,12 @@ async function getContainerRuntimeClient() {
+             common_1.log.debug(`Checking container runtime strategy "${strategy.getName()}"...`);
+             const client = await initStrategy(strategy);
+             if (client) {
++                if (explicit && JSON.stringify(explicitRuntimeConfiguration()) !== configurationKey) {
++                    throw new Error("Testcontainers endpoint configuration changed during initialization");
++                }
+                 common_1.log.debug(`Container runtime strategy "${strategy.getName()}" works`);
+                 containerRuntimeClient = client;
++                containerRuntimeClientConfiguration = configurationKey;
+                 return client;
+             }
+         }
+diff --git a/build/container-runtime/strategies/configuration-strategy.d.ts b/build/container-runtime/strategies/configuration-strategy.d.ts
+index 2c511f097e9e1f6a283d03775707479ac6b3a271..9b5bfbf6cfff7a94a5414fe4a22172b0ffa84932 100644
+--- a/build/container-runtime/strategies/configuration-strategy.d.ts
++++ b/build/container-runtime/strategies/configuration-strategy.d.ts
+@@ -1,6 +1,9 @@
+ import { ContainerRuntimeClientStrategy } from "./strategy";
+ import { ContainerRuntimeClientStrategyResult } from "./types";
++import { ContainerRuntimeConfig } from "./utils/config";
+ export declare class ConfigurationStrategy implements ContainerRuntimeClientStrategy {
++    private readonly config;
++    constructor(config?: ContainerRuntimeConfig);
+     getName(): string;
+     getResult(): Promise<ContainerRuntimeClientStrategyResult | undefined>;
+ }
+diff --git a/build/container-runtime/strategies/configuration-strategy.js b/build/container-runtime/strategies/configuration-strategy.js
+index 77e398077d533904b443cb2cdbe2a309ad9e95b2..eeee706f8d71a95aadba64493b12a80c74d75a93 100644
+--- a/build/container-runtime/strategies/configuration-strategy.js
++++ b/build/container-runtime/strategies/configuration-strategy.js
+@@ -5,31 +5,46 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
+ Object.defineProperty(exports, "__esModule", { value: true });
+ exports.ConfigurationStrategy = void 0;
+ const promises_1 = __importDefault(require("fs/promises"));
++const https_1 = require("https");
+ const path_1 = __importDefault(require("path"));
+ const url_1 = require("url");
+ const config_1 = require("./utils/config");
+ class ConfigurationStrategy {
++    constructor(config) {
++        this.config = config;
++    }
+     getName() {
+         return "ConfigurationStrategy";
+     }
+     async getResult() {
+-        const { dockerHost, dockerTlsVerify, dockerCertPath } = await (0, config_1.getContainerRuntimeConfig)();
++        const { dockerHost, dockerTlsVerify, dockerCertPath } = this.config ?? await (0, config_1.getContainerRuntimeConfig)();
+         if (!dockerHost) {
+             return undefined;
+         }
+         const dockerOptions = {};
+-        const { pathname, hostname, port } = new url_1.URL(dockerHost);
+-        if (hostname !== "") {
+-            dockerOptions.host = hostname;
+-            dockerOptions.port = port;
++        if (this.config && dockerHost.startsWith("unix://")) {
++            dockerOptions.socketPath = dockerHost.slice(7);
++        }
++        else if (this.config && dockerHost.startsWith("npipe://")) {
++            dockerOptions.socketPath = dockerHost.slice(8);
+         }
+         else {
+-            dockerOptions.socketPath = pathname;
++            const { pathname, hostname, port } = new url_1.URL(dockerHost);
++            if (hostname !== "") {
++                dockerOptions.host = hostname;
++                dockerOptions.port = port;
++            }
++            else {
++                dockerOptions.socketPath = pathname;
++            }
+         }
+         if (dockerTlsVerify === "1" && dockerCertPath !== undefined) {
+             dockerOptions.ca = await promises_1.default.readFile(path_1.default.resolve(dockerCertPath, "ca.pem"));
+             dockerOptions.cert = await promises_1.default.readFile(path_1.default.resolve(dockerCertPath, "cert.pem"));
+             dockerOptions.key = await promises_1.default.readFile(path_1.default.resolve(dockerCertPath, "key.pem"));
++            if (this.config) {
++                dockerOptions.agent = new https_1.Agent({ rejectUnauthorized: true });
++            }
+         }
+         return {
+             uri: dockerHost,

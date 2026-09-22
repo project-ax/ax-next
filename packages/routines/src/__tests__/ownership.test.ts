@@ -18,7 +18,10 @@
  * happily while the pair is broken.
  */
 import { describe, expect, it, beforeAll, afterAll, afterEach } from 'vitest';
-import { stopPostgresContainer } from '@ax/test-harness';
+import {
+  stopPostgresContainer,
+  startTestContainer,
+} from '@ax/test-harness';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
@@ -34,7 +37,7 @@ let container: StartedPostgreSqlContainer;
 let db: Kysely<RoutinesDatabase>;
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   db = new Kysely<RoutinesDatabase>({
     dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString: container.getConnectionUri() }) }),
   });
