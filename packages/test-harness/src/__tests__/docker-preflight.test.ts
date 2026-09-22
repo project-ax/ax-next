@@ -66,6 +66,7 @@ for (const shell of ['bash', 'zsh']) {
       vi.stubEnv('DOCKER_TLS_VERIFY', undefined);
       vi.stubEnv('DOCKER_CERT_PATH', undefined);
       vi.stubEnv('AX_TESTCONTAINERS_STRICT_ENDPOINT', undefined);
+      vi.stubEnv('NODE_TLS_REJECT_UNAUTHORIZED', undefined);
       vi.stubEnv('AX_DOCKER_TEST_NODE', process.execPath);
       vi.stubEnv('AX_DOCKER_TEST_TRACE', trace);
       vi.stubEnv('AX_DOCKER_TEST_MODE', 'healthy');

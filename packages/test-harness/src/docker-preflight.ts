@@ -39,17 +39,24 @@ function configuration(): ProbeConfiguration {
   if (host === undefined || host.length === 0) {
     throw configurationError('set DOCKER_HOST explicitly before running Docker-backed tests. Docker CLI contexts and automatic endpoint discovery are not used.');
   }
-  let url: URL;
-  try {
-    url = new URL(host);
-  } catch {
-    throw configurationError('DOCKER_HOST must be a supported explicit Docker endpoint URI.');
+  const cleanParts = (value: string): boolean => value.split('/').every((part) => part.length > 0 && part !== '.' && part !== '..');
+  const unix = host.startsWith('unix:///') && cleanParts(host.slice('unix:///'.length));
+  const pipePrefix = 'npipe:////./pipe/';
+  const pipe = host.startsWith(pipePrefix) && cleanParts(host.slice(pipePrefix.length));
+  let tcpUrl: URL | undefined;
+  if (host.startsWith('tcp://')) {
+    try {
+      const parsed = new URL(host);
+      if (parsed.href === host && parsed.hostname.length > 0 && parsed.port.length > 0 && Number(parsed.port) > 0 && (parsed.pathname === '' || parsed.pathname === '/') && parsed.username === '' && parsed.password === '') {
+        tcpUrl = parsed;
+      }
+    } catch {
+      throw configurationError('DOCKER_HOST must be a supported explicit Docker endpoint URI.');
+    }
   }
-  const tcp = url.protocol === 'tcp:' && url.hostname.length > 0 && url.port.length > 0 && (url.pathname === '' || url.pathname === '/');
-  const unix = url.protocol === 'unix:' && url.hostname === '' && url.pathname.startsWith('/') && url.pathname.length > 1;
-  const pipe = url.protocol === 'npipe:' && url.hostname === '' && url.pathname.startsWith('//./pipe/');
-  if ((!tcp && !unix && !pipe) || url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== '' || /[^\x21-\x7e]|%/.test(host)) {
-    throw configurationError('DOCKER_HOST must be an unescaped unix socket, named pipe, or tcp endpoint with an explicit port, without credentials, query, or fragment.');
+  const tcp = tcpUrl !== undefined;
+  if ((!tcp && !unix && !pipe) || /[^\x21-\x7e]|[%?#\\]/.test(host)) {
+    throw configurationError('DOCKER_HOST must be a canonical unescaped unix socket, named pipe, or tcp endpoint with an explicit port, without dot segments, credentials, query, or fragment.');
   }
   if ((process.env.DOCKER_TLS ?? '') !== '') {
     throw configurationError('DOCKER_TLS is CLI-only and is unsupported. Use DOCKER_TLS_VERIFY=1 with an absolute DOCKER_CERT_PATH for verified TCP TLS.');
@@ -58,7 +65,10 @@ function configuration(): ProbeConfiguration {
   if (verify !== '' && verify !== '1') {
     throw configurationError('DOCKER_TLS_VERIFY must be 1 or unset so Docker CLI and Testcontainers agree.');
   }
-  if (tcp && url.port === '2376' && verify !== '1') {
+  if (verify === '1' && process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') {
+    throw configurationError('NODE_TLS_REJECT_UNAUTHORIZED=0 is incompatible with verified Docker TLS. Use a process with certificate verification enabled.');
+  }
+  if (tcp && tcpUrl?.port === '2376' && verify !== '1') {
     throw configurationError('TCP port 2376 requires DOCKER_TLS_VERIFY=1 and an absolute DOCKER_CERT_PATH so Docker CLI and the SDK use the same TLS transport.');
   }
   if (verify !== '1' && (process.env.DOCKER_CERT_PATH ?? '') !== '') {

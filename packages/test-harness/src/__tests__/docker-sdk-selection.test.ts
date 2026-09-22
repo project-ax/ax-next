@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { Agent } from 'node:https';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,6 +38,7 @@ function runtime(opts: { strict: boolean; failExplicit?: boolean; cachedHost?: s
   }
   const strategy = moduleOf(strategySource, {
     'fs/promises': { readFile: vi.fn(async () => Buffer.from('fixture')) },
+    https: { Agent },
     path: { resolve: (...parts: string[]) => parts.join('/') },
     url: { URL },
     './utils/config': { getContainerRuntimeConfig: configRead },
@@ -80,7 +82,9 @@ function runtime(opts: { strict: boolean; failExplicit?: boolean; cachedHost?: s
     './image/docker-image-client': { DockerImageClient: ClientWrapper },
     './network/docker-network-client': { DockerNetworkClient: ClientWrapper },
   });
-  return { env, attempts, configRead, get: client.getContainerRuntimeClient as () => Promise<RuntimeClient> };
+  return { env, attempts, configRead, get: client.getContainerRuntimeClient as () => Promise<RuntimeClient>,
+    strategy: (config: Record<string, string>) => new (strategy.ConfigurationStrategy as new (config: Record<string, string>) => { getResult(): Promise<{ dockerOptions: { socketPath?: string; agent?: Agent } } | undefined> })(config),
+  };
 }
 
 describe('installed SDK explicit-endpoint selection', () => {
@@ -132,5 +136,45 @@ describe('installed SDK explicit-endpoint selection', () => {
     delete sdk.env.DOCKER_HOST;
     await expect(sdk.get()).rejects.toThrow(/requires DOCKER_HOST/);
     expect(sdk.attempts).toEqual([]);
+  });
+
+  it.each([
+    ['npipe:////./pipe/docker_engine', '//./pipe/docker_engine'],
+    ['unix:///tmp/link/../docker.sock', '/tmp/link/../docker.sock'],
+  ])('preserves raw native socket spelling in strict SDK configuration (%s)', async (host, socketPath) => {
+    const sdk = runtime({ strict: true });
+    const result = await sdk.strategy({ dockerHost: host }).getResult();
+    expect(result?.dockerOptions.socketPath).toBe(socketPath);
+    expect(sdk.configRead).not.toHaveBeenCalled();
+  });
+
+  it('rejects Node TLS verification disabling in strict selection before transport', async () => {
+    const sdk = runtime({ strict: true });
+    sdk.env.DOCKER_HOST = 'tcp://docker.example:2376';
+    sdk.env.DOCKER_TLS_VERIFY = '1';
+    sdk.env.DOCKER_CERT_PATH = '/fixture';
+    sdk.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+    await expect(sdk.get()).rejects.toThrow(/requires server-certificate verification/);
+    expect(sdk.attempts).toEqual([]);
+  });
+
+  it('rejects a Node TLS override before reusing a strict cached client', async () => {
+    const sdk = runtime({ strict: true });
+    sdk.env.DOCKER_HOST = 'tcp://docker.example:2376';
+    sdk.env.DOCKER_TLS_VERIFY = '1';
+    sdk.env.DOCKER_CERT_PATH = '/fixture';
+    await sdk.get();
+    sdk.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+    await expect(sdk.get()).rejects.toThrow(/requires server-certificate verification/);
+    expect(sdk.attempts).toHaveLength(1);
+  });
+
+  it('pins real HTTPS Agent verification below the fake Docker client seam', async () => {
+    const sdk = runtime({ strict: true });
+    sdk.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+    const result = await sdk.strategy({ dockerHost: 'tcp://docker.example:2376', dockerTlsVerify: '1', dockerCertPath: '/fixture' }).getResult();
+    expect(result?.dockerOptions.agent).toBeInstanceOf(Agent);
+    expect(result?.dockerOptions.agent?.options.rejectUnauthorized).toBe(true);
+    result?.dockerOptions.agent?.destroy();
   });
 });

@@ -65,6 +65,11 @@ TCP port 2376 requires verified TLS; certificate settings without verification
 are rejected. The checked-start wrapper enables the pinned SDK strict-selection
 patch, which fails instead of switching to a discovered socket and refuses a
 client cached under another configuration or outside strict mode.
+Socket path components after their fixed transport prefix must not contain
+empty/dot segments, escapes, or query/fragment delimiters. The fixed named-pipe
+namespace is preserved. Verified
+Docker TLS rejects Node's verification-disable override; the strict SDK transport
+also uses an HTTPS Agent with certificate verification explicitly enabled.
 
 ## Codex Memory Bootstrap
 

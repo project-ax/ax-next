@@ -24,6 +24,7 @@ beforeEach(() => {
   vi.stubEnv('DOCKER_TLS_VERIFY', undefined);
   vi.stubEnv('DOCKER_CERT_PATH', undefined);
   vi.stubEnv('AX_TESTCONTAINERS_STRICT_ENDPOINT', undefined);
+  vi.stubEnv('NODE_TLS_REJECT_UNAUTHORIZED', undefined);
 });
 
 afterEach(() => {
@@ -149,6 +150,61 @@ describe('explicit Docker endpoint contract', () => {
     const { startTestContainer } = await import('../docker-preflight.js');
     const start = vi.fn(async () => ({}));
     await expect(startTestContainer({ start })).rejects.toThrow(/DOCKER_CERT_PATH requires DOCKER_TLS_VERIFY=1/);
+    expect(mocks.exec).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'unix:///tmp/link/../docker.sock',
+    'unix:///tmp/./docker.sock',
+    'unix:///tmp/docker.sock?',
+    'unix:///tmp/docker.sock#',
+    'tcp://docker.example:2375?',
+    'tcp://docker.example:2375#',
+    'unix:/tmp/docker.sock',
+    'UNIX:///tmp/docker.sock',
+    'unix:////tmp/docker.sock',
+  ])('rejects ambiguous native endpoint %s before probing', async (host) => {
+    vi.stubEnv('DOCKER_HOST', host);
+    const { preflightDocker } = await import('../docker-preflight.js');
+    await expect(preflightDocker()).rejects.toThrow(/^Docker test configuration:/);
+    expect(mocks.exec).not.toHaveBeenCalled();
+  });
+
+  it('preserves the native named-pipe endpoint instead of URL-normalizing it', async () => {
+    const host = 'npipe:////./pipe/docker_engine';
+    vi.stubEnv('DOCKER_HOST', host);
+    const { preflightDocker } = await import('../docker-preflight.js');
+    await preflightDocker();
+    expect(mocks.exec).toHaveBeenCalledTimes(2);
+    for (const [, args, options] of mocks.exec.mock.calls as [string, string[], ProbeOptions][]) {
+      expect(args[0]).toBe(`--host=${host}`);
+      expect(options.env.DOCKER_HOST).toBe(host);
+    }
+  });
+
+  it('rejects Node verification disabling before verified TCP probes', async () => {
+    vi.stubEnv('DOCKER_HOST', 'tcp://docker.example:2376');
+    vi.stubEnv('DOCKER_TLS_VERIFY', '1');
+    vi.stubEnv('DOCKER_CERT_PATH', process.cwd());
+    vi.stubEnv('NODE_TLS_REJECT_UNAUTHORIZED', '0');
+    const { startTestContainer } = await import('../docker-preflight.js');
+    const start = vi.fn(async () => ({}));
+    await expect(startTestContainer({ start })).rejects.toThrow(/NODE_TLS_REJECT_UNAUTHORIZED=0/);
+    expect(mocks.exec).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('rechecks Node verification disabling before a cached checked start', async () => {
+    vi.stubEnv('DOCKER_HOST', 'tcp://docker.example:2376');
+    vi.stubEnv('DOCKER_TLS_VERIFY', '1');
+    vi.stubEnv('DOCKER_CERT_PATH', process.cwd());
+    const { startTestContainer } = await import('../docker-preflight.js');
+    await startTestContainer({ start: async () => ({}) });
+    mocks.exec.mockClear();
+    vi.stubEnv('NODE_TLS_REJECT_UNAUTHORIZED', '0');
+    const start = vi.fn(async () => ({}));
+    await expect(startTestContainer({ start })).rejects.toThrow(/NODE_TLS_REJECT_UNAUTHORIZED=0/);
     expect(mocks.exec).not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();
   });
