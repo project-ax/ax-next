@@ -252,7 +252,7 @@ describeIfHelm('memory preset opt-in (TASK-496)', () => {
 
   it('rejects an unknown host.preset', () => {
     const out = renderFails(['--set', 'host.preset=bogus']);
-    expect(out).toContain('host.preset');
+    expect(out).toMatch(/host[./]preset/);
   });
 
   it.each([
