@@ -19,6 +19,7 @@ import {
   type Plugin,
 } from '@ax/core';
 import { createSandboxK8sPlugin, type K8sCoreApi } from '@ax/sandbox-k8s';
+import { startTestContainer } from '@ax/test-harness';
 
 import { createMemoryPlugins, type MemoryPresetConfig } from '../index.js';
 
@@ -199,7 +200,7 @@ function ctxFor(agentId: string, userId: string, extra: Partial<AgentContext> = 
 const DROPPED = new Set(['@ax/sandbox-k8s', '@ax/auth-better', '@ax/llm-openrouter']);
 
 async function boot(): Promise<void> {
-  container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   const connectionString = container.getConnectionUri();
   tmp = await fsp.realpath(await fsp.mkdtemp(path.join(os.tmpdir(), 'ax-memory-preset-')));
   exportHostRoot = path.join(tmp, 'exports');
