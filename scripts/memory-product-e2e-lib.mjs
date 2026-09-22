@@ -152,7 +152,7 @@ export function makeClients({ env, ledger, tags, fetchImpl = fetch }) {
     try {
       const response = await fetchImpl(url, {
         method: 'POST', headers: { 'content-type': 'application/json', ...headers },
-        body: JSON.stringify(body), signal: AbortSignal.timeout(120_000),
+        body: JSON.stringify(body), signal: AbortSignal.timeout(120_000), redirect: 'error',
       });
       if (!response.ok) {
         const error = new ProviderError(provider, response.status);

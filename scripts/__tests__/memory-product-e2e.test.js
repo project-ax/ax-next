@@ -84,6 +84,15 @@ describe('spending ledger', () => {
     await expect(client.openrouter({ model: CONFIG.extractionModel, max_tokens: 4096, messages: [] })).rejects.toBeInstanceOf(BudgetExceeded);
     expect(calls).toBe(0);
   });
+  it('bounds the embedding transport before sending credentials', async () => {
+    const ledger = new Ledger(join(temporary(), 'costs.jsonl'), 25);
+    let calls = 0;
+    const fetcher = makeMeteredProviderFetch(ledger, tags, async () => { calls++; throw new Error('not reached'); });
+    for (const url of ['http://api.cohere.com/v2/rerank', 'https://api.cohere.com:8443/v2/rerank', 'https://elsewhere.invalid/v2/rerank', 'https://api.cohere.com/v2/rerank?redirect=x']) {
+      await expect(fetcher(url, { body: '{}' })).rejects.toThrow();
+    }
+    expect(calls).toBe(0);
+  });
   it('meters Vertex characters and Cohere billed search units, not guessed zeros', async () => {
     const ledger = new Ledger(join(temporary(), 'costs.jsonl'), 25);
     const fetcher = makeMeteredProviderFetch(ledger, tags, async url => new Response(JSON.stringify(String(url).includes(':predict') ? { metadata: { billableCharacterCount: 3 } } : { meta: { billed_units: { search_units: 2 } } }), { status: 200 }));
@@ -99,6 +108,7 @@ describe('model-driven tool loop', () => {
     const requests = [];
     const ledger = new Ledger(join(temporary(), 'costs.jsonl'), 25);
     const clients = makeClients({ env: {}, ledger, tags, fetchImpl: async (_url, init) => {
+      expect(init.redirect).toBe('error');
       const body = JSON.parse(init.body); requests.push(body);
       const first = requests.length === 1;
       const response = arm === 'sonnet'

@@ -77,6 +77,7 @@ export async function pinnedSamples() {
 export function makeMeteredProviderFetch(ledger, tags, fetchImpl = fetch) {
   const metered = async (input, init) => {
     const url = new URL(String(input));
+    if (url.protocol !== 'https:' || url.port || url.username || url.password || url.search || url.hash) throw new Error('Unexpected provider transport');
     const request = JSON.parse(String(init?.body ?? '{}'));
     const vertex = url.hostname === 'us-central1-aiplatform.googleapis.com' && url.pathname.endsWith('/text-embedding-005:predict');
     const cohere = url.hostname === 'api.cohere.com' && url.pathname === '/v2/rerank';
@@ -87,7 +88,7 @@ export function makeMeteredProviderFetch(ledger, tags, fetchImpl = fetch) {
     const id = ledger.reserve(upper, { ...tags(), provider: vertex ? 'vertex' : 'cohere' });
     let settled = false;
     try {
-      const response = await fetchImpl(input, init);
+      const response = await fetchImpl(input, { ...init, redirect: 'error' });
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) metered.fatalError = new ProviderError(vertex ? 'vertex' : 'cohere', response.status);
         ledger.settle(id, vertex ? 0 : upper, vertex ? 'http-error-not-billed' : 'uncertain-upper-bound', { status: response.status });
@@ -275,6 +276,7 @@ export async function main(argv = process.argv.slice(2)) {
     preflight: { type: 'boolean', default: false },
   } });
   if (!values['run-dir']) throw new Error('--run-dir is required');
+  if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') throw new Error('Benchmark requires TLS certificate verification');
   const directory = resolve(values['run-dir']);
   const cap = Number(values.cap);
   if (!Number.isFinite(cap) || cap <= 0) throw new Error('Spending cap must be positive and finite');
