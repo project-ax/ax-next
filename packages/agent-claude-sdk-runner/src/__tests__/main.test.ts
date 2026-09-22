@@ -3589,6 +3589,49 @@ describe('main()', () => {
       expect(queryArg.options.env.PATH?.endsWith(':/files/bin')).toBe(true);
     });
 
+    it('grants AX_MEMORY_ROOT via additionalDirectories only — never cwd/HOME/settingSources', async () => {
+      setEnv({
+        ...COMPLETE_ENV,
+        AX_EPHEMERAL_ROOT: '/ephemeral',
+        AX_USERFILES_ROOT: '/files',
+        AX_MEMORY_ROOT: '/memory',
+      });
+      wirePlan2Client();
+
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: {
+          cwd: string;
+          env: { HOME?: string };
+          settingSources: string[];
+          additionalDirectories?: string[];
+        };
+      };
+      expect(queryArg.options.additionalDirectories).toContain('/memory');
+      expect(queryArg.options.cwd).toBe('/files');
+      expect(queryArg.options.env.HOME).toBe('/files');
+      expect(queryArg.options.settingSources).toEqual(['user']);
+    });
+
+    it('omits the memory root when AX_MEMORY_ROOT is unset (no permission widening)', async () => {
+      setEnv({
+        ...COMPLETE_ENV,
+        AX_EPHEMERAL_ROOT: '/ephemeral',
+        AX_USERFILES_ROOT: '/files',
+      });
+      wirePlan2Client();
+
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: { additionalDirectories?: string[] };
+      };
+      expect(queryArg.options.additionalDirectories).not.toContain('/memory');
+    });
+
     it('UNSET (no AX_USERFILES_ROOT): cwd=HOME=/agent and /agent is the cwd (today)', async () => {
       // Regression guard: the governed root is the cwd, so it dedups OUT of
       // additionalDirectories — byte-identical to pre-Plan-2 behavior.

@@ -221,6 +221,63 @@ export function createOpenSession(deps: OpenSessionDeps) {
         throw err;
       }
     }
+    if (input.owner !== undefined && deps.bus.hasService('sandbox:memory-mounts')) {
+      try {
+        const resolved: unknown = await deps.bus.call<ResolveMountsInput, ResolveMountsOutput>(
+          'sandbox:memory-mounts',
+          ctx,
+          { owner: input.owner },
+        );
+        const memoryMounts = (resolved as { mounts?: unknown } | null)?.mounts;
+        const m =
+          Array.isArray(memoryMounts) && memoryMounts.length === 1
+            ? (memoryMounts[0] as Record<string, unknown> | null)
+            : null;
+        if (
+          m === null ||
+          typeof m !== 'object' ||
+          m.kind !== 'nfs' ||
+          m.role !== 'memory' ||
+          m.readOnly !== true ||
+          m.mountPath !== '/memory' ||
+          typeof m.server !== 'string' ||
+          m.server === '' ||
+          typeof m.exportPath !== 'string' ||
+          m.exportPath === '' ||
+          typeof m.subPath !== 'string' ||
+          m.subPath === ''
+        ) {
+          throw new PluginError({
+            code: 'invalid-return',
+            plugin: PLUGIN_NAME,
+            hookName: HOOK_NAME,
+            message:
+              "sandbox:memory-mounts must return exactly one read-only nfs mount at /memory",
+          });
+        }
+        mounts.push({
+          kind: 'nfs',
+          role: 'memory',
+          mountPath: '/memory',
+          server: m.server,
+          exportPath: m.exportPath,
+          subPath: m.subPath,
+          readOnly: true,
+        });
+      } catch (err) {
+        podLog.error('memory_mounts_failed', {
+          err: err instanceof Error ? err.message : String(err),
+        });
+        await deps.bus
+          .call<SessionTerminateInput, Record<string, never>>(
+            'session:terminate',
+            ctx,
+            { sessionId: created.sessionId },
+          )
+          .catch(() => undefined);
+        throw err;
+      }
+    }
 
     // 3. Build pod spec. runnerEndpoint is fixed at preset-config time
     //    (config.hostIpcUrl) and stamped onto AX_RUNNER_ENDPOINT — the

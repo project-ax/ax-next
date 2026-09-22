@@ -22,6 +22,7 @@ export {
 } from './extraction-prompt.js';
 export {
   NO_CREDENTIAL_EVENT,
+  NOTE_FAILED_EVENT,
   OBSERVER_FAILED_EVENT,
   OBSERVER_RUN_EVENT,
   isMissingCredential,
@@ -57,6 +58,17 @@ export {
   registerSystemPromptAugment,
   DEFAULTS as MEMORY_BLOCK_DEFAULTS,
 } from './augment.js';
+export {
+  RULES_WRITE_HOOK,
+  MAX_RULES_CHARS,
+  registerRulesHooks,
+} from './rules.js';
+export type {
+  MemoryRulesReadInput,
+  MemoryRulesReadOutput,
+  MemoryRulesWriteInput,
+  MemoryRulesWriteOutput,
+} from './rules.js';
 export type {
   MemoryBlockConfig,
   SystemPromptAugmentInput,
@@ -65,11 +77,25 @@ export type {
   AssembledBlock,
 } from './augment.js';
 export { resolveOwnerUserId } from './owner.js';
+export type { MemoryExportConfig } from './exporter.js';
+export { MEMORY_EXPORT_FLUSH_HOOK } from './exporter.js';
+export {
+  MEMORY_MOUNT_PATH,
+  validateVolumeConfig,
+  volumeAgentKey,
+} from './export-volume.js';
+export type { MemoryVolumeConfig } from './export-volume.js';
 export {
   MEMORY_RECALL_DESCRIPTOR,
   MEMORY_RECALL_TOOL_HOOK,
   registerMemoryRecall,
 } from './recall-tool.js';
+export {
+  MEMORY_NOTE_DESCRIPTOR,
+  MEMORY_NOTE_TOOL_HOOK,
+  registerMemoryNote,
+} from './note-tool.js';
+export type { MemoryNoteInput, MemoryNoteResult } from './note-tool.js';
 export {
   formatEvidenceWhen,
   relativeTime,

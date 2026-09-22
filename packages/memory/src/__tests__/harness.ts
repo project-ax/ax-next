@@ -195,6 +195,7 @@ export async function makeMemoryHarness(
     forget: (input, c) =>
       bus.call<MemoryForgetInput, MemoryForgetOutput>('memory:forget', c ?? ctx(), input),
     teardown: async () => {
+      await memoryPlugin.shutdown?.();
       await engine.shutdown?.();
       await rm(dir, { recursive: true, force: true });
     },

@@ -6,6 +6,8 @@ import type {
   RecordOutput,
   RecordedStatement,
   FactStatementInput,
+  FactScanInput,
+  FactScanOutput,
   RecallInput,
   RecallOutput,
   FactRecord,
@@ -385,6 +387,52 @@ function validateReindexInput(input: ReindexInput): ResolvedSlot[] {
   });
 }
 
+function validateScanInput(input: FactScanInput): {
+  ownerUserId?: string;
+  after?: string;
+  limit: number;
+} {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'scan input must be an object',
+    });
+  }
+  if (input.ownerUserId !== undefined && !isNonEmptyString(input.ownerUserId)) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'ownerUserId must be a non-empty string when set',
+    });
+  }
+  if (input.after !== undefined && !isNonEmptyString(input.after)) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'after must be a non-empty string when set',
+    });
+  }
+  if (
+    input.limit !== undefined &&
+    (typeof input.limit !== 'number' ||
+      !Number.isFinite(input.limit) ||
+      input.limit < 1 ||
+      !Number.isInteger(input.limit))
+  ) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'limit must be a positive integer when set',
+    });
+  }
+  return {
+    ...(input.ownerUserId !== undefined ? { ownerUserId: input.ownerUserId } : {}),
+    ...(input.after !== undefined ? { after: input.after } : {}),
+    limit: Math.min(input.limit ?? MAX_LIMIT, MAX_LIMIT),
+  };
+}
+
 function rowToFactRecord(row: FactRow): FactRecord {
   return {
     id: row.id,
@@ -597,6 +645,7 @@ export function createMemoryFactsPostgresPlugin(): Plugin {
       registers: [
         'memory:facts:record',
         'memory:facts:recall',
+        'memory:facts:scan',
         'memory:facts:supersede',
         'memory:facts:clear',
         'memory:facts:reindex',
@@ -783,6 +832,32 @@ export function createMemoryFactsPostgresPlugin(): Plugin {
           });
 
           return { statements: rows.map(rowToFactRecord), degraded };
+        },
+      );
+
+      bus.registerService<FactScanInput, FactScanOutput>(
+        'memory:facts:scan',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const { ownerUserId, after, limit } = validateScanInput(input);
+          const agentKey = agentScopeKey(ctx);
+
+          const rows = await inStore('memory:facts:scan', async () => {
+            const store = requireDb();
+            let query = store.selectFrom(TABLE).selectAll().where('agent_key', '=', agentKey);
+            if (ownerUserId !== undefined) query = query.where('owner_user_id', '=', ownerUserId);
+            if (after !== undefined) query = query.where('id', '>', after);
+            return (await query.orderBy('id', 'asc').limit(limit + 1).execute()) as FactRow[];
+          });
+
+          const page = rows.slice(0, limit);
+          return {
+            statements: page.map((row) => ({
+              ...rowToFactRecord(row),
+              recordedAt: row.transaction_time,
+            })),
+            ...(rows.length > limit ? { nextAfter: page[page.length - 1]!.id } : {}),
+          };
         },
       );
 

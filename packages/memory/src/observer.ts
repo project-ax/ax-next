@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { extractFacts, type ExtractedFact, type LlmCallFn } from './extract.js';
+import { deriveSlot, type Slot } from './slots.js';
 import { rewriteSpeaker } from './subject.js';
 import type { MemoryStatementKind } from './types.js';
 import {
@@ -32,6 +33,7 @@ export interface ObserverStatement {
   ownerUserId: string;
   conversationId?: string;
   kind?: MemoryStatementKind;
+  slot?: Slot;
 }
 
 export interface ObserverRecordInput {
@@ -235,6 +237,7 @@ export function toStatements(
       unusable += 1;
       continue;
     }
+    const slot = deriveSlot(fact.predicate);
     statements.push({
       // Design §3.2. The extractor canonicalizes whoever is speaking as the
       // literal subject `user`; the store is keyed by agent alone, so left
@@ -257,16 +260,18 @@ export function toStatements(
       // when the turn has no conversation.
       ...(opts.conversationId !== undefined ? { conversationId: opts.conversationId } : {}),
       ...(fact.kind !== undefined ? { kind: fact.kind } : {}),
+      // The slot comes from the deterministic synonym table (design §3.3,
+      // TASK-489), derived HERE from the predicate we are about to store —
+      // never taken from model output, so an extractor-emitted `slot` or
+      // `provenance` field cannot reach the store. A relation the table does
+      // not know lands with no slot: stored, retrievable, and inert for
+      // supersession, exactly like every other unmapped row. Not
+      // `PENDING_SLOT` either: pending raises `degraded: ['pending']` on
+      // every recall, and a flag about a component that does not exist to
+      // drain it is noise rather than signal — the same call
+      // `memory:remember` made. Neither the model nor the caller decides.
+      ...(slot !== null ? { slot } : {}),
     });
-    // No `slot`. Slot derivation is the normalizer's job (design §3.3,
-    // TASK-489), so a statement recorded here is INERT for supersession: it
-    // closes nothing and nothing closes it, exactly like every other no-slot
-    // row. That is under-closing — the measured baseline and the safe
-    // direction, because a false positive (`visited` -> `lives_in`) closes a
-    // true fact while a false negative merely leaves two. Not `PENDING_SLOT`
-    // either: pending additionally raises `degraded: ['pending']` on every
-    // recall, and a flag about a component that does not exist to drain it is
-    // noise rather than signal — the same call `memory:remember` made.
   }
   return { statements, unusable };
 }

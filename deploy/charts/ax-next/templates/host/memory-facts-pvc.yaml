@@ -1,0 +1,20 @@
+{{- if eq (.Values.host.preset | default "k8s") "memory" }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "ax-next.fullname" . }}-memory-facts
+  namespace: {{ include "ax-next.hostNamespace" . }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "ax-next.componentLabels" (dict "component" "host" "context" $) | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.memory.facts.storage | default "10Gi" }}
+  {{- if .Values.memory.facts.storageClassName }}
+  storageClassName: {{ .Values.memory.facts.storageClassName }}
+  {{- end }}
+{{- end }}

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createTestHarness } from '@ax/test-harness';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createSandboxK8sPlugin } from '../plugin.js';
@@ -810,6 +810,173 @@ describe('sandbox:open-session (k8s)', () => {
       ).rejects.toThrow(/resolver boom/);
       // No pod was created — we threw before createNamespacedPod.
       expect(api.creates).toHaveLength(0);
+      await h.close();
+    });
+  });
+
+  describe('sandbox:memory-mounts realization', () => {
+    const OWNER = {
+      userId: 'u1',
+      agentId: 'agent-abc',
+      agentConfig: {
+        displayName: 'A',
+        systemPromptAugment: '',
+        allowedTools: [],
+        mcpConfigIds: [],
+        model: 'claude',
+        runner: 'claude-sdk',
+      },
+    };
+    const INPUT = {
+      sessionId: 'sess-mem',
+      workspaceRoot: '/tmp/ws',
+      runnerBinary: '/opt/ax/runner.js',
+      owner: OWNER,
+    };
+    const MEMORY_MOUNT = {
+      kind: 'nfs',
+      role: 'memory',
+      mountPath: '/memory',
+      server: '10.0.0.3',
+      exportPath: '/vol1/memory',
+      subPath: 'deadbeef/permanent/memory/facts',
+      readOnly: true,
+    };
+
+    async function harnessWithMemory(api: MockK8sApi, mounts: unknown) {
+      return createTestHarness({
+        services: {
+          'sandbox:memory-mounts': async () => ({ mounts }),
+        },
+        plugins: [
+          createSessionInmemoryPlugin(),
+          createSandboxK8sPlugin({
+            api,
+            namespace: 'ax-test',
+            image: 'ax-next/agent:test',
+            hostIpcUrl: TEST_HOST_IPC_URL,
+            orphanSweepIntervalMs: 0,
+            ...FAST_POLL,
+          }),
+        ],
+      });
+    }
+
+    it('realizes the memory mount into the pod spec and stamps AX_MEMORY_ROOT', async () => {
+      const api = makeMockK8sApi();
+      api.setReadResponses(readyPod());
+      const h = await harnessWithMemory(api, [MEMORY_MOUNT]);
+      await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), INPUT);
+      const body = api.creates[0]!.body as {
+        spec: {
+          containers: Array<{
+            env: Array<{ name: string; value: string }>;
+            volumeMounts?: Array<{ name: string; mountPath: string; readOnly?: boolean }>;
+          }>;
+          initContainers?: Array<{ name: string }>;
+        };
+      };
+      const mount = (body.spec.containers[0]!.volumeMounts ?? []).find(
+        (m) => m.mountPath === '/memory',
+      );
+      expect(mount).toMatchObject({ mountPath: '/memory', readOnly: true });
+      const env = Object.fromEntries(
+        body.spec.containers[0]!.env.map((e) => [e.name, e.value]),
+      );
+      expect(env.AX_MEMORY_ROOT).toBe('/memory');
+      expect(
+        (body.spec.initContainers ?? []).every((c) => !c.name.endsWith('-chown')),
+      ).toBe(true);
+      await h.close();
+    });
+
+    it('a resolver failure terminates the session and aborts pod creation', async () => {
+      const api = makeMockK8sApi();
+      api.setReadResponses(readyPod());
+      const h = await createTestHarness({
+        services: {
+          'sandbox:memory-mounts': async () => {
+            throw new Error('memory resolver boom');
+          },
+        },
+        plugins: [
+          createSessionInmemoryPlugin(),
+          createSandboxK8sPlugin({
+            api,
+            namespace: 'ax-test',
+            image: 'ax-next/agent:test',
+            hostIpcUrl: TEST_HOST_IPC_URL,
+            orphanSweepIntervalMs: 0,
+            ...FAST_POLL,
+          }),
+        ],
+      });
+      const spy = vi.spyOn(h.bus, 'call');
+      await expect(
+        h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), INPUT),
+      ).rejects.toThrow(/memory resolver boom/);
+      expect(api.creates).toHaveLength(0);
+      expect(
+        spy.mock.calls.some(
+          ([hook, , input]) =>
+            hook === 'session:terminate' &&
+            (input as { sessionId?: string }).sessionId === 'sess-mem',
+        ),
+      ).toBe(true);
+      const alive = await h.bus.call<unknown, { alive: boolean }>(
+        'session:is-alive',
+        h.ctx(),
+        { sessionId: 'sess-mem' },
+      );
+      expect(alive.alive).toBe(false);
+      await h.close();
+    });
+
+    it.each([
+      ['two mounts', [MEMORY_MOUNT, MEMORY_MOUNT]],
+      ['zero mounts', []],
+      ['mounts not an array', { mounts: 'nope' }],
+      ['mounts null', null],
+      ['mounts undefined', undefined],
+      ['a writable mount', [{ ...MEMORY_MOUNT, readOnly: false }]],
+      ['readOnly the string "false"', [{ ...MEMORY_MOUNT, readOnly: 'false' }]],
+      ['a missing role', [((m) => { const { role: _r, ...rest } = m; return rest; })(MEMORY_MOUNT)]],
+      ['the user-files role', [{ ...MEMORY_MOUNT, role: 'user-files' }]],
+      ['a non-/memory mountPath', [{ ...MEMORY_MOUNT, mountPath: '/mem' }]],
+      ['a missing server', [{ ...MEMORY_MOUNT, server: '' }]],
+      ['a non-nfs mount', [{ kind: 'localDir', mountPath: '/memory', hostPath: '/x', readOnly: true, role: 'memory' }]],
+    ])('a malformed resolver output (%s) aborts pod creation and terminates the session', async (_l, resolved) => {
+      const api = makeMockK8sApi();
+      api.setReadResponses(readyPod());
+      const h = await createTestHarness({
+        services: {
+          'sandbox:memory-mounts': async () =>
+            Array.isArray(resolved) ? { mounts: resolved } : resolved,
+        },
+        plugins: [
+          createSessionInmemoryPlugin(),
+          createSandboxK8sPlugin({
+            api,
+            namespace: 'ax-test',
+            image: 'ax-next/agent:test',
+            hostIpcUrl: TEST_HOST_IPC_URL,
+            orphanSweepIntervalMs: 0,
+            ...FAST_POLL,
+          }),
+        ],
+      });
+      const spy = vi.spyOn(h.bus, 'call');
+      await expect(
+        h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), INPUT),
+      ).rejects.toThrow();
+      expect(api.creates).toHaveLength(0);
+      expect(
+        spy.mock.calls.some(
+          ([hook, , input]) =>
+            hook === 'session:terminate' &&
+            (input as { sessionId?: string }).sessionId === 'sess-mem',
+        ),
+      ).toBe(true);
       await h.close();
     });
   });

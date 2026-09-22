@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { HookBus, makeAgentContext, PluginError, type AgentContext } from '@ax/core';
 import type { RecallOutput } from '@ax/memory-facts-contract';
 
+import { MEMORY_NOTE_DESCRIPTOR } from '../note-tool.js';
 import { MEMORY_RECALL_DESCRIPTOR, MEMORY_RECALL_TOOL_HOOK } from '../recall-tool.js';
 import { createMemoryPlugin } from '../plugin.js';
 import { makeMemoryHarness, registerMemoryAgents, type MemoryHarness } from './harness.js';
@@ -48,7 +49,10 @@ const EMPTY_RECALL: RecallOutput = { statements: [], degraded: [] };
 describe('@ax/memory — the memory_recall tool', () => {
   it('registers itself on `tool:register` at init, with the authored descriptor', async () => {
     harness = await makeMemoryHarness();
-    expect(harness.toolDescriptors).toEqual([MEMORY_RECALL_DESCRIPTOR]);
+    expect(harness.toolDescriptors).toEqual([
+      MEMORY_RECALL_DESCRIPTOR,
+      MEMORY_NOTE_DESCRIPTOR,
+    ]);
     expect(MEMORY_RECALL_DESCRIPTOR.executesIn).toBe('host');
   });
 

@@ -1059,6 +1059,7 @@ async function runRunnerInner(
     // states both so the model resolves shared `.ax/uploads/…` files under the
     // governed root, not the new cwd.
     homeDir,
+    env.memoryRoot,
   );
 
   // Turn boundary (Phase 3). Replaces the legacy PostToolUse-based

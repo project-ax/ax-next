@@ -353,6 +353,37 @@ Invoked from `host/deployment.yaml`, which always renders.
 {{- end -}}
 {{- end -}}
 
+{{- define "ax-next.memoryFactsRoot" -}}
+/var/lib/ax-next/memory-facts
+{{- end -}}
+{{- define "ax-next.memoryExportsRoot" -}}
+/var/lib/ax-next/memory-exports
+{{- end -}}
+
+{{- define "ax-next.validatePreset" -}}
+{{- if hasKey .Values.host "preset" -}}
+{{- if not (kindIs "string" .Values.host.preset) -}}
+{{- fail "host.preset must be a string, one of [k8s, memory]" -}}
+{{- end -}}
+{{- if not (or (eq .Values.host.preset "k8s") (eq .Values.host.preset "memory")) -}}
+{{- fail "host.preset must be one of [k8s, memory]" -}}
+{{- end -}}
+{{- end -}}
+{{- $preset := .Values.host.preset | default "k8s" -}}
+{{- if eq $preset "memory" -}}
+{{- $mem := .Values.memory | default dict -}}
+{{- if not (dig "vertexProject" "" $mem) -}}
+{{- fail "memory.vertexProject is required when host.preset=memory" -}}
+{{- end -}}
+{{- if not (dig "exports" "server" "" $mem) -}}
+{{- fail "memory.exports.server is required when host.preset=memory" -}}
+{{- end -}}
+{{- if not (dig "exports" "exportPath" "" $mem) -}}
+{{- fail "memory.exports.exportPath is required when host.preset=memory" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{/*
 ax-next.validateHostReplicas — fail-fast guard for the single-replica chat
 constraint (ARCH-1).

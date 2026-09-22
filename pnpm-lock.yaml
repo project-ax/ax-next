@@ -805,6 +805,9 @@ importers:
       '@ax/preset-k8s':
         specifier: workspace:*
         version: link:../../presets/k8s
+      '@ax/preset-memory':
+        specifier: workspace:*
+        version: link:../../presets/memory
       '@ax/sandbox-subprocess':
         specifier: workspace:*
         version: link:../sandbox-subprocess
@@ -1568,6 +1571,9 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      '@ax/sandbox-mount-protocol':
+        specifier: workspace:*
+        version: link:../sandbox-mount-protocol
     devDependencies:
       '@ax/memory-facts-contract':
         specifier: workspace:*
@@ -1575,6 +1581,9 @@ importers:
       '@ax/memory-facts-sqlite':
         specifier: workspace:*
         version: link:../memory-facts-sqlite
+      '@ax/workspace-git':
+        specifier: workspace:*
+        version: link:../workspace-git
       '@types/better-sqlite3':
         specifier: ^7.6.12
         version: 7.6.13
@@ -2946,6 +2955,46 @@ importers:
       playwright:
         specifier: ^1.59.1
         version: 1.59.1
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^5.0.1
+        version: 5.0.1(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.2.1(@types/node@25.6.0)(esbuild@0.28.1)(jiti@1.21.7)(tsx@4.21.0)(yaml@2.8.3))
+
+  presets/memory:
+    dependencies:
+      '@ax/channel-web':
+        specifier: workspace:*
+        version: link:../../packages/channel-web
+      '@ax/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@ax/embeddings':
+        specifier: workspace:*
+        version: link:../../packages/embeddings
+      '@ax/memory':
+        specifier: workspace:*
+        version: link:../../packages/memory
+      '@ax/memory-facts-sqlite':
+        specifier: workspace:*
+        version: link:../../packages/memory-facts-sqlite
+      '@ax/preset-k8s':
+        specifier: workspace:*
+        version: link:../k8s
+    devDependencies:
+      '@ax/sandbox-k8s':
+        specifier: workspace:*
+        version: link:../../packages/sandbox-k8s
+      '@ax/test-harness':
+        specifier: workspace:*
+        version: link:../../packages/test-harness
+      '@testcontainers/postgresql':
+        specifier: 11.14.0
+        version: 11.14.0
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3

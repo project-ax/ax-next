@@ -52,6 +52,7 @@
     { "path": "packages/llm-anthropic" },
     { "path": "packages/llm-openrouter" },
     { "path": "presets/k8s" },
+    { "path": "presets/memory" },
     { "path": "packages/onboarding" },
     { "path": "packages/memory-strata-index-contract" },
     { "path": "packages/memory-strata-index-sqlite" },
