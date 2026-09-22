@@ -22,6 +22,7 @@ export {
 } from './extraction-prompt.js';
 export {
   NO_CREDENTIAL_EVENT,
+  NOTE_FAILED_EVENT,
   OBSERVER_FAILED_EVENT,
   OBSERVER_RUN_EVENT,
   isMissingCredential,
@@ -70,6 +71,12 @@ export {
   MEMORY_RECALL_TOOL_HOOK,
   registerMemoryRecall,
 } from './recall-tool.js';
+export {
+  MEMORY_NOTE_DESCRIPTOR,
+  MEMORY_NOTE_TOOL_HOOK,
+  registerMemoryNote,
+} from './note-tool.js';
+export type { MemoryNoteInput, MemoryNoteResult } from './note-tool.js';
 export {
   formatEvidenceWhen,
   relativeTime,

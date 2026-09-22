@@ -11,6 +11,7 @@ import {
   BOB,
   capturingLogger,
   engineRecall,
+  engineRecord,
   eventsNamed,
   makeMemoryHarness,
   type LoggedEvent,
@@ -469,6 +470,167 @@ describe('batch semantics', () => {
 
 // ---------------------------------------------------------------------------
 
+describe('the observer derives slots through the same normalizer', () => {
+  it('stores the derived slot on a mapped predicate, and a later extracted fact closes it', async () => {
+    const h = await withLlm((_input, call) =>
+      reply(
+        extraction([
+          fact({
+            object: call === 1 ? 'Boston' : 'Cambridge',
+            validStart: call === 1 ? JAN : '2023-06-01T09:00:00Z',
+          }),
+        ]),
+      ),
+    );
+
+    await chatEnd(h);
+    await chatEnd(h, {
+      messages: [...DIALOGUE, { role: 'user', content: 'Actually I moved again, to Cambridge.' }],
+    });
+
+    const rows = readRows(h.databasePath);
+    const first = rows.find((r) => r.value === 'Boston')!;
+    const second = rows.find((r) => r.value === 'Cambridge')!;
+    expect(first.slot).toBe('lives_in');
+    expect(second.slot).toBe('lives_in');
+    expect(first.valid_end).toBe('2023-06-01T09:00:00.000Z');
+    expect(first.closed_by).toBe(second.id);
+    const { statements } = await h.recall({ limit: 20 });
+    expect(statements.map((s) => s.value)).toEqual(['Cambridge']);
+  });
+
+  it('leaves an unmapped predicate inert — both rows stay active', async () => {
+    const h = await withLlm((_input, call) =>
+      reply(
+        extraction([
+          fact({
+            predicate: 'visited',
+            object: call === 1 ? 'Rome' : 'Milan',
+            validStart: call === 1 ? JAN : '2023-06-01T09:00:00Z',
+          }),
+        ]),
+      ),
+    );
+
+    await chatEnd(h);
+    await chatEnd(h, {
+      messages: [...DIALOGUE, { role: 'user', content: 'And Milan last month too.' }],
+    });
+
+    const rows = readRows(h.databasePath);
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.slot).toBeNull();
+      expect(row.valid_end).toBe('9999-12-31T23:59:59.999Z');
+    }
+    const { statements } = await h.recall({ limit: 20 });
+    expect(statements).toHaveLength(2);
+  });
+
+  it('an extracted fact cannot close an agent or human row with the same slot', async () => {
+    const h = await withLlm(() =>
+      reply(
+        extraction([
+          fact({ object: 'Boston', validStart: '2023-06-01T09:00:00Z' }),
+          fact({
+            predicate: 'works_at',
+            object: 'NewCorp',
+            validStart: '2023-06-01T09:00:00Z',
+          }),
+        ]),
+      ),
+    );
+    await engineRecord(h.bus, h.ctx(), [
+      {
+        about: `user:${ALICE}`,
+        relation: 'lives in',
+        value: 'Lyon',
+        when: JAN,
+        slot: 'lives_in',
+        provenance: 'agent',
+        ownerUserId: ALICE,
+      },
+      {
+        about: `user:${ALICE}`,
+        relation: 'works at',
+        value: 'OldCorp',
+        when: JAN,
+        slot: 'works_at',
+        provenance: 'human',
+        ownerUserId: ALICE,
+      },
+    ]);
+    const llm = h.llmCalls.length;
+    await chatEnd(h, {
+      messages: [...DIALOGUE, { role: 'user', content: 'I work at NewCorp now.' }],
+    });
+
+    const rows = readRows(h.databasePath);
+    const extracted = rows.find((r) => r.value === 'Boston')!;
+    const extractedWork = rows.find((r) => r.value === 'NewCorp')!;
+    const agent = rows.find((r) => r.value === 'Lyon')!;
+    const human = rows.find((r) => r.value === 'OldCorp')!;
+    expect(extracted.slot).toBe('lives_in');
+    expect(extractedWork.slot).toBe('works_at');
+    expect(agent.valid_end).toBe('9999-12-31T23:59:59.999Z');
+    expect(agent.closed_by).toBeNull();
+    expect(human.valid_end).toBe('9999-12-31T23:59:59.999Z');
+    expect(human.closed_by).toBeNull();
+    expect(h.llmCalls.length).toBeGreaterThan(llm);
+    const { statements } = await h.recall({ limit: 20 });
+    expect(statements.map((s) => s.value).sort()).toEqual(
+      ['Boston', 'Lyon', 'NewCorp', 'OldCorp'],
+    );
+  });
+
+  it('a human correction still wins the profile over a later extracted value', async () => {
+    const h = await withLlm(() =>
+      reply(extraction([fact({ object: 'Boston', validStart: '2023-06-01T09:00:00Z' })])),
+    );
+    await h.remember({ about: 'user', relation: 'lives in', value: 'Seattle', when: JAN });
+    await chatEnd(h);
+
+    const profile = await h.recall({ profile: true, limit: 10 });
+    expect(profile.statements.map((s) => s.value)).toContain('Seattle');
+    expect(profile.statements.map((s) => s.value)).not.toContain('Boston');
+    const rows = readRows(h.databasePath);
+    expect(rows.find((r) => r.value === 'Seattle')?.valid_end).toBe('9999-12-31T23:59:59.999Z');
+  });
+
+  it('ignores a model-smuggled slot or provenance — both come from our side', async () => {
+    const h = await withLlm(() =>
+      reply(
+        extraction([
+          fact({
+            predicate: 'visited',
+            object: 'Rome',
+            slot: 'lives_in',
+            provenance: 'human',
+          }),
+        ]),
+      ),
+    );
+    await engineRecord(h.bus, h.ctx(), [
+      {
+        about: `user:${ALICE}`,
+        relation: 'lives in',
+        value: 'Seattle',
+        when: JAN,
+        slot: 'lives_in',
+        provenance: 'human',
+        ownerUserId: ALICE,
+      },
+    ]);
+    await chatEnd(h);
+
+    const rows = readRows(h.databasePath);
+    const smuggled = rows.find((r) => r.value === 'Rome')!;
+    expect(smuggled.provenance).toBe('extracted');
+    expect(smuggled.slot).toBeNull();
+    expect(rows.find((r) => r.value === 'Seattle')?.valid_end).toBe('9999-12-31T23:59:59.999Z');
+  });
+});
+
 describe('extraction schema failures', () => {
   it('retries ONCE with the schema echoed, then records the corrected batch', async () => {
     const h = await withLlm((_input, call) =>
@@ -813,12 +975,16 @@ describe('the observer on a shared team agent', () => {
 
 /** Every row in the store, closed ones included, bypassing owner scoping. */
 function readRows(databasePath: string): Array<{
+  id: string;
   about: string;
   relation: string;
   value: string;
+  slot: string | null;
   provenance: string;
   conversation_id: string | null;
   owner_user_id: string | null;
+  valid_end: string | null;
+  closed_by: string | null;
 }> {
   const db = new Database(databasePath, { readonly: true });
   try {

@@ -24,6 +24,7 @@ import { runObserver, type ObserverRecordInput, type ObserverResult } from './ob
 import { selectProfileRows } from './profile.js';
 import { formatEvidenceWhen } from './evidence.js';
 import { MEMORY_RECALL_TOOL_HOOK, registerMemoryRecall } from './recall-tool.js';
+import { MEMORY_NOTE_TOOL_HOOK, registerMemoryNote } from './note-tool.js';
 import type { UntrustedMessage } from './transcript.js';
 import {
   createMemoryExporter,
@@ -328,6 +329,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         MEMORY_FORGET_HOOK,
         SYSTEM_PROMPT_AUGMENT_HOOK,
         MEMORY_RECALL_TOOL_HOOK,
+        MEMORY_NOTE_TOOL_HOOK,
         ...(exportsCfg !== undefined ? [MEMORY_EXPORT_FLUSH_HOOK] : []),
         ...(exportsCfg?.volume !== undefined ? ['sandbox:memory-mounts'] : []),
       ],
@@ -595,7 +597,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
       );
 
       // ---------------------------------------------------------------
-      // memory:remember — the ONLY external write. Provenance: human.
+      // memory:remember — the human correction write. Provenance: human.
       // ---------------------------------------------------------------
       bus.registerService<MemoryRememberInput, MemoryRememberOutput>(
         MEMORY_REMEMBER_HOOK,
@@ -787,6 +789,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
       });
 
       await registerMemoryRecall(bus);
+      await registerMemoryNote(bus, onFactsChanged);
     },
 
     async shutdown() {

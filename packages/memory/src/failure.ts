@@ -50,6 +50,8 @@ export const OBSERVER_FAILED_EVENT = 'memory_observer_failed';
 /** The observer's audit line for a run that completed, successfully or not. */
 export const OBSERVER_RUN_EVENT = 'memory_observer_run';
 
+export const NOTE_FAILED_EVENT = 'memory_note_failed';
+
 /**
  * True when `err` is a provider's "no credential resolved" error.
  *
