@@ -1,0 +1,39 @@
+{
+  "corpus": "LongMemEval-S",
+  "corpusSha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442",
+  "corpusQuestions": 500,
+  "selection": "stratified",
+  "selectionSourceRevision": "99cc9c2385d63563e9278122f6d71b7cce23f8b9",
+  "questionIds": [
+    "0a995998", "gpt4_59149c77", "6a1eabeb", "e47becba", "7161e7e2", "e831120c",
+    "gpt4_fa19884c", "8a2466db", "dd2973ad", "9a707b81", "d7c942c3", "c5e8278d",
+    "36b9f61e", "gpt4_7f6b06db", "6ae235be", "88432d0a", "gpt4_1916e0ea", "07741c44",
+    "5d3d2817", "7024f17c", "gpt4_4fc4f797", "0e5e2d1a", "0f05491a", "gpt4_d12ceb0e",
+    "gpt4_e061b84f", "94f70d80", "32260d93", "2788b940", "6e984301", "b6019101",
+    "gpt4_194be4b3", "bcbe585f", "488d3006", "c8c3f81d", "gpt4_e05b82a6", "eac54adc",
+    "72e3ee87", "2b8f3739", "gpt4_68e94287", "95bcc1c8", "8aef76bc", "06f04340",
+    "gpt4_2f91af09", "gpt4_e061b84g", "18bc8abd", "60bf93ed_abs", "gpt4_f420262d",
+    "b86304ba", "cc06de0d", "gpt4_fa19884d", "ed4ddc30", "3249768e", "60d45044",
+    "9aaed6a3", "0bc8ad93", "4b24c848", "7405e8b1", "gpt4_2655b836", "d24813b1",
+    "d596882b", "15745da0", "60036106", "08f4fc43", "eace081b", "ef66a6e5",
+    "gpt4_5dcc0aab", "b320f3f8", "352ab8bd", "91b15a6e", "a3838d2b", "cc5ded98",
+    "0100672e", "b9cfe692", "76d63226", "d6233ab6", "6c49646a", "c9f37c46",
+    "a2f3aa27", "5809eb10", "ba358f49", "cc6d1ec1", "4100d0a0", "bc149d6b",
+    "993da5e2", "10e09553", "b759caee", "c18a7dc8", "gpt4_4cd9eba1", "c14c00dd",
+    "c6853660", "078150f1", "gpt4_78cf46a3", "b0479f84", "87f22b4a", "gpt4_5438fa52",
+    "eaca4986", "15745da0_abs", "2698e78f_abs", "6456829e_abs", "gpt4_93159ced_abs"
+  ],
+  "counts": {
+    "multi-session": 27,
+    "temporal-reasoning": 27,
+    "knowledge-update": 15,
+    "single-session-user": 14,
+    "single-session-assistant": 11,
+    "single-session-preference": 6
+  },
+  "answerTypes": { "number": 7, "string": 93 },
+  "totalSessions": 4777,
+  "uniqueSessionTuples": 4777,
+  "missingQuestionDates": [],
+  "missingSessionDates": []
+}
