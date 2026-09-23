@@ -95,7 +95,10 @@ describe('spending ledger', () => {
   });
   it('meters Vertex characters and Cohere billed search units, not guessed zeros', async () => {
     const ledger = new Ledger(join(temporary(), 'costs.jsonl'), 25);
-    const fetcher = makeMeteredProviderFetch(ledger, tags, async url => new Response(JSON.stringify(String(url).includes(':predict') ? { metadata: { billableCharacterCount: 3 } } : { meta: { billed_units: { search_units: 2 } } }), { status: 200 }));
+    const fetcher = makeMeteredProviderFetch(ledger, tags, async (url, init) => {
+      expect(init.redirect).toBe('error');
+      return new Response(JSON.stringify(String(url).includes(':predict') ? { metadata: { billableCharacterCount: 3 } } : { meta: { billed_units: { search_units: 2 } } }), { status: 200 });
+    });
     await fetcher('https://us-central1-aiplatform.googleapis.com/v1/projects/test/locations/us-central1/publishers/google/models/text-embedding-005:predict', { body: JSON.stringify({ instances: [{ content: 'a bé' }] }) });
     await fetcher('https://api.cohere.com/v2/rerank', { body: JSON.stringify({ query: 'x', documents: Array.from({ length: 101 }, () => 'a') }) });
     expect(ledger.chargedUsd()).toBeCloseTo(3 * 0.000025 / 1000 + 2 * 0.0025, 12);
@@ -127,6 +130,38 @@ describe('model-driven tool loop', () => {
     expect(JSON.stringify(requests[0])).not.toContain('Osaka');
     expect(JSON.stringify(requests[1])).toContain('Network | When | Statement');
     expect(requests.every(r => r.max_tokens === 512)).toBe(true);
+  });
+  it.each([['budget', () => new BudgetExceeded()], ['lifecycle', () => new Error('fixture lifecycle failure')]])('propagates GLM recall %s errors instead of treating them as argument errors', async (_name, makeError) => {
+    const ledger = new Ledger(join(temporary(), 'costs.jsonl'), 25);
+    const error = makeError();
+    let requests = 0;
+    const clients = makeClients({ env: {}, ledger, tags, fetchImpl: async () => {
+      requests++;
+      const message = requests === 1
+        ? { role: 'assistant', content: null, tool_calls: [{ id: 't1', type: 'function', function: { name: descriptor.name, arguments: '{"query":"home"}' } }] }
+        : { role: 'assistant', content: 'Should not answer after lifecycle failure' };
+      return new Response(JSON.stringify({ choices: [{ message }], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.001 } }), { status: 200 });
+    } });
+    await expect(clients.answer({ arm: 'glm', system: 'fixture', question: 'Home?', descriptor, recall: async () => { throw error; } })).rejects.toBe(error);
+    expect(requests).toBe(1);
+  });
+  it.each([['memory_recall', '{', 'Invalid tool arguments'], ['unknown_tool', '{', 'Unknown tool']])('returns a tool error for %s without calling recall', async (name, args, expected) => {
+    const ledger = new Ledger(join(temporary(), 'costs.jsonl'), 25);
+    const requests = [];
+    let recalls = 0;
+    const clients = makeClients({ env: {}, ledger, tags, fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init.body);
+      requests.push(body);
+      const message = requests.length === 1
+        ? { role: 'assistant', content: null, tool_calls: [{ id: 't1', type: 'function', function: { name, arguments: args } }] }
+        : { role: 'assistant', content: 'No usable recall' };
+      return new Response(JSON.stringify({ choices: [{ message }], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.001 } }), { status: 200 });
+    } });
+    const answer = await clients.answer({ arm: 'glm', system: 'fixture', question: 'Home?', descriptor, recall: async () => { recalls++; return { ok: true, text: 'unexpected' }; } });
+    expect(answer).toBe('No usable recall');
+    expect(recalls).toBe(0);
+    expect(requests).toHaveLength(2);
+    expect(requests[1].messages.at(-1)).toEqual({ role: 'tool', tool_call_id: 't1', content: expected });
   });
   it('keeps the corpus clock separate from latency and restores it on error', async () => {
     const original = Date;

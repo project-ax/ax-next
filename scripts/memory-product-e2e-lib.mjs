@@ -234,9 +234,16 @@ export function makeClients({ env, ledger, tags, fetchImpl = fetch }) {
         if (!toolsAllowed || !uses.length) return typeof message.content === 'string' ? message.content : '';
         messages.push(message);
         for (const use of uses) {
-          let result;
-          try { result = use.function?.name === descriptor.name ? await recall(JSON.parse(use.function.arguments)) : { text: 'Unknown tool' }; }
-          catch { result = { text: 'Invalid tool arguments' }; }
+          let result = { text: 'Unknown tool' };
+          if (use.function?.name === descriptor.name) {
+            let input;
+            try { input = JSON.parse(use.function.arguments); }
+            catch {
+              messages.push({ role: 'tool', tool_call_id: use.id, content: 'Invalid tool arguments' });
+              continue;
+            }
+            result = await recall(input);
+          }
           messages.push({ role: 'tool', tool_call_id: use.id, content: result.text });
         }
       }
