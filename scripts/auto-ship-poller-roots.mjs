@@ -12,7 +12,7 @@ function isPoller(command) {
     script === knownScript ||
     /^(?:\S+\/)?auto-ship-board-poll\.sh$/.test(script)
   ) return true;
-  if (/(?:^|\/)auto-ship-board-poll\.sh(?:[ \t]|$)/.test(script)) {
+  if (/(?:^|\/|[ \t])auto-ship-board-poll\.sh(?:[ \t]|$)/.test(script)) {
     throw new Error('ambiguous poller command');
   }
   return false;
@@ -28,7 +28,10 @@ function pollerRoots(snapshot) {
     if (!row) throw new Error('invalid process snapshot');
     const pid = Number(row[1]);
     const parent = Number(row[2]);
-    if (!Number.isSafeInteger(pid) || !Number.isSafeInteger(parent) || parents.has(pid)) {
+    if (
+      !Number.isSafeInteger(pid) || !Number.isSafeInteger(parent) || parents.has(pid) ||
+      (pid === 0 && parent !== 0)
+    ) {
       throw new Error('invalid process identity');
     }
     parents.set(pid, parent);

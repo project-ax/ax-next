@@ -96,11 +96,11 @@ function unknown(result) {
 afterAll(() => rmSync(FIXTURES, { recursive: true, force: true }));
 
 describe('documented poller verification', () => {
-  it('extracts a runnable verifier instead of testing prose', () => {
+  it('harness: extracts a runnable verifier instead of testing prose', () => {
     expect(SCRIPT.trim()).not.toBe('');
   });
 
-  it('states its shell coverage', () => {
+  it('harness: states its shell coverage', () => {
     expect(SHELLS).toContain('bash');
     expect(SHELLS).toEqual(hasBin('zsh') ? ['bash', 'zsh'] : ['bash']);
   });
@@ -166,6 +166,23 @@ describe('documented poller verification', () => {
 
     it(`${shell}: an ambiguous other checkout path is unknown, not zero`, () => {
       unknown(runVerifier(shell, [INIT, row(100, 1, 'bash /other checkout with spaces/.claude/auto-ship-board-poll.sh')]));
+    });
+
+    for (const [label, rows] of [
+      ['alone', [INIT, row(100, 1, 'bash -x auto-ship-board-poll.sh')]],
+      ['beside a recognized root', [INIT, row(100, 1), row(200, 1, 'bash -x auto-ship-board-poll.sh')]],
+    ]) {
+      it(`${shell}: flagged bare filename ${label} is unknown, not zero`, () => {
+        unknown(runVerifier(shell, rows));
+      });
+    }
+
+    it(`${shell}: a PID-zero row with nonzero parent is unknown, not a root`, () => {
+      unknown(runVerifier(shell, [row(0, 100, 'kernel_task'), row(100, 0)]));
+    });
+
+    it(`${shell}: compatibility: accepts a kernel PID-zero row with parent zero`, () => {
+      expect(roots(runVerifier(shell, [row(0, 0, 'kernel_task'), row(100, 0)]))).toEqual([100]);
     });
   }
 });
