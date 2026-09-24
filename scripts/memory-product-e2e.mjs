@@ -1,11 +1,10 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { performance } from 'node:perf_hooks';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { parseArgs, parseEnv } from 'node:util';
+import { parseArgs, parseEnv, promisify } from 'node:util';
 import { HookBus, PluginError, bootstrap, makeAgentContext } from '../packages/core/dist/index.js';
 import { createMemoryPlugins } from '../presets/memory/dist/index.js';
 import { EXTRACTION_PROMPT_FINGERPRINT, EXTRACTION_PROMPT_MODEL_FINGERPRINT } from '../packages/memory/dist/index.js';
@@ -14,6 +13,7 @@ import { loadLongMemEvalSSamples } from '../packages/memory-strata/test/bench/co
 import { parseCorpusDate } from '../packages/memory-strata/test/bench/e2e-driver.ts';
 import { judgeAnswer } from '../packages/memory-strata/test/bench/judge.ts';
 import { CONFIG, ANSWER_PREAMBLE, BudgetExceeded, ProviderError, Ledger, aggregate, buildSystem, makeClients, readJsonl } from './memory-product-e2e-lib.mjs';
+import { PROVIDER_HOSTS, attemptStats, latencyBreakdown, makeDiagnosticsSinks, makeTokenSource, monoNow, openAttemptLog, realNow, sanitizeError, startEnvironmentMonitor, tlsProbe } from './memory-product-e2e-trace.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OWNER = 'memory-benchmark-owner';
@@ -35,11 +35,35 @@ export function loadEnvironment(files) {
   return Object.fromEntries(SUPPORTED_ENV.filter(key => typeof merged[key] === 'string' && merged[key].trim()).map(key => [key, merged[key]]));
 }
 
+const gcloudOptions = env => ({
+  encoding: 'utf8', timeout: 30_000,
+  env: { ...process.env, ...(env.GOOGLE_APPLICATION_CREDENTIALS ? { GOOGLE_APPLICATION_CREDENTIALS: env.GOOGLE_APPLICATION_CREDENTIALS } : {}), CLOUDSDK_CORE_DISABLE_PROMPTS: '1' },
+});
 function gcloud(args, env) {
-  return execFileSync('gcloud', args, {
-    encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, ...(env.GOOGLE_APPLICATION_CREDENTIALS ? { GOOGLE_APPLICATION_CREDENTIALS: env.GOOGLE_APPLICATION_CREDENTIALS } : {}), CLOUDSDK_CORE_DISABLE_PROMPTS: '1' },
-  }).trim();
+  return execFileSync('gcloud', args, { ...gcloudOptions(env), stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+}
+// Asynchronous, so minting a token never blocks the event loop (TASK-521).
+async function gcloudAsync(args, env) {
+  const { stdout } = await promisify(execFile)('gcloud', args, gcloudOptions(env));
+  return stdout.trim();
+}
+
+/** Every file whose content defines a run. A change to any of them is a new run identity. */
+export const HARNESS_FILES = Object.freeze(['memory-product-e2e.mjs', 'memory-product-e2e-lib.mjs', 'memory-product-e2e-trace.mjs']);
+export const sourceDigestOf = read => hash(JSON.stringify(HARNESS_FILES.map(name => hash(read(name)))));
+export function checkResumeIdentity(previous, identity) {
+  if (previous && JSON.stringify(previous.identity) !== JSON.stringify(identity)) throw new Error('Run identity changed; do not mix samples, prompts, models or harness versions');
+}
+
+/**
+ * One failure record per abort, numbered and never overwritten: the stage it happened
+ * in and an allowlisted error class. TASK-497's interruptions kept neither, so their
+ * cause could not be established afterwards.
+ */
+export function recordFailure(directory, { stage, questionId, arm, error }) {
+  const taken = readdirSync(directory).map(name => /^failure-(\d+)\.json$/.exec(name)?.[1]).filter(Boolean).map(Number);
+  const n = String((taken.length ? Math.max(...taken) : 0) + 1).padStart(2, '0');
+  writeFileSync(join(directory, `failure-${n}.json`), JSON.stringify({ stage, questionId, ...(arm ? { arm } : {}), at: realNow(), error: sanitizeError(error) }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
 }
 
 export async function withCorpusClock(instant, work) {
@@ -74,7 +98,9 @@ export async function pinnedSamples() {
   return { pinned, samples: selected };
 }
 
-export function makeMeteredProviderFetch(ledger, tags, fetchImpl = fetch) {
+// `observe` receives one span per provider request: status, time to headers, total time,
+// the ledger reservation it belongs to, and a sanitized error class on failure.
+export function makeMeteredProviderFetch(ledger, tags, fetchImpl = fetch, observe = () => {}) {
   const metered = async (input, init) => {
     const url = new URL(String(input));
     if (url.protocol !== 'https:' || url.port || url.username || url.password || url.search || url.hash) throw new Error('Unexpected provider transport');
@@ -85,10 +111,16 @@ export function makeMeteredProviderFetch(ledger, tags, fetchImpl = fetch) {
     const characters = vertex ? request.instances.reduce((n, item) => n + [...item.content].length, 0) : 0;
     const unitsUpper = cohere ? Math.max(1, Math.ceil(request.documents.reduce((n, doc) => n + Math.ceil((Buffer.byteLength(doc) + Buffer.byteLength(request.query) + 512) / 500), 0) / 100)) : 0;
     const upper = vertex ? characters * CONFIG.vertexPerThousandCharacters / 1000 : unitsUpper * CONFIG.coherePerSearchUnit;
-    const id = ledger.reserve(upper, { ...tags(), provider: vertex ? 'vertex' : 'cohere' });
+    const scope = tags();
+    const id = ledger.reserve(upper, { ...scope, provider: vertex ? 'vertex' : 'cohere' });
     let settled = false;
+    const span = { provider: vertex ? 'vertex' : 'cohere', questionId: scope.questionId, phase: scope.phase, reservation: id, at: realNow() };
+    const start = monoNow();
     try {
       const response = await fetchImpl(input, { ...init, redirect: 'error' });
+      span.headersMs = monoNow() - start;
+      span.status = response.status;
+      span.ok = response.ok;
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) metered.fatalError = new ProviderError(vertex ? 'vertex' : 'cohere', response.status);
         ledger.settle(id, vertex ? 0 : upper, vertex ? 'http-error-not-billed' : 'uncertain-upper-bound', { status: response.status });
@@ -103,24 +135,41 @@ export function makeMeteredProviderFetch(ledger, tags, fetchImpl = fetch) {
         measured ? 'published-rate-estimate' : 'quantity-upper-bound-estimate', { quantity, unit: vertex ? 'characters' : 'search_units' });
       settled = true;
       return response;
+    } catch (error) {
+      span.ok = false;
+      span.error = sanitizeError(error);
+      throw error;
     } finally {
       if (!settled && !ledger.settlements.has(id)) ledger.settle(id, upper, 'uncertain-upper-bound');
+      span.ms = monoNow() - start;
+      observe(span);
     }
   };
   return metered;
 }
 
-export async function createBank({ sample, directory, env, projectId, clients, providerFetch, ledger, storage }) {
+// Hooks timed inside a recall. Each span ends when the handler actually settles — for a
+// producer that lost the product's budget race that is AFTER the recall returned, which
+// is how late the provider really was. The harness drains before saving, so late spans
+// still land in the capture.
+const SPAN_HOOKS = new Set(['credentials:get', 'embeddings:embed', 'embeddings:rerank', 'memory:facts:recall', 'memory:recall']);
+
+export async function createBank({ sample, directory, env, projectId, clients, providerFetch, ledger, storage, vertexToken }) {
   mkdirSync(directory, { recursive: true });
   const bus = new HookBus();
   const rawCalls = new Set();
   const register = bus.registerService.bind(bus);
   bus.registerService = (hook, plugin, handler, options) => register(hook, plugin, (...args) => {
+    const capture = storage?.getStore()?.recallCapture;
+    const started = monoNow();
     const promise = Promise.resolve().then(() => handler(...args)).then(result => {
-      const capture = storage?.getStore()?.recallCapture;
       if (hook === 'memory:recall' && capture) capture.degraded = [...result.degraded];
       return result;
     });
+    if (capture && SPAN_HOOKS.has(hook)) {
+      const span = extra => capture.spans.push({ hook, startMs: started - capture.start, ms: monoNow() - started, ...extra });
+      promise.then(() => span({ ok: true }), error => span({ ok: false, error: sanitizeError(error) }));
+    }
     rawCalls.add(promise);
     void promise.then(() => rawCalls.delete(promise), () => rawCalls.delete(promise));
     return promise;
@@ -142,8 +191,6 @@ export async function createBank({ sample, directory, env, projectId, clients, p
   };
   const ctx = conversationId => makeAgentContext({ sessionId: `bench-${agentId}`, agentId, userId: OWNER, logger,
     workspace: { rootPath: directory }, ...(conversationId ? { conversationId } : {}) });
-  let vertexToken;
-  let tokenAt = -Infinity;
   const support = {
     manifest: { name: '@ax/benchmark-support', version: '0.0.0', registers: ['agents:resolve', 'credentials:get', 'llm:call:openrouter'], calls: [], subscribes: [] },
     init({ bus: b }) {
@@ -156,11 +203,10 @@ export async function createBank({ sample, directory, env, projectId, clients, p
         if (input.ref === 'provider:cohere') return env.COHERE_API_KEY;
         if (input.ref !== 'provider:vertex') throw new Error('Unknown benchmark credential reference');
         if (env.VERTEX_ACCESS_TOKEN) return env.VERTEX_ACCESS_TOKEN;
-        if (!vertexToken || performance.now() - tokenAt > 45 * 60_000) {
-          vertexToken = gcloud(['auth', 'application-default', 'print-access-token'], env);
-          tokenAt = performance.now();
-        }
-        return vertexToken;
+        // Never mint here: this runs inside timed recalls (TASK-521). The caller mints
+        // between sessions and before each answer attempt.
+        if (!vertexToken) throw new Error('Vertex credential was not minted before the timed region');
+        return vertexToken();
       });
       b.registerService('llm:call:openrouter', '@ax/benchmark-support', async (_ctx, input) => {
         if (input.model !== CONFIG.extractionModel || input.reasoningEffort !== 'minimal') throw new Error('Unexpected extraction configuration');
@@ -218,7 +264,36 @@ export async function createBank({ sample, directory, env, projectId, clients, p
   };
 }
 
-export function renderReport(manifest, results, money, cap, charged, abort) {
+/**
+ * The recall tool as the answer loop sees it, timed end to end. Each entry carries its
+ * wall-clock start, the stage spans recorded under it, and — on failure — a sanitized
+ * error class instead of the silent `ok: false` the frozen harness kept.
+ */
+export function makeRecall({ bank, storage, recalls, ledger, onRecall = () => {} }) {
+  return async input => {
+    const at = realNow();
+    const start = monoNow();
+    const recallCapture = { degraded: [], spans: [], start };
+    let text;
+    let entry;
+    try {
+      text = await storage.run({ ...storage.getStore(), recallCapture }, () => bank.bus.call('tool:execute:memory_recall', bank.ctx(), { input }));
+      entry = { at, ms: monoNow() - start, ok: true, degraded: recallCapture.degraded, spans: recallCapture.spans };
+    } catch (error) {
+      entry = { at, ms: monoNow() - start, ok: false, error: sanitizeError(error), spans: recallCapture.spans };
+    }
+    recalls.push(entry);
+    // Outside the try on purpose: a failing observer (a diagnostics write) is a harness
+    // failure and propagates as one. Inside, it would be recorded as a failed recall and
+    // the model would be told memory failed — changing the answer being measured.
+    onRecall(entry);
+    if (entry.ok) return { ok: true, text };
+    if (ledger.exhausted) throw new BudgetExceeded();
+    return { ok: false, text: 'Memory tool failed; check the arguments or memory availability.' };
+  };
+}
+
+export function renderReport(manifest, results, money, cap, charged, abort, diagnostics = {}) {
   const ids = manifest.input.questionIds;
   const shared = money.filter(r => r.phase === 'ingest' || r.phase === 'preflight').reduce((n, r) => n + r.usd, 0);
   const summaries = Object.fromEntries(ARMS.map(arm => [arm, aggregate(results.filter(r => r.arm === arm), ids)]));
@@ -243,6 +318,16 @@ export function renderReport(manifest, results, money, cap, charged, abort) {
   for (const arm of ARMS) {
     const s = summaries[arm];
     lines.push(`${arm}: ${s.recallErrors}/${s.recallCalls} recall calls failed; ${s.degradedCalls} calls degraded; ${s.uncertain} uncertain verdicts; ${s.errors} run errors. Accuracy gate: ${s.complete ? s.accuracyPassed ? 'PASS' : 'FAIL' : 'INCOMPLETE'}. Latency <1600ms: ${s.complete ? s.latencyPassed ? 'PASS' : 'FAIL' : 'INCOMPLETE'}.`);
+  }
+  lines.push('', 'Diagnostics (descriptive only; the gates above are unchanged and still cover every completed recall):');
+  for (const arm of ARMS) {
+    const a = diagnostics.attempts?.[arm] ?? { attempts: 0, failed: 0, interrupted: 0, toolCallsOutsideCompleted: 0 };
+    lines.push(`${arm}: ${a.interrupted} interrupted and ${a.failed} failed answer attempts (of ${a.attempts}); ${a.toolCallsOutsideCompleted} tool calls in them are not in the recall metrics above${a.unreadableLines ? `; ${a.unreadableLines} torn log lines (a process killed mid-write)` : ''}.`);
+  }
+  for (const arm of ARMS) {
+    const b = latencyBreakdown(results.filter(r => r.arm === arm));
+    const stages = Object.entries(b.stages).map(([hook, st]) => `; ${hook} p95 ${fmt(st.p95Ms)} (n=${st.n})`).join('');
+    lines.push(`${arm}: clean p95 ${fmt(b.cleanP95Ms)} (${b.cleanCalls} calls), degraded p95 ${fmt(b.degradedP95Ms)} (${b.degradedCalls} calls)${stages}.`);
   }
   lines.push('', `Replicated accuracy gate: ${!abort && ARMS.every(a => summaries[a].complete) ? ARMS.every(a => summaries[a].accuracyPassed) ? 'PASS' : 'FAIL' : 'INCOMPLETE'}.`,
     `Shared ingestion/preflight cost: $${shared.toFixed(4)}. Task ledger charge: $${charged.toFixed(4)} / $${cap.toFixed(2)} cap.`,
@@ -298,17 +383,31 @@ export async function main(argv = process.argv.slice(2)) {
   if (existsSync(directory) && !existsSync(manifestPath) && readdirSync(directory).length) throw new Error('Refusing a nonempty unowned run directory');
   mkdirSync(directory, { recursive: true });
   const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', cwd: resolve(HERE, '..') }).trim();
-  const sourceDigest = hash(JSON.stringify([hash(readFileSync(fileURLToPath(import.meta.url))), hash(readFileSync(join(HERE, 'memory-product-e2e-lib.mjs')))]));
+  const sourceDigest = sourceDigestOf(name => readFileSync(join(HERE, name)));
   const identity = { input: pinned, configuration: CONFIG, sourceRevision, sourceDigest, preambleSha256: hash(ANSWER_PREAMBLE), extractionFingerprint: EXTRACTION_PROMPT_FINGERPRINT, extractionModelFingerprint: EXTRACTION_PROMPT_MODEL_FINGERPRINT };
   const previous = readOptional(manifestPath);
-  if (previous && JSON.stringify(previous.identity) !== JSON.stringify(identity)) throw new Error('Run identity changed; do not mix samples, prompts, models or harness versions');
+  checkResumeIdentity(previous, identity);
   const manifest = previous ?? { runId: randomUUID(), sourceRevision, input: pinned, identity };
   if (!previous) save(manifestPath, manifest);
   const ledger = new Ledger(resolve(values.ledger ?? join(directory, 'costs.jsonl')), cap);
   const storage = new AsyncLocalStorage();
   const tags = () => { const scope = storage.getStore(); return { runId: manifest.runId, questionId: scope?.questionId ?? 'setup', phase: scope?.phase ?? 'preflight' }; };
   const clients = makeClients({ env, ledger, tags });
-  const providerFetch = makeMeteredProviderFetch(ledger, tags);
+  // Diagnostics sinks (TASK-521): run-level, append-only, wall-clock stamped. Events are
+  // buffered and flushed only at untimed boundaries, so no diagnostic write lands inside
+  // a timed recall.
+  const diagnostics = makeDiagnosticsSinks(directory);
+  const { recordEnvironment } = diagnostics;
+  const providerFetch = makeMeteredProviderFetch(ledger, tags, fetch, diagnostics.recordProviderSpan);
+  const tokenSource = env.VERTEX_ACCESS_TOKEN ? undefined : makeTokenSource({
+    mint: () => gcloudAsync(['auth', 'application-default', 'print-access-token'], env),
+    onStale: event => recordEnvironment(event),
+  });
+  // Called only at untimed boundaries: before the preflight, each ingestion session and each answer attempt.
+  const refreshCredential = async () => { await tokenSource?.ensureFresh(); };
+  const monitor = startEnvironmentMonitor({ emit: recordEnvironment });
+  let stage = 'setup';
+  let where = {};
   const resultsPath = join(directory, 'results.jsonl');
   const results = readJsonl(resultsPath);
   if (results.some(row => !ARMS.includes(row.arm))) throw new Error('Unknown arm in captured results');
@@ -327,9 +426,15 @@ export async function main(argv = process.argv.slice(2)) {
       if (!existsSync(progressPath)) save(progressPath, progress);
       if (!Number.isSafeInteger(progress.through) || progress.through < 0 || progress.through > sample.haystack_sessions.length || typeof progress.generation !== 'string' || !/^[a-f0-9-]{36}$/.test(progress.generation)) throw new Error('Invalid bank checkpoint');
       if (progress.budgetInvalid) throw new Error('This bank was interrupted by the budget; preserve artifacts and explicitly rebuild it before resuming');
-      const bank = await createBank({ sample, directory: join(bankRoot, progress.generation), env, projectId, clients, providerFetch, ledger, storage });
+      where = { questionId: sample.question_id };
+      stage = 'bank-start';
+      const bank = await createBank({ sample, directory: join(bankRoot, progress.generation), env, projectId, clients, providerFetch, ledger, storage, vertexToken: tokenSource && (() => tokenSource.current()) });
       try {
+        for (const host of PROVIDER_HOSTS) recordEnvironment({ questionId: sample.question_id, ...(await tlsProbe(host)) });
+        diagnostics.flush();
         if (!preflightChecked) {
+          stage = 'preflight';
+          await refreshCredential();
           const embedded = await bank.bus.call('embeddings:embed', bank.ctx(), { texts: ['Benchmark provider preflight'], task: 'query' });
           const ranked = await bank.bus.call('embeddings:rerank', bank.ctx(), { query: 'preflight', documents: ['Benchmark provider preflight'] });
           await bank.drain();
@@ -339,53 +444,75 @@ export async function main(argv = process.argv.slice(2)) {
           manifest.remotePreflightPassed = true;
           save(manifestPath, manifest);
         }
+        stage = 'ingest';
         await storage.run({ questionId: sample.question_id, phase: 'ingest' }, async () => {
           for (let i = progress.through; i < sample.haystack_sessions.length; i++) {
+            await refreshCredential();
             const before = bank.failures.length;
             await withCorpusClock(parseCorpusDate(sample.haystack_dates[i]).toISOString(), () => bank.observe(sample.haystack_session_ids[i], sample.haystack_sessions[i]));
             progress.observerFailures.push(...bank.failures.slice(before));
             progress.through = i + 1;
             save(progressPath, progress);
+            diagnostics.flush();
           }
         });
         const questionInstant = parseCorpusDate(sample.question_date).toISOString();
+        stage = 'inject';
         await withCorpusClock(questionInstant, async () => {
           const memory = await storage.run({ questionId: sample.question_id, phase: 'ingest' }, () => bank.injected());
           for (const arm of remaining) {
+            where = { questionId: sample.question_id, arm };
+            stage = `${arm}-answer`;
             await storage.run({ questionId: sample.question_id, phase: arm }, async () => {
               const answerPath = join(bankRoot, `answer-${arm}.json`);
               const captured = readOptional(answerPath);
               if (captured && (captured.questionId !== sample.question_id || captured.arm !== arm || typeof captured.answer !== 'string' || !Array.isArray(captured.recalls))) throw new Error('Invalid captured answer');
               const recalls = captured?.recalls ?? [];
-              const recall = async input => {
-                const start = performance.now();
+              let answer = captured?.answer;
+              let attempt;
+              if (!captured) {
+                await refreshCredential();
+                monitor.loopDelay();
+                attempt = openAttemptLog(bankRoot, arm, { runId: manifest.runId, questionId: sample.question_id });
+                // Written after the recall's `ms` is computed and before the next recall
+                // starts, so they are outside every recall's measured time. (A losing
+                // producer's stage span may still be open; that only touches the
+                // descriptive breakdown.) The attempt log must be durable, so its write
+                // failing aborts the attempt; the diagnostics flush is best-effort and
+                // retried at the next boundary.
+                const recall = makeRecall({ bank, storage, recalls, ledger, onRecall: entry => {
+                  attempt.write({ type: 'recall', ...entry });
+                  try { diagnostics.flush(); } catch { /* retried at the next boundary; see makeDiagnosticsBuffer */ }
+                } });
                 try {
-                  const recallCapture = { degraded: [] };
-                  const text = await storage.run({ ...storage.getStore(), recallCapture }, () => bank.bus.call('tool:execute:memory_recall', bank.ctx(), { input }));
-                  recalls.push({ ms: performance.now() - start, ok: true, degraded: recallCapture.degraded });
-                  return { ok: true, text };
-                } catch {
-                  recalls.push({ ms: performance.now() - start, ok: false });
+                  answer = await clients.answer({ arm, system: buildSystem(memory, sample.question_date), question: sample.question, descriptor: bank.descriptor, recall, onTurn: event => attempt.write(event) });
+                  await bank.drain();
                   if (ledger.exhausted) throw new BudgetExceeded();
-                  return { ok: false, text: 'Memory tool failed; check the arguments or memory availability.' };
+                  if (clients.fatalError || providerFetch.fatalError) throw clients.fatalError ?? providerFetch.fatalError;
+                } catch (error) {
+                  attempt.write({ type: 'attempt-failed', error: sanitizeError(error), loopDelay: monitor.loopDelay() });
+                  throw error;
                 }
-              };
-              const answer = captured?.answer ?? await clients.answer({ arm, system: buildSystem(memory, sample.question_date), question: sample.question, descriptor: bank.descriptor, recall });
-              await bank.drain();
-              if (ledger.exhausted) throw new BudgetExceeded();
-              if (clients.fatalError || providerFetch.fatalError) throw clients.fatalError ?? providerFetch.fatalError;
-              if (!captured) save(answerPath, { questionId: sample.question_id, arm, answer, recalls });
+                // Each `recall` event above was written when its recall returned, before
+                // the drain, so it omits spans of producers that settled later. This is
+                // the complete post-drain list, matching the answer file.
+                attempt.write({ type: 'recall-spans', spans: recalls.map(r => r.spans ?? []) });
+                save(answerPath, { questionId: sample.question_id, arm, answer, recalls, attempt: attempt.attempt });
+                attempt.write({ type: 'attempt-complete', loopDelay: monitor.loopDelay() });
+                diagnostics.flush();
+              }
+              stage = `${arm}-judge`;
               const judge = await judgeAnswer({ complete: async ({ system, user }) => {
                 const response = await clients.openrouter({ model: CONFIG.judgeModel, max_tokens: 120, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] });
                 const text = response.choices?.[0]?.message?.content;
                 if (typeof text !== 'string' || !/VERDICT:\s*(correct|incorrect|abstained-correctly|abstained-incorrectly|uncertain)\b/i.test(text) || !/REASON:\s*\S/i.test(text)) throw new Error('Judge returned no usable verdict; do not score a parse failure as uncertainty');
                 return { text, usage: { in: response.usage.prompt_tokens, out: response.usage.completion_tokens } };
               } }, sample.question, sample.answer, answer, { unanswerable: sample.question_id.endsWith('_abs') });
-              const row = { questionId: sample.question_id, questionType: sample.question_type, arm, unanswerable: sample.question_id.endsWith('_abs'), answer, verdict: judge.verdict, reason: judge.reason, recalls, sessionsAttempted: progress.through, observerFailures: progress.observerFailures };
+              const row = { questionId: sample.question_id, questionType: sample.question_type, arm, unanswerable: sample.question_id.endsWith('_abs'), answer, verdict: judge.verdict, reason: judge.reason, recalls, sessionsAttempted: progress.through, observerFailures: progress.observerFailures, at: realNow(), answerAttempt: captured?.attempt ?? attempt?.attempt ?? null };
               appendFileSync(resultsPath, JSON.stringify(row) + '\n');
               results.push(row);
               console.log(JSON.stringify({ questionId: row.questionId, arm, verdict: row.verdict, recalls: recalls.length, chargedUsd: ledger.chargedUsd() }));
-              writeFileSync(join(directory, 'report.md'), renderReport(manifest, results, ledger.rows(manifest.runId), cap, ledger.chargedUsd(), undefined));
+              writeFileSync(join(directory, 'report.md'), renderReport(manifest, results, ledger.rows(manifest.runId), cap, ledger.chargedUsd(), undefined, { attempts: attemptStats(directory) }));
             });
           }
         });
@@ -399,8 +526,12 @@ export async function main(argv = process.argv.slice(2)) {
   } catch (error) {
     abort = error instanceof BudgetExceeded || ledger.exhausted ? 'budget-exhausted' : error instanceof ProviderError ? `${error.provider}-http-${error.status}` : 'run-error; inspect the failing stage without publishing provider response bodies';
     process.exitCode = 1;
+    // Best-effort: a failure record that cannot be written must not replace the abort itself.
+    try { recordFailure(directory, { stage, ...where, error }); } catch { abort += '; the failure record could not be written'; }
   } finally {
-    writeFileSync(join(directory, 'report.md'), renderReport(manifest, results, ledger.rows(manifest.runId), cap, ledger.chargedUsd(), abort));
+    monitor.stop();
+    try { diagnostics.flush(); } catch { abort = `${abort ?? 'run-error'}; buffered diagnostics could not be written`; }
+    writeFileSync(join(directory, 'report.md'), renderReport(manifest, results, ledger.rows(manifest.runId), cap, ledger.chargedUsd(), abort, { attempts: attemptStats(directory) }));
   }
   return !abort && ARMS.every(arm => aggregate(results.filter(r => r.arm === arm), pinned.questionIds).complete) ? 0 : 1;
 }
