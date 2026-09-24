@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -171,6 +172,19 @@ describe('model-driven tool loop', () => {
     const events = [];
     await clients.answer({ arm: 'glm', system: 's', question: 'Q', descriptor, onTurn: e => events.push(e), recall: async () => { throw new Error('must not recall'); } });
     expect(events).toContainEqual({ type: 'tool', round: 0, name: 'memory_recall', argumentsError: true });
+  });
+  it('reports a GLM call to an unknown tool as a tool event too', async () => {
+    const ledger = new Ledger(join(temporary(), 'costs.jsonl'), 25);
+    let requests = 0;
+    const clients = makeClients({ env: {}, ledger, tags, fetchImpl: async () => {
+      const message = ++requests === 1
+        ? { role: 'assistant', content: null, tool_calls: [{ id: 't1', type: 'function', function: { name: 'other_tool', arguments: '{}' } }] }
+        : { role: 'assistant', content: 'none' };
+      return new Response(JSON.stringify({ choices: [{ message }], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.001 } }), { status: 200 });
+    } });
+    const events = [];
+    await clients.answer({ arm: 'glm', system: 's', question: 'Q', descriptor, onTurn: e => events.push(e), recall: async () => { throw new Error('must not recall'); } });
+    expect(events).toContainEqual({ type: 'tool', round: 0, name: 'other_tool', ok: false, resultChars: 12 });
   });
   it.each([['budget', () => new BudgetExceeded()], ['lifecycle', () => new Error('fixture lifecycle failure')]])('propagates GLM recall %s errors instead of treating them as argument errors', async (_name, makeError) => {
     const ledger = new Ledger(join(temporary(), 'costs.jsonl'), 25);
@@ -355,8 +369,12 @@ describe('TASK-521 instrumentation', () => {
     const identity = { sourceRevision: 'x', sourceDigest: digest };
     expect(() => checkResumeIdentity({ identity }, identity)).not.toThrow();
     expect(() => checkResumeIdentity(undefined, identity)).not.toThrow();
-    // TASK-497's frozen run (15c4554d) recorded this digest over two files.
-    expect(() => checkResumeIdentity({ identity: { ...identity, sourceDigest: '7dbec284ad3317700df5c148b536d5760f274c072e7409b14ed638f091d482c9' } }, identity)).toThrow(/Run identity changed/);
+    // The frozen TASK-497 harness digested TWO files. Even over identical contents that
+    // scheme cannot produce the three-file digest, so a manifest it wrote is refused.
+    const sha = value => createHash('sha256').update(value).digest('hex');
+    const frozenScheme = sha(JSON.stringify([sha(files['memory-product-e2e.mjs']), sha(files['memory-product-e2e-lib.mjs'])]));
+    expect(frozenScheme).not.toBe(digest);
+    expect(() => checkResumeIdentity({ identity: { ...identity, sourceDigest: frozenScheme } }, identity)).toThrow(/Run identity changed/);
   });
   it('reports interrupted attempts and the latency breakdown separately, leaving the gate line unchanged', () => {
     const manifest = { runId: 'test', sourceRevision: 'fixture', input: { questionIds: ['a'], corpusSha256: 'fixture', counts: { type: 1 } } };

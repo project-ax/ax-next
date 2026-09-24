@@ -3,7 +3,8 @@ import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { attemptStats, latencyBreakdown, makeTokenSource, openAttemptLog, realNow, sanitizeError, startEnvironmentMonitor, tlsProbe } from '../memory-product-e2e-trace.mjs';
+import { appendFileSync } from 'node:fs';
+import { attemptStats, latencyBreakdown, makeDiagnosticsBuffer, makeTokenSource, openAttemptLog, realNow, sanitizeError, startEnvironmentMonitor, tlsProbe } from '../memory-product-e2e-trace.mjs';
 import { withCorpusClock } from '../memory-product-e2e.mjs';
 
 const dirs = [];
@@ -71,6 +72,33 @@ describe('durable attempt capture', () => {
     complete.write({ type: 'tool', name: 'memory_recall' });
     complete.write({ type: 'attempt-complete' });
     expect(attemptStats(root)).toEqual({ sonnet: { attempts: 3, complete: 1, failed: 1, interrupted: 1, toolCallsOutsideCompleted: 2 } });
+  });
+});
+
+describe('attempt capture survives a torn write', () => {
+  it('counts an attempt whose last line was cut off as interrupted instead of failing every later report', () => {
+    const root = temporary();
+    const bank = join(root, 'bank-a');
+    mkdirSync(bank);
+    const torn = openAttemptLog(bank, 'glm', {});
+    torn.write({ type: 'tool', name: 'memory_recall' });
+    appendFileSync(torn.path, '{"type":"tool","na');
+    expect(attemptStats(root)).toEqual({ glm: { attempts: 1, complete: 0, failed: 0, interrupted: 1, toolCallsOutsideCompleted: 1, unreadableLines: 1 } });
+  });
+});
+
+describe('diagnostics are buffered out of timed regions', () => {
+  it('holds events until flush, then writes each sink once, in order', () => {
+    const writes = [];
+    const buffer = makeDiagnosticsBuffer((path, text) => writes.push([path, text]));
+    buffer.push('a.jsonl', { n: 1 });
+    buffer.push('b.jsonl', { n: 2 });
+    buffer.push('a.jsonl', { n: 3 });
+    expect(writes).toEqual([]);
+    buffer.flush();
+    expect(writes).toEqual([['a.jsonl', '{"n":1}\n{"n":3}\n'], ['b.jsonl', '{"n":2}\n']]);
+    buffer.flush();
+    expect(writes).toHaveLength(2);
   });
 });
 

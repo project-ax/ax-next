@@ -13,7 +13,7 @@ import { loadLongMemEvalSSamples } from '../packages/memory-strata/test/bench/co
 import { parseCorpusDate } from '../packages/memory-strata/test/bench/e2e-driver.ts';
 import { judgeAnswer } from '../packages/memory-strata/test/bench/judge.ts';
 import { CONFIG, ANSWER_PREAMBLE, BudgetExceeded, ProviderError, Ledger, aggregate, buildSystem, makeClients, readJsonl } from './memory-product-e2e-lib.mjs';
-import { PROVIDER_HOSTS, attemptStats, latencyBreakdown, makeTokenSource, monoNow, openAttemptLog, realNow, sanitizeError, startEnvironmentMonitor, tlsProbe } from './memory-product-e2e-trace.mjs';
+import { PROVIDER_HOSTS, attemptStats, latencyBreakdown, makeDiagnosticsBuffer, makeTokenSource, monoNow, openAttemptLog, realNow, sanitizeError, startEnvironmentMonitor, tlsProbe } from './memory-product-e2e-trace.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OWNER = 'memory-benchmark-owner';
@@ -390,11 +390,14 @@ export async function main(argv = process.argv.slice(2)) {
   const storage = new AsyncLocalStorage();
   const tags = () => { const scope = storage.getStore(); return { runId: manifest.runId, questionId: scope?.questionId ?? 'setup', phase: scope?.phase ?? 'preflight' }; };
   const clients = makeClients({ env, ledger, tags });
-  // Diagnostics sinks (TASK-521): run-level, append-only, wall-clock stamped.
+  // Diagnostics sinks (TASK-521): run-level, append-only, wall-clock stamped. Events are
+  // buffered and flushed only at untimed boundaries, so no diagnostic write lands inside
+  // a timed recall.
+  const diagnostics = makeDiagnosticsBuffer();
   const environmentPath = join(directory, 'environment.jsonl');
-  const recordEnvironment = event => appendFileSync(environmentPath, JSON.stringify({ at: realNow(), ...event }) + '\n');
+  const recordEnvironment = event => diagnostics.push(environmentPath, { at: realNow(), ...event });
   const providerSpansPath = join(directory, 'provider-spans.jsonl');
-  const providerFetch = makeMeteredProviderFetch(ledger, tags, fetch, span => appendFileSync(providerSpansPath, JSON.stringify(span) + '\n'));
+  const providerFetch = makeMeteredProviderFetch(ledger, tags, fetch, span => diagnostics.push(providerSpansPath, span));
   const tokenSource = env.VERTEX_ACCESS_TOKEN ? undefined : makeTokenSource({
     mint: () => gcloudAsync(['auth', 'application-default', 'print-access-token'], env),
     onStale: event => recordEnvironment(event),
@@ -427,6 +430,7 @@ export async function main(argv = process.argv.slice(2)) {
       const bank = await createBank({ sample, directory: join(bankRoot, progress.generation), env, projectId, clients, providerFetch, ledger, storage, vertexToken: tokenSource && (() => tokenSource.current()) });
       try {
         for (const host of PROVIDER_HOSTS) recordEnvironment({ questionId: sample.question_id, ...(await tlsProbe(host)) });
+        diagnostics.flush();
         if (!preflightChecked) {
           stage = 'preflight';
           await refreshCredential();
@@ -448,6 +452,7 @@ export async function main(argv = process.argv.slice(2)) {
             progress.observerFailures.push(...bank.failures.slice(before));
             progress.through = i + 1;
             save(progressPath, progress);
+            diagnostics.flush();
           }
         });
         const questionInstant = parseCorpusDate(sample.question_date).toISOString();
@@ -478,8 +483,13 @@ export async function main(argv = process.argv.slice(2)) {
                   attempt.write({ type: 'attempt-failed', error: sanitizeError(error), loopDelay: monitor.loopDelay() });
                   throw error;
                 }
+                // Each `recall` event above was written when its recall returned, before
+                // the drain, so it omits spans of producers that settled later. This is
+                // the complete post-drain list, matching the answer file.
+                attempt.write({ type: 'recall-spans', spans: recalls.map(r => r.spans ?? []) });
                 save(answerPath, { questionId: sample.question_id, arm, answer, recalls, attempt: attempt.attempt });
                 attempt.write({ type: 'attempt-complete', loopDelay: monitor.loopDelay() });
+                diagnostics.flush();
               }
               stage = `${arm}-judge`;
               const judge = await judgeAnswer({ complete: async ({ system, user }) => {
@@ -505,10 +515,12 @@ export async function main(argv = process.argv.slice(2)) {
     }
   } catch (error) {
     abort = error instanceof BudgetExceeded || ledger.exhausted ? 'budget-exhausted' : error instanceof ProviderError ? `${error.provider}-http-${error.status}` : 'run-error; inspect the failing stage without publishing provider response bodies';
-    recordFailure(directory, { stage, ...where, error });
     process.exitCode = 1;
+    // Best-effort: a failure record that cannot be written must not replace the abort itself.
+    try { recordFailure(directory, { stage, ...where, error }); } catch { abort += '; the failure record could not be written'; }
   } finally {
     monitor.stop();
+    try { diagnostics.flush(); } catch { abort = `${abort ?? 'run-error'}; buffered diagnostics could not be written`; }
     writeFileSync(join(directory, 'report.md'), renderReport(manifest, results, ledger.rows(manifest.runId), cap, ledger.chargedUsd(), abort, { attempts: attemptStats(directory) }));
   }
   return !abort && ARMS.every(arm => aggregate(results.filter(r => r.arm === arm), pinned.questionIds).complete) ? 0 : 1;

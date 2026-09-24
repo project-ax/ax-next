@@ -89,8 +89,16 @@ export function attemptStats(runDirectory) {
     for (const name of readdirSync(bankRoot)) {
       const match = /^answer-([a-z]+)\.attempt-\d+\.jsonl$/.exec(name);
       if (!match) continue;
-      const events = readFileSync(join(bankRoot, name), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
+      // A process killed mid-append leaves a torn last line. That is exactly the case
+      // this log exists for, so an unreadable line is counted, never fatal — one torn
+      // file must not stop every later report in the run from rendering.
+      const events = [];
+      let unreadable = 0;
+      for (const line of readFileSync(join(bankRoot, name), 'utf8').split('\n').filter(Boolean)) {
+        try { events.push(JSON.parse(line)); } catch { unreadable += 1; }
+      }
       const arm = (stats[match[1]] ??= { attempts: 0, complete: 0, failed: 0, interrupted: 0, toolCallsOutsideCompleted: 0 });
+      if (unreadable) arm.unreadableLines = (arm.unreadableLines ?? 0) + unreadable;
       arm.attempts += 1;
       const complete = events.some(e => e.type === 'attempt-complete');
       if (complete) arm.complete += 1;
@@ -161,6 +169,23 @@ export function startEnvironmentMonitor({ emit, wall = realNow, mono = monoNow, 
   };
 }
 
+/**
+ * Diagnostic events are held in memory and written only at untimed boundaries. A
+ * provider span is produced while a recall is still being timed, and a synchronous
+ * append there would add our own disk I/O to the number we are trying to explain —
+ * the same class of artifact as the synchronous token mint this card removed.
+ */
+export function makeDiagnosticsBuffer(write = appendFileSync) {
+  const pending = new Map();
+  return {
+    push(path, event) { if (!pending.has(path)) pending.set(path, []); pending.get(path).push(JSON.stringify(event) + '\n'); },
+    flush() {
+      for (const [path, lines] of pending) write(path, lines.join(''));
+      pending.clear();
+    },
+  };
+}
+
 /** The only hosts a benchmark run talks to; the probe refuses anything else. */
 export const PROVIDER_HOSTS = Object.freeze(['us-central1-aiplatform.googleapis.com', 'api.cohere.com', 'openrouter.ai', 'api.anthropic.com']);
 
@@ -187,11 +212,13 @@ export function tlsProbe(host, { connect = tlsConnect, timeoutMs = 5000 } = {}) 
   });
 }
 
-const nearestRank95 = values => {
-  if (!values.length) return null;
+/** Nearest-rank p95 — the ONE implementation; the gate in `memory-product-e2e-lib.mjs` re-exports it. */
+export function percentile95(values) {
+  if (values.length === 0) return null;
+  if (values.some(v => !Number.isFinite(v) || v < 0)) throw new Error('Invalid latency sample');
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.ceil(sorted.length * 0.95) - 1];
-};
+}
 
 /**
  * Descriptive only. The p95 gate stays defined over ALL calls; this shows how much of
@@ -205,8 +232,8 @@ export function latencyBreakdown(rows) {
   for (const span of calls.flatMap(call => call.spans ?? [])) (stages[span.hook] ??= []).push(span.ms);
   return {
     cleanCalls: clean.length, degradedCalls: degraded.length,
-    cleanP95Ms: nearestRank95(clean.map(c => c.ms)), degradedP95Ms: nearestRank95(degraded.map(c => c.ms)),
-    stages: Object.fromEntries(Object.entries(stages).sort().map(([hook, ms]) => [hook, { n: ms.length, p95Ms: nearestRank95(ms) }])),
+    cleanP95Ms: percentile95(clean.map(c => c.ms)), degradedP95Ms: percentile95(degraded.map(c => c.ms)),
+    stages: Object.fromEntries(Object.entries(stages).sort().map(([hook, ms]) => [hook, { n: ms.length, p95Ms: percentile95(ms) }])),
   };
 }
 

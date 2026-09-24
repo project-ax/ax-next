@@ -1,6 +1,8 @@
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { realNow } from './memory-product-e2e-trace.mjs';
+import { percentile95, realNow } from './memory-product-e2e-trace.mjs';
+
+export { percentile95 };
 
 export const CONFIG = Object.freeze({
   sample: 100,
@@ -95,13 +97,6 @@ export class Ledger {
       basis: this.settlements.get(r.id)?.basis ?? 'unsettled-upper-bound',
     }));
   }
-}
-
-export function percentile95(values) {
-  if (values.length === 0) return null;
-  if (values.some(v => !Number.isFinite(v) || v < 0)) throw new Error('Invalid latency sample');
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.ceil(sorted.length * 0.95) - 1];
 }
 
 export function aggregate(rows, expectedIds) {
@@ -247,7 +242,7 @@ export function makeClients({ env, ledger, tags, fetchImpl = fetch }) {
         if (!toolsAllowed || !uses.length) { onTurn({ type: 'final', round: turn, answer: text }); return text; }
         messages.push(message);
         for (const use of uses) {
-          let result = { text: 'Unknown tool' };
+          let result = { ok: false, text: 'Unknown tool' };
           if (use.function?.name === descriptor.name) {
             let input;
             try { input = JSON.parse(use.function.arguments); }
@@ -258,7 +253,7 @@ export function makeClients({ env, ledger, tags, fetchImpl = fetch }) {
             }
             result = await recall(input);
             onTurn({ type: 'tool', round: turn, name: descriptor.name, input, ok: result.ok, resultChars: result.text.length });
-          }
+          } else onTurn({ type: 'tool', round: turn, name: use.function?.name, ok: false, resultChars: result.text.length });
           messages.push({ role: 'tool', tool_call_id: use.id, content: result.text });
         }
       }
