@@ -128,7 +128,7 @@ describe('environment signals', () => {
     expect(ok).toMatchObject({ type: 'tls-probe', host: 'api.cohere.com', ok: true });
     expect(ok.ms).toBeGreaterThanOrEqual(0);
     expect(writes).toEqual([]);
-    const failing = (options, _onSecure) => {
+    const failing = (_options, _onSecure) => {
       const socket = Object.assign(new EventEmitter(), { destroy() {}, setTimeout() {} });
       setImmediate(() => socket.emit('error', Object.assign(new Error('getaddrinfo ENOTFOUND api.cohere.com sk-x'), { code: 'ENOTFOUND' })));
       return socket;
