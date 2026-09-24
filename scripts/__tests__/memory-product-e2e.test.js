@@ -342,7 +342,8 @@ describe('TASK-521 instrumentation', () => {
     const diskFull = new Error('ENOSPC');
     const recall = makeRecall({ bank, storage, recalls, ledger, onRecall: () => { throw diskFull; } });
     // The recall succeeded; a diagnostics write failing afterwards must surface as
-    // itself, not as "Memory tool failed" handed back to the model.
+    // itself. The length check is the load-bearing one: the unfixed code caught the
+    // observer error and pushed a second, phantom ok:false entry for the same recall.
     await expect(storage.run({}, () => recall({ query: 'q' }))).rejects.toBe(diskFull);
     expect(recalls).toHaveLength(1);
     expect(recalls[0]).toMatchObject({ ok: true });
