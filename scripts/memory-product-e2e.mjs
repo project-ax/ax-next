@@ -274,19 +274,22 @@ export function makeRecall({ bank, storage, recalls, ledger, onRecall = () => {}
     const at = realNow();
     const start = monoNow();
     const recallCapture = { degraded: [], spans: [], start };
+    let text;
+    let entry;
     try {
-      const text = await storage.run({ ...storage.getStore(), recallCapture }, () => bank.bus.call('tool:execute:memory_recall', bank.ctx(), { input }));
-      const entry = { at, ms: monoNow() - start, ok: true, degraded: recallCapture.degraded, spans: recallCapture.spans };
-      recalls.push(entry);
-      onRecall(entry);
-      return { ok: true, text };
+      text = await storage.run({ ...storage.getStore(), recallCapture }, () => bank.bus.call('tool:execute:memory_recall', bank.ctx(), { input }));
+      entry = { at, ms: monoNow() - start, ok: true, degraded: recallCapture.degraded, spans: recallCapture.spans };
     } catch (error) {
-      const entry = { at, ms: monoNow() - start, ok: false, error: sanitizeError(error), spans: recallCapture.spans };
-      recalls.push(entry);
-      onRecall(entry);
-      if (ledger.exhausted) throw new BudgetExceeded();
-      return { ok: false, text: 'Memory tool failed; check the arguments or memory availability.' };
+      entry = { at, ms: monoNow() - start, ok: false, error: sanitizeError(error), spans: recallCapture.spans };
     }
+    recalls.push(entry);
+    // Outside the try on purpose: a failing observer (a diagnostics write) is a harness
+    // failure and propagates as one. Inside, it would be recorded as a failed recall and
+    // the model would be told memory failed — changing the answer being measured.
+    onRecall(entry);
+    if (entry.ok) return { ok: true, text };
+    if (ledger.exhausted) throw new BudgetExceeded();
+    return { ok: false, text: 'Memory tool failed; check the arguments or memory availability.' };
   };
 }
 
@@ -472,8 +475,15 @@ export async function main(argv = process.argv.slice(2)) {
                 monitor.loopDelay();
                 attempt = openAttemptLog(bankRoot, arm, { runId: manifest.runId, questionId: sample.question_id });
                 // Written after the recall's `ms` is computed and before the next recall
-                // starts, so these writes sit between timed windows, never inside one.
-                const recall = makeRecall({ bank, storage, recalls, ledger, onRecall: entry => { attempt.write({ type: 'recall', ...entry }); diagnostics.flush(); } });
+                // starts, so they are outside every recall's measured time. (A losing
+                // producer's stage span may still be open; that only touches the
+                // descriptive breakdown.) The attempt log must be durable, so its write
+                // failing aborts the attempt; the diagnostics flush is best-effort and
+                // retried at the next boundary.
+                const recall = makeRecall({ bank, storage, recalls, ledger, onRecall: entry => {
+                  attempt.write({ type: 'recall', ...entry });
+                  try { diagnostics.flush(); } catch { /* retried at the next boundary; see makeDiagnosticsBuffer */ }
+                } });
                 try {
                   answer = await clients.answer({ arm, system: buildSystem(memory, sample.question_date), question: sample.question, descriptor: bank.descriptor, recall, onTurn: event => attempt.write(event) });
                   await bank.drain();
