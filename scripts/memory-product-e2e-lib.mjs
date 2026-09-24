@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { realNow } from './memory-product-e2e-trace.mjs';
 
 export const CONFIG = Object.freeze({
   sample: 100,
@@ -63,6 +64,9 @@ export class Ledger {
     } else throw new Error('Invalid ledger event');
   }
   append(event) {
+    // Wall-clock stamp (TASK-521): the frozen ledger had none, so a run's timeline could
+    // only be rebuilt from file mtimes.
+    event = { ...event, at: realNow() };
     this.apply(event);
     appendFileSync(this.path, JSON.stringify(event) + '\n');
     this.events.push(event);
@@ -205,22 +209,29 @@ export function makeClients({ env, ledger, tags, fetchImpl = fetch }) {
           basis: 'published-rate-estimate', details: { input, output, created, read, model: body.model } };
       });
   }
-  async function answer({ arm, system, question, descriptor, recall }) {
+  // `onTurn` receives each round as it happens (TASK-521). The harness appends those
+  // events to a per-attempt file, so an attempt that dies mid-answer still shows what
+  // the model asked for and what recall returned. It observes; it never alters a turn.
+  async function answer({ arm, system, question, descriptor, recall, onTurn = () => {} }) {
     const model = CONFIG.answerModels[arm];
     if (!model) throw new Error('Unknown answer arm');
     const messages = [{ role: 'user', content: question }];
     for (let turn = 0; turn <= CONFIG.maxToolTurns; turn++) {
       const toolsAllowed = turn < CONFIG.maxToolTurns;
+      onTurn({ type: 'request', round: turn, tools: toolsAllowed });
       if (arm === 'sonnet') {
         const response = await anthropic({ model, max_tokens: CONFIG.answerMaxTokens, system, messages,
           ...(toolsAllowed ? { tools: [{ name: descriptor.name, description: descriptor.description, input_schema: descriptor.inputSchema }] } : {}) });
         if (!Array.isArray(response.content)) throw new Error('Invalid Anthropic content');
         const uses = response.content.filter(block => block.type === 'tool_use');
-        if (!toolsAllowed || !uses.length) return response.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+        const text = response.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+        onTurn({ type: 'response', round: turn, toolUses: uses.length, textChars: text.length, calls: uses.map(u => ({ name: u.name, input: u.input })) });
+        if (!toolsAllowed || !uses.length) { onTurn({ type: 'final', round: turn, answer: text }); return text; }
         messages.push({ role: 'assistant', content: response.content });
         const results = [];
         for (const use of uses) {
           const result = use.name === descriptor.name ? await recall(use.input) : { ok: false, text: 'Unknown tool' };
+          onTurn({ type: 'tool', round: turn, name: use.name, input: use.input, ok: result.ok, resultChars: result.text.length });
           results.push({ type: 'tool_result', tool_use_id: use.id, content: result.text, ...(!result.ok ? { is_error: true } : {}) });
         }
         messages.push({ role: 'user', content: results });
@@ -231,7 +242,9 @@ export function makeClients({ env, ledger, tags, fetchImpl = fetch }) {
         const message = response.choices?.[0]?.message;
         if (!message || typeof message !== 'object') throw new Error('Invalid OpenRouter message');
         const uses = message.tool_calls ?? [];
-        if (!toolsAllowed || !uses.length) return typeof message.content === 'string' ? message.content : '';
+        const text = typeof message.content === 'string' ? message.content : '';
+        onTurn({ type: 'response', round: turn, toolUses: uses.length, textChars: text.length, calls: uses.map(u => ({ name: u.function?.name, arguments: u.function?.arguments })) });
+        if (!toolsAllowed || !uses.length) { onTurn({ type: 'final', round: turn, answer: text }); return text; }
         messages.push(message);
         for (const use of uses) {
           let result = { text: 'Unknown tool' };
@@ -239,10 +252,12 @@ export function makeClients({ env, ledger, tags, fetchImpl = fetch }) {
             let input;
             try { input = JSON.parse(use.function.arguments); }
             catch {
+              onTurn({ type: 'tool', round: turn, name: descriptor.name, argumentsError: true });
               messages.push({ role: 'tool', tool_call_id: use.id, content: 'Invalid tool arguments' });
               continue;
             }
             result = await recall(input);
+            onTurn({ type: 'tool', round: turn, name: descriptor.name, input, ok: result.ok, resultChars: result.text.length });
           }
           messages.push({ role: 'tool', tool_call_id: use.id, content: result.text });
         }
