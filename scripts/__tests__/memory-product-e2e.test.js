@@ -379,8 +379,8 @@ describe('TASK-521 instrumentation', () => {
   it('reports interrupted attempts and the latency breakdown separately, leaving the gate line unchanged', () => {
     const manifest = { runId: 'test', sourceRevision: 'fixture', input: { questionIds: ['a'], corpusSha256: 'fixture', counts: { type: 1 } } };
     const rows = [result('a', 'correct', [{ ms: 3500, ok: true, degraded: ['semantic'], spans: [{ hook: 'embeddings:embed', ms: 2000 }] }]), { ...result('a', 'correct', [{ ms: 400, ok: true, degraded: [] }]), arm: 'glm' }];
-    const report = renderReport(manifest, rows, [], 25, 0, undefined, { attempts: { sonnet: { attempts: 2, complete: 1, failed: 0, interrupted: 1, toolCallsOutsideCompleted: 3 } } });
-    expect(report).toContain('sonnet: 1 interrupted and 0 failed answer attempts (of 2); 3 tool calls in them');
+    const report = renderReport(manifest, rows, [], 25, 0, undefined, { attempts: { sonnet: { attempts: 2, complete: 1, failed: 0, interrupted: 1, toolCallsOutsideCompleted: 3, unreadableLines: 1 } } });
+    expect(report).toContain('sonnet: 1 interrupted and 0 failed answer attempts (of 2); 3 tool calls in them are not in the recall metrics above; 1 torn log lines (a process killed mid-write).');
     expect(report).toContain('glm: 0 interrupted and 0 failed answer attempts (of 0)');
     expect(report).toContain('sonnet: clean p95 n/a (0 calls), degraded p95 3500.000 (1 calls); embeddings:embed p95 2000.000 (n=1)');
     expect(report).toContain('sonnet: 0/1 recall calls failed; 1 calls degraded; 0 uncertain verdicts; 0 run errors. Accuracy gate: PASS. Latency <1600ms: FAIL.');

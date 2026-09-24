@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { appendFileSync } from 'node:fs';
-import { attemptStats, latencyBreakdown, makeDiagnosticsBuffer, makeTokenSource, openAttemptLog, realNow, sanitizeError, startEnvironmentMonitor, tlsProbe } from '../memory-product-e2e-trace.mjs';
+import { attemptStats, latencyBreakdown, makeDiagnosticsBuffer, makeDiagnosticsSinks, makeTokenSource, openAttemptLog, realNow, sanitizeError, startEnvironmentMonitor, tlsProbe } from '../memory-product-e2e-trace.mjs';
 import { withCorpusClock } from '../memory-product-e2e.mjs';
 
 const dirs = [];
@@ -99,6 +99,29 @@ describe('diagnostics are buffered out of timed regions', () => {
     expect(writes).toEqual([['a.jsonl', '{"n":1}\n{"n":3}\n'], ['b.jsonl', '{"n":2}\n']]);
     buffer.flush();
     expect(writes).toHaveLength(2);
+  });
+  it('does not rewrite an already-flushed sink when a later write fails', () => {
+    const writes = [];
+    let fail = true;
+    const buffer = makeDiagnosticsBuffer((path, text) => { if (path === 'b.jsonl' && fail) throw new Error('ENOSPC'); writes.push([path, text]); });
+    buffer.push('a.jsonl', { n: 1 });
+    buffer.push('b.jsonl', { n: 2 });
+    expect(() => buffer.flush()).toThrow('ENOSPC');
+    fail = false;
+    buffer.flush();
+    expect(writes).toEqual([['a.jsonl', '{"n":1}\n'], ['b.jsonl', '{"n":2}\n']]);
+  });
+  it('routes the run-level environment and provider-span sinks through the buffer', () => {
+    const root = temporary();
+    const sinks = makeDiagnosticsSinks(root);
+    sinks.recordEnvironment({ type: 'clock-gap' });
+    sinks.recordProviderSpan({ provider: 'vertex', ms: 1 });
+    // Nothing reaches disk until an untimed boundary flushes.
+    expect(() => readFileSync(join(root, 'environment.jsonl'))).toThrow();
+    expect(() => readFileSync(join(root, 'provider-spans.jsonl'))).toThrow();
+    sinks.flush();
+    expect(lines(join(root, 'environment.jsonl'))).toEqual([expect.objectContaining({ type: 'clock-gap', at: expect.any(Number) })]);
+    expect(lines(join(root, 'provider-spans.jsonl'))).toEqual([{ provider: 'vertex', ms: 1 }]);
   });
 });
 

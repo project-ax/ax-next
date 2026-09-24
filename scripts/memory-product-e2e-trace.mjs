@@ -174,15 +174,33 @@ export function startEnvironmentMonitor({ emit, wall = realNow, mono = monoNow, 
  * provider span is produced while a recall is still being timed, and a synchronous
  * append there would add our own disk I/O to the number we are trying to explain —
  * the same class of artifact as the synchronous token mint this card removed.
+ *
+ * Not everything can be moved out: the spending ledger still appends each reservation
+ * and settlement synchronously inside a recall (~4 small writes per clean recall), as
+ * the frozen harness did, because a buffered reservation could let a crash-restart
+ * overspend the cap. That cost is identical across arms and runs.
  */
 export function makeDiagnosticsBuffer(write = appendFileSync) {
   const pending = new Map();
   return {
     push(path, event) { if (!pending.has(path)) pending.set(path, []); pending.get(path).push(JSON.stringify(event) + '\n'); },
     flush() {
-      for (const [path, lines] of pending) write(path, lines.join(''));
-      pending.clear();
+      // Clear each sink as it is written, so a failing write does not make a retry
+      // duplicate the sinks that already succeeded.
+      for (const [path, lines] of pending) { write(path, lines.join('')); pending.delete(path); }
     },
+  };
+}
+
+/** The run-level diagnostic sinks, both buffered. `main` flushes them at untimed boundaries. */
+export function makeDiagnosticsSinks(directory, write) {
+  const buffer = makeDiagnosticsBuffer(write);
+  const environmentPath = join(directory, 'environment.jsonl');
+  const providerSpansPath = join(directory, 'provider-spans.jsonl');
+  return {
+    recordEnvironment: event => buffer.push(environmentPath, { at: realNow(), ...event }),
+    recordProviderSpan: span => buffer.push(providerSpansPath, span),
+    flush: () => buffer.flush(),
   };
 }
 

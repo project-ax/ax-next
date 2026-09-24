@@ -13,7 +13,7 @@ import { loadLongMemEvalSSamples } from '../packages/memory-strata/test/bench/co
 import { parseCorpusDate } from '../packages/memory-strata/test/bench/e2e-driver.ts';
 import { judgeAnswer } from '../packages/memory-strata/test/bench/judge.ts';
 import { CONFIG, ANSWER_PREAMBLE, BudgetExceeded, ProviderError, Ledger, aggregate, buildSystem, makeClients, readJsonl } from './memory-product-e2e-lib.mjs';
-import { PROVIDER_HOSTS, attemptStats, latencyBreakdown, makeDiagnosticsBuffer, makeTokenSource, monoNow, openAttemptLog, realNow, sanitizeError, startEnvironmentMonitor, tlsProbe } from './memory-product-e2e-trace.mjs';
+import { PROVIDER_HOSTS, attemptStats, latencyBreakdown, makeDiagnosticsSinks, makeTokenSource, monoNow, openAttemptLog, realNow, sanitizeError, startEnvironmentMonitor, tlsProbe } from './memory-product-e2e-trace.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OWNER = 'memory-benchmark-owner';
@@ -319,7 +319,7 @@ export function renderReport(manifest, results, money, cap, charged, abort, diag
   lines.push('', 'Diagnostics (descriptive only; the gates above are unchanged and still cover every completed recall):');
   for (const arm of ARMS) {
     const a = diagnostics.attempts?.[arm] ?? { attempts: 0, failed: 0, interrupted: 0, toolCallsOutsideCompleted: 0 };
-    lines.push(`${arm}: ${a.interrupted} interrupted and ${a.failed} failed answer attempts (of ${a.attempts}); ${a.toolCallsOutsideCompleted} tool calls in them are not in the recall metrics above.`);
+    lines.push(`${arm}: ${a.interrupted} interrupted and ${a.failed} failed answer attempts (of ${a.attempts}); ${a.toolCallsOutsideCompleted} tool calls in them are not in the recall metrics above${a.unreadableLines ? `; ${a.unreadableLines} torn log lines (a process killed mid-write)` : ''}.`);
   }
   for (const arm of ARMS) {
     const b = latencyBreakdown(results.filter(r => r.arm === arm));
@@ -393,11 +393,9 @@ export async function main(argv = process.argv.slice(2)) {
   // Diagnostics sinks (TASK-521): run-level, append-only, wall-clock stamped. Events are
   // buffered and flushed only at untimed boundaries, so no diagnostic write lands inside
   // a timed recall.
-  const diagnostics = makeDiagnosticsBuffer();
-  const environmentPath = join(directory, 'environment.jsonl');
-  const recordEnvironment = event => diagnostics.push(environmentPath, { at: realNow(), ...event });
-  const providerSpansPath = join(directory, 'provider-spans.jsonl');
-  const providerFetch = makeMeteredProviderFetch(ledger, tags, fetch, span => diagnostics.push(providerSpansPath, span));
+  const diagnostics = makeDiagnosticsSinks(directory);
+  const { recordEnvironment } = diagnostics;
+  const providerFetch = makeMeteredProviderFetch(ledger, tags, fetch, diagnostics.recordProviderSpan);
   const tokenSource = env.VERTEX_ACCESS_TOKEN ? undefined : makeTokenSource({
     mint: () => gcloudAsync(['auth', 'application-default', 'print-access-token'], env),
     onStale: event => recordEnvironment(event),
@@ -473,7 +471,9 @@ export async function main(argv = process.argv.slice(2)) {
                 await refreshCredential();
                 monitor.loopDelay();
                 attempt = openAttemptLog(bankRoot, arm, { runId: manifest.runId, questionId: sample.question_id });
-                const recall = makeRecall({ bank, storage, recalls, ledger, onRecall: entry => attempt.write({ type: 'recall', ...entry }) });
+                // Written after the recall's `ms` is computed and before the next recall
+                // starts, so these writes sit between timed windows, never inside one.
+                const recall = makeRecall({ bank, storage, recalls, ledger, onRecall: entry => { attempt.write({ type: 'recall', ...entry }); diagnostics.flush(); } });
                 try {
                   answer = await clients.answer({ arm, system: buildSystem(memory, sample.question_date), question: sample.question, descriptor: bank.descriptor, recall, onTurn: event => attempt.write(event) });
                   await bank.drain();
