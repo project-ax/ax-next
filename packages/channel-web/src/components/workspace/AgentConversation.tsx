@@ -1132,11 +1132,18 @@ function Message({
 
       A message whose decision is not in that array renders nothing. What is
       left after `approvalRead` is SKEW between two independent fetches — the
-      row was resolved and dropped from the open list, or the queue read has
-      simply not landed yet (first mount, or a `decisionRaised` frame whose
-      thread re-read beat its queue refresh). Every one of those settles on its
-      own, and silence beats a card built from a stale copy, which would offer
-      buttons for a decision that may already be closed.
+      row was resolved elsewhere and dropped from the open list, the receipt
+      has outlived `JUST_RESOLVED_MS`, or the queue read has simply not landed
+      yet (first mount, or a `decisionRaised` frame whose thread re-read beat
+      its queue refresh). Every one of those settles on its own, and silence
+      beats a card built from a stale copy, which would offer buttons for a
+      decision that may already be closed.
+
+      A row answered HERE is not one of them (TASK-509). The re-read that
+      follows an in-thread answer lists open rows only, and taking it verbatim
+      unmounted this card ~0.6s after the click — focus fell to `<body>` and
+      the ten-second Undo went with it. `useDecisionQueue` keeps a just-resolved
+      row across that read, so the receipt stays exactly as long as Today's.
 
       What this silence no longer stands for is a FAILED read. That was an
       opposite fact wearing the same silence — one means the question is
