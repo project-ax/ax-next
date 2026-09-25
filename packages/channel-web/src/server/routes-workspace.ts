@@ -160,8 +160,10 @@ import { fenceLine } from '../lib/fence-line.js';
 // function, with no DOM or React in it.
 import { MAX_DETAIL_CHARS } from '../lib/turn-error-labels.js';
 import {
+  settleHolds,
   shapeSteps,
   stepDetail,
+  type LiveHolds,
   type WorkspaceStepStatus,
   type WorkspaceToolCall,
 } from '../lib/workspace-steps.js';
@@ -2187,6 +2189,7 @@ function toolOutcomes(
 function turnToolCalls(
   blocks: TurnBlock[],
   outcomes: ReadonlyMap<string, { isError: boolean; held: boolean }>,
+  live: LiveHolds | null,
 ): WorkspaceToolCall[] {
   const calls: WorkspaceToolCall[] = [];
   for (const block of blocks) {
@@ -2209,7 +2212,9 @@ function turnToolCalls(
       status,
     });
   }
-  return calls;
+  // `held` is what was true at turn end; whether the question is STILL open
+  // is the decision store's to say (TASK-517). See `settleHolds`.
+  return settleHolds(calls, live);
 }
 
 /**
@@ -2358,6 +2363,9 @@ function errorMessages(
 function buildThread(
   turns: TurnRow[],
   displayEvents: readonly DisplayEventRow[] = [],
+  // The holds still being asked about in this conversation, or `null` when
+  // that is not known — which leaves every held step reading as waiting.
+  live: LiveHolds | null = null,
 ): ThreadMessage[] {
   const dated: Array<{ at: string; msg: ThreadMessage }> = [];
   const out: ThreadMessage[] = [];
@@ -2390,7 +2398,7 @@ function buildThread(
       });
       continue;
     }
-    const panel = shapeSteps(turnToolCalls(blocks, outcomes));
+    const panel = shapeSteps(turnToolCalls(blocks, outcomes, live));
     if (text.length === 0 && panel === null) continue;
     dated.push({
       at: turn.createdAt,
@@ -3197,9 +3205,14 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     userId: string,
     agentId: string,
     conversationId: string,
-  ): Promise<{ status: WorkspaceReadStatus; messages: ThreadMessage[] }> {
+  ): Promise<{
+    status: WorkspaceReadStatus;
+    messages: ThreadMessage[];
+    /** Open holds in this conversation; `null` unless the read was `ok`. */
+    live: LiveHolds | null;
+  }> {
     if (!bus.hasService('decisions:list')) {
-      return { status: 'unavailable', messages: [] };
+      return { status: 'unavailable', messages: [], live: null };
     }
     try {
       const out = await bus.call<DecisionsListInput, DecisionsListOutput>(
@@ -3211,19 +3224,25 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         const t = Date.parse(iso);
         return Number.isNaN(t) ? 0 : t;
       };
+      const open = (out.decisions ?? []).filter(
+        (d) => d.conversationId === conversationId && isOpenDecision(d),
+      );
       return {
         status: 'ok',
-        messages: (out.decisions ?? [])
-          .filter((d) => d.conversationId === conversationId && isOpenDecision(d))
+        messages: [...open]
           .sort((a, b) => stamp(a.createdAt) - stamp(b.createdAt))
           .map((d) => ({ kind: 'approval', id: `decision-${d.id}`, decisionId: d.id })),
+        live: {
+          callIds: new Set(open.map((d) => d.call.id)),
+          toolNames: new Set(open.map((d) => d.call.name)),
+        },
       };
     } catch (err) {
       initCtx.logger.warn('workspace_thread_decisions_failed', {
         agentId,
         error: err instanceof Error ? err.message : String(err),
       });
-      return { status: 'failed', messages: [] };
+      return { status: 'failed', messages: [], live: null };
     }
   }
 
@@ -4548,6 +4567,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
 
       let thread: ThreadMessage[] = [];
       let threadConversationId: string | null = null;
+      let decisionsRead: WorkspaceReadStatus = 'ok';
       if (targetId !== null) {
         let got: ConversationsGetOutput | null = null;
         try {
@@ -4592,31 +4612,37 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
             });
             return;
           }
-          thread = buildThread(got.turns ?? [], got.displayEvents ?? []);
           threadConversationId = got.conversation.conversationId;
+          /*
+            The still-open decisions raised in THIS conversation, as cards at
+            the end of the thread. They go last because that is where they
+            happened: the agent got as far as an outward action and stopped to
+            ask.
+
+            There is deliberately no decision payload on this response. The
+            client already has every row from GET /api/workspace/decisions, and
+            a second copy travelling on a second route is precisely the
+            two-producers bug this task exists to avoid.
+
+            What DOES travel is how that read went. `decisionsRead` starts at
+            `ok` for the no-conversation case and that is not a shrug: with no
+            conversation there is no conversationId for a decision to belong
+            to, so "nothing is waiting in this conversation" is true rather
+            than unread.
+
+            Read BEFORE the thread is shaped (TASK-517): the same open rows say
+            which held steps are still being asked about, so a hold the person
+            has since answered stops reading "waiting for you". Only an `ok`
+            read may settle one — a failed read is unknown, and `unavailable`
+            leaves them as the transcript recorded them.
+          */
+          const approvals = await approvalMessages(userId, agentId, threadConversationId);
+          decisionsRead = approvals.status;
+          thread = [
+            ...buildThread(got.turns ?? [], got.displayEvents ?? [], approvals.live),
+            ...approvals.messages,
+          ];
         }
-      }
-
-      /*
-        The still-open decisions raised in THIS conversation, as cards at the
-        end of the thread. They go last because that is where they happened:
-        the agent got as far as an outward action and stopped to ask.
-
-        There is deliberately no decision payload on this response. The client
-        already has every row from GET /api/workspace/decisions, and a second
-        copy travelling on a second route is precisely the two-producers bug
-        this task exists to avoid.
-
-        What DOES travel is how that read went. `decisionsRead` starts at `ok`
-        for the no-conversation case and that is not a shrug: with no
-        conversation there is no conversationId for a decision to belong to, so
-        "nothing is waiting in this conversation" is true rather than unread.
-      */
-      let decisionsRead: WorkspaceReadStatus = 'ok';
-      if (threadConversationId !== null) {
-        const approvals = await approvalMessages(userId, agentId, threadConversationId);
-        decisionsRead = approvals.status;
-        thread = [...thread, ...approvals.messages];
       }
 
       // One read, both halves (TASK-498) — see `deriveState`. The state word

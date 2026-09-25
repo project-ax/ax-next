@@ -3749,6 +3749,142 @@ describe('channel-web agent-workspace BFF', () => {
       // `[]` for a deployment without the plugin.
       expect(body.decisions).toEqual({ status: 'unavailable' });
     });
+
+    // --- a hold that has since been answered (TASK-517) --------------------
+    //
+    // The persisted `held: true` on a tool_result records what was true at
+    // turn end. Read back after the person answered, it used to render as
+    // "— waiting for you" forever, with nothing on the screen to resolve it.
+    // The open decisions this route already reads for the cards are what say
+    // whether a hold is still live.
+
+    function seedHeldThread(): void {
+      conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
+      turnsByConversation.set('c1', [
+        {
+          turnId: 't1',
+          turnIndex: 0,
+          role: 'assistant',
+          contentBlocks: [
+            {
+              type: 'tool_use',
+              id: 'tu1',
+              name: 'mcp__ax-host-tools__web_extract',
+              input: {},
+              activityPhrase: 'Reading a web page',
+            },
+          ],
+          createdAt: '2026-08-01T10:00:00.000Z',
+        },
+        {
+          turnId: 't2',
+          turnIndex: 1,
+          role: 'tool',
+          contentBlocks: [
+            { type: 'tool_result', tool_use_id: 'tu1', content: 'asked', held: true },
+          ],
+          createdAt: '2026-08-01T10:00:01.000Z',
+        },
+      ]);
+    }
+
+    async function heldSteps(): Promise<Record<string, unknown>> {
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+      const body = captured.body as { thread: Array<Record<string, unknown>> };
+      const steps = body.thread.find((m) => m.kind === 'steps');
+      expect(steps).toBeDefined();
+      return steps!;
+    }
+
+    it('stops saying "waiting for you" once the hold has been answered', async () => {
+      // The walk's row: approved, and the warm agent never took it up.
+      registerAuth({ id: 'u1', isAdmin: false });
+      seedHeldThread();
+      seed(
+        decision({
+          id: 'answered',
+          conversationId: 'c1',
+          status: 'executed',
+          resolvedAt: RESOLVED_AT,
+          call: { id: 'tu1', name: 'web_extract', input: {} },
+        }),
+      );
+      registerReads();
+      const steps = await heldSteps();
+      expect(steps).toMatchObject({
+        stepsLabel: '1 step',
+        steps: [{ text: 'Reading a web page — no longer waiting for you', status: 'settled' }],
+      });
+    });
+
+    it('still says "waiting for you" while the decision is open', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      seedHeldThread();
+      seed(
+        decision({
+          id: 'open',
+          conversationId: 'c1',
+          call: { id: 'tu1', name: 'web_extract', input: {} },
+        }),
+      );
+      registerReads();
+      const steps = await heldSteps();
+      expect(steps).toMatchObject({
+        stepsLabel: '1 step, 1 waiting for you',
+        steps: [{ text: 'Reading a web page — waiting for you', status: 'waiting' }],
+      });
+    });
+
+    it('keeps a re-held call waiting when its open decision carries the FIRST call id', async () => {
+      // An identical call held twice collapses onto one decision row
+      // (TASK-254), so the second hold's tool_use id is not the one on the
+      // row. Matching on the id alone would tell the person a live question
+      // was settled — the tool name keeps that from happening.
+      registerAuth({ id: 'u1', isAdmin: false });
+      seedHeldThread();
+      seed(
+        decision({
+          id: 'open',
+          conversationId: 'c1',
+          call: { id: 'an-earlier-call', name: 'web_extract', input: {} },
+        }),
+      );
+      registerReads();
+      const steps = await heldSteps();
+      expect(steps).toMatchObject({ steps: [{ status: 'waiting' }] });
+    });
+
+    it('does not keep a hold waiting on an open decision from ANOTHER conversation', async () => {
+      // The inverse guard: an open decision elsewhere says nothing about this
+      // thread's hold, which has been answered.
+      registerAuth({ id: 'u1', isAdmin: false });
+      seedHeldThread();
+      seed(
+        decision({
+          id: 'elsewhere',
+          conversationId: 'c9',
+          call: { id: 'tu1', name: 'web_extract', input: {} },
+        }),
+      );
+      registerReads();
+      const steps = await heldSteps();
+      expect(steps).toMatchObject({ steps: [{ status: 'settled' }] });
+    });
+
+    it('keeps a hold waiting when the decisions read FAILED — unknown is not settled', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      seedHeldThread();
+      bus.registerService('decisions:list', 'decisions', async () => {
+        throw new Error('the decision store is down');
+      });
+      const steps = await heldSteps();
+      expect(steps).toMatchObject({
+        stepsLabel: '1 step, 1 waiting for you',
+        steps: [{ status: 'waiting' }],
+      });
+    });
   });
 
   describe('facts memory routes', () => {
