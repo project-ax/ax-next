@@ -556,7 +556,7 @@ deleted. The text below is the original plan, kept for the rationale.
    `channelWeb.agentWorkspace`, not `features.agentWorkspace` — the env var is
    `AX_AGENT_WORKSPACE_PREVIEW`, and the client-side feature is
    `agentWorkspacePreview`. Three names for one switch; worth collapsing as
-   part of this.
+   part of this. *(Done — TASK-359.)*
 2. **The flag survives.** Decided (2026-09-12). "Off" keeps meaning
    `/api/workspace/*` is never registered — still the cheapest capability
    minimization we know how to buy. What changes is what it *implies*: it
@@ -567,7 +567,7 @@ deleted. The text below is the original plan, kept for the rationale.
    a broken install. The three-names-for-one-switch collapse
    (`channelWeb.agentWorkspace`, `AX_AGENT_WORKSPACE_PREVIEW`,
    `agentWorkspacePreview`) still stands, and `Preview` should fall out of
-   both names once the workspace *is* the product.
+   both names once the workspace *is* the product. *(Done — TASK-359.)*
 3. **`/chat` goes in one release.** Decided (2026-09-12) — no deprecation
    window, no dated notice. `pathRendersWorkspace()` is `/`, `/workspace`,
    `/workspace/*`; chat keeps `/chat` until the cutover, and then `/chat`

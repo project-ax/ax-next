@@ -71,9 +71,9 @@ describe('agent workspace switch has one name (TASK-359)', () => {
     const chart = load(readFileSync(resolve(chartDir, 'Chart.yaml'), 'utf8')) as {
       version?: unknown;
     };
-    const serveReadsRetired = new RegExp(`\\benv\\.${RETIRED_ENV}\\b`).test(
-      readFileSync(serveSourcePath, 'utf8'),
-    );
+    // ANY mention counts, not just the `env.NAME` spelling: a refactor to
+    // `env[RETIRED_AGENT_WORKSPACE_ENV]` must not disarm this guard.
+    const serveReadsRetired = readFileSync(serveSourcePath, 'utf8').includes(RETIRED_ENV);
     if (serveReadsRetired) {
       expect(
         chart.version,

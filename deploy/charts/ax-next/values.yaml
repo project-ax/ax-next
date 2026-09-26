@@ -539,8 +539,9 @@ channelWeb:
   # One name, everywhere. This value renders `AX_AGENT_WORKSPACE` ("1" on,
   # "0" off, stamped either way so what you write here is what you get), and
   # the browser sees it as `agentWorkspace` from `GET /api/features`. Write
-  # it as a bare boolean: a QUOTED "false" is a non-empty string, which Go
-  # templates treat as true (see `ax-next.bool` in templates/_helpers.tpl).
+  # it as a bare boolean. (A quoted "false" is rejected by values.schema.json
+  # at install, and even with the schema skipped `ax-next.bool` renders it
+  # as off — see templates/_helpers.tpl — but bare is what we test.)
   #
   # UPGRADING from a hand-written `host.env` entry: the retired env name,
   # `AX_AGENT_WORKSPACE_PREVIEW`, is still read for ONE release, by the

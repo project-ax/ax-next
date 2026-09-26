@@ -80,7 +80,7 @@ env (optional when AX_PRESET=memory):
  * names for one switch is how we ended up with three (TASK-359).
  *
  * REMOVAL: this goes away with the first chart release after 0.0.1.
- * `deploy/charts/ax-next/__tests__/render.test.ts` fails a chart version bump
+ * `deploy/charts/ax-next/__tests__/agent-workspace-name.test.ts` fails a chart version bump
  * while this read still exists, so it cannot quietly outlive its welcome.
  */
 export const RETIRED_AGENT_WORKSPACE_ENV = 'AX_AGENT_WORKSPACE_PREVIEW';
