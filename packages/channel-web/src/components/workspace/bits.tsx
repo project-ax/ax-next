@@ -101,8 +101,11 @@ export function stateWord(state: AgentRunState | 'held'): string {
  * the `cn()` below: `theme-contrast.test.ts` reads those arms back as the
  * dot's FILL, keyed by state, so a second arm per state would overwrite the
  * fill it measures. Fill lives there; geometry lives here.
+ *
+ * Every width here must fit inside `StateDotSlot` below (8px).
+ * `StateDotSlot.test.tsx` fails if one doesn't.
  */
-const STATE_SHAPE: Record<AgentRunState | 'held', string> = {
+export const STATE_SHAPE: Record<AgentRunState | 'held', string> = {
   working: 'h-[7px] w-[7px] rounded-full',
   waiting: 'h-[6px] w-[6px] rotate-45 rounded-[1px]',
   held: 'h-[6px] w-[6px] rotate-45 rounded-[1px]',
@@ -150,6 +153,21 @@ export function StateDot({
       )}
     />
   );
+}
+
+/**
+ * A fixed-width slot for `StateDot` (TASK-544, shared since TASK-546). The
+ * shapes above differ in width by state, so a bare dot nudged the text after
+ * it by a pixel from row to row. Centred in one 8px slot, every row's text
+ * starts at the same offset. Use it wherever text lines up after a dot.
+ *
+ * The slot fixes where the text starts. Every `STATE_SHAPE` layout width must
+ * also fit inside it, or that shape spills into the gap beside it;
+ * `StateDotSlot.test.tsx` pins this. (Rotation is not layout: the 6px diamond
+ * reaches about 8.5px corner to corner, and the row gap absorbs that.)
+ */
+export function StateDotSlot({ children }: { children: React.ReactNode }) {
+  return <span className="flex w-2 shrink-0 justify-center">{children}</span>;
 }
 
 export function AgentStateLabel({ agent }: { agent: WorkspaceAgent }) {

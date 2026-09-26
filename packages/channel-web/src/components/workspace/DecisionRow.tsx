@@ -39,7 +39,7 @@ import {
   useResolutionFocus,
 } from '@/lib/consent-focus';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
-import { StateDot, stateWord } from './bits';
+import { StateDot, StateDotSlot, stateWord } from './bits';
 import { ConsentAnnouncement } from './ConsentAnnouncement';
 import {
   DECISION_NOTHING_YET,
@@ -203,9 +203,9 @@ export function DecisionRow({
             data-testid={`decision-outcome-${d.id}`}
             className={`flex items-center gap-3 ${RESOLUTION_FOCUS_RING}`}
           >
-            <DotSlot>
+            <StateDotSlot>
               <StateDot state={TONE_DOT[outcome.tone]} />
-            </DotSlot>
+            </StateDotSlot>
             <span
               className="min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground"
               title={outcome.line}
@@ -275,9 +275,9 @@ export function DecisionRow({
           onClick={onToggle}
           className={`flex w-full items-center gap-3 px-5 py-3.5 text-left ${RESOLUTION_FOCUS_RING}`}
         >
-          <DotSlot>
+          <StateDotSlot>
             <StateDot state={stale ? 'stopped' : 'held'} />
-          </DotSlot>
+          </StateDotSlot>
           <span className="shrink-0 text-[13px] font-medium">{agent.name}</span>
           {/*
             On a held question the dot is the only thing that says the state —
@@ -450,16 +450,6 @@ export function DecisionRow({
       </div>
     </>
   );
-}
-
-/**
- * A fixed-width slot for the state dot (TASK-544). `StateDot`'s shapes differ
- * in width by state — 6px diamond, 7px circle or square, 8px dash — so a bare
- * dot nudged the text after it by a pixel from row to row. Centred in the same
- * `w-2` slot the sidebar roster uses, every row's text starts at one offset.
- */
-function DotSlot({ children }: { children: React.ReactNode }) {
-  return <span className="flex w-2 shrink-0 justify-center">{children}</span>;
 }
 
 function cnRow(stale: boolean): string {
