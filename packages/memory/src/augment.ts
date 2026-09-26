@@ -52,8 +52,9 @@ import { PLUGIN_NAME } from './plugin-name.js';
 import { memoryReadScope, resolveMemoryAccess } from './access.js';
 import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
 // The profile whitelist IS the normalizer's slot list — the same constant, not
-// a copy (design 3.3/4.1, Invariant 4). `__tests__/slots.test.ts` fails if a
-// second copy of the eight ever appears in production source.
+// a copy (design 3.3/4.1, Invariant 4).
+// `scripts/__tests__/slot-vocabulary-single-owner.test.js` fails if a second
+// copy of the eight ever appears in production source.
 import { selectProfileRows } from './profile.js';
 import { SLOTS } from './slots.js';
 import {

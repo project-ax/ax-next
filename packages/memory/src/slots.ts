@@ -63,11 +63,14 @@
  * **This list IS the profile whitelist of design §4.1** — the same constant, not
  * a copy (CLAUDE.md invariant 4). Adding a slot here makes it appear in the
  * injected profile block; removing one stops it closing rows. The consumer that
- * renders the profile block must import this. `__tests__/slots.test.ts` is the
- * guard, and it is a heuristic rather than a proof: it fails when 3+ slot
- * names — one of them `lives_in` — appear within 200 characters of each other
- * in any non-test `.ts`/`.tsx` under `packages/`, as quoted literals or as
- * object keys. A copy spelled some other way would get past it.
+ * renders the profile block must import this. The guard is
+ * `scripts/__tests__/slot-vocabulary-single-owner.test.js`, and it is a
+ * heuristic rather than a proof: it fails when 3+ slot names — one of them
+ * `lives_in` — are mentioned within 200 characters of each other in any tracked
+ * non-test JS/TS source under `packages/` or `presets/`. That anchor makes it
+ * WEAKER against a partial copy: `'name' | 'role' | 'language' | 'timezone'` is
+ * a second copy of part of this list and passes. That file's header lists what
+ * else gets past it.
  *
  * What each slot means, in words — kept as documentation rather than as an
  * exported `SLOT_DESCRIPTIONS` record, because that record's only ever role was
