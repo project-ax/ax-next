@@ -248,6 +248,45 @@ describe('MemorySurface', () => {
     expect(screen.queryByRole('button', { name: 'Forget: Worcester' })).toBeNull();
   });
 
+  it('shows an overridden row as closed history with a badge, even though it has no until', async () => {
+    recallMock.mockImplementation(async (_id, input) => {
+      if (input?.history === true) {
+        return {
+          statements: [
+            fact({ id: 'm1', value: 'Cambridge' }),
+            fact({ id: 'm0', value: 'Outranked', closure: 'overridden' }),
+          ],
+          degraded: [],
+        };
+      }
+      return { statements: [fact({ id: 'm1', value: 'Cambridge' })], degraded: [] };
+    });
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    expect(await screen.findByText('Cambridge')).toBeInTheDocument();
+    expect(screen.queryByText('Outranked')).toBeNull();
+
+    fireEvent.click(screen.getAllByRole('switch', { name: 'Show history' })[0]!);
+    expect(await screen.findByText('Outranked')).toBeInTheDocument();
+    expect(screen.getByText('Overridden')).toBeInTheDocument();
+    expect(screen.getByText(/another memory is used instead/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Edit: Outranked' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Forget: Outranked' })).toBeNull();
+  });
+
+  it('never shows Forget on an overridden row in search results', async () => {
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    await screen.findByText('Search memories from your conversations.');
+    recallMock.mockResolvedValue({
+      statements: [fact({ id: 'm1', value: 'Outranked', closure: 'overridden' })],
+      degraded: [],
+    });
+    fireEvent.change(screen.getByLabelText('Search memories'), { target: { value: 'x' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    expect(await screen.findByText(/Outranked/)).toBeInTheDocument();
+    expect(screen.getByText('Overridden')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Forget:/ })).toBeNull();
+  });
+
   it('searches on submit and maps kinds to friendly type labels', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
     expect(
@@ -272,8 +311,26 @@ describe('MemorySurface', () => {
     expect(screen.getAllByText('Fact')).not.toHaveLength(0);
     expect(screen.getByText('Observation')).toBeInTheDocument();
     expect(screen.getByText('Opinion')).toBeInTheDocument();
-    expect(screen.getByText('Unclassified')).toBeInTheDocument();
+    // No kind, no savedBy: the honest gap is "Older memory", not "Unclassified"
+    // (which read as a claim about the row rather than about our own metadata).
+    expect(screen.getByText('Older memory')).toBeInTheDocument();
     expect(screen.getByText('When (UTC)')).toBeInTheDocument();
+  });
+
+  it('labels a kindless row by who saved it, not by a raw provenance token', async () => {
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    await screen.findByText('Search memories from your conversations.');
+    recallMock.mockResolvedValue({
+      statements: [
+        fact({ id: 'm1', value: 'Human-saved', savedBy: 'person' }),
+        fact({ id: 'm2', value: 'Agent-saved', savedBy: 'agent' }),
+      ],
+      degraded: [],
+    });
+    fireEvent.change(screen.getByLabelText('Search memories'), { target: { value: 'x' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    expect(await screen.findByText('Saved by a person')).toBeInTheDocument();
+    expect(screen.getByText('Agent note')).toBeInTheDocument();
   });
 
   it('says no matches only after a real search came back empty', async () => {
@@ -334,12 +391,12 @@ describe('MemorySurface', () => {
     expect(await screen.findByText(/No profile memories yet/)).toBeInTheDocument();
   });
 
-  it('renders the owner\'s speaker as "you" and never the raw user id', async () => {
+  it('renders the owner\'s speaker as "You" and never the raw user id', async () => {
     recallMock.mockResolvedValue({ statements: [fact({ id: 'm1' })], degraded: [] });
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
     fireEvent.change(screen.getByLabelText('Search memories'), { target: { value: 'x' } });
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    expect(await screen.findByText(/you lives in: Boston/)).toBeInTheDocument();
+    expect(await screen.findByText(/You — lives in: Boston/)).toBeInTheDocument();
     expect(screen.queryByText(/user:alice|alice lives/)).toBeNull();
   });
 
@@ -351,18 +408,21 @@ describe('MemorySurface', () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
     fireEvent.change(screen.getByLabelText('Search memories'), { target: { value: 'x' } });
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    expect(await screen.findByText(/priya likes: tea/)).toBeInTheDocument();
-    expect(screen.queryByText(/you likes/)).toBeNull();
+    expect(await screen.findByText(/Priya — likes: tea/)).toBeInTheDocument();
+    expect(screen.queryByText(/You — likes/)).toBeNull();
   });
 
-  it('interleaves closed and active rows oldest-first, not bucketed', async () => {
+  it('renders the engine\'s own order — best match first, never re-sorted by date', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
     await screen.findByText('Search memories from your conversations.');
     recallMock.mockResolvedValue({
       statements: [
+        // Deliberately NOT date order: the engine's rank puts the oldest row
+        // first and the newest last. If the UI re-sorted by date this would
+        // come back Jan, Feb, Mar — the bug T3 removes.
+        fact({ id: 'a', value: 'Jan', when: '2026-01-01T00:00:00Z' }),
+        fact({ id: 'c', value: 'Mar', when: '2026-03-01T00:00:00Z' }),
         fact({ id: 'b', value: 'Feb', when: '2026-02-01T00:00:00Z' }),
-        fact({ id: 'a', value: 'Jan', when: '2026-01-01T00:00:00Z', until: '2026-02-05T00:00:00Z', closure: 'forgotten' }),
-        fact({ id: 'c', value: 'Mar', when: '2026-03-01T00:00:00Z', until: '2026-04-01T00:00:00Z', closure: 'forgotten' }),
       ],
       degraded: [],
     });
@@ -371,8 +431,9 @@ describe('MemorySurface', () => {
     expect(await screen.findByText(/Jan/)).toBeInTheDocument();
     const cells = screen.getAllByRole('cell').map((c) => c.textContent ?? '');
     const flat = cells.join('');
-    expect(flat.indexOf('Jan')).toBeLessThan(flat.indexOf('Feb'));
-    expect(flat.indexOf('Feb')).toBeLessThan(flat.indexOf('Mar'));
+    expect(flat.indexOf('Jan')).toBeLessThan(flat.indexOf('Mar'));
+    expect(flat.indexOf('Mar')).toBeLessThan(flat.indexOf('Feb'));
+    expect(screen.getByText('Best matches first.')).toBeInTheDocument();
   });
 
   it('submitting the same query twice makes a second request', async () => {
