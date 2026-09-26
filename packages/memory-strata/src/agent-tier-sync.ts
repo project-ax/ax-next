@@ -210,6 +210,9 @@ async function populateScratch(
   // order however the concurrent reads finish.
   const found: (Uint8Array | undefined)[] = new Array(memPaths.length);
   let sawFound = false;
+  // Only the serial phase may name the pin. Once reads overlap, a late latch
+  // would pin some in-flight reads and not others: a torn snapshot.
+  let pinOpen = true;
   const readOne = async (i: number): Promise<void> => {
     const tierPath = memPaths[i]!;
     const input: WorkspaceReadInput =
@@ -221,7 +224,7 @@ async function populateScratch(
     );
     if (!read.found) return;
     sawFound = true;
-    if (baseVersion === null && read.version !== undefined) baseVersion = read.version;
+    if (pinOpen && baseVersion === null && read.version !== undefined) baseVersion = read.version;
     found[i] = read.bytes;
     const scratchRel = tierToScratchRelPath(tierPath);
     const abs = join(scratchRoot, ...scratchRel.split('/'));
@@ -240,12 +243,13 @@ async function populateScratch(
   while (next < memPaths.length && !sawFound) {
     await readOne(next++);
   }
+  pinOpen = false;
   // TASK-554: every read after it is pinned to that snapshot, so their order
   // no longer matters: issue them concurrently, with a bound. A backend may
   // answer concurrent pinned reads together (workspace-git-server coalesces
   // them into one lookup), which is what takes the full hydrate off
-  // linear-serial. A backend that returns no version leaves them unpinned,
-  // exactly as the serial loop did.
+  // linear-serial. If the first found read carried no version (a backend that
+  // never versions reads), the rest stay unpinned, consistently.
   await readConcurrently(memPaths.length - next, HYDRATE_READ_CONCURRENCY, (k) =>
     readOne(next + k),
   );

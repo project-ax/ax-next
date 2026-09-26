@@ -21,13 +21,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkspaceReadOutput, WorkspaceVersion } from '@ax/core';
 
 const spawnCalls: string[][] = [];
+// When set, `cat-file --batch` runs as `--batch-check`: headers with no
+// contents, a reply the batch parser must reject.
+const corrupt = { batchReply: false };
 vi.mock('node:child_process', async (importOriginal) => {
   const real = await importOriginal<typeof import('node:child_process')>();
   return {
     ...real,
     spawn: (cmd: string, args: readonly string[], options: object) => {
       spawnCalls.push([cmd, ...args]);
-      return real.spawn(cmd, args, options);
+      const actual =
+        corrupt.batchReply && args.includes('--batch')
+          ? args.map((a) => (a === '--batch' ? '--batch-check' : a))
+          : args;
+      return real.spawn(cmd, actual, options);
     },
   };
 });
@@ -229,6 +236,50 @@ describe('git-engine — concurrent pinned reads coalesce (TASK-554)', () => {
       value: { found: true, bytes: new Uint8Array(0), version: v },
     });
     expect(absent).toEqual({ status: 'fulfilled', value: { found: false } });
+  });
+
+  it('a path with a NUL fails only its own read, not the batch it arrived with', async () => {
+    // git echoes a missing name truncated at the NUL, so a NUL path on the
+    // `--batch` stdin desynchronised the reply parser and failed EVERY read
+    // in the batch (review finding, TASK-554).
+    const ws = 'wsbatch00008';
+    const v = await seed(ws);
+    await expect(
+      h.engine.read(ws, { path: 'memory/docs/empty.md\u0000x', version: v }),
+    ).rejects.toThrow();
+
+    const [nul, file, absent] = await Promise.allSettled([
+      h.engine.read(ws, { path: 'memory/docs/empty.md\u0000x', version: v }),
+      h.engine.read(ws, { path: 'memory/docs/empty.md', version: v }),
+      h.engine.read(ws, { path: 'memory/docs/absent.md', version: v }),
+    ]);
+    expect(nul.status).toBe('rejected');
+    expect(file).toEqual({
+      status: 'fulfilled',
+      value: { found: true, bytes: new Uint8Array(0), version: v },
+    });
+    expect(absent).toEqual({ status: 'fulfilled', value: { found: false } });
+  });
+
+  it('a batch reply that does not parse falls back to one read each, with the same answers', async () => {
+    const ws = 'wsbatch00009';
+    const v = await seed(ws);
+    corrupt.batchReply = true;
+    try {
+      spawnCalls.length = 0;
+      const out = await Promise.all(
+        READ_PATHS.map((path) => h.engine.read(ws, { path, version: v })),
+      );
+      // The batch really was attempted (and so really failed to parse).
+      expect(catFileSpawns().filter((c) => c.includes('--batch'))).toHaveLength(1);
+      for (const [i, path] of READ_PATHS.entries()) {
+        expect(out[i]).toEqual(
+          path in FILES ? { found: true, bytes: FILES[path], version: v } : { found: false },
+        );
+      }
+    } finally {
+      corrupt.batchReply = false;
+    }
   });
 
   it('a path with a line break skips the batch and still reads correctly', async () => {

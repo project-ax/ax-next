@@ -169,6 +169,32 @@ describe('hydrateAgentTier reads concurrently after the pin (TASK-554)', () => {
     }
   });
 
+  it('a pin is never latched once reads overlap: the snapshot cannot tear', async () => {
+    // First found read carries no version; later ones do. A latch during the
+    // concurrent phase would pin some in-flight reads and not others.
+    const paths = docs(40);
+    const bus = new HookBus();
+    const reads: WorkspaceReadInput[] = [];
+    bus.registerService<WorkspaceListInput, WorkspaceListOutput>('workspace:list', 't', async () => ({
+      paths,
+    }));
+    bus.registerService<WorkspaceReadInput, WorkspaceReadOutput>('workspace:read', 't', async (_c, input) => {
+      reads.push(input);
+      await tick(1);
+      const bytes = enc(`body of ${input.path}`);
+      return input.path === paths[0] ? { found: true, bytes } : { found: true, bytes, version: V };
+    });
+
+    const hydrated = await hydrateAgentTier(bus, ctx);
+    try {
+      expect(reads).toHaveLength(paths.length);
+      expect(reads.filter((r) => r.version !== undefined)).toEqual([]);
+      expect(hydrated.baseVersion).toBeNull();
+    } finally {
+      await hydrated.dispose();
+    }
+  });
+
   it('the baseline keeps list order and the right bytes when reads finish out of order', async () => {
     const paths = docs(30);
     // Later paths finish first.

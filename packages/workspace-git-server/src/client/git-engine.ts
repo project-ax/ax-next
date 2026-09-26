@@ -345,10 +345,11 @@ type BatchEntry =
 
 // Can `path` go on a `cat-file --batch` stdin line? The protocol is one object
 // name per line, so a path carrying a line break would split into two
-// requests. Such a path takes the single-read path instead, which passes it as
-// one argv token.
+// requests. And git echoes a missing name truncated at a NUL, so a NUL path
+// would desynchronise the reply parser. Such paths take the single-read path
+// instead, which fails or answers them on their own.
 function batchablePath(path: string): boolean {
-  return !path.includes('\n') && !path.includes('\r');
+  return !path.includes('\n') && !path.includes('\r') && !path.includes('\u0000');
 }
 
 /**
@@ -1659,7 +1660,7 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
       }
       return;
     }
-    let entries: BatchEntry[];
+    let entries: BatchEntry[] | null;
     try {
       guardClosed();
       const remoteUrl = remoteUrlFor(opts.baseUrl, workspaceId);
@@ -1670,13 +1671,31 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
         if (!(await mirrorHasCommit(handle.dir, pinned))) {
           await fetchMirror(remoteUrl, opts.token, handle.dir);
         }
-        return catFileBatch(
-          handle.dir,
-          waiters.map((w) => `${pinned}:${w.path}`),
-        );
+        try {
+          return await catFileBatch(
+            handle.dir,
+            waiters.map((w) => `${pinned}:${w.path}`),
+          );
+        } catch {
+          // A reply we could not parse must not fail reads that would have
+          // succeeded alone. Fall back to one read each (below).
+          return null;
+        }
       });
     } catch (err) {
+      // The mirror lease or the fetch failed: every single read would too.
       for (const w of waiters) w.reject(err);
+      return;
+    }
+    if (entries === null) {
+      // Still inside this op's queue slot, so one at a time is correct.
+      for (const w of waiters) {
+        try {
+          w.resolve(await readQueued(workspaceId, w.path, pinned));
+        } catch (err) {
+          w.reject(err);
+        }
+      }
       return;
     }
     const version = asWorkspaceVersion(pinned);
