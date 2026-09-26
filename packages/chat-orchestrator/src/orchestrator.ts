@@ -944,7 +944,11 @@ export const CHAT_START_SUBSCRIBER_TIMEOUT_MS = 60_000;
  * that fire — this plugin's own subscriber resolves the turn's waiter from
  * inside it — so a hung subscriber there cannot hold the turn past
  * `chatTimeoutMs`, after which the bounded synthesized fire above takes over.
- * And bounding it changes fire()'s microtask timing on the path every
+ * That is still a real cost, stated plainly: a hung subscriber registered
+ * AHEAD of ours keeps our subscriber from ever running, so a turn the runner
+ * finished is reported as `chat-run-timeout` ten minutes later (and the
+ * runner's POST never gets its reply). No subscriber in the tree today can do
+ * that — every one returns promptly or detaches its work. And bounding it changes fire()'s microtask timing on the path every
  * successful turn takes: TASK-514 measured exactly that change breaking
  * preset-k8s acceptance's chat:end-once witness. Likewise unbounded, and
  * already bounded by something else: @ax/skill-broker's request_capability
