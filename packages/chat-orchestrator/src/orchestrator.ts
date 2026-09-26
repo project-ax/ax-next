@@ -942,21 +942,21 @@ export const CHAT_START_SUBSCRIBER_TIMEOUT_MS = 60_000;
  * work is one frame write or one row write, far inside it. Shorter than
  * chat:start's 60 s because nothing here does chat:start's cold-tier fan-out.
  *
- * WHAT IS NOT BOUNDED, on purpose: the HAPPY-PATH `chat:end` that @ax/ipc-core
- * fires when the runner POSTs `event.chat-end`. `agent:invoke` does not await
- * that fire — this plugin's own subscriber resolves the turn's waiter from
- * inside it — so a hung subscriber there cannot hold the turn past
- * `chatTimeoutMs`, after which the bounded synthesized fire above takes over.
- * That is still a real cost, stated plainly: a hung subscriber registered
- * AHEAD of ours keeps our subscriber from ever running, so a turn the runner
- * finished is reported as `chat-run-timeout` ten minutes later (and the
- * runner's POST never gets its reply). No subscriber in the tree today can do
- * that — every one returns promptly or detaches its work. And bounding it changes fire()'s microtask timing on the path every
- * successful turn takes: TASK-514 measured exactly that change breaking
- * preset-k8s acceptance's chat:end-once witness. Likewise unbounded, and
- * already bounded by something else: @ax/skill-broker's request_capability
- * card (inside a tool with a 30 s service timeout) and @ax/channel-web's
- * dispatch-failed turn-error (fire-and-forget; nobody awaits it).
+ * NOT FIRED HERE: the HAPPY-PATH `chat:end` that @ax/ipc-core fires when the
+ * runner POSTs `event.chat-end`. It is bounded there, at the same 30 s
+ * (`RUNNER_CHAT_END_SUBSCRIBER_TIMEOUT_MS`, TASK-555), because a hung
+ * subscriber registered AHEAD of ours kept our subscriber — the one that
+ * resolves the turn's waiter — from ever running, so a turn the runner had
+ * finished was reported as `chat-run-timeout` at `chatTimeoutMs`. That fire
+ * RACES `agent:invoke` (our subscriber resolves the caller from inside it), so
+ * under a bound a later-registered subscriber can run after `agent:invoke` has
+ * returned; preset-k8s acceptance's chat:end-once witness now waits for the
+ * turn to settle instead of reading on return (the TASK-514 trap).
+ *
+ * WHAT IS NOT BOUNDED, on purpose, because something else already bounds it:
+ * @ax/skill-broker's request_capability card (inside a tool with a 30 s
+ * service timeout) and @ax/channel-web's dispatch-failed turn-error
+ * (fire-and-forget; nobody awaits it).
  *
  * Like chat:start's bound, it ends the subscriber's say over this fire and
  * aborts its `signal` (TASK-552); stopping its work is up to the subscriber.
@@ -1486,8 +1486,8 @@ export function createOrchestrator(
   // TASK-551 — every `chat:end` / `chat:turn-error` / `chat:permission-request`
   // this plugin fires goes through here, so each subscriber is bounded by
   // `chatEventSubscriberTimeoutMs`. See CHAT_EVENT_SUBSCRIBER_TIMEOUT_MS for
-  // who waits on these and why the runner-reported `chat:end` (fired by
-  // @ax/ipc-core, not here) is deliberately left unbounded.
+  // who waits on these. The runner-reported `chat:end` is fired by
+  // @ax/ipc-core, not here, and bounded there (TASK-555).
   function fireChatEvent<P>(
     hook: 'chat:end' | 'chat:turn-error' | 'chat:permission-request',
     ctx: AgentContext,

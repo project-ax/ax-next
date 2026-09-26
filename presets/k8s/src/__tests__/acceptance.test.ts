@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
@@ -366,6 +366,39 @@ function createDispatcherDepsStubPlugin(hooks: string[]): Plugin {
 // chat actually ran (vs. a wiring-only happy path).
 const CANARY_TEXT = 'preset-ok';
 
+/**
+ * The I1 witness: `chat:end` fires EXACTLY once per `agent:invoke`. Each
+ * caller drives ONE turn, so "once per turn" is "once per test" here; a test
+ * that adds a second turn must count per reqId instead.
+ *
+ * It asserts the invariant, not the timing (TASK-555). The happy-path
+ * `chat:end` is fired by @ax/ipc-core after it has acked the runner's POST,
+ * detached, and bounded per subscriber — so the orchestrator's own subscriber
+ * can resolve `agent:invoke` before a LATER-registered subscriber (this
+ * recorder) has run. Reading the recorder the moment `agent:invoke` returned
+ * was therefore a test of `fire()`'s microtask ordering, and it broke the
+ * first time anyone bounded that fire (TASK-514).
+ *
+ * So: wait until the recorder has seen the event, then shut the kernel down —
+ * which ends the sandbox, the runner and the IPC listener, so nothing is left
+ * to deliver a second one for this turn — and only then count. Exact length
+ * stays load-bearing: a double fire still fails here, where
+ * `toBeGreaterThanOrEqual(1)` would pass it. What it cannot see: a duplicate
+ * still inside a detached fire when shutdown returns. `shutdown()` is
+ * idempotent, so the `finally` that calls it again is a no-op.
+ */
+async function expectChatEndOncePerTurn(
+  observedChatEndReqIds: readonly string[],
+  handle: { shutdown(): Promise<void> },
+): Promise<void> {
+  await vi.waitFor(
+    () => expect(observedChatEndReqIds.length).toBeGreaterThanOrEqual(1),
+    { timeout: 10_000, interval: 10 },
+  );
+  await handle.shutdown();
+  expect(observedChatEndReqIds).toHaveLength(1);
+}
+
 describe('@ax/preset-k8s acceptance (stub runner)', () => {
   let tmp: string;
   let originalCredKey: string | undefined;
@@ -558,7 +591,8 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         // that proves the event flowed through end-to-end. Exact length is
         // load-bearing: a double-fire regression would slip past
         // `toBeGreaterThanOrEqual(1)` while still violating the invariant.
-        expect(observedChatEndReqIds).toHaveLength(1);
+        // Counted once the turn has settled, not on return — see the helper.
+        await expectChatEndOncePerTurn(observedChatEndReqIds, handle);
       } finally {
         await handle.shutdown();
       }
@@ -752,7 +786,8 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           .reverse()
           .find((m) => m.role === 'assistant');
         expect(lastAssistant?.content).toContain(CANARY_TEXT);
-        expect(observedChatEndReqIds).toHaveLength(1);
+        // The chat:end-once (I1) check runs at the END of this test, because
+        // it shuts the kernel down to count (see expectChatEndOncePerTurn).
 
         // 3. Filesystem assertion against the storage tier. The bare repo
         // lives at `<serverRepoRoot>/<workspaceId>.git`; existence proves the
@@ -769,6 +804,9 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           `${expectedWorkspaceId}.git`,
         );
         expect(existsSync(bareRepoPath)).toBe(true);
+
+        // 4. chat:end fired exactly once for the turn in step 2 (I1).
+        await expectChatEndOncePerTurn(observedChatEndReqIds, handle);
       } finally {
         // Tear down in reverse order of construction. Kernel shutdown drains
         // the workspace plugin's mirror cache + git engine before the server
