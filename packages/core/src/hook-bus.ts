@@ -1,5 +1,5 @@
 import type { ZodType } from 'zod';
-import type { AgentContext } from './context.js';
+import { createLogger, type AgentContext } from './context.js';
 import { isRejection, PluginError, type Rejection } from './errors.js';
 import type { FireResult } from './types.js';
 import { withTimeout } from './util/with-timeout.js';
@@ -109,6 +109,50 @@ function warnQuietly(
     ctx.logger?.warn(msg, bindings);
   } catch {
     /* a logger that throws must not take the hook down with it */
+  }
+}
+
+/**
+ * Report a subscriber that threw, without ever throwing from the report.
+ *
+ * This used to be a bare `ctx.logger.error(...)`. Under a ctx with no logger
+ * (canaries, synthetic contexts) — or one whose `error` throws — the log line
+ * raised its own TypeError out of `fire()`'s catch block. That skipped EVERY
+ * REMAINING SUBSCRIBER and handed the caller the TypeError instead of anything
+ * about the subscriber that failed: diagnostics changing control flow, and
+ * erasing the very error they were reporting (TASK-512).
+ *
+ * Unlike `warnQuietly`, this does not go silent when the logger is unusable.
+ * A subscriber that really threw is worth a line even on a partial ctx, so it
+ * falls back to one structured JSON line on stderr carrying the same message
+ * and the ORIGINAL error. Only if that write fails too does it give up — at
+ * that point there is nowhere left to say it, and throwing would bring back
+ * the bug.
+ *
+ * `fire()`'s contract is unchanged: it never propagates subscriber errors to
+ * the caller, and this function does not start doing so.
+ */
+function reportSubscriberFailure(
+  ctx: AgentContext,
+  bindings: { hook: string; plugin: string; err: Error },
+): void {
+  try {
+    const logger = ctx?.logger;
+    if (typeof logger?.error === 'function') {
+      logger.error('hook_subscriber_failed', bindings);
+      return;
+    }
+  } catch {
+    /* the ctx's logger is broken — fall through to the last-resort line */
+  }
+  try {
+    const reqId = typeof ctx?.reqId === 'string' ? ctx.reqId : 'unknown';
+    createLogger({
+      reqId,
+      writer: (line) => process.stderr.write(line + '\n'),
+    }).error('hook_subscriber_failed', bindings);
+  } catch {
+    /* nowhere left to report to; throwing here would skip the remaining subscribers */
   }
 }
 
@@ -358,21 +402,10 @@ export class HookBus {
       try {
         result = (await sub.handler(ctx, current)) as P | undefined | Rejection;
       } catch (err) {
-        // NOTE this one is deliberately NOT routed through `warnQuietly`. The
-        // stall watch is diagnostics and must never become a failure, but this
-        // line reports a subscriber that actually threw — and under a ctx with
-        // no usable logger, throwing here beats swallowing a real subscriber
-        // error into a void. The guarantee the stall watch offers therefore
-        // does not extend to this log; the asymmetry is on purpose.
-        //
-        // Be precise about what "throwing here" costs, though: the TypeError
-        // escapes `fire()`, so it also SKIPS EVERY REMAINING SUBSCRIBER and
-        // reaches the caller wearing the wrong error's name. That is a change
-        // in control flow, not just in volume. It is reachable only from a ctx
-        // with no logger — synthetic and canary ones — which is the same
-        // population `warnQuietly` was just hardened for, so if this ever needs
-        // revisiting, revisit it on purpose rather than by accident.
-        ctx.logger.error('hook_subscriber_failed', {
+        // Isolation is the contract: a throwing subscriber is reported and the
+        // chain continues. The report must never break that contract itself —
+        // see `reportSubscriberFailure` for why it cannot throw.
+        reportSubscriberFailure(ctx, {
           hook: hookName,
           plugin: sub.plugin,
           err: err instanceof Error ? err : new Error(String(err)),

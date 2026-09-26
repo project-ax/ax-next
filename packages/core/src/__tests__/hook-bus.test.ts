@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { z } from 'zod';
 import { HookBus } from '../hook-bus.js';
 import { isRejection, isHold, PluginError, reject, hold } from '../errors.js';
@@ -607,9 +607,8 @@ describe('HookBus — stall watch (TASK-505)', () => {
     // that threw on one would be a new silent-failure source bolted onto the
     // fix for one.
     //
-    // Scoped to the STALL WATCH on purpose. `fire`'s pre-existing
-    // `hook_subscriber_failed` log is still unguarded, deliberately — see the
-    // note at that call site.
+    // Scoped to the STALL WATCH. `fire`'s `hook_subscriber_failed` log has its
+    // own guard and its own tests (TASK-512, below).
     const bus = new HookBus({ stallWarnMs: 20 });
     bus.registerService(
       'slow',
@@ -620,5 +619,142 @@ describe('HookBus — stall watch (TASK-505)', () => {
       typeof silentCtx
     >;
     await expect(bus.call('slow', loggerless, {})).resolves.toBe('done');
+  });
+});
+
+describe('HookBus — a subscriber failure is reported without breaking fire (TASK-512)', () => {
+  // `fire()` used to log a subscriber throw through a bare `ctx.logger.error`.
+  // Under a ctx with no usable logger that line itself threw a TypeError out of
+  // the catch block: every REMAINING subscriber was skipped, and the caller saw
+  // the TypeError instead of anything about the subscriber that actually failed.
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Capture what the last-resort path writes to stderr. */
+  const captureStderr = (): string[] => {
+    const lines: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => {
+      lines.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    return lines;
+  };
+
+  const loggerless = () =>
+    ({ reqId: 'req-t512', sessionId: 's', agentId: 'a', userId: 'u' }) as unknown as ReturnType<
+      typeof silentCtx
+    >;
+
+  const throwingLoggerCtx = () => {
+    const logger: Logger = {
+      debug: () => undefined,
+      info: () => undefined,
+      warn: () => undefined,
+      error: () => {
+        throw new Error('logger is broken');
+      },
+      child: () => logger,
+    };
+    return makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u', logger });
+  };
+
+  for (const [label, makeCtx] of [
+    ['a ctx with no logger', loggerless],
+    ['a ctx whose logger.error throws', throwingLoggerCtx],
+  ] as const) {
+    describe(label, () => {
+      it('still runs every remaining subscriber and resolves with their payload', async () => {
+        captureStderr();
+        const bus = new HookBus();
+        const ran: string[] = [];
+        bus.subscribe<{ n: number }>('h', 'bad', async () => {
+          ran.push('bad');
+          throw new Error('original subscriber failure');
+        });
+        bus.subscribe<{ n: number }>('h', 'good', async (_ctx, p) => {
+          ran.push('good');
+          return { n: p.n + 1 };
+        });
+        bus.subscribe<{ n: number }>('h', 'also-good', async (_ctx, p) => {
+          ran.push('also-good');
+          return { n: p.n * 10 };
+        });
+
+        // (c) the log path does not throw: fire resolves rather than rejecting.
+        const res = await bus.fire<{ n: number }>('h', makeCtx(), { n: 1 });
+        // (a) the subscribers after the failing one all ran.
+        expect(ran).toEqual(['bad', 'good', 'also-good']);
+        expect(res).toEqual({ rejected: false, payload: { n: 20 } });
+      });
+
+      it('surfaces the ORIGINAL subscriber error, not a logging TypeError', async () => {
+        const lines = captureStderr();
+        const bus = new HookBus();
+        bus.subscribe('h', '@ax/test-bad', async () => {
+          throw new Error('original subscriber failure');
+        });
+        await bus.fire('h', makeCtx(), {});
+
+        // (b) exactly one last-resort line, naming the hook, the plugin and the
+        // subscriber's own error — the failure that started it is not erased.
+        expect(lines).toHaveLength(1);
+        const entry = JSON.parse(lines[0]!) as Record<string, unknown>;
+        expect(entry).toMatchObject({
+          level: 'error',
+          msg: 'hook_subscriber_failed',
+          hook: 'h',
+          plugin: '@ax/test-bad',
+          err: { name: 'Error', message: 'original subscriber failure' },
+        });
+        expect(JSON.stringify(entry)).not.toContain('TypeError');
+      });
+    });
+  }
+
+  it('does not throw even when the last-resort stderr write itself throws', async () => {
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => {
+      throw new Error('EPIPE');
+    });
+    const bus = new HookBus();
+    const ran: string[] = [];
+    bus.subscribe('h', 'bad', async () => {
+      throw new Error('original subscriber failure');
+    });
+    bus.subscribe('h', 'good', async () => {
+      ran.push('good');
+      return undefined;
+    });
+    await expect(bus.fire('h', loggerless(), {})).resolves.toEqual({
+      rejected: false,
+      payload: {},
+    });
+    expect(ran).toEqual(['good']);
+  });
+
+  it('uses ctx.logger when it works, and writes nothing to stderr', async () => {
+    const lines = captureStderr();
+    const errors: string[] = [];
+    const logger: Logger = {
+      debug: () => undefined,
+      info: () => undefined,
+      warn: () => undefined,
+      error: (msg: string) => {
+        errors.push(msg);
+      },
+      child: () => logger,
+    };
+    const bus = new HookBus();
+    bus.subscribe('h', 'bad', async () => {
+      throw new Error('original subscriber failure');
+    });
+    await bus.fire(
+      'h',
+      makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u', logger }),
+      {},
+    );
+    expect(errors).toEqual(['hook_subscriber_failed']);
+    expect(lines).toEqual([]);
   });
 });
