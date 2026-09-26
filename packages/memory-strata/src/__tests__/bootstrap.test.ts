@@ -280,10 +280,13 @@ describe('ENOTDIR is "absent" in both local readers (TASK-560)', () => {
     await expect(readRegularFile(join(workspaceRoot, 'not-a-dir', 'agent.md'))).resolves.toBeUndefined();
   });
 
+  // Pin (passed before TASK-560 too): ENOENT was always absent.
   it('readRegularFile: a plainly missing path is absent too', async () => {
     await expect(readRegularFile(join(workspaceRoot, 'nope', 'agent.md'))).resolves.toBeUndefined();
   });
 
+  // Pin (readAxFile's behaviour since TASK-556, unchanged here): the other half
+  // of the agreement.
   it('composeIdentityFromFiles: a regular file where .ax/ should be is no identity', async () => {
     await mkdir(join(workspaceRoot, 'permanent'), { recursive: true });
     await writeFile(join(workspaceRoot, 'permanent', '.ax'), 'x', 'utf8');
@@ -292,8 +295,12 @@ describe('ENOTDIR is "absent" in both local readers (TASK-560)', () => {
   });
 
   it('bootstrap over that corrupt tree still fails closed: it rejects and leaves the file alone', async () => {
-    // Reading agent.md as absent only moves the failure one step later — the
-    // seed's own mkdir cannot create system/ where a file stands.
+    // Pin (passed before TASK-560 too). It is the step after the reader: once
+    // the CLI chat:start reads a corrupt tree's agent.md as absent, it calls
+    // bootstrap, and bootstrap's own mkdir cannot create system/ where a file
+    // stands. This test calls bootstrap directly and never reaches
+    // readRegularFile; the chat:start test in identity-seed-faults.test.ts
+    // covers the whole path.
     const systemDir = join(workspaceRoot, MEMORY_ROOT, 'system');
     await mkdir(join(workspaceRoot, MEMORY_ROOT), { recursive: true });
     await writeFile(systemDir, 'not a dir', 'utf8');
