@@ -542,7 +542,16 @@ Not stale, and worth stating so nobody re-derives it: `NewAgentDialog` and
 
 Only after 1–4.
 
-**Items 1 and 2 are done (TASK-359).** The chart defaults
+**All four items are done.** TASK-360 deleted chat, added the `/chat` → `/`
+redirect, and — on a human ruling (2026-09-26) that **supersedes item 2 and
+Decision 2 below** — removed the `agentWorkspace` flag entirely. The workspace is
+always on; there is no off state, no chart value, no `AX_AGENT_WORKSPACE`, and no
+`GET /api/features`. `ax serve` logs a warning if either old env name is still set
+and otherwise ignores it. The ruling came when deleting chat forced the question:
+with chat gone, "off" (and an unset env on `ax serve`) would have meant a
+deployment with no web interface at all.
+
+**Items 1 and 2 were done by TASK-359.** The chart defaults
 `channelWeb.agentWorkspace: true`, and the switch has one name: `agentWorkspace`
 (chart value, preset/plugin config, the `/api/features` field) and
 `AX_AGENT_WORKSPACE` on the pod. The chart stamps it `"1"`/`"0"` in both states.
@@ -600,8 +609,8 @@ deleted. The text below is the original plan, kept for the rationale.
    walk cards now face four surfaces that did not exist when this order was
    written (live step panels, attach chips, the find control, the download
    affordance), so their coverage lists are wider than Tier 4 below describes.
-7. Cutover (Tier 5), deletion last. Default flip + one name done
-   (TASK-359); `/chat` redirect + deletion **still open** — TASK-360.
+7. ~~Cutover (Tier 5), deletion last.~~ — done. Default flip + one name
+   (TASK-359); `/chat` redirect, deletion, and removing the flag (TASK-360).
 
 Steps 2–4 are prerequisites for flipping the default for anyone. Step 5 is the
 prerequisite for calling it good.
@@ -634,7 +643,8 @@ it.
    the thread when the human is actually there talking to that agent — that
    agent's thread is the open route *and* the tab is visible. One grant, two
    render sites, never two live copies. Shapes Tier 1 #2.
-2. **The `agentWorkspace` flag survives** the cutover as a capability
+2. *(Superseded 2026-09-26 by TASK-360: the flag was removed; the workspace
+   is always on.)* **The `agentWorkspace` flag survives** the cutover as a capability
    boundary. `off` no longer means "chat instead" — it means this deployment
    has no web interface, which is worth being able to ship. Shapes Tier 5 #2.
 3. **`/chat` goes in one release.** No deprecation window; it redirects to `/`

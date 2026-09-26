@@ -12,7 +12,7 @@
  *
  * Single source of truth: the `data-theme` attribute on `<html>`. React
  * subscribes via `useSyncExternalStore`; a small in-module listener set
- * rebroadcasts on `setTheme`. Same shape as `sidebar-collapse.ts`.
+ * rebroadcasts on `setTheme`.
  */
 import { useSyncExternalStore } from 'react';
 

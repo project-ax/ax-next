@@ -826,11 +826,11 @@ export function AgentConversation({
             </div>
           )}
           {/*
-            The announcer is a SEPARATE node from the cards above, mirroring
-            `InThreadApprovals`: one stable sentence that changes only when the
-            answer to "is something waiting" changes, and deliberately outside
-            any ticking counter (a settled receipt's `Undo | Ns` re-renders once
-            a second, which would bury the sentence that mattered).
+            The announcer is a SEPARATE node from the cards above: one stable
+            sentence that changes only when the answer to "is something
+            waiting" changes, and deliberately outside any ticking counter (a
+            settled receipt's `Undo | Ns` re-renders once a second, which would
+            bury the sentence that mattered).
           */}
           {/*
             `data-testid` because this surface now renders TWO `role="status"`
@@ -1252,13 +1252,13 @@ function Message({
           MARKDOWN, not a raw string (TASK-405). What the model writes IS
           markdown — tables, lists, `**bold**`, blank-line paragraphs — and this
           bubble used to draw it verbatim, so a reply whose meaning lived in its
-          structure arrived as one run-on line of pipes and asterisks. `/chat`
-          has always parsed it (`MarkdownText`); this is the same pipeline,
-          reached through `components/Markdown.tsx` because
-          `MarkdownTextPrimitive` only works inside a mounted assistant-ui
-          thread and there isn't one here.
+          structure arrived as one run-on line of pipes and asterisks. The
+          deleted chat UI always parsed it, through `MarkdownText`, which ran
+          on assistant-ui's `MarkdownTextPrimitive` — no use here, since this
+          surface mounts no assistant-ui thread. This renders through
+          `components/Markdown.tsx` instead, the same underlying pipeline.
 
-          Two differences from `/chat`, both inherited from `Markdown.tsx` and
+          Two differences from that, both inherited from `Markdown.tsx` and
           both deliberate: an `![](…)` renders as its ALT TEXT rather than
           fetching a remote image (model output must not make the reader's
           browser call out), and `ax://artifact/` is not widened into a chip

@@ -4,8 +4,8 @@
  * `credentials: 'include'` so the auth-better cookie rides along; the server
  * derives identity from the cookie (never trusts a client-supplied user id).
  *
- * Wraps `GET /api/chat/agents`, which channel-web already serves (the AgentMenu
- * consumes the same route).
+ * Wraps `GET /api/chat/agents`, which channel-web already serves (`hydrate-agents.ts`
+ * and the workspace's per-surface agent pickers consume the same route).
  */
 import { httpJson } from './http';
 

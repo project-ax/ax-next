@@ -27,11 +27,11 @@ because some Kubernetes name fields are limited to that length.
 ax-next.bool — the chart's one boolean gate (TASK-504).
 
 Go templates treat ANY non-empty string as true, so a quoted boolean in a
-values file — `agentWorkspace: "false"`, or anything arriving through
+values file — `enabled: "false"`, or anything arriving through
 `helm --set-string` or an env-var-derived templating layer — turns a gate ON
 while the operator reading their own values file believes it is off. Several
-of this chart's gates are capability boundaries (the `/api/workspace/*`
-routes, `/admin/credentials*`, the Ingress, the TCP credential proxy), so
+of this chart's gates are capability boundaries (`/admin/credentials*`, the
+Ingress, the TCP credential proxy), so
 that failure lands in the OPEN direction: the accident GRANTS reach. That is
 CLAUDE.md invariant 5, not a style nit.
 
@@ -49,7 +49,7 @@ Returns the string "true" (truthy in a template `if`) or "" (falsy):
   - nil / absent                   → off
 
 Which way is closed depends on the gate, and "off" is NOT always the safe
-answer. For the other 13 gates (the Ingress, `/api/workspace/*`, the TCP
+answer. For the other 12 gates (the Ingress, `/admin/credentials*`, the TCP
 credential proxy, MinIO, …) off withholds reach or keeps a guard on (for
 skipKubeVersionCheck, off keeps the 1.29+ check running), so an unrecognised
 string failing to off fails CLOSED. For the two ENFORCEMENT

@@ -3,9 +3,9 @@
  *
  * This module owns the wire and nothing else, so these tests never mention a
  * `UIMessageChunk`, a store, or a rendered label — they assert the frames that
- * come out and the reason the read ended. The two consumers
- * (`lib/transport.ts` for chat, `lib/workspace-api.ts` for the workspace) keep
- * their own tests for what they DO with a frame.
+ * come out and the reason the read ended. The consumer (`lib/workspace-api.ts`;
+ * chat's `lib/transport.ts` was the other until TASK-360 deleted it) keeps its
+ * own tests for what it DOES with a frame.
  */
 import { describe, expect, test } from 'vitest';
 import { readSseFrames, type SseReadEnd } from '../sse-frames';

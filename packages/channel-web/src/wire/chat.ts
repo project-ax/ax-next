@@ -244,11 +244,12 @@ export const GetConversationResponse = z.object({
 export type GetConversationResponse = z.infer<typeof GetConversationResponse>;
 
 // ---------------------------------------------------------------------------
-// GET /api/chat/agents — list user's agents for the AgentMenu.
+// GET /api/chat/agents — list the user's agents (Settings agent switcher,
+// `lib/hydrate-agents.ts`, and the workspace's per-surface agent pickers).
 //
 // Display-relevant subset of @ax/agents' `Agent` shape. We deliberately
 // drop `systemPrompt`, `allowedTools`, `mcpConfigIds`, `model`,
-// `workspaceRef`, and ownership fields: a chat-flow consumer doesn't need
+// `workspaceRef`, and ownership fields: a display-only consumer doesn't need
 // them, and surfacing them through this route would be a needless
 // information-disclosure surface (Invariant I5 — capabilities minimized).
 // The full agent record is still reachable via the admin API.
@@ -256,8 +257,7 @@ export type GetConversationResponse = z.infer<typeof GetConversationResponse>;
 // Slug derivation note: a frontend that wants short URLs can derive
 // `slug = agentId.slice(0, 8)`; the URL-routing on inbound requests should
 // resolve via the full agentId (which the frontend retains in state). For
-// MVP we don't include slug — Task 18's AgentMenu wiring decides the
-// presentation policy.
+// MVP we don't include slug.
 // ---------------------------------------------------------------------------
 
 export const ListAgentsResponse = z.array(

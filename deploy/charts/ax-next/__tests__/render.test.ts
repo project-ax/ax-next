@@ -13,7 +13,7 @@
 // the StatefulSet, when `gitServer.enabled=true`.
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1018,16 +1018,11 @@ describeIfHelm('ax-next chart: auth.secret value (TASK-169)', () => {
 });
 
 // The agent workspace — the web interface. TASK-325 gave the chart a value
-// for it (before that the whole UI shipped unreachable: the preset read an
-// env var no template could stamp). TASK-359 made it the DEFAULT and
-// collapsed its three names into one: `channelWeb.agentWorkspace` here,
-// `AX_AGENT_WORKSPACE` on the pod, `agentWorkspace` on `/api/features`.
-//
-// The var is stamped in BOTH states. "0" is what keeps an explicit
-// `agentWorkspace: false` from being overridden by a stale `host.env` entry
-// for the retired `AX_AGENT_WORKSPACE_PREVIEW` name, which `serve` still
-// promotes for one release — but only when `AX_AGENT_WORKSPACE` is unset.
-describeIfHelm('ax-next chart: channelWeb.agentWorkspace', () => {
+// for it, TASK-359 made it the default, and TASK-360 retired it: the workspace
+// is always on, so the chart has nothing to stamp. An old values file may still
+// set `channelWeb.agentWorkspace`; that must never fail the install, never
+// render either env name, and should earn a friendly NOTES warning.
+describeIfHelm('ax-next chart: retired channelWeb.agentWorkspace', () => {
   function hostEnvEntries(docs: K8sDoc[]): Array<{ name: string; value?: string }> {
     const dep = docs.find(
       (d) => d.kind === 'Deployment' && /-host$/.test(String(d.metadata?.name ?? '')),
@@ -1038,72 +1033,88 @@ describeIfHelm('ax-next chart: channelWeb.agentWorkspace', () => {
     return containers[0]?.env ?? [];
   }
 
-  /** Every env entry that spells the switch, under either name. */
+  /** Every env entry that spells the retired switch, under either name. */
   function switchEntries(docs: K8sDoc[]): Array<{ name: string; value?: string }> {
     return hostEnvEntries(docs).filter(
       (e) => e.name === 'AX_AGENT_WORKSPACE' || e.name === 'AX_AGENT_WORKSPACE_PREVIEW',
     );
   }
 
-  it('stamps AX_AGENT_WORKSPACE="1" by default — a fresh install lands on the workspace', () => {
-    // `toEqual` on the whole list: exactly one entry, under the current name,
-    // and the retired name never rendered by the chart itself.
-    expect(switchEntries(helmTemplate([]))).toEqual([
-      { name: 'AX_AGENT_WORKSPACE', value: '1' },
-    ]);
+  /*
+    `helm template` never renders NOTES.txt (and `helm install --dry-run`
+    wants a cluster), so render it through a probe: a throwaway copy of the
+    chart where NOTES.txt becomes a named template and one tiny manifest
+    includes it as a JSON string. Same values, same helpers, same schema.
+  */
+  let notesChart = '';
+  beforeAll(() => {
+    if (!HELM) return;
+    notesChart = mkdtempSync(join(tmpdir(), 'ax-next-chart-notes-'));
+    for (const entry of ['Chart.yaml', 'Chart.lock', 'values.yaml', 'values.schema.json', 'templates', 'charts']) {
+      cpSync(resolve(chartDir, entry), join(notesChart, entry), { recursive: true });
+    }
+    const notes = readFileSync(join(notesChart, 'templates', 'NOTES.txt'), 'utf8');
+    rmSync(join(notesChart, 'templates', 'NOTES.txt'));
+    writeFileSync(
+      join(notesChart, 'templates', '_notes_probe.tpl'),
+      `{{- define "ax-next-notes-probe" -}}\n${notes}\n{{- end -}}\n`,
+    );
+    writeFileSync(
+      join(notesChart, 'templates', 'notes-probe.yaml'),
+      'notes: {{ include "ax-next-notes-probe" . | toJson }}\n',
+    );
+  });
+  afterAll(() => {
+    if (notesChart) rmSync(notesChart, { recursive: true, force: true });
   });
 
-  it('stamps "0" — not nothing — when turned off', () => {
-    // Off means `/api/workspace/*` is never registered: this deployment has
-    // no web interface. Absent would let a stale retired-name entry win.
-    expect(
-      switchEntries(helmTemplate(['--set', 'channelWeb.agentWorkspace=false'])),
-    ).toEqual([{ name: 'AX_AGENT_WORKSPACE', value: '0' }]);
+  /** The rendered NOTES.txt text for these values. */
+  function renderNotes(args: readonly string[]): string {
+    if (!HELM) throw new Error('helm not available');
+    const out = execFileSync(
+      HELM,
+      [
+        'template', 'ax-test', notesChart, '--namespace', 'default',
+        ...REQUIRED, ...args, '--show-only', 'templates/notes-probe.yaml',
+      ],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    const doc = load(out) as { notes?: unknown } | null;
+    expect(typeof doc?.notes, 'the NOTES probe rendered nothing').toBe('string');
+    return doc?.notes as string;
+  }
+
+  it.each([
+    ['the defaults', [] as string[]],
+    ['channelWeb.agentWorkspace=false', ['--set', 'channelWeb.agentWorkspace=false']],
+    ['channelWeb.agentWorkspace=true', ['--set', 'channelWeb.agentWorkspace=true']],
+    ['channelWeb.enabled=false', ['--set', 'channelWeb.enabled=false']],
+    ['kind-dev-values.yaml', ['-f', resolve(chartDir, 'kind-dev-values.yaml')]],
+  ])('never stamps AX_AGENT_WORKSPACE or AX_AGENT_WORKSPACE_PREVIEW (%s)', (_label, args) => {
+    expect(switchEntries(helmTemplate(args))).toEqual([]);
   });
 
-  // TASK-499. `kind-dev-values.yaml` once never set the flag, so every walk of
-  // the workspace silently tested the legacy chat shell. The dev values the
-  // walks install with must reach the surface the walks exist to test. It
-  // also has to catch the double-stamp: kind-dev-values carries a `host.env`
-  // block, one careless line away from two entries of one name.
-  it('kind-dev-values renders the surface ON, exactly once', () => {
-    expect(
-      switchEntries(helmTemplate(['-f', resolve(chartDir, 'kind-dev-values.yaml')])),
-    ).toEqual([{ name: 'AX_AGENT_WORKSPACE', value: '1' }]);
+  it('warns in NOTES — without failing — when a values file still sets it', () => {
+    const out = renderNotes(['--set', 'channelWeb.agentWorkspace=false']);
+    expect(out).toContain('your values still set channelWeb.agentWorkspace');
+    expect(out).toContain('always on now');
   });
 
-  it('is independent of channelWeb.enabled — the SPA and the surface are separate', () => {
-    // The bundle being served and the workspace ROUTES existing are two
-    // different grants; serving the SPA must not silently mount the routes,
-    // and not serving it must not silently unmount them.
-    expect(
-      switchEntries(
-        helmTemplate(['--set', 'channelWeb.enabled=false', '--set', 'channelWeb.agentWorkspace=true']),
-      ),
-    ).toEqual([{ name: 'AX_AGENT_WORKSPACE', value: '1' }]);
-    expect(
-      switchEntries(
-        helmTemplate(['--set', 'channelWeb.enabled=true', '--set', 'channelWeb.agentWorkspace=false']),
-      ),
-    ).toEqual([{ name: 'AX_AGENT_WORKSPACE', value: '0' }]);
+  it('says nothing about it when the value is not set', () => {
+    const out = renderNotes([]);
+    // Non-vacuity: the probe really rendered NOTES.txt.
+    expect(out).toContain('ax-next has been deployed.');
+    expect(out).not.toContain('channelWeb.agentWorkspace');
   });
 
-  it('`helm show values` documents the one name and what OFF means', () => {
+  it('`helm show values` no longer offers the setting', () => {
     if (!HELM) throw new Error('helm not available');
     const out = execFileSync(HELM, ['show', 'values', chartDir], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-    // The value itself, defaulted on.
-    expect(out).toMatch(/^ {2}agentWorkspace: true$/m);
-    // The comment has to say OFF means no web interface, so nobody reads
-    // `false` as a broken install.
-    expect(out).toContain('Turning it OFF means THIS DEPLOYMENT HAS NO WEB INTERFACE');
-    // The retired name is documented with its removal release.
-    expect(out).toContain('AX_AGENT_WORKSPACE_PREVIEW');
-    expect(out).toContain('first chart release after 0.0.1');
-    // No surviving name carries `Preview`.
-    expect(out).not.toMatch(/agentWorkspacePreview/);
+    expect(out).not.toMatch(/agentWorkspace/);
+    expect(out).not.toContain('AX_AGENT_WORKSPACE');
   });
 });
 
@@ -1540,9 +1551,11 @@ describeIfHelm('ax-next chart: a quoted boolean cannot flip a gate (TASK-504)', 
   // green-but-empty shape this file's helm gate already exists to prevent.
   it('enumerates the chart booleans from values.yaml', () => {
     expect(BOOLEAN_PATHS.length).toBeGreaterThanOrEqual(15);
-    // Spot-check the two ends of the risk range: the capability gate this card
-    // came from, and the one only the schema can defend.
-    expect(BOOLEAN_PATHS).toContain('channelWeb.agentWorkspace');
+    // Spot-check the two ends of the risk range: a capability gate
+    // (`/admin/credentials*`), and the one only the schema can defend.
+    // (`channelWeb.agentWorkspace` used to be the first; TASK-360 retired it.)
+    expect(BOOLEAN_PATHS).toContain('credentials.admin.enabled');
+    expect(BOOLEAN_PATHS).not.toContain('channelWeb.agentWorkspace');
     expect(BOOLEAN_PATHS).toContain('postgres.embedded.enabled');
   });
 

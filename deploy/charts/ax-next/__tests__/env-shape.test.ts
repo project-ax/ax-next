@@ -473,7 +473,7 @@ describeIfHelm('host deployment env vs preset loader', () => {
  * nothing can ever set it, and CI stays green.
  *
  * That is exactly how TASK-325 happened. The workspace switch's env var (then
- * `AX_AGENT_WORKSPACE_PREVIEW`, `AX_AGENT_WORKSPACE` since TASK-359) was read
+ * `AX_AGENT_WORKSPACE_PREVIEW`; the switch itself is retired since TASK-360) was read
  * as a bare `process.env` lookup, was optional, and had no chart value, so the
  * whole agent-workspace UI — and later the #504 file browser behind it —
  * shipped unreachable on any fresh install.

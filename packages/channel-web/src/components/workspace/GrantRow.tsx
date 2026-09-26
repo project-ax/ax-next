@@ -1,11 +1,12 @@
 /**
  * A capability grant, as a row in the Today queue (TASK-350).
  *
- * WHY NOT `components/PermissionCard.tsx`. That card is chat's, it mounts above
- * chat's composer, and TASK-360 deletes it with the rest of the chat tree.
- * Mounting it here would tie the surviving surface to the retiring one. What
- * the two share — the words, and where a key is written — lives in
- * `@/lib/grant-copy` and `@/lib/grant-destinations`, which both import.
+ * WHY NOT `components/PermissionCard.tsx`. That card was chat's — it mounted
+ * above chat's composer — and TASK-360 deleted it with the rest of the chat
+ * tree. Mounting it here would have tied the surviving surface to the
+ * retiring one. What the two shared — the words, and where a key is written —
+ * lives in `@/lib/grant-copy` and `@/lib/grant-destinations`, which this file
+ * still imports.
  *
  * WHY IT IS A ROW AND NOT A CARD. It sits inside Today's existing bordered
  * list, next to `DecisionRow`. A `Card` inside that list would read as a
@@ -581,7 +582,7 @@ export function GrantRow({
           reaches `humanizeId` -> `tokenize` -> `.replace(...)`, which throws
           inside render and hands the whole surface to the `ErrorBoundary`.
 
-          That is the same hole chat's `PermissionCard` had, which is why the
+          That is the same hole chat's (now-deleted) `PermissionCard` had, which is why the
           answer is shared (`lib/grant-shape.ts`) rather than written twice —
           and it is why "our producer validates the slots" was not the
           reassurance it sounded like: it validates ONE field of them.

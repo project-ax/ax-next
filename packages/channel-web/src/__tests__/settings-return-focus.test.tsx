@@ -33,7 +33,6 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { App } from '../App';
 import { getSession, type AuthSession } from '../lib/auth';
 import { fetchBootstrapStatus } from '../lib/bootstrap-status';
-import { fetchFeatures } from '../lib/features';
 import { workspaceApi } from '../lib/workspace-api';
 import { rail as railFixture } from '../components/workspace/__tests__/rail-fixture';
 import { clearViewport, setViewport } from '../components/workspace/__tests__/viewport';
@@ -45,11 +44,6 @@ vi.mock('../lib/bootstrap-status', () => ({
 vi.mock('../lib/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/auth')>();
   return { ...actual, getSession: vi.fn(async () => null) };
-});
-
-vi.mock('../lib/features', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../lib/features')>();
-  return { ...actual, fetchFeatures: vi.fn(async () => actual.DEFAULT_FEATURES) };
 });
 
 // The REAL `WorkspaceShell` mounts here — unlike `workspace-gate.test.tsx`,
@@ -90,7 +84,6 @@ vi.mock('../components/settings/ConnectorsTab', () => ({
 
 const mockGetSession = vi.mocked(getSession);
 const mockFetchBootstrapStatus = vi.mocked(fetchBootstrapStatus);
-const mockFetchFeatures = vi.mocked(fetchFeatures);
 
 const ALICE: AuthSession = {
   user: { id: 'u2', email: 'alice@local', name: 'Alice', role: 'user' },
@@ -127,8 +120,6 @@ beforeEach(() => {
   mockGetSession.mockResolvedValue(ALICE);
   mockFetchBootstrapStatus.mockReset();
   mockFetchBootstrapStatus.mockResolvedValue('completed');
-  mockFetchFeatures.mockReset();
-  mockFetchFeatures.mockResolvedValue({ agentWorkspace: true });
   installShellFetch();
   setPathname('/workspace');
   vi.mocked(workspaceApi.board).mockResolvedValue({ agents: [] });

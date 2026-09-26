@@ -4,17 +4,15 @@
  *
  * WHY THIS FILE EXISTS. These strings used to be module-private consts and
  * inline JSX inside `src/components/PermissionCard.tsx`. That was fine while
- * chat was the only surface that could raise a grant. The agent workspace can
- * now raise one too, and `PermissionCard.tsx` is deleted by TASK-360 — so
- * repeating the literals in the second renderer would leave two copies of
- * security-critical text, one of them in a file scheduled for removal, with
- * nothing keeping them in step. That is the hazard TASK-372 was filed for, one
- * module over; making it twice would be worse than making it once.
+ * chat was the only surface that could raise a grant. The agent workspace grew
+ * its own grant renderer (`GrantRow`) too, and `PermissionCard.tsx` was
+ * deleted by TASK-360 along with the rest of chat — so repeating the literals
+ * in the second renderer would have left two copies of security-critical
+ * text, one of them in a file about to be removed, with nothing keeping them
+ * in step. That is the hazard TASK-372 was filed for, one module over; making
+ * it twice would have been worse than making it once.
  *
- * So the copy lives here, React-free and outside the tree TASK-360 deletes, and
- * both renderers import it. Moving a literal out of JSX does not change what
- * renders, which is why chat's existing copy tests — they assert by regex on
- * rendered text, not by importing these names — stay green and unedited.
+ * So the copy lives here, React-free, and `GrantRow` imports it.
  *
  * NO JOKES IN THIS FILE. Every string here is read at the moment a person is
  * deciding whether to widen what software may do on their behalf, and two of

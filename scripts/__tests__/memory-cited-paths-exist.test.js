@@ -81,6 +81,24 @@
 // read as a live file reference. Do not add an allowlist: the moment this grows
 // an exceptions list, the exceptions list becomes the next thing that rots.
 //
+// TOMBSTONES -- how a DELETED file stops being a finding (TASK-360). Memory is
+// append-only: `scripts/memory-append-check.sh` forbids deleting any line under
+// `.claude/memory/` (R1) and touching a root archive at all (R2). So when a PR
+// deletes a file that an archive row cites, "fix the memory file" is not
+// available -- the row was true when written, and the rules say it stays. The
+// append-only answer is to ADD a row: a shard line that starts with
+// `Deleted in <TASK-ID>:` and backticks the paths it retires. Such a path is
+// then satisfied everywhere it is cited, and a reader who greps the path finds
+// the tombstone next to the old claim.
+//
+// This is not an allowlist, and the difference is that a tombstone cannot rot
+// quietly: the guard asserts every tombstoned path is (a) NOT tracked -- a
+// tombstone on a live file is itself a false claim -- and (b) really was
+// deleted, per `git log --diff-filter=D`. A typo, or a path that never existed,
+// fails (b). A MOVED file should still be fixed by citing its new home, not
+// tombstoned: a tombstone says "gone", and "moved" is a different sentence.
+// Tombstones only count in shards, never in the frozen root archives.
+//
 // This guard also descends one level into `.claude/memory/`'s immediate
 // subdirectories (`decisions/`, `patterns/`, `mistakes/`, `context/`, `meta/`),
 // which hold per-task shard files (`decisions/2026-09-19-TASK-415.md`) split out
@@ -194,6 +212,66 @@ const allCitations = memoryFiles.flatMap((name) =>
     .filter((c) => c.path),
 );
 
+/**
+ * `Deleted in TASK-360: `a/b.ts`, `c/d.tsx`` -- a shard row retiring paths. See
+ * TOMBSTONES in the header. The marker must open the line (after an optional
+ * list bullet), so prose that merely MENTIONS a deletion is not a tombstone.
+ */
+const TOMBSTONE_LINE = /^\s*(?:[-*]\s+)?Deleted in [A-Z]+-\d+:/;
+
+const tombstones = memoryFiles
+  .filter((name) => name.includes('/'))
+  .flatMap((name) =>
+    readFileSync(join(MEMORY_DIR, name), 'utf8')
+      .split('\n')
+      .map((text, i) => ({ text, line: i + 1, file: name }))
+      .filter((l) => TOMBSTONE_LINE.test(l.text))
+      .flatMap((l) =>
+        citations(l.text).map((c) => ({
+          file: l.file,
+          line: l.line,
+          token: c.token,
+          path: PATH_TOKEN.exec(c.token)?.[1],
+        })),
+      )
+      .filter((c) => c.path),
+  );
+const tombstoned = new Set(tombstones.map((t) => t.path));
+const tombstoneLines = new Set(tombstones.map((t) => `${t.file}:${t.line}`));
+
+/**
+ * Paths git history shows as DELETED -- not renamed away. Deliberately NOT
+ * narrowed with a pathspec: git detects a rename by pairing the old path with
+ * the new one, and a pathspec naming only the old path hides the new one, so
+ * the rename is reported as a plain `D`. That would let a tombstone pass for a
+ * file that merely MOVED, which is exactly the rot this guard exists to catch.
+ * Walking all deletions with rename detection on (`-M`) costs ~0.1s here.
+ * (A move so heavily edited that git scores it below 50% similarity still reads
+ * as a delete; that is git's own definition, and the tombstone is then true.)
+ */
+function deletedNotRenamed() {
+  const out = execFileSync(
+    'git',
+    ['log', '-M', '--diff-filter=D', '--name-only', '--format='],
+    { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 1 << 28 },
+  );
+  return new Set(out.split('\n').filter(Boolean));
+}
+
+/** One path git history renamed AWAY, found live, so the test above has a real case. */
+function someRenamedAwayPath() {
+  const out = execFileSync(
+    'git',
+    ['log', '-M', '--diff-filter=R', '--name-status', '--format=', '-n', '50'],
+    { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 1 << 26 },
+  );
+  for (const line of out.split('\n')) {
+    const [status, from, to] = line.split('\t');
+    if (status?.startsWith('R') && from && to && !tracked.files.has(from)) return from;
+  }
+  return undefined;
+}
+
 const elided = allCitations.filter((c) => c.token.includes('...'));
 const literal = allCitations.filter((c) => !c.token.includes('...'));
 const inTrackedDir = literal.filter((c) =>
@@ -226,7 +304,8 @@ describe('.claude/memory citations point at files that exist', () => {
 
   it('every cited repo path is a tracked file', () => {
     const missing = checkable
-      .filter((c) => !tracked.files.has(c.path))
+      .filter((c) => !tombstoneLines.has(`${c.file}:${c.line}`))
+      .filter((c) => !tracked.files.has(c.path) && !tombstoned.has(c.path))
       .map((c) => `  .claude/memory/${c.file}:${c.line}  cites \`${c.token}\``);
 
     expect(
@@ -240,6 +319,42 @@ describe('.claude/memory citations point at files that exist', () => {
         'not read as a live file reference. Do NOT add an allowlist here.\n\n' +
         `${missing.join('\n')}\n`,
     ).toEqual([]);
+  });
+
+  describe('tombstones (a deleted file, retired by an appended shard row)', () => {
+    it('every tombstoned path is gone from HEAD', () => {
+      const live = tombstones
+        .filter((t) => tracked.files.has(t.path))
+        .map((t) => `  .claude/memory/${t.file}:${t.line}  tombstones \`${t.path}\`, which is still tracked`);
+      expect(live, 'A tombstone names a file that exists. Remove the path from the tombstone row.').toEqual([]);
+    });
+
+    it('every tombstoned path really was deleted, per git history', () => {
+      const deleted = deletedNotRenamed();
+      const invented = tombstones
+        .filter((t) => !deleted.has(t.path))
+        .map((t) => `  .claude/memory/${t.file}:${t.line}  tombstones \`${t.path}\`, which git never deleted`);
+      expect(
+        invented,
+        'A tombstone names a path git has no deletion of -- a typo, or a file that never existed. ' +
+          'A tombstone is a claim; this is the check that keeps it one.',
+      ).toEqual([]);
+    });
+
+    it('a file that was renamed away does not count as deleted', () => {
+      // The pathspec-narrowed spelling of this check reported a rename's old
+      // path as `D`, so a tombstone could have passed for a MOVED file.
+      const moved = someRenamedAwayPath();
+      expect(moved, 'history should hold at least one rename').toBeDefined();
+      expect(deletedNotRenamed().has(moved)).toBe(false);
+    });
+
+    it('recognises only a line that OPENS with the marker', () => {
+      expect(TOMBSTONE_LINE.test('Deleted in TASK-360: `a/b.ts`')).toBe(true);
+      expect(TOMBSTONE_LINE.test('- Deleted in TASK-360: `a/b.ts`')).toBe(true);
+      expect(TOMBSTONE_LINE.test('The chat tree was Deleted in TASK-360: `a/b.ts`')).toBe(false);
+      expect(TOMBSTONE_LINE.test('| 2026 | Deleted in TASK-360: `a/b.ts` |')).toBe(false);
+    });
   });
 
   // The gates carry the guard's precision, so they are asserted directly rather

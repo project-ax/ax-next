@@ -1030,9 +1030,9 @@ async function setConversationTitle(
 
   // Live-title push (invariant #4 — single source of truth): the only
   // place a title is written is also the only place the change signal is
-  // emitted, so every caller (auto-title pipeline today, rename UI later)
-  // surfaces in connected sidebars with no reload. Payload is domain-level;
-  // channel-web's title-events SSE duck-types it (no cross-plugin import).
+  // emitted, so any subscriber sees every caller (auto-title pipeline today,
+  // rename UI later). Payload is domain-level; subscribers duck-type it (no
+  // cross-plugin import).
   //
   // Guard on `conv.title !== title`, not just `updated`: `updated` reflects
   // that the row matched (rowCount), which is true even for an idempotent

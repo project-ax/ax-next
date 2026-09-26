@@ -251,13 +251,7 @@ describe('createMemoryPlugins guards', () => {
     ).not.toThrow();
   });
 
-  it('rejects a non-boolean agentWorkspace and blank projectId', () => {
-    expect(() =>
-      createMemoryPlugins({
-        ...baseConfig,
-        agentWorkspace: 'yes' as unknown as boolean,
-      }),
-    ).toThrow(/agentWorkspace/);
+  it('rejects a blank projectId', () => {
     expect(() =>
       createMemoryPlugins({
         ...baseConfig,
@@ -298,8 +292,7 @@ describe('loadMemoryConfigFromEnv', () => {
       embedCredentialRef: DEFAULT_VERTEX_CREDENTIAL_REF,
       rerankCredentialRef: DEFAULT_COHERE_CREDENTIAL_REF,
     });
-    // Unset → absent, which createMemoryPlugins reads as off.
-    expect(cfg.agentWorkspace).toBeUndefined();
+    expect('agentWorkspace' in cfg).toBe(false);
     expect(cfg.database).toEqual({ connectionString: 'postgres://x' });
   });
 
@@ -325,26 +318,15 @@ describe('loadMemoryConfigFromEnv', () => {
     expect(cfg.memoryEmbeddings.rerankCredentialRef).toBe('provider:cohere-alt');
   });
 
-  it('parses AX_AGENT_WORKSPACE strictly', () => {
-    expect(
-      loadMemoryConfigFromEnv({ ...baseEnv, AX_AGENT_WORKSPACE: '1' }).agentWorkspace,
-    ).toBe(true);
-    expect(
-      loadMemoryConfigFromEnv({ ...baseEnv, AX_AGENT_WORKSPACE: 'false' }).agentWorkspace,
-    ).toBe(false);
-    expect(() =>
-      loadMemoryConfigFromEnv({ ...baseEnv, AX_AGENT_WORKSPACE: 'yes' }),
-    ).toThrow(/AX_AGENT_WORKSPACE/);
-    for (const bad of ['TRUE', 'False', '2', 'on']) {
-      expect(() =>
-        loadMemoryConfigFromEnv({ ...baseEnv, AX_AGENT_WORKSPACE: bad }),
-      ).toThrow(/AX_AGENT_WORKSPACE/);
-    }
-  });
-
-  it('does not read the retired AX_AGENT_WORKSPACE_PREVIEW (serve.ts owns that one compat read)', () => {
-    expect(
-      loadMemoryConfigFromEnv({ ...baseEnv, AX_AGENT_WORKSPACE_PREVIEW: '1' }).agentWorkspace,
-    ).toBeUndefined();
-  });
+  it.each(['AX_AGENT_WORKSPACE', 'AX_AGENT_WORKSPACE_PREVIEW'])(
+    'ignores the retired %s whatever its value (TASK-360 — never a boot error)',
+    (name) => {
+      const baseline = loadMemoryConfigFromEnv(baseEnv);
+      for (const raw of ['0', 'false', '1', 'yes', 'garbage', '']) {
+        const cfg = loadMemoryConfigFromEnv({ ...baseEnv, [name]: raw });
+        expect(cfg).toEqual(baseline);
+        expect('agentWorkspace' in cfg).toBe(false);
+      }
+    },
+  );
 });

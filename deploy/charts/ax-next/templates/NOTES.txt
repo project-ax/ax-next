@@ -53,4 +53,12 @@ A few things worth double-checking on the way out:
 {{- end }}
 {{- end }}
 
+{{- if and (kindIs "map" .Values.channelWeb) (hasKey .Values.channelWeb "agentWorkspace") }}
+
+Heads up: your values still set channelWeb.agentWorkspace. That setting is
+retired — the agent workspace (the web interface) is always on now, whatever
+the value says, including false. Nothing broke; the chart just ignores it.
+You can delete it from your values file.
+{{- end }}
+
 For the full security walk: deploy/charts/ax-next/SECURITY.md.

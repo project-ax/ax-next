@@ -5,6 +5,14 @@ description: Use when you want to QA / pressure-test / smoke-test / regression-s
 
 # chat-qa-sweep (battery + report, Playwright-verified)
 
+> **Heads-up (TASK-360, 2026-09-26):** the chat screen this skill was written
+> against is gone; the agent workspace at `/` is the only web interface, and
+> `/chat` just redirects there. The wire-level scenarios (`/api/chat/messages`,
+> `/api/chat/stream/:reqId`) still apply. The DOM steps and component pointers below
+> (`Thread.tsx`, `Composer.tsx`, the chat sidebar, `/api/chat/title-events`) do not.
+> Drive the workspace's conversation view instead. Porting the catalog is tracked
+> as a follow-up.
+
 A QA pressure-test for the chat UI. You drive the running chat surface against the
 `ax-next-dev` kind cluster via Playwright MCP, run a **fixed catalog** of common-activity
 scenarios plus a fault-injection battery, capture evidence, and emit a findings report.

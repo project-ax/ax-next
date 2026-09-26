@@ -28,16 +28,16 @@
  *
  *   1. IT MUST ALREADY BE IN THE DOM. A live region inserted holding its
  *      message is not reliably announced — the assistive tech has nothing to
- *      have observed changing. So this mounts with the card, empty, and both
- *      renderers hang it ABOVE their branch split so that resolving a card (an
+ *      have observed changing. So this mounts with the card, empty, and each
+ *      renderer hangs it ABOVE its branch split so that resolving a card (an
  *      entirely different subtree) does not take the region with it. Same
  *      reasoning as `ThreadFind`'s permanently-mounted count.
- *   2. IT MUST NOT SPEAK ON MOUNT. `InThreadApprovals` draws every receipt
- *      resolved in the last ten seconds above the composer on a plain page
- *      load. Announcing those would report a past event as news — the audible
- *      version of the focus theft `useResolutionFocus`'s arming avoids. The
- *      first render is therefore silent by construction: both regions start
- *      empty and only a CHANGE to what the card says fills one.
+ *   2. IT MUST NOT SPEAK ON MOUNT. This card can draw a receipt resolved in
+ *      the last ten seconds on a plain page load. Announcing those would
+ *      report a past event as news — the audible version of the focus theft
+ *      `useResolutionFocus`'s arming avoids. The first render is therefore
+ *      silent by construction: the region starts empty and only a CHANGE to
+ *      what the card says fills it.
  *   3. IT MUST NOT SHARE A NODE WITH THE COUNTDOWN. `role="alert"` (and
  *      `role="status"`) implies `aria-atomic`, so any mutation re-reads the whole region, and a resolved
  *      row re-renders `Undo · Ns` twice a second off `useDecisionClock`. A
@@ -103,8 +103,8 @@
  * The mount rule does not bend for this. A card that MOUNTS already stale (a
  * page load) says nothing here: a region created holding its sentence is the
  * shape this component exists to avoid, and the arrival of a hold is already
- * spoken, politely, by the surface that draws it (`InThreadApprovals`). Only a
- * card that CHANGES to stale, or picks up a notice, while on screen is news.
+ * spoken, politely, by the surface that draws it. Only a card that CHANGES to
+ * stale, or picks up a notice, while on screen is news.
  *
  * ONE REGION PER CARD, not one per surface, and that is the opposite of where
  * a surface such as `TodayView` keeps the FOCUS region (`data-consent-region`, which has to

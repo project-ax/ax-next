@@ -4,44 +4,31 @@
  * A wire turn-error reason code in, an authored user-facing sentence out. This
  * module knows the wording; it does not know the wire, the store, the AI SDK or
  * React. Every surface that renders a turn failure goes through
- * `turnErrorText` below — there are no hand-copies of the rule left, as of
- * TASK-498:
+ * `turnErrorText` below:
  *
- *   - `lib/transport.ts`     — chat, into an AI-SDK `error` chunk.
  *   - `lib/workspace-api.ts` — the agent workspace, into an `onError` callback.
  *   - `components/workspace/AgentConversation.tsx` — the workspace again, for
  *     a failure REPLAYED out of the durable record after a reload.
  *
- * WHY IT LIVES HERE, AND NOT IN `transport.ts` WHERE IT STARTED. Fault A put
- * the table in `transport.ts` when chat was the only surface. TASK-296 found
- * the workspace printing a raw reason code (`dev-service-failed`) at a reader
- * and pointed it at this table rather than growing a second one — the right
- * call under invariant 4, and the reason the two surfaces still cannot drift.
- *
- * But `transport.ts` is chat's, and Tier 5 #4 of
- * `docs/plans/2026-09-12-workspace-as-sole-interface.md` (TASK-360) deletes it
- * with the rest of the chat tree when the workspace becomes the only surface.
- * A table the surviving surface reads out of a file that is being deleted is a
- * table that leaves with chat. So it moved out ahead of the deletion, the same
- * way `lib/sse-frames.ts` (TASK-349) and `lib/grant-copy.ts` (TASK-350) did.
+ * WHY IT LIVES HERE. Fault A put this table in the now-deleted chat UI's
+ * `lib/transport.ts` when chat was the only surface. TASK-296 found the
+ * workspace printing a raw reason code (`dev-service-failed`) at a reader and
+ * pointed it at that table rather than growing a second one — the right call
+ * under invariant 4. Ahead of TASK-360 deleting `transport.ts` with the rest
+ * of the chat tree, the table moved out here, the same way `lib/sse-frames.ts`
+ * (TASK-349) and `lib/grant-copy.ts` (TASK-350) moved theirs.
  *
  * WHY IT IS NOT IN `lib/sse-frames.ts`, the other module that outlived the
  * split: that one is the wire — bytes in, typed frames out — and a lint rule
  * pins it that way. A reason code becoming a sentence a person reads is a
  * RENDERING concern, which is exactly what that module refuses.
  *
- * THIS FILE SURVIVES TASK-360. Its neighbour `lib/turn-error.ts` does not —
- * that one is chat's `onError` adapter, whose only caller outside its own test
- * is `lib/runtime.tsx`, and it goes with the assistant-ui runtime. The similar
- * names are a trap worth naming once: deleting chat means deleting
- * `turn-error.ts`, never this file.
- *
- * `CONNECTION_LOST` deliberately did NOT move here. It is the banner for a
- * `done`-less SSE drop, and it is chat's alone: the workspace already has its
- * own copy for that case (`WORKSPACE_STREAM_LOST` in `lib/workspace-api.ts`),
- * deliberately worded as a detail line under the surface's own prose rather
- * than as a standalone instruction. Two surfaces, two sentences, on purpose —
- * moving it here would imply a shared one that does not exist.
+ * `CONNECTION_LOST` deliberately did not move here. It was the deleted chat
+ * UI's banner for a `done`-less SSE drop; the workspace has its own copy for
+ * that case (`WORKSPACE_STREAM_LOST` in `lib/workspace-api.ts`), deliberately
+ * worded as a detail line under the surface's own prose rather than as a
+ * standalone instruction. Two surfaces, two sentences, by design — and now
+ * one surface, its own sentence.
  */
 
 /**

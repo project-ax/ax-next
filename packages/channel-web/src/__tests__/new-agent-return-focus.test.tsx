@@ -19,7 +19,6 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { App } from '../App';
 import { getSession, type AuthSession } from '../lib/auth';
 import { fetchBootstrapStatus } from '../lib/bootstrap-status';
-import { fetchFeatures } from '../lib/features';
 import { workspaceApi, type AgentDetail } from '../lib/workspace-api';
 import { autoCreateBareAgent } from '../lib/auto-create-agent';
 import { RESTORE_WINDOW_MS } from '../lib/focus-when-ready';
@@ -33,11 +32,6 @@ vi.mock('../lib/bootstrap-status', () => ({
 vi.mock('../lib/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/auth')>();
   return { ...actual, getSession: vi.fn(async () => null) };
-});
-
-vi.mock('../lib/features', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../lib/features')>();
-  return { ...actual, fetchFeatures: vi.fn(async () => actual.DEFAULT_FEATURES) };
 });
 
 vi.mock('../lib/auto-create-agent', () => ({
@@ -70,7 +64,6 @@ vi.mock('../lib/workspace-api', async (importOriginal) => {
 
 const mockGetSession = vi.mocked(getSession);
 const mockFetchBootstrapStatus = vi.mocked(fetchBootstrapStatus);
-const mockFetchFeatures = vi.mocked(fetchFeatures);
 const mockAutoCreate = vi.mocked(autoCreateBareAgent);
 
 const ALICE: AuthSession = {
@@ -108,8 +101,6 @@ beforeEach(() => {
   mockGetSession.mockResolvedValue(ALICE);
   mockFetchBootstrapStatus.mockReset();
   mockFetchBootstrapStatus.mockResolvedValue('completed');
-  mockFetchFeatures.mockReset();
-  mockFetchFeatures.mockResolvedValue({ agentWorkspace: true });
   mockAutoCreate.mockReset();
   mockAutoCreate.mockResolvedValue({ agentId: 'a1' } as Awaited<
     ReturnType<typeof autoCreateBareAgent>

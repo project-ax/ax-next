@@ -10,7 +10,7 @@ import { agentStoreActions } from '../../lib/agent-store';
  * First-run: no form (TASK-140, conversational-agent-identity). We create a
  * BARE agent server-side — POST /api/agents/bootstrap, which also seeds
  * `.ax/BOOTSTRAP.md` — then select it, hydrate the agent store, and hand
- * control to the chat shell. The new agent wakes up in bootstrap mode and
+ * control to the workspace. The new agent wakes up in bootstrap mode and
  * figures out who it is through conversation (the runner injects BOOTSTRAP.md).
  * This replaces the retired 3-field name→soul→purpose wizard.
  *
@@ -20,19 +20,17 @@ import { agentStoreActions } from '../../lib/agent-store';
  * (`@vitejs/plugin-react`, see `vite.config.ts`), which re-runs effects on a
  * hot update while preserving refs. The ref would equally cover StrictMode's
  * deliberate double-invoke, but this app never enables it — `main.tsx` renders
- * a bare `createRoot`, and `lib/conversation-decisions.ts` says the same. The
- * ref is not dead code either way: the "Try again" handler below resets it on
- * purpose so a retry can re-run the effect.
+ * a bare `createRoot`. The ref is not dead code either way: the "Try again"
+ * handler below resets it on purpose so a retry can re-run the effect.
  */
 export function FirstRunAutoCreate({
   agentName,
   onDone,
 }: {
   agentName: string;
-  // Hands back the new agent's id: the chat surface resolves a freshly
-  // created agent from the agent store via its transport, but the
-  // workspace's send is explicit about which agent it's talking to, so the
-  // caller needs the id to hand the kickoff to the right agent.
+  // Hands back the new agent's id: the workspace's send is explicit about
+  // which agent it's talking to, so the caller needs the id to hand the
+  // kickoff to the right agent.
   onDone: (agentId: string) => void;
 }) {
   const ran = useRef(false);
@@ -48,7 +46,7 @@ export function FirstRunAutoCreate({
         const agent = await autoCreateBareAgent(agentName);
         if (cancelled) return;
         // Select + hydrate so the App-level gate flips (agent list no longer
-        // empty) and the chat shell renders this agent.
+        // empty) and the workspace renders this agent.
         agentStoreActions.setSelectedAgent(agent.agentId);
         await hydrateAgentsOnce();
         /*

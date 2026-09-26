@@ -5,17 +5,17 @@
  * host-initiated turn under a fresh reqId the approve response hands back as
  * `streamReqId`. The decision hooks own the approval but not the thread that
  * renders it, so this module is the rendezvous — the same module-ref posture
- * as `resume-actions.ts` (the thread registers, the approval triggers).
+ * the deleted chat UI's `resume-actions.ts` used (the thread registers, the
+ * approval triggers).
  *
- * ONE PATH, TWO RENDERERS. Chat's runtime (`lib/runtime.tsx`) and the agent
- * workspace's thread (`components/workspace/AgentView.tsx`) both register
- * here, and both surfaces' decision queues hand their approvals to
- * `continueApprovedTurn`. What each renderer DOES with a kick differs — chat
- * calls `chat.resumeStream()` and its transport takes the staged id; the
- * workspace takes the id itself and streams it over `workspaceApi.streamReply`
- * — but the rule for WHEN to attach is written once, here. That is why this
- * file lives outside the chat tree: TASK-360 deletes chat, and the workspace
- * keeps using this.
+ * ONE PATH, ONE RENDERER now — the agent workspace's thread
+ * (`components/workspace/AgentView.tsx`) registers here, and its decision
+ * queue hands approvals to `continueApprovedTurn`, which takes the staged id
+ * and streams it over `workspaceApi.streamReply`. While chat existed, its
+ * runtime registered here too and called `chat.resumeStream()` instead; the
+ * rule for WHEN to attach was written once, here, so the two renderers could
+ * not drift apart on it. That is why this file lived outside the chat tree
+ * from the start: TASK-360 deleted chat, and the workspace kept using this.
  *
  * The halves, deliberately separate:
  *
@@ -124,7 +124,7 @@ export const continuationActions = {
     };
   },
   /**
-   * The decision queue's `onDecisionApproved`, for both surfaces. A null
+   * The decision queue's `onDecisionApproved`. A null
    * `streamReqId` (no turn runs to watch), no registered thread, a thread on
    * the welcome state, or a decision from another conversation attaches
    * nothing: the receipts stand as they did before.

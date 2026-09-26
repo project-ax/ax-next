@@ -240,7 +240,6 @@ async function boot(): Promise<void> {
       backing: { server: 'nfs.example.invalid', exportPath: '/exports/ax-memory' },
     },
     memoryEmbeddings: { projectId: 'memory-canary', fetchImpl: fakeFetch },
-    agentWorkspace: true,
     onObserverDetached: (work) => {
       detached.push(work);
     },

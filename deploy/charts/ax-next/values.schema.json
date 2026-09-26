@@ -24,10 +24,6 @@
         "enabled": {
           "type": "boolean",
           "description": "Serve the channel-web SPA from the host pod."
-        },
-        "agentWorkspace": {
-          "type": "boolean",
-          "description": "The agent workspace (the web interface). On by default. CAPABILITY GATE: off means the host never registers /api/workspace/* — the routes do not exist on the wire and this deployment has no web interface. Renders AX_AGENT_WORKSPACE."
         }
       }
     },

@@ -20,7 +20,7 @@
  * CSRF — state-changing methods (POST/PATCH/DELETE) carry
  * `X-Requested-With: ax-admin` so they pass the http-server's CSRF guard
  * regardless of how `allowedOrigins` is configured. Same posture as
- * `lib/auth.ts` and `components/SessionRow.tsx`.
+ * `lib/auth.ts`.
  */
 import type { AdminTeamWire } from '@ax/teams';
 

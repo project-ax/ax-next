@@ -29,9 +29,10 @@
        progress fills and switch tracks, and `AvatarTile`'s decorative gradient,
        which mixes the accent at 22-26% behind an `aria-hidden` tile.
 
-       Compare `--ink-ghost` below, where the roles genuinely fought and the fix
-       was to split them. Same question, opposite answer; measure, don't assume.
-       `--ring` tracks this value in every block and moves with it. */
+       Compare `--state-quiet` below, split off a now-deleted fill token
+       (`--ink-ghost`) when the roles genuinely fought instead of shifted. Same
+       question, opposite answer; measure, don't assume. `--ring` tracks this
+       value in every block and moves with it. */
     --primary: 211 100% 42%;
     --primary-foreground: 0 0% 100%;
     --primary-soft: 214 100% 95%;
@@ -102,7 +103,7 @@
 
        The roles that carry no text ride along rather than pay: the `bits.tsx`
        state dot, `ThreadFind`'s match underline, and the hold glyphs in
-       `ActivityFeed`, `ToolUse` and `AgentConversation` all gain contrast. */
+       `ActivityFeed` and `AgentConversation` all gain contrast. */
     --warning: 32 81% 35%;
     --warning-foreground: 0 0% 100%;
     --warning-soft: 45 93% 93%;
@@ -112,38 +113,21 @@
     --ring: 211 100% 42%;
     --radius: 0.5rem;
     --rule-soft: 240 6% 95%;
-    /* A FILL, never ink, and now a fill for exactly ONE thing: the composer's
-       send circle while the field is empty. Value unchanged on purpose — read
-       this before nudging it.
-
-       As text it measures 1.72:1 on the page and 1.57:1 on `--muted`, about a
-       third of the AA floor, which is why nothing paints `text-ink-ghost` any
-       more; quiet copy is `--muted-foreground`. Lifting it to AA would need
-       ~46% here and ~53% in dark, and `--muted-foreground` is already 44/56 —
-       the same colour under a second name. It would also wreck the fill role
-       this token exists for: the send circle's inactive state, where the
-       faintness IS the affordance — it is how the button says "nothing to send
-       yet". A disabled control is the one thing WCAG 1.4.11 exempts outright,
-       so that role owes no ratio and is free to stay this faint.
-
-       The state DOTS used to share this token and are no longer allowed to:
-       they carry information rather than an inactive affordance, so they owe
-       3:1 and moved to `--state-quiet` below (TASK-450). Same accent-vs-
-       foreground tension documented above for primary/destructive, same fix —
-       split the roles. `theme-contrast.test.ts` measures this and enforces it. */
-    --ink-ghost: 240 4% 78%;
     /* The quiet-but-legible state mark: the `resting` dot in `bits.tsx` and the
        admin `empty` / `pending` dots in `StatusDot.tsx`.
 
        The dot's fill carries its state (alongside its shape, since TASK-485),
        which makes these information-bearing non-text UI owing 3:1 under WCAG 1.4.11 — a different floor from
-       the 4.5:1 that governs text. On `--ink-ghost` they measured 1.72:1 here
-       on the page and a card (1.67:1 on a dark card, 2.04:1 on the dark
-       page), and 1.50:1 / 1.56:1 on
+       the 4.5:1 that governs text. The dots used to share a fill token with
+       the composer's (now-deleted) empty send circle, `--ink-ghost`, which
+       measured 1.72:1 here on the page and a card (1.67:1 on a dark card,
+       2.04:1 on the dark page), and 1.50:1 / 1.56:1 on
        `--primary-soft` — the worst surface they land on, the selected sidebar
-       row. About half of what they owe.
+       row. About half of what they owe, so the dots got a token of their own
+       (TASK-450) rather than a shifted shared one — same accent-vs-foreground
+       tension documented above for primary/destructive, same fix: split the
+       roles.
 
-       Why a second token rather than moving `--ink-ghost`: see its note above.
        And why this is NOT `--muted-foreground` under a third name — the value
        that clears 3:1 sits on the OTHER side of it in each theme. 54% here is
        LIGHTER than `--muted-foreground` at 44%; 45% in dark is DARKER than its
@@ -157,12 +141,11 @@
        row, which is the tightest of the six): 3.66 / 3.66 / 3.33 / 3.45 /
        3.45 / 3.20 light, and 4.16 / 3.41 / 3.58 / 3.85 / 3.30 / 3.18 dark.
 
-       A FILL, never ink — same rule as `--ink-ghost`, one floor up. 3:1 is
-       the NON-text floor; as text this measures 3.33:1 on `--muted` and
-       3.41:1 on a dark card, under the 4.5:1 AA floor, and Tailwind publishes
-       `text-state-quiet` from the same colour entry whether we want it or
-       not. So nothing paints it; quiet copy is `--muted-foreground`.
-       `theme-contrast.test.ts` enforces that too.
+       A FILL, never ink. 3:1 is the NON-text floor; as text this measures
+       3.33:1 on `--muted` and 3.41:1 on a dark card, under the 4.5:1 AA floor,
+       and Tailwind publishes `text-state-quiet` from the same colour entry
+       whether we want it or not. So nothing paints it; quiet copy is
+       `--muted-foreground`. `theme-contrast.test.ts` enforces that too.
 
        It still reads as "not working" beside a `bg-primary` dot, because
        activeness here is carried by SATURATION, not lightness: this is a 4%-sat
@@ -229,9 +212,6 @@
       /* Tracks `--primary`. */
       --ring: 211 100% 56%;
       --rule-soft: 240 4% 13%;
-      /* A fill, never ink, and only the empty composer's send circle. 2.04:1 on
-         the page, 1.67:1 on a card. See the light block. */
-      --ink-ghost: 240 4% 26%;
       /* The state dots. See the light block for the whole argument. */
       --state-quiet: 240 4% 45%;
       color-scheme: dark;
@@ -267,9 +247,6 @@
     /* Tracks `--primary`. */
     --ring: 211 100% 56%;
     --rule-soft: 240 4% 13%;
-    /* A fill, never ink, and only the empty composer's send circle. 2.04:1 on
-       the page, 1.67:1 on a card. See the light block. */
-    --ink-ghost: 240 4% 26%;
     /* The state dots. See the light block for the whole argument. */
     --state-quiet: 240 4% 45%;
     color-scheme: dark;
@@ -295,65 +272,6 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* COMPOSER residue —
-   1. Gradient fade behind the fixed-bottom composer so chat messages
-      visually fall off the page rather than abruptly clipping under
-      the field. Tailwind can't easily express a 3-stop color-mix
-      gradient, so we keep this rule scoped to `.composer-fade`.
-   2. `:has()` ready-state toggle on the send circle: when the input
-      has content, the circle flips from neutral (bg-ink-ghost) to
-      bg-primary. Pure CSS — no observer needed. */
-:root {
-  --scrollbar-gutter: 15px;
-  /* Mirrors Tailwind `boxShadow.sm` — appended to the composer halo stack so
-     the field keeps its baseline lift beneath the new accent bloom. */
-  --shadow-sm: 0 1px 2px hsl(0 0% 0% / 0.04), 0 1px 1px hsl(0 0% 0% / 0.03);
-}
-
-/* Composer field halo — a hairline accent ring plus a soft drop + radial bloom
-   layered over the baseline --shadow-sm. Deepens on :focus-within (wider, more
-   saturated ring/blooms + an accent-tinted border). Replaces the prior Tailwind
-   `shadow-sm` and focus ring, which were removed from Composer.tsx. */
-.composer-field {
-  box-shadow:
-    0 0 0 1px color-mix(in oklch, hsl(var(--primary)) 10%, transparent),
-    0 24px 70px -18px color-mix(in oklch, hsl(var(--primary)) 30%, transparent),
-    0 0 60px -10px color-mix(in oklch, hsl(var(--primary)) 18%, transparent),
-    var(--shadow-sm);
-}
-.composer-field:focus-within {
-  box-shadow:
-    0 0 0 4px color-mix(in oklch, hsl(var(--primary)) 16%, transparent),
-    0 24px 70px -18px color-mix(in oklch, hsl(var(--primary)) 45%, transparent),
-    0 0 60px -10px color-mix(in oklch, hsl(var(--primary)) 28%, transparent),
-    var(--shadow-sm);
-  border-color: color-mix(in oklch, hsl(var(--primary)) 50%, hsl(var(--border)));
-}
-.composer-fade {
-  background: linear-gradient(
-    to top,
-    hsl(var(--background)) 60%,
-    color-mix(in srgb, hsl(var(--background)) 80%, transparent) 85%,
-    transparent 100%
-  );
-}
-.composer-field:has(.composer-input:not(:placeholder-shown)) [data-send] {
-  background: hsl(var(--primary));
-}
-.composer-field:has(.composer-input:not(:placeholder-shown)) [data-send]:hover {
-  transform: scale(1.05);
-  filter: brightness(1.05);
-}
-
-/* `breathe` is referenced by AgentStatus via Tailwind's
-   `animate-[breathe_1.6s_ease-in-out_infinite]`. Keep the keyframes
-   here as a global so both Tailwind utilities and any future named
-   `animation:` references resolve them. */
-@keyframes breathe {
-  0%, 100% { opacity: 0.25; transform: scale(0.8); }
-  50%      { opacity: 1;    transform: scale(1.15); }
-}
-
 /* `toast-in` / `toast-out` are referenced by Toast via Tailwind
    arbitrary `animate-[toast-in_220ms_cubic-bezier(0.2,0.8,0.2,1)_both]`
    and `animate-[toast-out_180ms_ease_forwards]`. */
@@ -365,83 +283,12 @@ body {
   to { opacity: 0; transform: translateX(8px); }
 }
 
-/* `msg-error-in` is referenced by the dev-only test trigger
-   `agent-status-test-triggers.ts`, which injects `.msg-error*` DOM via
-   className. The styling for those nodes lives below — small isolated
-   block, dev-only behavior. */
-.msg-error {
-  margin-top: 6px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 12px;
-  letter-spacing: -0.005em;
-  color: hsl(var(--destructive));
-  animation: msg-error-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
-}
-.msg.you .msg-error { justify-content: flex-end; }
-.msg-error-icon {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: hsl(var(--destructive));
-  color: hsl(var(--destructive-foreground));
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 9px;
-  font-weight: 600;
-  flex-shrink: 0;
-}
-.msg-error-label { color: hsl(var(--destructive)); }
-.msg-error-actions { display: flex; gap: 4px; margin-left: 2px; }
-.msg-error-action {
-  all: unset;
-  cursor: pointer;
-  padding: 1px 8px;
-  border-radius: 3px;
-  font-size: 11.5px;
-  color: hsl(var(--muted-foreground));
-  transition: color 120ms ease, background-color 120ms ease;
-}
-.msg-error-action:hover { color: hsl(var(--foreground)); background: hsl(var(--muted)); }
-.msg-error-action.retry { color: hsl(var(--destructive)); font-weight: 500; }
-.msg-error-action.retry:hover { background: hsl(var(--destructive) / 0.12); color: hsl(var(--destructive)); }
-@keyframes msg-error-in {
-  from { opacity: 0; transform: translateY(4px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
-/* THREAD residue — block spacing inside Markdown-rendered .msg-body.
-   The Tailwind typography plugin would replace this; not worth pulling
-   in for a handful of rules. */
-.msg-body p { margin-bottom: 0.6em; }
-.msg-body p:last-child { margin-bottom: 0; }
-
-/* The message body carries `white-space: pre-wrap` so plain-text turns keep
-   their newlines. Inside the Markdown container that backfires: react-markdown
-   emits a literal newline text node between every block element (<p>, <li>, …),
-   and pre-wrap renders each as a blank line — most visibly blowing the gap
-   between <li> items out to a full line-height. The Markdown container already
-   encodes its own structure, so reset it to normal whitespace. (Code blocks are
-   unaffected: <pre> carries its own `white-space: pre`.) */
-.msg-body .aui-md { white-space: normal; }
-
-/* With those blank lines gone, lists fall back to Preflight's zeroed margins
-   (items touching). Restore the same 0.6em rhythm the prose uses so list items
-   match the normal vertical spacing between chat elements. List markers are
-   left as-is — this only touches spacing. */
-.msg-body .aui-md :is(ul, ol) { margin: 0.6em 0; }
-.msg-body .aui-md li { margin-bottom: 0.6em; }
-.msg-body .aui-md li:last-child { margin-bottom: 0; }
-
 /* MARKDOWN OUTSIDE THE THREAD (`.ax-md`).
 
    The `prose-*` classes on the Markdown container emit NOTHING in this build —
-   `@tailwindcss/typography` is not installed, and the `.msg-body` rules above
-   are what actually gives an assistant reply its block rhythm. A rendered file
-   body (the workspace Files tab) is not inside `.msg-body`, so without these it
-   inherits Preflight: headings the same size as body text, lists with no
+   `@tailwindcss/typography` is not installed. (The deleted chat thread had its
+   own `.msg-body` rules for this; they went with it in TASK-360.) Without these,
+   a rendered file body (the workspace Files tab) inherits Preflight: headings the same size as body text, lists with no
    markers, everything touching. That reads as a broken document rather than as
    the file the agent wrote.
 

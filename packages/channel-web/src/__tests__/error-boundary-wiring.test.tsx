@@ -1,19 +1,20 @@
 /**
- * Error-boundary WIRING — the per-surface placement in `App.tsx`.
+ * Error-boundary WIRING — the surface placement in `App.tsx`.
  *
- * The unit test proves the component catches; this proves the chat shell
- * actually wraps its surfaces with it: a thread-panel throw must degrade
- * into the fallback while the sidebar stays up. If someone unwraps the
- * thread (or the boundary regresses), this goes red — the unit test alone
- * would stay green.
+ * The unit test proves the component catches; this proves App actually wraps
+ * the workspace with it: a workspace throw must degrade into the fallback,
+ * and the toast stack (outside the boundary on purpose) must survive it. If
+ * someone unwraps the workspace, or moves the toasts inside the boundary,
+ * this goes red — the unit test alone would stay green.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { App } from '../App';
+import { toastActions } from '../lib/toast-store';
 
-vi.mock('../components/Thread', () => ({
-  Thread: () => {
-    throw new Error('thread render boom (wiring test)');
+vi.mock('../components/workspace/WorkspaceShell', () => ({
+  WorkspaceShell: () => {
+    throw new Error('workspace render boom (wiring test)');
   },
 }));
 
@@ -48,14 +49,17 @@ afterEach(() => {
 });
 
 describe('error-boundary wiring', () => {
-  it('a throwing thread degrades to the fallback while the sidebar stays up', async () => {
-    const { container } = render(<App />);
+  it('a throwing workspace degrades to the fallback, and toasts still reach the user', async () => {
+    render(<App />);
     await waitFor(() => {
       expect(screen.getByText(/this part hit a snag/i)).toBeTruthy();
     });
-    // Per-surface, not app-wide: the sidebar survives the thread's crash.
-    expect(container.querySelector('aside[data-testid="sidebar"]')).toBeTruthy();
-    // And the raw error never reaches the DOM.
-    expect(screen.queryByText(/thread render boom/)).toBeNull();
+    // The raw error never reaches the DOM.
+    expect(screen.queryByText(/workspace render boom/)).toBeNull();
+    // The toast stack sits OUTSIDE the boundary, so it still works.
+    act(() => {
+      toastActions.error('toast after the crash');
+    });
+    expect(await screen.findByText('toast after the crash')).toBeTruthy();
   });
 });

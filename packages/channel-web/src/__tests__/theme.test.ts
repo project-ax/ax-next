@@ -35,7 +35,6 @@ describe('design tokens', () => {
       '--ring',
       '--radius',
       '--rule-soft',
-      '--ink-ghost',
     ]) {
       const escaped = tok.replace(/-/g, '\\-');
       expect(src).toMatch(new RegExp(`${escaped}\\s*:`));

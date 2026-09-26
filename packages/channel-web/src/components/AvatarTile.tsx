@@ -4,20 +4,18 @@
  * Two surfaces:
  *
  *   - `gradient` — the primary→muted blend used for "branded" tiles
- *     (agent chip, user-menu trigger). Strength is configurable so the
- *     tile reads slightly stronger when it's the primary identity
- *     marker (UserMenu trigger at 26%) vs. nestled inside a row
- *     (AgentChip avatar at 22%).
+ *     (user-menu trigger). Strength is configurable so the tile reads
+ *     slightly stronger when it's the primary identity marker (UserMenu
+ *     trigger at 26%) vs. a smaller instance elsewhere.
  *
  *   - `muted` — plain bg-muted, used where the tile is a backdrop for
- *     content with its own colour (the agent menu rows put a dot in
- *     the agent's colour inside; the user-menu popover header puts the
+ *     content with its own colour (the user-menu popover header puts the
  *     initials in foreground).
  *
  * Shape (`square` rounded-md vs `round` rounded-full) and pixel size
  * are props because the call-sites really do need the variation:
- * 22px square in the agent chip, 26px round in the user trigger,
- * 36px round in the popover header.
+ * `AgentTile` in the workspace uses `square`; the user trigger and popover
+ * header use `round` at 26px/36px.
  */
 import type { CSSProperties, ReactNode } from 'react';
 import { cn } from '@/lib/utils';

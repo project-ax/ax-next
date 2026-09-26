@@ -124,9 +124,9 @@ export function returnFocusToConsentRegion(
  * cannot carry the same key.
  *
  * THE ARMING IS WHAT KEEPS THIS HONEST. A settled receipt drawn on page load
- * has an answer too — `InThreadApprovals` renders the last ten seconds of them
- * above the composer — and stealing focus for one nobody just acted on would be
- * the reverse of this fix. Focus moves only when THIS person's click is what
+ * has an answer too — `ApprovalCard` can render one resolved in the last ten
+ * seconds — and stealing focus for one nobody just acted on would be the
+ * reverse of this fix. Focus moves only when THIS person's click is what
  * produced the answer, which is exactly what the flag records.
  *
  * It is a ref, not state, deliberately: arming must not re-render (the click

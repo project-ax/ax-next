@@ -2,22 +2,22 @@
  * What a grant card can actually DRAW from a `PermissionRequest` off the wire
  * (TASK-388).
  *
- * Both grant renderers — chat's `PermissionCard.tsx` and the workspace's
- * `workspace/GrantRow.tsx` — iterate the same `hosts`/`slots` reach and read
- * the same per-slot fields. They do NOT get the same protection:
+ * Two grant renderers used to iterate the same `hosts`/`slots` reach and read
+ * the same per-slot fields — chat's `PermissionCard.tsx` and the workspace's
+ * `workspace/GrantRow.tsx` — and they did NOT get the same protection:
  *
  *   - The workspace's producer validates first (`isRenderableGrant` ->
  *     `hasIterableReach` in `workspace-grant-store.ts`): `hosts` must be an
  *     array of strings and `slots` an array of objects with a string `slot`.
- *   - Chat's producer (`lib/transport.ts`) truthiness-checks the frame and
- *     validates nothing at all.
+ *   - Chat's producer (`lib/transport.ts`) truthiness-checked the frame and
+ *     validated nothing at all.
  *
- * So the two surfaces need different amounts of help, but they need the SAME
- * ANSWERS — "is this host drawable?", "is this slot fillable?", "is this
+ * So the two surfaces needed different amounts of help, but they needed the
+ * SAME ANSWERS — "is this host drawable?", "is this slot fillable?", "is this
  * account tag usable?" — which is why those answers live here rather than
- * being written twice. Same reasoning, and the same TASK-360 deadline, as
- * `grant-copy.ts` and `grant-destinations.ts`: chat's card is deleted, the
- * workspace's row is not, so the shared half has to outlive it.
+ * being written twice. Same reasoning as `grant-copy.ts` and
+ * `grant-destinations.ts`: chat's card was deleted by TASK-360, the
+ * workspace's row was not, so the shared half outlives it.
  *
  * The rule these all follow is TASK-351/#557's: COALESCE OR DROP THE FIELD,
  * NEVER REFUSE THE CARD. A grant nobody can answer is a worse outcome than a

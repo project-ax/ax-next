@@ -52,20 +52,22 @@ import { stripMcpToolPrefix } from './tool-name.js';
 /**
  * Where one tool call got to.
  *
- * The same four words `lib/tool-step-status.ts` classifies chat's tool parts
- * into, and the same ordering rule: **running → waiting → failed → done**. A
- * hold sits ABOVE a failure per call, because a call waiting on a person has
- * not run and has not failed, and calling a pending decision a failure tells
- * the reader the thing is over when it is in fact waiting on them.
+ * The same four words the deleted chat UI's `lib/tool-step-status.ts` used to
+ * classify its tool parts into, and the same ordering rule: **running →
+ * waiting → failed → done**. A hold sits ABOVE a failure per call, because a
+ * call waiting on a person has not run and has not failed, and calling a
+ * pending decision a failure tells the reader the thing is over when it is
+ * in fact waiting on them.
  *
- * We restate the union rather than importing that module's classifier, for a
- * concrete reason and not a stylistic one: `toolStepStatus` resolves `waiting`
- * by looking the call id up in `tool-held.ts`'s module-global map, and the only
- * writers to that map are `lib/transport.ts` and `lib/history-adapter.ts` —
- * chat's two readers, neither of which runs on this surface. Reusing it here
- * would return `waiting` never, which is the one answer that must not be wrong.
+ * We restate the union rather than importing that module's classifier (back
+ * when it still existed), for a concrete reason and not a stylistic one:
+ * `toolStepStatus` resolved `waiting` by looking the call id up in
+ * `tool-held.ts`'s module-global map, and the only writers to that map were
+ * `lib/transport.ts` and `lib/history-adapter.ts` — chat's two readers,
+ * neither of which ran on this surface. Reusing it here would have returned
+ * `waiting` never, which is the one answer that must not be wrong.
  *
- * `settled` is a fifth word chat does not need (TASK-517): a call that WAS held
+ * `settled` is a fifth word chat never needed (TASK-517): a call that WAS held
  * and whose question has since been answered — or has lapsed. The transcript's
  * `held: true` records what was true at turn end, and on reload it used to
  * read "waiting for you" forever. It is NOT `done`: an approval the agent never
@@ -557,7 +559,8 @@ export function applyToolUse(
  * hole in it — so the honest reading of a result with no call is "we are
  * missing frames", which is a banner, not a row.
  *
- * The status ordering is `tool-step-status.ts`'s, held above failed — see
+ * The status ordering is the same one the deleted chat UI's
+ * `tool-step-status.ts` used, held above failed — see
  * {@link WorkspaceStepStatus}. A held result arrives with `isError` omitted,
  * but a row carrying both must still read as waiting.
  */

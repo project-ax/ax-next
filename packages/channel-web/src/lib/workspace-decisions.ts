@@ -460,10 +460,9 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
           setNotice(id, notice);
           report?.(raw, decision);
         } catch (err) {
-          // Quiet in the UI is not silent anywhere else. Both READ paths log
-          // their failure (`checkedRead`, and `InThreadApprovals`), and this is
-          // the one decision path that still discarded its cause entirely —
-          // now the busier of the two, since the card ships on `/`. The user
+          // Quiet in the UI is not silent anywhere else. The READ path
+          // (`checkedRead`) logs its failure too, and this is the one
+          // decision path that still discarded its cause entirely. The user
           // gets the authored notice below; an operator gets the reason.
           console.warn(`[decisions] the ${id} action did not reach the server`, err);
           // The row is untouched — we never changed it — so there is nothing to

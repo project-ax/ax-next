@@ -33,9 +33,8 @@ import type {
 } from '@/lib/workspace-types';
 
 /**
- * Up to two initials from the agent's display name — the same convention the
- * shipped avatars use (`AgentChip` over `AvatarTile`), and the only identity
- * mark we actually have. The prototype keyed a lucide glyph off an `icon`
+ * Up to two initials from the agent's display name — the only identity mark
+ * we actually have. The prototype keyed a lucide glyph off an `icon`
  * field the real agent record never carried: a picked-for-you icon is
  * decoration pretending to be information.
  */
@@ -128,9 +127,10 @@ export const STATE_SHAPE: Record<AgentRunState | 'held', string> = {
  * `bg-ink-ghost` and measured 1.72:1 light / 2.04:1 dark on the page — and
  * 1.50:1 / 1.56:1 on the selected row's `--primary-soft`, the worst surface it
  * lands on — so on a pale row it was less "quiet" than "absent". It is
- * `bg-state-quiet` now; `--ink-ghost` stayed behind with the composer's send circle, which is a disabled control
- * and the one thing 1.4.11 exempts. `theme-contrast.test.ts` reads these
- * classes back out of this file and measures whatever it finds.
+ * `bg-state-quiet` now; `--ink-ghost` was the composer's send-circle fill token
+ * (a disabled control, the one thing 1.4.11 exempts) and was deleted with the
+ * composer in TASK-360. `theme-contrast.test.ts` reads these classes back out
+ * of this file and measures whatever it finds.
  */
 export function StateDot({
   state,

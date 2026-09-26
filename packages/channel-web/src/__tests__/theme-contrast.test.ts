@@ -216,7 +216,8 @@ const ACCENTS_USED_AS_TEXT = ['--primary', '--destructive', '--warning'] as cons
  *     and 4.72 -> 5.23 dark; `text-primary` on `--card` 4.97 -> 5.31 and
  *     4.58 -> 5.07). No role was traded away, so no role had to be split off.
  *
- * That is the opposite outcome to `--ink-ghost` below, where the roles pulled
+ * That is the opposite outcome to `--state-quiet` below, split off a
+ * now-deleted fill token (`--ink-ghost`) when the roles genuinely pulled
  * against each other and the resolution WAS to split them. Which way a token
  * goes is a question to be measured, not assumed.
  *
@@ -443,74 +444,14 @@ describe('theme contrast', () => {
   });
 });
 
-/* ------------------------------------------------------------------------- *
- * `--ink-ghost` — a fill, never ink.
- * ------------------------------------------------------------------------- */
-
-/**
- * The one palette token that does not clear the text floor, and must not try.
- *
- * Four independent browser probes measured it as text: 1.72:1 in light, 2.04:1
- * in dark — roughly a THIRD of the AA floor, on copy people are meant to read.
- * Against the surfaces the page actually paints it on it is worse still: 1.57:1
- * on light `--muted`, 1.67:1 on dark `--card`. Those two never showed up in a
- * probe because the probes measured the page background.
- *
- * The obvious fix does not work, and it is worth writing down why so nobody
- * spends another afternoon on it. To clear 4.5:1 on every surface it lands on,
- * `--ink-ghost` would have to become ~46% lightness in light mode and ~53% in
- * dark. `--muted-foreground` is already 44% and 56%. Two tokens, two or three
- * percentage points apart, one colour — which is invariant 4 with a paint
- * swatch on it.
- *
- * And it would break the token's OTHER job. `--ink-ghost` is also a fill:
- *
- *   - `Composer.tsx` — the send circle's INACTIVE state. A `:has()` rule flips
- *     it to `bg-primary` the moment the field has content, so the faintness is
- *     the affordance: it is how the button says "nothing to send yet".
- *
- * That is now the ONLY thing it fills. It used to fill the state dots too —
- * `bits.tsx` `StateDot`'s `resting`, and `StatusDot.tsx`'s admin `empty` and
- * `pending` — and TASK-450 moved those to `--state-quiet`, because a dot that
- * carries information owes 3:1 and an inactive control does not. See the
- * non-text section at the foot of this file.
- *
- * A mid-grey send circle reads as enabled. Moving the value satisfies the text
- * role by destroying the fill role.
- *
- * That tension is not new here — it is the same one this file already documents
- * for `--primary` and `--destructive`, where an accent is also a foreground and
- * moving it fixes one role and breaks the other. The resolution there was to
- * split the roles rather than average them, and it is the resolution here:
- * `--ink-ghost` keeps its value and becomes background-only. Quiet text is
- * `--muted-foreground`, which is measured above and clears AA everywhere.
- *
- * `AgentMenu.tsx` had already reached this conclusion for one component, with a
- * comment saying so. This generalises it, and enforces it, because Tailwind
- * generates `text-ink-ghost` from the same colour entry as `bg-ink-ghost` and
- * there is no way to publish one without the other.
- *
- * The fill sites used to be out of scope here, and are not any more. A dot's fill
- * carries its state (alongside its shape, since TASK-485), which makes the
- * `resting` dot an information-bearing non-text element owing 3:1 under WCAG 1.4.11 — and on this token it
- * measured 1.72:1 on the light page and card, 1.67:1 on a dark card (1.50 / 1.56 on
- * the selected row's `--primary-soft`), so it did not clear that either. That
- * was TASK-450, and the fix was the same split one level down: the dots took a
- * new token and the send circle kept this one. The 3:1 floor now has its own
- * section at the foot of this file; everything in THIS block still bounds the
- * 4.5:1 TEXT floor, which is a different number for a different reason.
- */
-const INK_GHOST = '--ink-ghost';
-
-/** The Tailwind class the token publishes as text. */
-const INK_GHOST_TEXT_CLASS = 'text-ink-ghost';
 
 const SRC_ROOT = join(__dirname, '..');
 
 /**
- * Comments are not rendered classes. `AgentMenu.tsx` names `text-ink-ghost` in
- * prose precisely to explain why it does not use it, and that sentence is worth
- * more than the false positive it would otherwise cost.
+ * Comments are not rendered classes. `AgentMenu.tsx` (deleted with the chat UI
+ * in TASK-360) named `text-ink-ghost` in prose precisely to explain why it did
+ * not use it, and that sentence was worth more than the false positive it
+ * would otherwise have cost.
  *
  * A block comment is recognised ONLY where one opens a line (after optional
  * whitespace and a JSX `{`). That restriction is the entire point of this
@@ -613,200 +554,35 @@ function filesMentioning(cls: string): string[] {
     .sort();
 }
 
-const INK_GHOST_TEXT_SITES = filesPainting(INK_GHOST_TEXT_CLASS);
-
-describe('--ink-ghost is a fill, never ink', () => {
-  for (const [name, selector] of THEMES) {
-    it(`${name}: measures under the text floor, so nothing may paint it as text`, () => {
-      const tokens = tokensAfter(selector);
-      const ghost = tokens.get(INK_GHOST);
-      expect(ghost, `${INK_GHOST} missing from ${selector}`).toBeDefined();
-
-      const measured = QUIET_TEXT_SURFACES.map((surface) => {
-        const bg = tokens.get(surface);
-        expect(bg, `${surface} missing from ${selector}`).toBeDefined();
-        return [surface, contrast(ghost!, bg!)] as const;
-      });
-      const readout = measured.map(([s, c]) => `${s} ${c.toFixed(2)}:1`).join(', ');
-      const worst = Math.min(...measured.map(([, c]) => c));
-
-      // Pins the premise. If someone later lifts `--ink-ghost` to AA, this trips
-      // and they have to come back and re-read the fill-vs-ink argument above —
-      // rather than inherit a usage ban whose entire justification has quietly
-      // evaporated underneath it.
-      expect(
-        worst,
-        `${INK_GHOST} now clears AA in ${name} (${readout}) — re-read the fill-vs-ink note above before relaxing anything`,
-      ).toBeLessThan(AA_NORMAL);
-
-      expect(
-        INK_GHOST_TEXT_SITES,
-        `${INK_GHOST} is ${readout} in ${name} — AA needs ${AA_NORMAL}:1. ` +
-          `Use \`text-muted-foreground\` for quiet copy. These files paint it as text:\n  ` +
-          INK_GHOST_TEXT_SITES.join('\n  '),
-      ).toEqual([]);
-    });
-  }
-
-  /**
-   * Anti-vacuity, part one. The assertion above is `toEqual([])`, which is also
-   * exactly what a scanner that walked the wrong directory, matched nothing, or
-   * stripped the whole file would produce. An empty result is the SAME shape as
-   * a clean result, so prove the scanner can see real classes in the real tree
-   * before believing it about the absent one.
-   */
-  it('the source scan can see the tree it is asserting about', () => {
-    const files = sourceFiles();
-    expect(files.length).toBeGreaterThan(50);
-    expect(files.some((f) => f.endsWith('index.css'))).toBe(true);
-
-    // The replacement token, in the same `text-*` shape the guard looks for.
-    // If the matcher or the walk is broken, this reads 0 and fails here rather
-    // than passing silently one assertion up.
-    expect(filesPainting('text-muted-foreground').length).toBeGreaterThan(10);
-
-    // And the fill site is still there — the guard bans the token as TEXT, not
-    // as a background. A sweep that deleted `--ink-ghost` outright would
-    // satisfy the ban and lose the affordance; this notices.
-    //
-    // Pinned as a SET rather than a count, and the set is now exactly one file.
-    // Before TASK-450 this was `>= 3` and the other two were the state dots; a
-    // count would have gone on passing while they drifted back, which is the
-    // regression this list exists to make loud. `Composer.tsx` is the send
-    // circle, an inactive control — the one role that is meant to keep a token
-    // this faint. Anything else appearing here is a dot that skipped the 3:1
-    // floor, and belongs on `--state-quiet` instead.
-    expect(filesPainting('bg-ink-ghost')).toEqual(['components/Composer.tsx']);
-  });
-
-  /**
-   * Anti-vacuity, part two: pin `paints` on a fixture, both directions. The
-   * comment-stripping is the part that can only ever hide a real usage, so a
-   * silent over-strip would make the guard permanently green. Assert it keeps
-   * code AND drops prose — and that it does not match a longer class that
-   * merely starts the same way.
-   */
-  it('reads code and ignores comments', () => {
-    expect(paints('<span className="text-ink-ghost" />', INK_GHOST_TEXT_CLASS)).toBe(true);
-    expect(paints("  'uppercase text-ink-ghost mt-1.5';", INK_GHOST_TEXT_CLASS)).toBe(true);
-    expect(paints('{/* not `text-ink-ghost`, which is too faint */}', INK_GHOST_TEXT_CLASS)).toBe(
-      false,
-    );
-    expect(paints('// avoid text-ink-ghost here', INK_GHOST_TEXT_CLASS)).toBe(false);
-    expect(paints(' * uses text-ink-ghost for the label', INK_GHOST_TEXT_CLASS)).toBe(false);
-    expect(paints('<span className="bg-ink-ghost" />', INK_GHOST_TEXT_CLASS)).toBe(false);
-    expect(paints('<span className="text-ink-ghostly" />', INK_GHOST_TEXT_CLASS)).toBe(false);
-
-    // A multi-line block comment is still stripped, and real code on the
-    // closing line survives it.
-    const block = [
-      '  /**',
-      '   * `text-ink-ghost` is too faint to read.',
-      '   */',
-      '  const x = 1;',
-    ].join('\n');
-    expect(paints(block, INK_GHOST_TEXT_CLASS)).toBe(false);
-    expect(paints(['  /* note */ <b className="text-ink-ghost" />'].join('\n'), INK_GHOST_TEXT_CLASS)).toBe(
-      true,
-    );
-  });
-
-  /**
-   * The regression that review caught, kept as a fixture because the bug is
-   * invisible: it made the guard PASS.
-   *
-   * The first version of `stripComments` did a file-wide
-   * `replace(/\/\*[\s\S]*?\*\//g, '')`. A bare `/` + `*` in ordinary code —
-   * a route path like `'…/files/*'`, or `routines/*.md` rendered as JSX text,
-   * both of which are live in this tree — was read as an opening delimiter and
-   * paired with the next real close far below, deleting a real class in
-   * between. Green suite, unguarded token.
-   *
-   * These are the reviewer's exact repro shapes. Case C is the control: if it
-   * ever goes false, the scanner is broken in the loud direction instead.
-   */
-  it('does not let a stray slash-star in code swallow a real usage', () => {
-    const caseA = [
-      '      <code>.ax/routines/*.md</code>',
-      '      <span className="text-ink-ghost">{row.source}</span>',
-      '      {/* a later block comment, whose close pairs with the text above */}',
-    ].join('\n');
-    expect(paints(caseA, INK_GHOST_TEXT_CLASS)).toBe(true);
-
-    const caseB = [
-      "      const rx = /\\/api\\/workspace\\/agents\\/:id\\/files\\/*/;",
-      '      <span className="text-ink-ghost" />',
-      '      {/* trailing comment */}',
-    ].join('\n');
-    expect(paints(caseB, INK_GHOST_TEXT_CLASS)).toBe(true);
-
-    const caseC = '<span className="text-ink-ghost" />';
-    expect(paints(caseC, INK_GHOST_TEXT_CLASS)).toBe(true);
-  });
-
-  /**
-   * The backstop that makes a silent hide impossible.
-   *
-   * `filesPainting` strips comments, and stripping is the one operation that
-   * can only ever LOSE a usage. So also scan the RAW text and pin the complete
-   * set of files that so much as name the class. The two checks cover each
-   * other: if stripping ever hides a real usage, the file still shows up here
-   * and is not on the list; if someone adds a real class to a file that is on
-   * the list, `filesPainting` catches it, because a className is not inside a
-   * line-opening block comment.
-   *
-   * Both entries below are prose EXPLAINING why the class is not used — the
-   * `AgentMenu` note that reached this conclusion first, and the token's own
-   * comment in the stylesheet. If you are adding to this list, you are almost
-   * certainly meant to be deleting a usage instead.
-   *
-   * The mutual coverage has one bounded blind spot, named here so it is not
-   * mistaken for total: a usage that is BOTH hidden by one of `stripComments`'
-   * residual gaps AND located in one of the two allow-listed files would
-   * escape both checks — stripped out of the first, and forgiven by the second
-   * because the file is expected. It needs a multi-line string of exactly the
-   * wrong shape inside `AgentMenu.tsx` or `index.css`; neither has one. Every
-   * other file in the tree is covered by one check or the other.
-   *
-   * Note the scope this trades against: `walk()` matches only `ts`/`tsx`/`css`
-   * plus `index.html`, so design docs and `.md` files are exempt and do not
-   * trip this. Inside those file types a future prose mention WILL fail the
-   * suite. That friction is deliberate for a hard-banned token — it forces the
-   * mention to be a decision rather than a drive-by.
-   */
-  it('mentions every file that names the class, prose included', () => {
-    expect(filesMentioning(INK_GHOST_TEXT_CLASS)).toEqual([
-      'components/AgentMenu.tsx',
-      'index.css',
-    ]);
-  });
-});
-
 /* ------------------------------------------------------------------------- *
  * `--state-quiet` — also a fill, never ink (TASK-484).
  * ------------------------------------------------------------------------- */
 
 /**
- * The same ban as `--ink-ghost` above, for the token TASK-450 split off it.
+ * The same ban `--ink-ghost` used to carry, for the token TASK-450 split off
+ * it. `--ink-ghost` itself was deleted in TASK-360 along with the composer's
+ * send circle, the one thing it still filled — so this section now also
+ * carries the shared scanner's own anti-vacuity coverage (below), which used
+ * to live under that token instead.
  *
  * `--state-quiet` was tuned to clear the 3:1 NON-text floor for the state dots
  * (see the non-text section at the foot of this file), and it does — but 3:1 is
  * not the text floor. As text it measures 3.66:1 on the light page and 3.33:1 on
  * light `--muted`, 3.41:1 on a dark card: every surface, both themes, under 4.5.
  * And Tailwind publishes `text-state-quiet` from the same colour entry as
- * `bg-state-quiet`, exactly as it does for `text-ink-ghost`. Symmetric risk; so,
- * symmetric guard.
+ * `bg-state-quiet`, exactly as it used to for the deleted `text-ink-ghost`.
+ * Symmetric risk; so, symmetric guard.
  *
  * There was no violation when this was written. It is here so the first one
  * fails a test instead of shipping — a dot token looks like a reasonable colour
- * for a quiet label, which is precisely the mistake the `--ink-ghost` section
- * exists to stop one token over.
+ * for a quiet label, which is precisely the mistake this ban exists to stop.
  *
- * It reuses that section's scanner (`filesPainting`, `filesMentioning`,
- * `stripComments`), so the anti-vacuity work there — the stray-slash-star
- * fixtures, the tree-visibility check — covers this too. What it adds is what is
- * specific to THIS class: the premise pin, the usage ban, the matcher pinned on
- * this class's own spelling, and the raw-mention backstop.
+ * It reuses the shared scanner (`filesPainting`, `filesMentioning`,
+ * `stripComments`), so the anti-vacuity work below — the stray-slash-star
+ * fixtures, the tree-visibility check — covers those functions for every
+ * token that uses them, this one included. What is specific to THIS class:
+ * the premise pin, the usage ban, the matcher pinned on this class's own
+ * spelling, and the raw-mention backstop.
  */
 const STATE_QUIET = '--state-quiet';
 
@@ -830,11 +606,11 @@ describe('--state-quiet is a fill, never ink', () => {
       const readout = measured.map(([s, c]) => `${s} ${c.toFixed(2)}:1`).join(', ');
       const worst = Math.min(...measured.map(([, c]) => c));
 
-      // Pins the premise, as the `--ink-ghost` block does. If `--state-quiet`
-      // is ever lifted to AA this trips, and whoever did it re-reads why the
-      // dot token sits BELOW `--muted-foreground` on purpose (the "quieter than
-      // the quiet text" ordering at the foot of this file) before relaxing a ban
-      // whose reason has gone.
+      // Pins the premise, the same way the deleted `--ink-ghost` ban used to.
+      // If `--state-quiet` is ever lifted to AA this trips, and whoever did it
+      // re-reads why the dot token sits BELOW `--muted-foreground` on purpose
+      // (the "quieter than the quiet text" ordering at the foot of this file)
+      // before relaxing a ban whose reason has gone.
       expect(
         worst,
         `${STATE_QUIET} now clears AA in ${name} (${readout}) — re-read the note above before relaxing anything`,
@@ -851,10 +627,9 @@ describe('--state-quiet is a fill, never ink', () => {
   }
 
   /**
-   * Anti-vacuity for this class's spelling. The shared scanner is proven in the
-   * `--ink-ghost` block; what is not proven there is that the matcher sees
-   * `text-state-quiet` in the shapes it would really arrive in — a variant
-   * prefix, an opacity suffix — and does not confuse it with the fill.
+   * Anti-vacuity for this class's spelling: the matcher sees `text-state-quiet`
+   * in the shapes it would really arrive in — a variant prefix, an opacity
+   * suffix — and does not confuse it with the fill.
    */
   it('reads this class in code, and not the fill or a longer name', () => {
     expect(paints('<span className="text-state-quiet" />', STATE_QUIET_TEXT_CLASS)).toBe(true);
@@ -873,10 +648,93 @@ describe('--state-quiet is a fill, never ink', () => {
   });
 
   /**
-   * The raw-text backstop, for the same reason as the `--ink-ghost` one: comment
-   * stripping can only ever LOSE a usage, so pin every file that so much as names
-   * the class. The one entry is the token's own note in the stylesheet saying
-   * not to use it.
+   * Anti-vacuity for the shared scanner itself (`filesPainting`, `sourceFiles`,
+   * `walk`). This coverage used to live under the `--ink-ghost` ban before
+   * TASK-360 deleted that token along with the composer; it moved here rather
+   * than disappearing with it, because the functions it proves are still load-
+   * bearing for the empty-result assertions above and for `ACCENT_SOFT_PAIRS`'
+   * completeness check below.
+   *
+   * An empty scan result is the SAME shape as a broken scanner that walked the
+   * wrong directory or stripped the whole file, so prove it can see real
+   * classes in the real tree before believing it about an absent one.
+   */
+  it('the source scan can see the tree it is asserting about', () => {
+    const files = sourceFiles();
+    expect(files.length).toBeGreaterThan(50);
+    expect(files.some((f) => f.endsWith('index.css'))).toBe(true);
+    expect(filesPainting('text-muted-foreground').length).toBeGreaterThan(10);
+  });
+
+  /**
+   * Pins `paints` on a fixture, both directions. The comment-stripping is the
+   * part that can only ever HIDE a real usage, so assert it keeps code AND
+   * drops prose — and that it does not match a longer class that merely starts
+   * the same way.
+   */
+  it('reads code and ignores comments', () => {
+    expect(paints('<span className="text-state-quiet" />', STATE_QUIET_TEXT_CLASS)).toBe(true);
+    expect(paints("  'uppercase text-state-quiet mt-1.5';", STATE_QUIET_TEXT_CLASS)).toBe(true);
+    expect(
+      paints('{/* not `text-state-quiet`, which is too faint */}', STATE_QUIET_TEXT_CLASS),
+    ).toBe(false);
+    expect(paints('// avoid text-state-quiet here', STATE_QUIET_TEXT_CLASS)).toBe(false);
+    expect(paints(' * uses text-state-quiet for the label', STATE_QUIET_TEXT_CLASS)).toBe(false);
+    expect(paints('<span className="bg-state-quiet" />', STATE_QUIET_TEXT_CLASS)).toBe(false);
+    expect(paints('<span className="text-state-quietly" />', STATE_QUIET_TEXT_CLASS)).toBe(false);
+
+    // A multi-line block comment is still stripped, and real code on the
+    // closing line survives it.
+    const block = [
+      '  /**',
+      '   * `text-state-quiet` is too faint to read.',
+      '   */',
+      '  const x = 1;',
+    ].join('\n');
+    expect(paints(block, STATE_QUIET_TEXT_CLASS)).toBe(false);
+    expect(
+      paints(['  /* note */ <b className="text-state-quiet" />'].join('\n'), STATE_QUIET_TEXT_CLASS),
+    ).toBe(true);
+  });
+
+  /**
+   * The regression that review caught on the deleted `--ink-ghost` ban, kept
+   * as a fixture here because the bug is invisible: it made the guard PASS.
+   *
+   * The first version of `stripComments` did a file-wide
+   * `replace(/\/\*[\s\S]*?\*\//g, '')`. A bare `/` + `*` in ordinary code —
+   * a route path like `'…/files/*'`, or `routines/*.md` rendered as JSX text,
+   * both of which are live in this tree — was read as an opening delimiter and
+   * paired with the next real close far below, deleting a real class in
+   * between. Green suite, unguarded token.
+   *
+   * These are the reviewer's exact repro shapes. Case C is the control: if it
+   * ever goes false, the scanner is broken in the loud direction instead.
+   */
+  it('does not let a stray slash-star in code swallow a real usage', () => {
+    const caseA = [
+      '      <code>.ax/routines/*.md</code>',
+      '      <span className="text-state-quiet">{row.source}</span>',
+      '      {/* a later block comment, whose close pairs with the text above */}',
+    ].join('\n');
+    expect(paints(caseA, STATE_QUIET_TEXT_CLASS)).toBe(true);
+
+    const caseB = [
+      "      const rx = /\\/api\\/workspace\\/agents\\/:id\\/files\\/*/;",
+      '      <span className="text-state-quiet" />',
+      '      {/* trailing comment */}',
+    ].join('\n');
+    expect(paints(caseB, STATE_QUIET_TEXT_CLASS)).toBe(true);
+
+    const caseC = '<span className="text-state-quiet" />';
+    expect(paints(caseC, STATE_QUIET_TEXT_CLASS)).toBe(true);
+  });
+
+  /**
+   * The raw-text backstop, for the same reason the deleted `--ink-ghost` ban
+   * had one: comment stripping can only ever LOSE a usage, so pin every file
+   * that so much as names the class. The one entry is the token's own note in
+   * the stylesheet saying not to use it.
    */
   it('mentions every file that names the class, prose included', () => {
     expect(filesMentioning(STATE_QUIET_TEXT_CLASS)).toEqual(['index.css']);
@@ -1338,12 +1196,13 @@ describe("ApprovalCard's tinted surface", () => {
  *      it shipped as TASK-485: a per-state shape, plus the state word as
  *      `sr-only` text in the roster row (`WorkspaceSidebarState.test.tsx`).
  *
- * WHY A SECOND TOKEN rather than moving `--ink-ghost`: the block above spells
- * out the tension and the precedent. `--ink-ghost` also fills the composer's
- * send circle while the field is empty, where the faintness IS the affordance
- * — and an inactive control is the one case SC 1.4.11 exempts by name, so that
- * role owes no ratio at all. Raising the shared token would have paid a bill
- * the send circle does not have. This file's answer to "one token, two roles
+ * WHY A SECOND TOKEN rather than moving `--ink-ghost` (deleted in TASK-360,
+ * with the composer it filled): the same tension and precedent as `--primary`
+ * / `--destructive` above. `--ink-ghost` also filled the composer's send
+ * circle while the field was empty, where the faintness WAS the affordance —
+ * and an inactive control is the one case SC 1.4.11 exempts by name, so that
+ * role owed no ratio at all. Raising the shared token would have paid a bill
+ * the send circle did not have. This file's answer to "one token, two roles
  * pulling apart" has now twice been to split rather than average.
  *
  * THE CLASSES ARE READ OUT OF THE COMPONENTS, not written down here — the same
@@ -1930,27 +1789,14 @@ describe('filled accent controls clear AA on hover', () => {
 });
 
 /**
- * SessionRow's "Delete" menu item, in every state it can paint (TASK-531).
+ * Class-string readers shared by the component-sourced contrast rows below.
  *
- * It is `text-destructive` ink on the row menu's own surface, and its hover
- * used to be `hover:bg-destructive/15` — the accent tinted at 15% over the
- * menu. In light mode that drags the fill toward the ink sitting on it:
- * **4.08:1**, under the floor, on the item that deletes a chat. (The follow-up
- * note that filed this also read 4.22 in dark mode; this file's formula puts
- * `/15` over the pure-black dark menu at 5.43, so only light was ever under.)
- *
- * The fix paints `hover:bg-destructive-soft` — the per-theme tint that already
- * sits behind `text-destructive` on the error rows, and which `ACCENT_SOFT_PAIRS`
- * above measures in both themes (4.57 light / 4.63 dark). An alpha cannot do
- * it: the menu is white in light mode and black in dark, so the same `/15`
- * composites to a different pixel in each, and the white one is what fails.
- *
- * These rows read the classes OFF THE COMPONENT — the item's ink, every
- * state-prefixed fill it carries (hover, focus, focus-visible, active), and the
- * menu surface underneath — so reverting the hover, or adding a focus fill that
- * does not clear, goes red here rather than in a browser walk.
+ * They were first written for the chat sidebar's SessionRow (TASK-531 /
+ * TASK-538), which TASK-360 deleted along with the rest of the chat screen.
+ * The readers outlived it: the Routines rows further down use them, and their
+ * own self-tests stay here so a reader that quietly drifts is caught before it
+ * makes a contrast row vacuous.
  */
-const SESSION_ROW_FILE = 'components/SessionRow.tsx';
 
 /** The `className="…"` of the one JSX element carrying `marker`, comments stripped. */
 function classNameOf(src: string, marker: string): string {
@@ -1998,47 +1844,7 @@ function menuItemPaint(cls: string): {
   return { text: `--${texts[0]!.slice('text-'.length)}`, fills };
 }
 
-const sessionRowCasesRegistered: string[] = [];
-
-describe("SessionRow's delete menu item clears AA in every state", () => {
-  const src = readSource(SESSION_ROW_FILE);
-  const item = menuItemPaint(classNameOf(src, 'data-testid="row-menu-delete"'));
-  const surface = bgFill(classNameOf(src, 'session-row-menu '));
-
-  for (const [themeName, selector] of THEMES) {
-    sessionRowCasesRegistered.push(themeName);
-    it(`${themeName}: ${item.text} on ${surface.cls}, resting and under ${item.fills.map((f) => f.cls).join(', ') || 'no fill'}`, () => {
-      const tokens = tokensAfter(selector);
-      const under = tokens.get(surface.token);
-      const text = tokens.get(item.text);
-      expect(under, `${surface.token} missing`).toBeDefined();
-      expect(text, `${item.text} missing`).toBeDefined();
-      expect(surface.alpha, 'the menu surface must be opaque to be measured').toBe(1);
-      expect(contrast(text!, under!), `resting on ${surface.cls}`).toBeGreaterThanOrEqual(AA_NORMAL);
-      for (const fill of item.fills) {
-        const v = tokens.get(fill.token);
-        expect(v, `${fill.token} missing`).toBeDefined();
-        const painted: Colour = fill.alpha === 1 ? v! : composite(v!, fill.alpha, under!);
-        expect(contrast(text!, painted), `${fill.state}: ${fill.cls}`).toBeGreaterThanOrEqual(AA_NORMAL);
-      }
-    });
-  }
-
-  it('paints a hover, and every fill it paints is a solid per-theme tint', () => {
-    expect(item.text).toBe('--destructive');
-    expect(item.fills.map((f) => f.state)).toContain('hover');
-    for (const f of item.fills) expect(f.alpha, f.cls).toBe(1);
-  });
-
-  it('measures the old `hover:bg-destructive/15` under the floor in light mode', () => {
-    const old = menuItemPaint('text-destructive hover:bg-destructive/15');
-    expect(old.fills).toEqual([{ state: 'hover', token: '--destructive', alpha: 0.15, cls: 'bg-destructive/15' }]);
-    const tokens = tokensAfter(':root {');
-    const ink = tokens.get('--destructive')!;
-    const painted = composite(ink, 0.15, tokens.get('--background')!);
-    expect(contrast(ink, painted)).toBeLessThan(AA_NORMAL);
-  });
-
+describe('menuItemPaint / classNameOf', () => {
   it('reads the item paint off a class string, and refuses shapes it cannot measure', () => {
     expect(menuItemPaint('text-[12.5px] text-destructive hover:bg-destructive-soft')).toEqual({
       text: '--destructive',
@@ -2059,38 +1865,7 @@ describe("SessionRow's delete menu item clears AA in every state", () => {
       'new',
     );
   });
-
-  it('registers one case per theme', () => {
-    expect(sessionRowCasesRegistered).toEqual(THEMES.map(([name]) => name));
-  });
 });
-
-/**
- * SessionRow's inline confirm-delete row, in every state it can paint (TASK-538).
- *
- * Choosing "Delete" from the row menu swaps the row for "Delete this chat?"
- * plus a Cancel and a Delete control. The row used to tint itself
- * `bg-destructive/10` over the sidebar's `bg-background`. In light mode that
- * alpha drags the white page toward the red ink sitting on it: Cancel
- * (`text-muted-foreground`) measured **4.49:1** and Delete (`text-destructive`)
- * **4.44:1**, both under the floor, on the two buttons that decide whether a
- * chat is gone. Dark mode was fine at /10 (5.68 / 5.71).
- *
- * The fix is the same one TASK-531 made for the menu item: the solid per-theme
- * `bg-destructive-soft`. It costs dark mode some headroom (4.61 / 4.63, down
- * from 5.7) and buys light mode its floor (4.63 / 4.57). One token that clears
- * both themes beats an alpha that only clears one, and beats a `dark:` override.
- *
- * Everything is read OFF THE COMPONENTS: the row's fill, each control's resting
- * ink, every state-prefixed fill (via `menuItemPaint`), each `hover:text-*` ink,
- * and the sidebar surface the row sits on. A revert to `/10` goes red here with
- * the true ratios. The Delete control's hover swaps BOTH its fill and its ink
- * (`bg-destructive` + `text-destructive-foreground`), so its hover fill is
- * measured against the hover ink, not the resting one — measuring red on red
- * would be a false alarm, and measuring the resting ink on the resting fill
- * alone would miss a bad hover.
- */
-const SIDEBAR_FILE = 'components/Sidebar.tsx';
 
 /** `menuItemPaint`, plus the one `hover:text-*` ink a control may swap to. Other prefixed inks are refused. */
 function controlPaint(cls: string): ReturnType<typeof menuItemPaint> & { hoverText?: string } {
@@ -2107,66 +1882,7 @@ function controlPaint(cls: string): ReturnType<typeof menuItemPaint> & { hoverTe
     : paint;
 }
 
-const confirmRowCasesRegistered: string[] = [];
-
-describe("SessionRow's confirm-delete row clears AA in every state", () => {
-  const src = readSource(SESSION_ROW_FILE);
-  const row = bgFill(classNameOf(src, 'session-row confirming-delete'));
-  const surface = bgFill(classNameOf(readSource(SIDEBAR_FILE), 'w-[240px]'));
-  const controls = [
-    ['prompt', controlPaint(classNameOf(src, 'session-row-confirm-text'))],
-    ['Cancel', controlPaint(classNameOf(src, 'session-row-confirm-cancel'))],
-    ['Delete', controlPaint(classNameOf(src, 'session-row-confirm-delete'))],
-  ] as const;
-
-  function rowColour(tokens: Map<string, string>, fill: { token: string; alpha: number }): Colour {
-    const under = tokens.get(surface.token);
-    const v = tokens.get(fill.token);
-    expect(under, `${surface.token} missing`).toBeDefined();
-    expect(v, `${fill.token} missing`).toBeDefined();
-    return fill.alpha === 1 ? v! : composite(v!, fill.alpha, under!);
-  }
-
-  for (const [themeName, selector] of THEMES) {
-    for (const [label, paint] of controls) {
-      confirmRowCasesRegistered.push(`${themeName}:${label}`);
-      it(`${themeName}: ${label} (${paint.text}) on ${row.cls}, resting and in every state`, () => {
-        const tokens = tokensAfter(selector);
-        const rest = rowColour(tokens, row);
-        const ink = tokens.get(paint.text);
-        expect(ink, `${paint.text} missing`).toBeDefined();
-        expect(contrast(ink!, rest), `resting on ${row.cls}`).toBeGreaterThanOrEqual(AA_NORMAL);
-        const hoverInk = paint.hoverText === undefined ? ink! : tokens.get(paint.hoverText);
-        expect(hoverInk, `${paint.hoverText} missing`).toBeDefined();
-        const hoverFill = paint.fills.find((f) => f.state === 'hover');
-        if (hoverFill === undefined) {
-          expect(contrast(hoverInk!, rest), `hover ink on ${row.cls}`).toBeGreaterThanOrEqual(AA_NORMAL);
-        }
-        for (const fill of paint.fills) {
-          const v = tokens.get(fill.token);
-          expect(v, `${fill.token} missing`).toBeDefined();
-          const painted: Colour = fill.alpha === 1 ? v! : composite(v!, fill.alpha, rest);
-          const on = fill.state === 'hover' ? hoverInk! : ink!;
-          expect(contrast(on, painted), `${fill.state}: ${fill.cls}`).toBeGreaterThanOrEqual(AA_NORMAL);
-        }
-      });
-    }
-  }
-
-  it('sits on an opaque sidebar surface, and the row fill is a solid per-theme tint', () => {
-    expect(surface).toEqual({ token: '--background', alpha: 1, cls: 'bg-background' });
-    expect(row.alpha, `${row.cls} must be solid: an alpha composites differently per theme`).toBe(1);
-    expect(controls.map(([, p]) => p.text)).toEqual(['--foreground', '--muted-foreground', '--destructive']);
-    expect(controls[2][1].hoverText).toBe('--destructive-foreground');
-  });
-
-  it('measures the old `bg-destructive/10` row under the floor in light mode for both controls', () => {
-    const tokens = tokensAfter(':root {');
-    const old = composite(tokens.get('--destructive')!, 0.1, tokens.get('--background')!);
-    expect(contrast(tokens.get('--muted-foreground')!, old)).toBeLessThan(AA_NORMAL);
-    expect(contrast(tokens.get('--destructive')!, old)).toBeLessThan(AA_NORMAL);
-  });
-
+describe('controlPaint', () => {
   it('reads a hover ink off a class string, and refuses inks it cannot measure', () => {
     expect(controlPaint('text-muted-foreground hover:text-foreground').hoverText).toBe('--foreground');
     expect(controlPaint('text-destructive').hoverText).toBeUndefined();
@@ -2174,12 +1890,6 @@ describe("SessionRow's confirm-delete row clears AA in every state", () => {
     expect(() => controlPaint('text-destructive dark:text-foreground')).toThrow(/unmeasured ink/);
     expect(() => controlPaint('text-x hover:text-y hover:text-z')).toThrow(/at most one/);
     expect(controlPaint('text-destructive hover:text-nowrap').hoverText).toBeUndefined();
-  });
-
-  it('registers one case per theme per control', () => {
-    expect(confirmRowCasesRegistered).toEqual(
-      THEMES.flatMap(([name]) => ['prompt', 'Cancel', 'Delete'].map((l) => `${name}:${l}`)),
-    );
   });
 });
 

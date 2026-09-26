@@ -3395,7 +3395,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         createSessionInmemoryPlugin(),
         ipcStubPlugin,
         createSandboxSubprocessPlugin(),
-        createChannelWebServerPlugin({ agentWorkspace: true }),
+        createChannelWebServerPlugin(),
         authStubPlugin,
         agentsStubPlugin,
         agentInvokeStubPlugin,

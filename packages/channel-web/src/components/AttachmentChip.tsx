@@ -26,18 +26,13 @@ import { cn } from '@/lib/utils';
  * this component spends it on an `<img alt>` and two `aria-label`s — a screen
  * reader announcing four hundred characters is its own kind of broken, and the
  * CSS `truncate` on the visible row does nothing about it, because CSS does not
- * touch the accessibility tree. Three call sites render this chip (chat's
- * `UserFilePart` and `LiveAttachmentChip`, the agent view's
- * `AgentConversation`) and TASK-431 exists precisely because a clamp that lived
- * at the call sites reached only one of the three. The sink is the one place
- * that cannot be forgotten.
+ * touch the accessibility tree. TASK-431 exists because a clamp that used to
+ * live at each call site reached only some of them; now the agent view's
+ * `AgentConversation` renders through this one sink, which cannot be forgotten.
  *
  * Read that narrowly: it bounds the names THIS chip draws, not every attachment
- * name in the product. `AttachmentComposerChip` — chat's composer — still
- * renders its name unclamped, where the workspace composer's
- * `WorkspaceAttachmentChip` clamps. A bare text node reaches the accessibility
- * tree just as fully as an `alt` does, so that asymmetry is the same defect one
- * surface earlier, and it has a follow-up card of its own.
+ * name in the product. The workspace composer's `WorkspaceAttachmentChip`
+ * clamps too, independently.
  */
 export type AttachmentChipProps =
   | {

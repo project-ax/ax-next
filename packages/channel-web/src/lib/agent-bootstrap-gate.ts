@@ -1,7 +1,7 @@
 import type { AgentStoreState } from './agent-store';
 
 /**
- * Whether the AgentBootstrap flow should mount (vs. the chat shell).
+ * Whether the AgentBootstrap flow should mount (vs. the workspace).
  *
  * First-run = the agent list loaded `ready` and is empty. We also mount when
  * the user explicitly opened "+ New agent". This is the gate that, when it
@@ -9,7 +9,7 @@ import type { AgentStoreState } from './agent-store';
  * screen could paint — the deferred-store-mutation fix lives in AgentBootstrap.
  *
  * Lives in its own module (not App.tsx) so the first-run interaction can be
- * exercised in a test without dragging the whole chat runtime + admin imports
+ * exercised in a test without dragging the whole workspace + admin imports
  * in via <AppContent>.
  *
  * 'error' deliberately keeps the gate closed (returns false here unless

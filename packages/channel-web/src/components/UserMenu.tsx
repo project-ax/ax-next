@@ -83,7 +83,6 @@ export function UserMenu({
           user-row group flex items-center gap-2.5 cursor-pointer w-full
           px-2 py-[7px] rounded-lg transition-colors
           hover:bg-muted aria-expanded:bg-muted
-          [body.sidebar-collapsed_&]:justify-center [body.sidebar-collapsed_&]:px-0
         "
       >
         <AvatarTile
@@ -94,7 +93,7 @@ export function UserMenu({
         >
           {user.name[0]?.toUpperCase() ?? 'U'}
         </AvatarTile>
-        <span className="flex flex-col gap-px min-w-0 flex-1 text-left [body.sidebar-collapsed_&]:hidden">
+        <span className="flex flex-col gap-px min-w-0 flex-1 text-left">
           <span className="user-name text-[12.5px] leading-[1.15] tracking-[-0.005em] text-foreground truncate">
             {user.name}
           </span>
@@ -108,7 +107,6 @@ export function UserMenu({
           className="
             shrink-0 h-2.5 w-2.5 text-muted-foreground transition-transform duration-150
             group-aria-expanded:rotate-180
-            [body.sidebar-collapsed_&]:hidden
           "
         >
           <path
