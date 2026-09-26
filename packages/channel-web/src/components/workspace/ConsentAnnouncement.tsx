@@ -63,6 +63,11 @@
  * without making the announcement conditional on a focus move that may not have
  * carried the words anyway (see the `outcome.note` hole above).
  *
+ * The same trade holds on `ApprovalCard`'s OPEN branch since TASK-473: press
+ * "Move it" on a row whose guard trips and focus lands on the stale paragraph
+ * while this region says the same sentence. Twice on a click, once with no
+ * click, never zero — do not "optimise" the click path back to silence here.
+ *
  * THE OPEN BRANCH IS PER-RENDERER (TASK-473), because the two renderers do not
  * start from the same place. `DecisionRow` draws a tripped freshness guard and
  * a failed-POST notice inside shadcn's `Alert`, which is already

@@ -417,7 +417,45 @@ describe('ApprovalCard — the open branch speaks when it changes on its own', (
     expect(said()).toBe(notice);
   });
 
+  it('a notice that clears empties the region, so the same refusal later is news again', () => {
+    const notice = 'That did not go through. Nothing was sent.';
+    const { rerender } = render(
+      <Passive renderer="thread" change={{ decision: decisionFixture(), notice }} />,
+    );
+    const before = region();
+
+    rerender(<Passive renderer="thread" change={null} />);
+    expect(said()).toBe('');
+
+    rerender(
+      <Passive renderer="thread" change={{ decision: decisionFixture(), notice }} />,
+    );
+    expect(said()).toBe(notice);
+    expect(region()).toBe(before);
+  });
+
+  it('an undo that re-opens a receipt clears what the region last said', () => {
+    const resolved = resolvedFixture('executed');
+    const { rerender } = render(
+      <Passive renderer="thread" change={{ decision: decisionFixture(), notice: null }} />,
+    );
+    const before = region();
+
+    rerender(<Passive renderer="thread" change={{ decision: resolved, notice: null }} />);
+    expect(said()).toBe(resolved.approvedText);
+
+    rerender(<Passive renderer="thread" change={{ decision: decisionFixture(), notice: null }} />);
+    expect(said()).toBe('');
+    expect(region()).toBe(before);
+  });
+
   it('a card that MOUNTS stale stays quiet — the mount rule does not bend', () => {
+    /*
+      An INVARIANT GUARD, not evidence for the fix: it passes on the code
+      before TASK-473 too. What it catches is the plausible wrong fix —
+      seeding the region from the current open sentence instead of from
+      silence.
+    */
     /*
       A page load. The hold's arrival is `InThreadApprovals`' polite line to
       say, and a region created holding its sentence is the unreliable shape
