@@ -1993,7 +1993,7 @@ function controlPaint(cls: string): ReturnType<typeof menuItemPaint> & { hoverTe
   const paint = menuItemPaint(cls);
   const prefixedInks = cls
     .split(/\s+/)
-    .filter((t) => /^[\w-]+:text-[a-z][\w-]*$/.test(t) && !/:text-(xs|sm|base|lg|\d?xl)$/.test(t));
+    .filter((t) => /^[\w-]+:text-[a-z][\w-]*$/.test(t) && !/:text-(xs|sm|base|lg|\d?xl|left|right|center|justify|start|end|ellipsis|clip|wrap|nowrap|balance|pretty)$/.test(t));
   const hover = prefixedInks.filter((t) => t.startsWith('hover:'));
   const other = prefixedInks.filter((t) => !t.startsWith('hover:'));
   if (other.length > 0) throw new Error(`unmeasured ink prefix "${other.join(', ')}" — give it a row first`);
@@ -2069,6 +2069,7 @@ describe("SessionRow's confirm-delete row clears AA in every state", () => {
     expect(() => controlPaint('text-destructive focus:text-foreground')).toThrow(/unmeasured ink/);
     expect(() => controlPaint('text-destructive dark:text-foreground')).toThrow(/unmeasured ink/);
     expect(() => controlPaint('text-x hover:text-y hover:text-z')).toThrow(/at most one/);
+    expect(controlPaint('text-destructive hover:text-nowrap').hoverText).toBeUndefined();
   });
 
   it('registers one case per theme per control', () => {
