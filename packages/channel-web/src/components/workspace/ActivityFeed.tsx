@@ -28,7 +28,7 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -205,6 +205,28 @@ export function ActivityFeed({
   const placeholder = awaitingScope || (loading && events.length === 0);
 
   /*
+    False for exactly the first commit of this mount, then true forever.
+
+    A feed can MOUNT already failed: the hook lives in WorkspaceShell, so
+    leaving the "What it did" tab and coming back remounts this component
+    with `error` still set (TASK-545). Rendered straight into the region, the
+    failure would be born with it — a live region created and filled in one
+    commit, which screen readers announce inconsistently, if at all.
+
+    So on that first commit the failure renders BESIDE the region, at the
+    same spot (the region takes no room while empty), and the passive effect
+    below moves it inside. The region exists empty for a whole commit — and,
+    because it is `useEffect` rather than `useLayoutEffect`, for a paint —
+    and then gains its text: a change a screen reader reports. Sighted
+    readers see nothing move. The alternative, holding the failure back
+    until armed, was the one-frame blank TASK-541 declined for this case.
+  */
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    setArmed(true);
+  }, []);
+
+  /*
     What the polite region below says. Nothing while a read is in flight —
     and that includes a "Try again", where the hook KEEPS `error` set: it is
     what makes a second identical failure audible (TASK-541). The region
@@ -370,14 +392,13 @@ export function ActivityFeed({
         Its spacing lives on the message, not here, so an empty region takes
         no room.
 
-        What this cannot cover: a feed MOUNTED already failed — the reader
-        opened Activity, or the "What it did" tab, after the read had failed
-        elsewhere. The region is born full then, like the placeholder is
-        born full, and the failure is page content the reader lands on
-        rather than news arriving while they wait.
+        A feed MOUNTED already failed is covered too: on its first commit
+        the failure sits just outside the region, and moves in once the
+        region has existed empty (see `armed`, TASK-545).
       */}
+      {!armed && failure}
       <div data-activity-announcer aria-live="polite">
-        {failure}
+        {armed && failure}
       </div>
 
       {!placeholder && events.length > 0 && hasMore && (
