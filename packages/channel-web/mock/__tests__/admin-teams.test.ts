@@ -51,7 +51,13 @@ describe('mock admin teams', () => {
       const body = await res.json();
       const teams = body.teams as Team[];
       expect(teams).toHaveLength(1);
-      expect(teams[0]).toMatchObject({ id: 't1', name: 'Engineering', members: ['u1', 'u2'] });
+      // TASK-571: the real route's exact key set — no `name`, no `members`.
+      expect(teams[0]).toEqual({
+        id: 't1',
+        displayName: 'Engineering',
+        createdBy: 'u1',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      });
     } finally {
       await close();
     }

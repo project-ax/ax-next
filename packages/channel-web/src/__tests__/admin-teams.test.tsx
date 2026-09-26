@@ -17,6 +17,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import type { AdminTeamWire } from '@ax/teams';
 import { TeamList } from '../components/admin/TeamList';
 
 const fetchMock = vi.fn();
@@ -38,16 +39,29 @@ beforeEach(() => {
 });
 
 describe('AdminSettings — Teams tab', () => {
-  it('lists seeded teams (read-only)', async () => {
+  it('lists the caller\'s teams by their displayName (read-only)', async () => {
+    // TASK-571: this fixture is the REAL route's shape, typed by the route's
+    // own exported wire type — `@ax/teams` serializeTeam sends
+    // `{ id, displayName, createdBy, createdAt }` and nothing else. The old
+    // fixture here was `{ name, members }`, a shape no server ever sent, so
+    // this test passed while the real Teams page showed a blank title and
+    // then threw on `members.length`.
+    const team: AdminTeamWire = {
+      id: 'team_1',
+      displayName: 'Engineering',
+      createdBy: 'u1',
+      createdAt: '2026-09-01T12:00:00.000Z',
+    };
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    fetchMock.mockResolvedValueOnce(
-      jsonOk({ teams: [{ id: 't1', name: 'Engineering', members: ['u1', 'u2'] }] }),
-    );
+    fetchMock.mockResolvedValueOnce(jsonOk({ teams: [team] }));
 
     render(<TeamList />);
     await waitFor(() => expect(screen.getByText('Engineering')).toBeTruthy());
-    expect(screen.getByText('2 members')).toBeTruthy();
+    // The list route carries no member list, so the card must not pretend to
+    // count one.
+    expect(screen.queryByText(/members?\b/i)).toBeNull();
+    expect(screen.getByText(/^Created /)).toBeTruthy();
   });
 
   it('shows the deferred-feature note', async () => {

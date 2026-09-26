@@ -530,6 +530,9 @@ importers:
       '@ax/skills-parser':
         specifier: workspace:*
         version: link:../skills-parser
+      '@ax/teams':
+        specifier: workspace:*
+        version: link:../teams
       '@ax/validator-routine':
         specifier: workspace:*
         version: link:../validator-routine

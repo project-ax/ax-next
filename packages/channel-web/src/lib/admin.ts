@@ -22,7 +22,7 @@
  * regardless of how `allowedOrigins` is configured. Same posture as
  * `lib/auth.ts` and `components/SessionRow.tsx`.
  */
-import type { Team } from '../../mock/admin/teams';
+import type { AdminTeamWire } from '@ax/teams';
 
 const writeHeaders = {
   'content-type': 'application/json',
@@ -324,8 +324,16 @@ export async function deleteAuthoredSkill(
 }
 
 // Teams ------------------------------------------------------------------
-// Task 24 swaps the placeholder for a real list/edit panel. Listing today
-// is enough so AgentForm can populate the team-owner dropdown.
+// Listing is all the SPA does today: TeamList shows the caller's teams and
+// AgentForm populates its team-owner dropdown. `GET /admin/teams` answers
+// "which teams am I in" (`teams:list-for-user`), not "every team".
+//
+// The element type is @ax/teams' own exported wire type (type-only import —
+// invariant #2 allows those), so the route and this client cannot drift
+// apart again (TASK-571: this used to be a mock-local `{ name, members }`
+// that no server ever sent).
+
+export type Team = AdminTeamWire;
 
 export async function listTeams(): Promise<Team[]> {
   const res = await fetch('/admin/teams', { credentials: 'include' });

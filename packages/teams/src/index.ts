@@ -4,6 +4,7 @@ export {
   createAdminTeamRouteHandlers,
   registerAdminTeamRoutes,
   type AdminRouteDeps,
+  type AdminTeamWire,
   type RouteRequest,
   type RouteResponse,
 } from './admin-routes.js';

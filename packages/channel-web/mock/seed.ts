@@ -47,7 +47,14 @@ export const defaultSeeds: Record<string, unknown[]> = {
       updated_at: 0,
     },
   ],
-  teams: [{ id: 't1', name: 'Engineering', members: ['u1', 'u2'] }],
+  teams: [
+    {
+      id: 't1',
+      displayName: 'Engineering',
+      createdBy: 'u1',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    },
+  ],
   'mcp-servers': [],
   sessions: [],
   messages: [],
