@@ -26,7 +26,9 @@ export const DEFAULT_SERVICE_TIMEOUT_MS = 120_000;
  * — and then fail with `service hook 'agent:invoke' exceeded 120000ms`. That
  * message names the OUTERMOST call, which is the one thing an operator already
  * knew. The thing actually stuck was a subscriber several frames down, and
- * `fire()` has no timeout at all, so it was never going to name itself.
+ * `fire()` had no timeout at all, so it was never going to name itself.
+ * (Since TASK-514 a caller may bound its subscribers with
+ * `subscriberTimeoutMs`; the default is still unbounded.)
  *
  * Three properties matter, and each one is load-bearing:
  *
