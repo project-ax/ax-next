@@ -11,8 +11,8 @@ import type { Readable } from 'node:stream';
  * raised this package's `testTimeout` past, just hidden inside the test body
  * where the config can't reach it. Under CI contention the stub legitimately
  * takes longer than that to boot and answer — on run 36220630082 the
- * neighbouring `echo` test did the identical spawn + handshake and needed
- * **9087ms** (idle: ~90ms). The echo test passed because it had no private
+ * neighbouring `echo` test did the same spawn + handshake (plus one echo
+ * call) and needed **9087ms** (idle: ~90ms). The echo test passed because it had no private
  * deadline; the crash test failed at 5.2s with `timeout waiting for id=1`.
  *
  * So there is deliberately NO timer here. How long a reply may take is the
@@ -32,7 +32,7 @@ export interface JsonRpcChild extends EventEmitter {
 export interface JsonRpcStdout {
   /** Resolves with the message whose `id` matches, whenever it arrives. */
   waitForId(id: number): Promise<unknown>;
-  /** Everything the child has written to stderr so far. */
+  /** The tail (last ~4KB) of what the child has written to stderr so far. */
   stderr(): string;
 }
 

@@ -91,8 +91,8 @@ describe('mcp-server-stub', () => {
     };
 
     // No private deadline on the reply (TASK-537): this used to give up
-    // after 5s, and CI has needed 9s for the same handshake in the echo
-    // test above. The package's testTimeout bounds the wait; the reader
+    // after 5s, and CI has needed 9s for the same spawn + handshake (plus
+    // one call) in the echo test above. The package's testTimeout bounds the wait; the reader
     // rejects straight away, with exit code + stderr, if the stub dies first.
     const rpc = readJsonRpcStdout(child);
 
