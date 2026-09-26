@@ -245,3 +245,158 @@ describe('useDecisionQueue.refresh — what a re-read keeps and what it drops', 
     expect(result.current.decisions).toEqual([fresh, serverCopy]);
   });
 });
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => (resolve = r));
+  return { promise, resolve };
+}
+
+/**
+ * THE SAME RACE, THE OTHER WAY ROUND (TASK-530).
+ *
+ * Undo puts the row back to `pending`. A queue re-read ISSUED while the row
+ * was still resolved (the post-answer refresh from the resumed turn, say) can
+ * land AFTER the undo's response. Its open-only list does not carry the row,
+ * the row is OPEN locally so the TASK-509 receipt rule does not keep it, and
+ * taking the read at face value unmounted the reopened card and dropped focus
+ * to `<body>`. A read that started before a local action on a row knows less
+ * about that row than we do, so it may not touch it.
+ */
+describe('in-thread undo — survives a queue refresh that was already in flight (TASK-530)', () => {
+  it('keeps the reopened card mounted with focus inside it', async () => {
+    const open = decisionFixture();
+    listDecisions.mockResolvedValue({ decisions: [open] });
+    let queue!: DecisionQueue;
+    render(<Thread expose={(q) => (queue = q)} />);
+    await settle();
+
+    approveDecision.mockResolvedValue({
+      decision: resolvedFixture('executed'),
+      executed: true,
+      path: null,
+      error: null,
+      pendingUntil: null,
+      streamReqId: null,
+    });
+    fireEvent.click(screen.getByRole('button', { name: open.primaryLabel }));
+    await settle();
+
+    // The resumed turn finishes and the shell re-reads the queue — while the
+    // row is still resolved on the server, so the answer omits it. It is slow.
+    const staleRead = deferred<{ decisions: Decision[] }>();
+    listDecisions.mockReturnValueOnce(staleRead.promise);
+    let refreshing!: Promise<void>;
+    act(() => {
+      refreshing = queue.refresh();
+    });
+
+    // Meanwhile: Undo. The question is back, and the person is on its buttons.
+    undoDecision.mockResolvedValue({ decision: decisionFixture(), undone: true });
+    fireEvent.click(screen.getByRole('button', { name: /Undo/ }));
+    await settle();
+    const yes = screen.getByRole('button', { name: open.primaryLabel });
+    yes.focus();
+    expect(document.activeElement).toBe(yes);
+
+    // The stale read lands.
+    await act(async () => {
+      staleRead.resolve({ decisions: [] });
+      await refreshing;
+    });
+
+    // THE BUG: on `main` the card is gone here and activeElement is <body>.
+    expect(screen.getByRole('button', { name: open.primaryLabel })).toBe(yes);
+    expect(document.activeElement).toBe(yes);
+  });
+});
+
+describe('useDecisionQueue.refresh — a read cannot overrule a newer local action (TASK-530)', () => {
+  async function mount(rows: Decision[]) {
+    listDecisions.mockResolvedValue({ decisions: rows });
+    const handle = renderHook(() => useDecisionQueue());
+    await settle();
+    return handle;
+  }
+
+  it('keeps a row undone while the read was in flight, though the read omits it', async () => {
+    const resolved = resolvedFixture('executed');
+    const { result } = await mount([resolved]);
+
+    const stale = deferred<{ decisions: Decision[] }>();
+    listDecisions.mockReturnValueOnce(stale.promise);
+    let refreshing!: Promise<void>;
+    act(() => {
+      refreshing = result.current.refresh();
+    });
+
+    const reopened = decisionFixture({ id: resolved.id });
+    undoDecision.mockResolvedValue({ decision: reopened, undone: true });
+    act(() => result.current.undo(resolved.id));
+    await settle();
+    expect(result.current.decisions).toEqual([reopened]);
+
+    await act(async () => {
+      stale.resolve({ decisions: [] });
+      await refreshing;
+    });
+
+    expect(result.current.decisions).toEqual([reopened]);
+  });
+
+  it("keeps the local copy over a stale read's copy of the same row", async () => {
+    // The approve direction: a read issued before the click still lists the
+    // row as OPEN. Applying it would put the buttons back over a question that
+    // has just been answered.
+    const open = decisionFixture();
+    const { result } = await mount([open]);
+
+    const stale = deferred<{ decisions: Decision[] }>();
+    listDecisions.mockReturnValueOnce(stale.promise);
+    let refreshing!: Promise<void>;
+    act(() => {
+      refreshing = result.current.refresh();
+    });
+
+    const answered = resolvedFixture('executed', { id: open.id });
+    approveDecision.mockResolvedValue({
+      decision: answered,
+      executed: true,
+      path: null,
+      error: null,
+      pendingUntil: null,
+      streamReqId: null,
+    });
+    act(() => result.current.approve(open.id));
+    await settle();
+
+    await act(async () => {
+      stale.resolve({ decisions: [open] });
+      await refreshing;
+    });
+
+    expect(result.current.decisions).toEqual([answered]);
+  });
+
+  it('lets the NEXT read — issued after the action — drop an open row as usual', async () => {
+    // The guard is scoped to reads that started before the action. A read
+    // issued afterwards knows at least what we know, so an OPEN row it omits
+    // was answered elsewhere and must go, exactly as before.
+    const resolved = resolvedFixture('executed');
+    const { result } = await mount([resolved]);
+
+    undoDecision.mockResolvedValue({
+      decision: decisionFixture({ id: resolved.id }),
+      undone: true,
+    });
+    act(() => result.current.undo(resolved.id));
+    await settle();
+
+    listDecisions.mockResolvedValue({ decisions: [] });
+    await act(async () => {
+      await result.current.refresh();
+    });
+
+    expect(result.current.decisions).toEqual([]);
+  });
+});
