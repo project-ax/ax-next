@@ -1,10 +1,15 @@
-import type { ReactNode } from 'react';
+import type { ReactNode, Ref } from 'react';
 
 export interface AdminPaneHeaderProps {
   eyebrow: string;
   title: string;
   /** Optional right-aligned slot — typically a status badge or count. */
   badge?: ReactNode;
+  /**
+   * The `h1`, for a caller that moves focus to it. `AdminShell` does, once, on
+   * mount (TASK-510) — see there.
+   */
+  headingRef?: Ref<HTMLHeadingElement> | undefined;
 }
 
 /**
@@ -23,14 +28,27 @@ export interface AdminPaneHeaderProps {
  *
  * Preflight resets heading typography, so the rendered pixels are unchanged.
  */
-export function AdminPaneHeader({ eyebrow, title, badge }: AdminPaneHeaderProps) {
+export function AdminPaneHeader({ eyebrow, title, badge, headingRef }: AdminPaneHeaderProps) {
   return (
     <header className="flex items-center justify-between gap-4 px-8 pt-[18px] pb-4 border-b border-rule-soft">
       <div className="flex flex-col gap-0.5 min-w-0">
         <span className="text-[11px] tracking-[0.06em] uppercase text-muted-foreground font-medium">
           {eyebrow}
         </span>
-        <h1 className="text-[19px] font-medium tracking-[-0.012em]">{title}</h1>
+        {/*
+          `tabIndex={-1}`: focusable from script, not a Tab stop — it is where
+          Settings puts focus on entry (TASK-510), not a control. The outline
+          is dropped because a heading is not something you act on; the
+          screen-reader announcement is the point of the move, and a ring
+          round a title reads as a button that does nothing.
+        */}
+        <h1
+          ref={headingRef}
+          tabIndex={-1}
+          className="text-[19px] font-medium tracking-[-0.012em] outline-none"
+        >
+          {title}
+        </h1>
       </div>
       {badge && <div className="flex items-center gap-3.5">{badge}</div>}
     </header>

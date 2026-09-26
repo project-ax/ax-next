@@ -83,6 +83,10 @@ vi.mock('../lib/workspace-api', async (importOriginal) => {
 vi.mock('../components/settings/SkillsTab', () => ({
   SkillsTab: () => <div data-testid="skills-tab-stub" />,
 }));
+// Same reason, for the tab the TASK-510 tab-switch case moves to.
+vi.mock('../components/settings/ConnectorsTab', () => ({
+  ConnectorsTab: () => <div data-testid="connectors-tab-stub" />,
+}));
 
 const mockGetSession = vi.mocked(getSession);
 const mockFetchBootstrapStatus = vi.mocked(fetchBootstrapStatus);
@@ -236,5 +240,64 @@ describe('closing Settings on a compact viewport (TASK-474)', () => {
     render(<App />);
     await waitFor(navTrigger);
     expect(document.activeElement).toBe(document.body);
+  });
+});
+
+/**
+ * TASK-510 — the OTHER direction: opening Settings must move focus INTO it.
+ *
+ * Measured on kind (walk TASK-358): restore-on-close worked, but entry did
+ * not — the pane swap destroys the menu item that had focus and nothing
+ * focused anything in `AdminShell`, so the person was on `<body>` in a surface
+ * they had not been taken to. Settings now focuses its page heading (the `h1`
+ * TASK-446 made the surface's one always-present title) on mount.
+ *
+ * The heading is re-queried from the current tree and must be connected, and
+ * the assertion is repeated after a macrotask so a deferred restore by the
+ * closing menu (Radix defers its unmount auto-focus with a `setTimeout`) cannot
+ * pass the first read and then take focus away.
+ */
+describe('opening Settings moves focus into it (TASK-510)', () => {
+  function settingsHeading(): HTMLElement {
+    return screen.getByRole('heading', { level: 1, name: 'Skills' });
+  }
+
+  async function expectHeadingHoldsFocus(): Promise<void> {
+    await waitFor(() => {
+      expect(document.activeElement).toBe(settingsHeading());
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(document.activeElement).toBe(settingsHeading());
+    expect(document.activeElement).not.toBe(document.body);
+    expect((document.activeElement as HTMLElement).isConnected).toBe(true);
+  }
+
+  it('lands focus on the Settings heading, not <body>', async () => {
+    render(<App />);
+    await openSettingsFromWorkspace();
+    await expectHeadingHoldsFocus();
+  });
+
+  it('does the same on a compact viewport', async () => {
+    setViewport(true);
+    render(<App />);
+    fireEvent.click(
+      await waitFor(() => screen.getByRole('button', { name: /open navigation/i })),
+    );
+    await openSettingsFromWorkspace();
+    await expectHeadingHoldsFocus();
+  });
+
+  it('does not pull focus back to the heading when the person switches tabs', async () => {
+    render(<App />);
+    await openSettingsFromWorkspace();
+    await expectHeadingHoldsFocus();
+
+    const connectors = screen.getByRole('button', { name: /Connectors/ });
+    connectors.focus();
+    fireEvent.click(connectors);
+
+    await screen.findByRole('heading', { level: 1, name: 'Connectors' });
+    expect(document.activeElement).toBe(connectors);
   });
 });

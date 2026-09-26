@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { AdminSidebar, type AdminTabId } from './AdminSidebar';
 import { AdminPane } from './AdminPane';
 import { AdminPaneHeader } from './AdminPaneHeader';
@@ -55,6 +55,26 @@ export function AdminShell({ isAdmin, onClose, backLabel = 'chat' }: AdminShellP
   const [activeTab, setActiveTab] = useState<AdminTabId>('skills');
   const meta = TAB_META[activeTab];
 
+  // TASK-510 — opening Settings takes focus INTO it.
+  //
+  // Settings is a pane swap (see `App.tsx`): the menu item that opened it is
+  // destroyed in the same commit that mounts this shell, so nothing holds the
+  // keyboard and a screen-reader user is left on `<body>` in a surface they
+  // were never taken to. The page heading is the target, not the first
+  // focusable (the back button): it announces WHERE you are, and it is the
+  // one title present on every tab (TASK-446).
+  //
+  // Mount-only on purpose: switching tabs leaves focus on the nav item the
+  // person chose, which is where they are working.
+  //
+  // A LAYOUT effect, not a passive one (TASK-451): a passive effect runs a
+  // task after the commit, a window in which the heading is on screen and
+  // focus is still on `<body>`.
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  useLayoutEffect(() => {
+    headingRef.current?.focus({ preventScroll: true });
+  }, []);
+
   return (
     <div className="flex flex-1 min-w-0 h-full bg-background">
       <AdminSidebar
@@ -65,7 +85,13 @@ export function AdminShell({ isAdmin, onClose, backLabel = 'chat' }: AdminShellP
         backLabel={backLabel}
       />
       <AdminPane
-        header={<AdminPaneHeader eyebrow={meta.eyebrow} title={meta.title} />}
+        header={
+          <AdminPaneHeader
+            eyebrow={meta.eyebrow}
+            title={meta.title}
+            headingRef={headingRef}
+          />
+        }
       >
         {activeTab === 'skills' && <SkillsTab isAdmin={isAdmin} />}
         {activeTab === 'connectors-user' && <ConnectorsTab isAdmin={isAdmin} />}

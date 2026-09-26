@@ -49,6 +49,7 @@ import { LoginPage } from './components/LoginPage';
 import { WorkspaceShell } from './components/workspace/WorkspaceShell';
 import { fetchFeatures, DEFAULT_FEATURES, type Features } from './lib/features';
 import { focusSettingsOpenerWhenReady } from './lib/settings-return-focus';
+import { focusNewAgentOpenerWhenReady } from './lib/new-agent-return-focus';
 import { Sidebar } from './components/Sidebar';
 import { SessionHeader } from './components/SessionHeader';
 import { Thread } from './components/Thread';
@@ -299,6 +300,27 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
   // `createAgentOpen` drives the explicit "+ New agent" entry into the
   // bootstrap flow (the first-run gate below uses the empty-list signal).
   const [createAgentOpen, setCreateAgentOpen] = useState(false);
+  // TASK-510 — closing the new-agent flow must not drop the keyboard on
+  // `<body>`. Same shape as the Settings restore above: the bootstrap gate
+  // below REPLACES the workspace with the dialog, so the "New agent…" row is
+  // destroyed on open and re-created on close, and the dialog's own node
+  // restore bails on the detached opener. Restore by identity, after the
+  // remount — see `lib/new-agent-return-focus.ts`.
+  //
+  // Keyed on `createAgentOpen` going true → false, which is every way out of
+  // the explicit flow: Escape and the ✕ (the dialog's `onOpenChange`) and a
+  // finished create (`FirstRunAutoCreate`'s `onDone`). First run never sets
+  // `createAgentOpen`, so it arms nothing — nobody opened it from a control.
+  const createAgentWasOpen = useRef(false);
+  useEffect(() => {
+    if (createAgentOpen) {
+      createAgentWasOpen.current = true;
+      return;
+    }
+    if (!createAgentWasOpen.current) return;
+    createAgentWasOpen.current = false;
+    return focusNewAgentOpenerWhenReady();
+  }, [createAgentOpen]);
   // `bootstrapAgentName` holds the name the user enters in the NewAgentDialog
   // before the bootstrap starts. null = dialog not yet submitted.
   const [bootstrapAgentName, setBootstrapAgentName] = useState<string | null>(null);
