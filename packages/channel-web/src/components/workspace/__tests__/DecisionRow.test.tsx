@@ -249,3 +249,77 @@ describe('DecisionRow — a clamped summary (TASK-436)', () => {
     expect(screen.getByText(summary).getAttribute('title')).toBe(summary);
   });
 });
+
+/*
+  TASK-544 — the dot's shape varies with state (bits.tsx `STATE_SHAPE`: 6px
+  diamond, 7px circle/square, 8px dash), so a bare dot shifted the text after
+  it by a pixel or two from row to row. Every dot sits in the same fixed `w-2`
+  slot the sidebar roster uses, so text starts at one x-offset whatever the
+  state. jsdom has no layout, so this pins the STRUCTURE that guarantees it:
+  one slot class for every state this row can draw.
+*/
+describe('DecisionRow — the dot sits in a fixed-width slot', () => {
+  const cases: Array<[string, Decision]> = [
+    ['held question', decisionFixture()],
+    [
+      'stale question',
+      decisionFixture({ status: 'stale', staleReason: 'Thursday 9:30 was booked.' }),
+    ],
+    ['executed receipt', resolvedFixture('executed')],
+    ['dismissed receipt', resolvedFixture('dismissed')],
+    ['failed receipt', resolvedFixture('failed', { undoable: false })],
+    ['expired receipt', resolvedFixture('expired', { undoable: false })],
+    ['pending-agent receipt', resolvedFixture('approved-pending-agent')],
+  ];
+
+  function slotOf(d: Decision): string {
+    const { container, unmount } = renderRow(d, false);
+    const row = container.querySelector(`[data-testid="decision-${d.id}"]`)!;
+    // The dot is the row's only aria-hidden SPAN (lucide icons are SVGs).
+    const dots = row.querySelectorAll('span[aria-hidden="true"]');
+    expect(dots).toHaveLength(1);
+    const cls = dots[0]!.parentElement!.className;
+    unmount();
+    return cls;
+  }
+
+  it.each(cases)('%s: the dot is centred in a w-2 slot', (_label, d) => {
+    expect(slotOf(d).split(/\s+/)).toEqual(
+      expect.arrayContaining(['w-2', 'shrink-0', 'justify-center']),
+    );
+  });
+
+  it('every state uses the SAME slot, so the text starts at one offset', () => {
+    const slots = new Set(cases.map(([, d]) => slotOf(d)));
+    expect(slots.size).toBe(1);
+  });
+});
+
+/*
+  TASK-544 — on a held (non-stale) question the dot is the only thing that
+  says the state: the text beside it is the question itself. The dot is
+  `aria-hidden`, so the row says the state word too, after the agent's name,
+  the way the sidebar roster does ("Scheduler, waiting on you").
+*/
+describe('DecisionRow — the held question says its state', () => {
+  it("puts the state word in the question button's accessible name", () => {
+    renderRow(decisionFixture(), false);
+    expect(
+      screen.getByRole('button', { name: /^Scheduler\s*, waiting on you\b/ }),
+    ).toBeTruthy();
+  });
+
+  it('keeps the word out of sight — it is for assistive tech only', () => {
+    renderRow(decisionFixture(), false);
+    const word = screen.getByText(/^, waiting on you$/);
+    expect(word.className.split(/\s+/)).toContain('sr-only');
+  });
+
+  it('does not add it to a stale row, whose visible summary already says it', () => {
+    renderRow(
+      decisionFixture({ status: 'stale', staleReason: 'Thursday 9:30 was booked.' }),
+      false,
+    );
+    expect(screen.queryByText(/waiting on you/i)).toBeNull();
+  });
+});
