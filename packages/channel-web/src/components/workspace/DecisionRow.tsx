@@ -151,8 +151,14 @@ export function DecisionRow({
     does not reliably announce. It is also FIRST, so the row's own `div` is
     still its parent's last child and `last:border-b-0` keeps working.
     `ConsentAnnouncement` carries the rest of the argument.
+
+    `openNote={null}` ON PURPOSE (TASK-473): this row's open branch draws its
+    stale reason and its notice inside shadcn's `Alert`, which is already
+    `role="alert"`. Handing either to the shared region would say it twice.
   */
-  const announcement = <ConsentAnnouncement outcome={outcome} notice={notice} />;
+  const announcement = (
+    <ConsentAnnouncement outcome={outcome} notice={notice} openNote={null} />
+  );
 
   if (outcome !== null) {
     return (

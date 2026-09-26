@@ -45,6 +45,8 @@ import { DecisionRow } from '../DecisionRow';
 import {
   DECISION_GOING_OUT,
   DECISION_GOING_OUT_NOTE,
+  DECISION_STALE_ADVICE,
+  DECISION_STALE_LEAD,
   DECISION_UNDO_TOO_LATE,
 } from '../decision-copy';
 import { decisionFixture, resolvedFixture } from './decision-fixture';
@@ -293,5 +295,169 @@ describe.each([
 
     expect(region().getAttribute('role')).toBe('alert');
     expect(region().className).toContain('sr-only');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * THE OPEN BRANCH, ON PASSIVE ARRIVAL (TASK-473)
+ *
+ * Everything above is about an ANSWER. This is about the card while it is
+ * still a question, and about the changes to it that nobody on this page
+ * clicked for: a queue read that brings back `status: 'stale'` because another
+ * tab approved it, a notice set with no press behind it. `armForResolution`
+ * only runs from an `onClick`, so the TASK-427 focus landing never fires for
+ * those — whatever voice the card has, it has to be a live region.
+ *
+ * The two renderers answer differently, and both answers are pinned:
+ *
+ *   - `ApprovalCard` draws the stale reason and the notice as plain
+ *     paragraphs, so the shared region says them — in the node that was
+ *     already there, which is the assertion a relocated or conditionally
+ *     mounted region fails.
+ *   - `DecisionRow` draws them inside shadcn's `Alert`, already
+ *     `role="alert"`, so the shared region says NOTHING — a second voice for
+ *     one sentence is the hazard, not the fix.
+ *
+ * WHICH DIRECTION DOES THIS FAIL IN? Silent — open. A region created in the
+ * same commit as its sentence reads correctly to jsdom and says nothing to
+ * real assistive tech, so text alone passes against the broken shape. Node
+ * identity is what fails it.
+ * ------------------------------------------------------------------ */
+
+const STALE_REASON = 'Thursday 9:30 was booked by someone else at 11:04.';
+const STALE_SENTENCE = `${DECISION_STALE_LEAD} ${STALE_REASON} ${DECISION_STALE_ADVICE}`;
+const staleFixture = () =>
+  decisionFixture({ status: 'stale', staleReason: STALE_REASON });
+
+type OpenChange = { decision: Decision; notice: string | null };
+
+/**
+ * Either renderer, driven from OUTSIDE — the shape a server push or a queue
+ * read takes. No button on the card is pressed, so nothing is armed.
+ */
+function Passive({
+  renderer,
+  change,
+}: {
+  renderer: 'thread' | 'queue';
+  change: OpenChange | null;
+}) {
+  const d = change?.decision ?? decisionFixture();
+  const notice = change?.notice ?? null;
+  return renderer === 'thread' ? (
+    <ApprovalCard
+      decision={d}
+      onApprove={vi.fn()}
+      onDismiss={vi.fn()}
+      onUndo={vi.fn()}
+      notice={notice}
+    />
+  ) : (
+    <DecisionRow
+      decision={d}
+      agent={quill}
+      expanded
+      onToggle={vi.fn()}
+      onOpenAgent={vi.fn()}
+      onApprove={vi.fn()}
+      onDismiss={vi.fn()}
+      onUndo={vi.fn()}
+      notice={notice}
+    />
+  );
+}
+
+/** Every `role="alert"` node on the page whose words include `text`. */
+function voicesSaying(text: string): HTMLElement[] {
+  return Array.from(document.querySelectorAll<HTMLElement>('[role="alert"]')).filter(
+    (el) => (el.textContent ?? '').includes(text),
+  );
+}
+
+describe('ApprovalCard — the open branch speaks when it changes on its own', () => {
+  it('a card that goes stale while on screen says so, in the region already there', () => {
+    const { rerender } = render(<Passive renderer="thread" change={null} />);
+    const before = region();
+    expect(said()).toBe('');
+
+    rerender(
+      <Passive renderer="thread" change={{ decision: staleFixture(), notice: null }} />,
+    );
+
+    expect(said()).toBe(STALE_SENTENCE);
+    // THE LOAD-BEARING ASSERTION — see the block header.
+    expect(region()).toBe(before);
+    // And only once: the paragraph on screen is not a second live region.
+    expect(voicesSaying(STALE_REASON)).toEqual([before]);
+  });
+
+  it('a notice that arrives with no press behind it is said', () => {
+    const notice = 'That did not go through. Nothing was sent.';
+    const { rerender } = render(<Passive renderer="thread" change={null} />);
+    const before = region();
+
+    rerender(
+      <Passive renderer="thread" change={{ decision: decisionFixture(), notice }} />,
+    );
+
+    expect(said()).toBe(notice);
+    expect(region()).toBe(before);
+  });
+
+  it('a notice outranks the stale reason it lands on, as it does for focus', () => {
+    const notice = 'That did not go through. Nothing was sent.';
+    const { rerender } = render(
+      <Passive renderer="thread" change={{ decision: staleFixture(), notice: null }} />,
+    );
+
+    rerender(
+      <Passive renderer="thread" change={{ decision: staleFixture(), notice }} />,
+    );
+
+    expect(said()).toBe(notice);
+  });
+
+  it('a card that MOUNTS stale stays quiet — the mount rule does not bend', () => {
+    /*
+      A page load. The hold's arrival is `InThreadApprovals`' polite line to
+      say, and a region created holding its sentence is the unreliable shape
+      this component avoids everywhere else.
+    */
+    render(
+      <Passive renderer="thread" change={{ decision: staleFixture(), notice: null }} />,
+    );
+
+    expect(screen.getByText(DECISION_STALE_LEAD)).toBeTruthy();
+    expect(said()).toBe('');
+  });
+});
+
+describe('DecisionRow — the open branch keeps ONE voice, its own Alert', () => {
+  it('going stale on screen is said by the Alert and not by the shared region', () => {
+    const { rerender } = render(<Passive renderer="queue" change={null} />);
+    const before = region();
+
+    rerender(
+      <Passive renderer="queue" change={{ decision: staleFixture(), notice: null }} />,
+    );
+
+    expect(said()).toBe('');
+    expect(region()).toBe(before);
+    // Exactly one voice for the sentence, and it is the visible `Alert`.
+    const voices = voicesSaying(STALE_REASON);
+    expect(voices).toHaveLength(1);
+    expect(voices[0]!.hasAttribute('data-consent-said')).toBe(false);
+  });
+
+  it('a notice on the open row is said by its Alert alone', () => {
+    const notice = 'That did not go through. Nothing was sent.';
+    const { rerender } = render(<Passive renderer="queue" change={null} />);
+
+    rerender(
+      <Passive renderer="queue" change={{ decision: decisionFixture(), notice }} />,
+    );
+
+    expect(said()).toBe('');
+    expect(voicesSaying(notice)).toHaveLength(1);
   });
 });
