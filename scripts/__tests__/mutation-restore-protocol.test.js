@@ -6,8 +6,8 @@
 //
 // Mutation testing is now standard practice on this board — nearly every card dispatched
 // asks the builder to "revert the fix, watch it go red, restore". Writing the mutant is
-// safe. **Putting the file back is where the damage has happened** — five measured
-// instances on 2026-09-18/19, in four distinct shapes, across two restore mechanisms (a
+// safe. **Putting the file back is where the damage has happened** — six measured
+// instances on 2026-09-18/20, in five distinct shapes, across two restore mechanisms (a
 // file copy, and `git checkout --`), each reported first-hand by the agent it happened to:
 //
 //   1. A builder restored a mutated file FROM A FILE COPY and silently reverted a fix
@@ -22,6 +22,17 @@
 //      entire uncommitted fix.
 //   4. One reviewer, handed the hazard in its brief, restored from its own copy and kept
 //      `git status --porcelain` clean before, between and after every mutation.
+//   5. (TASK-508, added after the fact — reported by TASK-479's builder, 2026-09-20.) A
+//      builder wrote a mutant with `git checkout <ref> -- <path>`, which STAGES it, and
+//      restored with the then-prescribed BARE `git checkout -- <path>`, which restores FROM
+//      THE INDEX — i.e. put the mutant back. Every later mutant stacked on it: 2 of 9 counts
+//      wrong, both flattering. The one shape caused by following the documented command as
+//      written. The restore block itself already failed CLOSED here (its post-restore
+//      status check refused, and an older version of this file pinned that refusal); the
+//      damage came from the hand-typed form the prose and the dispatch bullet prescribed.
+//      Fix: the block, the prose and the bullet all say `git checkout HEAD -- <path>`,
+//      which rewrites the index from the commit, and the staged fixtures now assert a real
+//      restore, index included, instead of a refusal.
 //
 // Shapes (1)-(3) are why the remedy prescribed after (1) — "use `git checkout --`" — is
 // only half an answer: it is the RECOMMENDED restore for the agent that owns the worktree
@@ -51,9 +62,10 @@
 // So the fix is not prose. Phase 4 carries two fenced, runnable blocks, marked
 // `# ax-mutation-restore: precondition` and `# ax-mutation-restore: restore`. The tests
 // below EXTRACT those blocks and RUN them, under bash (and under zsh when the machine has
-// it — see below) against throwaway git repositories built to THREE of the four shapes
-// above: shapes (2) and (3) share the dirty-path fixture, and shape (4) is the *absence*
-// of a failure, so it has no fixture at all. The doc is the single
+// it — see below) against throwaway git repositories built to FOUR of the five shapes
+// above: shapes (2) and (3) share the dirty-path fixture, shape (5) has two fixtures (one
+// per way of staging the mutant), and shape (4) is the *absence* of a failure, so it has
+// no fixture at all. The doc is the single
 // implementation; there is no second copy in a script for it to drift from. Modelled on
 // `yolo-ship-review-range-origin-main.test.js`, which pins Phase 5's block the same way.
 //
@@ -265,6 +277,16 @@
 //       branch had never executed. Found by probing the branch by hand rather than
 //       trusting the green. The marker is plain ASCII now, and the 40-file fixture is
 //       what makes the branch run at all.
+//  M22. (TASK-508, 2026-09-26, macOS + zsh + git 2.52.0; baseline **74 passed, 1 skipped**
+//       — the skip is the CI-only zsh presence check.) CONSTRUCTED: put the restore
+//       block's `git checkout HEAD -- "$P"` back to the bare `git checkout -- "$P"` ->
+//       **6 red of 74**: the two staged-mutant fixtures x2 shells (each failing on
+//       `still dirty after restore`, the mutant still on disk — the right reason) plus the
+//       two structure checks. Restored with `git checkout HEAD --`, `git status --short`
+//       empty after.
+//  M23. CONSTRUCTED: put the dispatch bullet's `git checkout HEAD -- <path>` back to the
+//       bare form -> **2 red of 74**, both templates.md text checks. Text checks, so weaker
+//       by construction; the runnable block is what M22 measures.
 //
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally — no network,
 // no Docker, no build. Every git repository it touches is created under a temp dir and
@@ -728,21 +750,49 @@ describe.each(SHELLS)('mutation-restore protocol under %s', (shell) => {
     expect(read(dir)).toBe(MUTANT);
   });
 
-  it('restore refuses when the mutant was staged — checkout restores from the INDEX', () => {
-    // `git checkout -- <path>` restores from the index, not from HEAD. Stage the mutant
-    // (an `git add -A` between mutating and restoring is all it takes) and the restore
-    // brings it straight back with exit status 0, looking successful. The post-restore
-    // check is the only thing that notices.
+  it.each([
+    [
+      'staged with `git add`',
+      (dir) => {
+        writeFileSync(join(dir, TARGET), MUTANT);
+        git(dir, 'add', TARGET);
+      },
+    ],
+    [
+      // TASK-479's exact shape: `git checkout <ref> -- <path>` is a convenient way to write
+      // a "revert the whole fix" mutant, and it writes the INDEX as well as the worktree.
+      'written by `git checkout <ref> -- <path>`, which stages it',
+      (dir) => {
+        writeFileSync(join(dir, TARGET), MUTANT);
+        git(dir, 'commit', '-q', '-am', 'the old text, on a side ref');
+        git(dir, 'branch', 'old-text');
+        git(dir, 'reset', '-q', '--hard', 'HEAD~1');
+        git(dir, 'checkout', 'old-text', '--', TARGET);
+      },
+    ],
+  ])('restore removes a mutant %s — from the index too, not just the worktree', (_how, mutate) => {
+    // Shape (5), TASK-479. The BARE `git checkout -- <path>` restores FROM THE INDEX, so a
+    // staged mutant comes straight back out of it, exit status 0, looking restored; the
+    // next mutant is then applied on top of the last one and every count after it is
+    // wrong in an unknown direction (TASK-479: 2 of 9 wrong, both flattering). The block
+    // restores from HEAD — which the precondition established is the content you
+    // mutated — and so puts back BOTH the worktree and the index.
+    //
+    // Against the bare form this case is red, and red for the right reason: exit 1 with
+    // `still dirty after restore` and the mutant still on disk.
     const dir = makeRepo();
-    writeFileSync(join(dir, TARGET), MUTANT);
-    git(dir, 'add', TARGET);
+    mutate(dir);
+    expect(git(dir, 'diff', '--cached', '--name-only').trim()).toBe(TARGET);
 
     const r = runBlock(shell, RESTORE, { cwd: dir, file: TARGET, mark: RESTORE_MARK });
 
-    expect(r.status).not.toBe(0);
-    expect(r.out).toMatch(/still dirty after restore/);
-    // And it says so rather than quietly leaving the mutant behind as "restored".
-    expect(read(dir)).toBe(MUTANT);
+    expect(r.out).not.toMatch(/REFUSE/);
+    expect(r.status).toBe(0);
+    expect(read(dir)).toBe(V1);
+    // The index agrees with the tree — `git status --short` empty between mutants is the
+    // assertion the protocol now requires, and this is it.
+    expect(git(dir, 'diff', '--cached', '--name-only').trim()).toBe('');
+    expect(porcelain(dir)).toBe('');
   });
 
   it.each([
@@ -1041,8 +1091,15 @@ describe('the blocks in yolo-ship Phase 4', () => {
       .toEqual({ invocation, message });
   });
 
+  it('restore from HEAD, never from the index — the bare form reinstates a staged mutant', () => {
+    // The behavioural staged-mutant cases above are what enforce this; this names the
+    // cause in one red instead of four. Exactly one checkout, and it reads from HEAD.
+    const checkouts = logicalLines(RESTORE).filter((l) => /\bgit\b.*\bcheckout\b/.test(l));
+    expect(checkouts).toEqual(['git checkout HEAD -- "$P"']);
+  });
+
   it('restore with git, never with a file copy', () => {
-    expect(logicalLines(RESTORE).some((l) => /^git checkout -- "\$P"$/.test(l))).toBe(true);
+    expect(logicalLines(RESTORE).some((l) => /^git checkout HEAD -- "\$P"$/.test(l))).toBe(true);
     for (const l of [...logicalLines(PRECONDITION), ...logicalLines(RESTORE)]) {
       expect(l).not.toMatch(/(^|[;&|(]\s*)(cp|rsync|install|mv)\s/);
     }
@@ -1154,11 +1211,25 @@ describe('the code-lane dispatch prompt (text check — weaker on purpose)', () 
     // All three in the SAME bullet: split across unrelated bullets they read as three
     // separate suggestions rather than one rule with two roles.
     expect(b).toMatch(/commit before you mutate/i);
-    expect(b).toMatch(/git checkout -- /);
+    expect(b).toMatch(/git checkout HEAD -- <path>/);
     expect(b).toMatch(/someone\s+ELSE'S worktree/i);
     expect(b).toMatch(/never from a file\s+copy/i);
     // The pointer to the runnable blocks, which are the part that is actually enforced.
     expect(b).toMatch(/yolo-ship Phase 4/);
+  });
+
+  it('prescribes the HEAD form and a clean `git status --short` between mutants (TASK-508)', () => {
+    // Shape (5): a builder hand-typing the restore types what the prompt shows it. The
+    // bullet used to show the BARE `git checkout -- <path>`, which restores from the index
+    // and so reinstates a staged mutant — TASK-479 did exactly that and 2 of its 9 mutant
+    // counts came out wrong. So the bullet may not show the bare form as a command at all
+    // (it names the hazard in words instead), and it must require the between-mutants check.
+    const [b] = promptBullets;
+    expect(b).toBeDefined();
+    expect(b).not.toMatch(/git checkout -- /);
+    expect(b).toMatch(/git status --short/);
+    expect(b).toMatch(/between mutants/i);
+    expect(b).toMatch(/index/i);
   });
 
   it('keeps the rule in the prompt, not in the orchestrator-facing prose above it', () => {

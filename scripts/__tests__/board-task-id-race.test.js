@@ -60,7 +60,8 @@
 // per-mutant red counts below are the ones that were measured, not re-derived.
 //
 // A WARNING THAT COST ME AN HOUR, AND IS NOT ABOUT MUTANTS AT ALL. Restoring a mutant
-// with `git checkout -- scripts/board-task-id.sh` is correct for whoever is running the
+// with `git checkout HEAD -- scripts/board-task-id.sh` (HEAD, not the bare form — that reads
+// the index, so a staged mutant comes back; TASK-508) is correct for whoever is running the
 // battery and DESTRUCTIVE to anyone else editing that file at the same moment. The
 // yolo-ship reviewer is dispatched WITHOUT its own worktree, so it shares the builder's
 // tree. Mine ran this same battery while I was applying its findings: my six edits

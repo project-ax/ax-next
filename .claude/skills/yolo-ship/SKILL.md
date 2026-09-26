@@ -134,8 +134,8 @@ Per-phase line catalogue (prefix exceptions with `⚠`):
 #### Mutation testing: restore without clobbering (REQUIRED whenever you mutate a file)
 
 Proving a guard reddens means writing a mutant into a real file and then putting the file
-back. **Putting it back is where the damage has happened** — **five measured instances** on
-2026-09-18/19, in **four** distinct shapes, across **two** restore mechanisms (a file copy,
+back. **Putting it back is where the damage has happened** — **six measured instances** on
+2026-09-18/20, in **five** distinct shapes, across **two** restore mechanisms (a file copy,
 and `git checkout --`), and the two obvious remedies point in opposite directions:
 
 - A builder restored a mutated file **from a file copy** and silently reverted a fix another
@@ -150,34 +150,49 @@ and `git checkout --`), and the two obvious remedies point in opposite direction
 - One reviewer, handed the hazard in its brief, restored from its own copy with
   `git status --porcelain` clean before, between and after every mutation. The behaviour is
   achievable; what was missing is that it only happened because a human typed it into a brief.
+- A builder wrote a mutant with `git checkout <ref> -- <path>` — which writes the **index** as
+  well as the file — and restored with the then-documented **bare** `git checkout -- <path>`,
+  which restores **from the index**, so it put the mutant straight back. Every later mutant was
+  applied on top of it: **2 of 9 mutant counts came out wrong, both in the flattering
+  direction** (TASK-479, 2026-09-20). The bare form is the command this section used to
+  prescribe, so following it as written is what caused this one.
 
 **The rule is one rule, not one per mechanism:**
 
-> **`git checkout -- <path>` restores exactly what you mutated and nothing else, if and only
-> if that path was committed-clean *before* you mutated it.** Make it clean first, or do not
-> mutate it.
+> **`git checkout HEAD -- <path>` restores exactly what you mutated and nothing else, if and
+> only if that path was committed-clean *before* you mutated it.** Make it clean first, or do
+> not mutate it. And **`git status --short` is empty between mutants** — asserted, not assumed.
 
-That precondition — not the choice of restore command — is what the four cases disagree about:
+**Spell it with `HEAD`** — the fifth shape is the one place the spelling matters. Without it,
+`git checkout -- <path>` restores from the **index**, and anything that staged the mutant
+(`git add -A`, a partial commit, `git checkout <ref> -- <path>`, a tool staging on your behalf)
+has made the index *the mutant*: the file comes back as the mutant, exit status 0, and the
+next round measures against a poisoned baseline. `git checkout HEAD -- <path>` reads the
+commit and rewrites the index from it, which is exactly what you want here.
+
+Beyond that, the precondition — not the choice of restore command — is what the first four
+cases disagree about:
 
 | you are | the path is | do |
 | --- | --- | --- |
-| the worktree **owner** | clean | mutate; restore with the **restore block** below — not with a hand-typed `git checkout -- <path>`, which skips the gates that catch a committed or staged mutant |
+| the worktree **owner** | clean | mutate; restore with the **restore block** below — not with a hand-typed checkout, which skips the gates that catch a committed mutant or a path that did not come back clean |
 | the worktree **owner** | carrying uncommitted work | **commit it first**, then mutate. `git checkout --` would take the uncommitted work with the mutant; a file copy would revert whatever lands while you mutate. |
 | a **subagent in someone else's worktree** (reviewer, helper) | clean | **don't — report instead.** "Clean" is a snapshot, not a property: in a shared tree the owner is a live writer by definition, and even when nothing clobbers your file the owner may be running a build off that tree and will debug *your* mutant as their own code (TASK-426, measured — *"the run I had just debugged was executing ITS mutant"*). The **only** exception is a dispatching brief that explicitly says the owner is parked for your window — a yes/no you can check, not a judgement call. Absent that, say what you would have mutated and why, and let the owner run it. |
 | a **subagent in someone else's worktree** | carrying uncommitted work | **do not mutate it.** You may not commit someone else's work-in-progress onto their branch, and you may not restore over it. Stop and say so. |
 
 So *"commit before you mutate"* is the **owner's** way of satisfying the precondition, and for
-the owner it is the right instruction — it is the one sentence that covers all four shapes
+the owner it is the right instruction — it is the one sentence that covers the first four shapes
 from the owner's chair. It is the **wrong** instruction for a subagent in a tree it does not
 own, which is the whole reason this is stated as the precondition rather than as the commit.
-And a guard that only says "use `git checkout --`" is half the problem restated: that is the
-recommended restore for an owner who committed first and the destructive one for everybody else.
+And a guard that only says "use `git checkout HEAD --`" is half the problem restated: that is
+the recommended restore for an owner who committed first and the destructive one for everybody
+else.
 
 **A file copy is never the restore.** A copy writes back whatever the file looked like when the
 copy was taken, so anything committed in between is silently undone and nothing reports it.
-`git checkout --` restores from the **index** — which is the content you committed, once the
-precondition has passed and you have staged nothing since — so it cannot write back a snapshot
-older than your own baseline.
+`git checkout HEAD --` restores from the **commit** — which is the content you mutated, once
+the precondition has passed — so it cannot write back a snapshot older than your own baseline,
+and a staged mutant cannot survive it.
 
 Run this **before** you write the mutant, from your worktree root:
 
@@ -278,7 +293,8 @@ if [ -z "$(git status --porcelain -- "$P")" ]; then
   exit 1
 fi
 
-git checkout -- "$P"
+# From HEAD, not the index: the bare form hands a STAGED mutant straight back.
+git checkout HEAD -- "$P"
 
 if [ -n "$(git status --porcelain -- "$P")" ]; then
   echo "REFUSE: $F is still dirty after restore — look before you commit anything."
@@ -289,10 +305,14 @@ echo "ok: $F restored, working tree clean."
 
 Three things the second block is really for, none of them obvious:
 
-- **`git checkout -- <path>` restores from the INDEX, not from `HEAD`.** If you ever
-  `git add`ed the mutant it comes straight back, exit status 0, looking restored.
+- **The bare `git checkout -- <path>` restores from the INDEX, not from `HEAD`.** If the
+  mutant was ever staged — `git add`, or written with `git checkout <ref> -- <path>` — the
+  bare form brings it straight back, exit status 0, looking restored. That is why the block
+  says `HEAD`, and why its last check is `git status` on the path: **between mutants
+  `git status --short` must be empty**, index included. If you ever restore some other way,
+  run that check yourself before you write the next mutant.
 - **A mutant you COMMITTED makes the restore a no-op that reports success.** `git commit -am
-  wip` after a red run is an ordinary habit; do it here and `git checkout --` has nothing to
+  wip` after a red run is an ordinary habit; do it here and `git checkout HEAD --` has nothing to
   undo, `git status` is empty, and the block would print `ok` over a mutant headed for your
   PR. That is why the restore refuses a path that is *already clean*.
 - **`git status` on a path git does not know prints nothing**, which is indistinguishable from
@@ -300,8 +320,8 @@ Three things the second block is really for, none of them obvious:
   answer, and why an unsubstituted `$F` stops there instead of sailing through.
 
 **Which direction does this fail in? Closed** — for every state the blocks can observe. Neither
-has a branch that proceeds on a failed check, and each of the three traps above is a refusal
-rather than an `ok`. Two things they still cannot see, stated rather than implied away:
+has a branch that proceeds on a failed check, and each of the three traps above ends in either
+a real restore (the staged mutant) or a refusal (the other two) — never a false `ok`. Two things they still cannot see, stated rather than implied away:
 
 - **A second writer touching the path *during* your window.** No restore protocol fixes that;
   the fix is one writer per window, which Phase 5 › *The review window* addresses for reviewers. Note the hazard runs both ways
@@ -312,9 +332,9 @@ rather than an `ok`. Two things they still cannot see, stated rather than implie
   here sets those; if you have, you already know.
 
 `scripts/__tests__/mutation-restore-protocol.test.js` EXTRACTS both blocks from this file and
-RUNS them against throwaway git repositories built to three of the four incident shapes above
-(the fourth, the reviewer that kept `git status` clean, is the *absence* of a failure and has
-no fixture). It runs them under **bash and zsh**, and both halves run in CI: the test job
+RUNS them against throwaway git repositories built to four of the five incident shapes above
+— the staged-mutant shape twice, once per way of staging it (the fourth, the reviewer that kept
+`git status` clean, is the *absence* of a failure and has no fixture). It runs them under **bash and zsh**, and both halves run in CI: the test job
 installs zsh (`.github/workflows/ci.yml`, since TASK-506), and the guard asserts zsh is present
 whenever `CI` is set, so dropping that install step reddens it instead of quietly halving the
 coverage. (This paragraph used to say the runner has no zsh. That was true when it was written
@@ -413,8 +433,8 @@ echo "files in range: $N"
 **The reviewer runs in YOUR worktree, and it has `Bash`.** "Read-only" is an instruction in
 its definition, not a capability it lacks. On 2026-09-19 (TASK-426, reported first-hand by
 the builder) a reviewer proved a test non-vacuous by mutating a file and restoring it with
-`git checkout -- <file>` — the correct restore for an *owner* who committed first, and the
-destructive one here: it reverted **six of the builder's uncommitted edits**, and the builder
+`git checkout -- <file>` — a checkout restore, which is the right tool for an *owner* who
+committed first (Phase 4 spells it `git checkout HEAD --`), and the destructive one here: it reverted **six of the builder's uncommitted edits**, and the builder
 then debugged the reviewer's mutant as its own code. Phase 4's table already says a subagent
 in someone else's tree does not mutate; this is the owner's half, so that one slip by either
 side is not enough to lose work.
