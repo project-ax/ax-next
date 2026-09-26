@@ -151,6 +151,38 @@ board_snapshot() {
   [ "$n" -ge "$BOARD_LIMIT" ] && { echo "FATAL: board_snapshot hit --limit ($n of $BOARD_LIMIT) — board truncated; raise BOARD_LIMIT" >&2; return 1; }
   printf '%s' "$j" > "$BOARD_CACHE"; echo "$BOARD_CACHE"
 }
+# board_laneless <snapshot-path> — the null-status sweep (TASK-477, §3). A card with NO
+# `Status` is in no lane, so the ready set, the poller, triage and the breakers — every
+# one of which selects BY lane — can never see it. This is the one query that selects
+# on the ABSENCE of a lane. Exit codes are the contract:
+#   0 = swept, none laneless  (prints "laneless: 0 of N items" — N proves a real read)
+#   1 = swept, some laneless  (one "LANELESS <id> <title>" line each, then a summary)
+#   2 = COULD NOT SWEEP       (FATAL on stderr, nothing on stdout)
+# It FAILS CLOSED: a missing/unparseable file, a non-array `.items`, an empty board or a
+# board at/over BOARD_LIMIT is rc 2, never rc 0. The sweep re-asserts board_snapshot's
+# non-truncation guard itself instead of trusting whoever wrote the file, because a
+# sweep over a partial read reports "none" for exactly the cards it cannot see — the
+# quiet direction, the one this function exists to close. The path is REQUIRED (no
+# default to BOARD_CACHE): a stale cache from an earlier pass would sweep the wrong board.
+# Call it as `SNAP=$(board_snapshot) && board_laneless "$SNAP"` so a failed read never
+# reaches it. It only REPORTS — it never routes (see §3 for what to do with a hit).
+board_laneless() {
+  local f="$1" n
+  [ -n "$f" ] || { echo "FATAL: board_laneless needs a snapshot path (SNAP=\$(board_snapshot) && board_laneless \"\$SNAP\")" >&2; return 2; }
+  [ -r "$f" ] || { echo "FATAL: board_laneless cannot read '$f' — NOT swept" >&2; return 2; }
+  n=$(jq -r '.items | if type=="array" then length else -1 end' "$f" 2>/dev/null) || n=""
+  case "$n" in ''|*[!0-9-]*) echo "FATAL: board_laneless: '$f' is not a board snapshot — NOT swept" >&2; return 2;; esac
+  [ "$n" -le 0 ] && { echo "FATAL: board_laneless: '$f' holds no items (bad read?) — NOT swept" >&2; return 2; }
+  [ "$n" -ge "$BOARD_LIMIT" ] && { echo "FATAL: board_laneless: '$f' has $n items, at/over BOARD_LIMIT $BOARD_LIMIT — truncated read, NOT swept" >&2; return 2; }
+  local hits k
+  hits=$(jq -r '.items[] | select((.status // "") == "") | "LANELESS \(.id) \(.title // "(untitled)")"' "$f") \
+    || { echo "FATAL: board_laneless: jq failed on '$f' — NOT swept" >&2; return 2; }
+  if [ -z "$hits" ]; then echo "laneless: 0 of $n items"; return 0; fi
+  printf '%s\n' "$hits"
+  k=$(printf '%s\n' "$hits" | wc -l | tr -d ' ')
+  echo "laneless: $k of $n items have NO Status — invisible to every lane query; NOT auto-routed (§3)"
+  return 1
+}
 # board_batch <projectId> <op>...  — ONE aliased mutation for many writes.
 #   op: "<itemId>|<fieldId>|single|<optionId>"  or  "<itemId>|<fieldId>|text|<value>"
 #
@@ -242,6 +274,10 @@ fi
 for f in append_progress set_needs_input append_learnings; do
   type "$f" >/dev/null 2>&1 || { echo "FATAL: STALE HELPER — $f missing from .claude/auto-ship-progress.sh; re-write the cat blocks (§6/§8.3 — the first \`cat >\` truncates, so a full rewrite is safe)"; FATAL=1; }
 done
+. .claude/auto-ship-board.sh
+for f in board_snapshot board_laneless board_batch; do
+  type "$f" >/dev/null 2>&1 || { echo "FATAL: STALE HELPER — $f missing from .claude/auto-ship-board.sh; re-write the §2b cat block"; FATAL=1; }
+done
 
 # (3) GRAPHQL BUDGET PRE-FLIGHT — the budget is 5000 pts/hr, shared with the poller,
 # every heartbeat and the merge queue. A dispatch round you cannot afford strands its
@@ -302,6 +338,43 @@ they're already safe.)
 
 `.status` is the lane name (e.g. `"To Do"`). `."depends on"` is the dependency field
 (empty = un-analyzed; `none` = analyzed-no-deps; else space/comma-separated Task IDs).
+
+### 3a. The laneless sweep — every pass, report-only (TASK-477)
+
+A card whose `.status` is **absent** is in no lane, and every query above selects by
+lane — so it is work the board holds and no process can reach. `MEASURED-BY-PROBE`
+2026-09-19: TASK-476 sat laneless for ~40 min after `claim` created it and a
+notification landed between `claim` and its routing `board_batch`; it surfaced only
+because a lane tally printed a `1 null` row. `claim` deliberately does not route (§4 —
+routing is orchestrator-owned), so "remember the second call" is the only thing that
+prevents it, and that is not a mechanism. This sweep is the mechanism: run it on the
+pass's one snapshot, right after reading it.
+
+```bash
+source .claude/auto-ship-board.sh
+if SNAP=$(board_snapshot); then
+  board_laneless "$SNAP"; LANELESS_RC=$?     # 0 clean · 1 hits (listed) · 2 could NOT sweep
+  [ "$LANELESS_RC" -eq 2 ] && echo "FATAL: laneless sweep did not run — treat the board as unswept this pass" >&2
+else
+  echo "FATAL: no snapshot — laneless sweep NOT run (and nothing else this pass may trust the board)" >&2
+fi
+```
+
+**Which direction does it fail in? Loud.** A sweep that says "none" over a truncated
+read is the failure this card exists to prevent, so `board_laneless` re-checks the
+snapshot's non-truncation itself and returns **2**, never 0, on a missing file, bad
+JSON, an empty board or one at/over `BOARD_LIMIT`. A quiet sweep always prints the item
+count it read (`laneless: 0 of 312 items`), so "swept and clean" is distinguishable from
+"did not run".
+
+**On a hit, report — do not auto-route.** Print each `LANELESS` line in the pass's
+status output. If it is a card **this run** just created (its create succeeded and its
+route did not), finish that route now with the §4 `board_batch` — that is the missed
+second call, not a new decision. Any other laneless card came from someone else:
+leave it where it is and keep reporting it every pass until a human routes it. Never
+drop it into To Do yourself: a card appearing in the actionable lane that nobody put
+there is its own surprise, and routing stays orchestrator-owned *by intent*, not by
+default.
 
 ## 4. Write the board (orchestrator only)
 
@@ -368,7 +441,10 @@ board_batch "$PROJ_ID" "$ID1|$STATUS_FIELD_ID|single|$INPROG" \
 # proceeding as though it had not happened is the same bug wearing a FATAL line.
 if CLAIM=$(scripts/board-task-id.sh claim --title "$T" --body "$B"); then
   TASK_ID=${CLAIM%% *}; ID=${CLAIM##* }
-  board_batch "$PROJ_ID" "$ID|$STATUS_FIELD_ID|single|$TODO" "$ID|$DEPS_FIELD_ID|text|none"
+  # A failed route leaves the card LANELESS — in no lane, so no query below can see it.
+  # Say so now, while you can act; the §3a sweep reports it every pass until it is routed.
+  board_batch "$PROJ_ID" "$ID|$STATUS_FIELD_ID|single|$TODO" "$ID|$DEPS_FIELD_ID|text|none" \
+    || echo "⚠ [$TASK_ID] $ID was CREATED but NOT routed — laneless until you retry this board_batch (§3a)" >&2
 else
   echo "FATAL: no Task ID allocated — follow-up card NOT created, nothing routed" >&2
 fi

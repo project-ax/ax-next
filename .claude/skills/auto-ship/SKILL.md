@@ -106,10 +106,12 @@ digraph autoship {
   "Open slots AND ready cards?" [shape=diamond];
   "Fill slots: move -> In Progress, dispatch yolo-ship (parallel)" [shape=box];
   "Merged PRs? serialized merge queue -> move cards" [shape=box];
+  "Laneless sweep (report no-Status cards; never auto-route)" [shape=box];
   "Refresh snapshot + re-arm poller + idle" [shape=doublecircle];
 
   "Wake (board change | agent done | run start)" -> "Merged PRs? serialized merge queue -> move cards";
-  "Merged PRs? serialized merge queue -> move cards" -> "Triage new/untagged To Do cards (assign ID, walk-tag; underspec -> Needs Input)";
+  "Merged PRs? serialized merge queue -> move cards" -> "Laneless sweep (report no-Status cards; never auto-route)";
+  "Laneless sweep (report no-Status cards; never auto-route)" -> "Triage new/untagged To Do cards (assign ID, walk-tag; underspec -> Needs Input)";
   "Triage new/untagged To Do cards (assign ID, walk-tag; underspec -> Needs Input)" -> "Review To Do deps (analyze empty, prune dangling)";
   "Review To Do deps (analyze empty, prune dangling)" -> "Recompute ready set + open slots";
   "Recompute ready set + open slots" -> "Open slots AND ready cards?";
@@ -127,6 +129,15 @@ Three wake signals, all run the same pass:
    reconcile pass *first*. A fresh invocation owns no live agents, so every In
    Progress / In Review card is by definition an orphan to recover; a board-change or
    agent-done wake has live tracked agents and must **not** reconcile.
+
+**Laneless sweep, every pass.** A card with **no `Status`** is in no lane, so the ready
+set, the poller, triage and the breakers — all of which select *by lane* — never see
+it (TASK-476 sat that way ~40 min: `claim` creates without routing, and a notification
+landed between the create and the route). Run `board_laneless` on the pass's snapshot
+(`references/github-project.md` §3a) and print every `LANELESS` line. It fails **loud**
+(rc 2) on a truncated/empty/unreadable snapshot, never quiet. Finish routing a card
+*this run* just created; otherwise report it every pass and leave it — never drop an
+unrouted card into To Do on your own.
 
 **Print the plan before the first dispatch** (ready set + skip-list + lane plan) so a
 watching human can interrupt. `--dry-run` runs one review+recompute pass, prints the
@@ -859,7 +870,7 @@ Locally, gitignored only:
 - `.claude/auto-ship-todo-snapshot.txt` — the poller's last-seen To Do hash.
 - `.claude/auto-ship-progress.sh` — the shell-side body-RMW helpers `append_progress` (§6) + `set_needs_input` (§8) + `append_learnings` (§6). All three must exist — §2c check (2) is fatal.
 - `.claude/auto-ship-hb.sh` — the worktree-safe heartbeat wrapper dispatched agents **call** by absolute path (§6). Loud on failure; agents report the outcome in the handoff's `progress:` field.
-- `.claude/auto-ship-board.sh` — the batched board helpers `board_snapshot` + `board_batch` (§2b).
+- `.claude/auto-ship-board.sh` — the batched board helpers `board_snapshot` + `board_laneless` + `board_batch` (§2b, §3a).
 - `.claude/auto-ship-board.json` — the once-per-pass board snapshot cache (§3).
 - `.claude/auto-ship-owner.lock` — the single-instance heartbeat (§7).
 
