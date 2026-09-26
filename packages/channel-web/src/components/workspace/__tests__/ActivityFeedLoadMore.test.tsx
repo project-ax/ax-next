@@ -89,6 +89,17 @@ interface Frame {
   anyFailureShown: boolean;
   /** Everything the polite region says in this commit, or null when it is not mounted. */
   announcerText: string | null;
+  /**
+   * The region's DOM node itself. "Empty, then filled" only helps a screen
+   * reader if it is the SAME node both times — a remount is a fresh region.
+   */
+  announcerNode: Element | null;
+}
+
+/** Every frame that had a region had the same one. */
+function oneRegionNode(fs: Frame[]): boolean {
+  const nodes = fs.map((f) => f.announcerNode).filter((n) => n !== null);
+  return nodes.length > 0 && nodes.every((n) => n === nodes[0]);
 }
 
 const frames: Frame[] = [];
@@ -113,6 +124,7 @@ function Harness() {
       announcerMounted: announcer !== null,
       anyFailureShown: /could not load/i.test(text),
       announcerText: announcer === null ? null : (announcer.textContent ?? ''),
+      announcerNode: announcer,
     });
   });
   return (
@@ -291,6 +303,7 @@ describe('every failure is announced (TASK-541)', () => {
       expect(f.announcerMounted).toBe(true);
       expect(f.pagesOnScreen.filter((p) => p === 1)).toHaveLength(PAGE_1_TEXT.length);
     }
+    expect(oneRegionNode(frames)).toBe(true);
   });
 
   it('announces a page-1 failure through a region that was there before it', async () => {
@@ -323,6 +336,9 @@ describe('every failure is announced (TASK-541)', () => {
       expect(f.announcerMounted).toBe(true);
       expect(f.announcerText).toBe('');
     }
+    // The same node from the placeholder frame to the failure frame — not a
+    // fresh region that happens to start out empty.
+    expect(oneRegionNode(frames)).toBe(true);
     // Announced once, by the region — not a second time by an alert role.
     expect(screen.queryByRole('alert')).toBeNull();
     const announcer = document.querySelector('[data-activity-announcer]')!;
