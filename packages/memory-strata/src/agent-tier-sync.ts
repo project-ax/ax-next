@@ -152,6 +152,12 @@ export interface HydrateOptions {
  * a torn scratch whose `baseVersion` was whichever head the last read saw.
  * (The list stays unpinned: it runs before any version is known, and a listed
  * path the pinned snapshot lacks is simply not found.)
+ *
+ * CONCURRENT AFTER THE PIN (TASK-554). Reads run one at a time only until the
+ * first found read names the snapshot; the rest, all pinned, run concurrently
+ * (bounded by HYDRATE_READ_CONCURRENCY). The same paths are read at the same
+ * version as before — only the waiting changed. Measured on the git-server
+ * backend, which coalesces them: see docs/plans/2026-09-26-task-554-*.md.
  */
 export async function hydrateAgentTier(
   bus: HookBus,
@@ -200,7 +206,12 @@ async function populateScratch(
   // what a caller put in `only`. Dedupe so a repeated `only` entry is one read.
   const memPaths = [...new Set(candidates.filter(isTierMemoryPath))];
 
-  for (const tierPath of memPaths) {
+  // Bytes land in `found` by index, so the baseline's order is the list's
+  // order however the concurrent reads finish.
+  const found: (Uint8Array | undefined)[] = new Array(memPaths.length);
+  let sawFound = false;
+  const readOne = async (i: number): Promise<void> => {
+    const tierPath = memPaths[i]!;
     const input: WorkspaceReadInput =
       baseVersion === null ? { path: tierPath } : { path: tierPath, version: baseVersion };
     const read: WorkspaceReadOutput = await bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
@@ -208,9 +219,10 @@ async function populateScratch(
       ctx,
       input,
     );
-    if (!read.found) continue;
+    if (!read.found) return;
+    sawFound = true;
     if (baseVersion === null && read.version !== undefined) baseVersion = read.version;
-    baseline.set(tierPath, read.bytes);
+    found[i] = read.bytes;
     const scratchRel = tierToScratchRelPath(tierPath);
     const abs = join(scratchRoot, ...scratchRel.split('/'));
     await mkdir(dirname(abs), { recursive: true });
@@ -220,9 +232,62 @@ async function populateScratch(
     // the flush's diff would see it missing and try to delete it. The boundary
     // for this module is enforced on the way OUT, in `flushAgentTier`.
     await writeFile(abs, Buffer.from(read.bytes));
-  }
+  };
 
+  // Serial until the first FOUND read: it is the one that names the snapshot
+  // (a not-found read carries no version), so nothing may start before it.
+  let next = 0;
+  while (next < memPaths.length && !sawFound) {
+    await readOne(next++);
+  }
+  // TASK-554: every read after it is pinned to that snapshot, so their order
+  // no longer matters: issue them concurrently, with a bound. A backend may
+  // answer concurrent pinned reads together (workspace-git-server coalesces
+  // them into one lookup), which is what takes the full hydrate off
+  // linear-serial. A backend that returns no version leaves them unpinned,
+  // exactly as the serial loop did.
+  await readConcurrently(memPaths.length - next, HYDRATE_READ_CONCURRENCY, (k) =>
+    readOne(next + k),
+  );
+
+  memPaths.forEach((tierPath, i) => {
+    const bytes = found[i];
+    if (bytes !== undefined) baseline.set(tierPath, bytes);
+  });
   return { baseline, baseVersion };
+}
+
+/** How many hydrate reads may be in flight at once. Enough that a coalescing
+ *  backend answers a large tree in a handful of lookups; small enough that a
+ *  non-coalescing one is not handed hundreds of simultaneous reads. */
+export const HYDRATE_READ_CONCURRENCY = 64;
+
+/**
+ * Run `task(0..count-1)` with at most `limit` in flight. On the first failure
+ * no new task starts, and the rejection is rethrown only once every task
+ * already running has settled: a hydrate read that is still writing into the
+ * scratch dir when `hydrateAgentTier` disposes it would re-create the dir
+ * after the `rm` and leak it (TASK-556).
+ */
+async function readConcurrently(
+  count: number,
+  limit: number,
+  task: (k: number) => Promise<void>,
+): Promise<void> {
+  let cursor = 0;
+  let failure: { err: unknown } | null = null;
+  const worker = async (): Promise<void> => {
+    while (failure === null && cursor < count) {
+      const k = cursor++;
+      try {
+        await task(k);
+      } catch (err) {
+        failure ??= { err };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, count) }, worker));
+  if (failure !== null) throw (failure as { err: unknown }).err;
 }
 
 /** Recursively list every file under `<root>/permanent/memory/`, returning
