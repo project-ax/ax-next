@@ -1820,3 +1820,138 @@ describe('filled accent controls clear AA on hover', () => {
     expect(hoverCasesRegistered).toEqual(expected);
   });
 });
+
+/**
+ * SessionRow's "Delete" menu item, in every state it can paint (TASK-531).
+ *
+ * It is `text-destructive` ink on the row menu's own surface, and its hover
+ * used to be `hover:bg-destructive/15` — the accent tinted at 15% over the
+ * menu. In light mode that drags the fill toward the ink sitting on it:
+ * **4.08:1**, under the floor, on the item that deletes a chat. (The follow-up
+ * note that filed this also read 4.22 in dark mode; this file's formula puts
+ * `/15` over the pure-black dark menu at 5.43, so only light was ever under.)
+ *
+ * The fix paints `hover:bg-destructive-soft` — the per-theme tint that already
+ * sits behind `text-destructive` on the error rows, and which `ACCENT_SOFT_PAIRS`
+ * above measures in both themes (4.57 light / 4.63 dark). An alpha cannot do
+ * it: the menu is white in light mode and black in dark, so the same `/15`
+ * composites to a different pixel in each, and the white one is what fails.
+ *
+ * These rows read the classes OFF THE COMPONENT — the item's ink, every
+ * state-prefixed fill it carries (hover, focus, focus-visible, active), and the
+ * menu surface underneath — so reverting the hover, or adding a focus fill that
+ * does not clear, goes red here rather than in a browser walk.
+ */
+const SESSION_ROW_FILE = 'components/SessionRow.tsx';
+
+/** The `className="…"` of the one JSX element carrying `marker`, comments stripped. */
+function classNameOf(src: string, marker: string): string {
+  const code = stripComments(src);
+  const hits = [...code.matchAll(/className="([^"]*)"([^>]*)/g)].filter(
+    (m) => m[1]!.includes(marker) || m[2]!.includes(marker),
+  );
+  if (hits.length !== 1) {
+    throw new Error(`expected exactly one className carrying "${marker}", found ${hits.length}`);
+  }
+  return hits[0]![1]!.replace(/\s+/g, ' ').trim();
+}
+
+/** State prefixes a menu item may paint a fill under. Any other prefix is refused. */
+const ITEM_STATES = ['hover', 'focus', 'focus-visible', 'active'] as const;
+
+/**
+ * Every fill a menu item can show — its resting one (if any) and one per
+ * state-prefixed `bg-*` — plus its ink: the one bare `text-<token>` that names
+ * a colour (arbitrary sizes like `text-[12.5px]` never match the pattern).
+ */
+function menuItemPaint(cls: string): {
+  text: string;
+  fills: Array<{ state: string; token: string; alpha: number; cls: string }>;
+} {
+  const tokens = cls.split(/\s+/).filter(Boolean);
+  const texts = tokens.filter(
+    (t) => /^text-[a-z][\w-]*$/.test(t) && !/^text-(xs|sm|base|lg|xl|left|right|center)$/.test(t),
+  );
+  if (texts.length !== 1) {
+    throw new Error(`expected exactly one bare text colour class, found ${texts.join(', ') || 'none'}`);
+  }
+  const fills: Array<{ state: string; token: string; alpha: number; cls: string }> = [];
+  const unprefixed = tokens.filter((t) => !t.includes(':'));
+  if (unprefixed.some((t) => /^bg-/.test(t))) {
+    fills.push({ state: 'rest', ...bgFill(unprefixed.join(' ')) });
+  }
+  for (const t of tokens.filter((x) => /:bg-/.test(x))) {
+    const [prefix, ...rest] = t.split(':');
+    if (rest.length !== 1 || !(ITEM_STATES as readonly string[]).includes(prefix!)) {
+      throw new Error(`unmeasured fill prefix "${t}" — give it a row before painting it`);
+    }
+    fills.push({ state: prefix!, ...bgFill(rest[0]!) });
+  }
+  return { text: `--${texts[0]!.slice('text-'.length)}`, fills };
+}
+
+const sessionRowCasesRegistered: string[] = [];
+
+describe("SessionRow's delete menu item clears AA in every state", () => {
+  const src = readSource(SESSION_ROW_FILE);
+  const item = menuItemPaint(classNameOf(src, 'data-testid="row-menu-delete"'));
+  const surface = bgFill(classNameOf(src, 'session-row-menu '));
+
+  for (const [themeName, selector] of THEMES) {
+    sessionRowCasesRegistered.push(themeName);
+    it(`${themeName}: ${item.text} on ${surface.cls}, resting and under ${item.fills.map((f) => f.cls).join(', ') || 'no fill'}`, () => {
+      const tokens = tokensAfter(selector);
+      const under = tokens.get(surface.token);
+      const text = tokens.get(item.text);
+      expect(under, `${surface.token} missing`).toBeDefined();
+      expect(text, `${item.text} missing`).toBeDefined();
+      expect(surface.alpha, 'the menu surface must be opaque to be measured').toBe(1);
+      expect(contrast(text!, under!), `resting on ${surface.cls}`).toBeGreaterThanOrEqual(AA_NORMAL);
+      for (const fill of item.fills) {
+        const v = tokens.get(fill.token);
+        expect(v, `${fill.token} missing`).toBeDefined();
+        const painted: Colour = fill.alpha === 1 ? v! : composite(v!, fill.alpha, under!);
+        expect(contrast(text!, painted), `${fill.state}: ${fill.cls}`).toBeGreaterThanOrEqual(AA_NORMAL);
+      }
+    });
+  }
+
+  it('paints a hover, and every fill it paints is a solid per-theme tint', () => {
+    expect(item.text).toBe('--destructive');
+    expect(item.fills.map((f) => f.state)).toContain('hover');
+    for (const f of item.fills) expect(f.alpha, f.cls).toBe(1);
+  });
+
+  it('measures the old `hover:bg-destructive/15` under the floor in light mode', () => {
+    const old = menuItemPaint('text-destructive hover:bg-destructive/15');
+    expect(old.fills).toEqual([{ state: 'hover', token: '--destructive', alpha: 0.15, cls: 'bg-destructive/15' }]);
+    const tokens = tokensAfter(':root {');
+    const ink = tokens.get('--destructive')!;
+    const painted = composite(ink, 0.15, tokens.get('--background')!);
+    expect(contrast(ink, painted)).toBeLessThan(AA_NORMAL);
+  });
+
+  it('reads the item paint off a class string, and refuses shapes it cannot measure', () => {
+    expect(menuItemPaint('text-[12.5px] text-destructive hover:bg-destructive-soft')).toEqual({
+      text: '--destructive',
+      fills: [{ state: 'hover', token: '--destructive-soft', alpha: 1, cls: 'bg-destructive-soft' }],
+    });
+    expect(menuItemPaint('text-destructive focus-visible:bg-muted/50').fills[0]).toMatchObject({
+      state: 'focus-visible',
+      alpha: 0.5,
+    });
+    expect(() => menuItemPaint('text-destructive dark:hover:bg-destructive/15')).toThrow(/unmeasured/);
+    expect(() => menuItemPaint('text-destructive group-hover:bg-destructive/15')).toThrow(/unmeasured/);
+    expect(() => menuItemPaint('hover:bg-destructive-soft')).toThrow(/text colour/);
+    expect(() =>
+      classNameOf('<a className="x" data-k="1" /><b className="y" data-k="1" />', 'data-k'),
+    ).toThrow(/found 2/);
+    expect(classNameOf('{/* className="old" data-k="1" */}\n<a className="new" data-k="1" />', 'data-k')).toBe(
+      'new',
+    );
+  });
+
+  it('registers one case per theme', () => {
+    expect(sessionRowCasesRegistered).toEqual(THEMES.map(([name]) => name));
+  });
+});

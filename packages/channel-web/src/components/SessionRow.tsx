@@ -398,7 +398,7 @@ export function SessionRow({
               session-row-menu-item danger
               flex items-center gap-2 px-2 py-1.5 rounded-sm
               text-[12.5px] text-destructive font-normal
-              hover:bg-destructive/15 transition-colors cursor-pointer
+              hover:bg-destructive-soft transition-colors cursor-pointer
             "
             data-testid="row-menu-delete"
             role="menuitem"
