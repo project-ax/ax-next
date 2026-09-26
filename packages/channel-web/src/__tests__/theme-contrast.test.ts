@@ -1960,3 +1960,120 @@ describe("SessionRow's delete menu item clears AA in every state", () => {
     expect(sessionRowCasesRegistered).toEqual(THEMES.map(([name]) => name));
   });
 });
+
+/**
+ * SessionRow's inline confirm-delete row, in every state it can paint (TASK-538).
+ *
+ * Choosing "Delete" from the row menu swaps the row for "Delete this chat?"
+ * plus a Cancel and a Delete control. The row used to tint itself
+ * `bg-destructive/10` over the sidebar's `bg-background`. In light mode that
+ * alpha drags the white page toward the red ink sitting on it: Cancel
+ * (`text-muted-foreground`) measured **4.49:1** and Delete (`text-destructive`)
+ * **4.44:1**, both under the floor, on the two buttons that decide whether a
+ * chat is gone. Dark mode was fine at /10 (5.68 / 5.71).
+ *
+ * The fix is the same one TASK-531 made for the menu item: the solid per-theme
+ * `bg-destructive-soft`. It costs dark mode some headroom (4.61 / 4.63, down
+ * from 5.7) and buys light mode its floor (4.63 / 4.57). One token that clears
+ * both themes beats an alpha that only clears one, and beats a `dark:` override.
+ *
+ * Everything is read OFF THE COMPONENTS: the row's fill, each control's resting
+ * ink, every state-prefixed fill (via `menuItemPaint`), each `hover:text-*` ink,
+ * and the sidebar surface the row sits on. A revert to `/10` goes red here with
+ * the true ratios. The Delete control's hover swaps BOTH its fill and its ink
+ * (`bg-destructive` + `text-destructive-foreground`), so its hover fill is
+ * measured against the hover ink, not the resting one — measuring red on red
+ * would be a false alarm, and measuring the resting ink on the resting fill
+ * alone would miss a bad hover.
+ */
+const SIDEBAR_FILE = 'components/Sidebar.tsx';
+
+/** `menuItemPaint`, plus the one `hover:text-*` ink a control may swap to. Other prefixed inks are refused. */
+function controlPaint(cls: string): ReturnType<typeof menuItemPaint> & { hoverText?: string } {
+  const paint = menuItemPaint(cls);
+  const prefixedInks = cls
+    .split(/\s+/)
+    .filter((t) => /^[\w-]+:text-[a-z][\w-]*$/.test(t) && !/:text-(xs|sm|base|lg|\d?xl)$/.test(t));
+  const hover = prefixedInks.filter((t) => t.startsWith('hover:'));
+  const other = prefixedInks.filter((t) => !t.startsWith('hover:'));
+  if (other.length > 0) throw new Error(`unmeasured ink prefix "${other.join(', ')}" — give it a row first`);
+  if (hover.length > 1) throw new Error(`expected at most one hover ink, found ${hover.join(', ')}`);
+  return hover.length === 1
+    ? { ...paint, hoverText: `--${hover[0]!.slice('hover:text-'.length)}` }
+    : paint;
+}
+
+const confirmRowCasesRegistered: string[] = [];
+
+describe("SessionRow's confirm-delete row clears AA in every state", () => {
+  const src = readSource(SESSION_ROW_FILE);
+  const row = bgFill(classNameOf(src, 'session-row confirming-delete'));
+  const surface = bgFill(classNameOf(readSource(SIDEBAR_FILE), 'w-[240px]'));
+  const controls = [
+    ['prompt', controlPaint(classNameOf(src, 'session-row-confirm-text'))],
+    ['Cancel', controlPaint(classNameOf(src, 'session-row-confirm-cancel'))],
+    ['Delete', controlPaint(classNameOf(src, 'session-row-confirm-delete'))],
+  ] as const;
+
+  function rowColour(tokens: Map<string, string>, fill: { token: string; alpha: number }): Colour {
+    const under = tokens.get(surface.token);
+    const v = tokens.get(fill.token);
+    expect(under, `${surface.token} missing`).toBeDefined();
+    expect(v, `${fill.token} missing`).toBeDefined();
+    return fill.alpha === 1 ? v! : composite(v!, fill.alpha, under!);
+  }
+
+  for (const [themeName, selector] of THEMES) {
+    for (const [label, paint] of controls) {
+      confirmRowCasesRegistered.push(`${themeName}:${label}`);
+      it(`${themeName}: ${label} (${paint.text}) on ${row.cls}, resting and in every state`, () => {
+        const tokens = tokensAfter(selector);
+        const rest = rowColour(tokens, row);
+        const ink = tokens.get(paint.text);
+        expect(ink, `${paint.text} missing`).toBeDefined();
+        expect(contrast(ink!, rest), `resting on ${row.cls}`).toBeGreaterThanOrEqual(AA_NORMAL);
+        const hoverInk = paint.hoverText === undefined ? ink! : tokens.get(paint.hoverText);
+        expect(hoverInk, `${paint.hoverText} missing`).toBeDefined();
+        const hoverFill = paint.fills.find((f) => f.state === 'hover');
+        if (hoverFill === undefined) {
+          expect(contrast(hoverInk!, rest), `hover ink on ${row.cls}`).toBeGreaterThanOrEqual(AA_NORMAL);
+        }
+        for (const fill of paint.fills) {
+          const v = tokens.get(fill.token);
+          expect(v, `${fill.token} missing`).toBeDefined();
+          const painted: Colour = fill.alpha === 1 ? v! : composite(v!, fill.alpha, rest);
+          const on = fill.state === 'hover' ? hoverInk! : ink!;
+          expect(contrast(on, painted), `${fill.state}: ${fill.cls}`).toBeGreaterThanOrEqual(AA_NORMAL);
+        }
+      });
+    }
+  }
+
+  it('sits on an opaque sidebar surface, and the row fill is a solid per-theme tint', () => {
+    expect(surface).toEqual({ token: '--background', alpha: 1, cls: 'bg-background' });
+    expect(row.alpha, `${row.cls} must be solid: an alpha composites differently per theme`).toBe(1);
+    expect(controls.map(([, p]) => p.text)).toEqual(['--foreground', '--muted-foreground', '--destructive']);
+    expect(controls[2][1].hoverText).toBe('--destructive-foreground');
+  });
+
+  it('measures the old `bg-destructive/10` row under the floor in light mode for both controls', () => {
+    const tokens = tokensAfter(':root {');
+    const old = composite(tokens.get('--destructive')!, 0.1, tokens.get('--background')!);
+    expect(contrast(tokens.get('--muted-foreground')!, old)).toBeLessThan(AA_NORMAL);
+    expect(contrast(tokens.get('--destructive')!, old)).toBeLessThan(AA_NORMAL);
+  });
+
+  it('reads a hover ink off a class string, and refuses inks it cannot measure', () => {
+    expect(controlPaint('text-muted-foreground hover:text-foreground').hoverText).toBe('--foreground');
+    expect(controlPaint('text-destructive').hoverText).toBeUndefined();
+    expect(() => controlPaint('text-destructive focus:text-foreground')).toThrow(/unmeasured ink/);
+    expect(() => controlPaint('text-destructive dark:text-foreground')).toThrow(/unmeasured ink/);
+    expect(() => controlPaint('text-x hover:text-y hover:text-z')).toThrow(/at most one/);
+  });
+
+  it('registers one case per theme per control', () => {
+    expect(confirmRowCasesRegistered).toEqual(
+      THEMES.flatMap(([name]) => ['prompt', 'Cancel', 'Delete'].map((l) => `${name}:${l}`)),
+    );
+  });
+});

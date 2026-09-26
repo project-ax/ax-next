@@ -16,8 +16,9 @@
  *
  * Inline delete confirm:
  *   - Trigger: click the "delete" item in the row-menu.
- *   - Row contents swap in place to a confirm UI. Background tints to
- *     bg-destructive/10, row stays 34px tall.
+ *   - Row contents swap in place to a confirm UI. Background tints to the
+ *     solid bg-destructive-soft (an alpha tint left Cancel and Delete under
+ *     AA in light mode; theme-contrast.test.ts guards it), row stays 34px tall.
  *   - Confirm `delete` -> `DELETE /api/chat/conversations/:id` + bump.
  *   - Confirm `cancel` or no action within 5s -> revert to idle.
  *
@@ -204,7 +205,7 @@ export function SessionRow({
         className="
           session-row confirming-delete
           flex items-center gap-1.5 h-[34px] px-2.5
-          rounded-sm bg-destructive/10 cursor-default
+          rounded-sm bg-destructive-soft cursor-default
         "
         data-session-id={id}
         role="group"
