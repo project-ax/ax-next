@@ -103,9 +103,13 @@ afford — heed it rather than dispatching and hoping.
 >   into the orchestrator-facing prose above.)
 > - **Mutation testing: commit before you mutate, and restore with git — never from a file
 >   copy.** Proving a guard reddens writes a mutant into a real file, and putting the file
->   back is what has gone wrong five times, in four distinct shapes, on 2026-09-18/19.
->   `git checkout -- <path>` restores exactly your mutation **if and only if that path was
->   committed-clean before you mutated it**, so as the owner of your worktree, commit first.
+>   back is what has gone wrong six times, in five distinct shapes, on 2026-09-18/20.
+>   `git checkout HEAD -- <path>` restores exactly your mutation **if and only if that path
+>   was committed-clean before you mutated it**, so as the owner of your worktree, commit
+>   first. Say `HEAD`: without it the checkout restores from the index, so a mutant that got
+>   staged (`git add -A`, or one written with `git checkout <ref> -- <path>`) comes straight
+>   back looking restored — one builder's mutant counts came out wrong that way, 2 of 9, both
+>   flattering. And assert `git status --short` is empty between mutants; do not assume it.
 >   It is lossy when the file carries other uncommitted work (two builders lost work that
 >   way, one its entire fix), and it is destructive when you are a subagent in someone
 >   ELSE'S worktree (a reviewer silently reverted six of its builder's edits) — **in a tree
