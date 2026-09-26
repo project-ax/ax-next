@@ -28,6 +28,14 @@
  *     treats them as line breaks even though they are not CR/LF, so they forge
  *     a second line past a check that only looked for `\n`.
  *
+ * Not every text fence uses this yet. Three strip C0/C1 controls ONLY, for
+ * one-line log / prompt output, and let the bidi and zero-width half through:
+ * `oneLine` in @ax/decisions `templates.ts`, `OTHER_CONTROLS` in @ax/memory
+ * `render.ts`, and `sanitizeOneLine` in @ax/sandbox-protocol
+ * `service-diagnosis.ts`. The single-owner guard cannot see them because they
+ * name no bidi control. Whether they should adopt this class is a separate
+ * follow-up, not something a reader should assume is already done.
+ *
  * Before TASK-562 six of the seven copies of this class stopped short of
  * U+2060–U+2064 and U+2028/U+2029; they passed straight through.
  *

@@ -181,7 +181,7 @@ const CHANGED_MAX_CHARS = 200;
  * the wire — C0/C1 controls (a newline forges a separate line in a log or a
  * hold note), the zero-width family, and the bidi overrides/isolates behind
  * Trojan Source (CVE-2021-42574) — becomes a space. That class is the one in
- * `@ax/core/surface-text`, shared with every other fence (TASK-562); the
+ * `@ax/core/surface-text`, shared with every bidi-aware fence (TASK-562); the
  * function around it is a local twin of `@ax/channel-web`'s `fenceLine`,
  * because plugins do not import each other (invariant 2).
  *

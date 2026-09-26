@@ -15,6 +15,8 @@
 // the parser.
 // ---------------------------------------------------------------------------
 
+import { replaceSurfaceRewriters } from '@ax/core/surface-text';
+
 /**
  * Display ceiling for a phrase that reaches a user-facing surface. Tool
  * descriptors cap at 40; this matches `@ax/agent-activity`'s status-line
@@ -28,9 +30,12 @@ export const ACTIVITY_PHRASE_MAX_CHARS = 60;
 // carrying these would restyle the terminal/log line it lands on.
 const ANSI_CSI_RE = /\u001b\[[0-9;]*[A-Za-z]/g;
 
-// C0/C1 controls (includes \t \r \n) + DEL. Stripped after the first-line
-// cut, so interior tabs cannot smuggle column breaks into a one-line label.
-const CONTROL_RE = /[\x00-\x1F\x7F-\x9F]/g;
+// After the first-line cut, every surface-rewriting character is REMOVED:
+// C0/C1 controls (so interior tabs cannot smuggle column breaks into a
+// one-line label) and, since TASK-562, the bidi / zero-width / invisible
+// format family too — a runner-supplied U+202E would otherwise reorder the
+// label on every surface that trusts this ingress fence. The class is the one
+// in `@ax/core/surface-text`.
 
 /**
  * Fence a runner-supplied activity phrase for a user-facing surface.
@@ -43,7 +48,7 @@ export function sanitizeActivityPhrase(value: unknown): string | undefined {
   // One line: cut at the first line break rather than joining, so a hostile
   // second line cannot dilute or contradict the first.
   const firstLine = value.split(/[\r\n\u2028\u2029]/, 1)[0] ?? '';
-  const clean = firstLine.replace(ANSI_CSI_RE, '').replace(CONTROL_RE, '').trim();
+  const clean = replaceSurfaceRewriters(firstLine.replace(ANSI_CSI_RE, ''), '').trim();
   if (clean.length === 0) return undefined;
   return clean.length > ACTIVITY_PHRASE_MAX_CHARS
     ? clean.slice(0, ACTIVITY_PHRASE_MAX_CHARS)

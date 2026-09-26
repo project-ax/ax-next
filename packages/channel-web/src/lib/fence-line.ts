@@ -31,7 +31,7 @@ import { replaceSurfaceRewriters } from '@ax/core/surface-text';
  * leaned on one to separate two words still reads as two words. React escapes
  * markup, so this was never XSS; it is the quieter failure where the UI says,
  * in our voice, something other than what is on the wire. The class itself is
- * `@ax/core/surface-text`'s, shared with every other fence in the repo.
+ * `@ax/core/surface-text`'s, shared with every other bidi-aware fence in the repo.
  *
  * Callers pass text that arrived from across a trust boundary: a routine name
  * authored in the agent's own workspace and validated only for non-emptiness,
