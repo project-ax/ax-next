@@ -9,9 +9,36 @@ export type ServiceHandler<I = unknown, O = unknown> = (
   input: I,
 ) => Promise<O>;
 
+/**
+ * What the bus hands a subscriber alongside its ctx and payload (TASK-552).
+ *
+ * `signal` is this subscriber's own `AbortSignal` for this one fire. The bus
+ * aborts it at the moment it stops waiting — when the caller's
+ * `subscriberTimeoutMs` elapses — with a `DOMException` named `TimeoutError`
+ * as its reason. It is never aborted for any other reason, and never aborted
+ * at all on an unbounded fire or for a subscriber that settles in time.
+ *
+ * Honouring it is voluntary, and it is the only way a subscriber's WORK stops
+ * once the bus has given up on its RESULT: JavaScript cannot cancel a promise.
+ * A subscriber doing something long or side-effecting (a storage write, a
+ * network call, a model call) should check `signal.aborted` before each step
+ * that commits something, or pass the signal down to an API that takes one.
+ * Stopping with `signal.throwIfAborted()` is fine — the bus recognises its own
+ * abort reason and logs it at debug rather than as a failure.
+ *
+ * Deliberately NOT on `AgentContext`: the ctx flows on into every service
+ * call a subscriber makes, and a signal there would read as a contract those
+ * services honour, which none do today. It is per-subscriber, not per-fire,
+ * so one slow subscriber being told to stop never tells its neighbours to.
+ */
+export interface SubscriberInvocation {
+  readonly signal: AbortSignal;
+}
+
 export type SubscriberHandler<P = unknown> = (
   ctx: AgentContext,
   payload: P,
+  invocation: SubscriberInvocation,
 ) => Promise<P | undefined | Rejection>;
 
 /** Default per-service-call timeout. A hang backstop, not a latency SLA. */
@@ -99,7 +126,8 @@ export interface FireOptions {
   /**
    * Bound on EACH subscriber, in ms (TASK-514). A subscriber still running
    * when it elapses is skipped — logged as `hook_subscriber_timed_out`, its
-   * result discarded — and the fire moves on. Omitted or `Infinity` means no
+   * result discarded, its `invocation.signal` aborted (TASK-552) — and the
+   * fire moves on. Omitted or `Infinity` means no
    * bound. `NaN`, negatives and `-Infinity` are rejected, never treated as
    * "no bound", for the same reason as a service `timeoutMs`.
    */
@@ -406,14 +434,17 @@ export class HookBus {
    * Run ONE subscriber under a finite `timeoutMs` (the unbounded path lives
    * inline in `fire`, see there for why).
    *
-   * A subscriber that blows the bound is abandoned, not cancelled: JavaScript
-   * has no way to stop a promise, and `AgentContext` carries no abort signal
-   * for a subscriber to honour. So it keeps running, and what we guarantee is
-   * narrower and checkable — once the bound passes, its RESULT has no say over
-   * this fire. Its eventual return value (a transform or a veto) is discarded;
-   * a late throw is still reported, flagged `timedOut: true`, so it is never
-   * swallowed; and its stall watch stays armed until it really settles, so
-   * `_stalled` without `_slow` keeps meaning "never finished".
+   * A subscriber that blows the bound is abandoned and TOLD to stop: its
+   * `invocation.signal` is aborted at the bound (TASK-552). JavaScript has no
+   * way to stop a promise, so stopping is up to the subscriber — one that
+   * ignores the signal keeps running. What we guarantee regardless is narrower
+   * and checkable — once the bound passes, its RESULT has no say over this
+   * fire. Its eventual return value (a transform or a veto) is discarded; a
+   * late throw is still reported, flagged `timedOut: true`, so it is never
+   * swallowed — unless the throw IS our abort reason, which means it stopped
+   * because we asked, and that is logged at debug as `hook_subscriber_aborted`;
+   * and its stall watch stays armed until it really settles, so `_stalled`
+   * without `_slow` keeps meaning "never finished".
    *
    * What it can still do: anything by side effect — including MUTATING the
    * payload object in place, since it holds the same reference later
@@ -438,9 +469,10 @@ export class HookBus {
       this.stallWarnMs,
     );
     let timedOut = false;
+    const controller = new AbortController();
     let run: Promise<unknown>;
     try {
-      run = Promise.resolve(sub.handler(ctx, current));
+      run = Promise.resolve(sub.handler(ctx, current, { signal: controller.signal }));
     } catch (err) {
       // A non-async handler can throw synchronously; treat it like any throw.
       run = Promise.reject(err);
@@ -452,6 +484,21 @@ export class HookBus {
           result: result as P | undefined | Rejection,
         }),
         (err: unknown): SubscriberOutcome<P> => {
+          // Thrown our own abort reason back at us (`signal.throwIfAborted()`):
+          // the subscriber stopped because we asked it to. The timeout was
+          // already warned; an error line here would report compliance as a
+          // failure. Identity, not shape — only OUR reason object counts.
+          if (timedOut && controller.signal.aborted && err === controller.signal.reason) {
+            try {
+              ctx.logger?.debug('hook_subscriber_aborted', {
+                hook: hookName,
+                plugin: sub.plugin,
+              });
+            } catch {
+              /* diagnostics must not change control flow */
+            }
+            return { kind: 'failed' };
+          }
           // Isolation is the contract: a throwing subscriber is reported and
           // the chain continues. The report must never break that contract
           // itself — see `reportSubscriberFailure` for why it cannot throw.
@@ -476,6 +523,17 @@ export class HookBus {
           timeoutMs,
         });
         resolve({ kind: 'timed-out' });
+        // Tell the subscriber to stop, AFTER the fire has its answer: abort
+        // listeners run synchronously inside `abort()`, and whatever they do
+        // is the subscriber's business, not this fire's. The reason matches
+        // what `AbortSignal.timeout()` would give, so code that already knows
+        // how to read a timeout abort reads this one.
+        controller.abort(
+          new DOMException(
+            `subscriber '${sub.plugin}' on '${hookName}' exceeded ${timeoutMs}ms`,
+            'TimeoutError',
+          ),
+        );
       }, timeoutMs);
       // Same posture as `withTimeout`: the bound never keeps the process alive.
       timer.unref?.();
@@ -494,7 +552,8 @@ export class HookBus {
    * opt-in, and the caller — the owner of the hook's latency contract — picks
    * the value, the way a service registrar picks its own `timeoutMs` and
    * `stallWarnMs`. A subscriber that exceeds it is named in a
-   * `hook_subscriber_timed_out` warning and SKIPPED: its effect is dropped and
+   * `hook_subscriber_timed_out` warning and SKIPPED: its effect is dropped,
+   * its `invocation.signal` is aborted so it can stop its work (TASK-552), and
    * the remaining subscribers run. It never fails the fire. Omitted (or
    * `Infinity`), `fire` waits for its subscribers however long they take,
    * exactly as it always has.
@@ -546,7 +605,14 @@ export class HookBus {
           this.stallWarnMs,
         );
         try {
-          result = (await sub.handler(ctx, current)) as P | undefined | Rejection;
+          // A fresh controller per subscriber even though nothing here ever
+          // aborts it: handlers can rely on `signal` always being present, and
+          // a shared never-aborting signal would accumulate every listener
+          // any subscriber ever added to it. Allocation only — no extra
+          // microtask hop, so the ordering note above still holds.
+          result = (await sub.handler(ctx, current, {
+            signal: new AbortController().signal,
+          })) as P | undefined | Rejection;
         } catch (err) {
           // Isolation is the contract: a throwing subscriber is reported and
           // the chain continues. The report must never break that contract
