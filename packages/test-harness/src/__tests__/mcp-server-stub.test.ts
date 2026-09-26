@@ -7,6 +7,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { mcpServerStubPath } from '../index.js';
+import { readJsonRpcStdout } from './helpers/json-rpc-stdout.js';
 
 // These tests spawn a real subprocess and drive it through the MCP SDK's
 // StdioClientTransport — same codepath the Task 18 acceptance test uses.
@@ -89,38 +90,11 @@ describe('mcp-server-stub', () => {
       child.stdin!.write(`${JSON.stringify(obj)}\n`);
     };
 
-    const lines: string[] = [];
-    let buf = '';
-    child.stdout!.on('data', (chunk: Buffer) => {
-      buf += chunk.toString('utf8');
-      for (;;) {
-        const nl = buf.indexOf('\n');
-        if (nl < 0) break;
-        lines.push(buf.slice(0, nl));
-        buf = buf.slice(nl + 1);
-      }
-    });
-
-    const waitForId = async (id: number): Promise<void> => {
-      const deadline = Date.now() + 5000;
-      for (;;) {
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          if (line == null || line.length === 0) continue;
-          try {
-            const msg = JSON.parse(line) as { id?: number };
-            if (msg.id === id) {
-              lines.splice(i, 1);
-              return;
-            }
-          } catch {
-            // ignore non-JSON lines (shouldn't happen on stdout)
-          }
-        }
-        if (Date.now() > deadline) throw new Error(`timeout waiting for id=${id}`);
-        await new Promise((r) => setTimeout(r, 10));
-      }
-    };
+    // No private deadline on the reply (TASK-537): this used to give up
+    // after 5s, and CI has needed 9s for the same spawn + handshake (plus
+    // one call) in the echo test above. The package's testTimeout bounds the wait; the reader
+    // rejects straight away, with exit code + stderr, if the stub dies first.
+    const rpc = readJsonRpcStdout(child);
 
     send({
       jsonrpc: '2.0',
@@ -132,7 +106,7 @@ describe('mcp-server-stub', () => {
         clientInfo: { name: 'crash-test', version: '0.0.0' },
       },
     });
-    await waitForId(1);
+    await rpc.waitForId(1);
     send({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} });
 
     send({
@@ -143,6 +117,6 @@ describe('mcp-server-stub', () => {
     });
 
     const [code] = (await once(child, 'exit')) as [number | null, NodeJS.Signals | null];
-    expect(code).toBe(1);
+    expect(code, `stub stderr: ${rpc.stderr()}`).toBe(1);
   });
 });
