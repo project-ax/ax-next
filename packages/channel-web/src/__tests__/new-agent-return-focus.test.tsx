@@ -348,8 +348,10 @@ describe('closing the new-agent dialog from the workspace (TASK-510)', () => {
      * in this order the new view paints AFTER the re-arm starts and the
      * observer's own check yields. The up-front check covers the other order
      * (view already painted) and is pinned in
-     * `lib/__tests__/new-agent-view-focus.test.ts`. What this one pins is the
-     * end-to-end outcome: the person's control, not the new view.
+     * `lib/__tests__/new-agent-view-focus.test.ts`. It also passes with the
+     * whole re-arm absent (nothing moves focus off the row), so it is a guard
+     * against a focus-STEALING re-arm only; the sibling test above is the one
+     * that proves the fix.
      */
     it('leaves a person who moved during the slow send where they are', async () => {
       const release = await createWithHeldSend();
