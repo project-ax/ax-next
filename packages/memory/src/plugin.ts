@@ -57,6 +57,7 @@ import {
   type MemoryRememberOutput,
   type MemoryStatement,
   type MemoryStatementKind,
+  type MemoryStatusOutput,
 } from './types.js';
 
 const PLUGIN_VERSION = '0.0.0';
@@ -70,6 +71,16 @@ export const FACTS_SUPERSEDE_HOOK = 'memory:facts:supersede';
 export const MEMORY_RECALL_HOOK = 'memory:recall';
 export const MEMORY_REMEMBER_HOOK = 'memory:remember';
 export const MEMORY_FORGET_HOOK = 'memory:forget';
+/**
+ * Whether extraction is paused for the CALLER — see `MemoryStatusOutput`.
+ *
+ * Backed by in-process state in the plugin instance. That is honest only
+ * because the host is single-replica (the chart's
+ * `ax-next.validateHostReplicas` refuses more), and it is per user because
+ * credential resolution is per user: the caller's own key, then the global
+ * one, then env — so one person can be paused while another is not.
+ */
+export const MEMORY_STATUS_HOOK = 'memory:status';
 
 /** The hook the observer observes. */
 export const CHAT_END_HOOK = 'chat:end';
@@ -338,6 +349,12 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
   }
   if (exportsCfg?.volume !== undefined) validateVolumeConfig(exportsCfg.volume);
   let exporterRef: ReturnType<typeof createMemoryExporter> | undefined;
+  // userIds whose last observer LLM call failed for want of a credential.
+  // Per plugin INSTANCE (not module-global) so two instances never share it.
+  // Set by the observer's missing-credential catch; cleared only by an
+  // observer LLM call that resolves — a skipped run proves nothing, and a
+  // 504 says nothing about the credential either way.
+  const pausedUsers = new Set<string>();
 
   return {
     manifest: {
@@ -347,6 +364,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         MEMORY_RECALL_HOOK,
         MEMORY_REMEMBER_HOOK,
         MEMORY_FORGET_HOOK,
+        MEMORY_STATUS_HOOK,
         SYSTEM_PROMPT_AUGMENT_HOOK,
         MEMORY_RECALL_TOOL_HOOK,
         MEMORY_NOTE_TOOL_HOOK,
@@ -861,6 +879,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           model: parsedMemoryOps.modelId,
           observerTimeoutMs,
           onFactsChanged,
+          pausedUsers,
         }).catch(() => {
           // Unreachable: `observeChatEnd` catches everything and logs it.
           // Present because a detached promise that CAN reject is an
@@ -870,6 +889,22 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         config.onObserverDetached?.(work);
         return undefined;
       });
+
+      // ---------------------------------------------------------------
+      // memory:status — the caller's own "extraction paused" state. The
+      // input is ignored: it answers for ctx.userId and nobody else.
+      // ---------------------------------------------------------------
+      bus.registerService<unknown, MemoryStatusOutput>(
+        MEMORY_STATUS_HOOK,
+        PLUGIN_NAME,
+        async (ctx) => {
+          const userId = ctx.userId;
+          if (typeof userId === 'string' && userId !== '' && pausedUsers.has(userId)) {
+            return { extraction: 'paused', reason: 'missing-credential' };
+          }
+          return { extraction: 'ok' };
+        },
+      );
 
       if (config.rules === true) registerRulesHooks(bus);
       await registerMemoryRecall(bus);
@@ -895,8 +930,10 @@ async function observeChatEnd(
     model: string;
     observerTimeoutMs: number;
     onFactsChanged?: (ctx: AgentContext) => void;
+    pausedUsers: Set<string>;
   },
 ): Promise<void> {
+  const userId = typeof ctx.userId === 'string' && ctx.userId !== '' ? ctx.userId : undefined;
   try {
     // A terminated outcome (a `chat:start` veto, a runner crash, a timeout)
     // carries no transcript, and a malformed payload carries nothing we can
@@ -931,13 +968,18 @@ async function observeChatEnd(
 
     const result = await runObserver({
       messages: messages as UntrustedMessage[],
-      llmCall: (input: LlmCallInput) =>
-        bus.call<LlmCallInput, LlmCallOutput>(cfg.memoryOpsHook, ctx, {
+      llmCall: async (input: LlmCallInput) => {
+        const out = await bus.call<LlmCallInput, LlmCallOutput>(cfg.memoryOpsHook, ctx, {
           ...input,
           // Applied HERE rather than at the call site, so a future memory
           // operation cannot forget it.
           reasoningEffort: MEMORY_OPS_REASONING,
-        }),
+        });
+        // The provider answered, so a credential resolved for this user:
+        // whatever paused them is fixed. Only a RESOLVED call may clear it.
+        if (userId !== undefined) cfg.pausedUsers.delete(userId);
+        return out;
+      },
       record: async (input: ObserverRecordInput) => {
         await resolveMemoryAccess(bus, ctx);
         const out = await bus.call<ObserverRecordInput, { records?: Array<{ id?: unknown }> } | null>(
@@ -962,6 +1004,7 @@ async function observeChatEnd(
     // somebody stores a key, so it gets its own event at `error` volume —
     // the "memory paused" state. Everything else keeps the path's `warn`.
     if (isMissingCredential(err)) {
+      if (userId !== undefined) cfg.pausedUsers.add(userId);
       ctx.logger.error(NO_CREDENTIAL_EVENT, {
         err: error,
         agentId: ctx.agentId,
