@@ -239,15 +239,37 @@ const tombstones = memoryFiles
 const tombstoned = new Set(tombstones.map((t) => t.path));
 const tombstoneLines = new Set(tombstones.map((t) => `${t.file}:${t.line}`));
 
-/** Paths git history shows as deleted, restricted to the ones asked about. */
-function everDeleted(paths) {
-  if (paths.length === 0) return new Set();
+/**
+ * Paths git history shows as DELETED -- not renamed away. Deliberately NOT
+ * narrowed with a pathspec: git detects a rename by pairing the old path with
+ * the new one, and a pathspec naming only the old path hides the new one, so
+ * the rename is reported as a plain `D`. That would let a tombstone pass for a
+ * file that merely MOVED, which is exactly the rot this guard exists to catch.
+ * Walking all deletions with rename detection on (`-M`) costs ~0.1s here.
+ * (A move so heavily edited that git scores it below 50% similarity still reads
+ * as a delete; that is git's own definition, and the tombstone is then true.)
+ */
+function deletedNotRenamed() {
   const out = execFileSync(
     'git',
-    ['log', '--diff-filter=D', '--name-only', '--format=', '--', ...paths],
-    { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 1 << 26 },
+    ['log', '-M', '--diff-filter=D', '--name-only', '--format='],
+    { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 1 << 28 },
   );
   return new Set(out.split('\n').filter(Boolean));
+}
+
+/** One path git history renamed AWAY, found live, so the test above has a real case. */
+function someRenamedAwayPath() {
+  const out = execFileSync(
+    'git',
+    ['log', '-M', '--diff-filter=R', '--name-status', '--format=', '-n', '50'],
+    { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 1 << 26 },
+  );
+  for (const line of out.split('\n')) {
+    const [status, from, to] = line.split('\t');
+    if (status?.startsWith('R') && from && to && !tracked.files.has(from)) return from;
+  }
+  return undefined;
 }
 
 const elided = allCitations.filter((c) => c.token.includes('...'));
@@ -308,7 +330,7 @@ describe('.claude/memory citations point at files that exist', () => {
     });
 
     it('every tombstoned path really was deleted, per git history', () => {
-      const deleted = everDeleted([...tombstoned]);
+      const deleted = deletedNotRenamed();
       const invented = tombstones
         .filter((t) => !deleted.has(t.path))
         .map((t) => `  .claude/memory/${t.file}:${t.line}  tombstones \`${t.path}\`, which git never deleted`);
@@ -317,6 +339,14 @@ describe('.claude/memory citations point at files that exist', () => {
         'A tombstone names a path git has no deletion of -- a typo, or a file that never existed. ' +
           'A tombstone is a claim; this is the check that keeps it one.',
       ).toEqual([]);
+    });
+
+    it('a file that was renamed away does not count as deleted', () => {
+      // The pathspec-narrowed spelling of this check reported a rename's old
+      // path as `D`, so a tombstone could have passed for a MOVED file.
+      const moved = someRenamedAwayPath();
+      expect(moved, 'history should hold at least one rename').toBeDefined();
+      expect(deletedNotRenamed().has(moved)).toBe(false);
     });
 
     it('recognises only a line that OPENS with the marker', () => {
