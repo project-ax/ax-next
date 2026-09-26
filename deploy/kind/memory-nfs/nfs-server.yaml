@@ -1,0 +1,75 @@
+# In-cluster NFSv4 server for the memory preset on kind — dev only.
+#
+# kubelet mounts `nfs:` volumes from the NODE's network namespace, not the
+# pod's, so the server has to be reachable without cluster DNS. A Service with
+# a pinned ClusterIP does that: kube-proxy programs the node's iptables for it,
+# and `kind-memory-values.yaml` can name the address as a plain IP.
+#
+# The pod is privileged because the kernel nfsd needs it (mounting
+# /proc/fs/nfsd, binding 2049). That is precisely the kind of thing we'd never
+# put in the chart — which is why it lives here, outside it.
+#
+# The export is an emptyDir: the facts database on the host's PVC is the
+# source of truth, so a pod restart loses no data. It does leave the host's
+# mount with stale handles (restart the host after it), and each agent's
+# export stays empty until that agent's memory next changes (TASK-529).
+apiVersion: v1
+kind: Service
+metadata:
+  name: ax-next-memory-nfs
+  namespace: ax-next
+  labels:
+    app.kubernetes.io/name: ax-next-memory-nfs
+spec:
+  type: ClusterIP
+  # Must stay inside kind's default service CIDR (10.96.0.0/16) and match
+  # memory.exports.server in kind-memory-values.yaml.
+  clusterIP: 10.96.200.49
+  selector:
+    app.kubernetes.io/name: ax-next-memory-nfs
+  ports:
+    - name: nfs
+      port: 2049
+      targetPort: 2049
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ax-next-memory-nfs
+  namespace: ax-next
+  labels:
+    app.kubernetes.io/name: ax-next-memory-nfs
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ax-next-memory-nfs
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ax-next-memory-nfs
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: nfs
+          image: ax-next/memory-nfs:dev
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          ports:
+            - name: nfs
+              containerPort: 2049
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: 2049
+            periodSeconds: 5
+          volumeMounts:
+            - name: exports
+              mountPath: /exports
+      volumes:
+        - name: exports
+          emptyDir: {}
