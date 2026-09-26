@@ -335,7 +335,8 @@ HEAD_SHA=$(gh pr view <n> --json headRefOid --jq .headRefOid)
 # its own trigger and reports a confident green. Swept 2026-09-26 over every PR head
 # CodeQL analysed 2026-08-21..09-26 (666 shas): all 49 heads with no ci.yml run
 # conflicted with origin/main at push time (`git merge-tree`), and all 611 heads with a
-# run merged cleanly into the main they were pushed onto. One branch, both directions:
+# run merged cleanly into the main they were pushed onto (607 directly; 3 whose run
+# predates, by seconds, the main commit they conflict with; 1 whose run was in flight). One branch, both directions:
 # PR #620 f70f6f7f CONFLICTING / runs=0 / 6 CodeQL-only → resolved 7dd96d1d MERGEABLE /
 # runs=1 on the first poll, 0s after the push. That is why "a rebase push creates the
 # run": the rebase RESOLVES THE CONFLICT. A push that leaves it (an empty commit, a
@@ -401,13 +402,13 @@ cycle. `git merge-tree` is the cheap discriminator — local, no API call, and u
 if ! git fetch -q origin main; then
   echo "NO-RUN-UNDIAGNOSED #<n>: fetch of origin/main failed — a stale main decides nothing"; exit 1
 elif ! git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null; then
-  echo "NO-RUN-UNDIAGNOSED #<n>: $HEAD_SHA is not in this clone — git fetch origin <branch>, then re-run"
+  echo "NO-RUN-UNDIAGNOSED #<n>: $HEAD_SHA is not in this clone — git fetch origin <branch>, then re-run"; exit 1
 else
   git merge-tree --write-tree origin/main "$HEAD_SHA" >/dev/null 2>&1; mt=$?
   case "$mt" in
     1) echo "NO-RUN-CONFLICT #<n>: $HEAD_SHA conflicts with origin/main — no merge ref, so no pull_request run. Rebase onto origin/main, resolve, push; the run appears on that push." ;;
     0) echo "NO-RUN-NOT-CONFLICT #<n>: $HEAD_SHA merges cleanly — a rebase push will NOT help. Check the PR base is main (ci.yml runs only for PRs into main); after a --base retarget, close + reopen the PR." ;;
-    *) echo "NO-RUN-UNDIAGNOSED #<n>: merge-tree rc=$mt" ;;
+    *) echo "NO-RUN-UNDIAGNOSED #<n>: merge-tree rc=$mt"; exit 1 ;;
   esac
 fi
 ```

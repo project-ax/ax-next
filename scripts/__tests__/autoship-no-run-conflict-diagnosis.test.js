@@ -173,7 +173,8 @@ git(WORK, 'commit', '-q', '-am', 'main edit');
 git(WORK, 'push', '-q', 'origin', 'mover:main');
 git(WORK, 'checkout', '-q', 'clean');
 
-// A 40-char sha no object in this clone has: merge-tree answers rc=128.
+// A 40-char sha no object in this clone has: merge-tree answers rc=1 (git 2.52) -- the
+// SAME code as a real conflict, which is why the block runs `cat-file -e` first.
 const MISSING_SHA = 'deadbeef'.repeat(5);
 
 // A second clone with no `origin` remote: the fetch itself fails.
@@ -264,9 +265,12 @@ describe('no-run diagnosis: conflict vs clean, executed against real git', () =>
       // the block must notice the missing object BEFORE it reads the rc, or it reports
       // a conflict nobody measured.
       const [script] = blocks;
-      const { out } = run(shell, script, WORK, MISSING_SHA);
+      const { code, out } = run(shell, script, WORK, MISSING_SHA);
       expect(out, `expected UNDIAGNOSED\n${out}`).toMatch(/NO-RUN-UNDIAGNOSED/);
       expect(out).not.toMatch(/NO-RUN-NOT-CONFLICT|NO-RUN-CONFLICT\b/);
+      // Every undecidable outcome exits non-zero, like the fetch failure does, so an
+      // UNDIAGNOSED is never exit-code-indistinguishable from a verdict.
+      expect(code, 'a missing head must exit non-zero').not.toBe(0);
     });
 
     it(`(${shell}) a failed fetch is UNDIAGNOSED -- a stale origin/main decides nothing`, () => {
