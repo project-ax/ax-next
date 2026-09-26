@@ -100,12 +100,20 @@ function renderedJob(extraArgs: readonly string[] = []): Rendered {
   return { image: c.image as string, command, args, script, pgHost: host[1]!, database: db[1]! };
 }
 
+type ChartPostgresValues = {
+  postgresql: {
+    image: { registry: string; repository: string; tag: string };
+    auth: { username: string };
+  };
+};
+
+function chartValues(): ChartPostgresValues {
+  return load(readFileSync(join(chartDir, 'values.yaml'), 'utf8')) as ChartPostgresValues;
+}
+
 /** The chart's own postgres image, read from values.yaml — the source of truth. */
 function chartPostgresImage(): string {
-  const values = load(readFileSync(join(chartDir, 'values.yaml'), 'utf8')) as {
-    postgresql: { image: { registry: string; repository: string; tag: string } };
-  };
-  const { registry, repository, tag } = values.postgresql.image;
+  const { registry, repository, tag } = chartValues().postgresql.image;
   return `${registry}/${repository}:${tag}`;
 }
 
@@ -200,15 +208,28 @@ function docker(args: readonly string[], timeoutMs = 60_000): { status: number; 
   return { status: r.status ?? -1, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
 }
 
-/** Pull with a bounded retry, so a registry blip is reported as one, not as a product failure. */
-function pull(image: string): void {
+/** Synchronous sleep — the suite drives Docker through spawnSync, so there is no event loop to yield to. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Make `image` resident with as few registry contacts as possible. An image
+ * already on the daemon is never pulled (`docker pull` would re-check the
+ * manifest over the network even then — the TASK-317 flake vector). Otherwise
+ * a bounded retry with backoff, and a failure that says it was the PULL, so a
+ * Docker Hub blip is never mistaken for a product failure.
+ */
+function ensureImage(image: string): void {
+  if (docker(['image', 'inspect', image]).status === 0) return;
   let last = '';
   for (let attempt = 1; attempt <= 3; attempt++) {
     const r = docker(['pull', '--quiet', image], 300_000);
     if (r.status === 0) return;
     last = r.out;
+    if (attempt < 3) sleepSync(attempt * 5_000);
   }
-  throw new Error(`docker pull ${image} failed 3 times:\n${last}`);
+  throw new Error(`docker pull ${image} failed 3 times (registry, not product):\n${last}`);
 }
 
 const cleanup: Array<string[]> = [];
@@ -261,11 +282,11 @@ describeIfContainers('pgvector bootstrap Job — behaviour (TASK-458)', () => {
     "enables pgvector on the chart's own postgres image, and the extension is really there",
     () => {
       const job = renderedJob();
-      pull(job.image);
+      ensureImage(job.image);
       // Mirror the subchart: a named app user plus a separate superuser password,
       // which the Job reads from `<release>-postgresql` / postgres-password.
       const result = runJobAgainst(job, chartPostgresImage(), {
-        POSTGRESQL_USERNAME: 'ax_next',
+        POSTGRESQL_USERNAME: chartValues().postgresql.auth.username,
         POSTGRESQL_PASSWORD: 'task458-app',
         POSTGRESQL_POSTGRES_PASSWORD: SUPERUSER_PASSWORD,
         POSTGRESQL_DATABASE: job.database,
@@ -289,8 +310,8 @@ describeIfContainers('pgvector bootstrap Job — behaviour (TASK-458)', () => {
     'FAILS the Job against a server without pgvector — no more silent success',
     () => {
       const job = renderedJob();
-      pull(job.image);
-      pull(NO_VECTOR_IMAGE);
+      ensureImage(job.image);
+      ensureImage(NO_VECTOR_IMAGE);
       const result = runJobAgainst(job, NO_VECTOR_IMAGE, {
         POSTGRES_PASSWORD: SUPERUSER_PASSWORD,
         POSTGRES_DB: job.database,
