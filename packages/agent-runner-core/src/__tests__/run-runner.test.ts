@@ -297,6 +297,179 @@ describe('runRunner', () => {
       ).toHaveLength(0);
     });
 
+    // TASK-573. The Claude Agent SDK pumps its prompt iterable EAGERLY
+    // (`Query.streamInput` is a bare `for await` into the CLI's stdin), so the
+    // loop's next `nextMessage()` is already pending while a turn streams. When
+    // a person approves mid-reply, the decision-resolved entry is pulled
+    // BEFORE the held turn's `result`. The shell used to adopt the
+    // continuation's reqId right there, so the held turn's remaining chunks
+    // and its turn-end went out stamped with the continuation's id — and the
+    // SSE stream on that id (#741 matches on payload.reqId) closed on the held
+    // turn's turn-end before the continuation said a word.
+    it('keeps the held turn on its own reqId when the decision resolves mid-stream (TASK-573)', async () => {
+      // A hand-rolled inbox: the delivery is released by the loop itself,
+      // mid-turn, and the loop waits on the pull resolving — events, no sleeps.
+      let releaseDecision!: () => void;
+      const decisionArrived = new Promise<void>((r) => {
+        releaseDecision = r;
+      });
+      const entries: Array<() => Promise<unknown>> = [
+        async () => ({
+          type: 'user-message',
+          payload: { role: 'user', content: 'read gnu.org' },
+          reqId: 'req-held',
+          cursor: 1,
+        }),
+        async () => {
+          await decisionArrived;
+          return {
+            type: 'decision-resolved',
+            decisionId: 'dec_1',
+            outcome: 'approved',
+            note: 'They said yes.',
+            reqId: 'req-continuation',
+          };
+        },
+      ];
+      (createInboxLoop as unknown as Mock).mockReturnValueOnce({
+        next: vi.fn(async () => {
+          const e = entries.shift();
+          return e !== undefined ? e() : { type: 'cancel' };
+        }),
+        cursor: 0,
+      });
+      const endTurnInput = {
+        contentBlocks: [],
+        toolResultBlocks: [{ type: 'tool_result', tool_use_id: 't1', content: 'held' }],
+        readTurnId: async () => undefined,
+      } as unknown as Parameters<LoopContext['endTurn']>[0];
+
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage(); // the user's message → the held turn
+          // What the SDK does: the next pull is already in flight.
+          const pull = ctx.nextMessage();
+          await ctx.emitChunk({ kind: 'text', text: 'held-1' });
+          releaseDecision(); // the person approves while the reply streams
+          const continuation = await pull; // the pull resolves mid-turn
+          expect(continuation).not.toBeNull();
+          await ctx.emitChunk({ kind: 'text', text: 'held-2' });
+          await ctx.endTurn(endTurnInput); // the held turn's `result`
+          await ctx.emitChunk({ kind: 'text', text: 'cont-1' });
+          await ctx.endTurn(endTurnInput); // the continuation's `result`
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+
+      const frames = fakeClient.event.mock.calls
+        .filter((c) => c[0] === 'event.stream-chunk' || c[0] === 'event.turn-end')
+        .map((c) => {
+          const p = c[1] as { reqId?: string; text?: string; role?: string };
+          return `${c[0] === 'event.stream-chunk' ? `chunk:${p.text}` : `turn-end:${p.role}`}@${p.reqId}`;
+        });
+      expect(frames).toEqual([
+        'chunk:held-1@req-held',
+        'chunk:held-2@req-held',
+        'turn-end:tool@req-held',
+        'turn-end:assistant@req-held',
+        'chunk:cont-1@req-continuation',
+        'turn-end:tool@req-continuation',
+        'turn-end:assistant@req-continuation',
+      ]);
+    });
+
+    it('parks a pulled-ahead message with no reqId too: the held turn stays on its id, the next runs dark (TASK-573)', async () => {
+      scriptInbox([
+        {
+          type: 'user-message',
+          payload: { role: 'user', content: 'read gnu.org' },
+          reqId: 'req-held',
+          cursor: 1,
+        },
+        {
+          type: 'decision-resolved',
+          decisionId: 'dec_1',
+          outcome: 'approved',
+          note: 'They said yes.',
+        },
+      ]);
+      const endTurnInput = {
+        contentBlocks: [],
+        toolResultBlocks: [],
+        readTurnId: async () => undefined,
+      } as unknown as Parameters<LoopContext['endTurn']>[0];
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage();
+          // Pulled ahead, resolved before the held turn's result.
+          expect(await ctx.nextMessage()).not.toBeNull();
+          await ctx.emitChunk({ kind: 'text', text: 'held-1' });
+          await ctx.endTurn(endTurnInput);
+          await ctx.emitChunk({ kind: 'text', text: 'cont-1' });
+          await ctx.endTurn(endTurnInput);
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+      const frames = fakeClient.event.mock.calls
+        .filter((c) => c[0] === 'event.stream-chunk' || c[0] === 'event.turn-end')
+        .map((c) => `${c[0]}@${(c[1] as { reqId?: string }).reqId ?? 'none'}`);
+      // The continuation's chunk is skipped (no id to route it to), never
+      // stamped with the held turn's already-finished id.
+      expect(frames).toEqual([
+        'event.stream-chunk@req-held',
+        'event.turn-end@req-held',
+        'event.turn-end@none',
+      ]);
+    });
+
+    it('adopts the continuation reqId at once when the decision resolves between turns (TASK-573)', async () => {
+      // The late-approve case: the held turn has already ended, so the
+      // delivery is pulled with no turn in flight and routes immediately.
+      scriptInbox([
+        {
+          type: 'user-message',
+          payload: { role: 'user', content: 'read gnu.org' },
+          reqId: 'req-held',
+          cursor: 1,
+        },
+        {
+          type: 'decision-resolved',
+          decisionId: 'dec_1',
+          outcome: 'approved',
+          note: 'They said yes.',
+          reqId: 'req-continuation',
+        },
+      ]);
+      const endTurnInput = {
+        contentBlocks: [],
+        toolResultBlocks: [],
+        readTurnId: async () => undefined,
+      } as unknown as Parameters<LoopContext['endTurn']>[0];
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage();
+          await ctx.emitChunk({ kind: 'text', text: 'held-1' });
+          await ctx.endTurn(endTurnInput);
+          await ctx.nextMessage();
+          await ctx.emitChunk({ kind: 'text', text: 'cont-1' });
+          await ctx.endTurn(endTurnInput);
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+      const frames = fakeClient.event.mock.calls
+        .filter((c) => c[0] === 'event.stream-chunk' || c[0] === 'event.turn-end')
+        .map((c) => `${c[0]}@${(c[1] as { reqId?: string }).reqId}`);
+      expect(frames).toEqual([
+        'event.stream-chunk@req-held',
+        'event.turn-end@req-held',
+        'event.stream-chunk@req-continuation',
+        'event.turn-end@req-continuation',
+      ]);
+    });
+
     it('re-polls past a delivery whose note is empty rather than waking the model', async () => {
       scriptInbox([
         { type: 'decision-resolved', decisionId: 'dec_1', outcome: 'approved', note: '   ' },

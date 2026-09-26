@@ -751,8 +751,9 @@ async function runRunnerInner(
 
   // Most-recent host-minted reqId from the inbox (J9). Set when a user
   // message arrives; read by `event.stream-chunk` emissions during the
-  // assistant branch. Lifetime is "from the inbox pull until the
-  // next inbox pull" — chunks for the SAME reqId may continue across
+  // assistant branch. Lifetime is "from the turn its message starts until
+  // the next message's turn starts" (TASK-573: NOT from pull to pull — see
+  // `adoptReqIdForTurn` below) — chunks for the SAME reqId may continue across
   // multiple turn boundaries (the loop may break a long response
   // into multiple turns), so we DO NOT clear this on turn-end. A chunk
   // that would emit before any user message has been pulled is impossible
@@ -760,6 +761,47 @@ async function runRunnerInner(
   // an unset reqId causes the chunk to be skipped (no `event.stream-chunk`
   // with a missing reqId — the host's router can't route it).
   let currentReqId: string | undefined;
+
+  // TASK-573: a reqId belongs to the TURN its message starts, and a turn owns
+  // it until its `endTurn` has emitted the turn-end — not merely until the next
+  // inbox pull. Those are different moments for a loop that pulls ahead: the
+  // Claude Agent SDK pumps its prompt iterable eagerly (`Query.streamInput` is
+  // a bare `for await` into the CLI's stdin), so the loop's next
+  // `nextMessage()` is already pending while a turn streams, and it resolves
+  // the instant the inbox has something. When a person approves while the held
+  // reply is still streaming, that something is the decision-resolved entry —
+  // and adopting its reqId on the pull stamped the held turn's remaining
+  // chunks AND its turn-end with the continuation's id. The SSE stream on that
+  // id (which matches chat:turn-end on payload.reqId, #741) then closed on the
+  // held turn's turn-end, before the continuation said a word.
+  //
+  // So a message pulled while a turn is in flight parks its reqId here, and the
+  // in-flight turn's `endTurn` hands it over after the last turn-end ships.
+  // A FIFO because more than one message can be pulled ahead. `keep` is a
+  // message that carries no reqId of its own (it inherits the current one,
+  // exactly as an un-parked one does). Assumes one `endTurn` per pulled message
+  // — true of both loops today; a loop that ended one message in several turns
+  // would hand over at its first, which is no earlier than before this fix.
+  type ReqIdAdoption = { reqId: string | undefined } | 'keep';
+  let turnInFlight = false;
+  const parkedReqIds: ReqIdAdoption[] = [];
+  function adoptReqIdForTurn(adoption: ReqIdAdoption): void {
+    if (turnInFlight) {
+      parkedReqIds.push(adoption);
+      return;
+    }
+    turnInFlight = true;
+    if (adoption !== 'keep') currentReqId = adoption.reqId;
+  }
+  function handOverReqIdAtTurnEnd(): void {
+    const next = parkedReqIds.shift();
+    if (next === undefined) {
+      turnInFlight = false;
+      return;
+    }
+    // The next pulled message's turn is now the one in flight.
+    if (next !== 'keep') currentReqId = next.reqId;
+  }
 
   // Inbox → loop user-message pull. Resolving null on cancel tells the loop no
   // more user messages are coming, which lets it drain naturally and exit.
@@ -812,18 +854,27 @@ async function runRunnerInner(
         // shell skip the emission outright (see `currentReqId` above) while
         // the turn's content still reaches the user via `event.turn-end`
         // through @ax/conversations' display event log.
-        currentReqId =
-          typeof entry.reqId === 'string' && entry.reqId.length > 0 ? entry.reqId : undefined;
+        //
+        // TASK-573: adopted at the turn boundary, not at this pull — see
+        // `adoptReqIdForTurn`. A person who approves mid-reply is answered while
+        // the held turn is still streaming, and those chunks are the held turn's.
+        adoptReqIdForTurn({
+          reqId:
+            typeof entry.reqId === 'string' && entry.reqId.length > 0 ? entry.reqId : undefined,
+        });
         chatEndHistory.push({ role: 'user', content });
         return { content };
       }
       if (entry.payload === undefined) continue;
       // Capture the host-minted reqId so subsequent stream-chunk
       // emissions correlate back to the originating request. Both fields
-      // are set on `user-message` entries by the InboxLoop layer.
-      if (typeof entry.reqId === 'string' && entry.reqId.length > 0) {
-        currentReqId = entry.reqId;
-      }
+      // are set on `user-message` entries by the InboxLoop layer. Adopted at
+      // the turn boundary when a turn is still in flight (TASK-573).
+      adoptReqIdForTurn(
+        typeof entry.reqId === 'string' && entry.reqId.length > 0
+          ? { reqId: entry.reqId }
+          : 'keep',
+      );
       const hasBlocks =
         entry.payload.contentBlocks !== undefined &&
         entry.payload.contentBlocks.length > 0;
@@ -1125,7 +1176,19 @@ async function runRunnerInner(
     }
   }
 
+  // The turn boundary. Every turn-end this turn emits is stamped with the
+  // turn's own reqId, and only once the last has shipped does the next pulled
+  // message's reqId take over (TASK-573). `finally`: a turn whose close threw
+  // is still over, and the next one must not inherit its id.
   async function endTurn(input: EndTurnInput): Promise<void> {
+    try {
+      await closeTurn(input);
+    } finally {
+      handOverReqIdAtTurnEnd();
+    }
+  }
+
+  async function closeTurn(input: EndTurnInput): Promise<void> {
     try {
       commitTrace(
         `[commit-trace] per-turn result: session=${transcriptSessionId ?? 'null'} contentBlocks=${input.contentBlocks.length} toolResults=${input.toolResultBlocks.length} finalAsstUuid=${input.lastAssistantUuid ?? '-'} parent=${parentVersion ?? 'null'}\n`,
