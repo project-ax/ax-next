@@ -1069,6 +1069,18 @@ describe('the scan catches a NEW package, and the config read is a read (TASK-40
       expect(bareTeardownViolations([pkg], budgetsByName, root)).toHaveLength(1);
     });
 
+    it('REPORTS a test budget it cannot read in the package\'s unreadable list — never counts it as zero', () => {
+      // Mutation-found (TASK-567): the scanner reported `testUnreadable`, but no
+      // test checked the guard carried it through, so dropping that loop left
+      // every assertion green while an unreadable 180s budget read as absent.
+      makePackage('unreadable-test-budget', {
+        testSource: [spawnLine, "it('slow', async () => { await go(); }, 3 * 60_000);", bareTeardown].join('\n'),
+      });
+      const pkg = outOfProcessPackages(root).find((p) => p.name === 'packages/unreadable-test-budget');
+      expect(pkg.unreadable).toEqual([expect.objectContaining({ why: 'test-expr', name: '3 * 60_000' })]);
+      expect(pkg.maxDeclaredTestTimeout).toBe(0);
+    });
+
     it('fails CLOSED for a package whose config budgets were never read', () => {
       makePackage('never-read', { testSource: [spawnLine, bigTest, bareTeardown].join('\n') });
       const pkg = outOfProcessPackages(root).find((p) => p.name === 'packages/never-read');
