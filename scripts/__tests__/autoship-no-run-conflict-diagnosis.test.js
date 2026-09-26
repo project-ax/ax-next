@@ -55,6 +55,13 @@
 // that both objects exist first, and the UNDIAGNOSED cases pin that: neither a missing
 // head nor a failed fetch may come out as CONFLICT or NOT-CONFLICT.
 //
+// MUTANTS RUN against the committed doc, 2026-09-26, bash+zsh (15 tests collected each
+// time): swap the 0/1 case arms -> 4 red (conflict + clean, both shells); replace the
+// `cat-file -e` check with `false` -> 2 red (missing head); replace the fetch check with
+// `false` -> 2 red (failed fetch); merge-tree against local `main` instead of
+// `origin/main` -> 2 red (conflicting head, because local main is stale by design).
+// On a runner without zsh each figure halves.
+//
 // Extraction does not use a `logicalLines` helper (TASK-454: two earlier guards joined
 // continuations AFTER filtering comments, which fails open). It takes the one fenced
 // ```bash block whose NON-COMMENT lines call `git merge-tree`, and requires exactly one.
