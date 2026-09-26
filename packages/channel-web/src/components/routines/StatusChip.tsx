@@ -20,7 +20,7 @@ export function StatusChip({ status }: { status: FireStatus | null }) {
   const styles: Record<FireStatus, string> = {
     ok: 'bg-muted text-foreground',
     silenced: 'bg-muted text-foreground/60',
-    error: 'bg-destructive/10 text-destructive border border-destructive/25',
+    error: 'bg-destructive-soft text-destructive border border-destructive/25',
   };
   return (
     <span
