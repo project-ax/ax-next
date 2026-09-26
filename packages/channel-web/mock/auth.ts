@@ -66,17 +66,20 @@ interface AclAgent {
   owner_type: 'user' | 'team';
 }
 
-interface AclTeam {
+/** One row of the mock's `team-memberships` collection (see seed.ts). */
+interface AclMembership {
   id: string;
-  name: string;
-  members: string[];
+  teamId: string;
+  userId: string;
 }
 
 export function canUseAgent(user: User, agent: AclAgent, store: Store): boolean {
   if (agent.owner_type === 'user') return agent.owner_id === user.id;
   if (agent.owner_type === 'team') {
-    const team = store.collection<AclTeam>('teams').get(agent.owner_id);
-    return !!team && team.members.includes(user.id);
+    return store
+      .collection<AclMembership>('team-memberships')
+      .list()
+      .some((m) => m.teamId === agent.owner_id && m.userId === user.id);
   }
   return false;
 }
