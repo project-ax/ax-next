@@ -443,12 +443,23 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
       bus.subscribe<ChatStartPayload>(
         'chat:start',
         PLUGIN_NAME,
-        async (ctx) => {
+        async (ctx, _payload, { signal }) => {
           // Subscriber posture: NEVER throw. The bus already swallows +
           // logs subscriber errors, but doing it here keeps log keys
           // stable + pins the plugin name.
           try {
-            await handleChatStart(bus, ctx, nowFn);
+            const stoppedAt = await handleChatStart(bus, ctx, nowFn, signal);
+            if (stoppedAt !== null) {
+              // The bus gave up on us (chat:start's subscriberTimeoutMs) and
+              // we stopped before writing anything. Warn, not debug: the
+              // seed was NOT written this turn, and the next turn retries.
+              // If this shows up on healthy first turns, the bound is too
+              // tight for the tier — raise it, the same advice as the bound.
+              ctx.logger.warn('memory_strata_bootstrap_aborted', {
+                agentId: ctx.agentId,
+                stage: stoppedAt,
+              });
+            }
           } catch (err) {
             ctx.logger.warn('memory_strata_bootstrap_failed', {
               err: err instanceof Error ? err : new Error(String(err)),
@@ -577,6 +588,23 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
 const SEED_TIER_PATHS: readonly string[] = BOOTSTRAP_SEED_FILES.map(scratchRelToTierPath);
 const SEED_AGENT_TIER_PATH = scratchRelToTierPath(systemFile('agent'));
 
+/**
+ * Where bootstrap stopped because the bus aborted its signal, or `null` when
+ * it ran to the end (or had nothing to do).
+ *
+ * TASK-552: chat:start is fired with a subscriber bound. Past it the turn
+ * has moved on without us and our signal is aborted. Bootstrap checks it
+ * before each step that commits something — the identity read, the local
+ * seed write, and above all the tier flush (a `workspace:apply` to shared
+ * storage) — so a bootstrap that blew its bound stops instead of writing into
+ * the agent's tier after the turn it belonged to. Stopping is safe:
+ * bootstrap only creates missing seed files, and the next turn's chat:start
+ * redoes it from scratch. What it cannot stop is a step already in flight —
+ * the tier hooks take no signal — so the checks bound the work to "at most
+ * the step that was running at the bound".
+ */
+type BootstrapStopStage = 'resolved' | 'hydrated' | 'seeded';
+
 async function handleChatStart(
   bus: HookBus,
   ctx: AgentContext,
@@ -584,13 +612,15 @@ async function handleChatStart(
   // an e2e replay stamps the seed files with the corpus date, not wall-clock.
   // Production passes `() => new Date()`, so this is a no-op there.
   nowFn: () => Date,
-): Promise<void> {
+  signal: AbortSignal,
+): Promise<BootstrapStopStage | null> {
   const agent = await resolveAgent(bus, ctx);
   if (agent === null) {
     // No agent record (e.g., a synthetic ctx without a registered agent).
     // Skip silently — the next chat for a real agent will seed.
-    return;
+    return null;
   }
+  if (signal.aborted) return 'resolved';
 
   // TASK-182: in a deployment whose memory home is the per-agent `/agent` git
   // tier (k8s preset), seed the memory tree there — NOT on the shared host CWD
@@ -608,6 +638,7 @@ async function handleChatStart(
     // deletions are baseline-minus-scratch, and unread files are in neither.
     const hydrated = await hydrateAgentTier(bus, ctx, { only: SEED_TIER_PATHS });
     try {
+      if (signal.aborted) return 'hydrated';
       // Identity lives in the tier at `.ax/IDENTITY.md` + `.ax/SOUL.md`, not on
       // the host FS — read it through the workspace hook (owner-routed by ctx).
       // It is only ever the body of a NEW `system/agent.md`; once that file
@@ -622,11 +653,14 @@ async function handleChatStart(
         composedIdentity,
         nowFn,
       });
+      // The last and most important check: the flush is the write to shared
+      // storage. The scratch seeded above is disposed below either way.
+      if (signal.aborted) return 'seeded';
       await flushAgentTier(bus, ctx, hydrated, 'memory-bootstrap');
     } finally {
       await hydrated.dispose();
     }
-    return;
+    return null;
   }
 
   // CLI / local-FS deployment: memory lives directly under the agent's own
@@ -639,11 +673,13 @@ async function handleChatStart(
   // column. Empty when the agent hasn't authored its identity yet (still
   // bootstrapping) — bootstrapMemoryTree seeds a placeholder body in that case.
   const composedIdentity = await composeIdentityFromFiles(ctx.workspace.rootPath);
+  if (signal.aborted) return 'resolved';
   await bootstrapMemoryTree({
     workspaceRoot: ctx.workspace.rootPath,
     composedIdentity,
     nowFn,
   });
+  return null;
 }
 
 async function kickOffObserver(
