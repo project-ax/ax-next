@@ -54,6 +54,43 @@ describe('session-postgres return schemas', () => {
     expect(SessionGetConfigOutputSchema.parse(full)).toEqual(full);
   });
 
+  it('SessionGetConfigOutputSchema preserves systemPromptBootstrapAugment when present', () => {
+    const full: SessionGetConfigOutput = {
+      userId: 'u1',
+      agentId: 'a1',
+      agentConfig: {
+        displayName: 'Test Agent',
+        systemPromptAugment: 'p',
+        systemPromptBootstrapAugment: 'rules-content',
+        allowedTools: ['bash'],
+        mcpConfigIds: ['m1'],
+        model: 'claude',
+        runner: 'claude-sdk',
+      },
+      conversationId: 'c1',
+    };
+    const out = SessionGetConfigOutputSchema.parse(full);
+    expect(out.agentConfig.systemPromptBootstrapAugment).toBe('rules-content');
+  });
+
+  it('SessionGetConfigOutputSchema leaves systemPromptBootstrapAugment absent when omitted', () => {
+    const full: SessionGetConfigOutput = {
+      userId: 'u1',
+      agentId: 'a1',
+      agentConfig: {
+        displayName: 'Test Agent',
+        systemPromptAugment: 'p',
+        allowedTools: ['bash'],
+        mcpConfigIds: ['m1'],
+        model: 'claude',
+        runner: 'claude-sdk',
+      },
+      conversationId: 'c1',
+    };
+    const out = SessionGetConfigOutputSchema.parse(full);
+    expect('systemPromptBootstrapAugment' in out.agentConfig).toBe(false);
+  });
+
   it('SessionQueueWorkOutputSchema validates cursor', () => {
     expect(SessionQueueWorkOutputSchema.parse({ cursor: 3 })).toEqual({ cursor: 3 });
     expect(SessionQueueWorkOutputSchema.safeParse({ cursor: 'x' }).success).toBe(false);

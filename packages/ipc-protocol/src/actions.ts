@@ -499,6 +499,13 @@ export const AgentConfigSchema = z.object({
    * injection), prepended on top of the composed system prompt in normal mode.
    * Empty string when no augment provider is registered. */
   systemPromptAugment: z.string(),
+  /** Bootstrap-safe subset of `system-prompt:augment` contributions (currently
+   * only the person's own Rules) that the runner prepends in bootstrap mode.
+   * Optional: absent means '' (no bootstrap augment) — session rows persisted
+   * before this field existed don't carry it. Flows into the LLM prompt like
+   * `systemPromptAugment`; the runner must NOT interpolate it into shell
+   * commands, file paths, or HTML. */
+  systemPromptBootstrapAugment: z.string().optional(),
   allowedTools: z.array(z.string()),
   mcpConfigIds: z.array(z.string()),
   model: z.string(),

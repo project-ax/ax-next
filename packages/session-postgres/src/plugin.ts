@@ -216,6 +216,7 @@ export const SessionGetConfigOutputSchema = z.object({
   agentConfig: z.object({
     displayName: z.string(),
     systemPromptAugment: z.string(),
+    systemPromptBootstrapAugment: z.string().optional(),
     allowedTools: z.array(z.string()),
     mcpConfigIds: z.array(z.string()),
     model: z.string(),
@@ -294,6 +295,25 @@ function requireStringAllowEmpty(
   }
 }
 
+/** For optional fields that must be a string WHEN present (e.g.
+ * `systemPromptBootstrapAugment`, absent on session rows persisted before
+ * the field existed). undefined is fine; anything else non-string throws. */
+function requireOptionalString(
+  value: unknown,
+  field: string,
+  hookName: string,
+): asserts value is string | undefined {
+  if (value === undefined) return;
+  if (typeof value !== 'string') {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `'${field}' must be a string when present`,
+    });
+  }
+}
+
 function requireNonNegativeInt(
   value: unknown,
   field: string,
@@ -367,6 +387,13 @@ function validateOwner(
     'owner.agentConfig.systemPromptAugment',
     hookName,
   );
+  // systemPromptBootstrapAugment is optional — absent on session rows
+  // persisted before this field existed.
+  requireOptionalString(
+    cfg.systemPromptBootstrapAugment,
+    'owner.agentConfig.systemPromptBootstrapAugment',
+    hookName,
+  );
   requireString(cfg.model, 'owner.agentConfig.model', hookName);
   requireString(cfg.runner, 'owner.agentConfig.runner', hookName);
   if (!Array.isArray(cfg.allowedTools) || !cfg.allowedTools.every((t) => typeof t === 'string')) {
@@ -432,6 +459,9 @@ function validateOwner(
     agentConfig: {
       displayName: cfg.displayName as string,
       systemPromptAugment: cfg.systemPromptAugment as string,
+      ...(cfg.systemPromptBootstrapAugment !== undefined
+        ? { systemPromptBootstrapAugment: cfg.systemPromptBootstrapAugment as string }
+        : {}),
       allowedTools: cfg.allowedTools as string[],
       mcpConfigIds: cfg.mcpConfigIds as string[],
       model: cfg.model as string,

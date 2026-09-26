@@ -126,6 +126,55 @@ beforeEach(() => {
   } as unknown as FakeClient;
 });
 
+describe('runRunner — bootstrap-safe augment (TASK-524)', () => {
+  function configWith(extra: Record<string, unknown>): void {
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-1',
+          agentId: 'a-1',
+          agentConfig: {
+            displayName: 'Test Agent',
+            systemPromptAugment: 'RULES\n\nFACTS',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
+            ...extra,
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      throw new Error(`unexpected call: ${action}`);
+    });
+  }
+
+  async function lastPromptArgs(): Promise<unknown[]> {
+    const { buildSystemPrompt } = await import('../prompt-engine.js');
+    const mock = buildSystemPrompt as unknown as Mock;
+    mock.mockClear();
+    const loop: Loop = { run: vi.fn().mockResolvedValue(0) };
+    expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+    expect(mock).toHaveBeenCalledOnce();
+    return mock.mock.calls[0]!;
+  }
+
+  it('hands the prompt engine the full augment AND the bootstrap-safe slice', async () => {
+    configWith({ systemPromptBootstrapAugment: 'RULES' });
+    const args = await lastPromptArgs();
+    expect(args[1]).toBe('RULES\n\nFACTS');
+    expect(args[8]).toBe('RULES');
+  });
+
+  it('a session frozen before TASK-524 (no field) means no bootstrap augment', async () => {
+    configWith({});
+    const args = await lastPromptArgs();
+    expect(args[8]).toBe('');
+  });
+});
+
 describe('runRunner', () => {
   it('returns 2 and does not fire chat-end when boot fails', async () => {
     const makeLoop = vi.fn();

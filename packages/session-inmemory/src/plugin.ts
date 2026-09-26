@@ -76,6 +76,25 @@ function requireStringAllowEmpty(
   }
 }
 
+/** For optional fields that must be a string WHEN present (e.g.
+ * `systemPromptBootstrapAugment`, absent on session rows persisted before
+ * the field existed). undefined is fine; anything else non-string throws. */
+function requireOptionalString(
+  value: unknown,
+  field: string,
+  hookName: string,
+): asserts value is string | undefined {
+  if (value === undefined) return;
+  if (typeof value !== 'string') {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `'${field}' must be a string when present`,
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // validateOwner — runs at session:create time on the optional `owner`
 // field. We require the full triple (no half-set owners) because a
@@ -126,6 +145,13 @@ function validateOwner(
   requireStringAllowEmpty(
     cfg.systemPromptAugment,
     'owner.agentConfig.systemPromptAugment',
+    hookName,
+  );
+  // systemPromptBootstrapAugment is optional — absent on session rows
+  // persisted before this field existed.
+  requireOptionalString(
+    cfg.systemPromptBootstrapAugment,
+    'owner.agentConfig.systemPromptBootstrapAugment',
     hookName,
   );
   requireString(cfg.model, 'owner.agentConfig.model', hookName);
@@ -194,6 +220,9 @@ function validateOwner(
     agentConfig: {
       displayName: cfg.displayName as string,
       systemPromptAugment: cfg.systemPromptAugment as string,
+      ...(cfg.systemPromptBootstrapAugment !== undefined
+        ? { systemPromptBootstrapAugment: cfg.systemPromptBootstrapAugment as string }
+        : {}),
       allowedTools: cfg.allowedTools as string[],
       mcpConfigIds: cfg.mcpConfigIds as string[],
       model: cfg.model as string,

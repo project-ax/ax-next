@@ -90,6 +90,7 @@ interface SessionCreateInput {
     agentConfig: {
       displayName: string;
       systemPromptAugment: string;
+      systemPromptBootstrapAugment?: string | undefined;
       allowedTools: string[];
       mcpConfigIds: string[];
       model: string;

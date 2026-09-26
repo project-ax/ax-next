@@ -66,6 +66,8 @@ interface AugmentMocks {
     augmentCalls: number;
     sandboxOpen: number;
     lastSystemPromptAugment: string | undefined;
+    /** `null` = the key was ABSENT from the forwarded agentConfig. */
+    lastBootstrapAugment: string | null | undefined;
     lastQueuedMessage: AgentMessage | undefined;
   };
 }
@@ -84,6 +86,7 @@ function buildMocks(opts: {
     augmentCalls: 0,
     sandboxOpen: 0,
     lastSystemPromptAugment: undefined,
+    lastBootstrapAugment: undefined,
     lastQueuedMessage: undefined,
   };
 
@@ -102,9 +105,15 @@ function buildMocks(opts: {
       trace.sandboxOpen += 1;
       const i = input as {
         sessionId: string;
-        owner: { agentConfig: { systemPromptAugment: string } };
+        owner: {
+          agentConfig: { systemPromptAugment: string; systemPromptBootstrapAugment?: string };
+        };
       };
       trace.lastSystemPromptAugment = i.owner.agentConfig.systemPromptAugment;
+      trace.lastBootstrapAugment =
+        'systemPromptBootstrapAugment' in i.owner.agentConfig
+          ? (i.owner.agentConfig.systemPromptBootstrapAugment ?? null)
+          : null;
       const originatingReqId = ctx.reqId;
       // Fire chat:end on the next tick to resolve the orchestrator's waiter.
       setImmediate(() => {
@@ -359,5 +368,78 @@ describe('chat-orchestrator system-prompt:augment (Phase 2B)', () => {
     expect(mocks.trace.sandboxOpen).toBe(0);
     // Augment NEVER called — the routed branch returns before reaching it.
     expect(mocks.trace.augmentCalls).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-524 — bootstrap-safe contributions.
+//
+// Bootstrap mode (the agent's first-run identity conversation) is decided
+// RUNNER-side, so the orchestrator ships two strings: every contribution in
+// `systemPromptAugment` (normal mode, unchanged), and only the contributions
+// flagged `bootstrapSafe: true` in `systemPromptBootstrapAugment`.
+// ---------------------------------------------------------------------------
+
+describe('chat-orchestrator system-prompt:augment — bootstrap-safe contributions (TASK-524)', () => {
+  async function run(
+    sessionId: string,
+    contributions: Array<{ source: string; body: string; bootstrapSafe?: unknown }>,
+  ): Promise<AugmentMocks['trace']> {
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      busRef,
+      augmentProvider: async () => ({ contributions }),
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    busRef.current = h.bus;
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx({ sessionId }),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    return mocks.trace;
+  }
+
+  it('only bootstrapSafe contributions reach systemPromptBootstrapAugment; all reach systemPromptAugment', async () => {
+    const trace = await run('boot-1', [
+      { source: '@ax/memory', body: 'RULES', bootstrapSafe: true },
+      { source: '@ax/memory', body: 'RECALLED-FACTS' },
+    ]);
+    expect(trace.lastSystemPromptAugment).toBe('RULES\n\nRECALLED-FACTS');
+    expect(trace.lastBootstrapAugment).toBe('RULES');
+  });
+
+  it('no bootstrapSafe contribution → the bootstrap augment is empty, never the full augment', async () => {
+    const trace = await run('boot-2', [{ source: 'x', body: 'RECALLED-FACTS' }]);
+    expect(trace.lastSystemPromptAugment).toBe('RECALLED-FACTS');
+    expect(trace.lastBootstrapAugment).toBe('');
+  });
+
+  it('a truthy non-boolean bootstrapSafe fails closed (stays out of bootstrap)', async () => {
+    const trace = await run('boot-3', [
+      { source: 'x', body: 'SNEAKY', bootstrapSafe: 'yes' },
+      { source: 'y', body: 'ALSO', bootstrapSafe: 1 },
+    ]);
+    expect(trace.lastSystemPromptAugment).toBe('SNEAKY\n\nALSO');
+    expect(trace.lastBootstrapAugment).toBe('');
+  });
+
+  it('empty bootstrapSafe bodies are filtered and safe ones keep array order', async () => {
+    const trace = await run('boot-4', [
+      { source: 'a', body: 'A', bootstrapSafe: true },
+      { source: 'b', body: 'FACTS' },
+      { source: 'c', body: '', bootstrapSafe: true },
+      { source: 'd', body: 'D', bootstrapSafe: true },
+    ]);
+    expect(trace.lastBootstrapAugment).toBe('A\n\nD');
   });
 });

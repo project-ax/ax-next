@@ -18,9 +18,18 @@
 // it is out of scope for this engine.
 //
 //   1. BOOTSTRAP mode  — `.ax/BOOTSTRAP.md` present → the system prompt is
-//      EXACTLY and ONLY that file's content. The agent wakes up inside the
-//      bootstrap script; nothing else is injected (no floor, no notes, no
-//      augment). Exclusive.
+//      that file's content behind a runner-authored name preamble. The agent
+//      wakes up inside the bootstrap script; nothing else is injected (no
+//      floor, no notes, no identity files) EXCEPT the bootstrap-safe slice of
+//      the host augment (TASK-524): contributions a provider flagged
+//      `bootstrapSafe`, carried separately as
+//      `agentConfig.systemPromptBootstrapAugment` and prepended on top. Today
+//      that is only @ax/memory's `## Rules From Your User` — the person's own
+//      words, host-sourced, never agent-writable — because the Memory tab
+//      promises the agent reads them before EVERY run, including this one.
+//      Recalled / agent-derived memory (profile, recent, digest) is NOT
+//      bootstrap-safe and stays out: keeping it away from the identity
+//      conversation is what the exclusivity is for.
 //
 //   2. NORMAL mode     — no BOOTSTRAP.md (the ONLY other mode) → compose, in
 //      order:
@@ -275,7 +284,11 @@ export function composeNormalModePrompt(input: ComposeNormalModeInput): string {
  *   ("You are <displayName>, a helpful personal assistant."). Host-controlled.
  * @param augment the host `system-prompt:augment` contribution (e.g. the
  *   memory-strata injection), prepended on top in normal mode. Empty string =>
- *   no prepend.
+ *   no prepend. NEVER used in bootstrap mode.
+ * @param bootstrapAugment the bootstrap-safe SUBSET of that contribution
+ *   (TASK-524), prepended on top in bootstrap mode only. It is a subset, so
+ *   normal mode ignores it (the full `augment` already carries it). Empty
+ *   string => bootstrap prompt byte-identical to before TASK-524.
  * @param workspaceRoot the durable workspace root (`/agent` by default);
  *   `.ax/` lives directly under it.
  */
@@ -293,10 +306,12 @@ export async function buildSystemPrompt(
   // `workspaceRoot` regardless — the governed tier never moves.
   cwd: string = workspaceRoot,
   memoryRoot: string | undefined = undefined,
+  bootstrapAugment = '',
 ): Promise<SdkSystemPrompt> {
   const files = await readAxIdentityFiles(workspaceRoot);
 
-  // Bootstrap mode is exclusive: the BOOTSTRAP.md content IS the entire prompt.
+  // Bootstrap mode is exclusive: the BOOTSTRAP.md content IS the prompt, plus
+  // only the bootstrap-safe augment slice (TASK-524; see the file header).
   //
   // TRUST NOTE (TASK-142, conversational-agent-identity Phase 3↔4): `.ax/` files
   // are agent-writable, but a re-created/forged `.ax/BOOTSTRAP.md` can no longer
@@ -312,7 +327,8 @@ export async function buildSystemPrompt(
   // forward to the SDK). Prepend a trusted runner-authored preamble so the agent
   // knows its display name from the first message.
   if (files.bootstrap !== undefined) {
-    return `${bootstrapPreamble(displayName)}\n\n${files.bootstrap}`;
+    const script = `${bootstrapPreamble(displayName)}\n\n${files.bootstrap}`;
+    return bootstrapAugment.length > 0 ? `${bootstrapAugment}\n\n${script}` : script;
   }
 
   // Normal mode — the ONLY other mode. Compose from the identity files + the

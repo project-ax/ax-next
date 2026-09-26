@@ -622,9 +622,17 @@ interface SessionIsAliveOutput {
 // which neither matches caller expectations nor improves anything (the
 // runner already has its prompt context).
 // Provider reads from ctx (userId, agentId, sessionId, etc.) — payload is empty.
+//
+// TASK-524: a contribution may set `bootstrapSafe: true`. Bootstrap mode (the
+// agent's first-run identity conversation, decided RUNNER-side by whether the
+// workspace still holds the bootstrap script) admits ONLY those — see
+// `agentConfig.systemPromptBootstrapAugment`. The flag is for content a PERSON
+// authored and no agent can write (e.g. @ax/memory's Rules section); recalled
+// or agent-derived content must leave it unset. Anything other than the
+// boolean `true` counts as unset, so a sloppy provider fails closed.
 type SystemPromptAugmentInput = Record<string, never>;
 interface SystemPromptAugmentOutput {
-  contributions: Array<{ source: string; body: string }>;
+  contributions: Array<{ source: string; body: string; bootstrapSafe?: boolean }>;
 }
 
 /**
@@ -1644,6 +1652,10 @@ export function createOrchestrator(
       // Seeded empty; the `system-prompt:augment` step below sets it on the
       // fresh-spawn path (the runner prepends it on top in normal mode).
       systemPromptAugment: '',
+      // TASK-524: the bootstrap-safe subset of the same augment, set below
+      // alongside it. The runner prepends THIS (never the full augment) in
+      // bootstrap mode.
+      systemPromptBootstrapAugment: '',
       // TASK-51 (JIT §P4): lock the always-on broker tools into every
       // multi-tenant agent's effective allowedTools (default+locked). For a
       // wildcard agent (empty allowedTools+mcpConfigIds) this is a no-op — it
@@ -1921,7 +1933,9 @@ export function createOrchestrator(
     //
     // The contribution lands on `agentConfig.systemPromptAugment` (its own
     // field since TASK-142); the runner prepends it on top of the composed
-    // `.ax/` identity prompt in normal mode.
+    // `.ax/` identity prompt in normal mode. The `bootstrapSafe` subset also
+    // lands on `agentConfig.systemPromptBootstrapAugment` (TASK-524), which is
+    // all the runner prepends in bootstrap mode.
     //
     // Failure-mode: augmentation is fire-and-degrade. A throw doesn't abort
     // the chat; we log and fall through with the un-augmented prompt. The
@@ -1933,15 +1947,22 @@ export function createOrchestrator(
           SystemPromptAugmentInput,
           SystemPromptAugmentOutput
         >('system-prompt:augment', ctx, {});
-        const extra = out.contributions
-          .map((c) => c.body)
-          .filter((b) => b.length > 0)
-          .join('\n\n');
+        const join = (cs: SystemPromptAugmentOutput['contributions']): string =>
+          cs
+            .map((c) => c.body)
+            .filter((b) => b.length > 0)
+            .join('\n\n');
+        const extra = join(out.contributions);
+        // Strict `=== true`: a truthy non-boolean is NOT an opt-in (TASK-524).
+        const bootstrapExtra = join(out.contributions.filter((c) => c.bootstrapSafe === true));
         if (extra.length > 0) {
           // Mutate the struct's field, not the binding. agentConfig is still
           // a const reference to the same object; only the systemPromptAugment
           // property changes before it gets frozen on the new session.
           agentConfig.systemPromptAugment = extra;
+        }
+        if (bootstrapExtra.length > 0) {
+          agentConfig.systemPromptBootstrapAugment = bootstrapExtra;
         }
       } catch (err) {
         ctx.logger.warn('system_prompt_augment_failed', {

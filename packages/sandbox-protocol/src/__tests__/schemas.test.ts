@@ -444,6 +444,50 @@ describe('AgentConfigSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('preserves systemPromptBootstrapAugment when present', () => {
+    const result = AgentConfigSchema.safeParse({
+      displayName: 'Helper',
+      systemPromptAugment: 'be helpful',
+      systemPromptBootstrapAugment: 'rules-content',
+      allowedTools: ['Read'],
+      mcpConfigIds: [],
+      model: 'claude',
+      runner: 'claude-sdk',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.systemPromptBootstrapAugment).toBe('rules-content');
+    }
+  });
+
+  it('leaves systemPromptBootstrapAugment absent when omitted', () => {
+    const result = AgentConfigSchema.safeParse({
+      displayName: 'Helper',
+      systemPromptAugment: 'be helpful',
+      allowedTools: ['Read'],
+      mcpConfigIds: [],
+      model: 'claude',
+      runner: 'claude-sdk',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect('systemPromptBootstrapAugment' in result.data).toBe(false);
+    }
+  });
+
+  it('rejects a non-string systemPromptBootstrapAugment', () => {
+    const result = AgentConfigSchema.safeParse({
+      displayName: 'Helper',
+      systemPromptAugment: 'be helpful',
+      systemPromptBootstrapAugment: 123,
+      allowedTools: ['Read'],
+      mcpConfigIds: [],
+      model: 'claude',
+      runner: 'claude-sdk',
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 // --- OpenSessionInputSchema (envelope) --------------------------------------

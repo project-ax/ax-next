@@ -26,6 +26,12 @@ export interface AgentConfig {
   /** The host `system-prompt:augment` contribution, prepended on top of the
    * composed prompt. Empty when no augment provider is registered. */
   systemPromptAugment: string;
+  /** Bootstrap-safe subset of `system-prompt:augment` contributions (currently
+   * only the person's own Rules) that the runner prepends in bootstrap mode.
+   * Optional: absent means '' (no bootstrap augment) — session rows persisted
+   * before this field existed don't carry it. Same untrusted-string handling
+   * as `systemPromptAugment` — flows into the LLM prompt only. */
+  systemPromptBootstrapAugment?: string;
   allowedTools: string[];
   mcpConfigIds: string[];
   model: string;

@@ -1280,3 +1280,109 @@ describe('system-prompt:augment — shared team agents', () => {
     ).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// TASK-524 — bootstrap mode admits the person's Rules and nothing recalled.
+//
+// The orchestrator puts every contribution in the normal-mode augment and only
+// `bootstrapSafe: true` ones in the bootstrap augment. So what is pinned here
+// is the SPLIT: Rules alone carry the flag, every store-derived section does
+// not, and the two joined are still byte-identical to the single block.
+// ---------------------------------------------------------------------------
+
+describe('system-prompt:augment — bootstrap-safe split (TASK-524)', () => {
+  type Contribution = { source: string; body: string; bootstrapSafe?: boolean };
+
+  async function contributions(h: MemoryHarness, ctx = h.ctx()): Promise<Contribution[]> {
+    const out = await h.bus.call<Record<string, never>, { contributions: Contribution[] }>(
+      'system-prompt:augment',
+      ctx,
+      {},
+    );
+    return out.contributions;
+  }
+
+  /** What the orchestrator ships for bootstrap mode — the same filter it applies. */
+  function bootstrapSlice(cs: Contribution[]): string {
+    return cs
+      .filter((c) => c.bootstrapSafe === true)
+      .map((c) => c.body)
+      .filter((b) => b.length > 0)
+      .join('\n\n');
+  }
+
+  async function seedFacts(h: MemoryHarness, ctx = h.ctx()): Promise<void> {
+    await engineRecord(h.bus, ctx, [
+      {
+        about: `user:${ALICE}`,
+        relation: 'lives_in',
+        value: 'Seattle',
+        when: MAR,
+        slot: 'lives_in',
+        ownerUserId: ALICE,
+        conversationId: 'conv-a',
+      },
+      {
+        about: 'cedar_creek',
+        relation: 'is_a',
+        value: 'trail',
+        when: JUN,
+        ownerUserId: ALICE,
+        conversationId: 'conv-a',
+      },
+    ]);
+  }
+
+  it('flags ONLY the Rules section bootstrap-safe; recalled facts stay out of the bootstrap slice', async () => {
+    const h = await makeHarness();
+    registerRulesStub(h.bus, 'Always answer in plain English.');
+    const ctx = h.ctx();
+    await seedFacts(h, ctx);
+
+    const cs = await contributions(h, ctx);
+    const boot = bootstrapSlice(cs);
+
+    expect(boot).toBe('## Rules From Your User\n\nAlways answer in plain English.');
+    // The half the bootstrap exclusivity exists for.
+    expect(boot).not.toContain('Seattle');
+    expect(boot).not.toContain('cedar_creek');
+    expect(boot).not.toContain('### Profile');
+    expect(boot).not.toContain('## What I Remember');
+
+    // Every non-Rules contribution is explicitly NOT bootstrap-safe.
+    for (const c of cs) {
+      if (c.bootstrapSafe === true) continue;
+      expect(c.body).not.toContain('## Rules From Your User');
+    }
+  });
+
+  it('the contributions joined are byte-identical to the single block (normal mode unchanged)', async () => {
+    const h = await makeHarness();
+    registerRulesStub(h.bus, 'Always answer in plain English.');
+    const ctx = h.ctx();
+    await seedFacts(h, ctx);
+
+    const joined = (await contributions(h, ctx)).map((c) => c.body).join('\n\n');
+    const block = await buildMemoryBlock(h.bus, ctx, FACTS_RECALL_HOOK);
+    expect(joined).toBe(block);
+    expect(joined).toContain('Seattle');
+  });
+
+  it('rules but no memory yet → a single bootstrap-safe contribution', async () => {
+    const h = await makeHarness();
+    registerRulesStub(h.bus, 'Never book travel without asking.');
+    const cs = await contributions(h);
+    expect(cs).toHaveLength(1);
+    expect(cs[0]!.bootstrapSafe).toBe(true);
+    expect(bootstrapSlice(cs)).toContain('Never book travel without asking.');
+  });
+
+  it('memory but no rules → nothing bootstrap-safe', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    await seedFacts(h, ctx);
+    const cs = await contributions(h, ctx);
+    expect(cs.length).toBeGreaterThan(0);
+    expect(bootstrapSlice(cs)).toBe('');
+  });
+});

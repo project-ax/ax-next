@@ -31,6 +31,12 @@ export interface AgentConfig {
    * injection), prepended on top of the composed system prompt. Empty when no
    * augment provider is registered. Intended destination is the LLM prompt. */
   systemPromptAugment: string;
+  /** Bootstrap-safe subset of `system-prompt:augment` contributions (currently
+   * only the person's own Rules) that the runner prepends in bootstrap mode.
+   * Optional: absent means '' (no bootstrap augment) — session rows persisted
+   * before this field existed don't carry it. Intended destination is the
+   * LLM prompt, same untrusted-string handling as `systemPromptAugment`. */
+  systemPromptBootstrapAugment?: string;
   /** Tool-name allow-list. Validated when the agent was created. */
   allowedTools: string[];
   /** MCP-config allow-list. Empty = no MCP tools. */
@@ -305,6 +311,7 @@ export const SessionGetConfigOutputSchema = z.object({
   agentConfig: z.object({
     displayName: z.string(),
     systemPromptAugment: z.string(),
+    systemPromptBootstrapAugment: z.string().optional(),
     allowedTools: z.array(z.string()),
     mcpConfigIds: z.array(z.string()),
     model: z.string(),

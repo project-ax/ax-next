@@ -370,6 +370,66 @@ describe('@ax/session-inmemory plugin', () => {
     expect(result.agentConfig.runner).toBe('aisdk');
   });
 
+  it('session:create -> session:get-config round-trips owner.agentConfig.systemPromptBootstrapAugment when present', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    const owner = {
+      ...OWNER,
+      agentConfig: { ...OWNER.agentConfig, systemPromptBootstrapAugment: 'rules-content' },
+    };
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      h.ctx(),
+      { sessionId: 's-bootstrap-augment', workspaceRoot: '/tmp/ws', owner },
+    );
+    const result = await h.bus.call<SessionGetConfigInput, SessionGetConfigOutput>(
+      'session:get-config',
+      h.ctx({ sessionId: 's-bootstrap-augment' }),
+      {},
+    );
+    expect(result.agentConfig.systemPromptBootstrapAugment).toBe('rules-content');
+  });
+
+  it('session:create -> session:get-config leaves owner.agentConfig.systemPromptBootstrapAugment absent when omitted', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      h.ctx(),
+      { sessionId: 's-no-bootstrap-augment', workspaceRoot: '/tmp/ws', owner: OWNER },
+    );
+    const result = await h.bus.call<SessionGetConfigInput, SessionGetConfigOutput>(
+      'session:get-config',
+      h.ctx({ sessionId: 's-no-bootstrap-augment' }),
+      {},
+    );
+    expect('systemPromptBootstrapAugment' in result.agentConfig).toBe(false);
+  });
+
+  it('session:create rejects a non-string owner.agentConfig.systemPromptBootstrapAugment', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    let caught: unknown;
+    try {
+      await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+        'session:create',
+        h.ctx(),
+        {
+          sessionId: 's-bad-bootstrap-augment',
+          workspaceRoot: '/tmp/ws',
+          owner: {
+            ...OWNER,
+            agentConfig: {
+              ...OWNER.agentConfig,
+              systemPromptBootstrapAugment: 123 as unknown as string,
+            },
+          },
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
+  });
+
   it('session:get-config returns conversationId when owner carries one (Task 15)', async () => {
     const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
     await h.bus.call<SessionCreateInput, SessionCreateOutput>(
