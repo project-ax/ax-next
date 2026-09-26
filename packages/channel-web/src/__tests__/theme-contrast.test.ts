@@ -493,7 +493,7 @@ describe('theme contrast', () => {
  * The fill sites used to be out of scope here, and are not any more. A dot's fill
  * carries its state (alongside its shape, since TASK-485), which makes the
  * `resting` dot an information-bearing non-text element owing 3:1 under WCAG 1.4.11 — and on this token it
- * measured 1.72:1 light / 1.67:1 dark on the page and a card (1.50 / 1.56 on
+ * measured 1.72:1 on the light page and card, 1.67:1 on a dark card (1.50 / 1.56 on
  * the selected row's `--primary-soft`), so it did not clear that either. That
  * was TASK-450, and the fix was the same split one level down: the dots took a
  * new token and the send circle kept this one. The 3:1 floor now has its own
@@ -1302,10 +1302,11 @@ describe("ApprovalCard's tinted surface", () => {
  * the row carries nothing either, so the 3:1 floor on the fill still holds.
  *
  * TASK-450 found three fills under it, all of them `bg-ink-ghost`: `StateDot`'s
- * `resting`, and `StatusDot`'s `empty` and `pending`, at 1.72:1 light and
- * 1.67:1 dark on the page and a card — and 1.50:1 / 1.56:1 on
+ * `resting`, and `StatusDot`'s `empty` and `pending`, at 1.72:1 on the light
+ * page and card and 1.67:1 on a dark card — and 1.50:1 / 1.56:1 on
  * `--primary-soft`, the selected sidebar row and the worst surface they land
- * on. About half the floor. They paint `--state-quiet` now; `index.css` carries the numbers.
+ * on. About half the floor. They paint `--state-quiet` now; `index.css`
+ * carries the numbers.
  *
  * THREE THINGS ABOUT THAT CARD DID NOT SURVIVE CONTACT, recorded here because
  * each one changes what this section is allowed to claim:

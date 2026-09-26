@@ -125,10 +125,10 @@ export const STATE_SHAPE: Record<AgentRunState | 'held', string> = {
  *
  * Every fill still owes 3:1 against the surfaces it lands on — an
  * information-bearing non-text element under WCAG 1.4.11. `resting` used to be
- * `bg-ink-ghost` and measured 1.72:1 light / 1.67:1 dark on the page and a
- * card — and 1.50:1 / 1.56:1 on the selected row's `--primary-soft`, the worst
- * surface it lands on — so on a pale row it was less "quiet" than "absent". It is `bg-state-quiet` now; `--ink-ghost`
- * stayed behind with the composer's send circle, which is a disabled control
+ * `bg-ink-ghost` and measured 1.72:1 light / 2.04:1 dark on the page — and
+ * 1.50:1 / 1.56:1 on the selected row's `--primary-soft`, the worst surface it
+ * lands on — so on a pale row it was less "quiet" than "absent". It is
+ * `bg-state-quiet` now; `--ink-ghost` stayed behind with the composer's send circle, which is a disabled control
  * and the one thing 1.4.11 exempts. `theme-contrast.test.ts` reads these
  * classes back out of this file and measures whatever it finds.
  */

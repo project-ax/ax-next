@@ -138,7 +138,8 @@
        The dot's fill carries its state (alongside its shape, since TASK-485),
        which makes these information-bearing non-text UI owing 3:1 under WCAG 1.4.11 — a different floor from
        the 4.5:1 that governs text. On `--ink-ghost` they measured 1.72:1 here
-       and 1.67:1 in dark on the page and a card, and 1.50:1 / 1.56:1 on
+       on the page and a card (1.67:1 on a dark card, 2.04:1 on the dark
+       page), and 1.50:1 / 1.56:1 on
        `--primary-soft` — the worst surface they land on, the selected sidebar
        row. About half of what they owe.
 
