@@ -328,12 +328,19 @@ describe('a clamped activity row (TASK-436)', () => {
         live role on it would not reliably announce — and the announcement is
         not wanted (see FeedPlaceholder). Nothing in it may claim otherwise.
       */
-      const { container } = render(
-        <ActivityFeed events={[]} agents={[agent()]} loading />,
-      );
+      render(<ActivityFeed events={[]} agents={[agent()]} loading />);
       expect(screen.queryByRole('status')).toBeNull();
       expect(screen.queryByRole('alert')).toBeNull();
-      expect(container.querySelector('[aria-live]')).toBeNull();
+      // The feed's failure region IS mounted here — empty, so that a page-1
+      // failure lands in a region that already existed (TASK-541). It is the
+      // only live region, it says nothing, and it is not the placeholder.
+      const live = document.querySelectorAll('[aria-live]');
+      expect(live).toHaveLength(1);
+      expect(live[0]!.hasAttribute('data-activity-announcer')).toBe(true);
+      expect(live[0]!.textContent).toBe('');
+      const placeholder = document.querySelector('[aria-busy="true"]')!;
+      expect(placeholder.contains(live[0]!)).toBe(false);
+      expect(placeholder.querySelector('[aria-live]')).toBeNull();
     });
   });
 
@@ -367,10 +374,34 @@ describe('a clamped activity row (TASK-436)', () => {
           error="We could not load the record."
         />,
       );
-      expect(screen.getByRole('alert')).toHaveTextContent(
-        /could not load the record/i,
-      );
+      // Through the feed's polite region, not a fresh `role="alert"` — see
+      // ActivityFeedLoadMore.test.tsx for the commit-by-commit proof (TASK-541).
+      expect(screen.queryByRole('alert')).toBeNull();
+      expect(
+        document.querySelector('[data-activity-announcer]'),
+      ).toHaveTextContent(/could not load the record/i);
       expect(screen.queryByText('Nothing recorded yet.')).toBeNull();
+    });
+
+    it('says nothing while a Try again is in flight', () => {
+      /*
+        TASK-541. The hook keeps `error` set through a retry. Emptying the
+        region for that window is what lets an identical second failure
+        register as a change — and "we could not load" is not yet known to
+        be true while we are trying again.
+      */
+      render(
+        <ActivityFeed
+          events={[event({ text: 'Morning inbox sweep' })]}
+          agents={[agent()]}
+          error="We could not load the record."
+          loading
+          hasMore
+        />,
+      );
+      expect(screen.getByText('Morning inbox sweep')).toBeInTheDocument();
+      expect(document.querySelector('[data-activity-announcer]')!.textContent).toBe('');
+      expect(screen.getByRole('button', { name: 'Try again' })).toBeDisabled();
     });
   });
 });

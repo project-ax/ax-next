@@ -28,6 +28,7 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -201,131 +202,45 @@ export function ActivityFeed({
     collection we just left too. "We could not load Quill's record" is no more
     true of Tern's tab than Quill's rows are.
   */
-  if (awaitingScope || (loading && events.length === 0)) {
-    return <FeedPlaceholder />;
-  }
+  const placeholder = awaitingScope || (loading && events.length === 0);
 
   /*
-    Only when there is nothing to show. A failed "Load more" leaves page 1 in
-    `events`, and a pagination failure is no reason to un-render rows that
-    loaded fine — blanking them reads as "your agent did nothing", the exact
-    misreading this surface keeps being rewritten to avoid. That case renders
-    the rows with the failure beneath them, below (TASK-501).
+    What the polite region below says. Nothing while a read is in flight —
+    and that includes a "Try again", where the hook KEEPS `error` set: it is
+    what makes a second identical failure audible (TASK-541). The region
+    empties when the retry starts and refills when it fails, two real commits
+    a network round trip apart. Rendering on `error !== null` alone left the
+    region's text unchanged across the retry, and an unchanged live region is
+    a silent one: the reader pressed Try again and heard nothing.
+
+    Why clear-and-refill rather than an attempt marker (a counter or a key
+    that forces the same sentence back in): re-inserting identical text in
+    ONE commit is the very create-and-fill-together shape that screen readers
+    handle inconsistently, and a visible counter ("attempt 3") is noise for
+    everyone else. The empty frame is also the honest one — while we are
+    trying again, "we could not load" is not yet known to be true.
   */
-  if (error !== null && events.length === 0) {
-    return (
-      <div className="px-1 py-6">
-        <Alert variant="destructive">
-          <AlertDescription>
-            We could not load the record. It is usually a blip — nothing your
-            agents did was lost, we just could not read it back right now.
-          </AlertDescription>
-        </Alert>
-      </div>
-    );
-  }
-
-  /*
-    Empty is a real state, not just "no rows fetched yet": the collection
-    exists and is genuinely empty. Two lines, because "Nothing recorded yet."
-    on its own reads as "your agents did nothing", and the truth is narrower —
-    the record just has nothing in it so far.
-  */
-  if (events.length === 0) {
-    // Scoped to the agent when the tab is. Under one agent's "What it did",
-    // "what agents do" is the wrong subject — the reader is asking about this
-    // one, and the global phrasing reads like a different screen's answer.
-    const scopedName = agentId === undefined ? null : name(agentId);
-    return (
-      <div className="flex flex-col gap-1.5 px-5 py-10 text-center">
-        <p className="text-[13.5px] text-muted-foreground">
-          Nothing recorded yet.
-        </p>
-        <p className="mx-auto max-w-[420px] text-[12.5px] leading-relaxed text-muted-foreground">
-          {scopedName === null
-            ? 'The record is empty so far. When your agents do something, every run and every decision shows up here.'
-            : `The record of what ${scopedName} does is empty so far. When it does something, every run and every decision shows up here.`}
-        </p>
-      </div>
-    );
-  }
-
-  const days = bucket(events);
-
-  return (
-    <div className="flex flex-col gap-6">
-      {days.map(({ key, label, rows }) => (
-        <div key={key}>
-          <div className="mb-2.5 flex items-center gap-2">
-            <span className="text-[12.5px] font-medium">{label}</span>
-            <span className="text-[11.5px] text-muted-foreground">
-              {rows.length}
-            </span>
-          </div>
-          <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
-            {rows.map((e) => {
-              const k = KIND[e.kind];
-              const time = localTime(e.at);
-              return (
-                <div
-                  key={e.id}
-                  className="flex items-center gap-3 border-b border-rule-soft px-5 py-3 last:border-b-0"
-                >
-                  <k.Icon size={13} className={cn('shrink-0', k.tone)} />
-                  {!agentId && (
-                    <button
-                      type="button"
-                      onClick={() => onOpenAgent?.(e.agentId)}
-                      className="shrink-0 text-[13px] font-medium hover:text-primary hover:underline hover:underline-offset-2"
-                    >
-                      {name(e.agentId)}
-                    </button>
-                  )}
-                  <span className="min-w-0 flex-1">
-                    {/* `title` so the clamp hides nothing unrecoverably (TASK-436). */}
-                    <span
-                      className="block truncate text-[13.5px] text-muted-foreground"
-                      title={e.text}
-                    >
-                      {e.text}
-                    </span>
-                    {/* The real error on a stopped row. Untrusted text — a string, never markup. */}
-                    {e.detail !== null && (
-                      <span
-                        className="block truncate text-[12px] text-destructive"
-                        title={e.detail}
-                      >
-                        {e.detail}
-                      </span>
-                    )}
-                  </span>
-                  {e.tag && (
-                    <Badge variant="secondary" className="shrink-0 text-[11px]">
-                      {e.tag}
-                    </Badge>
-                  )}
-                  {time !== null && (
-                    <span className="shrink-0 text-[12.5px] tabular-nums text-muted-foreground">
-                      {time}
-                    </span>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+  let failure: ReactNode = null;
+  if (!placeholder && !loading && error !== null) {
+    failure =
+      events.length === 0 ? (
+        /*
+          Only when there is nothing to show. A failed "Load more" leaves
+          page 1 in `events`, and a pagination failure is no reason to
+          un-render rows that loaded fine — blanking them reads as "your
+          agent did nothing", the exact misreading this surface keeps being
+          rewritten to avoid (TASK-501).
+        */
+        <div className="px-1 py-6">
+          <Alert variant="destructive" role="none">
+            <AlertDescription>
+              We could not load the record. It is usually a blip — nothing your
+              agents did was lost, we just could not read it back right now.
+            </AlertDescription>
+          </Alert>
         </div>
-      ))}
-
-      {/*
-        Mounted with the rows, EMPTY, before any failure — a live region
-        created and filled in one commit is announced inconsistently, and this
-        one has to be heard: the reader who pressed Load more has no other sign
-        it failed (focus is on the button, the rows did not change). The
-        `Alert` inside drops its own `role="alert"` so the message is announced
-        once, by this region, rather than twice.
-      */}
-      <div data-activity-announcer aria-live="polite">
-        {error !== null && (
+      ) : (
+        <div className="pt-6">
           <Alert variant="destructive" role="none">
             <AlertDescription>
               We could not load the older entries. It is usually a blip —
@@ -333,11 +248,140 @@ export function ActivityFeed({
               lost.
             </AlertDescription>
           </Alert>
-        )}
+        </div>
+      );
+  }
+
+  let body: ReactNode = null;
+  if (placeholder) {
+    body = <FeedPlaceholder />;
+  } else if (events.length === 0) {
+    /*
+      Empty is a real state, not just "no rows fetched yet": the collection
+      exists and is genuinely empty. Two lines, because "Nothing recorded
+      yet." on its own reads as "your agents did nothing", and the truth is
+      narrower — the record just has nothing in it so far. Not when the read
+      FAILED, though: that is `failure` above, and "we could not read it" is
+      not "there is nothing".
+    */
+    if (error === null) {
+      // Scoped to the agent when the tab is. Under one agent's "What it did",
+      // "what agents do" is the wrong subject — the reader is asking about
+      // this one, and the global phrasing reads like a different screen's
+      // answer.
+      const scopedName = agentId === undefined ? null : name(agentId);
+      body = (
+        <div className="flex flex-col gap-1.5 px-5 py-10 text-center">
+          <p className="text-[13.5px] text-muted-foreground">
+            Nothing recorded yet.
+          </p>
+          <p className="mx-auto max-w-[420px] text-[12.5px] leading-relaxed text-muted-foreground">
+            {scopedName === null
+              ? 'The record is empty so far. When your agents do something, every run and every decision shows up here.'
+              : `The record of what ${scopedName} does is empty so far. When it does something, every run and every decision shows up here.`}
+          </p>
+        </div>
+      );
+    }
+  } else {
+    body = (
+      <div className="flex flex-col gap-6">
+        {bucket(events).map(({ key, label, rows }) => (
+          <div key={key}>
+            <div className="mb-2.5 flex items-center gap-2">
+              <span className="text-[12.5px] font-medium">{label}</span>
+              <span className="text-[11.5px] text-muted-foreground">
+                {rows.length}
+              </span>
+            </div>
+            <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+              {rows.map((e) => {
+                const k = KIND[e.kind];
+                const time = localTime(e.at);
+                return (
+                  <div
+                    key={e.id}
+                    className="flex items-center gap-3 border-b border-rule-soft px-5 py-3 last:border-b-0"
+                  >
+                    <k.Icon size={13} className={cn('shrink-0', k.tone)} />
+                    {!agentId && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenAgent?.(e.agentId)}
+                        className="shrink-0 text-[13px] font-medium hover:text-primary hover:underline hover:underline-offset-2"
+                      >
+                        {name(e.agentId)}
+                      </button>
+                    )}
+                    <span className="min-w-0 flex-1">
+                      {/* `title` so the clamp hides nothing unrecoverably (TASK-436). */}
+                      <span
+                        className="block truncate text-[13.5px] text-muted-foreground"
+                        title={e.text}
+                      >
+                        {e.text}
+                      </span>
+                      {/* The real error on a stopped row. Untrusted text — a string, never markup. */}
+                      {e.detail !== null && (
+                        <span
+                          className="block truncate text-[12px] text-destructive"
+                          title={e.detail}
+                        >
+                          {e.detail}
+                        </span>
+                      )}
+                    </span>
+                    {e.tag && (
+                      <Badge variant="secondary" className="shrink-0 text-[11px]">
+                        {e.tag}
+                      </Badge>
+                    )}
+                    {time !== null && (
+                      <span className="shrink-0 text-[12.5px] tabular-nums text-muted-foreground">
+                        {time}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {body}
+
+      {/*
+        ONE live region for every failure this feed can report, at a fixed
+        position that every state above shares — placeholder, empty, rows —
+        so it is mounted, EMPTY, before any failure reaches it. A live region
+        created and filled in one commit is announced inconsistently
+        (VoiceOver often skips it), and both failures have to be heard: the
+        reader who pressed Load more has no other sign it failed (focus is on
+        the button, the rows did not change), and a first page that fails
+        after the placeholder has only ever said "reading" (TASK-501,
+        TASK-541). The `Alert`s inside drop their own `role="alert"` so each
+        message is announced once, by this region, rather than twice.
+
+        Its spacing lives on the message, not here, so an empty region takes
+        no room.
+
+        What this cannot cover: a feed MOUNTED already failed — the reader
+        opened Activity, or the "What it did" tab, after the read had failed
+        elsewhere. The region is born full then, like the placeholder is
+        born full, and the failure is page content the reader lands on
+        rather than news arriving while they wait.
+      */}
+      <div data-activity-announcer aria-live="polite">
+        {failure}
       </div>
 
-      {hasMore && (
-        <div className="flex justify-center">
+      {!placeholder && events.length > 0 && hasMore && (
+        <div className="mt-6 flex justify-center">
           <Button
             variant="ghost"
             size="sm"
