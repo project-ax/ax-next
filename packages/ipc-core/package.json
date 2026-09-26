@@ -23,6 +23,7 @@
     "@ax/workspace-bundle-protocol": "workspace:*"
   },
   "devDependencies": {
+    "@ax/chat-orchestrator": "workspace:*",
     "@ax/ipc-server": "workspace:*",
     "@ax/session-inmemory": "workspace:*",
     "@ax/test-harness": "workspace:*",

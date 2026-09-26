@@ -1327,6 +1327,9 @@ importers:
         specifier: workspace:*
         version: link:../workspace-bundle-protocol
     devDependencies:
+      '@ax/chat-orchestrator':
+        specifier: workspace:*
+        version: link:../chat-orchestrator
       '@ax/ipc-server':
         specifier: workspace:*
         version: link:../ipc-server
