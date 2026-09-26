@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import type { Agent } from '../../mock/agents';
 import { httpFetch } from './http';
 import { agentStoreActions } from './agent-store';
@@ -59,4 +60,11 @@ export function agentColorFor(agentId: string): string {
     hash = (hash * 31 + agentId.charCodeAt(i)) >>> 0;
   }
   return palette[hash % palette.length] ?? '#888';
+}
+
+/** Hydrate the agent list once, on mount. App calls it before the first-run gate, which reads the result. */
+export function useHydrateAgents(): void {
+  useEffect(() => {
+    void hydrateAgentsOnce();
+  }, []);
 }
