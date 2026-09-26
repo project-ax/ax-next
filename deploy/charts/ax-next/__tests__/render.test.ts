@@ -1098,7 +1098,7 @@ describeIfHelm('ax-next chart: channelWeb.agentWorkspace', () => {
     expect(out).toMatch(/^ {2}agentWorkspace: true$/m);
     // The comment has to say OFF means no web interface, so nobody reads
     // `false` as a broken install.
-    expect(out).toContain('THIS\n  # DEPLOYMENT HAS NO WEB INTERFACE');
+    expect(out).toContain('Turning it OFF means THIS DEPLOYMENT HAS NO WEB INTERFACE');
     // The retired name is documented with its removal release.
     expect(out).toContain('AX_AGENT_WORKSPACE_PREVIEW');
     expect(out).toContain('first chart release after 0.0.1');

@@ -521,14 +521,20 @@ channelWeb:
   #
   # ON BY DEFAULT. It is the product now, not a preview.
   #
-  # Turning it OFF does not swap in some other web UI. It means THIS
-  # DEPLOYMENT HAS NO WEB INTERFACE: the host never registers the
-  # `/api/workspace/*` routes, so the surface is not hidden, it is absent
-  # from the wire. That is a real shape to ship when your agents are reached
+  # Turning it OFF means THIS DEPLOYMENT HAS NO WEB INTERFACE. The host
+  # never registers the `/api/workspace/*` routes, so the surface is not
+  # hidden, it is absent from the wire. That is a real shape to ship when your agents are reached
   # from somewhere other than a browser, and it is the cheapest capability
   # minimization we know how to buy (invariant #5). So if you set this to
-  # false and the site has nothing to show a signed-in person, that is the
-  # setting doing its job, not a broken install.
+  # false and there is no workspace to sign in to, that is the setting doing
+  # its job, not a broken install.
+  #
+  # Two honest footnotes while the old chat screen is being retired: with
+  # this off, `/` still shows that legacy chat screen until the release that
+  # deletes it; and the `/api/workspace/decisions*` routes (approving a held
+  # tool call) stay registered either way, because a held call has to be
+  # approvable from whatever screen raised it. They still only ever show a
+  # signed-in person their own rows.
   #
   # One name, everywhere. This value renders `AX_AGENT_WORKSPACE` ("1" on,
   # "0" off, stamped either way so what you write here is what you get), and

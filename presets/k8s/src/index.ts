@@ -389,9 +389,10 @@ export interface K8sPresetConfig {
   /**
    * The agent workspace — the web interface. `true` registers
    * `/api/workspace/*` and makes the workspace the landing page at `/`.
-   * Anything else and those routes are never registered: the surface does
-   * not exist on the wire, and this deployment has no web interface
-   * (invariant 5). Read from `AX_AGENT_WORKSPACE`, which the chart stamps
+   * Anything else and those routes are never registered (bar the
+   * `decisions*` routes, which mount either way — see
+   * `registerWorkspaceRoutes`): the surface does not exist on the wire, and
+   * this deployment has no web interface (invariant 5). Read from `AX_AGENT_WORKSPACE`, which the chart stamps
    * from `channelWeb.agentWorkspace` (on by default).
    */
   agentWorkspace?: boolean;
