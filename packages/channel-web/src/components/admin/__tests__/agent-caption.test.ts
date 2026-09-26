@@ -9,12 +9,22 @@
 import { describe, expect, it } from 'vitest';
 import { agentCaption } from '../AgentForm';
 import type { AgentModelOption } from '../../../lib/admin';
-import type { Team } from '../../../../mock/admin/teams';
+import type { Team } from '../../../lib/admin';
 
 const models: AgentModelOption[] = [
   { id: 'claude-sonnet-4-6', label: 'Claude Sonnet', kind: 'either' },
 ];
-const teams = [{ id: 'tm_9f2', name: 'Marketing' }] as unknown as Team[];
+// The route's real shape (TASK-571). No `as unknown` cast: a fixture that
+// needed one was a fixture the compiler could not check, which is how the
+// caption read `.name` off a wire that only ever carried `displayName`.
+const teams: Team[] = [
+  {
+    id: 'tm_9f2',
+    displayName: 'Marketing',
+    createdBy: 'u1',
+    createdAt: '2026-09-01T12:00:00.000Z',
+  },
+];
 
 describe('agentCaption', () => {
   it('says who can see it and what it runs, in words', () => {

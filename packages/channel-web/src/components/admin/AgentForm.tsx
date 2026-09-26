@@ -41,6 +41,7 @@ import {
   type AdminAgent,
   type AdminAgentInput,
   type AgentModelOption,
+  type Team,
 } from '../../lib/admin';
 import { listConnectors, getConnector, type ConnectorSummary, type ConnectorRouteBase } from '../../lib/connectors';
 import { getOAuthStatus, type OAuthStatus } from '../../lib/connectors-oauth';
@@ -51,7 +52,6 @@ type OAuthStatusOrError = OAuthStatus | typeof OAUTH_STATUS_ERROR;
 import { SkillAttachmentsSection } from './SkillAttachmentsSection';
 import { AuthoredSkillsSection } from './AuthoredSkillsSection';
 import { ConnectorOAuthConnect } from '../settings/ConnectorOAuthConnect';
-import type { Team } from '../../../mock/admin/teams';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -216,7 +216,7 @@ export function agentCaption(
   const parts: string[] = [a.visibility === 'team' ? 'Team' : 'Personal'];
   if (a.visibility === 'team') {
     // A team id says nothing; the team's NAME is the entire point of the row.
-    const name = teams?.find((t) => t.id === a.ownerId)?.name;
+    const name = teams?.find((t) => t.id === a.ownerId)?.displayName;
     if (name !== undefined && name.length > 0) parts.push(name);
   }
   const label = models?.find((m) => m.id === a.model)?.label;
@@ -762,7 +762,7 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
               >
                 {(teams ?? []).map((t) => (
                   <option key={t.id} value={t.id}>
-                    {t.name}
+                    {t.displayName}
                   </option>
                 ))}
               </select>

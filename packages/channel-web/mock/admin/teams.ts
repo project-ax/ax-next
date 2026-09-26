@@ -2,11 +2,14 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Store } from '../store';
 import { requireAdmin } from '../auth';
 
-export interface Team {
-  id: string;
-  name: string;
-  members: string[];
-}
+import type { AdminTeamWire } from '@ax/teams';
+
+/**
+ * The mock serves the real route's wire shape — @ax/teams' own exported type,
+ * not a local guess. A local `{ name, members }` here was once the type the
+ * whole SPA rendered from, and it matched no server (TASK-571).
+ */
+export type Team = AdminTeamWire;
 
 function send(
   res: ServerResponse,

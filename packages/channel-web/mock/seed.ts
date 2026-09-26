@@ -47,7 +47,21 @@ export const defaultSeeds: Record<string, unknown[]> = {
       updated_at: 0,
     },
   ],
-  teams: [{ id: 't1', name: 'Engineering', members: ['u1', 'u2'] }],
+  teams: [
+    {
+      id: 't1',
+      displayName: 'Engineering',
+      createdBy: 'u1',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    },
+  ],
+  // Membership lives beside the team, not inside it — the same split as
+  // @ax/teams' teams_v1_memberships table. The team row above is the exact
+  // `/admin/teams` wire shape, which carries no member list (TASK-571).
+  'team-memberships': [
+    { id: 't1:u1', teamId: 't1', userId: 'u1' },
+    { id: 't1:u2', teamId: 't1', userId: 'u2' },
+  ],
   'mcp-servers': [],
   sessions: [],
   messages: [],

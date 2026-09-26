@@ -196,6 +196,27 @@ describe('AgentForm — non-admin owner-scoped sources', () => {
     expect(listConnectors).not.toHaveBeenCalledWith('/admin/connectors');
   });
 
+  it('the team picker names each team by its displayName (TASK-571)', async () => {
+    // The route's real shape. The picker used to read `.name`, which this
+    // wire never carries, so every option rendered with no text at all.
+    vi.mocked(listTeams).mockResolvedValue([
+      {
+        id: 'team_1',
+        displayName: 'Engineering',
+        createdBy: 'u1',
+        createdAt: '2026-09-01T12:00:00.000Z',
+      },
+    ]);
+    render(<AgentForm isAdmin />);
+    await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /new agent/i }));
+    const teamRadio = await screen.findByRole('radio', { name: /team/i });
+    await waitFor(() => expect((teamRadio as HTMLInputElement).disabled).toBe(false));
+    fireEvent.click(teamRadio);
+    const option = await screen.findByRole('option', { name: 'Engineering' });
+    expect((option as HTMLOptionElement).value).toBe('team_1');
+  });
+
   it('an admin reads connectors from the admin route (/admin/connectors)', async () => {
     render(<AgentForm isAdmin />);
     await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());

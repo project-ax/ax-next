@@ -23,7 +23,7 @@ import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
 import { createAuthBetterPlugin } from '@ax/auth-better';
 import { signInAsAdmin } from '@ax/test-harness';
 import { createTeamsPlugin } from '../plugin.js';
-import { ADMIN_BODY_MAX_BYTES } from '../admin-routes.js';
+import { ADMIN_BODY_MAX_BYTES, type AdminTeamWire } from '../admin-routes.js';
 import type { IsMemberInput, IsMemberOutput } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -206,12 +206,9 @@ async function http(
   return { status: r.status, body: parsed };
 }
 
-interface SerializedTeam {
-  id: string;
-  displayName: string;
-  createdBy: string;
-  createdAt: string;
-}
+// The route's exported wire type, not a local copy — the whole point of
+// TASK-571 is that the SPA and this test read the SAME declaration.
+type SerializedTeam = AdminTeamWire;
 
 interface SerializedMembership {
   teamId: string;
@@ -338,6 +335,14 @@ describe('@ax/teams admin routes', () => {
     expect(r.status).toBe(200);
     const list = (r.body as { teams: SerializedTeam[] }).teams;
     expect(list.map((t) => t.displayName).sort()).toEqual(['Alpha', 'Beta']);
+    // TASK-571: pin the exact key set. The SPA renders from these keys, so an
+    // added, dropped or renamed field is a contract change, not a detail —
+    // its old `{ name, members }` guess survived precisely because nothing
+    // here said what the list actually carries.
+    for (const t of list) {
+      expect(Object.keys(t).sort()).toEqual(['createdAt', 'createdBy', 'displayName', 'id']);
+      expect(Number.isNaN(Date.parse(t.createdAt))).toBe(false);
+    }
   });
 
   it('GET /admin/teams cross-tenant: User A and User B see only their own', async () => {

@@ -144,7 +144,28 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
-function serializeTeam(t: Team): Record<string, unknown> {
+/**
+ * The wire shape of one team on `/admin/teams` responses — `GET` lists these
+ * under `teams`, `POST` returns one under `team`.
+ *
+ * This is the ONE definition of that shape (TASK-571). The SPA's admin client
+ * (`@ax/channel-web` `lib/admin.ts`) type-imports it rather than declaring its
+ * own, because its own copy said `{ name, members }` for months while this
+ * route sent `{ displayName }` — the Teams list rendered nothing for a real
+ * team and the agent form's team picker showed blank options. There is no
+ * member list here on purpose: the list route answers "which teams am I in",
+ * and member lists are the team-admin-gated `GET /admin/teams/:id/members`.
+ */
+export interface AdminTeamWire {
+  id: string;
+  displayName: string;
+  /** user_id of the team's creator. */
+  createdBy: string;
+  /** ISO-8601 timestamp. */
+  createdAt: string;
+}
+
+function serializeTeam(t: Team): AdminTeamWire {
   return {
     id: t.id,
     displayName: t.displayName,

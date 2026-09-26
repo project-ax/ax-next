@@ -1,8 +1,12 @@
 /**
  * TeamList — read-only placeholder for the admin teams view.
  *
- * Hits `GET /api/admin/teams` so we know the wire is alive, then renders a
- * simple list of seeded teams + a member count. Team management proper
+ * Hits `GET /admin/teams` so we know the wire is alive, then renders the
+ * teams the caller belongs to, by `displayName`. There is no member count:
+ * the list route carries no member list (members are the team-admin-gated
+ * `GET /admin/teams/:id/members`), and TASK-571 found this card reading a
+ * `members` field that never existed — it threw on the first real team.
+ * Team management proper
  * (create / invite / membership) lands with the Week 9.5 multi-tenant slice
  * — see `docs/plans/2026-04-24-week-9.5-multi-tenant-handoff.md`.
  *
@@ -11,10 +15,20 @@
  * the editor yet.
  */
 import { useEffect, useState } from 'react';
-import { listTeams } from '../../lib/admin';
-import type { Team } from '../../../mock/admin/teams';
+import { listTeams, type Team } from '../../lib/admin';
 import { PaneStatus } from '../PaneStatus';
 import { RoleCard } from './RoleCard';
+
+/**
+ * When the team was created, in the reader's own locale — the one fact on the
+ * wire that means something to a person. An unparseable timestamp says
+ * nothing rather than "Invalid Date".
+ */
+function teamCaption(t: Team): string {
+  const created = new Date(t.createdAt);
+  if (Number.isNaN(created.getTime())) return '';
+  return `Created ${created.toLocaleDateString(undefined, { dateStyle: 'medium' })}`;
+}
 
 export function TeamList() {
   const [teams, setTeams] = useState<Team[] | null>(null);
@@ -44,8 +58,8 @@ export function TeamList() {
             planning document inside our own repository — a file they cannot
             open, naming a milestone that means nothing outside this team. */}
         <p className="text-sm leading-[1.55] text-muted-foreground max-w-[56ch]">
-          Team management is coming soon. For now you can see the teams that
-          exist here, but not create or change them.
+          Team management is coming soon. For now you can see the teams
+          you&rsquo;re in, but not create or change them.
         </p>
       </div>
 
@@ -67,8 +81,8 @@ export function TeamList() {
           <RoleCard
             key={t.id}
             pill="team"
-            title={t.name}
-            caption={`${t.members.length} ${t.members.length === 1 ? 'member' : 'members'}`}
+            title={t.displayName}
+            caption={teamCaption(t)}
           >
             <span aria-hidden="true" />
           </RoleCard>
