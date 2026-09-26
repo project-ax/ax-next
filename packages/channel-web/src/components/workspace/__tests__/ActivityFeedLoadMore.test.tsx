@@ -87,11 +87,14 @@ interface Frame {
   announcerMounted: boolean;
   /** ANY failure copy on screen, in any shape — the vacuity guard's signal. */
   anyFailureShown: boolean;
+  /** Everything the polite region says in this commit, or null when it is not mounted. */
+  announcerText: string | null;
 }
 
 const frames: Frame[] = [];
 
 const ERROR_SENTENCE = /could not load the older entries/i;
+const PAGE_1_FAILURE = /could not load the record/i;
 
 function Harness() {
   const feed = useActivityFeed();
@@ -109,6 +112,7 @@ function Harness() {
       errorText: m ? announcer!.textContent : null,
       announcerMounted: announcer !== null,
       anyFailureShown: /could not load/i.test(text),
+      announcerText: announcer === null ? null : (announcer.textContent ?? ''),
     });
   });
   return (
@@ -223,5 +227,106 @@ describe('a failed Load more (TASK-501)', () => {
     for (const t of PAGE_1_TEXT) {
       expect(screen.getByText(t)).toBeInTheDocument();
     }
+  });
+});
+
+/*
+  TASK-541. Two ways a failure used to go unheard, both about WHEN the text
+  lands in the live region relative to the region itself.
+*/
+describe('every failure is announced (TASK-541)', () => {
+  /** How many times the region went from not saying `match` to saying it. */
+  function announcements(match: RegExp): number {
+    let n = 0;
+    let prev = false;
+    for (const f of frames) {
+      const now = f.announcerText !== null && match.test(f.announcerText);
+      if (now && !prev) n += 1;
+      prev = now;
+    }
+    return n;
+  }
+
+  it('announces a second identical Try again failure too', async () => {
+    /*
+      The hook keeps `error` set through the retry and sets the SAME string
+      when it fails again, so a region that renders on "error !== null" alone
+      never changes and a screen reader has nothing to report: the reader
+      pressed Try again and heard silence. The region empties while the retry
+      is in flight and refills when it fails — two real commits, a network
+      round trip apart.
+    */
+    activityMock.mockResolvedValueOnce({
+      events: PAGE_1_TEXT.map(row),
+      nextBefore: '2026-09-20T00:00:00.000Z',
+    });
+    activityMock.mockRejectedValueOnce(new Error('network down'));
+    let rejectRetry!: (e: unknown) => void;
+    activityMock.mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          rejectRetry = reject;
+        }),
+    );
+
+    render(<Harness />);
+    await screen.findByText(PAGE_1_TEXT[0]!);
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    await screen.findByText(ERROR_SENTENCE);
+    expect(announcements(ERROR_SENTENCE)).toBe(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await act(async () => {
+      rejectRetry(new Error('network down'));
+    });
+    await screen.findByText(ERROR_SENTENCE);
+
+    expect(activityMock).toHaveBeenCalledTimes(3);
+    expect(announcements(ERROR_SENTENCE)).toBe(2);
+    // The region itself never left: the refill is a change INSIDE it, and the
+    // rows stay put across the whole retry.
+    const firstRows = frames.findIndex((f) => f.pagesOnScreen.includes(1));
+    expect(firstRows).toBeGreaterThanOrEqual(0);
+    for (const f of frames.slice(firstRows)) {
+      expect(f.announcerMounted).toBe(true);
+      expect(f.pagesOnScreen.filter((p) => p === 1)).toHaveLength(PAGE_1_TEXT.length);
+    }
+  });
+
+  it('announces a page-1 failure through a region that was there before it', async () => {
+    /*
+      Page 1 failing used to swap the whole feed for a fresh `role="alert"`
+      Alert, created and filled in one commit — which many screen readers
+      skip. It now lands in the same polite region, mounted empty from the
+      feed's first frame (alongside the placeholder).
+    */
+    let rejectPage1!: (e: unknown) => void;
+    activityMock.mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          rejectPage1 = reject;
+        }),
+    );
+
+    render(<Harness />);
+    expect(screen.getByText('Reading the record…')).toBeInTheDocument();
+    await act(async () => {
+      rejectPage1(new Error('network down'));
+    });
+    await screen.findByText(PAGE_1_FAILURE);
+
+    const first = frames.findIndex(
+      (f) => f.announcerText !== null && PAGE_1_FAILURE.test(f.announcerText),
+    );
+    expect(first).toBeGreaterThan(0);
+    for (const f of frames.slice(0, first)) {
+      expect(f.announcerMounted).toBe(true);
+      expect(f.announcerText).toBe('');
+    }
+    // Announced once, by the region — not a second time by an alert role.
+    expect(screen.queryByRole('alert')).toBeNull();
+    const announcer = document.querySelector('[data-activity-announcer]')!;
+    expect(announcer.getAttribute('aria-live')).toBe('polite');
+    expect(within(announcer as HTMLElement).getByText(PAGE_1_FAILURE)).toBeInTheDocument();
   });
 });
