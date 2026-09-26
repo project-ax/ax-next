@@ -42,23 +42,26 @@
 //   - A constant declared twice resolves to the LARGER value. Fail CLOSED (the
 //     TASK-410 lesson: last-write-wins made the verdict turn on declaration
 //     order, and one of the orders under-read).
-//   - A name that is ever ASSIGNED after its declaration (`let X = 5; X = 30_000;`,
-//     `X += 1`, `X++`) does not resolve at all — the value at the hook's call
-//     cannot be known from the initialiser — and lands in `unreadable`. Fail
-//     CLOSED. Resolving it to the initialiser would under-read. Like `consts`,
-//     this set is file-global, not scope-aware: an unrelated inner `X` that is
-//     reassigned makes an outer `X` unreadable too — a spurious red, never a
-//     hidden one.
+//   - A name resolves ONLY if every binding of it in the file is a numeric-literal
+//     initialiser and it is never written again. Anything else — ASSIGNED after
+//     its declaration (`X = 30_000`, `X += 1`, `X++`, a destructuring target
+//     `[X] = …` / `({ X } = …)`, a loop target `for (X of …)`), or ALSO bound
+//     some other way anywhere in the file (`const X = 2 * 60_000` in an inner
+//     scope, a destructured `const { X } = o`, a parameter `X`, a function or
+//     class named `X`) — lands in `unreadable`. Fail CLOSED. The scan is not
+//     scope-aware, so without this an inner non-numeric `X` that shadows an outer
+//     numeric one would resolve the hook to the OUTER value and under-read
+//     (measured: outer `const X = 5_000`, inner `const X = 2 * 60_000`, a hook
+//     on the inner `X` read 5_000). The cost of being file-global is the other
+//     direction only: an unrelated `X` elsewhere makes this `X` unreadable — a
+//     spurious red, never a hidden one.
 //   - A hook called through a PROPERTY (`globalThis.beforeAll(...)`,
 //     `vitest.afterAll(...)`) is read like a bare one. At worst an over-read.
 //   - NOT covered, and fail-OPEN if anyone writes them: a hook invoked through
 //     an alias (`const setup = beforeAll; setup(fn, 120_000)`), through element
 //     access (`globalThis['beforeAll'](...)`), or with a unicode-escaped name.
 //     A hook this scanner does not recognise contributes nothing to the
-//     maximum. Likewise a const rebound through a NON-identifier target —
-//     destructuring (`[X] = [30_000]`, `({ X } = o)`) or a loop binding
-//     (`for (X of xs)`) — is not seen as reassigned and resolves to its stale
-//     initialiser. None of these occurs in the tree; they are named here rather
+//     maximum. None of these occurs in the tree; they are named here rather
 //     than implied away.
 
 import ts from 'typescript';
@@ -81,6 +84,20 @@ function hookNameOf(callee) {
     return HOOK_NAMES.has(callee.name.text) ? callee.name.text : undefined;
   }
   return undefined;
+}
+
+/** Every identifier a binding name introduces: `X`, `{ X, y: [Z] }`, `[X, ...R]`. */
+function addBindingNames(name, into) {
+  if (ts.isIdentifier(name)) into.add(name.text);
+  else if (ts.isObjectBindingPattern(name) || ts.isArrayBindingPattern(name)) {
+    for (const el of name.elements) if (ts.isBindingElement(el)) addBindingNames(el.name, into);
+  }
+}
+
+/** Every identifier anywhere inside an assignment target. Over-collects on purpose: extra names only err closed. */
+function addTargetNames(target, into) {
+  if (ts.isIdentifier(target)) into.add(target.text);
+  ts.forEachChild(target, (child) => addTargetNames(child, into));
 }
 
 function lineOf(sf, node) {
@@ -118,34 +135,43 @@ export function scanHookTimeouts(text, fileName) {
 
   // name -> largest numeric literal it is ever initialised to, anywhere in the file.
   const consts = new Map();
-  // Names written to after declaration. These never resolve (see the header).
-  const reassigned = new Set();
+  // Names that must never resolve: written after declaration, or bound anywhere
+  // other than by a numeric-literal initialiser (see the header).
+  const unresolvable = new Set();
   const hookCalls = [];
   const visit = (node) => {
+    if (ts.isVariableDeclaration(node)) {
+      if (ts.isIdentifier(node.name) && node.initializer !== undefined && ts.isNumericLiteral(node.initializer)) {
+        const ms = Number(node.initializer.text);
+        const seen = consts.get(node.name.text);
+        consts.set(node.name.text, seen === undefined ? ms : Math.max(seen, ms));
+      } else {
+        addBindingNames(node.name, unresolvable);
+      }
+    }
+    if (ts.isParameter(node)) addBindingNames(node.name, unresolvable);
     if (
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.initializer !== undefined &&
-      ts.isNumericLiteral(node.initializer)
+      (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node) || ts.isFunctionExpression(node) ||
+        ts.isClassExpression(node)) &&
+      node.name !== undefined
     ) {
-      const ms = Number(node.initializer.text);
-      const seen = consts.get(node.name.text);
-      consts.set(node.name.text, seen === undefined ? ms : Math.max(seen, ms));
+      unresolvable.add(node.name.text);
     }
     if (
       ts.isBinaryExpression(node) &&
       node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-      node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
-      ts.isIdentifier(node.left)
+      node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
     ) {
-      reassigned.add(node.left.text);
+      addTargetNames(node.left, unresolvable);
     }
     if (
       (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
-      (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken) &&
-      ts.isIdentifier(node.operand)
+      (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken)
     ) {
-      reassigned.add(node.operand.text);
+      addTargetNames(node.operand, unresolvable);
+    }
+    if ((ts.isForOfStatement(node) || ts.isForInStatement(node)) && !ts.isVariableDeclarationList(node.initializer)) {
+      addTargetNames(node.initializer, unresolvable);
     }
     if (ts.isCallExpression(node)) {
       const hook = hookNameOf(node.expression);
@@ -161,7 +187,7 @@ export function scanHookTimeouts(text, fileName) {
     const line = lineOf(sf, node);
     if (ts.isNumericLiteral(arg)) {
       result.declared.push({ hook, ms: Number(arg.text), line });
-    } else if (ts.isIdentifier(arg) && consts.has(arg.text) && !reassigned.has(arg.text)) {
+    } else if (ts.isIdentifier(arg) && consts.has(arg.text) && !unresolvable.has(arg.text)) {
       result.declared.push({ hook, ms: consts.get(arg.text), line, name: arg.text });
     } else {
       result.unreadable.push({ hook, expr: arg.getText(sf), line });

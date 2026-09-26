@@ -694,14 +694,60 @@ describe('the scan catches a NEW package, and the config read is a read (TASK-40
       testSource: [
         "import { spawn } from 'node:child_process';",
         'let HOOK_MS = 5_000;',
-        'HOOK_MS = 30_000;',
         'beforeAll(async () => { await warm(); }, HOOK_MS);',
+        '// written AFTER the hook call, which is what "anywhere in the file" claims',
+        'HOOK_MS = 30_000;',
       ].join('\n'),
       config: "export default { test: { include: ['src/**/*.test.ts'] } };",
     });
     const pkg = outOfProcessPackages(root).find((p) => p.name === 'packages/reassigned-const');
     expect(pkg.unreadable.map((u) => u.name)).toEqual(['HOOK_MS']);
     expect(pkg.maxDeclaredHookTimeout).toBe(0); // the stale 5_000 must not leak in either
+  });
+
+  it('does not resolve a numeric const that is SHADOWED by a non-numeric binding of the same name', () => {
+    // The scan is not scope-aware. Before this was closed, the inner `X` (not a
+    // numeric literal, so absent from the const table) let the hook resolve to
+    // the OUTER 5_000 — an under-read with nothing reported. MEASURED by the
+    // independent review of abdfb244: declared 5000, unreadable [].
+    makePackage('shadowed-non-numeric', {
+      testSource: [
+        "import { spawn } from 'node:child_process';",
+        'const X = 5_000;',
+        'describe("inner", () => {',
+        '  const X = 2 * 60_000;',
+        '  beforeAll(async () => { await warm(); }, X);',
+        '});',
+      ].join('\n'),
+      config: "export default { test: { include: ['src/**/*.test.ts'] } };",
+    });
+    const pkg = outOfProcessPackages(root).find((p) => p.name === 'packages/shadowed-non-numeric');
+    expect(pkg.unreadable.map((u) => u.name)).toEqual(['X']);
+    expect(pkg.maxDeclaredHookTimeout).toBe(0);
+  });
+
+  it('does not resolve a const rebound through destructuring or a loop target', () => {
+    for (const [pkgName, rebind] of [
+      ['rebind-array', '[HOOK_MS] = [30_000];'],
+      ['rebind-object', '({ HOOK_MS } = { HOOK_MS: 30_000 });'],
+      ['rebind-for-of', 'for (HOOK_MS of [30_000]) {}'],
+    ]) {
+      makePackage(pkgName, {
+        testSource: [
+          "import { spawn } from 'node:child_process';",
+          'let HOOK_MS = 5_000;',
+          rebind,
+          'beforeAll(async () => { await warm(); }, HOOK_MS);',
+        ].join('\n'),
+        config: "export default { test: { include: ['src/**/*.test.ts'] } };",
+      });
+    }
+    const found = outOfProcessPackages(root);
+    for (const pkgName of ['rebind-array', 'rebind-object', 'rebind-for-of']) {
+      const pkg = found.find((p) => p.name === `packages/${pkgName}`);
+      expect(pkg.unreadable.map((u) => u.name), pkgName).toEqual(['HOOK_MS']);
+      expect(pkg.maxDeclaredHookTimeout, pkgName).toBe(0);
+    }
   });
 
   it('reports a source that does not parse, rather than trusting the hooks it could see', () => {
