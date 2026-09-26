@@ -433,8 +433,8 @@ echo "files in range: $N"
 **The reviewer runs in YOUR worktree, and it has `Bash`.** "Read-only" is an instruction in
 its definition, not a capability it lacks. On 2026-09-19 (TASK-426, reported first-hand by
 the builder) a reviewer proved a test non-vacuous by mutating a file and restoring it with
-`git checkout -- <file>` — the correct restore for an *owner* who committed first, and the
-destructive one here: it reverted **six of the builder's uncommitted edits**, and the builder
+`git checkout -- <file>` — a checkout restore, which is the right tool for an *owner* who
+committed first (Phase 4 spells it `git checkout HEAD --`), and the destructive one here: it reverted **six of the builder's uncommitted edits**, and the builder
 then debugged the reviewer's mutant as its own code. Phase 4's table already says a subagent
 in someone else's tree does not mutate; this is the owner's half, so that one slip by either
 side is not enough to lose work.

@@ -6,8 +6,9 @@
 //
 // `MEASURED-BY-PROBE` 2026-09-19 (TASK-426 / PR #625, reported first-hand by the builder):
 // an ax-code-reviewer runs in the BUILDER's worktree, mutated a file to prove a test
-// non-vacuous, and restored it with `git checkout -- <file>`. That is the recommended
-// restore for an owner who committed first (TASK-468, yolo-ship Phase 4) and the
+// non-vacuous, and restored it with `git checkout -- <file>`. A checkout is the recommended
+// restore for an owner who committed first (TASK-468, yolo-ship Phase 4 — spelled
+// `git checkout HEAD --` since TASK-508, because the bare form reads the index) and the
 // destructive one for everybody else in the tree: it reverted six of the builder's
 // UNCOMMITTED edits, and the builder then debugged the reviewer's mutant as its own code.
 //

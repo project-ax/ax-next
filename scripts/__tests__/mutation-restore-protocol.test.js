@@ -6,8 +6,8 @@
 //
 // Mutation testing is now standard practice on this board — nearly every card dispatched
 // asks the builder to "revert the fix, watch it go red, restore". Writing the mutant is
-// safe. **Putting the file back is where the damage has happened** — five measured
-// instances on 2026-09-18/19, in four distinct shapes, across two restore mechanisms (a
+// safe. **Putting the file back is where the damage has happened** — six measured
+// instances on 2026-09-18/20, in five distinct shapes, across two restore mechanisms (a
 // file copy, and `git checkout --`), each reported first-hand by the agent it happened to:
 //
 //   1. A builder restored a mutated file FROM A FILE COPY and silently reverted a fix
