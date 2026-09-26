@@ -20,7 +20,7 @@ import { App } from '../App';
 import { getSession, type AuthSession } from '../lib/auth';
 import { fetchBootstrapStatus } from '../lib/bootstrap-status';
 import { fetchFeatures } from '../lib/features';
-import { workspaceApi } from '../lib/workspace-api';
+import { workspaceApi, type AgentDetail } from '../lib/workspace-api';
 import { autoCreateBareAgent } from '../lib/auto-create-agent';
 import { rail as railFixture } from '../components/workspace/__tests__/rail-fixture';
 import { clearViewport, setViewport } from '../components/workspace/__tests__/viewport';
@@ -135,6 +135,33 @@ function navTrigger(): HTMLElement {
   return screen.getByRole('button', { name: /open navigation/i });
 }
 
+/** The new agent's conversation region, re-queried from the CURRENT tree. */
+function newAgentConversation(): HTMLElement {
+  return screen.getByRole('region', { name: 'Conversation with Quill' });
+}
+
+function newAgentDetail(agentId: string): AgentDetail {
+  return {
+    agent: {
+      id: agentId,
+      name: 'Quill',
+      state: 'resting',
+      now: null,
+      counter: null,
+      startedAt: null,
+      stoppedReason: null,
+    },
+    conversationId: 'c1',
+    thread: [],
+    decisions: { status: 'ok' },
+    past: [],
+    memory: {
+      rules: { status: 'unavailable', doc: null },
+      learned: { status: 'unavailable', docs: [] },
+    },
+  } as unknown as AgentDetail;
+}
+
 async function openNewAgentDialog(): Promise<void> {
   fireEvent.click(await waitFor(newAgentRow));
   await screen.findByRole('dialog', { name: /Name your agent/i });
@@ -174,17 +201,27 @@ describe('closing the new-agent dialog from the workspace (TASK-510)', () => {
     await waitFor(() => expectFocusedAndConnected(newAgentRow));
   });
 
-  it('a completed create returns focus to the "New agent…" row', async () => {
+  it('a completed create moves focus into the NEW agent\'s conversation (TASK-533)', async () => {
+    // The agent the create makes is not the one already on the board, so a
+    // landing on ANY conversation region would not prove the target is the
+    // new agent's view — the id-scoping is part of what is under test.
+    mockAutoCreate.mockResolvedValue({ agentId: 'a2' } as Awaited<
+      ReturnType<typeof autoCreateBareAgent>
+    >);
+    vi.mocked(workspaceApi.agent).mockImplementation(async (agentId: string) =>
+      newAgentDetail(agentId),
+    );
     render(<App />);
     await openNewAgentDialog();
 
     fireEvent.change(screen.getByLabelText(/Agent name/i), {
-      target: { value: 'Scout' },
+      target: { value: 'Quill' },
     });
     fireEvent.click(screen.getByRole('button', { name: /Create agent/i }));
 
-    await waitFor(() => expect(mockAutoCreate).toHaveBeenCalledWith('Scout'));
-    await waitFor(() => expectFocusedAndConnected(newAgentRow));
+    await waitFor(() => expect(mockAutoCreate).toHaveBeenCalledWith('Quill'));
+    await waitFor(() => expectFocusedAndConnected(newAgentConversation));
+    expect(document.activeElement).not.toBe(newAgentRow());
   });
 
   it('on a compact viewport, falls back to the hamburger — the row is in the closed sheet', async () => {

@@ -57,3 +57,46 @@ export function focusNewAgentOpenerWhenReady(
 ): () => void {
   return focusFirstWhenReady(NEW_AGENT_RETURN_TARGETS, doc, windowMs);
 }
+
+/**
+ * Marks an agent's conversation region with that agent's id (TASK-533).
+ *
+ * It carries the id, not just a presence flag, because the workspace that
+ * comes back after a create first paints whatever route it was on — often
+ * ANOTHER agent's conversation — and only moves to the new agent once the
+ * kickoff's send returns. A bare marker would land focus on the wrong agent.
+ */
+export const AGENT_CONVERSATION_ATTR = 'data-agent-conversation';
+
+/**
+ * After a FINISHED create, put focus into the new agent's conversation — the
+ * thing now on screen — rather than back on the "New agent…" row (TASK-533).
+ * Escape and Close still use {@link focusNewAgentOpenerWhenReady}: nothing was
+ * made, so the control you came from is still the right place to stand.
+ *
+ * THE ONE TARGET, and no opener fallback. The sidebar (and the row in it)
+ * paints BEFORE the route moves to the new agent, so listing the row second
+ * would not be a fallback at all: `focusFirstWhenReady` takes the first target
+ * that is present, and the row would win every time. If the new agent's view
+ * never appears inside the window (a board read that fails on the way back),
+ * this fails the way the original bug did — to `<body>`.
+ *
+ * The id is compared as a VALUE, not spliced into a selector: it is server
+ * data, and an attribute-selector string built from it is one escaping bug
+ * away from matching something else.
+ */
+export function focusNewAgentViewWhenReady(
+  agentId: string,
+  doc: Document = document,
+  windowMs?: number,
+): () => void {
+  const newAgentsConversation = (root: ParentNode): HTMLElement | null => {
+    for (const el of root.querySelectorAll<HTMLElement>(
+      `[${AGENT_CONVERSATION_ATTR}]`,
+    )) {
+      if (el.getAttribute(AGENT_CONVERSATION_ATTR) === agentId) return el;
+    }
+    return null;
+  };
+  return focusFirstWhenReady([newAgentsConversation], doc, windowMs);
+}

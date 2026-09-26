@@ -67,16 +67,26 @@ export const NAV_TRIGGER_ATTR = 'data-nav-trigger';
 export const RESTORE_WINDOW_MS = 2_000;
 
 /**
+ * One restore target: a selector, or a finder for a target a selector cannot
+ * name safely — e.g. one identified by server data (TASK-533), which should be
+ * compared as a value rather than spliced into selector syntax.
+ */
+export type FocusTarget = string | ((root: ParentNode) => HTMLElement | null);
+
+/**
  * Focus the first target, in order, that is present and accepts focus.
  *
  * Returns whether focus actually landed on one of them.
  */
 export function focusFirst(
-  selectors: readonly string[],
+  selectors: readonly FocusTarget[],
   root: ParentNode = document,
 ): boolean {
   for (const selector of selectors) {
-    const target = root.querySelector<HTMLElement>(selector);
+    const target =
+      typeof selector === 'string'
+        ? root.querySelector<HTMLElement>(selector)
+        : selector(root);
     if (target === null) continue;
     // `preventScroll`: the surface has just been re-created and is already
     // scrolled where the person left it. A scroll correction toward a control
@@ -117,7 +127,7 @@ function keyboardIsClaimed(doc: Document): boolean {
  * the real one. Callers in the app pass nothing.
  */
 export function focusFirstWhenReady(
-  selectors: readonly string[],
+  selectors: readonly FocusTarget[],
   doc: Document = document,
   windowMs: number = RESTORE_WINDOW_MS,
 ): () => void {
