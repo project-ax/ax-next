@@ -367,7 +367,9 @@ function createDispatcherDepsStubPlugin(hooks: string[]): Plugin {
 const CANARY_TEXT = 'preset-ok';
 
 /**
- * The I1 witness: `chat:end` fires EXACTLY once per `agent:invoke`.
+ * The I1 witness: `chat:end` fires EXACTLY once per `agent:invoke`. Each
+ * caller drives ONE turn, so "once per turn" is "once per test" here; a test
+ * that adds a second turn must count per reqId instead.
  *
  * It asserts the invariant, not the timing (TASK-555). The happy-path
  * `chat:end` is fired by @ax/ipc-core after it has acked the runner's POST,

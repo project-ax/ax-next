@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
@@ -469,6 +469,14 @@ describe('@ax/preset-k8s multi-tenant ACL gate (stub runner)', () => {
           .reverse()
           .find((m) => m.role === 'assistant');
         expect(lastA?.content).toContain('from-A');
+        // The runner-reported chat:end races agent:invoke and is bounded per
+        // subscriber (TASK-555), so this later-registered recorder may run
+        // just after the call returns. Wait for it before the next turn, so
+        // the in-order check below does not rest on microtask timing.
+        await vi.waitFor(() => expect(observedChatEnds.length).toBe(1), {
+          timeout: 10_000,
+          interval: 10,
+        });
 
         // ---- Invocation 2: agent B + user-B → completes with 'from-B'. ----
         const ctxB = makeAgentContext({
@@ -490,6 +498,10 @@ describe('@ax/preset-k8s multi-tenant ACL gate (stub runner)', () => {
           .reverse()
           .find((m) => m.role === 'assistant');
         expect(lastB?.content).toContain('from-B');
+        await vi.waitFor(() => expect(observedChatEnds.length).toBe(2), {
+          timeout: 10_000,
+          interval: 10,
+        });
 
         // ---- Invocation 3: agent A + user-B → ACL gate rejects. ----
         // The discriminating agents:resolve mock throws
