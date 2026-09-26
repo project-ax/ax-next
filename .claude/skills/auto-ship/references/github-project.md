@@ -557,6 +557,9 @@ source .claude/auto-ship-progress.sh
 # (§6, **Malformed vs transient**). Do not rely on that as the loop's only guard --
 # `read -r` behaves identically under both shells, so just write the correct form.
 # (`for b in $(cmd)` is fine: command substitution DOES split under zsh.)
+# Run this in the SAME Bash call as the family block above: Bash calls share no shell
+# state, so a separate call sees $IDS UNSET and would quietly propagate to nobody.
+[ -n "${IDS+set}" ] || echo "FATAL: \$IDS is unset — run the family block in this same Bash call" >&2
 printf '%s\n' "$IDS" | while IFS= read -r id; do
   [ -n "$id" ] || continue   # an empty $IDS still yields one empty line
   append_learnings "$id" "from $TASK_ID: <bullet>"   # one call per learnings bullet

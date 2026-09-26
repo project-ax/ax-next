@@ -190,6 +190,20 @@ describe('forward-learning family query (TASK-481)', () => {
         expect(runFamily(shell, { items: none, taskId: 'TASK-710' }).ids).toEqual([]);
       });
 
+      it.skipIf(!canRun)('markers below line 1 still count (real bodies put `epic:` under the spec)', () => {
+        const items = [
+          card('PVTI_M', 'TASK-900', 'In Review', 'the spec\n\nmore spec\nepic: e9\nparent: TASK-899'),
+          card('PVTI_EPIC', 'TASK-901', 'To Do', 'spec text\n\n## Acceptance\n- x\n\nepic: e9'),
+          card('PVTI_SIB', 'TASK-902', 'To Do', 'spec text\n\n  parent: TASK-899'),
+          card('PVTI_KID', 'TASK-903', 'To Do', 'spec\nFollow-up from TASK-900 (PR #9).'),
+        ];
+        expect(runFamily(shell, { items, taskId: 'TASK-900' }).ids).toEqual([
+          'PVTI_EPIC',
+          'PVTI_KID',
+          'PVTI_SIB',
+        ]);
+      });
+
       it.skipIf(!canRun)('a card matching several edges is emitted once', () => {
         const items = [
           card('PVTI_M', 'TASK-800', 'In Review', 'epic: e1\nparent: TASK-799'),
@@ -231,6 +245,31 @@ describe('forward-learning family query (TASK-481)', () => {
   }
 });
 
+describe('forward-learning loop refuses an unset $IDS (TASK-481)', () => {
+  // The family block and the append loop are separate fenced blocks, and the Bash tool
+  // shares no shell state between calls -- run them in two calls and the loop sees $IDS
+  // UNSET and propagates to nobody, silently. The loop must say so.
+  const md = readFileSync(GITHUB_PROJECT_MD, 'utf8');
+  const loop = [...md.matchAll(/```bash\n([\s\S]*?)\n```/g)]
+    .map((m) => m[1])
+    .filter((b) => /append_learnings "\$id"/.test(b));
+
+  for (const shell of SHELLS) {
+    it(`${shell}: unset $IDS is FATAL; an empty one is not`, () => {
+      expect(loop.length).toBe(1);
+      // Stub the helper file away: only the guard is under test.
+      const body = loop[0].replace(/^source .*$/m, 'append_learnings() { echo "called $1"; }');
+      const env = { ...process.env };
+      delete env.IDS;
+      const unset = spawnSync(shell, ['-c', body], { encoding: 'utf8', env });
+      expect(unset.stderr).toMatch(/FATAL: \$IDS is unset/);
+      const empty = spawnSync(shell, ['-c', `IDS=""\n${body}`], { encoding: 'utf8', env });
+      expect(empty.stderr).not.toMatch(/FATAL/);
+      expect(empty.stdout).not.toMatch(/called/);
+    });
+  }
+});
+
 describe('forward-learning prose and code agree (TASK-481)', () => {
   // The card's acceptance: SKILL.md's Forward learning section is the prose, §4's block
   // is the code the orchestrator runs, and "the two must not disagree". The old prose
@@ -260,6 +299,7 @@ describe('forward-learning prose and code agree (TASK-481)', () => {
       GITHUB_PROJECT_MD,
       join(AUTO_SHIP, 'references', 'templates.md'),
       join(REPO_ROOT, '.claude', 'skills', 'yolo-ship', 'SKILL.md'),
+      join(REPO_ROOT, 'docs', 'plans', '2026-05-24-auto-ship-design.md'),
     ];
     for (const f of docs) {
       const text = readFileSync(f, 'utf8');
