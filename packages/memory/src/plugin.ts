@@ -671,11 +671,21 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
                 MEMORY_RECALL_HOOK,
                 FACTS_RECALL_HOOK,
               );
+              // Refused, not coerced: an empty winner set would mark every
+              // active row overridden — nonsense rendered as an answer, the
+              // same lie the primary read's array check refuses.
+              if (!Array.isArray(activeRows.statements)) {
+                throw new PluginError({
+                  code: 'invalid-return',
+                  plugin: PLUGIN_NAME,
+                  hookName: MEMORY_RECALL_HOOK,
+                  message: `${FACTS_RECALL_HOOK} returned a non-array statements; memory cannot say which profile rows are in effect`,
+                });
+              }
               const winners = new Set(
-                selectProfileRows(
-                  Array.isArray(activeRows.statements) ? activeRows.statements : [],
-                  Number.MAX_SAFE_INTEGER,
-                ).map((row) => row.id),
+                selectProfileRows(activeRows.statements, Number.MAX_SAFE_INTEGER).map(
+                  (row) => row.id,
+                ),
               );
               overridden = new Set(
                 result.statements.filter(
