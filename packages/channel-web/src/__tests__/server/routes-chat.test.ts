@@ -778,13 +778,47 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
     `payload.reqId`, so an error keyed on anything else reaches no stream at
     all — which is indistinguishable, from the reader's chair, from not firing.
   */
-  it('4b. (TASK-498) a rejected agent:invoke fires chat:turn-error for that exact reqId', async () => {
+  /*
+    TASK-559 — WAIT ON THE FIRE, NOT ON THE CLOCK.
+
+    This test used to sleep a fixed 50ms after the 202 and then look. It
+    flaked on main (run 36240494701, attempt 1: `expected [] to deeply equal
+    [{ reqId, reason: 'chat-run-dispatch-failed' }]`). The card blamed #725's
+    bounded `fireChatEvent`, but that is the orchestrator's helper and the
+    orchestrator is not booted here: this fire is channel-web's own plain,
+    unbounded `bus.fire`. What the spy actually waits behind is
+    `@ax/conversations`' own `chat:turn-error` subscriber, which is
+    registered at boot, so it runs FIRST (`fire` walks subscribers in order,
+    one at a time) and does a Postgres insert to persist the error row.
+    Measured on an idle laptop, the spy landed 24-52ms after the POST went
+    out. That is most of a 50ms budget before a CI runner is even busy.
+
+    So the wait is on the event itself, bounded well under the 60s
+    testTimeout so a real "never fired" fails as a named `vi.waitFor` timeout
+    (carrying its last `fired.length` failure) rather than a bare vitest test
+    timeout. And 4b' pins that: a subscriber ahead of the
+    spy that stalls for longer than the old budget stands in for a slow
+    persist. Against the old 50ms sleep it fails every time, with CI's exact
+    message.
+  */
+  async function expectRejectedDispatchFiresTurnError(stallAheadOfSpyMs: number) {
     const booted = await boot({
       user: { id: 'userA', isAdmin: false },
       allowedFor: new Set(['userA']),
       dispatchRejects: true,
     });
     harnesses.push(booted.harness);
+
+    if (stallAheadOfSpyMs > 0) {
+      booted.harness.bus.subscribe<unknown>(
+        'chat:turn-error',
+        'slow-persist-stand-in',
+        async () => {
+          await new Promise((resolve) => setTimeout(resolve, stallAheadOfSpyMs));
+          return undefined;
+        },
+      );
+    }
 
     const fired: Array<{ reqId?: string; reason?: string }> = [];
     booted.harness.bus.subscribe<unknown>(
@@ -804,12 +838,24 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
     expect(r.status).toBe(202);
     const body = (await r.json()) as { conversationId: string; reqId: string };
 
-    // The dispatch — and therefore its rejection — is fire-and-forget.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // The dispatch — and therefore its rejection — is fire-and-forget, and
+    // the spy runs after every subscriber registered before it.
+    await vi.waitFor(() => expect(fired.length).toBeGreaterThan(0), {
+      timeout: 30_000,
+      interval: 5,
+    });
 
     expect(fired).toEqual([
       { reqId: body.reqId, reason: 'chat-run-dispatch-failed' },
     ]);
+  }
+
+  it('4b. (TASK-498) a rejected agent:invoke fires chat:turn-error for that exact reqId', async () => {
+    await expectRejectedDispatchFiresTurnError(0);
+  });
+
+  it("4b'. (TASK-559) ...and still does when a subscriber ahead of the spy is slow", async () => {
+    await expectRejectedDispatchFiresTurnError(250);
   });
 
   /*
