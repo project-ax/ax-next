@@ -17,14 +17,13 @@
 import { PluginError, type AgentContext, type HookBus, type Plugin } from '@ax/core';
 import { localEmbed, localRerank } from './local.js';
 import {
-  GCP_PROJECT_RE,
-  MODEL_RE,
+  OPENROUTER_MODEL_RE,
   embedEndpointFor,
   rerankEndpointFor,
   type EmbedEndpoint,
   type RerankEndpoint,
 } from './endpoints.js';
-import { cohereRerank, vertexEmbed, type RemoteDeps } from './remote.js';
+import { openrouterEmbed, openrouterRerank, type RemoteDeps } from './remote.js';
 import {
   EMBED_HOOK,
   PLUGIN_NAME,
@@ -60,14 +59,15 @@ export const MAX_DIMENSIONS = 4096;
  * after the caller has walked away.
  *
  * PER REQUEST, NOT PER CALL — and the difference is bigger than it looks.
- * `vertexEmbed` chunks a batch at `maxInstancesPerCall` (5) and awaits the
- * chunks in sequence, so a maximum 256-text batch is up to 52 sequential
- * requests and this 5s backstop bounds one `embeddings:embed` call at roughly
- * 260s, not 5s. That is safe for the in-repo caller, which races every
- * producer against its own 1.5s budget and stops waiting long before — but a
- * future caller that reads this constant as a total-call ceiling would be
- * badly surprised. If a total-call ceiling is ever wanted, it belongs as its
- * own deadline around the chunk loop; do not just lower this number.
+ * `openrouterEmbed` chunks a batch at `maxInputsPerCall` (64) and awaits the
+ * chunks in sequence, so a maximum 256-text batch (MAX_ITEMS) is 256/64 = 4
+ * sequential requests, and this 5s backstop bounds one `embeddings:embed`
+ * call at roughly 20s, not 5s. That is safe for the in-repo caller, which
+ * races every producer against its own 1.5s budget and stops waiting long
+ * before — but a future caller that reads this constant as a total-call
+ * ceiling would be badly surprised. If a total-call ceiling is ever wanted,
+ * it belongs as its own deadline around the chunk loop; do not just lower
+ * this number.
  */
 export const DEFAULT_TIMEOUT_MS = 5_000;
 
@@ -83,15 +83,14 @@ interface CredentialsGetInput {
 }
 
 export interface RemoteEmbedConfig {
-  provider: 'vertex';
+  provider: 'openrouter';
   /** Credential-store ref holding the bearer token. */
   credentialRef: string;
-  projectId: string;
   model?: string;
 }
 
 export interface RemoteRerankConfig {
-  provider: 'cohere';
+  provider: 'openrouter';
   credentialRef: string;
   model?: string;
 }
@@ -127,10 +126,11 @@ function invalidConfig(message: string): PluginError {
 function resolveModel(payloadModel: string | undefined, configured: string): string | undefined {
   // A payload model WINS over the config default — the deployment that filled
   // it knows which model its stored vectors came from — but only after passing
-  // the URL grammar. A payload model that fails it degrades rather than
+  // the model grammar. A payload model that fails it degrades rather than
   // throwing: it is not the caller's typo worth a write outage over, and
   // `endpoints.ts` explains what the grammar is actually stopping.
-  if (payloadModel !== undefined) return MODEL_RE.test(payloadModel) ? payloadModel : undefined;
+  if (payloadModel !== undefined)
+    return OPENROUTER_MODEL_RE.test(payloadModel) ? payloadModel : undefined;
   return configured;
 }
 
@@ -185,7 +185,7 @@ export function createEmbeddingsPlugin(config: EmbeddingsConfig = {}): Plugin {
   }
 
   // Every remote-config error is a BOOT failure, not a first-call failure. A
-  // typo'd provider id or project id cannot produce a working system later, so
+  // typo'd provider id or model id cannot produce a working system later, so
   // there is nothing to gain by finding out at 3am under load instead of at
   // startup — and unlike a failed call, this one is not something the consumer
   // can degrade around.
@@ -198,10 +198,7 @@ export function createEmbeddingsPlugin(config: EmbeddingsConfig = {}): Plugin {
     if (typeof config.embed.credentialRef !== 'string' || config.embed.credentialRef.length === 0) {
       throw invalidConfig('embed.credentialRef must be a non-empty string');
     }
-    if (typeof config.embed.projectId !== 'string' || !GCP_PROJECT_RE.test(config.embed.projectId)) {
-      throw invalidConfig(`embed.projectId is not a valid project id (got ${String(config.embed.projectId)})`);
-    }
-    if (config.embed.model !== undefined && !MODEL_RE.test(config.embed.model)) {
+    if (config.embed.model !== undefined && !OPENROUTER_MODEL_RE.test(config.embed.model)) {
       throw invalidConfig(`embed.model is not a valid model id (got ${String(config.embed.model)})`);
     }
   }
@@ -218,7 +215,7 @@ export function createEmbeddingsPlugin(config: EmbeddingsConfig = {}): Plugin {
     ) {
       throw invalidConfig('rerank.credentialRef must be a non-empty string');
     }
-    if (config.rerank.model !== undefined && !MODEL_RE.test(config.rerank.model)) {
+    if (config.rerank.model !== undefined && !OPENROUTER_MODEL_RE.test(config.rerank.model)) {
       throw invalidConfig(`rerank.model is not a valid model id (got ${String(config.rerank.model)})`);
     }
   }
@@ -258,11 +255,9 @@ export function createEmbeddingsPlugin(config: EmbeddingsConfig = {}): Plugin {
     if (model === undefined) return undefined;
     const token = await resolveToken(bus, ctx, remoteEmbed.credentialRef);
     if (token === undefined) return undefined;
-    const vectors = await vertexEmbed(deps, embedEndpoint, {
+    const vectors = await openrouterEmbed(deps, embedEndpoint, {
       texts: input.texts,
-      task: input.task,
       model,
-      projectId: remoteEmbed.projectId,
       token,
       dimensions,
     });
@@ -283,7 +278,7 @@ export function createEmbeddingsPlugin(config: EmbeddingsConfig = {}): Plugin {
     if (model === undefined) return undefined;
     const token = await resolveToken(bus, ctx, remoteRerank.credentialRef);
     if (token === undefined) return undefined;
-    const scores = await cohereRerank(deps, rerankEndpoint, {
+    const scores = await openrouterRerank(deps, rerankEndpoint, {
       query: input.query,
       documents: input.documents,
       model,

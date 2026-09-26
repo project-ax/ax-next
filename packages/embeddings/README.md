@@ -48,22 +48,22 @@ least favourite failure mode.
 // Local mode — nothing to configure.
 createEmbeddingsPlugin();
 
-// Remote mode.
+// Remote mode. Both hooks go through OpenRouter, on ONE long-lived credential.
 createEmbeddingsPlugin({
   embed: {
-    provider: 'vertex',
-    credentialRef: 'account:vertex-embeddings',  // where the bearer token lives
-    projectId: 'my-gcp-project',
+    provider: 'openrouter',
+    credentialRef: 'provider:openrouter',  // where the bearer token lives
   },
   rerank: {
-    provider: 'cohere',
-    credentialRef: 'account:cohere-rerank',
+    provider: 'openrouter',
+    credentialRef: 'provider:openrouter',
   },
 });
 ```
 
 Mode is per-hook. Configuring a remote embedder and no reranker is fine and common —
-you get real vectors and lexical reranking.
+you get real vectors and lexical reranking. In practice the memory preset configures
+both, on the same `provider:openrouter` credential — one account, one key to rotate.
 
 `dimensions` defaults to **384**, because that is the width of the fact store's vector
 column. If you change one you must change the other, and the consumer will reject

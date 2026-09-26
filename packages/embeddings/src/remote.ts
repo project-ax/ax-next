@@ -1,4 +1,6 @@
-// The two remote drivers: Vertex for embeddings, Cohere for reranking.
+// The two remote drivers: OpenRouter for embeddings, OpenRouter for
+// reranking. (Two hooks, one provider, one credential — that is the whole
+// point of TASK-523.)
 //
 // Both are plain functions over an INJECTED `fetch`. No SDK, no client object,
 // no module-level state, no `process.env`, no credential lookup — the token
@@ -20,7 +22,6 @@
 // and routinely echoes the request back; a log line is a fine place for a
 // bearer token to end up and a terrible place for it to live.
 
-import type { EmbeddingTask } from './wire.js';
 import type { EmbedEndpoint, RerankEndpoint } from './endpoints.js';
 import { validateScores, validateVectors } from './validate.js';
 
@@ -30,12 +31,6 @@ export interface RemoteDeps {
   /** Per-request deadline, enforced with an `AbortController`. */
   timeoutMs: number;
 }
-
-/** Vertex's task-type enum. Vendor vocabulary stops here — it never reaches a hook payload. */
-const VERTEX_TASK_TYPES: Record<EmbeddingTask, string> = {
-  document: 'RETRIEVAL_DOCUMENT',
-  query: 'RETRIEVAL_QUERY',
-};
 
 /**
  * One POST, one attempt, JSON in and JSON out. Returns the parsed body, or
@@ -91,62 +86,90 @@ function fieldOf(value: unknown, key: string): unknown {
   return (value as Record<string, unknown>)[key];
 }
 
-export interface VertexEmbedArgs {
+export interface OpenRouterEmbedArgs {
   texts: string[];
-  task: EmbeddingTask;
   model: string;
-  projectId: string;
   token: string;
   dimensions: number;
 }
 
 /**
- * Embed `texts` through Vertex's `:predict`, in input order.
+ * Embed `texts` through OpenRouter's `/api/v1/embeddings`, placing each
+ * vector BY the `index` its `data[]` entry carries — never by iteration
+ * order. OpenRouter's spec does not promise the response preserves input
+ * order (and the sibling Cohere-shaped rerank driver this package used to
+ * carry proved that assumption wrong once already), so this is full-coverage
+ * placement, the same logic `cohereRerank` used: every index in `0..n-1`
+ * exactly once, or `undefined`.
  *
- * `model` and `projectId` MUST already have passed `MODEL_RE` /
- * `GCP_PROJECT_RE` — they are interpolated into the URL. `plugin.ts` validates
- * both at construction, and the payload-supplied model on every call.
+ * WE DO NOT SEND `input_type` OR ANY TASK TYPE. OpenRouter's OpenAPI spec
+ * documents an `input_type` field (`search_query` / `search_document`), but
+ * nothing confirms whether its Google route actually maps that onto Gemini's
+ * asymmetric task type — and an unmapped field risks a 400 that would take
+ * the whole dense channel dark for every caller, not just the one that lost
+ * a few points of asymmetric-embedding quality. So the body is exactly
+ * `{ model, input, dimensions, encoding_format }` for BOTH `task: 'document'`
+ * and `task: 'query'`; `payload.test.ts` pins the exact key set. Follow-up:
+ * probe the field with a real key once one is available, and turn it on if
+ * the two tasks measurably diverge.
  *
- * Vertex caps a predict call at `maxInstancesPerCall` instances, so a batch is
- * chunked and the chunks concatenated. IF ANY CHUNK FAILS THE WHOLE CALL
- * ANSWERS `undefined`: a partially-embedded batch is not a smaller answer, it
- * is a misaligned one — the consumer zips vectors against texts by position,
- * so text 7 would silently carry text 12's embedding.
+ * `model` MUST already have passed `OPENROUTER_MODEL_RE` — `plugin.ts`
+ * validates both the configured model at construction and the payload-
+ * supplied model on every call, even though the model now travels in the
+ * body rather than the URL. See `endpoints.ts`'s grammar comment for why that
+ * check is kept anyway.
+ *
+ * `endpoint.maxInputsPerCall` caps a single call, so a batch is chunked and
+ * the chunks concatenated. IF ANY CHUNK FAILS THE WHOLE CALL ANSWERS
+ * `undefined`: a partially-embedded batch is not a smaller answer, it is a
+ * misaligned one — the consumer zips vectors against texts by position, so
+ * text 7 would silently carry text 12's embedding.
  */
-export async function vertexEmbed(
+export async function openrouterEmbed(
   deps: RemoteDeps,
   endpoint: EmbedEndpoint,
-  args: VertexEmbedArgs,
+  args: OpenRouterEmbedArgs,
 ): Promise<number[][] | undefined> {
   if (args.texts.length === 0) return [];
 
-  const url =
-    `https://${endpoint.host}/v1/projects/${args.projectId}` +
-    `/locations/${endpoint.region}/publishers/google/models/${args.model}:predict`;
-  const taskType = VERTEX_TASK_TYPES[args.task];
+  const url = `https://${endpoint.host}${endpoint.path}`;
 
   const vectors: number[][] = [];
-  for (let start = 0; start < args.texts.length; start += endpoint.maxInstancesPerCall) {
-    const batch = args.texts.slice(start, start + endpoint.maxInstancesPerCall);
+  for (let start = 0; start < args.texts.length; start += endpoint.maxInputsPerCall) {
+    const batch = args.texts.slice(start, start + endpoint.maxInputsPerCall);
     const body = await postJson(deps, url, args.token, {
-      instances: batch.map((content) => ({ content, task_type: taskType })),
-      parameters: { outputDimensionality: args.dimensions },
+      model: args.model,
+      input: batch,
+      dimensions: args.dimensions,
+      encoding_format: 'float',
     });
 
-    const predictions = fieldOf(body, 'predictions');
-    if (!Array.isArray(predictions)) return undefined;
-    // Unwrap `{ embeddings: { values } }` per prediction, then let
-    // `validateVectors` decide whether what came out is an answer. A missing
-    // `embeddings` yields `undefined` in that slot and fails the check there.
-    const values = predictions.map((prediction) => fieldOf(fieldOf(prediction, 'embeddings'), 'values'));
-    const chunk = validateVectors(values, batch.length, args.dimensions);
+    const data = fieldOf(body, 'data');
+    if (!Array.isArray(data)) return undefined;
+    if (data.length !== batch.length) return undefined;
+
+    const placed = new Array<number[]>(batch.length);
+    const seen = new Set<number>();
+    for (const entry of data) {
+      const index = fieldOf(entry, 'index');
+      if (typeof index !== 'number' || !Number.isInteger(index)) return undefined;
+      if (index < 0 || index >= batch.length) return undefined;
+      if (seen.has(index)) return undefined;
+      seen.add(index);
+      // `embedding` must be an ARRAY of numbers. OpenRouter's spec allows a
+      // base64-encoded string embedding for some providers; we never asked
+      // for that shape (`encoding_format: 'float'`) and refuse it outright
+      // rather than try to decode attacker/provider-influenced base64.
+      placed[index] = fieldOf(entry, 'embedding') as number[];
+    }
+    const chunk = validateVectors(placed, batch.length, args.dimensions);
     if (chunk === undefined) return undefined;
     vectors.push(...chunk);
   }
   return vectors;
 }
 
-export interface CohereRerankArgs {
+export interface OpenRouterRerankArgs {
   query: string;
   documents: string[];
   model: string;
@@ -154,9 +177,12 @@ export interface CohereRerankArgs {
 }
 
 /**
- * Score `documents` against `query` through Cohere's `/v2/rerank`, returned in
- * DOCUMENT order (Cohere returns them sorted by score, carrying the original
- * index on each result — so we place by `index`, never by iteration order).
+ * Score `documents` against `query` through OpenRouter's `/api/v1/rerank`,
+ * returned in DOCUMENT order. The response shape is identical to the Cohere
+ * one this driver replaced (`results: [{ index, relevance_score, document }]`,
+ * sorted by score, each carrying its original index) — so this ports
+ * `cohereRerank`'s full-coverage logic verbatim, guards and comments
+ * included, under a new name.
  *
  * `top_n` is sent explicitly and FULL COVERAGE is required: every index in
  * `0..n-1` exactly once, each with a finite score. Anything else ⇒ `undefined`.
@@ -171,14 +197,14 @@ export interface CohereRerankArgs {
  * than padded" — but all it can see is ARITY, and a padded array has perfect
  * arity. So the check has to live here, where the holes are still visible.
  */
-export async function cohereRerank(
+export async function openrouterRerank(
   deps: RemoteDeps,
   endpoint: RerankEndpoint,
-  args: CohereRerankArgs,
+  args: OpenRouterRerankArgs,
 ): Promise<number[] | undefined> {
   if (args.documents.length === 0) return [];
 
-  const body = await postJson(deps, `https://${endpoint.host}/v2/rerank`, args.token, {
+  const body = await postJson(deps, `https://${endpoint.host}${endpoint.path}`, args.token, {
     model: args.model,
     query: args.query,
     documents: args.documents,

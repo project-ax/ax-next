@@ -106,14 +106,12 @@ describe('every outbound URL is HTTPS to a host from the frozen table', () => {
     expect(remote).not.toMatch(/http:\/\//);
   });
 
-  it('declares exactly the two hosts the security note names', () => {
-    // If a third host is added, this test fails and whoever added it has to
+  it('declares exactly the one host the security note names, for both hooks', () => {
+    // If a second host is added, this test fails and whoever added it has to
     // update SECURITY.md's "what leaves, and where to" table in the same
     // commit. That coupling is the entire point.
-    expect(Object.values(EMBED_ENDPOINTS).map((e) => e.host)).toEqual([
-      'us-central1-aiplatform.googleapis.com',
-    ]);
-    expect(Object.values(RERANK_ENDPOINTS).map((e) => e.host)).toEqual(['api.cohere.com']);
+    expect(Object.values(EMBED_ENDPOINTS).map((e) => e.host)).toEqual(['openrouter.ai']);
+    expect(Object.values(RERANK_ENDPOINTS).map((e) => e.host)).toEqual(['openrouter.ai']);
   });
 
   it('freezes the tables, so nothing can add a host at runtime', () => {

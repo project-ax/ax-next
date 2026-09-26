@@ -17,11 +17,10 @@ import { busWithPlugin, ctx, fetchStub, jsonResponse } from './harness.js';
 import type { EmbedInput, EmbedOutput, RerankInput, RerankOutput } from '../wire.js';
 
 const GOOD_EMBED = {
-  provider: 'vertex' as const,
-  credentialRef: 'provider:vertex',
-  projectId: 'ax-next-dev',
+  provider: 'openrouter' as const,
+  credentialRef: 'provider:openrouter',
 };
-const GOOD_RERANK = { provider: 'cohere' as const, credentialRef: 'provider:cohere' };
+const GOOD_RERANK = { provider: 'openrouter' as const, credentialRef: 'provider:openrouter' };
 
 /** Build a config whose remote section is deliberately wrong in one way. */
 function withEmbed(patch: Record<string, unknown>): EmbeddingsConfig {
@@ -52,16 +51,14 @@ describe('remote config is rejected at construction', () => {
     ['an embed provider of __proto__', withEmbed({ provider: '__proto__' })],
     ['an empty embed credentialRef', withEmbed({ credentialRef: '' })],
     ['a missing embed credentialRef', withEmbed({ credentialRef: undefined })],
-    ['an uppercase projectId', withEmbed({ projectId: 'AX-Next-Dev' })],
-    ['a path-traversing projectId', withEmbed({ projectId: '../../../etc' })],
-    ['a too-short projectId', withEmbed({ projectId: 'abcd' })],
-    ['a digit-leading projectId', withEmbed({ projectId: '1ax-next' })],
-    ['a missing projectId', withEmbed({ projectId: undefined })],
     ['a path-traversing embed model', withEmbed({ model: '../../../x' })],
     ['an empty embed model', withEmbed({ model: '' })],
-    ['an unknown rerank provider', withRerank({ provider: 'openai' })],
+    ['a no-slash embed model', withEmbed({ model: 'x' })],
+    ['an uppercase embed model', withEmbed({ model: 'Google/Gemini' })],
+    ['an unknown rerank provider', withRerank({ provider: 'cohere' })],
     ['an empty rerank credentialRef', withRerank({ credentialRef: '' })],
     ['a path-traversing rerank model', withRerank({ model: 'a/../../b' })],
+    ['a too-many-slashes rerank model', withRerank({ model: 'a/b/c' })],
   ])('throws invalid-config for %s', (_label, config) => {
     expectInvalidConfig(() => createEmbeddingsPlugin(config));
   });
@@ -81,8 +78,8 @@ describe('remote config is rejected at construction', () => {
     expect(() => createEmbeddingsPlugin({ rerank: GOOD_RERANK })).not.toThrow();
     expect(() =>
       createEmbeddingsPlugin({
-        embed: { ...GOOD_EMBED, model: 'text-embedding-004' },
-        rerank: { ...GOOD_RERANK, model: 'rerank-v3.5' },
+        embed: { ...GOOD_EMBED, model: 'openai/text-embedding-3-small' },
+        rerank: { ...GOOD_RERANK, model: 'cohere/rerank-v3.5' },
         timeoutMs: 1,
       }),
     ).not.toThrow();
