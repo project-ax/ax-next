@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { isAbsentError } from './compose-identity.js';
 import { buildMarkdownFile, stripFrontmatter } from './frontmatter.js';
 import { systemFile, mapFile, type SystemFileName } from './paths.js';
 
@@ -176,17 +177,29 @@ export function isPlaceholderAgentFile(text: string | undefined): boolean {
  * Read a file only if it is a regular file (TASK-556). Absent → undefined; a
  * symlink, directory or device → undefined too: the agent can write into its
  * own memory tree, and a symlinked agent.md is never ours to follow or repair.
+ *
+ * "Absent" is {@link isAbsentError} — ENOENT, or ENOTDIR (a path component is
+ * a regular file, so the path cannot exist) — the same test the identity
+ * reader `readAxFile` uses (TASK-560). Any other error throws. Reading a
+ * corrupt tree's agent.md as absent does not paper over it: bootstrap then
+ * tries to create the file, and its `mkdir` fails where the file stands.
  */
 export async function readRegularFile(abs: string): Promise<string | undefined> {
   let info;
   try {
     info = await lstat(abs);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    if (isAbsentError(err)) return undefined;
     throw err;
   }
   if (!info.isFile()) return undefined;
-  return readFile(abs, 'utf8');
+  try {
+    return await readFile(abs, 'utf8');
+  } catch (err) {
+    // Deleted between the lstat and the read: absent, same as never there.
+    if (isAbsentError(err)) return undefined;
+    throw err;
+  }
 }
 
 /** Replace `abs` via a sibling temp file + rename: readers never see a torn

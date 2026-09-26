@@ -1,9 +1,10 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { lstat, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { load as yamlLoad } from 'js-yaml';
-import { bootstrapMemoryTree } from '../bootstrap.js';
+import { bootstrapMemoryTree, readRegularFile } from '../bootstrap.js';
+import { composeIdentityFromFiles } from '../compose-identity.js';
 import { workspaceMemoryRoot, systemFile, mapFile, MEMORY_ROOT } from '../paths.js';
 
 let workspaceRoot: string;
@@ -265,5 +266,41 @@ describe('placeholder agent.md repair (TASK-556)', () => {
     expect(out.repaired).toEqual([]);
     expect(await readFile(target, 'utf8')).toBe(targetBefore);
     expect((await lstat(agentPath())).isSymbolicLink()).toBe(true);
+  });
+});
+
+// TASK-560: the two local "read a file only if it is really there" helpers
+// (`readRegularFile` for agent.md, `readAxFile` for .ax/IDENTITY.md + SOUL.md)
+// agree on what "absent" means: ENOENT, or ENOTDIR (a path component is a
+// regular file, so the path cannot exist). Anything else throws in both.
+describe('ENOTDIR is "absent" in both local readers (TASK-560)', () => {
+  it('readRegularFile: a path beneath a regular file reads as absent, not a throw', async () => {
+    await writeFile(join(workspaceRoot, 'not-a-dir'), 'x', 'utf8');
+
+    await expect(readRegularFile(join(workspaceRoot, 'not-a-dir', 'agent.md'))).resolves.toBeUndefined();
+  });
+
+  it('readRegularFile: a plainly missing path is absent too', async () => {
+    await expect(readRegularFile(join(workspaceRoot, 'nope', 'agent.md'))).resolves.toBeUndefined();
+  });
+
+  it('composeIdentityFromFiles: a regular file where .ax/ should be is no identity', async () => {
+    await mkdir(join(workspaceRoot, 'permanent'), { recursive: true });
+    await writeFile(join(workspaceRoot, 'permanent', '.ax'), 'x', 'utf8');
+
+    await expect(composeIdentityFromFiles(workspaceRoot)).resolves.toBe('');
+  });
+
+  it('bootstrap over that corrupt tree still fails closed: it rejects and leaves the file alone', async () => {
+    // Reading agent.md as absent only moves the failure one step later — the
+    // seed's own mkdir cannot create system/ where a file stands.
+    const systemDir = join(workspaceRoot, MEMORY_ROOT, 'system');
+    await mkdir(join(workspaceRoot, MEMORY_ROOT), { recursive: true });
+    await writeFile(systemDir, 'not a dir', 'utf8');
+
+    await expect(
+      bootstrapMemoryTree({ workspaceRoot, composedIdentity: '## Identity\n\nI am Atlas.' }),
+    ).rejects.toThrow();
+    expect(await readFile(systemDir, 'utf8')).toBe('not a dir');
   });
 });

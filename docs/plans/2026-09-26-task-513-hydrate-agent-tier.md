@@ -38,7 +38,9 @@ seed files exist. It reads nothing else.
    from one exported constant in `bootstrap.ts` so the two cannot drift, and
    reads the identity files only when `system/agent.md` is missing. A partial
    hydrate is safe for `flushAgentTier` because deletions are computed as
-   baseline-minus-scratch, and bootstrap only creates.
+   baseline-minus-scratch, and bootstrap only creates. (Later: TASK-556 also
+   has bootstrap repair a placeholder `agent.md`. That file is in the seed
+   set, so the partial hydrate stays safe; see `HydrateOptions.only`.)
 2. **All reads of one hydrate are pinned to one snapshot.** The first found
    read's `version` is passed as `version` on every later read. This also
    closes a torn-read window: today each unpinned read may land on a different

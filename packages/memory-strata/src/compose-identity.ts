@@ -39,8 +39,10 @@ import type {
 const MAX_AX_FILE_BYTES = 256 * 1024;
 
 /** An errno that means "this file is not there" — the only failure a read may
- * report as absent. ENOTDIR covers a path component that is a file, not a dir. */
-function isAbsentError(err: unknown): boolean {
+ * report as absent. ENOTDIR covers a path component that is a file, not a dir.
+ * Shared with bootstrap's `readRegularFile` (TASK-560), so the two local
+ * readers cannot disagree about what "absent" means. */
+export function isAbsentError(err: unknown): boolean {
   const code = (err as NodeJS.ErrnoException | null)?.code;
   return code === 'ENOENT' || code === 'ENOTDIR';
 }
@@ -103,11 +105,12 @@ export async function composeIdentityFromFiles(
  *
  * Returns '' when neither file exists (or one is over the size cap) — the
  * caller seeds a placeholder body. A read that THROWS is not a miss and is not
- * swallowed (TASK-553): the placeholder is only ever the body of a NEW
- * `system/agent.md`, and bootstrap never rewrites that file, so treating one
- * transient backend error as "no identity" would make the placeholder
- * permanent. The error propagates; chat:start logs it and seeds nothing this
- * turn, and the next turn re-reads.
+ * swallowed (TASK-553): treating one transient backend error as "no identity"
+ * would seed the placeholder over a blip. Since TASK-556 a later turn repairs
+ * a placeholder agent.md once an identity composes, so that is no longer
+ * permanent — but it is still wrong for every turn in between, and a turn
+ * that fails is the honest answer. The error propagates; chat:start logs it
+ * and seeds nothing this turn, and the next turn re-reads.
  *
  * `version`, when given, pins both reads to that tier snapshot — the caller
  * passes the version its memory hydrate read from, so identity and memory
