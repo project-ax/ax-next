@@ -22,10 +22,27 @@
  *   - `continueApprovedTurn(decision, streamReqId)` — the decision queue's
  *     `onDecisionApproved`. Attaches ONLY when there is a turn to watch and
  *     the decision belongs to the conversation the registered thread has open
- *     at SETTLE time (the approve POST is async; the reader may have moved).
- *     Quiet when no thread is registered: approving from a surface with no
- *     open thread (the workspace's Today) is ordinary, and the turn still
- *     renders on the next read.
+ *     at ATTACH time (the approve POST is async, and the attach may wait out
+ *     the undo window — the reader may have moved either way). Quiet when no
+ *     thread is registered: approving from a surface with no open thread (the
+ *     workspace's Today) is ordinary, and the turn still renders on the next
+ *     read.
+ *   - `cancelApprovedTurn(decisionId)` — the decision queue's
+ *     `onDecisionUndone`. Drops a deferred attach that has not fired yet.
+ *
+ * WHY THE ATTACH WAITS (TASK-574). On the attended path the host no longer
+ * tells the warm agent at approve time: it holds the continuation until the
+ * ten-second undo window closes, so an Undo inside the window cancels a turn
+ * nothing has started. The approve answers that moment as `pendingUntil`
+ * beside the `streamReqId`. Attaching at once would show "Thinking…" for the
+ * whole window — and, after an Undo, forever, since nothing ever runs on that
+ * id. So a future `pendingUntil` schedules the attach for then, keyed by the
+ * decision id (one approval, one timer: a second approve settle for the same
+ * row replaces it), and an Undo that the server accepted cancels it. A past,
+ * absent or unparseable `pendingUntil` — a host predating TASK-574, or one
+ * that delivered at once — attaches immediately, exactly as before. A
+ * decision with no `id` cannot be cancelled by an Undo, so it attaches at
+ * once too rather than scheduling a timer nothing could ever clear.
  *   - `resumeContinuation(reqId)` — stages the id and kicks the registered
  *     resume. A no-op for junk ids, and a no-op (with a warn) when nothing is
  *     registered.
@@ -41,6 +58,35 @@ interface Registrant {
 
 let registrant: Registrant | null = null;
 let pendingReqId: string | null = null;
+/** Deferred attaches (TASK-574), keyed by decision id. */
+const deferred = new Map<string, ReturnType<typeof setTimeout>>();
+
+/**
+ * Attach now, if the gates hold NOW: a registered thread whose open
+ * conversation is the decision's. Read at call time — for a deferred attach,
+ * that is when the timer fires, not when the approve settled.
+ */
+function attachIfOpen(conversationId: string, streamReqId: string): void {
+  if (registrant === null) return;
+  const open = registrant.openConversation();
+  if (open === null || conversationId !== open) return;
+  resumeContinuation(streamReqId);
+}
+
+/** Milliseconds until `pendingUntil`, or 0 for past / absent / unparseable. */
+function delayUntil(pendingUntil: string | null | undefined): number {
+  if (typeof pendingUntil !== 'string') return 0;
+  const at = Date.parse(pendingUntil);
+  if (Number.isNaN(at)) return 0;
+  return Math.max(0, at - Date.now());
+}
+
+function clearDeferred(decisionId: string): void {
+  const timer = deferred.get(decisionId);
+  if (timer === undefined) return;
+  clearTimeout(timer);
+  deferred.delete(decisionId);
+}
 
 function resumeContinuation(reqId: string): void {
   if (typeof reqId !== 'string' || reqId.length === 0) return;
@@ -82,12 +128,41 @@ export const continuationActions = {
    * `streamReqId` (no turn runs to watch), no registered thread, a thread on
    * the welcome state, or a decision from another conversation attaches
    * nothing: the receipts stand as they did before.
+   *
+   * A future `pendingUntil` (TASK-574) defers the attach to then — see the
+   * header — and the gates above are applied when it fires.
    */
-  continueApprovedTurn(decision: { conversationId: string }, streamReqId: string | null): void {
-    if (streamReqId === null || registrant === null) return;
-    const open = registrant.openConversation();
-    if (open === null || decision.conversationId !== open) return;
-    resumeContinuation(streamReqId);
+  continueApprovedTurn(
+    decision: { id?: string; conversationId: string; pendingUntil?: string | null },
+    streamReqId: string | null,
+  ): void {
+    if (streamReqId === null) return;
+    const id = decision.id;
+    if (typeof id === 'string' && id.length > 0) {
+      // A second settle for the same row replaces the earlier plan.
+      clearDeferred(id);
+      const wait = delayUntil(decision.pendingUntil);
+      if (wait > 0) {
+        const { conversationId } = decision;
+        deferred.set(
+          id,
+          setTimeout(() => {
+            deferred.delete(id);
+            attachIfOpen(conversationId, streamReqId);
+          }, wait),
+        );
+        return;
+      }
+    }
+    attachIfOpen(decision.conversationId, streamReqId);
+  },
+  /**
+   * The decision queue's `onDecisionUndone` (TASK-574): the server took the
+   * approval back inside the window, so the deferred continuation will never
+   * run. Drop its attach. A no-op when nothing is pending for `decisionId`.
+   */
+  cancelApprovedTurn(decisionId: string): void {
+    clearDeferred(decisionId);
   },
   /**
    * Stage `reqId` for the renderer and kick the resume. The renderer picks
@@ -104,5 +179,7 @@ export const continuationActions = {
   reset(): void {
     registrant = null;
     pendingReqId = null;
+    for (const timer of deferred.values()) clearTimeout(timer);
+    deferred.clear();
   },
 };

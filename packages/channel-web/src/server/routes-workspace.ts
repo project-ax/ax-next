@@ -695,6 +695,13 @@ interface StoredDecision {
   replayClaimedAt: string | null;
   replayedAt: string | null;
   replayError: string | null;
+  // TASK-574 — the attended path's deferred delivery. `deliveryDueAt` is when
+  // the resolution is due to reach the warm agent (the undo window closing;
+  // the sweep clears it as it delivers), `deliveredAt` is when it did. Both
+  // OPTIONAL: the plugin is duck-typed across the bus and an older producer
+  // sends neither, so every read here is `?? null`.
+  deliveryDueAt?: string | null;
+  deliveredAt?: string | null;
 }
 
 interface DecisionsListInput {
@@ -948,11 +955,13 @@ export interface DecisionResponse {
  *
  * Everything past `decision` is the plugin's answer about what actually
  * happened, passed straight through: `executed` is only ever true when a host
- * executor returned, and `pendingUntil` is non-null only for an irreversible
- * call whose execution was deferred until the undo window closes. The one
- * exception is `streamReqId` (TASK-278): the plugin reports whether it
- * delivered to a warm agent, but the BIND that makes the id streamable is
- * this route's — so the route answers null whenever the bind did not land.
+ * executor returned, and `pendingUntil` is non-null when what was approved
+ * waits for the undo window to close — an irreversible call's deferred host
+ * execution, or (TASK-574) the attended path's deferred delivery to the warm
+ * agent. The one exception is `streamReqId` (TASK-278): the plugin reports
+ * whether it scheduled delivery to a warm agent, but the BIND that makes the
+ * id streamable is this route's — so the route answers null whenever the bind
+ * did not land.
  */
 export interface ApproveResponse {
   decision: Decision;
@@ -977,9 +986,11 @@ export interface ApproveResponse {
   pendingUntil: string | null;
   /**
    * TASK-278 — the continuation turn's reqId, bound as the conversation's
-   * `active_req_id` when the approval was delivered to a warm agent. The
-   * open thread attaches its stream consumer to
-   * `GET /api/chat/stream/<streamReqId>` for the live continuation. Null on
+   * `active_req_id` when the approval is scheduled for delivery to a warm
+   * agent. The open thread attaches its stream consumer to
+   * `GET /api/chat/stream/<streamReqId>` for the live continuation — at
+   * `pendingUntil` when one is set (TASK-574: the host tells the agent only
+   * once the undo window closes). Null on
    * every path where no turn runs to watch (parked, host replay, deferred,
    * already resolved) and whenever the bind could not be established — in
    * which case the client opens nothing and the receipts stand as they did
@@ -1619,10 +1630,14 @@ export function toWireDecision(stored: StoredDecision): Decision {
     expiresAt: stored.expiresAt,
     resolvedAt: stored.resolvedAt,
     staleReason: fenceLine(stored.staleReason, DECISION_DETAIL_MAX_CHARS),
-    // `replayDueAt` renamed. The plugin's replay queue is the plugin's
-    // business; what a reader needs to know is when the thing they approved
-    // will actually happen (invariant 1).
-    pendingUntil: stored.replayDueAt,
+    // The plugin's queues are the plugin's business (invariant 1); what a
+    // reader needs to know is when the thing they approved will actually
+    // happen. On the unattended path that is the host's deferred replay
+    // (`replayDueAt`). On the attended path (TASK-574) it is when the warm
+    // agent is TOLD — the plugin holds the continuation until the undo window
+    // closes (`deliveryDueAt`). The two never overlap on one row; replay wins
+    // if a producer ever sent both, since that is the call itself going out.
+    pendingUntil: stored.replayDueAt ?? stored.deliveryDueAt ?? null,
     /*
       Can this still be taken back?
 
@@ -1633,6 +1648,12 @@ export function toWireDecision(stored: StoredDecision): Decision {
       during which the call is already going out. Any of the three means
       something went out, and undo does not un-send an email — so the
       affordance is not offered at all rather than offered and refused.
+
+      `deliveredAt` (TASK-574) is the attended path's version of the same
+      line: the deferred resolution has reached the warm agent, which may
+      already be re-issuing its call, and `store.restore` refuses the row.
+      Offering Undo there would be the TASK-280 lie. Absent on an older
+      producer, which reads as not-yet-delivered, exactly as before.
 
       A button that cannot do what it names is the worst control this surface
       could ship: it teaches people that the safety net is there when it is
@@ -1649,7 +1670,8 @@ export function toWireDecision(stored: StoredDecision): Decision {
       stored.resolvedAt !== null &&
       stored.consumedAt === null &&
       stored.replayedAt === null &&
-      stored.replayClaimedAt === null,
+      stored.replayClaimedAt === null &&
+      (stored.deliveredAt ?? null) === null,
   };
 }
 
@@ -3118,7 +3140,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   }
 
   /**
-   * TASK-278 — bind the delivered continuation turn as the conversation's
+   * TASK-278 — bind the scheduled continuation turn as the conversation's
    * live reqId, so the open thread's `GET /api/chat/stream/<id>` resolves.
    *
    * Read-then-bind, both best-effort. A missing producer, a dead session
@@ -4278,12 +4300,16 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       );
       const decision = resolvedOrGone(out.decision, res);
       if (decision === null) return;
-      // The plugin echoes the id only when it actually delivered the
-      // resolution to a warm agent. Bind it as this conversation's live
-      // turn — without the bind, `GET /api/chat/stream/<id>` 404s (the
-      // handler ACLs on `active_req_id`) and the client would attach to
-      // nothing. Best-effort: any failure answers null, and the approval
-      // itself still stands — the turn runs dark exactly as before.
+      // The plugin echoes the id only when the resolution is SCHEDULED for
+      // delivery to a warm agent: since TASK-574 the attended path holds the
+      // delivery until the undo window closes (`pendingUntil`), so an Undo
+      // inside the window cancels a continuation nothing has seen yet. The
+      // bind still happens HERE, at approve time — the client attaches later
+      // (at `pendingUntil`), and `GET /api/chat/stream/<id>` must resolve
+      // when it does (the handler ACLs on `active_req_id`); without the bind
+      // it 404s and the client attaches to nothing. Best-effort: any failure
+      // answers null, and the approval itself still stands — the turn runs
+      // dark exactly as before.
       //
       // `?? null`: a producer predating TASK-278 answers no `streamReqId`
       // at all. That is absence, not a stream — and it must read as null,

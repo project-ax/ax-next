@@ -58,6 +58,19 @@ export type DeliveryResult =
  */
 export const CONTINUATION_REQ_ID_MAX = 128;
 
+/**
+ * The one bound on a continuation reqId, as a value: the id itself when it is
+ * one, null when it is absent or malformed. Shared by the approve path (which
+ * STORES the id for the deferred delivery, TASK-574) and `deliverResolution`
+ * (which re-checks what it is handed), so the two cannot disagree about what
+ * counts as an id.
+ */
+export function validContinuationReqId(raw: unknown): string | null {
+  return typeof raw === 'string' && raw.length > 0 && raw.length <= CONTINUATION_REQ_ID_MAX
+    ? raw
+    : null;
+}
+
 export interface DeliverResolutionInput {
   bus: HookBus;
   /**
@@ -112,12 +125,7 @@ export async function deliverResolution({
   const note = outcome === 'approved' ? decisionApprovedNote() : decisionDismissedNote();
   // Fail-closed: a malformed id rides as ABSENT, and the approval still
   // delivers — the runner then runs dark exactly as it did before TASK-278.
-  const streamReqId =
-    typeof continuationReqId === 'string' &&
-    continuationReqId.length > 0 &&
-    continuationReqId.length <= CONTINUATION_REQ_ID_MAX
-      ? continuationReqId
-      : null;
+  const streamReqId = validContinuationReqId(continuationReqId);
   if (continuationReqId !== undefined && streamReqId === null) {
     ctx.logger.warn('decision_delivery_dropped_bad_continuation', {
       plugin: PLUGIN_NAME,

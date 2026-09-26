@@ -102,6 +102,8 @@ function base(over: Partial<Decision> = {}): Decision {
     replayedAt: null,
     replayAbandonedAt: null,
     replayError: null,
+    deliveryDueAt: null,
+    deliveredAt: null,
     ...over,
   };
 }
@@ -765,6 +767,104 @@ describe('decisions store — deferred replays', () => {
     expect(await s.claimDueReplays(T_LATE, 2)).toHaveLength(2);
     expect(await s.claimDueReplays(T_LATE, 2)).toHaveLength(1);
     expect(await s.claimDueReplays(T_LATE, 2)).toEqual([]);
+  });
+});
+
+describe('decisions store — deferred deliveries (TASK-574)', () => {
+  /** An attended approval, the way `decisions:approve` writes one now. */
+  async function approvedAttended(s: DecisionStore, id = 'dec_1', fp = 'fp-1'): Promise<void> {
+    await s.create(base({ id, callFingerprint: fp }));
+    await s.claimForApproval(id, {
+      nowIso: T_SOON,
+      status: 'executed',
+      deliveryDueAt: T_REPLAY_DUE,
+      continuationReqId: `req-${id}`,
+    });
+  }
+
+  it('claims a due delivery exactly once, carrying its continuation id', async () => {
+    const s = await freshStore();
+    await approvedAttended(s);
+    expect((await s.get('dec_1'))!.deliveryDueAt).toBe(T_REPLAY_DUE);
+
+    const first = await s.claimDueDeliveries(T_LATE, 10);
+    expect(first.map((d) => [d.decision.id, d.continuationReqId])).toEqual([
+      ['dec_1', 'req-dec_1'],
+    ]);
+    expect(first[0]!.decision.deliveryDueAt).toBeNull();
+    expect(first[0]!.decision.deliveredAt).toBe(new Date(T_LATE).toISOString());
+    expect(await s.claimDueDeliveries(T_LATE, 10)).toEqual([]);
+  });
+
+  it('leaves a delivery whose undo window has not closed alone', async () => {
+    const s = await freshStore();
+    await approvedAttended(s);
+    expect(await s.claimDueDeliveries(T_REPLAY_EARLY, 10)).toEqual([]);
+    expect((await s.get('dec_1'))!.deliveredAt).toBeNull();
+  });
+
+  it('is never reachable from the REPLAY sweep — an attended call is not the host’s to run', async () => {
+    const s = await freshStore();
+    await approvedAttended(s);
+    expect(await s.claimDueReplays(T_LATE, 10)).toEqual([]);
+  });
+
+  it('an undo inside the window cancels the delivery outright', async () => {
+    const s = await freshStore();
+    await approvedAttended(s);
+    const restored = await s.restore('dec_1');
+    expect(restored!.status).toBe('pending');
+    expect(restored!.deliveryDueAt).toBeNull();
+    expect(await s.claimDueDeliveries(T_LATE, 10)).toEqual([]);
+  });
+
+  it('an undo AFTER the claim is refused — the agent has been told', async () => {
+    const s = await freshStore();
+    await approvedAttended(s);
+    expect(await s.claimDueDeliveries(T_LATE, 10)).toHaveLength(1);
+    expect(await s.restore('dec_1')).toBeNull();
+    expect((await s.get('dec_1'))!.status).toBe('executed');
+  });
+
+  it('an undo and a claim racing each other: exactly one wins', async () => {
+    const s = await freshStore();
+    await approvedAttended(s);
+    const [claimed, restored] = await Promise.all([
+      s.claimDueDeliveries(T_LATE, 10),
+      s.restore('dec_1'),
+    ]);
+    // Told XOR undone.
+    expect((claimed.length === 1) !== (restored !== null)).toBe(true);
+  });
+
+  it('a re-approval after an undo starts clean — the old continuation id is gone', async () => {
+    const s = await freshStore();
+    await approvedAttended(s);
+    await s.restore('dec_1');
+    await s.claimForApproval('dec_1', {
+      nowIso: T_SOON,
+      status: 'executed',
+      deliveryDueAt: T_REPLAY_DUE,
+      continuationReqId: 'req-again',
+    });
+    const [only] = await s.claimDueDeliveries(T_LATE, 10);
+    expect(only!.continuationReqId).toBe('req-again');
+  });
+
+  it('an agent that took the approval up itself is not handed it again', async () => {
+    const s = await freshStore();
+    await approvedAttended(s);
+    const taken = await s.takeApproval('a1', 'fp-1', T_SOON);
+    expect(taken!.deliveryDueAt).toBeNull();
+    expect(await s.claimDueDeliveries(T_LATE, 10)).toEqual([]);
+  });
+
+  it('honours the batch limit and leaves the rest for the next pass', async () => {
+    const s = await freshStore();
+    for (const n of [1, 2, 3]) await approvedAttended(s, `dec_${n}`, `fp-${n}`);
+    expect(await s.claimDueDeliveries(T_LATE, 2)).toHaveLength(2);
+    expect(await s.claimDueDeliveries(T_LATE, 2)).toHaveLength(1);
+    expect(await s.claimDueDeliveries(T_LATE, 2)).toEqual([]);
   });
 });
 

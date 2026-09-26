@@ -327,9 +327,14 @@ function Inner({
    * surface share for it (TASK-542): it attaches only when the decision
    * belongs to the conversation the mounted `AgentView` has open at settle
    * time, and is a quiet no-op on Today, where no thread is mounted.
+   *
+   * TASK-574 — the attach waits for the undo window to close (the host holds
+   * the continuation until then), and an accepted Undo drops it through
+   * `cancelApprovedTurn`: nothing will ever run on that id.
    */
   const queue = useDecisionQueue({
     onDecisionApproved: continuationActions.continueApprovedTurn,
+    onDecisionUndone: continuationActions.cancelApprovedTurn,
   });
   /*
     Open capability grants (TASK-350). A store with TWO producers that meet in

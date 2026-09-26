@@ -273,6 +273,10 @@ export interface DecisionStore {
    * taking the replay NOW, so the row is closed to the agent's gate and to undo
    * from this instant. Exactly one of the two is set on a host-replay claim,
    * and neither is set on the attended or parked paths.
+   *
+   * `deliveryDueAt` (TASK-574) is the attended path's own deferral: when the
+   * warm agent gets told. `continuationReqId` rides with it, already
+   * validated by the caller. Neither is set on any host path.
    */
   claimForApproval(
     decisionId: string,
@@ -281,6 +285,8 @@ export interface DecisionStore {
       status: 'executed' | 'approved-pending-agent';
       replayDueAt?: string | null;
       replayClaimedAt?: string | null;
+      deliveryDueAt?: string | null;
+      continuationReqId?: string | null;
     },
   ): Promise<Decision | null>;
 
@@ -410,6 +416,32 @@ export interface DecisionStore {
   claimDueReplays(nowIso: string, limit: number): Promise<Decision[]>;
 
   /**
+   * Claim every deferred DELIVERY whose undo window has closed (TASK-574) —
+   * the attended twin of `claimDueReplays`, and one-shot the same way: the
+   * claiming UPDATE clears `delivery_due_at` and stamps `delivered_at` with
+   * both as predicates, so a second replica gets nothing back.
+   *
+   * `delivered_at` is ALSO what closes the row to `restore`. That is the race
+   * this whole column exists for: an Undo and the claim landing together at
+   * the window's edge. Postgres serialises the two single-row UPDATEs; whichever
+   * commits first wins and the other matches nothing — so either the agent is
+   * told and the Undo is refused, or the Undo lands and nothing is ever told.
+   * Never both.
+   *
+   * A row the agent has already CONSUMED is not claimed (`takeApproval` clears
+   * its due-time anyway): it took the approval up on its own, and telling it
+   * again would prompt a second call that meets no authorisation.
+   *
+   * A host that dies between the claim and the delivery loses the delivery.
+   * The row is left `executed` and unconsumed: the standing authorisation is
+   * still at the gate for the agent's next run, and the receipt says so.
+   */
+  claimDueDeliveries(
+    nowIso: string,
+    limit: number,
+  ): Promise<Array<{ decision: Decision; continuationReqId: string | null }>>;
+
+  /**
    * GIVE UP on flights nobody is flying — the recovery `claimDueReplays` above
    * describes the need for (TASK-253).
    *
@@ -491,9 +523,12 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
       status: 'executed' | 'approved-pending-agent';
       replayDueAt?: string | null | undefined;
       replayClaimedAt?: string | null | undefined;
+      deliveryDueAt?: string | null | undefined;
+      continuationReqId?: string | null | undefined;
     },
   ): Promise<Decision | null> {
-    const { nowIso, status, replayDueAt, replayClaimedAt } = opts;
+    const { nowIso, status, replayDueAt, replayClaimedAt, deliveryDueAt, continuationReqId } =
+      opts;
     return transition(decisionId, OPEN_STATUSES, {
       status,
       resolved_at: new Date(nowIso),
@@ -509,6 +544,15 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
       // from a previous attempt would describe a run that is no longer the
       // one this row is about.
       replay_error: null,
+      // TASK-574. The attended deferral, written in the same statement as the
+      // claim so there is no instant at which the row is `executed` with its
+      // delivery neither scheduled nor done. `delivered_at` restarts with it:
+      // this is a new approval, and nothing has been told about it yet.
+      delivery_due_at:
+        deliveryDueAt === undefined || deliveryDueAt === null ? null : new Date(deliveryDueAt),
+      delivery_req_id:
+        continuationReqId === undefined || continuationReqId === null ? null : continuationReqId,
+      delivered_at: null,
     });
   }
 
@@ -678,9 +722,9 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
       return rows.map(toDecision);
     },
 
-    async claimForApproval(decisionId, { nowIso, status, replayDueAt, replayClaimedAt }) {
+    async claimForApproval(decisionId, opts) {
       try {
-        return await claim(decisionId, { nowIso, status, replayDueAt, replayClaimedAt });
+        return await claim(decisionId, opts);
       } catch (err) {
         // Translate ONLY the index's refusal. `throw err` for everything else
         // is not a fallthrough — it is the branch that keeps a transient write
@@ -803,10 +847,21 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
           // apologise for it afterwards.
           replay_due_at: null,
           replay_error: null,
+          // TASK-574 — and cancels the deferred hand-over to the warm agent the
+          // same way, which is what makes an Undo inside the window clean: the
+          // agent never hears about a yes that was taken back, so it never
+          // re-issues a call that would be held a second time.
+          delivery_due_at: null,
+          delivery_req_id: null,
         })
         .where('decision_id', '=', decisionId)
         .where('status', 'in', UNDOABLE_STATUSES as string[])
         .where('consumed_at', 'is', null)
+        // Nor once the warm agent has been TOLD. The resolution is on its
+        // inbox and no Undo can recall it; reopening the row would leave the
+        // agent's re-issued call to meet a pending question and be held again
+        // — the duplicate "held again" reply TASK-574 exists to remove.
+        .where('delivered_at', 'is', null)
         // The host already made the call. Undo cannot un-send it, and putting
         // the row back on the queue would let a second approval do it AGAIN —
         // the same bell-cannot-be-un-rung rule `consumed_at` enforces for the
@@ -864,6 +919,42 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
         .returningAll()
         .execute();
       return rows.map(toDecision);
+    },
+
+    async claimDueDeliveries(nowIso, limit) {
+      const due = await db
+        .selectFrom(table)
+        .select('decision_id')
+        .where('status', '=', 'executed')
+        .where('delivery_due_at', 'is not', null)
+        .where('delivery_due_at', '<=', new Date(nowIso))
+        .where('consumed_at', 'is', null)
+        .orderBy('delivery_due_at', 'asc')
+        .limit(limit)
+        .execute();
+      if (due.length === 0) return [];
+
+      // The claim, restating every predicate: between the read above and this
+      // write an Undo, a consuming agent or another replica's sweep may have
+      // moved the row, and whoever did owns what it says.
+      const rows = await db
+        .updateTable(table)
+        .set({ delivery_due_at: null, delivered_at: new Date(nowIso) })
+        .where(
+          'decision_id',
+          'in',
+          due.map((d) => d.decision_id),
+        )
+        .where('status', '=', 'executed')
+        .where('delivery_due_at', 'is not', null)
+        .where('delivery_due_at', '<=', new Date(nowIso))
+        .where('consumed_at', 'is', null)
+        .returningAll()
+        .execute();
+      return rows.map((row) => ({
+        decision: toDecision(row),
+        continuationReqId: row.delivery_req_id,
+      }));
     },
 
     async reclaimStrandedFlights({ nowIso, claimedBeforeIso, limit }) {
@@ -926,7 +1017,11 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
     async takeApproval(agentId, callFingerprint, nowIso) {
       const row = await db
         .updateTable(table)
-        .set({ consumed_at: new Date(nowIso) })
+        // TASK-574: an agent that took the approval up on its own (a message
+        // woke it inside the undo window) needs no hand-over any more — and
+        // one arriving afterwards would prompt a second call that meets no
+        // authorisation and is held again. Cleared in the consuming statement.
+        .set({ consumed_at: new Date(nowIso), delivery_due_at: null })
         .where('agent_id', '=', agentId)
         .where('call_fingerprint', '=', callFingerprint)
         // Both authorising statuses. `approved-pending-agent` exists precisely
@@ -992,6 +1087,11 @@ function fromDecision(d: Decision): DecisionRow {
     replay_abandoned_at:
       d.replayAbandonedAt === null ? null : new Date(d.replayAbandonedAt),
     replay_error: d.replayError,
+    delivery_due_at: d.deliveryDueAt === null ? null : new Date(d.deliveryDueAt),
+    // Never on `Decision`: it is chat correlation, not decision state. Only
+    // `claimForApproval` writes it.
+    delivery_req_id: null,
+    delivered_at: d.deliveredAt === null ? null : new Date(d.deliveredAt),
   };
 }
 
@@ -1035,5 +1135,7 @@ function toDecision(row: DecisionRow): Decision {
     replayAbandonedAt:
       row.replay_abandoned_at === null ? null : row.replay_abandoned_at.toISOString(),
     replayError: row.replay_error,
+    deliveryDueAt: row.delivery_due_at === null ? null : row.delivery_due_at.toISOString(),
+    deliveredAt: row.delivered_at === null ? null : row.delivered_at.toISOString(),
   };
 }

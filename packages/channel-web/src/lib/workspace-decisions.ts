@@ -282,10 +282,19 @@ export interface DecisionQueueHooks {
    * ignores it.
    */
   onDecisionApproved?: (decision: Decision, streamReqId: string | null) => void;
+  /**
+   * TASK-574 — fires when an undo POST answers `undone: true`, and ONLY then:
+   * the server took the approval back, so a continuation the host was holding
+   * for the end of the undo window will never run. The thread surface drops
+   * its deferred attach (`continuationActions.cancelApprovedTurn`). A refused
+   * undo (`undone: false`) or a failed POST leaves the approval — and the
+   * continuation — standing, so it says nothing.
+   */
+  onDecisionUndone?: (decisionId: string) => void;
 }
 
 export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
-  const { onDecisionApproved } = hooks ?? {};
+  const { onDecisionApproved, onDecisionUndone } = hooks ?? {};
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<DecisionReadError | null>(null);
@@ -482,8 +491,18 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
         // TASK-278 — hand the continuation id to the thread surface. `??`
         // null: a host predating TASK-278 answers no `streamReqId` at all,
         // which is absence, never a stream.
+        //
+        // TASK-574 — the thread attaches at `pendingUntil`, when the host
+        // tells the agent. The row carries it (the wire maps the deferred
+        // delivery onto it); the response's own `pendingUntil` is the same
+        // fact, used only when the row did not carry it.
         (out, decision) =>
-          onDecisionApproved?.(decision, out.streamReqId ?? null),
+          onDecisionApproved?.(
+            decision.pendingUntil == null && typeof out.pendingUntil === 'string'
+              ? { ...decision, pendingUntil: out.pendingUntil }
+              : decision,
+            out.streamReqId ?? null,
+          ),
       ),
     [act, onDecisionApproved],
   );
@@ -546,8 +565,13 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
           // "undone" would be a lie.
           notice: out.undone ? null : DECISION_UNDO_TOO_LATE,
         }),
+        // TASK-574 — only a genuine take-back cancels the deferred
+        // continuation; `=== true` so a malformed answer cancels nothing.
+        (out) => {
+          if (out.undone === true) onDecisionUndone?.(id);
+        },
       ),
-    [act],
+    [act, onDecisionUndone],
   );
 
   /*

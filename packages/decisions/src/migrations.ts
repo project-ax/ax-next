@@ -78,6 +78,32 @@ export async function runDecisionsMigration<DB>(db: Kysely<DB>): Promise<void> {
       ADD COLUMN IF NOT EXISTS replay_abandoned_at TIMESTAMPTZ
   `.execute(db);
 
+  // TASK-574. The ATTENDED path's own grace period. An approval that will be
+  // handed to a warm agent waits out the undo window before the agent is told,
+  // for the same reason an irreversible host replay does: once the runner has
+  // pulled the `decision-resolved` entry, an Undo cannot recall it, and the
+  // agent's re-issued call then meets a row that is `pending` again and is held
+  // a second time — the extra "held again" reply the TASK-358 walk measured.
+  //
+  // SEPARATE COLUMNS, NOT `replay_due_at`. That column is what the replay
+  // sweep claims on, and a claim there RUNS THE CALL ON THE HOST; an attended
+  // row must never be reachable from it. Additive and nullable, so every
+  // existing row reads back as "nothing waiting to be delivered", which is
+  // what it was.
+  //
+  //   * `delivery_due_at` — when the deferred delivery becomes due.
+  //   * `delivery_req_id` — the continuation turn's correlation id (TASK-278),
+  //     stored so the sweep can hand it on. Opaque, bounded at the approve
+  //     path, never parsed.
+  //   * `delivered_at`    — stamped by the one-shot claim; `restore` refuses a
+  //     row that carries it, because the agent has been told.
+  await sql`
+    ALTER TABLE decisions_v1_decisions
+      ADD COLUMN IF NOT EXISTS delivery_due_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS delivery_req_id TEXT,
+      ADD COLUMN IF NOT EXISTS delivered_at    TIMESTAMPTZ
+  `.execute(db);
+
   // THE idempotency guarantee, at the storage layer rather than in application
   // code: at most one standing authorisation per (agent, call shape). Two
   // concurrent approvals of the same call cannot both leave an unconsumed
@@ -114,6 +140,14 @@ export async function runDecisionsMigration<DB>(db: Kysely<DB>): Promise<void> {
     CREATE INDEX IF NOT EXISTS decisions_v1_replay_due
       ON decisions_v1_decisions (replay_due_at)
       WHERE replay_due_at IS NOT NULL
+  `.execute(db);
+
+  // The deferred-delivery sweep's read path (TASK-574) — the attended twin of
+  // `decisions_v1_replay_due`.
+  await sql`
+    CREATE INDEX IF NOT EXISTS decisions_v1_delivery_due
+      ON decisions_v1_decisions (delivery_due_at)
+      WHERE delivery_due_at IS NOT NULL
   `.execute(db);
 
   // The stranded-flight sweep's read path (TASK-253) — every replay currently
@@ -165,6 +199,9 @@ export interface DecisionRow {
   replayed_at: Date | null;
   replay_abandoned_at: Date | null;
   replay_error: string | null;
+  delivery_due_at: Date | null;
+  delivery_req_id: string | null;
+  delivered_at: Date | null;
 }
 
 export interface DecisionsDatabase {
