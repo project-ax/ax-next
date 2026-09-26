@@ -226,19 +226,25 @@ describe.each(SHELLS)('review window under %s', (shell) => {
       expect(r.out).toMatch(/HEAD moved/);
     });
 
+    // For CORRECTNESS these are all redundant with the HEAD comparison — none of them can
+    // equal a real HEAD — so asserting only "refused" would pass with the shape checks
+    // deleted (measured: it did). What the shape checks buy is the right diagnosis: "you
+    // pasted a prefix / the placeholder", not a false "HEAD moved" alarm that sends the
+    // builder hunting through reflog for a commit nobody made. So assert the message.
     it.each([
-      ['the unsubstituted placeholder', '<the sha the open block printed>'],
-      ['an empty sha', ''],
-      ['an abbreviated sha', 'SHORT'],
-      ['an uppercase sha', 'UPPER'],
-    ])('refuses %s', (_label, raw) => {
+      ['the unsubstituted placeholder', '<the sha the open block printed>', /is not a sha/],
+      ['an empty sha', '', /is not a sha/],
+      ['an abbreviated sha', 'SHORT', /40-character/],
+      ['an uppercase sha', 'UPPER', /is not a sha/],
+    ])('refuses %s with its own diagnosis, not "HEAD moved"', (_label, raw, why) => {
       const dir = makeRepo();
       let sha = raw;
       if (raw === 'SHORT') sha = head(dir).slice(0, 8);
       if (raw === 'UPPER') sha = head(dir).toUpperCase();
       const r = runBlock(shell, CLOSE, CLOSE_MARK, dir, sha);
       expect(r.status, r.out).toBe(1);
-      expect(r.out).toMatch(/REFUSE/);
+      expect(r.out).toMatch(why);
+      expect(r.out).not.toMatch(/HEAD moved/);
     });
 
     // The named blind spot, pinned as an honest ok rather than an implied catch.
