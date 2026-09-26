@@ -820,8 +820,8 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
       // hold the turn open for as long as the provider took, with nothing
       // outside it able to end the wait. Detaching is what makes the
       // observer's slowness cost nothing. (Since TASK-551 the orchestrator's
-      // SYNTHESIZED `chat:end` fires bound each subscriber at 30 s; the
-      // runner-reported one @ax/ipc-core fires is still unbounded. Neither
+      // SYNTHESIZED `chat:end` fires bound each subscriber at 30 s, and since
+      // TASK-555 so does the runner-reported one @ax/ipc-core fires. Neither
       // changes this: an awaited extraction would either hold the turn open
       // or be cut off mid-flight and skipped.)
       //
