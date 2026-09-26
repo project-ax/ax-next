@@ -106,6 +106,41 @@ function warnOnCoercedFlags(ctx: AgentContext, flags: readonly unknown[]): void 
   }
 }
 
+/**
+ * Logged when the engine's answer carries a `degraded` that is present but not
+ * an array at all (TASK-581). It is still coerced to `[]` — the list is
+ * advisory and must not break prompt assembly — but that coercion drops the
+ * WHOLE degradation signal, so it is logged rather than absorbed. Absent or
+ * `undefined` means "nothing was degraded" and logs nothing. Same shape as
+ * {@link DEGRADED_FLAG_COERCED_EVENT}: bindings `agentId` and `degradedType`
+ * only, never the value, and a throwing logger is swallowed.
+ */
+export const DEGRADED_LIST_COERCED_EVENT = 'memory_augment_degraded_list_coerced';
+
+/** The runtime type of a non-array `degraded`, naming `null` explicitly. */
+function degradedTypeOf(degraded: unknown): string {
+  return degraded === null ? 'null' : typeof degraded;
+}
+
+/**
+ * Normalize one engine answer's `degraded` to an array, warning when a present
+ * non-array value is coerced away.
+ */
+function coerceDegraded(ctx: AgentContext, degraded: unknown): unknown[] {
+  if (Array.isArray(degraded)) return degraded;
+  if (degraded === undefined) return [];
+  try {
+    ctx.logger.warn(DEGRADED_LIST_COERCED_EVENT, {
+      agentId: ctx.agentId,
+      degradedType: degradedTypeOf(degraded),
+    });
+  } catch {
+    // Swallowed on purpose: the warning is advisory about an advisory signal,
+    // and must never be the thing that fails the turn.
+  }
+  return [];
+}
+
 /** The human tier, read through the shared contract rather than the filesystem. */
 export const RULES_READ_HOOK = 'memory:rules:read';
 
@@ -581,7 +616,7 @@ export async function buildMemoryBlock(
         message: `${factsRecallHook} returned no readable statements; the injected memory block cannot report an empty memory for a store it could not read`,
       });
     }
-    const degraded: unknown[] = Array.isArray(raw.degraded) ? raw.degraded : [];
+    const degraded = coerceDegraded(ctx, raw.degraded);
     warnOnCoercedFlags(ctx, degraded);
     return { statements: raw.statements, degraded };
   };

@@ -22,6 +22,7 @@ import {
   assembleUnderCap,
   rankDigestSubjects,
   DEGRADED_FLAG_COERCED_EVENT,
+  DEGRADED_LIST_COERCED_EVENT,
 } from '../augment.js';
 import { SLOTS } from '../slots.js';
 import { escapeStatementText, MAX_VALUE_CHARS } from '../render.js';
@@ -942,17 +943,20 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
   // Degraded
   // -------------------------------------------------------------------------
   describe('degraded recall', () => {
+    /** Pass as `degraded` to leave the key off the engine's answer entirely. */
+    const ABSENT = Symbol('absent');
+
     /** A bus with a stand-in engine, so `degraded` can be dictated. */
     function busWithEngine(
       statements: unknown[],
-      degraded: unknown[],
+      degraded: unknown,
       logger?: Logger,
     ): { bus: HookBus; ctx: ReturnType<typeof makeAgentContext> } {
       const bus = new HookBus();
       bus.registerService<unknown, unknown>(
         FACTS_RECALL_HOOK,
         '@ax/test-engine',
-        async () => ({ statements, degraded }),
+        async () => (degraded === ABSENT ? { statements } : { statements, degraded }),
       );
       registerMemoryAgents(bus);
       return {
@@ -1094,6 +1098,79 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
       const body = await buildMemoryBlock(bus, ctx, FACTS_RECALL_HOOK);
       expect(body).toContain('Memory retrieval was degraded');
       expect(body).toContain('42');
+    });
+
+    // TASK-581, human ruling ("yes, warn"): a `degraded` that is present but
+    // not an array at all is still coerced to [] — the flag list is advisory
+    // and must not fail prompt assembly — but the coercion drops the WHOLE
+    // signal, so it is logged. One warning per engine answer, three answers.
+    it.each([
+      ['string', 'semantic', 'string'],
+      ['object', { semantic: true }, 'object'],
+      ['number', 7, 'number'],
+      ['null', null, 'null'],
+      ['boolean', true, 'boolean'],
+    ])(
+      'coerces a non-array degraded (%s) to [] AND warns once per answer',
+      async (_label, degraded, degradedType) => {
+        const logs: LoggedEvent[] = [];
+        const { bus, ctx } = busWithEngine([], degraded, capturingLogger(logs));
+        const body = await buildMemoryBlock(bus, ctx, FACTS_RECALL_HOOK);
+        // Coerced to []: no degradation notice is rendered from the bad value.
+        expect(body).not.toContain('degraded');
+
+        const warnings = eventsNamed(logs, DEGRADED_LIST_COERCED_EVENT);
+        expect(warnings).toHaveLength(3);
+        for (const line of warnings) {
+          expect(line.level).toBe('warn');
+          expect(line.bindings).toEqual({ agentId: DEFAULT_AGENT, degradedType });
+        }
+        // The per-flag warning is a different event: there were no flags.
+        expect(eventsNamed(logs, DEGRADED_FLAG_COERCED_EVENT)).toEqual([]);
+      },
+    );
+
+    it('never logs the non-array degraded value itself', async () => {
+      const logs: LoggedEvent[] = [];
+      const { bus, ctx } = busWithEngine(
+        [],
+        'the user said something private',
+        capturingLogger(logs),
+      );
+      await buildMemoryBlock(bus, ctx, FACTS_RECALL_HOOK);
+      expect(eventsNamed(logs, DEGRADED_LIST_COERCED_EVENT)).toHaveLength(3);
+      expect(JSON.stringify(logs)).not.toContain('private');
+    });
+
+    it.each([
+      ['absent', ABSENT],
+      ['undefined', undefined],
+    ])('logs nothing when degraded is %s', async (_label, degraded) => {
+      const logs: LoggedEvent[] = [];
+      const { bus, ctx } = busWithEngine([], degraded, capturingLogger(logs));
+      const body = await buildMemoryBlock(bus, ctx, FACTS_RECALL_HOOK);
+      expect(body).not.toContain('degraded');
+      expect(eventsNamed(logs, DEGRADED_LIST_COERCED_EVENT)).toEqual([]);
+      expect(eventsNamed(logs, DEGRADED_FLAG_COERCED_EVENT)).toEqual([]);
+    });
+
+    it('logs nothing for a well-formed empty degraded array', async () => {
+      const logs: LoggedEvent[] = [];
+      const { bus, ctx } = busWithEngine([], [], capturingLogger(logs));
+      await buildMemoryBlock(bus, ctx, FACTS_RECALL_HOOK);
+      expect(eventsNamed(logs, DEGRADED_LIST_COERCED_EVENT)).toEqual([]);
+    });
+
+    it('still builds the prompt when the warn logger throws on a non-array degraded', async () => {
+      const throwing: Logger = {
+        ...capturingLogger([]),
+        warn: () => {
+          throw new Error('logger exploded');
+        },
+      };
+      const { bus, ctx } = busWithEngine([], 'semantic', throwing);
+      const body = await buildMemoryBlock(bus, ctx, FACTS_RECALL_HOOK);
+      expect(body).not.toContain('degraded');
     });
 
     it('keeps the degradation notice even when the budget drops every section', async () => {
