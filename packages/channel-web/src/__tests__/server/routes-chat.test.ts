@@ -794,8 +794,9 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
     out. That is most of a 50ms budget before a CI runner is even busy.
 
     So the wait is on the event itself, bounded well under the 60s
-    testTimeout so a real "never fired" still fails with the assertion diff
-    rather than a bare timeout. And 4b' pins that: a subscriber ahead of the
+    testTimeout so a real "never fired" fails as a named `vi.waitFor` timeout
+    (carrying its last `fired.length` failure) rather than a bare vitest test
+    timeout. And 4b' pins that: a subscriber ahead of the
     spy that stalls for longer than the old budget stands in for a slow
     persist. Against the old 50ms sleep it fails every time, with CI's exact
     message.
