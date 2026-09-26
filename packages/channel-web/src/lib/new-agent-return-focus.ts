@@ -31,6 +31,7 @@
 import {
   NAV_TRIGGER_ATTR,
   focusFirstWhenReady,
+  keyboardIsClaimed,
   type FocusTarget,
 } from './focus-when-ready';
 
@@ -131,9 +132,13 @@ export function agentConversationTarget(agentId: string): FocusTarget {
  * The sidebar (and the "New agent…" row in it) paints BEFORE the route moves
  * to the new agent, so listing the row as a fallback would not be a fallback
  * at all: `focusFirstWhenReady` takes the first target that is present, and
- * the row would win every time. If neither target appears inside the window —
- * the kickoff's send itself outlasting it, or a board read that fails on the
- * way back — this fails the way the original bug did, to `<body>`.
+ * the row would win every time. If neither target appears inside the window
+ * — a board read that fails on the way back, say — this fails the way the
+ * original bug did, to `<body>`.
+ *
+ * A kickoff SEND that outlasts the window is covered one level up (TASK-547):
+ * on the workspace `App.tsx` calls this again when the send returns and the
+ * route moves, so that wait gets a window of its own.
  */
 export function focusNewAgentViewWhenReady(
   agentId: string,
@@ -145,4 +150,27 @@ export function focusNewAgentViewWhenReady(
     doc,
     windowMs,
   );
+}
+
+/**
+ * {@link focusNewAgentViewWhenReady} started a SECOND time, once the kickoff's
+ * send has returned and the route has moved (TASK-547) — so a send slower
+ * than the first window still ends with focus in the new agent.
+ *
+ * It yields to a person up front, which the first call does not need to: that
+ * one runs straight after the dialog's close, when the keyboard is on
+ * `<body>` by construction. This one runs seconds later, and
+ * `focusFirstWhenReady`'s immediate try does not check the keyboard — so if
+ * the new view has already painted by now, a person who tabbed somewhere
+ * during the send would have focus pulled out from under them. It also makes
+ * the re-arm a no-op when the first restore has already landed (the pane or
+ * the conversation holds focus, which counts as claimed).
+ */
+export function refocusNewAgentViewWhenReady(
+  agentId: string,
+  doc: Document = document,
+  windowMs?: number,
+): () => void {
+  if (keyboardIsClaimed(doc)) return () => {};
+  return focusNewAgentViewWhenReady(agentId, doc, windowMs);
 }

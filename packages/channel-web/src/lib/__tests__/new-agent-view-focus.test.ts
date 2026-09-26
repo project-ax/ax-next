@@ -12,6 +12,7 @@ import {
   AGENT_CONVERSATION_ATTR,
   AGENT_LOADING_ATTR,
   focusNewAgentViewWhenReady,
+  refocusNewAgentViewWhenReady,
 } from '../new-agent-return-focus';
 
 function region(agentId: string): HTMLElement {
@@ -95,5 +96,53 @@ describe('focusNewAgentViewWhenReady (TASK-533)', () => {
       expect(document.activeElement).toBe(created);
       stop();
     });
+  });
+});
+
+/*
+  TASK-547 — the re-arm after a slow kickoff send. The view may ALREADY be
+  painted when it runs, which is exactly when `focusFirstWhenReady`'s
+  immediate try would take focus without asking whether anyone holds it.
+
+  VACUITY: both "claimed" tests put the target on screen BEFORE the call, so
+  the only thing that can keep focus where the person put it is the up-front
+  check. Drop it (call `focusNewAgentViewWhenReady` straight through) and both
+  go red. The third pins that the check is not a blanket no-op.
+*/
+describe('refocusNewAgentViewWhenReady (TASK-547)', () => {
+  it('leaves a person where they are even when the new view is already painted', () => {
+    const elsewhere = document.createElement('button');
+    const created = region('a2');
+    document.body.append(elsewhere, created);
+    elsewhere.focus();
+
+    const stop = refocusNewAgentViewWhenReady('a2', document, 1_000);
+
+    expect(document.activeElement).toBe(elsewhere);
+    stop();
+  });
+
+  it('does not re-take focus from the loading pane the first restore landed on', () => {
+    const pane = loadingPane('a2');
+    const created = region('a2');
+    document.body.append(pane, created);
+    pane.focus();
+
+    const stop = refocusNewAgentViewWhenReady('a2', document, 1_000);
+
+    // The pane's own hand-off (AgentView) owns the next step, not this.
+    expect(document.activeElement).toBe(pane);
+    stop();
+  });
+
+  it('with the keyboard unclaimed, waits for the new view and lands on it', async () => {
+    const stop = refocusNewAgentViewWhenReady('a2', document, 1_000);
+
+    const pane = loadingPane('a2');
+    document.body.append(pane);
+    await flush();
+
+    expect(document.activeElement).toBe(pane);
+    stop();
   });
 });

@@ -176,6 +176,15 @@ export interface WorkspaceShellProps {
   kickoffAgentId?: string | null | undefined;
   /** Fired once the kickoff for `kickoffAgentId` has been sent (or failed). */
   onKickoffConsumed?: (() => void) | undefined;
+  /**
+   * Fired once the kickoff's send has SETTLED and the route has moved to the
+   * agent — on success and on the failure path, which navigates too
+   * (TASK-547). `App.tsx` re-arms a finished create's focus restore here: a
+   * send slower than `RESTORE_WINDOW_MS` used to outlast the restore that
+   * started at the dialog's close, before anything keyed by the new agent
+   * could be on screen.
+   */
+  onKickoffRouted?: ((agentId: string) => void) | undefined;
 }
 
 export function WorkspaceShell({
@@ -183,6 +192,7 @@ export function WorkspaceShell({
   onCreateAgent,
   kickoffAgentId,
   onKickoffConsumed,
+  onKickoffRouted,
 }: WorkspaceShellProps = {}) {
   return (
     <WorkspaceProvider>
@@ -191,6 +201,7 @@ export function WorkspaceShell({
         onCreateAgent={onCreateAgent}
         kickoffAgentId={kickoffAgentId}
         onKickoffConsumed={onKickoffConsumed}
+        onKickoffRouted={onKickoffRouted}
       />
     </WorkspaceProvider>
   );
@@ -201,6 +212,7 @@ function Inner({
   onCreateAgent,
   kickoffAgentId,
   onKickoffConsumed,
+  onKickoffRouted,
 }: WorkspaceShellProps) {
   const { board, error, loading, refresh } = useWorkspace();
   /**
@@ -640,18 +652,21 @@ function Inner({
     kickedOffId.current = kickoffAgentId;
     const id = kickoffAgentId;
     onKickoffConsumed?.();
-    startTurn(id, KICKOFF_TEXT).catch(() => {
-      // The agent exists, it just has not been greeted — never silently.
-      toastActions.error(
-        'Your agent is ready, but we could not say hello for you.',
-        'Send it a message to get started — it will introduce itself.',
-      );
-      navigate({ kind: 'agent', id, tab: 'chat' });
-    });
-    // `startTurn` and `navigate` are useCallback-stable; `onKickoffConsumed`
+    startTurn(id, KICKOFF_TEXT)
+      .catch(() => {
+        // The agent exists, it just has not been greeted — never silently.
+        toastActions.error(
+          'Your agent is ready, but we could not say hello for you.',
+          'Send it a message to get started — it will introduce itself.',
+        );
+        navigate({ kind: 'agent', id, tab: 'chat' });
+      })
+      // Both branches above have navigated by now (TASK-547).
+      .then(() => onKickoffRouted?.(id));
+    // `startTurn` and `navigate` are useCallback-stable; the two callbacks
     // may not be, but the ref guard above is what actually prevents a
     // resend, so a changed identity re-running this effect is harmless.
-  }, [kickoffAgentId, startTurn, navigate, onKickoffConsumed]);
+  }, [kickoffAgentId, startTurn, navigate, onKickoffConsumed, onKickoffRouted]);
 
   /**
    * `undefined` when the pages we hold cannot back the number — see

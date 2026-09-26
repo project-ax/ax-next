@@ -52,6 +52,7 @@ import { focusSettingsOpenerWhenReady } from './lib/settings-return-focus';
 import {
   focusNewAgentOpenerWhenReady,
   focusNewAgentViewWhenReady,
+  refocusNewAgentViewWhenReady,
 } from './lib/new-agent-return-focus';
 import { Sidebar } from './components/Sidebar';
 import { SessionHeader } from './components/SessionHeader';
@@ -319,22 +320,47 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
   // the time focus can land the screen shows the NEW agent, so focus goes into
   // its conversation instead of back to the row. `onDone` records the id here
   // before it closes the flow; Escape and ✕ leave it null.
+  //
+  // TASK-547 — on the workspace, the route only moves to the new agent once
+  // the kickoff's send returns, and nothing keyed by the new id can be on
+  // screen before that. A send slower than `RESTORE_WINDOW_MS` used to run
+  // the close-time restore out with focus on `<body>`. So the restore is
+  // started AGAIN when `WorkspaceShell` reports the route has moved
+  // (`onKickoffRouted`) — a fresh window, measured from the moment the new
+  // agent's view can actually paint, instead of a longer guess from the
+  // close. Only for the create this close armed (`kickoffFocusFor`), and
+  // only if nobody has taken the keyboard in the meantime — see
+  // `refocusNewAgentViewWhenReady`. On a fast send it is a harmless second
+  // wait on the same targets: whichever lands first, the other sees a
+  // claimed keyboard and stops.
   const createAgentWasOpen = useRef(false);
   const createdAgentId = useRef<string | null>(null);
+  const kickoffFocusFor = useRef<string | null>(null);
+  const cancelKickoffFocus = useRef<(() => void) | null>(null);
   useEffect(() => {
     if (createAgentOpen) {
       createAgentWasOpen.current = true;
       createdAgentId.current = null;
+      kickoffFocusFor.current = null;
+      cancelKickoffFocus.current?.();
+      cancelKickoffFocus.current = null;
       return;
     }
     if (!createAgentWasOpen.current) return;
     createAgentWasOpen.current = false;
     const created = createdAgentId.current;
     createdAgentId.current = null;
-    return created !== null
-      ? focusNewAgentViewWhenReady(created)
-      : focusNewAgentOpenerWhenReady();
+    if (created === null) return focusNewAgentOpenerWhenReady();
+    kickoffFocusFor.current = created;
+    return focusNewAgentViewWhenReady(created);
   }, [createAgentOpen]);
+  const onKickoffRouted = useCallback((agentId: string) => {
+    if (kickoffFocusFor.current !== agentId) return;
+    kickoffFocusFor.current = null;
+    cancelKickoffFocus.current?.();
+    cancelKickoffFocus.current = refocusNewAgentViewWhenReady(agentId);
+  }, []);
+  useEffect(() => () => cancelKickoffFocus.current?.(), []);
   // `bootstrapAgentName` holds the name the user enters in the NewAgentDialog
   // before the bootstrap starts. null = dialog not yet submitted.
   const [bootstrapAgentName, setBootstrapAgentName] = useState<string | null>(null);
@@ -519,6 +545,7 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
               onCreateAgent={() => { setBootstrapAgentName(null); setCreateAgentOpen(true); }}
               kickoffAgentId={kickoffAgentId}
               onKickoffConsumed={() => setKickoffAgentId(null)}
+              onKickoffRouted={onKickoffRouted}
             />
           )}
         </ErrorBoundary>

@@ -214,6 +214,47 @@ describe('workspace create-agent door', () => {
   });
 
   /**
+   * TASK-547 — `onKickoffRouted` is the "the route has moved" signal `App.tsx`
+   * re-arms a finished create's focus restore on. It must fire AFTER the send
+   * has settled, not when the kickoff starts: a send slower than the restore
+   * window is exactly the case it exists for.
+   *
+   * VACUITY: against unfixed code there is no `onKickoffRouted` prop, so it is
+   * never called and both `toHaveBeenCalledWith` assertions fail. The
+   * "not before the send settles" assertion is what separates it from a call
+   * made up front next to `onKickoffConsumed`.
+   */
+  it('fires onKickoffRouted with the id once the send has moved the route', async () => {
+    let settle!: (v: { reqId: string; conversationId: string }) => void;
+    sendMessageMock.mockImplementation(
+      () =>
+        new Promise((r) => {
+          settle = r;
+        }),
+    );
+    const onKickoffRouted = vi.fn();
+    renderShell({ kickoffAgentId: 'a-new', onKickoffRouted });
+
+    await waitFor(() => expect(sendMessageMock).toHaveBeenCalledTimes(1));
+    expect(onKickoffRouted).not.toHaveBeenCalled();
+
+    settle({ reqId: 'r1', conversationId: 'c1' });
+    await waitFor(() => expect(onKickoffRouted).toHaveBeenCalledWith('a-new'));
+    expect(onKickoffRouted).toHaveBeenCalledTimes(1);
+    expect(window.location.pathname).toBe('/workspace/agents/a-new');
+  });
+
+  it('fires onKickoffRouted on a failed kickoff too — the route still moves', async () => {
+    sendMessageMock.mockRejectedValue(new Error('boom'));
+    const onKickoffRouted = vi.fn();
+    renderShell({ kickoffAgentId: 'a-new', onKickoffRouted });
+
+    await waitFor(() => expect(onKickoffRouted).toHaveBeenCalledWith('a-new'));
+    expect(onKickoffRouted).toHaveBeenCalledTimes(1);
+    expect(window.location.pathname).toBe('/workspace/agents/a-new');
+  });
+
+  /**
    * The SECOND passes-either-way guard in this file, and it is declared as one
    * (review finding: the file's vacuity accounting had named only the row
    * one). It is red on neither the unfixed code — where no effect exists — nor
