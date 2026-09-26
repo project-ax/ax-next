@@ -239,6 +239,64 @@ describe("in-thread receipt — survives the thread's own re-read (TASK-536)", (
   });
 });
 
+describe('in-thread question — keeps its focus through a re-read after Undo (TASK-543)', () => {
+  /*
+    MEASURED on the TASK-358 walk (attempt 2): Undo reopened the card and put
+    focus on its question, then ~2.6s later focus moved to the "Conversation
+    with …" region with the card still pending. The re-read after the Undo lists
+    the row as open again, and the server appends open pointers AFTER every
+    turn — below the continuation — while the kept receipt had been sitting
+    ABOVE it. The transcript keys each message by position, so the card
+    remounted, and `ThreadApproval`'s cleanup handed focus to the region.
+  */
+  it('stays on the reopened question when the next re-read lists the row at the tail again', async () => {
+    const { view } = await approveInThread();
+
+    // The approve's re-read: the continuation lands, the pointer is kept above it.
+    listDecisions.mockResolvedValue({ decisions: [] });
+    agentRead.mockResolvedValue(detail([asked, replied]));
+    view.rerender(<Harness version={1} />);
+    await settle();
+
+    // Undo from the keyboard: the card asks again and focus lands on the question.
+    undoDecision.mockResolvedValue({ decision: decisionFixture(), undone: true });
+    fireEvent.click(screen.getByRole('button', { name: /Undo/ }));
+    await settle();
+    const question = screen.getByTestId(`approval-question-${open.id}`);
+    expect(document.activeElement).toBe(question);
+
+    // A later re-read: the row is open, so the server carries its pointer — at
+    // the END of the thread, after the continuation.
+    listDecisions.mockResolvedValue({ decisions: [open] });
+    agentRead.mockResolvedValue(detail([asked, replied, pointer]));
+    view.rerender(<Harness version={2} />);
+    await settle();
+
+    // THE BUG: on `main` the card remounts here and focus is on the region.
+    expect(screen.getByTestId(`approval-question-${open.id}`)).toBe(question);
+    expect(document.activeElement).toBe(question);
+    // And it is still where the reader saw it: above the continuation.
+    const reply = screen.getByText('Thursday 9:30 works for both of you.');
+    expect(question.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('keeps an open question focused when a re-read brings a turn in above its tail pointer', async () => {
+    listDecisions.mockResolvedValue({ decisions: [open] });
+    agentRead.mockResolvedValue(detail([asked, pointer]));
+    const view = render(<Harness version={0} />);
+    await settle();
+    const yes = screen.getByRole('button', { name: open.primaryLabel });
+    yes.focus();
+
+    agentRead.mockResolvedValue(detail([asked, replied, pointer]));
+    view.rerender(<Harness version={1} />);
+    await settle();
+
+    expect(screen.getByRole('button', { name: open.primaryLabel })).toBe(yes);
+    expect(document.activeElement).toBe(yes);
+  });
+});
+
 describe('keepAnsweredApprovals — which dropped pointers come back, and where', () => {
   const now = Date.now();
   const other: ThreadMessage = { kind: 'approval', id: 'decision-d-2', decisionId: 'd-2' };
@@ -264,14 +322,46 @@ describe('keepAnsweredApprovals — which dropped pointers come back, and where'
     ]);
   });
 
-  it('puts a kept pointer back after its nearest surviving neighbour, ahead of later rows', () => {
+  it('puts a kept pointer back after its nearest surviving neighbour, above the continuation', () => {
+    const got = keepAnsweredApprovals(
+      [asked, pointer],
+      [asked, replied],
+      [resolvedFixture('executed')],
+      now,
+    );
+    expect(got).toEqual([asked, pointer, replied]);
+  });
+
+  it('holds a pointer the fresh read still carries where it was, not at the server tail (TASK-543)', () => {
+    // Every pointer the previous read had keeps its slot, so neither card
+    // changes position — a moved card remounts, and a remount drops focus.
     const got = keepAnsweredApprovals(
       [asked, pointer, other],
       [asked, replied, other],
       [resolvedFixture('executed'), decisionFixture({ id: 'd-2' })],
       now,
     );
-    expect(got).toEqual([asked, pointer, replied, other]);
+    expect(got).toEqual([asked, pointer, other, replied]);
+  });
+
+  it('holds a reopened pointer above the continuation after an Undo (TASK-543)', () => {
+    expect(
+      keepAnsweredApprovals([asked, pointer, replied], [asked, replied, pointer], [open], now),
+    ).toEqual([asked, pointer, replied]);
+  });
+
+  // Characterization, not a TASK-543 guard: passes before and after the fix, and
+  // stops an over-correction that would hold brand-new pointers too.
+  it('leaves a pointer that is new to this read where the server put it', () => {
+    expect(
+      keepAnsweredApprovals([asked, replied], [asked, replied, pointer], [open], now),
+    ).toEqual([asked, replied, pointer]);
+  });
+
+  it('still drops a pointer the fresh read does not carry once the queue has let go of it', () => {
+    expect(
+      keepAnsweredApprovals([asked, pointer, other], [asked, replied, other], [decisionFixture({ id: 'd-2' })], now),
+    ).toEqual([asked, other, replied]);
   });
 
   it('never keeps a message that is not an approval pointer', () => {

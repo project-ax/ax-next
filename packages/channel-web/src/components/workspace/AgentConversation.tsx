@@ -585,9 +585,13 @@ export function AgentConversation({
               `m.id` alone while the index keyed by position left the drift this
               change is supposed to remove: on a duplicate id React drops or
               duplicates a `Message` and the painted marks stop matching the
-              total. Measured cost of the position-bearing key: nothing in
-              ordinary use (the thread only grows at the end), and a harmless
-              remount if compaction ever rewrites the head.
+              total. Cost of the position-bearing key: a remount whenever a
+              message moves. Turns only grow at the end, but the server appends
+              approval pointers AFTER every turn, so a new turn lands ABOVE an
+              open card — a remount that drops a focused card's focus. That is
+              why `AgentView.load` holds every pointer in its previous slot
+              (`keepAnsweredApprovals`, TASK-543). A compaction rewrite of the
+              head still remounts the tail.
             */
             const key = findFieldKey(i, m.id);
             return (
