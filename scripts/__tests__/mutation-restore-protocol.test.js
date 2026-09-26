@@ -65,15 +65,12 @@
 //     window` does pin is the part that IS in this card's control: the restore target is
 //     the index/HEAD, so a commit that lands during the window survives — and the same
 //     fixture run through a file copy loses it.
-//   - **The zsh half does not run in CI.** `SHELLS` is `['bash', ...zsh if present]`, and
-//     the GitHub runner has no zsh, so it collects materially fewer tests than a macOS
-//     machine does — roughly a seventh fewer, measured once on this branch's own PR run.
-//     **No exact pair is quoted here on purpose**: the count moves every time a case is
-//     added, and a figure nobody re-measures is the stale-count trap this file's own header
-//     warns about (it went stale twice during review). What matters and does not drift:
-//     every `zsh` assertion here is a LOCAL result, and only the bash half is continuously
-//     enforced. Same shape as every sibling shell guard in this directory; written down
-//     here, and in the doc, rather than left for someone to infer from a test count.
+//   - **The zsh half DOES run in CI** (corrected by TASK-550). This bullet used to say the
+//     GitHub runner has no zsh. The image indeed ships none, but TASK-506 added an apt
+//     install of zsh to the test job one day after this file landed, and PR #710's CI run
+//     collected 70 tests here — both halves. `SHELLS` still degrades to `['bash']` on a
+//     machine without zsh, which is why the `CI` presence assertion below exists: a
+//     `describe.each` over a silently shorter list is invisible in a CI summary.
 //   - **Pathspec edge cases, MEASURED on git 2.52.0 rather than reasoned about**, because
 //     the `:(literal)` hardening itself shipped a Critical (see M12) and "it's only a
 //     pathspec" is exactly the reasoning that produced it. Probed with the block's own
@@ -313,6 +310,13 @@ function binExists(name) {
 
 const HAS_ZSH = binExists('zsh');
 const SHELLS = ['bash', ...(HAS_ZSH ? ['zsh'] : [])];
+
+// yolo-ship Phase 4 tells builders both halves of this file are enforced in CI. That is
+// only true while the CI test job installs zsh — the runner image does not ship it — so
+// pin it: removing the install step must redden here, not quietly drop the zsh half.
+it.runIf(process.env.CI)('has zsh on CI, so the zsh half of this guard cannot silently vanish', () => {
+  expect(SHELLS).toEqual(['bash', 'zsh']);
+});
 
 // ---------------------------------------------------------------------------------
 // Extracting the runnable shell out of the doc.

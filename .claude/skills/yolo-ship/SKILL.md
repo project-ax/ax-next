@@ -314,9 +314,12 @@ rather than an `ok`. Two things they still cannot see, stated rather than implie
 `scripts/__tests__/mutation-restore-protocol.test.js` EXTRACTS both blocks from this file and
 RUNS them against throwaway git repositories built to three of the four incident shapes above
 (the fourth, the reviewer that kept `git status` clean, is the *absence* of a failure and has
-no fixture). It runs them under bash and, **when the machine has zsh, under zsh too** — the CI
-runner does not, so the zsh half is a local result and only the bash half is continuously
-enforced. It does not scan this prose for the right words: the prose quotes the dangerous
+no fixture). It runs them under **bash and zsh**, and both halves run in CI: the test job
+installs zsh (`.github/workflows/ci.yml`, since TASK-506), and the guard asserts zsh is present
+whenever `CI` is set, so dropping that install step reddens it instead of quietly halving the
+coverage. (This paragraph used to say the runner has no zsh. That was true when it was written
+and went stale a day later; PR #710's CI run measured 70 tests in this file and 40 in
+`docker-preflight.test.ts`, which loops over both shells unconditionally.) It does not scan this prose for the right words: the prose quotes the dangerous
 commands on purpose, so a text scan would pass against the broken text (the TASK-392 vacuity
 mistake). Delete either block, or drop any single gate inside one, and the guard reddens.
 
