@@ -167,6 +167,23 @@ describe('captureFreshness — fails OPEN', () => {
     expect(p!.label).not.toMatch(/[\u0000\u200B\u202E\n]/);
   });
 
+  it('fences the invisible operators the shared class gained in TASK-562', async () => {
+    const bus = busWith({
+      [freshnessCaptureHook(TOOL)]: async () => ({
+        predicate: {
+          kind: 'catalog-skill',
+          value: 'linear\u2060@abc',
+          label: 'lin\u2062ear\u2064entry',
+        },
+      }),
+    });
+    const { ctx } = ctxWithLog();
+    const p = await captureFreshness(bus, ctx, CALL);
+    expect(p!.label).toBe('lin ear entry');
+    // The value is stripped, not spaced, so it round-trips as one token.
+    expect(p!.value).toBe('linear@abc');
+  });
+
   it('clamps a runaway label by CODE POINTS, never splitting a surrogate pair', async () => {
     // Astral-plane characters are two UTF-16 units each. A `.slice()` cap would
     // cut one in half and emit a lone surrogate — ill-formed UTF-16 out of a

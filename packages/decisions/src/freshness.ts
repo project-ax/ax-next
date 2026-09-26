@@ -41,6 +41,7 @@
  * and "changed" on the check side, never "run it".
  */
 import type { AgentContext, HookBus, ToolCall } from '@ax/core';
+import { replaceSurfaceRewriters } from '@ax/core/surface-text';
 import type { FreshnessPredicate } from './types.js';
 
 /**
@@ -174,32 +175,22 @@ const LABEL_MAX_CHARS = 120;
 const CHANGED_MAX_CHARS = 200;
 
 /**
- * Everything that can make rendered text say something other than what is on
- * the wire: C0/C1 controls (a newline forges a separate line in a log or a hold
- * note), the zero-width family, and the bidi overrides/isolates behind Trojan
- * Source (CVE-2021-42574) — a lone U+202E reverses the visual order of
- * everything after it, and an unterminated isolate leaks that reordering into
- * whatever the renderer draws next.
- *
- * Written as `\uXXXX` escapes rather than literal bytes: a raw control byte in
- * a source file makes git treat it as binary and the diff unreviewable.
- *
- * A deliberate local twin of `@ax/channel-web`'s `fenceLine` and
- * `@ax/agent-activity`'s `fencePhrase` rather than an import — plugins talk
- * through the hook bus, never through each other's modules (invariant 2).
- */
-const REWRITES_THE_SURFACE =
-  /[\u0000-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]+/g;
-
-/**
  * One line, plain text, bounded — or `null` when nothing legible survives.
+ *
+ * Everything that can make rendered text say something other than what is on
+ * the wire — C0/C1 controls (a newline forges a separate line in a log or a
+ * hold note), the zero-width family, and the bidi overrides/isolates behind
+ * Trojan Source (CVE-2021-42574) — becomes a space. That class is the one in
+ * `@ax/core/surface-text`, shared with every bidi-aware fence (TASK-562); the
+ * function around it is a local twin of `@ax/channel-web`'s `fenceLine`,
+ * because plugins do not import each other (invariant 2).
  *
  * The cap counts CODE POINTS, not UTF-16 units, so truncation can never split a
  * surrogate pair and leave a lone half behind.
  */
 function fenceLine(value: unknown, maxChars: number): string | null {
   if (typeof value !== 'string') return null;
-  const flattened = value.replace(REWRITES_THE_SURFACE, ' ').replace(/\s+/g, ' ').trim();
+  const flattened = replaceSurfaceRewriters(value).replace(/\s+/g, ' ').trim();
   if (flattened.length === 0) return null;
   const points = [...flattened];
   if (points.length <= maxChars) return flattened;
@@ -217,7 +208,7 @@ function fenceLine(value: unknown, maxChars: number): string | null {
  */
 function normalizeValue(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
-  const stripped = raw.replace(REWRITES_THE_SURFACE, '').trim();
+  const stripped = replaceSurfaceRewriters(raw, '').trim();
   if (stripped.length === 0) return null;
   const points = [...stripped];
   return points.length <= VALUE_MAX_CHARS ? stripped : points.slice(0, VALUE_MAX_CHARS).join('');

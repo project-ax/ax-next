@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { REWRITES_THE_SURFACE } from '@ax/core/surface-text';
 import {
   deriveActivity,
   DEFAULT_PHRASE,
@@ -208,11 +209,11 @@ describe('deriveActivity — the line is one line', () => {
     ['a zero-width joiner', 'Morning\u200Demail pass'],
     ['a byte-order mark', '\uFEFFMorning email pass'],
     ['an Arabic letter mark', '\u061CMorning email pass'],
+    ['a word joiner (TASK-562)', 'Morning\u2060email pass'],
+    ['an invisible plus (TASK-562)', 'Morning\u2064email pass'],
   ])('neutralises %s — a label must not be able to reorder what a reader sees', (_what, trigger) => {
     const { phrase } = deriveActivity(input({ trigger }));
-    expect(phrase).not.toMatch(
-      /[\u0000-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/,
-    );
+    expect(phrase).not.toMatch(REWRITES_THE_SURFACE);
     expect(phrase).toBe('Morning email pass');
   });
 

@@ -1,3 +1,4 @@
+import { replaceSurfaceRewriters } from '@ax/core/surface-text';
 import type { ActivityCounter, AgentActivity, DeriveInput, DeriveToolInput } from './types.js';
 
 /**
@@ -145,26 +146,14 @@ function usablePhrase(value: string | null | undefined): string | null {
 }
 
 /**
- * Characters that let a string reshape the surface it lands on rather than just
- * sit on it: C0 and C1 controls, the zero-width family, and the bidirectional
- * marks, embeddings, overrides and isolates.
- *
- * The bidi half is the Trojan-source problem (CVE-2021-42574) pointed at a
- * status line. A lone U+202E reverses the visual order of everything after it,
- * and an unterminated isolate leaks that reordering into whatever the renderer
- * draws next. This line carries a routine name out of the agent's own
- * workspace and says it in our voice — so a label that can rewrite what the
- * reader sees is the same failure as a label that lies, arriving by a different
- * door.
- *
- * They become spaces rather than vanishing, so a name that leaned on one to
- * separate two words still reads as two words.
- */
-const REWRITES_THE_SURFACE =
-  /[\u0000-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]+/g;
-
-/**
  * One line, plain text, bounded — or nothing at all.
+ *
+ * This line carries a routine name out of the agent's own workspace and says
+ * it in our voice, so a label that can rewrite what the reader sees (a lone
+ * U+202E, an unterminated isolate, a zero-width run) is the same failure as a
+ * label that lies. Those characters — the one class in `@ax/core/surface-text`
+ * — become spaces, so a name that leaned on one to separate two words still
+ * reads as two words.
  *
  * Line breaks and layout characters are collapsed rather than rejected: a
  * routine named over two lines is a formatting accident, not an attack, and
@@ -179,7 +168,7 @@ const REWRITES_THE_SURFACE =
  */
 function fencePhrase(value: string | null | undefined): string | null {
   if (typeof value !== 'string') return null;
-  const flattened = value.replace(REWRITES_THE_SURFACE, ' ').replace(/\s+/g, ' ').trim();
+  const flattened = replaceSurfaceRewriters(value).replace(/\s+/g, ' ').trim();
   if (flattened.length === 0) return null;
   const points = [...flattened];
   if (points.length <= MAX_PHRASE_CHARS) return flattened;

@@ -1,3 +1,4 @@
+import { replaceSurfaceRewriters } from '@ax/core/surface-text';
 import {
   isRejection,
   PluginError,
@@ -64,30 +65,13 @@ const DECISION_SUMMARY_MAX_CHARS = 120;
 const DECISION_SUMMARY_FALLBACK = 'A decision is waiting for you';
 
 /**
- * Characters that rewrite the surface rather than appear on it: C0/C1 controls,
- * the zero-width family, and the bidi marks, embeddings, overrides and isolates.
- *
- * The bidi half is the Trojan-source problem (CVE-2021-42574) pointed at an
- * approval card. A lone U+202E reverses the visual order of everything after
- * it, so a summary can be authored to read as one action while describing
- * another; an unterminated isolate leaks that reordering into whatever the
- * renderer draws next. React escapes markup, so this was never XSS — it is the
- * quieter failure where the card says, in our voice, something other than what
- * is on the wire, and a person approves it.
- *
- * They become spaces rather than vanishing, so a summary that leaned on one to
- * separate two words still reads as two words.
- *
- * A deliberate local twin of `routes-workspace.ts`'s `fenceLine` rather than an
- * import: that helper is private to its module and a parallel edit there
- * shouldn't be able to change what this stream puts on the wire. Two small
- * copies inside one plugin are cheaper than the coupling.
- */
-const REWRITES_THE_SURFACE =
-  /[\u0000-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]+/g;
-
-/**
  * One line, plain text, bounded — or `null` when nothing legible survives.
+ *
+ * The characters that rewrite the surface rather than appear on it become
+ * spaces — the one class in `@ax/core/surface-text`. That is the Trojan-source
+ * problem (CVE-2021-42574) pointed at an approval card: a lone U+202E can make
+ * a summary read as one action while describing another, and a person
+ * approves it.
  *
  * The cap counts CODE POINTS, not UTF-16 units, so truncation can never split a
  * surrogate pair and leave a lone half behind — ill-formed UTF-16 out of a
@@ -95,7 +79,7 @@ const REWRITES_THE_SURFACE =
  */
 function fenceLine(value: string | null | undefined, maxChars: number): string | null {
   if (typeof value !== 'string') return null;
-  const flattened = value.replace(REWRITES_THE_SURFACE, ' ').replace(/\s+/g, ' ').trim();
+  const flattened = replaceSurfaceRewriters(value).replace(/\s+/g, ' ').trim();
   if (flattened.length === 0) return null;
   const points = [...flattened];
   if (points.length <= maxChars) return flattened;

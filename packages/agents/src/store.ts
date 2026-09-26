@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { isModelRef, PluginError } from '@ax/core';
+import { REWRITES_THE_SURFACE, replaceSurfaceRewriters } from '@ax/core/surface-text';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import type { AgentsDatabase, AgentsRow } from './migrations.js';
 import { scopedAgents, type AgentScope } from './scope.js';
@@ -135,18 +136,12 @@ function invalid(message: string): PluginError {
  * characters make two different names look identical. C0/C1 controls (TAB and
  * LF included) have no business in a one-line label either.
  *
- * This is the same class `@ax/channel-web`'s `fenceLine` strips from every
- * other label it draws (`REWRITES_THE_SURFACE` in `lib/fence-line.ts`) — a
- * local twin, not an import, because plugins do not import each other
- * (invariant 2). Keep the two in step: one rule, spelled twice.
- *
- * No `g` flag: it is used with `.test()` below, and a global regex carries
- * `lastIndex` between calls.
+ * Not a local copy: it IS `REWRITES_THE_SURFACE` from `@ax/core/surface-text`,
+ * the one class every surface fence in the repo shares (TASK-562). That
+ * module's header lists what is in it and why; widen it there, never here.
+ * Non-global, so the `.test()` below carries no `lastIndex` between calls.
  */
-export const DISPLAY_NAME_FORBIDDEN =
-  /[\u0000-\u001F\u007F-\u009F؜​-‏‪-‮⁦-⁩﻿]/;
-
-const DISPLAY_NAME_FORBIDDEN_RUN = new RegExp(`${DISPLAY_NAME_FORBIDDEN.source}+`, 'g');
+export const DISPLAY_NAME_FORBIDDEN: RegExp = REWRITES_THE_SURFACE;
 
 export const DISPLAY_NAME_FORBIDDEN_MESSAGE =
   'displayName must not contain invisible or text-direction control characters';
@@ -171,8 +166,7 @@ export const DISPLAY_NAME_FALLBACK = 'Untitled agent';
  * one renderer that has to remember.
  */
 export function fenceStoredDisplayName(value: string): string {
-  const fenced = value
-    .replace(DISPLAY_NAME_FORBIDDEN_RUN, ' ')
+  const fenced = replaceSurfaceRewriters(value)
     .replace(/\s+/g, ' ')
     .trim();
   return fenced.length === 0 ? DISPLAY_NAME_FALLBACK : fenced;

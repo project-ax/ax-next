@@ -21,9 +21,11 @@
  * nothing.
  */
 
-/**
- * Characters that let text move around on a surface someone reads, or forge a
- * line boundary in a log:
+import { replaceSurfaceRewriters } from '@ax/core/surface-text';
+
+/*
+ * What `sanitizeDecisionNote` turns into spaces — characters that let text move
+ * around on a surface someone reads, or forge a line boundary in a log:
  *
  *   - C0 and C1 control characters (CR/LF included) — a newline inside the
  *     note would let it forge what looks like a separate host-authored line;
@@ -42,11 +44,10 @@
  * note out of something less trustworthy, and it costs one pass over a string
  * of at most 2000 code points.
  *
- * Written as escapes, never as literal bytes: a raw control byte in a source
- * file makes git treat it as binary and the diff unreviewable.
+ * This was the one copy of the class that already covered U+2060–U+2064 and
+ * U+2028/U+2029. Since TASK-562 there is only one copy — `@ax/core/surface-text`,
+ * widened to match this list — and this file reads it from there.
  */
-const UNSAFE_CHARS =
-  /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u2029\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]+/gu;
 
 /**
  * Cap on the note, in CODE POINTS. `String.prototype.slice` counts UTF-16 code
@@ -65,7 +66,7 @@ const NOTE_MAX_CODE_POINTS = 2000;
 const SYSTEM_PREFIX = 'System message (not from the user):';
 
 export function sanitizeDecisionNote(note: string): string {
-  const flat = note.replace(UNSAFE_CHARS, ' ').replace(/\s+/g, ' ').trim();
+  const flat = replaceSurfaceRewriters(note).replace(/\s+/g, ' ').trim();
   const points = [...flat];
   if (points.length <= NOTE_MAX_CODE_POINTS) return flat;
   return `${points.slice(0, NOTE_MAX_CODE_POINTS - 1).join('').trimEnd()}…`;

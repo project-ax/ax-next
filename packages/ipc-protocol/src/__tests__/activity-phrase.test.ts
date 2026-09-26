@@ -89,6 +89,23 @@ describe('sanitizeActivityPhrase', () => {
     expect(sanitizeActivityPhrase('Read\ting')).toBe('Reading');
   });
 
+  // TASK-562: this fence stripped controls only, so a runner-supplied U+202E
+  // (Trojan Source) or a zero-width run reached storage and the SSE frame. It
+  // now removes the whole shared class from @ax/core/surface-text.
+  it.each([
+    ['U+202E RLO', '‮'],
+    ['U+2066 LRI', '⁦'],
+    ['U+2069 PDI', '⁩'],
+    ['U+200B ZWSP', '​'],
+    ['U+200F RLM', '‏'],
+    ['U+061C ALM', '؜'],
+    ['U+FEFF BOM', '﻿'],
+    ['U+2060 WORD JOINER', '⁠'],
+    ['U+2064 INVISIBLE PLUS', '⁤'],
+  ])('strips %s', (_label, ch) => {
+    expect(sanitizeActivityPhrase(`Read${ch}ing`)).toBe('Reading');
+  });
+
   it('truncates overlong phrases at the display ceiling', () => {
     const long = 'x'.repeat(200);
     const out = sanitizeActivityPhrase(long);

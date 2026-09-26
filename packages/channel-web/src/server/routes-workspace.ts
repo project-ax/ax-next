@@ -128,6 +128,7 @@ import {
   type AgentContext,
   type HookBus,
 } from '@ax/core';
+import { stripSurfaceRewritersFromDocument } from '@ax/core/surface-text';
 import type {
   ActivityEvent,
   AgentMemoryRead,
@@ -1769,11 +1770,8 @@ export function isServableWorkspaceFile(path: string): boolean {
  * They are removed rather than replaced with a space, because in a document
  * the separators that do real work are the ones we are keeping anyway.
  */
-const REWRITES_A_BODY =
-  /[\u0000-\u0008\u000B-\u000C\u000E-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
-
 export function fenceBody(text: string): string {
-  return text.replace(REWRITES_A_BODY, '');
+  return stripSurfaceRewritersFromDocument(text);
 }
 
 /** Shared so a clipped read and a whole read decode identically. */

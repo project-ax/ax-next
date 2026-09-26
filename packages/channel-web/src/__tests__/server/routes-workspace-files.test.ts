@@ -193,6 +193,21 @@ describe('fenceBody', () => {
     expect(fenceBody('a\u200Bb\uFEFFc\u2066d\u2069')).toBe('abcd');
     expect(fenceBody(`a${NUL}b`)).toBe('ab');
   });
+
+  // TASK-562: the shared class widened. A document keeps \n, so a U+2028 in
+  // it is a line break that no newline check ever saw — and the invisible
+  // operators hide inside words exactly like U+200B does.
+  it.each([
+    ['U+2028', '\u2028'],
+    ['U+2029', '\u2029'],
+    ['U+2060', '\u2060'],
+    ['U+2061', '\u2061'],
+    ['U+2062', '\u2062'],
+    ['U+2063', '\u2063'],
+    ['U+2064', '\u2064'],
+  ])('removes %s too', (_label, ch) => {
+    expect(fenceBody(`a${ch}b\nc`)).toBe('ab\nc');
+  });
 });
 
 // ---------------------------------------------------------------------------

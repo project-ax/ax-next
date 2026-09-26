@@ -9,6 +9,7 @@
 // ---------------------------------------------------------------------------
 
 import type { AgentContext, HookBus } from '@ax/core';
+import { HIDDEN_FORMAT_CHARS } from '@ax/core/surface-text';
 
 type ScanCategory = 'instruction-override' | 'credential-exfiltration' | 'obfuscation' | 'llm';
 
@@ -71,9 +72,12 @@ const OBFUSCATION_PATTERNS: RegExp[] = [
   /\b(eval|Function)\s*\(\s*atob\s*\(/i,
   /[A-Za-z0-9+/]{220,}={0,2}/, // long base64 run
 ];
-// Zero-width / bidi control characters (Trojan Source). Explicit \u escapes —
-// never embed the literal invisible characters in source.
-const HIDDEN_CHARS = /[\u200B-\u200F\u202A-\u202E\u2066-\u2069]/;
+// Zero-width / bidi / invisible format characters (Trojan Source) — the shared
+// class from `@ax/core/surface-text`, minus C0/C1 controls because a document's
+// newlines and tabs are its own structure (TASK-562; before it this was a
+// narrower local copy that missed U+2060-2064, U+2028/9, U+061C and a mid-text
+// U+FEFF). A leading BOM never reaches here: the strict TextDecoder consumes it.
+const HIDDEN_CHARS = HIDDEN_FORMAT_CHARS;
 
 /**
  * Pure synchronous regex scan. Returns the FIRST category hit or null. Order:
