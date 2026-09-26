@@ -26,6 +26,12 @@ export type ServiceHandler<I = unknown, O = unknown> = (
  * Stopping with `signal.throwIfAborted()` is fine — the bus recognises its own
  * abort reason and logs it at debug rather than as a failure.
  *
+ * Prefer polling (`signal.aborted`, `throwIfAborted()`) to an `'abort'`
+ * listener. If you do add a listener, it MUST NOT throw: Node reports a
+ * throwing abort listener as a process-level `uncaughtException`, which the
+ * bus cannot catch — the one way a subscriber can escape the isolation `fire`
+ * otherwise guarantees.
+ *
  * Deliberately NOT on `AgentContext`: the ctx flows on into every service
  * call a subscriber makes, and a signal there would read as a contract those
  * services honour, which none do today. It is per-subscriber, not per-fire,
@@ -525,7 +531,9 @@ export class HookBus {
         resolve({ kind: 'timed-out' });
         // Tell the subscriber to stop, AFTER the fire has its answer: abort
         // listeners run synchronously inside `abort()`, and whatever they do
-        // is the subscriber's business, not this fire's. The reason matches
+        // cannot change this fire's result. (A listener that THROWS is
+        // reported by Node as an uncaughtException, not to us — see
+        // `SubscriberInvocation`.) The reason matches
         // what `AbortSignal.timeout()` would give, so code that already knows
         // how to read a timeout abort reads this one.
         controller.abort(

@@ -63,6 +63,8 @@ type Snapshot = Map<string, Uint8Array>;
 interface TierProbe {
   /** When set, every `workspace:read` waits on it first (a slow/cold tier). */
   readGate?: Promise<void>;
+  /** When set, only reads whose path starts with this wait on `readGate`. */
+  readGatePrefix?: string;
   /** Counts `workspace:apply` calls — the tier writes. */
   applies: number;
 }
@@ -131,7 +133,12 @@ function createPerAgentWorkspace(probe?: TierProbe): { plugin: ReturnType<typeof
           'workspace:read',
           'test-per-agent-workspace',
           async (ctx, input) => {
-            if (probe?.readGate !== undefined) await probe.readGate;
+            if (
+              probe?.readGate !== undefined &&
+              (probe.readGatePrefix === undefined || input.path.startsWith(probe.readGatePrefix))
+            ) {
+              await probe.readGate;
+            }
             const s = storeFor(ctx);
             const v = input.version ?? s.latest;
             if (v === null) return { found: false };
@@ -665,12 +672,13 @@ describe('chat:start bootstrap honours the bus abort signal (TASK-552)', () => {
     return logger;
   };
 
-  const run = async (subscriberTimeoutMs: number | undefined) => {
+  const run = async (subscriberTimeoutMs: number | undefined, readGatePrefix?: string) => {
     let release!: () => void;
     const probe: TierProbe = {
       readGate: new Promise<void>((r) => {
         release = r;
       }),
+      ...(readGatePrefix !== undefined ? { readGatePrefix } : {}),
       applies: 0,
     };
     const { bus } = await buildBus({}, probe);
@@ -705,6 +713,24 @@ describe('chat:start bootstrap honours the bus abort signal (TASK-552)', () => {
     expect(logged.find((l) => l.msg === 'memory_strata_bootstrap_aborted')!.bindings).toEqual({
       agentId: 'slow-agent',
       stage: 'hydrated',
+    });
+    expect(probe.applies, 'no tier write after the bus gave up').toBe(0);
+    expect((await readTierMemory(bus, ctx)).size).toBe(0);
+  });
+
+  it('stops at the last check — right before the flush — when the bound elapses after hydrate', async () => {
+    // Only the identity reads (`.ax/…`, after the hydrate) are slow, so the
+    // hydrate check passes and the seed is written to the scratch; the check
+    // guarding the shared-storage flush is the one that must catch it.
+    const { bus, ctx, probe, logged, fired, release } = await run(20, '.ax/');
+    await expect(fired).resolves.toMatchObject({ rejected: false });
+    release();
+    await vi.waitFor(() => {
+      expect(logged.map((l) => l.msg)).toContain('memory_strata_bootstrap_aborted');
+    });
+    expect(logged.find((l) => l.msg === 'memory_strata_bootstrap_aborted')!.bindings).toEqual({
+      agentId: 'slow-agent',
+      stage: 'seeded',
     });
     expect(probe.applies, 'no tier write after the bus gave up').toBe(0);
     expect((await readTierMemory(bus, ctx)).size).toBe(0);
