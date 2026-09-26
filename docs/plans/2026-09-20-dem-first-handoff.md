@@ -145,6 +145,7 @@ operator neutralization pinned by a shared contract case. Copy both habits. `pg_
 used nowhere in this repo.
 
 **Read TASK-458 first** — whether pgvector exists anywhere is unproven.
+*(Resolved 2026-09-26: the embedded image ships pgvector 0.8.0 and the chart now proves it — see §3.3.)*
 
 ### 3.3 TASK-458 — the pgvector bootstrap swallows its own failure
 
@@ -154,6 +155,11 @@ indistinguishable. Nothing proves `bitnamilegacy/postgresql:17.6.0-debian-12-r4`
 no chart test references `EXTENSION`; and **no test lane could check** — every
 `PostgreSqlContainer` in the repo is `postgres:16-alpine`. Answer the question with one
 `docker run` before designing on it.
+
+*Resolved 2026-09-26 (TASK-458):* it ships pgvector **0.8.0**. The Job now fails loudly and
+`deploy/charts/ax-next/__tests__/pgvector-bootstrap.test.ts` proves both directions in the
+`helm-render` lane. The `PostgreSqlContainer` lanes are still `postgres:16-alpine` with no
+`vector` — that part is TASK-457's to solve.
 
 ### 3.4 TASK-459 — NUL/control chars at the record door (upgraded; read the card)
 

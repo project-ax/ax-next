@@ -191,6 +191,16 @@ So the default embedded deployment may have no vector capability at all, and the
 the class this project cares about, and it will be discovered by whoever builds the
 dense channel unless it is checked first. Filed separately (§5).
 
+> **Resolved by TASK-458 (2026-09-26).** The image *does* ship pgvector — 0.8.0,
+> measured with a `docker run` against
+> `sha256:926356130b77d5742d8ce605b258d35db9b62f2f8fd1601f9dbaef0c8a710a8d`. The Job no
+> longer swallows the answer: it fails the install when `CREATE EXTENSION` fails or no
+> `pg_extension` row appears, and `deploy/charts/ax-next/__tests__/pgvector-bootstrap.test.ts`
+> runs the rendered script against the chart's image (must succeed) and against
+> `postgres:16-alpine` (must fail) in CI's `helm-render` lane. The "no test lane could
+> exercise it" line is still true of the `PostgreSqlContainer` lanes — TASK-457 needs a
+> pgvector-capable image there.
+
 Also noted: tests run postgres **16**, both deployments run **17**. `websearch_to_tsquery`
 parameter parsing has already bitten once on 16.
 

@@ -416,6 +416,12 @@ postgresql:
   # mirror so fresh installs Just Work. Consumers wanting the new bitnami
   # premium catalog can override registry/repository at install time.
   # Tag matches v1 ax for consistency.
+  #
+  # This image MUST ship pgvector: the pg-init hook Job fails the install
+  # when `CREATE EXTENSION vector` fails (TASK-458). 17.6.0-debian-12-r4
+  # ships 0.8.0, and __tests__/pgvector-bootstrap.test.ts re-proves it in
+  # CI against whatever tag is set here — so a bump to a tag without it
+  # reddens the helm-render lane instead of breaking an install.
   image:
     registry: docker.io
     repository: bitnamilegacy/postgresql
