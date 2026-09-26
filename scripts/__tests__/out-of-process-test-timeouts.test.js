@@ -52,6 +52,14 @@
 // here — a file that raises its own `beforeAll` to 180s should redden this guard
 // until the config keeps up.
 //
+// TASK-575 made the unit a CONFIG, not a package. Both rules used to read only
+// `vitest.config.ts`, so `presets/k8s/vitest.config.k8s-e2e.ts` (hookTimeout
+// 60_000, `{ timeout: 180_000 }` tests, a bare cleanup `afterAll`) broke the
+// TASK-567 rule where nothing looked. Every config a package uses is now found
+// (`discoverVitestConfigs`), each is scored against only the files its
+// `include` / `exclude` select (`resolvePackageConfigs`), and a config or
+// script the guard cannot follow is REPORTED, never skipped.
+//
 // What this guard does NOT do: police the SIZE of those budgets. A budget too
 // small for legitimate work is a bug; one raised past a genuine hang is a mask.
 // Neither is decidable from source shape, so this file deliberately takes no
@@ -62,10 +70,11 @@
 
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, matchesGlob, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { configDefaults } from 'vitest/config';
 
 import { scanHookTimeouts, scanTestTimeouts } from '../hook-timeout-scan.mjs';
 
@@ -259,8 +268,17 @@ function outOfProcessPackages(repoRoot) {
     let maxTestAt;
     const bareTeardowns = [];
     const unreadable = [];
+    // TASK-575: the same facts per FILE, so each vitest config can be scored
+    // against only the files it actually runs (see `resolvePackageConfigs`).
+    const fileScans = [];
     for (const f of files) {
       const scan = scanTestTimeouts(readFileSync(f, 'utf8'), f);
+      fileScans.push({
+        file: f,
+        declared: scan.declared,
+        testDeclared: scan.testDeclared,
+        bareTeardowns: scan.bareTeardowns,
+      });
       for (const d of scan.declared) maxDeclaredHookTimeout = Math.max(maxDeclaredHookTimeout, d.ms);
       for (const d of scan.testDeclared) {
         if (d.ms > maxDeclaredTestTimeout) {
@@ -285,6 +303,7 @@ function outOfProcessPackages(repoRoot) {
       maxTestAt,
       bareTeardowns,
       unreadable,
+      fileScans,
     });
   }
   return out;
@@ -332,27 +351,188 @@ function outOfProcessPackages(repoRoot) {
  * the messages must not be interchangeable.
  */
 async function readResolvedTestBudgets(pkgDir) {
-  const configPath = join(pkgDir, 'vitest.config.ts');
+  return readConfigBudgets(join(pkgDir, 'vitest.config.ts'));
+}
+
+/**
+ * `readResolvedTestBudgets` for ANY config path (TASK-575), plus the settings
+ * that decide which files the config runs: `include` / `exclude`, defaulted
+ * from vitest's own `configDefaults` exactly as vitest defaults them (a
+ * config's `exclude` REPLACES the default, it does not extend it).
+ *
+ * Fail CLOSED on every setting that would move a file in or out of the config
+ * in a way `configFilesFor` does not model — each is `kind: 'unreadable'` with
+ * the reason, never "ok with the default file set":
+ *   - `test.projects` / `test.workspace`: the config fans out to other configs.
+ *   - `root`, `test.root`, `test.dir`: the globs resolve against another dir.
+ *   - a non-empty `test.includeSource`: in-source tests in non-test files.
+ *   - `include` / `exclude` that is not an array of strings, or an `include`
+ *     pattern negated with `!`.
+ * None of these occurs in the tree; they are refused rather than guessed at.
+ */
+async function readConfigBudgets(configPath) {
   if (!existsSync(configPath)) return { kind: 'missing', configPath };
-  let mod;
+  let resolved;
   try {
-    mod = await import(/* @vite-ignore */ pathToFileURL(configPath).href);
+    const mod = await import(/* @vite-ignore */ pathToFileURL(configPath).href);
+    // Inside the try (TASK-575 review): a default export that is a REJECTING
+    // promise must be reported as unreadable, not crash the whole guard.
+    resolved = await mod.default;
   } catch (err) {
     return { kind: 'unreadable', configPath, why: `import threw: ${err.message}` };
   }
-  const resolved = await mod.default;
   if (typeof resolved !== 'object' || resolved === null) {
     return { kind: 'unreadable', configPath, why: `default export is ${typeof resolved}, not an object` };
   }
   if (typeof resolved.test !== 'object' || resolved.test === null) {
     return { kind: 'unreadable', configPath, why: 'resolved config has no `test` block' };
   }
+  const t = resolved.test;
+  const unreadable = (why) => ({ kind: 'unreadable', configPath, why });
+  for (const key of ['projects', 'workspace']) {
+    if (t[key] !== undefined) return unreadable(`sets test.${key} — this guard cannot map files through it`);
+  }
+  if (resolved.root !== undefined) return unreadable('sets root — include globs would resolve elsewhere');
+  for (const key of ['root', 'dir']) {
+    if (t[key] !== undefined) return unreadable(`sets test.${key} — include globs would resolve elsewhere`);
+  }
+  if (t.includeSource !== undefined && !(Array.isArray(t.includeSource) && t.includeSource.length === 0)) {
+    return unreadable('sets test.includeSource — in-source tests are not mapped');
+  }
+  const isGlobList = (v) => Array.isArray(v) && v.every((g) => typeof g === 'string');
+  const include = t.include ?? [...configDefaults.include];
+  const exclude = t.exclude ?? [...configDefaults.exclude];
+  if (!isGlobList(include)) return unreadable('test.include is not an array of strings');
+  if (!isGlobList(exclude)) return unreadable('test.exclude is not an array of strings');
+  if (include.some((g) => g.startsWith('!'))) return unreadable('test.include has a negated (!) pattern');
   return {
     kind: 'ok',
     configPath,
-    testTimeout: resolved.test.testTimeout,
-    hookTimeout: resolved.test.hookTimeout,
+    testTimeout: t.testTimeout,
+    hookTimeout: t.hookTimeout,
+    include,
+    exclude,
   };
+}
+
+/**
+ * A package-root file that is a vitest config by NAME: `vitest.config.ts`,
+ * `vitest.config.k8s-e2e.ts`, `vitest.e2e.config.mjs`, `vitest.workspace.ts`.
+ * Setup files (`vitest.setup.ts`) are not configs and do not match.
+ */
+const VITEST_CONFIG_NAME = /^vitest\.(?:[\w-]+\.)*(?:config|workspace)(?:\.[\w-]+)*\.[cm]?[jt]s$/;
+
+/** vitest CLI flags that change which files a run picks up in ways the mapping does not model. */
+const UNMAPPED_VITEST_FLAG = /(?:^|\s)(?:--root|-r|--dir|--workspace|--project)(?:[\s=]|$)/;
+
+/**
+ * Every vitest config a package actually uses (TASK-575), and every reason
+ * this could not be established. Both timeout rules used to read ONLY
+ * `vitest.config.ts`, and `presets/k8s/vitest.config.k8s-e2e.ts` — run by its
+ * `test:k8s-e2e` script, hookTimeout 60_000 against `{ timeout: 180_000 }`
+ * tests with a bare `afterAll` — broke the TASK-567 rule where nothing looked.
+ *
+ * Two sources, unioned and de-duplicated by resolved path:
+ *   1. every package-root file matching `VITEST_CONFIG_NAME` (a config that
+ *      exists is assumed to be run by someone — over-read, never skip);
+ *   2. every `--config <p>` / `--config=<p>` / `-c <p>` in a package.json
+ *      script that invokes vitest, resolved against the package dir.
+ *
+ * Fail CLOSED, each as a `problems` entry: a package.json that does not parse;
+ * a script config whose value is not a plain path (`$VAR`, a backtick) or
+ * does not exist; a vitest script using `--root` / `--dir` / `--workspace` /
+ * `--project`. The primary `vitest.config.ts` is always listed (its absence is
+ * the `missing` case the config test reports).
+ *
+ * Known gap, stated: a script that reaches vitest through a wrapper (`node
+ * run-tests.mjs`) and passes the config there is not seen. None does today.
+ */
+function discoverVitestConfigs(pkgDir) {
+  const configs = new Map([[join(pkgDir, 'vitest.config.ts'), 'vitest.config.ts']]);
+  const problems = [];
+  for (const entry of readdirSync(pkgDir, { withFileTypes: true })) {
+    if (entry.isFile() && VITEST_CONFIG_NAME.test(entry.name)) configs.set(join(pkgDir, entry.name), entry.name);
+  }
+  const pkgJsonPath = join(pkgDir, 'package.json');
+  if (existsSync(pkgJsonPath)) {
+    let scripts;
+    try {
+      scripts = JSON.parse(readFileSync(pkgJsonPath, 'utf8')).scripts ?? {};
+    } catch (err) {
+      problems.push(`package.json does not parse (${err.message}) — its vitest scripts cannot be read`);
+      scripts = {};
+    }
+    for (const [name, cmd] of Object.entries(scripts)) {
+      if (typeof cmd !== 'string' || !/\bvitest\b/.test(cmd)) continue;
+      if (UNMAPPED_VITEST_FLAG.test(cmd)) {
+        problems.push(`script "${name}" runs vitest with a flag this guard cannot map files through: ${cmd}`);
+      }
+      for (const m of cmd.matchAll(/(?:^|\s)(?:--config|-c)(?:=|\s+)(\S+)/g)) {
+        const value = m[1].replace(/^(['"])(.*)\1$/, '$2');
+        if (!/^[\w./-]+$/.test(value)) {
+          problems.push(`script "${name}" names a config this guard cannot resolve: ${m[1]}`);
+          continue;
+        }
+        const path = join(pkgDir, value);
+        if (!existsSync(path)) {
+          problems.push(`script "${name}" names ${value}, which does not exist`);
+          continue;
+        }
+        if (!configs.has(path)) configs.set(path, `${value} (script "${name}")`);
+      }
+    }
+  }
+  return { configs: [...configs].map(([path, label]) => ({ path, label })), problems };
+}
+
+/** Does `rel` (posix, relative to the config's dir) belong to a config with these globs? */
+function configRuns(rel, { include, exclude }) {
+  const norm = (g) => g.replace(/^\.\//, '');
+  return include.some((g) => matchesGlob(rel, norm(g))) && !exclude.some((g) => matchesGlob(rel, norm(g)));
+}
+
+/**
+ * Every config of `pkg`, read and scored against the files it runs (TASK-575).
+ *
+ * Mapping: a source file matched by a config's `include` and not its `exclude`
+ * belongs to that config. A file matched by NO readable config of the package
+ * — a shared helper such as `k8s-e2e/helpers.ts`, which can register hooks for
+ * whichever test imports it, or an orphan test — belongs to EVERY config. That
+ * over-reads, which is the safe direction for maxima checked with `>=`.
+ * Globs are resolved against the package dir, which is where every config
+ * lives and where `pnpm --filter` runs its scripts; a config that points them
+ * elsewhere (`root`, `dir`) is refused by `readConfigBudgets`.
+ *
+ * Returns { configs: [{ label, budgets, files, maxDeclaredHookTimeout,
+ * maxDeclaredTestTimeout, maxTestAt, bareTeardowns }], problems: [string] }.
+ */
+async function resolvePackageConfigs(pkg) {
+  const { configs, problems } = discoverVitestConfigs(pkg.dir);
+  const read = [];
+  for (const c of configs) read.push({ ...c, budgets: await readConfigBudgets(c.path) });
+  const rels = pkg.fileScans.map((s) => relative(pkg.dir, s.file).split(sep).join('/'));
+  const readable = read.filter((c) => c.budgets.kind === 'ok');
+  const claimed = rels.map((rel) => readable.some((c) => configRuns(rel, c.budgets)));
+  const out = [];
+  for (const c of read) {
+    const scored = { label: c.label, budgets: c.budgets, files: [], maxDeclaredHookTimeout: 0, maxDeclaredTestTimeout: 0, maxTestAt: undefined, bareTeardowns: [] };
+    if (c.budgets.kind === 'ok') {
+      pkg.fileScans.forEach((s, i) => {
+        if (claimed[i] && !configRuns(rels[i], c.budgets)) return;
+        scored.files.push(s.file);
+        for (const d of s.declared) scored.maxDeclaredHookTimeout = Math.max(scored.maxDeclaredHookTimeout, d.ms);
+        for (const d of s.testDeclared) {
+          if (d.ms > scored.maxDeclaredTestTimeout) {
+            scored.maxDeclaredTestTimeout = d.ms;
+            scored.maxTestAt = { file: s.file, line: d.line };
+          }
+        }
+        for (const t of s.bareTeardowns) scored.bareTeardowns.push({ file: s.file, line: t.line, hook: t.hook });
+      });
+    }
+    out.push(scored);
+  }
+  return { configs: out, problems };
 }
 
 /**
@@ -385,27 +565,88 @@ async function readResolvedTestBudgets(pkgDir) {
  * omits it (that omission is also reported by the config test), so a missing key cannot
  * make this pass.
  */
-function bareTeardownViolations(pkgs, budgetsByName, repoRoot) {
+function bareTeardownViolations(pkgs, resolvedByName, repoRoot) {
   const out = [];
   for (const pkg of pkgs) {
-    const b = budgetsByName.get(pkg.name);
-    if (b === undefined) {
-      // Fail closed: a package whose config was never read has not passed.
+    const r = resolvedByName.get(pkg.name);
+    if (r === undefined) {
+      // Fail closed: a package whose configs were never read has not passed.
       out.push(`${pkg.name}: its vitest config budgets were never read`);
       continue;
     }
-    if (b.kind !== 'ok') continue; // missing / unreadable: reported by the config test
-    if (pkg.bareTeardowns.length === 0) continue;
-    const effectiveHookTimeout = b.hookTimeout ?? 10_000;
-    if (effectiveHookTimeout < pkg.maxDeclaredTestTimeout) {
-      const t = pkg.bareTeardowns[0];
-      out.push(
-        `${pkg.name}: hookTimeout ${effectiveHookTimeout} < ${pkg.maxDeclaredTestTimeout} declared by a test at ` +
-          `${relative(repoRoot, pkg.maxTestAt.file)}:${pkg.maxTestAt.line}, and ${pkg.bareTeardowns.length} bare ` +
-          `teardown(s) run under hookTimeout (first: ${t.hook} at ${relative(repoRoot, t.file)}:${t.line}) — ` +
-          'raise hookTimeout, or give each bare teardown its own timeout argument (the hook rule then holds ' +
-          'that argument to hookTimeout)',
-      );
+    for (const c of r.configs) {
+      if (c.budgets.kind !== 'ok') continue; // missing / unreadable: reported by the config test
+      if (c.bareTeardowns.length === 0) continue;
+      const effectiveHookTimeout = c.budgets.hookTimeout ?? 10_000;
+      if (effectiveHookTimeout < c.maxDeclaredTestTimeout) {
+        const t = c.bareTeardowns[0];
+        out.push(
+          `${pkg.name} [${c.label}]: hookTimeout ${effectiveHookTimeout} < ${c.maxDeclaredTestTimeout} declared by a ` +
+            `test at ${relative(repoRoot, c.maxTestAt.file)}:${c.maxTestAt.line}, and ${c.bareTeardowns.length} bare ` +
+            `teardown(s) run under hookTimeout (first: ${t.hook} at ${relative(repoRoot, t.file)}:${t.line}) — ` +
+            'raise hookTimeout, or give each bare teardown its own timeout argument (the hook rule then holds ' +
+            'that argument to hookTimeout)',
+        );
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The TASK-323 hook rule, per config (TASK-575): each config's `hookTimeout` is
+ * at least the largest timeout a hook in the files IT runs declares. Fail
+ * closed on a package that was never resolved.
+ */
+function hookRuleViolations(pkgs, resolvedByName) {
+  const out = [];
+  for (const pkg of pkgs) {
+    const r = resolvedByName.get(pkg.name);
+    if (r === undefined) {
+      out.push(`${pkg.name}: its vitest config budgets were never read`);
+      continue;
+    }
+    for (const c of r.configs) {
+      if (c.budgets.kind !== 'ok' || c.budgets.hookTimeout === undefined) continue; // reported by the config test
+      if (c.budgets.hookTimeout < c.maxDeclaredHookTimeout) {
+        out.push(
+          `${pkg.name} [${c.label}]: hookTimeout ${c.budgets.hookTimeout} < ${c.maxDeclaredHookTimeout} declared by ` +
+            "a hook in a file this config runs — a bare afterAll here gets less budget than its own file's " +
+            'beforeAll asks for',
+        );
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Every config of every package, each missing / unreadable / budget-less one
+ * as a message, plus every discovery problem (TASK-575: fail closed on a
+ * config the guard cannot read, wherever it was found).
+ */
+function configDeclarationProblems(pkgs, resolvedByName) {
+  const out = [];
+  for (const pkg of pkgs) {
+    const r = resolvedByName.get(pkg.name);
+    if (r === undefined) {
+      out.push(`${pkg.name}: its vitest configs were never read`);
+      continue;
+    }
+    for (const p of r.problems) out.push(`${pkg.name} (${pkg.reason}): ${p}`);
+    for (const c of r.configs) {
+      const b = c.budgets;
+      const at = `${pkg.name} [${c.label}] (${pkg.reason})`;
+      if (b.kind === 'missing') {
+        out.push(`${at}: no such config (a missing vitest.config.ts inherits 5s/10s defaults)`);
+        continue;
+      }
+      if (b.kind === 'unreadable') {
+        out.push(`${at}: config not readable — ${b.why}`);
+        continue;
+      }
+      if (b.testTimeout === undefined) out.push(`${at}: no testTimeout (inherits vitest's 5s)`);
+      if (b.hookTimeout === undefined) out.push(`${at}: no hookTimeout (inherits vitest's 10s)`);
     }
   }
   return out;
@@ -414,8 +655,8 @@ function bareTeardownViolations(pkgs, budgetsByName, repoRoot) {
 const packages = outOfProcessPackages(REPO_ROOT);
 
 describe('packages that leave the process declare their own timeouts (TASK-323, TASK-400)', () => {
-  /** @type {Map<string, Awaited<ReturnType<typeof readResolvedTestBudgets>>>} */
-  const budgets = new Map();
+  /** @type {Map<string, Awaited<ReturnType<typeof resolvePackageConfigs>>>} */
+  const resolved = new Map();
 
   // Bare on purpose. A hook's own timeout ARGUMENT overrides the config, so a
   // bare hook is what `scripts/vitest.config.mjs`'s `hookTimeout` actually
@@ -425,7 +666,7 @@ describe('packages that leave the process declare their own timeouts (TASK-323, 
   // whole tree; see `readResolvedTestBudgets` for the probe figure and why the
   // two land in the same range.
   beforeAll(async () => {
-    for (const pkg of packages) budgets.set(pkg.name, await readResolvedTestBudgets(pkg.dir));
+    for (const pkg of packages) resolved.set(pkg.name, await resolvePackageConfigs(pkg));
   });
 
   it('finds the out-of-process packages at all — a scan that matches nothing would pass everything below', () => {
@@ -468,26 +709,10 @@ describe('packages that leave the process declare their own timeouts (TASK-323, 
     expect(spawnOnly).toContain('packages/test-harness');
   });
 
-  it('each has a vitest.config.ts whose RESOLVED config sets both testTimeout and hookTimeout', () => {
-    const missing = [];
-    for (const pkg of packages) {
-      const b = budgets.get(pkg.name);
-      if (b.kind === 'missing') {
-        missing.push(`${pkg.name} (${pkg.reason}): no vitest.config.ts (inherits 5s/10s defaults)`);
-        continue;
-      }
-      if (b.kind === 'unreadable') {
-        missing.push(`${pkg.name} (${pkg.reason}): config not readable — ${b.why}`);
-        continue;
-      }
-      if (b.testTimeout === undefined) {
-        missing.push(`${pkg.name} (${pkg.reason}): no testTimeout (inherits vitest's 5s)`);
-      }
-      if (b.hookTimeout === undefined) {
-        missing.push(`${pkg.name} (${pkg.reason}): no hookTimeout (inherits vitest's 10s)`);
-      }
-    }
-    expect(missing).toEqual([]);
+  it('each has a vitest.config.ts, and EVERY config it uses resolves and sets both testTimeout and hookTimeout', () => {
+    // TASK-575: every config, not just `vitest.config.ts` — see
+    // `discoverVitestConfigs` for how they are found and what fails closed.
+    expect(configDeclarationProblems(packages, resolved)).toEqual([]);
   });
 
   it('no package in scope declares a hook timeout this guard cannot read', () => {
@@ -514,24 +739,34 @@ describe('packages that leave the process declare their own timeouts (TASK-323, 
     expect(unreadable).toEqual([]);
   });
 
-  it('a package with a BARE teardown has a hookTimeout of at least its largest declared test budget (TASK-567)', () => {
+  it('a config whose files hold a BARE teardown has a hookTimeout of at least their largest declared test budget (TASK-567, TASK-575)', () => {
     // See `bareTeardownViolations` for the rule and the human ruling behind it.
-    expect(bareTeardownViolations(packages, budgets, REPO_ROOT)).toEqual([]);
+    expect(bareTeardownViolations(packages, resolved, REPO_ROOT)).toEqual([]);
   });
 
-  it("each package's hookTimeout is at least the largest timeout its own hooks declare", () => {
-    const inconsistent = [];
-    for (const pkg of packages) {
-      const b = budgets.get(pkg.name);
-      if (b.kind !== 'ok' || b.hookTimeout === undefined) continue; // reported by the test above
-      if (b.hookTimeout < pkg.maxDeclaredHookTimeout) {
-        inconsistent.push(
-          `${pkg.name}: hookTimeout ${b.hookTimeout} < ${pkg.maxDeclaredHookTimeout} declared by a hook ` +
-            `in this package — a bare afterAll here gets less budget than its own file's beforeAll asks for`,
-        );
-      }
-    }
-    expect(inconsistent).toEqual([]);
+  it("each config's hookTimeout is at least the largest timeout the hooks in its files declare (TASK-575: per config)", () => {
+    expect(hookRuleViolations(packages, resolved)).toEqual([]);
+  });
+
+  it('reads presets/k8s/vitest.config.k8s-e2e.ts — the secondary config TASK-575 found unchecked', () => {
+    // Named regression, not left to the rules above: if discovery stops seeing
+    // secondary configs, every rule is green for the old reason (it never looked).
+    const k8s = resolved.get('presets/k8s');
+    expect(k8s, 'presets/k8s fell out of scope').not.toBeUndefined();
+    const e2e = k8s.configs.find((c) => c.label === 'vitest.config.k8s-e2e.ts');
+    expect(e2e?.budgets.kind).toBe('ok');
+    const rel = (f) => relative(join(REPO_ROOT, 'presets', 'k8s'), f).split(sep).join('/');
+    expect(e2e.files.map(rel)).toContain('src/__tests__/k8s-e2e/runner-owned-sessions-k8s-gap.test.ts');
+    expect(e2e.bareTeardowns.length).toBeGreaterThan(0);
+    expect(e2e.maxDeclaredTestTimeout).toBe(180_000);
+    // The main config EXCLUDES the e2e suite, so those files must not be scored
+    // against it — and the main config's own suite must not be scored against e2e.
+    const main = k8s.configs.find((c) => c.label === 'vitest.config.ts');
+    expect(main.files.map(rel)).not.toContain('src/__tests__/k8s-e2e/runner-owned-sessions-k8s-gap.test.ts');
+    expect(e2e.files.map(rel)).not.toContain('src/__tests__/acceptance.test.ts');
+    // A shared helper claimed by no config counts against BOTH (over-read).
+    expect(main.files.map(rel)).toContain('src/__tests__/k8s-e2e/helpers.ts');
+    expect(e2e.files.map(rel)).toContain('src/__tests__/k8s-e2e/helpers.ts');
   });
 });
 
@@ -993,8 +1228,8 @@ describe('the scan catches a NEW package, and the config read is a read (TASK-40
           : `export default { test: { testTimeout: 60_000, hookTimeout: ${hookTimeout} } };`;
       makePackage(name, { testSource, config: cfg });
       const pkg = outOfProcessPackages(root).find((p) => p.name === `packages/${name}`);
-      const budgetsByName = new Map([[pkg.name, await readResolvedTestBudgets(pkg.dir)]]);
-      return { pkg, violations: bareTeardownViolations([pkg], budgetsByName, root) };
+      const resolvedByName = new Map([[pkg.name, await resolvePackageConfigs(pkg)]]);
+      return { pkg, violations: bareTeardownViolations([pkg], resolvedByName, root) };
     }
 
     it('REDDENS: a bare teardown under a hookTimeout below the largest test budget — the TASK-567 shape', async () => {
@@ -1065,8 +1300,8 @@ describe('the scan catches a NEW package, and the config read is a read (TASK-40
       });
       writeFileSync(join(first.dir, 'src', '__tests__', 'b.test.ts'), bareTeardown);
       const pkg = outOfProcessPackages(root).find((p) => p.name === 'packages/split-files');
-      const budgetsByName = new Map([[pkg.name, await readResolvedTestBudgets(pkg.dir)]]);
-      expect(bareTeardownViolations([pkg], budgetsByName, root)).toHaveLength(1);
+      const resolvedByName = new Map([[pkg.name, await resolvePackageConfigs(pkg)]]);
+      expect(bareTeardownViolations([pkg], resolvedByName, root)).toHaveLength(1);
     });
 
     it('REPORTS a test budget it cannot read in the package\'s unreadable list — never counts it as zero', () => {
@@ -1085,6 +1320,200 @@ describe('the scan catches a NEW package, and the config read is a read (TASK-40
       makePackage('never-read', { testSource: [spawnLine, bigTest, bareTeardown].join('\n') });
       const pkg = outOfProcessPackages(root).find((p) => p.name === 'packages/never-read');
       expect(bareTeardownViolations([pkg], new Map(), root)).toHaveLength(1);
+    });
+  });
+
+  // TASK-575. Both rules used to read only `vitest.config.ts`, so a second
+  // config — `presets/k8s/vitest.config.k8s-e2e.ts`, hookTimeout 60_000 against
+  // `{ timeout: 180_000 }` tests and a bare `afterAll` — broke the TASK-567 rule
+  // where nothing looked. Each case builds the two-config shape and changes one
+  // thing, so each pins one branch of discovery, mapping, or fail-closed.
+  describe('every vitest config a package uses is checked, against the files it runs (TASK-575)', () => {
+    const spawnLine = "import { spawn } from 'node:child_process';";
+    const bigTest = "it('slow', { timeout: 180_000 }, async () => { await go(); });";
+    const bareTeardown = 'afterAll(async () => { await cleanup(); });';
+    const MAIN = [
+      'export default { test: {',
+      "  include: ['src/__tests__/**/*.test.ts'],",
+      "  exclude: ['src/__tests__/e2e/**'],",
+      '  testTimeout: 60_000,',
+      '  hookTimeout: 60_000,',
+      '} };',
+    ].join('\n');
+    const e2eConfig = (hookTimeout, extra = '') =>
+      [
+        'export default { test: {',
+        "  include: ['src/__tests__/e2e/**/*.test.ts'],",
+        '  testTimeout: 240_000,',
+        ...(hookTimeout === undefined ? [] : [`  hookTimeout: ${hookTimeout},`]),
+        extra,
+        '} };',
+      ].join('\n');
+
+    /**
+     * `packages/<name>`: a spawning main suite (`a.test.ts`, no budgets), an e2e
+     * suite at `src/__tests__/e2e/e.test.ts`, the MAIN config, and whatever
+     * extra files (`{ relPath: text }`) the case adds.
+     */
+    async function resolveFixture(name, { e2eSource, files = {}, scripts }) {
+      const dir = makePackage(name, { testSource: [spawnLine, "it('x', () => {});"].join('\n'), config: MAIN });
+      mkdirSync(join(dir, 'src', '__tests__', 'e2e'), { recursive: true });
+      writeFileSync(join(dir, 'src', '__tests__', 'e2e', 'e.test.ts'), e2eSource);
+      for (const [rel, text] of Object.entries(files)) {
+        mkdirSync(dirname(join(dir, rel)), { recursive: true });
+        writeFileSync(join(dir, rel), text);
+      }
+      if (scripts !== undefined) writeFileSync(join(dir, 'package.json'), JSON.stringify({ name, scripts }));
+      const pkg = outOfProcessPackages(root).find((p) => p.name === `packages/${name}`);
+      const resolved = await resolvePackageConfigs(pkg);
+      const byName = new Map([[pkg.name, resolved]]);
+      return {
+        pkg,
+        resolved,
+        bare: bareTeardownViolations([pkg], byName, root),
+        hook: hookRuleViolations([pkg], byName),
+        config: configDeclarationProblems([pkg], byName),
+      };
+    }
+
+    it('REDDENS: a secondary config found by NAME, whose own hookTimeout is below its tests — the k8s-e2e shape', async () => {
+      const { bare, config } = await resolveFixture('secondary-by-name', {
+        e2eSource: [bigTest, bareTeardown].join('\n'),
+        files: { 'vitest.config.e2e.ts': e2eConfig(60_000) },
+      });
+      expect(config).toEqual([]);
+      expect(bare).toHaveLength(1);
+      expect(bare[0]).toContain('[vitest.config.e2e.ts]');
+      expect(bare[0]).toContain('hookTimeout 60000 < 180000');
+    });
+
+    it('passes once the secondary config reaches the budget — and the MAIN config is not charged for e2e files it excludes', async () => {
+      // The main config's hookTimeout (60_000) is below the e2e test budget.
+      // Package-wide scoring (the pre-TASK-575 unit) would redden it; per-config
+      // mapping must not, because `pnpm test` never runs those files.
+      const { bare, resolved } = await resolveFixture('secondary-at-budget', {
+        e2eSource: [bigTest, bareTeardown].join('\n'),
+        files: { 'vitest.config.e2e.ts': e2eConfig(180_000) },
+      });
+      expect(bare).toEqual([]);
+      const main = resolved.configs.find((c) => c.label === 'vitest.config.ts');
+      expect(main.maxDeclaredTestTimeout).toBe(0);
+      expect(main.bareTeardowns).toEqual([]);
+    });
+
+    it('REDDENS the MAIN config when the e2e files are NOT excluded from it — mapping follows include/exclude, not the directory name', async () => {
+      const { bare } = await resolveFixture('main-runs-e2e', {
+        e2eSource: [bigTest, bareTeardown].join('\n'),
+        files: {
+          'vitest.config.ts': MAIN.replace("  exclude: ['src/__tests__/e2e/**'],\n", ''),
+          'vitest.config.e2e.ts': e2eConfig(180_000),
+        },
+      });
+      expect(bare).toHaveLength(1);
+      expect(bare[0]).toContain('[vitest.config.ts]');
+    });
+
+    it('REDDENS the hook rule per config: a secondary config below a hook budget in a file it runs', async () => {
+      const { hook } = await resolveFixture('secondary-hook-rule', {
+        e2eSource: "beforeAll(async () => { await boot(); }, 120_000);\nit('x', () => {});",
+        files: { 'vitest.config.e2e.ts': e2eConfig(60_000) },
+      });
+      expect(hook).toHaveLength(1);
+      expect(hook[0]).toContain('[vitest.config.e2e.ts]: hookTimeout 60000 < 120000');
+    });
+
+    it('finds a config named ONLY by a package.json script, however it is spelled', async () => {
+      for (const [i, cmd] of [
+        'vitest run --config configs/e2e.ts',
+        'vitest run --config=configs/e2e.ts',
+        'vitest run -c configs/e2e.ts',
+        'AX_E2E=1 vitest run --config "configs/e2e.ts"',
+      ].entries()) {
+        const { bare, config } = await resolveFixture(`script-config-${i}`, {
+          e2eSource: [bigTest, bareTeardown].join('\n'),
+          files: { 'configs/e2e.ts': e2eConfig(60_000) },
+          scripts: { test: 'vitest run', 'test:e2e': cmd },
+        });
+        expect(config, cmd).toEqual([]);
+        expect(bare, cmd).toHaveLength(1);
+        expect(bare[0], cmd).toContain('configs/e2e.ts (script "test:e2e")');
+      }
+    });
+
+    it('fails CLOSED on a secondary config it cannot read — a throw, no hookTimeout, or a fan-out', async () => {
+      const cases = [
+        ['secondary-throws', "throw new Error('boom');", 'config not readable'],
+        ['secondary-no-hook', e2eConfig(undefined), "no hookTimeout (inherits vitest's 10s)"],
+        ['secondary-projects', e2eConfig(180_000, "  projects: ['a'],"), 'sets test.projects'],
+        ['secondary-include-source', e2eConfig(180_000, "  includeSource: ['src/**/*.ts'],"), 'includeSource'],
+        ['secondary-dir', e2eConfig(180_000, "  dir: 'src',"), 'sets test.dir'],
+        ['secondary-negated', e2eConfig(180_000, "  include: ['!x/**'],"), 'negated'],
+        ['secondary-rejects', 'export default Promise.reject(new Error("late boom"));', 'late boom'],
+        ['secondary-workspace', e2eConfig(180_000, "  workspace: ['a'],"), 'sets test.workspace'],
+        ['secondary-test-root', e2eConfig(180_000, "  root: 'src',"), 'sets test.root'],
+        [
+          'secondary-top-root',
+          "export default { root: 'src', test: { testTimeout: 240_000, hookTimeout: 180_000 } };",
+          'sets root',
+        ],
+        ['secondary-include-type', e2eConfig(180_000, "  include: 'src/**/*.test.ts',"), 'test.include is not an array'],
+        ['secondary-exclude-type', e2eConfig(180_000, '  exclude: [42],'), 'test.exclude is not an array'],
+      ];
+      for (const [name, text, why] of cases) {
+        const { config } = await resolveFixture(name, {
+          e2eSource: [bigTest, bareTeardown].join('\n'),
+          files: { 'vitest.config.e2e.ts': text },
+        });
+        expect(config, name).toEqual([expect.stringContaining(why)]);
+        expect(config[0], name).toContain('[vitest.config.e2e.ts]');
+      }
+    });
+
+    it('fails CLOSED on a script it cannot follow — a missing config, a variable, an unmapped flag, a broken package.json', async () => {
+      const cases = [
+        ['script-missing', { 'test:e2e': 'vitest run --config nope.ts' }, 'nope.ts, which does not exist'],
+        ['script-variable', { 'test:e2e': 'vitest run --config $CFG' }, 'cannot resolve: $CFG'],
+        ['script-root', { 'test:e2e': 'vitest run --root e2e' }, 'cannot map files through'],
+        ['script-project', { 'test:e2e': 'vitest run --project e2e' }, 'cannot map files through'],
+        ['script-dir', { 'test:e2e': 'vitest run --dir src' }, 'cannot map files through'],
+        ['script-workspace', { 'test:e2e': 'vitest run --workspace w.ts' }, 'cannot map files through'],
+        ['script-r', { 'test:e2e': 'vitest run -r e2e' }, 'cannot map files through'],
+        ['script-root-eq', { 'test:e2e': 'vitest run --root=e2e' }, 'cannot map files through'],
+      ];
+      for (const [name, scripts, why] of cases) {
+        const { config } = await resolveFixture(name, { e2eSource: "it('x', () => {});", scripts });
+        expect(config, name).toEqual([expect.stringContaining(why)]);
+      }
+      const { config } = await resolveFixture('pkgjson-broken', {
+        e2eSource: "it('x', () => {});",
+        files: { 'package.json': '{ not json' },
+      });
+      expect(config).toEqual([expect.stringContaining('package.json does not parse')]);
+    });
+
+    it('a shared helper no config includes is charged to EVERY config (over-read, the safe direction)', async () => {
+      // `presets/k8s/src/__tests__/k8s-e2e/helpers.ts` is the real instance: a
+      // non-test file can register hooks for whichever test imports it.
+      const { pkg, bare, resolved } = await resolveFixture('shared-helper', {
+        e2eSource: "it('x', () => {});",
+        files: {
+          'vitest.config.e2e.ts': e2eConfig(180_000),
+          'src/__tests__/helpers.ts': [bigTest.replace('it(', 'export const t = () => it('), bareTeardown].join('\n'),
+        },
+      });
+      for (const c of resolved.configs) {
+        expect(c.files.map((f) => relative(pkg.dir, f)), c.label).toContain(join('src', '__tests__', 'helpers.ts'));
+      }
+      // Main (60_000) is charged with the helper's 180_000 and bare teardown; e2e (180_000) is not below it.
+      expect(bare).toEqual([expect.stringContaining('[vitest.config.ts]')]);
+    });
+
+    it('does not treat a setup file as a config', async () => {
+      const { resolved } = await resolveFixture('setup-file', {
+        e2eSource: "it('x', () => {});",
+        files: { 'vitest.setup.ts': 'export {};' },
+      });
+      expect(resolved.configs.map((c) => c.label)).toEqual(['vitest.config.ts']);
     });
   });
 
