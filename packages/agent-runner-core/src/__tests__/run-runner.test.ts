@@ -603,6 +603,60 @@ describe('runRunner', () => {
       ]);
     });
 
+    it('never lets a pulled-ahead message without a reqId displace a parked one (TASK-573)', async () => {
+      scriptInbox([
+        {
+          type: 'user-message',
+          payload: { role: 'user', content: 'first' },
+          reqId: 'req-a',
+          cursor: 1,
+        },
+        {
+          type: 'user-message',
+          payload: { role: 'user', content: 'second' },
+          reqId: 'req-b',
+          cursor: 2,
+        },
+        {
+          // No id of its own: it inherits, it does not overwrite.
+          type: 'user-message',
+          payload: { role: 'user', content: 'third' },
+          reqId: '',
+          cursor: 3,
+        },
+      ]);
+      const endTurnInput = {
+        contentBlocks: [],
+        toolResultBlocks: [],
+        readTurnId: async () => undefined,
+      } as unknown as Parameters<LoopContext['endTurn']>[0];
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage();
+          await ctx.emitChunk({ kind: 'text', text: 'a-1' });
+          await ctx.nextMessage(); // req-b parks
+          await ctx.nextMessage(); // the id-less one arrives behind it
+          await ctx.endTurn(endTurnInput);
+          await ctx.emitChunk({ kind: 'text', text: 'b-1' });
+          await ctx.endTurn(endTurnInput);
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+      const frames = fakeClient.event.mock.calls
+        .filter((c) => c[0] === 'event.stream-chunk' || c[0] === 'event.turn-end')
+        .map((c) => {
+          const p = c[1] as { reqId?: string; text?: string };
+          return `${c[0] === 'event.stream-chunk' ? `chunk:${p.text}` : 'turn-end'}@${p.reqId}`;
+        });
+      expect(frames).toEqual([
+        'chunk:a-1@req-a',
+        'turn-end@req-a',
+        'chunk:b-1@req-b',
+        'turn-end@req-b',
+      ]);
+    });
+
     it('re-polls past a delivery whose note is empty rather than waking the model', async () => {
       scriptInbox([
         { type: 'decision-resolved', decisionId: 'dec_1', outcome: 'approved', note: '   ' },
