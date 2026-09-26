@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
@@ -28,7 +28,31 @@ const startupExpression = expressions[0]!;
 type Startable = { start(): Promise<unknown> };
 type CheckedStart = (container: Startable, options: { timeoutMs: number; warn: (message: string) => void }) => Promise<unknown>;
 
-async function startConsumer(start: () => Promise<unknown>, warn: (message: string) => void, timeoutMs = 3_000): Promise<unknown> {
+// The probe budget every test gets unless it is asserting the timeout branch itself.
+// (TASK-549)
+//
+// It used to be 3_000. That is a wall-clock deadline inside the test, and the package
+// `testTimeout` in vitest.config.ts cannot reach it. On CI run 36225259523 (main at
+// be8fc794) the overflow tests got the timeout branch ("did not answer its readiness
+// probes within 3000 ms") instead of the failed-probe branch they assert. The stub's
+// overflow modes `exec node`, and a node child under CI contention can take seconds to
+// start: the same package has a measured 9087ms spawn-and-answer on CI (TASK-537).
+// Stalling only the stub's node child by 3500ms reproduces the CI error exactly. The
+// "stalled probe child" test below pins that.
+//
+// Why 20_000: it has to stay under the 30_000 `testTimeout`, so a genuine hang in a
+// test that does not expect one still fails with the helper's own named message
+// instead of vitest's generic timeout. Within that ceiling, more room is better. 20s is
+// ~2.2x the worst CI subprocess stall measured in this package. It also leaves 10s for
+// the rest of the test. This is the TEST's budget, not production's:
+// DOCKER_PREFLIGHT_TIMEOUT_MS (45s) is unchanged.
+//
+// The two `hang-*` tests still pass 1_000 explicitly, because the timeout branch is
+// what they assert. They cannot flake the wrong way: a slow child only makes the
+// timeout more certain.
+const PROBE_BUDGET_MS = 20_000;
+
+async function startConsumer(start: () => Promise<unknown>, warn: (message: string) => void, timeoutMs = PROBE_BUDGET_MS): Promise<unknown> {
   const checked = Reflect.get(harness, 'startTestContainer') as CheckedStart | undefined;
   class StubPostgres {
     start(): Promise<unknown> { return start(); }
@@ -148,6 +172,21 @@ esac
       expect(String(error)).toContain('Docker daemon readiness probe failed');
       expect(String(error)).not.toContain('PRIVATE_DIAGNOSTIC');
       expect(Object.getOwnPropertyNames(error).sort()).toEqual(['message', 'stack']);
+      expect(start).not.toHaveBeenCalled();
+    });
+
+    it('keeps the failed-probe branch when the probe child stalls past the old 3000ms budget', async () => {
+      // CI-sized startup stall, injected into ONLY the stub's node child: the vitest
+      // worker is already running, so the preload reaches nothing else. (TASK-549)
+      // Against the old 3_000 default this fails with the CI message, "did not answer
+      // its readiness probes within 3000 ms".
+      const stall = join(dir!, 'stall.mjs');
+      await writeFile(stall, 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3500);\n');
+      vi.stubEnv('NODE_OPTIONS', `--import=${pathToFileURL(stall).href}`);
+      vi.stubEnv('AX_DOCKER_TEST_MODE', 'overflow-stdout');
+      const error = await startConsumer(start, warn).then(() => null, (reason: unknown) => reason);
+      expect(String(error)).toContain('Docker daemon readiness probe failed');
+      expect(String(error)).not.toContain('PRIVATE_DIAGNOSTIC');
       expect(start).not.toHaveBeenCalled();
     });
 
