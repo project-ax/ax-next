@@ -329,20 +329,29 @@ HEAD_SHA=$(gh pr view <n> --json headRefOid --jq .headRefOid)
 # branch, same workflow config, two shas: the original push produced 6 checks — all
 # CodeQL/Analyze, NO `test` job — and the rebase push produced 11 including `test`.
 # ci.yml ran normally for sibling auto-ship branches that same day.
-# [INFERRED, not measured] The CAUSE was never diagnosed. Nondeterministic run
-# creation fits, but so does a timing story: ci.yml's `push` trigger is
-# `branches: [main]` ONLY, so a feature-branch run comes solely from the
-# `pull_request` event, and a sha pushed across PR-open / `synchronize` timing can
-# legitimately produce zero runs. "A rebase push creates one" is consistent with
-# BOTH. The gate is fail-closed either way, so the fix does not depend on which is
-# true -- but do not restate the cause as settled. "Are all reported checks
-# SUCCESS?" answers TRUE on a head whose build and tests never executed, and
-# `gh pr checks` exits 0 on it too — the CodeQL checks are real and really passed.
-# Zero-checks is NOT the failure mode; a PARTIAL check set is. Known remedy: a rebase
-# push creates the run. (A memory-only commit DID trigger one, so "small diffs skip
-# CI" is ruled out.)
+# CAUSE, MEASURED (TASK-463): THE HEAD CONFLICTED WITH main. A conflicting PR has no
+# merge ref, so GitHub fires no `pull_request` run, and ci.yml's `push` trigger is
+# `branches: [main]` only — so nothing runs it. CodeQL analyses refs/pull/<n>/head on
+# its own trigger and reports a confident green. Swept 2026-09-26 over every PR head
+# CodeQL analysed 2026-08-21..09-26 (666 shas): all 49 heads with no ci.yml run
+# conflicted with origin/main at push time (`git merge-tree`), and all 611 heads with a
+# run merged cleanly into the main they were pushed onto. One branch, both directions:
+# PR #620 f70f6f7f CONFLICTING / runs=0 / 6 CodeQL-only → resolved 7dd96d1d MERGEABLE /
+# runs=1 on the first poll, 0s after the push. That is why "a rebase push creates the
+# run": the rebase RESOLVES THE CONFLICT. A push that leaves it (an empty commit, a
+# rebase onto a main that moved again) gets no run either — PR #603 had two in a row.
+# Not the ONLY possible cause: a PR opened against a non-main base gets no ci.yml run
+# by construction, and retargeting it (`gh pr edit --base`) fires no event — none in
+# the sweep, but it exists. So the gate stays fail-closed on runs=0 WHATEVER the cause,
+# and the no-run diagnosis block below picks the remedy before anyone spends a CI cycle.
+# "Are all reported checks SUCCESS?" answers TRUE on a head whose build and tests never
+# executed, and `gh pr checks` exits 0 on it too — the CodeQL checks are real and
+# really passed. Zero-checks is NOT the failure mode; a PARTIAL check set is. (Read a
+# check COUNT only once pending==0: the bare "CodeQL" rollup row appears last, so a
+# mid-flight read undercounts. A memory-only commit DID trigger a run, so "small diffs
+# skip CI" is ruled out.)
 runs=$(gh run list --workflow ci.yml --commit "$HEAD_SHA" --json databaseId --jq 'length')
-[ "${runs:-0}" -ge 1 ] || { echo "HALT #<n>: no ci.yml run for $HEAD_SHA — rebase-push to create one"; exit 1; }
+[ "${runs:-0}" -ge 1 ] || { echo "HALT #<n>: no ci.yml run for $HEAD_SHA — run the no-run diagnosis before any rebase-push"; exit 1; }
 
 gh pr view <n> --json mergeable,statusCheckRollup     # confirm green + mergeable
 # Read conclusions only AFTER the existence check above. An EMPTY conclusion is
@@ -357,7 +366,10 @@ gh pr view <n> --json mergeable,statusCheckRollup     # confirm green + mergeabl
 #   to re-green, and continue.
 # `gh`'s `mergeable` field has been observed STALE and even UNKNOWN when a real
 # conflict existed — `git merge-tree --write-tree origin/main <branch>` (rc=0) is the
-# authority. It was right and `gh` wrong 3x in the 2026-08-24 run.
+# authority. It was right and `gh` wrong 3x in the 2026-08-24 run. UNKNOWN is the
+# transient still-computing state, not a verdict: PR #620's unchanged head f70f6f7f
+# read UNKNOWN one day and CONFLICTING the next. Treat it as "ask merge-tree" — and
+# re-read it later, it settles. Only CONFLICTING is decisive on its own.
 
 # NEVER `--delete-branch` here. Every builder is dispatched with isolation:"worktree",
 # so the PR branch is ALWAYS checked out in a worktree by the time you merge; `gh` then
@@ -372,6 +384,32 @@ state=$(gh pr view <n> --json state --jq .state)
 echo "MERGE-OK #<n>"                                         # required token
 git checkout main && git pull --ff-only
 git push origin --delete <branch> || echo "⚠ cleanup failed (non-fatal): remote branch <branch>"
+```
+
+**When the existence gate HALTs, diagnose before you rebase-push.** A rebase push fixes
+the measured cause (a conflict) and nothing else, so on a clean head it is a wasted CI
+cycle. `git merge-tree` is the cheap discriminator — local, no API call, and unlike
+`mergeable` it never answers UNKNOWN. Run this with the gate's `HEAD_SHA` still bound
+(yolo-ship's Phase 6/7 gates halt the same way; builders run it too):
+
+```bash
+# merge-tree exits 1 BOTH for a conflict AND for "not something we can merge" (a head
+# object missing from this clone — measured, git 2.52), so prove both objects exist
+# before trusting its rc. Anything this block cannot decide is UNDIAGNOSED, never
+# "clean": a false NOT-CONFLICT sends the reader to close+reopen a PR that needs a
+# rebase, and a false CONFLICT sends them to rebase a PR nobody looked at.
+if ! git fetch -q origin main; then
+  echo "NO-RUN-UNDIAGNOSED #<n>: fetch of origin/main failed — a stale main decides nothing"; exit 1
+elif ! git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null; then
+  echo "NO-RUN-UNDIAGNOSED #<n>: $HEAD_SHA is not in this clone — git fetch origin <branch>, then re-run"
+else
+  git merge-tree --write-tree origin/main "$HEAD_SHA" >/dev/null 2>&1; mt=$?
+  case "$mt" in
+    1) echo "NO-RUN-CONFLICT #<n>: $HEAD_SHA conflicts with origin/main — no merge ref, so no pull_request run. Rebase onto origin/main, resolve, push; the run appears on that push." ;;
+    0) echo "NO-RUN-NOT-CONFLICT #<n>: $HEAD_SHA merges cleanly — a rebase push will NOT help. Check the PR base is main (ci.yml runs only for PRs into main); after a --base retarget, close + reopen the PR." ;;
+    *) echo "NO-RUN-UNDIAGNOSED #<n>: merge-tree rc=$mt" ;;
+  esac
+fi
 ```
 
 **`MERGE-OK #<n>` is the gate.** Its absence halts the queue; a `⚠ cleanup` line never

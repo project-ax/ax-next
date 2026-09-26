@@ -587,14 +587,19 @@ digraph ship {
   # where nothing ran: the downstream merge gates would still block it, but you would
   # have handed off a false green and the card churns. Do NOT declare CI green — and in
   # orchestrated mode do NOT report `ci: green` — unless this passes.
-  [ "${runs:-0}" -ge 1 ] || { echo "⚠ NO ci.yml RUN for $HEAD_SHA — NOT green; rebase-push to create one"; exit 1; }
+  [ "${runs:-0}" -ge 1 ] || { echo "⚠ NO ci.yml RUN for $HEAD_SHA — NOT green; run the no-run diagnosis before any rebase-push"; exit 1; }
   ```
   Measured 2026-08-24, one branch, two shas: the original push produced **6 checks — all
   CodeQL/Analyze, no `test` job**; the rebase push produced **11** including `test`. ci.yml ran
-  normally for sibling branches the same day. **[INFERRED, not measured]** the cause was never
-  diagnosed — nondeterministic run creation fits, but so does timing (`ci.yml`'s `push` trigger is
-  `branches: [main]` only, so feature-branch runs come solely from the `pull_request` event). The
-  gate is fail-closed either way; do not restate the cause as settled. Zero-checks
+  normally for sibling branches the same day. **Cause, measured (TASK-463): the head conflicted
+  with `main`.** A conflicting PR has no merge ref, so GitHub fires no `pull_request` run (and
+  `ci.yml`'s `push` trigger is `branches: [main]` only), while CodeQL analyses the head on its own
+  trigger. Across 666 PR heads (2026-08-21..09-26) all 49 with no run conflicted, and all 611 with a
+  run merged cleanly — the rebase push "works" because it resolves the conflict. It is not the only
+  possible cause (a non-main base, or a `--base` retarget, also yields no run), so before any
+  rebase-push run the **no-run diagnosis** block in `auto-ship/SKILL.md` › Merge queue: it reads
+  `git merge-tree` and says CONFLICT, NOT-CONFLICT or UNDIAGNOSED. The gate stays fail-closed
+  whatever the cause. Zero-checks
   is not the failure mode — a partial check set is, and `gh pr checks` exits 0 on it because
   the CodeQL checks are real and really passed. Also: an **empty conclusion is PENDING, not
   success**, and status reads have flapped both ways for 15+ min (settle with several consecutive
@@ -642,7 +647,8 @@ git push origin --delete <branch> || echo "⚠ cleanup failed (non-fatal)"
 
 If the PR is **not mergeable** because `main` moved while you worked: check out
 the branch, `git rebase origin/main`, resolve conflicts, push, wait for CI to
-re-green — and a rebase push is also the remedy when **no `ci.yml` run exists**, so
+re-green — and a rebase push is also the remedy when **no `ci.yml` run exists** *and* the
+head conflicts (the measured cause — Phase 6; run the no-run diagnosis first), so
 re-assert existence for the NEW head (`gh run list --workflow ci.yml --commit <sha>`,
 where `<sha>` is the **full 40-char** `headRefOid` — an abbreviation silently matches
 nothing)
