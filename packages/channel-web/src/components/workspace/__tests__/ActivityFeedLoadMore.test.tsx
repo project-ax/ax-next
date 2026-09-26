@@ -24,7 +24,7 @@
  *
  * TASK-501.
  */
-import { useLayoutEffect, useRef } from 'react';
+import { Profiler, useLayoutEffect, useRef, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { workspaceApi } from '@/lib/workspace-api';
@@ -344,5 +344,142 @@ describe('every failure is announced (TASK-541)', () => {
     const announcer = document.querySelector('[data-activity-announcer]')!;
     expect(announcer.getAttribute('aria-live')).toBe('polite');
     expect(within(announcer as HTMLElement).getByText(PAGE_1_FAILURE)).toBeInTheDocument();
+  });
+});
+
+/*
+  TASK-545. The hook lives in WorkspaceShell, above the tabs, so leaving
+  "What it did" and coming back remounts the feed with `error` still set. A
+  region mounted in the same commit as its text is born full — the create-and-
+  fill-together shape screen readers skip — so the failure has to arrive in a
+  region that already existed, empty, for at least one commit.
+*/
+describe('a feed that mounts already failed (TASK-545)', () => {
+  /*
+    Recorded from a `Profiler` rather than the parent's layout effect: the
+    move into the region is a state update INSIDE the feed, which re-renders
+    the feed alone. A parent layout effect never runs for that commit, so it
+    would record the first frame and then miss the one that matters.
+    `onRender` fires on every commit under it, with the DOM already written.
+  */
+  const tabFrames: Frame[] = [];
+
+  function record(root: HTMLElement | null) {
+    if (root === null) return;
+    const text = root.textContent ?? '';
+    const announcer = root.querySelector('[data-activity-announcer]');
+    tabFrames.push({
+      pagesOnScreen: [...PAGE_OF.keys()]
+        .filter((t) => text.includes(t))
+        .map((t) => PAGE_OF.get(t)),
+      errorText: null,
+      announcerMounted: announcer !== null,
+      anyFailureShown: /could not load/i.test(text),
+      announcerText: announcer === null ? null : (announcer.textContent ?? ''),
+      announcerNode: announcer,
+    });
+  }
+
+  function TabHarness() {
+    const feed = useActivityFeed();
+    const [onTab, setOnTab] = useState(true);
+    const ref = useRef<HTMLDivElement>(null);
+    return (
+      <div>
+        <button type="button" onClick={() => setOnTab((v) => !v)}>
+          toggle tab
+        </button>
+        <div ref={ref}>
+          {onTab && (
+            <Profiler id="feed" onRender={() => record(ref.current)}>
+              <ActivityFeed
+                events={feed.events}
+                agents={AGENTS}
+                loading={feed.loading}
+                error={feed.error}
+                hasMore={feed.hasMore}
+                onLoadMore={feed.loadMore}
+              />
+            </Profiler>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  function announcementsIn(fs: Frame[], match: RegExp): number {
+    let n = 0;
+    let prev = false;
+    for (const f of fs) {
+      const now = f.announcerText !== null && match.test(f.announcerText);
+      if (now && !prev) n += 1;
+      prev = now;
+    }
+    return n;
+  }
+
+  beforeEach(() => {
+    tabFrames.length = 0;
+  });
+
+  /** Leave the tab and come back; returns only the frames of the new mount. */
+  async function tabAwayAndBack(): Promise<Frame[]> {
+    const toggle = screen.getByRole('button', { name: 'toggle tab' });
+    fireEvent.click(toggle);
+    expect(document.querySelector('[data-activity-announcer]')).toBeNull();
+    tabFrames.length = 0;
+    fireEvent.click(toggle);
+    await waitFor(() => {
+      expect(document.querySelector('[data-activity-announcer]')).not.toBeNull();
+    });
+    return [...tabFrames];
+  }
+
+  function expectAnnouncedOnceAfterAnEmptyCommit(fs: Frame[], match: RegExp) {
+    // The remount really was born failed — or everything below is vacuous.
+    expect(fs.length).toBeGreaterThan(1);
+    expect(fs[0]!.anyFailureShown).toBe(true);
+    // Its first commit: the region is there, and it says nothing.
+    expect(fs[0]!.announcerMounted).toBe(true);
+    expect(fs[0]!.announcerText).toBe('');
+    // A later commit fills it — once, and in the same node.
+    expect(announcementsIn(fs, match)).toBe(1);
+    expect(fs[fs.length - 1]!.announcerText).toMatch(match);
+    expect(oneRegionNode(fs)).toBe(true);
+    // A sighted reader never sees the failure blink out on the way.
+    for (const f of fs) expect(f.anyFailureShown).toBe(true);
+    // At rest it is said once, by the region — no second copy beside it.
+    const all = document.body.textContent ?? '';
+    expect(all.match(new RegExp(match.source, 'gi'))).toHaveLength(1);
+  }
+
+  it('announces a page-1 failure on the way back to the tab', async () => {
+    activityMock.mockRejectedValueOnce(new Error('network down'));
+    render(<TabHarness />);
+    await screen.findByText(PAGE_1_FAILURE);
+
+    const fs = await tabAwayAndBack();
+    expectAnnouncedOnceAfterAnEmptyCommit(fs, PAGE_1_FAILURE);
+    expect(screen.queryByRole('alert')).toBeNull();
+    // Nothing refetched: the hook's state is what the new mount was born into.
+    expect(activityMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('announces a failed Load more on the way back, rows and all', async () => {
+    activityMock.mockResolvedValueOnce({
+      events: PAGE_1_TEXT.map(row),
+      nextBefore: '2026-09-20T00:00:00.000Z',
+    });
+    activityMock.mockRejectedValueOnce(new Error('network down'));
+    render(<TabHarness />);
+    await screen.findByText(PAGE_1_TEXT[0]!);
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    await screen.findByText(ERROR_SENTENCE);
+
+    const fs = await tabAwayAndBack();
+    expectAnnouncedOnceAfterAnEmptyCommit(fs, ERROR_SENTENCE);
+    for (const f of fs) {
+      expect(f.pagesOnScreen.filter((p) => p === 1)).toHaveLength(PAGE_1_TEXT.length);
+    }
   });
 });
