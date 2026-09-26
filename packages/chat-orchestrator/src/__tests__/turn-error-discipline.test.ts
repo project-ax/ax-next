@@ -45,7 +45,15 @@ function exits(): Array<{ line: number; terminated: boolean; surfaced: boolean }
   const lines = SOURCE.split('\n');
   const out: Array<{ line: number; terminated: boolean; surfaced: boolean }> = [];
   lines.forEach((line, i) => {
-    if (!line.includes("bus.fire('chat:end', ctx, { outcome })")) return;
+    // TASK-551: every orchestrator chat:end goes through the bounded
+    // `fireChatEvent` helper. A bare `bus.fire` is still matched, so an exit
+    // written the old way is not invisible to the surfacing check below.
+    if (
+      !line.includes("fireChatEvent('chat:end', ctx, { outcome })") &&
+      !line.includes("bus.fire('chat:end', ctx, { outcome })")
+    ) {
+      return;
+    }
     let literal = -1;
     for (let j = i; j >= Math.max(0, i - 40); j--) {
       if (/AgentOutcome = \{|\boutcome\s*=\s*\{/.test(lines[j]!)) {

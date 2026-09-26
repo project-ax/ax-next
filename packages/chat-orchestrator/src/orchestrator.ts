@@ -6,6 +6,7 @@ import {
   type AgentContext,
   type AgentMessage,
   type AgentOutcome,
+  type FireResult,
   type HookBus,
 } from '@ax/core';
 // Shared `sandbox:open-session` contract. The orchestrator CONSTRUCTS the
@@ -144,6 +145,12 @@ export interface ChatOrchestratorConfig {
    * and the turn proceeds. Exposed so tests need not wait a minute.
    */
   chatStartSubscriberTimeoutMs?: number;
+  /**
+   * Bound on each subscriber of the `chat:end`, `chat:turn-error` and
+   * `chat:permission-request` fires THIS plugin makes, in ms. Defaults to
+   * `CHAT_EVENT_SUBSCRIBER_TIMEOUT_MS` (30 s). Exposed so tests need not wait.
+   */
+  chatEventSubscriberTimeoutMs?: number;
   // One-shot mode (default true for 6.5a): on the first `chat:turn-end` the
   // orchestrator queues a `cancel` entry into the runner's inbox, so the
   // runner exits cleanly after processing the single user message and emits
@@ -894,6 +901,80 @@ export const AGENT_INVOKE_TIMEOUT_MS = Number.POSITIVE_INFINITY;
  */
 export const CHAT_START_SUBSCRIBER_TIMEOUT_MS = 60_000;
 
+/**
+ * The bound on EACH subscriber of the `chat:end`, `chat:turn-error` and
+ * `chat:permission-request` fires this orchestrator makes (TASK-551), passed
+ * to `HookBus.fire` as `subscriberTimeoutMs`. Same mechanism as
+ * `CHAT_START_SUBSCRIBER_TIMEOUT_MS`: a subscriber past it is skipped and
+ * logged `hook_subscriber_timed_out`, and the rest still run.
+ *
+ * WHO WAITS, AND WHAT A HANG COST before this bound:
+ *
+ *  - `chat:end` — every fire here is a SYNTHESIZED outcome (a veto, a failed
+ *    resolve/spawn/queue, a sandbox that exited early, a wedged runner past
+ *    `chatTimeoutMs`), and `agent:invoke` awaits it before it returns. That
+ *    call has no deadline of its own (`AGENT_INVOKE_TIMEOUT_MS`), so one hung
+ *    subscriber pinned the turn open forever — on the timeout path, AFTER the
+ *    turn had already been given its full ten minutes.
+ *  - `chat:turn-error` — awaited on the same abnormal-end paths, just before
+ *    `chat:end`, so a hang there hung the turn the same way. It is also
+ *    awaited inside this plugin's `session:terminate` and `chat:end`
+ *    subscribers, where a hang stalled the fire that delivered them.
+ *  - `chat:permission-request` — the up-front authored-connector card is
+ *    awaited during turn setup (before `chatTimeoutMs` is armed), and the
+ *    reactive egress-wall card is awaited inside this plugin's
+ *    `event.http-egress` subscriber.
+ *
+ * Nothing that subscribes to them is load-bearing for the turn's outcome: the
+ * subscribers write an SSE frame, persist a display event (@ax/conversations),
+ * forget an activity line (@ax/agent-activity), or kick off DETACHED memory
+ * extraction that returns to the bus immediately (@ax/memory,
+ * @ax/memory-strata). So we proceed past a hung one, as chat:start does, and
+ * the turn ends with the outcome it already had. The cost of a skip is that
+ * one subscriber's view of that event may be missing (e.g. no persisted error
+ * row), which the timed-out line makes visible.
+ *
+ * WHY 30 s. Twice the 15 s stall watch, so a slow subscriber names itself
+ * (`hook_subscriber_stalled`) with 15 s of runway. Each subscriber's healthy
+ * work is one frame write or one row write, far inside it. Shorter than
+ * chat:start's 60 s because nothing here does chat:start's cold-tier fan-out.
+ *
+ * WHAT IS NOT BOUNDED, on purpose: the HAPPY-PATH `chat:end` that @ax/ipc-core
+ * fires when the runner POSTs `event.chat-end`. `agent:invoke` does not await
+ * that fire — this plugin's own subscriber resolves the turn's waiter from
+ * inside it — so a hung subscriber there cannot hold the turn past
+ * `chatTimeoutMs`, after which the bounded synthesized fire above takes over.
+ * That is still a real cost, stated plainly: a hung subscriber registered
+ * AHEAD of ours keeps our subscriber from ever running, so a turn the runner
+ * finished is reported as `chat-run-timeout` ten minutes later (and the
+ * runner's POST never gets its reply). No subscriber in the tree today can do
+ * that — every one returns promptly or detaches its work. And bounding it changes fire()'s microtask timing on the path every
+ * successful turn takes: TASK-514 measured exactly that change breaking
+ * preset-k8s acceptance's chat:end-once witness. Likewise unbounded, and
+ * already bounded by something else: @ax/skill-broker's request_capability
+ * card (inside a tool with a 30 s service timeout) and @ax/channel-web's
+ * dispatch-failed turn-error (fire-and-forget; nobody awaits it).
+ *
+ * Like chat:start's bound, it does not STOP the subscriber (no cancellation
+ * exists), only its say over this fire.
+ */
+export const CHAT_EVENT_SUBSCRIBER_TIMEOUT_MS = 30_000;
+
+/**
+ * Fail at boot, not on every turn: an invalid bound would make each bounded
+ * fire reject (HookBus.fire validates it), so catch it here.
+ */
+function validSubscriberBound(name: string, value: number): number {
+  if (value === Number.POSITIVE_INFINITY || (Number.isFinite(value) && value >= 0)) {
+    return value;
+  }
+  throw new PluginError({
+    code: 'invalid-payload',
+    plugin: PLUGIN_NAME,
+    message: `${name} must be a non-negative finite number or Infinity (got ${value})`,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // PR 2 (provider-agnostic runner, design doc §1) — runner id → binary path.
 //
@@ -1140,7 +1221,7 @@ export function createOrchestrator(
       );
       if (card === null) continue;
       fired.add(key);
-      await bus.fire('chat:permission-request', ctx, card);
+      await fireChatEvent('chat:permission-request', ctx, card);
     }
     upfrontConnectorCardsByConv.set(ctx.conversationId, fired);
   }
@@ -1235,7 +1316,7 @@ export function createOrchestrator(
     // (formatServiceDiagnosis); we forward it verbatim and the renderer treats
     // it as untrusted text. Omitted for ordinary errors so the wire stays lean.
     ctx.logger.info('chat_turn_error', { reqId, reason, ...(detail !== undefined ? { detail } : {}) });
-    await bus.fire('chat:turn-error', ctx, {
+    await fireChatEvent('chat:turn-error', ctx, {
       reqId,
       reason,
       ...(detail !== undefined ? { detail } : {}),
@@ -1319,7 +1400,7 @@ export function createOrchestrator(
       ctx.logger.info('reactive_wall_card', { sessionId, host, reqId });
       // The bus isolates subscriber throws (HookBus.fire), so a misbehaving
       // SSE handler can't break the egress audit path.
-      await bus.fire('chat:permission-request', ctx, {
+      await fireChatEvent('chat:permission-request', ctx, {
         kind: 'host',
         host,
         sessionId,
@@ -1390,21 +1471,26 @@ export function createOrchestrator(
   }
 
   const chatTimeoutMs = config.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS;
-  const chatStartSubscriberTimeoutMs =
-    config.chatStartSubscriberTimeoutMs ?? CHAT_START_SUBSCRIBER_TIMEOUT_MS;
-  // Fail at boot, not on every turn: an invalid bound would make each
-  // `chat:start` fire reject (HookBus.fire validates it), so catch it here.
-  if (
-    !(
-      chatStartSubscriberTimeoutMs === Number.POSITIVE_INFINITY ||
-      (Number.isFinite(chatStartSubscriberTimeoutMs) && chatStartSubscriberTimeoutMs >= 0)
-    )
-  ) {
-    throw new PluginError({
-      code: 'invalid-payload',
-      plugin: PLUGIN_NAME,
-      message: `chatStartSubscriberTimeoutMs must be a non-negative finite number or Infinity (got ${chatStartSubscriberTimeoutMs})`,
-    });
+  const chatStartSubscriberTimeoutMs = validSubscriberBound(
+    'chatStartSubscriberTimeoutMs',
+    config.chatStartSubscriberTimeoutMs ?? CHAT_START_SUBSCRIBER_TIMEOUT_MS,
+  );
+  const chatEventSubscriberTimeoutMs = validSubscriberBound(
+    'chatEventSubscriberTimeoutMs',
+    config.chatEventSubscriberTimeoutMs ?? CHAT_EVENT_SUBSCRIBER_TIMEOUT_MS,
+  );
+
+  // TASK-551 — every `chat:end` / `chat:turn-error` / `chat:permission-request`
+  // this plugin fires goes through here, so each subscriber is bounded by
+  // `chatEventSubscriberTimeoutMs`. See CHAT_EVENT_SUBSCRIBER_TIMEOUT_MS for
+  // who waits on these and why the runner-reported `chat:end` (fired by
+  // @ax/ipc-core, not here) is deliberately left unbounded.
+  function fireChatEvent<P>(
+    hook: 'chat:end' | 'chat:turn-error' | 'chat:permission-request',
+    ctx: AgentContext,
+    payload: P,
+  ): Promise<FireResult<P>> {
+    return bus.fire(hook, ctx, payload, { subscriberTimeoutMs: chatEventSubscriberTimeoutMs });
   }
   const oneShot = config.oneShot ?? true;
   const keepAlive = config.keepAlive ?? false;
@@ -1504,7 +1590,7 @@ export function createOrchestrator(
       // the SSE is the only signal. Without fireTurnError a vetoed chat:start
       // would leave the client spinning on "Thinking…" forever.
       await fireTurnError(ctx, ctx.reqId, outcome.reason);
-      await bus.fire('chat:end', ctx, { outcome });
+      await fireChatEvent('chat:end', ctx, { outcome });
       return outcome;
     }
 
@@ -1539,7 +1625,7 @@ export function createOrchestrator(
       // doesn't hang (coarse `reason` only — the ACL code, not the raw err;
       // see the chat:start note above).
       await fireTurnError(ctx, ctx.reqId, outcome.reason);
-      await bus.fire('chat:end', ctx, { outcome });
+      await fireChatEvent('chat:end', ctx, { outcome });
       return outcome;
     }
 
@@ -1776,7 +1862,7 @@ export function createOrchestrator(
         // F2b — surface on the SSE (waiter already unregistered above, so
         // onChatEnd skips it; original ctx.reqId → SSE matches by reqId).
         await fireTurnError(ctx, ctx.reqId, outcome.reason);
-        await bus.fire('chat:end', ctx, { outcome });
+        await fireChatEvent('chat:end', ctx, { outcome });
         return outcome;
       }
 
@@ -1814,7 +1900,7 @@ export function createOrchestrator(
         if (outcome.kind === 'terminated') {
           await fireTurnError(ctx, ctx.reqId, outcome.reason);
         }
-        await bus.fire('chat:end', ctx, { outcome });
+        await fireChatEvent('chat:end', ctx, { outcome });
       }
       // No handle.kill() — we did not open this sandbox.
       return outcome;
@@ -1898,7 +1984,7 @@ export function createOrchestrator(
       // is the originating agent:invoke reqId (never IPC-restamped on this
       // synchronous path), so the SSE matches the exact turn.
       await fireTurnError(ctx, ctx.reqId, outcome.reason);
-      await bus.fire('chat:end', ctx, { outcome });
+      await fireChatEvent('chat:end', ctx, { outcome });
       return outcome;
     }
     if (!proxyOpenLoaded) {
@@ -1915,7 +2001,7 @@ export function createOrchestrator(
       // TASK-22 — pre-waiter early-return: surface on the SSE so the client
       // doesn't hang (see the proxy-hooks-misconfigured note above).
       await fireTurnError(ctx, ctx.reqId, outcome.reason);
-      await bus.fire('chat:end', ctx, { outcome });
+      await fireChatEvent('chat:end', ctx, { outcome });
       return outcome;
     }
     let proxyConfig: ProxyConfig;
@@ -1951,7 +2037,7 @@ export function createOrchestrator(
       // TASK-22 — pre-waiter early-return: surface on the SSE so the client
       // doesn't hang (see the proxy-hooks-misconfigured note above).
       await fireTurnError(ctx, ctx.reqId, outcome.reason);
-      await bus.fire('chat:end', ctx, { outcome });
+      await fireChatEvent('chat:end', ctx, { outcome });
       return outcome;
     }
     const useProviderDefaults = allowedHostsMissing; // and therefore both
@@ -1993,7 +2079,7 @@ export function createOrchestrator(
         // reason only; the offending model ref stays in host logs.
         ctx.logger.warn('agent_model_provider_unknown', { model: agent.model });
         await fireTurnError(ctx, ctx.reqId, outcome.reason);
-        await bus.fire('chat:end', ctx, { outcome });
+        await fireChatEvent('chat:end', ctx, { outcome });
         return outcome;
       }
       providerDefaults = {
@@ -2050,7 +2136,7 @@ export function createOrchestrator(
         // doesn't hang (coarse `reason` only; the raw `err` stays on the audit
         // chat:end outcome — same pattern as skill-resolve-failed below).
         await fireTurnError(ctx, ctx.reqId, outcome.reason);
-        await bus.fire('chat:end', ctx, { outcome });
+        await fireChatEvent('chat:end', ctx, { outcome });
         return outcome;
       }
     }
@@ -2085,7 +2171,7 @@ export function createOrchestrator(
         // coarse `reason` crosses to the client; the raw `err` stays on the
         // audit chat:end outcome.
         await fireTurnError(ctx, ctx.reqId, outcome.reason);
-        await bus.fire('chat:end', ctx, { outcome });
+        await fireChatEvent('chat:end', ctx, { outcome });
         return outcome;
       }
     }
@@ -2312,7 +2398,7 @@ export function createOrchestrator(
       // (coarse `reason` only — never the raw err / descriptor detail). Same
       // shape as the chat:start / agent-resolve early-returns above.
       await fireTurnError(ctx, ctx.reqId, outcome.reason);
-      await bus.fire('chat:end', ctx, { outcome });
+      await fireChatEvent('chat:end', ctx, { outcome });
       return outcome;
     }
     // Append connector slots AFTER the skill slots so the bare-env projection's
@@ -2517,7 +2603,7 @@ export function createOrchestrator(
       // `err` stays on the audit chat:end outcome (no credential/decryption
       // detail leaks).
       await fireTurnError(ctx, ctx.reqId, outcome.reason);
-      await bus.fire('chat:end', ctx, { outcome });
+      await fireChatEvent('chat:end', ctx, { outcome });
       return outcome;
     }
 
@@ -2687,7 +2773,7 @@ export function createOrchestrator(
       // above, so onChatEnd won't fire turn-error for the chat:end below; we
       // hold the original ctx.reqId here, so the SSE matches by reqId.
       await fireTurnError(ctx, ctx.reqId, outcome.reason, detail);
-      await bus.fire('chat:end', ctx, { outcome });
+      await fireChatEvent('chat:end', ctx, { outcome });
       return outcome;
     }
 
@@ -2773,7 +2859,7 @@ export function createOrchestrator(
       // F2b — surface on the SSE (waiter already unregistered above, so
       // onChatEnd skips it; original ctx.reqId → SSE matches by reqId).
       await fireTurnError(ctx, ctx.reqId, outcome.reason);
-      await bus.fire('chat:end', ctx, { outcome });
+      await fireChatEvent('chat:end', ctx, { outcome });
       return outcome;
     }
 
@@ -2843,7 +2929,7 @@ export function createOrchestrator(
       if (outcome.kind === 'terminated') {
         await fireTurnError(ctx, ctx.reqId, outcome.reason);
       }
-      await bus.fire('chat:end', ctx, { outcome });
+      await fireChatEvent('chat:end', ctx, { outcome });
     }
 
     // 7. Kill the sandbox unless we're deliberately leaving it warm. We keep
