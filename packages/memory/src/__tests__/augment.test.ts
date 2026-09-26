@@ -1000,9 +1000,10 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
       expect(body).not.toContain('degraded');
     });
 
-    // TASK-515: the `degraded` array's ELEMENTS are not yet guaranteed to be
-    // strings. Dropping one we cannot read would be silently discarding a
-    // degradation signal, which is the one thing this section exists not to do.
+    // The augment reads `facts:recall` directly, so `memory:recall`'s element
+    // guard (TASK-515) does not cover it and a flag here need not be a string.
+    // Dropping one we cannot read would be silently discarding a degradation
+    // signal, which is the one thing this section exists not to do.
     it('still surfaces a degradation flag that is not a string', async () => {
       const { bus, ctx } = busWithEngine([], [{ weird: true }, 'semantic']);
       const body = await buildMemoryBlock(bus, ctx, FACTS_RECALL_HOOK);

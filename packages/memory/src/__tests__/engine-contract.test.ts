@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { HookBus, makeAgentContext, type AgentContext } from '@ax/core';
+import { HookBus, makeAgentContext, PluginError, type AgentContext } from '@ax/core';
 
 import { createMemoryPlugin } from '../plugin.js';
 import type { MemoryRecallOutput, MemoryRememberOutput } from '../types.js';
@@ -155,7 +155,7 @@ describe('@ax/memory — what actually goes down the wire', () => {
   });
 });
 
-describe('@ax/memory — degraded passes through untouched', () => {
+describe('@ax/memory — degraded passes through untouched, once readable', () => {
   it('forwards an unknown flag a newer engine raises', async () => {
     // Typed as `string[]` and copied, not mapped through a local union: a
     // second copy of the vocabulary here would silently drop any flag the
@@ -205,6 +205,43 @@ describe('@ax/memory — degraded passes through untouched', () => {
       ).rejects.toThrow(/non-array degraded/);
     },
   );
+
+  // The ELEMENTS, not just the array they arrived in — the same step
+  // `toMemoryStatement` takes for `statements` rows. A flag we cannot read is
+  // not a flag we may hand a caller: `MemoryRecallOutput.degraded` promises
+  // `string[]`, and passing `42` or `null` through would put a wrong-typed
+  // value on the caller-facing payload. Throwing (not dropping) because a
+  // dropped element is a silently discarded degradation signal, and throwing
+  // (not coercing) because `String(null)` is a flag name the engine never
+  // raised.
+  it.each([
+    ['a number', [42]],
+    ['null', [null]],
+    ['an object beside a real flag', ['semantic', { flag: 'ranking' }]],
+    ['undefined', [undefined]],
+    // A HOLE, not an `undefined` element. `Array.prototype.every` visits no
+    // index for a hole, so an `every`-shaped guard passes `[, 'semantic']`
+    // and the spread below then materializes it as a real `undefined`.
+    ['a hole', [, 'semantic']],
+  ])('throws when a degraded element is %s', async (_label, degraded) => {
+    const { bus } = await busWithEngine({ recall: { statements: [], degraded } });
+    const err = await bus
+      .call<Record<string, never>, MemoryRecallOutput>('memory:recall', ctx(), {})
+      .then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+    expect(err).toBeInstanceOf(PluginError);
+    expect(err).toMatchObject({
+      code: 'invalid-return',
+      plugin: '@ax/memory',
+      hookName: 'memory:recall',
+    });
+    expect((err as Error).message).toMatch(/non-string degraded flag/);
+    // Message hygiene, as the row guard keeps it: the engine-supplied value
+    // never reaches the message.
+    expect((err as Error).message).not.toMatch(/42|ranking|\[object/);
+  });
 });
 
 // A malformed answer is an ERROR, not an empty memory. "No facts" and "could

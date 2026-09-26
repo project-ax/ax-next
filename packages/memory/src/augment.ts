@@ -394,11 +394,13 @@ function renderDigest(
  * exists to prevent: the model would reason from a partial memory believing
  * it was the whole one.
  *
- * Entries are coerced with `String()` rather than filtered to strings.
- * `@ax/memory`'s own `degraded` passthrough guarantees the ARRAY but not its
- * elements (a known gap, TASK-515), and dropping an element we could not read
- * would be silently discarding a degradation signal — the one thing this
- * section exists not to do. Everything is escaped either way.
+ * Entries are coerced with `String()` rather than filtered to strings. This
+ * block reads the engine's `facts:recall` answer DIRECTLY, not through
+ * `memory:recall` — so the element guard that handler applies (TASK-515: a
+ * non-string flag is an `invalid-return` there) never runs on what arrives
+ * here, and the `recall` helper below guarantees only the ARRAY. Dropping an element
+ * we could not read would be silently discarding a degradation signal — the
+ * one thing this section exists not to do. Everything is escaped either way.
  */
 function renderDegraded(degraded: unknown[]): string {
   const flags = degraded

@@ -578,6 +578,28 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
               message: `${FACTS_RECALL_HOOK} returned a non-array degraded; a degradation signal we cannot read is not the same as no degradation`,
             });
           }
+          // And its ELEMENTS, the same step `toMemoryStatement` takes for
+          // `statements` rows: validating the array but not what is in it
+          // would hand a caller `[42]` or `[null]` on a payload typed
+          // `string[]`. An unreadable element is thrown on, not dropped (a
+          // dropped element is a silently discarded degradation signal) and
+          // not coerced (`String(null)` is a flag the engine never raised).
+          // The message is a static literal: the element is engine-supplied
+          // and never interpolated. Only the TYPE is checked — the vocabulary
+          // is deliberately open, so a flag a newer engine learned to raise
+          // still passes through verbatim below. `for...of`, not `every`:
+          // `every` skips a hole, and the spread below would then hand the
+          // caller that hole as a real `undefined`.
+          for (const flag of result.degraded ?? []) {
+            if (typeof flag !== 'string') {
+              throw new PluginError({
+                code: 'invalid-return',
+                plugin: PLUGIN_NAME,
+                hookName: MEMORY_RECALL_HOOK,
+                message: `${FACTS_RECALL_HOOK} returned a non-string degraded flag; a degradation signal we cannot read is not one we may hand a caller`,
+              });
+            }
+          }
 
           for (const row of result.statements) {
             toMemoryStatement(row);
