@@ -266,9 +266,7 @@ describe('a clamped activity row (TASK-436)', () => {
           awaitingScope
         />,
       );
-      expect(screen.getByRole('status')).toHaveTextContent(
-        'Reading the record',
-      );
+      expect(screen.getByText('Reading the record\u2026')).toBeInTheDocument();
       expect(screen.queryByText('Somebody else\u2019s row')).toBeNull();
     });
 
@@ -300,7 +298,7 @@ describe('a clamped activity row (TASK-436)', () => {
           error="We could not load the record."
         />,
       );
-      expect(screen.getByRole('status')).toBeInTheDocument();
+      expect(screen.getByText('Reading the record\u2026')).toBeInTheDocument();
       expect(screen.queryByRole('alert')).toBeNull();
     });
 
@@ -313,7 +311,7 @@ describe('a clamped activity row (TASK-436)', () => {
         component answers it from `loading` itself.
       */
       render(<ActivityFeed events={[]} agents={[agent()]} loading />);
-      expect(screen.getByRole('status')).toBeInTheDocument();
+      expect(screen.getByText('Reading the record\u2026')).toBeInTheDocument();
       expect(screen.queryByText('Nothing recorded yet.')).toBeNull();
     });
 
@@ -321,7 +319,58 @@ describe('a clamped activity row (TASK-436)', () => {
       // The guard above must not swallow the genuinely empty record.
       render(<ActivityFeed events={[]} agents={[agent()]} loading={false} />);
       expect(screen.getByText('Nothing recorded yet.')).toBeInTheDocument();
+      expect(screen.queryByText('Reading the record\u2026')).toBeNull();
+    });
+
+    it('makes no announcement promise it cannot keep', () => {
+      /*
+        TASK-501. The placeholder is born in the same commit as its text, so a
+        live role on it would not reliably announce — and the announcement is
+        not wanted (see FeedPlaceholder). Nothing in it may claim otherwise.
+      */
+      const { container } = render(
+        <ActivityFeed events={[]} agents={[agent()]} loading />,
+      );
       expect(screen.queryByRole('status')).toBeNull();
+      expect(screen.queryByRole('alert')).toBeNull();
+      expect(container.querySelector('[aria-live]')).toBeNull();
+    });
+  });
+
+  /*
+    TASK-501. The props-level half of `ActivityFeedLoadMore.test.tsx`: rows in
+    hand plus an error is a failed LATER page, and the rows stay.
+  */
+  describe('when a later page fails', () => {
+    it('keeps the rows it has and puts the failure beneath them', () => {
+      render(
+        <ActivityFeed
+          events={[event({ text: 'Morning inbox sweep' })]}
+          agents={[agent()]}
+          error="We could not load the record."
+          hasMore
+        />,
+      );
+      expect(screen.getByText('Morning inbox sweep')).toBeInTheDocument();
+      expect(
+        screen.getByText(/could not load the older entries/i),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/could not load the record/i)).toBeNull();
+      expect(screen.getByRole('button', { name: 'Try again' })).toBeEnabled();
+    });
+
+    it('still says it could not read anything when there is nothing in hand', () => {
+      render(
+        <ActivityFeed
+          events={[]}
+          agents={[agent()]}
+          error="We could not load the record."
+        />,
+      );
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        /could not load the record/i,
+      );
+      expect(screen.queryByText('Nothing recorded yet.')).toBeNull();
     });
   });
 });
