@@ -25,9 +25,11 @@ import { defineConfig } from 'vitest/config';
 //   the worst case moved 95ms -> 253ms (~2.5x), so the honest statement is that
 //   local measurement bounds nothing here; CI contention is a different animal
 //   and the CI numbers are the only ones that count.
-// - 30s is ~5.6x the one measured CI worst case and ~470x this suite's idle
-//   cost, which absorbs contention an order of magnitude worse than the run that
-//   broke the queue. It is also exactly what this repo already chose for its
+// - When this was set, 30s was ~5.6x the one measured CI worst case (5373ms)
+//   and ~470x this suite's idle cost. That headroom has since shrunk: a later CI
+//   run measured the mcp-server-stub `echo` test at 9087ms against ~90ms idle
+//   (TASK-537), so 30s is now ~3.3x the measured worst case, not 5.6x. It is also
+//   exactly what this repo already chose for its
 //   other subprocess-heavy suites — `packages/workspace-git*` (TASK-73, PR #146)
 //   and the `scripts` root (TASK-331) — and this package is that same class: it
 //   spawns real Node subprocesses and drives them over real MCP stdio.
@@ -42,6 +44,11 @@ import { defineConfig } from 'vitest/config';
 // governs all of them. Twice the test budget, per the ratio 18 other packages
 // here use: a teardown should never get less room than the test it is cleaning
 // up after.
+//
+// Raising these numbers does NOT reach a wall-clock deadline written inside a
+// test body. Two flakes here came from exactly that: a private `Date.now() + 5000`
+// poll (TASK-537) and a 3000ms Docker probe budget (TASK-549). Look for those
+// before you blame this file.
 //
 // Neither number is a position on how long the work SHOULD take. A budget too
 // small for legitimate work is a bug; one raised past a genuine hang is a mask.
