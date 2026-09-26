@@ -277,6 +277,20 @@ describe('@ax/teams admin routes', () => {
     expect((r.body as { error: string }).error).toMatch(/displayName/);
   });
 
+  // TASK-561: the route reaches the store's write door, which refuses a name
+  // carrying a bidi override and says why.
+  it('POST /admin/teams with a bidi override in displayName → 400', async () => {
+    const cookie = await signIn(stack);
+    const r = await http(stack.port, 'POST', '/admin/teams', {
+      cookie,
+      body: { displayName: 'Payroll \u202Ebad.exe' },
+    });
+    expect(r.status).toBe(400);
+    expect((r.body as { error: string }).error).toMatch(
+      /must not contain invisible or text-direction control characters/,
+    );
+  });
+
   it('POST /admin/teams with body > 64 KiB → 413', async () => {
     const cookie = await signIn(stack);
     // Build a JSON body just over 64 KiB. displayName will fail validation
