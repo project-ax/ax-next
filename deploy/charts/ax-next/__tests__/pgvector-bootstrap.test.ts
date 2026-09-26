@@ -21,12 +21,13 @@
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { load, loadAll } from 'js-yaml';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 
 import {
   DOCKER_REQUIRED_MESSAGE,
@@ -169,6 +170,152 @@ describeIfHelm('pgvector bootstrap Job — render (TASK-458)', () => {
     for (const line of script.split('\n').filter((l) => /\bpsql\b/.test(l) && !/SELECT 1/.test(l))) {
       expect(line, 'every psql after the readiness probe must stop on error').toContain('ON_ERROR_STOP=1');
     }
+  });
+});
+
+/** `helm template` expected to FAIL; returns its stderr so the reason can be asserted. */
+function helmTemplateError(extraArgs: readonly string[]): string {
+  if (!HELM) throw new Error('helm not available');
+  const r = spawnSync(
+    HELM,
+    ['template', RELEASE, chartDir, '--namespace', 'default', ...REQUIRED, ...extraArgs],
+    { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
+  );
+  if (r.status === 0) throw new Error(`helm template unexpectedly succeeded with ${extraArgs.join(' ')}`);
+  return r.stderr ?? '';
+}
+
+let noSchemaChart = '';
+
+/** A copy of the chart without values.schema.json — what a schema-skipping render sees. */
+function schemaSkippedChart(): string {
+  if (noSchemaChart === '') {
+    noSchemaChart = mkdtempSync(join(tmpdir(), 'ax-next-chart-noschema-t563-'));
+    for (const entry of ['Chart.yaml', 'Chart.lock', 'values.yaml', 'templates', 'charts']) {
+      cpSync(resolve(chartDir, entry), join(noSchemaChart, entry), { recursive: true });
+    }
+    rmSync(join(noSchemaChart, 'values.schema.json'), { force: true });
+  }
+  return noSchemaChart;
+}
+
+afterAll(() => {
+  if (noSchemaChart !== '') rmSync(noSchemaChart, { recursive: true, force: true });
+});
+
+type InitBounds = {readyTimeoutSeconds: number; activeDeadlineSeconds: number };
+
+function chartInitBounds(): InitBounds {
+  const v = load(readFileSync(join(chartDir, 'values.yaml'), 'utf8')) as {
+    postgres: { embedded: { init: InitBounds } };
+  };
+  return v.postgres.embedded.init;
+}
+
+function renderedBounds(extraArgs: readonly string[] = []): { jobDeadline: unknown; scriptTimeout: number } {
+  const job = findJob(helmTemplate(extraArgs));
+  if (!job) throw new Error(`${JOB_NAME} did not render`);
+  const { script } = renderedJob(extraArgs);
+  const m = /^\s*READY_TIMEOUT_SECONDS=(\d+)\s*$/m.exec(script);
+  if (!m) throw new Error('READY_TIMEOUT_SECONDS not found in the rendered script');
+  return { jobDeadline: job.spec?.activeDeadlineSeconds, scriptTimeout: Number(m[1]) };
+}
+
+describeIfHelm('pg-init Job is bounded in time (TASK-563)', () => {
+  it('values.yaml ships sane defaults, deadline above the readiness wait', () => {
+    const { readyTimeoutSeconds, activeDeadlineSeconds } = chartInitBounds();
+    expect(Number.isInteger(readyTimeoutSeconds) && readyTimeoutSeconds > 0).toBe(true);
+    expect(Number.isInteger(activeDeadlineSeconds)).toBe(true);
+    expect(activeDeadlineSeconds).toBeGreaterThan(readyTimeoutSeconds);
+  });
+
+  it('renders both bounds from values.yaml by default', () => {
+    const { readyTimeoutSeconds, activeDeadlineSeconds } = chartInitBounds();
+    expect(renderedBounds()).toEqual({ jobDeadline: activeDeadlineSeconds, scriptTimeout: readyTimeoutSeconds });
+  });
+
+  it("the template's key-absent fallback matches values.yaml (the default lives in two places)", () => {
+    const { readyTimeoutSeconds, activeDeadlineSeconds } = chartInitBounds();
+    expect(
+      renderedBounds([
+        '--set', 'postgres.embedded.init.readyTimeoutSeconds=null',
+        '--set', 'postgres.embedded.init.activeDeadlineSeconds=null',
+      ]),
+    ).toEqual({ jobDeadline: activeDeadlineSeconds, scriptTimeout: readyTimeoutSeconds });
+  });
+
+  it('honours overrides of both bounds', () => {
+    expect(
+      renderedBounds([
+        '--set', 'postgres.embedded.init.readyTimeoutSeconds=42',
+        '--set', 'postgres.embedded.init.activeDeadlineSeconds=4242',
+      ]),
+    ).toEqual({ jobDeadline: 4242, scriptTimeout: 42 });
+  });
+
+  it('the readiness loop checks its deadline and fails with a FATAL naming the knob', () => {
+    const { script } = renderedJob();
+    const loop = /until psql [^\n]*SELECT 1[^\n]*; do\n([\s\S]*?)\n\s*done/.exec(script);
+    expect(loop, 'readiness until-loop not found').not.toBeNull();
+    expect(loop![1]).toMatch(/if \[ "\$SECONDS" -ge "\$READY_DEADLINE" \]; then/);
+    expect(loop![1]).toContain('exit 1');
+    expect(loop![1]).toContain('postgres.embedded.init.readyTimeoutSeconds');
+    expect(script).toMatch(/^\s*READY_DEADLINE=\$\(\(SECONDS \+ READY_TIMEOUT_SECONDS\)\)\s*$/m);
+  });
+
+  it('bounds each connection attempt, so one black-holed connect cannot outlast the wait', () => {
+    const { script } = renderedJob();
+    const connect = script.search(/^\s*export PGCONNECT_TIMEOUT=\d+\s*$/m);
+    expect(connect).toBeGreaterThan(-1);
+    expect(connect).toBeLessThan(script.indexOf('until psql'));
+  });
+
+  it('refuses a deadline that would kill the Job before the wait can explain itself', () => {
+    const err = helmTemplateError([
+      '--set', 'postgres.embedded.init.readyTimeoutSeconds=300',
+      '--set', 'postgres.embedded.init.activeDeadlineSeconds=300',
+    ]);
+    expect(err).toContain('must be greater than readyTimeoutSeconds');
+  });
+
+  it.each([
+    ['readyTimeoutSeconds', '0'],
+    ['activeDeadlineSeconds', '0'],
+    ['readyTimeoutSeconds', '-5'],
+  ])('values.schema.json rejects %s=%s', (key, value) => {
+    const err = helmTemplateError(['--set', `postgres.embedded.init.${key}=${value}`]);
+    expect(err).toMatch(/schema/i);
+    expect(err).toContain(key);
+  });
+
+  it('values.schema.json rejects a misspelled bound instead of silently keeping the default', () => {
+    const err = helmTemplateError(['--set', 'postgres.embedded.init.readyTimeoutSecond=30']);
+    expect(err).toMatch(/schema/i);
+    expect(err).toContain('readyTimeoutSecond');
+  });
+
+  it('the values.yaml default leaves the FATAL room to fire before helm\'s default 5m --timeout', () => {
+    expect(chartInitBounds().readyTimeoutSeconds).toBeLessThan(300);
+  });
+
+  it.each(['readyTimeoutSeconds', 'activeDeadlineSeconds'])(
+    'with schema validation skipped, the template still refuses %s=0 (no `default` swallowing it)',
+    (key) => {
+      const r = spawnSync(
+        HELM!,
+        ['template', RELEASE, schemaSkippedChart(), '--namespace', 'default', ...REQUIRED,
+          '--set', `postgres.embedded.init.${key}=0`],
+        { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
+      );
+      expect(r.status, r.stdout).not.toBe(0);
+      expect(r.stderr).toContain('must both be positive integers');
+    },
+  );
+
+  it('values.schema.json rejects a quoted number', () => {
+    const err = helmTemplateError(['--set-string', 'postgres.embedded.init.readyTimeoutSeconds=300']);
+    expect(err).toMatch(/schema/i);
+    expect(err).toContain('readyTimeoutSeconds');
   });
 });
 
@@ -319,6 +466,49 @@ describeIfContainers('pgvector bootstrap Job — behaviour (TASK-458)', () => {
       expect(result.status, result.out).not.toBe(0);
       expect(result.out).toContain('FATAL: could not enable pgvector');
       expect(result.out).not.toContain('PostgreSQL initialization complete');
+    },
+    400_000,
+  );
+});
+
+describeIfContainers('pg-init Job — bounded readiness wait (TASK-563)', () => {
+  it(
+    'gives up with a FATAL when postgres never answers, inside the configured bound',
+    () => {
+      const READY = 6;
+      const job = renderedJob([
+        '--set', `postgres.embedded.init.readyTimeoutSeconds=${READY}`,
+        '--set', 'postgres.embedded.init.activeDeadlineSeconds=60',
+      ]);
+      ensureImage(job.image);
+      const id = randomBytes(4).toString('hex');
+      const net = `ax-t563-${id}`;
+      const runner = `ax-t563-job-${id}`;
+      expect(docker(['network', 'create', net]).status).toBe(0);
+      cleanup.push(['network', 'rm', net]);
+      // No server on this network at all, so the readiness probe can never
+      // succeed. The pre-TASK-563 loop spins here forever; the CLI timeout below
+      // turns that into a non-1 status instead of hanging the suite.
+      const [entrypoint, ...commandRest] = job.command;
+      cleanup.push(['rm', '-f', runner]);
+      const started = Date.now();
+      const ran = docker(
+        [
+          'run', '--name', runner, '--network', net,
+          '-e', `POSTGRES_PASSWORD=${SUPERUSER_PASSWORD}`,
+          '--entrypoint', entrypoint!,
+          job.image,
+          ...commandRest, ...job.args,
+        ],
+        90_000,
+      );
+      const elapsedS = (Date.now() - started) / 1000;
+      expect(ran.status, ran.out).toBe(1);
+      expect(ran.out).toContain(`FATAL: PostgreSQL at ${job.pgHost}:5432 was not ready after ${READY}s`);
+      expect(ran.out).toContain('Waiting for PostgreSQL...');
+      expect(ran.out).not.toContain('PostgreSQL is ready.');
+      // Container start + the bound + one probe/sleep of slack; far below the 90s kill.
+      expect(elapsedS).toBeLessThan(READY + 45);
     },
     400_000,
   );

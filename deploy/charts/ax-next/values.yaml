@@ -401,6 +401,20 @@ postgres:
   embedded:
     enabled: true
     # Auth lives under `postgresql.auth.*` (Bitnami subchart) — see below.
+    # The pg-init hook Job (templates/postgresql-init-job.yaml) is bounded
+    # in time, so a Postgres that never comes up FAILS the install with a
+    # message instead of a Job that spins forever. readyTimeoutSeconds is
+    # how long it waits for the server to accept connections;
+    # activeDeadlineSeconds is the Job-wide backstop across restarts and
+    # must be larger. Raise both on slow clusters (cold image pulls).
+    # Note helm's own --timeout (default 5m) bounds how long helm waits
+    # for this hook; the Job's bound is what stops it running afterwards.
+    # readyTimeoutSeconds sits a little under that 5m on purpose, so the
+    # Job fails with its own FATAL line before helm reports a generic
+    # timeout. If you raise it, raise helm's --timeout too.
+    init:
+      readyTimeoutSeconds: 240
+      activeDeadlineSeconds: 600
 
 # Subchart values — passed through to bitnami/postgresql when embedded
 # is enabled. Keep this intentionally minimal; operators who want the
