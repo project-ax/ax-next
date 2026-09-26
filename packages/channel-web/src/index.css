@@ -35,6 +35,23 @@
     --primary: 211 100% 42%;
     --primary-foreground: 0 0% 100%;
     --primary-soft: 214 100% 95%;
+    /* The hover fill for `bg-primary` / `bg-destructive` buttons and badges
+       (TASK-511). shadcn's stock hover is `hover:bg-primary/90`, which lets 10%
+       of the SURFACE bleed through — and the surface sits on the same side of
+       the accent as the foreground in both themes (white page under white text
+       here, black page under near-black text in dark). So the hover drifted
+       toward the text: 4.48:1 light, 4.32:1 dark on the page, under the floor
+       on the button that grants a capability. Destructive did the same (4.46 /
+       4.30), and `Badge`'s `/80` hover was worse still (~3.5-3.8).
+
+       A hover has to move AWAY from its foreground, and which way that is
+       depends on the theme — darker here, lighter in dark mode — which no
+       single alpha can express. Hence a token per theme. Roughly the same
+       visual step off the resting fill as the old /90 (~1.2:1), with the text
+       gaining contrast instead of losing it: primary 6.50 / 6.18, destructive
+       6.05 / 6.25. `theme-contrast.test.ts` reads the hover class off
+       `button.tsx` and `badge.tsx`, so reverting to `/90` goes red. */
+    --primary-hover: 211 100% 37%;
     --secondary: 240 5% 96%;
     --secondary-foreground: 240 6% 10%;
     --muted: 240 5% 96%;
@@ -58,6 +75,7 @@
     --destructive: 0 60% 50%;
     --destructive-foreground: 0 0% 100%;
     --destructive-soft: 0 60% 96%;
+    --destructive-hover: 0 60% 45%;
     /* Held-for-you. A third semantic state the surface genuinely needs:
        "waiting on a human" is neither an error nor business as usual.
 
@@ -180,6 +198,9 @@
       --primary: 211 100% 56%;
       --primary-foreground: 240 6% 10%;
       --primary-soft: 212 100% 14%;
+      /* LIGHTER than the accent here, darker in light mode: the hover moves
+         away from the foreground. See `--primary-hover` in the light block. */
+      --primary-hover: 211 100% 62%;
       --secondary: 240 3% 9%;
       --secondary-foreground: 240 5% 96%;
       --muted: 240 3% 9%;
@@ -189,6 +210,7 @@
       --destructive: 4 86% 62%;
       --destructive-foreground: 240 6% 10%;
       --destructive-soft: 4 60% 16%;
+      --destructive-hover: 4 86% 68%;
       --warning: 43 96% 58%;
       --warning-foreground: 240 6% 10%;
       --warning-soft: 38 60% 14%;
@@ -216,6 +238,7 @@
     --primary: 211 100% 56%;
     --primary-foreground: 240 6% 10%;
     --primary-soft: 212 100% 14%;
+    --primary-hover: 211 100% 62%;
     --secondary: 240 3% 9%;
     --secondary-foreground: 240 5% 96%;
     --muted: 240 3% 9%;
@@ -225,6 +248,7 @@
     --destructive: 4 86% 62%;
     --destructive-foreground: 240 6% 10%;
     --destructive-soft: 4 60% 16%;
+    --destructive-hover: 4 86% 68%;
     --warning: 43 96% 58%;
     --warning-foreground: 240 6% 10%;
     --warning-soft: 38 60% 14%;

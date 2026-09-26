@@ -1620,3 +1620,203 @@ describe('state dots clear the 3:1 non-text floor', () => {
     expect(dotCasesRegistered).toEqual(expected);
   });
 });
+
+/* ------------------------------------------------------------------------- *
+ * Hover fills on filled accent controls.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * A hover is a state a person sits in while they read the label and decide
+ * whether to press — it answers to the same AA floor as the resting fill.
+ *
+ * TASK-511 is what surfaced the gap: a browser walk (TASK-358) measured the
+ * primary consent button at 4.47:1 on hover in BOTH themes, while every resting
+ * pair above passed. The cause was shadcn's stock `hover:bg-primary/90`: 10% of
+ * the surface behind the button bleeds through, and in both themes that surface
+ * sits on the same side of the accent as the foreground (white page under white
+ * text in light, black page under near-black text in dark). So the hover drifts
+ * TOWARD the text. This file's formula: primary 4.48 light / 4.32 dark on the
+ * page, destructive 4.46 / 4.30 — the destructive variant had the same defect
+ * and nothing had measured it either. `Badge` carried the same treatment at
+ * `/80` and was worse: 3.75 / 3.53 primary, 3.79 / 3.53 destructive.
+ *
+ * Nothing above could see it, because every row measures a TOKEN and a hover
+ * class is not one — `bg-primary/90` is a composite of a token and whatever the
+ * control happens to sit on. So, as in the `ApprovalCard` and state-dot
+ * sections, THE CLASS IS READ OUT OF THE COMPONENT, alpha included, and
+ * composited over every opaque surface a button can sit on. Reverting either
+ * component to `/90` fails these rows with the true number rather than passing
+ * because a constant here moved with it.
+ *
+ * `secondary` is deliberately NOT a row: its hover is `bg-secondary/80` with a
+ * foreground at ~16:1, and a fractional variant of a near-surface fill only
+ * moves further from its text. `outline` and `ghost` hover to `--accent` with
+ * `--accent-foreground`, a solid pair the same value as `--muted` under the
+ * body text, 16:1+. If either ever carries a mid-tone fill, it needs a row.
+ */
+const HOVER_SITES = [
+  ['components/ui/button.tsx', 'default'],
+  ['components/ui/button.tsx', 'destructive'],
+  ['components/ui/badge.tsx', 'default'],
+  ['components/ui/badge.tsx', 'destructive'],
+] as const;
+
+/**
+ * Opaque surfaces a filled control can sit on. Only matters for a fractional
+ * hover — a solid one paints the same pixel everywhere — but it is listed in
+ * full so a future `/90` is measured on the worst of them, not the first.
+ * `--popover` is where dialog buttons live; `--muted` carries tab strips and
+ * filled chips.
+ */
+const CONTROL_SURFACES = ['--background', '--card', '--popover', '--muted'] as const;
+
+/**
+ * One cva variant's class string, read out of the component's source.
+ *
+ * Scoped to the `variant: { … }` block, because `size` has a `default:` arm of
+ * its own and "the first `default:`" would be a size string.
+ */
+function variantClasses(src: string, variant: string): string {
+  const code = stripComments(src);
+  const blocks = [...code.matchAll(/(?<![\w-])variant:\s*\{([^}]*)\}/g)];
+  if (blocks.length !== 1) {
+    throw new Error(`expected exactly one "variant: { … }" block, found ${blocks.length}`);
+  }
+  const hits = [
+    ...blocks[0]![1]!.matchAll(new RegExp(`(?<![\\w-])${variant}:\\s*"([^"]*)"`, 'g')),
+  ];
+  if (hits.length !== 1) {
+    throw new Error(`expected exactly one "${variant}:" variant string, found ${hits.length}`);
+  }
+  return hits[0]![1]!;
+}
+
+/**
+ * The resting fill, the hover fill and the text token of one variant string.
+ *
+ * Each must appear exactly once. A second `hover:bg-*` (say a `dark:hover:`
+ * override added later) would mean the dark rows measure the wrong class, so
+ * any variant-prefixed hover other than the bare `hover:` is refused rather
+ * than silently skipped.
+ */
+function hoverPair(cls: string): {
+  rest: { token: string; alpha: number };
+  hover: { token: string; alpha: number; cls: string };
+  text: string;
+} {
+  const tokens = cls.split(/\s+/).filter(Boolean);
+  const unprefixed = tokens.filter((t) => !t.includes(':')).join(' ');
+  const prefixedBg = tokens.filter((t) => /:bg-/.test(t));
+  const hovers = prefixedBg.filter((t) => /^hover:bg-/.test(t));
+  if (hovers.length !== 1 || prefixedBg.length !== 1) {
+    throw new Error(
+      `expected exactly one prefixed bg-* class and it bare "hover:", found ${prefixedBg.join(', ') || 'none'}`,
+    );
+  }
+  const texts = tokens.filter((t) => /^text-[a-z][\w-]*-foreground$/.test(t));
+  if (texts.length !== 1) {
+    throw new Error(`expected exactly one text-*-foreground class, found ${texts.length} in "${cls}"`);
+  }
+  return {
+    rest: bgFill(unprefixed),
+    hover: bgFill(hovers[0]!.slice('hover:'.length)),
+    text: `--${texts[0]!.slice('text-'.length)}`,
+  };
+}
+
+/** Contrast of one hover fill with its text, over one surface, in one theme. */
+function hoverContrast(
+  tokens: Map<string, string>,
+  pair: ReturnType<typeof hoverPair>,
+  surface: string,
+): number {
+  const fill = tokens.get(pair.hover.token);
+  const text = tokens.get(pair.text);
+  const under = tokens.get(surface);
+  expect(fill, `${pair.hover.token} missing`).toBeDefined();
+  expect(text, `${pair.text} missing`).toBeDefined();
+  expect(under, `${surface} missing`).toBeDefined();
+  const painted: Colour = pair.hover.alpha === 1 ? fill! : composite(fill!, pair.hover.alpha, under!);
+  return contrast(painted, text!);
+}
+
+const hoverCasesRegistered: string[] = [];
+
+describe('filled accent controls clear AA on hover', () => {
+  for (const [file, variant] of HOVER_SITES) {
+    const pair = hoverPair(variantClasses(readFileSync(join(SRC_ROOT, file), 'utf8'), variant));
+    for (const [themeName, selector] of THEMES) {
+      hoverCasesRegistered.push(`${themeName}:${file}:${variant}`);
+      it(`${themeName}: ${file} ${variant} (${pair.hover.cls}) keeps ${pair.text} above AA on every surface`, () => {
+        const tokens = tokensAfter(selector);
+        for (const surface of CONTROL_SURFACES) {
+          expect(
+            hoverContrast(tokens, pair, surface),
+            `${pair.hover.cls} over ${surface} in ${selector}`,
+          ).toBeGreaterThanOrEqual(AA_NORMAL);
+        }
+      });
+    }
+  }
+
+  /**
+   * The hover must be the SAME accent family as the resting fill. A variant
+   * that hovered to an unrelated token would pass the floor while meaning
+   * something else entirely — and, more to the point here, a hover token that
+   * is not derived from the rest is the only way the rows above could measure
+   * a pair that never renders.
+   */
+  it('hovers each variant within its own accent family', () => {
+    for (const [file, variant] of HOVER_SITES) {
+      const pair = hoverPair(variantClasses(readFileSync(join(SRC_ROOT, file), 'utf8'), variant));
+      expect(pair.hover.token.startsWith(pair.rest.token), `${file} ${variant}`).toBe(true);
+      expect(pair.text, `${file} ${variant}`).toBe(`${pair.rest.token}-foreground`);
+    }
+  });
+
+  /**
+   * Non-vacuity by construction. The stock shadcn class this section exists to
+   * reject must measure UNDER the floor with this file's own arithmetic, in
+   * both themes, for both accents — otherwise the rows above could be green
+   * over a revert. If a future token move lifts the stock `/90` over the floor
+   * this goes red, and that is the moment to decide on purpose whether the
+   * per-theme hover token is still needed.
+   */
+  it('measures the stock `hover:bg-*/90` treatment under the floor', () => {
+    for (const accent of ['primary', 'destructive']) {
+      const stock = hoverPair(`bg-${accent} text-${accent}-foreground hover:bg-${accent}/90`);
+      expect(stock.hover).toMatchObject({ token: `--${accent}`, alpha: 0.9 });
+      for (const [, selector] of THEMES) {
+        const tokens = tokensAfter(selector);
+        expect(hoverContrast(tokens, stock, '--background'), `${accent} in ${selector}`).toBeLessThan(
+          AA_NORMAL,
+        );
+      }
+    }
+  });
+
+  it('reads the hover class off a variant string, and refuses shapes it cannot measure', () => {
+    expect(hoverPair('bg-primary text-primary-foreground hover:bg-primary-hover')).toMatchObject({
+      rest: { token: '--primary', alpha: 1 },
+      hover: { token: '--primary-hover', alpha: 1 },
+      text: '--primary-foreground',
+    });
+    expect(() => hoverPair('bg-primary text-primary-foreground')).toThrow(/prefixed bg/);
+    expect(() =>
+      hoverPair('bg-primary text-primary-foreground hover:bg-primary-hover dark:hover:bg-primary/90'),
+    ).toThrow(/prefixed bg/);
+    expect(() => hoverPair('bg-primary hover:bg-primary-hover')).toThrow(/text-\*-foreground/);
+    const cva = (arms: string) => `variant: {\n${arms}\n},\nsize: {\n default: "h-10",\n}`;
+    expect(variantClasses(cva(' default: "live",'), 'default')).toBe('live');
+    expect(() => variantClasses(cva(' default: "a",\n default: "b",'), 'default')).toThrow(/found 2/);
+    expect(variantClasses(cva(' // default: "stale"\n default: "live",'), 'default')).toBe('live');
+    expect(() => variantClasses('size: {\n default: "h-10",\n}', 'default')).toThrow(/found 0/);
+  });
+
+  it('registers one case per theme per hover site', () => {
+    const expected = HOVER_SITES.flatMap(([file, variant]) =>
+      THEMES.map(([name]) => `${name}:${file}:${variant}`),
+    );
+    expect(hoverCasesRegistered).toEqual(expected);
+  });
+});
