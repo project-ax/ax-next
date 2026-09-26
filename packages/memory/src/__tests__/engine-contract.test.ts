@@ -391,6 +391,6 @@ describe('@ax/memory — the profile-history winner read refuses a malformed ans
 
     await expect(
       bus.call('memory:recall', ctx(), { profile: true, activeOnly: false }),
-    ).rejects.toThrow(/non-array statements/);
+    ).rejects.toThrow(/memory cannot say which profile rows are in effect/);
   });
 });
