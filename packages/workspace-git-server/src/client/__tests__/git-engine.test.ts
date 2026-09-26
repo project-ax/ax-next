@@ -812,3 +812,201 @@ describe('git-engine — exportBaselineBundle parent-mismatch', () => {
     expect(cause.baselineBundleBytes.length).toBeGreaterThan(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// TASK-513: a pinned read/list skips the storage-tier fetch when the local
+// mirror already holds the pinned commit.
+//
+// Observable: a second engine that SHARES the harness's mirror cache but
+// points at a dead storage URL. Any `git fetch` it runs fails with a
+// connection error (not one of the emptiness markers fetchMirror swallows),
+// so an op succeeding on it proves no fetch happened. The unpinned control
+// on the same engine shows the dead URL really is dead — without it the
+// pinned assertions would be vacuous.
+//
+// Replica tests use a second engine with its OWN mirror cache against the
+// same live server: a distinct per-workspace bare mirror, the shape of a
+// second host replica.
+// ---------------------------------------------------------------------------
+
+const DEAD_BASE_URL = 'http://127.0.0.1:1';
+
+function engineFor(baseUrl: string, mirrorCache: MirrorCache): GitEngine {
+  return createGitEngine({
+    baseUrl,
+    token: TOKEN,
+    mirrorCache,
+    lifecycleClient: createRepoLifecycleClient({ baseUrl, token: TOKEN }),
+  });
+}
+
+async function withReplica(
+  fn: (replica: GitEngine) => Promise<void>,
+): Promise<void> {
+  const cache = createMirrorCache();
+  const replica = engineFor(harness.baseUrl, cache);
+  try {
+    await fn(replica);
+  } finally {
+    await replica.shutdown();
+    await cache.shutdown();
+  }
+}
+
+async function withOffline(
+  fn: (offline: GitEngine) => Promise<void>,
+): Promise<void> {
+  const offline = engineFor(DEAD_BASE_URL, harness.mirrorCache);
+  try {
+    await fn(offline);
+  } finally {
+    await offline.shutdown();
+  }
+}
+
+describe('git-engine — pinned read/list skip the fetch when the commit is local (TASK-513)', () => {
+  const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+  const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
+
+  it('pinned read of a locally-held version succeeds with the storage tier unreachable', async () => {
+    const ws = 'wspinread001';
+    const v1 = await harness.engine.apply(ws, {
+      changes: [{ path: 'memory/a.md', kind: 'put', content: enc('A1') }],
+      parent: null,
+    });
+    await withOffline(async (offline) => {
+      // Control: an unpinned read must fetch, and the dead URL makes it fail.
+      await expect(offline.read(ws, { path: 'memory/a.md' })).rejects.toThrow(
+        /git fetch failed/,
+      );
+      const r = await offline.read(ws, {
+        path: 'memory/a.md',
+        version: v1.version,
+      });
+      expect(r.found).toBe(true);
+      if (r.found) {
+        expect(dec(r.bytes)).toBe('A1');
+        expect(r.version).toBe(v1.version);
+      }
+    });
+  });
+
+  it('pinned list of a locally-held version succeeds with the storage tier unreachable', async () => {
+    const ws = 'wspinlist001';
+    const v1 = await harness.engine.apply(ws, {
+      changes: [
+        { path: 'memory/a.md', kind: 'put', content: enc('A') },
+        { path: 'memory/b.md', kind: 'put', content: enc('B') },
+        { path: 'other.txt', kind: 'put', content: enc('O') },
+      ],
+      parent: null,
+    });
+    await withOffline(async (offline) => {
+      await expect(offline.list(ws, {})).rejects.toThrow(/git fetch failed/);
+      const all = await offline.list(ws, { version: v1.version });
+      expect(all.paths.sort()).toEqual([
+        'memory/a.md',
+        'memory/b.md',
+        'other.txt',
+      ]);
+      const globbed = await offline.list(ws, {
+        version: v1.version,
+        pathGlob: 'memory/**',
+      });
+      expect(globbed.paths.sort()).toEqual(['memory/a.md', 'memory/b.md']);
+    });
+  });
+
+  it('pinned read of a path absent at a locally-held commit is found:false without fetching', async () => {
+    const ws = 'wspinmiss001';
+    const v1 = await harness.engine.apply(ws, {
+      changes: [{ path: 'memory/a.md', kind: 'put', content: enc('A') }],
+      parent: null,
+    });
+    await withOffline(async (offline) => {
+      const r = await offline.read(ws, {
+        path: 'memory/absent.md',
+        version: v1.version,
+      });
+      expect(r).toEqual({ found: false });
+    });
+  });
+
+  it('pinned version NOT in the local mirror (written by another replica) still resolves via fetch', async () => {
+    const ws = 'wspinfall001';
+    await withReplica(async (replicaB) => {
+      const v1 = await harness.engine.apply(ws, {
+        changes: [{ path: 'memory/a.md', kind: 'put', content: enc('A1') }],
+        parent: null,
+      });
+      // Replica B's mirror now holds v1 — and only v1.
+      const warm = await replicaB.read(ws, { path: 'memory/a.md' });
+      expect(warm.found && warm.version).toBe(v1.version);
+
+      const v2 = await harness.engine.apply(ws, {
+        changes: [
+          { path: 'memory/a.md', kind: 'put', content: enc('A2') },
+          { path: 'memory/b.md', kind: 'put', content: enc('B2') },
+        ],
+        parent: v1.version,
+      });
+
+      const r = await replicaB.read(ws, {
+        path: 'memory/b.md',
+        version: v2.version,
+      });
+      expect(r.found).toBe(true);
+      if (r.found) {
+        expect(dec(r.bytes)).toBe('B2');
+        expect(r.version).toBe(v2.version);
+      }
+      // A path absent at a commit that arrived only via the fallback fetch.
+      const absent = await replicaB.read(ws, {
+        path: 'memory/nope.md',
+        version: v2.version,
+      });
+      expect(absent).toEqual({ found: false });
+    });
+  });
+
+  it('pinned list of a version NOT in the local mirror still resolves via fetch', async () => {
+    const ws = 'wspinfall002';
+    await withReplica(async (replicaB) => {
+      const v1 = await harness.engine.apply(ws, {
+        changes: [{ path: 'x.txt', kind: 'put', content: enc('X') }],
+        parent: null,
+      });
+      // B's mirror has never fetched this workspace: list must fetch first.
+      const listed = await replicaB.list(ws, { version: v1.version });
+      expect(listed.paths).toEqual(['x.txt']);
+    });
+  });
+
+  it('unpinned read/list still fetch: they see a write made by another replica', async () => {
+    const ws = 'wsunpinned01';
+    await withReplica(async (replicaB) => {
+      const v1 = await harness.engine.apply(ws, {
+        changes: [{ path: 'memory/a.md', kind: 'put', content: enc('A1') }],
+        parent: null,
+      });
+      const first = await replicaB.read(ws, { path: 'memory/a.md' });
+      expect(first.found && first.version).toBe(v1.version);
+
+      const v2 = await harness.engine.apply(ws, {
+        changes: [
+          { path: 'memory/a.md', kind: 'put', content: enc('A2') },
+          { path: 'memory/b.md', kind: 'put', content: enc('B2') },
+        ],
+        parent: v1.version,
+      });
+      const second = await replicaB.read(ws, { path: 'memory/a.md' });
+      expect(second.found).toBe(true);
+      if (second.found) {
+        expect(dec(second.bytes)).toBe('A2');
+        expect(second.version).toBe(v2.version);
+      }
+      const listed = await replicaB.list(ws, {});
+      expect(listed.paths.sort()).toEqual(['memory/a.md', 'memory/b.md']);
+    });
+  });
+});

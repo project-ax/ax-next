@@ -330,6 +330,15 @@ async function currentMirrorOid(mirror: string): Promise<string | null> {
   return oid.length > 0 ? oid : null;
 }
 
+// True iff the mirror holds `oid` as a commit object. Used by pinned
+// `read`/`list` to decide whether the storage-tier fetch can be skipped.
+// `oid` has already passed `requireOid`, so it is a bare hex id, never a
+// ref name or an option.
+async function mirrorHasCommit(mirror: string, oid: string): Promise<boolean> {
+  const r = await runGit(['-C', mirror, 'cat-file', '-e', `${oid}^{commit}`]);
+  return r.code === 0;
+}
+
 async function buildScratch(
   mirror: string,
   mirrorHead: string | null,
@@ -1430,6 +1439,38 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
       guardClosed();
       const remoteUrl = remoteUrlFor(opts.baseUrl, workspaceId);
       return opts.mirrorCache.withMirror(workspaceId, async (handle) => {
+        // Pinned fast path: skip the storage-tier fetch when the mirror
+        // already holds the pinned commit. Safe because a commit id names
+        // immutable content — a fetch can add objects and move refs, but it
+        // can never change what `<oid>:<path>` resolves to. The mirror is a
+        // plain per-workspace bare repo (no alternates, no shared object
+        // store), so an oid is only ever local because this workspace's own
+        // history put it there.
+        //
+        // Cheapest order for the common case: one `cat-file -e` on the
+        // blob. On a miss, a second probe tells "path absent at a commit we
+        // hold" (authoritative found:false, still no fetch) apart from
+        // "commit not here yet" — e.g. created through another host
+        // replica's mirror after ours last synced — which falls through to
+        // the fetch path below, unchanged.
+        if (pinned !== undefined) {
+          const hit = await runGit([
+            '-C',
+            handle.dir,
+            'cat-file',
+            '-e',
+            `${pinned}:${input.path}`,
+          ]);
+          if (hit.code === 0) {
+            const bytes = await readBlobBytes(handle.dir, pinned, input.path);
+            return { found: true, bytes, version: asWorkspaceVersion(pinned) };
+          }
+          if (await mirrorHasCommit(handle.dir, pinned)) {
+            return { found: false };
+          }
+        }
+        // Unpinned reads always fetch: "current head" is only as fresh as
+        // the last sync with the storage tier.
         await fetchMirror(remoteUrl, opts.token, handle.dir);
         const target = pinned ?? (await currentMirrorOid(handle.dir));
         if (target === null) return { found: false };
@@ -1461,7 +1502,15 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
       guardClosed();
       const remoteUrl = remoteUrlFor(opts.baseUrl, workspaceId);
       return opts.mirrorCache.withMirror(workspaceId, async (handle) => {
-        await fetchMirror(remoteUrl, opts.token, handle.dir);
+        // Same pinned fast path as `read`: a commit already in the mirror
+        // has an immutable tree, so list it without a fetch. A pinned oid
+        // that is not local (yet) fetches first; unpinned always fetches.
+        if (
+          pinned === undefined ||
+          !(await mirrorHasCommit(handle.dir, pinned))
+        ) {
+          await fetchMirror(remoteUrl, opts.token, handle.dir);
+        }
         const target = pinned ?? (await currentMirrorOid(handle.dir));
         if (target === null) return { paths: [] };
         const r = await runGit([
