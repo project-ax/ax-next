@@ -68,6 +68,44 @@ import {
 /** The hook this module registers. Already defined by the orchestrator. */
 export const SYSTEM_PROMPT_AUGMENT_HOOK = 'system-prompt:augment';
 
+/**
+ * Logged when the augment coerces a degraded flag that is not a string
+ * (TASK-568). The coercion stays — the flag is advisory, and a malformed one
+ * must not break prompt assembly or fail the turn — but a producer bug should
+ * be visible, not absorbed. Bindings are `agentId` and `flagType` only: the
+ * flag's VALUE is never logged, because it could carry user content.
+ */
+export const DEGRADED_FLAG_COERCED_EVENT = 'memory_augment_degraded_flag_coerced';
+
+/** The runtime type of a flag, naming the cases `typeof` blurs. */
+function flagTypeOf(flags: readonly unknown[], index: number, flag: unknown): string {
+  if (!(index in flags)) return 'hole';
+  if (flag === null) return 'null';
+  if (Array.isArray(flag)) return 'array';
+  return typeof flag;
+}
+
+/**
+ * Warn once per non-string flag in one engine answer. `for...of`, not
+ * `every()` or `map()`: both skip holes, and a hole is exactly the kind of
+ * malformed flag this exists to surface (TASK-515's learning). A throwing
+ * logger is swallowed — the warning is advisory about an advisory signal, and
+ * it must never be the thing that fails the turn.
+ */
+function warnOnCoercedFlags(ctx: AgentContext, flags: readonly unknown[]): void {
+  for (const [index, flag] of flags.entries()) {
+    if (typeof flag === 'string') continue;
+    try {
+      ctx.logger.warn(DEGRADED_FLAG_COERCED_EVENT, {
+        agentId: ctx.agentId,
+        flagType: flagTypeOf(flags, index, flag),
+      });
+    } catch {
+      // Swallowed on purpose; see above.
+    }
+  }
+}
+
 /** The human tier, read through the shared contract rather than the filesystem. */
 export const RULES_READ_HOOK = 'memory:rules:read';
 
@@ -401,6 +439,11 @@ function renderDigest(
  * here, and the `recall` helper below guarantees only the ARRAY. Dropping an element
  * we could not read would be silently discarding a degradation signal — the
  * one thing this section exists not to do. Everything is escaped either way.
+ *
+ * Coerced, but not silently (TASK-568, human ruling): the `recall` helper logs
+ * {@link DEGRADED_FLAG_COERCED_EVENT} for every non-string flag, holes
+ * included, so a producer bug shows up in the logs while the prompt still
+ * gets built.
  */
 function renderDegraded(degraded: unknown[]): string {
   const flags = degraded
@@ -538,7 +581,9 @@ export async function buildMemoryBlock(
         message: `${factsRecallHook} returned no readable statements; the injected memory block cannot report an empty memory for a store it could not read`,
       });
     }
-    return { statements: raw.statements, degraded: Array.isArray(raw.degraded) ? raw.degraded : [] };
+    const degraded: unknown[] = Array.isArray(raw.degraded) ? raw.degraded : [];
+    warnOnCoercedFlags(ctx, degraded);
+    return { statements: raw.statements, degraded };
   };
 
   // Three store queries. No embedding, no rerank, no model call — none of the
