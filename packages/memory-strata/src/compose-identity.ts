@@ -88,8 +88,13 @@ export async function composeIdentityFromFiles(
  * tier at `<tier>/.ax/…`. Read them through `workspace:read` (owner-routed by
  * `ctx`, so confined to this agent's repo) instead of a host-FS read.
  *
- * Returns '' on any miss — same contract as the FS variant; the caller seeds a
- * placeholder body.
+ * Returns '' when neither file exists (or one is over the size cap) — the
+ * caller seeds a placeholder body. A read that THROWS is not a miss and is not
+ * swallowed (TASK-553): the placeholder is only ever the body of a NEW
+ * `system/agent.md`, and bootstrap never rewrites that file, so treating one
+ * transient backend error as "no identity" would make the placeholder
+ * permanent. The error propagates; chat:start logs it and seeds nothing this
+ * turn, and the next turn re-reads.
  *
  * `version`, when given, pins both reads to that tier snapshot — the caller
  * passes the version its memory hydrate read from, so identity and memory
@@ -113,20 +118,21 @@ async function readTierAxFile(
   path: string,
   version: WorkspaceVersion | undefined,
 ): Promise<string | undefined> {
+  let out: WorkspaceReadOutput;
   try {
-    const out = await bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
+    out = await bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
       'workspace:read',
       ctx,
       version === undefined ? { path } : { path, version },
     );
-    if (!out.found) return undefined;
-    if (out.bytes.length > MAX_AX_FILE_BYTES) return undefined;
-    return new TextDecoder('utf-8').decode(out.bytes);
-  } catch {
-    // A read failure (no backend, transient error) degrades to absent — the
-    // bootstrap seeds the placeholder body, same as a never-identified agent.
-    return undefined;
+  } catch (err) {
+    // NOT degraded to absent (TASK-553) — see composeIdentityFromTier. Rethrown
+    // with the path so the chat:start warn names which file failed.
+    throw new Error(`identity read failed for ${path}`, { cause: err });
   }
+  if (!out.found) return undefined;
+  if (out.bytes.length > MAX_AX_FILE_BYTES) return undefined;
+  return new TextDecoder('utf-8').decode(out.bytes);
 }
 
 function composeIdentityParts(
