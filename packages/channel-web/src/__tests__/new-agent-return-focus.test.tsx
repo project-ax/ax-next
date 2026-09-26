@@ -341,9 +341,15 @@ describe('closing the new-agent dialog from the workspace (TASK-510)', () => {
 
     /**
      * The re-armed restore yields exactly like the first one: a person who
-     * took the keyboard during the slow send keeps it. Red against a re-arm
-     * that skips `keyboardIsClaimed` — `focusFirstWhenReady`'s immediate try
-     * does not check it, it assumes it is called straight after a close.
+     * took the keyboard during the slow send keeps it.
+     *
+     * Measured, and stated so nobody reads more into it: this passes even
+     * with `refocusNewAgentViewWhenReady`'s up-front check removed, because
+     * in this order the new view paints AFTER the re-arm starts and the
+     * observer's own check yields. The up-front check covers the other order
+     * (view already painted) and is pinned in
+     * `lib/__tests__/new-agent-view-focus.test.ts`. What this one pins is the
+     * end-to-end outcome: the person's control, not the new view.
      */
     it('leaves a person who moved during the slow send where they are', async () => {
       const release = await createWithHeldSend();

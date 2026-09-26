@@ -49,10 +49,10 @@ import { LoginPage } from './components/LoginPage';
 import { WorkspaceShell } from './components/workspace/WorkspaceShell';
 import { fetchFeatures, DEFAULT_FEATURES, type Features } from './lib/features';
 import { focusSettingsOpenerWhenReady } from './lib/settings-return-focus';
-import { keyboardIsClaimed } from './lib/focus-when-ready';
 import {
   focusNewAgentOpenerWhenReady,
   focusNewAgentViewWhenReady,
+  refocusNewAgentViewWhenReady,
 } from './lib/new-agent-return-focus';
 import { Sidebar } from './components/Sidebar';
 import { SessionHeader } from './components/SessionHeader';
@@ -329,10 +329,10 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
   // (`onKickoffRouted`) — a fresh window, measured from the moment the new
   // agent's view can actually paint, instead of a longer guess from the
   // close. Only for the create this close armed (`kickoffFocusFor`), and
-  // only if nobody has taken the keyboard in the meantime: the re-arm's first
-  // try does not check that for itself, it assumes it runs straight after a
-  // close. On a fast send it is a harmless second wait on the same targets —
-  // whichever lands first, the other sees a claimed keyboard and stops.
+  // only if nobody has taken the keyboard in the meantime — see
+  // `refocusNewAgentViewWhenReady`. On a fast send it is a harmless second
+  // wait on the same targets: whichever lands first, the other sees a
+  // claimed keyboard and stops.
   const createAgentWasOpen = useRef(false);
   const createdAgentId = useRef<string | null>(null);
   const kickoffFocusFor = useRef<string | null>(null);
@@ -357,9 +357,8 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
   const onKickoffRouted = useCallback((agentId: string) => {
     if (kickoffFocusFor.current !== agentId) return;
     kickoffFocusFor.current = null;
-    if (keyboardIsClaimed(document)) return;
     cancelKickoffFocus.current?.();
-    cancelKickoffFocus.current = focusNewAgentViewWhenReady(agentId);
+    cancelKickoffFocus.current = refocusNewAgentViewWhenReady(agentId);
   }, []);
   useEffect(() => () => cancelKickoffFocus.current?.(), []);
   // `bootstrapAgentName` holds the name the user enters in the NewAgentDialog
