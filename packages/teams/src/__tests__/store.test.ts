@@ -3,7 +3,7 @@ import {
   stopPostgresContainer,
   startTestContainer,
 } from '@ax/test-harness';
-import { Kysely, PostgresDialect } from 'kysely';
+import { Kysely, PostgresDialect, sql } from 'kysely';
 import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
@@ -13,6 +13,8 @@ import { PluginError } from '@ax/core';
 import { runTeamsMigration, type TeamsDatabase } from '../migrations.js';
 import {
   createTeamStore,
+  DISPLAY_NAME_FALLBACK,
+  fenceStoredDisplayName,
   validateDisplayName,
   validateId,
   validateRole,
@@ -86,6 +88,59 @@ describe('validation', () => {
     expect(validateDisplayName('My Team')).toBe('My Team');
   });
 
+  // TASK-561: every member sees a team's name, so the write door refuses the
+  // characters that let a name rewrite the surface it is drawn on. Each entry
+  // is one family of the canonical @ax/core/surface-text class.
+  it.each([
+    ['U+202E RIGHT-TO-LEFT OVERRIDE', 'Payroll \u202Ebad.exe'],
+    ['U+202A LEFT-TO-RIGHT EMBEDDING', 'Team \u202Aa'],
+    ['U+2066 LEFT-TO-RIGHT ISOLATE', 'Team \u2066a'],
+    ['U+2069 POP DIRECTIONAL ISOLATE', 'Team \u2069a'],
+    ['U+200E LEFT-TO-RIGHT MARK', 'Team\u200Ea'],
+    ['U+061C ARABIC LETTER MARK', 'Team\u061Ca'],
+    ['U+200B ZERO WIDTH SPACE', 'Adm\u200Bins'],
+    ['U+200D ZERO WIDTH JOINER', 'Adm\u200Dins'],
+    ['U+2060 WORD JOINER', 'Adm\u2060ins'],
+    ['U+FEFF ZERO WIDTH NO-BREAK SPACE', 'Adm\uFEFFins'],
+    // A `.test()` door does no \s collapse, so the separators are really
+    // exercised here (unlike a fence that collapses whitespace afterwards).
+    ['U+2028 LINE SEPARATOR', 'Team\u2028Admins'],
+    ['U+2029 PARAGRAPH SEPARATOR', 'Team\u2029Admins'],
+    ['a C0 control (LF)', 'Team\nAdmins'],
+    ['a C1 control (U+0085)', 'Team\u0085Admins'],
+  ])('rejects displayName carrying %s', (_label, value) => {
+    expect(() => validateDisplayName(value)).toThrow(
+      /must not contain invisible or text-direction control characters/,
+    );
+  });
+
+  it('rejects a displayName made only of zero-width characters', () => {
+    // `/\S/` matches U+200B, so the whitespace check alone let this through.
+    expect(() => validateDisplayName('\u200B\u200B')).toThrow(
+      /must not contain invisible or text-direction control characters/,
+    );
+  });
+
+  it('throws invalid-payload for a forbidden character', () => {
+    let caught: unknown;
+    try {
+      validateDisplayName('Team \u202Ex');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
+  });
+
+  it('accepts ordinary non-Latin names', () => {
+    expect(validateDisplayName('Équipe 東京')).toBe('Équipe 東京');
+    expect(validateDisplayName('فريق المبيعات')).toBe('فريق المبيعات');
+  });
+
+  it('the fallback name passes the write door', () => {
+    expect(validateDisplayName(DISPLAY_NAME_FALLBACK)).toBe(DISPLAY_NAME_FALLBACK);
+  });
+
   it('rejects empty id', () => {
     expect(() => validateId('', 'teamId')).toThrow(/teamId must be 1-256/);
   });
@@ -107,6 +162,24 @@ describe('validation', () => {
   it('accepts both valid roles', () => {
     expect(validateRole('admin')).toBe('admin');
     expect(validateRole('member')).toBe('member');
+  });
+});
+
+describe('fenceStoredDisplayName', () => {
+  it('turns a run of surface-rewriting characters into one space', () => {
+    expect(fenceStoredDisplayName('Payroll\u202E\u2066bad.exe')).toBe('Payroll bad.exe');
+  });
+
+  it('collapses whitespace and trims the ends', () => {
+    expect(fenceStoredDisplayName('\u200B Payroll \u202E  bad \uFEFF')).toBe('Payroll bad');
+  });
+
+  it('falls back when nothing legible survives', () => {
+    expect(fenceStoredDisplayName('\u202E\u200B\u2066')).toBe(DISPLAY_NAME_FALLBACK);
+  });
+
+  it('leaves an ordinary name alone', () => {
+    expect(fenceStoredDisplayName('Équipe 東京')).toBe('Équipe 東京');
   });
 });
 
@@ -175,6 +248,29 @@ describe('store', () => {
     void t1;
     const ordered = await store.listForUser('u1');
     expect(ordered.map((t) => t.displayName)).toEqual(['Beta', 'Alpha']);
+  });
+
+  // TASK-561: a row written before the write door refused these characters
+  // is fenced on every read path, not rewritten in place.
+  it('fences a pre-existing displayName carrying a bidi override on read', async () => {
+    const db = makeKysely();
+    await runTeamsMigration(db);
+    const store = createTeamStore(db);
+    const team = await store.create({ displayName: 'My Team', createdBy: 'u1' });
+    const planted = 'Payroll \u202Ebad.exe';
+    await sql`UPDATE teams_v1_teams SET display_name = ${planted} WHERE team_id = ${team.id}`.execute(
+      db,
+    );
+    expect((await store.getById(team.id))!.displayName).toBe('Payroll bad.exe');
+    const listed = await store.listForUser('u1');
+    expect(listed.find((t) => t.id === team.id)!.displayName).toBe('Payroll bad.exe');
+    // The stored bytes are untouched — a read fence, not a migration.
+    const raw = await db
+      .selectFrom('teams_v1_teams')
+      .select('display_name')
+      .where('team_id', '=', team.id)
+      .executeTakeFirstOrThrow();
+    expect(raw.display_name).toBe(planted);
   });
 
   it('addMembership returns the new row', async () => {

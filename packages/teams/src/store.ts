@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { PluginError } from '@ax/core';
+import { REWRITES_THE_SURFACE, replaceSurfaceRewriters } from '@ax/core/surface-text';
 import type { Kysely } from 'kysely';
 import type {
   MembershipRow,
@@ -29,6 +30,19 @@ const DISPLAY_NAME_MAX = 128;
 const ID_MAX = 256;
 const VALID_ROLES: ReadonlySet<TeamRole> = new Set(['admin', 'member']);
 
+/**
+ * The message the write door gives a name carrying a surface-rewriting
+ * character. Same wording as `@ax/agents`, so the two admin forms read alike.
+ */
+export const DISPLAY_NAME_FORBIDDEN_MESSAGE =
+  'displayName must not contain invisible or text-direction control characters';
+
+/**
+ * What a stored name reads as when nothing legible survives the read fence.
+ * It passes the write door, so a later rename through it yields a valid row.
+ */
+export const DISPLAY_NAME_FALLBACK = 'Untitled team';
+
 function invalid(message: string): PluginError {
   return new PluginError({
     code: 'invalid-payload',
@@ -57,7 +71,31 @@ export function validateDisplayName(value: unknown): string {
   if (!/\S/.test(value)) {
     throw invalid('displayName must contain at least one non-whitespace char');
   }
+  // TASK-561. Every member of a team sees its name, so one member could plant
+  // a name that renders misleadingly for the others: a lone U+202E reverses
+  // everything after it (Trojan Source, CVE-2021-42574), and zero-width
+  // characters make two different names look identical. The class is the one
+  // canonical copy in `@ax/core/surface-text` — widen it there, never here.
+  // Reject, not strip: silently rewriting the name someone typed would save a
+  // name they did not choose (same call as @ax/agents, TASK-558).
+  if (REWRITES_THE_SURFACE.test(value)) {
+    throw invalid(DISPLAY_NAME_FORBIDDEN_MESSAGE);
+  }
   return value;
+}
+
+/**
+ * The read-side fence, for rows written before the write door refused these
+ * characters. Each run of them becomes one space, whitespace collapses, and
+ * the ends are trimmed; nothing legible left reads as `DISPLAY_NAME_FALLBACK`.
+ * The stored row is not rewritten — display-safety, not a migration.
+ *
+ * Applied in `rowToTeam`, the one place every store read path funnels through,
+ * so every reader of `teams:list-for-user` (and `getById`) gets it.
+ */
+export function fenceStoredDisplayName(value: string): string {
+  const fenced = replaceSurfaceRewriters(value).replace(/\s+/g, ' ').trim();
+  return fenced.length === 0 ? DISPLAY_NAME_FALLBACK : fenced;
 }
 
 export function validateId(value: unknown, label: string): string {
@@ -93,7 +131,7 @@ export function mintTeamId(): string {
 function rowToTeam(row: TeamRow): Team {
   return {
     id: row.team_id,
-    displayName: row.display_name,
+    displayName: fenceStoredDisplayName(row.display_name),
     createdBy: row.created_by,
     createdAt: row.created_at,
   };
