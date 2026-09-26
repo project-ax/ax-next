@@ -24,7 +24,7 @@
  * is caught too: `readPanel` throws on the reload side, and the live side never
  * satisfies its `waitFor`.
  */
-import type { ComponentProps } from 'react';
+import type { ComponentProps, ReactElement } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import {
@@ -44,10 +44,12 @@ import { workspaceApi } from '@/lib/workspace-api';
 import { stepDetail } from '@/lib/workspace-steps';
 import type {
   AgentDetail,
+  Decision,
   ThreadMessage,
   WorkspaceAgent,
 } from '@/lib/workspace-api';
 import { rail as railFixture } from '@/components/workspace/__tests__/rail-fixture';
+import { decisionFixture } from '@/components/workspace/__tests__/decision-fixture';
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>(
@@ -605,6 +607,141 @@ describe('a turn that ran tools', () => {
     // The file BODY is not a step row. It is the one input field that would
     // turn this list back into a wall of text.
     expect(live.container.textContent).not.toContain('content');
+    live.unmount();
+  });
+});
+
+describe('a held step, answered while the turn is still live (TASK-532)', () => {
+  beforeEach(() => {
+    vi.mocked(workspaceApi.agent).mockReset();
+    vi.mocked(workspaceApi.sendMessage).mockReset();
+    vi.mocked(workspaceApi.streamReply).mockReset();
+  });
+
+  /*
+    The reload path learned this in TASK-517; the live panel did not, so the
+    step kept saying "waiting for you" beside a card that had already gone —
+    until the turn ended and the thread was re-read. Against the unfixed code
+    the last assertion reads "Sending the email — waiting for you".
+  */
+  it('stops saying "waiting for you" once the question leaves the queue, without a reload', async () => {
+    vi.mocked(workspaceApi.agent).mockResolvedValue(liveDetail());
+    vi.mocked(workspaceApi.sendMessage).mockResolvedValue({
+      conversationId: 'c1',
+      reqId: 'r1',
+    } as never);
+    // In flight throughout — `onDone` re-reads, which would be the reload path.
+    vi.mocked(workspaceApi.streamReply).mockImplementation(
+      async (_reqId: string, h): Promise<void> => {
+        h.onToolUse?.({
+          toolCallId: 'tu1',
+          toolName: 'mcp__gmail__send',
+          activityPhrase: 'Sending the email',
+        });
+        h.onToolResult?.({ toolCallId: 'tu1', held: true });
+        await new Promise<void>(() => {});
+      },
+    );
+
+    const view = (decisions: Decision[]): ReactElement => (
+      <AgentView
+        agentId="a1"
+        tab="chat"
+        onTab={vi.fn()}
+        decisions={decisions}
+        threadGrants={[]}
+        onGrantResolved={vi.fn()}
+        onGranted={vi.fn(async () => true)}
+        onApprove={vi.fn()}
+        onDismiss={vi.fn()}
+        onUndo={vi.fn()}
+        activity={[]}
+        agents={[quill]}
+        onBack={vi.fn()}
+        decisionsError={null}
+        version={0}
+        onChanged={vi.fn()}
+      />
+    );
+    const open = decisionFixture({ id: 'd1', agentId: 'a1', conversationId: 'c1' });
+
+    // The held result lands BEFORE the queue re-read brings its decision
+    // back. "Nothing open" here means "not arrived yet", so it must wait.
+    const live = render(view([]));
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'send it' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => {
+      expect(readPanel(live.container).steps).toEqual([
+        'Sending the email — waiting for you',
+      ]);
+    });
+
+    // The queue catches up: the question is open.
+    live.rerender(view([open]));
+    expect(readPanel(live.container).steps).toEqual([
+      'Sending the email — waiting for you',
+    ]);
+
+    // Answered: the row leaves the open set. No `onDone`, no re-read.
+    live.rerender(view([{ ...open, status: 'approved', resolvedAt: new Date().toISOString() }]));
+    await waitFor(() => {
+      expect(readPanel(live.container).steps).toEqual([
+        'Sending the email — no longer waiting for you',
+      ]);
+    });
+    expect(readPanel(live.container).label).toBe('1 step');
+    live.unmount();
+  });
+
+  it('keeps waiting when the queue could not be read', async () => {
+    vi.mocked(workspaceApi.agent).mockResolvedValue(liveDetail());
+    vi.mocked(workspaceApi.sendMessage).mockResolvedValue({
+      conversationId: 'c1',
+      reqId: 'r1',
+    } as never);
+    vi.mocked(workspaceApi.streamReply).mockImplementation(
+      async (_reqId: string, h): Promise<void> => {
+        h.onToolUse?.({ toolCallId: 'tu1', toolName: 'send', activityPhrase: 'Sending the email' });
+        h.onToolResult?.({ toolCallId: 'tu1', held: true });
+        await new Promise<void>(() => {});
+      },
+    );
+    const open = decisionFixture({ id: 'd1', agentId: 'a1', conversationId: 'c1' });
+    const view = (decisions: Decision[], failed: boolean): ReactElement => (
+      <AgentView
+        agentId="a1"
+        tab="chat"
+        onTab={vi.fn()}
+        decisions={decisions}
+        threadGrants={[]}
+        onGrantResolved={vi.fn()}
+        onGranted={vi.fn(async () => true)}
+        onApprove={vi.fn()}
+        onDismiss={vi.fn()}
+        onUndo={vi.fn()}
+        activity={[]}
+        agents={[quill]}
+        onBack={vi.fn()}
+        decisionsError={failed ? { kind: 'failed', detail: 'boom' } : null}
+        version={0}
+        onChanged={vi.fn()}
+      />
+    );
+    const live = render(view([open], false));
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'send it' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => {
+      expect(readPanel(live.container).steps).toEqual([
+        'Sending the email — waiting for you',
+      ]);
+    });
+    // A failed read empties the list — which is not "nothing is open".
+    live.rerender(view([], true));
+    expect(readPanel(live.container).steps).toEqual([
+      'Sending the email — waiting for you',
+    ]);
     live.unmount();
   });
 });

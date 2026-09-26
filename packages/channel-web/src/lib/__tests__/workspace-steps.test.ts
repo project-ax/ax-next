@@ -13,9 +13,11 @@ import {
   UNNAMED_STEP,
   applyToolResult,
   applyToolUse,
+  liveStreamHolds,
   settleHolds,
   shapeSteps,
   stepDetail,
+  witnessHolds,
   type WorkspaceToolCall,
 } from '../workspace-steps';
 
@@ -487,5 +489,58 @@ describe('settleHolds — a hold the person has since answered (TASK-517)', () =
       none,
     );
     expect(calls.map((c) => c.status)).toEqual(['done', 'failed', 'running']);
+  });
+});
+
+describe('liveStreamHolds + witnessHolds — the live panel (TASK-532)', () => {
+  const held = (over: Partial<WorkspaceToolCall> = {}): WorkspaceToolCall =>
+    done({ status: 'waiting', phrase: 'Sending the email', ...over });
+  const status = (
+    calls: WorkspaceToolCall[],
+    open: number | null,
+    witnessed: ReadonlySet<string>,
+  ): string[] =>
+    settleHolds(calls, liveStreamHolds(calls, open, witnessed)).map((c) => c.status);
+
+  it('settles a witnessed hold once nothing in the conversation is open', () => {
+    const calls = [held()];
+    const seen = witnessHolds(calls, 1, new Set());
+    expect(status(calls, 1, seen)).toEqual(['waiting']);
+    expect(status(calls, 0, seen)).toEqual(['settled']);
+  });
+
+  it('keeps a hold waiting that was never seen with its question open', () => {
+    // The held result beats the queue re-read that brings its decision back.
+    // "Nothing open" in that window means "not arrived yet", not "answered".
+    expect(status([held()], 0, new Set())).toEqual(['waiting']);
+  });
+
+  it('keeps every hold waiting while anything in the conversation is open', () => {
+    const calls = [held({ id: 'a' }), held({ id: 'b' })];
+    const seen = witnessHolds(calls, 2, new Set());
+    expect(status(calls, 1, seen)).toEqual(['waiting', 'waiting']);
+  });
+
+  it('a hold raised after the first was answered waits for its own question', () => {
+    const first = [held({ id: 'a' })];
+    const seen = witnessHolds(first, 1, new Set());
+    const both = [...first, held({ id: 'b' })];
+    // `a` was answered; `b`'s decision is not in the queue yet.
+    expect(status(both, 0, witnessHolds(both, 0, seen))).toEqual(['settled', 'waiting']);
+  });
+
+  it('an unknown read settles nothing and witnesses nothing', () => {
+    const calls = [held()];
+    const seen = witnessHolds(calls, 1, new Set());
+    expect(status(calls, null, seen)).toEqual(['waiting']);
+    expect(witnessHolds(calls, null, new Set()).size).toBe(0);
+  });
+
+  it('witnessHolds returns the same set when nothing new was seen', () => {
+    const calls = [held(), done({ id: 'x' })];
+    const seen = witnessHolds(calls, 1, new Set());
+    expect(seen).toEqual(new Set(['tu1']));
+    expect(witnessHolds(calls, 1, seen)).toBe(seen);
+    expect(witnessHolds(calls, 0, seen)).toBe(seen);
   });
 });

@@ -622,3 +622,65 @@ export function settleHolds(
       : call,
   );
 }
+
+/**
+ * The LIVE panel's answer to "which holds are still being asked about?"
+ * (TASK-532), in the same {@link LiveHolds} shape the reload path hands
+ * {@link settleHolds}. One function turns a hold into `settled`; this only
+ * decides what to tell it.
+ *
+ * THE LIVE PATH CANNOT MATCH THE WAY RELOAD DOES. Reload matches an open
+ * decision to its hold by the held call's id or tool name, read off the
+ * decision row. The browser never sees either: `call` is dropped from the
+ * browser's `Decision` and from the `decisionRaised` frame on purpose (see
+ * `workspace-types.ts` — it is model-authored). What the browser DOES know is
+ * how many decisions in this conversation are still open, so it asks the
+ * coarser question: "is anything here still waiting on you?"
+ *
+ * A hold settles only when BOTH are true:
+ *
+ *   * nothing in the conversation is open (`openInConversation === 0`), and
+ *   * the hold was WITNESSED — seen waiting while its conversation had an open
+ *     decision (see {@link witnessHolds}).
+ *
+ * The second half is the race guard. A held result reaches the browser before
+ * the queue re-read that brings its decision back, so for that moment the
+ * conversation reads "nothing open" while the question is brand new. Without
+ * the witness a fresh hold would flash "no longer waiting for you" — the one
+ * mistake `settleHolds` is written never to make.
+ *
+ * WHICH WAY IT FAILS: toward waiting, as on reload. An unknown read
+ * (`openInConversation === null`) settles nothing. Two holds in one turn both
+ * keep waiting until BOTH are answered — the coarse match over-holds, as
+ * reload's tool-name match does. What it cannot see: two holds raised at once
+ * whose second decision has not reached the queue when the first is answered;
+ * the second reads settled until that re-read lands.
+ */
+export function liveStreamHolds(
+  calls: readonly WorkspaceToolCall[],
+  openInConversation: number | null,
+  witnessed: ReadonlySet<string>,
+): LiveHolds | null {
+  if (openInConversation === null) return null;
+  const stillAsked = calls.filter(
+    (c) => c.status === 'waiting' && (openInConversation > 0 || !witnessed.has(c.id)),
+  );
+  return { callIds: new Set(stillAsked.map((c) => c.id)), toolNames: new Set() };
+}
+
+/**
+ * Record every waiting call seen while its conversation had a question open —
+ * the witness {@link liveStreamHolds} requires before it will settle one.
+ * Returns `prev` itself when nothing new was seen, so a React state setter
+ * handed this does not re-render for nothing.
+ */
+export function witnessHolds(
+  calls: readonly WorkspaceToolCall[],
+  openInConversation: number | null,
+  prev: ReadonlySet<string>,
+): ReadonlySet<string> {
+  if (openInConversation === null || openInConversation === 0) return prev;
+  const fresh = calls.filter((c) => c.status === 'waiting' && !prev.has(c.id));
+  if (fresh.length === 0) return prev;
+  return new Set([...prev, ...fresh.map((c) => c.id)]);
+}
