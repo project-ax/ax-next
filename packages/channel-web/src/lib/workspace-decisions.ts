@@ -192,10 +192,22 @@ function mergeReadWithReceipts(
  * receipt that moved would remount, and a remount drops focus exactly as an
  * unmount does.
  *
+ * AND A POINTER THE FRESH READ STILL CARRIES STAYS PUT TOO (TASK-543). The
+ * server appends every open pointer AFTER all the turns, so the moment a row
+ * is open again — an Undo reopened it — the next read puts it below the
+ * continuation, one slot further down than the receipt it was kept as. The
+ * card remounted and `ThreadApproval` handed focus from the reopened question
+ * to the conversation region, ~2.6s after the Undo (measured on the TASK-358
+ * walk). A turn landing above an open card's tail pointer does the same thing
+ * with no Undo at all. So every pointer the PREVIOUS read had is held in its
+ * slot, whether the fresh read dropped it (and the rule above keeps it) or
+ * carries it again. Only a pointer new to this read takes the server's place.
+ *
  * Which direction it fails in: CLOSED. Only a pointer the previous read had,
  * for a row the queue is still drawing, can come back; the caller applies this
  * only within one conversation; and every later read re-asks, so a pointer
- * lasts no longer than its row's receipt.
+ * lasts no longer than its row's receipt. Holding a carried pointer in place
+ * changes where it is drawn, never whether.
  */
 export function keepAnsweredApprovals(
   prev: readonly ThreadMessage[],
@@ -203,27 +215,37 @@ export function keepAnsweredApprovals(
   decisions: readonly Decision[],
   now: number,
 ): ThreadMessage[] {
-  const freshIds = new Set(fresh.map((m) => m.id));
+  const freshById = new Map(fresh.map((m) => [m.id, m]));
   const still = (decisionId: string): boolean => {
     const d = decisions.find((x) => x.id === decisionId);
     return d !== undefined && (isOpenDecision(d) || isJustResolved(d, now));
   };
   /** Anchor message id (or `null` for "before everything") → pointers after it. */
   const after = new Map<string | null, ThreadMessage[]>();
+  /** Fresh pointers drawn at their previous slot instead of the server's. */
+  const held = new Set<string>();
   let anchor: string | null = null;
-  let kept = 0;
   for (const m of prev) {
-    if (freshIds.has(m.id)) {
-      anchor = m.id;
+    const carried = freshById.get(m.id);
+    if (m.kind !== 'approval') {
+      if (carried !== undefined) anchor = m.id;
       continue;
     }
-    if (m.kind !== 'approval' || !still(m.decisionId)) continue;
+    if (carried !== undefined) {
+      held.add(m.id);
+      // The FRESH copy: the read is the source of truth for what it carries.
+      after.set(anchor, [...(after.get(anchor) ?? []), carried]);
+      continue;
+    }
+    if (!still(m.decisionId)) continue;
     after.set(anchor, [...(after.get(anchor) ?? []), m]);
-    kept += 1;
   }
-  if (kept === 0) return [...fresh];
+  if (after.size === 0) return [...fresh];
   const out: ThreadMessage[] = [...(after.get(null) ?? [])];
-  for (const m of fresh) out.push(m, ...(after.get(m.id) ?? []));
+  for (const m of fresh) {
+    if (held.has(m.id)) continue;
+    out.push(m, ...(after.get(m.id) ?? []));
+  }
   return out;
 }
 

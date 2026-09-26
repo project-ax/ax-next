@@ -158,10 +158,13 @@ export interface FindField {
  * key, so the claim covers the whole path.
  *
  * The cost of a position-bearing React key is a remount whenever a message's
- * POSITION changes, and it was measured rather than assumed: the thread only
- * ever grows at the end (streaming appends, and the turn-end re-read swaps the
- * transient rows for server ones at the tail), so ordinary use remounts
- * nothing. A compaction rewrite that replaces the head does remount the tail,
+ * POSITION changes. TURNS only ever grow at the end (streaming appends, and
+ * the turn-end re-read swaps the transient rows for server ones at the tail) —
+ * but the server appends approval pointers after every turn, so a new turn
+ * lands ABOVE an open card, and an earlier version of this note that called the
+ * whole thread append-only hid exactly that remount (TASK-543: it dropped a
+ * reopened question's focus). `keepAnsweredApprovals` now holds each pointer in
+ * its previous slot across a re-read, so ordinary use remounts nothing. A compaction rewrite that replaces the head does remount the tail,
  * and what that costs is now ONE thing rather than nothing (TASK-352, which
  * gave the `steps` variant its first producer): `Steps` is an uncontrolled
  * `Collapsible defaultOpen`, so a reader who had shut a step panel finds it
