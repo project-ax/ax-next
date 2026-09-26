@@ -138,6 +138,12 @@ export interface ChatOrchestratorConfig {
   // hangs without emitting chat-end, we synthesize a terminated outcome
   // after this elapses.
   chatTimeoutMs?: number;
+  /**
+   * Bound on each `chat:start` subscriber, in ms. Defaults to
+   * `CHAT_START_SUBSCRIBER_TIMEOUT_MS` (60 s); a subscriber past it is skipped
+   * and the turn proceeds. Exposed so tests need not wait a minute.
+   */
+  chatStartSubscriberTimeoutMs?: number;
   // One-shot mode (default true for 6.5a): on the first `chat:turn-end` the
   // orchestrator queues a `cancel` entry into the runner's inbox, so the
   // runner exits cleanly after processing the single user message and emits
@@ -816,8 +822,8 @@ export const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60 * 1000;
  * the bus deadline two minutes AHEAD of the orchestrator's, and now that
  * channel-web surfaces the rejection it would have killed a healthy streaming
  * turn's SSE and persisted a failure that never happened. Any finite slack has
- * that shape, because `chat:start` subscribers are unbounded and no number
- * dominates them.
+ * that shape: setup is a chain of separately-bounded phases, and no single
+ * number measured from handler entry dominates their sum.
  *
  * SO THE ORCHESTRATOR OWNS TURN DURATION, ALONE — which it is built to do, and
  * this is not a backstop being removed so much as a second, wrong clock. Every
@@ -827,12 +833,10 @@ export const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60 * 1000;
  * fires `chat:turn-error(chat-run-timeout)`. A turn cannot now be reported dead
  * by a clock that was not watching the thing it timed.
  *
- * WHAT IS GENUINELY UNCOVERED, said plainly rather than left for the next
- * reader to discover: a `chat:start` subscriber that hangs forever. `HookBus.
- * fire` puts no clock on subscribers, so that turn hangs with nothing to end
- * it. What the person sees is unchanged — it hung before this change too, and
- * the 120 s rejection only wrote a log line that never reached the browser —
- * so this is a pre-existing gap, not one opened here.
+ * The one phase that used to have no bound of its own was `chat:start`:
+ * `HookBus.fire` put no clock on subscribers, so a subscriber that hung
+ * forever hung the turn with nothing to end it. TASK-514 closed that — see
+ * `CHAT_START_SUBSCRIBER_TIMEOUT_MS`.
  *
  * WHAT THIS DOES COST, because "pre-existing" would otherwise read as "nothing
  * changed": the OPERATOR loses a signal. That 120 s rejection did run the
@@ -844,10 +848,45 @@ export const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60 * 1000;
  * lives one frame in and is deliberately better there: the subscribers and
  * service calls it awaits keep the default stall watch, so a hang names the
  * plugin responsible instead of reporting the outermost frame — which was
- * only ever the frame an operator already knew was stuck. Bounding
- * `chat:start` is its own card.
+ * only ever the frame an operator already knew was stuck.
  */
 export const AGENT_INVOKE_TIMEOUT_MS = Number.POSITIVE_INFINITY;
+
+/**
+ * The bound on EACH `chat:start` subscriber (TASK-514), passed to
+ * `HookBus.fire` as `subscriberTimeoutMs`.
+ *
+ * WHY. `fire` puts no clock on subscribers by default, and `chat:start` runs
+ * before the turn has any other clock armed — `chatTimeoutMs` starts only once
+ * the runner is streaming, and `agent:invoke` itself has none (see above). So
+ * one `chat:start` subscriber that never settled left the turn pending forever:
+ * no throw, no settle, no timeout, and the person watching got "Thinking…"
+ * with nothing ever coming to end it.
+ *
+ * WHAT HAPPENS AT THE BOUND: the turn PROCEEDS without that subscriber. The
+ * bus logs `hook_subscriber_timed_out` (hook + plugin + bound), discards
+ * whatever the subscriber eventually returns — including a late veto — and
+ * runs the rest. We proceed rather than fail the turn because no `chat:start`
+ * subscriber today is load-bearing for the turn's correctness: `@ax/agent-
+ * activity` records a status line, and `@ax/memory-strata` seeds the agent's
+ * memory tree, which is idempotent and re-attempted on the next turn. Losing
+ * either for one turn is a degraded turn; failing it would turn a slow
+ * observer into a user-facing error. A subscriber that NEEDS to stop a turn
+ * vetoes, and a veto that arrives inside the bound still works.
+ *
+ * WHY 60 s. Four times the 15 s stall watch, so a slow subscriber has already
+ * named itself (`hook_subscriber_stalled`) with 45 s of runway before it is
+ * cut off, and comfortably above memory-strata's healthy bootstrap (a tier
+ * hydrate + flush, each a bounded service call). It is a hang backstop, not a
+ * latency budget.
+ *
+ * WHAT IT DOES NOT DO: stop the subscriber. It keeps running in the background
+ * (there is no cancellation to give it), so a subscriber that hangs on every
+ * turn leaks one pending task per turn until whatever it is waiting on gives
+ * up. Its SIDE EFFECTS are therefore still possible after the bound — only its
+ * say over this turn is gone.
+ */
+export const CHAT_START_SUBSCRIBER_TIMEOUT_MS = 60_000;
 
 // ---------------------------------------------------------------------------
 // PR 2 (provider-agnostic runner, design doc §1) — runner id → binary path.
@@ -1345,6 +1384,22 @@ export function createOrchestrator(
   }
 
   const chatTimeoutMs = config.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS;
+  const chatStartSubscriberTimeoutMs =
+    config.chatStartSubscriberTimeoutMs ?? CHAT_START_SUBSCRIBER_TIMEOUT_MS;
+  // Fail at boot, not on every turn: an invalid bound would make each
+  // `chat:start` fire reject (HookBus.fire validates it), so catch it here.
+  if (
+    !(
+      chatStartSubscriberTimeoutMs === Number.POSITIVE_INFINITY ||
+      (Number.isFinite(chatStartSubscriberTimeoutMs) && chatStartSubscriberTimeoutMs >= 0)
+    )
+  ) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: `chatStartSubscriberTimeoutMs must be a non-negative finite number or Infinity (got ${chatStartSubscriberTimeoutMs})`,
+    });
+  }
   const oneShot = config.oneShot ?? true;
   const keepAlive = config.keepAlive ?? false;
   const idleWindowMs = config.idleWindowMs ?? 5 * 60 * 1000;
@@ -1424,9 +1479,14 @@ export function createOrchestrator(
     input: AgentInvokeInput,
   ): Promise<AgentOutcome> {
     // 1. chat:start — subscribers can veto.
-    const startResult = await bus.fire('chat:start', ctx, {
-      message: input.message,
-    });
+    //    Bounded (TASK-514): a subscriber past the bound is skipped and named,
+    //    and the turn proceeds — see CHAT_START_SUBSCRIBER_TIMEOUT_MS.
+    const startResult = await bus.fire(
+      'chat:start',
+      ctx,
+      { message: input.message },
+      { subscriberTimeoutMs: chatStartSubscriberTimeoutMs },
+    );
     if (startResult.rejected) {
       const outcome: AgentOutcome = {
         kind: 'terminated',
