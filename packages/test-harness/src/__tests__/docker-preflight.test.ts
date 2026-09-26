@@ -54,7 +54,9 @@ type CheckedStart = (container: Startable, options: { timeoutMs: number; warn: (
 const PROBE_BUDGET_MS = 20_000;
 
 // Wall-clock bound on the vm's synchronous evaluation of the consumer's startup
-// expression. It guards one thing: a consumer expression that never returns. (TASK-579)
+// expression. It guards one thing: a consumer expression whose SYNCHRONOUS evaluation
+// never returns. An async startup that never settles is caught by `testTimeout` and the
+// preflight's own deadline, not by this watchdog. (TASK-579)
 //
 // It was 1_000, the same number the `hang-*` tests pass as the preflight budget, and the
 // checked start used to run inside it. Two clocks, one budget, one winner picked by CI
