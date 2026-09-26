@@ -185,6 +185,17 @@ function bareTeardownViolation(hookTimeout, files) {
   );
 }
 
+/** TASK-575: every test budget in `files` the scanner cannot evaluate, as messages. */
+function unreadableTestBudgets(files) {
+  const out = [];
+  for (const { name, text } of files) {
+    for (const u of scanTestTimeouts(text, name).testUnreadable) {
+      out.push(`${name}:${u.line}: test budget \`${u.expr}\` on ${u.call} cannot be read`);
+    }
+  }
+  return out;
+}
+
 const testFiles = readdirSync(TESTS_DIR)
   .filter((f) => f.endsWith('.test.js'))
   .map((f) => ({ name: f, text: readFileSync(join(TESTS_DIR, f), 'utf8') }));
@@ -292,13 +303,12 @@ describe('the scripts vitest root declares its own timeouts (TASK-331)', () => {
   it('no guard file declares a TEST budget this test cannot read (TASK-575)', () => {
     // The bare-teardown rule below folds test budgets into a maximum, so an
     // unreadable one would count as absent. Fail closed, as for hooks.
-    const unreadable = [];
-    for (const { name, text } of testFiles) {
-      for (const u of scanTestTimeouts(text, name).testUnreadable) {
-        unreadable.push(`${name}:${u.line}: test budget \`${u.expr}\` on ${u.call} cannot be read`);
-      }
-    }
-    expect(unreadable).toEqual([]);
+    expect(unreadableTestBudgets(testFiles)).toEqual([]);
+  });
+
+  it('unreadableTestBudgets REPORTS a budget it cannot evaluate — never counts it as zero (TASK-575)', () => {
+    const files = [{ name: 'f.test.js', text: "it('slow', async () => { await go(); }, 3 * 60_000);" }];
+    expect(unreadableTestBudgets(files)).toEqual([expect.stringContaining('`3 * 60_000`')]);
   });
 
   it('a BARE teardown gets a hookTimeout of at least the largest declared test budget (TASK-567 rule, TASK-575)', () => {
