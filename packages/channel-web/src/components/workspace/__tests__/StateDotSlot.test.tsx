@@ -8,9 +8,10 @@
  * wider shape would spill out of the slot into the gap beside it.
  *
  * jsdom has no layout, so this reads the width CLASSES the real components
- * render and turns them into pixels. It checks LAYOUT width, the number that
- * places the text after the dot. A `rotate-*` transform does not change
- * layout; the diamond's corners overhang by a fraction of a pixel on purpose.
+ * render and turns them into pixels. It checks LAYOUT width. The fixed slot
+ * is what places the text; this pin keeps a shape from outgrowing it. A
+ * `rotate-*` transform does not change layout, so the 6px diamond (about 8.5px
+ * corner to corner) passes, and its sub-pixel overhang lands in the row gap.
  *
  * A width class this parser cannot read fails the test instead of being
  * skipped, so a new spelling cannot slip past it.
@@ -24,8 +25,17 @@ const PX_PER_STEP = 4;
 
 /** The layout width, in px, that a class list sets. Throws if it can't tell. */
 function widthPx(className: string): number {
-  const widths = className
-    .split(/\s+/)
+  const tokens = className.split(/\s+/);
+  // Classes that also move the horizontal extent. They would make the dot
+  // wider than its `w-*` says, so a shape using one fails loudly here.
+  // Border COLOURS (`border-transparent`) are not widths; border widths are.
+  const sneaky = tokens.find(
+    (c) =>
+      /^(min-w|max-w|basis|p|px|pl|pr|ps|pe)-/.test(c) ||
+      /^border(-[xlrse])?(-(\d+|\[[^\]]+\]))?$/.test(c),
+  );
+  if (sneaky) throw new Error(`"${sneaky}" also sets width; teach this test how to read it`);
+  const widths = tokens
     .filter((c) => /^(w|size)-/.test(c))
     .map((c) => {
       const arbitrary = /^(?:w|size)-\[(\d+(?:\.\d+)?)px\]$/.exec(c);
@@ -78,5 +88,11 @@ describe('StateDotSlot fits every STATE_SHAPE (TASK-546)', () => {
     expect(widthPx('size-[7px]')).toBe(7);
     expect(() => widthPx('w-full')).toThrow(/can't read/);
     expect(() => widthPx('h-2')).toThrow(/exactly one/);
+    expect(() => widthPx('w-[6px] min-w-[12px]')).toThrow(/also sets width/);
+    expect(() => widthPx('w-[6px] px-1')).toThrow(/also sets width/);
+    expect(() => widthPx('w-[6px] border')).toThrow(/also sets width/);
+    expect(() => widthPx('w-[6px] border-x-2')).toThrow(/also sets width/);
+    // Colour classes are not widths.
+    expect(widthPx('w-[7px] bg-primary border-transparent')).toBe(7);
   });
 });

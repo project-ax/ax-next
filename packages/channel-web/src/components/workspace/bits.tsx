@@ -161,8 +161,10 @@ export function StateDot({
  * it by a pixel from row to row. Centred in one 8px slot, every row's text
  * starts at the same offset. Use it wherever text lines up after a dot.
  *
- * The slot must be at least as wide as the widest `STATE_SHAPE`, or that
- * shape spills into the gap beside it. `StateDotSlot.test.tsx` pins this.
+ * The slot fixes where the text starts. Every `STATE_SHAPE` layout width must
+ * also fit inside it, or that shape spills into the gap beside it;
+ * `StateDotSlot.test.tsx` pins this. (Rotation is not layout: the 6px diamond
+ * reaches about 8.5px corner to corner, and the row gap absorbs that.)
  */
 export function StateDotSlot({ children }: { children: React.ReactNode }) {
   return <span className="flex w-2 shrink-0 justify-center">{children}</span>;
