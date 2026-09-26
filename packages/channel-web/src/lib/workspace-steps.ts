@@ -650,11 +650,22 @@ export function settleHolds(
  * mistake `settleHolds` is written never to make.
  *
  * WHICH WAY IT FAILS: toward waiting, as on reload. An unknown read
- * (`openInConversation === null`) settles nothing. Two holds in one turn both
- * keep waiting until BOTH are answered — the coarse match over-holds, as
- * reload's tool-name match does. What it cannot see: two holds raised at once
- * whose second decision has not reached the queue when the first is answered;
- * the second reads settled until that re-read lands.
+ * (`openInConversation === null`) settles nothing.
+ *
+ * WHERE THIS AND RELOAD DISAGREE, stated rather than implied away. Two holds
+ * in one turn both keep waiting until BOTH are answered. That is coarser than
+ * reload, not the same: reload matches each hold to its own decision, so with
+ * two DIFFERENT tools held and one answered, reload reads the answered one as
+ * settled while this still reads it as waiting — until the other is answered
+ * too, or the turn ends and the thread is re-read. It errs toward waiting,
+ * which is the permitted direction. The one forbidden-direction gap: two holds
+ * raised at once, the first answered before the second's decision reaches the
+ * queue — the second reads settled until that re-read lands.
+ *
+ * Pairing each hold with the `decisionRaised` frame that preceded it would be
+ * exact, and is not done: an identical re-held call (TASK-254) raises NO
+ * frame, so a hold can have no frame of its own, and pairing it with a
+ * neighbour's answered one would settle a live question.
  */
 export function liveStreamHolds(
   calls: readonly WorkspaceToolCall[],

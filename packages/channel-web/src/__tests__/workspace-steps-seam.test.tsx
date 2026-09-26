@@ -742,6 +742,14 @@ describe('a held step, answered while the turn is still live (TASK-532)', () => 
     expect(readPanel(live.container).steps).toEqual([
       'Sending the email — waiting for you',
     ]);
+    // And the SAME empty list, read successfully, does settle it — so the
+    // line above is the failed read holding it back, not nothing happening.
+    live.rerender(view([], false));
+    await waitFor(() => {
+      expect(readPanel(live.container).steps).toEqual([
+        'Sending the email — no longer waiting for you',
+      ]);
+    });
     live.unmount();
   });
 });

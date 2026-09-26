@@ -521,6 +521,15 @@ describe('liveStreamHolds + witnessHolds — the live panel (TASK-532)', () => {
     expect(status(calls, 1, seen)).toEqual(['waiting', 'waiting']);
   });
 
+  it('is COARSER than reload: an answered hold waits while a different one is open', () => {
+    // Reload would settle `a` here (its own decision is gone). Live cannot see
+    // which decision is whose, so it errs toward waiting — pinned so a change
+    // to this is a decision, not an accident.
+    const calls = [held({ id: 'a', name: 'send' }), held({ id: 'b', name: 'delete' })];
+    const seen = witnessHolds(calls, 2, new Set());
+    expect(status(calls, 1, seen)).toEqual(['waiting', 'waiting']);
+  });
+
   it('a hold raised after the first was answered waits for its own question', () => {
     const first = [held({ id: 'a' })];
     const seen = witnessHolds(first, 1, new Set());

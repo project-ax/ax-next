@@ -578,6 +578,8 @@ export function AgentView({
           setSent(null);
           setStreamed('');
           setLiveCalls([]);
+          setWitnessed(new Set());
+          setStreamConversation(null);
           setPhase(null);
           // The durable thread is the source of truth — re-read it rather than
           // keeping our transient copy around to drift.
