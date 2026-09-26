@@ -24,7 +24,8 @@ uncommitted edits, and the builder then debugged the reviewer's mutant as its ow
 - **A claim that needs a mutation to prove** ("this test would pass against the unfixed code"):
   either report the exact mutation and the result you predict, for the owner to run, or run it
   in **your own** detached checkout of the sha you were given —
-  `git worktree add --detach <your scratch dir>/review-<sha> <sha>`, then
+  `git worktree add --detach <your scratch dir>/review-<sha> <sha>` — the scratch dir must be
+  OUTSIDE the worktree you are reviewing, or it shows up there as untracked residue — then
   `pnpm install --frozen-lockfile && pnpm build` there (~25s on a warm store), mutate freely,
   and `git worktree remove --force` it before you return. There you are the owner. Say in the
   review which route you took. (yolo-ship Phase 4's "owner is parked" exception is not a

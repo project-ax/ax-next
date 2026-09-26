@@ -436,8 +436,10 @@ Three rules, for the whole of each review round:
 ```bash
 # ax-review-window: open — run BEFORE you dispatch a review round.
 if [ -n "$(git status --porcelain)" ]; then
-  echo "REFUSE: this worktree carries uncommitted work — commit it before dispatching."
+  echo "REFUSE: this worktree carries uncommitted work — clear it before dispatching."
   echo "  The reviewer runs in THIS tree; uncommitted work is exactly what its restore eats."
+  echo "  Commit changes that belong to the branch; move untracked scratch (notes,"
+  echo "  screenshots) OUTSIDE the worktree rather than committing it."
   git status --porcelain | head -20
   exit 1
 fi
@@ -505,6 +507,10 @@ rather than implied away:
   says it built anything, rebuild before you trust a test run.
 - **A `git stash` by the reviewer.** It leaves HEAD and the tree clean — and, because the
   open block made the tree committed-clean, there was nothing of yours for it to take.
+- **A sha you re-derived instead of copied.** The HEAD check is only as good as the `SHA`
+  you paste: run `git rev-parse HEAD` at close time and paste *that*, and the comparison is
+  trivially equal — a false `ok` exactly when HEAD moved. Paste the line the **open** block
+  printed (it is also the round's `reviewed-sha`), never a fresh one.
 
 **Is this enforceable? Partly, and the honest word is *detected*, not *prevented*.** Nothing
 here stops a reviewer from writing; the open block makes the damage impossible for work you

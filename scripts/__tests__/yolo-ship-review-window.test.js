@@ -29,7 +29,9 @@
 //     the close block says `ok` — pinned below as a deliberate `ok`, because a guard that
 //     pretended to see it would be lying. The doc names it as a blind spot.
 //   - Gitignored output (`dist/`), which `git status` never shows.
-//   - The zsh half does not run on a machine without zsh; only bash is guaranteed.
+//   - The zsh half runs wherever zsh is installed. CI installs it (TASK-550), and the
+//     `CI` presence assertion below reddens if that install step is ever dropped, so a
+//     silently shorter `describe.each` cannot pass unnoticed.
 // ---------------------------------------------------------------------------------
 
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -57,6 +59,12 @@ function binExists(name) {
 }
 
 const SHELLS = ['bash', ...(binExists('zsh') ? ['zsh'] : [])];
+
+// Same pin as mutation-restore-protocol.test.js (TASK-550): the CI test job installs zsh,
+// and removing that step must redden here, not quietly drop the zsh half.
+it.runIf(process.env.CI)('has zsh on CI, so the zsh half of this guard cannot silently vanish', () => {
+  expect(SHELLS).toEqual(['bash', 'zsh']);
+});
 
 /** Every fenced ```bash block in `md`, dedented by the fence's own indent. */
 function bashBlocks(md) {
@@ -185,6 +193,8 @@ describe.each(SHELLS)('review window under %s', (shell) => {
       const r = runBlock(shell, OPEN, OPEN_MARK, dir);
       expect(r.status, r.out).toBe(1);
       expect(r.out).toContain('new-test.js');
+      // Untracked scratch is relocated, not committed — the remedy must say so.
+      expect(r.out).toMatch(/OUTSIDE the worktree/);
     });
   });
 
@@ -254,6 +264,17 @@ describe.each(SHELLS)('review window under %s', (shell) => {
       writeFileSync(join(dir, TARGET), MUTANT);
       git(dir, 'checkout', '--', TARGET);
       const r = runBlock(shell, CLOSE, CLOSE_MARK, dir, sha);
+      expect(r.status, r.out).toBe(0);
+    });
+
+    // The second named blind spot: re-deriving the sha at close time instead of pasting
+    // the one open printed makes the HEAD check trivially equal — a false ok over a
+    // committed mutant. Pinned as an ok so the doc's warning stays the only defence it is.
+    it('says ok over a moved HEAD when the sha was re-derived at close (documented blind spot)', () => {
+      const dir = makeRepo();
+      writeFileSync(join(dir, TARGET), MUTANT);
+      git(dir, 'commit', '-q', '-am', 'reviewer wip');
+      const r = runBlock(shell, CLOSE, CLOSE_MARK, dir, head(dir));
       expect(r.status, r.out).toBe(0);
     });
   });
