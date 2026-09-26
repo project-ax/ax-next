@@ -219,6 +219,10 @@ describe('@ax/memory — degraded passes through untouched, once readable', () =
     ['null', [null]],
     ['an object beside a real flag', ['semantic', { flag: 'ranking' }]],
     ['undefined', [undefined]],
+    // A HOLE, not an `undefined` element. `Array.prototype.every` visits no
+    // index for a hole, so an `every`-shaped guard passes `[, 'semantic']`
+    // and the spread below then materializes it as a real `undefined`.
+    ['a hole', [, 'semantic']],
   ])('throws when a degraded element is %s', async (_label, degraded) => {
     const { bus } = await busWithEngine({ recall: { statements: [], degraded } });
     const err = await bus

@@ -587,14 +587,18 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           // The message is a static literal: the element is engine-supplied
           // and never interpolated. Only the TYPE is checked — the vocabulary
           // is deliberately open, so a flag a newer engine learned to raise
-          // still passes through verbatim below.
-          if (result.degraded !== undefined && !result.degraded.every((flag) => typeof flag === 'string')) {
-            throw new PluginError({
-              code: 'invalid-return',
-              plugin: PLUGIN_NAME,
-              hookName: MEMORY_RECALL_HOOK,
-              message: `${FACTS_RECALL_HOOK} returned a non-string degraded flag; a degradation signal we cannot read is not one we may hand a caller`,
-            });
+          // still passes through verbatim below. `for...of`, not `every`:
+          // `every` skips a hole, and the spread below would then hand the
+          // caller that hole as a real `undefined`.
+          for (const flag of result.degraded ?? []) {
+            if (typeof flag !== 'string') {
+              throw new PluginError({
+                code: 'invalid-return',
+                plugin: PLUGIN_NAME,
+                hookName: MEMORY_RECALL_HOOK,
+                message: `${FACTS_RECALL_HOOK} returned a non-string degraded flag; a degradation signal we cannot read is not one we may hand a caller`,
+              });
+            }
           }
 
           for (const row of result.statements) {
