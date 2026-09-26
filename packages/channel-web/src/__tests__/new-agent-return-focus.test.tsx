@@ -229,7 +229,7 @@ describe('closing the new-agent dialog from the workspace (TASK-510)', () => {
   describe('when the agent read outlasts the restore window (TASK-539)', () => {
     /** The new agent's loading pane, re-queried from the CURRENT tree. */
     function loadingPane(): HTMLElement {
-      return screen.getByRole('region', { name: 'Loading conversation' });
+      return screen.getByRole('region', { name: 'Loading agent' });
     }
 
     /** Create "Quill" (a2) with its agent read held until `release()`. */
@@ -272,7 +272,7 @@ describe('closing the new-agent dialog from the workspace (TASK-510)', () => {
       // The pane is REPLACED; focus must follow into the conversation rather
       // than falling to <body> with the removed node.
       await waitFor(() => expectFocusedAndConnected(newAgentConversation));
-      expect(screen.queryByRole('region', { name: 'Loading conversation' })).toBeNull();
+      expect(screen.queryByRole('region', { name: 'Loading agent' })).toBeNull();
     }, 10_000);
 
     it('leaves a person who moved during the wait where they are', async () => {
@@ -285,6 +285,78 @@ describe('closing the new-agent dialog from the workspace (TASK-510)', () => {
       await waitFor(() => newAgentConversation());
       expectFocusedAndConnected(newAgentRow);
     });
+  });
+
+  describe('when the kickoff send outlasts the restore window (TASK-547)', () => {
+    /**
+     * Create "Quill" (a2) with the kickoff's `sendMessage` held until
+     * `release()`. The route only moves to the new agent once the send
+     * resolves, so nothing keyed by a2 is on screen until then.
+     */
+    async function createWithHeldSend(): Promise<() => void> {
+      mockAutoCreate.mockResolvedValue({ agentId: 'a2' } as Awaited<
+        ReturnType<typeof autoCreateBareAgent>
+      >);
+      vi.mocked(workspaceApi.agent).mockImplementation(async (agentId: string) =>
+        newAgentDetail(agentId),
+      );
+      let release!: () => void;
+      const held = new Promise<void>((r) => {
+        release = r;
+      });
+      vi.mocked(workspaceApi.sendMessage).mockImplementationOnce(async () => {
+        await held;
+        return { reqId: 'r1', conversationId: 'c1' };
+      });
+      render(<App />);
+      await openNewAgentDialog();
+      fireEvent.change(screen.getByLabelText(/Agent name/i), {
+        target: { value: 'Quill' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /Create agent/i }));
+      await waitFor(() => expect(workspaceApi.sendMessage).toHaveBeenCalled());
+      return release;
+    }
+
+    const outlastWindow = (): Promise<void> =>
+      new Promise((r) => setTimeout(r, RESTORE_WINDOW_MS + 300));
+
+    /**
+     * VACUITY: against the unfixed code the only restore started at the
+     * dialog's close and gave up after `RESTORE_WINDOW_MS`, with the route
+     * still on the old view — so focus stays on `<body>` and the final
+     * `waitFor` times out. The first `expect` pins the premise: the window
+     * really did run out with focus nowhere.
+     */
+    it('still lands focus in the new agent once the send returns', async () => {
+      const release = await createWithHeldSend();
+
+      await outlastWindow();
+      expect(document.activeElement).toBe(document.body);
+
+      release();
+
+      await waitFor(() => expectFocusedAndConnected(newAgentConversation));
+    }, 10_000);
+
+    /**
+     * The re-armed restore yields exactly like the first one: a person who
+     * took the keyboard during the slow send keeps it. Red against a re-arm
+     * that skips `keyboardIsClaimed` — `focusFirstWhenReady`'s immediate try
+     * does not check it, it assumes it is called straight after a close.
+     */
+    it('leaves a person who moved during the slow send where they are', async () => {
+      const release = await createWithHeldSend();
+
+      await outlastWindow();
+      newAgentRow().focus();
+      release();
+
+      await waitFor(() => newAgentConversation());
+      // Give a wrongly re-armed restore the frame it would need to land.
+      await new Promise((r) => setTimeout(r, 50));
+      expectFocusedAndConnected(newAgentRow);
+    }, 10_000);
   });
 
   it('on a compact viewport, falls back to the hamburger — the row is in the closed sheet', async () => {

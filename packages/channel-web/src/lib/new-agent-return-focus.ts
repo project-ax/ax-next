@@ -131,9 +131,13 @@ export function agentConversationTarget(agentId: string): FocusTarget {
  * The sidebar (and the "New agent…" row in it) paints BEFORE the route moves
  * to the new agent, so listing the row as a fallback would not be a fallback
  * at all: `focusFirstWhenReady` takes the first target that is present, and
- * the row would win every time. If neither target appears inside the window —
- * the kickoff's send itself outlasting it, or a board read that fails on the
- * way back — this fails the way the original bug did, to `<body>`.
+ * the row would win every time. If neither target appears inside the window
+ * — a board read that fails on the way back, say — this fails the way the
+ * original bug did, to `<body>`.
+ *
+ * A kickoff SEND that outlasts the window is covered one level up (TASK-547):
+ * on the workspace `App.tsx` calls this again when the send returns and the
+ * route moves, so that wait gets a window of its own.
  */
 export function focusNewAgentViewWhenReady(
   agentId: string,

@@ -920,12 +920,17 @@ export function AgentView({
       region it replaces, it needs a real role for its name to be announced
       at all, and a visible outline when focused; it stays heading-free for
       the reason above.
+
+      Named "Loading agent", not "Loading conversation" (TASK-547): the pane
+      is what EVERY tab shows until the agent read lands — Activity, Files and
+      Memory included — so a conversation-specific name was wrong on three of
+      the four.
     */
     return (
       <div
         tabIndex={-1}
         role="region"
-        aria-label="Loading conversation"
+        aria-label="Loading agent"
         {...{ [AGENT_LOADING_ATTR]: agentId }}
         onFocus={() => {
           loadingPaneHeldFocus.current = true;

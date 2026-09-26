@@ -247,3 +247,25 @@ describe('AgentView heading outline', () => {
     expect(headingOutlineProblems()).toEqual([]);
   });
 });
+
+/*
+  TASK-547 — the "Loading…" pane is focusable and named (TASK-539), and it is
+  the same pane on every tab: it renders before the agent read, whatever the
+  URL's tab says. It used to be called "Loading conversation" everywhere,
+  which is wrong on Activity, Files and Memory.
+
+  VACUITY: against the unfixed code every iteration fails — no region named
+  "Loading agent" exists. The read is held forever so the pane is what is on
+  screen when the assertion runs.
+*/
+describe('AgentView loading pane name', () => {
+  for (const tab of ['chat', 'did', 'files', 'memory'] as const) {
+    it(`names the ${tab} tab's loading pane "Loading agent"`, () => {
+      agentMock.mockReturnValue(new Promise<AgentDetail>(() => {}));
+      renderView({ tab });
+
+      expect(screen.getByRole('region', { name: 'Loading agent' })).toBeInTheDocument();
+      expect(screen.queryByRole('region', { name: /conversation/i })).toBeNull();
+    });
+  }
+});
