@@ -684,7 +684,7 @@ describe('a held step, answered while the turn is still live (TASK-532)', () => 
     ]);
 
     // Answered: the row leaves the open set. No `onDone`, no re-read.
-    live.rerender(view([{ ...open, status: 'approved', resolvedAt: new Date().toISOString() }]));
+    live.rerender(view([{ ...open, status: 'executed', resolvedAt: new Date().toISOString() }]));
     await waitFor(() => {
       expect(readPanel(live.container).steps).toEqual([
         'Sending the email — no longer waiting for you',
