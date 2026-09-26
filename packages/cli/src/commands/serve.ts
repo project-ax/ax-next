@@ -67,7 +67,53 @@ env (required when AX_PRESET=memory):
 env (optional when AX_PRESET=memory):
   AX_MEMORY_VERTEX_CREDENTIAL_REF   default 'provider:vertex'
   AX_MEMORY_COHERE_CREDENTIAL_REF   default 'provider:cohere'
-  AX_AGENT_WORKSPACE_PREVIEW        '1'/'true' mounts the workspace preview routes (default off)`;
+  AX_AGENT_WORKSPACE                '1'/'true' serves the agent workspace (the web
+                                    interface); unset or '0'/'false' = no web
+                                    interface. The Helm chart sets it (on by default).`;
+
+/**
+ * The retired spelling of `AX_AGENT_WORKSPACE`, read here ONCE so an operator
+ * who set it by hand (the pre-TASK-325 way, a `host.env` entry) does not
+ * silently lose the web interface on upgrade.
+ *
+ * This is the only place in the codebase that reads it, on purpose: two live
+ * names for one switch is how we ended up with three (TASK-359).
+ *
+ * REMOVAL: this goes away with the first chart release after 0.0.1.
+ * `deploy/charts/ax-next/__tests__/render.test.ts` fails a chart version bump
+ * while this read still exists, so it cannot quietly outlive its welcome.
+ */
+export const RETIRED_AGENT_WORKSPACE_ENV = 'AX_AGENT_WORKSPACE_PREVIEW';
+
+/**
+ * Promote the retired name to the current one when — and only when — the
+ * current one is unset. The current name always wins: the chart stamps it in
+ * both states, so an explicit `channelWeb.agentWorkspace: false` beats a stale
+ * `host.env` entry. Warns whenever the retired name is present at all, so an
+ * operator sees it in the pod log before it stops working. Never mutates the
+ * caller's env.
+ */
+export function applyRetiredEnvNames(
+  env: NodeJS.ProcessEnv,
+  warn: (line: string) => void,
+): NodeJS.ProcessEnv {
+  const retired = env.AX_AGENT_WORKSPACE_PREVIEW;
+  if (retired === undefined) return env;
+  const current = env.AX_AGENT_WORKSPACE;
+  if (current === undefined || current === '') {
+    warn(
+      `serve: ${RETIRED_AGENT_WORKSPACE_ENV} is a retired name — using it as AX_AGENT_WORKSPACE for now. ` +
+        'Set channelWeb.agentWorkspace in the chart (or AX_AGENT_WORKSPACE) and drop the old entry; ' +
+        'the old name stops being read in the next chart release.',
+    );
+    return { ...env, AX_AGENT_WORKSPACE: retired };
+  }
+  warn(
+    `serve: ${RETIRED_AGENT_WORKSPACE_ENV} is a retired name and is IGNORED because AX_AGENT_WORKSPACE is set. ` +
+      'Drop the old entry.',
+  );
+  return env;
+}
 
 export interface RunServeOptions {
   argv: string[];
@@ -94,7 +140,7 @@ export interface RunServeOptions {
 export async function runServeCommand(opts: RunServeOptions): Promise<number> {
   const out = opts.stdout ?? ((line: string) => process.stdout.write(line + '\n'));
   const err = opts.stderr ?? ((line: string) => process.stderr.write(line + '\n'));
-  const env = opts.env ?? process.env;
+  const env = applyRetiredEnvNames(opts.env ?? process.env, err);
 
   // Argument parsing. The standalone HTTP listener is gone (issue #39); the
   // public listener's host/port now come from AX_HTTP_HOST / AX_HTTP_PORT

@@ -3,7 +3,7 @@
  *
  * Mounted at `/workspace/*` — and at `/`, which the flag also claims and the
  * shell rewrites to `/workspace` on mount — behind the
- * `agentWorkspacePreview` feature flag, on the real host: `App.tsx` supplies
+ * `agentWorkspace` feature flag, on the real host: `App.tsx` supplies
  * the signed-in user, `/api/workspace/*` supplies the board, and sending a
  * message goes to the shipped chat wire.
  *
@@ -266,7 +266,7 @@ function Inner({
    * Canonicalize whatever we were opened with, once.
    *
    * `/` is a real entry point — App renders the workspace there when the
-   * preview is on — and so are the non-canonical spellings of a view
+   * flag is on — and so are the non-canonical spellings of a view
    * (`/workspace/agents/x/chat`, a trailing slash, an unknown tab). Left
    * alone, the same view would have several addresses and "copy the URL"
    * would be a coin flip.

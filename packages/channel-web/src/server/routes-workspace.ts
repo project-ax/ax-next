@@ -109,11 +109,11 @@
  * nothing else — so the row a person reads in the thread is the row the queue
  * shows rather than a second copy of it that can disagree.
  *
- * Most `/api/workspace/*` routes mount only when the preview flag is on
- * (capability minimization, invariant #5) — an unmounted route is the
+ * Most `/api/workspace/*` routes mount only when the agentWorkspace flag is
+ * on (capability minimization, invariant #5) — an unmounted route is the
  * cheapest minimization there is. The `/api/workspace/decisions*` collection
  * is the exception: every route in it mounts unconditionally, because a held
- * call reaches the default `/` chat surface whether or not the preview is on,
+ * call reaches the default `/` chat surface whether or not the flag is on,
  * and gating the routes would gate only the remedy (TASK-261/TASK-259). See
  * `registerWorkspaceRoutes` below for the full accounting.
  *
@@ -823,7 +823,7 @@ interface DecisionsUndoOutput {
 
 /** `GET /api/features` — the flag echo the SPA reads before it renders. */
 export interface FeaturesResponse {
-  agentWorkspacePreview: boolean;
+  agentWorkspace: boolean;
 }
 
 /**
@@ -2489,7 +2489,7 @@ export interface WorkspaceHandlerDeps {
    * Echoed by `GET /api/features`. The route-mounting decision lives in
    * `registerWorkspaceRoutes`; the handler only needs it to tell the truth.
    */
-  agentWorkspacePreview?: boolean;
+  agentWorkspace?: boolean;
   /**
    * Time seam for the "This week" window, and for the `declinedAt` a "Not now"
    * is recorded with (TASK-444). Injected so the counter's boundary is
@@ -2509,7 +2509,7 @@ export interface WorkspaceHandlerDeps {
 export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   const { bus, initCtx } = deps;
   const buffer = deps.buffer;
-  const agentWorkspacePreview = deps.agentWorkspacePreview === true;
+  const agentWorkspace = deps.agentWorkspace === true;
   const now = deps.now ?? ((): Date => new Date());
 
   /**
@@ -4050,7 +4050,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * `GET /api/branding`.
      */
     async features(_req: RouteRequest, res: RouteResponse): Promise<void> {
-      res.status(200).json({ agentWorkspacePreview } satisfies FeaturesResponse);
+      res.status(200).json({ agentWorkspace } satisfies FeaturesResponse);
     },
 
     /** GET /api/workspace/state */
@@ -5506,7 +5506,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
  * Register the workspace routes against @ax/http-server.
  *
  * Two things mount unconditionally, and everything else stays behind
- * `opts.agentWorkspacePreview`:
+ * `opts.agentWorkspace`:
  *
  * - `GET /api/features` — it is how the SPA learns whether the rest of this
  *   surface exists.
@@ -5515,24 +5515,24 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
  *   that "which ones" is never a question anybody has to get right again; the
  *   property test in `routes-workspace-decisions-unflagged.test.ts` pins the
  *   set rather than the count. A held call reaches the DEFAULT `/` chat
- *   surface today — preview
- *   flag or no — because `@ax/decisions` can hold any outward-facing tool
- *   call regardless of who's looking at `/workspace`. Gating these routes
- *   would gate only the remedy, leaving a dead end (a call nobody can
- *   approve) as the default experience (TASK-261). Ungating them widens
- *   *reachability*, not *authority*: `authOr401` and the owner-scoped
- *   `decisions:get` / `resolveAgentOr404` checks inside the handlers are
- *   unchanged, so a caller still only ever sees or resolves their own rows.
+ *   surface today — flag on or off — because `@ax/decisions` can hold any
+ *   outward-facing tool call regardless of who's looking at `/workspace`.
+ *   Gating these routes would gate only the remedy, leaving a dead end (a
+ *   call nobody can approve) as the default experience (TASK-261). Ungating
+ *   them widens *reachability*, not *authority*: `authOr401` and the
+ *   owner-scoped `decisions:get` / `resolveAgentOr404` checks inside the
+ *   handlers are unchanged, so a caller still only ever sees or resolves
+ *   their own rows.
  *
- * Every other `/api/workspace/*` route still mounts ONLY when the preview
- * flag is on: an unmounted route is the cheapest possible capability
- * minimization (invariant #5), and a 404 is an honest answer for a surface
- * the deployment hasn't enabled.
+ * Every other `/api/workspace/*` route still mounts ONLY when the
+ * agentWorkspace flag is on: an unmounted route is the cheapest possible
+ * capability minimization (invariant #5), and a 404 is an honest answer for
+ * a deployment that has the flag off.
  */
 export async function registerWorkspaceRoutes(
   bus: HookBus,
   initCtx: AgentContext,
-  opts: { agentWorkspacePreview: boolean; buffer?: ChunkBuffer },
+  opts: { agentWorkspace: boolean; buffer?: ChunkBuffer },
 ): Promise<Array<() => void>> {
   // TWO CLOCKS THAT HAVE TO BE ONE. `makeWorkspaceHandlers`'s `now` stamps the
   // `declinedAt` of a "Not now"; `createChunkBuffer`'s `now` (plugin.ts, the
@@ -5545,7 +5545,7 @@ export async function registerWorkspaceRoutes(
   const handlers = makeWorkspaceHandlers({
     bus,
     initCtx,
-    agentWorkspacePreview: opts.agentWorkspacePreview,
+    agentWorkspace: opts.agentWorkspace,
     // Spread, not a plain property: with exactOptionalPropertyTypes an
     // explicit `buffer: undefined` is not assignable to `buffer?: ChunkBuffer`
     // (the same shape the rest of this file uses for optional inputs).
@@ -5572,8 +5572,8 @@ export async function registerWorkspaceRoutes(
         property test that keeps it that way.
 
         The short version: `@ax/decisions` holds outward-facing tool calls on
-        the DEFAULT `/` chat surface whether or not a deployment turned the
-        workspace preview on. TASK-261 puts the approval card there, undo
+        the DEFAULT `/` chat surface whether or not a deployment has the
+        agentWorkspace flag on. TASK-261 puts the approval card there, undo
         window and all. A route left behind the flag would be a dead end whose
         symptom is invisible — the single-decision re-read below is the one way
         `undoable: false` ever reaches a browser (TASK-259), so if IT 404s,
@@ -5609,7 +5609,7 @@ export async function registerWorkspaceRoutes(
       handler: handlers.undoDecision as unknown as RouteHandler,
     },
   ];
-  if (opts.agentWorkspacePreview) {
+  if (opts.agentWorkspace) {
     routes.push(
       {
         method: 'GET',
@@ -5620,7 +5620,7 @@ export async function registerWorkspaceRoutes(
         // TASK-373 — the read-back for grants raised while the workspace was
         // closed. Its only consumer is the workspace surface itself (the
         // Today queue's mount fetch), so it mounts with the rest of the
-        // preview-gated routes: with the flag off, no surface reads it, and
+        // flag-gated routes: with the flag off, no surface reads it, and
         // an unmounted route is the cheapest capability minimization.
         method: 'GET',
         path: '/api/workspace/grants',

@@ -244,10 +244,18 @@ describeIfHelm('memory preset opt-in (TASK-496)', () => {
     expect(spec?.storageClassName).toBe('premium-rwo');
   });
 
-  it('channelWeb.agentWorkspace stays off in memory mode — no forced AX_AGENT_WORKSPACE_PREVIEW', () => {
-    const { container } = hostSpec(hostDeployment(render(MEMORY_VALUES)));
-    const env = envMap(container);
-    expect(env.has('AX_AGENT_WORKSPACE_PREVIEW')).toBe(false);
+  it('memory mode follows channelWeb.agentWorkspace like k8s mode — no forced value, no retired name', () => {
+    // TASK-359: the chart default is ON for both presets, and memory mode
+    // must not override the operator's choice either way.
+    const on = envMap(hostSpec(hostDeployment(render(MEMORY_VALUES))).container);
+    expect(on.get('AX_AGENT_WORKSPACE')).toBe('1');
+    expect(on.has('AX_AGENT_WORKSPACE_PREVIEW')).toBe(false);
+    const off = envMap(
+      hostSpec(
+        hostDeployment(render([...MEMORY_VALUES, '--set', 'channelWeb.agentWorkspace=false'])),
+      ).container,
+    );
+    expect(off.get('AX_AGENT_WORKSPACE')).toBe('0');
   });
 
   it('rejects an unknown host.preset', () => {

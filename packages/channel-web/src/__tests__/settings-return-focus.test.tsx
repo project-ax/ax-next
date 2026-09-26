@@ -128,7 +128,7 @@ beforeEach(() => {
   mockFetchBootstrapStatus.mockReset();
   mockFetchBootstrapStatus.mockResolvedValue('completed');
   mockFetchFeatures.mockReset();
-  mockFetchFeatures.mockResolvedValue({ agentWorkspacePreview: true });
+  mockFetchFeatures.mockResolvedValue({ agentWorkspace: true });
   installShellFetch();
   setPathname('/workspace');
   vi.mocked(workspaceApi.board).mockResolvedValue({ agents: [] });

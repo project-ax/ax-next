@@ -1,13 +1,13 @@
 // @vitest-environment node
 /**
- * The decision routes and the preview flag must stay independent.
+ * The decision routes and the agentWorkspace flag must stay independent.
  *
  * TASK-261 moved the list, approve, dismiss and undo routes out of
- * `registerWorkspaceRoutes`' `if (agentWorkspacePreview)` block, joining the
+ * `registerWorkspaceRoutes`' `if (agentWorkspace)` block, joining the
  * single-row re-read TASK-259 had already put there — so the whole
  * `/api/workspace/decisions*` collection now mounts unconditionally. Because a
  * call held for approval reaches the DEFAULT `/` chat surface whether or not
- * a deployment turned the workspace preview on. Gating the routes gated only
+ * a deployment has the agentWorkspace flag on. Gating the routes gated only
  * the remedy: the agent said it was waiting for an answer and every button
  * that could give one 404'd.
  *
@@ -50,7 +50,7 @@ interface Registered {
  * The handlers are closures that only touch the bus when a request arrives, so
  * registration needs nothing from it but a place to put the route.
  */
-async function registeredRoutes(agentWorkspacePreview: boolean): Promise<Registered[]> {
+async function registeredRoutes(agentWorkspace: boolean): Promise<Registered[]> {
   const seen: Registered[] = [];
   const bus = {
     async call(hook: string, _ctx: AgentContext, payload: unknown) {
@@ -64,7 +64,7 @@ async function registeredRoutes(agentWorkspacePreview: boolean): Promise<Registe
     hasService: () => false,
   } as unknown as HookBus;
 
-  await registerWorkspaceRoutes(bus, initCtx, { agentWorkspacePreview });
+  await registerWorkspaceRoutes(bus, initCtx, { agentWorkspace });
   return seen;
 }
 
@@ -76,8 +76,8 @@ function decisionRoutes(routes: Registered[]): string[] {
     .sort();
 }
 
-describe('the decisions collection vs the workspace preview flag', () => {
-  it('registers the same decision routes whether the preview is on or off', async () => {
+describe('the decisions collection vs the agentWorkspace flag', () => {
+  it('registers the same decision routes whether the flag is on or off', async () => {
     const on = decisionRoutes(await registeredRoutes(true));
     const off = decisionRoutes(await registeredRoutes(false));
 
@@ -88,7 +88,7 @@ describe('the decisions collection vs the workspace preview flag', () => {
     expect(off).toEqual(on);
   });
 
-  it('mounts a non-empty decisions collection with the preview off', async () => {
+  it('mounts a non-empty decisions collection with the flag off', async () => {
     // Guards the degenerate pass: two empty arrays are also "equal", and would
     // mean the whole collection had vanished rather than been ungated.
     const off = decisionRoutes(await registeredRoutes(false));

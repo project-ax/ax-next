@@ -1017,18 +1017,16 @@ describeIfHelm('ax-next chart: auth.secret value (TASK-169)', () => {
   });
 });
 
-// The agent-centric workspace surface (TASK-325). The whole UI shipped in the
-// image on 2026-08-24 and no operator could turn it on: the preset gates route
-// registration on AX_AGENT_WORKSPACE_PREVIEW, and the chart had no value for
-// it, so `helm show values` never mentioned it and enabling it took a
-// hand-written `host.env` block in a gitignored overlay.
+// The agent workspace — the web interface. TASK-325 gave the chart a value
+// for it (before that the whole UI shipped unreachable: the preset read an
+// env var no template could stamp). TASK-359 made it the DEFAULT and
+// collapsed its three names into one: `channelWeb.agentWorkspace` here,
+// `AX_AGENT_WORKSPACE` on the pod, `agentWorkspace` on `/api/features`.
 //
-// Nothing caught that, and the reason is worth keeping: the env-shape guard's
-// two gates are "every REQUIRED var is stamped" and "every stamped var is
-// read". This var is read as a bare `process.env` lookup and is OPTIONAL, so
-// it fell between both. These assertions are the replacement — and the OFF
-// case is the load-bearing one, because a flag that silently defaults ON is a
-// capability nobody granted.
+// The var is stamped in BOTH states. "0" is what keeps an explicit
+// `agentWorkspace: false` from being overridden by a stale `host.env` entry
+// for the retired `AX_AGENT_WORKSPACE_PREVIEW` name, which `serve` still
+// promotes for one release — but only when `AX_AGENT_WORKSPACE` is unset.
 describeIfHelm('ax-next chart: channelWeb.agentWorkspace', () => {
   function hostEnvEntries(docs: K8sDoc[]): Array<{ name: string; value?: string }> {
     const dep = docs.find(
@@ -1040,61 +1038,72 @@ describeIfHelm('ax-next chart: channelWeb.agentWorkspace', () => {
     return containers[0]?.env ?? [];
   }
 
-  it('does NOT stamp AX_AGENT_WORKSPACE_PREVIEW by default', () => {
-    // `/api/workspace/*` is never registered without this, so an absent var is
-    // a real capability boundary and not a cosmetic default (invariant #5).
+  /** Every env entry that spells the switch, under either name. */
+  function switchEntries(docs: K8sDoc[]): Array<{ name: string; value?: string }> {
+    return hostEnvEntries(docs).filter(
+      (e) => e.name === 'AX_AGENT_WORKSPACE' || e.name === 'AX_AGENT_WORKSPACE_PREVIEW',
+    );
+  }
+
+  it('stamps AX_AGENT_WORKSPACE="1" by default — a fresh install lands on the workspace', () => {
+    // `toEqual` on the whole list: exactly one entry, under the current name,
+    // and the retired name never rendered by the chart itself.
+    expect(switchEntries(helmTemplate([]))).toEqual([
+      { name: 'AX_AGENT_WORKSPACE', value: '1' },
+    ]);
+  });
+
+  it('stamps "0" — not nothing — when turned off', () => {
+    // Off means `/api/workspace/*` is never registered: this deployment has
+    // no web interface. Absent would let a stale retired-name entry win.
     expect(
-      hostEnvEntries(helmTemplate([])).filter(
-        (e) => e.name === 'AX_AGENT_WORKSPACE_PREVIEW',
-      ),
-    ).toEqual([]);
+      switchEntries(helmTemplate(['--set', 'channelWeb.agentWorkspace=false'])),
+    ).toEqual([{ name: 'AX_AGENT_WORKSPACE', value: '0' }]);
   });
 
-  it('stamps it exactly once, as "1", when opted in', () => {
-    const entries = hostEnvEntries(
-      helmTemplate(['--set', 'channelWeb.agentWorkspace=true']),
-    ).filter((e) => e.name === 'AX_AGENT_WORKSPACE_PREVIEW');
-    // Exactly once: an operator mid-migration may still carry the legacy
-    // `host.env` entry, and two entries with the same name is legal YAML whose
-    // winner depends on template ordering. If this ever reads 2, the values
-    // comment telling operators to remove the old block is being ignored.
-    expect(entries).toEqual([{ name: 'AX_AGENT_WORKSPACE_PREVIEW', value: '1' }]);
-  });
-
-  // TASK-499. The two cases above pin the DEFAULT (off) and the OPT-IN shape,
-  // and both stayed green for the entire window in which no shipped values
-  // file exercised the opt-in: `kind-dev-values.yaml` never set the flag, so a
-  // stock kind install rendered the legacy chat shell and every walk of the
-  // workspace silently tested the wrong UI. Nothing errored — `/api/features`
-  // answered HTTP 200 with `agentWorkspacePreview: false`, which is a real
-  // answer, not a fallback. The missing assertion is this one: the dev values
-  // the walks actually install with must reach the surface the walks exist to
-  // test.
+  // TASK-499. `kind-dev-values.yaml` once never set the flag, so every walk of
+  // the workspace silently tested the legacy chat shell. The dev values the
+  // walks install with must reach the surface the walks exist to test. It
+  // also has to catch the double-stamp: kind-dev-values carries a `host.env`
+  // block, one careless line away from two entries of one name.
   it('kind-dev-values renders the surface ON, exactly once', () => {
-    const entries = hostEnvEntries(
-      helmTemplate(['-f', resolve(chartDir, 'kind-dev-values.yaml')]),
-    ).filter((e) => e.name === 'AX_AGENT_WORKSPACE_PREVIEW');
-    // `toEqual` on the whole list, not `toContain`/`toHaveLength(>=1)`: this
-    // has to catch the double-stamp too. kind-dev-values carries a `host.env`
-    // block, so it is one careless line away from being the exact
-    // upgrade hazard values.yaml warns about — two entries of the same name,
-    // legal YAML, winner decided by template order.
-    expect(entries).toEqual([{ name: 'AX_AGENT_WORKSPACE_PREVIEW', value: '1' }]);
+    expect(
+      switchEntries(helmTemplate(['-f', resolve(chartDir, 'kind-dev-values.yaml')])),
+    ).toEqual([{ name: 'AX_AGENT_WORKSPACE', value: '1' }]);
   });
 
   it('is independent of channelWeb.enabled — the SPA and the surface are separate', () => {
     // The bundle being served and the workspace ROUTES existing are two
-    // different grants; a headless deploy could want the API surface without
-    // the SPA, and serving the SPA must not silently mount the routes.
-    const entries = hostEnvEntries(
-      helmTemplate([
-        '--set',
-        'channelWeb.enabled=false',
-        '--set',
-        'channelWeb.agentWorkspace=true',
-      ]),
-    ).filter((e) => e.name === 'AX_AGENT_WORKSPACE_PREVIEW');
-    expect(entries).toHaveLength(1);
+    // different grants; serving the SPA must not silently mount the routes,
+    // and not serving it must not silently unmount them.
+    expect(
+      switchEntries(
+        helmTemplate(['--set', 'channelWeb.enabled=false', '--set', 'channelWeb.agentWorkspace=true']),
+      ),
+    ).toEqual([{ name: 'AX_AGENT_WORKSPACE', value: '1' }]);
+    expect(
+      switchEntries(
+        helmTemplate(['--set', 'channelWeb.enabled=true', '--set', 'channelWeb.agentWorkspace=false']),
+      ),
+    ).toEqual([{ name: 'AX_AGENT_WORKSPACE', value: '0' }]);
+  });
+
+  it('`helm show values` documents the one name and what OFF means', () => {
+    if (!HELM) throw new Error('helm not available');
+    const out = execFileSync(HELM, ['show', 'values', chartDir], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    // The value itself, defaulted on.
+    expect(out).toMatch(/^ {2}agentWorkspace: true$/m);
+    // The comment has to say OFF means no web interface, so nobody reads
+    // `false` as a broken install.
+    expect(out).toContain('THIS\n  # DEPLOYMENT HAS NO WEB INTERFACE');
+    // The retired name is documented with its removal release.
+    expect(out).toContain('AX_AGENT_WORKSPACE_PREVIEW');
+    expect(out).toContain('first chart release after 0.0.1');
+    // No surviving name carries `Preview`.
+    expect(out).not.toMatch(/agentWorkspacePreview/);
   });
 });
 

@@ -109,7 +109,7 @@ beforeEach(() => {
   mockFetchBootstrapStatus.mockReset();
   mockFetchBootstrapStatus.mockResolvedValue('completed');
   mockFetchFeatures.mockReset();
-  mockFetchFeatures.mockResolvedValue({ agentWorkspacePreview: true });
+  mockFetchFeatures.mockResolvedValue({ agentWorkspace: true });
   mockAutoCreate.mockReset();
   mockAutoCreate.mockResolvedValue({ agentId: 'a1' } as Awaited<
     ReturnType<typeof autoCreateBareAgent>

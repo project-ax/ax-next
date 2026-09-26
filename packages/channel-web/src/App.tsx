@@ -78,14 +78,14 @@ function isSetupPath(): boolean {
 
 /**
  * Which paths resolve to the agent workspace — given the deployment has the
- * preview on, which is checked separately at the call site
- * (`features.agentWorkspacePreview`).
+ * flag on, which is checked separately at the call site
+ * (`features.agentWorkspace`).
  *
  * It is a normal, gated surface: it goes through bootstrap, sign-in, and the
  * first-run agent flow like every other route. A signed-out visitor gets the
  * sign-in page, same as anywhere else.
  *
- * `/` IS IN HERE ON PURPOSE. For a deployment that turns the preview on, the
+ * `/` IS IN HERE ON PURPOSE. For a deployment with the flag on, the
  * workspace is the landing surface. Note this is not a redirect: App renders by
  * path priority (setup → workspace → chat), so `/` simply resolves to the
  * workspace branch instead of falling through to chat. No URL rewrite and no
@@ -106,7 +106,7 @@ function isSetupPath(): boolean {
  * URL state, so if the fall-through were ever narrowed to an explicit list the
  * chat shell would become unreachable.
  *
- * A deployment with the preview OFF is untouched: `/` falls through to chat
+ * A deployment with the flag OFF is untouched: `/` falls through to chat
  * exactly as before, because the call site ANDs this with the flag.
  */
 function pathRendersWorkspace(): boolean {
@@ -427,7 +427,7 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
   // kickoff to the right send path. Still a plain per-render const —
   // `pathRendersWorkspace()` reads `window.location.pathname` and is not
   // reactive, same as the existing call site below.
-  const rendersWorkspace = pathRendersWorkspace() && features.agentWorkspacePreview;
+  const rendersWorkspace = pathRendersWorkspace() && features.agentWorkspace;
 
   // First-run (no personal agent yet) OR the explicit "+ New agent…" entry.
   // 'error' deliberately falls through to the chat shell — a transient blip

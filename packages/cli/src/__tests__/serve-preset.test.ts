@@ -114,3 +114,64 @@ describe('serve AX_PRESET selection', () => {
     expect(stderr.join('\n')).toContain('hostRoot');
   });
 });
+
+// TASK-359: `AX_AGENT_WORKSPACE_PREVIEW` is the retired spelling of
+// `AX_AGENT_WORKSPACE`. serve.ts is its ONLY reader, for one release, so an
+// operator who set it by hand keeps their web interface across the rename.
+describe('serve retired AX_AGENT_WORKSPACE_PREVIEW compat read', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    k8sLoader.mockReturnValue({});
+    k8sFactory.mockReturnValue([providerStub()]);
+  });
+
+  function envSeenByLoader(): NodeJS.ProcessEnv {
+    expect(k8sLoader).toHaveBeenCalledTimes(1);
+    return k8sLoader.mock.calls[0]![0] as NodeJS.ProcessEnv;
+  }
+
+  it('promotes the retired name when the current one is unset, and says so', async () => {
+    const { code, stderr } = await run({ AX_SERVE_TOKEN: 'x', AX_AGENT_WORKSPACE_PREVIEW: '1' });
+    expect(code).toBe(0);
+    expect(envSeenByLoader().AX_AGENT_WORKSPACE).toBe('1');
+    expect(stderr.some((l) => /AX_AGENT_WORKSPACE_PREVIEW is a retired name/.test(l))).toBe(true);
+  });
+
+  it('the current name wins — an explicit off beats a stale retired entry', async () => {
+    const { code, stderr } = await run({
+      AX_SERVE_TOKEN: 'x',
+      AX_AGENT_WORKSPACE: '0',
+      AX_AGENT_WORKSPACE_PREVIEW: '1',
+    });
+    expect(code).toBe(0);
+    expect(envSeenByLoader().AX_AGENT_WORKSPACE).toBe('0');
+    expect(stderr.some((l) => /IGNORED because AX_AGENT_WORKSPACE is set/.test(l))).toBe(true);
+  });
+
+  it('passes the env through untouched and silently when the retired name is absent', async () => {
+    const env = { AX_SERVE_TOKEN: 'x' };
+    const { code, stderr } = await run(env);
+    expect(code).toBe(0);
+    expect(envSeenByLoader()).toBe(env);
+    expect(stderr.some((l) => /retired/.test(l))).toBe(false);
+  });
+
+  it('does not mutate the caller env when promoting', async () => {
+    const env: NodeJS.ProcessEnv = { AX_SERVE_TOKEN: 'x', AX_AGENT_WORKSPACE_PREVIEW: 'true' };
+    await run(env);
+    expect('AX_AGENT_WORKSPACE' in env).toBe(false);
+    expect(envSeenByLoader().AX_AGENT_WORKSPACE).toBe('true');
+  });
+
+  it('reaches the memory preset too', async () => {
+    memoryLoader.mockReturnValue({});
+    memoryFactory.mockReturnValue([providerStub()]);
+    const { code } = await run({
+      AX_SERVE_TOKEN: 'x',
+      AX_PRESET: 'memory',
+      AX_AGENT_WORKSPACE_PREVIEW: '1',
+    });
+    expect(code).toBe(0);
+    expect((memoryLoader.mock.calls[0]![0] as NodeJS.ProcessEnv).AX_AGENT_WORKSPACE).toBe('1');
+  });
+});

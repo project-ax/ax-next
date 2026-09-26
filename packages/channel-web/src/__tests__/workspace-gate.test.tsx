@@ -3,9 +3,9 @@
  *
  * It used to render before the auth + bootstrap gate, keyed off
  * `import.meta.env.DEV`. Now it goes through boot like every other route and
- * renders only when the server says this deployment has the preview on. These
- * tests pin the three arms of that gate, plus the fail-closed behaviour of the
- * `/api/features` client.
+ * renders only when the server says this deployment has the agentWorkspace
+ * flag on. These tests pin the three arms of that gate, plus the fail-closed
+ * behaviour of the `/api/features` client.
  *
  * `WorkspaceShell` is stubbed with a sentinel on purpose: what's under test is
  * the GATE, not the shell. Mounting the real shell would drag its data layer
@@ -95,7 +95,7 @@ beforeEach(() => {
   mockFetchBootstrapStatus.mockReset();
   mockFetchBootstrapStatus.mockResolvedValue('completed');
   mockFetchFeatures.mockReset();
-  mockFetchFeatures.mockResolvedValue({ agentWorkspacePreview: false });
+  mockFetchFeatures.mockResolvedValue({ agentWorkspace: false });
   lastWorkspaceShellProps = undefined;
   installShellFetch();
 });
@@ -110,7 +110,7 @@ describe('/workspace gate', () => {
   it('sends a signed-out visitor to the sign-in page even with the flag on', async () => {
     setPathname('/workspace');
     mockGetSession.mockResolvedValue(null);
-    mockFetchFeatures.mockResolvedValue({ agentWorkspacePreview: true });
+    mockFetchFeatures.mockResolvedValue({ agentWorkspace: true });
 
     render(<App />);
 
@@ -123,7 +123,7 @@ describe('/workspace gate', () => {
   it('falls through to the chat shell when the flag is off', async () => {
     setPathname('/workspace');
     mockGetSession.mockResolvedValue(ALICE);
-    mockFetchFeatures.mockResolvedValue({ agentWorkspacePreview: false });
+    mockFetchFeatures.mockResolvedValue({ agentWorkspace: false });
 
     const { container } = render(<App />);
 
@@ -136,7 +136,7 @@ describe('/workspace gate', () => {
   it('renders the workspace for a signed-in user when the flag is on', async () => {
     setPathname('/workspace');
     mockGetSession.mockResolvedValue(ALICE);
-    mockFetchFeatures.mockResolvedValue({ agentWorkspacePreview: true });
+    mockFetchFeatures.mockResolvedValue({ agentWorkspace: true });
 
     const { container } = render(<App />);
 
@@ -150,7 +150,7 @@ describe('/workspace gate', () => {
 /**
  * `/` is the landing surface, and which surface that IS depends on the flag.
  *
- * With the preview on, the workspace is home — that is the whole point of the
+ * With the flag on, the workspace is home — that is the whole point of the
  * flag for the deployment that turns it on. With it off, `/` must still be the
  * chat shell, because that is what every other deployment gets and this change
  * must be invisible to them.
@@ -164,7 +164,7 @@ describe('the default surface at /', () => {
   it('renders the workspace at / when the flag is on', async () => {
     setPathname('/');
     mockGetSession.mockResolvedValue(ALICE);
-    mockFetchFeatures.mockResolvedValue({ agentWorkspacePreview: true });
+    mockFetchFeatures.mockResolvedValue({ agentWorkspace: true });
 
     const { container } = render(<App />);
 
@@ -177,7 +177,7 @@ describe('the default surface at /', () => {
   it('still renders the chat shell at / when the flag is off', async () => {
     setPathname('/');
     mockGetSession.mockResolvedValue(ALICE);
-    mockFetchFeatures.mockResolvedValue({ agentWorkspacePreview: false });
+    mockFetchFeatures.mockResolvedValue({ agentWorkspace: false });
 
     const { container } = render(<App />);
 
@@ -190,7 +190,7 @@ describe('the default surface at /', () => {
   it('keeps /chat on the chat shell even with the flag on', async () => {
     setPathname('/chat');
     mockGetSession.mockResolvedValue(ALICE);
-    mockFetchFeatures.mockResolvedValue({ agentWorkspacePreview: true });
+    mockFetchFeatures.mockResolvedValue({ agentWorkspace: true });
 
     const { container } = render(<App />);
 
@@ -223,7 +223,7 @@ describe('fetchFeatures — fail closed', () => {
       json: async () => ({}),
     })) as unknown as typeof fetch;
 
-    await expect(realFetchFeatures()).resolves.toEqual({ agentWorkspacePreview: false });
+    await expect(realFetchFeatures()).resolves.toEqual({ agentWorkspace: false });
     expect(warn).toHaveBeenCalled();
   });
 
@@ -232,7 +232,7 @@ describe('fetchFeatures — fail closed', () => {
       throw new Error('offline');
     }) as unknown as typeof fetch;
 
-    await expect(realFetchFeatures()).resolves.toEqual({ agentWorkspacePreview: false });
+    await expect(realFetchFeatures()).resolves.toEqual({ agentWorkspace: false });
     expect(warn).toHaveBeenCalled();
   });
 
@@ -240,10 +240,10 @@ describe('fetchFeatures — fail closed', () => {
     globalThis.fetch = (async () => ({
       ok: true,
       status: 200,
-      json: async () => ({ agentWorkspacePreview: 'yes please' }),
+      json: async () => ({ agentWorkspace: 'yes please' }),
     })) as unknown as typeof fetch;
 
-    await expect(realFetchFeatures()).resolves.toEqual({ agentWorkspacePreview: false });
+    await expect(realFetchFeatures()).resolves.toEqual({ agentWorkspace: false });
     expect(warn).toHaveBeenCalled();
   });
 
@@ -251,10 +251,24 @@ describe('fetchFeatures — fail closed', () => {
     globalThis.fetch = (async () => ({
       ok: true,
       status: 200,
+      json: async () => ({ agentWorkspace: true }),
+    })) as unknown as typeof fetch;
+
+    await expect(realFetchFeatures()).resolves.toEqual({ agentWorkspace: true });
+  });
+
+  // A stale server (pre-rename) paired with a new client is a real skew, not
+  // a hypothetical: the wire field only carries the retired name, so the new
+  // client must treat it as missing and fail closed rather than trust it.
+  it('returns all-off when the body carries only the retired field name', async () => {
+    globalThis.fetch = (async () => ({
+      ok: true,
+      status: 200,
       json: async () => ({ agentWorkspacePreview: true }),
     })) as unknown as typeof fetch;
 
-    await expect(realFetchFeatures()).resolves.toEqual({ agentWorkspacePreview: true });
+    await expect(realFetchFeatures()).resolves.toEqual({ agentWorkspace: false });
+    expect(warn).toHaveBeenCalled();
   });
 });
 
@@ -283,7 +297,7 @@ describe('workspace create-agent door + kickoff routing (TASK-249)', () => {
   it('App supplies a working onCreateAgent, and calling it opens the name dialog', async () => {
     setPathname('/workspace');
     mockGetSession.mockResolvedValue(ALICE);
-    mockFetchFeatures.mockResolvedValue({ agentWorkspacePreview: true });
+    mockFetchFeatures.mockResolvedValue({ agentWorkspace: true });
     // installShellFetch() (from the default beforeEach) already returns one
     // agent, so the first-run gate is closed and the workspace renders
     // straight away.
@@ -311,7 +325,7 @@ describe('workspace create-agent door + kickoff routing (TASK-249)', () => {
   it('hands the kickoff to the workspace, not to bootstrapKickoff', async () => {
     setPathname('/workspace');
     mockGetSession.mockResolvedValue(ALICE);
-    mockFetchFeatures.mockResolvedValue({ agentWorkspacePreview: true });
+    mockFetchFeatures.mockResolvedValue({ agentWorkspace: true });
     const trigger = vi.spyOn(bootstrapKickoff, 'trigger');
 
     let bootstrapped = false;
@@ -398,7 +412,7 @@ describe('workspace create-agent door + kickoff routing (TASK-249)', () => {
     mockGetSession.mockResolvedValue(ALICE);
     // Flag OFF — App falls through to the chat shell even though the path
     // would otherwise resolve to the workspace.
-    mockFetchFeatures.mockResolvedValue({ agentWorkspacePreview: false });
+    mockFetchFeatures.mockResolvedValue({ agentWorkspace: false });
     const trigger = vi.spyOn(bootstrapKickoff, 'trigger');
 
     let bootstrapped = false;

@@ -76,23 +76,17 @@ minio:
   storage: 1Gi
 
 # ─── Agent workspace surface ─────────────────────────────────────
-# ON for kind, and deliberately still OFF in the chart's own defaults.
+# ON — which is also the chart default since TASK-359. Kept explicit here
+# anyway, because this is the surface the manual-acceptance walks exist to
+# test and a walk against the wrong shell fails QUIETLY: with it off,
+# `/api/features` answers HTTP 200 with `{"agentWorkspace":false}`, nothing
+# errors, and a walker has to notice the page is wrong. Pinning it here
+# means a future change to the chart default cannot silently change what
+# the walks test.
 #
-# This is the surface the manual-acceptance walks exist to test, and the
-# only mechanism that reaches it: the chart stamps
-# `AX_AGENT_WORKSPACE_PREVIEW` from this value, the k8s preset reads that
-# env var to decide whether to register `/api/workspace/*` at all, and the
-# SPA gates `/` and `/workspace` on the resulting `/api/features` answer.
-# Leave it unset and every one of those says "no" — quietly. Nothing
-# errors, `/api/features` returns HTTP 200 with
-# `{"agentWorkspacePreview":false}`, the page loads, and the legacy chat
-# shell renders. A walker has to notice the shell is wrong, which is
-# exactly the kind of failure we'd rather not rely on noticing.
-#
-# NOT a suggestion for production. `values.yaml` keeps `agentWorkspace:
-# false` on purpose — with it off the routes are never mounted, so the
-# surface does not exist on the wire (invariant #5, capabilities
-# minimized). This file is the dev cluster only.
+# The chart stamps `AX_AGENT_WORKSPACE` from this value, the preset reads
+# it to decide whether to register `/api/workspace/*` at all, and the SPA
+# gates `/` and `/workspace` on the resulting `/api/features` answer.
 #
 # Set it HERE, not as a `host.env` entry — doing both renders the env var
 # twice and the winner depends on template order. See values.yaml.

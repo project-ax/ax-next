@@ -387,17 +387,17 @@ describe('channel-web agent-workspace BFF', () => {
 
   it('GET /api/features echoes the flag without requiring auth', async () => {
     registerAuth(null);
-    const on = makeWorkspaceHandlers({ bus, initCtx, agentWorkspacePreview: true });
+    const on = makeWorkspaceHandlers({ bus, initCtx, agentWorkspace: true });
     const { res, captured } = mkRes();
     await on.features(mkReq(), res);
     expect(captured.statusCode).toBe(200);
-    expect(captured.body).toEqual({ agentWorkspacePreview: true });
+    expect(captured.body).toEqual({ agentWorkspace: true });
 
     const off = makeWorkspaceHandlers({ bus, initCtx });
     const second = mkRes();
     await off.features(mkReq(), second.res);
     expect(second.captured.statusCode).toBe(200);
-    expect(second.captured.body).toEqual({ agentWorkspacePreview: false });
+    expect(second.captured.body).toEqual({ agentWorkspace: false });
   });
 
   // -------------------------------------------------------------------------

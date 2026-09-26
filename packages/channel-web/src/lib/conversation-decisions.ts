@@ -42,7 +42,7 @@ import type { Decision } from './workspace-api';
  * quietly shorten the grace period on the fourth approval inside ten seconds —
  * and on the deployments this file exists to serve there is nowhere else to go,
  * because `/workspace` and the activity feed are both behind
- * `AX_AGENT_WORKSPACE_PREVIEW`.
+ * `AX_AGENT_WORKSPACE`.
  *
  * "Live" is `undoSecondsLeft() > 0`, which is the SAME test `ApprovalCard` uses
  * to draw the button — deliberately not the raw `undoable` flag. `undoable` is

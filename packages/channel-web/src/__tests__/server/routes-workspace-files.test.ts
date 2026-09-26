@@ -630,7 +630,7 @@ describe('the Files routes over a real socket', () => {
       plugins: [http],
     });
     await registerWorkspaceRoutes(booted.bus, initCtx, {
-      agentWorkspacePreview: true,
+      agentWorkspace: true,
     });
     return { harness: booted, port: http.boundPort() };
   }
