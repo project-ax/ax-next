@@ -81,6 +81,8 @@ export const AGENT_CONVERSATION_ATTR = 'data-agent-conversation';
  * conversation region arrives after the restore has given up, and focus stays
  * on `<body>`. The loading pane is on screen from the moment the route moves
  * to the new agent, so it is a landing spot that does not wait on the read.
+ * It is not only the slow path: the pane usually paints before the read
+ * returns, so most creates land here first and are handed on.
  *
  * Keyed by id for the same reason as {@link AGENT_CONVERSATION_ATTR}: another
  * agent's view can be painting when the restore starts.

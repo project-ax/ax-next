@@ -501,8 +501,8 @@ export function AgentView({
 
   /*
     TASK-539 — the "Loading…" pane below can hold focus: a finished create
-    lands it there when the agent read is slower than the restore window (see
-    `AGENT_LOADING_ATTR`). The pane is REPLACED when the read lands, and a
+    lands it there whenever the pane paints before the agent read returns,
+    which is most creates and every slow one (see `AGENT_LOADING_ATTR`). The pane is REPLACED when the read lands, and a
     focused node that is removed drops the keyboard on `<body>` — so a pane
     that held focus hands it on to the conversation.
 
