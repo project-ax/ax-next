@@ -169,7 +169,7 @@ describe('navigating', () => {
    * `findByText('Quill')` matched both and threw on the ambiguity.
    */
   function rosterRow() {
-    return screen.findByRole('button', { name: 'Quill' });
+    return screen.findByRole('button', { name: /^Quill\s*,/ });
   }
 
   it('keeps a clamped roster name reachable in `title` (TASK-436)', async () => {

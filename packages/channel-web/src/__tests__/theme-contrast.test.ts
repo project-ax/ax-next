@@ -490,9 +490,9 @@ describe('theme contrast', () => {
  * generates `text-ink-ghost` from the same colour entry as `bg-ink-ghost` and
  * there is no way to publish one without the other.
  *
- * The fill sites used to be out of scope here, and are not any more. `bits.tsx`
- * says "colour is the state", which makes the `resting` dot an information-
- * bearing non-text element owing 3:1 under WCAG 1.4.11 — and on this token it
+ * The fill sites used to be out of scope here, and are not any more. A dot's fill
+ * carries its state (alongside its shape, since TASK-485), which makes the
+ * `resting` dot an information-bearing non-text element owing 3:1 under WCAG 1.4.11 — and on this token it
  * measured 1.72:1 light / 1.67:1 dark, so it did not clear that either. That
  * was TASK-450, and the fix was the same split one level down: the dots took a
  * new token and the send circle kept this one. The 3:1 floor now has its own
@@ -1192,10 +1192,12 @@ describe("ApprovalCard's tinted surface", () => {
  * different criteria answering different questions, which is why folding a dot
  * into a text table would be wrong in both directions.
  *
- * `bits.tsx` states the premise in a doc comment: *"colour is the state"*. A
- * `StateDot` carries no glyph, no label and no shape difference — the fill is
- * the whole message — which makes it "visual information required to identify
- * ... a state": WCAG 2.1 SC 1.4.11 Non-text Contrast, 3:1.
+ * A `StateDot` is "visual information required to identify ... a state": WCAG
+ * 2.1 SC 1.4.11 Non-text Contrast, 3:1. When TASK-450 wrote this section the
+ * fill was the whole message — no glyph, no label, no shape difference. Since
+ * TASK-485 each state also has its own shape (`STATE_SHAPE` in `bits.tsx`), so
+ * colour is no longer the ONLY channel — but a shape nobody can see against
+ * the row carries nothing either, so the 3:1 floor on the fill still holds.
  *
  * TASK-450 found three fills under it, all of them `bg-ink-ghost`: `StateDot`'s
  * `resting`, and `StatusDot`'s `empty` and `pending`, at 1.72:1 light and
@@ -1227,8 +1229,10 @@ describe("ApprovalCard's tinted surface", () => {
  *      because the two are not alternatives for one defect. The dot being
  *      invisible (1.4.11) and the dot being colour-only (1.4.1, plus
  *      `aria-hidden` hiding it from screen readers altogether) are two bugs;
- *      this fixes the first. The second is a layout and copy change to the
- *      sidebar row, and is left as a follow-up rather than smuggled in here.
+ *      this fixes the first. The second was a layout and copy change to the
+ *      sidebar row, left as a follow-up rather than smuggled in here — and
+ *      it shipped as TASK-485: a per-state shape, plus the state word as
+ *      `sr-only` text in the roster row (`WorkspaceSidebarState.test.tsx`).
  *
  * WHY A SECOND TOKEN rather than moving `--ink-ghost`: the block above spells
  * out the tension and the precedent. `--ink-ghost` also fills the composer's
@@ -1457,7 +1461,7 @@ describe('state dots clear the 3:1 non-text floor', () => {
             `${label} paints \`${fill.cls}\` (${fill.token}) and measures ` +
               `${ratio.toFixed(2)}:1 on ${backdrop.label} in ${themeName} — WCAG 1.4.11 ` +
               `needs ${AA_NON_TEXT}:1 for a mark that carries information. ` +
-              `\`bits.tsx\` says "colour is the state", so this dot IS the message.`,
+              `The fill still carries the state, and a shape nobody can see says nothing.`,
           ).toBeGreaterThanOrEqual(AA_NON_TEXT);
         }
       });

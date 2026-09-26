@@ -18,7 +18,7 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import type { WorkspaceAgent } from '@/lib/workspace-api';
 import { NEW_AGENT_OPENER_ATTR } from '@/lib/new-agent-return-focus';
-import { StateDot } from './bits';
+import { StateDot, stateWord } from './bits';
 
 interface Props {
   agents: WorkspaceAgent[];
@@ -145,10 +145,21 @@ export function WorkspaceSidebarNav({
                   : 'text-muted-foreground hover:bg-muted/60',
               )}
             >
-              <StateDot state={a.state} />
+              {/* Fixed-width slot: the shapes differ in width (dash 8px,
+                  diamond 6px), and names should line up regardless. */}
+              <span className="flex w-2 shrink-0 justify-center">
+                <StateDot state={a.state} />
+              </span>
               <span className="truncate" title={a.name}>
                 {a.name}
               </span>
+              {/*
+                The dot is the only thing on this row that says the state, and
+                it is `aria-hidden` (TASK-485). So the row SAYS it as well,
+                after the name — "Ada, waiting on you". Sighted readers get the
+                dot's shape as the non-colour channel; `StateDot` explains both.
+              */}
+              <span className="sr-only">, {stateWord(a.state).toLowerCase()}</span>
             </button>
           ))}
 
