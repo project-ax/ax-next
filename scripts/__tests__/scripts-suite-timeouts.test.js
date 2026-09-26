@@ -53,6 +53,8 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
+import { scanHookTimeouts } from '../hook-timeout-scan.mjs';
+
 const SCRIPTS_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const TESTS_DIR = join(SCRIPTS_ROOT, '__tests__');
 
@@ -60,8 +62,11 @@ const TESTS_DIR = join(SCRIPTS_ROOT, '__tests__');
 // it, and `vitest run --root scripts` resolves a `.mjs` config natively.
 const CONFIG_PATH = join(SCRIPTS_ROOT, 'vitest.config.mjs');
 
-// Every pattern below is anchored to the START of a line (`^[ \t]*`), and that
+// `readTimeout` below is anchored to the START of a line (`^[ \t]*`), and that
 // anchor is the whole trick for reading CODE rather than the prose beside it.
+// (Hook timeouts used to be read the same way; since TASK-462 they are PARSED —
+// see `scripts/hook-timeout-scan.mjs` — and a parser never sees a comment. The
+// history below is kept because it is the config reader's history too.)
 //
 // It is here because two earlier drafts of this file got it wrong in both
 // directions, and the second way was the dangerous one.
@@ -106,10 +111,9 @@ const CONFIG_PATH = join(SCRIPTS_ROOT, 'vitest.config.mjs');
 //     a budget nobody checked. `noBlockCommentsInConfig` below closes that for
 //     real, on the 37-line file this guard owns, instead of trusting the
 //     convention.
-//   - `HOOK_WITH_TIMEOUT` is fail-CLOSED. A column-0 example hook inside a
-//     block comment inflates the suite maximum, so the assertion demands a
-//     budget nobody asked for and reddens loudly. Annoying, never silent, so it
-//     is documented rather than guarded.
+//   - The hook scan used to be the fail-CLOSED one here (a column-0 example
+//     hook in a block comment inflated the suite maximum and reddened loudly).
+//     It is a parser now, so the question no longer arises.
 //
 // The other way it errs closed: a real setting sharing a line with another
 // — `test: { testTimeout: 30_000, hookTimeout: 120_000 }` — reads as ABSENT and
@@ -138,34 +142,19 @@ function readTimeout(configText, key) {
 }
 
 /**
- * A hook that declares its own timeout: `beforeAll(async () => { ... }, 60_000);`
+ * Hook timeouts are read by PARSING each guard file — `scanHookTimeouts` in
+ * `scripts/hook-timeout-scan.mjs`, shared with `out-of-process-test-timeouts.test.js`.
  *
- * Same pattern and same caveats as `out-of-process-test-timeouts.test.js`: the body
- * match is non-greedy, so in a file where a bare hook precedes a timed one the
- * argument can be attributed to the wrong hook. That is harmless here for the
- * same reason — the assertion below consumes the MAXIMUM over the suite, and
- * mis-attributing a value between two hooks cannot change a maximum. Both the
- * opening keyword and the closing brace are indentation-tolerant — `^[ \t]*` and
- * `\n[ \t]*\}` — so describe-nested hooks are seen; anchoring either at column 0
- * is the bug that made the sibling guard green on the very violation it was
- * written to catch. `[ \t]` rather than `\s` on purpose: `\s` matches newlines,
- * which would let the anchor drift off the line it is meant to pin.
+ * This file used to carry its own copy of that guard's regex pair
+ * (`HOOK_WITH_TIMEOUT` / `UNREADABLE_HOOK_TIMEOUT`), and with it the same
+ * fail-OPEN defect TASK-462 closed: matching lazily from a hook keyword to the
+ * first line closing `}, <x>);` stops at anything inside the hook body that
+ * closes the same way — a nested hook, a multi-line `setTimeout(...)` — and
+ * credits the hook with the INNER number while its own budget goes unseen. A
+ * missed budget LOWERS the suite maximum, and the consistency assertion then
+ * passes a config that is too low. See the scanner for the per-failure-mode
+ * direction; the one fail-open gap left is a hook invoked through an alias.
  */
-const HOOK_WITH_TIMEOUT =
-  /^[ \t]*(?:beforeAll|afterAll|beforeEach|afterEach)\s*\([\s\S]*?\n[ \t]*\}\s*,\s*(\d[\d_]*)\s*\)\s*;/gm;
-
-/**
- * The named-constant spelling of the same thing (`}, TIMEOUT_MS)`), which this
- * file cannot evaluate.
- *
- * Fail closed, for the reason the sibling guard documents at length: a budget
- * that is not read counts as absent, which LOWERS the suite maximum and lets the
- * consistency assertion pass a config that is too low — a guard that
- * under-reports is worse than no guard, because it also reports success.
- */
-const UNREADABLE_HOOK_TIMEOUT =
-  /^[ \t]*(?:beforeAll|afterAll|beforeEach|afterEach)\s*\([\s\S]*?\n[ \t]*\}\s*,\s*([A-Za-z_$][\w$]*)\s*\)\s*;/gm;
-
 const testFiles = readdirSync(TESTS_DIR)
   .filter((f) => f.endsWith('.test.js'))
   .map((f) => ({ name: f, text: readFileSync(join(TESTS_DIR, f), 'utf8') }));
@@ -224,10 +213,18 @@ describe('the scripts vitest root declares its own timeouts (TASK-331)', () => {
   });
 
   it('no guard file declares a hook timeout this test cannot read', () => {
+    // Fail closed: an unreadable budget would count as absent. Two things land
+    // here — a timeout that is neither a numeric literal nor a same-file numeric
+    // const, and a file that does not parse (it cannot be trusted to have shown
+    // every hook).
     const unreadable = [];
     for (const { name, text } of testFiles) {
-      for (const m of text.matchAll(UNREADABLE_HOOK_TIMEOUT)) {
-        unreadable.push(`${name}: hook timeout \`${m[1]}\` is not a numeric literal`);
+      const scan = scanHookTimeouts(text, name);
+      for (const u of scan.unreadable) {
+        unreadable.push(`${name}:${u.line}: hook timeout \`${u.expr}\` is not a numeric literal or file-local const`);
+      }
+      for (const e of scan.parseErrors) {
+        unreadable.push(`${name}:${e.line}: does not parse (${e.message}) — its hooks cannot be read`);
       }
     }
     expect(unreadable).toEqual([]);
@@ -247,8 +244,7 @@ describe('the scripts vitest root declares its own timeouts (TASK-331)', () => {
     let maxDeclared = 0;
     let declaredBy = '(none)';
     for (const { name, text: src } of testFiles) {
-      for (const m of src.matchAll(HOOK_WITH_TIMEOUT)) {
-        const v = Number(m[1].replace(/_/g, ''));
+      for (const { ms: v } of scanHookTimeouts(src, name).declared) {
         if (v > maxDeclared) {
           maxDeclared = v;
           declaredBy = name;
@@ -268,6 +264,7 @@ describe('the scripts vitest root declares its own timeouts (TASK-331)', () => {
   // assumed. The dangerous direction is the LAST two: a scan that silently
   // misses a real value passes a config nobody checked.
   describe('the scanners read code, not the prose beside it', () => {
+    const declaredMs = (text, name = 'fixture.test.js') => scanHookTimeouts(text, name).declared.map((d) => d.ms);
     const CONFIG = ['export default defineConfig({', '  test: {', '    hookTimeout: 120_000,', '  },', '});'];
 
     it('ignores a smaller number named in a line comment (draft 1 read this one)', () => {
@@ -313,14 +310,14 @@ describe('the scripts vitest root declares its own timeouts (TASK-331)', () => {
       // The indentation-tolerant anchor. A column-0-only anchor is what made the
       // sibling guard green on the violation it was written to catch.
       const src = ['describe("x", () => {', '  beforeAll(async () => {', '    await warm();', '  }, 120_000);', '});'].join('\n');
-      expect([...src.matchAll(HOOK_WITH_TIMEOUT)].map((m) => m[1])).toEqual(['120_000']);
+      expect(declaredMs(src)).toEqual([120_000]);
     });
 
     it('does not count a hook written as an example inside a doc comment', () => {
       const src = [
         '/**', ' * A hook that declares its own timeout:', ' *', ' *     beforeAll(async () => {', ' *       await x();', ' *     }, 600_000);', ' */', 'it("real", () => {});',
       ].join('\n');
-      expect([...src.matchAll(HOOK_WITH_TIMEOUT)].map((m) => m[1])).toEqual([]);
+      expect(declaredMs(src)).toEqual([]);
     });
 
     it("still sees this suite's own real hook — the fail-open case draft 2 hit", () => {
@@ -331,7 +328,23 @@ describe('the scripts vitest root declares its own timeouts (TASK-331)', () => {
       const src = testFiles.find((f) => f.name === 'eslint-ignores-worktrees.test.js');
       expect(src, 'eslint-ignores-worktrees.test.js is missing from the scan').not.toBeUndefined();
       expect(src.text).toContain('**/worktrees/**'); // the text that broke draft 2
-      expect([...src.text.matchAll(HOOK_WITH_TIMEOUT)].map((m) => m[1])).toEqual(['120_000']);
+      expect(declaredMs(src.text, src.name)).toEqual([120_000]);
+    });
+
+    it('reads the OUTER budget when a hook is registered inside another hook (TASK-462)', () => {
+      // The fail-OPEN case the regex had. MEASURED against the regex scanner at
+      // `be8fc794`: it read ['30_000'] here — the inner hook's budget, credited to
+      // the outer one — and never saw 120_000 at all.
+      const src = [
+        'beforeAll(async () => {',
+        '  beforeEach(async () => {',
+        '    await reset();',
+        '  }, 30_000);',
+        '  await warm();',
+        '}, 120_000);',
+      ].join('\n');
+      expect(Math.max(...declaredMs(src))).toBe(120_000);
+      expect(declaredMs(src).sort((x, y) => x - y)).toEqual([30_000, 120_000]);
     });
   });
 });
