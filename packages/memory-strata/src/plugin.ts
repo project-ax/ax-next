@@ -613,7 +613,11 @@ async function handleChatStart(
       // It is only ever the body of a NEW `system/agent.md`; once that file
       // exists bootstrap never rewrites it, so skip both reads in the (every
       // turn after the first) case where the hydrate found it. When read, pin
-      // to the snapshot the memory came from.
+      // to the snapshot the memory came from. A read that throws propagates
+      // (TASK-553): nothing is flushed, the subscriber logs
+      // memory_strata_bootstrap_failed with the agent id, and the next turn —
+      // still missing agent.md — retries, instead of this turn seeding a
+      // placeholder that bootstrap would then never replace.
       const composedIdentity = hydrated.baseline.has(SEED_AGENT_TIER_PATH)
         ? ''
         : await composeIdentityFromTier(bus, ctx, hydrated.baseVersion ?? undefined);

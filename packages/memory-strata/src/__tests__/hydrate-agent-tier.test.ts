@@ -54,6 +54,7 @@ function createTier(): {
   seed: (files: Record<string, string>) => WorkspaceVersion;
   head: () => Snapshot;
   onAfterRead: (fn: ((n: number) => void) | null) => void;
+  onBeforeRead: (fn: ((input: WorkspaceReadInput) => void) | null) => void;
 } {
   const bus = new HookBus();
   const snapshots = new Map<WorkspaceVersion, Snapshot>();
@@ -61,6 +62,7 @@ function createTier(): {
   let counter = 0;
   const calls: Calls = { reads: [], lists: [], applies: [] };
   let afterRead: ((n: number) => void) | null = null;
+  let beforeRead: ((input: WorkspaceReadInput) => void) | null = null;
 
   const commit = (changes: FileChange[]): WorkspaceVersion => {
     const base = latest === null ? new Map() : new Map(snapshots.get(latest));
@@ -98,6 +100,7 @@ function createTier(): {
     'test-tier',
     async (_ctx, input) => {
       calls.reads.push({ ...input });
+      beforeRead?.(input);
       const v = input.version ?? latest;
       let out: WorkspaceReadOutput = { found: false };
       if (v !== null) {
@@ -131,6 +134,9 @@ function createTier(): {
     head: () => (latest === null ? new Map() : new Map(snapshots.get(latest))),
     onAfterRead: (fn) => {
       afterRead = fn;
+    },
+    onBeforeRead: (fn) => {
+      beforeRead = fn;
     },
   };
 }
@@ -212,6 +218,63 @@ describe('chat:start reads only the bootstrap seed files (TASK-513)', () => {
     ]);
     const after = tier.head();
     for (const [p, bytes] of before) expect(dec(after.get(p)!), p).toBe(dec(bytes));
+  });
+});
+
+describe('a failed identity read never seeds the placeholder (TASK-553)', () => {
+  it('a read that fails once, then succeeds: turn 1 writes nothing and warns with the agent id; turn 2 seeds the real identity', async () => {
+    const tier = createTier();
+    tier.seed({ '.ax/IDENTITY.md': 'I am Atlas, a careful deployer.' });
+    await withMemoryPlugin(tier.bus);
+    const warns: Array<{ msg: string; fields: Record<string, unknown> | undefined }> = [];
+    const logger = {
+      ...ctx.logger,
+      warn: (msg: string, fields?: Record<string, unknown>) => {
+        warns.push({ msg, fields });
+      },
+    };
+    const turnCtx = makeAgentContext({
+      sessionId: 's1',
+      agentId: 'atlas',
+      userId: 'u1',
+      workspace: { rootPath: '/opt/ax-next/host' },
+      logger,
+    });
+
+    let failures = 0;
+    tier.onBeforeRead((input) => {
+      if (input.path === '.ax/IDENTITY.md' && failures === 0) {
+        failures++;
+        throw new Error('storage backend blip');
+      }
+    });
+
+    await tier.bus.fire('chat:start', turnCtx, {});
+
+    expect(failures).toBe(1);
+    // Nothing reached the tier: no placeholder agent.md to become permanent.
+    expect(tier.calls.applies).toEqual([]);
+    expect(tier.head().has('memory/system/agent.md')).toBe(false);
+    const warn = warns.find((w) => w.msg === 'memory_strata_bootstrap_failed');
+    expect(warn, JSON.stringify(warns.map((w) => w.msg))).toBeDefined();
+    expect(warn!.fields?.agentId).toBe('atlas');
+    expect(String(warn!.fields?.err)).toContain('.ax/IDENTITY.md');
+
+    await tier.bus.fire('chat:start', turnCtx, {});
+
+    const agentMd = dec(tier.head().get('memory/system/agent.md')!);
+    expect(agentMd).toContain('I am Atlas, a careful deployer.');
+    expect(agentMd).not.toContain('has not authored its identity');
+  });
+
+  it('an ABSENT identity file is not an error: turn 1 still seeds the placeholder', async () => {
+    const tier = createTier();
+    await withMemoryPlugin(tier.bus);
+
+    await tier.bus.fire('chat:start', ctx, {});
+
+    const agentMd = dec(tier.head().get('memory/system/agent.md')!);
+    expect(agentMd).toContain('has not authored its identity');
   });
 });
 
