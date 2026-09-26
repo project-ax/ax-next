@@ -203,7 +203,7 @@ afterAll(() => {
   if (noSchemaChart !== '') rmSync(noSchemaChart, { recursive: true, force: true });
 });
 
-type InitBounds ={ readyTimeoutSeconds: number; activeDeadlineSeconds: number };
+type InitBounds = {readyTimeoutSeconds: number; activeDeadlineSeconds: number };
 
 function chartInitBounds(): InitBounds {
   const v = load(readFileSync(join(chartDir, 'values.yaml'), 'utf8')) as {
@@ -232,6 +232,16 @@ describeIfHelm('pg-init Job is bounded in time (TASK-563)', () => {
   it('renders both bounds from values.yaml by default', () => {
     const { readyTimeoutSeconds, activeDeadlineSeconds } = chartInitBounds();
     expect(renderedBounds()).toEqual({ jobDeadline: activeDeadlineSeconds, scriptTimeout: readyTimeoutSeconds });
+  });
+
+  it("the template's key-absent fallback matches values.yaml (the default lives in two places)", () => {
+    const { readyTimeoutSeconds, activeDeadlineSeconds } = chartInitBounds();
+    expect(
+      renderedBounds([
+        '--set', 'postgres.embedded.init.readyTimeoutSeconds=null',
+        '--set', 'postgres.embedded.init.activeDeadlineSeconds=null',
+      ]),
+    ).toEqual({ jobDeadline: activeDeadlineSeconds, scriptTimeout: readyTimeoutSeconds });
   });
 
   it('honours overrides of both bounds', () => {
