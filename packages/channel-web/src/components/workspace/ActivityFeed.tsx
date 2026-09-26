@@ -148,9 +148,9 @@ function bucket(rows: ActivityEvent[]): Bucket[] {
  * used to carry `role="status"`, which reads as an announcement guarantee it
  * could not keep: the placeholder is inserted in the same commit that gives it
  * its text, and a live region created and filled together is announced
- * inconsistently (VoiceOver often skips it). Mounting a region empty first is
- * not available either — the fresh-mount case is born in this state. And the
- * announcement is not wanted: the reader got here by pressing a tab or opening
+ * inconsistently (VoiceOver often skips it). Arming a region after mount, the
+ * way the failure region below does (TASK-545), would make it announceable —
+ * but the announcement is not wanted: the reader got here by pressing a tab or opening
  * a page, which their screen reader already reported, and "Reading the
  * record…" spoken on every switch is chatter that often lands after the rows
  * it describes. The rows arriving are the news, not the wait.
@@ -220,6 +220,11 @@ export function ActivityFeed({
     and then gains its text: a change a screen reader reports. Sighted
     readers see nothing move. The alternative, holding the failure back
     until armed, was the one-frame blank TASK-541 declined for this case.
+
+    Keep it `useEffect`. No test can hold this line: jsdom has no paint and
+    no assistive tech, so `useLayoutEffect` produces the same two commits
+    there and stays green while dropping the paint that makes the empty
+    frame real to a screen reader.
   */
   const [armed, setArmed] = useState(false);
   useEffect(() => {
