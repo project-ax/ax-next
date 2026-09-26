@@ -6,6 +6,7 @@
  * turns. So the tests are mostly "did we invent anything?" checks: no `stats`
  * key, no fixture decisions, no guessed state.
  */
+import { REWRITES_THE_SURFACE as SHARED_SURFACE_CLASS } from '@ax/core/surface-text';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
 import {
@@ -2543,8 +2544,7 @@ describe('channel-web agent-workspace BFF', () => {
   // the renderer.
 
   /** Everything the fence exists to keep off a row. */
-  const REWRITES_THE_SURFACE =
-    /[\u0000-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/;
+  const REWRITES_THE_SURFACE = SHARED_SURFACE_CLASS;
 
   const at = '2026-08-20T12:00:00.000Z';
   /*
@@ -2803,8 +2803,7 @@ describe('channel-web agent-workspace BFF', () => {
     const RESOLVED_AT = '2026-08-21T11:00:00.000Z';
 
     /** Everything the fence exists to keep off a decision row. */
-    const FENCED_OUT =
-      /[\u0000-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/;
+    const FENCED_OUT = SHARED_SURFACE_CLASS;
 
     let store: Map<string, StoredDecisionLike>;
 

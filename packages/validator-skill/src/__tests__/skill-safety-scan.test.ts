@@ -69,6 +69,26 @@ describe('regexScan (Layer 1 — pure, high-signal)', () => {
     expect(regexScan('text\u202Egnirts')?.category).toBe('obfuscation');
   });
 
+  // TASK-562: the class is now the shared one from @ax/core/surface-text, which
+  // the old local copy stopped short of.
+  it.each([
+    ['U+061C ALM', '\u061C'],
+    ['U+2028 LINE SEPARATOR', '\u2028'],
+    ['U+2029 PARAGRAPH SEPARATOR', '\u2029'],
+    ['U+2060 WORD JOINER', '\u2060'],
+    ['U+2061 FUNCTION APPLICATION', '\u2061'],
+    ['U+2062 INVISIBLE TIMES', '\u2062'],
+    ['U+2063 INVISIBLE SEPARATOR', '\u2063'],
+    ['U+2064 INVISIBLE PLUS', '\u2064'],
+    ['a mid-text U+FEFF', '\uFEFF'],
+  ])('flags obfuscation: %s', (_label, ch) => {
+    expect(regexScan(`ignore${ch}this`)?.category).toBe('obfuscation');
+  });
+
+  it('does not flag a document for its own newlines, tabs and carriage returns', () => {
+    expect(regexScan('# Title\r\n\n- one\n\t- two\n')).toBeNull();
+  });
+
   it('reason is short, names the category, and does not echo a large blob', () => {
     const hit = regexScan(`x = atob("${'B'.repeat(400)}")`);
     expect(hit).not.toBeNull();

@@ -53,6 +53,14 @@ const REFUSED: Array<[string, string]> = [
   ['U+007F DEL', '\u007F'],
   ['U+0085 NEL', '\u0085'],
   ['U+009F APC', '\u009F'],
+  // TASK-562 widened the shared class; each of these used to pass the door.
+  ['U+2028 LINE SEPARATOR', '\u2028'],
+  ['U+2029 PARAGRAPH SEPARATOR', '\u2029'],
+  ['U+2060 WORD JOINER', '\u2060'],
+  ['U+2061 FUNCTION APPLICATION', '\u2061'],
+  ['U+2062 INVISIBLE TIMES', '\u2062'],
+  ['U+2063 INVISIBLE SEPARATOR', '\u2063'],
+  ['U+2064 INVISIBLE PLUS', '\u2064'],
 ];
 
 describe('displayName write door (TASK-558)', () => {
