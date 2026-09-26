@@ -123,7 +123,10 @@ export interface HydrateOptions {
    * SAFE ONLY FOR CREATE-ONLY PIPELINES. `flushAgentTier` computes deletions
    * as baseline-minus-scratch, so a file that was never read is in neither and
    * is never deleted — and a pipeline that only creates files (bootstrap, with
-   * its O_EXCL seeds) sees everything it needs. But a pipeline that reads,
+   * its O_EXCL seeds) sees everything it needs. Rewriting a file that IS in
+   * `only` is equally safe — bootstrap's placeholder `agent.md` repair
+   * (TASK-556) does exactly that — because the baseline holds it and the flush
+   * ships the change as a plain put. But a pipeline that reads,
    * rewrites or deletes OTHER files (observer, consolidator, memory_note) would
    * see a scratch missing most of the agent's memory: it would rebuild derived
    * files from a fraction of the data, or fail to find what it should delete.
@@ -156,6 +159,27 @@ export async function hydrateAgentTier(
   opts: HydrateOptions = {},
 ): Promise<HydratedTier> {
   const scratchRoot = await mkdtemp(join(tmpdir(), 'ax-mem-tier-'));
+  const dispose = async (): Promise<void> => {
+    await rm(scratchRoot, { recursive: true, force: true });
+  };
+  // TASK-556: until this returns, the caller holds no `dispose` — every
+  // caller's own `finally` starts after the hydrate — so a list, read or write
+  // that throws mid-hydrate must remove the scratch dir here.
+  try {
+    const { baseline, baseVersion } = await populateScratch(bus, ctx, opts, scratchRoot);
+    return { scratchRoot, baseVersion, baseline, dispose };
+  } catch (err) {
+    await dispose().catch(() => undefined); // never mask the hydrate error
+    throw err;
+  }
+}
+
+async function populateScratch(
+  bus: HookBus,
+  ctx: AgentContext,
+  opts: HydrateOptions,
+  scratchRoot: string,
+): Promise<{ baseline: Map<string, Uint8Array>; baseVersion: WorkspaceVersion | null }> {
   const baseline = new Map<string, Uint8Array>();
   let baseVersion: WorkspaceVersion | null = null;
 
@@ -198,14 +222,7 @@ export async function hydrateAgentTier(
     await writeFile(abs, Buffer.from(read.bytes));
   }
 
-  return {
-    scratchRoot,
-    baseVersion,
-    baseline,
-    dispose: async () => {
-      await rm(scratchRoot, { recursive: true, force: true });
-    },
-  };
+  return { baseline, baseVersion };
 }
 
 /** Recursively list every file under `<root>/permanent/memory/`, returning

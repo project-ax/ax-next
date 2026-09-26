@@ -1,6 +1,7 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { buildMarkdownFile } from './frontmatter.js';
+import { buildMarkdownFile, stripFrontmatter } from './frontmatter.js';
 import { systemFile, mapFile, type SystemFileName } from './paths.js';
 
 /**
@@ -68,12 +69,20 @@ export interface BootstrapInput {
  * deviation D4 in the plan); the second through Nth chats must not
  * clobber memory the agent has accumulated.
  *
- * Returns the list of files actually created, mostly for tests + logs.
+ * One exception (TASK-556): an existing `system/agent.md` whose content is
+ * EXACTLY the placeholder bootstrap seeds for an identity-less agent is
+ * rewritten when `composedIdentity` is non-empty. Without it, an agent seeded
+ * before it authored its identity — or poisoned by a read blip before TASK-553
+ * — kept the placeholder forever. Any other content is the agent's own and is
+ * never touched.
+ *
+ * Returns the files actually created, and the ones repaired, for tests + logs.
  */
 export async function bootstrapMemoryTree(
   input: BootstrapInput,
-): Promise<{ created: string[] }> {
+): Promise<{ created: string[]; repaired: string[] }> {
   const created: string[] = [];
+  const repaired: string[] = [];
   const now = (input.nowFn ?? (() => new Date()))();
   const nowIso = now.toISOString();
 
@@ -101,7 +110,17 @@ export async function bootstrapMemoryTree(
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
       // Another caller (or a previous chat) seeded this file. That's
-      // the idempotent path — leave their content alone.
+      // the idempotent path — leave their content alone. The one exception
+      // (TASK-556): an agent.md that still holds exactly the placeholder,
+      // now that a real identity has been composed.
+      if (
+        name === 'agent' &&
+        input.composedIdentity.trim().length > 0 &&
+        isPlaceholderAgentFile(await readRegularFile(abs))
+      ) {
+        await replaceAtomically(abs, buildMarkdownFile(fm, body));
+        repaired.push(rel);
+      }
     }
   }
 
@@ -136,7 +155,52 @@ export async function bootstrapMemoryTree(
     }
   }
 
-  return { created };
+  return { created, repaired };
+}
+
+const AGENT_PLACEHOLDER = '_The agent has not authored its identity yet._';
+
+/**
+ * Does this `system/agent.md` content hold exactly the placeholder bootstrap
+ * seeds for an identity-less agent (TASK-556)? Compared on the body, with the
+ * frontmatter stripped, so the seed's timestamp doesn't matter — but any other
+ * change the agent made to the body makes it the agent's file, not ours.
+ * `undefined` (absent or not a regular file) is never the placeholder.
+ */
+export function isPlaceholderAgentFile(text: string | undefined): boolean {
+  if (text === undefined) return false;
+  return stripFrontmatter(text) === `# Agent\n\n${AGENT_PLACEHOLDER}`;
+}
+
+/**
+ * Read a file only if it is a regular file (TASK-556). Absent → undefined; a
+ * symlink, directory or device → undefined too: the agent can write into its
+ * own memory tree, and a symlinked agent.md is never ours to follow or repair.
+ */
+export async function readRegularFile(abs: string): Promise<string | undefined> {
+  let info;
+  try {
+    info = await lstat(abs);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw err;
+  }
+  if (!info.isFile()) return undefined;
+  return readFile(abs, 'utf8');
+}
+
+/** Replace `abs` via a sibling temp file + rename: readers never see a torn
+ *  file, and the rename swaps the directory entry rather than writing through
+ *  whatever `abs` points at. */
+async function replaceAtomically(abs: string, content: string): Promise<void> {
+  const tmp = `${abs}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(tmp, content, { encoding: 'utf8', flag: 'wx' });
+    await rename(tmp, abs);
+  } catch (err) {
+    await rm(tmp, { force: true }).catch(() => undefined);
+    throw err;
+  }
 }
 
 function systemFrontmatter(name: SeededSystemFileName, nowIso: string): MemoryFrontmatter {
@@ -162,14 +226,10 @@ function systemBody(name: SeededSystemFileName, composedIdentity: string): strin
   if (name === 'agent') {
     // The composed identity (IDENTITY.md + SOUL.md). Empty when the agent has
     // no identity files yet (still bootstrapping) — seed a placeholder so the
-    // file exists and gets filled in once the agent authors its identity. (The
-    // seed is idempotent: a later bootstrap with a real identity won't
-    // overwrite this file, but a real identity is seeded on the FIRST chat that
-    // resolves one — the placeholder only persists for a never-identified
-    // agent.)
-    const body = composedIdentity.trim().length > 0
-      ? composedIdentity
-      : '_The agent has not authored its identity yet._';
+    // file exists. The seed is otherwise create-only, so the placeholder is
+    // the one body bootstrap replaces: the first chat that composes a real
+    // identity rewrites it (TASK-556, see `isPlaceholderAgentFile`).
+    const body = composedIdentity.trim().length > 0 ? composedIdentity : AGENT_PLACEHOLDER;
     return `# Agent\n\n${body}\n`;
   }
   if (name === 'user') {
