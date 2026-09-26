@@ -897,7 +897,11 @@ describe('the host grant turned down (site 4)', () => {
     fireEvent.click(screen.getByRole('button', { name: GRANT_REJECT_LABEL }));
 
     expect(screen.queryByTestId('thread-grants')).toBeNull();
-    const region = container.querySelector('[data-consent-region]');
+    // The GRANTS region, by name: the transcript is a consent region too now
+    // (for its approval cards, TASK-536), so "the first one" is not this one.
+    const region = container.querySelector(
+      `[data-consent-region][aria-label="Permission requests for ${quill.name}"]`,
+    );
     expect(region).not.toBeNull();
     expect(document.activeElement).toBe(region);
     expect(document.activeElement).not.toBe(document.body);

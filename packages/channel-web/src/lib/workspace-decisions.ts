@@ -39,13 +39,18 @@
  * than sitting there until the ten seconds run out on the clock alone.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { workspaceApi, WorkspaceApiError, type Decision } from './workspace-api';
+import {
+  workspaceApi,
+  WorkspaceApiError,
+  type Decision,
+  type ThreadMessage,
+} from './workspace-api';
 import {
   DECISION_ACTION_FAILED,
   DECISION_UNDO_TOO_LATE,
   undoSecondsLeft,
 } from '@/components/workspace/decision-copy';
-import { isJustResolved } from './workspace-types';
+import { isJustResolved, isOpenDecision } from './workspace-types';
 
 /**
  * How often we re-read a row while its undo window is open. The window itself
@@ -155,6 +160,71 @@ function mergeReadWithReceipts(
     (d) => !listed.has(d.id) && (ours.has(d.id) || isJustResolved(d, now)),
   );
   return [...merged, ...kept];
+}
+
+/**
+ * A fresh THREAD read, plus the approval pointers it no longer carries for a
+ * row the queue is still drawing (TASK-536).
+ *
+ * `mergeReadWithReceipts` above is half of this. An in-thread answer is
+ * followed by two reads, and the queue's is only one of them: the thread
+ * re-reads `GET /api/workspace/agents/:id` too, and the server builds its
+ * approval pointers from OPEN decisions only. The card is drawn only where a
+ * pointer is, so the thread's read took the receipt away even while the queue
+ * was keeping it — the card unmounted and focus fell to `<body>` ~1.2s after
+ * the click (measured on the TASK-358 walk). The server is right not to invent
+ * a receipt: on a fresh page load there is none to show.
+ *
+ * ONE RULE, NOT TWO (invariant 4). A dropped pointer survives iff the queue
+ * still holds its row AND that row is either open or `isJustResolved` — the
+ * predicate the queue and Today already use. So the thread cannot keep a
+ * receipt the queue has let go of, and cannot let go of one Today still shows.
+ * The open case is the queue's own TASK-530 rule arriving here: a thread read
+ * issued while the row was resolved can land after an Undo reopened it, and the
+ * reopened question must not vanish either. Whatever the queue decides about an
+ * open row the server stopped listing, the card follows on its next read — it
+ * draws from the queue, never from this pointer.
+ *
+ * WHERE IT GOES. Right after the nearest message before it that the fresh read
+ * still has — where it was, with the continuation of the turn below it. That is
+ * where the reader saw it while the turn streamed, and it is also what keeps it
+ * MOUNTED: the transcript keys each message by position (`findFieldKey`), so a
+ * receipt that moved would remount, and a remount drops focus exactly as an
+ * unmount does.
+ *
+ * Which direction it fails in: CLOSED. Only a pointer the previous read had,
+ * for a row the queue is still drawing, can come back; the caller applies this
+ * only within one conversation; and every later read re-asks, so a pointer
+ * lasts no longer than its row's receipt.
+ */
+export function keepAnsweredApprovals(
+  prev: readonly ThreadMessage[],
+  fresh: readonly ThreadMessage[],
+  decisions: readonly Decision[],
+  now: number,
+): ThreadMessage[] {
+  const freshIds = new Set(fresh.map((m) => m.id));
+  const still = (decisionId: string): boolean => {
+    const d = decisions.find((x) => x.id === decisionId);
+    return d !== undefined && (isOpenDecision(d) || isJustResolved(d, now));
+  };
+  /** Anchor message id (or `null` for "before everything") → pointers after it. */
+  const after = new Map<string | null, ThreadMessage[]>();
+  let anchor: string | null = null;
+  let kept = 0;
+  for (const m of prev) {
+    if (freshIds.has(m.id)) {
+      anchor = m.id;
+      continue;
+    }
+    if (m.kind !== 'approval' || !still(m.decisionId)) continue;
+    after.set(anchor, [...(after.get(anchor) ?? []), m]);
+    kept += 1;
+  }
+  if (kept === 0) return [...fresh];
+  const out: ThreadMessage[] = [...(after.get(null) ?? [])];
+  for (const m of fresh) out.push(m, ...(after.get(m.id) ?? []));
+  return out;
 }
 
 export interface DecisionQueue {

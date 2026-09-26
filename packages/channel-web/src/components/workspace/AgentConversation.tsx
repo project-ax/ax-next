@@ -7,7 +7,14 @@
  * rail; routine fires never appear here at all, or 612 unattended runs would
  * bury the two conversations the human actually had.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import {
   AlertTriangle,
   ArrowUp,
@@ -68,7 +75,11 @@ import type {
 } from '@/lib/workspace-api';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 import { AgentTile } from './bits';
-import { RESOLUTION_FOCUS_RING } from '@/lib/consent-focus';
+import {
+  CONSENT_REGION_ATTR,
+  RESOLUTION_FOCUS_RING,
+  returnFocusToConsentRegion,
+} from '@/lib/consent-focus';
 import { ApprovalCard } from './ApprovalCard';
 import { GrantRow } from './GrantRow';
 import {
@@ -547,11 +558,17 @@ export function AgentConversation({
         the agent's name says where you have arrived. And `outline-none` alone
         would leave a sighted keyboard user with nothing to see, so the outline
         is replaced rather than removed.
+
+        It is also the CONSENT REGION for the approval cards inside it
+        (TASK-536): a receipt that retires with focus still on it hands focus
+        here on the way out (`ThreadApproval`) instead of letting it fall to
+        `<body>`. The name stays true with no card in it.
       */}
       <div
         ref={scrollRef}
         onScroll={onThreadScroll}
         tabIndex={-1}
+        {...{ [CONSENT_REGION_ATTR]: '' }}
         role="region"
         aria-label={`Conversation with ${agent.name}`}
         className="flex-1 overflow-y-auto px-6 py-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
@@ -890,6 +907,38 @@ export function AgentConversation({
   );
 }
 
+/**
+ * One approval card's row in the transcript, and where its focus goes when it
+ * leaves (TASK-536).
+ *
+ * A receipt does retire: once its row is no longer just-resolved, the next
+ * thread read stops carrying it (`keepAnsweredApprovals`), and a keyboard user
+ * may still be standing on it. The browser's rule for a focused node that
+ * disappears is `<body>`, the top of the document. So on the way out, and only
+ * if focus is inside this row, focus goes to the transcript's consent region
+ * instead: the reader stays in the conversation and their next Tab continues
+ * from there.
+ *
+ * A LAYOUT effect's cleanup, because React runs it while the row is still in
+ * the document — `closest` cannot walk up from a detached node.
+ */
+function ThreadApproval({ children }: { children: ReactNode }) {
+  const row = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const node = row.current;
+    return () => {
+      if (node !== null && node.contains(document.activeElement)) {
+        returnFocusToConsentRegion(node);
+      }
+    };
+  }, []);
+  return (
+    <div ref={row} className="flex gap-3">
+      {children}
+    </div>
+  );
+}
+
 function Message({
   m,
   agent,
@@ -1144,6 +1193,10 @@ function Message({
       unmounted this card ~0.6s after the click — focus fell to `<body>` and
       the ten-second Undo went with it. `useDecisionQueue` keeps a just-resolved
       row across that read, so the receipt stays exactly as long as Today's.
+      The thread's OWN re-read drops the pointer too — the server lists open
+      decisions only — so `AgentView.load` keeps it by the same rule
+      (`keepAnsweredApprovals`, TASK-536). Both halves are needed; either one
+      alone still unmounts this card.
 
       What this silence no longer stands for is a FAILED read. That was an
       opposite fact wearing the same silence — one means the question is
@@ -1154,7 +1207,7 @@ function Message({
     const d = decisions.find((x) => x.id === m.decisionId);
     if (!d) return null;
     return (
-      <div className="flex gap-3">
+      <ThreadApproval>
         <AgentTile agent={agent} />
         <ApprovalCard
           decision={d}
@@ -1166,7 +1219,7 @@ function Message({
           find={find}
           fieldKey={fieldKey}
         />
-      </div>
+      </ThreadApproval>
     );
   }
 
