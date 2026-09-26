@@ -31,7 +31,7 @@ import {
 } from '@ax/core';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import pg from 'pg';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { UNDO_WINDOW_MS } from '../machine.js';
 import { CLAIM_REFUSED_DETAIL } from '../templates.js';
 import { createDecisionsPlugin, type DecisionsPluginOptions } from '../plugin.js';
@@ -2011,9 +2011,10 @@ describe('decisions canary — the attended undo window (TASK-574)', () => {
     await approveWith(h, id, 'req-nudged');
     clock.pastWindow();
 
-    for (let i = 0; i < 200 && h.delivered.length === 0; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await vi.waitFor(() => expect(h.delivered).toHaveLength(1), {
+      timeout: 5_000,
+      interval: 10,
+    });
     expect(h.delivered.map((d) => d.entry.reqId)).toEqual(['req-nudged']);
   });
 });
