@@ -203,8 +203,8 @@ describe('the slot vocabulary', () => {
 // The scanner that fails when a second copy of SLOTS appears in production
 // source lives in `scripts/__tests__/slot-vocabulary-single-owner.test.js`
 // (TASK-518). It used to be in this file, where CI's affected-packages test job
-// never ran it for the PR that actually added a copy — nothing depends on
-// @ax/memory, so a `channel-web` change did not select this suite.
+// never ran it for the PR that actually added a copy — @ax/memory does not
+// depend on `channel-web`, so a `channel-web` change did not select this suite.
 // `pnpm test:scripts` runs on every PR.
 // ---------------------------------------------------------------------------
 

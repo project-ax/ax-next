@@ -10,9 +10,10 @@
 //
 // WHY IT LIVES HERE AND NOT IN @ax/memory (TASK-518). It used to be a case in
 // packages/memory/src/__tests__/slots.test.ts. CI's PR `test` job runs only the
-// packages a PR affects, plus their dependents — and nothing depends on
-// @ax/memory — so a PR that added a copy to `channel-web` (the case this guard
-// exists for) never ran it. The copy merged green, and the red landed later on
+// packages a PR changes, plus the packages that depend on those. @ax/memory
+// does not depend on `channel-web`, so a PR that added a copy to `channel-web`
+// (the case this guard exists for) did not select @ax/memory's suite and never
+// ran it. The copy merged green, and the red landed later on
 // main's full suite, or on the next unrelated @ax/memory PR, blamed on a package
 // its author never touched. `pnpm test:scripts` runs on EVERY PR (ci.yml,
 // "Test (affected packages + dependents)"), so here it fails the PR that
@@ -34,8 +35,12 @@
 //   - A copy spread thinner than WINDOW characters, e.g. one slot per line with
 //     a long comment beside each. Distance is measured on the source as
 //     written, comments included.
-//   - A copy built at runtime (`'lives' + '_in'`), or held in a non-source file
-//     (JSON, YAML, Markdown).
+//   - A copy built at runtime (`'lives' + '_in'`), or held in a file that is
+//     not JS/TS: JSON, YAML, Markdown, or a framework single-file component
+//     (`.vue`, `.svelte`, `.astro`) whose script block could hold one. Those
+//     are filtered out of the walk, not parsed, so the "no parser" refusal in
+//     scanSource never fires for them. The repo has none today (React/`.tsx`
+//     only); if one lands, extend SCRIPT_KIND or extract its script block.
 //
 // WHAT IT READS. Every file `git ls-files` tracks under packages/ and presets/
 // with a JS/TS extension, minus `__tests__/` directories and `*.test.*` /
@@ -215,6 +220,9 @@ describe('the slot vocabulary has exactly one owner (invariant 4)', () => {
     const files = productionSources();
     expect(files.length).toBeGreaterThan(500);
     expect(files).toContain(OWNER);
+    // The header's "nearest miss" file. If it moved, update this path (and
+    // the header) rather than deleting the line: it proves the walk reaches
+    // across packages, which is the whole reason this guard lives here.
     expect(files).toContain('packages/memory-facts-contract/src/index.ts');
     expect(files.some((f) => f.startsWith('packages/channel-web/') && f.endsWith('.tsx'))).toBe(true);
     expect(files.some((f) => f.split('/').includes('__tests__'))).toBe(false);
