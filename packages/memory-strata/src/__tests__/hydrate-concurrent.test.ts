@@ -171,8 +171,10 @@ describe('hydrateAgentTier reads concurrently after the pin (TASK-554)', () => {
 
   it('a pin is never latched once reads overlap: the snapshot cannot tear', async () => {
     // First found read carries no version; later ones do. A latch during the
-    // concurrent phase would pin some in-flight reads and not others.
-    const paths = docs(40);
+    // concurrent phase would pin some in-flight reads and not others. More
+    // paths than the bound, so later reads start after earlier ones resolve
+    // and would pick up a late latch.
+    const paths = docs(HYDRATE_READ_CONCURRENCY * 2 + 5);
     const bus = new HookBus();
     const reads: WorkspaceReadInput[] = [];
     bus.registerService<WorkspaceListInput, WorkspaceListOutput>('workspace:list', 't', async () => ({
