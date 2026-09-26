@@ -619,11 +619,19 @@ describe('InThreadApprovals', () => {
       expect(screen.getByRole('button', { name: /undo/i })).toBeInTheDocument(),
     );
 
-    const live = container.querySelectorAll('[aria-live]');
-    expect(live).toHaveLength(1);
-    // The one live node holds a sentence, never a card and never a counter.
-    expect(live[0]!.querySelector('button')).toBeNull();
-    expect(live[0]!.textContent ?? '').not.toMatch(/\d+s/);
+    /*
+      Every live node on the surface, the cards' own included: since TASK-540
+      each `ApprovalCard` mounts two `sr-only` regions (`data-consent-said`,
+      assertive for a receipt, polite for its open branch). None of them may
+      hold a card or a counter, and the surface itself still owns exactly one.
+    */
+    const live = Array.from(container.querySelectorAll('[aria-live]'));
+    expect(live.filter((el) => !el.hasAttribute('data-consent-said'))).toHaveLength(1);
+    for (const el of live) {
+      // A live node holds a sentence, never a card and never a counter.
+      expect(el.querySelector('button')).toBeNull();
+      expect(el.textContent ?? '').not.toMatch(/\d+s/);
+    }
   });
 
   it('announces a wait when something really is open', async () => {

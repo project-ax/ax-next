@@ -36,10 +36,10 @@
  *      resolved in the last ten seconds above the composer on a plain page
  *      load. Announcing those would report a past event as news — the audible
  *      version of the focus theft `useResolutionFocus`'s arming avoids. The
- *      first render is therefore silent by construction: `announced` starts
- *      empty and only a CHANGE to what the card says fills it.
- *   3. IT MUST NOT SHARE A NODE WITH THE COUNTDOWN. `role="alert"` implies
- *      `aria-atomic`, so any mutation re-reads the whole region, and a resolved
+ *      first render is therefore silent by construction: both regions start
+ *      empty and only a CHANGE to what the card says fills one.
+ *   3. IT MUST NOT SHARE A NODE WITH THE COUNTDOWN. `role="alert"` (and
+ *      `role="status"`) implies `aria-atomic`, so any mutation re-reads the whole region, and a resolved
  *      row re-renders `Undo · Ns` twice a second off `useDecisionClock`. A
  *      region wrapped around the receipt would read it out up to ten times and
  *      bury the reading that mattered. This is its own node, and the only
@@ -50,11 +50,26 @@
  *      and adds no gap to the `flex ... gap-2` containers these cards sit in —
  *      the 6px-twice-over regression `ThreadFind` documents.
  *
- * ASSERTIVE, NOT POLITE. `role="alert"` interrupts, which is usually the wrong
- * manners for a confirmation. Here the answer is time-boxed: the control that
- * reverses it expires in ten seconds (`UNDO_WINDOW_MS`), and a polite message
- * queued behind whatever the reader was mid-sentence on can spend a real part
- * of that window. Same call `Toast` makes for its error items.
+ * ASSERTIVE FOR A RECEIPT, NOT POLITE. `role="alert"` interrupts, which is
+ * usually the wrong manners for a confirmation. Here the answer is time-boxed:
+ * the control that reverses it expires in ten seconds (`UNDO_WINDOW_MS`), and a
+ * polite message queued behind whatever the reader was mid-sentence on can
+ * spend a real part of that window. Same call `Toast` makes for its error
+ * items. That covers everything said while the card is RESOLVED — the receipt,
+ * and a notice landing on it (a refused undo) — since both answer a press.
+ *
+ * POLITE FOR THE OPEN BRANCH (TASK-540). What an open card says — a stale
+ * reason, a notice — has no undo window to race, and the human ruling on
+ * TASK-275 is that a card which changes because of the agent is announced
+ * politely and focus does not move. So the card has TWO regions: the assertive
+ * one above (`data-consent-said="receipt"`) and a polite `role="status"` one
+ * (`data-consent-said="open"`). A change is routed by the branch the card is
+ * in when it happens, and the other region is emptied in the same commit so a
+ * reader walking the page never finds a superseded sentence left behind.
+ * Two nodes rather than one node whose `role`/`aria-live` flips: politeness
+ * is read off the region as its content changes, and flipping it in the very
+ * commit that fills it is exactly the kind of timing assistive tech handles
+ * inconsistently. Both mount empty with the card, for rule 1.
  *
  * THE COST, NAMED. Focus lands on the outcome line at almost the same moment,
  * so a screen reader may say the first sentence twice — once as the alert, once
@@ -65,7 +80,7 @@
  *
  * The same trade holds on `ApprovalCard`'s OPEN branch since TASK-473: press
  * "Move it" on a row whose guard trips and focus lands on the stale paragraph
- * while this region says the same sentence. Twice on a click, once with no
+ * while the polite region says the same sentence. Twice on a click, once with no
  * click, never zero — do not "optimise" the click path back to silence here.
  *
  * THE OPEN BRANCH SPEAKS HERE TOO (TASK-473, TASK-535). An answer is not the
@@ -80,8 +95,8 @@
  *
  * So each renderer hands this `openNote`: the sentence its open branch has to
  * say. Both now pass the same notice-first sentence, and `DecisionRow`'s
- * `Alert`s drop the `role="alert"` shadcn gives them so that this region stays
- * the ONE voice for it, expanded or collapsed. The prop stays required: the
+ * `Alert`s drop the `role="alert"` shadcn gives them so that the polite region
+ * stays the ONE voice for it, expanded or collapsed. The prop stays required: the
  * shared half owns the MECHANISM — the already-mounted region, the silent
  * mount — and only the renderer knows what its open branch says.
  *
@@ -96,8 +111,8 @@
  * outlive the row that is disappearing). A region that only has to survive a
  * card's own open-to-resolved swap has no such requirement, and keeping it
  * local is what lets both renderers share one component instead of asking
- * every surface to provide one. An empty assertive region is silent, so N rows
- * cost nothing to a reader. Do not "fix" this into a page-level region: that
+ * every surface to provide one. An empty region, assertive or polite, is
+ * silent, so N rows cost nothing to a reader. Do not "fix" this into a page-level region: that
  * would hand the announcement back to the surfaces and re-open the coupling.
  */
 import { useState } from 'react';
@@ -152,15 +167,33 @@ export function ConsentAnnouncement({ outcome, notice, openNote }: Props) {
     after it is a change, and every change is said.
   */
   const [seen, setSeen] = useState(say);
-  const [announced, setAnnounced] = useState('');
+  const [receipt, setReceipt] = useState('');
+  const [open, setOpen] = useState('');
   if (seen !== say) {
     setSeen(say);
-    setAnnounced(say ?? '');
+    /*
+      Routed by the branch the card is in NOW (TASK-540). Only a change to
+      the sentence is news — the same words staying put while the branch
+      flips is not a reason to say them again.
+    */
+    const resolved = outcome !== null;
+    setReceipt(resolved ? (say ?? '') : '');
+    setOpen(resolved ? '' : (say ?? ''));
   }
 
   return (
-    <span className="sr-only" role="alert" data-consent-said="">
-      {announced}
-    </span>
+    <>
+      <span
+        className="sr-only"
+        role="alert"
+        aria-live="assertive"
+        data-consent-said="receipt"
+      >
+        {receipt}
+      </span>
+      <span className="sr-only" role="status" aria-live="polite" data-consent-said="open">
+        {open}
+      </span>
+    </>
   );
 }
