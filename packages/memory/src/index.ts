@@ -35,8 +35,8 @@ export { SPEAKER_SUBJECT, rewriteSpeaker } from './subject.js';
 //
 // `SLOTS` is ALSO the injected profile's whitelist (design §4.1) — the same
 // constant, not a copy. `augment.ts` imports it rather than keeping a
-// `PROFILE_SLOTS` of its own, and `__tests__/slots.test.ts` is the guard that
-// fails if a second copy appears.
+// `PROFILE_SLOTS` of its own, and `scripts/__tests__/slot-vocabulary-single-owner.test.js`
+// is the guard that fails if a second copy appears.
 export { SLOTS, PENDING_SLOT, deriveSlot } from './slots.js';
 export type { Slot } from './slots.js';
 export { selectProfileRows } from './profile.js';

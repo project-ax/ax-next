@@ -1,5 +1,5 @@
-import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import { PENDING_SLOT as CONTRACT_PENDING_SLOT } from '@ax/memory-facts-contract';
@@ -7,7 +7,6 @@ import { PENDING_SLOT as CONTRACT_PENDING_SLOT } from '@ax/memory-facts-contract
 import { SLOTS, SLOT_SYNONYMS, PENDING_SLOT, deriveSlot, relationToWords } from '../slots.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = join(HERE, '..', '..', '..', '..');
 
 interface KnownBad {
   predicate: string;
@@ -199,150 +198,15 @@ describe('the slot vocabulary', () => {
 });
 
 // ---------------------------------------------------------------------------
-// One list, one owner — enforced against the source tree.
+// One list, one owner — enforced against the source tree, but NOT here.
+//
+// The scanner that fails when a second copy of SLOTS appears in production
+// source lives in `scripts/__tests__/slot-vocabulary-single-owner.test.js`
+// (TASK-518). It used to be in this file, where CI's affected-packages test job
+// never ran it for the PR that actually added a copy — nothing depends on
+// @ax/memory, so a `channel-web` change did not select this suite.
+// `pnpm test:scripts` runs on every PR.
 // ---------------------------------------------------------------------------
-
-/**
- * `SLOTS` is *also* the profile whitelist of design §4.1: the block injected at
- * chat start renders the active rows whose slot is set. Design §3.3 is explicit
- * that this is the same constant and not a copy, because the two directions
- * fail differently and both fail silently — a slot missing from a copied
- * whitelist closes rows nobody can see, and a slot present only in a copied
- * whitelist renders a column that never fills.
- *
- * That consumer is a later card, so there is nothing yet to point at `SLOTS`.
- * This test is what stops it arriving with its own list: any production source
- * file that names both `lives_in` and `works_at` as string literals is holding
- * the slot vocabulary, and only `slots.ts` may.
- */
-function productionSources(dir: string, out: string[] = []): string[] {
-  for (const entry of readdirSync(dir)) {
-    if (entry === 'node_modules' || entry === 'dist' || entry === 'dist-web' || entry === 'dist-spa') continue;
-    const full = join(dir, entry);
-    if (statSync(full).isDirectory()) {
-      if (entry === '__tests__') continue;
-      productionSources(full, out);
-    } else if (
-      // `.tsx` too. The §4.1 profile block is a rendering surface, so the
-      // copy most worth catching is the one that lands in `channel-web`.
-      (entry.endsWith('.ts') || entry.endsWith('.tsx')) &&
-      !entry.endsWith('.test.ts') &&
-      !entry.endsWith('.test.tsx')
-    ) {
-      out.push(full);
-    }
-  }
-  return out;
-}
-
-/** Block comments and `//` line comments — but not the `//` in a `https://` URL. */
-function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(?<![:/])\/\/.*$/gm, '');
-}
-
-/**
- * The most distinct slot names that appear as string literals inside any
- * {@link WINDOW}-character stretch of `code`.
- *
- * A window rather than a whole-file count, because a whole-file count reports
- * the shared engine-contract suite (which uses `lives_in` and `works_at` as
- * test data in unrelated cases hundreds of lines apart) and misses nothing a
- * window would. A COPY of the vocabulary is by its nature one literal list, so
- * it is dense: all eight names inside one array.
- */
-const WINDOW = 200;
-
-/**
- * Both spellings a copied list can take: a quoted literal (`'lives_in'`, in an
- * array or a union) and a bare object key (`lives_in:`, in a
- * `Record<Slot, …>`). Matching only the first is how a hand-copied
- * `Record<Slot, string>` sails through.
- */
-const SLOT_MENTION = /['"`]([A-Za-z_][A-Za-z_0-9]*)['"`]|\b([A-Za-z_][A-Za-z_0-9]*)\s*:/g;
-
-function densestSlotRun(code: string): string[] {
-  const hits: Array<{ at: number; slot: string }> = [];
-  for (const match of code.matchAll(SLOT_MENTION)) {
-    const slot = match[1] ?? match[2];
-    if (slot !== undefined && (SLOTS as readonly string[]).includes(slot)) {
-      hits.push({ at: match.index, slot });
-    }
-  }
-  let densest: string[] = [];
-  for (let i = 0; i < hits.length; i += 1) {
-    const start = hits[i]!.at;
-    const run = new Set(hits.slice(i).filter((h) => h.at - start <= WINDOW).map((h) => h.slot));
-    if (run.size > densest.length) densest = [...run];
-  }
-  return densest;
-}
-
-/**
- * A run is a copy of the vocabulary when it is **dense** and contains
- * `lives_in`.
- *
- * Density alone would be a coincidence detector: `name`, `role`, `language`
- * and `timezone` are ordinary words, and three of them near each other in some
- * unrelated package would fail THIS package's suite with a message about a
- * vocabulary its author never heard of. `lives_in` is not an ordinary word and
- * any real copy of the eight contains it. MEASURED over all 840 production
- * `.ts`/`.tsx` files: **no file outside `slots.ts` reaches 3 by either rule**,
- * so the extra condition costs nothing today and buys the margin.
- */
-const ANCHOR: string = 'lives_in';
-
-function looksLikeACopy(run: readonly string[]): boolean {
-  return run.length >= 3 && run.includes(ANCHOR);
-}
-
-describe('the slot list has exactly one owner (invariant 4)', () => {
-  it('appears in no production source but slots.ts', () => {
-    const slotsFile = join(REPO_ROOT, 'packages', 'memory', 'src', 'slots.ts');
-    const offenders: string[] = [];
-
-    for (const file of productionSources(join(REPO_ROOT, 'packages'))) {
-      if (file === slotsFile) continue;
-      const run = densestSlotRun(stripComments(readFileSync(file, 'utf8')));
-      if (looksLikeACopy(run)) {
-        offenders.push(`${relative(REPO_ROOT, file)} (${run.join(', ')})`);
-      }
-    }
-
-    expect(
-      offenders,
-      'a second copy of the slot vocabulary — import SLOTS from @ax/memory instead',
-    ).toEqual([]);
-  });
-
-  it('actually reads the tree it claims to read', () => {
-    // Without this, a scanner that silently walked an empty directory would
-    // pass the test above for the wrong reason — the shape of green that means
-    // nothing was checked.
-    const files = productionSources(join(REPO_ROOT, 'packages'));
-    expect(files.length).toBeGreaterThan(100);
-    expect(files).toContain(join(REPO_ROOT, 'packages', 'memory', 'src', 'slots.ts'));
-    expect(files.some((f) => f.includes('__tests__'))).toBe(false);
-    // …and `.tsx` is in scope, because the §4.1 profile block is a rendering
-    // surface and `channel-web` is where a hand-copied list would land.
-    expect(files.some((f) => f.endsWith('.tsx'))).toBe(true);
-  });
-
-  it('recognizes a copy in either spelling, and ignores an innocent cluster', () => {
-    // The detector itself, since the case above can only ever assert an empty
-    // list — a guard whose positive branch is never exercised is a guard
-    // nobody has seen work.
-    const asArray = "const WHITELIST = ['name', 'lives_in', 'works_at'] as const;";
-    const asRecord = 'const LABELS = { name: "Name", lives_in: "Home", works_at: "Employer" };';
-    const innocent = "type Field = 'name' | 'role' | 'language';";
-
-    expect(looksLikeACopy(densestSlotRun(asArray))).toBe(true);
-    expect(looksLikeACopy(densestSlotRun(asRecord))).toBe(true);
-    // Three slot names, but no `lives_in` — ordinary words that happen to
-    // collide, which is the false positive the anchor exists to refuse.
-    expect(densestSlotRun(innocent)).toHaveLength(3);
-    expect(looksLikeACopy(densestSlotRun(innocent))).toBe(false);
-  });
-});
 
 describe('relationToWords', () => {
   it('turns the extraction contract snake_case into the table key form', () => {
