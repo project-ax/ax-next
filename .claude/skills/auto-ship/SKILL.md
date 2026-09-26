@@ -161,7 +161,7 @@ Board Policy).
    dead tasks), sequences them into a dependency DAG, and **creates one draft-issue card
    per slice**: title `[TASK-n] <title>`, body = that slice's self-contained spec (scope +
    acceptance criteria) **+ a `design:` pointer + an `epic:<slug>` marker** (load-bearing —
-   Forward learning keys off it), `(walk)`-tagged where the design calls for a
+   it is Forward learning's epic edge), `(walk)`-tagged where the design calls for a
    manual-acceptance step. It returns a **compact manifest only** (`task · item · title ·
    deps`), never the bodies — your context stays lean.
 2. **Apply routing (you, shell-side, batched).** From the manifest, set each new card's
@@ -681,8 +681,11 @@ On a `pr-green` handoff (PR open, pre-merge): move the card → **In Review** (t
 already logged `PR #<n> opened` in its progress block — you no longer append a link).
 After the merge: move the card → **Done**, `append_progress … "merged #<n> ✅"` on the
 card, append `merged #<n>` to the journal, **propagate the agent's `learnings:` to every
-still-queued same-epic To Do card** (Forward learning, below — shell-side, best-effort),
-and **create a new To Do card for each follow-up** the agent reported (set its deps). You are the **sole writer of the
+still-queued To Do card in its family** (Forward learning, below — shell-side, best-effort),
+and **create a new To Do card for each follow-up** the agent reported (set its deps). A
+follow-up card's body **starts with `parent: <the reporting card's TASK-ID>`**, plus that
+card's `epic:` line when it had one — the `parent:` line is what makes the new card a
+family member of every later sibling merge, so do not drop it. You are the **sole writer of the
 routing fields** (`Status`, `Depends on`) and the sole card-mover; the only thing an
 agent writes is the progress block of its own In-Progress card (§6). **Never** merge
 two PRs concurrently.
@@ -774,11 +777,24 @@ established pattern, a decision, a gotcha, or "this sibling card's premise is no
 
 - **Channel A — the board (active, scoped, primary).** On merge of card X, append X's
   `learnings:` to a delimited **Predecessor learnings** block in the body of **every
-  still-queued To Do card sharing X's `epic:<slug>`**. You already hold the bullets
-  (they're in X's ≤150-word handoff); find the same-epic To Do cards by a **shell-side
-  `jq`** over the bound `$ITEMS` snapshot (match `epic: <slug>` in the body, emit
-  **item-ids only** — bodies never enter your context, see `references/github-project.md`
-  §4), and write each via the shell-side **`append_learnings`** helper (§6).
+  still-queued To Do card in X's family**. A card is family when **any** explicit edge
+  links it to X: the same **epic** (`epic: <slug>`, and `epic: none` matches nothing);
+  a **child** that names X as its **parent** (a line starting `parent: X`,
+  `**parent:** X`, or `Follow-up from X`); X's own **parent** still waiting in To Do; a
+  **sibling** sharing X's parent; or a card **named** by its Task ID in X's `learnings:`
+  text. The epic was the only key until TASK-481, and it missed most of the lane — 20 of
+  36 To Do cards carried no `epic:`, and one of those was the inverse card of a card
+  merged an hour earlier whose builder had addressed a learning to it by name. Every edge
+  is a marker someone wrote, never a fuzzy match (a card that merely touches the same
+  component gets nothing), and each card is emitted **at most once** however many edges
+  it matches — that is the over-broadcast bound. You already hold the bullets (they're in
+  X's ≤150-word handoff); bind them as `$LEARNINGS` and run the
+  **`ax-forward-learning: family`** block in `references/github-project.md` §4 — a **shell-side `jq`** over the
+  bound `$ITEMS` snapshot that reads X's epic and parent out of X's own body and emits
+  **item-ids only** (bodies never enter your context) — then write each via the
+  shell-side **`append_learnings`** helper (§6). That block is the rule; this paragraph
+  only describes it, and `scripts/__tests__/autoship-forward-learning-family.test.js`
+  runs it against a fixture board per edge.
   **One-writer-safe:** learnings are written **only to To Do cards** (no agent owns them);
   an In-Progress card's body belongs to its building agent. When such a card is finally
   dispatched, yolo-ship re-reads its own card body, reconciles its plan/spec against the
@@ -789,7 +805,7 @@ established pattern, a decision, a gotcha, or "this sibling card's premise is no
   branch; on merge those land on `main`, and every *later*-dispatched card branches a
   fresh worktree from the updated `main`, inheriting both the merged code and memory.
   Channel A is the in-your-face,
-  epic-scoped boost; Channel B is the durable global substrate.
+  family-scoped boost; Channel B is the durable global substrate.
 
 This step runs inside the **merge queue** (below the merge, above the next dispatch), so a
 card merged and a card dispatched in the same pass still gets the fresh learnings first.
@@ -922,5 +938,5 @@ in-flight, and any walk-filed follow-ups.
 | "This walk card is ready, I'll yolo-ship it" | `(walk)` cards run via the serialized k8s-acceptance-loop, never yolo-ship. |
 | "Design-intake — I'll park the new cards in Backlog for review" | No. Cards go straight to **To Do** with their deps; the dep DAG sequences them and the plan-print + `--dry-run` are the review gate. |
 | "I'll have the decomposition agent set the cards' Status / deps" | The agent only *creates* cards + writes bodies; **you** (the orchestrator) own routing — set Status→To Do + Depends on shell-side from the manifest. |
-| "I'll read the queued cards' bodies to splice in the learnings" | Never pull a body into context. `append_learnings` is shell-side; you find same-epic To Do ids by a shell-side `jq` match and pass only the bullets. |
+| "I'll read the queued cards' bodies to splice in the learnings" | Never pull a body into context. `append_learnings` is shell-side; you find the family's To Do ids with §4's shell-side `ax-forward-learning: family` block and pass only the bullets. |
 | "I'll push the merged card's learnings onto the in-flight cards too" | Only **To Do** cards (no agent owns them). An In-Progress card's body belongs to its building agent — writing it races the heartbeat. |

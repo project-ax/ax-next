@@ -386,9 +386,12 @@ and falls through into the normal drain loop.
 
 **Forward learning.** Every yolo-ship handoff returns a `learnings:` field (≤3 curated
 bullets: facts that change assumptions for *other* tasks). On merge, auto-ship appends a
-merged card's learnings to the body of **every still-queued To Do card sharing its
-`epic:<slug>`** (Channel A — shell-side `append_learnings`; scope = all same-epic cards,
-not just direct dependents), backed by the existing `.claude/memory/` path that fresh
+merged card's learnings to the body of **every still-queued To Do card in its family**
+(Channel A — shell-side `append_learnings`). The family was originally just the cards
+sharing its `epic:<slug>`; since TASK-481 it is any card linked by an explicit edge — same
+epic, a `parent:` / `Follow-up from` child, the merged card's own parent, a sibling sharing
+its parent, or a card named in its learnings — because 20 of 36 queued cards carried no
+epic at all (`references/github-project.md` §4 holds the query), backed by the existing `.claude/memory/` path that fresh
 worktrees inherit from `main` (Channel B). Learnings are written **only to To Do cards**
 (one-writer-at-a-time: an In-Progress card's body belongs to its building agent). A queued
 card reconciles its plan against the accumulated predecessor learnings when dispatched and
