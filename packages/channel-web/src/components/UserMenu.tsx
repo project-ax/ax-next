@@ -18,6 +18,9 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
@@ -158,47 +161,52 @@ export function UserMenu({
           {/*
             (C5) Three unlabelled icons. A sun, a moon and a rectangle tell a
             first-time reader nothing — and the one that matters most, "System",
-            is the least guessable of the three. The labels are now visible
-            rather than hidden in a `title`, which only a mouse user who waits
-            would ever see.
+            is the least guessable of the three — so each option carries a
+            visible label, not a `title` only a patient mouse user would find.
 
-            The control stays hand-rolled on purpose. The obvious primitive is
-            `ToggleGroup`, but Radix roots its single-select variant at
-            `role="group"`, and this is genuinely a `role="radiogroup"` of
-            `role="radio"` — swapping would trade correct ARIA for a primitive.
+            (TASK-500) These are the menu's own radio items, not a hand-rolled
+            `role="radiogroup"` of buttons. Inside a Radix menu the content
+            swallows Tab and the roving focus walks only menu items, so the old
+            buttons were unreachable from the keyboard: ArrowDown went straight
+            from Settings to Sign out. `DropdownMenuRadioItem` is a
+            `menuitemradio` in that roving set, so the arrow keys land on each
+            theme and Enter/Space picks it — the WAI-ARIA menu pattern, which
+            also makes the ARIA valid (a `radiogroup` is not an allowed child
+            of a `menu`).
+
+            They stack vertically on purpose: a menu's arrow keys are Up/Down,
+            and a horizontal row whose options you reach with ArrowDown would
+            teach the wrong key.
           */}
-          <div className="px-2.5 py-1.5" data-action="theme">
-            <div className="flex items-center gap-2.5 mb-1.5">
-              <Moon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" strokeWidth={1.4} />
-              <span className="text-[12.5px] text-foreground">Theme</span>
-            </div>
-            <div
-              className="flex items-stretch gap-0.5 p-0.5 rounded-md bg-muted border border-border"
-              role="radiogroup"
-              aria-label="Theme"
-            >
-              {THEME_OPTIONS.map(({ value, label, Icon }) => (
-                <button
-                  key={value}
-                  type="button"
-                  data-value={value}
-                  role="radio"
-                  aria-checked={theme === value}
-                  aria-label={label}
-                  data-active={theme === value || undefined}
-                  onClick={() => setTheme(value)}
-                  className="
-                    flex-1 inline-flex items-center justify-center gap-1 py-[3px] rounded-sm
-                    text-[11px] leading-none text-muted-foreground transition-colors hover:text-foreground
-                    data-[active]:bg-background data-[active]:text-primary data-[active]:shadow-sm
-                  "
-                >
-                  <Icon className="h-3 w-3 shrink-0" aria-hidden="true" strokeWidth={1.4} />
-                  <span>{label}</span>
-                </button>
-              ))}
-            </div>
-          </div>
+          <DropdownMenuLabel className="px-2.5 pt-1.5 pb-1 text-[11px] font-normal text-muted-foreground">
+            Theme
+          </DropdownMenuLabel>
+          <DropdownMenuRadioGroup
+            aria-label="Theme"
+            data-action="theme"
+            value={theme}
+            onValueChange={(v) => {
+              // Radix hands back a bare string; only a value we rendered is a Theme.
+              const next = THEME_OPTIONS.find((o) => o.value === v)?.value;
+              if (next) setTheme(next);
+            }}
+          >
+            {THEME_OPTIONS.map(({ value, label, Icon }) => (
+              <DropdownMenuRadioItem
+                key={value}
+                value={value}
+                data-value={value}
+                // Picking a theme is try-and-compare: keep the menu open so the
+                // next arrow press can preview another one. Radix still fires
+                // `onValueChange` — its handler ignores `defaultPrevented`.
+                onSelect={(event) => event.preventDefault()}
+                className="gap-2.5 py-2 pr-2.5 text-[12.5px] [&_svg]:h-3.5 [&_svg]:w-3.5 [&_svg]:shrink-0"
+              >
+                <Icon className="text-muted-foreground" aria-hidden="true" strokeWidth={1.4} />
+                <span>{label}</span>
+              </DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
           <DropdownMenuSeparator />
           <DropdownMenuItem
             className="gap-2.5 px-2.5 py-2 text-[12.5px] [&_svg]:h-3.5 [&_svg]:w-3.5 [&_svg]:shrink-0 [&_svg]:text-muted-foreground"

@@ -113,12 +113,12 @@ describe('UserMenu', () => {
       </UserProvider>,
     );
     openMenu(/Alice/i);
-    const group = screen.getByRole('radiogroup', { name: 'Theme' });
+    const group = screen.getByRole('group', { name: 'Theme' });
     // Three options, one per Theme mode the provider supports ('light' | 'dark' | 'auto').
-    expect(within(group).getByRole('radio', { name: 'Light' })).toBeTruthy();
-    expect(within(group).getByRole('radio', { name: 'Dark' })).toBeTruthy();
-    expect(within(group).getByRole('radio', { name: 'System' })).toBeTruthy();
-    expect(within(group).getAllByRole('radio')).toHaveLength(3);
+    expect(within(group).getByRole('menuitemradio', { name: 'Light' })).toBeTruthy();
+    expect(within(group).getByRole('menuitemradio', { name: 'Dark' })).toBeTruthy();
+    expect(within(group).getByRole('menuitemradio', { name: 'System' })).toBeTruthy();
+    expect(within(group).getAllByRole('menuitemradio')).toHaveLength(3);
   });
 
   it('selecting System clears the persisted theme (provider auto mode)', () => {
@@ -128,11 +128,11 @@ describe('UserMenu', () => {
       </UserProvider>,
     );
     openMenu(/Alice/i);
-    const group = screen.getByRole('radiogroup', { name: 'Theme' });
+    const group = screen.getByRole('group', { name: 'Theme' });
     // Pin dark first so there is something to clear.
-    fireEvent.click(within(group).getByRole('radio', { name: 'Dark' }));
+    fireEvent.click(within(group).getByRole('menuitemradio', { name: 'Dark' }));
     expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
-    fireEvent.click(within(group).getByRole('radio', { name: 'System' }));
+    fireEvent.click(within(group).getByRole('menuitemradio', { name: 'System' }));
     // 'auto' removes the attribute entirely so prefers-color-scheme takes over.
     expect(document.documentElement.getAttribute('data-theme')).toBeNull();
   });
@@ -186,7 +186,7 @@ describe('UserMenu', () => {
       </UserProvider>,
     );
     openMenu(/Alice/i);
-    const group = screen.getByRole('radiogroup', { name: 'Theme' });
+    const group = screen.getByRole('group', { name: 'Theme' });
     // Visible text, not a `title` attribute a mouse user has to hover to find
     // — "System" in particular is not guessable from a rectangle icon.
     for (const label of ['Light', 'Dark', 'System']) {
