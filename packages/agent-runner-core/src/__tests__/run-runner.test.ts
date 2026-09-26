@@ -470,6 +470,139 @@ describe('runRunner', () => {
       ]);
     });
 
+    // TASK-573. The shell can't count on one `endTurn` per pulled message: the
+    // Claude Code CLI folds a message that arrives mid-turn into the running
+    // turn (its `queued_command` attachment), so two pulls can share one
+    // `result`. A shell that counted hand-overs would then run one message
+    // behind for the rest of the session.
+    it('does not drift when a pulled-ahead message is folded into the running turn (TASK-573)', async () => {
+      scriptInbox([
+        {
+          type: 'user-message',
+          payload: { role: 'user', content: 'first' },
+          reqId: 'req-a',
+          cursor: 1,
+        },
+        {
+          type: 'user-message',
+          payload: { role: 'user', content: 'also this' },
+          reqId: 'req-b',
+          cursor: 2,
+        },
+        {
+          type: 'user-message',
+          payload: { role: 'user', content: 'later' },
+          reqId: 'req-c',
+          cursor: 3,
+        },
+        {
+          type: 'user-message',
+          payload: { role: 'user', content: 'much later' },
+          reqId: 'req-d',
+          cursor: 4,
+        },
+      ]);
+      const endTurnInput = {
+        contentBlocks: [],
+        toolResultBlocks: [],
+        readTurnId: async () => undefined,
+      } as unknown as Parameters<LoopContext['endTurn']>[0];
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage(); // req-a opens the turn
+          await ctx.emitChunk({ kind: 'text', text: 'a-1' });
+          await ctx.nextMessage(); // req-b arrives mid-turn and is folded in
+          await ctx.emitChunk({ kind: 'text', text: 'a-2' });
+          await ctx.endTurn(endTurnInput); // ONE result for both messages
+          await ctx.nextMessage(); // req-c, pulled with nothing streaming
+          await ctx.emitChunk({ kind: 'text', text: 'c-1' });
+          await ctx.endTurn(endTurnInput);
+          await ctx.nextMessage(); // req-d
+          await ctx.emitChunk({ kind: 'text', text: 'd-1' });
+          await ctx.endTurn(endTurnInput);
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+      const frames = fakeClient.event.mock.calls
+        .filter((c) => c[0] === 'event.stream-chunk' || c[0] === 'event.turn-end')
+        .map((c) => {
+          const p = c[1] as { reqId?: string; text?: string };
+          return `${c[0] === 'event.stream-chunk' ? `chunk:${p.text}` : 'turn-end'}@${p.reqId}`;
+        });
+      expect(frames).toEqual([
+        'chunk:a-1@req-a',
+        'chunk:a-2@req-a',
+        'turn-end@req-a',
+        // req-b was answered inside the turn that just ended; the next pull
+        // adopts at once rather than queueing behind it.
+        'chunk:c-1@req-c',
+        'turn-end@req-c',
+        'chunk:d-1@req-d',
+        'turn-end@req-d',
+      ]);
+    });
+
+    it('parks a message pulled while the continuation streams, then hands it over at its end (TASK-573)', async () => {
+      scriptInbox([
+        {
+          type: 'user-message',
+          payload: { role: 'user', content: 'read gnu.org' },
+          reqId: 'req-held',
+          cursor: 1,
+        },
+        {
+          type: 'decision-resolved',
+          decisionId: 'dec_1',
+          outcome: 'approved',
+          note: 'They said yes.',
+          reqId: 'req-continuation',
+        },
+        {
+          type: 'user-message',
+          payload: { role: 'user', content: 'thanks' },
+          reqId: 'req-next',
+          cursor: 2,
+        },
+      ]);
+      const endTurnInput = {
+        contentBlocks: [],
+        toolResultBlocks: [],
+        readTurnId: async () => undefined,
+      } as unknown as Parameters<LoopContext['endTurn']>[0];
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage();
+          await ctx.emitChunk({ kind: 'text', text: 'held-1' });
+          await ctx.nextMessage(); // decision pulled mid-reply
+          await ctx.endTurn(endTurnInput);
+          await ctx.emitChunk({ kind: 'text', text: 'cont-1' });
+          await ctx.nextMessage(); // pulled while the continuation streams
+          await ctx.emitChunk({ kind: 'text', text: 'cont-2' });
+          await ctx.endTurn(endTurnInput);
+          await ctx.emitChunk({ kind: 'text', text: 'next-1' });
+          await ctx.endTurn(endTurnInput);
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+      const frames = fakeClient.event.mock.calls
+        .filter((c) => c[0] === 'event.stream-chunk' || c[0] === 'event.turn-end')
+        .map((c) => {
+          const p = c[1] as { reqId?: string; text?: string };
+          return `${c[0] === 'event.stream-chunk' ? `chunk:${p.text}` : 'turn-end'}@${p.reqId}`;
+        });
+      expect(frames).toEqual([
+        'chunk:held-1@req-held',
+        'turn-end@req-held',
+        'chunk:cont-1@req-continuation',
+        'chunk:cont-2@req-continuation',
+        'turn-end@req-continuation',
+        'chunk:next-1@req-next',
+        'turn-end@req-next',
+      ]);
+    });
+
     it('re-polls past a delivery whose note is empty rather than waking the model', async () => {
       scriptInbox([
         { type: 'decision-resolved', decisionId: 'dec_1', outcome: 'approved', note: '   ' },

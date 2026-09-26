@@ -775,32 +775,43 @@ async function runRunnerInner(
   // id (which matches chat:turn-end on payload.reqId, #741) then closed on the
   // held turn's turn-end, before the continuation said a word.
   //
-  // So a message pulled while a turn is in flight parks its reqId here, and the
-  // in-flight turn's `endTurn` hands it over after the last turn-end ships.
-  // A FIFO because more than one message can be pulled ahead. `keep` is a
-  // message that carries no reqId of its own (it inherits the current one,
-  // exactly as an un-parked one does). Assumes one `endTurn` per pulled message
-  // — true of both loops today; a loop that ended one message in several turns
-  // would hand over at its first, which is no earlier than before this fix.
+  // So a message pulled while a turn is active parks its reqId, and that
+  // turn's `endTurn` hands it over after the last turn-end ships.
+  //
+  // What the shell can NOT assume is one `endTurn` per pulled message. The
+  // Claude Code CLI folds a user message that arrives mid-turn into the
+  // running turn (its `queued_command` attachment, drained at a tool
+  // boundary), so two pulls can share one `result`. A counting scheme (park a
+  // FIFO, hand one over per `endTurn`) would then run one message behind for
+  // the rest of the session — every later turn stamped with the previous
+  // message's id. So "active" is observed, not counted: a turn is active from
+  // the moment it claims `currentReqId` (a pull that adopts at once, or its
+  // first chunk) until its `endTurn`. After a hand-over nothing is active until
+  // the next turn actually streams, so a message folded into the turn that
+  // just ended costs nothing, and the next pull adopts at once.
+  //
+  // One slot, latest wins: when several messages are pulled during one turn,
+  // the CLI most likely folds them together, and the reply to the fold answers
+  // the latest. `keep` is a message that carries no reqId of its own — it
+  // inherits whatever id the turn would otherwise have, exactly as an
+  // un-parked one does, so it never displaces a parked id.
   type ReqIdAdoption = { reqId: string | undefined } | 'keep';
-  let turnInFlight = false;
-  const parkedReqIds: ReqIdAdoption[] = [];
+  let turnActive = false;
+  let parkedAdoption: ReqIdAdoption | undefined;
   function adoptReqIdForTurn(adoption: ReqIdAdoption): void {
-    if (turnInFlight) {
-      parkedReqIds.push(adoption);
+    if (turnActive) {
+      if (adoption !== 'keep' || parkedAdoption === undefined) parkedAdoption = adoption;
       return;
     }
-    turnInFlight = true;
+    turnActive = true;
     if (adoption !== 'keep') currentReqId = adoption.reqId;
   }
   function handOverReqIdAtTurnEnd(): void {
-    const next = parkedReqIds.shift();
-    if (next === undefined) {
-      turnInFlight = false;
-      return;
+    if (parkedAdoption !== undefined && parkedAdoption !== 'keep') {
+      currentReqId = parkedAdoption.reqId;
     }
-    // The next pulled message's turn is now the one in flight.
-    if (next !== 'keep') currentReqId = next.reqId;
+    parkedAdoption = undefined;
+    turnActive = false;
   }
 
   // Inbox → loop user-message pull. Resolving null on cancel tells the loop no
@@ -1369,6 +1380,10 @@ async function runRunnerInner(
       // and the canonical transcript still flows via event.turn-end /
       // event.chat-end. Untrusted (J2): the text is model output and reaches
       // the host verbatim — host-side renderers sanitize.
+      // A chunk means a turn is streaming: from here a pulled message parks
+      // (TASK-573). Marked before the skip — a turn with no id to route to is
+      // still the turn in flight.
+      turnActive = true;
       if (currentReqId === undefined) return;
       await client
         .event('event.stream-chunk', { reqId: currentReqId, ...chunk })
