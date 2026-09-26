@@ -335,6 +335,111 @@ function run(args, { shell = 'bash', env = {} } = {}) {
 const SHELLS = ['bash', ...(HAS_ZSH ? ['zsh'] : [])];
 
 // ---------------------------------------------------------------------------------
+// The doc-wiring scanner, as PURE functions (TASK-472).
+//
+// These used to live inline in the wiring test below, which meant the only input they
+// ever saw was the real docs. The review pass on #625 measured what that costs: revert
+// the exemption from the marker back to the old shape rule and the wiring test stays
+// GREEN (`calls=4`), because the real docs happen to carry a correctly-spelled marker.
+// No automated test could catch a regression of the fix itself. Factored out, the same
+// code the wiring test runs is fed hostile fence bodies by the table in the
+// `allocator-call scanner` suite at the bottom of this file.
+// ---------------------------------------------------------------------------------
+
+const REFERENCE_LISTING_MARKER = /#\s*board-task-id:\s*reference listing\b/;
+const ALLOCATOR_CALL = /scripts\/board-task-id\.sh\s+(claim|settle)\b/;
+const VACUITY_FLOOR = 2;
+
+// Only ```bash FENCES, not "everything between fences" — a naive split enrols the
+// prose paragraphs too, and a sentence that merely names `scripts/board-task-id.sh`
+// in backticks then reads as an unguarded call site. (Measured: my first version of
+// this test failed on §4's design-intake PARAGRAPH.)
+function bashFences(text) {
+  const lines = text.split('\n');
+  const blocks = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^\s*```bash\s*$/.test(lines[i])) continue;
+    const body = [];
+    let j = i + 1;
+    for (; j < lines.length && !/^\s*```\s*$/.test(lines[j]); j++) body.push(lines[j]);
+    blocks.push(body.join('\n'));
+    i = j;
+  }
+  return blocks;
+}
+
+/**
+ * One fence body in, the decision out: is the fence exempt, and which allocator call
+ * lines does it contribute? Checked on LOGICAL lines, with `\`-continuations joined.
+ */
+function scanFence(body) {
+  const code = body
+    .replace(/\\\n/g, ' ')
+    .split('\n')
+    .filter((l) => l.trim() && !/^\s*#/.test(l));
+  // The exemption is an EXPLICIT MARKER, not an inference from the block's shape.
+  //
+  // It used to be "every non-comment line is a bare `scripts/board-task-id.sh …`
+  // invocation, so nothing depends on the result". That reasoning is fine and the
+  // rule built from it was worthless, in the specific way that matters: a lone bare
+  // call in its own fence satisfies `every(...)` trivially — and a lone bare call IS
+  // the regression. MEASURED: with the shape rule in place, reverting SKILL.md's
+  // fenced `if TASK_ID=$(… settle …)` back to the bare form produced **0 red across
+  // 26**. The guard could not catch the exact bug it was written for, because the
+  // mutant deleted the very lines that disqualified the block from being exempt.
+  // Every additional line you remove makes an unsafe block *more* exempt. That is a
+  // rule whose strength runs backwards.
+  //
+  // So: default CHECKED, opt out on purpose and in writing. A doc that genuinely
+  // lists the CLI says so in the fence, and the marker is greppable, reviewable, and
+  // impossible to arrive at by deletion.
+  //
+  // THE RESIDUAL, MEASURED RATHER THAN REASONED. An opt-out opts out: adding a real
+  // board write inside the MARKED block is 0 red, and removing the marker from that
+  // same block is 1 red. So the marker can still hide a call site — what changed is
+  // the direction of the mistake. Under the shape rule you became exempt by DELETING
+  // the lines that made you safe, silently, while shrinking a block. Here you become
+  // exempt only by ADDING a line that says "this is not a call site", in a diff, next
+  // to a comment telling you to delete it if that stops being true. A wrong marker is
+  // a visible claim someone can disagree with; the old rule made no claim at all.
+  // Tested against the RAW block, not `code` — the marker IS a comment, and `code`
+  // has already dropped every comment line.
+  if (REFERENCE_LISTING_MARKER.test(body)) return { exempt: true, calls: [] };
+  return { exempt: false, calls: code.filter((l) => ALLOCATOR_CALL.test(l)).map((l) => l.trim()) };
+}
+
+/** Every counted allocator call line across a set of doc texts. */
+function allocatorCalls(docTexts) {
+  return docTexts.flatMap(bashFences).flatMap((b) => scanFence(b).calls);
+}
+
+/** What the wiring test fails on; `[]` means the docs are sound. */
+function wiringProblems(calls) {
+  const problems = [];
+  // Vacuity guard: if the extractor stops matching, every assertion below passes by
+  // iterating nothing — the precise way a doc-scanning test goes quietly useless.
+  if (calls.length < VACUITY_FLOOR) {
+    problems.push(
+      'found fewer than 2 `scripts/board-task-id.sh claim|settle` calls across the ' +
+        'auto-ship docs — either the wiring was removed or this extractor stopped ' +
+        'matching it, and in the second case every assertion below passes on an empty ' +
+        'list',
+    );
+  }
+  for (const line of calls) {
+    if (!line.startsWith('if ')) {
+      problems.push(
+        `this allocator call does not branch on failure:\n    ${line}\n` +
+          'Put the writes that depend on it inside `if …; then … else <FATAL> fi`. A ' +
+          '`|| echo "FATAL…"` prints and then continues, which is how a duplicate id ' +
+          'gets routed into `Depends on` one line after being told not to.',
+      );
+    }
+  }
+  return problems;
+}
+
+// ---------------------------------------------------------------------------------
 
 describe('board-task-id.sh — Task-ID allocation under concurrency', () => {
   it('states its coverage out loud rather than skipping silently', () => {
@@ -805,80 +910,10 @@ describe('board-task-id.sh — Task-ID allocation under concurrency', () => {
       ['.claude', 'skills', 'auto-ship', 'references', 'templates.md'],
     ].map((parts) => join(REPO_ROOT, ...parts));
 
-    // Only ```bash FENCES, not "everything between fences" — a naive split enrols the
-    // prose paragraphs too, and a sentence that merely names `scripts/board-task-id.sh`
-    // in backticks then reads as an unguarded call site. (Measured: my first version of
-    // this test failed on §4's design-intake PARAGRAPH.)
-    const blocks = [];
-    for (const docPath of DOCS) {
-      const lines = readFileSync(docPath, 'utf8').split('\n');
-      for (let i = 0; i < lines.length; i++) {
-        if (!/^\s*```bash\s*$/.test(lines[i])) continue;
-        const body = [];
-        let j = i + 1;
-        for (; j < lines.length && !/^\s*```\s*$/.test(lines[j]); j++) body.push(lines[j]);
-        blocks.push(body.join('\n'));
-        i = j;
-      }
-    }
-
-    const calls = [];
-    for (const block of blocks) {
-      const code = block
-        .replace(/\\\n/g, ' ')
-        .split('\n')
-        .filter((l) => l.trim() && !/^\s*#/.test(l));
-      // The exemption is an EXPLICIT MARKER, not an inference from the block's shape.
-      //
-      // It used to be "every non-comment line is a bare `scripts/board-task-id.sh …`
-      // invocation, so nothing depends on the result". That reasoning is fine and the
-      // rule built from it was worthless, in the specific way that matters: a lone bare
-      // call in its own fence satisfies `every(...)` trivially — and a lone bare call IS
-      // the regression. MEASURED: with the shape rule in place, reverting SKILL.md's
-      // fenced `if TASK_ID=$(… settle …)` back to the bare form produced **0 red across
-      // 26**. The guard could not catch the exact bug it was written for, because the
-      // mutant deleted the very lines that disqualified the block from being exempt.
-      // Every additional line you remove makes an unsafe block *more* exempt. That is a
-      // rule whose strength runs backwards.
-      //
-      // So: default CHECKED, opt out on purpose and in writing. A doc that genuinely
-      // lists the CLI says so in the fence, and the marker is greppable, reviewable, and
-      // impossible to arrive at by deletion.
-      //
-      // THE RESIDUAL, MEASURED RATHER THAN REASONED. An opt-out opts out: adding a real
-      // board write inside the MARKED block is 0 red, and removing the marker from that
-      // same block is 1 red. So the marker can still hide a call site — what changed is
-      // the direction of the mistake. Under the shape rule you became exempt by DELETING
-      // the lines that made you safe, silently, while shrinking a block. Here you become
-      // exempt only by ADDING a line that says "this is not a call site", in a diff, next
-      // to a comment telling you to delete it if that stops being true. A wrong marker is
-      // a visible claim someone can disagree with; the old rule made no claim at all.
-      // Tested against the RAW block, not `code` — the marker IS a comment, and `code`
-      // has already dropped every comment line.
-      if (/#\s*board-task-id:\s*reference listing\b/.test(block)) continue;
-      for (const line of code) {
-        if (/scripts\/board-task-id\.sh\s+(claim|settle)\b/.test(line)) calls.push(line.trim());
-      }
-    }
-    // Vacuity guard: if the extractor stops matching, every assertion below passes by
-    // iterating nothing — the precise way a doc-scanning test goes quietly useless.
-    expect(
-      calls.length,
-      'found fewer than 2 `scripts/board-task-id.sh claim|settle` calls across the ' +
-        'auto-ship docs — either the wiring was removed or this extractor stopped ' +
-        'matching it, and in the second case every assertion below passes on an empty ' +
-        'list',
-    ).toBeGreaterThanOrEqual(2);
-
-    for (const line of calls) {
-      expect(
-        line.startsWith('if '),
-        `this allocator call does not branch on failure:\n    ${line}\n` +
-          'Put the writes that depend on it inside `if …; then … else <FATAL> fi`. A ' +
-          '`|| echo "FATAL…"` prints and then continues, which is how a duplicate id ' +
-          'gets routed into `Depends on` one line after being told not to.',
-      ).toBe(true);
-    }
+    const problems = wiringProblems(
+      allocatorCalls(DOCS.map((docPath) => readFileSync(docPath, 'utf8'))),
+    );
+    expect(problems, problems.join('\n\n')).toEqual([]);
   });
 
   it('is called from every documented card-creation path', () => {
@@ -898,5 +933,160 @@ describe('board-task-id.sh — Task-ID allocation under concurrency', () => {
       'the decomposition agent creates cards too, and it numbered them from a stale ' +
         '<BASE-N> handed over in its prompt — the longest-lived stale read on the board',
     ).toMatch(/scripts\/board-task-id\.sh/);
+  });
+});
+
+// ---------------------------------------------------------------------------------
+// The scanner's OWN safety direction (TASK-472), executable instead of asserted.
+//
+// The wiring test above only ever feeds the scanner the real docs, and the real docs
+// are correct — so it cannot tell a correct exemption from a broken one. MEASURED on
+// #625's review pass: reverting `scanFence`'s exemption to the old shape rule ("every
+// non-comment line is a bare `scripts/board-task-id.sh …` call") left it GREEN,
+// `calls=4`. This table is the hostile input the real docs never are. Each row is a
+// doc; `exempt` is the per-fence decision, `flagged` the non-branching calls it must
+// report, `vacuous` whether the `>= 2` floor must trip.
+//
+// Every row carries two correctly-branched fences (`GOOD`) unless it says otherwise, so
+// the floor is satisfied and the row isolates the one fence it is about.
+//
+// MUTANT RUN, NOT REASONED ABOUT (2026-09-26, committed first, restored with
+// `git checkout --`). `scanFence`'s marker test replaced by the old shape rule:
+//     const exempt = code.length > 0 &&
+//       code.every((l) => /^\s*scripts\/board-task-id\.sh\b/.test(l));
+// -> RED_COUNT_PLACEHOLDER
+// ---------------------------------------------------------------------------------
+
+const fence = (...lines) => ['```bash', ...lines, '```'].join('\n');
+const MARKER_LINE = '# board-task-id: reference listing';
+const BRANCHED_SETTLE = fence(
+  'if TASK_ID=$(scripts/board-task-id.sh settle --item "$ITEM_ID"); then',
+  '  gh project item-edit --id "$ITEM_ID" --field-id "$DEPS_FIELD_ID" --text "$DEPS"',
+  'else',
+  '  echo "FATAL: $ITEM_ID still shares its id" >&2',
+  'fi',
+);
+const BRANCHED_CLAIM = fence(
+  'if NEW=$(scripts/board-task-id.sh claim --title "$T" --body "$B"); then',
+  '  echo "created $NEW"',
+  'fi',
+);
+const GOOD = [BRANCHED_SETTLE, BRANCHED_CLAIM];
+const BARE_SETTLE = 'scripts/board-task-id.sh settle --item "$ITEM_ID"';
+
+const doc = (...parts) => parts.join('\n\nSome prose between fences.\n\n');
+
+const SCANNER_TABLE = [
+  {
+    name: 'a lone bare call with no marker is flagged — the regression itself',
+    text: doc(fence(BARE_SETTLE), ...GOOD),
+    exempt: [false, false, false],
+    flagged: 1,
+  },
+  {
+    name: 'a bare call behind `|| echo FATAL` and onward is flagged',
+    text: doc(
+      fence(
+        `TASK_ID=$(${BARE_SETTLE}) \\`,
+        '  || echo "FATAL: do not write deps for $ITEM_ID" >&2',
+        'gh project item-edit --id "$ITEM_ID" --text "$DEPS"',
+      ),
+      ...GOOD,
+    ),
+    exempt: [false, false, false],
+    flagged: 1,
+  },
+  {
+    name: 'a branched call is counted and passes',
+    text: doc(...GOOD),
+    exempt: [false, false],
+    flagged: 0,
+  },
+  {
+    name: 'a valid marker exempts its fence',
+    text: doc(
+      fence(MARKER_LINE, 'scripts/board-task-id.sh check', 'scripts/board-task-id.sh claim --title x'),
+      ...GOOD,
+    ),
+    exempt: [true, false, false],
+    flagged: 0,
+  },
+  {
+    name: 'a valid marker exempts ONLY its own fence, not the bare one after it',
+    text: doc(
+      fence(MARKER_LINE, 'scripts/board-task-id.sh next'),
+      fence(BARE_SETTLE),
+      ...GOOD,
+    ),
+    exempt: [true, false, false, false],
+    flagged: 1,
+  },
+  {
+    name: 'a misspelled marker falls back to CHECKED',
+    text: doc(fence('# board-task-id: refrence listing', BARE_SETTLE), ...GOOD),
+    exempt: [false, false, false],
+    flagged: 1,
+  },
+  {
+    name: 'a pluralized marker falls back to CHECKED',
+    text: doc(fence('# board-task-id: reference listings', BARE_SETTLE), ...GOOD),
+    exempt: [false, false, false],
+    flagged: 1,
+  },
+  {
+    name: 'a wrong-case marker falls back to CHECKED',
+    text: doc(fence('# Board-Task-Id: Reference Listing', BARE_SETTLE), ...GOOD),
+    exempt: [false, false, false],
+    flagged: 1,
+  },
+  {
+    name: 'the marker in PROSE, outside the fence, exempts nothing',
+    text: doc(`${MARKER_LINE}\n\n${fence(BARE_SETTLE)}`, ...GOOD),
+    exempt: [false, false, false],
+    flagged: 1,
+  },
+  {
+    // The accepted residual, pinned so that CHANGING it is a decision rather than a
+    // drift: an opt-out opts out. See THE RESIDUAL in `scanFence`.
+    name: 'a real unbranched call inside a MARKED fence is exempt (the accepted residual)',
+    text: doc(
+      fence(MARKER_LINE, BARE_SETTLE, 'gh project item-edit --id "$ITEM_ID" --text "$DEPS"'),
+      ...GOOD,
+    ),
+    exempt: [true, false, false],
+    flagged: 0,
+  },
+  {
+    name: 'marking every fence trips the vacuity floor',
+    text: doc(...GOOD.map((f) => f.replace('```bash\n', '```bash\n' + MARKER_LINE + '\n'))),
+    exempt: [true, true],
+    flagged: 0,
+    vacuous: true,
+  },
+];
+
+describe('allocator-call scanner — the exemption fails CLOSED', () => {
+  it('the table is not empty and every row is well-formed', () => {
+    // A mutant that removes rows rather than reddening them is the failure mode this
+    // file tripped once; the row count is part of what the table asserts.
+    expect(SCANNER_TABLE.length).toBe(11);
+    for (const row of SCANNER_TABLE) {
+      expect(bashFences(row.text).length, row.name).toBe(row.exempt.length);
+    }
+  });
+
+  it.each(SCANNER_TABLE)('$name', ({ text, exempt, flagged, vacuous = false }) => {
+    const decisions = bashFences(text).map(scanFence);
+    expect(decisions.map((d) => d.exempt)).toEqual(exempt);
+
+    const problems = wiringProblems(allocatorCalls([text]));
+    expect(
+      problems.filter((p) => p.startsWith('this allocator call does not branch')).length,
+      problems.join('\n\n'),
+    ).toBe(flagged);
+    expect(
+      problems.some((p) => p.startsWith('found fewer than 2')),
+      problems.join('\n\n'),
+    ).toBe(vacuous);
   });
 });
