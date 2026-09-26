@@ -888,16 +888,19 @@ export const AGENT_INVOKE_TIMEOUT_MS = Number.POSITIVE_INFINITY;
  * into a `workspace:list`, N `workspace:read`s and two `workspace:apply`s,
  * each separately bounded at 120 s with nothing bounding their sum. A large
  * or cold tier can therefore be cut off while HEALTHY, not hung. That costs
- * only same-turn visibility of the memory seed (the flush still completes in
- * the background, and the next turn retries), and the `hook_subscriber_
- * timed_out` line makes it countable — if it shows up on healthy first turns,
- * raise this, do not remove it.
+ * the memory seed for this turn: since TASK-552 the bootstrap honours the
+ * bus's abort signal and stops before its tier flush, and the next turn
+ * retries (logged `memory_strata_bootstrap_aborted`). The
+ * `hook_subscriber_timed_out` line makes it countable — if it shows up on
+ * healthy first turns, raise this, do not remove it.
  *
- * WHAT IT DOES NOT DO: stop the subscriber. It keeps running in the background
- * (there is no cancellation to give it), so a subscriber that hangs on every
- * turn leaks one pending task per turn until whatever it is waiting on gives
- * up. Its SIDE EFFECTS are therefore still possible after the bound — only its
- * say over this turn is gone.
+ * WHAT IT DOES NOT DO: force the subscriber to stop. At the bound the bus
+ * aborts that subscriber's `signal` (TASK-552), and a subscriber that checks
+ * it stops; one that ignores it keeps running in the background — JavaScript
+ * cannot cancel a promise — so a subscriber that hangs on every turn and
+ * ignores its signal leaks one pending task per turn. Its SIDE EFFECTS are
+ * therefore possible after the bound unless it honours the signal — only its
+ * say over this turn is guaranteed gone.
  */
 export const CHAT_START_SUBSCRIBER_TIMEOUT_MS = 60_000;
 
@@ -955,8 +958,8 @@ export const CHAT_START_SUBSCRIBER_TIMEOUT_MS = 60_000;
  * card (inside a tool with a 30 s service timeout) and @ax/channel-web's
  * dispatch-failed turn-error (fire-and-forget; nobody awaits it).
  *
- * Like chat:start's bound, it does not STOP the subscriber (no cancellation
- * exists), only its say over this fire.
+ * Like chat:start's bound, it ends the subscriber's say over this fire and
+ * aborts its `signal` (TASK-552); stopping its work is up to the subscriber.
  */
 export const CHAT_EVENT_SUBSCRIBER_TIMEOUT_MS = 30_000;
 
