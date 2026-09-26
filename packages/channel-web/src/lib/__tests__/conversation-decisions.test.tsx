@@ -546,5 +546,73 @@ describe('useConversationDecisions', () => {
       });
       expect(continuationActions.takePendingContinuation()).toBeNull();
     });
+
+    /*
+      TASK-574 — the host holds the continuation until the undo window
+      closes. The chat surface waits with it, and an accepted Undo drops the
+      wait: nothing will ever run on that id.
+    */
+    describe('a deferred continuation (TASK-574)', () => {
+      const WINDOW_MS = 10_000;
+
+      function serveDeferredApprove(streamReqId: string) {
+        const pendingUntil = new Date(Date.now() + WINDOW_MS).toISOString();
+        return vi.spyOn(workspaceApi, 'approveDecision').mockResolvedValue({
+          decision: approvedRow({
+            resolvedAt: new Date().toISOString(),
+            undoable: true,
+            pendingUntil,
+          }),
+          executed: false,
+          path: 'agent-executes',
+          error: null,
+          pendingUntil,
+          streamReqId,
+        });
+      }
+
+      async function mountAndApprove() {
+        serve([decisionFixture({ id: 'd1' })]);
+        serveDeferredApprove('req-continuation-1');
+        const hook = renderHook(() => useConversationDecisions());
+        await waitFor(() => expect(hook.result.current.open).toHaveLength(1));
+        // Only the timeouts, and only now: the mount ran on the real clock.
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        await act(async () => {
+          hook.result.current.approve('d1');
+          await Promise.resolve();
+        });
+        expect(workspaceApi.approveDecision).toHaveBeenCalledTimes(1);
+        return hook;
+      }
+
+      it('stages the consumer only once the undo window has passed', async () => {
+        await mountAndApprove();
+        expect(continuationActions.takePendingContinuation()).toBeNull();
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(WINDOW_MS);
+        });
+        expect(continuationActions.takePendingContinuation()).toBe('req-continuation-1');
+      });
+
+      it('an accepted Undo inside the window stages nothing, ever', async () => {
+        const { result } = await mountAndApprove();
+        vi.spyOn(workspaceApi, 'undoDecision').mockResolvedValue({
+          decision: decisionFixture({ id: 'd1', status: 'pending', undoable: false }),
+          undone: true,
+        });
+        await act(async () => {
+          result.current.undo('d1');
+          await Promise.resolve();
+        });
+        expect(workspaceApi.undoDecision).toHaveBeenCalledWith('d1');
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(WINDOW_MS * 3);
+        });
+        expect(continuationActions.takePendingContinuation()).toBeNull();
+      });
+    });
   });
 });

@@ -303,6 +303,27 @@ export interface Decision {
    * with ours would make the audit trail unreadable as either.
    */
   replayError: string | null;
+  /**
+   * TASK-574 — when a DEFERRED delivery to the warm agent becomes due:
+   * `resolvedAt + UNDO_WINDOW_MS` on the attended path. Null means nothing is
+   * waiting to be handed over — it was delivered, it was never attended, it was
+   * undone, or the agent took the approval up on its own first.
+   *
+   * The attended twin of `replayDueAt`, and deliberately NOT the same field:
+   * a due replay runs the call on the HOST, a due delivery only tells the agent
+   * that a person answered. The warm agent is told after the undo window
+   * closes rather than at once, because once the runner has pulled the
+   * resolution no Undo can recall it — the agent's re-issued call would then
+   * meet a row that is pending again and be held a second time.
+   */
+  deliveryDueAt: string | null;
+  /**
+   * TASK-574 — when the sweep handed the resolution to the warm agent (or took
+   * the host fallback because nobody was there any more). Once set, the row can
+   * no longer be undone: the agent has been told, and an Undo that reported
+   * success would be followed by the agent acting on the yes anyway.
+   */
+  deliveredAt: string | null;
 }
 
 export type ActivityKind =
@@ -415,10 +436,12 @@ export interface DecisionsApproveInput {
    * parsed, only passed through to the woken runner and echoed back as
    * `streamReqId` so the open thread can attach a stream consumer to it.
    *
-   * Honoured ONLY on the delivered agent-executes path. Every other outcome
-   * (parked, host replay, deferred, already resolved) ignores it: there is no
-   * warm turn to correlate. Malformed values are dropped, never fatal — the
-   * approval itself must not fail over a streaming hint.
+   * Honoured ONLY on the agent-executes path, where it is STORED on the row
+   * and rides the deferred delivery once the undo window closes (TASK-574).
+   * Every other outcome (parked, host replay, deferred replay, already
+   * resolved) ignores it: there is no warm turn to correlate. Malformed values
+   * are dropped, never fatal — the approval itself must not fail over a
+   * streaming hint.
    */
   continuationReqId?: string;
 }
@@ -456,19 +479,26 @@ export interface DecisionsApproveOutput {
    */
   error: string | null;
   /**
-   * ISO instant a DEFERRED replay will run, for an irreversible call. Non-null
-   * only on that path, and it is exactly when the undo window closes — the
-   * grace period is the reason the deferral exists.
+   * ISO instant the approved thing actually starts happening, when that is
+   * not now: a DEFERRED host replay of an irreversible call, or (TASK-574) the
+   * deferred hand-over to a warm agent on the attended path. Either way it is
+   * exactly when the undo window closes — the grace period is the reason the
+   * deferral exists. Null on every path that acts at once or not at all.
    */
   pendingUntil: string | null;
   /**
    * TASK-278 — the continuation turn's reqId, echoed from the input's
-   * `continuationReqId`. Non-null ONLY when the resolution was delivered to a
-   * warm agent that will emit the continuation under this id; the open thread
-   * attaches its stream consumer to it. Null on every other path — parked,
-   * host replay, deferred, already resolved, or no id was offered — where
-   * there is no live turn to watch. A renderer must never promise a live
-   * continuation off anything but a non-null value here.
+   * `continuationReqId`. Non-null ONLY when the resolution is SCHEDULED for a
+   * warm agent that will emit the continuation under this id once the undo
+   * window closes (`pendingUntil`, TASK-574); the open thread attaches its
+   * stream consumer to it — at `pendingUntil`, not before, and not at all if
+   * the person undoes first. Null on every other path — parked, host replay,
+   * deferred replay, already resolved, or no id was offered — where there is
+   * no live turn to watch. A renderer must never promise a live continuation
+   * off anything but a non-null value here.
+   *
+   * Known residue: a session that ENDS inside the window is found at delivery
+   * time and falls back to the host replay; nothing then runs under this id.
    */
   streamReqId: string | null;
 }
@@ -608,6 +638,12 @@ export interface DecisionsSweepOutput {
    * the row (`decisions:recent-receipts-for-agent`).
    */
   replayed: number;
+  /**
+   * TASK-574 — deferred deliveries to a warm agent claimed in this pass. Each
+   * one was either delivered or, when nobody was listening any more, handed to
+   * the host fallback (`replayed` does not count those; the row says which).
+   */
+  delivered: number;
 }
 
 export interface DecisionsDismissInput {
@@ -705,6 +741,8 @@ export const DecisionSchema = z.object({
   replayedAt: z.string().nullable(),
   replayAbandonedAt: z.string().nullable(),
   replayError: z.string().nullable(),
+  deliveryDueAt: z.string().nullable(),
+  deliveredAt: z.string().nullable(),
 }) as unknown as z.ZodType<Decision>;
 
 export const DecisionsListOutputSchema = z.object({
@@ -753,6 +791,7 @@ export const DecisionsSweepOutputSchema = z.object({
   expired: z.number(),
   reclaimed: z.number(),
   replayed: z.number(),
+  delivered: z.number(),
 }) as unknown as z.ZodType<DecisionsSweepOutput>;
 
 export const DecisionsDismissOutputSchema = z.object({

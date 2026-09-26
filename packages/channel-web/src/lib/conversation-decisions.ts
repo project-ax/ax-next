@@ -137,9 +137,14 @@ export function useConversationDecisions(): ConversationDecisions {
     thread that is) lives in `continuationActions.continueApprovedTurn`,
     shared with the agent workspace's thread (TASK-542) so the two surfaces
     cannot disagree about when a continuation is theirs to render.
+
+    TASK-574 — the attach waits for the undo window to close (the host holds
+    the continuation until then), and an accepted Undo drops it: nothing will
+    ever run on that id.
   */
   const queue = useDecisionQueue({
     onDecisionApproved: continuationActions.continueApprovedTurn,
+    onDecisionUndone: continuationActions.cancelApprovedTurn,
   });
   const { raised } = useDecisionRaised();
 

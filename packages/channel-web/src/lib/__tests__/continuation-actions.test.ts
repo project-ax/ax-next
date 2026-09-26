@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { continuationActions } from '../continuation-actions';
 
 describe('continuationActions', () => {
@@ -76,6 +76,144 @@ describe('continuationActions', () => {
       continuationActions.continueApprovedTurn({ conversationId: 'c1' }, 'req-1');
       expect(warn).not.toHaveBeenCalled();
       expect(continuationActions.takePendingContinuation()).toBeNull();
+    });
+  });
+
+  /*
+    TASK-574 — the host defers the continuation until the undo window closes,
+    so the approve answers `pendingUntil` with the `streamReqId`. Attaching at
+    once showed "Thinking…" for the whole window, and hung forever after an
+    Undo: nothing ever runs on that id.
+  */
+  describe('continueApprovedTurn waits out pendingUntil (TASK-574)', () => {
+    const NOW = new Date('2026-09-26T12:00:00.000Z').getTime();
+    const inMs = (ms: number) => new Date(NOW + ms).toISOString();
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('does not attach until pendingUntil passes, then attaches exactly once', () => {
+      const resume = vi.fn();
+      continuationActions.registerResume(resume, () => 'c1');
+      continuationActions.continueApprovedTurn(
+        { id: 'd1', conversationId: 'c1', pendingUntil: inMs(10_000) },
+        'req-1',
+      );
+      expect(resume).not.toHaveBeenCalled();
+      expect(continuationActions.takePendingContinuation()).toBeNull();
+
+      vi.advanceTimersByTime(9_999);
+      expect(resume).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(1);
+      expect(resume).toHaveBeenCalledTimes(1);
+      expect(continuationActions.takePendingContinuation()).toBe('req-1');
+
+      vi.advanceTimersByTime(60_000);
+      expect(resume).toHaveBeenCalledTimes(1);
+    });
+
+    it('cancelApprovedTurn before the window closes: never attaches', () => {
+      const resume = vi.fn();
+      continuationActions.registerResume(resume, () => 'c1');
+      continuationActions.continueApprovedTurn(
+        { id: 'd1', conversationId: 'c1', pendingUntil: inMs(10_000) },
+        'req-1',
+      );
+      vi.advanceTimersByTime(4_000);
+      continuationActions.cancelApprovedTurn('d1');
+      vi.advanceTimersByTime(60_000);
+      expect(resume).not.toHaveBeenCalled();
+      expect(continuationActions.takePendingContinuation()).toBeNull();
+    });
+
+    it('cancelApprovedTurn for an id with nothing pending is a no-op', () => {
+      expect(() => continuationActions.cancelApprovedTurn('nope')).not.toThrow();
+    });
+
+    it('checks the open conversation when the timer FIRES, not when it was set', () => {
+      let open: string | null = 'c1';
+      const resume = vi.fn();
+      continuationActions.registerResume(resume, () => open);
+      continuationActions.continueApprovedTurn(
+        { id: 'd1', conversationId: 'c1', pendingUntil: inMs(10_000) },
+        'req-1',
+      );
+      open = 'c2'; // the reader moved to another thread inside the window
+      vi.advanceTimersByTime(10_000);
+      expect(resume).not.toHaveBeenCalled();
+      expect(continuationActions.takePendingContinuation()).toBeNull();
+    });
+
+    it('checks the registrant when the timer fires: an unmounted thread attaches nothing', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const resume = vi.fn();
+      const dispose = continuationActions.registerResume(resume, () => 'c1');
+      continuationActions.continueApprovedTurn(
+        { id: 'd1', conversationId: 'c1', pendingUntil: inMs(10_000) },
+        'req-1',
+      );
+      dispose();
+      vi.advanceTimersByTime(10_000);
+      expect(resume).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('a second call for the same decision replaces the first timer: one attach', () => {
+      const resume = vi.fn();
+      continuationActions.registerResume(resume, () => 'c1');
+      continuationActions.continueApprovedTurn(
+        { id: 'd1', conversationId: 'c1', pendingUntil: inMs(10_000) },
+        'req-1',
+      );
+      continuationActions.continueApprovedTurn(
+        { id: 'd1', conversationId: 'c1', pendingUntil: inMs(12_000) },
+        'req-2',
+      );
+      vi.advanceTimersByTime(10_000);
+      expect(resume).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(2_000);
+      expect(resume).toHaveBeenCalledTimes(1);
+      expect(continuationActions.takePendingContinuation()).toBe('req-2');
+      vi.advanceTimersByTime(60_000);
+      expect(resume).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['in the past', inMs(-1_000)],
+      ['null', null],
+      ['absent', undefined],
+      ['unparseable', 'not-a-date'],
+    ])('attaches at once when pendingUntil is %s', (_what, pendingUntil) => {
+      const resume = vi.fn();
+      continuationActions.registerResume(resume, () => 'c1');
+      continuationActions.continueApprovedTurn(
+        // Absent means the key is missing, not present-and-undefined.
+        { id: 'd1', conversationId: 'c1', ...(pendingUntil === undefined ? {} : { pendingUntil }) },
+        'req-1',
+      );
+      expect(resume).toHaveBeenCalledTimes(1);
+      expect(continuationActions.takePendingContinuation()).toBe('req-1');
+    });
+
+    it('reset() drops every pending timer', () => {
+      const resume = vi.fn();
+      continuationActions.registerResume(resume, () => 'c1');
+      continuationActions.continueApprovedTurn(
+        { id: 'd1', conversationId: 'c1', pendingUntil: inMs(10_000) },
+        'req-1',
+      );
+      continuationActions.reset();
+      const later = vi.fn();
+      continuationActions.registerResume(later, () => 'c1');
+      vi.advanceTimersByTime(10_000);
+      expect(resume).not.toHaveBeenCalled();
+      expect(later).not.toHaveBeenCalled();
     });
   });
 

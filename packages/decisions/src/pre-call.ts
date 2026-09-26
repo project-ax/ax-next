@@ -199,6 +199,8 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
       replayedAt: null,
       replayAbandonedAt: null,
       replayError: null,
+      deliveryDueAt: null,
+      deliveredAt: null,
     };
 
     // ONE QUESTION PER CALL (TASK-254). If this person already has an OPEN

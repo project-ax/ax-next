@@ -418,3 +418,102 @@ describe('useDecisionQueue — the undo window is closed by the server, not the 
     cleanup();
   });
 });
+
+/*
+  TASK-574 — the host defers the attended continuation until the undo window
+  closes, and the thread schedules its attach for then. An Undo the server
+  ACCEPTED means that continuation never runs, so the queue has to say so —
+  otherwise the thread attaches to an id nothing will ever stream on and sits
+  on "Thinking…" forever. A REFUSED undo leaves the approval standing, and the
+  continuation with it.
+*/
+describe('useDecisionQueue — onDecisionUndone (TASK-574)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-22T12:00:00.000Z'));
+    listDecisions.mockReset();
+    readDecision.mockReset();
+    approveDecision.mockReset();
+    undoDecision.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function mountWithHooks(
+    rows: Decision[],
+    hooks: Parameters<typeof useDecisionQueue>[0],
+  ) {
+    listDecisions.mockResolvedValue({ decisions: rows });
+    const handle = renderHook(() => useDecisionQueue(hooks));
+    await settle();
+    return handle;
+  }
+
+  it('calls onDecisionUndone with the id when the server takes the approval back', async () => {
+    const onDecisionUndone = vi.fn();
+    const resolved = resolvedFixture('executed');
+    const { result } = await mountWithHooks([resolved], { onDecisionUndone });
+
+    undoDecision.mockResolvedValue({
+      decision: decisionFixture({ status: 'pending', undoable: false }),
+      undone: true,
+    });
+    act(() => result.current.undo(resolved.id));
+    await settle();
+
+    expect(onDecisionUndone).toHaveBeenCalledTimes(1);
+    expect(onDecisionUndone).toHaveBeenCalledWith(resolved.id);
+  });
+
+  it('does NOT call onDecisionUndone when the server refuses the undo', async () => {
+    const onDecisionUndone = vi.fn();
+    const resolved = resolvedFixture('executed');
+    const { result } = await mountWithHooks([resolved], { onDecisionUndone });
+
+    // Refused: the approval stands, so the deferred continuation still runs.
+    undoDecision.mockResolvedValue({ decision: resolved, undone: false });
+    act(() => result.current.undo(resolved.id));
+    await settle();
+
+    expect(onDecisionUndone).not.toHaveBeenCalled();
+  });
+
+  it('does NOT call onDecisionUndone when the undo POST fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const onDecisionUndone = vi.fn();
+    const resolved = resolvedFixture('executed');
+    const { result } = await mountWithHooks([resolved], { onDecisionUndone });
+
+    undoDecision.mockRejectedValue(new Error('network'));
+    act(() => result.current.undo(resolved.id));
+    await settle();
+
+    expect(onDecisionUndone).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('hands onDecisionApproved the approve response pendingUntil when the row lacks one', async () => {
+    const onDecisionApproved = vi.fn();
+    const open = decisionFixture();
+    const { result } = await mountWithHooks([open], { onDecisionApproved });
+
+    const due = new Date(Date.now() + UNDO_WINDOW_MS).toISOString();
+    approveDecision.mockResolvedValue({
+      decision: resolvedFixture('executed', { pendingUntil: null }),
+      executed: false,
+      path: 'agent-executes',
+      error: null,
+      pendingUntil: due,
+      streamReqId: 'req-1',
+    });
+    act(() => result.current.approve(open.id));
+    await settle();
+
+    expect(onDecisionApproved).toHaveBeenCalledTimes(1);
+    const [decision, streamReqId] = onDecisionApproved.mock.calls[0]!;
+    expect(streamReqId).toBe('req-1');
+    expect(decision.pendingUntil).toBe(due);
+  });
+});

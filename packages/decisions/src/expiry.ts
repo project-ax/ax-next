@@ -28,12 +28,17 @@
  * approve path says so out loud rather than absorbing the click.
  */
 import type { AgentContext, HookBus } from '@ax/core';
+import { deliverResolution } from './delivery.js';
 import { replayContext, settleReplay } from './replay.js';
 import type { DecisionStore } from './store.js';
+import type { Decision } from './types.js';
 import { PLUGIN_NAME } from './pre-call.js';
 
 /** How many due replays one pass will take on. */
 export const DEFAULT_REPLAY_BATCH = 25;
+
+/** How many due deliveries one pass will hand over. */
+export const DEFAULT_DELIVERY_BATCH = 25;
 
 /** How many stranded flights one pass will give up on. */
 export const DEFAULT_RECLAIM_BATCH = 25;
@@ -164,4 +169,95 @@ export async function runDueReplays(args: {
     }
   }
   return ran;
+}
+
+/**
+ * Hand every approval whose undo window has closed to its warm agent
+ * (TASK-574). Returns how many were claimed.
+ *
+ * WHY THIS WAITS AT ALL. Delivering at approve time meant the runner pulled
+ * the `decision-resolved` entry within milliseconds and the model started
+ * re-issuing its call. An Undo inside the window then put the row back to
+ * `pending` — the store only refused once the call had been CONSUMED — so the
+ * re-issued call met an open question and was held a second time: a second
+ * "held" reply for one question, which is what the TASK-358 walk measured. An
+ * Undo cannot recall an inbox entry the runner has already read, so the only
+ * fix is not to send it until the Undo can no longer happen. The cost is up to
+ * one undo window of latency on every attended approval, accepted by ruling.
+ *
+ * WHEN NOBODY IS THERE ANY MORE. The liveness read at approve time said a warm
+ * agent existed; ten seconds later it may not. A delivery that does not land
+ * means the agent was NOT told, and the standing yes on the row would then
+ * wait for a run that may never come (TASK-277). So the host takes the replay
+ * itself — and takes the FLIGHT first, as one conditional UPDATE off the same
+ * columns `restore` and `takeApproval` guard, so a consuming agent or another
+ * resolver that got there first wins and nothing runs. Gated on the executor
+ * existing: with no executor `settleReplay` parks the row for the agent's next
+ * run, and a flight taken on that side would close the row to nothing.
+ *
+ * Each row is settled independently: one failing delivery must not strand the
+ * rest of the batch.
+ */
+export async function runDueDeliveries(args: {
+  store: DecisionStore;
+  bus: HookBus;
+  now: Date;
+  limit?: number | undefined;
+  /** Logging context. Every bus call runs under the decision's own. */
+  logCtx: AgentContext;
+}): Promise<number> {
+  const { store, bus, now, logCtx } = args;
+  const due = await store.claimDueDeliveries(
+    now.toISOString(),
+    args.limit ?? DEFAULT_DELIVERY_BATCH,
+  );
+
+  for (const { decision, continuationReqId } of due) {
+    try {
+      const delivery = await deliverResolution({
+        bus,
+        ctx: logCtx,
+        decision,
+        outcome: 'approved',
+        ...(continuationReqId !== null ? { continuationReqId } : {}),
+      });
+      if (delivery.delivered) continue;
+
+      logCtx.logger.warn('decision_delivery_fell_back_to_replay', {
+        plugin: PLUGIN_NAME,
+        decisionId: decision.id,
+        reason: delivery.reason,
+      });
+      let flight: Decision = decision;
+      if (bus.hasService(`tool:execute:${decision.call.name}`)) {
+        const taken = await store.claimReplayFlight(decision.id, now.toISOString());
+        if (taken === null) {
+          logCtx.logger.warn('decision_replay_flight_lost', {
+            plugin: PLUGIN_NAME,
+            decisionId: decision.id,
+          });
+          continue;
+        }
+        flight = taken;
+      }
+      await settleReplay({
+        store,
+        bus,
+        ctx: replayContext(flight),
+        decision: flight,
+        now: () => now,
+      });
+    } catch (err) {
+      // `deliverResolution` and `settleReplay` are both total, so reaching here
+      // means the STORE failed. The claim already stamped `delivered_at`, so no
+      // later pass retries this row: logged loudly rather than swallowed. The
+      // standing authorisation is still at the gate for the agent's next run.
+      logCtx.logger.error('decision_deferred_delivery_failed', {
+        plugin: PLUGIN_NAME,
+        decisionId: decision.id,
+        err: err instanceof Error ? err : new Error(String(err)),
+      });
+    }
+  }
+  return due.length;
 }

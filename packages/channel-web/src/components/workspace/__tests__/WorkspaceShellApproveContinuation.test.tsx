@@ -58,6 +58,7 @@ const activityMock = vi.mocked(workspaceApi.activity);
 const decisionsMock = vi.mocked(workspaceApi.decisions);
 const decisionMock = vi.mocked(workspaceApi.decision);
 const approveMock = vi.mocked(workspaceApi.approveDecision);
+const undoMock = vi.mocked(workspaceApi.undoDecision);
 const streamMock = vi.mocked(workspaceApi.streamReply);
 
 const user = { id: 'u1', email: 'u@example.com', name: 'Uma', role: 'user' as const };
@@ -106,13 +107,17 @@ function renderAt(path: string) {
   );
 }
 
-function answerApprove(streamReqId: string | null, over: Partial<typeof open> = {}) {
+function answerApprove(
+  streamReqId: string | null,
+  over: Partial<typeof open> = {},
+  pendingUntil: string | null = null,
+) {
   approveMock.mockResolvedValue({
-    decision: resolvedFixture('executed', over),
+    decision: resolvedFixture('executed', { pendingUntil, ...over }),
     executed: false,
     path: 'agent-executes',
     error: null,
-    pendingUntil: null,
+    pendingUntil,
     streamReqId,
   });
 }
@@ -139,6 +144,7 @@ beforeEach(() => {
     decision: resolvedFixture('executed', { id }),
   }));
   approveMock.mockReset();
+  undoMock.mockReset();
   streamMock.mockReset();
   // Held open until the test drives it, like a real long-running turn.
   streamMock.mockImplementation(() => new Promise<void>(() => undefined));
@@ -146,6 +152,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   resetDraftsForTest();
   continuationActions.reset();
@@ -270,5 +277,66 @@ describe('approve in the agent thread → the continuation streams live (TASK-54
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+/*
+  TASK-574 — the host holds the attended continuation until the ten-second undo
+  window closes, and says so with `pendingUntil`. Opening the stream at once
+  showed "Thinking…" for the whole window; after an Undo it showed it forever,
+  because nothing ever runs on that id. Only the timers are faked, and only
+  after the card is on screen, so the shell mounts on the real clock.
+*/
+describe('approve with a deferred continuation (TASK-574)', () => {
+  const WINDOW_MS = 10_000;
+
+  function fakeTimeouts(): void {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  }
+
+  async function advance(ms: number): Promise<void> {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  it('does not open the stream until the undo window has passed, then opens it once', async () => {
+    renderAt('/workspace/agents/scheduler');
+    const yes = await screen.findByRole('button', { name: open.primaryLabel });
+
+    fakeTimeouts();
+    answerApprove('req-cont-1', {}, new Date(Date.now() + WINDOW_MS).toISOString());
+    fireEvent.click(yes);
+    await settle();
+
+    // Inside the window: the agent has not been told, so there is nothing to watch.
+    expect(streamMock).not.toHaveBeenCalled();
+    await advance(WINDOW_MS - 1_000);
+    expect(streamMock).not.toHaveBeenCalled();
+
+    await advance(1_500);
+    expect(streamMock).toHaveBeenCalledTimes(1);
+    expect(streamMock).toHaveBeenCalledWith('req-cont-1', expect.anything());
+  });
+
+  it('approve then Undo inside the window never opens the stream', async () => {
+    renderAt('/workspace/agents/scheduler');
+    const yes = await screen.findByRole('button', { name: open.primaryLabel });
+
+    fakeTimeouts();
+    answerApprove('req-cont-1', {}, new Date(Date.now() + WINDOW_MS).toISOString());
+    fireEvent.click(yes);
+    await settle();
+
+    undoMock.mockResolvedValue({
+      decision: decisionFixture({ status: 'pending', undoable: false }),
+      undone: true,
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Undo/ }));
+    await settle();
+    expect(undoMock).toHaveBeenCalledWith(open.id);
+
+    await advance(WINDOW_MS * 3);
+    expect(streamMock).not.toHaveBeenCalled();
   });
 });

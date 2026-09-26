@@ -31,7 +31,7 @@ import {
 } from '@ax/core';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import pg from 'pg';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { UNDO_WINDOW_MS } from '../machine.js';
 import { CLAIM_REFUSED_DETAIL } from '../templates.js';
 import { createDecisionsPlugin, type DecisionsPluginOptions } from '../plugin.js';
@@ -316,6 +316,29 @@ async function readReceipts(h: TestHarness): Promise<DecisionReceipt[]> {
   return out.receipts;
 }
 
+/**
+ * A clock the test moves (TASK-574). An attended approval tells the warm agent
+ * only once the undo window closes, so every test that wants the delivery has
+ * to get past that window — and a test that waited the ten seconds out would be
+ * a test that sleeps.
+ */
+function movableClock(start = '2026-08-21T09:00:00.000Z'): {
+  now: () => Date;
+  advance: (ms: number) => void;
+  pastWindow: () => void;
+} {
+  let at = new Date(start);
+  const advance = (ms: number): void => {
+    at = new Date(at.getTime() + ms);
+  };
+  return { now: () => at, advance, pastWindow: () => advance(UNDO_WINDOW_MS + 1) };
+}
+
+/** One maintenance pass, the way the timer (or the nudge) runs it. */
+function sweepNow(h: TestHarness, ctx: AgentContext = userCtx(h)): Promise<DecisionsSweepOutput> {
+  return h.bus.call<unknown, DecisionsSweepOutput>('decisions:sweep', ctx, {});
+}
+
 describe('decisions canary', () => {
   it('a held call becomes a durable row, and approving it authorises exactly one retry', async () => {
     const h = await boot();
@@ -347,7 +370,10 @@ describe('decisions canary', () => {
     expect(approved.executed).toBe(false);
     expect(approved.path).toBe('agent-executes');
     expect(approved.error).toBeNull();
-    expect(approved.pendingUntil).toBeNull();
+    // TASK-574: the warm agent is told when the undo window closes, not now.
+    expect(approved.pendingUntil).toBe(
+      new Date(Date.parse(approved.decision!.resolvedAt!) + UNDO_WINDOW_MS).toISOString(),
+    );
 
     // The warm agent re-issues its call…
     expect((await h.bus.fire('tool:pre-call', ctx, CALL)).rejected).toBe(false);
@@ -562,6 +588,10 @@ describe('decisions canary', () => {
         // ordinary failure and the receipt would claim nothing was completed.
         'replayAbandonedAt',
         'replayError',
+        // TASK-574's. Stripped here, a delivered row would read back as
+        // undoable and the wire would offer an Undo the store refuses.
+        'deliveryDueAt',
+        'deliveredAt',
         'freshness',
         'summary',
         'detail',
@@ -696,7 +726,8 @@ describe('decisions canary', () => {
   });
 
   it('an attended approve with a continuationReqId streams the answer live (TASK-278)', async () => {
-    const h = await boot();
+    const clock = movableClock();
+    const h = await boot({ now: clock.now });
     const ctx = userCtx(h);
     const id = await holdAndId(h, ctx, CALL);
 
@@ -706,8 +737,13 @@ describe('decisions canary', () => {
       { decisionId: id, userId: 'u1', continuationReqId: 'req-continuation-1' },
     );
     expect(approved.path).toBe('agent-executes');
-    // The client opens its stream consumer off this id.
+    // The client opens its stream consumer off this id — at `pendingUntil`.
     expect(approved.streamReqId).toBe('req-continuation-1');
+    expect(approved.pendingUntil).not.toBeNull();
+    // TASK-574: nothing is handed over inside the undo window…
+    expect(h.delivered).toHaveLength(0);
+    clock.pastWindow();
+    expect((await sweepNow(h)).delivered).toBe(1);
     // …and the woken runner emits the continuation under it.
     expect(h.delivered).toHaveLength(1);
     expect(h.delivered[0]!.entry).toMatchObject({
@@ -719,13 +755,16 @@ describe('decisions canary', () => {
   });
 
   it('an attended approve without one leaves the continuation dark, as before (TASK-278)', async () => {
-    const h = await boot();
+    const clock = movableClock();
+    const h = await boot({ now: clock.now });
     const ctx = userCtx(h);
     const id = await holdAndId(h, ctx, CALL);
 
     const approved = await approve(h, ctx, id);
     expect(approved.path).toBe('agent-executes');
     expect(approved.streamReqId).toBeNull();
+    clock.pastWindow();
+    await sweepNow(h);
     // Vacuity guard the other way: no reqId key at all, not an undefined one.
     expect(h.delivered).toHaveLength(1);
     expect('reqId' in h.delivered[0]!.entry).toBe(false);
@@ -1352,12 +1391,17 @@ describe('decisions canary — attendance and delivery', () => {
   });
 
   it('delivers an approval to the warm agent, and the retry cashes it in', async () => {
-    const h = await boot();
+    const clock = movableClock();
+    const h = await boot({ now: clock.now });
     const executor = recordExecutor(h, HOLD_RULE.match.tool);
     const ctx = userCtx(h);
     const id = await holdAndId(h, ctx, CALL);
 
     const out = await approve(h, ctx, id);
+    // TASK-574: told when the undo window closes, not at the click.
+    expect(h.delivered).toHaveLength(0);
+    clock.pastWindow();
+    expect((await sweepNow(h)).delivered).toBe(1);
     expect(out.path).toBe('agent-executes');
     // The HOST ran nothing — that is the whole point of the attended path.
     expect(out.executed).toBe(false);
@@ -1561,22 +1605,30 @@ describe('decisions canary — attendance and delivery', () => {
     // `unknown-session`. The agent was NOT told, so the host must not assume it
     // was — and the fallback has to be loud, because a discarded delivery
     // result is what TASK-277 was in the first place.
+    //
+    // TASK-574 moved WHEN this is decided: at delivery time, once the undo
+    // window has closed — the approve itself only schedules the hand-over.
     const lines: string[] = [];
-    const h = await boot({}, undefined, liveChannels(), { throws: 'unknown-session' });
+    const clock = movableClock();
+    const h = await boot({ now: clock.now }, undefined, liveChannels(), {
+      throws: 'unknown-session',
+    });
     const executor = recordExecutor(h, HOLD_RULE.match.tool);
     const id = await holdAndId(h, userCtx(h), CALL);
-    const approver = h.ctx({
+    const sweeper = h.ctx({
       agentId: 'a1',
       userId: 'u1',
       conversationId: 'conv-web',
       sessionId: 's1',
-      logger: createLogger({ reqId: 'req-approve', writer: (line) => lines.push(line) }),
+      logger: createLogger({ reqId: 'req-sweep', writer: (line) => lines.push(line) }),
     });
 
-    const out = await approve(h, approver, id);
+    const out = await approve(h, userCtx(h), id);
+    expect(out.path).toBe('agent-executes');
+    expect(executor.calls).toEqual([]);
+    clock.pastWindow();
+    expect((await sweepNow(h, sweeper)).delivered).toBe(1);
     expect(executor.calls).toEqual([CALL]);
-    expect(out.executed).toBe(true);
-    expect(out.path).toBe('host-replays');
     expect(lines.join('\n')).toContain('decision_delivery_fell_back_to_replay');
 
     const after = await readDecision(h, userCtx(h), id);
@@ -1596,15 +1648,17 @@ describe('decisions canary — attendance and delivery', () => {
     // expecting to make the call itself. So this is the one path where
     // `executed` is written and then walked back, and the assertion that
     // matters is that it IS walked back.
-    const h = await boot({}, undefined, liveChannels(), { throws: 'unknown-session' });
+    const clock = movableClock();
+    const h = await boot({ now: clock.now }, undefined, liveChannels(), {
+      throws: 'unknown-session',
+    });
     const ctx = userCtx(h);
     const id = await holdAndId(h, ctx, SANDBOX_CALL);
 
     const out = await approve(h, ctx, id);
-    expect(out.executed).toBe(false);
-    expect(out.path).toBeNull();
-    expect(out.error).toBeNull();
-    expect(out.decision!.status).toBe('approved-pending-agent');
+    expect(out.path).toBe('agent-executes');
+    clock.pastWindow();
+    expect((await sweepNow(h)).delivered).toBe(1);
     expect((await readDecision(h, ctx, id)).status).toBe('approved-pending-agent');
 
     // "Approved — it will do this the next time it runs", never "Sent".
@@ -1623,17 +1677,19 @@ describe('decisions canary — attendance and delivery', () => {
     // leave a trace saying it did — and must not leave a standing yes behind
     // either, or the agent quietly inherits an approval for something that
     // failed.
-    const h = await boot({}, undefined, liveChannels(), { throws: 'unknown-session' });
+    const clock = movableClock();
+    const h = await boot({ now: clock.now }, undefined, liveChannels(), {
+      throws: 'unknown-session',
+    });
     recordExecutor(h, HOLD_RULE.match.tool, { throws: 'upstream 503' });
     const ctx = userCtx(h);
     const id = await holdAndId(h, ctx, CALL);
     const stored = await readDecision(h, ctx, id);
 
     const out = await approve(h, ctx, id);
-    expect(out.executed).toBe(false);
-    expect(out.path).toBeNull();
-    expect(out.error).not.toBeNull();
-    expect(out.error).toContain('upstream 503');
+    expect(out.path).toBe('agent-executes');
+    clock.pastWindow();
+    expect((await sweepNow(h)).delivered).toBe(1);
 
     const after = await readDecision(h, ctx, id);
     expect(after.status).toBe('failed');
@@ -1665,7 +1721,14 @@ describe('decisions canary — attendance and delivery', () => {
     //
     // Undo needs no warm agent, which is what the first version of this branch
     // failed to consider. It is a person and a button.
-    const h = await boot({}, undefined, liveChannels(), { throws: 'unknown-session' });
+    //
+    // TASK-574: the fallback now runs from the sweep, after the window — and
+    // the claim that starts it also stamps `deliveredAt`, which `restore`
+    // refuses on its own. The flight is still taken first (asserted below).
+    const clock = movableClock();
+    const h = await boot({ now: clock.now }, undefined, liveChannels(), {
+      throws: 'unknown-session',
+    });
     const ctx = userCtx(h);
     const calls: ToolCall[] = [];
     let id = '';
@@ -1687,7 +1750,9 @@ describe('decisions canary — attendance and delivery', () => {
     );
 
     id = await holdAndId(h, ctx, CALL);
-    const out = await approve(h, ctx, id);
+    expect((await approve(h, ctx, id)).path).toBe('agent-executes');
+    clock.pastWindow();
+    expect((await sweepNow(h)).delivered).toBe(1);
 
     // THE INVARIANT, stated as one expression so it cannot be satisfied by
     // reading half of it: it must never be true both that the person was told
@@ -1700,7 +1765,6 @@ describe('decisions canary — attendance and delivery', () => {
     expect(calls).toHaveLength(1);
     expect(undoInside!.undone).toBe(false);
     expect(undoInside!.decision!.status).toBe('executed');
-    expect(out.executed).toBe(true);
 
     // The row is what a reader sees, and it says the call went out. There is
     // no separate retraction anybody could have written over it.
@@ -1781,6 +1845,179 @@ function freshnessProducer(h: TestHarness, toolName: string, world: FreshWorld):
     },
   );
 }
+
+describe('decisions canary — the attended undo window (TASK-574)', () => {
+  /** The questions still waiting on this person — what the queue shows. */
+  async function openQuestions(h: TestHarness): Promise<Decision[]> {
+    const { decisions } = await h.bus.call<unknown, DecisionsListOutput>(
+      'decisions:list',
+      userCtx(h),
+      { userId: 'u1' },
+    );
+    return decisions;
+  }
+
+  function approveWith(
+    h: TestHarness,
+    decisionId: string,
+    continuationReqId: string,
+  ): Promise<DecisionsApproveOutput> {
+    return h.bus.call<unknown, DecisionsApproveOutput>('decisions:approve', userCtx(h), {
+      decisionId,
+      userId: 'u1',
+      continuationReqId,
+    });
+  }
+
+  function undo(h: TestHarness, decisionId: string): Promise<DecisionsUndoOutput> {
+    return h.bus.call<unknown, DecisionsUndoOutput>('decisions:undo', userCtx(h), {
+      decisionId,
+      userId: 'u1',
+    });
+  }
+
+  it('undo, then re-approve: the agent is told ONCE, and its call is held no second time', async () => {
+    // THE WALK'S SHAPE (TASK-358 attempt 4). Before TASK-574 the approval was
+    // on the warm agent's inbox the instant it was clicked; the runner pulled
+    // it, the model re-issued its call, the Undo put the row back to pending,
+    // and the re-issued call met an open question and was held AGAIN — a
+    // second "held" reply for one question. The first expectation below is
+    // the one that fails on that code: `delivered` was 1 before any sweep.
+    const clock = movableClock();
+    const h = await boot({ now: clock.now });
+    const id = await holdAndId(h, userCtx(h), CALL);
+
+    const first = await approveWith(h, id, 'req-first');
+    expect(first.path).toBe('agent-executes');
+    expect(first.streamReqId).toBe('req-first');
+    expect(first.pendingUntil).toBe(
+      new Date(clock.now().getTime() + UNDO_WINDOW_MS).toISOString(),
+    );
+    expect(h.delivered).toHaveLength(0);
+
+    clock.advance(3_000);
+    const undone = await undo(h, id);
+    expect(undone.undone).toBe(true);
+    expect(undone.decision!.status).toBe('pending');
+    expect(undone.decision!.deliveryDueAt).toBeNull();
+
+    // Long past the first approval's due-time, nothing is handed over: the
+    // Undo cancelled it outright rather than racing it.
+    clock.advance(UNDO_WINDOW_MS * 3);
+    expect((await sweepNow(h)).delivered).toBe(0);
+    expect(h.delivered).toHaveLength(0);
+
+    // The person says yes again, and waits it out.
+    const second = await approveWith(h, id, 'req-second');
+    expect(second.streamReqId).toBe('req-second');
+    clock.pastWindow();
+    expect((await sweepNow(h)).delivered).toBe(1);
+    expect(await sweepNow(h)).toMatchObject({ delivered: 0 });
+
+    // ONE hand-over, carrying the SECOND approval's continuation id.
+    expect(h.delivered).toHaveLength(1);
+    expect(h.delivered[0]!.entry).toMatchObject({
+      type: 'decision-resolved',
+      decisionId: id,
+      outcome: 'approved',
+      reqId: 'req-second',
+    });
+
+    // The agent re-issues its call once — and it RUNS, rather than raising a
+    // fresh question. Nothing is waiting on the person afterwards.
+    expect((await h.bus.fire('tool:pre-call', userCtx(h), CALL)).rejected).toBe(false);
+    expect(await openQuestions(h)).toEqual([]);
+    const row = await readDecision(h, userCtx(h), id);
+    expect(row.consumedAt).not.toBeNull();
+    expect(row.deliveredAt).not.toBeNull();
+  });
+
+  it("a first approval's hand-over can never land after a re-approval", async () => {
+    // The race the investigation flagged: approve (due t+10), undo at t+3,
+    // re-approve at t+5 (due t+15). A sweep at t+11 is past the FIRST
+    // due-time and before the second — if the first were still scheduled, it
+    // would be handed over here, the agent would cash the second approval, and
+    // the second hand-over would then raise a fresh hold. Option A makes that
+    // impossible: the first is gone, so t+11 hands over nothing.
+    const clock = movableClock();
+    const h = await boot({ now: clock.now });
+    const id = await holdAndId(h, userCtx(h), CALL);
+
+    await approveWith(h, id, 'req-first');
+    clock.advance(3_000);
+    expect((await undo(h, id)).undone).toBe(true);
+    clock.advance(2_000);
+    await approveWith(h, id, 'req-second');
+
+    clock.advance(6_000); // t+11: past the first due-time, before the second.
+    expect((await sweepNow(h)).delivered).toBe(0);
+    expect(h.delivered).toHaveLength(0);
+
+    clock.advance(5_000); // t+16.
+    expect((await sweepNow(h)).delivered).toBe(1);
+    expect(h.delivered.map((d) => d.entry.reqId)).toEqual(['req-second']);
+
+    // One approval standing, cashed exactly once.
+    expect((await h.bus.fire('tool:pre-call', userCtx(h), CALL)).rejected).toBe(false);
+    expect(isHold(await h.bus.fire('tool:pre-call', userCtx(h), CALL))).toBe(true);
+  });
+
+  it('at the edge of the window, the agent is told OR the undo lands — never both', async () => {
+    // Exactly UNDO_WINDOW_MS after the click the pure machine still allows an
+    // undo (`>` not `>=`) and the delivery is due (`<=`). Both cannot win.
+    const clock = movableClock();
+    const h = await boot({ now: clock.now });
+    const id = await holdAndId(h, userCtx(h), CALL);
+    await approveWith(h, id, 'req-edge');
+
+    clock.advance(UNDO_WINDOW_MS);
+    expect((await sweepNow(h)).delivered).toBe(1);
+    const late = await undo(h, id);
+
+    expect(late.undone && h.delivered.length === 1).toBe(false);
+    expect(late.undone).toBe(false);
+    expect(late.decision!.status).toBe('executed');
+    expect(late.decision!.deliveredAt).not.toBeNull();
+  });
+
+  it('an agent that takes the approval up inside the window is not told about it again', async () => {
+    // Something ELSE woke it (a new message) and it re-issued the call before
+    // the window closed. The gate let it through once; a hand-over arriving
+    // afterwards would prompt a second call that meets no authorisation and
+    // is held — the very reply this card removes.
+    const clock = movableClock();
+    const h = await boot({ now: clock.now });
+    const id = await holdAndId(h, userCtx(h), CALL);
+    await approveWith(h, id, 'req-early');
+
+    clock.advance(2_000);
+    expect((await h.bus.fire('tool:pre-call', userCtx(h), CALL)).rejected).toBe(false);
+    expect((await readDecision(h, userCtx(h), id)).deliveryDueAt).toBeNull();
+
+    clock.pastWindow();
+    expect((await sweepNow(h)).delivered).toBe(0);
+    expect(h.delivered).toHaveLength(0);
+    // And the Undo is refused honestly: the call has been made.
+    expect((await undo(h, id)).undone).toBe(false);
+  });
+
+  it('the nudge hands it over at the close of the window without waiting on the interval sweep', async () => {
+    // Production arms a one-shot pass at UNDO_WINDOW_MS + a margin; the test
+    // shortens it and moves the clock instead of sleeping ten seconds. The
+    // interval sweep is set far out of reach, so only the nudge can deliver.
+    const clock = movableClock();
+    const h = await boot({ now: clock.now, sweepIntervalMs: 3_600_000, deliveryNudgeMs: 20 });
+    const id = await holdAndId(h, userCtx(h), CALL);
+    await approveWith(h, id, 'req-nudged');
+    clock.pastWindow();
+
+    await vi.waitFor(() => expect(h.delivered).toHaveLength(1), {
+      timeout: 5_000,
+      interval: 10,
+    });
+    expect(h.delivered.map((d) => d.entry.reqId)).toEqual(['req-nudged']);
+  });
+});
 
 describe('decisions canary — the freshness guard', () => {
   it('captures a predicate at hold time and executes when the world has not moved', async () => {
@@ -2016,17 +2253,27 @@ describe('decisions canary — a replay stranded by a host crash', () => {
    *     (TASK-277's fallback, which did not exist when this card was written).
    */
   async function strandOnACrash(attended: boolean): Promise<string> {
+    // The attended fallback runs from the sweep once the undo window closes
+    // (TASK-574), so that host's clock has to be able to get there.
+    let at = T_CRASH;
     const dead = attended
-      ? await boot({ now: () => T_CRASH }, undefined, liveChannels(), {
+      ? await boot({ now: () => at }, undefined, liveChannels(), {
           throws: 'the session ended under us',
         })
-      : await boot({ now: () => T_CRASH });
+      : await boot({ now: () => at });
     const ctx = attended ? userCtx(dead) : routineCtx(dead);
     const hung = hangingExecutor(dead, HOLD_RULE.match.tool);
 
     const id = await holdAndId(dead, ctx, CALL);
-    // Nobody awaits this: the host is about to die underneath it.
-    void approve(dead, ctx, id).catch(() => {});
+    if (attended) {
+      await approve(dead, ctx, id);
+      at = new Date(T_CRASH.getTime() + UNDO_WINDOW_MS + 1);
+      // Nobody awaits this: the host is about to die underneath it.
+      void sweep(dead).catch(() => {});
+    } else {
+      // Nobody awaits this: the host is about to die underneath it.
+      void approve(dead, ctx, id).catch(() => {});
+    }
     await waitFor(() => hung.calls.length === 1, 'the host to take the flight');
 
     // The shape a crash leaves, read back off the real row before we pull the

@@ -194,9 +194,10 @@ export function receiptFor(decision: Decision): DecisionReceipt | null {
     // Deliberately keyed on the markers and NOT on `attendance`: that field is
     // the channel that opened the conversation, which TASK-277 showed is not
     // the route the approval actually took. The markers are what say who is
-    // holding the call. Nor on `irreversible`: an attended irreversible call
-    // is not deferred (the undo window is a host-path grace period only), so
-    // it waits at the gate like any other.
+    // holding the call. Nor on `irreversible`: an attended call's grace period
+    // (TASK-574) defers only the hand-over to the agent — `deliveryDueAt` —
+    // never a host replay, so the yes stands at the gate from the click, the
+    // same for every attended call.
     case 'executed':
       if (made) {
         return { ...row, outcome: 'executed', receipt: decision.approvedText, error: null };

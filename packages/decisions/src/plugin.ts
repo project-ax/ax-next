@@ -12,8 +12,13 @@ import {
   createAttendanceResolver,
   CONVERSATION_METADATA_HOOK,
 } from './attendance.js';
-import { deliverResolution, SESSION_QUEUE_HOOK } from './delivery.js';
-import { reclaimStrandedReplays, runDueReplays, sweepExpired } from './expiry.js';
+import { deliverResolution, SESSION_QUEUE_HOOK, validContinuationReqId } from './delivery.js';
+import {
+  reclaimStrandedReplays,
+  runDueDeliveries,
+  runDueReplays,
+  sweepExpired,
+} from './expiry.js';
 import { auditFreshnessPairs, checkFreshness } from './freshness.js';
 import {
   approveDecision,
@@ -79,6 +84,13 @@ export const DEFAULT_DECISION_TTL_MS = 48 * 60 * 60 * 1000;
 export const DEFAULT_SWEEP_INTERVAL_MS = 5_000;
 
 /**
+ * How long after the undo window's close the TASK-574 nudge runs its pass.
+ * Enough to be past the due-time on this host's clock through timer jitter;
+ * small enough that nobody waits on it.
+ */
+export const NUDGE_MARGIN_MS = 250;
+
+/**
  * The receipt page size, and its ceiling.
  *
  * The caller asks and we decide — a page size that arrives from a query string
@@ -111,6 +123,13 @@ export interface DecisionsPluginOptions {
    * `decisions:sweep` directly rather than racing a clock.
    */
   sweepIntervalMs?: number;
+  /**
+   * TASK-574 — how long after an attended approval the one-shot nudge sweep
+   * runs. Production leaves it unset (`UNDO_WINDOW_MS + NUDGE_MARGIN_MS`).
+   * Tests shorten it rather than wait ten real seconds. Only armed when the
+   * interval sweep is (`sweepIntervalMs > 0`).
+   */
+  deliveryNudgeMs?: number;
 }
 
 /**
@@ -166,9 +185,20 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
   const idGen = opts?.idGen ?? newDecisionId;
   const ttlMs = opts?.ttlMs ?? DEFAULT_DECISION_TTL_MS;
   const sweepIntervalMs = opts?.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS;
+  const deliveryNudgeMs = opts?.deliveryNudgeMs ?? UNDO_WINDOW_MS + NUDGE_MARGIN_MS;
   let store: DecisionStore | undefined;
   let busRef: { unsubscribe(hook: string, plugin: string): number } | null = null;
   let sweepTimer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * TASK-574 — one-shot wake-ups at the close of an attended approval's undo
+   * window, so the warm agent is told ~10 s after the click rather than up to
+   * one sweep interval later. A LATENCY aid only: the durable due-time and the
+   * interval sweep are the guarantee (patterns: a grace period is a due-time
+   * plus a sweep, never a `setTimeout`), and a nudge lost to a restart or
+   * landing on another replica costs at most one interval.
+   */
+  const nudges = new Set<ReturnType<typeof setTimeout>>();
+  let nudge: (() => void) | null = null;
 
   /**
    * Nothing ran and nothing is pending — the shape every "we did not act"
@@ -336,6 +366,16 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
             logCtx: ctx,
           }),
           replayed: await runDueReplays({
+            store: store!,
+            bus,
+            now: now(),
+            limit,
+            logCtx: ctx,
+          }),
+          // AFTER the replays: a delivery that finds nobody there falls back
+          // to a host replay of its own, and nothing about that should wait on
+          // or reorder the irreversible calls already due in this pass.
+          delivered: await runDueDeliveries({
             store: store!,
             bus,
             now: now(),
@@ -590,14 +630,14 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           // read back nothing and be told, wrongly but plausibly, that the
           // session is gone.
           //
-          // The undo window is honoured on the HOST path only, and that is a
-          // real limit rather than an oversight: on the attended path the
-          // still-warm agent re-issues its own call the moment the gate lets it
-          // through, and nothing here can hold the agent back for ten seconds.
-          // An irreversible rule whose calls need the grace period must be
-          // raised unattended. Recorded rather than papered over — though a web
-          // decision whose session has since died is on the host path now, and
-          // does get its grace period.
+          // The undo window is honoured on BOTH paths now (TASK-574). On the
+          // host path the replay waits for it; on the attended path the
+          // hand-over to the warm agent does, because the agent re-issues its
+          // own call the moment it hears — and once it has heard, no Undo can
+          // recall that. What the attended window still cannot stop is an
+          // agent woken by something ELSE inside it (a new message) re-issuing
+          // the call on its own: the gate lets that through, the approval is
+          // consumed, and the Undo is then refused rather than lying.
           // -----------------------------------------------------------------
           const liveSessionId =
             current.attendance === 'attended'
@@ -617,6 +657,23 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           const replayDueAt = deferred
             ? new Date(Date.parse(nowIso) + UNDO_WINDOW_MS).toISOString()
             : null;
+          // TASK-574. The attended twin: when the warm agent gets told. The
+          // continuation id is validated HERE, once, because it is stored for a
+          // delivery ten seconds away and echoed to the caller now — the two
+          // must be the same value.
+          const deliveryDueAt = attended
+            ? new Date(Date.parse(nowIso) + UNDO_WINDOW_MS).toISOString()
+            : null;
+          const continuationReqId = attended
+            ? validContinuationReqId(input.continuationReqId)
+            : null;
+          if (attended && input.continuationReqId !== undefined && continuationReqId === null) {
+            ctx.logger.warn('decision_delivery_dropped_bad_continuation', {
+              plugin: PLUGIN_NAME,
+              decisionId,
+              outcome: 'approved',
+            });
+          }
 
           // THE CLAIM. One conditional UPDATE off the open statuses, so of two
           // concurrent approvals exactly one gets a row back — and only that one
@@ -677,6 +734,8 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
               // enough for a concurrent byte-identical agent call to consume
               // the authorisation and run the call a second time.
               replayClaimedAt: immediate ? nowIso : null,
+              deliveryDueAt,
+              continuationReqId,
             });
           } catch (err) {
             if (!(err instanceof DuplicateAuthorisationError)) throw err;
@@ -699,127 +758,29 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           if (claimed === null) return settle(null);
 
           if (attended) {
-            // AW-6: hand it to the warm agent as its next inbox message. It
-            // re-issues its own held call and the fingerprint gate authorises
-            // that exactly once. Nothing has happened yet, so nothing claims it
-            // has: no receipt is fired here. The row it leaves — `executed`,
-            // no replay due, none in flight — derives the pending-agent line
-            // until the agent takes it up (`receiptFor`, TASK-517), which is
-            // what "What it did" shows if the agent never does.
+            // AW-6, deferred (TASK-574): the warm agent is handed this as its
+            // next inbox message once the undo window closes — the sweep does
+            // it (`runDueDeliveries`), nudged at exactly the window's edge. It
+            // then re-issues its own held call and the fingerprint gate
+            // authorises that exactly once. Nothing has happened yet, so
+            // nothing claims it has: no receipt is fired, and `pendingUntil`
+            // tells the caller when the hand-over will be.
             //
-            // TASK-278: the caller's continuation id rides the entry so the
-            // woken turn emits under an id the open thread can attach a stream
-            // consumer to. Validated inside deliverResolution; what it reports
-            // back is what the entry carries, which is what the output echoes.
-            const delivery = await deliverResolution({
-              bus,
-              ctx,
-              decision: claimed,
-              outcome: 'approved',
-              ...(input.continuationReqId !== undefined
-                ? { continuationReqId: input.continuationReqId }
-                : {}),
-            });
-            if (!delivery.delivered) {
-              // The liveness read closed the hours-wide hole; this is the
-              // milliseconds-wide one left over — the session ended between the
-              // lookup and the queue, or the queue refused outright. All three
-              // reasons mean the same thing, and it is the thing that matters:
-              // the agent was NOT told. So the host does not get to assume it
-              // was and leave a standing yes on a row nobody may ever come back
-              // for. It takes the replay itself.
-              //
-              // AND IT TAKES THE FLIGHT BEFORE THE CALL, which the first cut of
-              // this branch did not. The claim above wrote `replayClaimedAt:
-              // null` — `immediate` is false whenever `attended` is true,
-              // because the attended branch had no idea it might end up making
-              // the call. That left the row `executed` with BOTH
-              // `replay_claimed_at` and `replayed_at` null for the entire
-              // duration of the host tool, which is exactly the shape
-              // `store.restore` accepts as undoable. A `decisions:undo` landing
-              // in that window returned `undone: true` and fired the retracted
-              // receipt — telling the person it was taken back — while the call
-              // was already on its way out, and `markReplayed` then wrote the
-              // row back to `executed` over the top of them. "Undone" about a
-              // call that went out is the same lie as the silent no-op this
-              // whole card exists to remove.
-              //
-              // The REASONING that hid it is worth keeping, because it read as
-              // careful: the comment here used to argue the un-stamped window
-              // was safe, since the only thing that could exploit it was a
-              // byte-identical call from a warm agent and a warm agent was
-              // precisely what we had just failed to find. True, and beside the
-              // point — UNDO NEEDS NO WARM AGENT. It is a person and a button.
-              // A window argued safe against one actor is not safe; it is
-              // unexamined against every other.
-              //
-              // So the flight is taken as one conditional UPDATE off the same
-              // three columns `restore` and `takeApproval` guard — unconsumed,
-              // untaken, un-replayed, on an `executed` row. Null back means
-              // undo, a consuming agent, or another resolver already won:
-              // report the stored outcome and run NOTHING.
-              //
-              // WHY IT IS GATED ON `hasExecutor`. Not because a flight on the
-              // park side would be unrecoverable — `parkForAgent` clears
-              // `replay_claimed_at` unconditionally, so a mis-gate there is
-              // very nearly harmless. The real reason is that `hasExecutor` is
-              // the SAME answer `replayOnApprove` is about to branch on:
-              // `HookBus` has no deregistration, so `hasService` cannot go
-              // stale inside one handler. Gating on it takes the flight in
-              // exactly the case where a send is imminent, and skips it in
-              // exactly the case where the outcome is a park that must stay
-              // undoable. Taking it on the park side would close the row to
-              // undo for the duration of a branch that sends nothing — a
-              // window with no call behind it to justify it.
-              //
-              // The unrecoverable reading is real but SECONDARY: it needs the
-              // process to die between `claimReplayFlight` and `parkForAgent`,
-              // leaving a parked row carrying a flight nothing will ever clear,
-              // which `takeApproval` then refuses forever. Worth avoiding,
-              // not the reason.
-              ctx.logger.warn('decision_delivery_fell_back_to_replay', {
-                plugin: PLUGIN_NAME,
-                decisionId,
-                reason: delivery.reason,
-              });
-              let flight: Decision = claimed;
-              if (hasExecutor) {
-                const taken = await store!.claimReplayFlight(decisionId, nowIso);
-                if (taken === null) {
-                  ctx.logger.warn('decision_replay_flight_lost', {
-                    plugin: PLUGIN_NAME,
-                    decisionId,
-                  });
-                  return settle(null);
-                }
-                flight = taken;
-              }
-              const replayed = await settleReplay({
-                store: store!,
-                bus,
-                ctx: replayContext(flight),
-                decision: flight,
-                now,
-              });
-              return {
-                decision: (await store!.get(decisionId, ownerUserId)) ?? claimed,
-                executed: replayed.executed,
-                path: replayed.path,
-                error: replayed.error,
-                pendingUntil: null,
-                // The warm agent was NOT told: no entry, no continuation id
-                // in flight. The host replay is a tool call, not a turn, so
-                // there is no stream to attach to.
-                streamReqId: null,
-              };
-            }
+            // The fallback for a session that is gone by then (TASK-277) moved
+            // with the delivery: it is decided at delivery time, where the
+            // answer is true, not here, ten seconds early.
+            //
+            // TASK-278: the caller's continuation id rides the row to that
+            // delivery, and is echoed now so the open thread can attach its
+            // stream consumer to it — at `pendingUntil`, not before.
+            nudge?.();
             return {
               decision: claimed,
               executed: false,
               path: 'agent-executes',
               error: null,
-              pendingUntil: null,
-              streamReqId: delivery.streamReqId,
+              pendingUntil: deliveryDueAt,
+              streamReqId: continuationReqId,
             };
           }
 
@@ -942,7 +903,14 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           // well as in `store.restore`'s predicates: the store is the guarantee
           // under concurrency, this is the one that keeps the two enforcement
           // points from drifting apart silently.
-          if (current.consumedAt !== null || current.replayedAt !== null) {
+          // And (TASK-574) once the warm agent has been TOLD: the resolution is
+          // on its inbox, and reopening the row would leave its re-issued call
+          // to meet a pending question and be held a second time.
+          if (
+            current.consumedAt !== null ||
+            current.replayedAt !== null ||
+            current.deliveredAt !== null
+          ) {
             return { decision: current, undone: false };
           }
 
@@ -987,15 +955,27 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           agentId: PLUGIN_NAME,
           userId: 'system',
         });
-        sweepTimer = setInterval(() => {
+        const sweepOnce = (): void => {
           void runSweep(sweepCtx).catch((err: unknown) => {
             sweepCtx.logger.error('decisions_sweep_failed', {
               plugin: PLUGIN_NAME,
               err: err instanceof Error ? err : new Error(String(err)),
             });
           });
-        }, sweepIntervalMs);
+        };
+        sweepTimer = setInterval(sweepOnce, sweepIntervalMs);
         sweepTimer.unref?.();
+        // The nudge: one pass just after the window closes. The margin covers
+        // timer jitter so the pass finds the row due; a pass that finds
+        // nothing (an Undo won, another replica got there) is a no-op.
+        nudge = () => {
+          const t = setTimeout(() => {
+            nudges.delete(t);
+            sweepOnce();
+          }, deliveryNudgeMs);
+          t.unref?.();
+          nudges.add(t);
+        };
       }
     },
 
@@ -1004,6 +984,9 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
         clearInterval(sweepTimer);
         sweepTimer = null;
       }
+      for (const t of nudges) clearTimeout(t);
+      nudges.clear();
+      nudge = null;
       if (busRef !== null) {
         busRef.unsubscribe('tool:pre-call', PLUGIN_NAME);
         busRef = null;

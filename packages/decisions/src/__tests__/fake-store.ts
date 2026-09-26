@@ -25,6 +25,8 @@ export interface FakeStore extends DecisionStore {
 
 export function createFakeStore(): FakeStore {
   const rows = new Map<string, Decision>();
+  /** `delivery_req_id` — store-internal, never on `Decision`, as in Postgres. */
+  const deliveryReqIds = new Map<string, string | null>();
   const failing = new Set<string>();
 
   function trip(method: string): void {
@@ -160,7 +162,10 @@ export function createFakeStore(): FakeStore {
         .slice(0, limit);
     },
 
-    async claimForApproval(decisionId, { nowIso, status, replayDueAt, replayClaimedAt }) {
+    async claimForApproval(
+      decisionId,
+      { nowIso, status, replayDueAt, replayClaimedAt, deliveryDueAt, continuationReqId },
+    ) {
       const row = open(decisionId);
       if (row === null) return null;
       for (const other of rows.values()) {
@@ -188,8 +193,11 @@ export function createFakeStore(): FakeStore {
         replayedAt: null,
         replayAbandonedAt: null,
         replayError: null,
+        deliveryDueAt: deliveryDueAt ?? null,
+        deliveredAt: null,
       };
       rows.set(decisionId, next);
+      deliveryReqIds.set(decisionId, continuationReqId ?? null);
       return next;
     },
 
@@ -298,6 +306,7 @@ export function createFakeStore(): FakeStore {
       if (row.consumedAt !== null) return null;
       if (row.replayedAt !== null) return null;
       if (row.replayClaimedAt !== null) return null;
+      if (row.deliveredAt !== null) return null;
       const next: Decision = {
         ...row,
         status: 'pending',
@@ -305,8 +314,10 @@ export function createFakeStore(): FakeStore {
         staleReason: null,
         replayDueAt: null,
         replayError: null,
+        deliveryDueAt: null,
       };
       rows.set(decisionId, next);
+      deliveryReqIds.set(decisionId, null);
       return next;
     },
 
@@ -334,6 +345,24 @@ export function createFakeStore(): FakeStore {
           const next: Decision = { ...row, replayDueAt: null, replayClaimedAt: nowIso };
           rows.set(id, next);
           claimed.push(next);
+        }
+      }
+      return claimed;
+    },
+
+    async claimDueDeliveries(nowIso, limit) {
+      const claimed: Array<{ decision: Decision; continuationReqId: string | null }> = [];
+      for (const [id, row] of rows) {
+        if (claimed.length >= limit) break;
+        if (
+          row.status === 'executed' &&
+          row.deliveryDueAt !== null &&
+          row.consumedAt === null &&
+          Date.parse(row.deliveryDueAt) <= Date.parse(nowIso)
+        ) {
+          const next: Decision = { ...row, deliveryDueAt: null, deliveredAt: nowIso };
+          rows.set(id, next);
+          claimed.push({ decision: next, continuationReqId: deliveryReqIds.get(id) ?? null });
         }
       }
       return claimed;
@@ -384,7 +413,7 @@ export function createFakeStore(): FakeStore {
           row.replayClaimedAt === null &&
           row.replayedAt === null
         ) {
-          const next: Decision = { ...row, consumedAt: nowIso };
+          const next: Decision = { ...row, consumedAt: nowIso, deliveryDueAt: null };
           rows.set(id, next);
           return next;
         }

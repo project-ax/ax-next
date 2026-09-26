@@ -2731,6 +2731,11 @@ describe('channel-web agent-workspace BFF', () => {
       replayClaimedAt: string | null;
       replayedAt: string | null;
       replayError: string | null;
+      // TASK-574 — optional, as they are on the route's mirror: an older
+      // producer sends neither, and the fixture defaults leave them absent so
+      // every pre-existing case exercises that shape.
+      deliveryDueAt?: string | null;
+      deliveredAt?: string | null;
     }
 
     function decision(
@@ -3490,6 +3495,67 @@ describe('channel-web agent-workspace BFF', () => {
           ),
         );
         expect(out.pendingUntil).toBe('2026-08-21T11:00:10.000Z');
+        expect(out.undoable).toBe(true);
+      });
+
+      // TASK-574 — the attended path defers the continuation until the undo
+      // window closes. The reader needs to know when the thing they approved
+      // will actually happen, and on that path it is when the agent is told.
+      it('falls back to deliveryDueAt for pendingUntil on the attended path', () => {
+        const out = toWireDecision(
+          stored(
+            decision({
+              id: 'd1',
+              status: 'executed',
+              resolvedAt: RESOLVED_AT,
+              deliveryDueAt: '2026-08-21T11:00:10.000Z',
+              deliveredAt: null,
+            }),
+          ),
+        );
+        expect(out.pendingUntil).toBe('2026-08-21T11:00:10.000Z');
+        // Not yet delivered: nothing has been told anything, Undo still works.
+        expect(out.undoable).toBe(true);
+      });
+
+      it('prefers replayDueAt over deliveryDueAt when both are set', () => {
+        const out = toWireDecision(
+          stored(
+            decision({
+              id: 'd1',
+              replayDueAt: '2026-08-21T11:00:10.000Z',
+              deliveryDueAt: '2026-08-21T11:00:20.000Z',
+            }),
+          ),
+        );
+        expect(out.pendingUntil).toBe('2026-08-21T11:00:10.000Z');
+      });
+
+      it('is NOT undoable once the deferred resolution was delivered', () => {
+        // The warm agent has been told and `store.restore` refuses — offering
+        // Undo here would be the TASK-280 lie.
+        const out = toWireDecision(
+          stored(
+            decision({
+              id: 'd1',
+              status: 'executed',
+              resolvedAt: RESOLVED_AT,
+              deliveryDueAt: null,
+              deliveredAt: '2026-08-21T11:00:10.000Z',
+            }),
+          ),
+        );
+        expect(out.undoable).toBe(false);
+        expect(out.pendingUntil).toBeNull();
+      });
+
+      it('reads an older producer (no delivery fields at all) as before', () => {
+        const row = decision({ id: 'd1', status: 'executed', resolvedAt: RESOLVED_AT });
+        expect('deliveryDueAt' in row).toBe(false);
+        expect('deliveredAt' in row).toBe(false);
+        const out = toWireDecision(stored(row));
+        // `null`, not `undefined`: the wire field is declared `string | null`.
+        expect(out.pendingUntil).toBeNull();
         expect(out.undoable).toBe(true);
       });
 
