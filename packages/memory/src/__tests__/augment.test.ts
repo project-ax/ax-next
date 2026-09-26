@@ -1049,7 +1049,6 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
     // see this one — the loop has to be `for...of` (TASK-515's learning).
     it('warns on a hole in the degraded array, and still builds the prompt', async () => {
       const logs: LoggedEvent[] = [];
-      // eslint-disable-next-line no-sparse-arrays
       const sparse: unknown[] = [, 'semantic'];
       expect(0 in sparse).toBe(false);
       const { bus, ctx } = busWithEngine([], sparse, capturingLogger(logs));
