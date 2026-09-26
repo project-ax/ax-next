@@ -82,6 +82,15 @@ export const STATE_WORDS: Record<AgentRunState | 'held', string> = {
 };
 
 /**
+ * `STATE_WORDS[state]`, with the badge's old fall-through kept: a state
+ * outside the contract (malformed server data) reads as "Resting" rather than
+ * as an empty badge or a crash in the roster's `.toLowerCase()`.
+ */
+export function stateWord(state: AgentRunState | 'held'): string {
+  return STATE_WORDS[state] ?? STATE_WORDS.resting;
+}
+
+/**
  * Shape is the second channel (WCAG 1.4.1, TASK-485). Colour used to be the
  * whole message, so someone who cannot tell the hues apart got no state at
  * all. Each state now has its own outline too, readable in greyscale:
@@ -144,7 +153,7 @@ export function StateDot({
 }
 
 export function AgentStateLabel({ agent }: { agent: WorkspaceAgent }) {
-  const word = STATE_WORDS[agent.state];
+  const word = stateWord(agent.state);
   if (agent.state === 'stopped') return <Badge variant="destructive">{word}</Badge>;
   if (agent.state === 'waiting')
     return (

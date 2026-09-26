@@ -135,8 +135,8 @@
     /* The quiet-but-legible state mark: the `resting` dot in `bits.tsx` and the
        admin `empty` / `pending` dots in `StatusDot.tsx`.
 
-       `bits.tsx` says "colour is the state", which makes these information-
-       bearing non-text UI owing 3:1 under WCAG 1.4.11 — a different floor from
+       The dot's fill carries its state (alongside its shape, since TASK-485),
+       which makes these information-bearing non-text UI owing 3:1 under WCAG 1.4.11 — a different floor from
        the 4.5:1 that governs text. On `--ink-ghost` they measured 1.72:1 here
        and 1.67:1 in dark against the worst surface they land on, a bit over
        half of what they owe.

@@ -490,9 +490,9 @@ describe('theme contrast', () => {
  * generates `text-ink-ghost` from the same colour entry as `bg-ink-ghost` and
  * there is no way to publish one without the other.
  *
- * The fill sites used to be out of scope here, and are not any more. `bits.tsx`
- * says "colour is the state", which makes the `resting` dot an information-
- * bearing non-text element owing 3:1 under WCAG 1.4.11 — and on this token it
+ * The fill sites used to be out of scope here, and are not any more. A dot's fill
+ * carries its state (alongside its shape, since TASK-485), which makes the
+ * `resting` dot an information-bearing non-text element owing 3:1 under WCAG 1.4.11 — and on this token it
  * measured 1.72:1 light / 1.67:1 dark, so it did not clear that either. That
  * was TASK-450, and the fix was the same split one level down: the dots took a
  * new token and the send circle kept this one. The 3:1 floor now has its own
@@ -1461,7 +1461,7 @@ describe('state dots clear the 3:1 non-text floor', () => {
             `${label} paints \`${fill.cls}\` (${fill.token}) and measures ` +
               `${ratio.toFixed(2)}:1 on ${backdrop.label} in ${themeName} — WCAG 1.4.11 ` +
               `needs ${AA_NON_TEXT}:1 for a mark that carries information. ` +
-              `\`bits.tsx\` says "colour is the state", so this dot IS the message.`,
+              `The fill still carries the state, and a shape nobody can see says nothing.`,
           ).toBeGreaterThanOrEqual(AA_NON_TEXT);
         }
       });

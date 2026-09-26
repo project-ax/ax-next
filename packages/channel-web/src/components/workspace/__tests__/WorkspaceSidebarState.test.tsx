@@ -69,6 +69,17 @@ describe('WorkspaceSidebar roster — agent state is not colour-only (TASK-485)'
     expect(screen.getByRole('button', { name: byName })).toBeTruthy();
   });
 
+  it('reads an out-of-contract state as resting, not a crash', () => {
+    // Malformed server data: the roster used to render any state (the dot just
+    // lost its fill); the state word must not turn that into a thrown render.
+    renderRoster([agent('a9', 'Ez', 'paused' as WorkspaceAgent['state'])]);
+    expect(
+      screen.getByRole('button', {
+        name: (n: string) => n.replace(/\s+,/g, ',') === 'Ez, resting',
+      }),
+    ).toBeTruthy();
+  });
+
   it('gives each state its own shape, not just its own colour', () => {
     renderRoster();
     const geometry = (who: string) => {
