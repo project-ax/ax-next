@@ -97,12 +97,13 @@ export interface ChannelWebServerConfig {
   chatTimeoutMs?: number;
   /**
    * Mount the agent-centric workspace surface (`/api/workspace/*`, TASK-230).
-   * Off by default: it is a preview, and an unmounted route is the cheapest
-   * capability minimization there is (invariant #5). `GET /api/features`
-   * mounts either way so the SPA can ask rather than guess — it echoes exactly
-   * this flag.
+   * On by default in the Helm chart; off means `/api/workspace/*` is never
+   * registered and this deployment has no web interface — an unmounted route
+   * is the cheapest capability minimization there is (invariant #5). `GET
+   * /api/features` mounts either way so the SPA can ask rather than guess —
+   * it echoes exactly this flag.
    */
-  agentWorkspacePreview?: boolean;
+  agentWorkspace?: boolean;
 }
 
 // How far above the configured chat timeout the cursor-shell reap ceiling sits,
@@ -696,7 +697,7 @@ export function createChannelWebServerPlugin(
 
       // TASK-230 — the agent-centric workspace surface. GET /api/features
       // always mounts (it is how the SPA learns whether the rest of this exists);
-      // the three /api/workspace/* reads mount only behind the preview flag.
+      // the three /api/workspace/* reads mount only behind the agentWorkspace flag.
       // Ships with its consumer (the workspace shell) in the same PR (I3 — no
       // half-wired surface).
       //
@@ -705,7 +706,7 @@ export function createChannelWebServerPlugin(
       // the chat routes' eviction callbacks write and drop. A second instance
       // would answer from a different world than the streams create.
       const workspaceRouteUnregisters = await registerWorkspaceRoutes(bus, initCtx, {
-        agentWorkspacePreview: config.agentWorkspacePreview === true,
+        agentWorkspace: config.agentWorkspace === true,
         buffer: localBuffer,
       });
       for (const u of workspaceRouteUnregisters) unregisterRoutes.push(u);

@@ -542,12 +542,21 @@ Not stale, and worth stating so nobody re-derives it: `NewAgentDialog` and
 
 Only after 1–4.
 
+**Items 1 and 2 are done (TASK-359).** The chart defaults
+`channelWeb.agentWorkspace: true`, and the switch has one name: `agentWorkspace`
+(chart value, preset/plugin config, the `/api/features` field) and
+`AX_AGENT_WORKSPACE` on the pod. The chart stamps it `"1"`/`"0"` in both states.
+The retired `AX_AGENT_WORKSPACE_PREVIEW` is read once, in
+`packages/cli/src/commands/serve.ts`, only when the new name is unset, and a
+chart test fails the first chart version bump past 0.0.1 until that read is
+deleted. The text below is the original plan, kept for the rationale.
+
 1. **Flip the default.** `channelWeb.agentWorkspace: true` in
    `deploy/charts/ax-next/values.yaml`. Note the chart key is
    `channelWeb.agentWorkspace`, not `features.agentWorkspace` — the env var is
    `AX_AGENT_WORKSPACE_PREVIEW`, and the client-side feature is
    `agentWorkspacePreview`. Three names for one switch; worth collapsing as
-   part of this.
+   part of this. *(Done — TASK-359.)*
 2. **The flag survives.** Decided (2026-09-12). "Off" keeps meaning
    `/api/workspace/*` is never registered — still the cheapest capability
    minimization we know how to buy. What changes is what it *implies*: it
@@ -558,7 +567,7 @@ Only after 1–4.
    a broken install. The three-names-for-one-switch collapse
    (`channelWeb.agentWorkspace`, `AX_AGENT_WORKSPACE_PREVIEW`,
    `agentWorkspacePreview`) still stands, and `Preview` should fall out of
-   both names once the workspace *is* the product.
+   both names once the workspace *is* the product. *(Done — TASK-359.)*
 3. **`/chat` goes in one release.** Decided (2026-09-12) — no deprecation
    window, no dated notice. `pathRendersWorkspace()` is `/`, `/workspace`,
    `/workspace/*`; chat keeps `/chat` until the cutover, and then `/chat`
@@ -591,7 +600,8 @@ Only after 1–4.
    walk cards now face four surfaces that did not exist when this order was
    written (live step panels, attach chips, the find control, the download
    affordance), so their coverage lists are wider than Tier 4 below describes.
-7. Cutover (Tier 5), deletion last. **Still open** — TASK-359.
+7. Cutover (Tier 5), deletion last. Default flip + one name done
+   (TASK-359); `/chat` redirect + deletion **still open** — TASK-360.
 
 Steps 2–4 are prerequisites for flipping the default for anyone. Step 5 is the
 prerequisite for calling it good.

@@ -187,21 +187,18 @@ spec:
               value: {{ required "channelWeb.bundleDir is required when channelWeb.enabled=true" .Values.channelWeb.bundleDir | quote }}
             {{- end }}
 
-            # The agent-centric workspace surface (`/workspace`). Stamped ONLY
-            # when the operator opted in — the preset gates route registration
-            # on this, so an absent var means `/api/workspace/*` is never
-            # mounted. Rendering it as "0" when off would work too, but an
-            # absent var is the honest shape for a capability nobody granted.
-            #
-            # `AX_AGENT_WORKSPACE_PREVIEW` is read at
-            # presets/k8s/src/index.ts as a bare `process.env` lookup, so it
-            # is OPTIONAL — which is exactly why nothing caught its absence.
-            # The env-shape guard's two gates are "every REQUIRED var is
-            # stamped" and "every stamped var is read"; an optional var that
-            # is read and never stamped falls between them.
+            # The agent workspace — the web interface (channelWeb.agentWorkspace,
+            # on by default). "0" means `/api/workspace/*` is never registered:
+            # this deployment has no web interface. Stamped in BOTH states so
+            # the chart value always beats the retired
+            # `AX_AGENT_WORKSPACE_PREVIEW` name, which `serve` still reads for
+            # one release but only when this var is unset (TASK-359).
             {{- if (include "ax-next.bool" .Values.channelWeb.agentWorkspace) }}
-            - name: AX_AGENT_WORKSPACE_PREVIEW
+            - name: AX_AGENT_WORKSPACE
               value: "1"
+            {{- else }}
+            - name: AX_AGENT_WORKSPACE
+              value: "0"
             {{- end }}
 
             # Sandbox plugin reads these to size + place runner pods.

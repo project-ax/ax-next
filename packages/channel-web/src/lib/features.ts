@@ -23,25 +23,27 @@ export const SEMANTIC_SEARCH = false;
  * Server-provided feature flags, from `GET /api/features` (registered by
  * @ax/channel-web).
  *
- *   - `agentWorkspacePreview` — the agent-centric workspace. On only where an
- *     operator turned it on. It answers at `/workspace`, AND it takes over `/`
- *     as the landing surface: enabling the preview means the workspace is home,
- *     not that it is merely available (see `pathRendersWorkspace` in App.tsx).
- *     There is deliberately no way to have one without the other today — if a
+ *   - `agentWorkspace` — the agent-centric workspace. On by default in the
+ *     Helm chart; off means `/api/workspace/*` is never registered and this
+ *     deployment has no web interface (capability boundary — invariant 5).
+ *     It answers at `/workspace`, AND it takes over `/` as the landing
+ *     surface: turning it on means the workspace is home, not that it is
+ *     merely available (see `pathRendersWorkspace` in App.tsx). There is
+ *     deliberately no way to have one without the other today — if a
  *     deployment ever needs `/workspace` available while `/` stays chat, that
  *     is a second flag, not a tweak to this one. Chat keeps its own address at
  *     `/chat` either way.
  */
 export interface Features {
-  agentWorkspacePreview: boolean;
+  agentWorkspace: boolean;
 }
 
 /**
  * What we assume when the server doesn't tell us otherwise: everything off.
- * Fail closed — a preview surface that appears because a fetch fell over is
- * worse than one that stays hidden until we can ask again.
+ * Fail closed — a fetch failure must not light up a surface the server did
+ * not confirm.
  */
-export const DEFAULT_FEATURES: Features = { agentWorkspacePreview: false };
+export const DEFAULT_FEATURES: Features = { agentWorkspace: false };
 
 const FETCH_TIMEOUT_MS = 5_000;
 
@@ -67,12 +69,12 @@ export async function fetchFeatures(): Promise<Features> {
       console.warn('[features] non-2xx, defaulting to all-off', r.status);
       return DEFAULT_FEATURES;
     }
-    const body = (await r.json()) as { agentWorkspacePreview?: unknown };
-    if (typeof body?.agentWorkspacePreview !== 'boolean') {
-      console.warn('[features] invalid agentWorkspacePreview field, defaulting to all-off', body);
+    const body = (await r.json()) as { agentWorkspace?: unknown };
+    if (typeof body?.agentWorkspace !== 'boolean') {
+      console.warn('[features] invalid agentWorkspace field, defaulting to all-off', body);
       return DEFAULT_FEATURES;
     }
-    return { agentWorkspacePreview: body.agentWorkspacePreview };
+    return { agentWorkspace: body.agentWorkspace };
   } catch (err) {
     console.warn('[features] fetch failed, defaulting to all-off', err);
     return DEFAULT_FEATURES;

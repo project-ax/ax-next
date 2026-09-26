@@ -116,7 +116,7 @@ describe('landing on a URL', () => {
   });
 
   it('rewrites bare / to the workspace root without adding history', async () => {
-    // App renders the workspace at `/` when the preview is on. One canonical
+    // App renders the workspace at `/` when the flag is on. One canonical
     // URL per view is the goal — but a PUSH here would put a phantom entry
     // between the visitor and wherever they came from, so this must replace.
     const before = window.history.length;

@@ -9,7 +9,7 @@ export function StepDone() {
     >
       <Button asChild className="w-full">
         {/*
-          `/chat`, not `/`: with the agent-workspace preview on, `/` renders the
+          `/chat`, not `/`: with the agentWorkspace flag on, `/` renders the
           workspace, and this button says "Open chat". `/chat` is the chat
           shell's stable address on every deployment — App falls through to chat
           for any path it does not claim, and static-files serves the SPA there.

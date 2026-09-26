@@ -515,26 +515,44 @@ channelWeb:
   # doesn't depend on pnpm's internal node_modules layout. Operators who
   # repackage the image with a different layout can override.
   bundleDir: /opt/ax-next/host/web
-  # The agent-centric workspace surface (`/workspace`) — the roster, the
-  # activity feed, the Files tab and the per-agent rail.
+  # The agent workspace: the web interface. The roster, Today, the activity
+  # feed, each agent's thread, Files, Settings. Signed-in people land on it
+  # at `/`.
   #
-  # OFF BY DEFAULT, and that is a real capability boundary rather than a
-  # cosmetic toggle: with it off the preset never registers the
-  # `/api/workspace/*` routes at all, so the surface is not merely hidden,
-  # it does not exist on the wire. Leaving it off is the cheapest
-  # capability minimization there is (invariant #5).
+  # ON BY DEFAULT. It is the product now, not a preview.
   #
-  # It renders `AX_AGENT_WORKSPACE_PREVIEW`, which the k8s preset reads. That
-  # env var was readable by the code and settable by nobody until now: the
-  # chart had no value for it, so `helm show values` did not mention it and
-  # turning it on took a hand-written `host.env` block. The whole UI shipped
-  # in the image on 2026-08-24 and no operator could discover how to see it.
+  # Turning it OFF means THIS DEPLOYMENT HAS NO WEB INTERFACE. The host
+  # never registers the `/api/workspace/*` routes, so the surface is not
+  # hidden, it is absent from the wire. That is a real shape to ship when your agents are reached
+  # from somewhere other than a browser, and it is the cheapest capability
+  # minimization we know how to buy (invariant #5). So if you set this to
+  # false and there is no workspace to sign in to, that is the setting doing
+  # its job, not a broken install.
   #
-  # UPGRADING: if you turned this on with a `host.env` entry for
-  # `AX_AGENT_WORKSPACE_PREVIEW`, replace it with `agentWorkspace: true` here.
-  # Setting BOTH renders the env var twice in the container spec — legal, but
-  # the last one wins and which that is depends on template order, so do not.
-  agentWorkspace: false
+  # Two honest footnotes while the old chat screen is being retired: with
+  # this off, `/` still shows that legacy chat screen until the release that
+  # deletes it; and the `/api/workspace/decisions*` routes (approving a held
+  # tool call) stay registered either way, because a held call has to be
+  # approvable from whatever screen raised it. They still only ever show a
+  # signed-in person their own rows.
+  #
+  # One name, everywhere. This value renders `AX_AGENT_WORKSPACE` ("1" on,
+  # "0" off, stamped either way so what you write here is what you get), and
+  # the browser sees it as `agentWorkspace` from `GET /api/features`. Write
+  # it as a bare boolean. (A quoted "false" is rejected by values.schema.json
+  # at install, and even with the schema skipped `ax-next.bool` renders it
+  # as off — see templates/_helpers.tpl — but bare is what we test.)
+  #
+  # UPGRADING from a hand-written `host.env` entry: the retired env name,
+  # `AX_AGENT_WORKSPACE_PREVIEW`, is still read for ONE release, by the
+  # `serve` command, and only when `AX_AGENT_WORKSPACE` is unset. With this
+  # chart it is never unset, so this value wins; the old entry just earns
+  # you a warning in the host log on every boot. It stops being read
+  # entirely in the first chart release after 0.0.1. Delete the entry and
+  # set this value instead. (And do not add a `host.env` entry for
+  # `AX_AGENT_WORKSPACE` either: two entries of one name is legal YAML whose
+  # winner depends on template order.)
+  agentWorkspace: true
 
 # ─── HTTP-server config (public surface — issue #39) ─────────────
 # `cookieKey` signs auth-better's session cookie. 32 bytes; provide

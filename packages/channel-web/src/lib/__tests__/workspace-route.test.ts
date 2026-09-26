@@ -20,7 +20,7 @@ describe('parseWorkspaceRoute', () => {
   });
 
   it('reads bare / as Today, because that is the landing surface', () => {
-    // App.tsx routes `/` to the workspace when the preview is on. The shell
+    // App.tsx routes `/` to the workspace when the flag is on. The shell
     // canonicalizes the URL after mount; parsing has to agree meanwhile.
     expect(parseWorkspaceRoute('/')).toEqual({ kind: 'today' });
   });

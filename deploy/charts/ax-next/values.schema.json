@@ -27,7 +27,7 @@
         },
         "agentWorkspace": {
           "type": "boolean",
-          "description": "CAPABILITY GATE. Off means the k8s preset never registers /api/workspace/* — the routes do not exist on the wire."
+          "description": "The agent workspace (the web interface). On by default. CAPABILITY GATE: off means the host never registers /api/workspace/* — the routes do not exist on the wire and this deployment has no web interface. Renders AX_AGENT_WORKSPACE."
         }
       }
     },

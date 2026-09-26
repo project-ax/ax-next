@@ -71,7 +71,7 @@ function parseAgentId(segment: string): string | null {
 export function parseWorkspaceRoute(pathname: string): WorkspaceRoute {
   const segments = pathname.split('/').filter((s) => s.length > 0);
 
-  // `/` — App.tsx renders the workspace there when the preview is on.
+  // `/` — App.tsx renders the workspace there when the flag is on.
   if (segments.length === 0) return TODAY;
   if (segments[0] !== 'workspace') return TODAY;
 

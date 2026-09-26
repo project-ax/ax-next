@@ -31,7 +31,6 @@ export interface MemoryPresetConfig extends K8sPresetConfig {
     rerankCredentialRef?: string;
     fetchImpl?: typeof fetch;
   };
-  agentWorkspacePreview?: boolean;
   onObserverDetached?: (work: Promise<void>) => void;
 }
 
@@ -80,10 +79,10 @@ function validateMemoryPresetConfig(config: MemoryPresetConfig): void {
     }
   }
   if (
-    config.agentWorkspacePreview !== undefined &&
-    typeof config.agentWorkspacePreview !== 'boolean'
+    config.agentWorkspace !== undefined &&
+    typeof config.agentWorkspace !== 'boolean'
   ) {
-    throw new Error('memory preset agentWorkspacePreview must be a boolean');
+    throw new Error('memory preset agentWorkspace must be a boolean');
   }
 
   const hostRoot = config.memoryExportVolume.hostRoot;
@@ -178,7 +177,7 @@ export function createMemoryPlugins(config: MemoryPresetConfig): Plugin[] {
     }),
     createChannelWebServerPlugin({
       chatTimeoutMs,
-      agentWorkspacePreview: config.agentWorkspacePreview === true,
+      agentWorkspace: config.agentWorkspace === true,
     }),
   ];
 }
@@ -218,17 +217,9 @@ export function loadMemoryConfigFromEnv(
       ? env.AX_MEMORY_COHERE_CREDENTIAL_REF
       : DEFAULT_COHERE_CREDENTIAL_REF;
 
-  const previewRaw = env.AX_AGENT_WORKSPACE_PREVIEW;
-  let agentWorkspacePreview = false;
-  if (previewRaw !== undefined && previewRaw !== '') {
-    if (previewRaw === '1' || previewRaw === 'true') {
-      agentWorkspacePreview = true;
-    } else if (previewRaw === '0' || previewRaw === 'false') {
-      agentWorkspacePreview = false;
-    } else {
-      throw new Error('AX_AGENT_WORKSPACE_PREVIEW must be 1/true or 0/false');
-    }
-  }
+  // The agent workspace switch (`agentWorkspace`) arrives on `base`:
+  // loadK8sConfigFromEnv parses AX_AGENT_WORKSPACE strictly for both presets,
+  // so there is one parser for one name (TASK-359).
 
   const config: MemoryPresetConfig = {
     ...base,
@@ -242,7 +233,6 @@ export function loadMemoryConfigFromEnv(
       embedCredentialRef,
       rerankCredentialRef,
     },
-    agentWorkspacePreview,
   };
   validateMemoryPresetConfig(config);
   return config;

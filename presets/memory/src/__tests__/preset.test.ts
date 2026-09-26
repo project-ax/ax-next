@@ -251,13 +251,13 @@ describe('createMemoryPlugins guards', () => {
     ).not.toThrow();
   });
 
-  it('rejects a non-boolean agentWorkspacePreview and blank projectId', () => {
+  it('rejects a non-boolean agentWorkspace and blank projectId', () => {
     expect(() =>
       createMemoryPlugins({
         ...baseConfig,
-        agentWorkspacePreview: 'yes' as unknown as boolean,
+        agentWorkspace: 'yes' as unknown as boolean,
       }),
-    ).toThrow(/agentWorkspacePreview/);
+    ).toThrow(/agentWorkspace/);
     expect(() =>
       createMemoryPlugins({
         ...baseConfig,
@@ -298,7 +298,8 @@ describe('loadMemoryConfigFromEnv', () => {
       embedCredentialRef: DEFAULT_VERTEX_CREDENTIAL_REF,
       rerankCredentialRef: DEFAULT_COHERE_CREDENTIAL_REF,
     });
-    expect(cfg.agentWorkspacePreview).toBe(false);
+    // Unset → absent, which createMemoryPlugins reads as off.
+    expect(cfg.agentWorkspace).toBeUndefined();
     expect(cfg.database).toEqual({ connectionString: 'postgres://x' });
   });
 
@@ -324,22 +325,26 @@ describe('loadMemoryConfigFromEnv', () => {
     expect(cfg.memoryEmbeddings.rerankCredentialRef).toBe('provider:cohere-alt');
   });
 
-  it('parses AX_AGENT_WORKSPACE_PREVIEW strictly', () => {
+  it('parses AX_AGENT_WORKSPACE strictly', () => {
     expect(
-      loadMemoryConfigFromEnv({ ...baseEnv, AX_AGENT_WORKSPACE_PREVIEW: '1' })
-        .agentWorkspacePreview,
+      loadMemoryConfigFromEnv({ ...baseEnv, AX_AGENT_WORKSPACE: '1' }).agentWorkspace,
     ).toBe(true);
     expect(
-      loadMemoryConfigFromEnv({ ...baseEnv, AX_AGENT_WORKSPACE_PREVIEW: 'false' })
-        .agentWorkspacePreview,
+      loadMemoryConfigFromEnv({ ...baseEnv, AX_AGENT_WORKSPACE: 'false' }).agentWorkspace,
     ).toBe(false);
     expect(() =>
-      loadMemoryConfigFromEnv({ ...baseEnv, AX_AGENT_WORKSPACE_PREVIEW: 'yes' }),
-    ).toThrow(/AX_AGENT_WORKSPACE_PREVIEW/);
+      loadMemoryConfigFromEnv({ ...baseEnv, AX_AGENT_WORKSPACE: 'yes' }),
+    ).toThrow(/AX_AGENT_WORKSPACE/);
     for (const bad of ['TRUE', 'False', '2', 'on']) {
       expect(() =>
-        loadMemoryConfigFromEnv({ ...baseEnv, AX_AGENT_WORKSPACE_PREVIEW: bad }),
-      ).toThrow(/AX_AGENT_WORKSPACE_PREVIEW/);
+        loadMemoryConfigFromEnv({ ...baseEnv, AX_AGENT_WORKSPACE: bad }),
+      ).toThrow(/AX_AGENT_WORKSPACE/);
     }
+  });
+
+  it('does not read the retired AX_AGENT_WORKSPACE_PREVIEW (serve.ts owns that one compat read)', () => {
+    expect(
+      loadMemoryConfigFromEnv({ ...baseEnv, AX_AGENT_WORKSPACE_PREVIEW: '1' }).agentWorkspace,
+    ).toBeUndefined();
   });
 });

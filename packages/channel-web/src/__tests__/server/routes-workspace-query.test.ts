@@ -119,7 +119,7 @@ async function boot(): Promise<{ harness: TestHarness; port: number }> {
     },
     plugins: [http],
   });
-  await registerWorkspaceRoutes(harness.bus, initCtx, { agentWorkspacePreview: true });
+  await registerWorkspaceRoutes(harness.bus, initCtx, { agentWorkspace: true });
   return { harness, port: http.boundPort() };
 }
 
