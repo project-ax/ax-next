@@ -277,6 +277,16 @@
 //       branch had never executed. Found by probing the branch by hand rather than
 //       trusting the green. The marker is plain ASCII now, and the 40-file fixture is
 //       what makes the branch run at all.
+//  M22. (TASK-508, 2026-09-26, macOS + zsh + git 2.52.0; baseline **74 passed, 1 skipped**
+//       — the skip is the CI-only zsh presence check.) CONSTRUCTED: put the restore
+//       block's `git checkout HEAD -- "$P"` back to the bare `git checkout -- "$P"` ->
+//       **6 red of 74**: the two staged-mutant fixtures x2 shells (each failing on
+//       `still dirty after restore`, the mutant still on disk — the right reason) plus the
+//       two structure checks. Restored with `git checkout HEAD --`, `git status --short`
+//       empty after.
+//  M23. CONSTRUCTED: put the dispatch bullet's `git checkout HEAD -- <path>` back to the
+//       bare form -> **2 red of 74**, both templates.md text checks. Text checks, so weaker
+//       by construction; the runnable block is what M22 measures.
 //
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally — no network,
 // no Docker, no build. Every git repository it touches is created under a temp dir and
