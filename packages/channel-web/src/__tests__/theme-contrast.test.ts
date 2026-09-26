@@ -1870,7 +1870,7 @@ function menuItemPaint(cls: string): {
 } {
   const tokens = cls.split(/\s+/).filter(Boolean);
   const texts = tokens.filter(
-    (t) => /^text-[a-z][\w-]*$/.test(t) && !/^text-(xs|sm|base|lg|xl|left|right|center)$/.test(t),
+    (t) => /^text-[a-z][\w-]*$/.test(t) && !/^text-(xs|sm|base|lg|\d?xl|left|right|center|justify|start|end|ellipsis|clip|wrap|nowrap|balance|pretty)$/.test(t),
   );
   if (texts.length !== 1) {
     throw new Error(`expected exactly one bare text colour class, found ${texts.join(', ') || 'none'}`);
@@ -1943,6 +1943,7 @@ describe("SessionRow's delete menu item clears AA in every state", () => {
     expect(() => menuItemPaint('text-destructive dark:hover:bg-destructive/15')).toThrow(/unmeasured/);
     expect(() => menuItemPaint('text-destructive group-hover:bg-destructive/15')).toThrow(/unmeasured/);
     expect(() => menuItemPaint('hover:bg-destructive-soft')).toThrow(/text colour/);
+    expect(menuItemPaint('text-ellipsis text-nowrap text-destructive text-2xl').text).toBe('--destructive');
     expect(() =>
       classNameOf('<a className="x" data-k="1" /><b className="y" data-k="1" />', 'data-k'),
     ).toThrow(/found 2/);
