@@ -424,6 +424,32 @@ describe('@ax/agents admin routes', () => {
     expect((r.body as { error: string }).error).toMatch(/displayName/);
   });
 
+  // TASK-558: a displayName other users see must not carry bidi overrides.
+  it('POST /admin/agents with a bidi override in displayName → 400', async () => {
+    const cookie = await signIn(stack);
+    const r = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: makeBody({ displayName: 'Payroll \u202Ebad.exe' }),
+    });
+    expect(r.status).toBe(400);
+    expect((r.body as { error: string }).error).toMatch(/text-direction control/);
+  });
+
+  it('PATCH /admin/agents/:id with a bidi isolate in displayName → 400', async () => {
+    const cookie = await signIn(stack);
+    const created = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: makeBody(),
+    });
+    const id = (created.body as { agent: SerializedAgent }).agent.id;
+    const r = await http(stack.port, 'PATCH', `/admin/agents/${id}`, {
+      cookie,
+      body: { displayName: 'Pay\u2067roll' },
+    });
+    expect(r.status).toBe(400);
+    expect((r.body as { error: string }).error).toMatch(/text-direction control/);
+  });
+
   it('POST /admin/agents with body > 64 KiB → 413', async () => {
     const cookie = await signIn(stack);
     // The admin API caps the WHOLE body at 64 KiB (well under the
