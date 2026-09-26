@@ -103,6 +103,12 @@ const RFC1918 =
  *   - The bounds of the private ranges themselves, which appear in the
  *     credential-proxy's SSRF blocklist documentation. A doc explaining that we
  *     BLOCK `10.0.0.0/8` has to be able to write `10.0.0.0`.
+ *   - kind's own defaults and one constant this repo pins inside them, for
+ *     the local dev cluster (`deploy/kind/memory-nfs/`, TASK-519): the default
+ *     service range `10.96.0.0/16`, the default pod-network gateway
+ *     `10.244.0.1`, and `10.96.200.49` — the ClusterIP the dev NFS Service
+ *     pins so kubelet can mount it by address. Every `kind create cluster`
+ *     gets the same ranges, and the pinned IP is our choice, not a machine.
  *
  * Adding to this list is a judgement call with one question: would this string
  * be identical in a fork owned by a stranger? If not, it does not belong here.
@@ -114,6 +120,9 @@ const EXAMPLE_ADDRESSES = new Set([
   '10.0.0.5',
   '10.42.0.5',
   '10.9.8.7',
+  '10.96.0.0',
+  '10.96.200.49',
+  '10.244.0.1',
   '172.16.0.0',
   '172.16.0.1',
   '172.31.255.255',

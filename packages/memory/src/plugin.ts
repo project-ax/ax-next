@@ -21,7 +21,7 @@ import {
   noCredentialFields,
 } from './failure.js';
 import { runObserver, type ObserverRecordInput, type ObserverResult } from './observer.js';
-import { selectProfileRows } from './profile.js';
+import { dropRementionedSlotRows, selectProfileRows } from './profile.js';
 import { formatEvidenceWhen } from './evidence.js';
 import { MEMORY_RECALL_TOOL_HOOK, registerMemoryRecall } from './recall-tool.js';
 import { MEMORY_NOTE_TOOL_HOOK, registerMemoryNote } from './note-tool.js';
@@ -582,10 +582,44 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           for (const row of result.statements) {
             toMemoryStatement(row);
           }
-          const page =
-            input.profile === true && input.activeOnly !== false
-              ? selectProfileRows(result.statements, limit)
-              : result.statements.slice(0, limit);
+          const activeOnly = input.activeOnly !== false;
+          let page: EngineFactRecord[];
+          if (input.profile === true && activeOnly) {
+            page = selectProfileRows(result.statements, limit);
+          } else if (activeOnly) {
+            // §3.4 on the read path: a correction survives the next chat
+            // mention. A lower-provenance row that merely restates a value the
+            // person replaced is the stale value coming back, not news — see
+            // `dropRementionedSlotRows`. The replaced row and the correction
+            // may sit outside this pool, so each subject's slot chains are
+            // read whole (closed rows included). History (`activeOnly: false`)
+            // shows everything, as it should.
+            const abouts = [
+              ...new Set(
+                result.statements
+                  .filter((row) => typeof row.slot === 'string' && row.slot !== '')
+                  .map((row) => row.about),
+              ),
+            ];
+            const group: EngineFactRecord[] = [];
+            for (const about of abouts) {
+              const slotRows = requireEngineResult(
+                await bus.call<unknown, EngineRecallOutput | null>(FACTS_RECALL_HOOK, ctx, {
+                  limit: 200,
+                  ...memoryReadScope(access),
+                  about,
+                  slots: [...SLOTS],
+                  activeOnly: false,
+                }),
+                MEMORY_RECALL_HOOK,
+                FACTS_RECALL_HOOK,
+              );
+              if (Array.isArray(slotRows.statements)) group.push(...slotRows.statements);
+            }
+            page = dropRementionedSlotRows(result.statements, group).slice(0, limit);
+          } else {
+            page = result.statements.slice(0, limit);
+          }
           const visibleIds = new Set(page.map((row) => row.id));
 
           return {

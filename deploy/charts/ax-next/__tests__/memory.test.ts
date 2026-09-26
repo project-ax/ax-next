@@ -328,3 +328,40 @@ describeIfHelm('memory preset opt-in (TASK-496)', () => {
     expect(unread, `render stamps memory env vars nothing reads: ${unread.join(', ')}`).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// The kind overlay (TASK-519). kind has no Filestore, so the rung-5 walk runs
+// against the dev NFS server in deploy/kind/memory-nfs/. kubelet mounts NFS
+// from the NODE, which cannot resolve cluster DNS, so the overlay names the
+// server by the Service's pinned ClusterIP. Those two literals live in two
+// files; this is what stops them drifting apart.
+// ---------------------------------------------------------------------------
+const KIND_MEMORY_VALUES = resolve(chartDir, 'kind-memory-values.yaml');
+const KIND_NFS_MANIFEST = resolve(repoRoot, 'deploy/kind/memory-nfs/nfs-server.yaml');
+
+describeIfHelm('kind memory overlay (TASK-519)', () => {
+  it('refuses to render without a Vertex project, and says which value is missing', () => {
+    expect(renderFails(['-f', KIND_DEV_VALUES, '-f', KIND_MEMORY_VALUES])).toMatch(
+      /memory\.vertexProject is required/,
+    );
+  });
+
+  it('points the host export mount at the dev NFS Service by its pinned ClusterIP', () => {
+    const docs = render([
+      '-f', KIND_DEV_VALUES, '-f', KIND_MEMORY_VALUES,
+      '--set', 'memory.vertexProject=memory-canary',
+    ]);
+    const { container, spec } = hostSpec(hostDeployment(docs));
+    const nfsDocs = loadAll(readFileSync(KIND_NFS_MANIFEST, 'utf8')) as K8sDoc[];
+    const service = nfsDocs.find((d) => d.kind === 'Service');
+    const clusterIP = (service?.spec as { clusterIP?: string } | undefined)?.clusterIP;
+    expect(clusterIP).toMatch(/^10\.96\.\d+\.\d+$/);
+
+    const exportsVol = (spec.volumes ?? []).find((v) => v.name === 'memory-exports') as
+      | { nfs?: { server?: string; path?: string } }
+      | undefined;
+    expect(exportsVol?.nfs?.server).toBe(clusterIP);
+    expect(exportsVol?.nfs?.path).toBe('/memory');
+    expect(envMap(container).get('AX_MEMORY_EXPORT_NFS_SERVER')).toBe(clusterIP);
+  });
+});

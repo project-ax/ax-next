@@ -1,0 +1,24 @@
+# kind overlay for the facts-memory preset (TASK-519). Layer it ON TOP of
+# kind-dev-values.yaml, never instead of it:
+#
+#   helm upgrade --install ax-next deploy/charts/ax-next \
+#     -f deploy/charts/ax-next/kind-dev-values.yaml \
+#     -f deploy/charts/ax-next/kind-memory-values.yaml ...
+#
+# It needs the dev NFS server from deploy/kind/memory-nfs/ running first —
+# see the README there. The memory credentials (provider:vertex,
+# provider:cohere) are NOT set here; they live in the credential store.
+host:
+  preset: memory
+
+memory:
+  # vertexProject is deliberately NOT set: it's whichever GCP project your
+  # Vertex token can call, so pass --set memory.vertexProject=<yours>. Forget
+  # it and the chart refuses to render, saying exactly that.
+  exports:
+    # The pinned ClusterIP of the ax-next-memory-nfs Service
+    # (deploy/kind/memory-nfs/nfs-server.yaml). kubelet mounts from the node,
+    # so this has to be an address the node can route — not a cluster DNS name.
+    server: 10.96.200.49
+    # Relative to the server's NFSv4 pseudo-root (/exports, fsid=0).
+    exportPath: /memory
