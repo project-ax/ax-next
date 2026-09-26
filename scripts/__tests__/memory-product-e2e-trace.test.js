@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { appendFileSync } from 'node:fs';
-import { attemptStats, latencyBreakdown, makeDiagnosticsBuffer, makeDiagnosticsSinks, makeTokenSource, openAttemptLog, realNow, sanitizeError, startEnvironmentMonitor, tlsProbe } from '../memory-product-e2e-trace.mjs';
+import { PROVIDER_HOSTS, attemptStats, latencyBreakdown, makeDiagnosticsBuffer, makeDiagnosticsSinks, openAttemptLog, realNow, sanitizeError, startEnvironmentMonitor, tlsProbe } from '../memory-product-e2e-trace.mjs';
 import { withCorpusClock } from '../memory-product-e2e.mjs';
 
 const dirs = [];
@@ -14,11 +14,11 @@ const lines = path => readFileSync(path, 'utf8').split('\n').filter(Boolean).map
 
 describe('sanitized failure classes', () => {
   it('keeps only allowlisted identifiers and never a message, body or header', () => {
-    const cause = Object.assign(new Error('socket to https://api.cohere.com?key=sk-cause-secret hung up'), { code: 'ECONNRESET', body: 'sk-body-secret' });
+    const cause = Object.assign(new Error('socket to https://openrouter.ai?key=sk-cause-secret hung up'), { code: 'ECONNRESET', body: 'sk-body-secret' });
     const error = Object.assign(new TypeError('fetch failed: Bearer sk-live-secret'), { cause, code: 'UND_ERR_SOCKET', headers: { authorization: 'Bearer sk-header-secret' }, status: 503 });
     const out = sanitizeError(error);
     expect(out).toEqual({ name: 'TypeError', code: 'UND_ERR_SOCKET', status: 503, cause: { name: 'Error', code: 'ECONNRESET' } });
-    expect(JSON.stringify(out)).not.toMatch(/secret|cohere|Bearer|hung up/);
+    expect(JSON.stringify(out)).not.toMatch(/secret|openrouter|Bearer|hung up/);
   });
   it('maps unknown names and codes to "other" instead of copying caller-chosen strings', () => {
     class LeakyNameError extends Error { constructor() { super('x'); this.name = 'user@example.com said sk-123'; this.code = 'sk-123'; } }
@@ -115,41 +115,13 @@ describe('diagnostics are buffered out of timed regions', () => {
     const root = temporary();
     const sinks = makeDiagnosticsSinks(root);
     sinks.recordEnvironment({ type: 'clock-gap' });
-    sinks.recordProviderSpan({ provider: 'vertex', ms: 1 });
+    sinks.recordProviderSpan({ provider: 'openrouter-embed', ms: 1 });
     // Nothing reaches disk until an untimed boundary flushes.
     expect(() => readFileSync(join(root, 'environment.jsonl'))).toThrow();
     expect(() => readFileSync(join(root, 'provider-spans.jsonl'))).toThrow();
     sinks.flush();
     expect(lines(join(root, 'environment.jsonl'))).toEqual([expect.objectContaining({ type: 'clock-gap', at: expect.any(Number) })]);
-    expect(lines(join(root, 'provider-spans.jsonl'))).toEqual([{ provider: 'vertex', ms: 1 }]);
-  });
-});
-
-describe('token minting outside timed regions', () => {
-  it('mints only in ensureFresh; current() never mints and refuses before the first mint', async () => {
-    let mono = 0;
-    let mints = 0;
-    const source = makeTokenSource({ mint: async () => `token-${++mints}`, now: () => mono, maxAgeMs: 1000 });
-    expect(() => source.current()).toThrow(/not minted/);
-    await source.ensureFresh();
-    await source.ensureFresh();
-    expect(mints).toBe(1);
-    mono = 999;
-    expect(source.current()).toBe('token-1');
-    mono = 1001;
-    expect(source.current()).toBe('token-1');
-    expect(mints).toBe(1);
-    await source.ensureFresh();
-    expect(source.current()).toBe('token-2');
-  });
-  it('reports a token that aged past its window instead of silently using it', async () => {
-    let mono = 0;
-    const stale = [];
-    const source = makeTokenSource({ mint: async () => 'token', now: () => mono, maxAgeMs: 1000, staleAfterMs: 2000, onStale: event => stale.push(event) });
-    await source.ensureFresh();
-    mono = 2500;
-    expect(source.current()).toBe('token');
-    expect(stale).toEqual([{ type: 'token-stale', ageMs: 2500 }]);
+    expect(lines(join(root, 'provider-spans.jsonl'))).toEqual([{ provider: 'openrouter-embed', ms: 1 }]);
   });
 });
 
@@ -171,25 +143,31 @@ describe('environment signals', () => {
     const writes = [];
     const connect = (options, onSecure) => {
       const socket = Object.assign(new EventEmitter(), { write: data => writes.push(data), destroy() { socket.destroyed = true; }, setTimeout() {} });
-      expect(options).toMatchObject({ host: 'api.cohere.com', port: 443, servername: 'api.cohere.com', rejectUnauthorized: true });
+      expect(options).toMatchObject({ host: 'openrouter.ai', port: 443, servername: 'openrouter.ai', rejectUnauthorized: true });
       setImmediate(onSecure);
       return socket;
     };
-    const ok = await tlsProbe('api.cohere.com', { connect });
-    expect(ok).toMatchObject({ type: 'tls-probe', host: 'api.cohere.com', ok: true });
+    const ok = await tlsProbe('openrouter.ai', { connect });
+    expect(ok).toMatchObject({ type: 'tls-probe', host: 'openrouter.ai', ok: true });
     expect(ok.ms).toBeGreaterThanOrEqual(0);
     expect(writes).toEqual([]);
     const failing = (_options, _onSecure) => {
       const socket = Object.assign(new EventEmitter(), { destroy() {}, setTimeout() {} });
-      setImmediate(() => socket.emit('error', Object.assign(new Error('getaddrinfo ENOTFOUND api.cohere.com sk-x'), { code: 'ENOTFOUND' })));
+      setImmediate(() => socket.emit('error', Object.assign(new Error('getaddrinfo ENOTFOUND openrouter.ai sk-x'), { code: 'ENOTFOUND' })));
       return socket;
     };
-    const bad = await tlsProbe('api.cohere.com', { connect: failing });
+    const bad = await tlsProbe('openrouter.ai', { connect: failing });
     expect(bad).toMatchObject({ ok: false, error: { name: 'Error', code: 'ENOTFOUND' } });
     expect(JSON.stringify(bad)).not.toContain('sk-x');
   });
   it('refuses to probe a host outside the fixed provider set', async () => {
     await expect(tlsProbe('evil.example', { connect: () => { throw new Error('must not connect'); } })).rejects.toThrow(/provider host/);
+  });
+  it('no longer probes the retired Vertex and Cohere hosts', async () => {
+    expect(PROVIDER_HOSTS).toEqual(['openrouter.ai', 'api.anthropic.com']);
+    for (const host of ['us-central1-aiplatform.googleapis.com', 'api.cohere.com']) {
+      await expect(tlsProbe(host, { connect: () => { throw new Error('must not connect'); } })).rejects.toThrow(/provider host/);
+    }
   });
 });
 

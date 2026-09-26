@@ -111,31 +111,6 @@ export function attemptStats(runDirectory) {
 }
 
 /**
- * A credential minted OUTSIDE timed regions. The frozen harness minted the Vertex
- * token lazily inside `credentials:get` with a synchronous `gcloud` spawn, so on a
- * resumed bank the first timed recall paid for that spawn and blocked the event loop
- * while the product's embed budget timer ran. Here only `ensureFresh` mints, and the
- * harness calls it between sessions and before each answer attempt.
- */
-export function makeTokenSource({ mint, now = monoNow, maxAgeMs = 45 * 60_000, staleAfterMs = 55 * 60_000, onStale = () => {} }) {
-  let token;
-  let mintedAt = -Infinity;
-  return {
-    async ensureFresh() {
-      if (token !== undefined && now() - mintedAt <= maxAgeMs) return;
-      token = await mint();
-      mintedAt = now();
-    },
-    current() {
-      if (token === undefined) throw new Error('Credential was not minted before the timed region');
-      const ageMs = now() - mintedAt;
-      if (ageMs > staleAfterMs) onStale({ type: 'token-stale', ageMs });
-      return token;
-    },
-  };
-}
-
-/**
  * Two cheap environment signals, sampled on a timer:
  * - `clock-gap`: the wall clock moved much more than the monotonic one. On macOS the
  *   monotonic clock does not advance while the host sleeps, so this is how a sleeping
@@ -173,7 +148,7 @@ export function startEnvironmentMonitor({ emit, wall = realNow, mono = monoNow, 
  * Diagnostic events are held in memory and written only at untimed boundaries. A
  * provider span is produced while a recall is still being timed, and a synchronous
  * append there would add our own disk I/O to the number we are trying to explain —
- * the same class of artifact as the synchronous token mint this card removed.
+ * the same class of artifact as the synchronous credential mint TASK-521 removed from timed regions.
  *
  * Not everything can be moved out: the spending ledger still appends each reservation
  * and settlement synchronously inside a recall (~4 small writes per clean recall), as
@@ -205,7 +180,7 @@ export function makeDiagnosticsSinks(directory, write) {
 }
 
 /** The only hosts a benchmark run talks to; the probe refuses anything else. */
-export const PROVIDER_HOSTS = Object.freeze(['us-central1-aiplatform.googleapis.com', 'api.cohere.com', 'openrouter.ai', 'api.anthropic.com']);
+export const PROVIDER_HOSTS = Object.freeze(['openrouter.ai', 'api.anthropic.com']);
 
 /**
  * Time a TLS handshake to a provider host, then close. No request is written and no

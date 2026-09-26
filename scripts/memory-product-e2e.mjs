@@ -1,10 +1,10 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { execFile, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { parseArgs, parseEnv, promisify } from 'node:util';
+import { parseArgs, parseEnv } from 'node:util';
 import { HookBus, PluginError, bootstrap, makeAgentContext } from '../packages/core/dist/index.js';
 import { createMemoryPlugins } from '../presets/memory/dist/index.js';
 import { EXTRACTION_PROMPT_FINGERPRINT, EXTRACTION_PROMPT_MODEL_FINGERPRINT } from '../packages/memory/dist/index.js';
@@ -13,12 +13,12 @@ import { loadLongMemEvalSSamples } from '../packages/memory-strata/test/bench/co
 import { parseCorpusDate } from '../packages/memory-strata/test/bench/e2e-driver.ts';
 import { judgeAnswer } from '../packages/memory-strata/test/bench/judge.ts';
 import { CONFIG, ANSWER_PREAMBLE, BudgetExceeded, ProviderError, Ledger, aggregate, buildSystem, makeClients, readJsonl } from './memory-product-e2e-lib.mjs';
-import { PROVIDER_HOSTS, attemptStats, latencyBreakdown, makeDiagnosticsSinks, makeTokenSource, monoNow, openAttemptLog, realNow, sanitizeError, startEnvironmentMonitor, tlsProbe } from './memory-product-e2e-trace.mjs';
+import { PROVIDER_HOSTS, attemptStats, latencyBreakdown, makeDiagnosticsSinks, monoNow, openAttemptLog, realNow, sanitizeError, startEnvironmentMonitor, tlsProbe } from './memory-product-e2e-trace.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OWNER = 'memory-benchmark-owner';
 const ARMS = ['sonnet', 'glm'];
-const SUPPORTED_ENV = ['ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY', 'COHERE_API_KEY', 'VERTEX_ACCESS_TOKEN', 'GOOGLE_CLOUD_PROJECT', 'GCLOUD_PROJECT', 'GOOGLE_APPLICATION_CREDENTIALS'];
+const SUPPORTED_ENV = ['ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY'];
 const hash = value => createHash('sha256').update(value).digest('hex');
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
 function save(path, value) {
@@ -33,19 +33,6 @@ export function loadEnvironment(files) {
   for (const file of [...files].reverse()) Object.assign(merged, parseEnv(readFileSync(resolve(file), 'utf8')));
   Object.assign(merged, process.env);
   return Object.fromEntries(SUPPORTED_ENV.filter(key => typeof merged[key] === 'string' && merged[key].trim()).map(key => [key, merged[key]]));
-}
-
-const gcloudOptions = env => ({
-  encoding: 'utf8', timeout: 30_000,
-  env: { ...process.env, ...(env.GOOGLE_APPLICATION_CREDENTIALS ? { GOOGLE_APPLICATION_CREDENTIALS: env.GOOGLE_APPLICATION_CREDENTIALS } : {}), CLOUDSDK_CORE_DISABLE_PROMPTS: '1' },
-});
-function gcloud(args, env) {
-  return execFileSync('gcloud', args, { ...gcloudOptions(env), stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-}
-// Asynchronous, so minting a token never blocks the event loop (TASK-521).
-async function gcloudAsync(args, env) {
-  const { stdout } = await promisify(execFile)('gcloud', args, gcloudOptions(env));
-  return stdout.trim();
 }
 
 /** Every file whose content defines a run. A change to any of them is a new run identity. */
@@ -98,23 +85,43 @@ export async function pinnedSamples() {
   return { pinned, samples: selected };
 }
 
+// The only two provider endpoints the memory slice may reach, both on OpenRouter and
+// both behind the one `provider:openrouter` credential (TASK-523).
+const PROVIDER_ENDPOINTS = Object.freeze({
+  '/api/v1/embeddings': { provider: 'openrouter-embed', perMillion: () => CONFIG.openRouterEmbedPerMillionTokens },
+  '/api/v1/rerank': { provider: 'openrouter-rerank', perMillion: () => CONFIG.openRouterRerankPerMillionTokens },
+});
+const tokenBound = text => {
+  if (typeof text !== 'string') throw new Error('Unexpected embedding/reranking request');
+  // UTF-8 bytes bound the token count from above; the floor of 1 covers an empty string.
+  return Math.max(1, Buffer.byteLength(text, 'utf8'));
+};
+/**
+ * A conservative token upper bound for one request. Rerank bills the query once per
+ * document plus every document, so the bound is bytes(query) × n + Σ bytes(document).
+ */
+export function providerTokenUpperBound(path, request) {
+  const list = value => { if (!Array.isArray(value)) throw new Error('Unexpected embedding/reranking request'); return value; };
+  if (path === '/api/v1/embeddings') return list(request.input).reduce((n, text) => n + tokenBound(text), 0);
+  const documents = list(request.documents);
+  return tokenBound(request.query) * documents.length + documents.reduce((n, doc) => n + tokenBound(doc), 0);
+}
+
 // `observe` receives one span per provider request: status, time to headers, total time,
 // the ledger reservation it belongs to, and a sanitized error class on failure.
 export function makeMeteredProviderFetch(ledger, tags, fetchImpl = fetch, observe = () => {}) {
   const metered = async (input, init) => {
     const url = new URL(String(input));
     if (url.protocol !== 'https:' || url.port || url.username || url.password || url.search || url.hash) throw new Error('Unexpected provider transport');
-    const request = JSON.parse(String(init?.body ?? '{}'));
-    const vertex = url.hostname === 'us-central1-aiplatform.googleapis.com' && url.pathname.endsWith('/text-embedding-005:predict');
-    const cohere = url.hostname === 'api.cohere.com' && url.pathname === '/v2/rerank';
-    if (!vertex && !cohere) throw new Error('Unexpected embedding/reranking endpoint');
-    const characters = vertex ? request.instances.reduce((n, item) => n + [...item.content].length, 0) : 0;
-    const unitsUpper = cohere ? Math.max(1, Math.ceil(request.documents.reduce((n, doc) => n + Math.ceil((Buffer.byteLength(doc) + Buffer.byteLength(request.query) + 512) / 500), 0) / 100)) : 0;
-    const upper = vertex ? characters * CONFIG.vertexPerThousandCharacters / 1000 : unitsUpper * CONFIG.coherePerSearchUnit;
+    const endpoint = url.hostname === 'openrouter.ai' && Object.hasOwn(PROVIDER_ENDPOINTS, url.pathname) ? PROVIDER_ENDPOINTS[url.pathname] : undefined;
+    if (!endpoint) throw new Error('Unexpected embedding/reranking endpoint');
+    const { provider } = endpoint;
+    const tokens = providerTokenUpperBound(url.pathname, JSON.parse(String(init?.body ?? '{}')));
+    const upper = tokens * endpoint.perMillion() / 1_000_000;
     const scope = tags();
-    const id = ledger.reserve(upper, { ...scope, provider: vertex ? 'vertex' : 'cohere' });
+    const id = ledger.reserve(upper, { ...scope, provider });
     let settled = false;
-    const span = { provider: vertex ? 'vertex' : 'cohere', questionId: scope.questionId, phase: scope.phase, reservation: id, at: realNow() };
+    const span = { provider, questionId: scope.questionId, phase: scope.phase, reservation: id, at: realNow() };
     const start = monoNow();
     try {
       const response = await fetchImpl(input, { ...init, redirect: 'error' });
@@ -122,17 +129,21 @@ export function makeMeteredProviderFetch(ledger, tags, fetchImpl = fetch, observ
       span.status = response.status;
       span.ok = response.ok;
       if (!response.ok) {
-        if (response.status === 401 || response.status === 403) metered.fatalError = new ProviderError(vertex ? 'vertex' : 'cohere', response.status);
-        ledger.settle(id, vertex ? 0 : upper, vertex ? 'http-error-not-billed' : 'uncertain-upper-bound', { status: response.status });
+        if (response.status === 401 || response.status === 403) metered.fatalError = new ProviderError(provider, response.status);
+        // OpenRouter does not document whether a failed request is billed, so the
+        // reservation is kept rather than guessing zero.
+        ledger.settle(id, upper, 'uncertain-upper-bound', { status: response.status });
         settled = true;
         return response;
       }
-      const body = await response.clone().json();
-      const actualUnits = vertex ? body.metadata?.billableCharacterCount : body.meta?.billed_units?.search_units;
-      const measured = typeof actualUnits === 'number' && Number.isFinite(actualUnits) && actualUnits >= 0;
-      const quantity = measured ? actualUnits : vertex ? characters : unitsUpper;
-      ledger.settle(id, quantity * (vertex ? CONFIG.vertexPerThousandCharacters / 1000 : CONFIG.coherePerSearchUnit),
-        measured ? 'published-rate-estimate' : 'quantity-upper-bound-estimate', { quantity, unit: vertex ? 'characters' : 'search_units' });
+      const usage = (await response.clone().json())?.usage;
+      const cost = usage?.cost;
+      if (typeof cost === 'number' && Number.isFinite(cost) && cost >= 0) {
+        const reported = usage.total_tokens;
+        ledger.settle(id, cost, 'provider-reported', Number.isSafeInteger(reported) && reported >= 0 ? { quantity: reported, unit: 'tokens' } : {});
+      } else {
+        ledger.settle(id, upper, 'quantity-upper-bound-estimate', { quantity: tokens, unit: 'tokens' });
+      }
       settled = true;
       return response;
     } catch (error) {
@@ -154,7 +165,7 @@ export function makeMeteredProviderFetch(ledger, tags, fetchImpl = fetch, observ
 // still land in the capture.
 const SPAN_HOOKS = new Set(['credentials:get', 'embeddings:embed', 'embeddings:rerank', 'memory:facts:recall', 'memory:recall']);
 
-export async function createBank({ sample, directory, env, projectId, clients, providerFetch, ledger, storage, vertexToken }) {
+export async function createBank({ sample, directory, env, clients, providerFetch, ledger, storage }) {
   mkdirSync(directory, { recursive: true });
   const bus = new HookBus();
   const rawCalls = new Set();
@@ -200,13 +211,9 @@ export async function createBank({ sample, directory, env, projectId, clients, p
       });
       b.registerService('credentials:get', '@ax/benchmark-support', async (_ctx, input) => {
         if (input.userId !== OWNER) throw new Error('Wrong benchmark credential owner');
-        if (input.ref === 'provider:cohere') return env.COHERE_API_KEY;
-        if (input.ref !== 'provider:vertex') throw new Error('Unknown benchmark credential reference');
-        if (env.VERTEX_ACCESS_TOKEN) return env.VERTEX_ACCESS_TOKEN;
-        // Never mint here: this runs inside timed recalls (TASK-521). The caller mints
-        // between sessions and before each answer attempt.
-        if (!vertexToken) throw new Error('Vertex credential was not minted before the timed region');
-        return vertexToken();
+        // The memory slice's only credential: embeddings and reranking both go through OpenRouter.
+        if (input.ref !== 'provider:openrouter') throw new Error('Unknown benchmark credential reference');
+        return env.OPENROUTER_API_KEY;
       });
       b.registerService('llm:call:openrouter', '@ax/benchmark-support', async (_ctx, input) => {
         if (input.model !== CONFIG.extractionModel || input.reasoningEffort !== 'minimal') throw new Error('Unexpected extraction configuration');
@@ -236,7 +243,7 @@ export async function createBank({ sample, directory, env, projectId, clients, p
     http: { host: '127.0.0.1', port: 0, cookieKey: '0'.repeat(64), allowedOrigins: [] },
     factsDatabasePath: join(directory, 'facts.db'),
     memoryExportVolume: { hostRoot: join(directory, 'exports'), backing: { server: 'benchmark.invalid', exportPath: '/benchmark-memory' } },
-    memoryEmbeddings: { projectId, fetchImpl: providerFetch },
+    memoryEmbeddings: { fetchImpl: providerFetch },
     onObserverDetached: promise => detached.push(promise),
   });
   const keep = new Set(['@ax/memory', '@ax/memory-facts-sqlite', '@ax/embeddings', '@ax/workspace-git', '@ax/tool-dispatcher']);
@@ -332,7 +339,7 @@ export function renderReport(manifest, results, money, cap, charged, abort, diag
   lines.push('', `Replicated accuracy gate: ${!abort && ARMS.every(a => summaries[a].complete) ? ARMS.every(a => summaries[a].accuracyPassed) ? 'PASS' : 'FAIL' : 'INCOMPLETE'}.`,
     `Shared ingestion/preflight cost: $${shared.toFixed(4)}. Task ledger charge: $${charged.toFixed(4)} / $${cap.toFixed(2)} cap.`,
     'Shared ingestion is counted once in actual experiment spend, but included in each standalone-arm estimate; do not add the two standalone columns to estimate the paid total.',
-    'Costs combine OpenRouter reported USD and published-rate estimates (Anthropic tokens/cache, Vertex $0.000025/1000 non-Gemini embedding characters, Cohere $0.0025/search unit). Missing billing quantities use conservative upper bounds, never zero. Unknown failed-request charges retain the reservation. Taxes/credit-purchase fees are not included.',
+    'Costs combine OpenRouter reported USD (answers, extraction, judge, embeddings and reranking) and published-rate estimates (Anthropic tokens/cache). An embedding/reranking response without a reported cost is charged a UTF-8-byte token upper bound at the published rate ($0.15/M Gemini embedding tokens, $0.05/M Voyage rerank tokens), never zero. Unknown failed-request charges retain the reservation. Taxes/credit-purchase fees are not included.',
     `Upper-bound/uncertain cost entries: ${money.filter(r => r.basis.includes('upper')).length}. OpenRouter provider price ceilings: $10/M input, $20/M output, $0/request; :nitro routing remains enabled.`,
     'Identical-code noise floor from the design: total 1.6pp, multi-session 5.3pp, hallucination 13.4pp. A one-point difference is not a difference. Per-type n is small; report both arms, not a best-of.',
     '', '| Type | Arm | n | Correct | Accuracy |', '|---|---|---:|---:|---:|');
@@ -369,12 +376,9 @@ export async function main(argv = process.argv.slice(2)) {
   if (stopAfter !== Infinity && (!Number.isSafeInteger(stopAfter) || stopAfter < 1)) throw new Error('stop-after must be a positive integer');
   const { pinned, samples } = await pinnedSamples();
   const env = loadEnvironment(values['credentials-file'] ?? []);
-  for (const key of ['ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY', 'COHERE_API_KEY']) if (!env[key]) throw new Error(`Missing ${key}; configure an approved env file`);
-  const projectId = env.GOOGLE_CLOUD_PROJECT ?? env.GCLOUD_PROJECT ?? gcloud(['config', 'get-value', 'project'], env);
-  if (!projectId || projectId === '(unset)') throw new Error('Vertex project is not configured');
-  if (!env.VERTEX_ACCESS_TOKEN) gcloud(['auth', 'application-default', 'print-access-token'], env);
+  for (const key of SUPPORTED_ENV) if (!env[key]) throw new Error(`Missing ${key}; configure an approved env file`);
   if (values.preflight) {
-    console.log(JSON.stringify({ pinnedQuestions: samples.length, credentialsConfigured: true, vertexProjectConfigured: true, capUsd: cap, paidCalls: 0 }));
+    console.log(JSON.stringify({ pinnedQuestions: samples.length, credentialsConfigured: true, capUsd: cap, paidCalls: 0 }));
     return 0;
   }
   const worktree = resolve(HERE, '..');
@@ -399,12 +403,6 @@ export async function main(argv = process.argv.slice(2)) {
   const diagnostics = makeDiagnosticsSinks(directory);
   const { recordEnvironment } = diagnostics;
   const providerFetch = makeMeteredProviderFetch(ledger, tags, fetch, diagnostics.recordProviderSpan);
-  const tokenSource = env.VERTEX_ACCESS_TOKEN ? undefined : makeTokenSource({
-    mint: () => gcloudAsync(['auth', 'application-default', 'print-access-token'], env),
-    onStale: event => recordEnvironment(event),
-  });
-  // Called only at untimed boundaries: before the preflight, each ingestion session and each answer attempt.
-  const refreshCredential = async () => { await tokenSource?.ensureFresh(); };
   const monitor = startEnvironmentMonitor({ emit: recordEnvironment });
   let stage = 'setup';
   let where = {};
@@ -428,13 +426,12 @@ export async function main(argv = process.argv.slice(2)) {
       if (progress.budgetInvalid) throw new Error('This bank was interrupted by the budget; preserve artifacts and explicitly rebuild it before resuming');
       where = { questionId: sample.question_id };
       stage = 'bank-start';
-      const bank = await createBank({ sample, directory: join(bankRoot, progress.generation), env, projectId, clients, providerFetch, ledger, storage, vertexToken: tokenSource && (() => tokenSource.current()) });
+      const bank = await createBank({ sample, directory: join(bankRoot, progress.generation), env, clients, providerFetch, ledger, storage });
       try {
         for (const host of PROVIDER_HOSTS) recordEnvironment({ questionId: sample.question_id, ...(await tlsProbe(host)) });
         diagnostics.flush();
         if (!preflightChecked) {
           stage = 'preflight';
-          await refreshCredential();
           const embedded = await bank.bus.call('embeddings:embed', bank.ctx(), { texts: ['Benchmark provider preflight'], task: 'query' });
           const ranked = await bank.bus.call('embeddings:rerank', bank.ctx(), { query: 'preflight', documents: ['Benchmark provider preflight'] });
           await bank.drain();
@@ -447,7 +444,6 @@ export async function main(argv = process.argv.slice(2)) {
         stage = 'ingest';
         await storage.run({ questionId: sample.question_id, phase: 'ingest' }, async () => {
           for (let i = progress.through; i < sample.haystack_sessions.length; i++) {
-            await refreshCredential();
             const before = bank.failures.length;
             await withCorpusClock(parseCorpusDate(sample.haystack_dates[i]).toISOString(), () => bank.observe(sample.haystack_session_ids[i], sample.haystack_sessions[i]));
             progress.observerFailures.push(...bank.failures.slice(before));
@@ -471,7 +467,6 @@ export async function main(argv = process.argv.slice(2)) {
               let answer = captured?.answer;
               let attempt;
               if (!captured) {
-                await refreshCredential();
                 monitor.loopDelay();
                 attempt = openAttemptLog(bankRoot, arm, { runId: manifest.runId, questionId: sample.question_id });
                 // Written after the recall's `ms` is computed and before the next recall
@@ -537,5 +532,5 @@ export async function main(argv = process.argv.slice(2)) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  main().then(code => { process.exitCode = code; }).catch(() => { console.error('Benchmark setup failed; no credential values are printed. Check required env files, Vertex ADC/project, built packages and pinned inputs.'); process.exitCode = 1; });
+  main().then(code => { process.exitCode = code; }).catch(() => { console.error('Benchmark setup failed; no credential values are printed. Check required env files, built packages and pinned inputs.'); process.exitCode = 1; });
 }

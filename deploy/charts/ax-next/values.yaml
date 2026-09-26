@@ -729,9 +729,11 @@ skills:
 # cheap moves much faster than this chart does.
 memory:
   orchestratorModel: ""
-  vertexProject: ''
-  vertexCredentialRef: provider:vertex
-  cohereCredentialRef: provider:cohere
+  # host.preset=memory needs ONE provider credential: `provider:openrouter`,
+  # stored through the admin Provider keys screen. It drives the observer's
+  # extraction model, embeddings (google/gemini-embedding-001) and reranking
+  # (voyageai/rerank-2.5). Without it recall still answers, lexically, and says
+  # so: degraded ["semantic", "ranking"]. There is nothing to set here for it.
   facts:
     storage: 10Gi
     storageClassName: ''

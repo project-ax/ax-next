@@ -16,8 +16,10 @@ export const CONFIG = Object.freeze({
   openRouterMaxPrice: { prompt: 10, completion: 20, request: 0 },
   sonnetInputPerMillion: 3,
   sonnetOutputPerMillion: 15,
-  vertexPerThousandCharacters: 0.000025,
-  coherePerSearchUnit: 0.0025,
+  // Published OpenRouter list prices, used only for reservations and for settlements
+  // the provider did not price itself (a response without `usage.cost`).
+  openRouterEmbedPerMillionTokens: 0.15, // google/gemini-embedding-001
+  openRouterRerankPerMillionTokens: 0.05, // voyageai/rerank-2.5
 });
 
 export const ANSWER_PREAMBLE = `You are a helpful personal assistant answering a question from your long-term memory of past conversations with this user.

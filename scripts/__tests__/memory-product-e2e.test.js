@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { afterEach, describe, expect, it } from 'vitest';
-import { CONFIG, BudgetExceeded, Ledger, aggregate, percentile95, makeClients } from '../memory-product-e2e-lib.mjs';
+import { CONFIG, BudgetExceeded, Ledger, ProviderError, aggregate, percentile95, makeClients } from '../memory-product-e2e-lib.mjs';
 import { createBank, withCorpusClock, renderReport, makeMeteredProviderFetch, makeRecall, recordFailure, sourceDigestOf, checkResumeIdentity, HARNESS_FILES } from '../memory-product-e2e.mjs';
 
 const dirs = [];
@@ -89,21 +89,81 @@ describe('spending ledger', () => {
     const ledger = new Ledger(join(temporary(), 'costs.jsonl'), 25);
     let calls = 0;
     const fetcher = makeMeteredProviderFetch(ledger, tags, async () => { calls++; throw new Error('not reached'); });
-    for (const url of ['http://api.cohere.com/v2/rerank', 'https://api.cohere.com:8443/v2/rerank', 'https://elsewhere.invalid/v2/rerank', 'https://api.cohere.com/v2/rerank?redirect=x']) {
-      await expect(fetcher(url, { body: '{}' })).rejects.toThrow();
+    const body = JSON.stringify({ query: 'q', documents: ['a'], input: ['a'] });
+    for (const url of ['http://openrouter.ai/api/v1/rerank', 'https://openrouter.ai:8443/api/v1/rerank', 'https://user@openrouter.ai/api/v1/embeddings',
+      'https://openrouter.ai/api/v1/embeddings?redirect=x', 'https://openrouter.ai/api/v1/rerank#x', 'https://elsewhere.invalid/api/v1/rerank',
+      'https://openrouter.ai/api/v1/chat/completions', 'https://openrouter.ai/api/v1/embeddings/', 'https://openrouter.ai.evil.invalid/api/v1/embeddings',
+      // The hosts this harness metered before TASK-523 are refused outright now.
+      'https://us-central1-aiplatform.googleapis.com/v1/projects/test/locations/us-central1/publishers/google/models/text-embedding-005:predict',
+      'https://api.cohere.com/v2/rerank']) {
+      await expect(fetcher(url, { body })).rejects.toThrow(/Unexpected/);
     }
     expect(calls).toBe(0);
+    expect(ledger.rows('test-run')).toEqual([]);
   });
-  it('meters Vertex characters and Cohere billed search units, not guessed zeros', async () => {
+  it('reserves a UTF-8-byte token upper bound at the published OpenRouter rates', async () => {
+    const ledger = new Ledger(join(temporary(), 'costs.jsonl'), 25);
+    const fetcher = makeMeteredProviderFetch(ledger, tags, async () => { throw new TypeError('network down'); });
+    // 'bé' is 3 bytes and 'xyz' 3; the empty string still counts one token.
+    await expect(fetcher('https://openrouter.ai/api/v1/embeddings', { body: JSON.stringify({ model: 'm', input: ['bé', 'xyz', ''] }) })).rejects.toThrow();
+    // Rerank: bytes(query) × documents + Σ bytes(document) = 4 × 2 + (1 + 5) = 14.
+    await expect(fetcher('https://openrouter.ai/api/v1/rerank', { body: JSON.stringify({ model: 'm', query: 'abcd', documents: ['a', 'hello'] }) })).rejects.toThrow();
+    const rows = ledger.rows('test-run');
+    expect(rows.map(r => r.provider)).toEqual(['openrouter-embed', 'openrouter-rerank']);
+    expect(rows[0].upperUsd).toBeCloseTo(7 * 0.15 / 1e6, 15);
+    expect(rows[1].upperUsd).toBeCloseTo(14 * 0.05 / 1e6, 15);
+    // A transport failure keeps the reservation; it is never settled as free.
+    expect(rows.map(r => [r.basis, r.usd])).toEqual([['uncertain-upper-bound', rows[0].upperUsd], ['uncertain-upper-bound', rows[1].upperUsd]]);
+    expect(CONFIG).toMatchObject({ openRouterEmbedPerMillionTokens: 0.15, openRouterRerankPerMillionTokens: 0.05 });
+  });
+  it('settles with the provider-reported usage.cost, not the reservation', async () => {
     const ledger = new Ledger(join(temporary(), 'costs.jsonl'), 25);
     const fetcher = makeMeteredProviderFetch(ledger, tags, async (url, init) => {
       expect(init.redirect).toBe('error');
-      return new Response(JSON.stringify(String(url).includes(':predict') ? { metadata: { billableCharacterCount: 3 } } : { meta: { billed_units: { search_units: 2 } } }), { status: 200 });
+      return new Response(JSON.stringify(String(url).endsWith('/embeddings')
+        ? { data: [{ index: 0, embedding: [0.1] }], usage: { prompt_tokens: 2, total_tokens: 2, cost: 0.0000003 } }
+        : { results: [{ index: 0, relevance_score: 0.5 }], usage: { total_tokens: 9, cost: 0 } }), { status: 200 });
     });
-    await fetcher('https://us-central1-aiplatform.googleapis.com/v1/projects/test/locations/us-central1/publishers/google/models/text-embedding-005:predict', { body: JSON.stringify({ instances: [{ content: 'a bé' }] }) });
-    await fetcher('https://api.cohere.com/v2/rerank', { body: JSON.stringify({ query: 'x', documents: Array.from({ length: 101 }, () => 'a') }) });
-    expect(ledger.chargedUsd()).toBeCloseTo(3 * 0.000025 / 1000 + 2 * 0.0025, 12);
-    expect(ledger.rows('test-run').map(r => r.quantity)).toEqual([3, 2]);
+    await fetcher('https://openrouter.ai/api/v1/embeddings', { body: JSON.stringify({ input: ['a long text that bounds far above two tokens'] }) });
+    await fetcher('https://openrouter.ai/api/v1/rerank', { body: JSON.stringify({ query: 'x', documents: ['a'] }) });
+    const rows = ledger.rows('test-run');
+    expect(rows.map(r => [r.basis, r.usd, r.quantity, r.unit])).toEqual([['provider-reported', 0.0000003, 2, 'tokens'], ['provider-reported', 0, 9, 'tokens']]);
+    expect(ledger.chargedUsd()).toBeCloseTo(0.0000003, 15);
+  });
+  it.each([
+    ['no usage', {}],
+    ['no cost', { usage: { total_tokens: 1 } }],
+    ['a string cost', { usage: { cost: '0.00001' } }],
+    ['a negative cost', { usage: { cost: -1 } }],
+  ])('falls back to the upper bound, never zero, when the response has %s', async (_name, extra) => {
+    const ledger = new Ledger(join(temporary(), 'costs.jsonl'), 25);
+    const fetcher = makeMeteredProviderFetch(ledger, tags, async () => new Response(JSON.stringify({ data: [{ index: 0, embedding: [0.1] }], ...extra }), { status: 200 }));
+    await fetcher('https://openrouter.ai/api/v1/embeddings', { body: JSON.stringify({ input: ['hello'] }) });
+    const [row] = ledger.rows('test-run');
+    expect(row).toMatchObject({ basis: 'quantity-upper-bound-estimate', quantity: 5, unit: 'tokens' });
+    expect(row.usd).toBeCloseTo(5 * 0.15 / 1e6, 15);
+    expect(row.usd).toBe(row.upperUsd);
+  });
+  it.each([401, 403])('makes a %i fatal and keeps the reservation', async status => {
+    const ledger = new Ledger(join(temporary(), 'costs.jsonl'), 25);
+    const fetcher = makeMeteredProviderFetch(ledger, tags, async () => new Response('{}', { status }));
+    const response = await fetcher('https://openrouter.ai/api/v1/rerank', { body: JSON.stringify({ query: 'q', documents: ['a'] }) });
+    expect(response.status).toBe(status);
+    expect(fetcher.fatalError).toBeInstanceOf(ProviderError);
+    expect(fetcher.fatalError).toMatchObject({ provider: 'openrouter-rerank', status });
+    const [row] = ledger.rows('test-run');
+    expect(row).toMatchObject({ basis: 'uncertain-upper-bound', status });
+    expect(row.usd).toBe(row.upperUsd);
+    expect(row.usd).toBeGreaterThan(0);
+  });
+  it('keeps the reservation on a non-fatal HTTP error without marking the run fatal', async () => {
+    const ledger = new Ledger(join(temporary(), 'costs.jsonl'), 25);
+    const fetcher = makeMeteredProviderFetch(ledger, tags, async () => new Response('{}', { status: 502 }));
+    await fetcher('https://openrouter.ai/api/v1/embeddings', { body: JSON.stringify({ input: ['abc'] }) });
+    expect(fetcher.fatalError).toBeUndefined();
+    const [row] = ledger.rows('test-run');
+    expect(row).toMatchObject({ basis: 'uncertain-upper-bound', status: 502 });
+    expect(row.usd).toBeCloseTo(3 * 0.15 / 1e6, 15);
   });
 });
 
@@ -232,22 +292,27 @@ describe('model-driven tool loop', () => {
   });
 });
 
+const fakeProviderFetch = (delays = {}) => async (url, init) => {
+  const b = JSON.parse(init.body);
+  const embed = String(url) === 'https://openrouter.ai/api/v1/embeddings';
+  const wait = embed ? delays.embed : delays.rerank;
+  if (wait) await new Promise(done => setTimeout(done, wait));
+  return new Response(JSON.stringify(embed ? { data: b.input.map((_, index) => ({ index, embedding: new Array(384).fill(0.01) })) } : { results: b.documents.map((_, index) => ({ index, relevance_score: 1 })) }), { status: 200 });
+};
+
 describe('actual preset memory slice', () => {
   it('ingests through the observer, exposes the real tool, isolates banks and drains timed-out producer work', async () => {
     const root = temporary();
     const ledger = new Ledger(join(root, 'costs.jsonl'), 25);
     const storage = new AsyncLocalStorage();
     const options = {
-      env: { VERTEX_ACCESS_TOKEN: 'test-token', COHERE_API_KEY: 'test-token' }, projectId: 'memory-canary', ledger, storage,
+      env: { OPENROUTER_API_KEY: 'test-token' }, ledger, storage,
       clients: { async openrouter(body) {
         expect(body.model).toBe(CONFIG.extractionModel);
         expect(body.reasoning).toEqual({ effort: 'minimal' });
         return { choices: [{ message: { content: JSON.stringify({ facts: [{ network: 'world', subject: 'user', predicate: 'lives in', object: 'Osaka', validStart: '2023-01-01T00:00:00Z' }] }) } }], usage: { prompt_tokens: 1, completion_tokens: 1 } };
       } },
-      providerFetch: async (url, init) => {
-        const b = JSON.parse(init.body);
-        return new Response(JSON.stringify(String(url).includes(':predict') ? { predictions: b.instances.map(() => ({ embeddings: { values: new Array(384).fill(0.01) } })) } : { results: b.documents.map((_, index) => ({ index, relevance_score: 1 })) }), { status: 200 });
-      },
+      providerFetch: fakeProviderFetch(),
     };
     const a = await createBank({ ...options, sample: { question_id: 'bank-a' }, directory: join(root, 'a') });
     const b = await createBank({ ...options, sample: { question_id: 'bank-b' }, directory: join(root, 'b') });
@@ -269,39 +334,38 @@ describe('actual preset memory slice', () => {
   });
 });
 
-const fakeProviderFetch = (delays = {}) => async (url, init) => {
-  const b = JSON.parse(init.body);
-  const embed = String(url).includes(':predict');
-  const wait = embed ? delays.embed : delays.rerank;
-  if (wait) await new Promise(done => setTimeout(done, wait));
-  return new Response(JSON.stringify(embed ? { predictions: b.instances.map(() => ({ embeddings: { values: new Array(384).fill(0.01) } })) } : { results: b.documents.map((_, index) => ({ index, relevance_score: 1 })) }), { status: 200 });
-};
 const extractionClient = { async openrouter() {
   return { choices: [{ message: { content: JSON.stringify({ facts: [{ network: 'world', subject: 'user', predicate: 'lives in', object: 'Osaka', validStart: '2023-01-01T00:00:00Z' }] }) } }], usage: { prompt_tokens: 1, completion_tokens: 1 } };
 } };
 
 describe('TASK-521 instrumentation', () => {
-  it('never mints a Vertex credential inside credentials:get; it only reads a pre-minted one', async () => {
+  it('serves only provider:openrouter from the benchmark credential store', async () => {
     const root = temporary();
-    const storage = new AsyncLocalStorage();
-    const savedPath = process.env.PATH;
-    // With no gcloud on PATH, the frozen harness's lazy spawn throws here instead of
-    // returning the pre-minted token — which is what makes this test fail before the fix.
-    process.env.PATH = root;
-    let bank;
+    const requests = [];
+    const bank = await createBank({ sample: { question_id: 'credentials' }, directory: join(root, 'a'), env: { OPENROUTER_API_KEY: 'or-key', ANTHROPIC_API_KEY: 'an-key' },
+      ledger: new Ledger(join(root, 'costs.jsonl'), 25), storage: new AsyncLocalStorage(), clients: extractionClient,
+      providerFetch: async (url, init) => { requests.push({ url: String(url), auth: new Headers(init.headers).get('authorization') }); return fakeProviderFetch()(url, init); } });
     try {
-      bank = await createBank({ sample: { question_id: 'token' }, directory: join(root, 'a'), env: { COHERE_API_KEY: 'c' }, projectId: 'memory-canary',
-        ledger: new Ledger(join(root, 'costs.jsonl'), 25), storage, clients: extractionClient, providerFetch: fakeProviderFetch(), vertexToken: () => 'minted-token' });
-      await expect(bank.bus.call('credentials:get', bank.ctx(), { userId: 'memory-benchmark-owner', ref: 'provider:vertex' })).resolves.toBe('minted-token');
-    } finally { process.env.PATH = savedPath; await bank?.close(); }
+      const get = ref => bank.bus.call('credentials:get', bank.ctx(), { userId: 'memory-benchmark-owner', ref });
+      await expect(get('provider:openrouter')).resolves.toBe('or-key');
+      for (const ref of ['provider:vertex', 'provider:cohere', 'provider:anthropic']) await expect(get(ref)).rejects.toThrow(/Unknown benchmark credential reference/);
+      await expect(bank.bus.call('credentials:get', bank.ctx(), { userId: 'someone-else', ref: 'provider:openrouter' })).rejects.toThrow(/owner/);
+      // The preset really asks for that one ref: both producers reach OpenRouter carrying its key.
+      await bank.bus.call('embeddings:embed', bank.ctx(), { texts: ['x'], task: 'query' });
+      await bank.bus.call('embeddings:rerank', bank.ctx(), { query: 'x', documents: ['y'] });
+      expect(requests).toEqual([
+        { url: 'https://openrouter.ai/api/v1/embeddings', auth: 'Bearer or-key' },
+        { url: 'https://openrouter.ai/api/v1/rerank', auth: 'Bearer or-key' },
+      ]);
+    } finally { await bank.close(); }
   });
   it('records per-stage spans for each recall, including a provider that answered after losing the budget race', async () => {
     const root = temporary();
     const storage = new AsyncLocalStorage();
     const ledger = new Ledger(join(root, 'costs.jsonl'), 25);
     let slowEmbed = false;
-    const bank = await createBank({ sample: { question_id: 'spans' }, directory: join(root, 'a'), env: { VERTEX_ACCESS_TOKEN: 't', COHERE_API_KEY: 'c' }, projectId: 'memory-canary', ledger, storage, clients: extractionClient,
-      providerFetch: async (url, init) => { if (slowEmbed && String(url).includes(':predict')) await new Promise(done => setTimeout(done, 1700)); return fakeProviderFetch()(url, init); } });
+    const bank = await createBank({ sample: { question_id: 'spans' }, directory: join(root, 'a'), env: { OPENROUTER_API_KEY: 'k' }, ledger, storage, clients: extractionClient,
+      providerFetch: async (url, init) => { if (slowEmbed && String(url).endsWith('/embeddings')) await new Promise(done => setTimeout(done, 1700)); return fakeProviderFetch()(url, init); } });
     try {
       await withCorpusClock('2023-01-01T12:00:00Z', () => bank.observe('s1', [{ role: 'user', content: 'I live in Osaka' }, { role: 'assistant', content: 'Noted.' }]));
       const recalls = [];
@@ -353,14 +417,14 @@ describe('TASK-521 instrumentation', () => {
     const spans = [];
     const fetcher = makeMeteredProviderFetch(ledger, tags, async url => {
       if (String(url).includes('rerank')) throw Object.assign(new TypeError('fetch failed sk-secret'), { cause: Object.assign(new Error('y'), { code: 'UND_ERR_SOCKET' }) });
-      return new Response(JSON.stringify({ metadata: { billableCharacterCount: 3 } }), { status: 200 });
+      return new Response(JSON.stringify({ data: [{ index: 0, embedding: [0.1] }], usage: { total_tokens: 1, cost: 0.0000001 } }), { status: 200 });
     }, span => spans.push(span));
-    await fetcher('https://us-central1-aiplatform.googleapis.com/v1/projects/test/locations/us-central1/publishers/google/models/text-embedding-005:predict', { body: JSON.stringify({ instances: [{ content: 'abc' }] }) });
-    await expect(fetcher('https://api.cohere.com/v2/rerank', { body: JSON.stringify({ query: 'x', documents: ['a'] }) })).rejects.toThrow();
-    expect(spans[0]).toMatchObject({ provider: 'vertex', ok: true, status: 200, phase: 'sonnet' });
+    await fetcher('https://openrouter.ai/api/v1/embeddings', { body: JSON.stringify({ input: ['abc'] }) });
+    await expect(fetcher('https://openrouter.ai/api/v1/rerank', { body: JSON.stringify({ query: 'x', documents: ['a'] }) })).rejects.toThrow();
+    expect(spans[0]).toMatchObject({ provider: 'openrouter-embed', ok: true, status: 200, phase: 'sonnet' });
     expect(spans[0].headersMs).toBeLessThanOrEqual(spans[0].ms);
     expect(spans[0].reservation).toBe(ledger.rows('test-run')[0].id);
-    expect(spans[1]).toMatchObject({ provider: 'cohere', ok: false, error: { name: 'TypeError', cause: { code: 'UND_ERR_SOCKET' } } });
+    expect(spans[1]).toMatchObject({ provider: 'openrouter-rerank', ok: false, error: { name: 'TypeError', cause: { code: 'UND_ERR_SOCKET' } } });
     expect(JSON.stringify(spans)).not.toContain('sk-secret');
     expect(ledger.events.every(event => Number.isFinite(event.at))).toBe(true);
   });
