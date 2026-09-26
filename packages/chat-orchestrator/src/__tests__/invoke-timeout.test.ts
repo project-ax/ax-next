@@ -19,8 +19,11 @@
  * `agents:resolve`, `proxy:open-session` and `sandbox:open-session` (registered
  * `timeoutMs: 300_000` by BOTH providers) — while the bus clock starts at
  * handler entry. A three-minute cold pod spawn puts the bus deadline two
- * minutes ahead of the orchestrator's, and no finite slack fixes it, because
- * `HookBus.fire` puts no clock on `chat:start` subscribers at all.
+ * minutes ahead of the orchestrator's, and no finite slack fixes it: setup is
+ * a chain of separately-bounded phases, and no one number measured from
+ * handler entry dominates their sum. (When this was written `chat:start`
+ * subscribers had no clock at all; TASK-514 bounded them at 60 s each, which
+ * closes the forever-hang but does not make a derived deadline correct.)
  *
  * So the orchestrator owns turn duration alone. The assertions below are the
  * two halves of that: the registration carries no finite deadline, and a turn
@@ -89,8 +92,9 @@ describe('agent:invoke service timeout', () => {
       hook 'agent:invoke' exceeded 25ms" — the same failure the shipped 120 s
       default produced on any turn over two minutes, just sooner.
 
-      The slow part is a `chat:start` subscriber for two reasons: `HookBus.
-      fire` puts no clock on subscribers, so the delay stays inside the handler
+      The slow part is a `chat:start` subscriber for two reasons: its ~120 ms
+      is far inside the 60 s `chat:start` subscriber bound (TASK-514) and has
+      no service timeout of its own, so the delay stays inside the handler
       where the timeout applies rather than blowing a nested call's own budget
       first; and it sits in the SETUP phase, which is precisely the stretch the
       orchestrator's own timer is not yet watching. That is the gap a derived

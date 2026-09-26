@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   HookBus,
   PluginError,
@@ -11,7 +11,11 @@ import {
 } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createChatOrchestratorPlugin } from '../index.js';
-import { withBrokerDefaults, sessionNeedsCredentialRotation } from '../orchestrator.js';
+import {
+  withBrokerDefaults,
+  sessionNeedsCredentialRotation,
+  CHAT_START_SUBSCRIBER_TIMEOUT_MS,
+} from '../orchestrator.js';
 
 // Default agent stub — every test gets its own copy via spread to avoid
 // accidental mutation. Mirrors @ax/agents' AgentRecord shape (the
@@ -212,6 +216,93 @@ describe('chat-orchestrator', () => {
     expect(endFires).toHaveLength(1);
     expect(endFires[0]).toEqual(outcome);
   });
+
+  // TASK-514 — `HookBus.fire` put no clock on subscribers, so a chat:start
+  // subscriber that never settled left the turn pending FOREVER: no throw, no
+  // settle, no timeout. The turn must now proceed past it.
+  it('a chat:start subscriber that never settles cannot hang the turn', async () => {
+    const mocks = buildMocks({
+      // End the turn right after chat:start with a quick, recognisable outcome:
+      // reaching agents:resolve at all is the proof the turn got past the hang.
+      agentsResolve: async () => {
+        throw new PluginError({ code: 'forbidden', plugin: 'agents', message: 'nope' });
+      },
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
+          chatTimeoutMs: 5_000,
+          chatStartSubscriberTimeoutMs: 20,
+        }),
+      ],
+    });
+    h.bus.subscribe('chat:start', '@ax/test-hanger', () => new Promise<never>(() => {}));
+    const endFires: AgentOutcome[] = [];
+    h.bus.subscribe('chat:end', 'obs', async (_ctx, p: unknown) => {
+      endFires.push((p as { outcome: AgentOutcome }).outcome);
+      return undefined;
+    });
+
+    const invoked = h.bus.call<unknown, AgentOutcome>('agent:invoke', silentCtx(), {
+      message: { role: 'user', content: 'hi' },
+    });
+    const outcome = await Promise.race([
+      invoked,
+      new Promise<'still-pending'>((r) => setTimeout(() => r('still-pending'), 2_000)),
+    ]);
+
+    expect(outcome, 'the turn must not stay pending behind a hung subscriber').toEqual({
+      kind: 'terminated',
+      reason: 'agent-resolve:forbidden',
+      error: expect.anything(),
+    });
+    expect(mocks.calls.agentsResolve).toBe(1);
+    expect(endFires).toHaveLength(1);
+  });
+
+  it('bounds chat:start at CHAT_START_SUBSCRIBER_TIMEOUT_MS by default', async () => {
+    // The regression above passes an explicit bound so it need not wait a
+    // minute. This pins that production — no override — is bounded too.
+    const mocks = buildMocks({
+      agentsResolve: async () => {
+        throw new PluginError({ code: 'forbidden', plugin: 'agents', message: 'nope' });
+      },
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    const fireSpy = vi.spyOn(h.bus, 'fire');
+    await h.bus.call('agent:invoke', silentCtx(), {
+      message: { role: 'user', content: 'hi' },
+    });
+    const startFire = fireSpy.mock.calls.find((c) => c[0] === 'chat:start');
+    expect(startFire?.[3]).toEqual({ subscriberTimeoutMs: CHAT_START_SUBSCRIBER_TIMEOUT_MS });
+    expect(Number.isFinite(CHAT_START_SUBSCRIBER_TIMEOUT_MS)).toBe(true);
+  });
+
+  for (const bad of [-1, Number.NaN]) {
+    it(`refuses chatStartSubscriberTimeoutMs=${bad} at init`, async () => {
+      await expect(
+        createTestHarness({
+          services: buildMocks().services,
+          plugins: [
+            createChatOrchestratorPlugin({
+              runnerBinaries: { 'claude-sdk': '/irrelevant' },
+              chatStartSubscriberTimeoutMs: bad,
+            }),
+          ],
+        }),
+      ).rejects.toThrow(/chatStartSubscriberTimeoutMs/);
+    });
+  }
 
   it('happy path: fake sandbox fires chat:end with a complete outcome; orchestrator returns it', async () => {
     const expectedOutcome: AgentOutcome = {

@@ -26,7 +26,9 @@ export const DEFAULT_SERVICE_TIMEOUT_MS = 120_000;
  * — and then fail with `service hook 'agent:invoke' exceeded 120000ms`. That
  * message names the OUTERMOST call, which is the one thing an operator already
  * knew. The thing actually stuck was a subscriber several frames down, and
- * `fire()` has no timeout at all, so it was never going to name itself.
+ * `fire()` had no timeout at all, so it was never going to name itself.
+ * (Since TASK-514 a caller may bound its subscribers with
+ * `subscriberTimeoutMs`; the default is still unbounded.)
  *
  * Three properties matter, and each one is load-bearing:
  *
@@ -92,6 +94,24 @@ interface RegisteredSubscriber {
   handler: SubscriberHandler;
 }
 
+/** Per-call options for `HookBus.fire`. */
+export interface FireOptions {
+  /**
+   * Bound on EACH subscriber, in ms (TASK-514). A subscriber still running
+   * when it elapses is skipped — logged as `hook_subscriber_timed_out`, its
+   * result discarded — and the fire moves on. Omitted or `Infinity` means no
+   * bound. `NaN`, negatives and `-Infinity` are rejected, never treated as
+   * "no bound", for the same reason as a service `timeoutMs`.
+   */
+  subscriberTimeoutMs?: number;
+}
+
+/** How one subscriber's run ended, from `fire`'s point of view. */
+type SubscriberOutcome<P> =
+  | { kind: 'settled'; result: P | undefined | Rejection }
+  | { kind: 'failed' }
+  | { kind: 'timed-out' };
+
 /**
  * Warn through `ctx.logger` without ever becoming the reason a hook failed.
  *
@@ -134,7 +154,9 @@ function warnQuietly(
  */
 function reportSubscriberFailure(
   ctx: AgentContext,
-  bindings: { hook: string; plugin: string; err: Error },
+  // `timedOut` marks a throw that arrived AFTER the subscriber had already
+  // blown its `subscriberTimeoutMs` — the fire it belonged to has moved on.
+  bindings: { hook: string; plugin: string; err: Error; timedOut?: true },
 ): void {
   try {
     const logger = ctx?.logger;
@@ -380,39 +402,164 @@ export class HookBus {
     return before - filtered.length;
   }
 
-  async fire<P>(hookName: string, ctx: AgentContext, payload: P): Promise<FireResult<P>> {
+  /**
+   * Run ONE subscriber under a finite `timeoutMs` (the unbounded path lives
+   * inline in `fire`, see there for why).
+   *
+   * A subscriber that blows the bound is abandoned, not cancelled: JavaScript
+   * has no way to stop a promise, and `AgentContext` carries no abort signal
+   * for a subscriber to honour. So it keeps running, and what we guarantee is
+   * narrower and checkable — once the bound passes, its RESULT has no say over
+   * this fire. Its eventual return value (a transform or a veto) is discarded;
+   * a late throw is still reported, flagged `timedOut: true`, so it is never
+   * swallowed; and its stall watch stays armed until it really settles, so
+   * `_stalled` without `_slow` keeps meaning "never finished".
+   *
+   * What it can still do: anything by side effect — including MUTATING the
+   * payload object in place, since it holds the same reference later
+   * subscribers (and the caller's returned `payload`) see. That window is new
+   * with the bound: before, an in-place mutation could only land before fire
+   * returned. Subscribers are expected to return a new payload rather than
+   * mutate (every subscriber in the tree today does, or ignores the payload),
+   * so we document it rather than freeze the payload out from under them.
+   */
+  private async runBoundedSubscriber<P>(
+    sub: RegisteredSubscriber,
+    hookName: string,
+    ctx: AgentContext,
+    current: P,
+    timeoutMs: number,
+  ): Promise<SubscriberOutcome<P>> {
+    const settleStallWatch = this.watchStall(
+      ctx,
+      'hook_subscriber',
+      hookName,
+      sub.plugin,
+      this.stallWarnMs,
+    );
+    let timedOut = false;
+    let run: Promise<unknown>;
+    try {
+      run = Promise.resolve(sub.handler(ctx, current));
+    } catch (err) {
+      // A non-async handler can throw synchronously; treat it like any throw.
+      run = Promise.reject(err);
+    }
+    const tracked: Promise<SubscriberOutcome<P>> = run
+      .then(
+        (result): SubscriberOutcome<P> => ({
+          kind: 'settled',
+          result: result as P | undefined | Rejection,
+        }),
+        (err: unknown): SubscriberOutcome<P> => {
+          // Isolation is the contract: a throwing subscriber is reported and
+          // the chain continues. The report must never break that contract
+          // itself — see `reportSubscriberFailure` for why it cannot throw.
+          reportSubscriberFailure(ctx, {
+            hook: hookName,
+            plugin: sub.plugin,
+            err: err instanceof Error ? err : new Error(String(err)),
+            ...(timedOut ? { timedOut: true as const } : {}),
+          });
+          return { kind: 'failed' };
+        },
+      )
+      .finally(settleStallWatch);
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<SubscriberOutcome<P>>((resolve) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        warnQuietly(ctx, 'hook_subscriber_timed_out', {
+          hook: hookName,
+          plugin: sub.plugin,
+          timeoutMs,
+        });
+        resolve({ kind: 'timed-out' });
+      }, timeoutMs);
+      // Same posture as `withTimeout`: the bound never keeps the process alive.
+      timer.unref?.();
+    });
+    try {
+      return await Promise.race([tracked, deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Run every subscriber on `hookName`, in registration order.
+   *
+   * `opts.subscriberTimeoutMs` (TASK-514) bounds EACH subscriber. It is
+   * opt-in, and the caller — the owner of the hook's latency contract — picks
+   * the value, the way a service registrar picks its own `timeoutMs` and
+   * `stallWarnMs`. A subscriber that exceeds it is named in a
+   * `hook_subscriber_timed_out` warning and SKIPPED: its effect is dropped and
+   * the remaining subscribers run. It never fails the fire. Omitted (or
+   * `Infinity`), `fire` waits for its subscribers however long they take,
+   * exactly as it always has.
+   */
+  async fire<P>(
+    hookName: string,
+    ctx: AgentContext,
+    payload: P,
+    opts?: FireOptions,
+  ): Promise<FireResult<P>> {
+    const timeoutMs = opts?.subscriberTimeoutMs ?? Number.POSITIVE_INFINITY;
+    if (!isValidTimeoutMs(timeoutMs)) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: 'core',
+        hookName,
+        message: `fire('${hookName}') subscriberTimeoutMs must be a non-negative finite number or Infinity (got ${timeoutMs})`,
+      });
+    }
     const list = this.subscribers.get(hookName) ?? [];
     let current: P = payload;
     for (const sub of list) {
       let result: P | undefined | Rejection;
-      // `fire` has no timeout — deliberately, since a subscriber's slowness
-      // must not fail the thing it is observing. That makes subscribers the
-      // one place on the bus where a hang can burn a caller's entire budget
-      // in silence, so they are exactly where the stall watch earns its keep.
-      // Subscribers keep the bus-wide threshold: `subscribe` has no options bag
-      // to carry an override, and 15s is right for them — a subscriber on a
-      // per-turn hook has no business running longer.
-      const settleStallWatch = this.watchStall(
-        ctx,
-        'hook_subscriber',
-        hookName,
-        sub.plugin,
-        this.stallWarnMs,
-      );
-      try {
-        result = (await sub.handler(ctx, current)) as P | undefined | Rejection;
-      } catch (err) {
-        // Isolation is the contract: a throwing subscriber is reported and the
-        // chain continues. The report must never break that contract itself —
-        // see `reportSubscriberFailure` for why it cannot throw.
-        reportSubscriberFailure(ctx, {
-          hook: hookName,
-          plugin: sub.plugin,
-          err: err instanceof Error ? err : new Error(String(err)),
-        });
-        continue;
-      } finally {
-        settleStallWatch();
+      if (Number.isFinite(timeoutMs)) {
+        const outcome = await this.runBoundedSubscriber(sub, hookName, ctx, current, timeoutMs);
+        if (outcome.kind !== 'settled') continue;
+        result = outcome.result;
+      } else {
+        // The unbounded path is kept exactly as it was — one `await` on the
+        // handler, nothing wrapped around it — ON PURPOSE. The bounded path
+        // costs a few extra microtask hops per subscriber, and existing fire
+        // sites have come to depend on the old ordering: measured on this
+        // branch (TASK-514), routing every subscriber through the helper's
+        // promise chain let
+        // `agent:invoke`'s caller resume before a LATER `chat:end` subscriber
+        // ran, and preset-k8s's once-per-invoke witness saw zero fires.
+        //
+        // `fire` stays unbounded by default — a subscriber's slowness must not
+        // fail the thing it is observing — which makes subscribers the one
+        // place on the bus where a hang can burn a caller's budget in silence.
+        // The stall watch names such a hang while it is happening. Subscribers
+        // keep the bus-wide stall threshold: `subscribe` has no options bag to
+        // carry an override, and 15s is right for them.
+        const settleStallWatch = this.watchStall(
+          ctx,
+          'hook_subscriber',
+          hookName,
+          sub.plugin,
+          this.stallWarnMs,
+        );
+        try {
+          result = (await sub.handler(ctx, current)) as P | undefined | Rejection;
+        } catch (err) {
+          // Isolation is the contract: a throwing subscriber is reported and
+          // the chain continues. The report must never break that contract
+          // itself — see `reportSubscriberFailure` for why it cannot throw.
+          reportSubscriberFailure(ctx, {
+            hook: hookName,
+            plugin: sub.plugin,
+            err: err instanceof Error ? err : new Error(String(err)),
+          });
+          continue;
+        } finally {
+          settleStallWatch();
+        }
       }
       if (isRejection(result)) {
         // SPREAD the subscriber's rejection; do not rebuild it. This used to

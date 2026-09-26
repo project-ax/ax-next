@@ -758,3 +758,195 @@ describe('HookBus — a subscriber failure is reported without breaking fire (TA
     expect(lines).toEqual([]);
   });
 });
+
+/**
+ * TASK-514 — a caller can put a clock on its subscribers.
+ *
+ * `fire()` used to have no timeout at all, so one subscriber that never
+ * settled left the caller pending forever: no throw, no settle, no clock.
+ * `subscriberTimeoutMs` bounds EACH subscriber. A subscriber that blows it is
+ * named in a `hook_subscriber_timed_out` warning, its effect is dropped, and
+ * the chain carries on without it.
+ */
+describe('HookBus — per-fire subscriber timeout (TASK-514)', () => {
+  interface Logged {
+    level: 'warn' | 'error';
+    msg: string;
+    bindings: Record<string, unknown>;
+  }
+
+  const capturingCtx = (sink: Logged[]) => {
+    const logger: Logger = {
+      debug: () => undefined,
+      info: () => undefined,
+      warn: (msg: string, bindings?: Record<string, unknown>) => {
+        sink.push({ level: 'warn', msg, bindings: bindings ?? {} });
+      },
+      error: (msg: string, bindings?: Record<string, unknown>) => {
+        sink.push({ level: 'error', msg, bindings: bindings ?? {} });
+      },
+      child: () => logger,
+    };
+    return makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u', logger });
+  };
+
+  const tick = (ms: number): Promise<void> =>
+    new Promise((resolve) => setTimeout(resolve, ms));
+
+  /** Resolve to 'pending' if `p` has not settled within `ms`. */
+  const settledWithin = async <T>(p: Promise<T>, ms: number): Promise<T | 'pending'> =>
+    Promise.race([p, tick(ms).then(() => 'pending' as const)]);
+
+  it('a subscriber that never settles cannot leave the fire pending', async () => {
+    const logged: Logged[] = [];
+    const bus = new HookBus({ stallWarnMs: Number.POSITIVE_INFINITY });
+    const ran: string[] = [];
+    bus.subscribe('chat:start', '@ax/test-hanger', () => new Promise<never>(() => {}));
+    bus.subscribe<{ n: number }>('chat:start', 'after', async (_ctx, p) => {
+      ran.push('after');
+      return { n: p.n + 1 };
+    });
+
+    const res = await settledWithin(
+      bus.fire('chat:start', capturingCtx(logged), { n: 1 }, { subscriberTimeoutMs: 20 }),
+      500,
+    );
+
+    expect(res, 'the bound must end the wait').toEqual({ rejected: false, payload: { n: 2 } });
+    // The subscriber after the hung one still ran.
+    expect(ran).toEqual(['after']);
+    // And the hung one is NAMED, so the skip is not silent.
+    expect(logged).toEqual([
+      {
+        level: 'warn',
+        msg: 'hook_subscriber_timed_out',
+        bindings: { hook: 'chat:start', plugin: '@ax/test-hanger', timeoutMs: 20 },
+      },
+    ]);
+  });
+
+  it('without the option, fire is unbounded exactly as before', async () => {
+    // Back-compat: every existing fire site passes no option and must keep
+    // waiting for its subscribers.
+    const bus = new HookBus({ stallWarnMs: Number.POSITIVE_INFINITY });
+    bus.subscribe(
+      'h',
+      'slow',
+      () => new Promise<undefined>((r) => setTimeout(() => r(undefined), 80)),
+    );
+    const res = await settledWithin(bus.fire('h', silentCtx(), {}), 40);
+    expect(res).toBe('pending');
+  });
+
+  it('a subscriber that settles inside the bound is untouched', async () => {
+    const logged: Logged[] = [];
+    const bus = new HookBus({ stallWarnMs: Number.POSITIVE_INFINITY });
+    bus.subscribe<{ n: number }>('h', 'quick', async (_ctx, p) => {
+      await tick(5);
+      return { n: p.n * 3 };
+    });
+    await expect(
+      bus.fire('h', capturingCtx(logged), { n: 2 }, { subscriberTimeoutMs: 200 }),
+    ).resolves.toEqual({ rejected: false, payload: { n: 6 } });
+    expect(logged).toEqual([]);
+  });
+
+  it('a veto that settles inside the bound still short-circuits', async () => {
+    const bus = new HookBus({ stallWarnMs: Number.POSITIVE_INFINITY });
+    bus.subscribe('h', 'vetoer', async () => reject({ reason: 'no' }));
+    const res = await bus.fire('h', silentCtx(), {}, { subscriberTimeoutMs: 200 });
+    expect(res).toMatchObject({ rejected: true, reason: 'no', source: 'vetoer' });
+  });
+
+  it('a late veto or transform from a timed-out subscriber is discarded', async () => {
+    const bus = new HookBus({ stallWarnMs: Number.POSITIVE_INFINITY });
+    bus.subscribe('h', 'late-veto', async () => {
+      await tick(60);
+      return reject({ reason: 'too late' });
+    });
+    bus.subscribe<{ n: number }>('h', 'late-transform', async () => {
+      await tick(60);
+      return { n: 999 };
+    });
+    const res = await bus.fire('h', silentCtx(), { n: 1 }, { subscriberTimeoutMs: 10 });
+    expect(res).toEqual({ rejected: false, payload: { n: 1 } });
+  });
+
+  it('a timed-out subscriber that later throws is still reported, flagged as late', async () => {
+    const logged: Logged[] = [];
+    const bus = new HookBus({ stallWarnMs: Number.POSITIVE_INFINITY });
+    bus.subscribe('h', '@ax/test-late-thrower', async () => {
+      await tick(40);
+      throw new Error('late failure');
+    });
+    await bus.fire('h', capturingCtx(logged), {}, { subscriberTimeoutMs: 10 });
+    await tick(80);
+    expect(logged.map((l) => l.msg)).toEqual([
+      'hook_subscriber_timed_out',
+      'hook_subscriber_failed',
+    ]);
+    expect(logged[1]!.bindings).toMatchObject({
+      hook: 'h',
+      plugin: '@ax/test-late-thrower',
+      timedOut: true,
+    });
+    expect((logged[1]!.bindings.err as Error).message).toBe('late failure');
+  });
+
+  it('keeps the stall/slow pair truthful for a subscriber that outlives its bound', async () => {
+    // `_stalled` with no `_slow` means "never finished". A timed-out subscriber
+    // that DOES finish later must still emit its `_slow`, and only then.
+    const logged: Logged[] = [];
+    const bus = new HookBus({ stallWarnMs: 20 });
+    bus.subscribe('h', 'p', async () => {
+      await tick(100);
+      return undefined;
+    });
+    await bus.fire('h', capturingCtx(logged), {}, { subscriberTimeoutMs: 50 });
+    expect(logged.map((l) => l.msg)).toEqual([
+      'hook_subscriber_stalled',
+      'hook_subscriber_timed_out',
+    ]);
+    await tick(120);
+    expect(logged.map((l) => l.msg)).toEqual([
+      'hook_subscriber_stalled',
+      'hook_subscriber_timed_out',
+      'hook_subscriber_slow',
+    ]);
+  });
+
+  it('never fails the fire because the ctx had no usable logger', async () => {
+    const bus = new HookBus({ stallWarnMs: Number.POSITIVE_INFINITY });
+    bus.subscribe('h', 'hanger', () => new Promise<never>(() => {}));
+    const loggerless = { sessionId: 's', agentId: 'a', userId: 'u' } as unknown as ReturnType<
+      typeof silentCtx
+    >;
+    await expect(
+      bus.fire('h', loggerless, { n: 1 }, { subscriberTimeoutMs: 10 }),
+    ).resolves.toEqual({ rejected: false, payload: { n: 1 } });
+  });
+
+  for (const bad of [-1, Number.NaN, Number.NEGATIVE_INFINITY]) {
+    it(`rejects subscriberTimeoutMs=${bad} loudly instead of silently unbounding`, async () => {
+      const bus = new HookBus();
+      bus.subscribe('h', 'p', async () => undefined);
+      await expect(
+        bus.fire('h', silentCtx(), {}, { subscriberTimeoutMs: bad }),
+      ).rejects.toMatchObject({ name: 'PluginError', code: 'invalid-payload' });
+    });
+  }
+
+  it('Infinity is the explicit "no bound" value', async () => {
+    const bus = new HookBus({ stallWarnMs: Number.POSITIVE_INFINITY });
+    bus.subscribe(
+      'h',
+      'slow',
+      () => new Promise<undefined>((r) => setTimeout(() => r(undefined), 80)),
+    );
+    const res = await settledWithin(
+      bus.fire('h', silentCtx(), {}, { subscriberTimeoutMs: Number.POSITIVE_INFINITY }),
+      40,
+    );
+    expect(res).toBe('pending');
+  });
+});

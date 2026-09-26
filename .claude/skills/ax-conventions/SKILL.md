@@ -158,6 +158,7 @@ Two primitives, deliberately distinct.
 - Each subscriber returns modified payload, passes through unchanged, or calls `reject({ reason })`.
 - **Rejection short-circuits** with a structured `PluginError` — core lifts to `chat_terminated`.
 - **Throws are isolated** — caught + logged as `hook_subscriber_failed` (plugin name + hook + error) + chat continues. One bad subscriber never tanks the host.
+- **No clock by default.** A caller that cannot afford to wait forever passes `hooks.fire(event, ctx, payload, { subscriberTimeoutMs })`: each subscriber still running at the bound is logged as `hook_subscriber_timed_out` and skipped (its late result discarded, a late throw still reported with `timedOut: true`). It is not cancelled — it keeps running — so the bound limits its say over this fire, not its side effects. `chat:start` is bounded this way (`CHAT_START_SUBSCRIBER_TIMEOUT_MS`, TASK-514).
 
 ### Choosing between them
 
