@@ -278,6 +278,91 @@ describe('a failed identity read never seeds the placeholder (TASK-553)', () => 
   });
 });
 
+describe('a placeholder agent.md is repaired once identity is readable (TASK-556)', () => {
+  // The exact bytes an earlier chat:start seeded for a never-identified agent
+  // (or, before TASK-553, for one whose identity read blipped).
+  async function poisonedAgentMd(): Promise<string> {
+    const tier = createTier();
+    await withMemoryPlugin(tier.bus);
+    await tier.bus.fire('chat:start', ctx, {});
+    const raw = dec(tier.head().get('memory/system/agent.md')!);
+    expect(raw).toContain('has not authored its identity');
+    return raw;
+  }
+
+  it('starting from the poisoned state: the next turn rewrites agent.md with the real identity, touching nothing else', async () => {
+    const placeholder = await poisonedAgentMd();
+    const tier = createTier();
+    const seeded: Record<string, string> = {
+      ...otherDocs(3),
+      '.ax/IDENTITY.md': 'I am Atlas, a careful deployer.',
+    };
+    for (const p of SEED_TIER_PATHS) seeded[p] = `existing ${p}`;
+    seeded['memory/system/agent.md'] = placeholder;
+    const v = tier.seed(seeded);
+    await withMemoryPlugin(tier.bus);
+
+    await tier.bus.fire('chat:start', ctx, {});
+
+    expect(tier.calls.applies).toHaveLength(1);
+    const changes = tier.calls.applies[0]!.changes;
+    expect(changes.map((c) => `${c.kind}:${c.path}`)).toEqual(['put:memory/system/agent.md']);
+    const agentMd = dec(tier.head().get('memory/system/agent.md')!);
+    expect(agentMd).toContain('I am Atlas, a careful deployer.');
+    expect(agentMd).not.toContain('has not authored its identity');
+    // The identity came from the snapshot the seed files were read from.
+    const identityReads = tier.calls.reads.filter(isIdentityRead);
+    expect(identityReads.length).toBeGreaterThan(0);
+    for (const r of identityReads) expect(r.version).toBe(v);
+
+    // Once repaired, later turns are back to zero identity reads.
+    tier.calls.reads.length = 0;
+    tier.calls.applies.length = 0;
+    await tier.bus.fire('chat:start', ctx, {});
+    expect(tier.calls.reads.filter(isIdentityRead)).toEqual([]);
+    expect(tier.calls.applies).toEqual([]);
+  });
+
+  it('a poisoned agent that still has no identity: no write, placeholder kept', async () => {
+    const placeholder = await poisonedAgentMd();
+    const tier = createTier();
+    const seeded: Record<string, string> = {};
+    for (const p of SEED_TIER_PATHS) seeded[p] = `existing ${p}`;
+    seeded['memory/system/agent.md'] = placeholder;
+    tier.seed(seeded);
+    await withMemoryPlugin(tier.bus);
+
+    await tier.bus.fire('chat:start', ctx, {});
+
+    expect(tier.calls.applies).toEqual([]);
+    expect(dec(tier.head().get('memory/system/agent.md')!)).toBe(placeholder);
+  });
+
+  it('a poisoned agent whose identity read throws: nothing is written and the next turn repairs it', async () => {
+    const placeholder = await poisonedAgentMd();
+    const tier = createTier();
+    const seeded: Record<string, string> = { '.ax/IDENTITY.md': 'I am Atlas.' };
+    for (const p of SEED_TIER_PATHS) seeded[p] = `existing ${p}`;
+    seeded['memory/system/agent.md'] = placeholder;
+    tier.seed(seeded);
+    await withMemoryPlugin(tier.bus);
+    let failures = 0;
+    tier.onBeforeRead((input) => {
+      if (input.path === '.ax/IDENTITY.md' && failures === 0) {
+        failures++;
+        throw new Error('storage backend blip');
+      }
+    });
+
+    await tier.bus.fire('chat:start', ctx, {});
+    expect(failures).toBe(1);
+    expect(tier.calls.applies).toEqual([]);
+
+    await tier.bus.fire('chat:start', ctx, {});
+    expect(dec(tier.head().get('memory/system/agent.md')!)).toContain('I am Atlas.');
+  });
+});
+
 describe('hydrateAgentTier pins every read to one snapshot (TASK-513)', () => {
   it('full mode: every read after the first found one carries its version; baseVersion equals it', async () => {
     const tier = createTier();

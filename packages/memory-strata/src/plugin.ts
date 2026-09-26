@@ -21,7 +21,13 @@ import {
   noCredentialFields,
   NO_CREDENTIAL_EVENT,
 } from './llm-failure.js';
-import { BOOTSTRAP_SEED_FILES, bootstrapMemoryTree } from './bootstrap.js';
+import { join } from 'node:path';
+import {
+  BOOTSTRAP_SEED_FILES,
+  bootstrapMemoryTree,
+  isPlaceholderAgentFile,
+  readRegularFile,
+} from './bootstrap.js';
 import { systemFile } from './paths.js';
 import { composeIdentityFromFiles, composeIdentityFromTier } from './compose-identity.js';
 import { runConsolidation, type ConsolidationInput, type ConsolidationResult } from './consolidator.js';
@@ -605,6 +611,14 @@ const SEED_AGENT_TIER_PATH = scratchRelToTierPath(systemFile('agent'));
  */
 type BootstrapStopStage = 'resolved' | 'hydrated' | 'seeded';
 
+/** Does this chat:start need the agent's composed identity? Only when
+ *  `system/agent.md` is absent (it will be created) or still holds the
+ *  placeholder (it will be repaired, TASK-556) — bootstrap writes it in no
+ *  other case, so any other turn skips the identity reads. */
+function needsIdentity(existingAgentMd: string | undefined): boolean {
+  return existingAgentMd === undefined || isPlaceholderAgentFile(existingAgentMd);
+}
+
 async function handleChatStart(
   bus: HookBus,
   ctx: AgentContext,
@@ -641,17 +655,20 @@ async function handleChatStart(
       if (signal.aborted) return 'hydrated';
       // Identity lives in the tier at `.ax/IDENTITY.md` + `.ax/SOUL.md`, not on
       // the host FS — read it through the workspace hook (owner-routed by ctx).
-      // It is only ever the body of a NEW `system/agent.md`; once that file
-      // exists bootstrap never rewrites it, so skip both reads in the (every
-      // turn after the first) case where the hydrate found it. When read, pin
-      // to the snapshot the memory came from. A read that throws propagates
+      // It is only ever the body of a NEW `system/agent.md`, or of one still
+      // holding the placeholder (TASK-556 repair); any other agent.md is never
+      // rewritten, so skip both reads in the (every turn after the first)
+      // case where the hydrate found a real one. When read, pin to the
+      // snapshot the memory came from. A read that throws propagates
       // (TASK-553): nothing is flushed, the subscriber logs
-      // memory_strata_bootstrap_failed with the agent id, and the next turn —
-      // still missing agent.md — retries, instead of this turn seeding a
-      // placeholder that bootstrap would then never replace.
-      const composedIdentity = hydrated.baseline.has(SEED_AGENT_TIER_PATH)
-        ? ''
-        : await composeIdentityFromTier(bus, ctx, hydrated.baseVersion ?? undefined);
+      // memory_strata_bootstrap_failed with the agent id, and the next turn
+      // retries, instead of this turn seeding a placeholder over a blip.
+      const existingAgent = hydrated.baseline.get(SEED_AGENT_TIER_PATH);
+      const composedIdentity = needsIdentity(
+        existingAgent === undefined ? undefined : new TextDecoder('utf-8').decode(existingAgent),
+      )
+        ? await composeIdentityFromTier(bus, ctx, hydrated.baseVersion ?? undefined)
+        : '';
       await bootstrapMemoryTree({
         workspaceRoot: hydrated.scratchRoot,
         composedIdentity,
@@ -675,8 +692,15 @@ async function handleChatStart(
   // TASK-142: seed `system/agent.md` from the agent's COMPOSED identity (its
   // own `.ax/IDENTITY.md` + `.ax/SOUL.md`), not the dropped `system_prompt`
   // column. Empty when the agent hasn't authored its identity yet (still
-  // bootstrapping) — bootstrapMemoryTree seeds a placeholder body in that case.
-  const composedIdentity = await composeIdentityFromFiles(ctx.workspace.rootPath);
+  // bootstrapping) — bootstrapMemoryTree seeds a placeholder body in that case,
+  // and replaces it on a later turn that composes a real one (TASK-556). Read
+  // identity only when agent.md is absent or still the placeholder: a read
+  // error now fails the seed (TASK-556), and it must not fail every turn of a
+  // warm agent whose agent.md bootstrap would never rewrite anyway.
+  const existingAgent = await readRegularFile(join(ctx.workspace.rootPath, systemFile('agent')));
+  const composedIdentity = needsIdentity(existingAgent)
+    ? await composeIdentityFromFiles(ctx.workspace.rootPath)
+    : '';
   if (signal.aborted) return 'resolved';
   await bootstrapMemoryTree({
     workspaceRoot: ctx.workspace.rootPath,

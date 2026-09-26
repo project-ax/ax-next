@@ -208,6 +208,40 @@ describe('createMemoryStrataPlugin', () => {
     expect(raw).toContain('not authored its identity yet');
   });
 
+  it('TASK-556: starting from a placeholder agent.md, the next chat:start repairs it once IDENTITY.md exists', async () => {
+    const bus = buildBus({ llmText: '[]', agent: fakeAgent() });
+    const plugin = createMemoryStrataPlugin();
+    await plugin.init?.({ bus, config: {} });
+    await bus.fire('chat:start', makeCtx(workspaceRoot), {});
+    const agentPath = join(workspaceRoot, systemFile('agent'));
+    expect(await readFile(agentPath, 'utf8')).toContain('not authored its identity yet');
+    const userBefore = await readFile(join(workspaceRoot, systemFile('user')), 'utf8');
+
+    await writeAxIdentity(workspaceRoot, { identity: 'I am Atlas.', soul: 'I value rigor.' });
+    await bus.fire('chat:start', makeCtx(workspaceRoot), {});
+
+    const raw = await readFile(agentPath, 'utf8');
+    expect(raw).toContain('I am Atlas.');
+    expect(raw).toContain('I value rigor.');
+    expect(raw).not.toContain('not authored its identity yet');
+    expect(await readFile(join(workspaceRoot, systemFile('user')), 'utf8')).toBe(userBefore);
+  });
+
+  it('TASK-556: an agent.md holding real content is never rewritten, even when IDENTITY.md changes', async () => {
+    await writeAxIdentity(workspaceRoot, { identity: 'I am Atlas.' });
+    const bus = buildBus({ llmText: '[]', agent: fakeAgent() });
+    const plugin = createMemoryStrataPlugin();
+    await plugin.init?.({ bus, config: {} });
+    await bus.fire('chat:start', makeCtx(workspaceRoot), {});
+    const agentPath = join(workspaceRoot, systemFile('agent'));
+    const before = await readFile(agentPath, 'utf8');
+
+    await writeAxIdentity(workspaceRoot, { identity: 'I am Atlas, renamed.' });
+    await bus.fire('chat:start', makeCtx(workspaceRoot), {});
+
+    expect(await readFile(agentPath, 'utf8')).toBe(before);
+  });
+
   it('runs the Observer on chat:end and writes to inbox', async () => {
     const bus = buildBus({
       llmText: JSON.stringify([

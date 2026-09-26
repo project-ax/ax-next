@@ -38,10 +38,19 @@ import type {
  * KiB. */
 const MAX_AX_FILE_BYTES = 256 * 1024;
 
+/** An errno that means "this file is not there" — the only failure a read may
+ * report as absent. ENOTDIR covers a path component that is a file, not a dir. */
+function isAbsentError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | null)?.code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
+}
+
 /** Read one `.ax/` identity file under `<workspaceRoot>/permanent/.ax/`. Returns
- * undefined on any miss (absent, a symlink / non-regular file, over the cap, or
- * a read error) — the `lstat`-before-read guard rejects a symlink so its target
- * is never opened. */
+ * undefined on a miss (absent, a symlink / non-regular file, or over the cap) —
+ * the `lstat`-before-read guard rejects a symlink so its target is never
+ * opened. Any OTHER error (EACCES, EIO, ...) throws (TASK-556), for the same
+ * reason the tier read does (TASK-553): the result becomes the body of a NEW
+ * `system/agent.md`, and reading a blip as "absent" seeds the placeholder. */
 async function readAxFile(
   workspaceRoot: string,
   name: string,
@@ -50,8 +59,9 @@ async function readAxFile(
   let info;
   try {
     info = await lstat(path);
-  } catch {
-    return undefined; // ENOENT (the common case) or any lstat error → absent.
+  } catch (err) {
+    if (isAbsentError(err)) return undefined;
+    throw new Error(`identity read failed for .ax/${name}`, { cause: err });
   }
   // Reject a symlink (isFile() is false under lstat), directory, or device — a
   // symlinked `.ax/SOUL.md` could point at a secret outside the workspace.
@@ -59,8 +69,10 @@ async function readAxFile(
   if (info.size > MAX_AX_FILE_BYTES) return undefined;
   try {
     return await readFile(path, 'utf8');
-  } catch {
-    return undefined;
+  } catch (err) {
+    // Deleted between the lstat and the read: absent, same as never there.
+    if (isAbsentError(err)) return undefined;
+    throw new Error(`identity read failed for .ax/${name}`, { cause: err });
   }
 }
 
@@ -70,6 +82,7 @@ async function readAxFile(
  * in normal mode. Each section is inject-if-present; the heading appears only
  * when its body is present. Returns '' when neither file exists (a never-
  * identified / still-bootstrapping agent) — the caller seeds a placeholder body.
+ * Rejects on a read error that is not "absent" (see {@link readAxFile}).
  */
 export async function composeIdentityFromFiles(
   workspaceRoot: string,

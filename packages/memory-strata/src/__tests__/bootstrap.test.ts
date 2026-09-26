@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { lstat, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { load as yamlLoad } from 'js-yaml';
@@ -198,5 +198,72 @@ describe('BOOTSTRAP_SEED_FILES drift guard (TASK-513)', () => {
     expect(mod.BOOTSTRAP_SEED_FILES).toBeDefined();
     expect([...(mod.BOOTSTRAP_SEED_FILES ?? [])].sort()).toEqual([...created].sort());
     expect(created.length).toBe(4);
+  });
+});
+
+// TASK-556: an agent.md seeded with the placeholder (a still-bootstrapping
+// agent, or one poisoned by a pre-TASK-553 read blip) is repaired once a real
+// identity is composed. Anything else in agent.md is the agent's and is kept.
+describe('placeholder agent.md repair (TASK-556)', () => {
+  const agentPath = (): string => join(workspaceRoot, systemFile('agent'));
+
+  it('rewrites a placeholder agent.md when a real identity is composed, and reports it', async () => {
+    await bootstrapMemoryTree({ workspaceRoot, composedIdentity: '' });
+    expect(await readFile(agentPath(), 'utf8')).toContain('has not authored its identity');
+
+    const out = await bootstrapMemoryTree({ workspaceRoot, composedIdentity: '## Identity\n\nI am Atlas.' });
+
+    const raw = await readFile(agentPath(), 'utf8');
+    expect(raw).toContain('I am Atlas.');
+    expect(raw).not.toContain('has not authored its identity');
+    expect(splitFrontmatter(raw).fm['type']).toBe('system/agent');
+    expect(out.created).toEqual([]);
+    expect(out.repaired).toEqual([systemFile('agent')]);
+    // The atomic replace leaves no temp file beside it.
+    expect((await readdir(join(workspaceRoot, MEMORY_ROOT, 'system'))).sort()).toEqual([
+      'agent.md',
+      'map.md',
+      'session.md',
+      'user.md',
+    ]);
+  });
+
+  it('leaves a placeholder alone while the composed identity is still empty', async () => {
+    await bootstrapMemoryTree({ workspaceRoot, composedIdentity: '' });
+    const before = await readFile(agentPath(), 'utf8');
+
+    const out = await bootstrapMemoryTree({ workspaceRoot, composedIdentity: '   ' });
+
+    expect(await readFile(agentPath(), 'utf8')).toBe(before);
+    expect(out.repaired).toEqual([]);
+  });
+
+  it('never rewrites an agent.md that holds anything but the exact placeholder', async () => {
+    await bootstrapMemoryTree({ workspaceRoot, composedIdentity: '' });
+    const edited = (await readFile(agentPath(), 'utf8')).replace(
+      '_The agent has not authored its identity yet._',
+      '_The agent has not authored its identity yet._\n\nNote to self: I like tea.',
+    );
+    await writeFile(agentPath(), edited, 'utf8');
+
+    const out = await bootstrapMemoryTree({ workspaceRoot, composedIdentity: '## Identity\n\nI am Atlas.' });
+
+    expect(await readFile(agentPath(), 'utf8')).toBe(edited);
+    expect(out.repaired).toEqual([]);
+  });
+
+  it('a symlinked agent.md is not the placeholder: neither it nor its target is written', async () => {
+    await bootstrapMemoryTree({ workspaceRoot, composedIdentity: '' });
+    const target = join(workspaceRoot, 'outside.md');
+    await writeFile(target, await readFile(agentPath(), 'utf8'), 'utf8');
+    const targetBefore = await readFile(target, 'utf8');
+    await rm(agentPath());
+    await symlink(target, agentPath());
+
+    const out = await bootstrapMemoryTree({ workspaceRoot, composedIdentity: '## Identity\n\nI am Atlas.' });
+
+    expect(out.repaired).toEqual([]);
+    expect(await readFile(target, 'utf8')).toBe(targetBefore);
+    expect((await lstat(agentPath())).isSymbolicLink()).toBe(true);
   });
 });
