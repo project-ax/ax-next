@@ -372,13 +372,15 @@ async function readResolvedTestBudgets(pkgDir) {
  */
 async function readConfigBudgets(configPath) {
   if (!existsSync(configPath)) return { kind: 'missing', configPath };
-  let mod;
+  let resolved;
   try {
-    mod = await import(/* @vite-ignore */ pathToFileURL(configPath).href);
+    const mod = await import(/* @vite-ignore */ pathToFileURL(configPath).href);
+    // Inside the try (TASK-575 review): a default export that is a REJECTING
+    // promise must be reported as unreadable, not crash the whole guard.
+    resolved = await mod.default;
   } catch (err) {
     return { kind: 'unreadable', configPath, why: `import threw: ${err.message}` };
   }
-  const resolved = await mod.default;
   if (typeof resolved !== 'object' || resolved === null) {
     return { kind: 'unreadable', configPath, why: `default export is ${typeof resolved}, not an object` };
   }
@@ -1446,6 +1448,16 @@ describe('the scan catches a NEW package, and the config read is a read (TASK-40
         ['secondary-include-source', e2eConfig(180_000, "  includeSource: ['src/**/*.ts'],"), 'includeSource'],
         ['secondary-dir', e2eConfig(180_000, "  dir: 'src',"), 'sets test.dir'],
         ['secondary-negated', e2eConfig(180_000, "  include: ['!x/**'],"), 'negated'],
+        ['secondary-rejects', 'export default Promise.reject(new Error("late boom"));', 'late boom'],
+        ['secondary-workspace', e2eConfig(180_000, "  workspace: ['a'],"), 'sets test.workspace'],
+        ['secondary-test-root', e2eConfig(180_000, "  root: 'src',"), 'sets test.root'],
+        [
+          'secondary-top-root',
+          "export default { root: 'src', test: { testTimeout: 240_000, hookTimeout: 180_000 } };",
+          'sets root',
+        ],
+        ['secondary-include-type', e2eConfig(180_000, "  include: 'src/**/*.test.ts',"), 'test.include is not an array'],
+        ['secondary-exclude-type', e2eConfig(180_000, '  exclude: [42],'), 'test.exclude is not an array'],
       ];
       for (const [name, text, why] of cases) {
         const { config } = await resolveFixture(name, {
@@ -1463,6 +1475,10 @@ describe('the scan catches a NEW package, and the config read is a read (TASK-40
         ['script-variable', { 'test:e2e': 'vitest run --config $CFG' }, 'cannot resolve: $CFG'],
         ['script-root', { 'test:e2e': 'vitest run --root e2e' }, 'cannot map files through'],
         ['script-project', { 'test:e2e': 'vitest run --project e2e' }, 'cannot map files through'],
+        ['script-dir', { 'test:e2e': 'vitest run --dir src' }, 'cannot map files through'],
+        ['script-workspace', { 'test:e2e': 'vitest run --workspace w.ts' }, 'cannot map files through'],
+        ['script-r', { 'test:e2e': 'vitest run -r e2e' }, 'cannot map files through'],
+        ['script-root-eq', { 'test:e2e': 'vitest run --root=e2e' }, 'cannot map files through'],
       ];
       for (const [name, scripts, why] of cases) {
         const { config } = await resolveFixture(name, { e2eSource: "it('x', () => {});", scripts });
