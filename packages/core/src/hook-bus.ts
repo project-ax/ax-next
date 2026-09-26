@@ -409,11 +409,19 @@ export class HookBus {
    * A subscriber that blows the bound is abandoned, not cancelled: JavaScript
    * has no way to stop a promise, and `AgentContext` carries no abort signal
    * for a subscriber to honour. So it keeps running, and what we guarantee is
-   * narrower and checkable — once the bound passes, nothing it does can reach
-   * back into this fire. Its eventual return value (a transform or a veto) is
-   * discarded; a late throw is still reported, flagged `timedOut: true`, so it
-   * is never swallowed; and its stall watch stays armed until it really
-   * settles, so `_stalled` without `_slow` keeps meaning "never finished".
+   * narrower and checkable — once the bound passes, its RESULT has no say over
+   * this fire. Its eventual return value (a transform or a veto) is discarded;
+   * a late throw is still reported, flagged `timedOut: true`, so it is never
+   * swallowed; and its stall watch stays armed until it really settles, so
+   * `_stalled` without `_slow` keeps meaning "never finished".
+   *
+   * What it can still do: anything by side effect — including MUTATING the
+   * payload object in place, since it holds the same reference later
+   * subscribers (and the caller's returned `payload`) see. That window is new
+   * with the bound: before, an in-place mutation could only land before fire
+   * returned. Subscribers are expected to return a new payload rather than
+   * mutate (every subscriber in the tree today does, or ignores the payload),
+   * so we document it rather than freeze the payload out from under them.
    */
   private async runBoundedSubscriber<P>(
     sub: RegisteredSubscriber,

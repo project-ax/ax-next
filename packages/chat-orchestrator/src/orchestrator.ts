@@ -876,9 +876,15 @@ export const AGENT_INVOKE_TIMEOUT_MS = Number.POSITIVE_INFINITY;
  *
  * WHY 60 s. Four times the 15 s stall watch, so a slow subscriber has already
  * named itself (`hook_subscriber_stalled`) with 45 s of runway before it is
- * cut off, and comfortably above memory-strata's healthy bootstrap (a tier
- * hydrate + flush, each a bounded service call). It is a hang backstop, not a
- * latency budget.
+ * cut off. It is a hang backstop, not a latency budget — and it is not
+ * measured against a real cold start: memory-strata's k8s bootstrap fans out
+ * into a `workspace:list`, N `workspace:read`s and two `workspace:apply`s,
+ * each separately bounded at 120 s with nothing bounding their sum. A large
+ * or cold tier can therefore be cut off while HEALTHY, not hung. That costs
+ * only same-turn visibility of the memory seed (the flush still completes in
+ * the background, and the next turn retries), and the `hook_subscriber_
+ * timed_out` line makes it countable — if it shows up on healthy first turns,
+ * raise this, do not remove it.
  *
  * WHAT IT DOES NOT DO: stop the subscriber. It keeps running in the background
  * (there is no cancellation to give it), so a subscriber that hangs on every
