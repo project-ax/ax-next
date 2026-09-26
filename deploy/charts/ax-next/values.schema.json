@@ -117,6 +117,21 @@
             "enabled": {
               "type": "boolean",
               "description": "Run the bundled Bitnami PostgreSQL subchart. This one is schema-ONLY: it is also the subchart's `condition:` in Chart.yaml, and helm's condition resolver silently keeps a dependency ENABLED when the value is not a real bool — no template can intercept that."
+            },
+            "init": {
+              "type": "object",
+              "properties": {
+                "readyTimeoutSeconds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "How long the pg-init hook Job waits for the embedded postgres to accept connections before failing (TASK-563)."
+                },
+                "activeDeadlineSeconds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Job-wide deadline for the pg-init hook Job, across restarts. Must exceed readyTimeoutSeconds."
+                }
+              }
             }
           }
         },

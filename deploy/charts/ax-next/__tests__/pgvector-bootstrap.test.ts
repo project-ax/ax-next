@@ -172,6 +172,100 @@ describeIfHelm('pgvector bootstrap Job — render (TASK-458)', () => {
   });
 });
 
+/** `helm template` expected to FAIL; returns its stderr so the reason can be asserted. */
+function helmTemplateError(extraArgs: readonly string[]): string {
+  if (!HELM) throw new Error('helm not available');
+  const r = spawnSync(
+    HELM,
+    ['template', RELEASE, chartDir, '--namespace', 'default', ...REQUIRED, ...extraArgs],
+    { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
+  );
+  if (r.status === 0) throw new Error(`helm template unexpectedly succeeded with ${extraArgs.join(' ')}`);
+  return r.stderr ?? '';
+}
+
+type InitBounds = { readyTimeoutSeconds: number; activeDeadlineSeconds: number };
+
+function chartInitBounds(): InitBounds {
+  const v = load(readFileSync(join(chartDir, 'values.yaml'), 'utf8')) as {
+    postgres: { embedded: { init: InitBounds } };
+  };
+  return v.postgres.embedded.init;
+}
+
+function renderedBounds(extraArgs: readonly string[] = []): { jobDeadline: unknown; scriptTimeout: number } {
+  const job = findJob(helmTemplate(extraArgs));
+  if (!job) throw new Error(`${JOB_NAME} did not render`);
+  const { script } = renderedJob(extraArgs);
+  const m = /^\s*READY_TIMEOUT_SECONDS=(\d+)\s*$/m.exec(script);
+  if (!m) throw new Error('READY_TIMEOUT_SECONDS not found in the rendered script');
+  return { jobDeadline: job.spec?.activeDeadlineSeconds, scriptTimeout: Number(m[1]) };
+}
+
+describeIfHelm('pg-init Job is bounded in time (TASK-563)', () => {
+  it('values.yaml ships sane defaults, deadline above the readiness wait', () => {
+    const { readyTimeoutSeconds, activeDeadlineSeconds } = chartInitBounds();
+    expect(Number.isInteger(readyTimeoutSeconds) && readyTimeoutSeconds > 0).toBe(true);
+    expect(Number.isInteger(activeDeadlineSeconds)).toBe(true);
+    expect(activeDeadlineSeconds).toBeGreaterThan(readyTimeoutSeconds);
+  });
+
+  it('renders both bounds from values.yaml by default', () => {
+    const { readyTimeoutSeconds, activeDeadlineSeconds } = chartInitBounds();
+    expect(renderedBounds()).toEqual({ jobDeadline: activeDeadlineSeconds, scriptTimeout: readyTimeoutSeconds });
+  });
+
+  it('honours overrides of both bounds', () => {
+    expect(
+      renderedBounds([
+        '--set', 'postgres.embedded.init.readyTimeoutSeconds=42',
+        '--set', 'postgres.embedded.init.activeDeadlineSeconds=4242',
+      ]),
+    ).toEqual({ jobDeadline: 4242, scriptTimeout: 42 });
+  });
+
+  it('the readiness loop checks its deadline and fails with a FATAL naming the knob', () => {
+    const { script } = renderedJob();
+    const loop = /until psql [^\n]*SELECT 1[^\n]*; do\n([\s\S]*?)\n\s*done/.exec(script);
+    expect(loop, 'readiness until-loop not found').not.toBeNull();
+    expect(loop![1]).toMatch(/if \[ "\$SECONDS" -ge "\$READY_DEADLINE" \]; then/);
+    expect(loop![1]).toContain('exit 1');
+    expect(loop![1]).toContain('postgres.embedded.init.readyTimeoutSeconds');
+    expect(script).toMatch(/^\s*READY_DEADLINE=\$\(\(SECONDS \+ READY_TIMEOUT_SECONDS\)\)\s*$/m);
+  });
+
+  it('bounds each connection attempt, so one black-holed connect cannot outlast the wait', () => {
+    const { script } = renderedJob();
+    const connect = script.search(/^\s*export PGCONNECT_TIMEOUT=\d+\s*$/m);
+    expect(connect).toBeGreaterThan(-1);
+    expect(connect).toBeLessThan(script.indexOf('until psql'));
+  });
+
+  it('refuses a deadline that would kill the Job before the wait can explain itself', () => {
+    const err = helmTemplateError([
+      '--set', 'postgres.embedded.init.readyTimeoutSeconds=300',
+      '--set', 'postgres.embedded.init.activeDeadlineSeconds=300',
+    ]);
+    expect(err).toContain('must be greater than readyTimeoutSeconds');
+  });
+
+  it.each([
+    ['readyTimeoutSeconds', '0'],
+    ['activeDeadlineSeconds', '0'],
+    ['readyTimeoutSeconds', '-5'],
+  ])('values.schema.json rejects %s=%s', (key, value) => {
+    const err = helmTemplateError(['--set', `postgres.embedded.init.${key}=${value}`]);
+    expect(err).toMatch(/schema/i);
+    expect(err).toContain(key);
+  });
+
+  it('values.schema.json rejects a quoted number', () => {
+    const err = helmTemplateError(['--set-string', 'postgres.embedded.init.readyTimeoutSeconds=300']);
+    expect(err).toMatch(/schema/i);
+    expect(err).toContain('readyTimeoutSeconds');
+  });
+});
+
 // ─── Behaviour: run the rendered script against real servers ─────────────────
 
 function dockerReachable(): boolean {
@@ -319,6 +413,49 @@ describeIfContainers('pgvector bootstrap Job — behaviour (TASK-458)', () => {
       expect(result.status, result.out).not.toBe(0);
       expect(result.out).toContain('FATAL: could not enable pgvector');
       expect(result.out).not.toContain('PostgreSQL initialization complete');
+    },
+    400_000,
+  );
+});
+
+describeIfContainers('pg-init Job — bounded readiness wait (TASK-563)', () => {
+  it(
+    'gives up with a FATAL when postgres never answers, inside the configured bound',
+    () => {
+      const READY = 6;
+      const job = renderedJob([
+        '--set', `postgres.embedded.init.readyTimeoutSeconds=${READY}`,
+        '--set', 'postgres.embedded.init.activeDeadlineSeconds=60',
+      ]);
+      ensureImage(job.image);
+      const id = randomBytes(4).toString('hex');
+      const net = `ax-t563-${id}`;
+      const runner = `ax-t563-job-${id}`;
+      expect(docker(['network', 'create', net]).status).toBe(0);
+      cleanup.push(['network', 'rm', net]);
+      // No server on this network at all, so the readiness probe can never
+      // succeed. The pre-TASK-563 loop spins here forever; the CLI timeout below
+      // turns that into a non-1 status instead of hanging the suite.
+      const [entrypoint, ...commandRest] = job.command;
+      cleanup.push(['rm', '-f', runner]);
+      const started = Date.now();
+      const ran = docker(
+        [
+          'run', '--name', runner, '--network', net,
+          '-e', `POSTGRES_PASSWORD=${SUPERUSER_PASSWORD}`,
+          '--entrypoint', entrypoint!,
+          job.image,
+          ...commandRest, ...job.args,
+        ],
+        90_000,
+      );
+      const elapsedS = (Date.now() - started) / 1000;
+      expect(ran.status, ran.out).toBe(1);
+      expect(ran.out).toContain(`FATAL: PostgreSQL at ${job.pgHost}:5432 was not ready after ${READY}s`);
+      expect(ran.out).toContain('Waiting for PostgreSQL...');
+      expect(ran.out).not.toContain('PostgreSQL is ready.');
+      // Container start + the bound + one probe/sleep of slack; far below the 90s kill.
+      expect(elapsedS).toBeLessThan(READY + 45);
     },
     400_000,
   );

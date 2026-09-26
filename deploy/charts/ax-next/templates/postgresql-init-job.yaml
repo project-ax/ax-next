@@ -1,6 +1,15 @@
 {{- if and (not (include "ax-next.bool" .Values.postgres.external.enabled)) (include "ax-next.bool" .Values.postgres.embedded.enabled) }}
 {{- $pgUser := .Values.postgresql.auth.username | default "ax_next" }}
 {{- $pgDb := .Values.postgresql.auth.database | default "ax_next" }}
+{{- $init := .Values.postgres.embedded.init | default dict }}
+{{- $readyTimeout := int ($init.readyTimeoutSeconds | default 300) }}
+{{- $deadline := int ($init.activeDeadlineSeconds | default 600) }}
+{{- if or (le $readyTimeout 0) (le $deadline 0) }}
+{{- fail "postgres.embedded.init.readyTimeoutSeconds and activeDeadlineSeconds must both be positive integers" }}
+{{- end }}
+{{- if le $deadline $readyTimeout }}
+{{- fail (printf "postgres.embedded.init.activeDeadlineSeconds (%d) must be greater than readyTimeoutSeconds (%d), or Kubernetes kills the Job before it can say why it gave up" $deadline $readyTimeout) }}
+{{- end }}
 {{/*
 Schema bootstrap for the embedded postgres subchart.
 
@@ -19,6 +28,14 @@ __tests__/pgvector-bootstrap.test.ts runs this rendered script against
 the chart's image and against one without pgvector, so the image and
 the failure mode are both checked.
 
+Bounded in time (TASK-563). The readiness wait gives up after
+`postgres.embedded.init.readyTimeoutSeconds` with a FATAL line naming the
+host, and each probe has PGCONNECT_TIMEOUT so one black-holed connect
+cannot outlast the budget. `activeDeadlineSeconds` is the Job-wide backstop:
+it covers every restart (backoffLimit) and any later psql that hangs, so a
+Postgres that never comes up ends in a failed Job instead of one that spins
+in the cluster forever after helm's own --timeout has given up on it.
+
 External mode skips this job entirely; operators are expected to have
 already run their own bootstrap against the cloud DB.
 */}}
@@ -35,6 +52,7 @@ metadata:
     "helm.sh/hook-delete-policy": hook-succeeded,before-hook-creation
 spec:
   backoffLimit: 10
+  activeDeadlineSeconds: {{ $deadline }}
   template:
     metadata:
       labels:
@@ -55,7 +73,14 @@ spec:
               PG_HOST="{{ .Release.Name }}-postgresql"
               PG_PORT="5432"
               export PGPASSWORD="$POSTGRES_PASSWORD"
+              export PGCONNECT_TIMEOUT=5
+              READY_TIMEOUT_SECONDS={{ $readyTimeout }}
+              READY_DEADLINE=$((SECONDS + READY_TIMEOUT_SECONDS))
               until psql -h "$PG_HOST" -p "$PG_PORT" -U postgres -c "SELECT 1" >/dev/null 2>&1; do
+                if [ "$SECONDS" -ge "$READY_DEADLINE" ]; then
+                  echo "FATAL: PostgreSQL at $PG_HOST:$PG_PORT was not ready after ${READY_TIMEOUT_SECONDS}s (postgres.embedded.init.readyTimeoutSeconds). Check the postgresql pod's status and logs." >&2
+                  exit 1
+                fi
                 echo "Waiting for PostgreSQL..."
                 sleep 2
               done
