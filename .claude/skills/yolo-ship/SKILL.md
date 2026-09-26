@@ -304,7 +304,7 @@ has a branch that proceeds on a failed check, and each of the three traps above 
 rather than an `ok`. Two things they still cannot see, stated rather than implied away:
 
 - **A second writer touching the path *during* your window.** No restore protocol fixes that;
-  the fix is one writer per window, which is TASK-471's scope. Note the hazard runs both ways
+  the fix is one writer per window, which Phase 5 › *The review window* addresses for reviewers. Note the hazard runs both ways
   — a second **reader** is enough, because the owner's build can pick up your live mutant and
   the owner will debug it as their own code.
 - **`git update-index --assume-unchanged` / `--skip-worktree` on the path.** `ls-files`
@@ -408,7 +408,121 @@ echo "files in range: $N"
   echo "⚠ $N files is large for one card — confirm every one is yours before dispatching."
 ```
 
-- **REQUIRED:** Dispatch the **`ax-code-reviewer`** subagent (the Agent/`Task` tool with `subagent_type: ax-code-reviewer`) to review the **whole-branch diff against `origin/main`** — the surface CI and a human reviewer see, not just the last task. In the dispatch prompt, name the diff range explicitly — **copy the `reviewer range:` line the block above printed**, rather than retyping a range from memory — and name the worktree it runs in; for a diff that needs AX-invariant / boundary-specific framing or a challenge to the chosen *approach*, add that focus to the prompt and note the choice in your decisions shard (rule 2). The agent pins its own model + effort (Opus 4.8, `effort: max` in its definition) and runs read-only, so there's no model/effort to tier and nothing to pre-authorize. **Dispatch it in the plain shape — see the dispatch contract below. An apparently hung reviewer is usually a DELIVERY problem, not a liveness one.**
+#### The review window: committed-clean, one reviewer, you hands-off (REQUIRED)
+
+**The reviewer runs in YOUR worktree, and it has `Bash`.** "Read-only" is an instruction in
+its definition, not a capability it lacks. On 2026-09-19 (TASK-426, reported first-hand by
+the builder) a reviewer proved a test non-vacuous by mutating a file and restoring it with
+`git checkout -- <file>` — the correct restore for an *owner* who committed first, and the
+destructive one here: it reverted **six of the builder's uncommitted edits**, and the builder
+then debugged the reviewer's mutant as its own code. Phase 4's table already says a subagent
+in someone else's tree does not mutate; this is the owner's half, so that one slip by either
+side is not enough to lose work.
+
+Three rules, for the whole of each review round:
+
+1. **Commit before you dispatch.** A restore can only eat what is uncommitted, so leave it
+   nothing. The **open** block below refuses a dirty tree, untracked files included.
+2. **One reviewer in flight per worktree.** Two reviewers in one tree are two guests who can
+   each clobber the other's mutant or build off it. A second opinion waits for the first to
+   return, or reviews from its own checkout (below).
+3. **Hands off tracked files until it returns** — no edits, no commits, no `pnpm build` or
+   test runs in this tree. The reviewer is reading a sha; changing the tree under it means it
+   reviews a moving target, and a build of yours can pick up a mutant of its. Scratch files
+   outside the worktree are fine. This is what lets you truthfully tell it the tree is
+   quiescent — and it is what makes the **close** check meaningful, because anything that
+   moved during the window is then not yours.
+
+```bash
+# ax-review-window: open — run BEFORE you dispatch a review round.
+if [ -n "$(git status --porcelain)" ]; then
+  echo "REFUSE: this worktree carries uncommitted work — clear it before dispatching."
+  echo "  The reviewer runs in THIS tree; uncommitted work is exactly what its restore eats."
+  echo "  Commit changes that belong to the branch; move untracked scratch (notes,"
+  echo "  screenshots) OUTSIDE the worktree rather than committing it."
+  git status --porcelain | head -20
+  exit 1
+fi
+SHA=$(git rev-parse --verify HEAD) || {
+  echo "FATAL: no HEAD to review."
+  exit 1
+}
+echo "review window open at: $SHA"
+echo "  Record this as the round's sha, and paste it into the reviewer prompt."
+echo "  Do not touch tracked files in this tree until the reviewer returns."
+```
+
+Put the printed sha in the prompt with one sentence, verbatim: *"You are a guest in my
+worktree, committed-clean at `<sha>`: do not write to any tracked file in it — if a claim
+needs a mutation to prove, follow your definition's guest rule."* Then, **the moment the
+reviewer returns and before you edit anything**, close the window with the sha the open
+block printed (a new shell — Bash calls do not share state):
+
+```bash
+# ax-review-window: close — run when the reviewer returns, BEFORE you edit anything.
+SHA="<the sha the open block printed>"
+
+case "$SHA" in
+  *[!0-9a-f]* | "")
+    echo "REFUSE: \"$SHA\" is not a sha — paste the full one the open block printed."
+    exit 1
+    ;;
+esac
+if [ "${#SHA}" -ne 40 ]; then
+  echo "REFUSE: $SHA is ${#SHA} characters — use the full 40-character sha, not a prefix."
+  exit 1
+fi
+
+NOW=$(git rev-parse --verify HEAD) || {
+  echo "FATAL: cannot read HEAD."
+  exit 1
+}
+if [ "$NOW" != "$SHA" ]; then
+  echo "REFUSE: HEAD moved during the review window ($SHA -> $NOW)."
+  echo "  Something committed, reset or checked out in this tree while the reviewer ran."
+  echo "  Read git log --oneline $SHA..HEAD and git reflog before trusting any of it."
+  exit 1
+fi
+if [ -n "$(git status --porcelain)" ]; then
+  echo "REFUSE: the tree is dirty after the review — something wrote to it in the window."
+  git status --porcelain | head -20
+  echo "  You opened it clean and kept your hands off, so this is not your work: most"
+  echo "  likely a reviewer's leftover mutant. Diff it and read it; do NOT git checkout --"
+  echo "  over it until you know what it is, and tell the reviewer's findings apart from it."
+  exit 1
+fi
+echo "ok: review window closed clean at $SHA."
+```
+
+**Which direction does this fail in? Closed**, for everything it can observe: a dirty tree
+at open, a moved HEAD or any tracked or untracked residue at close, and an unsubstituted,
+empty or abbreviated sha are each a refusal, never an `ok`. What it **cannot** see, stated
+rather than implied away:
+
+- **A mutant written and correctly restored inside the window.** The tree ends clean, which
+  is the harmless case *for the tree* — and the reason for rule 3, because the harm left is
+  a build of yours picking the mutant up mid-window.
+- **Gitignored output.** `dist/` and `node_modules/` never show in `git status`. A reviewer
+  that built from a mutant leaves a mutant `dist/` behind a clean source tree; if its review
+  says it built anything, rebuild before you trust a test run.
+- **A `git stash` by the reviewer.** It leaves HEAD and the tree clean — and, because the
+  open block made the tree committed-clean, there was nothing of yours for it to take.
+- **A sha you re-derived instead of copied.** The HEAD check is only as good as the `SHA`
+  you paste: run `git rev-parse HEAD` at close time and paste *that*, and the comparison is
+  trivially equal — a false `ok` exactly when HEAD moved. Paste the line the **open** block
+  printed (it is also the round's `reviewed-sha`), never a fresh one.
+
+**Is this enforceable? Partly, and the honest word is *detected*, not *prevented*.** Nothing
+here stops a reviewer from writing; the open block makes the damage impossible for work you
+committed, and the close block makes any residue loud. Prevention was costed and not taken:
+dropping `Bash` from the reviewer's tools would cost it running the suite and every
+pipeline-shaped check it does today; `isolation: "worktree"` gives it a *fresh* worktree and
+it would review the wrong tree (see the dispatch contract below). The cheap real isolation is
+the one its definition now prescribes for mutation proofs: **its own detached worktree at the
+sha you paste**, which costs one `pnpm install --frozen-lockfile && pnpm build` (7.6s + 17.1s
+measured on a warm store, 2026-09-17) and is paid only by a reviewer that wants to mutate.
+
+- **REQUIRED:** Dispatch the **`ax-code-reviewer`** subagent (the Agent/`Task` tool with `subagent_type: ax-code-reviewer`) to review the **whole-branch diff against `origin/main`** — the surface CI and a human reviewer see, not just the last task. In the dispatch prompt, name the diff range explicitly — **copy the `reviewer range:` line the block above printed**, rather than retyping a range from memory — and name the worktree it runs in; for a diff that needs AX-invariant / boundary-specific framing or a challenge to the chosen *approach*, add that focus to the prompt and note the choice in your decisions shard (rule 2). The agent pins its own model + effort (Opus 4.8, `effort: max` in its definition) and is read-only by instruction — not by capability, it has `Bash`, which is why the review window above exists — so there's no model/effort to tier and nothing to pre-authorize. **Dispatch it in the plain shape — see the dispatch contract below. An apparently hung reviewer is usually a DELIVERY problem, not a liveness one.**
 - **When to skip:** docs/comment/config-only or other non-code diffs — the PR's CodeRabbit + CodeQL + semgrep + gitleaks already cover those. Log the skip in your decisions shard (rule 2). Any code change gets reviewed.
 - **Address findings with receiving-code-review discipline** — verify each one; fix the real issues with targeted commits (test-first for bugs, per Bug Fix Policy [[feedback_targeted_followup_commits]]), and log in your decisions shard (rule 2) any finding you deliberately reject and why (silent dismissal isn't allowed). Then **re-scope the range and re-dispatch the reviewer** on the updated branch — re-run the block above, because each round re-reads the current `origin/main...HEAD` diff — until it returns `APPROVE` / no actionable findings.
 - **ASK THE VACUITY QUESTION IN EVERY REVIEW DISPATCH.** Add, verbatim: *"For each new or changed

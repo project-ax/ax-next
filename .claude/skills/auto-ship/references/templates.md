@@ -115,7 +115,9 @@ afford — heed it rather than dispatching and hoping.
 >   explicitly says the owner is parked for your window. A file copy
 >   is never the restore: it writes back whatever the file looked like when the copy was
 >   taken, silently reverting anything committed in between — the original incident.
->   **And if you dispatch a reviewer, commit first: it runs in YOUR worktree.** The runnable
+>   **And if you dispatch a reviewer, commit first: it runs in YOUR worktree** — one reviewer
+>   in flight at a time, and hands off tracked files until it returns; yolo-ship Phase 5 ›
+>   *The review window* has the open/close checks that refuse a dirty or moved tree. The runnable
 >   before/after blocks live in yolo-ship Phase 4 › *Mutation testing: restore without
 >   clobbering*; `scripts/__tests__/mutation-restore-protocol.test.js` executes them, and
 >   also fails if this bullet leaves the builder-facing prompt.
