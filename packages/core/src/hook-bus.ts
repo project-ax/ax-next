@@ -403,7 +403,8 @@ export class HookBus {
   }
 
   /**
-   * Run ONE subscriber, bounded by `timeoutMs` when it is finite.
+   * Run ONE subscriber under a finite `timeoutMs` (the unbounded path lives
+   * inline in `fire`, see there for why).
    *
    * A subscriber that blows the bound is abandoned, not cancelled: JavaScript
    * has no way to stop a promise, and `AgentContext` carries no abort signal
@@ -414,19 +415,13 @@ export class HookBus {
    * is never swallowed; and its stall watch stays armed until it really
    * settles, so `_stalled` without `_slow` keeps meaning "never finished".
    */
-  private async runSubscriber<P>(
+  private async runBoundedSubscriber<P>(
     sub: RegisteredSubscriber,
     hookName: string,
     ctx: AgentContext,
     current: P,
     timeoutMs: number,
   ): Promise<SubscriberOutcome<P>> {
-    // `fire` stays unbounded by default — a subscriber's slowness must not
-    // fail the thing it is observing — which makes subscribers the one place
-    // on the bus where a hang can burn a caller's budget in silence. The stall
-    // watch names such a hang while it is happening. Subscribers keep the
-    // bus-wide stall threshold: `subscribe` has no options bag to carry an
-    // override, and 15s is right for them.
     const settleStallWatch = this.watchStall(
       ctx,
       'hook_subscriber',
@@ -462,8 +457,6 @@ export class HookBus {
         },
       )
       .finally(settleStallWatch);
-
-    if (!Number.isFinite(timeoutMs)) return tracked;
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<SubscriberOutcome<P>>((resolve) => {
@@ -516,9 +509,50 @@ export class HookBus {
     const list = this.subscribers.get(hookName) ?? [];
     let current: P = payload;
     for (const sub of list) {
-      const outcome = await this.runSubscriber(sub, hookName, ctx, current, timeoutMs);
-      if (outcome.kind !== 'settled') continue;
-      const result = outcome.result;
+      let result: P | undefined | Rejection;
+      if (Number.isFinite(timeoutMs)) {
+        const outcome = await this.runBoundedSubscriber(sub, hookName, ctx, current, timeoutMs);
+        if (outcome.kind !== 'settled') continue;
+        result = outcome.result;
+      } else {
+        // The unbounded path is kept exactly as it was — one `await` on the
+        // handler, nothing wrapped around it — ON PURPOSE. The bounded path
+        // costs a few extra microtask hops per subscriber, and existing fire
+        // sites have come to depend on the old ordering: measured on this
+        // branch (TASK-514), routing every subscriber through the helper's
+        // promise chain let
+        // `agent:invoke`'s caller resume before a LATER `chat:end` subscriber
+        // ran, and preset-k8s's once-per-invoke witness saw zero fires.
+        //
+        // `fire` stays unbounded by default — a subscriber's slowness must not
+        // fail the thing it is observing — which makes subscribers the one
+        // place on the bus where a hang can burn a caller's budget in silence.
+        // The stall watch names such a hang while it is happening. Subscribers
+        // keep the bus-wide stall threshold: `subscribe` has no options bag to
+        // carry an override, and 15s is right for them.
+        const settleStallWatch = this.watchStall(
+          ctx,
+          'hook_subscriber',
+          hookName,
+          sub.plugin,
+          this.stallWarnMs,
+        );
+        try {
+          result = (await sub.handler(ctx, current)) as P | undefined | Rejection;
+        } catch (err) {
+          // Isolation is the contract: a throwing subscriber is reported and
+          // the chain continues. The report must never break that contract
+          // itself — see `reportSubscriberFailure` for why it cannot throw.
+          reportSubscriberFailure(ctx, {
+            hook: hookName,
+            plugin: sub.plugin,
+            err: err instanceof Error ? err : new Error(String(err)),
+          });
+          continue;
+        } finally {
+          settleStallWatch();
+        }
+      }
       if (isRejection(result)) {
         // SPREAD the subscriber's rejection; do not rebuild it. This used to
         // construct a fresh `{rejected, reason, source}`, which silently
