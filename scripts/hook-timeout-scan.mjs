@@ -45,15 +45,21 @@
 //   - A name that is ever ASSIGNED after its declaration (`let X = 5; X = 30_000;`,
 //     `X += 1`, `X++`) does not resolve at all — the value at the hook's call
 //     cannot be known from the initialiser — and lands in `unreadable`. Fail
-//     CLOSED. Resolving it to the initialiser would under-read.
+//     CLOSED. Resolving it to the initialiser would under-read. Like `consts`,
+//     this set is file-global, not scope-aware: an unrelated inner `X` that is
+//     reassigned makes an outer `X` unreadable too — a spurious red, never a
+//     hidden one.
 //   - A hook called through a PROPERTY (`globalThis.beforeAll(...)`,
 //     `vitest.afterAll(...)`) is read like a bare one. At worst an over-read.
 //   - NOT covered, and fail-OPEN if anyone writes them: a hook invoked through
 //     an alias (`const setup = beforeAll; setup(fn, 120_000)`), through element
 //     access (`globalThis['beforeAll'](...)`), or with a unicode-escaped name.
 //     A hook this scanner does not recognise contributes nothing to the
-//     maximum. None occurs in the tree; they are named here rather than implied
-//     away.
+//     maximum. Likewise a const rebound through a NON-identifier target —
+//     destructuring (`[X] = [30_000]`, `({ X } = o)`) or a loop binding
+//     (`for (X of xs)`) — is not seen as reassigned and resolves to its stale
+//     initialiser. None of these occurs in the tree; they are named here rather
+//     than implied away.
 
 import ts from 'typescript';
 

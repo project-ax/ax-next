@@ -686,7 +686,7 @@ describe('the scan catches a NEW package, and the config read is a read (TASK-40
     expect(pkg.maxDeclaredHookTimeout).toBe(80_000);
   });
 
-  it('does not resolve a const that is REASSIGNED before the hook runs', () => {
+  it('does not resolve a const that is REASSIGNED anywhere in the file', () => {
     // Resolving `X` to its initialiser would read 5_000 where the hook gets
     // 30_000 — an under-read. It is reported instead. (Not a regex-era shape:
     // the regex resolver had the same hole; the reviewer of TASK-462 found it.)
@@ -701,6 +701,7 @@ describe('the scan catches a NEW package, and the config read is a read (TASK-40
     });
     const pkg = outOfProcessPackages(root).find((p) => p.name === 'packages/reassigned-const');
     expect(pkg.unreadable.map((u) => u.name)).toEqual(['HOOK_MS']);
+    expect(pkg.maxDeclaredHookTimeout).toBe(0); // the stale 5_000 must not leak in either
   });
 
   it('reports a source that does not parse, rather than trusting the hooks it could see', () => {
