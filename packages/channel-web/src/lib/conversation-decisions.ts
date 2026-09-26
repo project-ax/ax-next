@@ -20,7 +20,7 @@
  * function; using it as a status test would make this the fourth consumer of
  * "is this open" and the only one asking a different way. Reserve it for prose.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useDecisionQueue, type DecisionReadError } from './workspace-decisions';
 import { useConversationId } from './use-conversation-id';
 import { continuationActions } from './continuation-actions';
