@@ -225,7 +225,7 @@ function QueueHarness({ resolved }: { resolved: Decision }) {
 const undoButton = () => screen.getByRole('button', { name: /Undo/ });
 
 /**
- * The alert the PERSON sees on this row.
+ * The alert the PERSON sees on this row, by the sentence it carries.
  *
  * Since TASK-442 a decision card also mounts a permanently-present, empty
  * `sr-only` live region carrying `role="alert"` — that is what makes an answer
@@ -238,10 +238,16 @@ const undoButton = () => screen.getByRole('button', { name: /Undo/ });
  * It still pins uniqueness: two VISIBLE alerts on one row would mean focus had
  * a choice it could get wrong, which is the bug this file is for.
  */
-function visibleAlert(): HTMLElement {
-  const visible = screen
-    .getAllByRole('alert')
-    .filter((el) => !el.hasAttribute('data-consent-said'));
+function visibleAlert(text: string): HTMLElement {
+  /*
+    TASK-535: `DecisionRow`'s `Alert`s gave up their own `role="alert"` so the
+    shared region is the one voice, so a role query no longer finds them. What
+    these cases are about is the VISIBLE box focus can land on, so ask for the
+    focus destinations (`tabIndex={-1}`) that carry the sentence.
+  */
+  const visible = Array.from(
+    document.querySelectorAll<HTMLElement>('[tabindex="-1"]'),
+  ).filter((el) => (el.textContent ?? '').includes(text));
   expect(visible).toHaveLength(1);
   return visible[0]!;
 }
@@ -581,7 +587,7 @@ describe('DecisionRow — the Today queue (site 3)', () => {
     render(<FailQueueHarness />);
     fireEvent.click(screen.getByRole('button', { name: 'Move it' }));
 
-    expect(document.activeElement).toBe(visibleAlert());
+    expect(document.activeElement).toBe(visibleAlert('We could not reach the server.'));
     expect(document.activeElement).not.toBe(document.body);
   });
 
@@ -678,7 +684,7 @@ describe('DecisionRow — the Today queue (site 3)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Move it' }));
 
     expect(document.activeElement).not.toBe(document.body);
-    expect(document.activeElement).toBe(visibleAlert());
+    expect(document.activeElement).toBe(visibleAlert('Thursday 9:30 is no longer free.'));
     expect(document.activeElement?.textContent).toContain(
       'Thursday 9:30 is no longer free.',
     );

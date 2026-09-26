@@ -314,9 +314,11 @@ describe.each([
  *     paragraphs, so the shared region says them — in the node that was
  *     already there, which is the assertion a relocated or conditionally
  *     mounted region fails.
- *   - `DecisionRow` draws them inside shadcn's `Alert`, already
- *     `role="alert"`, so the shared region says NOTHING — a second voice for
- *     one sentence is the hazard, not the fix.
+ *   - `DecisionRow` draws them inside shadcn's `Alert`, and only while the
+ *     row is EXPANDED — collapsed, the Today default, it draws nothing. So
+ *     the shared region says them there too (TASK-535), and the `Alert`s give
+ *     up their own `role="alert"` so that it stays ONE voice, expanded or
+ *     collapsed.
  *
  * WHICH DIRECTION DOES THIS FAIL IN? Silent — open. A region created in the
  * same commit as its sentence reads correctly to jsdom and says nothing to
@@ -338,9 +340,12 @@ type OpenChange = { decision: Decision; notice: string | null };
 function Passive({
   renderer,
   change,
+  expanded = true,
 }: {
   renderer: 'thread' | 'queue';
   change: OpenChange | null;
+  /** The queue row only. Collapsed is the Today default. */
+  expanded?: boolean;
 }) {
   const d = change?.decision ?? decisionFixture();
   const notice = change?.notice ?? null;
@@ -356,7 +361,7 @@ function Passive({
     <DecisionRow
       decision={d}
       agent={quill}
-      expanded
+      expanded={expanded}
       onToggle={vi.fn()}
       onOpenAgent={vi.fn()}
       onApprove={vi.fn()}
@@ -470,32 +475,130 @@ describe('ApprovalCard — the open branch speaks when it changes on its own', (
   });
 });
 
-describe('DecisionRow — the open branch keeps ONE voice, its own Alert', () => {
-  it('going stale on screen is said by the Alert and not by the shared region', () => {
-    const { rerender } = render(<Passive renderer="queue" change={null} />);
+/*
+ * TASK-535. The Today row, collapsed and expanded. Before this card the row
+ * handed the region `openNote={null}` because its `Alert`s were already
+ * `role="alert"` — but those only mount EXPANDED, so a collapsed row (the
+ * default) that went stale or picked up a notice said nothing at all.
+ *
+ * Every case is a `rerender` with new props and no click: `armForResolution`
+ * runs only from `onClick`, so a click would move focus and hide a missing
+ * voice. Focus is asserted to stay where it was — TASK-275: an arrival nobody
+ * pressed for is said, not jumped to.
+ */
+describe.each([
+  ['collapsed', false],
+  ['expanded', true],
+] as const)('DecisionRow (%s) — the open branch is said once, by the shared region', (_label, expanded) => {
+  it('going stale on screen is said, in the region already there, with no focus move', () => {
+    const { rerender } = render(
+      <Passive renderer="queue" change={null} expanded={expanded} />,
+    );
     const before = region();
+    const focused = document.activeElement;
+    expect(said()).toBe('');
 
     rerender(
-      <Passive renderer="queue" change={{ decision: staleFixture(), notice: null }} />,
+      <Passive
+        renderer="queue"
+        change={{ decision: staleFixture(), notice: null }}
+        expanded={expanded}
+      />,
     );
 
-    expect(said()).toBe('');
+    expect(said()).toBe(STALE_SENTENCE);
+    // THE LOAD-BEARING ASSERTION — see the block header above.
     expect(region()).toBe(before);
-    // Exactly one voice for the sentence, and it is the visible `Alert`.
-    const voices = voicesSaying(STALE_REASON);
-    expect(voices).toHaveLength(1);
-    expect(voices[0]!.hasAttribute('data-consent-said')).toBe(false);
+    // ONE voice: the visible `Alert` (expanded) is not a second live region.
+    expect(voicesSaying(STALE_REASON)).toEqual([before]);
+    expect(document.activeElement).toBe(focused);
   });
 
-  it('a notice on the open row is said by its Alert alone', () => {
+  it('a notice that arrives with no press behind it is said once, with no focus move', () => {
     const notice = 'That did not go through. Nothing was sent.';
-    const { rerender } = render(<Passive renderer="queue" change={null} />);
+    const { rerender } = render(
+      <Passive renderer="queue" change={null} expanded={expanded} />,
+    );
+    const before = region();
+    const focused = document.activeElement;
 
     rerender(
-      <Passive renderer="queue" change={{ decision: decisionFixture(), notice }} />,
+      <Passive
+        renderer="queue"
+        change={{ decision: decisionFixture(), notice }}
+        expanded={expanded}
+      />,
+    );
+
+    expect(said()).toBe(notice);
+    expect(region()).toBe(before);
+    expect(voicesSaying(notice)).toEqual([before]);
+    expect(document.activeElement).toBe(focused);
+  });
+
+  it('a notice outranks the stale reason it lands on', () => {
+    const notice = 'That did not go through. Nothing was sent.';
+    const { rerender } = render(
+      <Passive
+        renderer="queue"
+        change={{ decision: staleFixture(), notice: null }}
+        expanded={expanded}
+      />,
+    );
+
+    rerender(
+      <Passive
+        renderer="queue"
+        change={{ decision: staleFixture(), notice }}
+        expanded={expanded}
+      />,
+    );
+
+    expect(said()).toBe(notice);
+  });
+
+  it('a row that MOUNTS stale stays quiet, and so does its Alert', () => {
+    /*
+      An INVARIANT GUARD for the mount rule. On an expanded row it is also
+      evidence for the fix: before TASK-535 the stale `Alert` mounted with
+      `role="alert"` holding its sentence, a page-load announcement.
+    */
+    render(
+      <Passive
+        renderer="queue"
+        change={{ decision: staleFixture(), notice: null }}
+        expanded={expanded}
+      />,
     );
 
     expect(said()).toBe('');
-    expect(voicesSaying(notice)).toHaveLength(1);
+    expect(voicesSaying(STALE_REASON)).toEqual([]);
+  });
+});
+
+describe('DecisionRow — opening and closing a stale row is not news', () => {
+  it('toggling a stale row says nothing new, and does not move the region', () => {
+    /*
+      The plausible wrong fix is `openNote={expanded ? null : sentence}`,
+      which would re-announce the stale reason every time someone collapsed
+      the row. The note must not depend on the disclosure.
+    */
+    const change = { decision: staleFixture(), notice: null };
+    const { rerender } = render(
+      <Passive renderer="queue" change={null} expanded={false} />,
+    );
+    const before = region();
+    rerender(<Passive renderer="queue" change={change} expanded={false} />);
+    expect(said()).toBe(STALE_SENTENCE);
+
+    // A toggle-dependent note would empty the region here, and say the
+    // sentence again on the collapse below.
+    rerender(<Passive renderer="queue" change={change} expanded />);
+    expect(said()).toBe(STALE_SENTENCE);
+    expect(region()).toBe(before);
+    rerender(<Passive renderer="queue" change={change} expanded={false} />);
+    expect(said()).toBe(STALE_SENTENCE);
+    expect(region()).toBe(before);
+    expect(voicesSaying(STALE_REASON)).toEqual([before]);
   });
 });
