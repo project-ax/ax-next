@@ -19,16 +19,32 @@ import {
 } from '@ax/embeddings';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
 
-export const DEFAULT_VERTEX_CREDENTIAL_REF = 'provider:vertex';
-export const DEFAULT_COHERE_CREDENTIAL_REF = 'provider:cohere';
+/**
+ * The ONE provider credential the memory preset needs (TASK-523). The
+ * observer's extraction model, embeddings and reranking all run through
+ * OpenRouter on this ref, which the admin Provider keys screen writes — a
+ * long-lived key with a validate-and-save path, replacing a ~1 h Vertex bearer
+ * token and a Cohere key that had no product write path at all.
+ */
+export const MEMORY_CREDENTIAL_REF = 'provider:openrouter';
+
+/**
+ * The embedding model, pinned on the FACT STORE's embedder ref rather than
+ * left to the producer's default. The store records this string as the
+ * fingerprint of the vectors it holds and sends it in every embed payload, so
+ * changing it here is what makes the store drop the old vectors and re-embed —
+ * two models' vectors are never compared. 384 dims is native for this model.
+ */
+export const MEMORY_EMBED_MODEL = 'google/gemini-embedding-001:nitro';
+
+/** The rerank model — `voyageai/rerank-2.5` on OpenRouter's fastest route. */
+export const MEMORY_RERANK_MODEL = 'voyageai/rerank-2.5:nitro';
 
 export interface MemoryPresetConfig extends K8sPresetConfig {
   factsDatabasePath: string;
   memoryExportVolume: MemoryVolumeConfig;
-  memoryEmbeddings: {
-    projectId: string;
-    embedCredentialRef?: string;
-    rerankCredentialRef?: string;
+  /** Test seam: the fetch the embed/rerank drivers use. Production leaves it unset. */
+  memoryEmbeddings?: {
     fetchImpl?: typeof fetch;
   };
   onObserverDetached?: (work: Promise<void>) => void;
@@ -60,24 +76,6 @@ function validateMemoryPresetConfig(config: MemoryPresetConfig): void {
   }
 
   validateVolumeConfig(config.memoryExportVolume);
-
-  const embeddings = config.memoryEmbeddings;
-  if (
-    embeddings === null ||
-    typeof embeddings !== 'object' ||
-    typeof embeddings.projectId !== 'string' ||
-    embeddings.projectId.trim() === ''
-  ) {
-    throw new Error('memory preset requires a non-empty vertex projectId');
-  }
-  for (const [name, ref] of [
-    ['embedCredentialRef', embeddings.embedCredentialRef],
-    ['rerankCredentialRef', embeddings.rerankCredentialRef],
-  ] as const) {
-    if (ref !== undefined && (typeof ref !== 'string' || ref.trim() === '')) {
-      throw new Error(`memory preset ${name} must be a non-empty credential ref`);
-    }
-  }
 
   const hostRoot = config.memoryExportVolume.hostRoot;
   const repoRoot =
@@ -143,22 +141,21 @@ export function createMemoryPlugins(config: MemoryPresetConfig): Plugin[] {
     ...base,
     createMemoryFactsSqlitePlugin({
       databasePath: config.factsDatabasePath,
-      embedder: { hook: EMBED_HOOK },
-      reranker: { hook: RERANK_HOOK },
+      embedder: { hook: EMBED_HOOK, model: MEMORY_EMBED_MODEL },
+      reranker: { hook: RERANK_HOOK, model: MEMORY_RERANK_MODEL },
     }),
     createEmbeddingsPlugin({
       embed: {
-        provider: 'vertex',
-        projectId: config.memoryEmbeddings.projectId,
-        credentialRef:
-          config.memoryEmbeddings.embedCredentialRef ?? DEFAULT_VERTEX_CREDENTIAL_REF,
+        provider: 'openrouter',
+        credentialRef: MEMORY_CREDENTIAL_REF,
+        model: MEMORY_EMBED_MODEL,
       },
       rerank: {
-        provider: 'cohere',
-        credentialRef:
-          config.memoryEmbeddings.rerankCredentialRef ?? DEFAULT_COHERE_CREDENTIAL_REF,
+        provider: 'openrouter',
+        credentialRef: MEMORY_CREDENTIAL_REF,
+        model: MEMORY_RERANK_MODEL,
       },
-      ...(config.memoryEmbeddings.fetchImpl !== undefined
+      ...(config.memoryEmbeddings?.fetchImpl !== undefined
         ? { fetchImpl: config.memoryEmbeddings.fetchImpl }
         : {}),
     }),
@@ -193,32 +190,12 @@ export function loadMemoryConfigFromEnv(
   if (nfsExportPath === undefined || nfsExportPath === '') {
     throw new Error('AX_MEMORY_EXPORT_NFS_PATH is required');
   }
-  const vertexProject = env.AX_MEMORY_VERTEX_PROJECT;
-  if (vertexProject === undefined || vertexProject === '') {
-    throw new Error('AX_MEMORY_VERTEX_PROJECT is required');
-  }
-  const embedCredentialRef =
-    env.AX_MEMORY_VERTEX_CREDENTIAL_REF !== undefined &&
-    env.AX_MEMORY_VERTEX_CREDENTIAL_REF !== ''
-      ? env.AX_MEMORY_VERTEX_CREDENTIAL_REF
-      : DEFAULT_VERTEX_CREDENTIAL_REF;
-  const rerankCredentialRef =
-    env.AX_MEMORY_COHERE_CREDENTIAL_REF !== undefined &&
-    env.AX_MEMORY_COHERE_CREDENTIAL_REF !== ''
-      ? env.AX_MEMORY_COHERE_CREDENTIAL_REF
-      : DEFAULT_COHERE_CREDENTIAL_REF;
-
   const config: MemoryPresetConfig = {
     ...base,
     factsDatabasePath,
     memoryExportVolume: {
       hostRoot: exportHostRoot,
       backing: { server: nfsServer, exportPath: nfsExportPath },
-    },
-    memoryEmbeddings: {
-      projectId: vertexProject,
-      embedCredentialRef,
-      rerankCredentialRef,
     },
   };
   validateMemoryPresetConfig(config);

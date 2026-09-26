@@ -1,47 +1,59 @@
 // The closed, frozen table of hosts this plugin is allowed to talk to, plus
-// the two grammars that guard the only caller-influenced pieces of the URL.
+// the grammar that guards the only caller-influenced piece of the request.
 //
-// A HOST IS NEVER CALLER-DERIVED. A deployment picks a table KEY (`'vertex'`,
-// `'cohere'`), not a URL — so no config value, and certainly no hook payload,
-// can point the egress at a host of its choosing. That is Invariant 5 applied
-// to network reach: the plugin's whole allowance is two hostnames, visible in
-// one file, greppable by anyone writing an egress policy. Adding a provider is
-// a deliberate edit here with a review attached, not a config string.
+// A HOST IS NEVER CALLER-DERIVED. A deployment picks a table KEY
+// (`'openrouter'`), not a URL — so no config value, and certainly no hook
+// payload, can point the egress at a host of its choosing. That is Invariant
+// 5 applied to network reach: the plugin's whole allowance is ONE hostname,
+// `openrouter.ai`, visible in one file, greppable by anyone writing an egress
+// policy. Adding a provider is a deliberate edit here with a review attached,
+// not a config string.
+//
+// TASK-523 replaced the Vertex embed driver and the Cohere rerank driver with
+// OpenRouter equivalents, on the theory that the memory preset should run on
+// ONE long-lived credential (`provider:openrouter`) instead of two. The old
+// two-host table (`us-central1-aiplatform.googleapis.com` +
+// `api.cohere.com`) is gone, not merely unused — see the Half-Wired Code
+// Policy in CLAUDE.md.
 
-/** A Vertex-shaped embedding endpoint. */
+/** An OpenRouter-shaped embedding endpoint. */
 export interface EmbedEndpoint {
-  id: 'vertex';
+  id: 'openrouter';
   host: string;
-  region: string;
+  path: string;
   defaultModel: string;
-  /** Most `instances` one predict call may carry; the driver chunks at this. */
-  maxInstancesPerCall: number;
+  /** Most `input` entries one call may carry; the driver chunks at this. OpenRouter documents no per-call cap; this is our own choice, well under its MAX_ITEMS (256). */
+  maxInputsPerCall: number;
 }
 
-/** A Cohere-shaped rerank endpoint. */
+/** An OpenRouter-shaped rerank endpoint. */
 export interface RerankEndpoint {
-  id: 'cohere';
+  id: 'openrouter';
   host: string;
+  path: string;
   defaultModel: string;
 }
 
 export const EMBED_ENDPOINTS: Readonly<Record<string, EmbedEndpoint>> = Object.freeze({
-  vertex: Object.freeze({
-    id: 'vertex',
-    host: 'us-central1-aiplatform.googleapis.com',
-    region: 'us-central1',
-    defaultModel: 'text-embedding-005',
-    // Vertex rejects a predict call carrying more than 5 instances. Ported
-    // from `dem-memory/src/models/embeddings.ts`'s MAX_INSTANCES_PER_VERTEX_CALL.
-    maxInstancesPerCall: 5,
+  openrouter: Object.freeze({
+    id: 'openrouter',
+    host: 'openrouter.ai',
+    path: '/api/v1/embeddings',
+    defaultModel: 'google/gemini-embedding-001:nitro',
+    // OpenRouter's OpenAPI spec documents no per-call input cap (MAX_ITEMS on
+    // the hook is 256). 64 is our own chunk size, chosen so a maximum 256-text
+    // batch is 4 sequential requests rather than 1 — see `plugin.ts`'s
+    // `DEFAULT_TIMEOUT_MS` comment for the arithmetic that depends on it.
+    maxInputsPerCall: 64,
   }),
 });
 
 export const RERANK_ENDPOINTS: Readonly<Record<string, RerankEndpoint>> = Object.freeze({
-  cohere: Object.freeze({
-    id: 'cohere',
-    host: 'api.cohere.com',
-    defaultModel: 'rerank-v4.0-pro',
+  openrouter: Object.freeze({
+    id: 'openrouter',
+    host: 'openrouter.ai',
+    path: '/api/v1/rerank',
+    defaultModel: 'voyageai/rerank-2.5:nitro',
   }),
 });
 
@@ -66,29 +78,22 @@ export function rerankEndpointFor(id: string): RerankEndpoint | undefined {
 }
 
 // ---------------------------------------------------------------------------
-// Grammars
+// Model grammar
 // ---------------------------------------------------------------------------
 //
-// Both values below are INTERPOLATED INTO A REQUEST URL, so both are checked
-// against a strict allow-list grammar before they get there. "Deployment-
-// supplied" is not the same as "trusted": a `model` of `../../../elsewhere` is
-// a path-traversal primitive against an API URL — it walks off the
-// `publishers/google/models/` path and sends a bearer token, plus a batch of
-// somebody's memory, to whatever sits at the other end. Same for a `?` or `#`
-// that reinterprets the rest of the URL as a query or a fragment.
+// Unlike the Vertex driver this replaced, the model no longer lands in the
+// request URL — OpenRouter takes it in the JSON BODY (`{ model, ... }`). That
+// removes the path-traversal risk a URL-interpolated model carried, but the
+// grammar check stays anyway, as DEFENSE IN DEPTH: a `model` is still
+// deployment- or payload-supplied, still crosses a trust boundary either way
+// (see `plugin.ts`'s model resolution), and a strict allow-list costs nothing
+// to keep. A payload model failing the grammar degrades to `undefined`, same
+// as before; a CONFIG model failing it is a boot-time `invalid-config`.
 //
-// `@` IS allowed, deliberately: Vertex pins model versions with it
-// (`text-embedding-005@002`), and inside a path segment it is inert — userinfo
-// only exists in an authority, which needs a `//` the grammar forbids. What
-// the grammar actually stops is `/` (without which there is no traversal at
-// all), a leading `.`, `?`, `#`, `%`, whitespace and everything non-ASCII.
-//
-// The `model` in the HOOK PAYLOAD lands on this same path — the consumer fills
-// it from its own config, and a hook payload crosses a trust boundary either
-// way — so it is validated identically. See `plugin.ts`'s model resolution.
-
-/** Lowercase provider-native model ids: `text-embedding-005`, `rerank-v4.0-pro`. */
-export const MODEL_RE = /^[a-z0-9][a-z0-9.@_-]{0,63}$/;
-
-/** GCP project ids: 5–30 chars, lowercase letter first, then letters/digits/hyphens. */
-export const GCP_PROJECT_RE = /^[a-z][a-z0-9-]{4,29}$/;
+// OpenRouter model ids are `vendor/model[:variant]` — `google/gemini-
+// embedding-001:nitro`, `voyageai/rerank-2.5:nitro`, `openai/text-embedding-
+// 3-small` — which is why this is a different shape from the old
+// `MODEL_RE` (Vertex/Cohere native ids never carried `/`). Lowercase,
+// bounded, one slash, at most one colon-prefixed variant.
+export const OPENROUTER_MODEL_RE =
+  /^[a-z0-9][a-z0-9._-]{0,63}\/[a-z0-9][a-z0-9._-]{0,127}(?::[a-z0-9_-]{1,32})?$/;

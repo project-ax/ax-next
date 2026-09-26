@@ -12,6 +12,16 @@ export const FTS_TABLE = 'memory_facts_v1_fts';
 export const VEC_TABLE = 'memory_facts_v1_vec';
 
 /**
+ * Key/value facts ABOUT the store's derived indexes (TASK-523). Today one
+ * key, `model`: the embedding-model fingerprint every vector in
+ * {@link VEC_TABLE} was produced under — see
+ * {@link reconcileEmbeddingFingerprint}.
+ */
+export const EMBEDDING_META_TABLE = 'memory_facts_v1_embedding_meta';
+
+const FINGERPRINT_KEY = 'model';
+
+/**
  * Dimensionality of the stored embedding (bge-small, matching `dem-memory` and
  * `memory-strata-index-sqlite`'s own `vec0` table). `vectorToBlob` enforces
  * this at the boundary so a mismatched embedder fails loudly at the write
@@ -293,6 +303,71 @@ function migrateAddColumns(driver: BetterSqliteDb, vectorExtensionLoaded: boolea
       );
     `);
   }
+
+  // Embedding-model fingerprint (TASK-523). A plain table, so unlike `vec0`
+  // it is created unconditionally — it costs nothing on a host without the
+  // extension, and it means "the table exists" never depends on which
+  // machine happened to open the file first. Additive: a pre-TASK-523 db
+  // simply gains it, empty, and `reconcileEmbeddingFingerprint` treats "no
+  // row" as "unknown model".
+  driver.exec(`
+    CREATE TABLE IF NOT EXISTS ${EMBEDDING_META_TABLE} (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+  `);
+}
+
+/**
+ * Make {@link VEC_TABLE} hold vectors from exactly ONE embedding model: the
+ * one this deployment is configured to ask for (TASK-523 decision 4).
+ *
+ * Vectors from two models are not comparable — different geometry, same
+ * dimensionality — and nothing errors when they are compared: `vec0` returns
+ * real distances and the dense channel returns confident nonsense. So when
+ * the stored fingerprint differs from `fingerprint`, every vector is deleted
+ * and the new fingerprint recorded, in ONE transaction: a crash between the
+ * two would either leave old vectors under a new name (the bug) or a wiped
+ * table under the old name (harmless — the next open wipes it again).
+ *
+ * "No fingerprint stored" counts as different when vectors exist: that is a
+ * pre-TASK-523 store whose vectors came from a model nobody recorded (Vertex
+ * `text-embedding-005`, before OpenRouter). Even when the configured model
+ * might be the one that wrote them, the store cannot know that, and guessing
+ * is exactly how two spaces end up side by side. An EMPTY vec table with no
+ * fingerprint just records it — there is nothing to be wrong about.
+ *
+ * Only callable with the extension loaded on this connection (deleting from
+ * `vec0` needs the module) — the caller's job to check; see `plugin.ts`.
+ * Wiped vectors come back through the post-record backfill in `plugin.ts`.
+ */
+export function reconcileEmbeddingFingerprint(
+  driver: BetterSqliteDb,
+  fingerprint: string,
+): { wiped: boolean } {
+  const reconcile = driver.transaction((): { wiped: boolean } => {
+    const stored = (
+      driver
+        .prepare(`SELECT value FROM ${EMBEDDING_META_TABLE} WHERE key = ?`)
+        .get(FINGERPRINT_KEY) as { value: string } | undefined
+    )?.value;
+    if (stored === fingerprint) return { wiped: false };
+
+    let wiped = false;
+    const hasVectors = driver.prepare(`SELECT 1 FROM ${VEC_TABLE} LIMIT 1`).get() !== undefined;
+    if (hasVectors) {
+      driver.prepare(`DELETE FROM ${VEC_TABLE}`).run();
+      wiped = true;
+    }
+    driver
+      .prepare(
+        `INSERT INTO ${EMBEDDING_META_TABLE} (key, value) VALUES (?, ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      )
+      .run(FINGERPRINT_KEY, fingerprint);
+    return { wiped };
+  });
+  return reconcile();
 }
 
 export interface FtsIndexInput {
@@ -306,7 +381,8 @@ export interface IndexFactRowOptions {
   /**
    * The fact's dense embedding, when one could be produced. Absent means "no
    * embedder was available for this write" — an ordinary state, not an error;
-   * `memory:facts:reindex` backfills the vector later.
+   * the next successful `memory:facts:record` (or `memory:facts:reindex`)
+   * backfills the vector later.
    */
   vector?: readonly number[];
   /**

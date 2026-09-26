@@ -3,8 +3,9 @@ import { createK8sPlugins, type K8sPresetConfig } from '@ax/preset-k8s';
 import {
   createMemoryPlugins,
   loadMemoryConfigFromEnv,
-  DEFAULT_COHERE_CREDENTIAL_REF,
-  DEFAULT_VERTEX_CREDENTIAL_REF,
+  MEMORY_CREDENTIAL_REF,
+  MEMORY_EMBED_MODEL,
+  MEMORY_RERANK_MODEL,
   type MemoryPresetConfig,
 } from '../index.js';
 
@@ -30,7 +31,6 @@ const baseConfig: MemoryPresetConfig = {
     hostRoot: '/tmp/preset-memory-stub/exports',
     backing: { server: 'nfs.example.invalid', exportPath: '/exports/ax-memory' },
   },
-  memoryEmbeddings: { projectId: 'memory-canary' },
 };
 
 const names = (cfg: MemoryPresetConfig) =>
@@ -251,13 +251,15 @@ describe('createMemoryPlugins guards', () => {
     ).not.toThrow();
   });
 
-  it('rejects a blank projectId', () => {
-    expect(() =>
-      createMemoryPlugins({
-        ...baseConfig,
-        memoryEmbeddings: { projectId: '' },
-      }),
-    ).toThrow(/projectId/);
+  it('needs no embeddings config at all — one OpenRouter credential, no Vertex project (TASK-523)', () => {
+    expect(() => createMemoryPlugins(baseConfig)).not.toThrow();
+    expect('memoryEmbeddings' in baseConfig).toBe(false);
+  });
+
+  it('pins the owner-chosen models and the one credential ref (TASK-523)', () => {
+    expect(MEMORY_CREDENTIAL_REF).toBe('provider:openrouter');
+    expect(MEMORY_EMBED_MODEL).toBe('google/gemini-embedding-001:nitro');
+    expect(MEMORY_RERANK_MODEL).toBe('voyageai/rerank-2.5:nitro');
   });
 });
 
@@ -274,10 +276,9 @@ describe('loadMemoryConfigFromEnv', () => {
     AX_MEMORY_EXPORT_HOST_ROOT: '/var/lib/ax-next/memory-exports',
     AX_MEMORY_EXPORT_NFS_SERVER: 'nfs.example.invalid',
     AX_MEMORY_EXPORT_NFS_PATH: '/exports/ax-memory',
-    AX_MEMORY_VERTEX_PROJECT: 'memory-canary',
   };
 
-  it('loads a complete config with credential-ref defaults', () => {
+  it('loads a complete config with no embeddings env at all', () => {
     const cfg = loadMemoryConfigFromEnv(baseEnv);
     expect(cfg.factsDatabasePath).toBe('/var/lib/ax-next/memory-facts/facts.db');
     expect(cfg.memoryExportVolume).toEqual({
@@ -287,11 +288,7 @@ describe('loadMemoryConfigFromEnv', () => {
         exportPath: '/exports/ax-memory',
       },
     });
-    expect(cfg.memoryEmbeddings).toEqual({
-      projectId: 'memory-canary',
-      embedCredentialRef: DEFAULT_VERTEX_CREDENTIAL_REF,
-      rerankCredentialRef: DEFAULT_COHERE_CREDENTIAL_REF,
-    });
+    expect('memoryEmbeddings' in cfg).toBe(false);
     expect('agentWorkspace' in cfg).toBe(false);
     expect(cfg.database).toEqual({ connectionString: 'postgres://x' });
   });
@@ -301,21 +298,21 @@ describe('loadMemoryConfigFromEnv', () => {
     'AX_MEMORY_EXPORT_HOST_ROOT',
     'AX_MEMORY_EXPORT_NFS_SERVER',
     'AX_MEMORY_EXPORT_NFS_PATH',
-    'AX_MEMORY_VERTEX_PROJECT',
   ])('throws naming %s when it is missing', (name) => {
     const env = { ...baseEnv };
     delete env[name];
     expect(() => loadMemoryConfigFromEnv(env)).toThrow(new RegExp(name));
   });
 
-  it('honors explicit credential refs', () => {
+  it('ignores the retired Vertex/Cohere env vars (TASK-523 — never a boot error)', () => {
+    const baseline = loadMemoryConfigFromEnv(baseEnv);
     const cfg = loadMemoryConfigFromEnv({
       ...baseEnv,
-      AX_MEMORY_VERTEX_CREDENTIAL_REF: 'provider:vertex-alt',
-      AX_MEMORY_COHERE_CREDENTIAL_REF: 'provider:cohere-alt',
+      AX_MEMORY_VERTEX_PROJECT: 'left-over',
+      AX_MEMORY_VERTEX_CREDENTIAL_REF: 'provider:vertex',
+      AX_MEMORY_COHERE_CREDENTIAL_REF: 'provider:cohere',
     });
-    expect(cfg.memoryEmbeddings.embedCredentialRef).toBe('provider:vertex-alt');
-    expect(cfg.memoryEmbeddings.rerankCredentialRef).toBe('provider:cohere-alt');
+    expect(cfg).toEqual(baseline);
   });
 
   it.each(['AX_AGENT_WORKSPACE', 'AX_AGENT_WORKSPACE_PREVIEW'])(

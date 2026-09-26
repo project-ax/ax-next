@@ -365,12 +365,6 @@ spec:
               value: {{ .Values.memory.exports.server | quote }}
             - name: AX_MEMORY_EXPORT_NFS_PATH
               value: {{ .Values.memory.exports.exportPath | quote }}
-            - name: AX_MEMORY_VERTEX_PROJECT
-              value: {{ .Values.memory.vertexProject | quote }}
-            - name: AX_MEMORY_VERTEX_CREDENTIAL_REF
-              value: {{ .Values.memory.vertexCredentialRef | quote }}
-            - name: AX_MEMORY_COHERE_CREDENTIAL_REF
-              value: {{ .Values.memory.cohereCredentialRef | quote }}
             {{- end }}
 
             # Credentials key — encrypts secrets at rest. Required.

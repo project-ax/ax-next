@@ -72,7 +72,7 @@ describe('validateScores', () => {
   });
 
   it('answers undefined for a HOLE in a sparse array', () => {
-    // This is the shape `cohereRerank` builds: `new Array(n)` filled by index.
+    // This is the shape `openrouterRerank` builds: `new Array(n)` filled by index.
     // A provider that skips an index leaves a hole, `for..of` yields
     // `undefined` for it, and that must not read as a score of any kind —
     // least of all as zero, which would sink the document to the bottom of the

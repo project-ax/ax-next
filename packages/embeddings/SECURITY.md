@@ -5,12 +5,17 @@ That deserves a page of its own rather than a bullet in a PR.
 
 ## What leaves, when remote mode is on
 
-Two destinations, both fixed, both HTTPS:
+One destination, fixed, HTTPS, carrying both calls:
 
 | Destination | What we send | How often |
 |---|---|---|
-| `us-central1-aiplatform.googleapis.com` (embeddings) | every statement as it is stored, and every recall query | every write, every query-shaped recall |
-| `api.cohere.com` (rerank) | the top 40 fused candidates plus the query | every query-shaped recall |
+| `openrouter.ai/api/v1/embeddings` | every statement as it is stored, and every recall query | every write, every query-shaped recall |
+| `openrouter.ai/api/v1/rerank` | the top 40 fused candidates plus the query | every query-shaped recall |
+
+Both routes live behind the same host and, in the memory preset, the same
+`provider:openrouter` credential — one account to configure, one key to rotate,
+instead of the two separate provider relationships (Vertex + Cohere) this package
+carried before TASK-523.
 
 That is the honest version. It is not "some derived signal" or "just vectors" — the
 *text* goes out, because that is what an embedding API takes. If your deployment can't
@@ -23,13 +28,15 @@ With remote mode off — the default — this package opens no sockets at all.
 There is no configurable base URL, and that is on purpose. A `baseUrl` field is a
 `fetch`-to-anywhere primitive wearing a config's clothes: one compromised settings row
 and memory flows to somebody else's endpoint. Instead, `endpoints.ts` holds a frozen
-table and a deployment picks a **key** from it. Adding a region is a code change with a
-review, which is exactly the friction we want on "where does everyone's memory go".
+table and a deployment picks a **key** from it. Adding a provider is a code change with
+a review, which is exactly the friction we want on "where does everyone's memory go".
 
-Two values *are* deployment-supplied and *do* reach the URL — the model id and the GCP
-project id. Both are checked against a strict grammar before anything is interpolated.
-"Deployment-supplied" is not the same as "trusted": a model id of `../../../somewhere`
-is a path-traversal primitive against an API URL, and it would have worked.
+One value *is* deployment-supplied — the model id — and it is checked against a strict
+grammar (`OPENROUTER_MODEL_RE`, `vendor/model[:variant]`) before it goes anywhere. It no
+longer lands in the request URL the way the old Vertex driver's model id did (OpenRouter
+takes the model in the JSON body), so the traversal risk that grammar originally existed
+to stop is gone — but the check stays anyway, as defense in depth against a config or
+payload value that is merely deployment-supplied, not trusted.
 
 One more thing worth naming before someone finds it and wonders: `EmbeddingsConfig` has
 a `fetchImpl` field, and yes, that is technically a dial-anywhere hole in the package

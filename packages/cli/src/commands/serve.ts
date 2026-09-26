@@ -62,11 +62,9 @@ env (required when AX_PRESET=memory):
   AX_MEMORY_EXPORT_HOST_ROOT  host dir holding exported memory profiles
   AX_MEMORY_EXPORT_NFS_SERVER export backing NFS server
   AX_MEMORY_EXPORT_NFS_PATH   export backing NFS path
-  AX_MEMORY_VERTEX_PROJECT    vertex project for embeddings
 
-env (optional when AX_PRESET=memory):
-  AX_MEMORY_VERTEX_CREDENTIAL_REF   default 'provider:vertex'
-  AX_MEMORY_COHERE_CREDENTIAL_REF   default 'provider:cohere'`;
+  Embeddings and reranking use the stored provider:openrouter key (admin
+  Provider keys screen) — no env var.`;
 
 /**
  * Env names that used to switch the agent workspace (the web interface) on and

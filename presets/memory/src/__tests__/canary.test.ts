@@ -147,24 +147,38 @@ function fakeK8sApi(): K8sCoreApi {
   } as unknown as K8sCoreApi;
 }
 
-let vertexCalls = 0;
-let cohereCalls = 0;
+// TASK-523: both producers go through OpenRouter on the ONE credential the
+// Provider keys screen writes. The fake answers only the two exact URLs, only
+// with that key, and records the model each request asked for — so a preset
+// that drifted to another host, another credential or another model shows up
+// here rather than on the next live walk.
+const OPENROUTER_KEY = 'canary-openrouter-key';
+let embedCalls = 0;
+let rerankCalls = 0;
+const embedModels: unknown[] = [];
+const rerankModels: unknown[] = [];
 let embeddingsUp = true;
 
 const fakeFetch: typeof fetch = async (input, init) => {
   const url = String(input);
   const parsed = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
-  if (url.includes(':predict')) {
-    vertexCalls += 1;
+  const auth = new Headers(init?.headers).get('authorization');
+  if (auth !== `Bearer ${OPENROUTER_KEY}`) return new Response('unauthorized', { status: 401 });
+  if (url === 'https://openrouter.ai/api/v1/embeddings') {
+    embedCalls += 1;
+    embedModels.push(parsed.model);
     if (!embeddingsUp) return new Response('down', { status: 500 });
-    const instances = parsed.instances as unknown[];
-    const predictions = instances.map(() => ({
-      embeddings: { values: new Array<number>(384).fill(0.01) },
+    const inputs = parsed.input as unknown[];
+    const data = inputs.map((_, index) => ({
+      object: 'embedding',
+      index,
+      embedding: new Array<number>(parsed.dimensions as number).fill(0.01),
     }));
-    return new Response(JSON.stringify({ predictions }), { status: 200 });
+    return new Response(JSON.stringify({ object: 'list', data }), { status: 200 });
   }
-  if (url.includes('/v2/rerank')) {
-    cohereCalls += 1;
+  if (url === 'https://openrouter.ai/api/v1/rerank') {
+    rerankCalls += 1;
+    rerankModels.push(parsed.model);
     if (!embeddingsUp) return new Response('down', { status: 500 });
     const docs = parsed.documents as unknown[];
     const results = docs.map((_, index) => ({ index, relevance_score: 1 - index * 0.01 }));
@@ -239,7 +253,7 @@ async function boot(): Promise<void> {
       hostRoot: exportHostRoot,
       backing: { server: 'nfs.example.invalid', exportPath: '/exports/ax-memory' },
     },
-    memoryEmbeddings: { projectId: 'memory-canary', fetchImpl: fakeFetch },
+    memoryEmbeddings: { fetchImpl: fakeFetch },
     onObserverDetached: (work) => {
       detached.push(work);
     },
@@ -273,16 +287,17 @@ async function boot(): Promise<void> {
   shutdown = () => handle.shutdown();
   httpPort = httpPlugin?.boundPort?.() ?? 0;
 
-  const seedCtx = ctxFor('canary-seed', ALICE);
-  for (const ref of ['provider:vertex', 'provider:cohere']) {
-    await bus.call('credentials:set', seedCtx, {
-      scope: 'global',
-      ownerId: null,
-      ref,
-      kind: 'api-key',
-      payload: new TextEncoder().encode('canary-token'),
-    });
-  }
+  await seedOpenRouterKey();
+}
+
+async function seedOpenRouterKey(): Promise<void> {
+  await bus.call('credentials:set', ctxFor('canary-seed', ALICE), {
+    scope: 'global',
+    ownerId: null,
+    ref: 'provider:openrouter',
+    kind: 'api-key',
+    payload: new TextEncoder().encode(OPENROUTER_KEY),
+  });
 }
 
 async function teardown(): Promise<void> {
@@ -465,8 +480,8 @@ describe('@ax/preset-memory canary', () => {
     const romeId = rome.json.id as string;
     expect(typeof romeId).toBe('string');
 
-    const vertexBefore = vertexCalls;
-    const cohereBefore = cohereCalls;
+    const embedBefore = embedCalls;
+    const rerankBefore = rerankCalls;
     const active = await apiJson(
       'POST',
       `/api/workspace/agents/${aliceAgentId}/memory/recall`,
@@ -474,9 +489,12 @@ describe('@ax/preset-memory canary', () => {
       { query: 'where does the user live' },
     );
     expect(active.status).toBe(200);
-    expect(vertexCalls).toBeGreaterThan(vertexBefore);
-    expect(cohereCalls).toBeGreaterThan(cohereBefore);
+    expect(embedCalls).toBeGreaterThan(embedBefore);
+    expect(rerankCalls).toBeGreaterThan(rerankBefore);
     expect(active.json.degraded).toEqual([]);
+    // The owner-chosen models, and only those, went on the wire.
+    expect(new Set(embedModels)).toEqual(new Set(['google/gemini-embedding-001:nitro']));
+    expect(new Set(rerankModels)).toEqual(new Set(['voyageai/rerank-2.5:nitro']));
     const activeStmts = active.json.statements as Array<{ value: string }>;
     expect(activeStmts.some((s) => s.value === 'Rome')).toBe(true);
     expect(activeStmts.some((s) => s.value === 'Paris')).toBe(false);
@@ -915,17 +933,15 @@ describe('@ax/preset-memory canary', () => {
     }
   });
 
-  it('missing embedding credentials degrade with no outbound provider call', async () => {
+  it('a missing OpenRouter credential degrades with no outbound provider call', async () => {
     const seedCtx = ctxFor('canary-seed', ALICE);
-    for (const ref of ['provider:vertex', 'provider:cohere']) {
-      await bus.call('credentials:delete', seedCtx, {
-        scope: 'global',
-        ownerId: null,
-        ref,
-      });
-    }
-    const vertexBefore = vertexCalls;
-    const cohereBefore = cohereCalls;
+    await bus.call('credentials:delete', seedCtx, {
+      scope: 'global',
+      ownerId: null,
+      ref: 'provider:openrouter',
+    });
+    const embedBefore = embedCalls;
+    const rerankBefore = rerankCalls;
     try {
       const recall = await apiJson(
         'POST',
@@ -937,18 +953,10 @@ describe('@ax/preset-memory canary', () => {
       const degraded = recall.json.degraded as string[];
       expect(degraded).toContain('semantic');
       expect(degraded).toContain('ranking');
-      expect(vertexCalls).toBe(vertexBefore);
-      expect(cohereCalls).toBe(cohereBefore);
+      expect(embedCalls).toBe(embedBefore);
+      expect(rerankCalls).toBe(rerankBefore);
     } finally {
-      for (const ref of ['provider:vertex', 'provider:cohere']) {
-        await bus.call('credentials:set', seedCtx, {
-          scope: 'global',
-          ownerId: null,
-          ref,
-          kind: 'api-key',
-          payload: new TextEncoder().encode('canary-token'),
-        });
-      }
+      await seedOpenRouterKey();
     }
   });
 

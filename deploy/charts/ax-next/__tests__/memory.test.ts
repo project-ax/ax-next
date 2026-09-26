@@ -31,8 +31,6 @@ const MEMORY_VALUES = [
   '--set',
   'host.preset=memory',
   '--set',
-  'memory.vertexProject=memory-canary',
-  '--set',
   'memory.exports.server=nfs.example.invalid',
   '--set',
   'memory.exports.exportPath=/exports/ax-memory',
@@ -144,6 +142,12 @@ const MEMORY_ENV_NAMES = [
   'AX_MEMORY_EXPORT_HOST_ROOT',
   'AX_MEMORY_EXPORT_NFS_SERVER',
   'AX_MEMORY_EXPORT_NFS_PATH',
+];
+
+// TASK-523: embeddings + rerank moved to OpenRouter on `provider:openrouter`,
+// which the Provider keys screen writes. There is no Vertex project and no
+// per-provider credential ref left to configure, so none of these may render.
+const RETIRED_MEMORY_ENV_NAMES = [
   'AX_MEMORY_VERTEX_PROJECT',
   'AX_MEMORY_VERTEX_CREDENTIAL_REF',
   'AX_MEMORY_COHERE_CREDENTIAL_REF',
@@ -173,7 +177,7 @@ describeIfHelm('memory preset opt-in (TASK-496)', () => {
     expect(docs.find((d) => (d.metadata?.name ?? '').endsWith('-memory-facts'))).toBeUndefined();
   });
 
-  it('memory mode stamps AX_PRESET + all seven memory env vars from values', () => {
+  it('memory mode stamps AX_PRESET + all four memory env vars from values', () => {
     const { container } = hostSpec(hostDeployment(render(['-f', KIND_DEV_VALUES, ...MEMORY_VALUES])));
     const env = envMap(container);
     expect(env.get('AX_PRESET')).toBe('memory');
@@ -181,9 +185,22 @@ describeIfHelm('memory preset opt-in (TASK-496)', () => {
     expect(env.get('AX_MEMORY_EXPORT_HOST_ROOT')).toBe('/var/lib/ax-next/memory-exports');
     expect(env.get('AX_MEMORY_EXPORT_NFS_SERVER')).toBe('nfs.example.invalid');
     expect(env.get('AX_MEMORY_EXPORT_NFS_PATH')).toBe('/exports/ax-memory');
-    expect(env.get('AX_MEMORY_VERTEX_PROJECT')).toBe('memory-canary');
-    expect(env.get('AX_MEMORY_VERTEX_CREDENTIAL_REF')).toBe('provider:vertex');
-    expect(env.get('AX_MEMORY_COHERE_CREDENTIAL_REF')).toBe('provider:cohere');
+    for (const name of RETIRED_MEMORY_ENV_NAMES) {
+      expect(env.has(name), `${name} is retired (TASK-523) and must not render`).toBe(false);
+    }
+  });
+
+  it('memory mode renders with no Vertex settings at all (TASK-523)', () => {
+    // A stale value left over from a pre-TASK-523 release is ignored, not fatal:
+    // the schema does not forbid unknown memory.* keys, so an upgrade that
+    // carries `memory.vertexProject` forward still renders.
+    const { container } = hostSpec(hostDeployment(render([
+      '-f', KIND_DEV_VALUES, ...MEMORY_VALUES, '--set', 'memory.vertexProject=left-over',
+    ])));
+    const env = envMap(container);
+    for (const name of RETIRED_MEMORY_ENV_NAMES) {
+      expect(env.has(name), `${name} is retired (TASK-523) and must not render`).toBe(false);
+    }
   });
 
   it('memory mode mounts the facts PVC and the SAME NFS export read-write on the host', () => {
@@ -268,18 +285,16 @@ describeIfHelm('memory preset opt-in (TASK-496)', () => {
   });
 
   it.each([
-    'host.preset=memory,memory.exports.server=nfs.example.invalid,memory.exports.exportPath=/e',
-    'host.preset=memory,memory.vertexProject=p,memory.exports.exportPath=/e',
-    'host.preset=memory,memory.vertexProject=p,memory.exports.server=nfs.example.invalid',
+    'host.preset=memory,memory.exports.exportPath=/e',
+    'host.preset=memory,memory.exports.server=nfs.example.invalid',
   ])('render fails on missing memory fields even with the schema out of the way: %s', (sets) => {
     const out = renderFails(['--set', sets], schemaSkippedChart());
     expect(out).toContain('memory.');
   });
 
   it.each([
-    ['memory.vertexProject', 'host.preset=memory,memory.exports.server=nfs.example.invalid,memory.exports.exportPath=/e'],
-    ['memory.exports.server', 'host.preset=memory,memory.vertexProject=p,memory.exports.exportPath=/e'],
-    ['memory.exports.exportPath', 'host.preset=memory,memory.vertexProject=p,memory.exports.server=nfs.example.invalid'],
+    ['memory.exports.server', 'host.preset=memory,memory.exports.exportPath=/e'],
+    ['memory.exports.exportPath', 'host.preset=memory,memory.exports.server=nfs.example.invalid'],
   ])('render fails when %s is missing under host.preset=memory', (field, sets) => {
     const out = renderFails(['--set', sets]);
     expect(out).toContain(field);
@@ -338,16 +353,16 @@ const KIND_MEMORY_VALUES = resolve(chartDir, 'kind-memory-values.yaml');
 const KIND_NFS_MANIFEST = resolve(repoRoot, 'deploy/kind/memory-nfs/nfs-server.yaml');
 
 describeIfHelm('kind memory overlay (TASK-519)', () => {
-  it('refuses to render without a Vertex project, and says which value is missing', () => {
-    expect(renderFails(['-f', KIND_DEV_VALUES, '-f', KIND_MEMORY_VALUES])).toMatch(
-      /memory\.vertexProject is required/,
-    );
+  it('renders with no --set at all — the overlay is complete on its own (TASK-523)', () => {
+    const { container } = hostSpec(hostDeployment(render([
+      '-f', KIND_DEV_VALUES, '-f', KIND_MEMORY_VALUES,
+    ])));
+    expect(envMap(container).get('AX_PRESET')).toBe('memory');
   });
 
   it('points the host export mount at the dev NFS Service by its pinned ClusterIP', () => {
     const docs = render([
       '-f', KIND_DEV_VALUES, '-f', KIND_MEMORY_VALUES,
-      '--set', 'memory.vertexProject=memory-canary',
     ]);
     const { container, spec } = hostSpec(hostDeployment(docs));
     const nfsDocs = loadAll(readFileSync(KIND_NFS_MANIFEST, 'utf8')) as K8sDoc[];

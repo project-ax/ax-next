@@ -6,15 +6,12 @@
 #     -f deploy/charts/ax-next/kind-memory-values.yaml ...
 #
 # It needs the dev NFS server from deploy/kind/memory-nfs/ running first —
-# see the README there. The memory credentials (provider:vertex,
-# provider:cohere) are NOT set here; they live in the credential store.
+# see the README there. The one memory credential (provider:openrouter) is
+# NOT set here; it goes in through the admin Provider keys screen.
 host:
   preset: memory
 
 memory:
-  # vertexProject is deliberately NOT set: it's whichever GCP project your
-  # Vertex token can call, so pass --set memory.vertexProject=<yours>. Forget
-  # it and the chart refuses to render, saying exactly that.
   exports:
     # The pinned ClusterIP of the ax-next-memory-nfs Service
     # (deploy/kind/memory-nfs/nfs-server.yaml). kubelet mounts from the node,

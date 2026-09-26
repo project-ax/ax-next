@@ -186,16 +186,6 @@
     "memory": {
       "type": "object",
       "properties": {
-        "vertexProject": {
-          "type": "string",
-          "description": "Vertex AI project for the embeddings embed path. Required when host.preset=memory."
-        },
-        "vertexCredentialRef": {
-          "type": "string"
-        },
-        "cohereCredentialRef": {
-          "type": "string"
-        },
         "facts": {
           "type": "object",
           "properties": {

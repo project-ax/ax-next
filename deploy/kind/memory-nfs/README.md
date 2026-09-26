@@ -29,8 +29,7 @@ kubectl --context kind-ax-next-dev -n ax-next rollout status deploy/ax-next-memo
 helm --kube-context kind-ax-next-dev upgrade ax-next deploy/charts/ax-next -n ax-next \
   -f deploy/charts/ax-next/kind-dev-values.yaml \
   -f <your-previous-values.yaml> \
-  -f deploy/charts/ax-next/kind-memory-values.yaml \
-  --set memory.vertexProject=<a GCP project your Vertex token can call>
+  -f deploy/charts/ax-next/kind-memory-values.yaml
 ```
 
 Check it took:
@@ -61,10 +60,14 @@ kubectl --context kind-ax-next-dev -n ax-next exec deploy/ax-next-host -c host -
   (the node's address on the pod network), so kubelet's mounts work and a pod
   speaking NFS directly gets `Permission denied`. Runners reach the export only
   through their read-only `/memory` mount.
-- **The memory preset needs three credentials, not two.** Vertex
-  (`provider:vertex`, embeddings) and Cohere (`provider:cohere`, reranking)
-  degrade recall when missing. The observer's extraction model runs through
-  OpenRouter (`provider:openrouter`) — without it, nothing is ever extracted
-  from conversations and the host logs `memory_no_llm_credential`. OpenRouter
-  goes in through the admin Provider keys screen; Vertex and Cohere have no
-  UI path yet.
+- **The memory preset needs one credential, and it is OpenRouter.**
+  `provider:openrouter`, stored through the admin Provider keys screen, drives
+  the observer's extraction model, embeddings and reranking. Without it,
+  nothing is extracted from conversations (the host logs
+  `memory_no_llm_credential`) and recall answers lexically with
+  `degraded: ["semantic", "ranking"]`.
+- **Changing the embedding model wipes the stored vectors.** The fact store
+  remembers which model made its vectors; on a mismatch it drops them all
+  rather than compare two incompatible vector spaces, and re-embeds each
+  agent's facts in the background after that agent's next successful memory
+  write. Until then recall for that agent is lexical-plus-recency.

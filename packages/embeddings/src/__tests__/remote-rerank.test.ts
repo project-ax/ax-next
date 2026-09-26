@@ -1,9 +1,9 @@
-// The Cohere rerank driver, driven through the bus.
+// The OpenRouter rerank driver, driven through the bus.
 //
-// The two tests that carry this file are the SHUFFLE one (Cohere answers
-// sorted by score, so scores must be placed by `index` and never by iteration
-// order) and the SHORT-ANSWER one (a short answer is refused outright, not
-// padded with zeros). Everything else is the failure table.
+// The two tests that carry this file are the SHUFFLE one (the provider
+// answers sorted by score, so scores must be placed by `index` and never by
+// iteration order) and the SHORT-ANSWER one (a short answer is refused
+// outright, not padded with zeros). Everything else is the failure table.
 
 import { describe, expect, it } from 'vitest';
 import type { HookBus } from '@ax/core';
@@ -21,23 +21,24 @@ import {
 import type { RerankInput, RerankOutput } from '../wire.js';
 import type { EmbeddingsConfig } from '../plugin.js';
 
-const TOKEN = 'cohere-test-key';
+const TOKEN = 'sk-or-test-key';
 const DOCS = ['d0', 'd1', 'd2', 'd3'];
+const DEFAULT_MODEL = 'voyageai/rerank-2.5:nitro';
 
-interface CohereRequest {
+interface OpenRouterRerankRequest {
   model: string;
   query: string;
   documents: string[];
   top_n: number;
 }
 
-function requestOf(call: RecordedCall): CohereRequest {
-  return call.body as CohereRequest;
+function requestOf(call: RecordedCall): OpenRouterRerankRequest {
+  return call.body as OpenRouterRerankRequest;
 }
 
 function configWith(stub: FetchStub, extra: Partial<EmbeddingsConfig> = {}): EmbeddingsConfig {
   return {
-    rerank: { provider: 'cohere', credentialRef: 'provider:cohere' },
+    rerank: { provider: 'openrouter', credentialRef: 'provider:openrouter' },
     fetchImpl: stub.impl,
     ...extra,
   };
@@ -47,7 +48,7 @@ function rerank(bus: HookBus, input: RerankInput, who = ctx): Promise<RerankOutp
   return bus.call<RerankInput, RerankOutput | undefined>('embeddings:rerank', who, input);
 }
 
-/** What Cohere actually sends: results sorted by score, each carrying its original index. */
+/** What the provider actually sends: results sorted by score, each carrying its original index. */
 const SHUFFLED_RESULTS = [
   { index: 2, relevance_score: 0.9 },
   { index: 0, relevance_score: 0.7 },
@@ -77,32 +78,37 @@ describe('remote rerank — the happy path', () => {
 
     const call = stub.calls[0];
     expect(stub.calls).toHaveLength(1);
-    expect(call?.url).toBe('https://api.cohere.com/v2/rerank');
+    expect(call?.url).toBe('https://openrouter.ai/api/v1/rerank');
     expect(call?.method).toBe('POST');
     expect(call?.headers.authorization).toBe(`Bearer ${TOKEN}`);
     expect(call?.url).not.toContain(TOKEN);
     // `top_n` is sent explicitly: the default is provider-side and has changed
     // before, and a truncated result set is exactly the short answer we refuse.
     expect(requestOf(call as RecordedCall).top_n).toBe(DOCS.length);
-    expect(requestOf(call as RecordedCall).model).toBe('rerank-v4.0-pro');
-    expect(requestOf(call as RecordedCall).query).toBe('hello');
-    expect(requestOf(call as RecordedCall).documents).toEqual(DOCS);
+    // Deep-equal the exact body: this is the request-shape pin the plan asks
+    // for on the rerank side, mirroring the embed one in remote-embed.test.ts.
+    expect(requestOf(call as RecordedCall)).toEqual({
+      model: DEFAULT_MODEL,
+      query: 'hello',
+      documents: DOCS,
+      top_n: DOCS.length,
+    });
   });
 
   it('uses the configured model over the endpoint default, and a payload model over both', async () => {
     const stub = fetchStub(() => jsonResponse({ results: SHUFFLED_RESULTS }));
     const bus = await busWithPlugin(
       configWith(stub, {
-        rerank: { provider: 'cohere', credentialRef: 'provider:cohere', model: 'rerank-v3.5' },
+        rerank: { provider: 'openrouter', credentialRef: 'provider:openrouter', model: 'voyageai/rerank-2.5' },
       }),
       { credential: TOKEN },
     );
 
     await rerank(bus, { query: 'q', documents: DOCS });
-    expect(requestOf(stub.calls[0] as RecordedCall).model).toBe('rerank-v3.5');
+    expect(requestOf(stub.calls[0] as RecordedCall).model).toBe('voyageai/rerank-2.5');
 
-    await rerank(bus, { query: 'q', documents: DOCS, model: 'rerank-v4.0-lite' });
-    expect(requestOf(stub.calls[1] as RecordedCall).model).toBe('rerank-v4.0-lite');
+    await rerank(bus, { query: 'q', documents: DOCS, model: 'cohere/rerank-v3.5' });
+    expect(requestOf(stub.calls[1] as RecordedCall).model).toBe('cohere/rerank-v3.5');
   });
 
   it('short-circuits an empty document list with no fetch at all', async () => {
@@ -118,11 +124,11 @@ describe('remote rerank — full coverage or nothing', () => {
   // NOTE ON WHAT THIS ACTUALLY PINS (TASK-487 mutation pass). It pins the
   // OUTCOME — a short answer is refused, never padded — and that outcome is
   // worth pinning, because `dem-memory` padded and we deliberately do not.
-  // What it does NOT pin is WHICH of `cohereRerank`'s three guards refuses it:
-  // deleting the arity check leaves this test green, because the missing slot
-  // then survives as a hole and `validateScores` catches it instead. Same for
-  // the `seen` check and the duplicated-index case below. See the comment at
-  // the end of `cohereRerank`.
+  // What it does NOT pin is WHICH of `openrouterRerank`'s three guards refuses
+  // it: deleting the arity check leaves this test green, because the missing
+  // slot then survives as a hole and `validateScores` catches it instead.
+  // Same for the `seen` check and the duplicated-index case below. See the
+  // comment at the end of `openrouterRerank`.
   it('refuses a short answer instead of padding the missing slot with zero', async () => {
     const stub = fetchStub(() =>
       jsonResponse({ results: SHUFFLED_RESULTS.filter((r) => r.index !== 1) }),
@@ -270,10 +276,10 @@ describe('remote rerank — a non-2xx is not an answer, however well-formed its 
   // The rerank half of the same TASK-487 mutation finding — see the matching
   // block in `remote-embed.test.ts`. Every non-2xx fixture in the failure
   // table above carries a body that ALSO fails the shape check, so deleting
-  // `if (!response.ok)` left the suite green. A 429 from Cohere that still
-  // carries a usable `results` array is the case that tells the two guards
-  // apart, and accepting it would let a throttled response silently reorder
-  // somebody's recall.
+  // `if (!response.ok)` left the suite green. A 429 that still carries a
+  // usable `results` array is the case that tells the two guards apart, and
+  // accepting it would let a throttled response silently reorder somebody's
+  // recall.
   it.each([
     ['403', 403],
     ['429', 429],

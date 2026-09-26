@@ -394,9 +394,6 @@ Invoked from `host/deployment.yaml`, which always renders.
 {{- $preset := .Values.host.preset | default "k8s" -}}
 {{- if eq $preset "memory" -}}
 {{- $mem := .Values.memory | default dict -}}
-{{- if not (dig "vertexProject" "" $mem) -}}
-{{- fail "memory.vertexProject is required when host.preset=memory" -}}
-{{- end -}}
 {{- if not (dig "exports" "server" "" $mem) -}}
 {{- fail "memory.exports.server is required when host.preset=memory" -}}
 {{- end -}}
