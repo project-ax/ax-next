@@ -13,7 +13,7 @@ import { AxChatTransport } from './transport';
 import { useAgentStore } from './agent-store';
 import { sessionStoreActions, useSessionStore } from './session-store';
 import { AxAttachmentAdapter } from './ax-attachment-adapter';
-import { setActiveConversationId } from './use-conversation-id';
+import { getActiveConversationId, setActiveConversationId } from './use-conversation-id';
 import { applyTurnError } from './turn-error';
 import { resumeActions } from './resume-actions';
 import { continuationActions } from './continuation-actions';
@@ -87,10 +87,12 @@ const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
   // TASK-278: expose this thread's resumeStream so an approval that woke a
   // warm agent can attach a consumer for the continuation turn. This is a
   // resume, never a re-POST: the turn is already running server-side under
-  // the staged id, and a regenerate here would run it a second time.
+  // the staged id, and a regenerate here would run it a second time. The
+  // open-conversation getter is what `continueApprovedTurn` checks the
+  // approved decision against at settle time.
   continuationActions.registerResume(() => {
     void chatRef.current?.resumeStream();
-  });
+  }, getActiveConversationId);
   // Bootstrap kickoff: when a new agent was just created, App.tsx calls
   // bootstrapKickoff.trigger() before the chat runtime is mounted. Register here
   // so the pending kickoff fires as soon as the runtime is ready. The chatRef

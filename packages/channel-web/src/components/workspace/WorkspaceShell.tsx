@@ -36,6 +36,7 @@ import {
 } from '@/lib/workspace-api';
 import { useActivityFeed } from '@/lib/workspace-activity';
 import { useDecisionQueue } from '@/lib/workspace-decisions';
+import { continuationActions } from '@/lib/continuation-actions';
 import { resumeParkedTurn } from '@/lib/workspace-resume';
 import type { SendableAttachment } from '@/lib/workspace-attachments';
 import {
@@ -308,8 +309,16 @@ function Inner({
    * tab. One collection, one fetch, one array — the card in the thread and the
    * row in Today are literally the same object, so resolving one resolves both
    * without a second read and without two copies drifting apart on screen.
+   *
+   * An approval that woke a warm agent answers a `streamReqId` for the
+   * continuation turn. `continueApprovedTurn` is the one rule chat and this
+   * surface share for it (TASK-542): it attaches only when the decision
+   * belongs to the conversation the mounted `AgentView` has open at settle
+   * time, and is a quiet no-op on Today, where no thread is mounted.
    */
-  const queue = useDecisionQueue();
+  const queue = useDecisionQueue({
+    onDecisionApproved: continuationActions.continueApprovedTurn,
+  });
   /*
     Open capability grants (TASK-350). A store with TWO producers that meet in
     one place — `raise()` — so a grant is one row however it arrives:

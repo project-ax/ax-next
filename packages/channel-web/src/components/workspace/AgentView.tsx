@@ -53,6 +53,7 @@ import {
   type WorkspaceToolCall,
 } from '@/lib/workspace-steps';
 import { isOpenDecision } from '@/lib/workspace-types';
+import { continuationActions } from '@/lib/continuation-actions';
 import type { SendableAttachment } from '@/lib/workspace-attachments';
 import type { PhaseKind } from '@/server/types';
 import { ActivityFeed } from './ActivityFeed';
@@ -690,6 +691,38 @@ export function AgentView({
       });
     },
     [agentId, load, onChanged, onDecisionRaised],
+  );
+
+  /*
+    THE POST-APPROVAL CONTINUATION (TASK-542). Approving a hold that a warm
+    agent was waiting on starts a new turn server-side under the approve
+    response's `streamReqId`; nothing else ever opens it, so without this the
+    agent's answer sat unrendered until the next unrelated re-read.
+
+    Registered on the shared seam chat uses (TASK-278) rather than a second
+    copy of its rule: `continueApprovedTurn` decides WHETHER a continuation is
+    ours — this thread's open conversation, read at settle time through
+    `conversationRef` — and this only decides HOW to render it, which is the
+    same `streamFrom` every other turn here goes through. No `sent` bubble: the
+    person did not say anything, they answered a card, and the receipt already
+    in the thread is the record of that.
+
+    Once per mount, through a ref, so an unstable `onChanged` from the shell
+    cannot churn the registration; the disposer only clears the slot if it
+    still holds THIS registration.
+  */
+  const streamFromRef = useRef(streamFrom);
+  streamFromRef.current = streamFrom;
+  useEffect(
+    () =>
+      continuationActions.registerResume(
+        () => {
+          const reqId = continuationActions.takePendingContinuation();
+          if (reqId !== null) void streamFromRef.current(reqId);
+        },
+        () => conversationRef.current,
+      ),
+    [],
   );
 
   /*
