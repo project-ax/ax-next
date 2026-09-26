@@ -104,8 +104,11 @@ export function focusFirst(
  * and `<html>` and `null` are the same fact reported differently by different
  * engines and by a document nobody has focused yet. None of the three is a
  * person standing somewhere; everything else is.
+ *
+ * Exported for a restore that hands focus on in two steps (TASK-539's loading
+ * pane): the second step must yield to a person the same way the first does.
  */
-function keyboardIsClaimed(doc: Document): boolean {
+export function keyboardIsClaimed(doc: Document): boolean {
   const active = doc.activeElement;
   return (
     active !== null && active !== doc.body && active !== doc.documentElement
