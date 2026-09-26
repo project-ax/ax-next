@@ -64,15 +64,20 @@ function claimBlock() {
   return `${m[1]}fi`;
 }
 
-/** The §3a runnable block (the one the loop pass actually runs). */
-function sweepBlock() {
+/** The §3a prose section (no runnable block of its own: the sweep lives in §3's). */
+function sweepSection() {
   const start = DOC.indexOf('\n### 3a. ');
   const end = DOC.indexOf('\n## 4. ', start + 1);
   if (start < 0 || end < 0) throw new Error('§3a laneless sweep section missing');
-  const m = /```bash\n([\s\S]*?)\n```/.exec(DOC.slice(start, end));
-  if (!m) throw new Error('§3a has no bash block');
-  return m[1];
+  return DOC.slice(start, end);
 }
+
+/** Non-comment lines of a shell block. */
+const code = (block) =>
+  block
+    .split('\n')
+    .filter((l) => !/^\s*#/.test(l))
+    .join('\n');
 
 const BOARD_LIMIT = Number(/^BOARD_LIMIT=(\d+)$/m.exec(boardHelper())?.[1]);
 
@@ -175,9 +180,9 @@ describe.each(SHELLS)('board_laneless under %s', (shell) => {
     }
   });
 
-  const pass = () => `${readBlock()}\n${sweepBlock()}\necho "RC=$LANELESS_RC"`;
+  const pass = () => `${readBlock()}\necho "RC=$LANELESS_RC"`;
 
-  it('the §3 read + §3a sweep report a laneless card end to end, on ONE board read', () => {
+  it('the §3 pass block report a laneless card end to end, on ONE board read', () => {
     const r = run(shell, pass(), { ghOut: board(...routed, LANELESS) });
     expect(r.out).toContain('LANELESS PVTI_z [TASK-476] stranded');
     expect(r.out).toContain('RC=1');
@@ -199,7 +204,7 @@ describe.each(SHELLS)('board_laneless under %s', (shell) => {
     expect(ok.out).toContain('board_batch: 2 write(s) in 1 request');
   });
 
-  it('the §3 read + §3a sweep never reach a quiet verdict when the board read is truncated', () => {
+  it('the §3 pass block never reach a quiet verdict when the board read is truncated', () => {
     const r = run(shell, pass(), { ghOut: full(BOARD_LIMIT, [LANELESS]) });
     expect(r.out).not.toMatch(/laneless: 0/);
     expect(r.err).toMatch(/FATAL: board_snapshot hit --limit/);
@@ -218,11 +223,12 @@ describe('the sweep is wired into the loop, not just defined', () => {
     expect(DOC).toMatch(/for f in board_snapshot board_laneless board_batch; do/);
   });
 
-  it('§3a does not issue its own board read', () => {
-    const code = sweepBlock()
-      .split('\n')
-      .filter((l) => !/^\s*#/.test(l))
-      .join('\n');
-    expect(code).not.toMatch(/board_snapshot|item-list/);
+  it('the sweep runs in the SAME block as the one read ($SNAP does not survive a Bash call)', () => {
+    const read = code(readBlock());
+    expect(read.match(/board_snapshot/g)).toHaveLength(1);
+    expect(read).not.toMatch(/item-list/);
+    expect(read).toMatch(/board_laneless "\$SNAP"/);
+    // A separate §3a block would run in its own call with $SNAP empty -- FATAL every pass.
+    expect(sweepSection()).not.toMatch(/```bash/);
   });
 });

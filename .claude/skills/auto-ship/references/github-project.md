@@ -320,6 +320,17 @@ source .claude/auto-ship-board.sh
 if SNAP=$(board_snapshot); then ITEMS=$(cat "$SNAP")    # the ONLY board read this pass
 else SNAP=""; ITEMS=""; echo "FATAL: board read failed — do NOT derive a ready set, sweep or reconcile from it this pass" >&2
 fi
+# laneless sweep (§3a) — IN THIS SAME BLOCK, on purpose: it needs $SNAP and the sourced
+# helper, and shell state does not survive between Bash calls. Split it into its own call
+# and $SNAP is empty there, so it FATALs every pass on a healthy board and never sweeps.
+# Never "fix" that by calling board_snapshot again (doubles the pass's heaviest read) or
+# by sweeping $BOARD_CACHE (after a FAILED read it still holds the PREVIOUS board).
+if [ -n "$SNAP" ]; then
+  board_laneless "$SNAP"; LANELESS_RC=$?     # 0 clean · 1 hits (listed) · 2 could NOT sweep
+  [ "$LANELESS_RC" -eq 2 ] && echo "FATAL: laneless sweep did not run — treat the board as unswept this pass" >&2
+else
+  echo "FATAL: no snapshot — laneless sweep NOT run (and nothing else this pass may trust the board)" >&2
+fi
 # ready set + deps:
 printf '%s' "$ITEMS" | jq -r '.items[] | select(.status=="To Do") | "\(.title)\tdeps=\(."depends on" // "")"'
 # an item's node id AND its body come from the SAME JSON — never re-query for them:
@@ -349,19 +360,9 @@ lane — so it is work the board holds and no process can reach. `MEASURED-BY-PR
 notification landed between `claim` and its routing `board_batch`; it surfaced only
 because a lane tally printed a `1 null` row. `claim` deliberately does not route (§4 —
 routing is orchestrator-owned), so "remember the second call" is the only thing that
-prevents it, and that is not a mechanism. This sweep is the mechanism: run it on the
-pass's one snapshot (§3's `$SNAP`), right after reading it.
-
-```bash
-# NO second board read: sweep the file §3's one read produced ($SNAP). Never call
-# board_snapshot again here — that doubles the pass's heaviest GraphQL cost.
-if [ -n "${SNAP:-}" ]; then
-  board_laneless "$SNAP"; LANELESS_RC=$?     # 0 clean · 1 hits (listed) · 2 could NOT sweep
-  [ "$LANELESS_RC" -eq 2 ] && echo "FATAL: laneless sweep did not run — treat the board as unswept this pass" >&2
-else
-  echo "FATAL: no snapshot — laneless sweep NOT run (and nothing else this pass may trust the board)" >&2
-fi
-```
+prevents it, and that is not a mechanism. This sweep is the mechanism. It lives **inside
+the §3 read block**, right after the read, and sweeps that same `$SNAP` — one board read
+per pass, and one Bash invocation, because `$SNAP` does not outlive the call that set it.
 
 **Which direction does it fail in? Loud.** A sweep that says "none" over a truncated
 read is the failure this card exists to prevent, so `board_laneless` re-checks the
