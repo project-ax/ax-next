@@ -48,12 +48,33 @@ type CheckedStart = (container: Startable, options: { timeoutMs: number; warn: (
 // DOCKER_PREFLIGHT_TIMEOUT_MS (45s) is unchanged.
 //
 // The two `hang-*` tests still pass 1_000 explicitly, because the timeout branch is
-// what they assert. They cannot flake the wrong way: a slow child only makes the
-// timeout more certain.
+// what they assert. A slow CHILD only makes that timeout more certain. They did flake
+// the other way once, though (TASK-579): a second 1000ms clock, the vm watchdog below,
+// fired first. See VM_SYNC_BUDGET_MS.
 const PROBE_BUDGET_MS = 20_000;
 
-async function startConsumer(start: () => Promise<unknown>, warn: (message: string) => void, timeoutMs = PROBE_BUDGET_MS): Promise<unknown> {
-  const checked = Reflect.get(harness, 'startTestContainer') as CheckedStart | undefined;
+// Wall-clock bound on the vm's synchronous evaluation of the consumer's startup
+// expression. It guards one thing: a consumer expression that never returns. (TASK-579)
+//
+// It was 1_000, the same number the `hang-*` tests pass as the preflight budget, and the
+// checked start used to run inside it. Two clocks, one budget, one winner picked by CI
+// load. `startConsumer` now defers the checked start, so the preflight never runs under
+// this watchdog. That separation is the fix. This number only has to cover pure JS:
+// ~2ms idle, 10ms worst locally under 8 parallel runs plus 16 CPU burners. 10s leaves
+// room for a CI stall of the multi-second size this package has measured (TASK-537).
+// It stays under the 30s `testTimeout`, so a genuine synchronous hang still fails with
+// the vm's own named error.
+const VM_SYNC_BUDGET_MS = 10_000;
+
+async function startConsumer(start: () => Promise<unknown>, warn: (message: string) => void, timeoutMs = PROBE_BUDGET_MS, seams: { syncStallMs?: number; vmBudgetMs?: number } = {}): Promise<unknown> {
+  const { syncStallMs = 0, vmBudgetMs = VM_SYNC_BUDGET_MS } = seams;
+  const real = Reflect.get(harness, 'startTestContainer') as CheckedStart | undefined;
+  // Test-only seam: stall the checked start's SYNCHRONOUS prefix, which is where the
+  // harness reads its configuration and spawns the first docker probe. (TASK-579)
+  const checked: CheckedStart | undefined = real === undefined || syncStallMs === 0 ? real : (container, options) => {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, syncStallMs);
+    return real(container, options);
+  };
   class StubPostgres {
     start(): Promise<unknown> { return start(); }
   }
@@ -61,9 +82,16 @@ async function startConsumer(start: () => Promise<unknown>, warn: (message: stri
     PostgreSqlContainer: StubPostgres,
     startTestContainer: (container: Startable) => {
       if (checked === undefined) throw new Error('startTestContainer must be exported by the test harness.');
-      return checked(container, { timeoutMs, warn });
+      // Deferred on purpose. The vm `timeout` below is a wall-clock watchdog over the
+      // SYNCHRONOUS evaluation only. Calling the checked start inline put its sync
+      // prefix inside that window: the configuration read and the spawn of the first
+      // docker probe. On CI that window blew 1000ms twice, and the test saw "Script
+      // execution timed out" instead of the preflight's own message. (TASK-579)
+      // Deferred, the whole preflight runs after runInNewContext has returned and its
+      // watchdog is gone, so the two clocks never overlap and neither can win a race.
+      return Promise.resolve().then(() => checked(container, { timeoutMs, warn }));
     },
-  }, { timeout: 1_000 }) as Promise<unknown>;
+  }, { timeout: vmBudgetMs }) as Promise<unknown>;
 }
 
 for (const shell of ['bash', 'zsh']) {
@@ -203,6 +231,20 @@ esac
     it.each(['hang-version', 'hang-info'])('bounds %s instead of inheriting the command hang', async (mode) => {
       vi.stubEnv('AX_DOCKER_TEST_MODE', mode);
       await expect(startConsumer(start, warn, 1_000)).rejects.toThrow(/Docker daemon.*within 1000 ms/);
+      expect(start).not.toHaveBeenCalled();
+    });
+
+    it('reports the preflight deadline, not the vm watchdog, when the checked start stalls synchronously', async () => {
+      // CI runs 36253712450 and 36260485665 failed `bounds hang-info` with "Script
+      // execution timed out after 1000ms": the vm watchdog, not the preflight. A 1500ms
+      // stall in the checked start's synchronous prefix reproduces that exactly against
+      // a startConsumer that runs the checked start inside the vm's timed window. (TASK-579)
+      //
+      // The vm budget is pinned back to the old 1000ms, equal to the preflight budget, on
+      // purpose. That makes this test about WHERE the checked start runs, not about how
+      // big VM_SYNC_BUDGET_MS is: raising the number alone would not turn it green.
+      vi.stubEnv('AX_DOCKER_TEST_MODE', 'hang-info');
+      await expect(startConsumer(start, warn, 1_000, { syncStallMs: 1_500, vmBudgetMs: 1_000 })).rejects.toThrow(/Docker daemon.*within 1000 ms/);
       expect(start).not.toHaveBeenCalled();
     });
 
