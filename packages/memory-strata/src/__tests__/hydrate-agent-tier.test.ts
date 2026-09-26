@@ -334,6 +334,12 @@ describe('a placeholder agent.md is repaired once identity is readable (TASK-556
 
     await tier.bus.fire('chat:start', ctx, {});
 
+    // The placeholder opens the identity gate (a real agent.md would not)...
+    expect(tier.calls.reads.filter(isIdentityRead).map((r) => r.path).sort()).toEqual([
+      '.ax/IDENTITY.md',
+      '.ax/SOUL.md',
+    ]);
+    // ...but an empty identity is no repair.
     expect(tier.calls.applies).toEqual([]);
     expect(dec(tier.head().get('memory/system/agent.md')!)).toBe(placeholder);
   });
