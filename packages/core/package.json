@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./surface-text": {
+      "types": "./dist/surface-text.d.ts",
+      "default": "./dist/surface-text.js"
     }
   },
   "files": ["dist"],
