@@ -322,7 +322,7 @@ describe('keepAnsweredApprovals — which dropped pointers come back, and where'
     ]);
   });
 
-  it('puts a kept pointer back after its nearest surviving neighbour, ahead of later rows', () => {
+  it('puts a kept pointer back after its nearest surviving neighbour, above the continuation', () => {
     const got = keepAnsweredApprovals(
       [asked, pointer],
       [asked, replied],
@@ -350,6 +350,8 @@ describe('keepAnsweredApprovals — which dropped pointers come back, and where'
     ).toEqual([asked, pointer, replied]);
   });
 
+  // Characterization, not a TASK-543 guard: passes before and after the fix, and
+  // stops an over-correction that would hold brand-new pointers too.
   it('leaves a pointer that is new to this read where the server put it', () => {
     expect(
       keepAnsweredApprovals([asked, replied], [asked, replied, pointer], [open], now),
