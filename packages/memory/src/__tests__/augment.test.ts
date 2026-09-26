@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { HookBus, makeAgentContext, ownerlessIdFor } from '@ax/core';
+import { HookBus, makeAgentContext, ownerlessIdFor, type Logger } from '@ax/core';
 import Database from 'better-sqlite3';
 
 import {
@@ -10,11 +10,19 @@ import {
   ALICE,
   BOB,
   DEFAULT_AGENT,
+  capturingLogger,
+  eventsNamed,
+  type LoggedEvent,
   type MemoryHarness,
   type MemoryHarnessOptions,
 } from './harness.js';
 import { AGENTS_RESOLVE_HOOK } from '../access.js';
-import { buildMemoryBlock, assembleUnderCap, rankDigestSubjects } from '../augment.js';
+import {
+  buildMemoryBlock,
+  assembleUnderCap,
+  rankDigestSubjects,
+  DEGRADED_FLAG_COERCED_EVENT,
+} from '../augment.js';
 import { SLOTS } from '../slots.js';
 import { escapeStatementText, MAX_VALUE_CHARS } from '../render.js';
 import { FACTS_RECALL_HOOK } from '../plugin.js';
@@ -938,6 +946,7 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
     function busWithEngine(
       statements: unknown[],
       degraded: unknown[],
+      logger?: Logger,
     ): { bus: HookBus; ctx: ReturnType<typeof makeAgentContext> } {
       const bus = new HookBus();
       bus.registerService<unknown, unknown>(
@@ -953,6 +962,7 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
           agentId: DEFAULT_AGENT,
           userId: ALICE,
           workspace: { rootPath: '/tmp' },
+          ...(logger === undefined ? {} : { logger }),
         }),
       };
     }
@@ -1010,6 +1020,81 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
       expect(body).toContain('Memory retrieval was degraded');
       expect(body).toContain('semantic');
       expect(body).toContain('object Object');
+    });
+
+    // TASK-568, human ruling: keep coercing (the flag is advisory, and a bad one
+    // must not break prompt assembly), but log a warning so the producer bug is
+    // visible. The engine stand-in answers all three store queries, so a bad
+    // flag in its answer is three occurrences and three warnings.
+    it('builds the prompt with a coerced non-string flag AND warns once per occurrence', async () => {
+      const logs: LoggedEvent[] = [];
+      const secret = { weird: 'the user said something private' };
+      const { bus, ctx } = busWithEngine([], [secret, 'semantic'], capturingLogger(logs));
+      const body = await buildMemoryBlock(bus, ctx, FACTS_RECALL_HOOK);
+      expect(body).toContain('Memory retrieval was degraded');
+      expect(body).toContain('semantic');
+      expect(body).toContain('object Object');
+
+      const warnings = eventsNamed(logs, DEGRADED_FLAG_COERCED_EVENT);
+      expect(warnings).toHaveLength(3);
+      for (const line of warnings) {
+        expect(line.level).toBe('warn');
+        expect(line.bindings).toEqual({ agentId: DEFAULT_AGENT, flagType: 'object' });
+      }
+      // The value itself never reaches the log: it could carry user content.
+      expect(JSON.stringify(logs)).not.toContain('private');
+    });
+
+    // `every()` and `map()` skip holes, so a guard built on either would never
+    // see this one — the loop has to be `for...of` (TASK-515's learning).
+    it('warns on a hole in the degraded array, and still builds the prompt', async () => {
+      const logs: LoggedEvent[] = [];
+      // eslint-disable-next-line no-sparse-arrays
+      const sparse: unknown[] = [, 'semantic'];
+      expect(0 in sparse).toBe(false);
+      const { bus, ctx } = busWithEngine([], sparse, capturingLogger(logs));
+      const body = await buildMemoryBlock(bus, ctx, FACTS_RECALL_HOOK);
+      expect(body).toContain('Memory retrieval was degraded');
+      expect(body).toContain('semantic');
+
+      const warnings = eventsNamed(logs, DEGRADED_FLAG_COERCED_EVENT);
+      expect(warnings).toHaveLength(3);
+      for (const line of warnings) {
+        expect(line.bindings).toEqual({ agentId: DEFAULT_AGENT, flagType: 'hole' });
+      }
+    });
+
+    it('names null and array flags by what they are, not as "object"', async () => {
+      const logs: LoggedEvent[] = [];
+      const { bus, ctx } = busWithEngine([], [null, ['x'], 7], capturingLogger(logs));
+      await buildMemoryBlock(bus, ctx, FACTS_RECALL_HOOK);
+      const types = eventsNamed(logs, DEGRADED_FLAG_COERCED_EVENT).map(
+        (line) => line.bindings.flagType,
+      );
+      expect(types).toEqual(['null', 'array', 'number', 'null', 'array', 'number', 'null', 'array', 'number']);
+    });
+
+    it('logs nothing for well-formed string flags', async () => {
+      const logs: LoggedEvent[] = [];
+      const { bus, ctx } = busWithEngine([], ['semantic', 'pending'], capturingLogger(logs));
+      const body = await buildMemoryBlock(bus, ctx, FACTS_RECALL_HOOK);
+      expect(body).toContain('semantic');
+      expect(eventsNamed(logs, DEGRADED_FLAG_COERCED_EVENT)).toEqual([]);
+    });
+
+    // The warning is advisory about an advisory flag. A logger that throws must
+    // not be the thing that fails the turn.
+    it('still builds the prompt when the warn logger throws', async () => {
+      const throwing: Logger = {
+        ...capturingLogger([]),
+        warn: () => {
+          throw new Error('logger exploded');
+        },
+      };
+      const { bus, ctx } = busWithEngine([], [42, 'semantic'], throwing);
+      const body = await buildMemoryBlock(bus, ctx, FACTS_RECALL_HOOK);
+      expect(body).toContain('Memory retrieval was degraded');
+      expect(body).toContain('42');
     });
 
     it('keeps the degradation notice even when the budget drops every section', async () => {
