@@ -12,6 +12,15 @@ export default defineConfig({
     // plugin stack. Cold image pulls + bootstrap can run long on first
     // execution; subsequent runs reuse the layer cache.
     testTimeout: 60_000,
-    hookTimeout: 120_000,
+    // 180_000, not 120_000 (TASK-567). `acceptance.test.ts` and
+    // `prod-bootstrap.test.ts` declare `{ timeout: 180_000 }` on their longest
+    // canaries, and their teardowns — `afterAll(() => pgContainer.stop())` and
+    // the tmpdir-removing `afterEach` — are BARE, so they run under this value.
+    // A hook's own timeout argument would override it, but these carry none.
+    // Below the tests' own budget, a slow container stop fails the run after
+    // every assertion passed. `scripts/__tests__/out-of-process-test-timeouts.test.js`
+    // holds this: a package with a bare teardown keeps `hookTimeout` at or above
+    // its largest declared test budget.
+    hookTimeout: 180_000,
   },
 });
