@@ -140,6 +140,9 @@ const MEMORY_OPS_REASONING = 'minimal' as const;
  */
 const FORBIDDEN_PAYLOAD_FIELDS = [
   'provenance',
+  // The read-only display coarsening of provenance (TASK-526). Refused like
+  // provenance so a caller setting it learns it did nothing.
+  'savedBy',
   'ownerUserId',
   'scope',
   'visibility',
@@ -653,13 +656,36 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             // hide cannot drift.
             page = result.statements.slice(0, limit);
             if (input.profile === true) {
-              const active = result.statements.filter(
-                (row) => row.until === undefined && typeof row.slot === 'string' && row.slot !== '',
+              // The winners come from the ACTIVE slot rows read on their own,
+              // not from this page: the page is recency-ordered and capped,
+              // and an old human correction (never closed) is exactly the row
+              // that falls off it — which would crown a newer outranked row.
+              const activeRows = requireEngineResult(
+                await bus.call<unknown, EngineRecallOutput | null>(FACTS_RECALL_HOOK, ctx, {
+                  limit: 200,
+                  ...memoryReadScope(access),
+                  about: rewriteSpeaker(SPEAKER_SUBJECT, ownerUserId),
+                  slots: [...SLOTS],
+                  activeOnly: true,
+                }),
+                MEMORY_RECALL_HOOK,
+                FACTS_RECALL_HOOK,
               );
-              // A limit of every active row: only the per-slot pick may mark,
-              // never the page size.
-              const shown = new Set(selectProfileRows(active, active.length));
-              overridden = new Set(active.filter((row) => !shown.has(row)));
+              const winners = new Set(
+                selectProfileRows(
+                  Array.isArray(activeRows.statements) ? activeRows.statements : [],
+                  Number.MAX_SAFE_INTEGER,
+                ).map((row) => row.id),
+              );
+              overridden = new Set(
+                result.statements.filter(
+                  (row) =>
+                    row.until === undefined &&
+                    typeof row.slot === 'string' &&
+                    row.slot !== '' &&
+                    !winners.has(row.id),
+                ),
+              );
             } else {
               overridden = rementionedSlotRows(result.statements, await readSlotGroup());
             }

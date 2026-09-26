@@ -66,6 +66,16 @@ describe('@ax/memory — provenance is a property of the hook', () => {
   });
 
   it.each([
+    [MEMORY_REMEMBER_HOOK, { about: 'a', relation: 'r', value: 'v', savedBy: 'person' }],
+    [MEMORY_RECALL_HOOK, { savedBy: 'person' }],
+  ])('%s REFUSES a payload carrying savedBy, the display coarsening of provenance', async (hook, payload) => {
+    harness = await makeMemoryHarness();
+    await expect(harness.bus.call(hook, harness.ctx(), payload)).rejects.toThrow(
+      /savedBy is not a caller-settable field/,
+    );
+  });
+
+  it.each([
     [MEMORY_REMEMBER_HOOK, { about: 'a', relation: 'r', value: 'v', ownerUserId: 'user-bob' }],
     [MEMORY_RECALL_HOOK, { ownerUserId: 'user-bob' }],
     [MEMORY_FORGET_HOOK, { ids: ['x'], ownerUserId: 'user-bob' }],

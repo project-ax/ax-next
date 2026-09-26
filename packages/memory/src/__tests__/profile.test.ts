@@ -399,6 +399,35 @@ describe('@ax/memory — recall display fields', () => {
     expect(active.statements.some((s) => s.closure === 'overridden')).toBe(false);
   });
 
+  it('history profile still marks the outranked row when the winner fell off the page', async () => {
+    // Review finding (TASK-526): the history page is recency-ordered and
+    // capped, and an old human correction is never closed, so enough newer
+    // extracted rows push it off the page. Deciding the mark from the page
+    // alone then picked the newest extracted row as the "winner" and showed
+    // it as current, while the active profile shows Boston.
+    harness = await makeMemoryHarness();
+    await harness.remember({
+      about: 'user',
+      relation: 'lives_in',
+      value: 'Boston',
+      when: '2023-01-01T00:00:00Z',
+    });
+    for (let i = 0; i < 34; i += 1) {
+      const when = new Date(Date.UTC(2023, 2, 1 + i)).toISOString();
+      await engineRecord(harness.bus, harness.ctx(), [extracted(`City ${i}`, when)]);
+    }
+
+    const history = await harness.recall({ profile: true, activeOnly: false, limit: 32 });
+    expect(history.statements.some((s) => s.value === 'Boston')).toBe(false);
+    const latest = history.statements.find((s) => s.value === 'City 33');
+    expect(latest).toBeDefined();
+    expect(latest).not.toHaveProperty('until');
+    expect(latest?.closure).toBe('overridden');
+
+    const active = await harness.recall({ profile: true, limit: 100 });
+    expect(active.statements.map((s) => s.value)).toEqual(['Boston']);
+  });
+
   it('history search marks exactly the re-mention the active read hides', async () => {
     harness = await makeMemoryHarness();
     // One call per row: each arrival settles its slot against what is there.
