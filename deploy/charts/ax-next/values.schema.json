@@ -120,6 +120,7 @@
             },
             "init": {
               "type": "object",
+              "additionalProperties": false,
               "properties": {
                 "readyTimeoutSeconds": {
                   "type": "integer",

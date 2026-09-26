@@ -2,8 +2,13 @@
 {{- $pgUser := .Values.postgresql.auth.username | default "ax_next" }}
 {{- $pgDb := .Values.postgresql.auth.database | default "ax_next" }}
 {{- $init := .Values.postgres.embedded.init | default dict }}
-{{- $readyTimeout := int ($init.readyTimeoutSeconds | default 300) }}
-{{- $deadline := int ($init.activeDeadlineSeconds | default 600) }}
+{{- /* Not `| default`: sprig treats an explicit 0 as unset and would turn it
+       into the default, so a 0 that got past the schema (schema validation
+       skipped) would render as 300 instead of failing. */}}
+{{- $readyTimeout := 240 }}
+{{- if hasKey $init "readyTimeoutSeconds" }}{{- $readyTimeout = int $init.readyTimeoutSeconds }}{{- end }}
+{{- $deadline := 600 }}
+{{- if hasKey $init "activeDeadlineSeconds" }}{{- $deadline = int $init.activeDeadlineSeconds }}{{- end }}
 {{- if or (le $readyTimeout 0) (le $deadline 0) }}
 {{- fail "postgres.embedded.init.readyTimeoutSeconds and activeDeadlineSeconds must both be positive integers" }}
 {{- end }}

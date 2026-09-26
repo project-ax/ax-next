@@ -21,12 +21,13 @@
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { load, loadAll } from 'js-yaml';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 
 import {
   DOCKER_REQUIRED_MESSAGE,
@@ -184,7 +185,25 @@ function helmTemplateError(extraArgs: readonly string[]): string {
   return r.stderr ?? '';
 }
 
-type InitBounds = { readyTimeoutSeconds: number; activeDeadlineSeconds: number };
+let noSchemaChart = '';
+
+/** A copy of the chart without values.schema.json — what a schema-skipping render sees. */
+function schemaSkippedChart(): string {
+  if (noSchemaChart === '') {
+    noSchemaChart = mkdtempSync(join(tmpdir(), 'ax-next-chart-noschema-t563-'));
+    for (const entry of ['Chart.yaml', 'Chart.lock', 'values.yaml', 'templates', 'charts']) {
+      cpSync(resolve(chartDir, entry), join(noSchemaChart, entry), { recursive: true });
+    }
+    rmSync(join(noSchemaChart, 'values.schema.json'), { force: true });
+  }
+  return noSchemaChart;
+}
+
+afterAll(() => {
+  if (noSchemaChart !== '') rmSync(noSchemaChart, { recursive: true, force: true });
+});
+
+type InitBounds ={ readyTimeoutSeconds: number; activeDeadlineSeconds: number };
 
 function chartInitBounds(): InitBounds {
   const v = load(readFileSync(join(chartDir, 'values.yaml'), 'utf8')) as {
@@ -258,6 +277,30 @@ describeIfHelm('pg-init Job is bounded in time (TASK-563)', () => {
     expect(err).toMatch(/schema/i);
     expect(err).toContain(key);
   });
+
+  it('values.schema.json rejects a misspelled bound instead of silently keeping the default', () => {
+    const err = helmTemplateError(['--set', 'postgres.embedded.init.readyTimeoutSecond=30']);
+    expect(err).toMatch(/schema/i);
+    expect(err).toContain('readyTimeoutSecond');
+  });
+
+  it('the values.yaml default leaves the FATAL room to fire before helm\'s default 5m --timeout', () => {
+    expect(chartInitBounds().readyTimeoutSeconds).toBeLessThan(300);
+  });
+
+  it.each(['readyTimeoutSeconds', 'activeDeadlineSeconds'])(
+    'with schema validation skipped, the template still refuses %s=0 (no `default` swallowing it)',
+    (key) => {
+      const r = spawnSync(
+        HELM!,
+        ['template', RELEASE, schemaSkippedChart(), '--namespace', 'default', ...REQUIRED,
+          '--set', `postgres.embedded.init.${key}=0`],
+        { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
+      );
+      expect(r.status, r.stdout).not.toBe(0);
+      expect(r.stderr).toContain('must both be positive integers');
+    },
+  );
 
   it('values.schema.json rejects a quoted number', () => {
     const err = helmTemplateError(['--set-string', 'postgres.embedded.init.readyTimeoutSeconds=300']);
