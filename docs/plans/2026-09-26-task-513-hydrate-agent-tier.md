@@ -75,7 +75,9 @@ chat:start is now flat in memory size: 4 `workspace:read` calls, 0
 first read fetches; the other three are pinned and served from the local mirror.
 The full hydrate, still used off the blocking path by the observer,
 consolidator and `memory_note`, is ~3x faster from the pinned-read fetch skip
-alone. It is still O(N) and stays out of scope here.
+alone. It is still O(N) and stays out of scope here. (Update: TASK-554 took
+it off linear-serial, measured at 223 ms at 100 docs and 375 ms at 300. See
+`2026-09-26-task-554-full-hydrate-batched-reads.md`.)
 
 **Cold is ~270 ms slower, and we took that trade on purpose.** Turn 1 used to
 make 1 list plus 2 identity reads. It now makes 4 seed reads plus 2 identity

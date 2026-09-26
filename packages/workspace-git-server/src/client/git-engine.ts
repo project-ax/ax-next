@@ -330,6 +330,109 @@ async function currentMirrorOid(mirror: string): Promise<string | null> {
   return oid.length > 0 ? oid : null;
 }
 
+// A pinned read waiting on a coalesced batch (TASK-554).
+interface PinnedReadWaiter {
+  path: string;
+  resolve: (out: WorkspaceReadOutput) => void;
+  reject: (err: unknown) => void;
+}
+
+// One answer from `git cat-file --batch`, in request order.
+type BatchEntry =
+  | { kind: 'blob'; bytes: Bytes }
+  | { kind: 'missing' }
+  | { kind: 'other'; type: string };
+
+// Can `path` go on a `cat-file --batch` stdin line? The protocol is one object
+// name per line, so a path carrying a line break would split into two
+// requests. And git echoes a missing name truncated at a NUL, so a NUL path
+// would desynchronise the reply parser. Such paths take the single-read path
+// instead, which fails or answers them on their own.
+function batchablePath(path: string): boolean {
+  return !path.includes('\n') && !path.includes('\r') && !path.includes('\u0000');
+}
+
+/**
+ * Resolve many `<rev>:<path>` specs with ONE `git cat-file --batch` process
+ * (TASK-554). Returns one entry per spec, in order. The specs travel on stdin,
+ * never argv, so no spec can be read as an option.
+ *
+ * Reply grammar (git-cat-file(1)): a found object is
+ * `<oid> SP <type> SP <size> LF <bytes> LF`; a name that does not resolve is
+ * `<name> SP missing LF` (`ambiguous` likewise). Anything else is a protocol
+ * error and fails the whole call rather than mis-assigning bytes to a path.
+ */
+async function catFileBatch(
+  repoDir: string,
+  specs: readonly string[],
+): Promise<BatchEntry[]> {
+  const buf = await new Promise<Buffer>((resolve, reject) => {
+    const child = spawn('git', ['-C', repoDir, 'cat-file', '--batch'], {
+      env: HOST_GIT_ENV,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const chunks: Buffer[] = [];
+    const errChunks: Buffer[] = [];
+    child.stdout.on('data', (c: Buffer) => chunks.push(c));
+    child.stderr.on('data', (c: Buffer) => errChunks.push(c));
+    child.once('error', reject);
+    // An EPIPE on stdin (git died early) surfaces as a non-zero exit below.
+    child.stdin.on('error', () => undefined);
+    child.once('close', (code) => {
+      if (code !== 0) {
+        reject(
+          new Error(
+            `git cat-file --batch exited ${code}: ${Buffer.concat(errChunks).toString('utf8')}`,
+          ),
+        );
+        return;
+      }
+      resolve(Buffer.concat(chunks));
+    });
+    child.stdin.end(specs.map((s) => `${s}\n`).join(''));
+  });
+
+  const out: BatchEntry[] = [];
+  let pos = 0;
+  for (const spec of specs) {
+    const nl = buf.indexOf(0x0a, pos);
+    if (nl < 0) {
+      throw new Error(`git cat-file --batch: reply ended before ${spec}`);
+    }
+    const header = buf.subarray(pos, nl).toString('utf8');
+    pos = nl + 1;
+    const found = /^[0-9a-f]{40,64} (\S+) (\d+)$/.exec(header);
+    if (found !== null) {
+      const type = found[1]!;
+      const size = Number(found[2]);
+      if (pos + size + 1 > buf.length || buf[pos + size] !== 0x0a) {
+        throw new Error(`git cat-file --batch: truncated reply for ${spec}`);
+      }
+      const content = buf.subarray(pos, pos + size);
+      pos += size + 1;
+      out.push(
+        type === 'blob'
+          ? { kind: 'blob', bytes: new Uint8Array(content) }
+          : { kind: 'other', type },
+      );
+      continue;
+    }
+    if (header === `${spec} missing`) {
+      out.push({ kind: 'missing' });
+      continue;
+    }
+    if (header.startsWith(`${spec} `)) {
+      out.push({ kind: 'other', type: header.slice(spec.length + 1) });
+      continue;
+    }
+    throw new Error(`git cat-file --batch: unexpected reply for ${spec}: ${header}`);
+  }
+  if (pos !== buf.length) {
+    throw new Error('git cat-file --batch: trailing bytes after the last reply');
+  }
+  return out;
+}
+
 // True iff the mirror holds `oid` as a commit object. Used by pinned
 // `read`/`list` to decide whether the storage-tier fetch can be skipped.
 // `oid` has already passed `requireOid`, so it is a bare hex id, never a
@@ -1435,56 +1538,179 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
       input.version === undefined
         ? undefined
         : requireOid(input.version, 'workspace:read', 'version');
-    return enqueue(workspaceId, async () => {
-      guardClosed();
-      const remoteUrl = remoteUrlFor(opts.baseUrl, workspaceId);
-      return opts.mirrorCache.withMirror(workspaceId, async (handle) => {
-        // Pinned fast path: skip the storage-tier fetch when the mirror
-        // already holds the pinned commit. Safe because a commit id names
-        // immutable content — a fetch can add objects and move refs, but it
-        // can never change what `<oid>:<path>` resolves to. The mirror is a
-        // plain per-workspace bare repo (no alternates, no shared object
-        // store), so an oid is only ever local because this workspace's own
-        // history put it there.
-        //
-        // Cheapest order for the common case: one `cat-file -e` on the
-        // blob. On a miss, a second probe tells "path absent at a commit we
-        // hold" (authoritative found:false, still no fetch) apart from
-        // "commit not here yet" — e.g. created through another host
-        // replica's mirror after ours last synced — which falls through to
-        // the fetch path below, unchanged.
-        if (pinned !== undefined) {
-          const hit = await runGit([
-            '-C',
-            handle.dir,
-            'cat-file',
-            '-e',
-            `${pinned}:${input.path}`,
-          ]);
-          if (hit.code === 0) {
-            const bytes = await readBlobBytes(handle.dir, pinned, input.path);
-            return { found: true, bytes, version: asWorkspaceVersion(pinned) };
-          }
-          if (await mirrorHasCommit(handle.dir, pinned)) {
-            return { found: false };
-          }
-        }
-        // Unpinned reads always fetch: "current head" is only as fresh as
-        // the last sync with the storage tier.
-        await fetchMirror(remoteUrl, opts.token, handle.dir);
-        const target = pinned ?? (await currentMirrorOid(handle.dir));
-        if (target === null) return { found: false };
-        const exists = await runGit([
+    if (pinned !== undefined && batchablePath(input.path)) {
+      return joinPinnedBatch(workspaceId, pinned, input.path);
+    }
+    return enqueue(workspaceId, () => readQueued(workspaceId, input.path, pinned));
+  };
+
+  // The body of ONE read, run from inside the workspace's queue.
+  const readQueued = async (
+    workspaceId: string,
+    path: string,
+    pinned: string | undefined,
+  ): Promise<WorkspaceReadOutput> => {
+    guardClosed();
+    const remoteUrl = remoteUrlFor(opts.baseUrl, workspaceId);
+    return opts.mirrorCache.withMirror(workspaceId, async (handle) => {
+      // Pinned fast path: skip the storage-tier fetch when the mirror
+      // already holds the pinned commit. Safe because a commit id names
+      // immutable content — a fetch can add objects and move refs, but it
+      // can never change what `<oid>:<path>` resolves to. The mirror is a
+      // plain per-workspace bare repo (no alternates, no shared object
+      // store), so an oid is only ever local because this workspace's own
+      // history put it there.
+      //
+      // Cheapest order for the common case: one `cat-file -e` on the
+      // blob. On a miss, a second probe tells "path absent at a commit we
+      // hold" (authoritative found:false, still no fetch) apart from
+      // "commit not here yet" — e.g. created through another host
+      // replica's mirror after ours last synced — which falls through to
+      // the fetch path below, unchanged.
+      if (pinned !== undefined) {
+        const hit = await runGit([
           '-C',
           handle.dir,
           'cat-file',
           '-e',
-          `${target}:${input.path}`,
+          `${pinned}:${path}`,
         ]);
-        if (exists.code !== 0) return { found: false };
-        const bytes = await readBlobBytes(handle.dir, target, input.path);
-        return { found: true, bytes, version: asWorkspaceVersion(target) };
+        if (hit.code === 0) {
+          const bytes = await readBlobBytes(handle.dir, pinned, path);
+          return { found: true, bytes, version: asWorkspaceVersion(pinned) };
+        }
+        if (await mirrorHasCommit(handle.dir, pinned)) {
+          return { found: false };
+        }
+      }
+      // Unpinned reads always fetch: "current head" is only as fresh as
+      // the last sync with the storage tier.
+      await fetchMirror(remoteUrl, opts.token, handle.dir);
+      const target = pinned ?? (await currentMirrorOid(handle.dir));
+      if (target === null) return { found: false };
+      const exists = await runGit([
+        '-C',
+        handle.dir,
+        'cat-file',
+        '-e',
+        `${target}:${path}`,
+      ]);
+      if (exists.code !== 0) return { found: false };
+      const bytes = await readBlobBytes(handle.dir, target, path);
+      return { found: true, bytes, version: asWorkspaceVersion(target) };
+    });
+  };
+
+  // TASK-554: coalesce pinned reads. Every read is one queued op, and the
+  // queue serialises a workspace's ops, so N concurrent pinned reads used to
+  // cost N ops of 2 git processes each (~23 ms apiece on loopback). Instead a
+  // pinned read joins the not-yet-started batch for its (workspace, version)
+  // when there is one, and a batch is ONE queued op that answers all of its
+  // paths with one `git cat-file --batch`. Reads that arrive while a batch
+  // runs form the next batch. The queue invariant (one mirror op at a time
+  // per workspace) is unchanged: a batch IS one op.
+  //
+  // Answering many paths from one lookup is exactly equivalent to reading
+  // them one by one, because a commit id names immutable content: nothing a
+  // fetch or apply between the reads could do changes what `<oid>:<path>`
+  // resolves to.
+  const pendingPinnedReads = new Map<string, PinnedReadWaiter[]>();
+
+  const joinPinnedBatch = (
+    workspaceId: string,
+    pinned: string,
+    path: string,
+  ): Promise<WorkspaceReadOutput> => {
+    // NUL cannot appear in a workspace id or an oid, so the key is unambiguous.
+    const key = `${workspaceId}\u0000${pinned}`;
+    let waiters = pendingPinnedReads.get(key);
+    if (waiters === undefined) {
+      const batch: PinnedReadWaiter[] = [];
+      pendingPinnedReads.set(key, batch);
+      waiters = batch;
+      void enqueue(workspaceId, async () => {
+        // Close the batch the moment it starts: a read arriving from here on
+        // must not join a lookup that has already been issued.
+        if (pendingPinnedReads.get(key) === batch) pendingPinnedReads.delete(key);
+        await runPinnedBatch(workspaceId, pinned, batch);
       });
+    }
+    const joined = waiters;
+    // The executor runs synchronously, so the waiter is registered before the
+    // enqueued op can start (that is at least one microtask away).
+    return new Promise((resolve, reject) => {
+      joined.push({ path, resolve, reject });
+    });
+  };
+
+  // Settles every waiter. Never throws: the queue would swallow it and the
+  // waiters would hang.
+  const runPinnedBatch = async (
+    workspaceId: string,
+    pinned: string,
+    waiters: readonly PinnedReadWaiter[],
+  ): Promise<void> => {
+    if (waiters.length === 1) {
+      // A lone read keeps the single-read path exactly.
+      const lone = waiters[0]!;
+      try {
+        lone.resolve(await readQueued(workspaceId, lone.path, pinned));
+      } catch (err) {
+        lone.reject(err);
+      }
+      return;
+    }
+    let entries: BatchEntry[] | null;
+    try {
+      guardClosed();
+      const remoteUrl = remoteUrlFor(opts.baseUrl, workspaceId);
+      entries = await opts.mirrorCache.withMirror(workspaceId, async (handle) => {
+        // Same fetch rule as a single pinned read: fetch only when the commit
+        // is not local. If a fetch still does not bring it, every path
+        // answers `missing`, which is the single read's found:false too.
+        if (!(await mirrorHasCommit(handle.dir, pinned))) {
+          await fetchMirror(remoteUrl, opts.token, handle.dir);
+        }
+        try {
+          return await catFileBatch(
+            handle.dir,
+            waiters.map((w) => `${pinned}:${w.path}`),
+          );
+        } catch {
+          // A reply we could not parse must not fail reads that would have
+          // succeeded alone. Fall back to one read each (below).
+          return null;
+        }
+      });
+    } catch (err) {
+      // The mirror lease or the fetch failed: every single read would too.
+      for (const w of waiters) w.reject(err);
+      return;
+    }
+    if (entries === null) {
+      // Still inside this op's queue slot, so one at a time is correct.
+      for (const w of waiters) {
+        try {
+          w.resolve(await readQueued(workspaceId, w.path, pinned));
+        } catch (err) {
+          w.reject(err);
+        }
+      }
+      return;
+    }
+    const version = asWorkspaceVersion(pinned);
+    waiters.forEach((w, i) => {
+      const entry = entries[i]!;
+      if (entry.kind === 'blob') {
+        w.resolve({ found: true, bytes: entry.bytes, version });
+      } else if (entry.kind === 'missing') {
+        w.resolve({ found: false });
+      } else {
+        // The single read fails the same way: `cat-file blob` on a tree.
+        w.reject(
+          new Error(`git cat-file: ${pinned}:${w.path} is a ${entry.type}, not a blob`),
+        );
+      }
     });
   };
 
