@@ -950,11 +950,20 @@ describe('board-task-id.sh — Task-ID allocation under concurrency', () => {
 // Every row carries two correctly-branched fences (`GOOD`) unless it says otherwise, so
 // the floor is satisfied and the row isolates the one fence it is about.
 //
-// MUTANT RUN, NOT REASONED ABOUT (2026-09-26, committed first, restored with
-// `git checkout --`). `scanFence`'s marker test replaced by the old shape rule:
-//     const exempt = code.length > 0 &&
-//       code.every((l) => /^\s*scripts\/board-task-id\.sh\b/.test(l));
-// -> RED_COUNT_PLACEHOLDER
+// MUTANTS RUN, NOT REASONED ABOUT (2026-09-26, committed first, restored with
+// `git checkout --`). Baseline 38 collected, 38 passed; every mutant still COLLECTED 38.
+//
+//   S1. `scanFence`'s marker test replaced by the old shape rule —
+//           code.length > 0 &&
+//             code.every((l) => /^\s*scripts\/board-task-id\.sh\b/.test(l))
+//       -> 8 red, exactly the 8 predicted before running it: the lone bare call, only
+//       its own fence, misspelled, pluralized, wrong-case, marker in prose, the
+//       residual, and the vacuity floor. The three rows it leaves green (`|| echo`,
+//       branched, valid marker) are ones the shape rule genuinely gets right. And the
+//       real-docs wiring test stayed GREEN under it, reproducing #625's measurement —
+//       which is the whole reason this table exists.
+//   S2. Marker regex made case-insensitive (`/i`) -> 1 red, `a wrong-case marker`.
+//   S3. Marker regex loses its trailing `\b` -> 1 red, `a pluralized marker`.
 // ---------------------------------------------------------------------------------
 
 const fence = (...lines) => ['```bash', ...lines, '```'].join('\n');
