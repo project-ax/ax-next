@@ -23,7 +23,15 @@ import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useIsCompact } from '@/lib/use-compact';
-import { NAV_TRIGGER_ATTR } from '@/lib/focus-when-ready';
+import {
+  NAV_TRIGGER_ATTR,
+  focusFirstWhenReady,
+  keyboardIsClaimed,
+} from '@/lib/focus-when-ready';
+import {
+  AGENT_LOADING_ATTR,
+  agentConversationTarget,
+} from '@/lib/new-agent-return-focus';
 import { relativeDay } from '@/lib/workspace-time';
 import { HTTP_SESSION_ENDED, logRequestFailure } from '@/lib/http';
 import {
@@ -492,6 +500,31 @@ export function AgentView({
   }, [load, version]);
 
   /*
+    TASK-539 — the "Loading…" pane below can hold focus: a finished create
+    lands it there whenever the pane paints before the agent read returns,
+    which is most creates and every slow one (see `AGENT_LOADING_ATTR`). The pane is REPLACED when the read lands, and a
+    focused node that is removed drops the keyboard on `<body>` — so a pane
+    that held focus hands it on to the conversation.
+
+    Only when nobody has moved since: a person who tabbed away from the pane
+    during the wait is standing somewhere on purpose, and outranks this. The
+    same wait-and-yield as the first step (`focusFirstWhenReady`), since the
+    conversation may paint a frame after `detail` does.
+
+    If the read FAILS instead, the error pane replaces the loading one and
+    focus falls to `<body>` — where it was before TASK-539 on every slow
+    create, and where TASK-533 already accepted a failed read leaves it.
+  */
+  const loadingPaneHeldFocus = useRef(false);
+  const hasDetail = detail !== null;
+  useEffect(() => {
+    if (!hasDetail || !loadingPaneHeldFocus.current) return;
+    loadingPaneHeldFocus.current = false;
+    if (keyboardIsClaimed(document)) return;
+    return focusFirstWhenReady([agentConversationTarget(agentId)]);
+  }, [hasDetail, agentId]);
+
+  /*
     Open one of the rail's past conversations. The excerpt is a real re-read
     (`?conversationId=`), not something the roster response carried: `past`
     rows used to ship `msgs: []` and a `folded: 0`, which the pane rendered as
@@ -880,8 +913,25 @@ export function AgentView({
       announcing that the wait ended, which is a different piece of work from
       an outline.
     */
+    /*
+      FOCUSABLE, for one caller (TASK-539): a finished create's restore lands
+      here when the agent read outlasts its window — see `AGENT_LOADING_ATTR`.
+      `tabIndex={-1}` keeps it out of the Tab order. Like the conversation
+      region it replaces, it needs a real role for its name to be announced
+      at all, and a visible outline when focused; it stays heading-free for
+      the reason above.
+    */
     return (
-      <div className="flex flex-1 items-center justify-center text-[13px] text-muted-foreground">
+      <div
+        tabIndex={-1}
+        role="region"
+        aria-label="Loading conversation"
+        {...{ [AGENT_LOADING_ATTR]: agentId }}
+        onFocus={() => {
+          loadingPaneHeldFocus.current = true;
+        }}
+        className="flex flex-1 items-center justify-center text-[13px] text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      >
         Loading…
       </div>
     );

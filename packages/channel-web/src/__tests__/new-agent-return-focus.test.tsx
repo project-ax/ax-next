@@ -22,6 +22,7 @@ import { fetchBootstrapStatus } from '../lib/bootstrap-status';
 import { fetchFeatures } from '../lib/features';
 import { workspaceApi, type AgentDetail } from '../lib/workspace-api';
 import { autoCreateBareAgent } from '../lib/auto-create-agent';
+import { RESTORE_WINDOW_MS } from '../lib/focus-when-ready';
 import { rail as railFixture } from '../components/workspace/__tests__/rail-fixture';
 import { clearViewport, setViewport } from '../components/workspace/__tests__/viewport';
 
@@ -223,6 +224,67 @@ describe('closing the new-agent dialog from the workspace (TASK-510)', () => {
     await waitFor(() => expect(mockAutoCreate).toHaveBeenCalledWith('Quill'));
     await waitFor(() => expectFocusedAndConnected(newAgentConversation));
     expect(document.activeElement).not.toBe(newAgentRow());
+  });
+
+  describe('when the agent read outlasts the restore window (TASK-539)', () => {
+    /** The new agent's loading pane, re-queried from the CURRENT tree. */
+    function loadingPane(): HTMLElement {
+      return screen.getByRole('region', { name: 'Loading conversation' });
+    }
+
+    /** Create "Quill" (a2) with its agent read held until `release()`. */
+    async function createWithHeldRead(): Promise<() => void> {
+      mockAutoCreate.mockResolvedValue({ agentId: 'a2' } as Awaited<
+        ReturnType<typeof autoCreateBareAgent>
+      >);
+      let release!: () => void;
+      const held = new Promise<void>((r) => {
+        release = r;
+      });
+      vi.mocked(workspaceApi.agent).mockImplementation(async (agentId: string) => {
+        await held;
+        return newAgentDetail(agentId);
+      });
+      render(<App />);
+      await openNewAgentDialog();
+      fireEvent.change(screen.getByLabelText(/Agent name/i), {
+        target: { value: 'Quill' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /Create agent/i }));
+      await waitFor(() => expect(mockAutoCreate).toHaveBeenCalledWith('Quill'));
+      return release;
+    }
+
+    /** Wait out the real restore window — the delay the card is about. */
+    const outlastWindow = (): Promise<void> =>
+      new Promise((r) => setTimeout(r, RESTORE_WINDOW_MS + 300));
+
+    it('lands on the loading pane, then moves into the conversation when the read lands', async () => {
+      const release = await createWithHeldRead();
+
+      await waitFor(() => expectFocusedAndConnected(loadingPane));
+      await outlastWindow();
+      // Past the window, and still not on <body>.
+      expectFocusedAndConnected(loadingPane);
+
+      release();
+
+      // The pane is REPLACED; focus must follow into the conversation rather
+      // than falling to <body> with the removed node.
+      await waitFor(() => expectFocusedAndConnected(newAgentConversation));
+      expect(screen.queryByRole('region', { name: 'Loading conversation' })).toBeNull();
+    }, 10_000);
+
+    it('leaves a person who moved during the wait where they are', async () => {
+      const release = await createWithHeldRead();
+      await waitFor(() => expectFocusedAndConnected(loadingPane));
+
+      newAgentRow().focus();
+      release();
+
+      await waitFor(() => newAgentConversation());
+      expectFocusedAndConnected(newAgentRow);
+    });
   });
 
   it('on a compact viewport, falls back to the hamburger — the row is in the closed sheet', async () => {
