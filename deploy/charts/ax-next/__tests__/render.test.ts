@@ -1677,9 +1677,10 @@ describeIfHelm('ax-next chart: a quoted boolean cannot flip a gate (TASK-504)', 
   // `ax-next.bool` resolves any unrecognised string to OFF. For the capability
   // gates that is the closed direction. For these two it is the OPEN one: off
   // means no NetworkPolicies / no TLS block. Before the helper, the same garbage
-  // string was truthy and happened to enforce, so on these two gates the helper
-  // is NOT strictly narrowing for garbage input — only the schema stands in the
-  // way. Pinned here so the helper comment's claim is a tested fact, and so a
+  // string was truthy and happened to enforce. The render still moves toward
+  // off here, as it does on every gate; what inverts is the SAFETY of off, so
+  // on these two gates garbage input went from enforced to open, and only the
+  // schema stands in the way. Pinned here so the helper comment's claim is a tested fact, and so a
   // future "never open" rewrite of it has something to contradict it.
   const ENFORCEMENT_GATES = ['networkPolicies.enabled', 'ingress.tls'] as const;
 
@@ -1744,11 +1745,24 @@ describe('ax-next chart: every ax-next.bool gate is enumerated (TASK-516)', () =
   const calls = [...source.matchAll(/include\s+"ax-next\.bool"\s+(\S+?)\s*\)/g)].map(
     (m) => m[1] as string,
   );
+  // Every mention, whatever its shape. The parse above needs a closing `)`, so
+  // a paren-less `{{ if include "ax-next.bool" .Values.x }}` would slip past it
+  // silently; comparing against this count makes that shape fail loudly.
+  const mentions = source.match(/"ax-next\.bool"/g)?.length ?? 0;
 
   it('finds the call sites (non-vacuity)', () => {
     expect(calls.length).toBeGreaterThanOrEqual(30);
   });
 
+  it('parses every ax-next.bool call site (none skipped by an unexpected shape)', () => {
+    // The `define` itself is one mention and is not a call.
+    expect(calls.length, 'a call site is shaped so the path check cannot see it').toBe(
+      mentions - 1,
+    );
+  });
+
+  // Written as `.Values.<path>` on purpose: `$.Values.<path>`, a `$var` or a
+  // sub-pipeline all fail here, loudly, rather than being guessed at.
   it('every call passes a .Values path, not a variable the path check cannot see', () => {
     expect(calls.filter((c) => !c.startsWith('.Values.'))).toEqual([]);
   });
