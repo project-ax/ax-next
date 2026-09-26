@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { DecisionRow } from '../DecisionRow';
+import { StateDotSlot } from '../bits';
 import {
   DECISION_EXPIRED,
   DECISION_FAILED,
@@ -292,6 +293,15 @@ describe('DecisionRow — the dot sits in a fixed-width slot', () => {
   it('every state uses the SAME slot, so the text starts at one offset', () => {
     const slots = new Set(cases.map(([, d]) => slotOf(d)));
     expect(slots.size).toBe(1);
+  });
+
+  it('that slot is the shared StateDotSlot the sidebar uses (TASK-546)', () => {
+    // StateDotSlot.test pins the slot's width against every shape; that pin
+    // only covers this row while the row uses the shared slot.
+    const shared = render(<StateDotSlot>x</StateDotSlot>);
+    const slotClass = (shared.container.firstElementChild as HTMLElement).className;
+    shared.unmount();
+    for (const [, d] of cases) expect(slotOf(d)).toBe(slotClass);
   });
 });
 

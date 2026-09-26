@@ -18,7 +18,7 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import type { WorkspaceAgent } from '@/lib/workspace-api';
 import { NEW_AGENT_OPENER_ATTR } from '@/lib/new-agent-return-focus';
-import { StateDot, stateWord } from './bits';
+import { StateDot, StateDotSlot, stateWord } from './bits';
 
 interface Props {
   agents: WorkspaceAgent[];
@@ -145,11 +145,11 @@ export function WorkspaceSidebarNav({
                   : 'text-muted-foreground hover:bg-muted/60',
               )}
             >
-              {/* Fixed-width slot: the shapes differ in width (dash 8px,
-                  diamond 6px), and names should line up regardless. */}
-              <span className="flex w-2 shrink-0 justify-center">
+              {/* Fixed-width slot: the shapes differ in width, and names
+                  should line up regardless. */}
+              <StateDotSlot>
                 <StateDot state={a.state} />
-              </span>
+              </StateDotSlot>
               <span className="truncate" title={a.name}>
                 {a.name}
               </span>

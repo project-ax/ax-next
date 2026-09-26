@@ -18,6 +18,7 @@ import { render, screen } from '@testing-library/react';
 import { UserProvider } from '@/lib/user-context';
 import type { WorkspaceAgent } from '@/lib/workspace-api';
 import { WorkspaceSidebarNav } from '../WorkspaceSidebar';
+import { StateDotSlot } from '../bits';
 
 function agent(id: string, name: string, state: WorkspaceAgent['state']): WorkspaceAgent {
   return { id, name, state, now: null } as unknown as WorkspaceAgent;
@@ -94,5 +95,19 @@ describe('WorkspaceSidebar roster — agent state is not colour-only (TASK-485)'
     };
     const shapes = ['Ada', 'Bo', 'Cy', 'Di'].map(geometry);
     expect(new Set(shapes).size).toBe(4);
+  });
+
+  it('puts every dot in the shared StateDotSlot (TASK-546)', () => {
+    // The slot's width is pinned against every shape in StateDotSlot.test;
+    // that pin only covers the roster while the roster uses THIS slot.
+    const shared = render(<StateDotSlot>x</StateDotSlot>);
+    const slotClass = (shared.container.firstElementChild as HTMLElement).className;
+    shared.unmount();
+    renderRoster();
+    for (const who of ['Ada', 'Bo', 'Cy', 'Di']) {
+      const row = screen.getByText(who).closest('button')!;
+      const dot = row.querySelector('span[aria-hidden="true"]')!;
+      expect(dot.parentElement!.className, who).toBe(slotClass);
+    }
   });
 });
