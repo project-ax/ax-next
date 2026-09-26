@@ -202,9 +202,10 @@ describe('closing the new-agent dialog from the workspace (TASK-510)', () => {
   });
 
   it('a completed create moves focus into the NEW agent\'s conversation (TASK-533)', async () => {
-    // The agent the create makes is not the one already on the board, so a
-    // landing on ANY conversation region would not prove the target is the
-    // new agent's view — the id-scoping is part of what is under test.
+    // End-to-end wiring: `onDone` hands the created id to the close effect,
+    // which picks the view restore over the opener one. Only one region mounts
+    // here, so id-scoping (passing over ANOTHER agent's region) is pinned by
+    // `lib/__tests__/new-agent-view-focus.test.ts`, not by this test.
     mockAutoCreate.mockResolvedValue({ agentId: 'a2' } as Awaited<
       ReturnType<typeof autoCreateBareAgent>
     >);
