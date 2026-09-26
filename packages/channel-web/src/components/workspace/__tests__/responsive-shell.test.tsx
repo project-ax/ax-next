@@ -25,6 +25,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { NAV_TRIGGER_ATTR } from '@/lib/focus-when-ready';
 import {
   workspaceApi,
   type AgentDetail,
@@ -192,6 +193,8 @@ describe('the workspace shell below md', () => {
     // content that is off-screen with no way back is a dead end; content behind
     // a labelled control is not.
     const trigger = screen.getByRole('button', { name: 'Open navigation' });
+    // It is also where closing Settings sends focus on compact (TASK-474).
+    expect(trigger.hasAttribute(NAV_TRIGGER_ATTR)).toBe(true);
     fireEvent.click(trigger);
 
     expect(await screen.findByRole('navigation')).toBeTruthy();
@@ -275,9 +278,11 @@ describe('the agent pane below md', () => {
     const onOpenNav = vi.fn();
     renderAgentView({ onOpenNav });
 
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Open navigation' }),
-    );
+    const trigger = await screen.findByRole('button', { name: 'Open navigation' });
+    // The agent route's own trigger is the compact Settings-close restore
+    // target too — a Settings close can land back on this route (TASK-474).
+    expect(trigger.hasAttribute(NAV_TRIGGER_ATTR)).toBe(true);
+    fireEvent.click(trigger);
     expect(onOpenNav).toHaveBeenCalledTimes(1);
   });
 

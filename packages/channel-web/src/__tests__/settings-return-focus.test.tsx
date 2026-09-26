@@ -36,6 +36,7 @@ import { fetchBootstrapStatus } from '../lib/bootstrap-status';
 import { fetchFeatures } from '../lib/features';
 import { workspaceApi } from '../lib/workspace-api';
 import { rail as railFixture } from '../components/workspace/__tests__/rail-fixture';
+import { clearViewport, setViewport } from '../components/workspace/__tests__/viewport';
 
 vi.mock('../lib/bootstrap-status', () => ({
   fetchBootstrapStatus: vi.fn(async () => 'completed'),
@@ -129,6 +130,7 @@ beforeEach(() => {
   vi.mocked(workspaceApi.board).mockResolvedValue({ agents: [] });
 });
 afterEach(() => {
+  clearViewport();
   Object.defineProperty(window, 'location', {
     writable: true,
     value: originalLocation,
@@ -161,6 +163,9 @@ describe('closing Settings from the workspace (TASK-443)', () => {
   it('returns focus to the control that opened it, not to <body>', async () => {
     render(<App />);
     await openSettingsFromWorkspace();
+    // Desktop really is desktop: no hamburger anywhere, so the assertion below
+    // is about the opener itself and not about the compact stand-in (TASK-474).
+    expect(screen.queryByRole('button', { name: /open navigation/i })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: /^workspace$/i }));
 
@@ -183,6 +188,53 @@ describe('closing Settings from the workspace (TASK-443)', () => {
   it('really does start from <body> — the restore is doing the work', async () => {
     render(<App />);
     await waitFor(userMenuTrigger);
+    expect(document.activeElement).toBe(document.body);
+  });
+});
+
+/**
+ * TASK-474 — the same close on a COMPACT viewport.
+ *
+ * Below `md` the only `UserMenu` lives inside the nav `Sheet`, which Radix
+ * unmounts while closed, and the sheet is closed when the workspace comes back.
+ * So the opener never reappears and #628's by-identity wait simply expired,
+ * leaving focus on `<body>`. The restore now falls back to the hamburger — a
+ * DIFFERENT element from the one that opened Settings, chosen on purpose: it is
+ * the control on screen that leads back to the opener.
+ */
+describe('closing Settings on a compact viewport (TASK-474)', () => {
+  /** The hamburger, re-queried from the CURRENT tree every time. */
+  function navTrigger(): HTMLElement {
+    return screen.getByRole('button', { name: /open navigation/i });
+  }
+
+  async function openSettingsFromCompactNav(): Promise<void> {
+    fireEvent.click(await waitFor(navTrigger));
+    await openSettingsFromWorkspace();
+  }
+
+  it('lands focus on the hamburger trigger, not on <body> or <html>', async () => {
+    setViewport(true);
+    render(<App />);
+    await openSettingsFromCompactNav();
+
+    fireEvent.click(screen.getByRole('button', { name: /^workspace$/i }));
+
+    await waitFor(() => {
+      expect(document.activeElement).toBe(navTrigger());
+    });
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).not.toBe(document.documentElement);
+    expect((document.activeElement as HTMLElement).isConnected).toBe(true);
+    // The premise, asserted rather than assumed: the opener really is gone
+    // (the sheet is closed), so this is the stand-in doing the work.
+    expect(screen.queryByRole('button', { name: /Alice/ })).toBeNull();
+  });
+
+  it('really does start from <body> on compact too', async () => {
+    setViewport(true);
+    render(<App />);
+    await waitFor(navTrigger);
     expect(document.activeElement).toBe(document.body);
   });
 });
