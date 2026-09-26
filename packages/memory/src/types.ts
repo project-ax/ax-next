@@ -57,7 +57,20 @@ export interface MemoryStatement {
   kind?: MemoryStatementKind;
   slot?: string;
   closedBy?: string;
-  closure?: 'replaced' | 'forgotten';
+  /**
+   * Why a row is not current. `replaced`/`forgotten` describe a closed row
+   * (`until` set). `overridden` appears only on history reads
+   * (`activeOnly: false`), on a row that is still ACTIVE but that the
+   * equivalent active read hides because a higher-provenance row outranks it.
+   */
+  closure?: 'replaced' | 'forgotten' | 'overridden';
+  /**
+   * Who saved a row that was not extracted from a conversation: `person` for
+   * `memory:remember`, `agent` for `memory_note`. Absent for extracted rows
+   * and unknown provenance. A read-only display coarsening of provenance —
+   * provenance itself is still never accepted on any input payload.
+   */
+  savedBy?: 'person' | 'agent';
   whenText?: string;
   aboutText?: string;
 }

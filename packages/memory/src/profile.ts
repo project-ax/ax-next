@@ -81,6 +81,19 @@ export function dropRementionedSlotRows<T extends SlotGroupRow>(
   rows: readonly T[],
   group: readonly SlotGroupRow[],
 ): T[] {
+  const drop = rementionedSlotRows(rows, group);
+  return rows.filter((row) => !drop.has(row));
+}
+
+/**
+ * The rows of `rows` that {@link dropRementionedSlotRows} hides. History
+ * reads mark these instead of dropping them; one function decides both so
+ * the hide rule and the mark rule cannot drift.
+ */
+export function rementionedSlotRows<T extends SlotGroupRow>(
+  rows: readonly T[],
+  group: readonly SlotGroupRow[],
+): Set<T> {
   const key = (row: SlotGroupRow): string => `${row.about}\u0000${row.slot}`;
   const topActiveRank = new Map<string, number>();
   const replaced = new Map<string, Set<string>>();
@@ -95,12 +108,14 @@ export function dropRementionedSlotRows<T extends SlotGroupRow>(
       replaced.set(key(row), values);
     }
   }
-  return rows.filter((row) => {
-    if (typeof row.slot !== 'string' || row.slot === '' || row.until !== undefined) return true;
-    const rank = PROVENANCE_RANK.get(row.provenance ?? '') ?? 0;
-    const outranked = rank < (topActiveRank.get(key(row)) ?? 0);
-    return !(outranked && replaced.get(key(row))?.has(sameValue(row.value)));
-  });
+  return new Set(
+    rows.filter((row) => {
+      if (typeof row.slot !== 'string' || row.slot === '' || row.until !== undefined) return false;
+      const rank = PROVENANCE_RANK.get(row.provenance ?? '') ?? 0;
+      const outranked = rank < (topActiveRank.get(key(row)) ?? 0);
+      return outranked && replaced.get(key(row))?.has(sameValue(row.value)) === true;
+    }),
+  );
 }
 
 /** Higher provenance wins; equal provenance, the later `when`; then the id, for stability. */

@@ -24,6 +24,11 @@ const NETWORK_TAG = new Map<MemoryStatementKind, string>([
   ['opinion', 'OPIN'],
 ]);
 
+const SAVED_BY_TAG = new Map<string, string>([
+  ['person', 'HUMAN'],
+  ['agent', 'AGENT'],
+]);
+
 function utcMidnight(value: Date): number {
   return Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate());
 }
@@ -94,8 +99,18 @@ export function renderEvidenceTable(rows: readonly MemoryStatement[], asOf: stri
     '| :---- | :---- | :---- |',
     ...ordered.map((row) => {
       const words = (value: string) => value.replace(/_/g, ' ').trim();
-      const statement = `${escapeStatementText(words(row.about))} ${escapeStatementText(words(row.relation))}: ${escapeStatementText(row.value)}`;
-      const tag = row.kind === undefined ? 'UNKNOWN' : (NETWORK_TAG.get(row.kind) ?? 'UNKNOWN');
+      // The caller's own subject is stored as `user:<id>`; DEM canonicalized
+      // the speaker as the literal `user`, so that is what the model reads.
+      // Other subjects go through the recall surface's `aboutText`, which
+      // never carries another person's raw id.
+      const subject =
+        row.aboutText === 'you' ? 'user' : row.aboutText !== undefined ? row.aboutText : words(row.about);
+      const statement = `${escapeStatementText(subject)} ${escapeStatementText(words(row.relation))}: ${escapeStatementText(row.value)}`;
+      // A kind-less row is not unknown when we know who saved it.
+      const tag =
+        row.kind !== undefined
+          ? (NETWORK_TAG.get(row.kind) ?? 'UNKNOWN')
+          : (SAVED_BY_TAG.get(row.savedBy ?? '') ?? 'UNKNOWN');
       return `| [${tag}] | ${escapeStatementText(formatEvidenceWhen(row, asOf))} | ${statement} |`;
     }),
   ].join('\n');

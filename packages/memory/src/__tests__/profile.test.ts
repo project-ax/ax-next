@@ -3,6 +3,7 @@ import { HookBus, makeAgentContext, type AgentContext } from '@ax/core';
 
 import { createMemoryPlugin } from '../plugin.js';
 import { formatEvidenceWhen } from '../evidence.js';
+import { MEMORY_NOTE_TOOL_HOOK } from '../note-tool.js';
 import {
   makeMemoryHarness,
   engineRecord,
@@ -298,5 +299,141 @@ describe('@ax/memory — profile recall against a real store', () => {
     const after = await harness.recall({ activeOnly: false, limit: 100 });
     const forgotten = after.statements.find((s) => s.id === second.id);
     expect(forgotten?.closure).toBe('forgotten');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-526: display legibility. `savedBy` coarsens provenance for display,
+// `aboutText` never names another person's raw id, `whenText` leaves closure
+// to the `closure` field, and history marks the row the active read hides.
+// ---------------------------------------------------------------------------
+describe('@ax/memory — recall display fields', () => {
+  const extracted = (value: string, when: string, extra: Record<string, unknown> = {}) => ({
+    about: `user:${ALICE}`,
+    relation: 'lives_in',
+    value,
+    when,
+    slot: 'lives_in',
+    provenance: 'extracted' as 'extracted' | 'human',
+    ownerUserId: ALICE,
+    ...extra,
+  });
+
+  it('says who saved a row: person for memory:remember, agent for memory_note, absent for extracted', async () => {
+    harness = await makeMemoryHarness();
+    await harness.remember({ about: 'acme_corp', relation: 'stage', value: 'series B' });
+    await harness.bus.call(MEMORY_NOTE_TOOL_HOOK, harness.ctx(), {
+      input: { about: 'acme_corp', relation: 'ceo', value: 'Dana' },
+    });
+    await engineRecord(harness.bus, harness.ctx(), [
+      {
+        about: 'acme_corp',
+        relation: 'founded_in',
+        value: '2019',
+        when: '2023-01-01T00:00:00Z',
+        provenance: 'extracted',
+        ownerUserId: ALICE,
+      },
+    ]);
+    const { statements } = await harness.recall({ about: 'acme_corp' });
+    const by = (value: string) => statements.find((s) => s.value === value);
+    expect(by('series B')?.savedBy).toBe('person');
+    expect(by('Dana')?.savedBy).toBe('agent');
+    expect(by('2019')).toBeDefined();
+    expect(by('2019')).not.toHaveProperty('savedBy');
+    expect(by('2019')).not.toHaveProperty('provenance');
+  });
+
+  it("labels another person's speaker subject 'a teammate', never the raw id", async () => {
+    harness = await makeMemoryHarness();
+    await engineRecord(harness.bus, harness.ctx(), [
+      {
+        about: `user:${BOB}`,
+        relation: 'likes',
+        value: 'tea',
+        when: '2023-01-01T00:00:00Z',
+        provenance: 'extracted',
+        ownerUserId: ALICE,
+      },
+    ]);
+    const { statements } = await harness.recall({ activeOnly: false, limit: 100 });
+    const tea = statements.find((s) => s.value === 'tea');
+    expect(tea?.aboutText).toBe('a teammate');
+    expect(tea?.aboutText).not.toContain(BOB);
+  });
+
+  it('leaves closure out of whenText — the closure field owns it', async () => {
+    harness = await makeMemoryHarness();
+    const { id } = await harness.remember({
+      about: 'acme_corp',
+      relation: 'stage',
+      value: 'series B',
+      when: '2023-01-01T00:00:00Z',
+    });
+    await harness.forget({ ids: [id] });
+    const { statements } = await harness.recall({ about: 'acme_corp', activeOnly: false });
+    expect(statements[0]?.closure).toBe('forgotten');
+    expect(statements[0]?.whenText).not.toContain('→');
+    expect(statements[0]?.whenText).not.toContain('superseded');
+  });
+
+  it('history profile marks the outranked active row overridden, not the one the profile shows', async () => {
+    harness = await makeMemoryHarness();
+    await harness.remember({
+      about: 'user',
+      relation: 'lives_in',
+      value: 'Boston',
+      when: '2023-01-01T00:00:00Z',
+    });
+    await engineRecord(harness.bus, harness.ctx(), [extracted('Denver', '2023-03-01T00:00:00Z')]);
+
+    const history = await harness.recall({ profile: true, activeOnly: false, limit: 100 });
+    const by = (value: string) => history.statements.find((s) => s.value === value);
+    expect(by('Denver')?.closure).toBe('overridden');
+    expect(by('Denver')).not.toHaveProperty('until');
+    expect(by('Boston')).toBeDefined();
+    expect(by('Boston')).not.toHaveProperty('closure');
+
+    const active = await harness.recall({ profile: true, limit: 100 });
+    expect(active.statements.map((s) => s.value)).toEqual(['Boston']);
+    expect(active.statements.some((s) => s.closure === 'overridden')).toBe(false);
+  });
+
+  it('history search marks exactly the re-mention the active read hides', async () => {
+    harness = await makeMemoryHarness();
+    // One call per row: each arrival settles its slot against what is there.
+    for (const r of [
+      extracted('Portland, Oregon', '2026-01-10T12:00:00.000Z'),
+      extracted('Seattle, Washington', '2026-02-10T12:00:00.000Z', { provenance: 'human' }),
+      extracted('Portland, Oregon', '2026-06-10T12:00:00.000Z', { conversationId: 'conv-restated' }),
+    ]) {
+      await engineRecord(harness.bus, harness.ctx(), [r]);
+    }
+
+    const history = await harness.recall({ activeOnly: false, limit: 100 });
+    const portlands = history.statements.filter((s) => s.value === 'Portland, Oregon');
+    expect(portlands.map((s) => s.closure).sort()).toEqual(['overridden', 'replaced']);
+    expect(portlands.find((s) => s.closure === 'overridden')).not.toHaveProperty('until');
+    const seattle = history.statements.find((s) => s.value === 'Seattle, Washington');
+    expect(seattle).toBeDefined();
+    expect(seattle).not.toHaveProperty('closure');
+
+    for (const input of [{}, { query: 'where does the user live' }, { profile: true }]) {
+      const active = await harness.recall(input);
+      expect(active.statements.some((s) => s.closure === 'overridden')).toBe(false);
+    }
+  });
+
+  it('does not mark a genuinely new value under an old human row in history search', async () => {
+    harness = await makeMemoryHarness();
+    await engineRecord(harness.bus, harness.ctx(), [
+      extracted('Paris', '2026-01-10T12:00:00.000Z', { provenance: 'human' }),
+    ]);
+    await engineRecord(harness.bus, harness.ctx(), [
+      extracted('Coimbra', '2026-06-10T12:00:00.000Z', { conversationId: 'conv-moved' }),
+    ]);
+    const history = await harness.recall({ activeOnly: false, limit: 100 });
+    expect(history.statements.map((s) => s.value).sort()).toEqual(['Coimbra', 'Paris']);
+    expect(history.statements.some((s) => s.closure === 'overridden')).toBe(false);
   });
 });

@@ -77,6 +77,47 @@ describe('renderEvidenceTable', () => {
     expect(table).toContain('| [UNKNOWN] |');
   });
 
+  it('tags a kind-less row by who saved it, and UNKNOWN only when that is not known either', () => {
+    const table = renderEvidenceTable(
+      [
+        row({ id: 'a', when: '2023-01-01T00:00:00.000Z', savedBy: 'person' }),
+        row({ id: 'b', when: '2023-02-01T00:00:00.000Z', savedBy: 'agent' }),
+        row({ id: 'c', when: '2023-03-01T00:00:00.000Z' }),
+        // A classified row keeps its network tag whoever saved it.
+        row({ id: 'd', when: '2023-04-01T00:00:00.000Z', kind: 'world', savedBy: 'agent' }),
+      ],
+      AS_OF,
+    );
+    expect(table.split('\n').slice(2).map((l) => l.split('|')[1])).toEqual([
+      ' [HUMAN] ',
+      ' [AGENT] ',
+      ' [UNKNOWN] ',
+      ' [FACT] ',
+    ]);
+  });
+
+  it("renders the caller's own subject as DEM's literal `user`, never the raw user:<id> key", () => {
+    const table = renderEvidenceTable(
+      [row({ id: 'a', when: '2023-01-01T00:00:00.000Z', about: 'user:usr_9f3', aboutText: 'you', kind: 'world' })],
+      AS_OF,
+    );
+    expect(table).toContain('| user likes artist: Khalid |');
+    expect(table).not.toContain('usr');
+  });
+
+  it('renders any other subject through its aboutText when the recall surface set one', () => {
+    const table = renderEvidenceTable(
+      [
+        row({ id: 'a', when: '2023-01-01T00:00:00.000Z', about: 'user:usr_bob', aboutText: 'a teammate' }),
+        row({ id: 'b', when: '2023-02-01T00:00:00.000Z', about: 'priya_sharma', aboutText: 'priya sharma' }),
+      ],
+      AS_OF,
+    );
+    expect(table).toContain('a teammate likes artist: Khalid');
+    expect(table).toContain('priya sharma likes artist: Khalid');
+    expect(table).not.toContain('usr_bob');
+  });
+
   it('never leaks statement ids into the output', () => {
     const table = renderEvidenceTable(
       [row({ id: 'fact-secret-id-7', when: '2023-01-01T00:00:00.000Z' })],
