@@ -23,6 +23,7 @@ import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useIsCompact } from '@/lib/use-compact';
+import { NAV_TRIGGER_ATTR } from '@/lib/focus-when-ready';
 import { relativeDay } from '@/lib/workspace-time';
 import { HTTP_SESSION_ENDED, logRequestFailure } from '@/lib/http';
 import {
@@ -974,6 +975,9 @@ export function AgentView({
               className="md:hidden"
               onClick={onOpenNav}
               aria-label="Open navigation"
+              // TASK-474 — same compact stand-in restore target as the shell's
+              // trigger. See `lib/focus-when-ready.ts`.
+              {...{ [NAV_TRIGGER_ATTR]: '' }}
             >
               <Menu size={16} />
             </Button>

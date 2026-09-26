@@ -29,6 +29,7 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet';
 import { useIsCompact } from '@/lib/use-compact';
+import { NAV_TRIGGER_ATTR } from '@/lib/focus-when-ready';
 import {
   workspaceApi,
   WorkspaceApiError,
@@ -786,6 +787,11 @@ function Inner({
       className="md:hidden"
       onClick={() => setNavOpen(true)}
       aria-label="Open navigation"
+      // TASK-474 — the compact stand-in restore target. Anything inside the
+      // nav sheet (the user menu Settings opens from) is unmounted while the
+      // sheet is closed, so a restore lands HERE instead: a different element
+      // from the opener, on purpose. See `lib/focus-when-ready.ts`.
+      {...{ [NAV_TRIGGER_ATTR]: '' }}
     >
       <Menu size={16} />
     </Button>
