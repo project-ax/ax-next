@@ -42,6 +42,10 @@
 //   - A constant declared twice resolves to the LARGER value. Fail CLOSED (the
 //     TASK-410 lesson: last-write-wins made the verdict turn on declaration
 //     order, and one of the orders under-read).
+//   - A name that is ever ASSIGNED after its declaration (`let X = 5; X = 30_000;`,
+//     `X += 1`, `X++`) does not resolve at all — the value at the hook's call
+//     cannot be known from the initialiser — and lands in `unreadable`. Fail
+//     CLOSED. Resolving it to the initialiser would under-read.
 //   - A hook called through a PROPERTY (`globalThis.beforeAll(...)`,
 //     `vitest.afterAll(...)`) is read like a bare one. At worst an over-read.
 //   - NOT covered, and fail-OPEN if anyone writes them: a hook invoked through
@@ -108,6 +112,8 @@ export function scanHookTimeouts(text, fileName) {
 
   // name -> largest numeric literal it is ever initialised to, anywhere in the file.
   const consts = new Map();
+  // Names written to after declaration. These never resolve (see the header).
+  const reassigned = new Set();
   const hookCalls = [];
   const visit = (node) => {
     if (
@@ -119,6 +125,21 @@ export function scanHookTimeouts(text, fileName) {
       const ms = Number(node.initializer.text);
       const seen = consts.get(node.name.text);
       consts.set(node.name.text, seen === undefined ? ms : Math.max(seen, ms));
+    }
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+      ts.isIdentifier(node.left)
+    ) {
+      reassigned.add(node.left.text);
+    }
+    if (
+      (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+      (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken) &&
+      ts.isIdentifier(node.operand)
+    ) {
+      reassigned.add(node.operand.text);
     }
     if (ts.isCallExpression(node)) {
       const hook = hookNameOf(node.expression);
@@ -134,7 +155,7 @@ export function scanHookTimeouts(text, fileName) {
     const line = lineOf(sf, node);
     if (ts.isNumericLiteral(arg)) {
       result.declared.push({ hook, ms: Number(arg.text), line });
-    } else if (ts.isIdentifier(arg) && consts.has(arg.text)) {
+    } else if (ts.isIdentifier(arg) && consts.has(arg.text) && !reassigned.has(arg.text)) {
       result.declared.push({ hook, ms: consts.get(arg.text), line, name: arg.text });
     } else {
       result.unreadable.push({ hook, expr: arg.getText(sf), line });

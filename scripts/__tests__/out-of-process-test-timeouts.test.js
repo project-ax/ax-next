@@ -353,6 +353,9 @@ describe('packages that leave the process declare their own timeouts (TASK-323, 
     // in scope — 22 that start a container, 12 whose tests spawn, 2 doing both
     // (22 + 12 - 2 = 32). The inputs are written beside the total on purpose, so
     // the next reader can check the arithmetic instead of trusting the digit.
+    // Re-measured 2026-09-26 (TASK-462, the figure the parser note above uses):
+    // **35** — 24 that start a container, 13 whose tests spawn, 2 doing both
+    // (24 + 13 - 2 = 35). The count moved; the floor below did not need to.
     //
     // The version this replaces said "25 as this is written (21 container
     // packages plus ...)" and worked through a hand-kept list of the rest. Both
@@ -681,6 +684,23 @@ describe('the scan catches a NEW package, and the config read is a read (TASK-40
     });
     const pkg = outOfProcessPackages(root).find((p) => p.name === 'packages/one-liners');
     expect(pkg.maxDeclaredHookTimeout).toBe(80_000);
+  });
+
+  it('does not resolve a const that is REASSIGNED before the hook runs', () => {
+    // Resolving `X` to its initialiser would read 5_000 where the hook gets
+    // 30_000 — an under-read. It is reported instead. (Not a regex-era shape:
+    // the regex resolver had the same hole; the reviewer of TASK-462 found it.)
+    makePackage('reassigned-const', {
+      testSource: [
+        "import { spawn } from 'node:child_process';",
+        'let HOOK_MS = 5_000;',
+        'HOOK_MS = 30_000;',
+        'beforeAll(async () => { await warm(); }, HOOK_MS);',
+      ].join('\n'),
+      config: "export default { test: { include: ['src/**/*.test.ts'] } };",
+    });
+    const pkg = outOfProcessPackages(root).find((p) => p.name === 'packages/reassigned-const');
+    expect(pkg.unreadable.map((u) => u.name)).toEqual(['HOOK_MS']);
   });
 
   it('reports a source that does not parse, rather than trusting the hooks it could see', () => {
