@@ -118,6 +118,93 @@ function lineOf(sf, node) {
 export function scanHookTimeouts(text, fileName) {
   const result = { declared: [], unreadable: [], parseErrors: [] };
   if (!MENTIONS_A_HOOK.test(text)) return result;
+  const full = scanTestTimeouts(text, fileName);
+  return { declared: full.declared, unreadable: full.unreadable, parseErrors: full.parseErrors };
+}
+
+// ---------------------------------------------------------------------------
+// TASK-567: test budgets and BARE teardowns.
+//
+// A bare `afterAll` / `afterEach` (no timeout argument) runs under the config's
+// `hookTimeout`. A test that declares a long budget — `it(..., 180_000)` — is
+// usually a test that leaves long cleanup behind, and that cleanup lands in the
+// bare teardown. If `hookTimeout` is below the test's budget, the teardown times
+// out AFTER every assertion passed (the `@ax/auth-better` Docker-teardown class
+// in CLAUDE.md). The out-of-process guard therefore needs, per file, the budgets
+// its tests declare and whether it has a bare teardown. Human ruling on TASK-567
+// (2026-09-26): enforce it.
+//
+// A TEST CALL is any call whose callee chain roots at the identifier `it`,
+// `test`, `describe` or `suite`, through property access and calls:
+// `it(...)`, `it.only(...)`, `test.concurrent(...)`, `it.skipIf(c)(...)`,
+// `it.each(t)(...)`. `describe` / `suite` are included because vitest's
+// `describe(name, { timeout }, fn)` sets the budget of every test inside it.
+// For the modifier calls in the middle of a chain (`it.skipIf(c)`,
+// `it.each(t)`) the first argument is the condition / table, never a budget,
+// so only arguments AFTER the first are read — on every test call.
+//
+// Each argument after the first is read as follows. Direction, per shape — the
+// guard consumes the maximum, so the safe direction is to OVER-read or REPORT:
+//
+//   - a function (arrow / function expression): the body, not a budget. Skipped.
+//   - a numeric literal, or a name that resolves under the same rules as a hook
+//     budget (see the header): a declared budget.
+//   - an object literal: its `timeout` property is the budget (`{ timeout: N }`,
+//     shorthand `{ timeout }`). No `timeout` key and no spread: no budget (e.g.
+//     `{ retry: 2 }`). A spread (`{ ...opts }`), a computed key, or a `timeout`
+//     value that does not resolve: UNREADABLE. Fail CLOSED.
+//   - anything else (an unresolved name — possibly a function reference, a call,
+//     `2 * 60_000`, a conditional): UNREADABLE. Fail CLOSED. The cost is a
+//     spurious red for `it('x', runCase)`, never a hidden budget.
+//   - NOT covered, fail-OPEN if written: a test function reached through an
+//     alias (`const t = it; t('x', fn, 999_999)`), element access, or a
+//     `test.extend(...)`-derived name that is not itself `it` / `test`. None
+//     occurs in the tree.
+//
+// A teardown is BARE when an `afterAll` / `afterEach` call has fewer than two
+// arguments. A teardown with ANY second argument is not bare: its own argument
+// governs it (a hook's timeout argument overrides the config), and the existing
+// `hookTimeout >= max declared hook budget` rule — or the unreadable report —
+// already covers it. `beforeAll`'s returned cleanup and `onTestFinished` are not
+// counted: neither is an `afterAll` / `afterEach`, and the ruling names those.
+// ---------------------------------------------------------------------------
+
+const TEST_CALL_ROOTS = new Set(['it', 'test', 'describe', 'suite']);
+const TEARDOWN_NAMES = new Set(['afterAll', 'afterEach']);
+
+/** Cheap pre-filter for `scanTestTimeouts`: no hook word and no test word means nothing to read. */
+const MENTIONS_A_HOOK_OR_TEST = /\b(?:beforeAll|afterAll|beforeEach|afterEach|it|test|describe|suite)\b/;
+
+/** `it` for `it(...)`, `it.only(...)`, `it.skipIf(c)(...)`, `it.each(t)(...)`; else undefined. */
+function testCallRootOf(callee) {
+  let c = callee;
+  for (;;) {
+    if (ts.isIdentifier(c)) return TEST_CALL_ROOTS.has(c.text) ? c.text : undefined;
+    if (ts.isPropertyAccessExpression(c)) c = c.expression;
+    else if (ts.isCallExpression(c)) c = c.expression;
+    else return undefined;
+  }
+}
+
+/**
+ * Everything `scanHookTimeouts` returns, plus the test-side facts TASK-567 needs.
+ *
+ * Returns
+ *   declared, unreadable, parseErrors — exactly as `scanHookTimeouts`
+ *   testDeclared:   [{ call, ms, line, name? }] — a budget a test / describe declares
+ *   testUnreadable: [{ call, expr, line }]      — a test argument this cannot evaluate
+ *   bareTeardowns:  [{ hook, line }]            — an afterAll / afterEach with no timeout
+ */
+export function scanTestTimeouts(text, fileName) {
+  const result = {
+    declared: [],
+    unreadable: [],
+    parseErrors: [],
+    testDeclared: [],
+    testUnreadable: [],
+    bareTeardowns: [],
+  };
+  if (!MENTIONS_A_HOOK_OR_TEST.test(text)) return result;
 
   const sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, scriptKindFor(fileName));
   if (!Array.isArray(sf.parseDiagnostics)) {
@@ -139,6 +226,7 @@ export function scanHookTimeouts(text, fileName) {
   // other than by a numeric-literal initialiser (see the header).
   const unresolvable = new Set();
   const hookCalls = [];
+  const testCalls = [];
   const visit = (node) => {
     if (ts.isVariableDeclaration(node)) {
       if (ts.isIdentifier(node.name) && node.initializer !== undefined && ts.isNumericLiteral(node.initializer)) {
@@ -176,21 +264,65 @@ export function scanHookTimeouts(text, fileName) {
     if (ts.isCallExpression(node)) {
       const hook = hookNameOf(node.expression);
       if (hook !== undefined && node.arguments.length >= 2) hookCalls.push({ hook, node });
+      if (hook !== undefined && TEARDOWN_NAMES.has(hook) && node.arguments.length < 2) {
+        result.bareTeardowns.push({ hook, line: lineOf(sf, node) });
+      }
+      if (hook === undefined && testCallRootOf(node.expression) !== undefined) testCalls.push(node);
     }
     ts.forEachChild(node, visit);
   };
   visit(sf);
 
+  /** `{ ms, name? }` for a numeric literal or a resolvable name; undefined otherwise. */
+  const resolve = (expr) => {
+    let e = expr;
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (ts.isNumericLiteral(e)) return { ms: Number(e.text) };
+    if (ts.isIdentifier(e) && consts.has(e.text) && !unresolvable.has(e.text)) {
+      return { ms: consts.get(e.text), name: e.text };
+    }
+    return undefined;
+  };
+
   for (const { hook, node } of hookCalls) {
-    let arg = node.arguments[1];
-    while (ts.isParenthesizedExpression(arg)) arg = arg.expression;
+    const arg = node.arguments[1];
     const line = lineOf(sf, node);
-    if (ts.isNumericLiteral(arg)) {
-      result.declared.push({ hook, ms: Number(arg.text), line });
-    } else if (ts.isIdentifier(arg) && consts.has(arg.text) && !unresolvable.has(arg.text)) {
-      result.declared.push({ hook, ms: consts.get(arg.text), line, name: arg.text });
-    } else {
-      result.unreadable.push({ hook, expr: arg.getText(sf), line });
+    const r = resolve(arg);
+    if (r !== undefined) result.declared.push({ hook, ...r, line });
+    else result.unreadable.push({ hook, expr: arg.getText(sf), line });
+  }
+
+  for (const node of testCalls) {
+    const call = node.expression.getText(sf).replace(/\s+/g, ' ');
+    const line = lineOf(sf, node);
+    for (const raw of node.arguments.slice(1)) {
+      let arg = raw;
+      while (ts.isParenthesizedExpression(arg)) arg = arg.expression;
+      if (ts.isArrowFunction(arg) || ts.isFunctionExpression(arg)) continue;
+      if (ts.isObjectLiteralExpression(arg)) {
+        for (const prop of arg.properties) {
+          if (ts.isSpreadAssignment(prop) || (prop.name !== undefined && ts.isComputedPropertyName(prop.name))) {
+            result.testUnreadable.push({ call, expr: prop.getText(sf), line });
+            continue;
+          }
+          const key = prop.name !== undefined && (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name))
+            ? prop.name.text
+            : undefined;
+          if (key !== 'timeout') continue;
+          const value = ts.isPropertyAssignment(prop)
+            ? prop.initializer
+            : ts.isShorthandPropertyAssignment(prop)
+              ? prop.name
+              : undefined; // a `timeout()` method or accessor: not a number
+          const r = value === undefined ? undefined : resolve(value);
+          if (r !== undefined) result.testDeclared.push({ call, ...r, line });
+          else result.testUnreadable.push({ call, expr: prop.getText(sf), line });
+        }
+        continue;
+      }
+      const r = resolve(arg);
+      if (r !== undefined) result.testDeclared.push({ call, ...r, line });
+      else result.testUnreadable.push({ call, expr: arg.getText(sf), line });
     }
   }
   return result;

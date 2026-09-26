@@ -67,7 +67,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { scanHookTimeouts } from '../hook-timeout-scan.mjs';
+import { scanHookTimeouts, scanTestTimeouts } from '../hook-timeout-scan.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -160,6 +160,11 @@ const TEST_LEAVES_PROCESS =
  *      `it` budget that the regex had run past a hook to reach. None raised; no
  *      config needed changing. An `it` budget is not a hook budget, so those
  *      packages' bare hooks were never governed by it.
+ *      TASK-567 (human ruling: enforce it) then made the part of that accident
+ *      worth keeping deliberate, as its own rule: a package with a BARE teardown
+ *      keeps `hookTimeout` at or above its largest DECLARED test budget. See
+ *      `bareTeardownViolations`. It is a separate maximum, not folded into
+ *      `maxDeclaredHookTimeout`, so a timed teardown still answers to hooks only.
  *
  * A timeout argument the parser cannot evaluate (an imported name, `2 * 60_000`)
  * lands in `unreadable` and is REPORTED, never counted as zero. A name declared
@@ -248,17 +253,39 @@ function outOfProcessPackages(repoRoot) {
     if (reasons.length === 0) continue;
 
     let maxDeclaredHookTimeout = 0;
+    // TASK-567: the largest budget a TEST in this package declares, where it was
+    // declared, and every bare teardown (see `scanTestTimeouts`).
+    let maxDeclaredTestTimeout = 0;
+    let maxTestAt;
+    const bareTeardowns = [];
     const unreadable = [];
     for (const f of files) {
-      const scan = scanHookTimeouts(readFileSync(f, 'utf8'), f);
+      const scan = scanTestTimeouts(readFileSync(f, 'utf8'), f);
       for (const d of scan.declared) maxDeclaredHookTimeout = Math.max(maxDeclaredHookTimeout, d.ms);
+      for (const d of scan.testDeclared) {
+        if (d.ms > maxDeclaredTestTimeout) {
+          maxDeclaredTestTimeout = d.ms;
+          maxTestAt = { file: f, line: d.line };
+        }
+      }
+      for (const t of scan.bareTeardowns) bareTeardowns.push({ file: f, line: t.line, hook: t.hook });
       // Reported, never counted as zero — see the note above `outOfProcessPackages`.
       for (const u of scan.unreadable) unreadable.push({ file: f, line: u.line, name: u.expr, why: 'expr' });
+      for (const u of scan.testUnreadable) unreadable.push({ file: f, line: u.line, name: u.expr, why: 'test-expr' });
       // A file that does not parse cleanly cannot be trusted to have shown us
       // every hook, so it is unreadable as a whole. Fail closed.
       for (const e of scan.parseErrors) unreadable.push({ file: f, line: e.line, name: e.message, why: 'parse' });
     }
-    out.push({ ...pkg, files, reason: reasons.join(' + '), maxDeclaredHookTimeout, unreadable });
+    out.push({
+      ...pkg,
+      files,
+      reason: reasons.join(' + '),
+      maxDeclaredHookTimeout,
+      maxDeclaredTestTimeout,
+      maxTestAt,
+      bareTeardowns,
+      unreadable,
+    });
   }
   return out;
 }
@@ -326,6 +353,62 @@ async function readResolvedTestBudgets(pkgDir) {
     testTimeout: resolved.test.testTimeout,
     hookTimeout: resolved.test.hookTimeout,
   };
+}
+
+/**
+ * TASK-567: packages with a BARE teardown whose effective `hookTimeout` is below
+ * the largest budget a test in the package declares, as failure messages.
+ *
+ * Human ruling (Vinay, 2026-09-26): enforce it.
+ *
+ * A bare `afterAll` / `afterEach` runs under the config's `hookTimeout`. A
+ * test declaring `it(..., 180_000)` is a test that does long out-of-process
+ * work, and the cleanup of that work lands in the bare teardown. With
+ * `hookTimeout` below the test's own budget, the teardown times out AFTER
+ * every assertion passed — the `@ax/auth-better` Docker-teardown shape
+ * CLAUDE.md warns about (64/64 assertions green, run red).
+ *
+ * The regex scanner held this line by ACCIDENT before TASK-462: it ran lazily
+ * from a bare hook to the next `it(..., N)` and credited the hook with it.
+ * The parser stopped that misattribution, correctly, and this is the
+ * invariant made deliberate instead.
+ *
+ * Scope, stated: PACKAGE-wide, like the hook rule — the maximum test
+ * budget anywhere in the package against any bare teardown anywhere in it,
+ * because both share one config. A teardown with a timeout ARGUMENT is not
+ * bare (its own argument governs it) and is held by the hook rule
+ * (`hookTimeout >= the largest timeout a hook declares`) instead.
+ * Tests with NO declared budget run under `testTimeout` and are not counted:
+ * the ruling is about DECLARED `it()` budgets.
+ *
+ * The effective `hookTimeout` is vitest's 10_000 default when the config
+ * omits it (that omission is also reported by the config test), so a missing key cannot
+ * make this pass.
+ */
+function bareTeardownViolations(pkgs, budgetsByName, repoRoot) {
+  const out = [];
+  for (const pkg of pkgs) {
+    const b = budgetsByName.get(pkg.name);
+    if (b === undefined) {
+      // Fail closed: a package whose config was never read has not passed.
+      out.push(`${pkg.name}: its vitest config budgets were never read`);
+      continue;
+    }
+    if (b.kind !== 'ok') continue; // missing / unreadable: reported by the config test
+    if (pkg.bareTeardowns.length === 0) continue;
+    const effectiveHookTimeout = b.hookTimeout ?? 10_000;
+    if (effectiveHookTimeout < pkg.maxDeclaredTestTimeout) {
+      const t = pkg.bareTeardowns[0];
+      out.push(
+        `${pkg.name}: hookTimeout ${effectiveHookTimeout} < ${pkg.maxDeclaredTestTimeout} declared by a test at ` +
+          `${relative(repoRoot, pkg.maxTestAt.file)}:${pkg.maxTestAt.line}, and ${pkg.bareTeardowns.length} bare ` +
+          `teardown(s) run under hookTimeout (first: ${t.hook} at ${relative(repoRoot, t.file)}:${t.line}) — ` +
+          'raise hookTimeout, or give each bare teardown its own timeout argument (the hook rule then holds ' +
+          'that argument to hookTimeout)',
+      );
+    }
+  }
+  return out;
 }
 
 const packages = outOfProcessPackages(REPO_ROOT);
@@ -421,11 +504,19 @@ describe('packages that leave the process declare their own timeouts (TASK-323, 
       pkg.unreadable.map((u) =>
         u.why === 'parse'
           ? `${relative(REPO_ROOT, u.file)}:${u.line}: does not parse (${u.name}) — its hooks cannot be read`
-          : `${relative(REPO_ROOT, u.file)}:${u.line}: hook timeout \`${u.name}\` is not a numeric literal ` +
-            'and is not a file-local numeric const',
+          : u.why === 'test-expr'
+            ? `${relative(REPO_ROOT, u.file)}:${u.line}: test argument \`${u.name}\` is not a function, a ` +
+              'numeric literal, a file-local numeric const, or an object literal whose `timeout` is one of those'
+            : `${relative(REPO_ROOT, u.file)}:${u.line}: hook timeout \`${u.name}\` is not a numeric literal ` +
+              'and is not a file-local numeric const',
       ),
     );
     expect(unreadable).toEqual([]);
+  });
+
+  it('a package with a BARE teardown has a hookTimeout of at least its largest declared test budget (TASK-567)', () => {
+    // See `bareTeardownViolations` for the rule and the human ruling behind it.
+    expect(bareTeardownViolations(packages, budgets, REPO_ROOT)).toEqual([]);
   });
 
   it("each package's hookTimeout is at least the largest timeout its own hooks declare", () => {
@@ -887,10 +978,192 @@ describe('the scan catches a NEW package, and the config read is a read (TASK-40
     expect(pkg.maxDeclaredHookTimeout).toBe(30_000);
   });
 
+  // TASK-567. The rule end to end: a real package tree, a real config import,
+  // the real scan, the real verdict function. Each case differs from the first
+  // in exactly one thing, so each one pins exactly one branch of the rule.
+  describe('bare teardowns vs declared test budgets (TASK-567)', () => {
+    const spawnLine = "import { spawn } from 'node:child_process';";
+    const bigTest = "it('slow', { timeout: 180_000 }, async () => { await go(); });";
+    const bareTeardown = 'afterAll(async () => { await container.stop(); });';
+
+    async function verdict(name, { testSource, hookTimeout }) {
+      const cfg =
+        hookTimeout === undefined
+          ? 'export default { test: { testTimeout: 60_000 } };'
+          : `export default { test: { testTimeout: 60_000, hookTimeout: ${hookTimeout} } };`;
+      makePackage(name, { testSource, config: cfg });
+      const pkg = outOfProcessPackages(root).find((p) => p.name === `packages/${name}`);
+      const budgetsByName = new Map([[pkg.name, await readResolvedTestBudgets(pkg.dir)]]);
+      return { pkg, violations: bareTeardownViolations([pkg], budgetsByName, root) };
+    }
+
+    it('REDDENS: a bare teardown under a hookTimeout below the largest test budget — the TASK-567 shape', async () => {
+      // `presets/k8s` on the day this landed: hookTimeout 120_000, three
+      // `{ timeout: 180_000 }` canaries, `afterAll(() => pgContainer.stop())`.
+      const { pkg, violations } = await verdict('bare-under-budget', {
+        testSource: [spawnLine, bigTest, bareTeardown].join('\n'),
+        hookTimeout: 120_000,
+      });
+      expect(pkg.unreadable).toEqual([]);
+      expect(pkg.maxDeclaredTestTimeout).toBe(180_000);
+      expect(pkg.bareTeardowns.map((t) => t.hook)).toEqual(['afterAll']);
+      expect(violations).toHaveLength(1);
+      expect(violations[0]).toContain('hookTimeout 120000 < 180000');
+    });
+
+    it('passes once hookTimeout reaches the test budget (the equality edge is allowed)', async () => {
+      const { violations } = await verdict('bare-at-budget', {
+        testSource: [spawnLine, bigTest, bareTeardown].join('\n'),
+        hookTimeout: 180_000,
+      });
+      expect(violations).toEqual([]);
+    });
+
+    it('passes when the teardown carries its own timeout — it is not bare, and keeps the hook rule', async () => {
+      const { pkg, violations } = await verdict('timed-teardown', {
+        testSource: [spawnLine, bigTest, 'afterAll(async () => { await container.stop(); }, 90_000);'].join('\n'),
+        hookTimeout: 120_000,
+      });
+      expect(pkg.bareTeardowns).toEqual([]);
+      expect(pkg.maxDeclaredHookTimeout).toBe(90_000);
+      expect(violations).toEqual([]);
+    });
+
+    it('passes when no test declares a budget — undeclared tests are not counted', async () => {
+      const { violations } = await verdict('no-test-budget', {
+        testSource: [spawnLine, "it('x', async () => { await go(); });", bareTeardown].join('\n'),
+        hookTimeout: 120_000,
+      });
+      expect(violations).toEqual([]);
+    });
+
+    it('a bare beforeAll is NOT a teardown and does not trigger the rule', async () => {
+      const { pkg, violations } = await verdict('bare-setup-only', {
+        testSource: [spawnLine, bigTest, 'beforeAll(async () => { await warm(); });'].join('\n'),
+        hookTimeout: 120_000,
+      });
+      expect(pkg.bareTeardowns).toEqual([]);
+      expect(violations).toEqual([]);
+    });
+
+    it('REDDENS against vitest\'s 10_000 default when the config omits hookTimeout', async () => {
+      // Fail closed: an absent key must not read as "unbounded".
+      const { violations } = await verdict('default-hook-timeout', {
+        testSource: [spawnLine, "it('x', async () => { await go(); }, 30_000);", 'afterEach(() => reset());'].join(
+          '\n',
+        ),
+        hookTimeout: undefined,
+      });
+      expect(violations).toHaveLength(1);
+      expect(violations[0]).toContain('hookTimeout 10000 < 30000');
+    });
+
+    it('is PACKAGE-wide: the budget and the bare teardown may live in different files', async () => {
+      const { pkg: first } = await verdict('split-files', {
+        testSource: [spawnLine, bigTest].join('\n'),
+        hookTimeout: 120_000,
+      });
+      writeFileSync(join(first.dir, 'src', '__tests__', 'b.test.ts'), bareTeardown);
+      const pkg = outOfProcessPackages(root).find((p) => p.name === 'packages/split-files');
+      const budgetsByName = new Map([[pkg.name, await readResolvedTestBudgets(pkg.dir)]]);
+      expect(bareTeardownViolations([pkg], budgetsByName, root)).toHaveLength(1);
+    });
+
+    it('fails CLOSED for a package whose config budgets were never read', () => {
+      makePackage('never-read', { testSource: [spawnLine, bigTest, bareTeardown].join('\n') });
+      const pkg = outOfProcessPackages(root).find((p) => p.name === 'packages/never-read');
+      expect(bareTeardownViolations([pkg], new Map(), root)).toHaveLength(1);
+    });
+  });
+
   // Bare, like the setup hook, and for the same reason: what the suite's
   // `hookTimeout` governs is the hooks that don't argue with it.
   afterAll(() => {
     rmSync(root, { recursive: true, force: true });
+  });
+});
+
+// TASK-567: what `scanTestTimeouts` reads out of a test call, one hostile shape
+// per row (the #715 pattern). Each row names the test budget maximum it must
+// report, the arguments it must REPORT as unreadable (fail closed), and how many
+// bare teardowns it must count. The row count is pinned below so a deleted row
+// is a red, not a silent loss of coverage.
+describe('scanTestTimeouts reads test budgets and bare teardowns (TASK-567)', () => {
+  const ROWS = [
+    // --- budgets that must be READ ---
+    ['numeric third argument', "it('x', () => {}, 30_000);", { max: 30_000 }],
+    ['options object second', "it('x', { timeout: 40_000 }, () => {});", { max: 40_000 }],
+    ['options object third', "it('x', () => {}, { timeout: 45_000 });", { max: 45_000 }],
+    ['string-keyed timeout', "it('x', { 'timeout': 12_000 }, () => {});", { max: 12_000 }],
+    ['shorthand { timeout }', "const timeout = 50_000;\nit('x', { timeout }, () => {});", { max: 50_000 }],
+    ['file-local const', "const T = 60_000;\nit('x', () => {}, T);", { max: 60_000 }],
+    ['parenthesised literal', "it('x', () => {}, (33_000));", { max: 33_000 }],
+    // `presets/k8s`' real spelling. The condition is the modifier's argument, never a budget.
+    ['it.skipIf(c)(…) chain', "it.skipIf(!E2E)('x', { timeout: 70_000 }, async () => {});", { max: 70_000 }],
+    // The table is `it.each`'s argument, never a budget.
+    ['it.each(t)(…) chain', "it.each([[1], [2]])('x %s', () => {}, 80_000);", { max: 80_000 }],
+    ['test.concurrent', "test.concurrent('x', () => {}, 25_000);", { max: 25_000 }],
+    ['it.only', "it.only('x', () => {}, 26_000);", { max: 26_000 }],
+    // vitest's describe options set the budget of every test inside.
+    ['describe options', "describe('d', { timeout: 90_000 }, () => {});", { max: 90_000 }],
+    ['nested in describe body', "describe('d', () => {\n  it('x', () => {}, 34_000);\n});", { max: 34_000 }],
+    ['maximum of two', "it('a', () => {}, 10_000);\nit('b', () => {}, 20_000);", { max: 20_000 }],
+    // --- no budget at all: nothing read, nothing reported ---
+    ['options without timeout', "it('x', { retry: 2 }, () => {});", { max: 0 }],
+    ['undeclared test', "it('x', () => {});", { max: 0 }],
+    ['a hook budget is not a test budget', 'beforeAll(() => {}, 99_000);', { max: 0 }],
+    ['a method named test is not a test call', "const ok = /a/.test('a', 99_000);", { max: 0 }],
+    ['no test or hook word at all', 'export const x = 1;', { max: 0 }],
+    // --- budgets that must be REPORTED, never counted as zero ---
+    ['spread options', "it('x', { ...opts }, () => {});", { max: 0, unreadable: ['...opts'] }],
+    ['computed key', "it('x', { [k]: 1 }, () => {});", { max: 0, unreadable: ['[k]: 1'] }],
+    ['arithmetic budget', "it('x', () => {}, 2 * 60_000);", { max: 0, unreadable: ['2 * 60_000'] }],
+    [
+      'arithmetic timeout in options',
+      "it('x', { timeout: 2 * 60_000 }, () => {});",
+      { max: 0, unreadable: ['timeout: 2 * 60_000'] },
+    ],
+    [
+      'timeout as a method',
+      "it('x', { timeout() { return 1; } }, () => {});",
+      { max: 0, unreadable: ['timeout() { return 1; }'] },
+    ],
+    ['imported name', "import { T } from './b.js';\nit('x', () => {}, T);", { max: 0, unreadable: ['T'] }],
+    [
+      'reassigned const',
+      "let T = 5_000;\nT = 90_000;\nit('x', () => {}, T);",
+      { max: 0, unreadable: ['T'] },
+    ],
+    // Fail closed at a cost: an unresolved name might be a function reference or
+    // a budget, and this cannot tell which. Spurious red, never a hidden budget.
+    ['function reference', "it('x', runCase);", { max: 0, unreadable: ['runCase'] }],
+    // --- bare teardowns ---
+    ['bare afterAll', 'afterAll(async () => { await stop(); });', { max: 0, bare: 1 }],
+    ['bare afterEach + timed afterAll', 'afterEach(() => {});\nafterAll(() => {}, 5_000);', { max: 0, bare: 1 }],
+    ['bare beforeAll is not a teardown', 'beforeAll(() => {});\nbeforeEach(() => {});', { max: 0, bare: 0 }],
+    ['teardown through a property', 'vitest.afterAll(() => {});', { max: 0, bare: 1 }],
+    // A second argument, however odd, makes the teardown not bare; the hook rule
+    // then reports `undefined` as an unreadable hook budget.
+    ['afterAll(fn, undefined)', 'afterAll(() => {}, undefined);', { max: 0, bare: 0, hookUnreadable: ['undefined'] }],
+  ];
+
+  it('has the pinned number of rows — a deleted row reddens here', () => {
+    expect(ROWS.length).toBe(32);
+  });
+
+  it.each(ROWS)('%s', (_name, source, want) => {
+    const scan = scanTestTimeouts(source, 'fixture.test.ts');
+    expect(scan.parseErrors).toEqual([]);
+    expect(Math.max(0, ...scan.testDeclared.map((d) => d.ms))).toBe(want.max);
+    expect(scan.testUnreadable.map((u) => u.expr)).toEqual(want.unreadable ?? []);
+    expect(scan.bareTeardowns.length).toBe(want.bare ?? 0);
+    expect(scan.unreadable.map((u) => u.expr)).toEqual(want.hookUnreadable ?? []);
+  });
+
+  it('scanHookTimeouts still returns exactly its three hook fields — its sibling guard reads them', () => {
+    const r = scanHookTimeouts("afterAll(() => {}, 7_000);\nit('x', () => {}, 30_000);", 'f.test.ts');
+    expect(Object.keys(r).sort()).toEqual(['declared', 'parseErrors', 'unreadable']);
+    expect(r.declared.map((d) => d.ms)).toEqual([7_000]);
   });
 });
 
