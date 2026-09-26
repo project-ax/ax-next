@@ -139,7 +139,8 @@ afford — heed it rather than dispatching and hoping.
 >   Needs Input lane for the human. Reserve it for genuine human-owned decisions, not
 >   technical unknowns you can resolve by reading the code.
 > - **Learn from what merged before you.** Your card body above may carry a `Predecessor
->   learnings` block — lessons from same-epic cards merged ahead of you. Read it at the
+>   learnings` block — lessons from cards in your family (same epic, parent, sibling,
+>   or a builder who named you) merged ahead of you. Read it at the
 >   start from the body you were handed — **do NOT run `gh project item-list`** to fetch
 >   it (~102 GraphQL points; three builders doing that exhausts the shared hourly
 >   budget). Fold those lessons into your plan, and if one

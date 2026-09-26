@@ -435,6 +435,9 @@ board_batch "$PROJ_ID" "$ID1|$STATUS_FIELD_ID|single|$INPROG" \
                        "$ID2|$STATUS_FIELD_ID|single|$INPROG" \
                        "$ID3|$STATUS_FIELD_ID|single|$INPROG"
 # a new follow-up card's Status + Depends on in ONE request (create still separate):
+# `$B` STARTS with `parent: <reporting TASK-ID>` (plus its `epic:` line, if it had one) --
+# that line is the card's child/sibling edge for Forward learning below (TASK-481).
+# The TASK-ID is ASCII-hyphenated and line-initial; `Follow-up from TASK-n` also counts.
 # `claim` allocates the [TASK-n], creates the card and confirms the number survived, all
 # in ONE process -- see §8.2a. `$T` is the BARE title; claim adds the prefix. It prints
 # "<TASK-ID> <PVTI_id>" on success.
@@ -470,15 +473,81 @@ a human drag**, never an orchestrator write; it re-enters via the triage gate (�
 Walk cards stay in **Backlog** unless a human moves them to To Do.
 
 **Forward learning (on merge).** After moving a card → Done, propagate its handoff
-`learnings:` to every still-queued **To Do** card sharing its `epic:<slug>`. Find those
-item-ids **shell-side** from `$ITEMS` (never surface a body to the model), then
-`append_learnings` each bullet:
+`learnings:` to every still-queued **To Do** card in the merged card's **family** — the
+epic is one way in, not the only one (TASK-481: 20 of 36 To Do cards carried no `epic:`,
+and the card that needed a predecessor's lesson most was one of them). A queued card is
+in merged card X's family when **any** of these holds:
+
+| edge | the queued card… | read from |
+|---|---|---|
+| **epic** | carries the same `epic: <slug>` line as X (`epic: none` matches nothing) | both bodies |
+| **child** | names X as its parent — a line starting `parent: X`, `**parent:** X`, or `Follow-up from X` | its body |
+| **parent** | IS X's parent — X is the fix it was waiting on | X's body |
+| **sibling** | shares a parent with X | both bodies |
+| **named** | is named by its `[TASK-n]` in X's `learnings:` text | the handoff |
+
+Every edge is **explicit** — a marker a person or builder wrote, or a Task ID X's builder
+typed — so there is no fuzzy matching to over-broadcast through: an unrelated card that
+merely touches the same component gets nothing, by design. Each card is emitted **at
+most once** however many edges it matches, and only **To Do** cards ever qualify (the
+one-writer rule: an In-Progress card's body belongs to its building agent). Find the
+ids **shell-side** from `$ITEMS` (never surface a body to the model); X's own body
+supplies its epic and parent, so you no longer hand-type a slug:
 
 ```bash
-# same-epic queued cards — To Do cards whose body carries `epic: <slug>`; item-ids ONLY:
-EPIC=<slug>
-IDS=$(printf '%s' "$ITEMS" | jq -r --arg e "epic: $EPIC" \
-  '.items[] | select(.status=="To Do") | select((.content.body // "") | contains($e)) | .id')
+# ax-forward-learning: family — the still-queued To Do cards that learn from merged card
+# $TASK_ID. Needs $ITEMS (this pass's snapshot, §3), $TASK_ID, and $LEARNINGS (X's
+# handoff `learnings:` bullets, verbatim). Emits item-ids ONLY, each at most once.
+# Line-anchored on purpose: `parent:` / `Follow-up from` count only at the START of a
+# line, so prose that merely mentions a parent ("parent-useLayoutEffect", "not parent:
+# TASK-7") is not an edge. Task-ID matches are bounded, so TASK-43 never matches TASK-431.
+IDS=""
+if [ -z "$TASK_ID" ] || [ -z "$ITEMS" ]; then
+  echo "FATAL: forward learning needs \$TASK_ID and \$ITEMS bound — nothing propagated" >&2
+else
+  printf '%s' "$ITEMS" | jq -e --arg p "[$TASK_ID]" \
+    'any(.items[]; (.title // "") | ascii_upcase | startswith($p | ascii_upcase))' >/dev/null ||
+    echo "⚠ [$TASK_ID] is not in \$ITEMS — its epic/parent/sibling edges are unreadable; only child + named edges apply" >&2
+  IDS=$(printf '%s' "$ITEMS" | jq -r --arg t "$TASK_ID" --arg l "${LEARNINGS:-}" '
+    def tid: (.title // "") | (capture("^\\[(?<id>[A-Za-z]+-[0-9]+)\\]").id // "") | ascii_upcase;
+    def body: .content.body // "";
+    def epic: [body | match("(?m)^[ \\t]*(?:\\*\\*)?epic:(?:\\*\\*)?[ \\t]*([A-Za-z0-9._-]+)"; "gi")
+                | .captures[0].string | ascii_downcase]
+              | (first // "") | if . == "none" then "" else . end;
+    def parents: [body
+                  | (match("(?m)^[ \\t]*(?:\\*\\*)?parent:(?:\\*\\*)?[ \\t]*\\[?([A-Za-z]+-[0-9]+)"; "gi"),
+                     match("(?m)^[ \\t]*(?:\\*\\*)?follow-up from[ \\t]+\\[?([A-Za-z]+-[0-9]+)"; "gi"))
+                  | .captures[0].string | ascii_upcase] | unique;
+    ($t | ascii_upcase) as $t
+    | ([.items[] | select(tid == $t)] | first // {}) as $x
+    | ($x | epic) as $e
+    | ($x | parents) as $xp
+    | ($l | ascii_upcase) as $lu
+    | .items[]
+    | select(.status == "To Do")
+    | tid as $c
+    | select($c != $t)
+    | parents as $cp
+    | select(
+        ($e != "" and epic == $e)
+        or any($cp[]; . == $t)
+        or ($c != "" and any($xp[]; . == $c))
+        or any($cp[]; . as $p | any($xp[]; . == $p))
+        or ($c != "" and ($lu | test("(?<![A-Z0-9-])" + $c + "(?![0-9])")))
+      )
+    | .id') || {
+    IDS=""
+    echo "FATAL: the family query failed (is \$ITEMS valid JSON?) — nothing propagated" >&2
+  }
+fi
+```
+
+`scripts/__tests__/autoship-forward-learning-family.test.js` extracts that block by its
+first line and runs it, under bash and zsh, against a fixture board built to each edge
+above and to the over-broadcast cases (an unrelated card, `TASK-4360` vs `TASK-436`, an
+In-Progress child, a mid-line `parent:`). Then `append_learnings` each bullet to each id:
+
+```bash
 source .claude/auto-ship-progress.sh
 # `for id in $IDS` here is BROKEN and looks fine. The Bash tool runs zsh, and zsh does
 # NOT word-split an unquoted parameter expansion, so that form iterates ONCE with every
