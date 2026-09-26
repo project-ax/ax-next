@@ -722,7 +722,11 @@ describe('chat:start bootstrap honours the bus abort signal (TASK-552)', () => {
     // Only the identity reads (`.ax/…`, after the hydrate) are slow, so the
     // hydrate check passes and the seed is written to the scratch; the check
     // guarding the shared-storage flush is the one that must catch it.
-    const { bus, ctx, probe, logged, fired, release } = await run(20, '.ax/');
+    // 100 ms, not 20: the UN-gated hydrate must beat the bound for the abort
+    // to land at the pre-flush check rather than the post-hydrate one. The
+    // gated identity read holds until `release()`, so a wider bound costs
+    // nothing in determinism.
+    const { bus, ctx, probe, logged, fired, release } = await run(100, '.ax/');
     await expect(fired).resolves.toMatchObject({ rejected: false });
     release();
     await vi.waitFor(() => {
