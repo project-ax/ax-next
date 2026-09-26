@@ -137,20 +137,26 @@ function bucket(rows: ActivityEvent[]): Bucket[] {
  * does not jump when the rows land. Three rows, not a page of fifty: this is a
  * "we are reading it" sign, not a guess at how much is coming.
  *
- * `role="status"` with a sentence in it, because a pile of pulsing rectangles
- * is nothing at all without CSS — just empty divs, indistinguishable from the
- * empty state it replaced, with nothing for a screen reader or a test to read.
+ * A sentence in it, because a pile of pulsing rectangles is nothing at all
+ * without CSS — just empty divs, indistinguishable from the empty state it
+ * replaced, with nothing for a screen reader or a test to read. The sentence
+ * is plain text in the accessibility tree: a screen reader reading the page
+ * finds it, and jsdom (no CSS, no pulse either) can assert it.
  *
- * Do not read that as a promise that it ANNOUNCES. The region is inserted in
- * the same commit that gives it its text, and a live region created and filled
- * together is announced inconsistently — NVDA and JAWS usually do, VoiceOver
- * often does not. Reliable announcement needs the region mounted first. What
- * this earns today is a state with a NAME: reachable in the accessibility
- * tree, and assertable in jsdom, which has no CSS and no pulse either.
+ * Deliberately NOT a live region, and it does not announce (TASK-501). It
+ * used to carry `role="status"`, which reads as an announcement guarantee it
+ * could not keep: the placeholder is inserted in the same commit that gives it
+ * its text, and a live region created and filled together is announced
+ * inconsistently (VoiceOver often skips it). Mounting a region empty first is
+ * not available either — the fresh-mount case is born in this state. And the
+ * announcement is not wanted: the reader got here by pressing a tab or opening
+ * a page, which their screen reader already reported, and "Reading the
+ * record…" spoken on every switch is chatter that often lands after the rows
+ * it describes. The rows arriving are the news, not the wait.
  */
 function FeedPlaceholder() {
   return (
-    <div role="status" className="flex flex-col gap-6">
+    <div aria-busy="true" className="flex flex-col gap-6">
       <span className="sr-only">Reading the record…</span>
       <div>
         <div className="mb-2.5 flex items-center gap-2">
@@ -199,7 +205,14 @@ export function ActivityFeed({
     return <FeedPlaceholder />;
   }
 
-  if (error !== null) {
+  /*
+    Only when there is nothing to show. A failed "Load more" leaves page 1 in
+    `events`, and a pagination failure is no reason to un-render rows that
+    loaded fine — blanking them reads as "your agent did nothing", the exact
+    misreading this surface keeps being rewritten to avoid. That case renders
+    the rows with the failure beneath them, below (TASK-501).
+  */
+  if (error !== null && events.length === 0) {
     return (
       <div className="px-1 py-6">
         <Alert variant="destructive">
@@ -303,6 +316,26 @@ export function ActivityFeed({
         </div>
       ))}
 
+      {/*
+        Mounted with the rows, EMPTY, before any failure — a live region
+        created and filled in one commit is announced inconsistently, and this
+        one has to be heard: the reader who pressed Load more has no other sign
+        it failed (focus is on the button, the rows did not change). The
+        `Alert` inside drops its own `role="alert"` so the message is announced
+        once, by this region, rather than twice.
+      */}
+      <div data-activity-announcer aria-live="polite">
+        {error !== null && (
+          <Alert variant="destructive" role="none">
+            <AlertDescription>
+              We could not load the older entries. It is usually a blip —
+              everything above is still right, and nothing your agents did was
+              lost.
+            </AlertDescription>
+          </Alert>
+        )}
+      </div>
+
       {hasMore && (
         <div className="flex justify-center">
           <Button
@@ -312,7 +345,7 @@ export function ActivityFeed({
             onClick={() => onLoadMore?.()}
             className="h-7 gap-1.5 text-[12px] text-primary"
           >
-            Load more
+            {error !== null ? 'Try again' : 'Load more'}
           </Button>
         </div>
       )}
