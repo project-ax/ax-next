@@ -66,53 +66,56 @@ env (required when AX_PRESET=memory):
 
 env (optional when AX_PRESET=memory):
   AX_MEMORY_VERTEX_CREDENTIAL_REF   default 'provider:vertex'
-  AX_MEMORY_COHERE_CREDENTIAL_REF   default 'provider:cohere'
-  AX_AGENT_WORKSPACE                '1'/'true' serves the agent workspace (the web
-                                    interface); unset or '0'/'false' = no web
-                                    interface. The Helm chart sets it (on by default).`;
+  AX_MEMORY_COHERE_CREDENTIAL_REF   default 'provider:cohere'`;
 
 /**
- * The retired spelling of `AX_AGENT_WORKSPACE`, read here ONCE so an operator
- * who set it by hand (the pre-TASK-325 way, a `host.env` entry) does not
- * silently lose the web interface on upgrade.
+ * Env names that used to switch the agent workspace (the web interface) on and
+ * off. TASK-360 made the workspace always on, so both are retired: nothing
+ * reads their values any more, anywhere.
  *
- * This is the only place in the codebase that reads it, on purpose: two live
- * names for one switch is how we ended up with three (TASK-359).
- *
- * REMOVAL: this goes away with the first chart release after 0.0.1.
- * `deploy/charts/ax-next/__tests__/agent-workspace-name.test.ts` fails a chart version bump
- * while this read still exists, so it cannot quietly outlive its welcome.
+ * Existing deployments may still set them — a hand-written `host.env` entry,
+ * an old values file — and that must never be a boot error. Instead we say so,
+ * once per name, at startup. `AX_AGENT_WORKSPACE_PREVIEW` is the even older
+ * spelling (retired by TASK-359).
  */
-export const RETIRED_AGENT_WORKSPACE_ENV = 'AX_AGENT_WORKSPACE_PREVIEW';
+export const RETIRED_AGENT_WORKSPACE_ENV_NAMES = [
+  'AX_AGENT_WORKSPACE',
+  'AX_AGENT_WORKSPACE_PREVIEW',
+] as const;
+
+/** Values somebody would have set to turn the web interface OFF. */
+const OFF_VALUE = /^(0|false|off|no)$/i;
 
 /**
- * Promote the retired name to the current one when — and only when — the
- * current one is unset. The current name always wins: the chart stamps it in
- * both states, so an explicit `channelWeb.agentWorkspace: false` beats a stale
- * `host.env` entry. Warns whenever the retired name is present at all, so an
- * operator sees it in the pod log before it stops working. Never mutates the
- * caller's env.
+ * Warn once for each retired workspace env name that is present. Warn-only:
+ * it never throws, never mutates `env`, and never changes what boots — the
+ * workspace is on either way. An "off" value gets its own wording, because
+ * that operator is the one who would otherwise be surprised to find the web
+ * interface still there.
  */
-export function applyRetiredEnvNames(
+export function warnRetiredEnvNames(
   env: NodeJS.ProcessEnv,
   warn: (line: string) => void,
-): NodeJS.ProcessEnv {
-  const retired = env.AX_AGENT_WORKSPACE_PREVIEW;
-  if (retired === undefined) return env;
-  const current = env.AX_AGENT_WORKSPACE;
-  if (current === undefined || current === '') {
-    warn(
-      `serve: ${RETIRED_AGENT_WORKSPACE_ENV} is a retired name — using it as AX_AGENT_WORKSPACE for now. ` +
-        'Set channelWeb.agentWorkspace in the chart (or AX_AGENT_WORKSPACE) and drop the old entry; ' +
-        'the old name stops being read in the next chart release.',
-    );
-    return { ...env, AX_AGENT_WORKSPACE: retired };
+): void {
+  for (const name of RETIRED_AGENT_WORKSPACE_ENV_NAMES) {
+    try {
+      const raw = env[name];
+      if (raw === undefined) continue;
+      // Only echo the value when it is one of the known "off" spellings, so an
+      // arbitrary env value never ends up copied into the log.
+      const off = OFF_VALUE.test(raw.trim());
+      warn(
+        off
+          ? `serve: ${name}=${raw.trim()} is set, but that switch is retired. The web interface ` +
+              'is still ON: the agent workspace is always on now, and this variable is ignored. ' +
+              'You can delete it.'
+          : `serve: ${name} is retired. The agent workspace is always on now, so this variable ` +
+              'is ignored. You can delete it.',
+      );
+    } catch {
+      // A warning must never be the thing that stops a boot.
+    }
   }
-  warn(
-    `serve: ${RETIRED_AGENT_WORKSPACE_ENV} is a retired name and is IGNORED because AX_AGENT_WORKSPACE is set. ` +
-      'Drop the old entry.',
-  );
-  return env;
 }
 
 export interface RunServeOptions {
@@ -140,7 +143,8 @@ export interface RunServeOptions {
 export async function runServeCommand(opts: RunServeOptions): Promise<number> {
   const out = opts.stdout ?? ((line: string) => process.stdout.write(line + '\n'));
   const err = opts.stderr ?? ((line: string) => process.stderr.write(line + '\n'));
-  const env = applyRetiredEnvNames(opts.env ?? process.env, err);
+  const env = opts.env ?? process.env;
+  warnRetiredEnvNames(env, err);
 
   // Argument parsing. The standalone HTTP listener is gone (issue #39); the
   // public listener's host/port now come from AX_HTTP_HOST / AX_HTTP_PORT

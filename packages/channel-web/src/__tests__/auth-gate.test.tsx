@@ -18,7 +18,7 @@ function jsonStatus(status: number, body: unknown = {}): MockResponse {
 interface RouteHandlers {
   bootstrapStatus?: MockResponse | (() => Promise<MockResponse>);
   adminMe?: MockResponse | (() => Promise<MockResponse>);
-  /** Fallback for any other URL (sidebar agents fetch, etc.). */
+  /** Fallback for any other URL (agent list, workspace board, etc.). */
   fallback?: MockResponse;
 }
 
@@ -122,7 +122,7 @@ describe('App boot — auth gate (post-bootstrap)', () => {
     });
   });
 
-  it('shows AppContent (sidebar) when /admin/me returns a user', async () => {
+  it('shows the workspace when /admin/me returns a user', async () => {
     setPathname('/');
     installRouteFetch({
       bootstrapStatus: jsonOk({ status: 'completed' }),
@@ -131,10 +131,14 @@ describe('App boot — auth gate (post-bootstrap)', () => {
       }),
       fallback: jsonOk({ agents: [] }),
     });
-    const { container } = render(<App />);
+    render(<App />);
+    // The workspace rail's user menu, named for the signed-in user: the gate
+    // released AND the real `WorkspaceShell` loaded its board and drew its
+    // chrome. Neither the sign-in page nor the boot screen carries it.
     await waitFor(() => {
-      expect(container.querySelector('aside[data-testid="sidebar"]')).toBeTruthy();
+      expect(screen.getByRole('button', { name: /Alice/ })).toBeTruthy();
     });
+    expect(screen.queryByText(/Sign in with Google/i)).toBeNull();
   });
 
   it('shows loading state initially before fetch resolves', () => {
@@ -161,7 +165,7 @@ describe('App boot — auth gate (post-bootstrap)', () => {
 
   it('treats bootstrap-status fetch failure as completed (no redirect, falls through to auth gate)', async () => {
     // If /admin/bootstrap-status is unreachable, App should NOT trap the
-    // user in a redirect loop — it should default to the chat shell so
+    // user in a redirect loop — it should default to the signed-in app so
     // legacy deployments without the onboarding plugin keep working.
     setPathname('/');
     installRouteFetch({

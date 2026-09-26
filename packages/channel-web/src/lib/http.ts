@@ -19,9 +19,9 @@
  * to lose, and "connecting…" forever is a worse answer than a sign-in button.
  * Post-boot we know more, so we are stricter: ONLY a 401 ends the session, and
  * a 500 or a dropped connection stays a per-surface failure the reader can
- * retry. The boot modules (`lib/auth.ts`, `lib/bootstrap-status.ts`,
- * `lib/features.ts`) deliberately do NOT route through this helper, so the two
- * rules cannot bleed into each other by accident.
+ * retry. The boot modules (`lib/auth.ts`, `lib/bootstrap-status.ts`)
+ * deliberately do NOT route through this helper, so the two rules cannot
+ * bleed into each other by accident.
  *
  * WHAT A 401 MEANS HERE. Every route this helper reaches is behind
  * `auth:require-user`, which answers 401 when — and only when — the caller has

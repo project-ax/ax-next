@@ -1,5 +1,4 @@
 /**
- * GET  /api/features                   — public feature-flag echo
  * GET  /api/workspace/state            — the agent roster
  * GET  /api/workspace/agents/:agentId  — one agent's detail panel
  *        ?conversationId=<id> reads that conversation instead of the current
@@ -109,16 +108,9 @@
  * nothing else — so the row a person reads in the thread is the row the queue
  * shows rather than a second copy of it that can disagree.
  *
- * Most `/api/workspace/*` routes mount only when the agentWorkspace flag is
- * on (capability minimization, invariant #5) — an unmounted route is the
- * cheapest minimization there is. The `/api/workspace/decisions*` collection
- * is the exception: every route in it mounts unconditionally, because a held
- * call reaches the default `/` chat surface whether or not the flag is on,
- * and gating the routes would gate only the remedy (TASK-261/TASK-259). See
- * `registerWorkspaceRoutes` below for the full accounting.
- *
- * `/api/features` always mounts and needs no auth — it echoes a build-time
- * flag and nothing else, exactly like `GET /api/branding`.
+ * Every route here always mounts. The workspace is the only web interface,
+ * so there is no flag to hide it behind (TASK-360 retired `agentWorkspace`).
+ * Each handler is authenticated and owner-scoped on its own.
  */
 import {
   PluginError,
@@ -820,11 +812,6 @@ interface DecisionsUndoOutput {
 }
 
 // --- wire shapes ----------------------------------------------------------
-
-/** `GET /api/features` — the flag echo the SPA reads before it renders. */
-export interface FeaturesResponse {
-  agentWorkspace: boolean;
-}
 
 /**
  * `GET /api/workspace/state` — the roster, and only the roster.
@@ -2486,11 +2473,6 @@ export interface WorkspaceHandlerDeps {
    */
   buffer?: ChunkBuffer;
   /**
-   * Echoed by `GET /api/features`. The route-mounting decision lives in
-   * `registerWorkspaceRoutes`; the handler only needs it to tell the truth.
-   */
-  agentWorkspace?: boolean;
-  /**
    * Time seam for the "This week" window, and for the `declinedAt` a "Not now"
    * is recorded with (TASK-444). Injected so the counter's boundary is
    * testable — a counter whose definition cannot be tested at its edge is a
@@ -2509,7 +2491,6 @@ export interface WorkspaceHandlerDeps {
 export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   const { bus, initCtx } = deps;
   const buffer = deps.buffer;
-  const agentWorkspace = deps.agentWorkspace === true;
   const now = deps.now ?? ((): Date => new Date());
 
   /**
@@ -4042,17 +4023,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   }
 
   return {
-    /**
-     * GET /api/features — a public echo of a build-time flag.
-     *
-     * No auth: it discloses nothing about the caller or the workspace, and the
-     * SPA needs it before it knows whether anyone is signed in. Same posture as
-     * `GET /api/branding`.
-     */
-    async features(_req: RouteRequest, res: RouteResponse): Promise<void> {
-      res.status(200).json({ agentWorkspace } satisfies FeaturesResponse);
-    },
-
     /** GET /api/workspace/state */
     async state(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);
@@ -5505,34 +5475,17 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
 /**
  * Register the workspace routes against @ax/http-server.
  *
- * Two things mount unconditionally, and everything else stays behind
- * `opts.agentWorkspace`:
- *
- * - `GET /api/features` — it is how the SPA learns whether the rest of this
- *   surface exists.
- * - Every `/api/workspace/decisions*` route — the list, the single-row re-read
- *   that closes the undo window early, approve, dismiss and undo. All five, so
- *   that "which ones" is never a question anybody has to get right again; the
- *   property test in `routes-workspace-decisions-unflagged.test.ts` pins the
- *   set rather than the count. A held call reaches the DEFAULT `/` chat
- *   surface today — flag on or off — because `@ax/decisions` can hold any
- *   outward-facing tool call regardless of who's looking at `/workspace`.
- *   Gating these routes would gate only the remedy, leaving a dead end (a
- *   call nobody can approve) as the default experience (TASK-261). Ungating
- *   them widens *reachability*, not *authority*: `authOr401` and the
- *   owner-scoped `decisions:get` / `resolveAgentOr404` checks inside the
- *   handlers are unchanged, so a caller still only ever sees or resolves
- *   their own rows.
- *
- * Every other `/api/workspace/*` route still mounts ONLY when the
- * agentWorkspace flag is on: an unmounted route is the cheapest possible
- * capability minimization (invariant #5), and a 404 is an honest answer for
- * a deployment that has the flag off.
+ * Every route mounts, always. There used to be an `agentWorkspace` flag that
+ * kept most of them unmounted (and a `GET /api/features` echo so the SPA could
+ * ask); TASK-360 retired both, because the workspace is now the only web
+ * interface and a deployment without it has no UI at all. Reachability is not
+ * authority: `authOr401` and the owner-scoped checks inside each handler
+ * (`decisions:get`, `resolveAgentOr404`, …) still decide who sees what.
  */
 export async function registerWorkspaceRoutes(
   bus: HookBus,
   initCtx: AgentContext,
-  opts: { agentWorkspace: boolean; buffer?: ChunkBuffer },
+  opts: { buffer?: ChunkBuffer } = {},
 ): Promise<Array<() => void>> {
   // TWO CLOCKS THAT HAVE TO BE ONE. `makeWorkspaceHandlers`'s `now` stamps the
   // `declinedAt` of a "Not now"; `createChunkBuffer`'s `now` (plugin.ts, the
@@ -5545,7 +5498,6 @@ export async function registerWorkspaceRoutes(
   const handlers = makeWorkspaceHandlers({
     bus,
     initCtx,
-    agentWorkspace: opts.agentWorkspace,
     // Spread, not a plain property: with exactOptionalPropertyTypes an
     // explicit `buffer: undefined` is not assignable to `buffer?: ChunkBuffer`
     // (the same shape the rest of this file uses for optional inputs).
@@ -5560,29 +5512,11 @@ export async function registerWorkspaceRoutes(
     handler: RouteHandler;
   }> = [
     {
-      method: 'GET',
-      path: '/api/features',
-      handler: handlers.features as unknown as RouteHandler,
-    },
-    {
       /*
-        THE WHOLE DECISIONS COLLECTION MOUNTS UNCONDITIONALLY. All five routes,
-        not four and an exception — see the note on `registerWorkspaceRoutes`
-        for why, and `routes-workspace-decisions-unflagged.test.ts` for the
-        property test that keeps it that way.
-
-        The short version: `@ax/decisions` holds outward-facing tool calls on
-        the DEFAULT `/` chat surface whether or not a deployment has the
-        agentWorkspace flag on. TASK-261 puts the approval card there, undo
-        window and all. A route left behind the flag would be a dead end whose
-        symptom is invisible — the single-decision re-read below is the one way
-        `undoable: false` ever reaches a browser (TASK-259), so if IT 404s,
-        every Undo lingers the full ten seconds on a call that has already gone
-        out, and a failed poll says nothing by design.
-
-        Mounting them early costs nothing: each is authenticated and
-        owner-scoped, and answers 404 for an id that is not the caller's — the
-        same posture it has with the flag on.
+        The decisions collection. The single-decision re-read below is the
+        one way `undoable: false` ever reaches a browser (TASK-259): if IT
+        404s, every Undo lingers the full ten seconds on a call that has
+        already gone out, and a failed poll says nothing by design.
       */
       method: 'GET',
       path: '/api/workspace/decisions',
@@ -5608,148 +5542,140 @@ export async function registerWorkspaceRoutes(
       path: '/api/workspace/decisions/:decisionId/undo',
       handler: handlers.undoDecision as unknown as RouteHandler,
     },
+    {
+      method: 'GET',
+      path: '/api/workspace/state',
+      handler: handlers.state as unknown as RouteHandler,
+    },
+    {
+      // TASK-373 — the read-back for grants raised while the workspace was
+      // closed. Its only consumer is the workspace surface itself (the
+      // Today queue's mount fetch).
+      method: 'GET',
+      path: '/api/workspace/grants',
+      handler: handlers.grants as unknown as RouteHandler,
+    },
+    {
+      // TASK-444 — "Not now", recorded. It can only ever decline something
+      // the read above is offering.
+      method: 'POST',
+      path: '/api/workspace/grants/decline',
+      handler: handlers.declineGrant as unknown as RouteHandler,
+    },
+    {
+      method: 'GET',
+      path: '/api/workspace/agents/:agentId',
+      handler: handlers.agentDetail as unknown as RouteHandler,
+    },
+    {
+      method: 'GET',
+      path: '/api/workspace/activity',
+      handler: handlers.activity as unknown as RouteHandler,
+    },
+    {
+      method: 'GET',
+      path: '/api/workspace/agents/:agentId/files',
+      handler: handlers.agentFiles as unknown as RouteHandler,
+    },
+    {
+      /*
+        The splat is a bare `*`, and it MUST be the final segment —
+        `@ax/http-server`'s router only recognises that spelling (a
+        `/*path` segment compiles to a LITERAL and the route then matches
+        nothing but the URL `/files/*path`). The captured remainder lands
+        under `req.params['*']`, undecoded.
+
+        Registered after the exact `/files` route above only for
+        readability: the router tries every non-splat pattern before any
+        splat, so `/files` can never be swallowed by this one.
+      */
+      method: 'GET',
+      path: '/api/workspace/agents/:agentId/files/*',
+      handler: handlers.agentFile as unknown as RouteHandler,
+    },
+    {
+      /*
+        The DURABLE tier's root. Sibling of `/files` above and a different
+        backend: `/files` reads `workspace:*` (the git-backed governed tier),
+        this reads `sandbox:read-user-files` (the agent's cwd and HOME).
+      */
+      method: 'GET',
+      path: '/api/workspace/agents/:agentId/user-files',
+      handler: handlers.agentUserFiles as unknown as RouteHandler,
+    },
+    {
+      /*
+        Same splat rules as `/files/*`: a bare `*` as the FINAL segment is
+        the only spelling `@ax/http-server`'s router recognises, and the
+        captured remainder lands under `req.params['*']` undecoded. The
+        router tries every non-splat pattern before any splat, so the exact
+        `/user-files` route above can never be swallowed by this one.
+      */
+      method: 'GET',
+      path: '/api/workspace/agents/:agentId/user-files/*',
+      handler: handlers.agentUserFile as unknown as RouteHandler,
+    },
+    {
+      /*
+        THE BYTES, for each tier. Two routes, because they are two backends
+        — the same reason `/files` and `/user-files` are two routes.
+
+        `download` sits where `files`/`user-files` sit, not after them, and
+        that placement is load-bearing: `/files/download/*` would be
+        ambiguous with a file the agent actually named `download/…`, and the
+        splat would hand both to the same handler. Here the segment is part
+        of the ROUTE, so no path an agent can write can collide with it.
+
+        Same splat rules as every other route on this surface: a bare `*` as
+        the FINAL segment is the only spelling `@ax/http-server`'s router
+        recognises, and the remainder arrives under `req.params['*']`
+        undecoded.
+      */
+      method: 'GET',
+      path: '/api/workspace/agents/:agentId/download/files/*',
+      handler: handlers.agentFileDownload as unknown as RouteHandler,
+    },
+    {
+      method: 'GET',
+      path: '/api/workspace/agents/:agentId/download/user-files/*',
+      handler: handlers.agentUserFileDownload as unknown as RouteHandler,
+    },
+    {
+      method: 'GET',
+      path: '/api/workspace/agents/:agentId/rail',
+      handler: handlers.rail as unknown as RouteHandler,
+    },
+    {
+      method: 'POST',
+      path: '/api/workspace/agents/:agentId/grants/revoke',
+      handler: handlers.revokeGrant as unknown as RouteHandler,
+    },
+    {
+      method: 'PUT',
+      path: '/api/workspace/agents/:agentId/memory/rules',
+      handler: handlers.saveRules as unknown as RouteHandler,
+    },
+    {
+      method: 'POST',
+      path: '/api/workspace/agents/:agentId/memory/recall',
+      handler: handlers.recallFacts as unknown as RouteHandler,
+    },
+    {
+      method: 'POST',
+      path: '/api/workspace/agents/:agentId/memory/remember',
+      handler: handlers.rememberFact as unknown as RouteHandler,
+    },
+    {
+      method: 'POST',
+      path: '/api/workspace/agents/:agentId/memory/forget',
+      handler: handlers.forgetFacts as unknown as RouteHandler,
+    },
+    {
+      method: 'POST',
+      path: '/api/workspace/route',
+      handler: handlers.route as unknown as RouteHandler,
+    },
   ];
-  if (opts.agentWorkspace) {
-    routes.push(
-      {
-        method: 'GET',
-        path: '/api/workspace/state',
-        handler: handlers.state as unknown as RouteHandler,
-      },
-      {
-        // TASK-373 — the read-back for grants raised while the workspace was
-        // closed. Its only consumer is the workspace surface itself (the
-        // Today queue's mount fetch), so it mounts with the rest of the
-        // flag-gated routes: with the flag off, no surface reads it, and
-        // an unmounted route is the cheapest capability minimization.
-        method: 'GET',
-        path: '/api/workspace/grants',
-        handler: handlers.grants as unknown as RouteHandler,
-      },
-      {
-        // TASK-444 — "Not now", recorded. Mounts beside the read above and
-        // behind the same flag: it can only ever decline something that read
-        // is offering, so a deployment without the surface has nothing for it
-        // to answer.
-        method: 'POST',
-        path: '/api/workspace/grants/decline',
-        handler: handlers.declineGrant as unknown as RouteHandler,
-      },
-      {
-        method: 'GET',
-        path: '/api/workspace/agents/:agentId',
-        handler: handlers.agentDetail as unknown as RouteHandler,
-      },
-      {
-        method: 'GET',
-        path: '/api/workspace/activity',
-        handler: handlers.activity as unknown as RouteHandler,
-      },
-      {
-        method: 'GET',
-        path: '/api/workspace/agents/:agentId/files',
-        handler: handlers.agentFiles as unknown as RouteHandler,
-      },
-      {
-        /*
-          The splat is a bare `*`, and it MUST be the final segment —
-          `@ax/http-server`'s router only recognises that spelling (a
-          `/*path` segment compiles to a LITERAL and the route then matches
-          nothing but the URL `/files/*path`). The captured remainder lands
-          under `req.params['*']`, undecoded.
-
-          Registered after the exact `/files` route above only for
-          readability: the router tries every non-splat pattern before any
-          splat, so `/files` can never be swallowed by this one.
-        */
-        method: 'GET',
-        path: '/api/workspace/agents/:agentId/files/*',
-        handler: handlers.agentFile as unknown as RouteHandler,
-      },
-      {
-        /*
-          The DURABLE tier's root. Sibling of `/files` above and a different
-          backend: `/files` reads `workspace:*` (the git-backed governed tier),
-          this reads `sandbox:read-user-files` (the agent's cwd and HOME).
-        */
-        method: 'GET',
-        path: '/api/workspace/agents/:agentId/user-files',
-        handler: handlers.agentUserFiles as unknown as RouteHandler,
-      },
-      {
-        /*
-          Same splat rules as `/files/*`: a bare `*` as the FINAL segment is
-          the only spelling `@ax/http-server`'s router recognises, and the
-          captured remainder lands under `req.params['*']` undecoded. The
-          router tries every non-splat pattern before any splat, so the exact
-          `/user-files` route above can never be swallowed by this one.
-        */
-        method: 'GET',
-        path: '/api/workspace/agents/:agentId/user-files/*',
-        handler: handlers.agentUserFile as unknown as RouteHandler,
-      },
-      {
-        /*
-          THE BYTES, for each tier. Two routes, because they are two backends
-          — the same reason `/files` and `/user-files` are two routes.
-
-          `download` sits where `files`/`user-files` sit, not after them, and
-          that placement is load-bearing: `/files/download/*` would be
-          ambiguous with a file the agent actually named `download/…`, and the
-          splat would hand both to the same handler. Here the segment is part
-          of the ROUTE, so no path an agent can write can collide with it.
-
-          Same splat rules as every other route on this surface: a bare `*` as
-          the FINAL segment is the only spelling `@ax/http-server`'s router
-          recognises, and the remainder arrives under `req.params['*']`
-          undecoded.
-        */
-        method: 'GET',
-        path: '/api/workspace/agents/:agentId/download/files/*',
-        handler: handlers.agentFileDownload as unknown as RouteHandler,
-      },
-      {
-        method: 'GET',
-        path: '/api/workspace/agents/:agentId/download/user-files/*',
-        handler: handlers.agentUserFileDownload as unknown as RouteHandler,
-      },
-      {
-        method: 'GET',
-        path: '/api/workspace/agents/:agentId/rail',
-        handler: handlers.rail as unknown as RouteHandler,
-      },
-      {
-        method: 'POST',
-        path: '/api/workspace/agents/:agentId/grants/revoke',
-        handler: handlers.revokeGrant as unknown as RouteHandler,
-      },
-      {
-        method: 'PUT',
-        path: '/api/workspace/agents/:agentId/memory/rules',
-        handler: handlers.saveRules as unknown as RouteHandler,
-      },
-      {
-        method: 'POST',
-        path: '/api/workspace/agents/:agentId/memory/recall',
-        handler: handlers.recallFacts as unknown as RouteHandler,
-      },
-      {
-        method: 'POST',
-        path: '/api/workspace/agents/:agentId/memory/remember',
-        handler: handlers.rememberFact as unknown as RouteHandler,
-      },
-      {
-        method: 'POST',
-        path: '/api/workspace/agents/:agentId/memory/forget',
-        handler: handlers.forgetFacts as unknown as RouteHandler,
-      },
-      {
-        method: 'POST',
-        path: '/api/workspace/route',
-        handler: handlers.route as unknown as RouteHandler,
-      },
-    );
-  }
 
   const unregisters: Array<() => void> = [];
   for (const route of routes) {

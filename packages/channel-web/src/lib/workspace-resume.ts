@@ -11,31 +11,30 @@
  * the grant attaches the skill and RETIRES the warm session, so the capability
  * is there for the next turn and there is no current turn to give it to.
  *
- * That is why this re-POSTs rather than re-attaching. The evidence is in chat,
- * which has both mechanisms and picks deliberately between them: a decision
- * approval calls `continuationActions` → `chat.resumeStream()`, whose own
- * comment says "this is a resume, never a re-POST: the turn is already running
- * server-side"; a capability grant calls `resumeActions` → `chat.regenerate()`,
- * which re-POSTs the last user turn. We are the second case, so we do the
- * second thing.
+ * That is why this re-POSTs rather than re-attaching. The evidence was in the
+ * deleted chat UI, which had both mechanisms and picked deliberately between
+ * them: a decision approval called `continuationActions` → `chat.resumeStream()`,
+ * whose own comment said "this is a resume, never a re-POST: the turn is
+ * already running server-side"; a capability grant called `resumeActions` →
+ * `chat.regenerate()`, which re-POSTed the last user turn. We are the second
+ * case, so we do the second thing.
  *
- * WHY NOT `lib/resume-actions.ts` — the module chat uses. It is a register/call
- * pair around the assistant-ui runtime's `regenerate`, and the only thing that
- * ever registers is `useChatThreadRuntime`, which assistant-ui calls solely
- * under an `AssistantRuntimeProvider`. The workspace branch of `App.tsx`
- * deliberately mounts none, so `continueAfterGrant()` there is a no-op that
- * looks exactly like wiring — the same trap `bootstrapKickoff` laid for
- * TASK-249. This is the workspace's own route to the same outcome, over the
- * workspace's own wire, importing nothing from the chat tree.
+ * WHY NOT A REGISTER/CALL BRIDGE. The now-deleted chat UI used exactly that
+ * shape for `resumeActions` and for the agent-bootstrap kickoff (TASK-249):
+ * a register/call pair around the assistant-ui runtime, live only while a
+ * `useChatThreadRuntime` was mounted. The workspace mounts no such runtime,
+ * so a bridge like that would be a no-op that looks exactly like wiring. This
+ * is the workspace's own route to the same outcome, over the workspace's own
+ * wire, importing nothing from the chat tree.
  *
  * WHAT A RE-POST COSTS, stated rather than hidden: the person's message appears
  * in the transcript a second time, because `POST /api/chat/messages` appends
- * the user turn it is given. Chat's `regenerate()` has always done exactly
- * this — `lib/transport.ts` POSTs `messages[messages.length - 1]`, which after
- * assistant-ui drops the trailing assistant message IS the previous user turn.
- * So this is parity with the shipped surface, not a new wart, and the
- * alternative (a server-side resume that re-invokes without appending) is a
- * change to the chat wire that both surfaces would share and neither card owns.
+ * the user turn it is given. Chat's `regenerate()` always did exactly this —
+ * its `lib/transport.ts` POSTed `messages[messages.length - 1]`, which after
+ * assistant-ui dropped the trailing assistant message was the previous user
+ * turn. So this was parity with the shipped surface, not a new wart, and the
+ * alternative (a server-side resume that re-invokes without appending) would
+ * have been a change to the chat wire that neither card owns.
  */
 import { workspaceApi, type ThreadMessage } from './workspace-api';
 

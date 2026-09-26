@@ -52,7 +52,7 @@ Two iteration modes. Picking the right one on each failure dominates loop speed:
 Before each run, write down:
 
 1. **Which scenario, in browser-UI terms.** Phrase the expected outcome the way it appears to a user: "I send '<msg>' and the assistant's reply contains a tool-execution block whose output is `…`", or "after submitting the form the toast says 'saved' and the new row appears at the top of the list." The user supplies this. If they only gave you a vague goal, restate your interpretation and ask before looping — chasing the wrong target is the most expensive bug in this loop.
-2. **What signals count as PASS.** At minimum: a DOM assertion (text/element visible) and absence of console errors. For chat-style scenarios add: an expected `POST /chat` (or equivalent) network response with the right shape. If the scenario also mutates server-side state (workspace, db row), pick one cluster-side probe to confirm — but the browser must be the primary signal.
+2. **What signals count as PASS.** At minimum: a DOM assertion (text/element visible) and absence of console errors. For conversation scenarios add: an expected `POST /api/chat/messages` (or equivalent) network response with the right shape. If the scenario also mutates server-side state (workspace, db row), pick one cluster-side probe to confirm — but the browser must be the primary signal.
 3. **Which iteration mode is current.** Default to image-rebuild on the first cycle and after any chart/dockerfile/runner change. Default to fast loop after the first successful image build, while you're iterating on host TypeScript.
 
 Then loop:
@@ -184,21 +184,15 @@ kubectl wait -n ax-next --for=condition=Ready pod \
 
 For more elaborate scenarios (multi-replica + `workspace.backend=http`, channel-web, etc.) the helm flags differ — copy the matching block from `deploy/MANUAL-ACCEPTANCE.md` if it covers your case, or adapt from `deploy/charts/ax-next/values.yaml`.
 
-**Confirm the workspace surface is on before you walk anything.**
-The agent workspace (`/`, `/workspace`) is gated end to end on
-`channelWeb.agentWorkspace`. It defaults to `true` in `values.yaml` since TASK-359,
-and `kind-dev-values.yaml` pins it `true` as well so a future default change cannot
-quietly change what this loop tests. With it off the host never registers
-`/api/workspace/*`, and **nothing will look broken**: the pod is Ready,
-`/api/features` returns HTTP 200 with `{"agentWorkspace":false}`, the page loads —
-and you are driving the legacy chat shell (until TASK-360 deletes it) while
-believing you are walking the workspace. A bespoke values file that sets it `false`
-does exactly that. Confirm it once the port-forward from §4 is up and before you
-drive anything:
-
-```bash
-curl -fsS http://localhost:9090/api/features | jq .agentWorkspace   # must be true (the field was `agentWorkspacePreview` before TASK-359)
-```
+**The workspace is the only web interface, and it is always on.**
+TASK-360 deleted the legacy chat screen and removed the `agentWorkspace` flag
+(chart value, `AX_AGENT_WORKSPACE` env, and the `GET /api/features` probe that
+used to report it). There is no off state to trip over any more, so the old
+"confirm the flag is on" step is gone, and `curl /api/features` now 404s — that
+is expected, not a broken install. A values file or `host.env` entry that still
+sets the old names is ignored: the host logs a warning and the chart's install
+notes say the same. If `/` shows anything but the workspace, you are running an
+image built before TASK-360 — rebuild it.
 
 ---
 
@@ -209,7 +203,7 @@ The chart doesn't ship an Ingress on kind, so reach the public surface via port-
 ### Standing up the entry point
 
 ```bash
-# /chat + /health + /auth/* + /api/chat/* live on the public-http port (9090).
+# The SPA (/, /workspace) + /health + /auth/* + /api/* live on the public-http port (9090).
 # The Service's :80 is the runner-IPC back-channel — NOT for browser traffic.
 kubectl -n ax-next port-forward svc/ax-next-host 9090:9090 >/tmp/pf.log 2>&1 &
 echo $! > /tmp/pf.pid

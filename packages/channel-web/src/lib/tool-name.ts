@@ -48,14 +48,14 @@ export function stripMcpToolPrefix(toolName: string): string {
  * `mcp__ax-sandbox-tools__artifact_publish`. The runner serves it from its
  * `ax-sandbox-tools` in-process MCP server and the SDK renames it to this at
  * the canUseTool boundary; that renamed name is what gets persisted and what
- * the transcript renderer must match.
+ * a transcript renderer must match.
  *
  * We re-state the literal here rather than importing the runner's
  * `MCP_SANDBOX_SERVER_NAME` (invariant 2: no cross-plugin imports). The
- * `assistant-ui` `tools.by_name` lookup is an exact-match dictionary on the
- * raw `part.toolName`, so registering the chip renderer under BOTH this name
- * and the bare `artifact_publish` is what makes it resolve for the live + the
- * already-stripped/legacy form alike.
+ * deleted chat UI's assistant-ui-based chip renderer needed BOTH this name
+ * and the bare `artifact_publish` registered, because assistant-ui's
+ * `tools.by_name` lookup was an exact-match dictionary on the raw
+ * `part.toolName`; that is why both spellings are exported here.
  */
 export const ARTIFACT_PUBLISH_TOOL_NAME = 'artifact_publish';
 export const MCP_ARTIFACT_PUBLISH_TOOL_NAME =

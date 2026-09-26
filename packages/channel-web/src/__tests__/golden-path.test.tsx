@@ -1,15 +1,19 @@
 /**
  * Golden-path acceptance — boots the full <App /> tree against a stubbed
- * backend and asserts the integration surface holds together: auth gate
- * resolves, sidebar mounts, runtime + provider establish, composer
- * renders, thread shows the empty welcome state.
+ * backend and asserts the integration surface holds together: the boot and
+ * auth gates release, the agent list hydrates past the first-run gate, and
+ * the REAL workspace shell mounts, reads its board, and draws its rail (the
+ * signed-in user's menu, the agent the board reported, the create-agent door)
+ * around the Today view.
  *
- * This is the "do all the wires actually connect?" test. Per-feature
- * coverage lives in the 31 sibling test files; this one only fails when
- * the integration boundary itself breaks (e.g., a context provider
- * disappears, the auth gate stops releasing, the runtime fails to
- * mount). It's the smallest test that would catch a wholesale
- * regression in App.tsx's composition.
+ * This is the "do all the wires actually connect?" test. Per-feature coverage
+ * lives in the sibling test files; this one only fails when the integration
+ * boundary itself breaks (e.g., a context provider disappears, the auth gate
+ * stops releasing, the workspace stops loading its board). It's the smallest
+ * test that would catch a wholesale regression in App.tsx's composition.
+ *
+ * Nothing is module-mocked on purpose: every layer between `fetch` and the
+ * DOM is the shipped code.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
@@ -17,49 +21,45 @@ import { App } from '../App';
 
 const fetchMock = vi.fn();
 
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
 beforeEach(() => {
   fetchMock.mockReset();
   globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-  // Default backend stub: Alice is signed in with one existing agent and no
-  // sessions. The agent is required so AppContent's first-run gate resolves
-  // to the chat shell (an EMPTY agent list now diverts to the first-run
-  // auto-create flow, <FirstRunAutoCreate> — see its dedicated suite). The
-  // empty-session state is intentional — it means we don't have to wrangle the
-  // streaming SSE protocol in jsdom, which has no real ReadableStream story for
-  // fetch responses.
+  // Default backend stub: Alice is signed in with one existing agent. The
+  // agent is required so AppContent's first-run gate resolves to the
+  // workspace (an EMPTY agent list diverts to the first-run create flow,
+  // <FirstRunAutoCreate> — see its dedicated suite).
   fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
     const url = typeof input === 'string' ? input : (input as Request).url ?? String(input);
     if (url.includes('/admin/me')) {
       // BackendUser shape (from @ax/auth-better); lib/auth.ts maps to AuthUser.
-      return new Response(
-        JSON.stringify({
-          user: { id: 'u2', email: 'alice@local', displayName: 'Alice', isAdmin: false },
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      );
-    }
-    if (url.includes('/api/chat/agents')) {
-      return new Response(
-        JSON.stringify([{ agentId: 'agt_alice', displayName: 'Alice Agent', visibility: 'personal' }]),
-        {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        },
-      );
-    }
-    if (url.includes('/api/chat/conversations')) {
-      return new Response(JSON.stringify([]), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
+      return json({
+        user: { id: 'u2', email: 'alice@local', displayName: 'Alice', isAdmin: false },
       });
     }
-    if (url.includes('/api/chat/sessions')) {
-      // Legacy mock endpoint still hit by SessionHeader rename (out of
-      // scope for Tasks 17-21). Return an empty list.
-      return new Response(JSON.stringify({ sessions: [] }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
+    if (url.includes('/api/chat/agents')) {
+      return json([{ agentId: 'agt_alice', displayName: 'Alice Agent', visibility: 'personal' }]);
+    }
+    if (url.includes('/api/workspace/state')) {
+      return json({
+        agents: [
+          {
+            id: 'agt_alice',
+            name: 'Scribe',
+            state: 'resting',
+            now: null,
+            counter: null,
+            startedAt: null,
+            stoppedReason: null,
+          },
+        ],
       });
     }
     return new Response('{}', { status: 404 });
@@ -68,23 +68,27 @@ beforeEach(() => {
 
 describe('golden-path acceptance', () => {
   it('mounts the full App tree against a mocked backend', async () => {
-    const { container } = render(<App />);
+    render(<App />);
 
-    // Auth gate releases → sidebar mounts.
+    // Auth gate releases → the workspace rail draws the signed-in user's menu.
     await waitFor(() => {
-      expect(container.querySelector('aside[data-testid="sidebar"]')).toBeTruthy();
+      expect(screen.getByRole('button', { name: /Alice/ })).toBeTruthy();
     });
 
-    // Composer renders → runtime context is established. If the
-    // AssistantRuntimeProvider failed to mount, the composer would
-    // throw on its `useThreadRuntime()` calls.
+    // The board was read and reached the rail: the agent's name is the one
+    // `/api/workspace/state` sent, not the chat agent list's display name.
+    expect(screen.getByRole('button', { name: /Scribe/ })).toBeTruthy();
+
+    // App wired its create-agent door through to the shell.
+    expect(screen.getByRole('button', { name: /New agent/ })).toBeTruthy();
+
+    // `/` resolved to the Today view — the main pane, not just the rail.
     await waitFor(() => {
-      expect(container.querySelector('.composer-field')).toBeTruthy();
+      expect(screen.getByRole('group', { name: 'Your queue' })).toBeTruthy();
     });
 
-    // Empty conversation welcome copy → Thread renders without messages.
-    await waitFor(() => {
-      expect(screen.getByText(/One conversation/i)).toBeTruthy();
-    });
+    // Neither the sign-in page nor a load failure is on screen.
+    expect(screen.queryByText(/Sign in with Google/i)).toBeNull();
+    expect(screen.queryByText(/We could not load your workspace/i)).toBeNull();
   });
 });

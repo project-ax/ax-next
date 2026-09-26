@@ -187,20 +187,6 @@ spec:
               value: {{ required "channelWeb.bundleDir is required when channelWeb.enabled=true" .Values.channelWeb.bundleDir | quote }}
             {{- end }}
 
-            # The agent workspace — the web interface (channelWeb.agentWorkspace,
-            # on by default). "0" means `/api/workspace/*` is never registered:
-            # this deployment has no web interface. Stamped in BOTH states so
-            # the chart value always beats the retired
-            # `AX_AGENT_WORKSPACE_PREVIEW` name, which `serve` still reads for
-            # one release but only when this var is unset (TASK-359).
-            {{- if (include "ax-next.bool" .Values.channelWeb.agentWorkspace) }}
-            - name: AX_AGENT_WORKSPACE
-              value: "1"
-            {{- else }}
-            - name: AX_AGENT_WORKSPACE
-              value: "0"
-            {{- end }}
-
             # Sandbox plugin reads these to size + place runner pods.
             - name: K8S_RUNTIME_CLASS
               value: {{ .Values.sandbox.runtimeClassName | quote }}

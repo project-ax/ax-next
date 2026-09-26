@@ -1,27 +1,23 @@
 /**
  * SidebarRow — shared base for left-rail rows.
  *
- * Both `AdminNavItem` (admin shell) and `SessionRow` (chat sessions
- * list) render this exact frame: same padding, gap, text size, hover
- * tone, active wash. Two consumers, one source of truth — visual drift
- * between them would otherwise be a forever-ongoing Whac-A-Mole.
+ * `AdminNavItem` (admin shell) renders this exact frame: same padding, gap,
+ * text size, hover tone, active wash. The deleted chat UI's `SessionRow` used
+ * to render it too — the shared base kept the two from drifting apart while
+ * both existed.
  *
  * Slots:
  *
  *   - `accent`  — left-edge bar (2px wide, full row height minus 10px
  *                 vertical padding, rounded-full). Admin passes nothing
- *                 and gets a primary-blue bar when `active`. Chat passes
- *                 a custom node coloured per-agent so the bar is always
- *                 visible and identifies which agent owns the session.
+ *                 and gets a primary-blue bar when `active`.
  *
- *   - `children` — leading icon (admin), the title, and any trailing
- *                  affordance (chat's `⋯` menu). Caller controls the
- *                  layout inside the row.
+ *   - `children` — leading icon, the title, and any trailing affordance.
+ *                  Caller controls the layout inside the row.
  *
  * The frame is a `<button>` by default. Callers that need a non-button
- * container (e.g. for the inline rename / delete-confirm edges in
- * SessionRow) should opt out and apply the same Tailwind frame manually
- * — see `sidebarRowBaseClass` below for the exact set.
+ * container should opt out and apply the same Tailwind frame manually — see
+ * `sidebarRowBaseClass` below for the exact set.
  */
 import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
@@ -35,9 +31,9 @@ export const sidebarRowInactiveClass =
 
 /**
  * The default primary-blue accent bar admin uses when `active` is true
- * and no `accent` slot is provided. Exported so consumers that bypass
- * the `<SidebarRow>` component (e.g. SessionRow's confirm-delete edge)
- * can render the same bar against the same row frame.
+ * and no `accent` slot is provided. Exported so a consumer that bypasses
+ * the `<SidebarRow>` component can still render the same bar against the
+ * same row frame.
  */
 export const SidebarRowDefaultAccent = () => (
   <span

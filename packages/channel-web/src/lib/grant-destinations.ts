@@ -6,8 +6,8 @@
  * was the only surface that could ask. They are pure, React-free, and getting
  * them wrong writes a secret to the wrong vault row — so when the agent
  * workspace grew its own grant renderer they moved here rather than being
- * copied. Same reasoning as `grant-copy.ts`, and the same deadline:
- * `PermissionCard.tsx` is deleted by TASK-360.
+ * copied. Same reasoning as `grant-copy.ts`: `PermissionCard.tsx` was deleted
+ * along with the rest of chat by TASK-360.
  */
 import type { Destination } from '@ax/credentials';
 

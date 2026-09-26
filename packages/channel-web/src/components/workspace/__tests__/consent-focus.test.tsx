@@ -15,10 +15,9 @@
  *   1. `ApprovalCard` — yes, in-thread.
  *   2. `ApprovalCard` — no, in-thread.
  *   3. `DecisionRow` — yes, in the Today queue.
- *   4. the host grant's "Not now" — on BOTH renderers of it, because there are
- *      two: `GrantRow` (the workspace) and `PermissionCard` (the `/` chat tree
- *      TASK-360 retires). Fixing only the named one would have left the live
- *      surface broken.
+ *   4. the host grant's "Not now" — on `GrantRow`, the workspace's renderer
+ *      of it. (There used to be a second renderer, the chat tree's
+ *      `PermissionCard`, pinned here too until TASK-360 deleted it.)
  *
  * AND UNDO HAS TWO ENDINGS. It can succeed — the row goes back to `pending` —
  * or the server can REFUSE it, because the window shut between the click and
@@ -60,19 +59,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useState, type ReactNode } from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import {
-  AssistantRuntimeProvider,
-  useLocalRuntime,
-} from '@assistant-ui/react';
 import { AgentConversation } from '../AgentConversation';
 import { ApprovalCard } from '../ApprovalCard';
 import { DecisionRow } from '../DecisionRow';
 import { GrantRow } from '../GrantRow';
 import { TodayView } from '../TodayView';
-import { Composer } from '@/components/Composer';
 import { decisionFixture, resolvedFixture } from './decision-fixture';
 import { grantKey } from '@/lib/workspace-grant-store';
-import { permissionCardActions } from '@/lib/permission-card-store';
 import {
   GRANT_CONNECT_LABEL,
   GRANT_NOT_RESUMED,
@@ -172,20 +165,6 @@ const skillReq: PermissionRequest = {
   slots: [{ slot: 'api_key', kind: 'api-key' }],
 };
 
-/** `Composer` draws assistant-ui primitives, which want a runtime in context. */
-function ChatStub({ children }: { children: ReactNode }) {
-  const runtime = useLocalRuntime({
-    async run() {
-      return { content: [{ type: 'text' as const, text: 'ok' }] };
-    },
-  });
-  return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      {children}
-    </AssistantRuntimeProvider>
-  );
-}
-
 /** The in-thread card, driven the way `useConversationDecisions` drives it. */
 function ThreadHarness({ resolved }: { resolved: Decision }) {
   const [d, setD] = useState<Decision>(decisionFixture());
@@ -262,7 +241,6 @@ function visibleAlert(text: string): HTMLElement {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  permissionCardActions.dismiss();
 });
 
 /* ------------------------------------------------------------------ *
@@ -1080,65 +1058,5 @@ describe('the host grant turned down (site 4)', () => {
     } finally {
       observer.disconnect();
     }
-  });
-
-  it('PermissionCard focuses its failure Alert when the grant does NOT land', async () => {
-    // The finding a reviewer caught: success unmounts the card and `close()`
-    // hands focus up, but a FAILED Allow leaves the card on screen with the
-    // person on `<body>` and the Alert unread behind them. Same bug, quieter.
-    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline'));
-    render(
-      <ChatStub>
-        <Decoys />
-        <Composer />
-      </ChatStub>,
-    );
-    permissionCardActions.show(hostReq);
-
-    const allow = await screen.findByRole('button', {
-      name: HOST_ALLOW_ONCE_LABEL,
-    });
-    allow.focus();
-    fireEvent.click(allow);
-
-    // Same race as the `GrantRow` case above, latent here rather than
-    // observed — same renderer-independent cause (focus arrives from an
-    // effect), so it gets the same deadline rather than waiting its turn to
-    // start failing.
-    await waitFor(() => {
-      expect(document.activeElement).toBe(screen.getByRole('alert'));
-    });
-    // The card is still up — this is the failure path, not the dismiss path.
-    expect(screen.getByTestId('permission-card-host')).toBeTruthy();
-    expect(document.activeElement).not.toBe(document.body);
-  });
-
-  it('PermissionCard hands focus to the composer stack on the `/` surface', async () => {
-    // The OTHER renderer of the same question. `PermissionCard` is the one the
-    // card body names; `GrantRow` above is the one the walk's surface draws.
-    // Both had the hole, so both are pinned — and this one goes through the
-    // real `Composer`, so the region is the shipped markup rather than the
-    // test's own.
-    const { container } = render(
-      <ChatStub>
-        <Decoys />
-        <Composer />
-      </ChatStub>,
-    );
-    permissionCardActions.show(hostReq);
-
-    const notNow = await screen.findByRole('button', {
-      name: GRANT_REJECT_LABEL,
-    });
-    notNow.focus();
-    fireEvent.click(notNow);
-
-    await waitFor(() => {
-      expect(screen.queryByTestId('permission-card-host')).toBeNull();
-    });
-    const region = container.querySelector('[data-consent-region]');
-    expect(region).not.toBeNull();
-    expect(document.activeElement).toBe(region);
-    expect(document.activeElement).not.toBe(document.body);
   });
 });

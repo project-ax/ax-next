@@ -387,16 +387,6 @@ export interface K8sPresetConfig {
     oneShot?: boolean;
   };
   /**
-   * The agent workspace — the web interface. `true` registers
-   * `/api/workspace/*` and makes the workspace the landing page at `/`.
-   * Anything else and those routes are never registered (bar the
-   * `decisions*` routes, which mount either way — see
-   * `registerWorkspaceRoutes`): the surface does not exist on the wire, and
-   * this deployment has no web interface (invariant 5). Read from `AX_AGENT_WORKSPACE`, which the chart stamps
-   * from `channelWeb.agentWorkspace` (on by default).
-   */
-  agentWorkspace?: boolean;
-  /**
    * Auto-titling model override. @ax/llm-anthropic, @ax/llm-openrouter and
    * @ax/conversation-titles load UNCONDITIONALLY (each provider plugin
    * resolves its key from the credential store at call time, so titles don't
@@ -1480,14 +1470,11 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // drop output for a connected client (TASK-23 / Codex P2). Sizing hint only;
   // the orchestrator remains the source of truth for the timeout.
   //
-  // The agent workspace (TASK-230, default-on since TASK-359). Off means the
-  // /api/workspace/* routes are never registered at all (not just hidden) —
-  // the cheapest capability minimization we know how to buy — and so this
-  // deployment has no web interface. See `K8sPresetConfig.agentWorkspace`.
+  // The agent workspace (TASK-230) always mounts: it is the web interface,
+  // and TASK-360 retired the switch that could turn it off.
   plugins.push(
     createChannelWebServerPlugin({
       chatTimeoutMs: orchestratorCfg.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS,
-      agentWorkspace: config.agentWorkspace === true,
     }),
   );
 
@@ -1716,23 +1703,10 @@ export function blobConfigFromEnv(
 //                                    paths go through chat.runnerBinaries)
 //   - AX_CHAT_TIMEOUT_MS           — chat orchestrator override
 //   - AX_AUTH_SESSION_LIFETIME_SECONDS — auth session cookie lifetime
-//   - AX_AGENT_WORKSPACE           — the web interface (1/true or 0/false;
-//                                    unset = off). The chart stamps it.
 //
 // `AX_CREDENTIALS_KEY` is read by @ax/credentials at init() time — it
 // doesn't appear in K8sPresetConfig.
 // ---------------------------------------------------------------------------
-
-/**
- * `AX_AGENT_WORKSPACE`: unset/empty → `undefined` (the preset treats that as
- * off); `1`/`true` → on; `0`/`false` → off; anything else throws.
- */
-function parseAgentWorkspaceEnv(raw: string | undefined): boolean | undefined {
-  if (raw === undefined || raw === '') return undefined;
-  if (raw === '1' || raw === 'true') return true;
-  if (raw === '0' || raw === 'false') return false;
-  throw new Error(`invalid AX_AGENT_WORKSPACE=${raw}; expected 1/true or 0/false`);
-}
 
 /**
  * Build a full `K8sPresetConfig` from the env vars the Helm chart sets on the
@@ -1859,11 +1833,10 @@ export function loadK8sConfigFromEnv(
   }
 
   // ---- agent workspace (the web interface) ----------------------------
-  // Strict on purpose: a typo here used to mean "off" with no word said,
-  // which is a surprising way to lose a whole UI. The chart only ever
-  // stamps "1" or "0". (The switch's retired env name is read exactly once,
-  // in the CLI's serve command, not here — see applyRetiredEnvNames.)
-  const agentWorkspace = parseAgentWorkspaceEnv(env.AX_AGENT_WORKSPACE);
+  // Always on; there is no switch. `AX_AGENT_WORKSPACE` (and the older
+  // `AX_AGENT_WORKSPACE_PREVIEW`) are retired and deliberately NOT read here —
+  // any value, even garbage, must not fail boot. The CLI's serve command
+  // warns about them once (warnRetiredEnvNames).
 
   // ---- http listener (public-facing /admin + /auth surface) -----------
   const httpHost = env.AX_HTTP_HOST;
@@ -2005,7 +1978,6 @@ export function loadK8sConfigFromEnv(
   // resolver loads.
   if (filestore !== undefined) config.filestore = filestore;
   if (Object.keys(chat).length > 0) config.chat = chat;
-  if (agentWorkspace !== undefined) config.agentWorkspace = agentWorkspace;
   if (env.AX_PROXY_SOCKET_PATH !== undefined && env.AX_PROXY_SOCKET_PATH !== '') {
     config.credentialProxy = { socketPath: env.AX_PROXY_SOCKET_PATH };
   }

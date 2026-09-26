@@ -1,10 +1,11 @@
 /**
  * Open capability grants on the agent workspace (TASK-350).
  *
- * WHY A SECOND STORE AND NOT `permission-card-store`. Chat's store is a single
- * slot, because chat shows one card at a time above the composer. Today is a
- * queue: the grant lands next to the decisions, and two grants can legitimately
- * be open at once. A single slot in a queue is a dropped question.
+ * WHY A SECOND STORE AND NOT THE DELETED CHAT UI'S `permission-card-store`.
+ * That store was a single slot, because chat showed one card at a time above
+ * the composer. Today is a queue: the grant lands next to the decisions, and
+ * two grants can legitimately be open at once. A single slot in a queue is a
+ * dropped question.
  *
  * WHAT IT DELIBERATELY DOES NOT DO. It holds no answer state and no history. A
  * grant is either open or gone — answering removes the row, and nothing here
@@ -26,8 +27,8 @@
  * thread and the row in the queue are the same object and answering either
  * resolves both. Neither reader keeps a copy.
  *
- * Same `useSyncExternalStore` shape as `decision-raised-store.ts` /
- * `permission-card-store.ts`.
+ * Same `useSyncExternalStore` shape the deleted chat UI's
+ * `decision-raised-store.ts` and `permission-card-store.ts` used.
  */
 import { useSyncExternalStore } from 'react';
 import { clearAllGrantDrafts, clearGrantDraft } from './workspace-grant-drafts';

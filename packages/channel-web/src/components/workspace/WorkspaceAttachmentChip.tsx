@@ -14,13 +14,11 @@ import type { WorkspaceAttachment } from '@/lib/workspace-attachments';
 /**
  * One file waiting to go to the agent, on the workspace composer.
  *
- * Shaped after `AttachmentComposerChip` so the two composers read as one
- * product — but this one takes a plain prop instead of assistant-ui's
- * attachment context, because the workspace surface has no
- * `AssistantRuntimeProvider` to read from. It also has a third state that
- * chip never needed: chat's adapter can only be running or done, so a file
- * the server refused had nowhere to say so. Here it says so, in a sentence,
- * with a Retry next to it.
+ * This takes a plain prop rather than reading from a runtime's attachment
+ * context, because the workspace surface mounts no such runtime. It also has
+ * a third state the deleted chat UI's equivalent chip never needed: chat's
+ * adapter could only be running or done, so a file the server refused had
+ * nowhere to say so. Here it says so, in a sentence, with a Retry next to it.
  */
 
 function pickIcon(mediaType: string) {

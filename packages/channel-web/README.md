@@ -1,6 +1,6 @@
 # `@ax/channel-web`
 
-The browser chat UI for ax-next. Tide design, assistant-ui plumbing, mocked backend for now.
+The browser UI for ax-next: the agent workspace, plus setup, sign-in and Settings. (The older chat screen was deleted in TASK-360; `/chat` now lands on `/`.)
 
 ## Getting started
 
@@ -32,7 +32,7 @@ To reset: `rm -rf .mock-data/` and restart the dev server. The next launch re-se
 pnpm --filter @ax/channel-web test
 ```
 
-Tests cover: design tokens, mock store + auth + sessions + completions + admin endpoints, ported assistant-ui transport + adapters, every UI component, every state machine. ~120 tests, all hermetic (no shared state between tests).
+Tests cover: design tokens, mock store + auth + sessions + completions + admin endpoints, every UI component, every state machine. ~120 tests, all hermetic (no shared state between tests).
 
 ## Building for production
 
@@ -60,7 +60,6 @@ See `docs/plans/2026-04-25-chat-ui-pulled-forward.md` for the full handoff conte
 ## What's NOT in the MVP
 
 - File uploads (the attach button is disabled — `/api/files/*` isn't implemented).
-- Search filtering (the search bar toggles a feature flag for "semantic" search; literal substring filtering needs an assistant-ui API that's still firming up).
 - Team management UI (read-only list; full CRUD ships with Week 9.5).
 - Real auth / real persistence / real LLM streaming.
 

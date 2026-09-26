@@ -190,7 +190,7 @@ export const App = () => {
 
 const AppContent = ({ user }: { user: AuthUser }) => {
   useHydrateAgents(); // before the first-run gate, which reads the result
-  const { agents, agentsStatus, selectedAgentId, pendingAgentId } = useAgentStore();
+  const { agents, agentsStatus } = useAgentStore();
   // `adminSettingsOpen` is set by the user menu's "Settings" entry
   // (admin-gated). AdminSettings renders in the main pane when true.
   const [adminSettingsOpen, setAdminSettingsOpen] = useState(false);

@@ -78,12 +78,6 @@ function validateMemoryPresetConfig(config: MemoryPresetConfig): void {
       throw new Error(`memory preset ${name} must be a non-empty credential ref`);
     }
   }
-  if (
-    config.agentWorkspace !== undefined &&
-    typeof config.agentWorkspace !== 'boolean'
-  ) {
-    throw new Error('memory preset agentWorkspace must be a boolean');
-  }
 
   const hostRoot = config.memoryExportVolume.hostRoot;
   const repoRoot =
@@ -175,10 +169,7 @@ export function createMemoryPlugins(config: MemoryPresetConfig): Plugin[] {
         ? { onObserverDetached: config.onObserverDetached }
         : {}),
     }),
-    createChannelWebServerPlugin({
-      chatTimeoutMs,
-      agentWorkspace: config.agentWorkspace === true,
-    }),
+    createChannelWebServerPlugin({ chatTimeoutMs }),
   ];
 }
 
@@ -216,10 +207,6 @@ export function loadMemoryConfigFromEnv(
     env.AX_MEMORY_COHERE_CREDENTIAL_REF !== ''
       ? env.AX_MEMORY_COHERE_CREDENTIAL_REF
       : DEFAULT_COHERE_CREDENTIAL_REF;
-
-  // The agent workspace switch (`agentWorkspace`) arrives on `base`:
-  // loadK8sConfigFromEnv parses AX_AGENT_WORKSPACE strictly for both presets,
-  // so there is one parser for one name (TASK-359).
 
   const config: MemoryPresetConfig = {
     ...base,

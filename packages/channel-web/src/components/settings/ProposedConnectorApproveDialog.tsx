@@ -22,12 +22,12 @@ import { myCredentials, setDestinationCredential } from '@/lib/credentials';
 import type { Destination } from '@ax/credentials';
 
 /**
- * The Settings-side twin of the in-chat connector approval card
- * (`PermissionCard`, kind:'connector'). Surfaces a connector the assistant
- * PROPOSED mid-turn (a pending authored draft) so the user can approve it
- * outside chat — the fallback for a missed/dismissed card.
+ * The Settings-side twin of the workspace's connector grant row (`GrantRow`,
+ * kind:'connector'). Surfaces a connector the assistant PROPOSED mid-turn (a
+ * pending authored draft) so the user can approve it from Settings too — the
+ * fallback for a missed/dismissed row.
  *
- * Same handshake as the card: collect a key per declared slot (a slot already in
+ * Same handshake as the row: collect a key per declared slot (a slot already in
  * the user's vault is offered as "use existing"), write each entered key STRAIGHT
  * to the host credential store under the connector's `account:<service>[:<slot>]`
  * row (never the model, never the approve POST — §10), then POST the approval
@@ -143,12 +143,13 @@ export function ProposedConnectorApproveDialog({
         </DialogHeader>
         <div className="flex flex-col gap-4">
           {/*
-            (TASK-344) THE AUDIT MISSED THIS FILE. It is a near-copy of
-            `PermissionCard`'s reach renderer and carried the same three defects
-            TASK-334 fixed there — a bare "Will access" host list (A12), raw slot
-            ids as field labels (A1), and the npm/pypi registry line (A5). Fixing
-            one and not the other would leave the product saying two different
-            things about the same decision, so the copy is now identical.
+            (TASK-344) THE AUDIT MISSED THIS FILE. It was a near-copy of the
+            (now-deleted) chat `PermissionCard`'s reach renderer and carried the
+            same three defects TASK-334 fixed there — a bare "Will access" host
+            list (A12), raw slot ids as field labels (A1), and the npm/pypi
+            registry line (A5). Fixing one and not the other would have left
+            the product saying two different things about the same decision,
+            so the copy is now identical.
           */}
           {hosts.length > 0 && (
             <div className="flex flex-col gap-1.5">

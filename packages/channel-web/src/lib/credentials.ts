@@ -25,7 +25,7 @@ import type { Destination } from '@ax/credentials';
  *     flows. Same as `lib/auth.ts` and `lib/admin.ts`.
  *   - `x-requested-with: ax-admin` on writes so requests pass the
  *     http-server's CSRF guard regardless of how `allowedOrigins` is
- *     configured. Same posture as `lib/admin.ts` and `SessionRow.tsx`.
+ *     configured. Same posture as `lib/admin.ts`.
  *   - `payload` (the actual secret bytes) is base64-encoded before
  *     POSTing — JSON-clear-text would be a logs risk and a wire-shape
  *     ambiguity (binary in JSON has no canonical form). Decode happens

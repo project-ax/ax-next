@@ -33,9 +33,8 @@ import type {
 } from '@/lib/workspace-types';
 
 /**
- * Up to two initials from the agent's display name — the same convention the
- * shipped avatars use (`AgentChip` over `AvatarTile`), and the only identity
- * mark we actually have. The prototype keyed a lucide glyph off an `icon`
+ * Up to two initials from the agent's display name — the only identity mark
+ * we actually have. The prototype keyed a lucide glyph off an `icon`
  * field the real agent record never carried: a picked-for-you icon is
  * decoration pretending to be information.
  */

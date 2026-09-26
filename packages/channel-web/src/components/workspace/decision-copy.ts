@@ -105,7 +105,7 @@ export const DECISION_ACTION_FAILED =
   'We could not reach the server, so nothing changed. Try again in a moment.';
 
 /**
- * The heading over a failed read, on the `/` chat surface.
+ * The heading over a failed read, on the `/` workspace surface.
  *
  * It leads with the fact that survives the outage — somebody is waiting on you
  * — rather than with our plumbing. The body (below) does the apologising. This

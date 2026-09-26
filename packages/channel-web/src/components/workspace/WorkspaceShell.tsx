@@ -1,11 +1,11 @@
 /**
- * The agent workspace — the shell.
+ * The agent workspace — the shell. The only UI; there is no chat surface to
+ * fall back to.
  *
- * Mounted at `/workspace/*` — and at `/`, which the flag also claims and the
- * shell rewrites to `/workspace` on mount — behind the
- * `agentWorkspace` feature flag, on the real host: `App.tsx` supplies
- * the signed-in user, `/api/workspace/*` supplies the board, and sending a
- * message goes to the shipped chat wire.
+ * Mounted at `/workspace/*` — and at `/`, which the shell rewrites to
+ * `/workspace` on mount — on the real host: `App.tsx` supplies the signed-in
+ * user, `/api/workspace/*` supplies the board, and sending a message goes to
+ * the shipped chat wire.
  *
  * Views are addressable: `/workspace`, `/workspace/activity`, and
  * `/workspace/agents/<id>[/<tab>]`. The grammar lives in
@@ -170,8 +170,7 @@ export interface WorkspaceShellProps {
   /**
    * The id of a just-bootstrapped agent still waiting for its kickoff — set
    * by `App.tsx` when `FirstRunAutoCreate`'s `onDone` fires on this surface.
-   * See the effect below for why the workspace cannot reuse
-   * `bootstrapKickoff`.
+   * See the effect below for how the workspace sends it.
    */
   kickoffAgentId?: string | null | undefined;
   /** Fired once the kickoff for `kickoffAgentId` has been sent (or failed). */
@@ -536,12 +535,10 @@ function Inner({
   /**
    * A capability grant was APPROVED — start the agent it stopped (TASK-374).
    *
-   * THE ROUTE THIS SURFACE ACTUALLY HAS. Chat's is `resumeActions` →
-   * assistant-ui's `regenerate()`, registered by a runtime this branch of the
-   * app deliberately does not mount; calling it from here would be a no-op
-   * wearing the shape of wiring. So the workspace re-issues the turn over its
-   * own wire — see `lib/workspace-resume.ts` for why a re-POST and not an
-   * attach.
+   * THE ROUTE THIS SURFACE ACTUALLY HAS: the workspace re-issues the turn
+   * over its own wire — see `lib/workspace-resume.ts` for why a re-POST and
+   * not an attach (and for why the deleted chat UI's register/call bridge
+   * shape would not have worked here).
    *
    * OWNED HERE, not in `AgentView`, because a grant answered on Today belongs
    * to an agent that may have no panel on screen — and that is the common case,
@@ -623,14 +620,8 @@ function Inner({
   /**
    * TASK-249 — the kickoff for an agent just created from THIS surface.
    *
-   * `bootstrapKickoff` (the chat runtime's module-level trigger/register
-   * bridge) cannot serve the workspace: its only registrant is
-   * `useChatThreadRuntime`, which assistant-ui calls only from inside
-   * `_RuntimeBinder`, reached only under an `AssistantRuntimeProvider` — and
-   * the workspace branch of `App.tsx` deliberately mounts none. `trigger()`
-   * would set `_pending` and nothing would ever consume it: a created agent
-   * that never says anything. So the workspace sends its own kickoff, through
-   * the same `startTurn` a person's own first message uses.
+   * Sends `KICKOFF_TEXT` (see `lib/bootstrap-kickoff.ts`) through the same
+   * `startTurn` a person's own first message uses.
    *
    * Ref-guarded on the id, mirroring `AgentView`'s `consumedReqId` /
    * `onPendingReplyConsumed` pattern, so a re-render with the same

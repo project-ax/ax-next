@@ -2,12 +2,13 @@
  * "Sign in" — the button offered beside an expired-session notice.
  *
  * WHY IT IS A COMPONENT AND NOT A `<Button onClick={…}>` (TASK-288).
- * Two surfaces render this exact offer (`TodayView`, `InThreadApprovals`) and
- * both used to do the same thing with the failure: `.catch(console.warn)`. So
- * a person told "your session ended, sign in" could press the one button on
- * the screen, have it fail, and get nothing back at all — on a surface whose
- * entire purpose is to tell them a true thing about their own session. Owning
- * the failure in one place means neither surface can forget it again.
+ * `TodayView` renders this exact offer, and the deleted chat UI's
+ * `InThreadApprovals` used to too — both did the same thing with the
+ * failure: `.catch(console.warn)`. So a person told "your session ended,
+ * sign in" could press the one button on the screen, have it fail, and get
+ * nothing back at all — on a surface whose entire purpose is to tell them a
+ * true thing about their own session. Owning the failure in one place means
+ * no surface can forget it again.
  *
  * On success `signInWithGoogle()` navigates away, so nothing after it runs.
  */

@@ -4,8 +4,8 @@
  * Before this, `getSession()` was called exactly once, ever, and no interceptor
  * existed anywhere: a session that expired while the tab was open stayed open,
  * and the expiry surfaced as `chat-flow POST failed: 401 Unauthorized` on the
- * banner above the composer, `workspace /board → 401` on the workspace, and
- * `list agents: 401` in the sidebar.
+ * (since deleted) chat composer, `workspace /board → 401` on the workspace,
+ * and `list agents: 401` in the sidebar.
  *
  * NOTE ON WHAT THIS FILE DOES *NOT* TEST. Boot is unchanged and stays that way:
  * `auth-gate.test.tsx` pins it, including the deliberate rule that ANY thrown
@@ -175,6 +175,11 @@ describe('lib/http — what a failed request is allowed to say', () => {
 });
 
 describe('App — a post-boot 401 returns to the sign-in page', () => {
+  /** The signed-in workspace's user menu — present only once boot let Alice in. */
+  function workspaceUserMenu(): HTMLElement {
+    return screen.getByRole('button', { name: /Alice/ });
+  }
+
   function boot(handlers: {
     adminMe?: () => Promise<Response>;
     fallback?: () => Promise<Response>;
@@ -206,16 +211,15 @@ describe('App — a post-boot 401 returns to the sign-in page', () => {
 
   it('swaps a signed-in app for LoginPage when a later request 401s', async () => {
     boot({});
-    const { container } = render(<App />);
-    // Signed in first — otherwise this proves nothing about POST-boot.
-    await waitFor(() =>
-      expect(container.querySelector('aside[data-testid="sidebar"]')).toBeTruthy(),
-    );
+    render(<App />);
+    // Signed in first — otherwise this proves nothing about POST-boot. The
+    // sentinel is the workspace rail's user menu, named for the user.
+    await waitFor(() => expect(workspaceUserMenu()).toBeTruthy());
 
     await httpFetch('/api/chat/agents', undefined, async () => res(401));
 
     await waitFor(() => expect(screen.getByText(/Sign in with Google/i)).toBeTruthy());
-    expect(container.querySelector('aside[data-testid="sidebar"]')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Alice/ })).toBeNull();
   });
 
   /*
@@ -226,15 +230,13 @@ describe('App — a post-boot 401 returns to the sign-in page', () => {
   */
   it('leaves a signed-in app alone when a later request fails with a 500', async () => {
     boot({});
-    const { container } = render(<App />);
-    await waitFor(() =>
-      expect(container.querySelector('aside[data-testid="sidebar"]')).toBeTruthy(),
-    );
+    render(<App />);
+    await waitFor(() => expect(workspaceUserMenu()).toBeTruthy());
 
     await httpFetch('/api/chat/agents', undefined, async () => res(500));
 
     await new Promise((r) => setTimeout(r, 0));
-    expect(container.querySelector('aside[data-testid="sidebar"]')).toBeTruthy();
+    expect(workspaceUserMenu()).toBeTruthy();
     expect(screen.queryByText(/Sign in with Google/i)).toBeNull();
   });
 });

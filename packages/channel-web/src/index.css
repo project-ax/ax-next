@@ -102,7 +102,7 @@
 
        The roles that carry no text ride along rather than pay: the `bits.tsx`
        state dot, `ThreadFind`'s match underline, and the hold glyphs in
-       `ActivityFeed`, `ToolUse` and `AgentConversation` all gain contrast. */
+       `ActivityFeed` and `AgentConversation` all gain contrast. */
     --warning: 32 81% 35%;
     --warning-foreground: 0 0% 100%;
     --warning-soft: 45 93% 93%;
@@ -295,65 +295,6 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* COMPOSER residue —
-   1. Gradient fade behind the fixed-bottom composer so chat messages
-      visually fall off the page rather than abruptly clipping under
-      the field. Tailwind can't easily express a 3-stop color-mix
-      gradient, so we keep this rule scoped to `.composer-fade`.
-   2. `:has()` ready-state toggle on the send circle: when the input
-      has content, the circle flips from neutral (bg-ink-ghost) to
-      bg-primary. Pure CSS — no observer needed. */
-:root {
-  --scrollbar-gutter: 15px;
-  /* Mirrors Tailwind `boxShadow.sm` — appended to the composer halo stack so
-     the field keeps its baseline lift beneath the new accent bloom. */
-  --shadow-sm: 0 1px 2px hsl(0 0% 0% / 0.04), 0 1px 1px hsl(0 0% 0% / 0.03);
-}
-
-/* Composer field halo — a hairline accent ring plus a soft drop + radial bloom
-   layered over the baseline --shadow-sm. Deepens on :focus-within (wider, more
-   saturated ring/blooms + an accent-tinted border). Replaces the prior Tailwind
-   `shadow-sm` and focus ring, which were removed from Composer.tsx. */
-.composer-field {
-  box-shadow:
-    0 0 0 1px color-mix(in oklch, hsl(var(--primary)) 10%, transparent),
-    0 24px 70px -18px color-mix(in oklch, hsl(var(--primary)) 30%, transparent),
-    0 0 60px -10px color-mix(in oklch, hsl(var(--primary)) 18%, transparent),
-    var(--shadow-sm);
-}
-.composer-field:focus-within {
-  box-shadow:
-    0 0 0 4px color-mix(in oklch, hsl(var(--primary)) 16%, transparent),
-    0 24px 70px -18px color-mix(in oklch, hsl(var(--primary)) 45%, transparent),
-    0 0 60px -10px color-mix(in oklch, hsl(var(--primary)) 28%, transparent),
-    var(--shadow-sm);
-  border-color: color-mix(in oklch, hsl(var(--primary)) 50%, hsl(var(--border)));
-}
-.composer-fade {
-  background: linear-gradient(
-    to top,
-    hsl(var(--background)) 60%,
-    color-mix(in srgb, hsl(var(--background)) 80%, transparent) 85%,
-    transparent 100%
-  );
-}
-.composer-field:has(.composer-input:not(:placeholder-shown)) [data-send] {
-  background: hsl(var(--primary));
-}
-.composer-field:has(.composer-input:not(:placeholder-shown)) [data-send]:hover {
-  transform: scale(1.05);
-  filter: brightness(1.05);
-}
-
-/* `breathe` is referenced by AgentStatus via Tailwind's
-   `animate-[breathe_1.6s_ease-in-out_infinite]`. Keep the keyframes
-   here as a global so both Tailwind utilities and any future named
-   `animation:` references resolve them. */
-@keyframes breathe {
-  0%, 100% { opacity: 0.25; transform: scale(0.8); }
-  50%      { opacity: 1;    transform: scale(1.15); }
-}
-
 /* `toast-in` / `toast-out` are referenced by Toast via Tailwind
    arbitrary `animate-[toast-in_220ms_cubic-bezier(0.2,0.8,0.2,1)_both]`
    and `animate-[toast-out_180ms_ease_forwards]`. */
@@ -365,83 +306,12 @@ body {
   to { opacity: 0; transform: translateX(8px); }
 }
 
-/* `msg-error-in` is referenced by the dev-only test trigger
-   `agent-status-test-triggers.ts`, which injects `.msg-error*` DOM via
-   className. The styling for those nodes lives below — small isolated
-   block, dev-only behavior. */
-.msg-error {
-  margin-top: 6px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 12px;
-  letter-spacing: -0.005em;
-  color: hsl(var(--destructive));
-  animation: msg-error-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
-}
-.msg.you .msg-error { justify-content: flex-end; }
-.msg-error-icon {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: hsl(var(--destructive));
-  color: hsl(var(--destructive-foreground));
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 9px;
-  font-weight: 600;
-  flex-shrink: 0;
-}
-.msg-error-label { color: hsl(var(--destructive)); }
-.msg-error-actions { display: flex; gap: 4px; margin-left: 2px; }
-.msg-error-action {
-  all: unset;
-  cursor: pointer;
-  padding: 1px 8px;
-  border-radius: 3px;
-  font-size: 11.5px;
-  color: hsl(var(--muted-foreground));
-  transition: color 120ms ease, background-color 120ms ease;
-}
-.msg-error-action:hover { color: hsl(var(--foreground)); background: hsl(var(--muted)); }
-.msg-error-action.retry { color: hsl(var(--destructive)); font-weight: 500; }
-.msg-error-action.retry:hover { background: hsl(var(--destructive) / 0.12); color: hsl(var(--destructive)); }
-@keyframes msg-error-in {
-  from { opacity: 0; transform: translateY(4px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
-/* THREAD residue — block spacing inside Markdown-rendered .msg-body.
-   The Tailwind typography plugin would replace this; not worth pulling
-   in for a handful of rules. */
-.msg-body p { margin-bottom: 0.6em; }
-.msg-body p:last-child { margin-bottom: 0; }
-
-/* The message body carries `white-space: pre-wrap` so plain-text turns keep
-   their newlines. Inside the Markdown container that backfires: react-markdown
-   emits a literal newline text node between every block element (<p>, <li>, …),
-   and pre-wrap renders each as a blank line — most visibly blowing the gap
-   between <li> items out to a full line-height. The Markdown container already
-   encodes its own structure, so reset it to normal whitespace. (Code blocks are
-   unaffected: <pre> carries its own `white-space: pre`.) */
-.msg-body .aui-md { white-space: normal; }
-
-/* With those blank lines gone, lists fall back to Preflight's zeroed margins
-   (items touching). Restore the same 0.6em rhythm the prose uses so list items
-   match the normal vertical spacing between chat elements. List markers are
-   left as-is — this only touches spacing. */
-.msg-body .aui-md :is(ul, ol) { margin: 0.6em 0; }
-.msg-body .aui-md li { margin-bottom: 0.6em; }
-.msg-body .aui-md li:last-child { margin-bottom: 0; }
-
 /* MARKDOWN OUTSIDE THE THREAD (`.ax-md`).
 
    The `prose-*` classes on the Markdown container emit NOTHING in this build —
-   `@tailwindcss/typography` is not installed, and the `.msg-body` rules above
-   are what actually gives an assistant reply its block rhythm. A rendered file
-   body (the workspace Files tab) is not inside `.msg-body`, so without these it
-   inherits Preflight: headings the same size as body text, lists with no
+   `@tailwindcss/typography` is not installed. (The deleted chat thread had its
+   own `.msg-body` rules for this; they went with it in TASK-360.) Without these,
+   a rendered file body (the workspace Files tab) inherits Preflight: headings the same size as body text, lists with no
    markers, everything touching. That reads as a broken document rather than as
    the file the agent wrote.
 

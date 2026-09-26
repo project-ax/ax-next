@@ -115,10 +115,10 @@ describe('serve AX_PRESET selection', () => {
   });
 });
 
-// TASK-359: `AX_AGENT_WORKSPACE_PREVIEW` is the retired spelling of
-// `AX_AGENT_WORKSPACE`. serve.ts is its ONLY reader, for one release, so an
-// operator who set it by hand keeps their web interface across the rename.
-describe('serve retired AX_AGENT_WORKSPACE_PREVIEW compat read', () => {
+// TASK-360: the agent workspace is always on. `AX_AGENT_WORKSPACE` and the
+// older `AX_AGENT_WORKSPACE_PREVIEW` are retired — serve warns once per name
+// and boots anyway, whatever the value. It never promotes, parses or rejects.
+describe('serve retired agent-workspace env names', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     k8sLoader.mockReturnValue({});
@@ -130,48 +130,84 @@ describe('serve retired AX_AGENT_WORKSPACE_PREVIEW compat read', () => {
     return k8sLoader.mock.calls[0]![0] as NodeJS.ProcessEnv;
   }
 
-  it('promotes the retired name when the current one is unset, and says so', async () => {
-    const { code, stderr } = await run({ AX_SERVE_TOKEN: 'x', AX_AGENT_WORKSPACE_PREVIEW: '1' });
+  const retiredLines = (stderr: string[]): string[] =>
+    stderr.filter((l) => /AX_AGENT_WORKSPACE/.test(l));
+
+  it.each(['AX_AGENT_WORKSPACE', 'AX_AGENT_WORKSPACE_PREVIEW'])(
+    'warns exactly once for %s=1 and boots',
+    async (name) => {
+      const { code, stderr } = await run({ AX_SERVE_TOKEN: 'x', [name]: '1' });
+      expect(code).toBe(0);
+      const lines = retiredLines(stderr);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain(`${name} is retired`);
+      expect(lines[0]).toMatch(/always on now/);
+      expect(lines[0]).toMatch(/can delete it/);
+    },
+  );
+
+  it.each([
+    ['AX_AGENT_WORKSPACE', '0'],
+    ['AX_AGENT_WORKSPACE', 'false'],
+    ['AX_AGENT_WORKSPACE_PREVIEW', '0'],
+  ])('says the web interface is still ON for %s=%s, and boots', async (name, value) => {
+    const { code, stderr } = await run({ AX_SERVE_TOKEN: 'x', [name]: value });
     expect(code).toBe(0);
-    expect(envSeenByLoader().AX_AGENT_WORKSPACE).toBe('1');
-    expect(stderr.some((l) => /AX_AGENT_WORKSPACE_PREVIEW is a retired name/.test(l))).toBe(true);
+    const lines = retiredLines(stderr);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(`${name}=${value}`);
+    expect(lines[0]).toMatch(/web interface is still ON/);
+    expect(k8sFactory).toHaveBeenCalled();
   });
 
-  it('the current name wins — an explicit off beats a stale retired entry', async () => {
+  it('warns once per name when both are set', async () => {
     const { code, stderr } = await run({
       AX_SERVE_TOKEN: 'x',
       AX_AGENT_WORKSPACE: '0',
       AX_AGENT_WORKSPACE_PREVIEW: '1',
     });
     expect(code).toBe(0);
-    expect(envSeenByLoader().AX_AGENT_WORKSPACE).toBe('0');
-    expect(stderr.some((l) => /IGNORED because AX_AGENT_WORKSPACE is set/.test(l))).toBe(true);
+    const lines = retiredLines(stderr);
+    expect(lines).toHaveLength(2);
+    expect(lines.some((l) => l.includes('AX_AGENT_WORKSPACE=0'))).toBe(true);
+    expect(lines.some((l) => l.includes('AX_AGENT_WORKSPACE_PREVIEW is retired'))).toBe(true);
   });
 
-  it('passes the env through untouched and silently when the retired name is absent', async () => {
+  it('does not echo an arbitrary value into the log, and still boots', async () => {
+    const { code, stderr } = await run({ AX_SERVE_TOKEN: 'x', AX_AGENT_WORKSPACE: 'garbage' });
+    expect(code).toBe(0);
+    const lines = retiredLines(stderr);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).not.toContain('garbage');
+  });
+
+  it('says nothing when neither name is set, and passes the env through as-is', async () => {
     const env = { AX_SERVE_TOKEN: 'x' };
     const { code, stderr } = await run(env);
     expect(code).toBe(0);
     expect(envSeenByLoader()).toBe(env);
+    expect(retiredLines(stderr)).toEqual([]);
     expect(stderr.some((l) => /retired/.test(l))).toBe(false);
   });
 
-  it('does not mutate the caller env when promoting', async () => {
+  it('never promotes or mutates: the loader sees exactly the caller env', async () => {
     const env: NodeJS.ProcessEnv = { AX_SERVE_TOKEN: 'x', AX_AGENT_WORKSPACE_PREVIEW: 'true' };
     await run(env);
     expect('AX_AGENT_WORKSPACE' in env).toBe(false);
-    expect(envSeenByLoader().AX_AGENT_WORKSPACE).toBe('true');
+    expect(envSeenByLoader()).toBe(env);
+    expect(envSeenByLoader().AX_AGENT_WORKSPACE).toBeUndefined();
   });
 
-  it('reaches the memory preset too', async () => {
+  it('warns for the memory preset too', async () => {
     memoryLoader.mockReturnValue({});
     memoryFactory.mockReturnValue([providerStub()]);
-    const { code } = await run({
+    const { code, stderr } = await run({
       AX_SERVE_TOKEN: 'x',
       AX_PRESET: 'memory',
-      AX_AGENT_WORKSPACE_PREVIEW: '1',
+      AX_AGENT_WORKSPACE: '0',
     });
     expect(code).toBe(0);
-    expect((memoryLoader.mock.calls[0]![0] as NodeJS.ProcessEnv).AX_AGENT_WORKSPACE).toBe('1');
+    expect(retiredLines(stderr)).toHaveLength(1);
+    expect(memoryFactory).toHaveBeenCalled();
   });
 });

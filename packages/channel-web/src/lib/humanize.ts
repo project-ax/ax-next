@@ -7,10 +7,10 @@
  * id is correct, and to the person being asked to hand over a secret it is
  * noise at exactly the moment they most need a plain sentence.
  *
- * So: one shared humanizer, used by the permission card (TASK-334) and by the
- * credential + connector surfaces (TASK-344). It lives in `lib/` rather than
- * inside a component because two cards need it — the same reason
- * `lib/tool-name.ts` and `lib/tool-phrase.ts` sit here.
+ * So: one shared humanizer, used by the grant row (TASK-334, now
+ * `GrantRow.tsx`) and by the credential + connector surfaces (TASK-344). It
+ * lives in `lib/` rather than inside a component because several surfaces
+ * need it — the same reason `lib/tool-name.ts` sits here.
  *
  * What this is NOT: a source of truth. It is a display-time guess at how a
  * human would say an id, and nothing may key a decision off it. If a producer

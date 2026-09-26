@@ -5,16 +5,14 @@ export function StepDone() {
   return (
     <SetupShell
       title="You're all set"
-      description="Setup complete — you can start chatting now."
+      description="Setup complete — your workspace is ready."
     >
       <Button asChild className="w-full">
         {/*
-          `/chat`, not `/`: with the agentWorkspace flag on, `/` renders the
-          workspace, and this button says "Open chat". `/chat` is the chat
-          shell's stable address on every deployment — App falls through to chat
-          for any path it does not claim, and static-files serves the SPA there.
+          `/`, not `/chat`: chat was deleted in TASK-360 and `/chat` only
+          redirects here now. A link should not point at a redirect.
         */}
-        <a href="/chat">Open chat →</a>
+        <a href="/">Open your workspace →</a>
       </Button>
     </SetupShell>
   );

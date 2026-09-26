@@ -208,7 +208,7 @@ async function boot(opts: BootOpts = {}): Promise<Booted> {
     };
   }
   const harness = await createTestHarness({ services, plugins: [http] });
-  await registerWorkspaceRoutes(harness.bus, initCtx, { agentWorkspace: true });
+  await registerWorkspaceRoutes(harness.bus, initCtx);
   return { harness, port: http.boundPort(), approveInputs, binds };
 }
 

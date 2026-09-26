@@ -311,8 +311,8 @@ export function TodayView({
               verbatim. On a 401 that read "workspace /decisions → 401" to a
               person, which is a request path and a status code standing in for
               a sentence, on the one screen whose own comment already forbade
-              exactly that. The message now goes to a `console.warn` (see
-              `InThreadApprovals`) and the reader gets authored copy instead.
+              exactly that. The message now goes to a `console.warn` and the
+              reader gets authored copy instead.
 
               Two branches, because the two need different people to act. A blip
               is ours to retry. An expired session is not retryable at all —

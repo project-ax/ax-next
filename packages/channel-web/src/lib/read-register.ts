@@ -19,11 +19,12 @@
  * bearing rather than a hedge — see the third clause below, which names the
  * surface that would otherwise falsify this file.
  *
- * WHY THIS FILE EXISTS. Three surfaces drew the same two facts in two different
- * registers: `TodayView` and `AgentConversation` painted a failed read
- * `destructive`, `InThreadApprovals` painted it `default`. Each had a
- * defensible local reading and neither was written down, so the next surface
- * needing an error state had a coin to flip. This is the coin, called.
+ * WHY THIS FILE EXISTS. Three surfaces used to draw the same two facts in two
+ * different registers: `TodayView` and `AgentConversation` painted a failed
+ * read `destructive`, and the deleted chat UI's `InThreadApprovals` painted it
+ * `default`. Each had a defensible local reading and neither was written
+ * down, so the next surface needing an error state had a coin to flip. This
+ * is the coin, called.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * THE RULE
@@ -139,7 +140,7 @@
  *   An error alert gets an `AlertTitle` only when the surface holds POSITIVE
  *   EVIDENCE for the claim that title makes.
  *
- * `DECISION_READ_FAILED_TITLE` asserts that a hold exists. `InThreadApprovals`
+ * `DECISION_READ_FAILED_TITLE` asserts that a hold exists. `AgentConversation`
  * may say it because it gates on a live `decisionRaised` frame seen this
  * page-load; `TodayView` has no such gate, so it has no title. That asymmetry
  * is the rule working, not drift, and it is NOT something to harmonize. Adding
@@ -194,9 +195,9 @@ import { HttpError } from './http';
  * axis this file rules. It stays two-kind deliberately rather than by
  * oversight, because no decisions route answers 403 or 404 for a queue read —
  * a `gone` arm there would be a branch nothing can reach, and every decisions
- * consumer (`TodayView`, `InThreadApprovals`, `AgentConversation`) would have
- * to grow copy for a state none of them can be shown. It stays two-kind until
- * a route produces a third.
+ * consumer (`TodayView`, `AgentConversation`) would have to grow copy for a
+ * state none of them can be shown. It stays two-kind until a route produces
+ * a third.
  */
 export type ReadOutcome = 'expired' | 'gone' | 'failed';
 

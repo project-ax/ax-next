@@ -2,13 +2,13 @@
  * workspace-attachments — the agent-workspace composer's attachment state.
  *
  * WHY THIS EXISTS. The agent-workspace surface (`components/workspace/`)
- * deliberately does not mount assistant-ui's `AssistantRuntimeProvider`, so
- * chat's `AttachmentAdapter` / `useAttachment` / `ComposerPrimitive.Attachments`
- * machinery is simply unreachable there. Without this hook a person looking at
- * a workspace composer has no way to hand their agent a file at all. This is
- * the plain-React equivalent of the same idea, sitting on the SAME uploader
- * (`./attachment-upload`) so the two surfaces cannot drift apart on wire shape
- * or error taxonomy.
+ * mounts no assistant-ui runtime, so the deleted chat UI's `AttachmentAdapter`
+ * / `useAttachment` / `ComposerPrimitive.Attachments` machinery was never
+ * reachable here. Without this hook a person looking at a workspace composer
+ * has no way to hand their agent a file at all. This is the plain-React
+ * equivalent of the same idea, sitting on the SAME uploader
+ * (`./attachment-upload`) that chat used, so wire shape and error taxonomy
+ * never drifted apart between the two while both existed.
  *
  * WHY SENDING IS EVER BLOCKED. `sendBlock` exists because the alternative —
  * sending the text anyway — silently drops the file the person meant to send,

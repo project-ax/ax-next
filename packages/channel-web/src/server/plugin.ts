@@ -23,7 +23,6 @@ import {
   type RouteRequest,
   type RouteResponse,
 } from './sse.js';
-import { createTitleEventsHandler } from './title-events.js';
 import type { PermissionRequest, PhaseEvent, StreamChunk } from './types.js';
 
 const PLUGIN_NAME = '@ax/channel-web';
@@ -95,15 +94,6 @@ export interface ChannelWebServerConfig {
    * of truth for the timeout (the orchestrator owns that); it's a sizing hint.
    */
   chatTimeoutMs?: number;
-  /**
-   * Mount the agent-centric workspace surface (`/api/workspace/*`, TASK-230).
-   * On by default in the Helm chart; off means `/api/workspace/*` is never
-   * registered and this deployment has no web interface — an unmounted route
-   * is the cheapest capability minimization there is (invariant #5). `GET
-   * /api/features` mounts either way so the SPA can ask rather than guess —
-   * it echoes exactly this flag.
-   */
-  agentWorkspace?: boolean;
 }
 
 // How far above the configured chat timeout the cursor-shell reap ceiling sits,
@@ -382,7 +372,7 @@ export function createChannelWebServerPlugin(
             'approvals never stream the continuation live (the turn still runs; it renders on the next read)',
         },
       ],
-      subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'conversations:title-updated'],
+      subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request'],
     },
 
     async init({ bus }) {
@@ -487,24 +477,6 @@ export function createChannelWebServerPlugin(
         ) => Promise<void>,
       });
       unregisterRoutes.push(routeResult.unregister);
-
-      // Live title push — per-user SSE. Surfaces a title that lands after
-      // the client's poll window without a reload (design I5: ships with
-      // its consumer in the same PR; the route auto-registers here, no
-      // preset change needed).
-      const titleEventsHandler = createTitleEventsHandler({ bus, initCtx });
-      const titleEventsRoute = await bus.call<
-        unknown,
-        { unregister: () => void }
-      >('http:register-route', initCtx, {
-        method: 'GET',
-        path: '/api/chat/title-events',
-        handler: titleEventsHandler as unknown as (
-          req: RouteRequest,
-          res: RouteResponse,
-        ) => Promise<void>,
-      });
-      unregisterRoutes.push(titleEventsRoute.unregister);
 
       // Tasks 9-13 — chat-flow REST surface (POST messages, GET/DELETE
       // conversations, GET conversations/:id, GET agents). CSRF gated
@@ -695,18 +667,15 @@ export function createChannelWebServerPlugin(
       );
       for (const u of attachmentRouteUnregisters) unregisterRoutes.push(u);
 
-      // TASK-230 — the agent-centric workspace surface. GET /api/features
-      // always mounts (it is how the SPA learns whether the rest of this exists);
-      // the three /api/workspace/* reads mount only behind the agentWorkspace flag.
-      // Ships with its consumer (the workspace shell) in the same PR (I3 — no
-      // half-wired surface).
+      // TASK-230 — the agent-centric workspace surface. Every /api/workspace/*
+      // route always mounts: the workspace is the only web interface (TASK-360
+      // retired the flag that once gated it).
       //
       // TASK-373 — the SAME buffer instance goes to the workspace routes, so
       // GET /api/workspace/grants reads the cards the SSE fill subscriber and
       // the chat routes' eviction callbacks write and drop. A second instance
       // would answer from a different world than the streams create.
       const workspaceRouteUnregisters = await registerWorkspaceRoutes(bus, initCtx, {
-        agentWorkspace: config.agentWorkspace === true,
         buffer: localBuffer,
       });
       for (const u of workspaceRouteUnregisters) unregisterRoutes.push(u);

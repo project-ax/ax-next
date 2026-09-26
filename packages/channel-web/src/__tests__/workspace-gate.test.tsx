@@ -1,11 +1,11 @@
 /**
- * `/workspace` is a gated surface, not a dev-only bypass.
+ * The gate in front of the workspace (TASK-360).
  *
- * It used to render before the auth + bootstrap gate, keyed off
- * `import.meta.env.DEV`. Now it goes through boot like every other route and
- * renders only when the server says this deployment has the agentWorkspace
- * flag on. These tests pin the three arms of that gate, plus the fail-closed
- * behaviour of the `/api/features` client.
+ * Signed in, there is one surface: the agent workspace. There is no feature
+ * flag and no chat fall-through any more — every path a signed-in user lands
+ * on renders `WorkspaceShell`, and the retired `/chat` addresses are REPLACEd
+ * with `/` before anything reads the path. Signed out, every path is the
+ * sign-in page.
  *
  * `WorkspaceShell` is stubbed with a sentinel on purpose: what's under test is
  * the GATE, not the shell. Mounting the real shell would drag its data layer
@@ -17,8 +17,6 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { App } from '../App';
 import { getSession, type AuthSession } from '../lib/auth';
 import { fetchBootstrapStatus } from '../lib/bootstrap-status';
-import { fetchFeatures } from '../lib/features';
-import { bootstrapKickoff } from '../lib/bootstrap-kickoff';
 import type { WorkspaceShellProps } from '../components/workspace/WorkspaceShell';
 
 vi.mock('../lib/bootstrap-status', () => ({
@@ -30,11 +28,6 @@ vi.mock('../lib/auth', async (importOriginal) => {
   // needs to be steerable per test.
   const actual = await importOriginal<typeof import('../lib/auth')>();
   return { ...actual, getSession: vi.fn(async () => null) };
-});
-
-vi.mock('../lib/features', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../lib/features')>();
-  return { ...actual, fetchFeatures: vi.fn(async () => actual.DEFAULT_FEATURES) };
 });
 
 // `WorkspaceShell` is stubbed with a sentinel — see the file header — but the
@@ -51,15 +44,14 @@ vi.mock('../components/workspace/WorkspaceShell', () => ({
 
 const mockGetSession = vi.mocked(getSession);
 const mockFetchBootstrapStatus = vi.mocked(fetchBootstrapStatus);
-const mockFetchFeatures = vi.mocked(fetchFeatures);
 
 const ALICE: AuthSession = {
   user: { id: 'u2', email: 'alice@local', name: 'Alice', role: 'user' },
 };
 
 /**
- * Everything the chat shell fetches after boot (agent list, runtime wiring).
- * One agent so the first-run create-agent gate stays closed.
+ * What App fetches after boot (the agent list). One agent so the first-run
+ * create-agent gate stays closed.
  */
 function installShellFetch(): void {
   const fetchImpl = async (input: RequestInfo | URL) => {
@@ -78,13 +70,25 @@ function installShellFetch(): void {
   globalThis.fetch = fetchImpl as unknown as typeof fetch;
 }
 
-function setPathname(pathname: string): void {
-  // jsdom's location is mostly read-only; spy on replace and override pathname.
+/**
+ * jsdom's location is mostly read-only, so it is swapped for a plain object.
+ * `history.replaceState` is spied AND made to move that object, so a test can
+ * assert both that the replace was called and where the address ended up.
+ */
+let replaceState: ReturnType<typeof vi.spyOn>;
+function setLocation(pathname: string, search = '', hash = ''): void {
   const loc = window.location;
-  Object.defineProperty(window, 'location', {
-    writable: true,
-    value: { ...loc, pathname, search: '', replace: vi.fn() },
-  });
+  const fake = { ...loc, pathname, search, hash, replace: vi.fn() };
+  Object.defineProperty(window, 'location', { writable: true, value: fake });
+  replaceState = vi
+    .spyOn(window.history, 'replaceState')
+    .mockImplementation((_data, _unused, url) => {
+      if (typeof url !== 'string') return;
+      const next = new URL(url, 'http://localhost');
+      fake.pathname = next.pathname;
+      fake.search = next.search;
+      fake.hash = next.hash;
+    });
 }
 
 let originalLocation: Location;
@@ -94,210 +98,146 @@ beforeEach(() => {
   mockGetSession.mockResolvedValue(null);
   mockFetchBootstrapStatus.mockReset();
   mockFetchBootstrapStatus.mockResolvedValue('completed');
-  mockFetchFeatures.mockReset();
-  mockFetchFeatures.mockResolvedValue({ agentWorkspace: false });
   lastWorkspaceShellProps = undefined;
   installShellFetch();
 });
 afterEach(() => {
+  replaceState?.mockRestore();
   Object.defineProperty(window, 'location', {
     writable: true,
     value: originalLocation,
   });
 });
 
-describe('/workspace gate', () => {
-  it('sends a signed-out visitor to the sign-in page even with the flag on', async () => {
-    setPathname('/workspace');
+describe('the auth gate in front of the workspace', () => {
+  it.each(['/', '/workspace', '/chat'])(
+    'sends a signed-out visitor on %s to the sign-in page',
+    async (path) => {
+      setLocation(path);
+      mockGetSession.mockResolvedValue(null);
+
+      render(<App />);
+
+      await waitFor(() => {
+        expect(screen.getByText(/Sign in with Google/i)).toBeTruthy();
+      });
+      expect(screen.queryByTestId('workspace-shell-stub')).toBeNull();
+    },
+  );
+});
+
+describe('signed in, every path is the workspace', () => {
+  it.each(['/', '/workspace', '/workspace/agents/a1', '/somewhere/else'])(
+    'renders the workspace on %s, without touching the address',
+    async (path) => {
+      setLocation(path);
+      mockGetSession.mockResolvedValue(ALICE);
+
+      render(<App />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('workspace-shell-stub')).toBeTruthy();
+      });
+      // Not a retired chat address, so App leaves it alone; the shell owns
+      // canonicalising workspace routes.
+      expect(replaceState).not.toHaveBeenCalled();
+      expect(window.location.pathname).toBe(path);
+    },
+  );
+
+  // A prefix match would swallow these; the helper matches `/chat` and
+  // `/chat/` only.
+  it('does not treat /chatroom as a retired chat address', async () => {
+    setLocation('/chatroom');
+    mockGetSession.mockResolvedValue(ALICE);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('workspace-shell-stub')).toBeTruthy();
+    });
+    expect(replaceState).not.toHaveBeenCalled();
+  });
+});
+
+describe('retired /chat addresses land on / (TASK-360)', () => {
+  it.each([
+    ['/chat', '', ''],
+    ['/chat/deep/link', '', ''],
+    ['/chat', '?x=1', '#h'],
+    ['/chat/c-123', '?x=1', '#h'],
+  ])('%s%s%s is replaced with / and ends at the workspace', async (path, search, hash) => {
+    setLocation(path, search, hash);
+    mockGetSession.mockResolvedValue(ALICE);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('workspace-shell-stub')).toBeTruthy();
+    });
+    // A REPLACE to bare `/` — nothing of the old address (segment, query,
+    // hash) is carried over, and no Back entry is left on the dead path.
+    expect(replaceState).toHaveBeenCalledWith(null, '', '/');
+    expect(window.location.pathname).toBe('/');
+    expect(window.location.search).toBe('');
+    expect(window.location.hash).toBe('');
+  });
+
+  it('replaces before the boot fetch resolves, not after', async () => {
+    setLocation('/chat');
+    let release!: () => void;
+    mockFetchBootstrapStatus.mockReturnValue(
+      new Promise((resolve) => {
+        release = () => resolve('completed');
+      }),
+    );
+    mockGetSession.mockResolvedValue(ALICE);
+
+    render(<App />);
+
+    expect(replaceState).toHaveBeenCalledWith(null, '', '/');
+    await act(async () => {
+      release();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('workspace-shell-stub')).toBeTruthy();
+    });
+  });
+
+  it('replaces a /chat address for a signed-out visitor too', async () => {
+    setLocation('/chat/deep/link');
     mockGetSession.mockResolvedValue(null);
-    mockFetchFeatures.mockResolvedValue({ agentWorkspace: true });
 
     render(<App />);
 
     await waitFor(() => {
       expect(screen.getByText(/Sign in with Google/i)).toBeTruthy();
     });
-    expect(screen.queryByTestId('workspace-shell-stub')).toBeNull();
-  });
-
-  it('falls through to the chat shell when the flag is off', async () => {
-    setPathname('/workspace');
-    mockGetSession.mockResolvedValue(ALICE);
-    mockFetchFeatures.mockResolvedValue({ agentWorkspace: false });
-
-    const { container } = render(<App />);
-
-    await waitFor(() => {
-      expect(container.querySelector('aside[data-testid="sidebar"]')).toBeTruthy();
-    });
-    expect(screen.queryByTestId('workspace-shell-stub')).toBeNull();
-  });
-
-  it('renders the workspace for a signed-in user when the flag is on', async () => {
-    setPathname('/workspace');
-    mockGetSession.mockResolvedValue(ALICE);
-    mockFetchFeatures.mockResolvedValue({ agentWorkspace: true });
-
-    const { container } = render(<App />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId('workspace-shell-stub')).toBeTruthy();
-    });
-    expect(container.querySelector('aside[data-testid="sidebar"]')).toBeNull();
-  });
-});
-
-/**
- * `/` is the landing surface, and which surface that IS depends on the flag.
- *
- * With the flag on, the workspace is home — that is the whole point of the
- * flag for the deployment that turns it on. With it off, `/` must still be the
- * chat shell, because that is what every other deployment gets and this change
- * must be invisible to them.
- *
- * Chat does not lose its address either way: it is App's fall-through branch
- * and the static-files plugin serves the SPA on any unclaimed path, so `/chat`
- * renders it. That is what makes handing `/` to the workspace safe rather than
- * a one-way door — and it is why the third test here pins `/chat` explicitly.
- */
-describe('the default surface at /', () => {
-  it('renders the workspace at / when the flag is on', async () => {
-    setPathname('/');
-    mockGetSession.mockResolvedValue(ALICE);
-    mockFetchFeatures.mockResolvedValue({ agentWorkspace: true });
-
-    const { container } = render(<App />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId('workspace-shell-stub')).toBeTruthy();
-    });
-    expect(container.querySelector('aside[data-testid="sidebar"]')).toBeNull();
-  });
-
-  it('still renders the chat shell at / when the flag is off', async () => {
-    setPathname('/');
-    mockGetSession.mockResolvedValue(ALICE);
-    mockFetchFeatures.mockResolvedValue({ agentWorkspace: false });
-
-    const { container } = render(<App />);
-
-    await waitFor(() => {
-      expect(container.querySelector('aside[data-testid="sidebar"]')).toBeTruthy();
-    });
-    expect(screen.queryByTestId('workspace-shell-stub')).toBeNull();
-  });
-
-  it('keeps /chat on the chat shell even with the flag on', async () => {
-    setPathname('/chat');
-    mockGetSession.mockResolvedValue(ALICE);
-    mockFetchFeatures.mockResolvedValue({ agentWorkspace: true });
-
-    const { container } = render(<App />);
-
-    await waitFor(() => {
-      expect(container.querySelector('aside[data-testid="sidebar"]')).toBeTruthy();
-    });
-    expect(screen.queryByTestId('workspace-shell-stub')).toBeNull();
-  });
-});
-
-describe('fetchFeatures — fail closed', () => {
-  // The real client, not the module mock the gate tests install.
-  async function realFetchFeatures() {
-    const mod = await vi.importActual<typeof import('../lib/features')>('../lib/features');
-    return mod.fetchFeatures();
-  }
-
-  let warn: ReturnType<typeof vi.spyOn>;
-  beforeEach(() => {
-    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-  });
-  afterEach(() => {
-    warn.mockRestore();
-  });
-
-  it('returns all-off when /api/features 500s', async () => {
-    globalThis.fetch = (async () => ({
-      ok: false,
-      status: 500,
-      json: async () => ({}),
-    })) as unknown as typeof fetch;
-
-    await expect(realFetchFeatures()).resolves.toEqual({ agentWorkspace: false });
-    expect(warn).toHaveBeenCalled();
-  });
-
-  it('returns all-off when /api/features is unreachable', async () => {
-    globalThis.fetch = (async () => {
-      throw new Error('offline');
-    }) as unknown as typeof fetch;
-
-    await expect(realFetchFeatures()).resolves.toEqual({ agentWorkspace: false });
-    expect(warn).toHaveBeenCalled();
-  });
-
-  it('returns all-off when the body is malformed', async () => {
-    globalThis.fetch = (async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({ agentWorkspace: 'yes please' }),
-    })) as unknown as typeof fetch;
-
-    await expect(realFetchFeatures()).resolves.toEqual({ agentWorkspace: false });
-    expect(warn).toHaveBeenCalled();
-  });
-
-  it('passes a real boolean through', async () => {
-    globalThis.fetch = (async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({ agentWorkspace: true }),
-    })) as unknown as typeof fetch;
-
-    await expect(realFetchFeatures()).resolves.toEqual({ agentWorkspace: true });
-  });
-
-  // A stale server (pre-rename) paired with a new client is a real skew, not
-  // a hypothetical: the wire field only carries the retired name, so the new
-  // client must treat it as missing and fail closed rather than trust it.
-  it('returns all-off when the body carries only the retired field name', async () => {
-    globalThis.fetch = (async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({ agentWorkspacePreview: true }),
-    })) as unknown as typeof fetch;
-
-    await expect(realFetchFeatures()).resolves.toEqual({ agentWorkspace: false });
-    expect(warn).toHaveBeenCalled();
+    expect(replaceState).toHaveBeenCalledWith(null, '', '/');
+    expect(window.location.pathname).toBe('/');
   });
 });
 
 /**
  * TASK-249 — the workspace gets a create-agent door, AND the kickoff that
- * door starts reaches a surface that can actually send it.
+ * door starts reaches the workspace, which is the surface that sends it.
  *
- * Shipping only the door would reproduce the exact failure this card exists
- * to avoid: `bootstrapKickoff.trigger()` only ever fires through
- * `useChatThreadRuntime`, which only mounts under an `AssistantRuntimeProvider`
- * — and the workspace branch mounts none. So these tests pin two separate
- * things: (1) `WorkspaceShell` is handed a working `onCreateAgent`, and (2) a
- * first-run kickoff on the workspace path is handed to `WorkspaceShell` as
- * `kickoffAgentId`, never stranded in `bootstrapKickoff`. A third test pins
- * the chat path is untouched — the actual regression risk of "fix" #2.
+ * These tests pin two separate things: (1) `WorkspaceShell` is handed a
+ * working `onCreateAgent`, and (2) a first-run kickoff is handed to
+ * `WorkspaceShell` as `kickoffAgentId`.
  *
- * Tests 2 and 3 deliberately drive the FIRST-RUN arm (empty agent list), not
- * the explicit "+ New agent…" path — that is the arm that actually exercises
+ * Test 2 deliberately drives the FIRST-RUN arm (empty agent list), not the
+ * explicit "+ New agent…" path — that is the arm that actually exercises
  * `onDone`, because on first run `FirstRunAutoCreate`'s own gate-closing side
  * effect (via `hydrateAgentsOnce`) used to unmount it before `onDone` fired;
- * see the fix and its comment in `FirstRunAutoCreate.tsx`. The explicit path
- * never hit that race (`createAgentOpen` keeps the gate open until `onDone`
- * itself closes it), so it would not have caught the bug either fix touches.
+ * see the fix and its comment in `FirstRunAutoCreate.tsx`. Putting
+ * `if (cancelled) return` back in front of `onDone` turns it red on
+ * `expected null to be 'a-new'`.
  */
 describe('workspace create-agent door + kickoff routing (TASK-249)', () => {
   it('App supplies a working onCreateAgent, and calling it opens the name dialog', async () => {
-    setPathname('/workspace');
+    setLocation('/workspace');
     mockGetSession.mockResolvedValue(ALICE);
-    mockFetchFeatures.mockResolvedValue({ agentWorkspace: true });
     // installShellFetch() (from the default beforeEach) already returns one
     // agent, so the first-run gate is closed and the workspace renders
     // straight away.
@@ -322,11 +262,9 @@ describe('workspace create-agent door + kickoff routing (TASK-249)', () => {
     expect(screen.getByRole('button', { name: /close/i })).toBeTruthy();
   });
 
-  it('hands the kickoff to the workspace, not to bootstrapKickoff', async () => {
-    setPathname('/workspace');
+  it('hands the first-run kickoff to the workspace', async () => {
+    setLocation('/workspace');
     mockGetSession.mockResolvedValue(ALICE);
-    mockFetchFeatures.mockResolvedValue({ agentWorkspace: true });
-    const trigger = vi.spyOn(bootstrapKickoff, 'trigger');
 
     let bootstrapped = false;
     globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -370,90 +308,5 @@ describe('workspace create-agent door + kickoff routing (TASK-249)', () => {
     await waitFor(() => {
       expect(lastWorkspaceShellProps?.kickoffAgentId).toBe('a-new');
     });
-    // The actual bug this card fixes: on the old code this call went through
-    // and the kickoff was silently dropped, because nothing on the workspace
-    // path ever registers with it.
-    expect(trigger).not.toHaveBeenCalled();
-  });
-
-  /**
-   * VACUITY, corrected after review. This was first written off as the
-   * no-regression arm that "passes either way" — the guard that stops the new
-   * `rendersWorkspace` branch from routing BOTH surfaces at the workspace. It
-   * is that, but it is also stronger than that, and the weaker label was
-   * wrong.
-   *
-   * Against `main` this test is **red**, measured by swapping `main`'s
-   * `FirstRunAutoCreate.tsx` in and running it: `expected "trigger" to be
-   * called 1 times, but got 0 times`. On first run the unfixed component never
-   * reaches `onDone` at all — the `hydrateAgentsOnce` it awaits closes the
-   * bootstrap gate, unmounts it, and its own `cancelled` guard discards the
-   * completion. So `bootstrapKickoff.trigger()` is never called on the CHAT
-   * path either.
-   *
-   * Which makes this a regression net for the `onDone` ungating as much as
-   * for the branch — but it is NOT the only one, and an earlier version of
-   * this comment wrongly claimed it was. Putting `if (cancelled) return` back
-   * in front of `onDone` turns BOTH first-run tests red, measured: this one
-   * on `expected "trigger" to be called 1 times, but got 0 times`, and `hands
-   * the kickoff to the workspace` on `expected null to be 'a-new'`. The reason
-   * is that `App.tsx` sets `kickoffAgentId` only inside this same `onDone`, so
-   * re-gating it strands the workspace arm exactly as it strands the chat arm.
-   * That is what the block header above already says: tests 2 and 3 both drive
-   * the first-run arm because that is the arm that exercises `onDone`.
-   *
-   * What IS distinct about this test: it is the only one that asserts
-   * `trigger()` **is** called, and that the workspace is never mounted — it
-   * pins the CHAT branch of the `rendersWorkspace` fork, where test 2 pins the
-   * workspace branch. Neither subsumes the other.
-   */
-  it('still uses bootstrapKickoff on the chat path (no regression)', async () => {
-    setPathname('/workspace');
-    mockGetSession.mockResolvedValue(ALICE);
-    // Flag OFF — App falls through to the chat shell even though the path
-    // would otherwise resolve to the workspace.
-    mockFetchFeatures.mockResolvedValue({ agentWorkspace: false });
-    const trigger = vi.spyOn(bootstrapKickoff, 'trigger');
-
-    let bootstrapped = false;
-    globalThis.fetch = (async (input: RequestInfo | URL) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url.includes('/api/agents/bootstrap')) {
-        bootstrapped = true;
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
-            agent: { agentId: 'a-new', displayName: 'Scout', visibility: 'personal' },
-          }),
-        };
-      }
-      if (url.includes('/api/chat/agents')) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () =>
-            bootstrapped
-              ? [{ agentId: 'a-new', displayName: 'Scout', visibility: 'personal' }]
-              : [],
-        };
-      }
-      return { ok: true, status: 200, json: async () => ({}) };
-    }) as unknown as typeof fetch;
-
-    render(<App />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Name your agent')).toBeTruthy();
-    });
-    fireEvent.change(screen.getByLabelText(/agent name/i), {
-      target: { value: 'Scout' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: /create agent/i }));
-
-    await waitFor(() => {
-      expect(trigger).toHaveBeenCalledTimes(1);
-    });
-    expect(lastWorkspaceShellProps).toBeUndefined();
   });
 });

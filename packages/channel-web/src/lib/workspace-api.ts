@@ -46,9 +46,9 @@ import { HttpError, httpErrorMessage, httpFetch } from './http';
   instead of a type error.
 
   It used to be read out of `./transport`, which owned it from Fault A until
-  TASK-372. That was correct and is no longer survivable: TASK-360 deletes
-  `transport.ts` with the rest of chat, and this is the surface that is left.
-  The table now lives in `./turn-error-labels`, outside the tree that goes.
+  TASK-372. That was correct and did not survive: TASK-360 deleted
+  `transport.ts` with the rest of chat, and this is now the surface that is
+  left. The table lives in `./turn-error-labels`, outside the tree that went.
 */
 import { turnErrorText } from './turn-error-labels';
 import { readSseFrames } from './sse-frames';
@@ -348,11 +348,12 @@ export class WorkspaceShapeError extends Error {
  * the result during React's RENDER phase — `watchedKey` calls `.filter` on the
  * list, `applyPolledRow` reads `row.id` inside a `setDecisions` updater. So a
  * malformed body did not degrade, it threw out of a hook — and before
- * TASK-273 there was no ErrorBoundary in this SPA, so the whole chat surface
- * unmounted. That was survivable while only the flag-gated `/workspace`
- * mounted this. TASK-261 puts it on the default `/` chat surface, for every
- * user, on every page load. (The per-surface boundaries are the backstop for
- * what this guard misses; this guard stays the primary defence.)
+ * TASK-273 there was no ErrorBoundary in this SPA, so the whole surface it
+ * was on unmounted. That was survivable while only `/workspace` mounted
+ * this. TASK-261 put it on the default `/` route too, and now `/` and
+ * `/workspace` are the same route, for every user, on every page load. (The
+ * per-surface boundaries are the backstop for what this guard misses; this
+ * guard stays the primary defence.)
  *
  * Checked HERE rather than in each caller so the list read and the single-row
  * re-read cannot drift — the first version of this guard covered only the list,
@@ -524,8 +525,8 @@ export interface StreamHandlers {
    * what happens: `request_capability` returns to the model, the model says it
    * has asked, the turn ENDS, and answering the grant retires the warm session
    * so the capability is there for the NEXT turn. Somebody has to start that
-   * turn — `lib/workspace-resume.ts` (TASK-374) is who, and chat's own
-   * `resumeActions` → `regenerate()` is the same admission one surface over.
+   * turn — `lib/workspace-resume.ts` (TASK-374) is who; the deleted chat UI's
+   * own `resumeActions` → `regenerate()` made the same admission over there.
    *
    * Before this existed the frame was parsed and then dropped on the floor: the
    * reader handled `done`, `error`, text and `decisionRaised`, and a
@@ -990,11 +991,11 @@ export const workspaceApi = {
  *
  * WHY THIS IS STILL A SEPARATE READER. It no longer parses anything. The wire
  * — `data: ` framing, the carry buffer, malformed JSON, `:` comments, and the
- * TASK-23 seq dedup + gap detection — belongs to `./sse-frames`, shared with
- * chat's `lib/transport.ts`. What is different between the two surfaces is what
- * a frame BECOMES, and that difference is deliberate: chat emits AI-SDK
- * `UIMessageChunk`s into the assistant-ui runtime, and the workspace does not
- * mount that runtime at all. So this reader turns frames into plain callbacks.
+ * TASK-23 seq dedup + gap detection — belongs to `./sse-frames`. The deleted
+ * chat UI's `lib/transport.ts` used to share that module too, turning frames
+ * into AI-SDK `UIMessageChunk`s for the assistant-ui runtime; the workspace
+ * mounts no such runtime, so this reader turns frames into plain callbacks
+ * instead.
  *
  * TASK-352 grew the renderers: `tool-use`, `tool-result` and `phase` now reach
  * the caller as their own callbacks, so the live thread can say what the agent
@@ -1068,8 +1069,9 @@ async function streamReply(
         REASON CODE — `dev-service-failed`, `chat-run-timeout` — and this
         used to hand it to the caller verbatim, which put an internal
         identifier on screen in the same breath as the rest of this epic
-        was taking them off. `lib/transport.ts` has mapped these to authored
-        labels since Fault A; reading its table rather than growing a second
+        was taking them off. `lib/transport.ts` mapped these to authored
+        labels since Fault A (that table now lives in `./turn-error-labels`,
+        see the import note above); reading it rather than growing a second
         one is the difference between one source of truth and two that drift
         (invariant 4). An unknown code falls back to `DEFAULT_TURN_ERROR`,
         so a reason code can never reach a reader again.

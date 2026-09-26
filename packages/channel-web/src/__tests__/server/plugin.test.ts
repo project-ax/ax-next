@@ -426,8 +426,6 @@ function memoryMockPlugin(state: {
 
 interface BootArgs {
   user?: { id: string; isAdmin: boolean } | null;
-  /** TASK-230 — mount the /api/workspace/* surface. */
-  agentWorkspace?: boolean;
   /** AW-13 — load the Memory-tab hooks. Omitted = no memory plugin at all. */
   memory?: Parameters<typeof memoryMockPlugin>[0];
   /** TASK-230 — conversation rows the workspace detail route can read. */
@@ -489,11 +487,7 @@ async function boot(args: BootArgs = {}): Promise<{
       attachmentsMockPlugin(),
       skillsMockPlugin(),
       ...(args.memory === undefined ? [] : [memoryMockPlugin(args.memory)]),
-      createChannelWebServerPlugin(
-        args.agentWorkspace === undefined
-          ? {}
-          : { agentWorkspace: args.agentWorkspace },
-      ),
+      createChannelWebServerPlugin(),
     ],
   });
   return { harness, port: http.boundPort(), http };
@@ -752,7 +746,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
             'approvals never stream the continuation live (the turn still runs; it renders on the next read)',
         },
       ],
-      subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'conversations:title-updated'],
+      subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request'],
     });
   });
 
@@ -835,8 +829,10 @@ describe('@ax/channel-web server plugin (integration)', () => {
       expect(plugin.manifest.calls ?? []).not.toContain('session:is-alive');
     });
 
-    it('mounts /api/workspace/* and echoes the flag when it is on', async () => {
-      const booted = await boot({ user: null, agentWorkspace: true });
+    it('mounts /api/workspace/* with no flag passed, and no longer serves /api/features', async () => {
+      // TASK-360 — the agentWorkspace flag is gone: boot() passes no config at
+      // all, and the workspace surface must be there anyway.
+      const booted = await boot({ user: null });
       harness = booted.harness;
 
       // user=null → auth throws → 401. A 404 would mean the route is missing,
@@ -846,33 +842,35 @@ describe('@ax/channel-web server plugin (integration)', () => {
       );
       expect(state.status).toBe(401);
 
-      // TASK-373 — the grants read-back sits behind the same flag, and this
-      // pin is the reason it does: a typo'd path or a move outside the gated
-      // block would otherwise pass every handler-level test, which never ask
-      // whether the route is REACHABLE.
+      // TASK-373 — the grants read-back. A typo'd path would otherwise pass
+      // every handler-level test, which never ask whether the route is
+      // REACHABLE.
       const grants = await fetch(
         `http://127.0.0.1:${booted.port}/api/workspace/grants`,
       );
       expect(grants.status).toBe(401);
 
-      // The flag echo needs no session at all — the SPA reads it before it
-      // knows whether anyone is signed in.
+      // The old flag echo is gone with the flag. A 404 here (not a 200) is what
+      // catches a revert that brings the route back.
       const features = await fetch(`http://127.0.0.1:${booted.port}/api/features`);
-      expect(features.status).toBe(200);
-      expect(await features.json()).toEqual({ agentWorkspace: true });
+      expect(features.status).toBe(404);
+
+      // So is the chat sidebar's live-title SSE; its only consumer was the
+      // deleted chat client.
+      const titleEvents = await fetch(
+        `http://127.0.0.1:${booted.port}/api/chat/title-events`,
+      );
+      expect(titleEvents.status).toBe(404);
     });
 
     /*
-      TASK-261 — with the flag ON, the move of the decision routes
-      out of the `if (agentWorkspace)` block must not have LOST them,
-      and must not have left a duplicate copy behind inside the block: two
-      `http:register-route` calls for the same (method, path) throw
+      Two `http:register-route` calls for the same (method, path) throw
       `route already registered` out of the real `@ax/http-server` router, so
       `boot()` resolving at all — for every route below, not just the first —
       is itself part of the assertion.
     */
-    it('registers each decision route exactly once when the flag is on', async () => {
-      const booted = await boot({ user: null, agentWorkspace: true });
+    it('registers each decision route exactly once', async () => {
+      const booted = await boot({ user: null });
       harness = booted.harness;
 
       // user=null → authOr401 inside the handler → 401. A 404 would mean the
@@ -949,7 +947,6 @@ describe('@ax/channel-web server plugin (integration)', () => {
         ],
       ]);
       const booted = await boot({
-        agentWorkspace: true,
         conversationRows: rows,
         conversationTurns: turns,
       });
@@ -991,7 +988,6 @@ describe('@ax/channel-web server plugin (integration)', () => {
         writeCtx: [] as Array<{ agentId: string; userId: string; payloadAgentId: string }>,
       };
       const booted = await boot({
-        agentWorkspace: true,
         conversationRows: [],
         memory,
       });
@@ -1038,7 +1034,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
           message: 'rules must be 16384 characters or fewer',
         }),
       };
-      const booted = await boot({ agentWorkspace: true, memory });
+      const booted = await boot({ memory });
       harness = booted.harness;
 
       const put = await fetch(
@@ -1058,7 +1054,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
     it('503s the rules write when no memory plugin is loaded', async () => {
       // No `memory` in BootArgs → the hooks are simply absent. Answering 200
       // here would tell the user their rules were kept when nothing kept them.
-      const booted = await boot({ agentWorkspace: true, conversationRows: [] });
+      const booted = await boot({ conversationRows: [] });
       harness = booted.harness;
 
       const put = await fetch(
@@ -1095,7 +1091,6 @@ describe('@ax/channel-web server plugin (integration)', () => {
         writeCtx: [] as Array<{ agentId: string; userId: string; payloadAgentId: string }>,
       };
       const booted = await boot({
-        agentWorkspace: true,
         agentsAllow: false,
         memory,
       });
@@ -1134,7 +1129,6 @@ describe('@ax/channel-web server plugin (integration)', () => {
         },
       };
       const booted = await boot({
-        agentWorkspace: true,
         conversationRows: [],
         memory,
       });
@@ -1191,104 +1185,36 @@ describe('@ax/channel-web server plugin (integration)', () => {
       expect(memory.facts.calls[2]).toMatchObject({ hook: 'forget', userId: 'userA' });
     });
 
-    it('leaves the flagged /api/workspace/* routes unmounted when the flag is off, but keeps the whole decisions collection reachable', async () => {
+    it('mounts the Files routes and the rest of the surface with no flag passed', async () => {
       const booted = await boot({ user: null });
       harness = booted.harness;
 
-      // Not registered at all — the cheapest capability minimization there is.
-      const state = await fetch(
-        `http://127.0.0.1:${booted.port}/api/workspace/state`,
-      );
-      expect(state.status).toBe(404);
-
-      const activity = await fetch(
-        `http://127.0.0.1:${booted.port}/api/workspace/activity`,
-      );
-      expect(activity.status).toBe(404);
-
-      const agentDetail = await fetch(
-        `http://127.0.0.1:${booted.port}/api/workspace/agents/agt_test`,
-      );
-      expect(agentDetail.status).toBe(404);
-
       /*
-        The Files routes (TASK-233) sit inside the same flag, and they are the
-        ones worth naming: they are the only routes on this surface that read a
-        caller-supplied path out of a workspace. A route accidentally pushed
-        OUTSIDE the `if (agentWorkspace)` block would still pass the
-        assertion above, because that one only asks about `/state`.
+        401 (authOr401 ran), not 404 (route missing). The Files routes are
+        worth naming: they are the only routes on this surface that read a
+        caller-supplied path out of a workspace, so reachability without auth
+        is what must NOT happen — and the 401 says it doesn't.
       */
-      const files = await fetch(
-        `http://127.0.0.1:${booted.port}/api/workspace/agents/agt_test/files`,
-      );
-      expect(files.status).toBe(404);
-
-      const oneFile = await fetch(
-        `http://127.0.0.1:${booted.port}/api/workspace/agents/agt_test/files/x.md`,
-      );
-      expect(oneFile.status).toBe(404);
-
-      // TASK-373 — the grants read-back stays behind the flag too. Its only
-      // consumer is the workspace shell's mount fetch, which does not exist
-      // when the flag is off, so an unmounted route is the cheapest
-      // capability minimization there is.
-      const grants = await fetch(
-        `http://127.0.0.1:${booted.port}/api/workspace/grants`,
-      );
-      expect(grants.status).toBe(404);
-
-      /*
-        "Unmounted" has exactly one exception, and it is a whole collection
-        rather than a route: every `/api/workspace/decisions*` route mounts
-        unconditionally (asserted just below, and pinned as a PROPERTY by
-        `routes-workspace-decisions-unflagged.test.ts`). The bar for joining
-        that set is a safety affordance that fails silently, not a feature that
-        would be handy to have early.
-      */
-
-      const features = await fetch(`http://127.0.0.1:${booted.port}/api/features`);
-      expect(features.status).toBe(200);
-      expect(await features.json()).toEqual({ agentWorkspace: false });
-
-      /*
-        TASK-261 — the decisions collection mounts unconditionally now. A held
-        call reaches the default `/` chat surface whether or not the flag
-        is on, so gating these routes would gate only the remedy.
-        401 (authOr401 ran) rather than 404 (route missing) or 405 (wrong
-        method) proves each one is registered, on the right verb, outside the
-        flag.
-      */
-      const list = await fetch(`http://127.0.0.1:${booted.port}/api/workspace/decisions`);
-      expect(list.status).toBe(401);
-
-      for (const action of ['approve', 'dismiss', 'undo']) {
-        const r = await fetch(
-          `http://127.0.0.1:${booted.port}/api/workspace/decisions/d1/${action}`,
-          {
-            method: 'POST',
-            headers: { 'x-requested-with': 'ax-admin' },
-          },
-        );
-        expect(r.status).toBe(401);
+      for (const path of [
+        '/api/workspace/activity',
+        '/api/workspace/agents/agt_test',
+        '/api/workspace/agents/agt_test/files',
+        '/api/workspace/agents/agt_test/files/x.md',
+      ]) {
+        const r = await fetch(`http://127.0.0.1:${booted.port}${path}`);
+        expect({ path, status: r.status }).toEqual({ path, status: 401 });
       }
     });
 
-    it('KEEPS the single-decision re-read mounted when the flag is off', async () => {
+    it('mounts the single-decision re-read', async () => {
       /*
-        The test above covers the collection; this one is kept separate because
-        this route's reason for being unmounted-free is its own, and it is the
-        one most likely to be quietly re-gated by someone who reads the others
-        as "just the approve buttons".
-
         `GET /api/workspace/decisions/:decisionId` is how `undoable: false`
         reaches a browser: the queue polls it while a row is inside its undo
         window, so the Undo control disappears when the agent actually consumes
         the authorisation instead of when the ten seconds run out (TASK-259).
-        The approval card now renders on the default `/` surface unflagged
-        (TASK-261), so a route left behind the flag would 404 that poll
-        forever — and a failed poll is silent by design, so nothing would say
-        so. Undo would sit there for ten seconds on a call that had already
-        gone out.
+        If it 404'd, that poll would fail forever — and a failed poll is silent
+        by design, so nothing would say so. Undo would sit there for ten
+        seconds on a call that had already gone out.
 
         401, not 404, is the assertion: `user: null` means the handler ran and
         `authOr401` refused it. A 404 would mean the route was never registered
@@ -1302,17 +1228,6 @@ describe('@ax/channel-web server plugin (integration)', () => {
       );
       expect(oneDecision.status).toBe(401);
     });
-  });
-
-  it('GET /api/chat/title-events is registered (returns 401, not 404)', async () => {
-    const booted = await boot({ user: null });
-    harness = booted.harness;
-    // With user=null, auth:require-user throws unauthenticated → 401.
-    // A 404 body {"error":"not-found"} would mean the route was never
-    // registered — any other status proves the route handler ran.
-    const r = await fetch(`http://127.0.0.1:${booted.port}/api/chat/title-events`);
-    expect(r.status).toBe(401);
-    expect(await r.json()).toEqual({ error: 'unauthenticated' });
   });
 
   describe('attachments routes', () => {

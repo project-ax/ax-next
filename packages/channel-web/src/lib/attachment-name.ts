@@ -3,20 +3,13 @@
  *
  * This lived privately inside `components/workspace/WorkspaceAttachmentChip.tsx`
  * until TASK-431, which needed the same bound in `components/AttachmentChip.tsx`
- * — a component BOTH shells render (chat's transcript through `Thread.tsx`, the
- * agent view's through `AgentConversation.tsx`). Leaving it where it was would
+ * — a component the agent view's `AgentConversation.tsx` renders (and, while
+ * chat existed, its transcript rendered too). Leaving it where it was would
  * have pointed the SHARED chip at the SPECIFIC one — the workspace composer's
- * chip — which is the wrong direction whichever way the trees are eventually
- * pruned. So it moved here, next to `fence-line.ts`, which came out of
- * `server/routes-workspace.ts` for the same reason: a rule both trees apply is
- * not a rule if it lives inside one of them (invariant 4).
- *
- * Reaching into `components/workspace/` is not itself forbidden and there are
- * several such imports today — `InThreadApprovals`, `Composer` and two `lib/`
- * modules all pull `components/workspace/decision-copy`. Those are chat
- * surfaces borrowing workspace-authored COPY, and they go when chat goes. This
- * is the opposite shape: a bound the agent view keeps needing, reached for by a
- * component the agent view keeps rendering.
+ * chip — which is the wrong direction. So it moved here, next to
+ * `fence-line.ts`, which came out of `server/routes-workspace.ts` for the same
+ * reason: a rule both trees apply is not a rule if it lives inside one of them
+ * (invariant 4).
  *
  * Not the same tool as `fenceLine`, and the difference matters. `fenceLine`
  * fences text arriving from across a trust boundary: it strips the characters

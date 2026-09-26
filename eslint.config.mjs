@@ -291,10 +291,10 @@ export default tseslint.config(
     //
     // It exists because chat's parser was welded to assistant-ui chunk emission,
     // which is why the agent workspace grew a second parser rather than reuse
-    // it. The module's whole value is that BOTH surfaces can consume it, and it
-    // loses that the moment it imports a renderer: an `ai` or `@assistant-ui/*`
-    // import drags the runtime the workspace deliberately does not mount, and a
-    // `react` import makes it unusable outside a component tree.
+    // it. Chat is gone (TASK-360), but the lesson stands: the module stays
+    // usable by any consumer only while it imports no renderer. An `ai` or
+    // `@assistant-ui/*` import would drag a runtime back in, and a `react`
+    // import makes it unusable outside a component tree.
     //
     // Its docblock claims all three. This is the claim being checked rather
     // than asserted — the next person to add "just one" render helper here gets
@@ -312,74 +312,7 @@ export default tseslint.config(
             {
               group: ['ai', 'ai/*', '@assistant-ui/*', 'react', 'react-dom'],
               message:
-                'sse-frames.ts is the shared SSE wire reader: bytes in, typed frames out. Rendering belongs to its consumers — lib/transport.ts turns frames into AI-SDK chunks for chat, lib/workspace-api.ts turns them into callbacks for the agent workspace. If this module needs a renderer, the thing you are adding belongs in one of those two instead. See TASK-349 / docs/plans/2026-09-12-workspace-as-sole-interface.md Tier 2.',
-            },
-            crossPluginImports,
-          ],
-        },
-      ],
-    },
-  },
-  {
-    // TASK-372 — the agent workspace may not read out of the chat tree.
-    //
-    // Tier 5 #4 of docs/plans/2026-09-12-workspace-as-sole-interface.md deletes
-    // chat: the assistant-ui runtime (`lib/runtime.tsx`), `lib/transport.ts`,
-    // and the chat-only components. The workspace is the surface that is left,
-    // so anything it imports from in there is a dependency on a file scheduled
-    // for deletion — TASK-372 exists because `lib/workspace-api.ts` had exactly
-    // one of those (the Fault A error-label table) and it failed nobody's test.
-    //
-    // The three modules named below are the chat-only ones the workspace could
-    // plausibly reach for, verified chat-only at the time of writing: outside
-    // their own test files, `lib/runtime.tsx` is imported only by `App.tsx` and
-    // `lib/turn-error.ts` only by `lib/runtime.tsx`. This is a NAMED list, not
-    // a fence around the whole chat tree — it catches a repeat of the import
-    // that prompted it, not every future one. Shared code belongs in a module
-    // outside both trees (`lib/sse-frames.ts`, `lib/turn-error-labels.ts`,
-    // `lib/grant-copy.ts`).
-    //
-    // The FILE set is the workspace's own modules — `lib/workspace-*` by naming
-    // convention, plus its component tree. A lib module both surfaces share
-    // (`lib/permission-frames.ts`, `lib/agent-store.ts`, …) is NOT matched, and
-    // could not be: chat's own `lib/turn-error.ts` legitimately imports
-    // `./transport`, so a fence around all of `src/lib/**` would fail on the
-    // chat side. None of the shared modules imports the chat tree today.
-    //
-    // Tests are excluded: the base config turns this rule OFF under
-    // `__tests__/`, and matching them here would silently switch invariant 2
-    // back on for the workspace's test files.
-    //
-    // NOTE: a flat-config block REPLACES this rule's options for the matched
-    // files rather than merging, so `crossPluginImports` is listed here too.
-    // Dropping it would silently exempt the workspace from invariant 2 — which
-    // is what the guard test's cross-plugin cases exist to catch.
-    files: [
-      'packages/channel-web/src/lib/workspace-*.ts',
-      'packages/channel-web/src/lib/workspace-*.tsx',
-      'packages/channel-web/src/components/workspace/**/*.ts',
-      'packages/channel-web/src/components/workspace/**/*.tsx',
-    ],
-    ignores: ['**/__tests__/**'],
-    rules: {
-      '@typescript-eslint/no-restricted-imports': [
-        'error',
-        {
-          patterns: [
-            {
-              group: [
-                './transport',
-                './runtime',
-                './turn-error',
-                '../transport',
-                '../runtime',
-                '../turn-error',
-                '**/lib/transport',
-                '**/lib/runtime',
-                '**/lib/turn-error',
-              ],
-              message:
-                'The agent workspace must not import from the chat tree. lib/transport.ts, lib/runtime.tsx and lib/turn-error.ts are chat-only and are deleted by TASK-360 (Tier 5 #4 of docs/plans/2026-09-12-workspace-as-sole-interface.md), which would take this import with them. If you need something they hold, move it to a module outside both trees first — that is what lib/turn-error-labels.ts (the Fault A error-label table), lib/sse-frames.ts (the SSE wire reader) and lib/grant-copy.ts (the grant trust copy) are.',
+                'sse-frames.ts is the shared SSE wire reader: bytes in, typed frames out. Rendering belongs to its consumers — lib/workspace-api.ts turns frames into callbacks for the agent workspace. If this module needs a renderer, the thing you are adding belongs in a consumer instead. See TASK-349 / docs/plans/2026-09-12-workspace-as-sole-interface.md Tier 2.',
             },
             crossPluginImports,
           ],

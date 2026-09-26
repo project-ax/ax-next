@@ -11,11 +11,13 @@
  * If the human walks away instead, the reaper ends the turn and this exact
  * decision is waiting in Today. Same row, degraded path.
  *
- * IT RENDERS ON BOTH SURFACES (TASK-261). `/workspace` draws it inside the
- * thread; the default `/` chat surface draws it above the composer via
- * `<InThreadApprovals>`. One component, one queue, one set of controls — a
- * second, reduced renderer on the surface most people actually use is exactly
- * the fork this card exists to avoid.
+ * IT RENDERED ON BOTH SURFACES (TASK-261) while chat existed: `/workspace`
+ * drew it inside the thread, and the deleted chat UI drew it above the
+ * composer via its own `<InThreadApprovals>`. One component, one queue, one
+ * set of controls, so neither surface got a second, reduced renderer of the
+ * same thing. Chat is gone now, but the shared-component shape stayed —
+ * `decision-copy.ts` below still exists to keep this card and `DecisionRow`
+ * saying the same thing about the same outcome.
  *
  * THE THIRD RENDERER OF ONE ROW (the queue, this, and one day Slack). Every
  * sentence about an OUTCOME comes from `decision-copy.ts`, shared with
@@ -58,7 +60,7 @@ interface Props {
   notice?: string | null;
   /**
    * The find bar's current search, or `null`/omitted when there is none
-   * (TASK-390) — `InThreadApprovals` renders this same card above chat's
+   * (TASK-390) — the deleted chat UI rendered this same card above its
    * composer with no find bar at all, so both find props default to
    * "no highlight" rather than being required of every caller.
    */
@@ -132,7 +134,7 @@ export function ApprovalCard({
     region that went with it would arrive already holding its message, which
     assistive tech does not reliably announce. `ConsentAnnouncement` carries
     the rest of the argument, including why it stays quiet on mount for the
-    settled receipts `InThreadApprovals` draws above the composer.
+    settled receipts the deleted chat UI drew above its composer.
 
     THE OPEN BRANCH SPEAKS HERE TOO (TASK-473). Its stale reason and its
     notice are plain paragraphs below, not `Alert`s, so nothing else on this

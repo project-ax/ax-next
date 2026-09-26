@@ -3,23 +3,23 @@
  *
  * Bytes in, typed `SseFrame`s out. This module knows how a frame is framed on
  * the wire and how the TASK-23 sequence cursor works. It does not know what a
- * frame MEANS — no `UIMessageChunk`, no store, no label table, no React. Both
- * readers render their own way on top of it:
+ * frame MEANS — no `UIMessageChunk`, no store, no label table, no React. The
+ * one remaining reader renders on top of it:
  *
- *   - `lib/transport.ts`    — chat, into AI-SDK chunks for assistant-ui.
  *   - `lib/workspace-api.ts` — the agent workspace, into plain callbacks.
  *
- * WHY IT LIVES HERE. Until now the parser was welded into `transport.ts`'s
- * chunk emission and module-private, so the workspace grew a second, dumber
- * reader over the same wire — one with no seq dedup and no gap detection, which
- * is the difference between a replayed buffer rendering twice and rendering
- * once, and between a truncated answer and a visible banner. Two parsers on one
- * wire is two things to keep in step (invariant 4).
+ * (The now-deleted chat UI's `lib/transport.ts` used to be a second reader,
+ * turning frames into AI-SDK chunks for assistant-ui.)
  *
- * WHY IT LIVES *HERE* SPECIFICALLY, and not in `transport.ts` or beside a chat
- * component: TASK-360 deletes `lib/transport.ts` and the chat-only component
- * tree wholesale when the workspace becomes the only surface. A parser inside
- * either is a parser that gets deleted out from under the surface that is left.
+ * WHY IT LIVES HERE. The parser used to be welded into `transport.ts`'s chunk
+ * emission and module-private, so the workspace grew a second, dumber reader
+ * over the same wire — one with no seq dedup and no gap detection, which is
+ * the difference between a replayed buffer rendering twice and rendering
+ * once, and between a truncated answer and a visible banner. Two parsers on
+ * one wire was two things to keep in step (invariant 4), so the parser moved
+ * out here, ahead of TASK-360 deleting `lib/transport.ts` and the rest of the
+ * chat tree — a parser inside either would have been a parser deleted out
+ * from under the surface that was left.
  *
  * Wire shapes are imported from `src/server/types.ts` rather than restated.
  * That file is types-only, so the import erases at build time and costs the

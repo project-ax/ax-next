@@ -1,14 +1,14 @@
 /**
  * Wire client for `GET /admin/bootstrap-status` (registered by
  * @ax/onboarding). Public read-only status echo so the SPA can decide
- * whether to render the chat shell or the setup wizard without trapping
+ * whether to render the workspace or the setup wizard without trapping
  * a fresh-install user on a sign-in screen they can't satisfy.
  *
  * On any fetch error, timeout, or non-2xx response we default to
  * 'completed' — if we can't reach the endpoint, the safer fallback is
- * "act normal" (chat shell + auth check) rather than trap the user in
- * a redirect loop to /setup. We log every fallback so an operator
- * debugging boot can see why the SPA didn't redirect.
+ * "act normal" (render the workspace + run the auth check) rather than trap
+ * the user in a redirect loop to /setup. We log every fallback so an
+ * operator debugging boot can see why the SPA didn't redirect.
  */
 export type BootstrapStatus = 'pending' | 'claimed' | 'completed' | 'uninitialized';
 

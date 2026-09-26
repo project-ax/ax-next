@@ -6,7 +6,7 @@
  * opener and closes the popup before React ever mounts. But some providers and
  * some environments (popup blockers, email-link flows) redirect the MAIN window
  * instead. This module handles that case: strip the /oauth/connected params,
- * push a toast, and leave the user on the chat surface.
+ * push a toast, and leave the user on the workspace.
  *
  * Exported as a pure function so it's trivially testable without mounting App.
  * App.tsx calls it once on mount (inside a one-shot useEffect).

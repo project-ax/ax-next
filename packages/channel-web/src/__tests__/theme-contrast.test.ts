@@ -665,18 +665,15 @@ describe('--ink-ghost is a fill, never ink', () => {
     // than passing silently one assertion up.
     expect(filesPainting('text-muted-foreground').length).toBeGreaterThan(10);
 
-    // And the fill site is still there — the guard bans the token as TEXT, not
-    // as a background. A sweep that deleted `--ink-ghost` outright would
-    // satisfy the ban and lose the affordance; this notices.
-    //
-    // Pinned as a SET rather than a count, and the set is now exactly one file.
-    // Before TASK-450 this was `>= 3` and the other two were the state dots; a
-    // count would have gone on passing while they drifted back, which is the
-    // regression this list exists to make loud. `Composer.tsx` is the send
-    // circle, an inactive control — the one role that is meant to keep a token
-    // this faint. Anything else appearing here is a dot that skipped the 3:1
-    // floor, and belongs on `--state-quiet` instead.
-    expect(filesPainting('bg-ink-ghost')).toEqual(['components/Composer.tsx']);
+    // The fill sites, pinned as a SET. Before TASK-450 the state dots painted
+    // `bg-ink-ghost` too (they moved to `--state-quiet`, which clears the 3:1
+    // floor); after that the only site was the chat composer's inactive send
+    // circle, which TASK-360 deleted with the rest of the chat screen. So the
+    // set is now EMPTY: the token is still defined (the premise test above
+    // reads it) but nothing paints it. Anything appearing here is a new use —
+    // decide whether it is a genuinely inactive control before admitting it,
+    // and if it is a dot, it belongs on `--state-quiet` instead.
+    expect(filesPainting('bg-ink-ghost')).toEqual([]);
   });
 
   /**
@@ -755,17 +752,18 @@ describe('--ink-ghost is a fill, never ink', () => {
    * the list, `filesPainting` catches it, because a className is not inside a
    * line-opening block comment.
    *
-   * Both entries below are prose EXPLAINING why the class is not used — the
-   * `AgentMenu` note that reached this conclusion first, and the token's own
-   * comment in the stylesheet. If you are adding to this list, you are almost
-   * certainly meant to be deleting a usage instead.
+   * The entry below is prose EXPLAINING why the class is not used — the
+   * token's own comment in the stylesheet. (There used to be a second, the
+   * chat `AgentMenu` note that reached this conclusion first; TASK-360 deleted
+   * that file.) If you are adding to this list, you are almost certainly meant
+   * to be deleting a usage instead.
    *
    * The mutual coverage has one bounded blind spot, named here so it is not
    * mistaken for total: a usage that is BOTH hidden by one of `stripComments`'
-   * residual gaps AND located in one of the two allow-listed files would
-   * escape both checks — stripped out of the first, and forgiven by the second
-   * because the file is expected. It needs a multi-line string of exactly the
-   * wrong shape inside `AgentMenu.tsx` or `index.css`; neither has one. Every
+   * residual gaps AND located in the allow-listed file would escape both
+   * checks — stripped out of the first, and forgiven by the second because the
+   * file is expected. It needs a multi-line string of exactly the wrong shape
+   * inside `index.css`; it has none. Every
    * other file in the tree is covered by one check or the other.
    *
    * Note the scope this trades against: `walk()` matches only `ts`/`tsx`/`css`
@@ -775,10 +773,7 @@ describe('--ink-ghost is a fill, never ink', () => {
    * mention to be a decision rather than a drive-by.
    */
   it('mentions every file that names the class, prose included', () => {
-    expect(filesMentioning(INK_GHOST_TEXT_CLASS)).toEqual([
-      'components/AgentMenu.tsx',
-      'index.css',
-    ]);
+    expect(filesMentioning(INK_GHOST_TEXT_CLASS)).toEqual(['index.css']);
   });
 });
 
@@ -1930,27 +1925,14 @@ describe('filled accent controls clear AA on hover', () => {
 });
 
 /**
- * SessionRow's "Delete" menu item, in every state it can paint (TASK-531).
+ * Class-string readers shared by the component-sourced contrast rows below.
  *
- * It is `text-destructive` ink on the row menu's own surface, and its hover
- * used to be `hover:bg-destructive/15` — the accent tinted at 15% over the
- * menu. In light mode that drags the fill toward the ink sitting on it:
- * **4.08:1**, under the floor, on the item that deletes a chat. (The follow-up
- * note that filed this also read 4.22 in dark mode; this file's formula puts
- * `/15` over the pure-black dark menu at 5.43, so only light was ever under.)
- *
- * The fix paints `hover:bg-destructive-soft` — the per-theme tint that already
- * sits behind `text-destructive` on the error rows, and which `ACCENT_SOFT_PAIRS`
- * above measures in both themes (4.57 light / 4.63 dark). An alpha cannot do
- * it: the menu is white in light mode and black in dark, so the same `/15`
- * composites to a different pixel in each, and the white one is what fails.
- *
- * These rows read the classes OFF THE COMPONENT — the item's ink, every
- * state-prefixed fill it carries (hover, focus, focus-visible, active), and the
- * menu surface underneath — so reverting the hover, or adding a focus fill that
- * does not clear, goes red here rather than in a browser walk.
+ * They were first written for the chat sidebar's SessionRow (TASK-531 /
+ * TASK-538), which TASK-360 deleted along with the rest of the chat screen.
+ * The readers outlived it: the Routines rows further down use them, and their
+ * own self-tests stay here so a reader that quietly drifts is caught before it
+ * makes a contrast row vacuous.
  */
-const SESSION_ROW_FILE = 'components/SessionRow.tsx';
 
 /** The `className="…"` of the one JSX element carrying `marker`, comments stripped. */
 function classNameOf(src: string, marker: string): string {
@@ -1998,47 +1980,7 @@ function menuItemPaint(cls: string): {
   return { text: `--${texts[0]!.slice('text-'.length)}`, fills };
 }
 
-const sessionRowCasesRegistered: string[] = [];
-
-describe("SessionRow's delete menu item clears AA in every state", () => {
-  const src = readSource(SESSION_ROW_FILE);
-  const item = menuItemPaint(classNameOf(src, 'data-testid="row-menu-delete"'));
-  const surface = bgFill(classNameOf(src, 'session-row-menu '));
-
-  for (const [themeName, selector] of THEMES) {
-    sessionRowCasesRegistered.push(themeName);
-    it(`${themeName}: ${item.text} on ${surface.cls}, resting and under ${item.fills.map((f) => f.cls).join(', ') || 'no fill'}`, () => {
-      const tokens = tokensAfter(selector);
-      const under = tokens.get(surface.token);
-      const text = tokens.get(item.text);
-      expect(under, `${surface.token} missing`).toBeDefined();
-      expect(text, `${item.text} missing`).toBeDefined();
-      expect(surface.alpha, 'the menu surface must be opaque to be measured').toBe(1);
-      expect(contrast(text!, under!), `resting on ${surface.cls}`).toBeGreaterThanOrEqual(AA_NORMAL);
-      for (const fill of item.fills) {
-        const v = tokens.get(fill.token);
-        expect(v, `${fill.token} missing`).toBeDefined();
-        const painted: Colour = fill.alpha === 1 ? v! : composite(v!, fill.alpha, under!);
-        expect(contrast(text!, painted), `${fill.state}: ${fill.cls}`).toBeGreaterThanOrEqual(AA_NORMAL);
-      }
-    });
-  }
-
-  it('paints a hover, and every fill it paints is a solid per-theme tint', () => {
-    expect(item.text).toBe('--destructive');
-    expect(item.fills.map((f) => f.state)).toContain('hover');
-    for (const f of item.fills) expect(f.alpha, f.cls).toBe(1);
-  });
-
-  it('measures the old `hover:bg-destructive/15` under the floor in light mode', () => {
-    const old = menuItemPaint('text-destructive hover:bg-destructive/15');
-    expect(old.fills).toEqual([{ state: 'hover', token: '--destructive', alpha: 0.15, cls: 'bg-destructive/15' }]);
-    const tokens = tokensAfter(':root {');
-    const ink = tokens.get('--destructive')!;
-    const painted = composite(ink, 0.15, tokens.get('--background')!);
-    expect(contrast(ink, painted)).toBeLessThan(AA_NORMAL);
-  });
-
+describe('menuItemPaint / classNameOf', () => {
   it('reads the item paint off a class string, and refuses shapes it cannot measure', () => {
     expect(menuItemPaint('text-[12.5px] text-destructive hover:bg-destructive-soft')).toEqual({
       text: '--destructive',
@@ -2059,38 +2001,7 @@ describe("SessionRow's delete menu item clears AA in every state", () => {
       'new',
     );
   });
-
-  it('registers one case per theme', () => {
-    expect(sessionRowCasesRegistered).toEqual(THEMES.map(([name]) => name));
-  });
 });
-
-/**
- * SessionRow's inline confirm-delete row, in every state it can paint (TASK-538).
- *
- * Choosing "Delete" from the row menu swaps the row for "Delete this chat?"
- * plus a Cancel and a Delete control. The row used to tint itself
- * `bg-destructive/10` over the sidebar's `bg-background`. In light mode that
- * alpha drags the white page toward the red ink sitting on it: Cancel
- * (`text-muted-foreground`) measured **4.49:1** and Delete (`text-destructive`)
- * **4.44:1**, both under the floor, on the two buttons that decide whether a
- * chat is gone. Dark mode was fine at /10 (5.68 / 5.71).
- *
- * The fix is the same one TASK-531 made for the menu item: the solid per-theme
- * `bg-destructive-soft`. It costs dark mode some headroom (4.61 / 4.63, down
- * from 5.7) and buys light mode its floor (4.63 / 4.57). One token that clears
- * both themes beats an alpha that only clears one, and beats a `dark:` override.
- *
- * Everything is read OFF THE COMPONENTS: the row's fill, each control's resting
- * ink, every state-prefixed fill (via `menuItemPaint`), each `hover:text-*` ink,
- * and the sidebar surface the row sits on. A revert to `/10` goes red here with
- * the true ratios. The Delete control's hover swaps BOTH its fill and its ink
- * (`bg-destructive` + `text-destructive-foreground`), so its hover fill is
- * measured against the hover ink, not the resting one — measuring red on red
- * would be a false alarm, and measuring the resting ink on the resting fill
- * alone would miss a bad hover.
- */
-const SIDEBAR_FILE = 'components/Sidebar.tsx';
 
 /** `menuItemPaint`, plus the one `hover:text-*` ink a control may swap to. Other prefixed inks are refused. */
 function controlPaint(cls: string): ReturnType<typeof menuItemPaint> & { hoverText?: string } {
@@ -2107,66 +2018,7 @@ function controlPaint(cls: string): ReturnType<typeof menuItemPaint> & { hoverTe
     : paint;
 }
 
-const confirmRowCasesRegistered: string[] = [];
-
-describe("SessionRow's confirm-delete row clears AA in every state", () => {
-  const src = readSource(SESSION_ROW_FILE);
-  const row = bgFill(classNameOf(src, 'session-row confirming-delete'));
-  const surface = bgFill(classNameOf(readSource(SIDEBAR_FILE), 'w-[240px]'));
-  const controls = [
-    ['prompt', controlPaint(classNameOf(src, 'session-row-confirm-text'))],
-    ['Cancel', controlPaint(classNameOf(src, 'session-row-confirm-cancel'))],
-    ['Delete', controlPaint(classNameOf(src, 'session-row-confirm-delete'))],
-  ] as const;
-
-  function rowColour(tokens: Map<string, string>, fill: { token: string; alpha: number }): Colour {
-    const under = tokens.get(surface.token);
-    const v = tokens.get(fill.token);
-    expect(under, `${surface.token} missing`).toBeDefined();
-    expect(v, `${fill.token} missing`).toBeDefined();
-    return fill.alpha === 1 ? v! : composite(v!, fill.alpha, under!);
-  }
-
-  for (const [themeName, selector] of THEMES) {
-    for (const [label, paint] of controls) {
-      confirmRowCasesRegistered.push(`${themeName}:${label}`);
-      it(`${themeName}: ${label} (${paint.text}) on ${row.cls}, resting and in every state`, () => {
-        const tokens = tokensAfter(selector);
-        const rest = rowColour(tokens, row);
-        const ink = tokens.get(paint.text);
-        expect(ink, `${paint.text} missing`).toBeDefined();
-        expect(contrast(ink!, rest), `resting on ${row.cls}`).toBeGreaterThanOrEqual(AA_NORMAL);
-        const hoverInk = paint.hoverText === undefined ? ink! : tokens.get(paint.hoverText);
-        expect(hoverInk, `${paint.hoverText} missing`).toBeDefined();
-        const hoverFill = paint.fills.find((f) => f.state === 'hover');
-        if (hoverFill === undefined) {
-          expect(contrast(hoverInk!, rest), `hover ink on ${row.cls}`).toBeGreaterThanOrEqual(AA_NORMAL);
-        }
-        for (const fill of paint.fills) {
-          const v = tokens.get(fill.token);
-          expect(v, `${fill.token} missing`).toBeDefined();
-          const painted: Colour = fill.alpha === 1 ? v! : composite(v!, fill.alpha, rest);
-          const on = fill.state === 'hover' ? hoverInk! : ink!;
-          expect(contrast(on, painted), `${fill.state}: ${fill.cls}`).toBeGreaterThanOrEqual(AA_NORMAL);
-        }
-      });
-    }
-  }
-
-  it('sits on an opaque sidebar surface, and the row fill is a solid per-theme tint', () => {
-    expect(surface).toEqual({ token: '--background', alpha: 1, cls: 'bg-background' });
-    expect(row.alpha, `${row.cls} must be solid: an alpha composites differently per theme`).toBe(1);
-    expect(controls.map(([, p]) => p.text)).toEqual(['--foreground', '--muted-foreground', '--destructive']);
-    expect(controls[2][1].hoverText).toBe('--destructive-foreground');
-  });
-
-  it('measures the old `bg-destructive/10` row under the floor in light mode for both controls', () => {
-    const tokens = tokensAfter(':root {');
-    const old = composite(tokens.get('--destructive')!, 0.1, tokens.get('--background')!);
-    expect(contrast(tokens.get('--muted-foreground')!, old)).toBeLessThan(AA_NORMAL);
-    expect(contrast(tokens.get('--destructive')!, old)).toBeLessThan(AA_NORMAL);
-  });
-
+describe('controlPaint', () => {
   it('reads a hover ink off a class string, and refuses inks it cannot measure', () => {
     expect(controlPaint('text-muted-foreground hover:text-foreground').hoverText).toBe('--foreground');
     expect(controlPaint('text-destructive').hoverText).toBeUndefined();
@@ -2174,12 +2026,6 @@ describe("SessionRow's confirm-delete row clears AA in every state", () => {
     expect(() => controlPaint('text-destructive dark:text-foreground')).toThrow(/unmeasured ink/);
     expect(() => controlPaint('text-x hover:text-y hover:text-z')).toThrow(/at most one/);
     expect(controlPaint('text-destructive hover:text-nowrap').hoverText).toBeUndefined();
-  });
-
-  it('registers one case per theme per control', () => {
-    expect(confirmRowCasesRegistered).toEqual(
-      THEMES.flatMap(([name]) => ['prompt', 'Cancel', 'Delete'].map((l) => `${name}:${l}`)),
-    );
   });
 });
 

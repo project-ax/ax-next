@@ -17,6 +17,7 @@ import { NewAgentDialog } from '../components/onboard/NewAgentDialog';
 import { SetupShell, SETUP_UNEXPECTED } from '../components/setup/SetupShell';
 import { StepGate } from '../components/setup/StepGate';
 import { StepAdmin } from '../components/setup/StepAdmin';
+import { StepDone } from '../components/setup/StepDone';
 
 describe('NewAgentDialog — first run offers no exit it will not honour (B4)', () => {
   it('renders no close button when it cannot be dismissed', () => {
@@ -185,5 +186,17 @@ describe('StepAdmin promises no mechanism it may not keep (B8)', () => {
     expect(screen.queryByText(/no password needed/i)).toBeNull();
     expect(screen.queryByText(/remember this browser/i)).toBeNull();
     expect(screen.queryByText(/other authentication methods/i)).toBeNull();
+  });
+});
+
+describe('StepDone sends the new admin to the workspace (TASK-360)', () => {
+  it('links straight to /, not to the retired /chat redirect', () => {
+    render(<StepDone />);
+    const link = screen.getByRole('link', { name: /open your workspace/i });
+    // Exactly `/`: `/chat` still works, but only as a redirect, and a link
+    // that points at a redirect is a link nobody updated.
+    expect(link.getAttribute('href')).toBe('/');
+    expect(screen.getByText(/your workspace is ready/i)).toBeTruthy();
+    expect(screen.queryByText(/chat/i)).toBeNull();
   });
 });

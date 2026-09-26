@@ -3,10 +3,11 @@ import type { ContentBlock } from '@ax/ipc-protocol';
 /**
  * attachment-upload — the single primitive for uploading a file to
  * `/api/attachments` and turning the result into an `attachment_ref`
- * ContentBlock. Originally lived only inside `AxAttachmentAdapter` (chat's
- * assistant-ui composer); pulled out so the agent-workspace surface can
- * reuse chat's lineage (XHR shape, error taxonomy, wire URL prefix)
- * instead of forking a second copy that quietly drifts.
+ * ContentBlock. Originally lived only inside the deleted chat UI's
+ * `AxAttachmentAdapter` (its assistant-ui composer); pulled out so the
+ * agent-workspace surface could reuse that lineage (XHR shape, error
+ * taxonomy, wire URL prefix) instead of forking a second copy that quietly
+ * drifts. Chat is gone now; the workspace is the sole caller.
  */
 
 // Comma-joined MIME list. Matches the server's default allowlist.
@@ -16,8 +17,8 @@ export const ATTACHMENT_ACCEPT =
   'text/plain,text/csv,text/markdown,application/json,application/zip';
 
 /** Wire URL prefix for an uploaded attachment reference, e.g.
- *  `ax://attachment/<attachmentId>`. Both the chat transport (parsing an
- *  incoming `file` part) and the attachment adapter (building the outgoing
+ *  `ax://attachment/<attachmentId>`. Both the workspace's chat wire (parsing
+ *  an incoming `file` part) and the attachment adapter (building the outgoing
  *  one) must agree on this exact prefix. */
 export const AX_ATTACHMENT_URL_PREFIX = 'ax://attachment/';
 

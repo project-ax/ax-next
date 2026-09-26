@@ -1,24 +1,20 @@
 /**
  * Markdown for a plain string, and the one URL policy the whole package shares.
  *
- * WHY THIS EXISTS. `MarkdownText` renders the assistant's markdown, but it
- * cannot render anybody else's: `MarkdownTextPrimitive` takes its text from
- * `useMessagePartText()` and deliberately drops `children` from its props, so
- * it only works inside a mounted assistant-ui thread with a message part in
- * scope. A file viewer has a string.
+ * WHY THIS EXISTS. A file viewer has a plain string to render, not a message
+ * part inside a chat thread. (The now-deleted chat UI's `MarkdownText` ran
+ * through assistant-ui's `MarkdownTextPrimitive`, which takes its text from
+ * `useMessagePartText()` and only works inside a mounted thread — no use here.)
  *
- * THIS IS NOT A SECOND MARKDOWN PIPELINE. It is the same one: `react-markdown`
- * with `remark-gfm`, which is exactly what `MarkdownTextPrimitive` runs
- * internally, at the same version that was already resolved in the lockfile.
- * All this file does is call it directly and export `safeUrlTransform` so the
- * two call sites cannot drift apart on what a safe URL is — the old copy of
- * that check lived in `MarkdownText.tsx` under a comment apologising for not
- * being able to import it. Now it can.
+ * THIS IS NOT A SECOND MARKDOWN PIPELINE. It calls `react-markdown` with
+ * `remark-gfm` directly, at the same version already resolved in the
+ * lockfile, and exports `safeUrlTransform` as the one definition of "what is
+ * a safe URL" for every caller in the package.
  *
- * THE POLICY IS NARROWER HERE, ON PURPOSE. `MarkdownText` renders text the
- * user just watched an agent write, inside a conversation that owns the
- * artifacts it links to. This renders a FILE out of the agent's workspace,
- * which is untrusted content with no conversation around it:
+ * THE POLICY IS NARROWER HERE, ON PURPOSE. Rendering an agent's chat reply
+ * happens inside a conversation that owns the artifacts it links to. This
+ * renders a FILE out of the agent's workspace, which is untrusted content
+ * with no conversation around it:
  *
  *   - `img` renders as its alt text, not as an image. A remote `<img>` in a
  *     file body is an outbound request made by the reader's browser on the
@@ -76,15 +72,16 @@ export function safeUrlTransform(url: string): string {
 }
 
 /**
- * The class list `MarkdownText` has always carried. Exported so there is one
- * copy of it rather than two.
+ * The prose class list used to render markdown text. Exported so there is
+ * one copy of it rather than two. The leading `aui-md` token is a leftover
+ * hook from the deleted chat runtime's CSS (`index.css`'s `.msg-body`
+ * rules, also since removed) — harmless to keep, since nothing in either
+ * bundle targets it any more.
  *
  * Be aware of what it does NOT do: `@tailwindcss/typography` is not installed
- * in this package, so every `prose-*` utility in here emits no CSS at all. An
- * assistant reply gets its block rhythm from the `.msg-body` rules in
- * `index.css`, not from these. Anything rendered OUTSIDE the thread needs
- * `.ax-md` (below) or it inherits Preflight — headings the size of body text,
- * lists with no markers.
+ * in this package, so every `prose-*` utility in here emits no CSS at all.
+ * Anything rendered with this class needs `.ax-md` (below) too, or it
+ * inherits Preflight — headings the size of body text, lists with no markers.
  */
 export const MARKDOWN_PROSE_CLASS =
   'aui-md prose dark:prose-invert max-w-none prose-p:leading-7 prose-pre:bg-card prose-pre:border prose-pre:border-border/40 prose-pre:rounded-xl prose-pre:backdrop-blur-sm prose-code:font-mono prose-code:text-[0.85em] prose-headings:tracking-tight prose-a:text-amber prose-a:no-underline hover:prose-a:underline prose-th:text-left';
