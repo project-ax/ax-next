@@ -125,15 +125,36 @@ function toDecisionReadError(e: unknown): DecisionReadError {
  * or expired somewhere else, and keeping it would offer buttons for a question
  * that is already closed. A row the server DOES list is always the server's
  * copy. Retained rows go after the fresh ones, in the order they already had.
+ *
+ * ONE EXCEPTION TO "THE SERVER'S COPY WINS" (TASK-530): `newer`, the rows a
+ * click changed AFTER this read was issued. The read's snapshot of those rows
+ * predates the person's own action, so it knows less than we do. The case that
+ * found it is Undo: a refresh issued while the row was still resolved (the
+ * resumed turn's `onDone`) lands after the undo reopened it. The row is open
+ * locally, so the receipt rule above does not keep it, and the read's list
+ * omits it — so the reopened card unmounted and focus fell to `<body>`, the
+ * TASK-509 symptom in the other direction. The approve direction is the same
+ * race: a read issued before the click still lists the row OPEN, and applying
+ * it would put the buttons back over a question just answered.
+ *
+ * Which direction THIS fails in: it keeps our copy for exactly one read — the
+ * ones already in flight when the click landed. Every read issued after it
+ * applies normally, so an open row answered elsewhere is still dropped by the
+ * next read, never kept indefinitely.
  */
 function mergeReadWithReceipts(
   prev: readonly Decision[],
   fresh: readonly Decision[],
   now: number,
+  newer: ReadonlySet<string>,
 ): Decision[] {
+  const ours = new Map(prev.filter((d) => newer.has(d.id)).map((d) => [d.id, d]));
   const listed = new Set(fresh.map((d) => d.id));
-  const receipts = prev.filter((d) => !listed.has(d.id) && isJustResolved(d, now));
-  return [...fresh, ...receipts];
+  const merged = fresh.map((d) => ours.get(d.id) ?? d);
+  const kept = prev.filter(
+    (d) => !listed.has(d.id) && (ours.has(d.id) || isJustResolved(d, now)),
+  );
+  return [...merged, ...kept];
 }
 
 export interface DecisionQueue {
@@ -186,12 +207,25 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
    */
   const readId = useRef(0);
 
+  /**
+   * Row id → the newest read id that was already issued when a click's server
+   * row was applied to it (TASK-530). A read whose id is at or below that
+   * number started before the click, so it may not overwrite or drop the row —
+   * see `mergeReadWithReceipts`. Only the newest read ever applies, so once one
+   * lands every entry is moot and the map is cleared.
+   */
+  const appliedAtRead = useRef(new Map<string, number>());
+
   const refresh = useCallback(async () => {
     const id = ++readId.current;
     setLoading(true);
     try {
       const page = await workspaceApi.decisions();
       if (readId.current !== id) return;
+      // Snapshot before the updater: React may run it later, or twice.
+      const newer = new Set<string>();
+      for (const [rowId, at] of appliedAtRead.current) if (at >= id) newer.add(rowId);
+      appliedAtRead.current.clear();
       /*
         A body that is not a decisions page never reaches here — `workspaceApi`
         throws `WorkspaceShapeError` at the boundary, and the `catch` below
@@ -203,7 +237,9 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
         on it during render, so an `undefined` here would not degrade, it would
         throw out of the hook and unmount the surface.
       */
-      setDecisions((prev) => mergeReadWithReceipts(prev, page.decisions, Date.now()));
+      setDecisions((prev) =>
+        mergeReadWithReceipts(prev, page.decisions, Date.now(), newer),
+      );
       setError(null);
     } catch (e) {
       if (readId.current !== id) return;
@@ -240,6 +276,7 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
    * everything below it.
    */
   const applyServerRow = useCallback((row: Decision) => {
+    appliedAtRead.current.set(row.id, readId.current);
     setDecisions((prev) => {
       const at = prev.findIndex((d) => d.id === row.id);
       if (at === -1) return [...prev, row];
