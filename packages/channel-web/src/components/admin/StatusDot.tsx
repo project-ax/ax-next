@@ -10,8 +10,8 @@ export interface StatusDotProps {
 /**
  * Every fill here is an information-bearing mark, so each owes 3:1 against the
  * surfaces it lands on (WCAG 1.4.11). `empty` and `pending` used to be
- * `bg-ink-ghost` and measured 1.72:1 light / 1.67:1 dark — under half the
- * floor. They are `bg-state-quiet` now.
+ * `bg-ink-ghost` and measured 1.72:1 light / 1.67:1 dark on the card they sit
+ * in — a bit over half the floor. They are `bg-state-quiet` now.
  *
  * Worth being honest about what that buys, because it is less than the card
  * that asked for it assumed: this dot never renders alone. All three LIVE

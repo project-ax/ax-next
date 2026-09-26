@@ -493,7 +493,8 @@ describe('theme contrast', () => {
  * The fill sites used to be out of scope here, and are not any more. A dot's fill
  * carries its state (alongside its shape, since TASK-485), which makes the
  * `resting` dot an information-bearing non-text element owing 3:1 under WCAG 1.4.11 — and on this token it
- * measured 1.72:1 light / 1.67:1 dark, so it did not clear that either. That
+ * measured 1.72:1 light / 1.67:1 dark on the page and a card (1.50 / 1.56 on
+ * the selected row's `--primary-soft`), so it did not clear that either. That
  * was TASK-450, and the fix was the same split one level down: the dots took a
  * new token and the send circle kept this one. The 3:1 floor now has its own
  * section at the foot of this file; everything in THIS block still bounds the
@@ -778,6 +779,107 @@ describe('--ink-ghost is a fill, never ink', () => {
       'components/AgentMenu.tsx',
       'index.css',
     ]);
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * `--state-quiet` — also a fill, never ink (TASK-484).
+ * ------------------------------------------------------------------------- */
+
+/**
+ * The same ban as `--ink-ghost` above, for the token TASK-450 split off it.
+ *
+ * `--state-quiet` was tuned to clear the 3:1 NON-text floor for the state dots
+ * (see the non-text section at the foot of this file), and it does — but 3:1 is
+ * not the text floor. As text it measures 3.66:1 on the light page and 3.33:1 on
+ * light `--muted`, 3.41:1 on a dark card: every surface, both themes, under 4.5.
+ * And Tailwind publishes `text-state-quiet` from the same colour entry as
+ * `bg-state-quiet`, exactly as it does for `text-ink-ghost`. Symmetric risk; so,
+ * symmetric guard.
+ *
+ * There was no violation when this was written. It is here so the first one
+ * fails a test instead of shipping — a dot token looks like a reasonable colour
+ * for a quiet label, which is precisely the mistake the `--ink-ghost` section
+ * exists to stop one token over.
+ *
+ * It reuses that section's scanner (`filesPainting`, `filesMentioning`,
+ * `stripComments`), so the anti-vacuity work there — the stray-slash-star
+ * fixtures, the tree-visibility check — covers this too. What it adds is what is
+ * specific to THIS class: the premise pin, the usage ban, the matcher pinned on
+ * this class's own spelling, and the raw-mention backstop.
+ */
+const STATE_QUIET = '--state-quiet';
+
+/** The Tailwind class the token publishes as text. */
+const STATE_QUIET_TEXT_CLASS = 'text-state-quiet';
+
+const STATE_QUIET_TEXT_SITES = filesPainting(STATE_QUIET_TEXT_CLASS);
+
+describe('--state-quiet is a fill, never ink', () => {
+  for (const [name, selector] of THEMES) {
+    it(`${name}: measures under the text floor, so nothing may paint it as text`, () => {
+      const tokens = tokensAfter(selector);
+      const quiet = tokens.get(STATE_QUIET);
+      expect(quiet, `${STATE_QUIET} missing from ${selector}`).toBeDefined();
+
+      const measured = QUIET_TEXT_SURFACES.map((surface) => {
+        const bg = tokens.get(surface);
+        expect(bg, `${surface} missing from ${selector}`).toBeDefined();
+        return [surface, contrast(quiet!, bg!)] as const;
+      });
+      const readout = measured.map(([s, c]) => `${s} ${c.toFixed(2)}:1`).join(', ');
+      const worst = Math.min(...measured.map(([, c]) => c));
+
+      // Pins the premise, as the `--ink-ghost` block does. If `--state-quiet`
+      // is ever lifted to AA this trips, and whoever did it re-reads why the
+      // dot token sits BELOW `--muted-foreground` on purpose (the "quieter than
+      // the quiet text" ordering at the foot of this file) before relaxing a ban
+      // whose reason has gone.
+      expect(
+        worst,
+        `${STATE_QUIET} now clears AA in ${name} (${readout}) — re-read the note above before relaxing anything`,
+      ).toBeLessThan(AA_NORMAL);
+
+      expect(
+        STATE_QUIET_TEXT_SITES,
+        `${STATE_QUIET} is ${readout} in ${name} — AA needs ${AA_NORMAL}:1, and 3:1 is the ` +
+          `floor for dots, not words. Use \`text-muted-foreground\` for quiet copy. ` +
+          `These files paint it as text:\n  ` +
+          STATE_QUIET_TEXT_SITES.join('\n  '),
+      ).toEqual([]);
+    });
+  }
+
+  /**
+   * Anti-vacuity for this class's spelling. The shared scanner is proven in the
+   * `--ink-ghost` block; what is not proven there is that the matcher sees
+   * `text-state-quiet` in the shapes it would really arrive in — a variant
+   * prefix, an opacity suffix — and does not confuse it with the fill.
+   */
+  it('reads this class in code, and not the fill or a longer name', () => {
+    expect(paints('<span className="text-state-quiet" />', STATE_QUIET_TEXT_CLASS)).toBe(true);
+    expect(paints("  'text-xs hover:text-state-quiet',", STATE_QUIET_TEXT_CLASS)).toBe(true);
+    expect(paints('<i className="text-state-quiet/80" />', STATE_QUIET_TEXT_CLASS)).toBe(true);
+    expect(paints('<span className="bg-state-quiet" />', STATE_QUIET_TEXT_CLASS)).toBe(false);
+    expect(paints('<span className="text-state-quieter" />', STATE_QUIET_TEXT_CLASS)).toBe(false);
+    expect(paints('// never text-state-quiet', STATE_QUIET_TEXT_CLASS)).toBe(false);
+
+    // And the fill is really in the tree, so the empty result above is a scan
+    // that looked at live users of this token and found no text among them —
+    // not a scan of a token nobody uses.
+    expect(filesPainting('bg-state-quiet')).toEqual(
+      expect.arrayContaining(['components/admin/StatusDot.tsx', 'components/workspace/bits.tsx']),
+    );
+  });
+
+  /**
+   * The raw-text backstop, for the same reason as the `--ink-ghost` one: comment
+   * stripping can only ever LOSE a usage, so pin every file that so much as names
+   * the class. The one entry is the token's own note in the stylesheet saying
+   * not to use it.
+   */
+  it('mentions every file that names the class, prose included', () => {
+    expect(filesMentioning(STATE_QUIET_TEXT_CLASS)).toEqual(['index.css']);
   });
 });
 
@@ -1201,8 +1303,9 @@ describe("ApprovalCard's tinted surface", () => {
  *
  * TASK-450 found three fills under it, all of them `bg-ink-ghost`: `StateDot`'s
  * `resting`, and `StatusDot`'s `empty` and `pending`, at 1.72:1 light and
- * 1.67:1 dark against the worst surface they land on. A bit over half the
- * floor. They paint `--state-quiet` now; `index.css` carries the numbers.
+ * 1.67:1 dark on the page and a card — and 1.50:1 / 1.56:1 on
+ * `--primary-soft`, the selected sidebar row and the worst surface they land
+ * on. About half the floor. They paint `--state-quiet` now; `index.css` carries the numbers.
  *
  * THREE THINGS ABOUT THAT CARD DID NOT SURVIVE CONTACT, recorded here because
  * each one changes what this section is allowed to claim:

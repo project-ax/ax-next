@@ -138,8 +138,9 @@
        The dot's fill carries its state (alongside its shape, since TASK-485),
        which makes these information-bearing non-text UI owing 3:1 under WCAG 1.4.11 — a different floor from
        the 4.5:1 that governs text. On `--ink-ghost` they measured 1.72:1 here
-       and 1.67:1 in dark against the worst surface they land on, a bit over
-       half of what they owe.
+       and 1.67:1 in dark on the page and a card, and 1.50:1 / 1.56:1 on
+       `--primary-soft` — the worst surface they land on, the selected sidebar
+       row. About half of what they owe.
 
        Why a second token rather than moving `--ink-ghost`: see its note above.
        And why this is NOT `--muted-foreground` under a third name — the value
@@ -150,9 +151,17 @@
        dot. That ordering is asserted, not just described.
 
        Measured against every surface a dot lands on — the page, a card,
-       `--muted`, the hover `bg-muted/60`, and `bg-primary-soft` (the SELECTED
-       sidebar row, which is the tightest of the five): 3.66 / 3.66 / 3.33 /
-       3.45 / 3.20 light, and 4.16 / 3.41 / 3.58 / 3.85 / 3.18 dark.
+       `--muted`, the hover `bg-muted/60`, the stale decision row's
+       `bg-destructive-soft/50`, and `bg-primary-soft` (the SELECTED sidebar
+       row, which is the tightest of the six): 3.66 / 3.66 / 3.33 / 3.45 /
+       3.45 / 3.20 light, and 4.16 / 3.41 / 3.58 / 3.85 / 3.30 / 3.18 dark.
+
+       A FILL, never ink — same rule as `--ink-ghost`, one floor up. 3:1 is
+       the NON-text floor; as text this measures 3.33:1 on `--muted` and
+       3.41:1 on a dark card, under the 4.5:1 AA floor, and Tailwind publishes
+       `text-state-quiet` from the same colour entry whether we want it or
+       not. So nothing paints it; quiet copy is `--muted-foreground`.
+       `theme-contrast.test.ts` enforces that too.
 
        It still reads as "not working" beside a `bg-primary` dot, because
        activeness here is carried by SATURATION, not lightness: this is a 4%-sat
