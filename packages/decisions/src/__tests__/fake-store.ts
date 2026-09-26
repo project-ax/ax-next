@@ -144,7 +144,10 @@ export function createFakeStore(): FakeStore {
         .filter((r) => RECEIPT_STATUSES.includes(r.status))
         .filter(
           (r) =>
-            r.status !== 'executed' || r.replayedAt !== null || r.consumedAt !== null,
+            r.status !== 'executed' ||
+            r.replayedAt !== null ||
+            r.consumedAt !== null ||
+            (r.replayDueAt === null && r.replayClaimedAt === null),
         )
         .filter((r) => before === undefined || r.resolvedAt! < before)
         .sort((a, b) =>

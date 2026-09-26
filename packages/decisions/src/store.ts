@@ -227,7 +227,9 @@ export interface DecisionStore {
    *
    * The filter is `receiptFor`'s rule pushed into SQL — the receipt-bearing
    * statuses, AND an `executed` row only once its call has actually gone out
-   * (`replayed_at` for the host, `consumed_at` for the agent). Doing it here
+   * (`replayed_at` for the host, `consumed_at` for the agent) or once nothing
+   * on the host side is holding it (no replay due, none in flight — the
+   * attended approval waiting at the gate, TASK-517). Doing it here
    * rather than fetching a page and discarding most of it is what makes a page
    * exactly a page: rows dropped after the LIMIT under-fill it, and a feed
    * paging through under-filled pages stalls short of history it has.
@@ -652,15 +654,21 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
       if (before !== undefined) q = q.where('resolved_at', '<', new Date(before));
       const rows = await q
         // The one status that is not on its own enough: `executed` is written
-        // the moment a human says yes, and on two paths the call has not gone
-        // out yet — an irreversible one waiting out its undo window, and an
-        // attended one waiting for its warm agent. Neither has anything to
-        // report, and both are still undoable.
+        // the moment a human says yes, and on some paths the call has not gone
+        // out yet. The HOST's two — an irreversible call waiting out its undo
+        // window (`replay_due_at`), a replay in flight (`replay_claimed_at`) —
+        // have nothing to report yet. An attended approval waiting for its
+        // warm agent has neither marker, and DOES: its yes is banked at the
+        // gate, and `receiptFor` says so (TASK-517).
         .where((eb) =>
           eb.or([
             eb('status', '!=', 'executed'),
             eb('replayed_at', 'is not', null),
             eb('consumed_at', 'is not', null),
+            eb.and([
+              eb('replay_due_at', 'is', null),
+              eb('replay_claimed_at', 'is', null),
+            ]),
           ]),
         )
         .orderBy('resolved_at', 'desc')

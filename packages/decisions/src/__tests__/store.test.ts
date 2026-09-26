@@ -1050,9 +1050,23 @@ describe('decisions store — the rows a receipt is derived from', () => {
     dismissed: [{ name: 'dismissed', over: { status: 'dismissed', resolvedAt: T_SOON } }],
     expired: [{ name: 'expired', over: { status: 'expired', resolvedAt: T_SOON } }],
     executed: [
-      // Approved, but the call has NOT gone out: the deferred window, and the
-      // attended row still waiting for its warm agent. Both are still undoable.
-      { name: 'executed, nothing spent', over: { status: 'executed', resolvedAt: T_SOON } },
+      // Approved, but the call has NOT gone out. Three shapes, and they do not
+      // all answer the same (TASK-517): the host's deferred window and the
+      // host's in-flight replay have nothing to report yet, while an approval
+      // with NO host replay scheduled is standing at the gate for the agent and
+      // owes the person the pending-agent line.
+      {
+        name: 'executed, waiting out the undo window',
+        over: { status: 'executed', resolvedAt: T_SOON, irreversible: true, replayDueAt: T_LATE },
+      },
+      {
+        name: 'executed, host replay in flight',
+        over: { status: 'executed', resolvedAt: T_SOON, replayClaimedAt: T_SOON },
+      },
+      {
+        name: 'executed, waiting for the warm agent',
+        over: { status: 'executed', resolvedAt: T_SOON, attendance: 'attended' },
+      },
       {
         name: 'executed, host replayed it',
         over: { status: 'executed', resolvedAt: T_SOON, replayedAt: T_LATE },

@@ -1267,6 +1267,9 @@ const STEP_MARK: Record<
   // compete with.
   done: null,
   running: null,
+  // A hold that has since been answered (TASK-517). No hand, no warning tone:
+  // there is nothing left for the reader to do, and the words say so.
+  settled: null,
   failed: { Icon: AlertTriangle, tone: 'text-destructive' },
   waiting: { Icon: Hand, tone: 'text-warning' },
 };

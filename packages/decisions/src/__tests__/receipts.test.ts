@@ -139,13 +139,61 @@ describe('receiptFor — the outcomes that have one', () => {
 });
 
 describe('receiptFor — the states that have no receipt', () => {
-  it('an approved row whose call has not gone out yet has none', () => {
-    // The deferred-replay window, and the attended row waiting for its agent.
-    // A receipt here would claim something that has not happened, and the undo
+  it('an approved row the HOST is about to run has none', () => {
+    // The deferred-replay window (an irreversible call waiting out undo), and
+    // the flight between the host claiming the replay and finishing it. The
+    // host owns both and will report on them itself — a receipt here would
+    // claim something that has not happened, and in the first case the undo
     // that is still available would have to take it back.
     expect(receiptFor(base({ replayDueAt: T_RAN }))).toBeNull();
-    expect(receiptFor(base())).toBeNull();
+    expect(receiptFor(base({ irreversible: true, replayDueAt: T_RAN }))).toBeNull();
+    expect(receiptFor(base({ replayClaimedAt: T_RAN }))).toBeNull();
   });
+});
+
+describe('receiptFor — an attended approval the warm agent has not taken up (TASK-517)', () => {
+  it('says the yes is banked, exactly as a parked row does', () => {
+    // The row a walk found on the cluster: `executed`, resolved, and nothing
+    // else — no consume, no replay, no replay scheduled or in flight. The
+    // attended path hands the approval to the warm agent, and if the agent
+    // never re-issues the call the approval simply stands at the gate. This
+    // used to answer `null`, so "What it did" had no row for a decision the
+    // person had answered, while the rail's counter counted it.
+    const r = receiptFor(base({ attendance: 'attended' }));
+    expect(r).toEqual({
+      decisionId: 'dec_1',
+      agentId: 'a1',
+      outcome: 'pending-agent',
+      receipt: PENDING_AGENT_RECEIPT,
+      at: T_RESOLVED,
+      error: null,
+    });
+    // H1: nothing was sent, so it must never carry the line that says it was.
+    expect(r?.receipt).not.toBe(base().approvedText);
+  });
+
+  it('keys on the replay markers, not on attendance or irreversibility', () => {
+    // An attended irreversible call is NOT deferred — the undo window is
+    // honoured on the host path only (see plugin.ts) — so it waits at the gate
+    // exactly like a reversible one. And `attendance` is the channel that
+    // opened the conversation, which TASK-277 showed is not the route the
+    // approval actually took: the markers are what say who holds the call.
+    for (const over of [
+      { attendance: 'attended' as const, irreversible: true },
+      { attendance: 'unattended' as const, irreversible: false },
+    ]) {
+      expect(receiptFor(base(over))?.outcome).toBe('pending-agent');
+    }
+  });
+
+  it('stops promising once the agent takes it up', () => {
+    const r = receiptFor(base({ attendance: 'attended', consumedAt: T_RAN }));
+    expect(r?.outcome).toBe('executed');
+    expect(r?.receipt).toBe(base().approvedText);
+  });
+});
+
+describe('receiptFor — the states that have no receipt (continued)', () => {
 
   it('an UNDONE decision has none — the row is open again', () => {
     // This is the whole design. `restore` writes `pending` and clears
@@ -305,6 +353,9 @@ describe('the count and the feed, recomputed from the SAME rows (TASK-447)', () 
       ['d_declined', { status: 'dismissed' }],
       ['d_expired', { status: 'expired' }],
       ['d_failed', { status: 'failed', replayError: 'the tool threw' }],
+      // TASK-517: said yes in their own chat, and the warm agent never took it
+      // up. Counted by the rail and — until this card — missing from the feed.
+      ['d_unclaimed', { status: 'executed', attendance: 'attended' }],
       // Raised and still sitting in the queue: counted, nothing to show yet.
       ['d_open', { status: 'pending', resolvedAt: null }],
     ];
@@ -332,7 +383,7 @@ describe('the count and the feed, recomputed from the SAME rows (TASK-447)', () 
     const raisedInWindow = [...store.rows.values()].filter(
       (r) => Date.parse(r.createdAt) >= Date.parse(WINDOW_START),
     ).length;
-    expect(raisedInWindow).toBe(5);
+    expect(raisedInWindow).toBe(6);
     await expect(
       store.count({ ownerUserId: OWNER, agentId: AGENT, since: WINDOW_START }),
     ).resolves.toBe(raisedInWindow);
@@ -358,6 +409,8 @@ describe('the count and the feed, recomputed from the SAME rows (TASK-447)', () 
     expect(new Set(shown.map((r) => r.decisionId))).toEqual(new Set(settled));
     // The one the card was filed for. Before TASK-447 this set was three.
     expect(shown.find((r) => r.decisionId === 'd_declined')?.outcome).toBe('declined');
+    // And the one TASK-517 was filed for: a promise, never a claim it ran.
+    expect(shown.find((r) => r.decisionId === 'd_unclaimed')?.outcome).toBe('pending-agent');
     // And the open row is still absent, which is the half a "just make the two
     // numbers match" fix would have broken: it HAS been brought to you, and
     // there is nothing yet to report about it.

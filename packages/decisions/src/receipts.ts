@@ -68,8 +68,9 @@ import type { Decision, DecisionReceipt, DecisionStatus } from './types.js';
  * row.
  *
  * Still COARSE, deliberately. Being in here means "this row may have something
- * to report", not "it does": an `executed` row whose call has not gone out yet
- * is a candidate that `receiptFor` still answers `null` for. The SQL filter is
+ * to report", not "it does": an `executed` row the host is about to run (its
+ * undo window, its replay in flight) is a candidate that `receiptFor` still
+ * answers `null` for. The SQL filter is
  * allowed to over-select; it must never under-select.
  *
  * TWO SPELLINGS OF ONE RULE, in two languages, which is the shape this package
@@ -97,7 +98,8 @@ export const RECEIPT_STATUSES: readonly DecisionStatus[] = DECISION_STATUSES.fil
  *
  * What has no receipt is a question still OPEN: `pending` and `stale`, where
  * the person has not answered and the row is still sitting in the queue; an
- * `executed` row whose call has not gone out yet; and an UNDONE row, which undo
+ * `executed` row the HOST is about to run (its undo window, or its replay in
+ * flight); and an UNDONE row, which undo
  * puts back to `pending` so the derived receipt simply stops existing. A line
  * for any of those would be a claim about something that has not happened —
  * design H1, and in the undo case a claim the person has explicitly taken back.
@@ -172,13 +174,35 @@ export function receiptFor(decision: Decision): DecisionReceipt | null {
     // same thing to a reader, so both carry the same authored line: the only
     // one of the receipts that claims the thing happened.
     //
-    // An `executed` row whose call has NOT gone out has no receipt — an
-    // irreversible call inside its undo window, or an attended one waiting for
-    // its warm agent. Saying anything there would be a claim about something
-    // that has not happened (design H1).
+    // An `executed` row whose call has NOT gone out is two different states,
+    // and the replay markers are what tell them apart (TASK-517):
+    //
+    //   * The HOST holds it — `replayDueAt` (an irreversible call waiting out
+    //     its undo window) or `replayClaimedAt` (the host is making the call
+    //     right now). No receipt: the host is about to report on this itself,
+    //     and saying anything first would be a claim about something that has
+    //     not happened (design H1) — in the undo case, one the person can
+    //     still take back.
+    //   * NOBODY on the host side holds it — no replay scheduled, none in
+    //     flight. That is the attended path: the approval was handed to the
+    //     warm agent, and until the agent re-issues its call the yes stands at
+    //     the gate. That is exactly `approved-pending-agent`'s situation, and it
+    //     gets that row's sentence. It used to get `null`, and because an
+    //     agent that never re-issues leaves the row like this for good, the
+    //     person's own answer had no line anywhere on "What it did".
+    //
+    // Deliberately keyed on the markers and NOT on `attendance`: that field is
+    // the channel that opened the conversation, which TASK-277 showed is not
+    // the route the approval actually took. The markers are what say who is
+    // holding the call. Nor on `irreversible`: an attended irreversible call
+    // is not deferred (the undo window is a host-path grace period only), so
+    // it waits at the gate like any other.
     case 'executed':
-      return made
-        ? { ...row, outcome: 'executed', receipt: decision.approvedText, error: null }
+      if (made) {
+        return { ...row, outcome: 'executed', receipt: decision.approvedText, error: null };
+      }
+      return awaitingAgent(decision)
+        ? { ...row, outcome: 'pending-agent', receipt: PENDING_AGENT_RECEIPT, error: null }
         : null;
 
     // Same line once the agent has actually taken it up. Until then the host
@@ -216,4 +240,17 @@ export function receiptFor(decision: Decision): DecisionReceipt | null {
       return unhandled;
     }
   }
+}
+
+/**
+ * An approved-but-unperformed row the HOST is not going to run: no replay is
+ * scheduled (`replayDueAt`) and none is in flight (`replayClaimedAt`), so the
+ * only way the call ever happens is the agent re-issuing it at the gate.
+ *
+ * Only meaningful on a row whose call has not been made — the caller checks
+ * that first. `listReceiptCandidates` states the same predicate in SQL, and
+ * `store.test.ts` pins the two against each other.
+ */
+function awaitingAgent(decision: Decision): boolean {
+  return decision.replayDueAt === null && decision.replayClaimedAt === null;
 }

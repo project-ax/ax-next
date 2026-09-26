@@ -64,8 +64,15 @@ import { stripMcpToolPrefix } from './tool-name.js';
  * writers to that map are `lib/transport.ts` and `lib/history-adapter.ts` —
  * chat's two readers, neither of which runs on this surface. Reusing it here
  * would return `waiting` never, which is the one answer that must not be wrong.
+ *
+ * `settled` is a fifth word chat does not need (TASK-517): a call that WAS held
+ * and whose question has since been answered — or has lapsed. The transcript's
+ * `held: true` records what was true at turn end, and on reload it used to
+ * read "waiting for you" forever. It is NOT `done`: an approval the agent never
+ * took up did not run, and a declined one never will, so a settled row claims
+ * neither. See {@link settleHolds}.
  */
-export type WorkspaceStepStatus = 'running' | 'waiting' | 'failed' | 'done';
+export type WorkspaceStepStatus = 'running' | 'waiting' | 'settled' | 'failed' | 'done';
 
 /** One tool call, normalized out of whichever path saw it. */
 export interface WorkspaceToolCall {
@@ -400,6 +407,11 @@ const STATUS_SUFFIX: Record<Exclude<WorkspaceStepStatus, 'done'>, string> = {
   // progress, and this surface is written for the person.
   running: 'in progress',
   waiting: 'waiting for you',
+  // Not "approved", not "done": the row cannot see which way the question
+  // went, and an approval the agent never took up did not run. What it can
+  // say truthfully is that the person is no longer being asked. The outcome
+  // itself is "What it did"'s to report (the decision's receipt).
+  settled: 'no longer waiting for you',
   failed: "didn't finish",
 };
 
@@ -476,7 +488,9 @@ export function shapeSteps(
       steps.push({ text: row, status: 'done' });
       continue;
     }
-    counts[call.status] += 1;
+    // A settled hold is not something the header needs to raise: it is not
+    // waiting, has not failed, and is not running.
+    if (call.status !== 'settled') counts[call.status] += 1;
     // The words stay, ALONGSIDE the status — a colour is not a sentence, and a
     // reader who cannot see the difference between two greys still has to be
     // told what happened.
@@ -558,4 +572,53 @@ export function applyToolResult(
   const merged = [...calls];
   merged[at] = { ...calls[at]!, status };
   return merged;
+}
+
+/**
+ * The holds still being asked about, read from the OPEN decisions of the
+ * conversation being shaped. `null` when that read did not come back.
+ */
+export interface LiveHolds {
+  /** `call.id` of every open decision — the tool_use id it was held under. */
+  callIds: ReadonlySet<string>;
+  /** `call.name` of every open decision; the `mcp__…__` prefix is ignored. */
+  toolNames: ReadonlySet<string>;
+}
+
+/**
+ * Turn each held step whose question is no longer open into `settled`
+ * (TASK-517).
+ *
+ * `held: true` is persisted on the tool_result at turn end and never
+ * rewritten, so a step read back after the person answered still said
+ * "— waiting for you", in the warning tone, with nothing left to press. The
+ * transcript cannot know better; the decision store can.
+ *
+ * WHICH WAY IT FAILS, because the two mistakes are not equal. Telling someone
+ * a live question is settled hides the one thing they need to act on;
+ * telling them a settled one is still waiting is the old, visible annoyance.
+ * So everything uncertain stays `waiting`:
+ *
+ *   * `live === null` — the decisions read failed or does not exist. Unknown
+ *     is not "nothing is open".
+ *   * The call id matches an open decision — the plain case.
+ *   * The TOOL matches an open decision under any id. An identical call held
+ *     twice collapses onto one decision row (TASK-254), which keeps the FIRST
+ *     call's id, so the second hold's id matches nothing. Matching by name
+ *     over-holds at worst — an older, answered hold of the same tool keeps
+ *     reading "waiting" while a newer one genuinely is.
+ */
+export function settleHolds(
+  calls: readonly WorkspaceToolCall[],
+  live: LiveHolds | null,
+): WorkspaceToolCall[] {
+  if (live === null) return [...calls];
+  const liveNames = new Set([...live.toolNames].map(stripMcpToolPrefix));
+  return calls.map((call) =>
+    call.status === 'waiting' &&
+    !live.callIds.has(call.id) &&
+    !liveNames.has(stripMcpToolPrefix(call.name))
+      ? { ...call, status: 'settled' }
+      : call,
+  );
 }

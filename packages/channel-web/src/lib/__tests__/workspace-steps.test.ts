@@ -13,6 +13,7 @@ import {
   UNNAMED_STEP,
   applyToolResult,
   applyToolUse,
+  settleHolds,
   shapeSteps,
   stepDetail,
   type WorkspaceToolCall,
@@ -442,5 +443,49 @@ describe('stepDetail', () => {
     expect(stepDetail({ command: '\u200B\u202E', file_path: 'src/app.ts' })).toBe(
       'src/app.ts',
     );
+  });
+});
+
+describe('settleHolds — a hold the person has since answered (TASK-517)', () => {
+  const held = (over: Partial<WorkspaceToolCall> = {}): WorkspaceToolCall =>
+    done({ status: 'waiting', phrase: 'Reading a web page', ...over });
+  const none = { callIds: new Set<string>(), toolNames: new Set<string>() };
+
+  it('a settled hold does not render the waiting qualifier', () => {
+    const panel = shapeSteps(settleHolds([held()], none));
+    expect(texts(panel)).toEqual(['Reading a web page — no longer waiting for you']);
+    expect(panel?.steps[0]?.status).toBe('settled');
+    // And the header stops counting it as waiting.
+    expect(panel?.label).toBe('1 step');
+  });
+
+  it('a hold whose call id is still open stays waiting', () => {
+    const calls = settleHolds([held({ id: 'tu1' })], {
+      callIds: new Set(['tu1']),
+      toolNames: new Set(),
+    });
+    expect(calls[0]?.status).toBe('waiting');
+  });
+
+  it('a hold whose TOOL still has an open decision stays waiting, prefix or not', () => {
+    // The re-held call (TASK-254) carries a different id from the row's.
+    const calls = settleHolds([held({ id: 'tu2', name: 'mcp__ax-host-tools__web_extract' })], {
+      callIds: new Set(['tu1']),
+      toolNames: new Set(['web_extract']),
+    });
+    expect(calls[0]?.status).toBe('waiting');
+  });
+
+  it('an UNKNOWN set of open decisions settles nothing', () => {
+    // A failed read is not "nothing is open"; the old reading stands.
+    expect(settleHolds([held()], null)[0]?.status).toBe('waiting');
+  });
+
+  it('touches only held rows', () => {
+    const calls = settleHolds(
+      [done({ id: 'a' }), done({ id: 'b', status: 'failed' }), done({ id: 'c', status: 'running' })],
+      none,
+    );
+    expect(calls.map((c) => c.status)).toEqual(['done', 'failed', 'running']);
   });
 });

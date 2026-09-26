@@ -702,7 +702,10 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
             // AW-6: hand it to the warm agent as its next inbox message. It
             // re-issues its own held call and the fingerprint gate authorises
             // that exactly once. Nothing has happened yet, so nothing claims it
-            // has: no receipt is fired here.
+            // has: no receipt is fired here. The row it leaves — `executed`,
+            // no replay due, none in flight — derives the pending-agent line
+            // until the agent takes it up (`receiptFor`, TASK-517), which is
+            // what "What it did" shows if the agent never does.
             //
             // TASK-278: the caller's continuation id rides the entry so the
             // woken turn emits under an id the open thread can attach a stream
