@@ -30,6 +30,7 @@ import type {
   HookBus,
   WorkspaceReadInput,
   WorkspaceReadOutput,
+  WorkspaceVersion,
 } from '@ax/core';
 
 /** Per-file hard cap (mirrors the runner's prompt-engine). A larger file is
@@ -89,14 +90,19 @@ export async function composeIdentityFromFiles(
  *
  * Returns '' on any miss — same contract as the FS variant; the caller seeds a
  * placeholder body.
+ *
+ * `version`, when given, pins both reads to that tier snapshot — the caller
+ * passes the version its memory hydrate read from, so identity and memory
+ * come from the same commit (TASK-513). Omitted: each read sees the head.
  */
 export async function composeIdentityFromTier(
   bus: HookBus,
   ctx: AgentContext,
+  version?: WorkspaceVersion,
 ): Promise<string> {
   const [identity, soul] = await Promise.all([
-    readTierAxFile(bus, ctx, '.ax/IDENTITY.md'),
-    readTierAxFile(bus, ctx, '.ax/SOUL.md'),
+    readTierAxFile(bus, ctx, '.ax/IDENTITY.md', version),
+    readTierAxFile(bus, ctx, '.ax/SOUL.md', version),
   ]);
   return composeIdentityParts(identity, soul);
 }
@@ -105,12 +111,13 @@ async function readTierAxFile(
   bus: HookBus,
   ctx: AgentContext,
   path: string,
+  version: WorkspaceVersion | undefined,
 ): Promise<string | undefined> {
   try {
     const out = await bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
       'workspace:read',
       ctx,
-      { path },
+      version === undefined ? { path } : { path, version },
     );
     if (!out.found) return undefined;
     if (out.bytes.length > MAX_AX_FILE_BYTES) return undefined;

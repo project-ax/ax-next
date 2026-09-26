@@ -79,7 +79,7 @@ import { AGENT_TIER_MEMORY_ROOT, MEMORY_ROOT } from './paths.js';
 export { AGENT_TIER_MEMORY_ROOT };
 
 /** `permanent/memory/foo` (scratch-relative) → `memory/foo` (/agent tier). */
-function scratchRelToTierPath(scratchRel: string): string {
+export function scratchRelToTierPath(scratchRel: string): string {
   // scratchRel is always posix-style (we build it from MEMORY_ROOT + posix
   // joins). Strip the MEMORY_ROOT prefix, re-root under AGENT_TIER_MEMORY_ROOT.
   const tail = scratchRel.slice(MEMORY_ROOT.length + 1); // drop "permanent/memory/"
@@ -105,6 +105,33 @@ export interface HydratedTier {
   dispose(): Promise<void>;
 }
 
+/** Is `tierPath` a file path inside the agent tier's memory subtree? A prefix
+ *  check alone is not enough: `memory/../x` passes it and then normalizes out
+ *  of the subtree (and, joined onto the scratch root, out of the scratch). */
+function isTierMemoryPath(tierPath: string): boolean {
+  if (!tierPath.startsWith(`${AGENT_TIER_MEMORY_ROOT}/`)) return false;
+  return tierPath.split('/').every((seg) => seg !== '' && seg !== '.' && seg !== '..');
+}
+
+export interface HydrateOptions {
+  /**
+   * Hydrate ONLY these tier paths (e.g. `memory/system/agent.md`) instead of
+   * the whole `memory/**` subtree: `workspace:list` is skipped and each path is
+   * read directly. Paths outside the memory subtree are ignored — this module
+   * never pulls non-memory files into the scratch.
+   *
+   * SAFE ONLY FOR CREATE-ONLY PIPELINES. `flushAgentTier` computes deletions
+   * as baseline-minus-scratch, so a file that was never read is in neither and
+   * is never deleted — and a pipeline that only creates files (bootstrap, with
+   * its O_EXCL seeds) sees everything it needs. But a pipeline that reads,
+   * rewrites or deletes OTHER files (observer, consolidator, memory_note) would
+   * see a scratch missing most of the agent's memory: it would rebuild derived
+   * files from a fraction of the data, or fail to find what it should delete.
+   * Those callers MUST hydrate fully (omit `only`). (TASK-513)
+   */
+  only?: readonly string[];
+}
+
 /**
  * Read the agent's `memory/**` out of `/agent` into a fresh local scratch dir
  * laid out as `permanent/memory/**`. The returned `scratchRoot` is what the
@@ -114,35 +141,51 @@ export interface HydratedTier {
  * that agent's repo, so the scratch can never contain another agent's
  * memory. (The repo is shared by every user authorized to reach that agent;
  * `ctx.userId` no longer selects a distinct repo — see `workspace-id.ts`.)
+ *
+ * ONE SNAPSHOT (TASK-513). The first read that finds a file returns the tier
+ * version it read from; every later read passes that `version`, so the whole
+ * scratch comes from one snapshot and `baseVersion` names it. Unpinned, each
+ * read could land on a different head if a runner commit landed mid-hydrate —
+ * a torn scratch whose `baseVersion` was whichever head the last read saw.
+ * (The list stays unpinned: it runs before any version is known, and a listed
+ * path the pinned snapshot lacks is simply not found.)
  */
 export async function hydrateAgentTier(
   bus: HookBus,
   ctx: AgentContext,
+  opts: HydrateOptions = {},
 ): Promise<HydratedTier> {
   const scratchRoot = await mkdtemp(join(tmpdir(), 'ax-mem-tier-'));
   const baseline = new Map<string, Uint8Array>();
   let baseVersion: WorkspaceVersion | null = null;
 
-  const listed = await bus.call<WorkspaceListInput, WorkspaceListOutput>(
-    'workspace:list',
-    ctx,
-    { pathGlob: `${AGENT_TIER_MEMORY_ROOT}/**` },
-  );
+  let candidates: readonly string[];
+  if (opts.only !== undefined) {
+    candidates = opts.only;
+  } else {
+    const listed = await bus.call<WorkspaceListInput, WorkspaceListOutput>(
+      'workspace:list',
+      ctx,
+      { pathGlob: `${AGENT_TIER_MEMORY_ROOT}/**` },
+    );
+    candidates = listed.paths;
+  }
   // `pathGlob` is advisory — a backend MAY ignore it and return everything
   // (the local git-core backend does). Filter defensively so the scratch only
-  // contains memory files regardless of backend filtering.
-  const memPaths = listed.paths.filter(
-    (p) => p === AGENT_TIER_MEMORY_ROOT || p.startsWith(`${AGENT_TIER_MEMORY_ROOT}/`),
-  );
+  // contains memory files regardless of backend filtering — and regardless of
+  // what a caller put in `only`. Dedupe so a repeated `only` entry is one read.
+  const memPaths = [...new Set(candidates.filter(isTierMemoryPath))];
 
   for (const tierPath of memPaths) {
-    const read = await bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
+    const input: WorkspaceReadInput =
+      baseVersion === null ? { path: tierPath } : { path: tierPath, version: baseVersion };
+    const read: WorkspaceReadOutput = await bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
       'workspace:read',
       ctx,
-      { path: tierPath },
+      input,
     );
     if (!read.found) continue;
-    if (read.version !== undefined) baseVersion = read.version;
+    if (baseVersion === null && read.version !== undefined) baseVersion = read.version;
     baseline.set(tierPath, read.bytes);
     const scratchRel = tierToScratchRelPath(tierPath);
     const abs = join(scratchRoot, ...scratchRel.split('/'));
