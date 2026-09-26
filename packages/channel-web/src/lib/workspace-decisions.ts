@@ -45,6 +45,7 @@ import {
   DECISION_UNDO_TOO_LATE,
   undoSecondsLeft,
 } from '@/components/workspace/decision-copy';
+import { isJustResolved } from './workspace-types';
 
 /**
  * How often we re-read a row while its undo window is open. The window itself
@@ -99,6 +100,40 @@ function toDecisionReadError(e: unknown): DecisionReadError {
     return { kind: 'expired', detail };
   }
   return { kind: 'failed', detail };
+}
+
+/**
+ * A fresh queue read, plus the receipts it does not know about (TASK-509).
+ *
+ * `GET /api/workspace/decisions` lists OPEN rows only — `decisions:list`'s
+ * default status set — so a row resolved a moment ago is, correctly, not in
+ * it. But that row is still on screen as its own receipt, carrying the
+ * ten-second Undo, and a re-read is exactly what follows an in-thread answer:
+ * the turn resumes, finishes, and the thread asks the shell to refresh. Taking
+ * the read verbatim removed the row the person had just answered, the thread's
+ * `ApprovalCard` (which looks its decision up by id) rendered nothing, and
+ * focus fell from the receipt to `<body>` about 0.6s after the click —
+ * measured on the TASK-358 walk. Today only looked immune because nothing on
+ * Today triggers that refresh.
+ *
+ * So a row survives a read that omits it iff it is RESOLVED and still inside
+ * `JUST_RESOLVED_MS` — the same predicate Today uses to draw it, so the two
+ * surfaces cannot disagree about the same receipt.
+ *
+ * Which direction it fails in: CLOSED for anything still asking a question. An
+ * OPEN row the server stopped listing is dropped as before — it was answered
+ * or expired somewhere else, and keeping it would offer buttons for a question
+ * that is already closed. A row the server DOES list is always the server's
+ * copy. Retained rows go after the fresh ones, in the order they already had.
+ */
+function mergeReadWithReceipts(
+  prev: readonly Decision[],
+  fresh: readonly Decision[],
+  now: number,
+): Decision[] {
+  const listed = new Set(fresh.map((d) => d.id));
+  const receipts = prev.filter((d) => !listed.has(d.id) && isJustResolved(d, now));
+  return [...fresh, ...receipts];
 }
 
 export interface DecisionQueue {
@@ -168,7 +203,7 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
         on it during render, so an `undefined` here would not degrade, it would
         throw out of the hook and unmount the surface.
       */
-      setDecisions(page.decisions);
+      setDecisions((prev) => mergeReadWithReceipts(prev, page.decisions, Date.now()));
       setError(null);
     } catch (e) {
       if (readId.current !== id) return;

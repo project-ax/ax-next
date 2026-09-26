@@ -862,3 +862,34 @@ export interface PastConversation {
  * nothing.
  */
 export const UNDO_WINDOW_MS = 10_000;
+
+/**
+ * How long a decision that has just been resolved stays on screen as its own
+ * receipt — on Today AND in the agent's thread.
+ *
+ * Long enough that the receipt lands where the person was looking and, for the
+ * ten seconds that matter (`UNDO_WINDOW_MS`), that Undo is still under their
+ * cursor rather than somewhere in the Activity feed. Deliberately longer than
+ * the undo window: a receipt that vanished the instant its Undo expired would
+ * reflow the page under the reader for no reason.
+ */
+export const JUST_RESOLVED_MS = 60_000;
+
+/**
+ * True for a row that is resolved and still inside `JUST_RESOLVED_MS`.
+ *
+ * ONE predicate for two jobs (TASK-509): Today uses it to pick which resolved
+ * rows to draw as receipts, and the queue uses it to decide which resolved rows
+ * survive a re-read that no longer lists them. Two copies of the rule would be
+ * two surfaces disagreeing about the same receipt — which is the bug.
+ */
+export function isJustResolved(
+  d: { status: DecisionStatus; resolvedAt: string | null },
+  now: number,
+): boolean {
+  return (
+    !isOpenDecision(d) &&
+    d.resolvedAt !== null &&
+    now - Date.parse(d.resolvedAt) < JUST_RESOLVED_MS
+  );
+}

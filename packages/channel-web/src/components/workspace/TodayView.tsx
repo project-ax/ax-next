@@ -26,7 +26,7 @@ import { SignInAgainButton } from '@/components/SignInAgainButton';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import type { DecisionReadError } from '@/lib/workspace-decisions';
 import { readAlertVariant } from '@/lib/read-register';
-import { isOpenDecision } from '@/lib/workspace-types';
+import { isJustResolved, isOpenDecision } from '@/lib/workspace-types';
 import { RESOLUTION_FOCUS_RING } from '@/lib/consent-focus';
 import { DecisionRow } from './DecisionRow';
 import { GrantRow } from './GrantRow';
@@ -59,15 +59,6 @@ const WORDS = [
   'Four things',
   'Five things',
 ];
-
-/**
- * How long a row that has just been resolved stays on screen under the queue.
- *
- * Long enough that the receipt lands where the person was looking — and, for
- * the ten seconds that matter, that Undo is still under their cursor rather
- * than somewhere in the Activity feed.
- */
-const JUST_RESOLVED_MS = 60_000;
 
 interface Props {
   decisions: Decision[];
@@ -174,12 +165,7 @@ export function TodayView({
     instant the status changes.
   */
   const justResolved = readable
-    ? decisions.filter(
-        (d) =>
-          !isOpenDecision(d) &&
-          d.resolvedAt !== null &&
-          Date.now() - Date.parse(d.resolvedAt) < JUST_RESOLVED_MS,
-      )
+    ? decisions.filter((d) => isJustResolved(d, Date.now()))
     : [];
   const working = agents.filter((a) => a.state === 'working');
   /*
