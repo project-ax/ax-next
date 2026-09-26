@@ -120,14 +120,14 @@ export interface HydrateOptions {
    * read directly. Paths outside the memory subtree are ignored — this module
    * never pulls non-memory files into the scratch.
    *
-   * SAFE ONLY FOR CREATE-ONLY PIPELINES. `flushAgentTier` computes deletions
-   * as baseline-minus-scratch, so a file that was never read is in neither and
-   * is never deleted — and a pipeline that only creates files (bootstrap, with
-   * its O_EXCL seeds) sees everything it needs. Rewriting a file that IS in
-   * `only` is equally safe — bootstrap's placeholder `agent.md` repair
-   * (TASK-556) does exactly that — because the baseline holds it and the flush
-   * ships the change as a plain put. But a pipeline that reads,
-   * rewrites or deletes OTHER files (observer, consolidator, memory_note) would
+   * SAFE ONLY FOR PIPELINES THAT TOUCH NOTHING OUTSIDE `only`. `flushAgentTier`
+   * computes deletions as baseline-minus-scratch, so a file that was never read
+   * is in neither and is never deleted — and a pipeline that only creates files
+   * (bootstrap, with its O_EXCL seeds) sees everything it needs. Rewriting a
+   * file that IS in `only` is equally safe — bootstrap's placeholder `agent.md`
+   * repair (TASK-556) does exactly that — because the baseline holds it and the
+   * flush ships the change as a plain put. But a pipeline that reads, rewrites
+   * or deletes OTHER files (observer, consolidator, memory_note) would
    * see a scratch missing most of the agent's memory: it would rebuild derived
    * files from a fraction of the data, or fail to find what it should delete.
    * Those callers MUST hydrate fully (omit `only`). (TASK-513)

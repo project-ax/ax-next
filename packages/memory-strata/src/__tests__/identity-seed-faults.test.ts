@@ -69,6 +69,7 @@ const { composeIdentityFromFiles } = await import('../compose-identity.js');
 const { hydrateAgentTier } = await import('../agent-tier-sync.js');
 const { createMemoryStrataPlugin } = await import('../plugin.js');
 const { systemFile } = await import('../paths.js');
+const { readRegularFile } = await import('../bootstrap.js');
 
 async function exists(p: string): Promise<boolean> {
   try {
@@ -158,6 +159,61 @@ describe('composeIdentityFromFiles: a non-ENOENT error is not "absent" (TASK-556
     // And a workspace with no .ax/ at all is simply empty.
     await rm(join(workspaceRoot, 'permanent'), { recursive: true, force: true });
     await expect(composeIdentityFromFiles(workspaceRoot)).resolves.toBe('');
+  });
+});
+
+describe('readRegularFile shares readAxFile\'s notion of "absent" (TASK-560)', () => {
+  const isAgentPath = (p: string): boolean => p.endsWith(join('system', 'agent.md'));
+
+  it('a file deleted between lstat and readFile (ENOENT) is absent', async () => {
+    const abs = join(workspaceRoot, systemFile('agent'));
+    await mkdir(join(abs, '..'), { recursive: true });
+    await writeFile(abs, 'x', 'utf8');
+    faults.readFile.push({ match: isAgentPath, code: 'ENOENT', remaining: 1 });
+
+    await expect(readRegularFile(abs)).resolves.toBeUndefined();
+    expect(faults.readFile[0]!.remaining).toBe(0);
+  });
+
+  it('ENOTDIR from readFile after a clean lstat is absent too (the shared predicate, not ENOENT alone)', async () => {
+    const abs = join(workspaceRoot, systemFile('agent'));
+    await mkdir(join(abs, '..'), { recursive: true });
+    await writeFile(abs, 'x', 'utf8');
+    faults.readFile.push({ match: isAgentPath, code: 'ENOTDIR', remaining: 1 });
+
+    await expect(readRegularFile(abs)).resolves.toBeUndefined();
+    expect(faults.readFile[0]!.remaining).toBe(0);
+  });
+
+  // Pin (passed before TASK-560 too): "absent" stays narrow.
+  it('any other error still throws, from lstat or from readFile', async () => {
+    const abs = join(workspaceRoot, systemFile('agent'));
+    await mkdir(join(abs, '..'), { recursive: true });
+    await writeFile(abs, 'x', 'utf8');
+
+    faults.lstat.push({ match: isAgentPath, code: 'EACCES', remaining: 1 });
+    await expect(readRegularFile(abs)).rejects.toMatchObject({ code: 'EACCES' });
+
+    faults.readFile.push({ match: isAgentPath, code: 'EIO', remaining: 1 });
+    await expect(readRegularFile(abs)).rejects.toMatchObject({ code: 'EIO' });
+  });
+
+  // Pin (the turn failed before TASK-560 too, at the agent.md read; now it
+  // fails one step later, at bootstrap's mkdir). The whole CLI chat:start path
+  // over a tree where `system/` is a regular file: agent.md reads as absent,
+  // bootstrap cannot create system/, the turn warns and writes nothing.
+  it('CLI chat:start over a corrupt tree still fails closed and leaves the file alone', async () => {
+    const bus = cliBus();
+    await createMemoryStrataPlugin({ consolidatorDebounceMs: 0 }).init?.({ bus, config: {} });
+    const { ctx, warns } = recordingCtx(workspaceRoot);
+    const systemPath = join(workspaceRoot, systemFile('agent'), '..');
+    await mkdir(join(systemPath, '..'), { recursive: true });
+    await writeFile(systemPath, 'not a dir', 'utf8');
+
+    await bus.fire('chat:start', ctx, {});
+
+    expect(warns.map((w) => w.msg)).toContain('memory_strata_bootstrap_failed');
+    expect(await readFile(systemPath, 'utf8')).toBe('not a dir');
   });
 });
 

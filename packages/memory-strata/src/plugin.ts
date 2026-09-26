@@ -604,8 +604,10 @@ const SEED_AGENT_TIER_PATH = scratchRelToTierPath(systemFile('agent'));
  * seed write, and above all the tier flush (a `workspace:apply` to shared
  * storage) — so a bootstrap that blew its bound stops instead of writing into
  * the agent's tier after the turn it belonged to. Stopping is safe:
- * bootstrap only creates missing seed files, and the next turn's chat:start
- * redoes it from scratch. What it cannot stop is a step already in flight —
+ * bootstrap creates missing seed files and repairs a `system/agent.md` that
+ * still holds exactly the placeholder (TASK-556) — it never touches a file
+ * that holds the agent's own content — and the next turn's chat:start redoes
+ * both from scratch. What it cannot stop is a step already in flight —
  * the tier hooks take no signal — so the checks bound the work to "at most
  * the step that was running at the bound".
  */
@@ -647,9 +649,12 @@ async function handleChatStart(
     // `memory/**` subtree. Each tier read is a round trip to the storage
     // backend (~80 ms on git-server), serialised, on the blocking dispatch
     // path — a full hydrate made chat:start linear in the agent's memory size
-    // (8.4 s at 100 docs). Bootstrap only asks "does each seed file exist?",
-    // and it only creates, so a partial hydrate is safe for the flush below:
-    // deletions are baseline-minus-scratch, and unread files are in neither.
+    // (8.4 s at 100 docs). Bootstrap only asks "does each seed file exist?"
+    // (and, for agent.md, "is it still the placeholder?"), and it writes only
+    // seed files — creating missing ones, repairing a placeholder agent.md
+    // (TASK-556) — so a partial hydrate is safe for the flush below: deletions
+    // are baseline-minus-scratch, unread files are in neither, and a repaired
+    // agent.md is in the baseline, so it ships as a plain put.
     const hydrated = await hydrateAgentTier(bus, ctx, { only: SEED_TIER_PATHS });
     try {
       if (signal.aborted) return 'hydrated';

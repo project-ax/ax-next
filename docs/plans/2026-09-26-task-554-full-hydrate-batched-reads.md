@@ -50,7 +50,10 @@ halves.
 
 We read the same paths at the same version and get the same bytes. The only
 change is how long we wait. The `only` option is untouched, and it's still
-safe only for create-only pipelines. Its seed reads benefit too.
+safe only for create-only pipelines. Its seed reads benefit too. (Later,
+TASK-560: more exactly, it is safe for pipelines that touch nothing outside
+`only`. Since TASK-556 that includes bootstrap's placeholder `agent.md`
+repair, which rewrites a file that is in `only`. See `HydrateOptions.only`.)
 
 ## After (same probe, same machine, median of 5)
 
