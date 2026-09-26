@@ -1676,10 +1676,13 @@ export const FILE_LABEL_MAX_CHARS = 120;
  * crossed a boundary unfenced. TASK-480 fenced it (see
  * `LEARNED_DOC_FALLBACK_NAME`); the doc `body` beside it is a document, and a
  * one-line fence is the wrong tool for that half, so it is still not fenced.
- * The owner-authored `displayName` on the rail is also unfenced here: it is
- * length-validated where it is written (`@ax/agents`' store), and stripping
- * its bidi belongs at that write, not in one of its readers. The first draft
- * of this comment claimed every other label was fenced; a grep says otherwise.
+ * The owner-authored `displayName` on the rail is not fenced here, on
+ * purpose: `@ax/agents` owns it, and since TASK-558 its store refuses the same
+ * character class at the write (`DISPLAY_NAME_FORBIDDEN`) and fences rows
+ * written before that on every read (`fenceStoredDisplayName`). So it arrives
+ * here already clean, from the one place that stores it, rather than being
+ * fixed in one of its several readers. The first draft of this comment
+ * claimed every other label was fenced; a grep said otherwise at the time.
  *
  * 120 is `FILE_LABEL_MAX_CHARS` — a banner and a rail row are the same size
  * of thing — and the fallback below is unchanged, so a title that fences to

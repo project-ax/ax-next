@@ -124,6 +124,60 @@ function invalid(message: string): PluginError {
   });
 }
 
+/**
+ * Characters that let a display name rewrite the surface it is drawn on.
+ *
+ * TASK-558. Since TASK-257 an agent's displayName is drawn for OTHER users
+ * (the workspace rail, team views), so one user can plant a name that renders
+ * misleadingly for another. A lone U+202E reverses the visual order of
+ * everything after it (Trojan source, CVE-2021-42574); an unterminated isolate
+ * leaks that reordering into whatever the renderer draws next; zero-width
+ * characters make two different names look identical. C0/C1 controls (TAB and
+ * LF included) have no business in a one-line label either.
+ *
+ * This is the same class `@ax/channel-web`'s `fenceLine` strips from every
+ * other label it draws (`REWRITES_THE_SURFACE` in `lib/fence-line.ts`) — a
+ * local twin, not an import, because plugins do not import each other
+ * (invariant 2). Keep the two in step: one rule, spelled twice.
+ *
+ * No `g` flag: it is used with `.test()` below, and a global regex carries
+ * `lastIndex` between calls.
+ */
+export const DISPLAY_NAME_FORBIDDEN =
+  /[\u0000-\u001F\u007F-\u009F؜​-‏‪-‮⁦-⁩﻿]/;
+
+const DISPLAY_NAME_FORBIDDEN_RUN = new RegExp(`${DISPLAY_NAME_FORBIDDEN.source}+`, 'g');
+
+export const DISPLAY_NAME_FORBIDDEN_MESSAGE =
+  'displayName must not contain invisible or text-direction control characters';
+
+/**
+ * What a stored name reads as when nothing legible survives the read fence.
+ * It passes the write door, so an owner who opens the edit form and saves
+ * gets a valid row back.
+ */
+export const DISPLAY_NAME_FALLBACK = 'Untitled agent';
+
+/**
+ * The read-side fence, for rows written before the write door refused these
+ * characters. Same class as `DISPLAY_NAME_FORBIDDEN`; each run becomes one
+ * space (so a name that leaned on a control to separate two words still reads
+ * as two words), whitespace collapses, and the ends are trimmed. The stored
+ * row is not rewritten — this is display-safety, not a migration; the next
+ * save through the write door makes the row itself clean.
+ *
+ * Applied in `rowToAgent`, the single place every store read path funnels
+ * through, so every reader of `agents:resolve` / `agents:list` gets it — not
+ * one renderer that has to remember.
+ */
+export function fenceStoredDisplayName(value: string): string {
+  const fenced = value
+    .replace(DISPLAY_NAME_FORBIDDEN_RUN, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return fenced.length === 0 ? DISPLAY_NAME_FALLBACK : fenced;
+}
+
 function validateDisplayName(value: unknown): string {
   if (typeof value !== 'string') {
     throw invalid('displayName must be a string');
@@ -135,6 +189,12 @@ function validateDisplayName(value: unknown): string {
   }
   if (value !== value.trim()) {
     throw invalid('displayName must not have leading or trailing whitespace');
+  }
+  // Reject, not strip (TASK-558): silently rewriting the name an owner typed
+  // would save something they did not choose, and they would only find out by
+  // reading it back. A 400 names the problem at the moment it can be fixed.
+  if (DISPLAY_NAME_FORBIDDEN.test(value)) {
+    throw invalid(DISPLAY_NAME_FORBIDDEN_MESSAGE);
   }
   return value;
 }
@@ -483,7 +543,8 @@ function rowToAgent(row: AgentsRow): Agent {
     ownerId: row.owner_id,
     ownerType: row.owner_type,
     visibility: row.visibility,
-    displayName: row.display_name,
+    // Fenced on read for rows that predate the TASK-558 write door.
+    displayName: fenceStoredDisplayName(row.display_name),
     allowedTools,
     mcpConfigIds,
     model: row.model,

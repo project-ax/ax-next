@@ -12,7 +12,11 @@ import {
   validateNewAttachments,
   type NewAttachmentInput,
 } from './skill-attachments-validation.js';
-import { validateConnectorAttachmentIds } from './store.js';
+import {
+  DISPLAY_NAME_FORBIDDEN,
+  DISPLAY_NAME_FORBIDDEN_MESSAGE,
+  validateConnectorAttachmentIds,
+} from './store.js';
 import type {
   Actor,
   Agent,
@@ -109,7 +113,10 @@ const displayNameSchema = z
   .refine(
     (s) => s === s.trim(),
     'displayName must not have leading or trailing whitespace',
-  );
+  )
+  // TASK-558: same class the store's write door refuses (one regex, imported
+  // from store.ts) — here so the admin form gets a named 400 before the hook.
+  .refine((s) => !DISPLAY_NAME_FORBIDDEN.test(s), DISPLAY_NAME_FORBIDDEN_MESSAGE);
 
 const allowedToolsSchema = z
   .array(z.string().regex(TOOL_NAME_RE, 'allowedTools entry has invalid shape'))

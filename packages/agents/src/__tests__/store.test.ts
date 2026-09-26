@@ -449,6 +449,33 @@ describe('store + scopedAgents', () => {
     expect((await store.getById(created.id))!.runner).toBe('claude-sdk');
   });
 
+  // TASK-558: a row written before the write door refused bidi/zero-width
+  // characters is fenced on every read path, not rewritten in place.
+  it('fences a pre-existing displayName carrying a bidi override on read', async () => {
+    const db = makeKysely();
+    await runAgentsMigration(db);
+    const store = createAgentStore(db);
+    const created = await store.create({
+      ownerId: 'u1',
+      ownerType: 'user',
+      validated: validateCreateInput(makeInput(), { allowedModels: ALLOWED }),
+    });
+    const planted = 'Payroll \u202Ebad.exe';
+    await sql`UPDATE agents_v1_agents SET display_name = ${planted} WHERE agent_id = ${created.id}`.execute(
+      db,
+    );
+    expect((await store.getById(created.id))!.displayName).toBe('Payroll bad.exe');
+    const listed = await store.listScoped({ userId: 'u1', teamIds: [] });
+    expect(listed.find((a) => a.id === created.id)!.displayName).toBe('Payroll bad.exe');
+    // The stored bytes are untouched — this is a read fence, not a migration.
+    const raw = await db
+      .selectFrom('agents_v1_agents')
+      .select('display_name')
+      .where('agent_id', '=', created.id)
+      .executeTakeFirstOrThrow();
+    expect(raw.display_name).toBe(planted);
+  });
+
   it('rejects a row whose runner is not a known runner id', async () => {
     const db = makeKysely();
     await runAgentsMigration(db);
