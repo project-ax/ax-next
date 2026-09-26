@@ -68,20 +68,22 @@
  * while this region says the same sentence. Twice on a click, once with no
  * click, never zero — do not "optimise" the click path back to silence here.
  *
- * THE OPEN BRANCH IS PER-RENDERER (TASK-473), because the two renderers do not
- * start from the same place. `DecisionRow` draws a tripped freshness guard and
- * a failed-POST notice inside shadcn's `Alert`, which is already
- * `role="alert"`; saying those here too would be two voices for one sentence.
- * `ApprovalCard` draws the same two as plain paragraphs, and its only voice
- * used to be the TASK-427 focus landing — which fires for the person's own
- * click and nobody else's. A card that went stale while it sat there (another
- * tab answered it, a queue read brought the new status back) said nothing.
+ * THE OPEN BRANCH SPEAKS HERE TOO (TASK-473, TASK-535). An answer is not the
+ * only thing that changes a card with nobody's finger on anything: a card can
+ * go stale while it sits there (another tab answered it, a queue read brought
+ * the new status back), or pick up a notice with no press behind it. The
+ * TASK-427 focus landing fires for the person's own click and nobody else's,
+ * so without this region those changes were silent — on `ApprovalCard`, whose
+ * open branch draws them as plain paragraphs, and on a COLLAPSED `DecisionRow`,
+ * which does not draw them at all until it is expanded (and collapsed is the
+ * Today default).
  *
- * So each renderer hands this `openNote`: the sentence its open branch has
- * that nothing else on the card voices. `ApprovalCard` passes it; `DecisionRow`
- * passes `null`, on purpose. The shared half still owns the MECHANISM — the
- * already-mounted region, the silent mount — and only the renderer knows
- * whether it already has a voice.
+ * So each renderer hands this `openNote`: the sentence its open branch has to
+ * say. Both now pass the same notice-first sentence, and `DecisionRow`'s
+ * `Alert`s drop the `role="alert"` shadcn gives them so that this region stays
+ * the ONE voice for it, expanded or collapsed. The prop stays required: the
+ * shared half owns the MECHANISM — the already-mounted region, the silent
+ * mount — and only the renderer knows what its open branch says.
  *
  * The mount rule does not bend for this. A card that MOUNTS already stale (a
  * page load) says nothing here: a region created holding its sentence is the
@@ -111,8 +113,7 @@ import type { DecisionOutcome } from './decision-copy';
  * the freshest thing the card has to say wins.
  *
  * An OPEN row says whatever its renderer handed over as `openNote`, and
- * nothing when that is `null` — the renderer either has nothing to add or
- * already voices it (see the header). The renderer builds `openNote` in the
+ * nothing when that is `null` (see the header). The renderer builds `openNote` in the
  * same notice-first order `answerKey` uses, so the precedence still matches.
  */
 function announcedAnswer(
@@ -131,10 +132,9 @@ interface Props {
   /** What the last action came back with, when it was not what was asked for. */
   notice: string | null;
   /**
-   * What the OPEN card says that nothing else on it voices, or `null`
-   * (TASK-473). Required, not defaulted, so each renderer states its answer:
-   * `null` from a renderer that already announces its open branch is a
-   * decision, and an omitted prop would look like one without being one.
+   * What the OPEN card says, or `null` for nothing (TASK-473). Required, not
+   * defaulted, so each renderer states its answer: an omitted prop would look
+   * like a decision without being one.
    */
   openNote: string | null;
 }

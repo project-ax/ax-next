@@ -152,12 +152,34 @@ export function DecisionRow({
     still its parent's last child and `last:border-b-0` keeps working.
     `ConsentAnnouncement` carries the rest of the argument.
 
-    `openNote={null}` ON PURPOSE (TASK-473): this row's open branch draws its
-    stale reason and its notice inside shadcn's `Alert`, which is already
-    `role="alert"`. Handing either to the shared region would say it twice.
+    THE OPEN BRANCH SPEAKS HERE TOO (TASK-535). Collapsed is the Today
+    default, and the stale reason and the notice are drawn only when the row
+    is EXPANDED — so a collapsed row that went stale because another tab
+    answered it, or picked up a notice with no press behind it, used to say
+    nothing at all. The shared region is mounted either way, so it is the one
+    place that can say it. Built notice-first, the order `answerKey` uses,
+    and the same sentence `ApprovalCard` hands over.
+
+    It does NOT depend on `expanded`. Opening or closing the row is the
+    person's own disclosure, not news: a note that flipped between a sentence
+    and `null` on toggle would announce the stale reason every time someone
+    collapsed the row. The price of that is the next thing.
+
+    ONE VOICE, so the two `Alert`s below give up their own `role="alert"`
+    (`role={undefined}` overrides the one shadcn's `Alert` sets). Kept, they
+    would be a second voice for the same sentence on an expanded row, and an
+    expanded row that MOUNTS stale would read out on a page load — the shape
+    `ConsentAnnouncement`'s mount rule exists to avoid. They are still the
+    visible red box and still the focus landing for a click (TASK-427).
   */
+  const openNote =
+    notice !== null
+      ? notice
+      : stale && d.staleReason
+        ? `${DECISION_STALE_LEAD} ${d.staleReason} ${DECISION_STALE_ADVICE}`
+        : null;
   const announcement = (
-    <ConsentAnnouncement outcome={outcome} notice={notice} openNote={null} />
+    <ConsentAnnouncement outcome={outcome} notice={notice} openNote={openNote} />
   );
 
   if (outcome !== null) {
@@ -285,6 +307,8 @@ export function DecisionRow({
               <Alert
                 ref={answerRef}
                 tabIndex={-1}
+                // Voiced by the shared region above, not here (TASK-535).
+                role={undefined}
                 variant="destructive"
                 className={`mb-4 ${RESOLUTION_FOCUS_RING}`}
               >
@@ -347,6 +371,8 @@ export function DecisionRow({
               <Alert
                 ref={answerRef}
                 tabIndex={-1}
+                // Voiced by the shared region above, not here (TASK-535).
+                role={undefined}
                 variant="destructive"
                 className={`mt-3 max-w-[660px] ${RESOLUTION_FOCUS_RING}`}
               >
