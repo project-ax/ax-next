@@ -32,7 +32,10 @@ import {
   type ReadOutcome,
 } from '@/lib/read-register';
 import { workspaceApi, type AgentDetail, type Decision } from '@/lib/workspace-api';
-import type { DecisionReadError } from '@/lib/workspace-decisions';
+import {
+  keepAnsweredApprovals,
+  type DecisionReadError,
+} from '@/lib/workspace-decisions';
 /*
   The one shaping function, shared with the server's reload path
   (`server/routes-workspace.ts`). Both sides normalize their own frames/blocks
@@ -440,10 +443,38 @@ export function AgentView({
   const conversationRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
+  /*
+    The queue's rows as of the latest render, for `load` below (TASK-536). A
+    ref rather than a dependency: `load` must not change identity every time a
+    row does, or the effect keyed on it would re-read the thread on every
+    queue update.
+  */
+  const decisionsRef = useRef(decisions);
+  decisionsRef.current = decisions;
+
   const load = useCallback(async () => {
     try {
       const next = await workspaceApi.agent(agentId);
-      setDetail(next);
+      /*
+        A receipt answered in this thread outlives the re-read that follows
+        the answer — see `keepAnsweredApprovals`. Only within ONE
+        conversation: a pointer is a fact about the thread it was raised in.
+      */
+      setDetail((prev) =>
+        prev !== null &&
+        prev.agent.id === next.agent.id &&
+        prev.conversationId === next.conversationId
+          ? {
+              ...next,
+              thread: keepAnsweredApprovals(
+                prev.thread,
+                next.thread,
+                decisionsRef.current,
+                Date.now(),
+              ),
+            }
+          : next,
+      );
       conversationRef.current = next.conversationId;
       setLoadError(null);
     } catch (e) {
