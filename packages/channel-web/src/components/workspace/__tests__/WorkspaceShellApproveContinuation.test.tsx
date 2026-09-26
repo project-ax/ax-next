@@ -192,6 +192,41 @@ describe('approve in the agent thread → the continuation streams live (TASK-54
     expect(document.activeElement).toBe(outcome);
   });
 
+  it('a warm agent still streaming with the hold open: the old stream is aborted and the continuation takes over', async () => {
+    // No hold yet: the person sends, and the turn's stream opens.
+    decisionsMock.mockResolvedValue({ decisions: [] });
+    agentMock.mockResolvedValue(detail([asked]));
+    renderAt('/workspace/agents/scheduler');
+    await screen.findByLabelText('Conversation with Quill');
+    vi.mocked(workspaceApi.sendMessage).mockResolvedValue({ conversationId: 'c1', reqId: 'r-orig' });
+    fireEvent.change(screen.getByPlaceholderText('Message Quill'), {
+      target: { value: 'try again please' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await settle();
+    const original = handlersFor('r-orig')!;
+    expect(original.signal?.aborted).toBe(false);
+
+    // Mid-turn the agent stops to ask; the stream stays open (non-terminal).
+    decisionsMock.mockResolvedValue({ decisions: [open] });
+    agentMock.mockResolvedValue(detail([asked, pointer]));
+    act(() => original.onDecisionRaised?.({ decisionId: open.id, summary: open.summary }));
+    const yes = await screen.findByRole('button', { name: open.primaryLabel });
+
+    answerApprove('req-cont-1');
+    yes.focus();
+    fireEvent.click(yes);
+    await settle();
+
+    // The parked stream is released rather than left writing alongside.
+    expect(original.signal?.aborted).toBe(true);
+    const cont = handlersFor('req-cont-1')!;
+    act(() => cont.onText(CONTINUATION));
+    await settle();
+    expect(screen.getByText(CONTINUATION)).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByTestId(`approval-outcome-${open.id}`));
+  });
+
   it('opens nothing when the approve answers no streamReqId', async () => {
     renderAt('/workspace/agents/scheduler');
     const yes = await screen.findByRole('button', { name: open.primaryLabel });
