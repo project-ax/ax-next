@@ -68,15 +68,56 @@ export function AgentTile({
 }
 
 /**
- * Colour is the state, so the dot needs no label to be scannable in a list.
+ * The plain-English word for each state — one copy, shared by the badge below
+ * and by every place that has to SAY a dot's state rather than paint it
+ * (TASK-485: the sidebar roster, where the dot sits beside nothing but a name).
+ * `held` is a decision waiting on you, which reads the same to the person.
+ */
+export const STATE_WORDS: Record<AgentRunState | 'held', string> = {
+  working: 'Working',
+  waiting: 'Waiting on you',
+  held: 'Waiting on you',
+  resting: 'Resting',
+  stopped: 'Stopped',
+};
+
+/**
+ * Shape is the second channel (WCAG 1.4.1, TASK-485). Colour used to be the
+ * whole message, so someone who cannot tell the hues apart got no state at
+ * all. Each state now has its own outline too, readable in greyscale:
  *
- * Which is exactly why every fill here owes 3:1 against the surfaces it lands
- * on — an information-bearing non-text element under WCAG 1.4.11. `resting`
- * used to be `bg-ink-ghost` and measured 1.72:1 light / 1.67:1 dark, so on a
- * pale row it was less "quiet" than "absent". It is `bg-state-quiet` now;
- * `--ink-ghost` stayed behind with the composer's send circle, which is a
- * disabled control and the one thing 1.4.11 exempts. `theme-contrast.test.ts`
- * reads these classes back out of this file and measures whatever it finds.
+ *   working ● circle · waiting/held ◆ diamond · resting ▬ dash · stopped ■ square
+ *
+ * Deliberately a separate record, NOT more `state === … && '…'` arms inside
+ * the `cn()` below: `theme-contrast.test.ts` reads those arms back as the
+ * dot's FILL, keyed by state, so a second arm per state would overwrite the
+ * fill it measures. Fill lives there; geometry lives here.
+ */
+const STATE_SHAPE: Record<AgentRunState | 'held', string> = {
+  working: 'h-[7px] w-[7px] rounded-full',
+  waiting: 'h-[6px] w-[6px] rotate-45 rounded-[1px]',
+  held: 'h-[6px] w-[6px] rotate-45 rounded-[1px]',
+  resting: 'h-[3px] w-[8px] rounded-full',
+  stopped: 'h-[7px] w-[7px] rounded-[1px]',
+};
+
+/**
+ * The state mark: a coloured SHAPE, never colour alone.
+ *
+ * It stays `aria-hidden` on purpose. A mark before a name cannot carry an
+ * accessible name that reads well ("Waiting on you Ada"), and at most call
+ * sites the adjacent text already says the state — a receipt line, a question
+ * summary, a list of who is working. Where the dot is the ONLY carrier (the
+ * sidebar roster), the call site adds the `STATE_WORDS` word as `sr-only` text
+ * after the name. A new call site where the dot stands alone owes the same.
+ *
+ * Every fill still owes 3:1 against the surfaces it lands on — an
+ * information-bearing non-text element under WCAG 1.4.11. `resting` used to be
+ * `bg-ink-ghost` and measured 1.72:1 light / 1.67:1 dark, so on a pale row it
+ * was less "quiet" than "absent". It is `bg-state-quiet` now; `--ink-ghost`
+ * stayed behind with the composer's send circle, which is a disabled control
+ * and the one thing 1.4.11 exempts. `theme-contrast.test.ts` reads these
+ * classes back out of this file and measures whatever it finds.
  */
 export function StateDot({
   state,
@@ -89,7 +130,8 @@ export function StateDot({
     <span
       aria-hidden="true"
       className={cn(
-        'h-[7px] w-[7px] shrink-0 rounded-full',
+        'shrink-0',
+        STATE_SHAPE[state],
         state === 'working' && 'bg-primary',
         state === 'waiting' && 'bg-warning',
         state === 'held' && 'bg-warning',
@@ -102,15 +144,15 @@ export function StateDot({
 }
 
 export function AgentStateLabel({ agent }: { agent: WorkspaceAgent }) {
-  if (agent.state === 'stopped') return <Badge variant="destructive">Stopped</Badge>;
+  const word = STATE_WORDS[agent.state];
+  if (agent.state === 'stopped') return <Badge variant="destructive">{word}</Badge>;
   if (agent.state === 'waiting')
     return (
       <Badge variant="secondary" className="bg-warning-soft text-warning">
-        Waiting on you
+        {word}
       </Badge>
     );
-  if (agent.state === 'working') return <Badge variant="secondary">Working</Badge>;
-  return <Badge variant="secondary">Resting</Badge>;
+  return <Badge variant="secondary">{word}</Badge>;
 }
 
 /**

@@ -18,7 +18,7 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import type { WorkspaceAgent } from '@/lib/workspace-api';
 import { NEW_AGENT_OPENER_ATTR } from '@/lib/new-agent-return-focus';
-import { StateDot } from './bits';
+import { STATE_WORDS, StateDot } from './bits';
 
 interface Props {
   agents: WorkspaceAgent[];
@@ -149,6 +149,13 @@ export function WorkspaceSidebarNav({
               <span className="truncate" title={a.name}>
                 {a.name}
               </span>
+              {/*
+                The dot is the only thing on this row that says the state, and
+                it is `aria-hidden` (TASK-485). So the row SAYS it as well,
+                after the name — "Ada, waiting on you". Sighted readers get the
+                dot's shape as the non-colour channel; `StateDot` explains both.
+              */}
+              <span className="sr-only">, {STATE_WORDS[a.state].toLowerCase()}</span>
             </button>
           ))}
 

@@ -147,7 +147,7 @@ describe('switching agents mid-send', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
     // The POST is in flight (unresolved). Switch to agent B before it lands.
-    fireEvent.click(screen.getByRole('button', { name: 'Tern' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Tern\s*,/ }));
     await screen.findByLabelText('Conversation with Tern');
 
     // Now let A's send resolve, and have the mocked SSE reader push a text
@@ -190,12 +190,12 @@ describe('switching agents mid-send', () => {
     });
 
     // Switch away — this REMOUNTS the pane (TASK-393's `key={route.id}`).
-    fireEvent.click(screen.getByRole('button', { name: 'Tern' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Tern\s*,/ }));
     await screen.findByLabelText('Conversation with Tern');
     expect(screen.getByPlaceholderText('Message Tern')).toHaveValue('');
 
     // Switch back — the draft must still be there.
-    fireEvent.click(screen.getByRole('button', { name: 'Quill' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Quill\s*,/ }));
     await screen.findByLabelText('Conversation with Quill');
     expect(screen.getByPlaceholderText('Message Quill')).toHaveValue(
       'a note I have not sent yet',
