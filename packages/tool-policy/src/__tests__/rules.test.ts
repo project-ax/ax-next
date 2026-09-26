@@ -65,6 +65,7 @@ describe('BUILTIN_RULES', () => {
       'memory.search',
       'memory.read-section',
       'memory.note',
+      'memory.recall',
       'skills.search-catalog',
       'artifacts.publish',
     ]);
@@ -310,6 +311,7 @@ describe('BUILTIN_RULES', () => {
         'connector_propose',
         'memory_note',
         'memory_read_section',
+        'memory_recall',
         'memory_search',
         'request_capability',
         'search_catalog',

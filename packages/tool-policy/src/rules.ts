@@ -270,6 +270,20 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     subject: 'agent',
     provenance: 'catalog',
   },
+  // `@ax/memory`'s search tool (the facts engine). `memory_search` above is
+  // `@ax/memory-strata`'s; a deployment loads one or the other, and the rail's
+  // not-installed subtraction drops whichever it does not. Without this row the
+  // rail read "Can use `memory_recall` — We haven't described this one."
+  // (TASK-526, off the TASK-519 walk).
+  {
+    id: 'memory.recall',
+    match: { tool: 'memory_recall' },
+    providedBy: 'host',
+    verdict: 'allow',
+    capability: 'bring up what it remembers from earlier conversations',
+    subject: 'agent',
+    provenance: 'catalog',
+  },
   {
     id: 'skills.search-catalog',
     match: { tool: 'search_catalog' },
