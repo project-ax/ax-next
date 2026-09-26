@@ -28,6 +28,8 @@ import {
   DECISION_RECEIPT_MAX_CHARS,
   DECISION_SUMMARY_MAX_CHARS,
   CONVERSATION_TITLE_MAX_CHARS,
+  FILE_LABEL_MAX_CHARS,
+  LEARNED_DOC_FALLBACK_NAME,
   DECISION_RECEIPT_TAG,
   DECISION_UNRESOLVED_TAG,
   FIRE_NO_SUMMARY,
@@ -695,6 +697,47 @@ describe('channel-web agent-workspace BFF', () => {
     ]);
   });
 
+  it('fences a learned-memory doc name like every other label out of this file', async () => {
+    /*
+      TASK-480. `memory:learned:read` hands back `{ name, body }` across a
+      plugin boundary, and the name became a tab label with no bound and no
+      bidi strip. Today's @ax/memory-strata names are three fixed strings, so
+      this is the fence at the boundary rather than a patch for a live
+      exploit: an alternate impl of the hook is free to name docs however it
+      likes, and the tab is where the Trojan-source reorder would land.
+
+      The body is deliberately NOT fenced — it is a document, not a line.
+    */
+    registerAuth({ id: 'u1', isAdmin: false });
+    const longBody = `# Notes\n${'y'.repeat(500)}\n‮keep me\n`;
+    registerMemory({
+      rules: '',
+      learned: [
+        { name: `The‮gnp.dorp-eteled ${'x'.repeat(FILE_LABEL_MAX_CHARS + 50)}`, body: longBody },
+        { name: '‮​  ', body: '# Empty name\n' },
+      ],
+      calls: [],
+    });
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+
+    expect(captured.statusCode).toBe(200);
+    const docs = (
+      captured.body as { memory: { learned: { docs: Array<{ name: string; body: string }> } } }
+    ).memory.learned.docs;
+    const name = docs[0]!.name;
+    // Bounded…
+    expect([...name]).toHaveLength(FILE_LABEL_MAX_CHARS);
+    // …and stripped of the override that reorders what the reader sees.
+    expect(name).not.toContain('‮');
+    expect(name.startsWith('The gnp.dorp-eteled')).toBe(true);
+    // A name with nothing legible left still reads as a tab, not a blank.
+    expect(docs[1]!.name).toBe(LEARNED_DOC_FALLBACK_NAME);
+    // The body is a document and rides through untouched (out of scope here).
+    expect(docs[0]!.body).toBe(longBody);
+  });
+
   it('emits factsVisibility from the RESOLVED agent, never the request', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerMemory({ rules: '', learned: [], calls: [] });
@@ -1310,9 +1353,9 @@ describe('channel-web agent-workspace BFF', () => {
       also carries it in a `title` attribute, so an unbounded string with a
       bidi override in it had two sinks instead of one.
 
-      It is NOT the last unfenced label here — the learned-memory doc `name`
-      is the same shape of thing and still needs a card of its own. See
-      CONVERSATION_TITLE_MAX_CHARS.
+      It was NOT the last unfenced label here — the learned-memory doc `name`
+      was the same shape of thing, and TASK-480 fenced it (see the test
+      beside the Memory-tab block). See CONVERSATION_TITLE_MAX_CHARS.
     */
     registerAuth({ id: 'u1', isAdmin: false });
     conversations = [

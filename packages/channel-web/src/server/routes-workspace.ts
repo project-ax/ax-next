@@ -1672,12 +1672,14 @@ export const FILE_LABEL_MAX_CHARS = 120;
  *
  * NOT THE LAST ONE, and the honest version of that sentence matters. A second
  * review pass found the learned-memory doc `name` below (search
- * `status: 'learned'`) is the same shape of thing — a one-line label the model
- * wrote — and is still unfenced, as is the owner-authored `displayName` on the
- * rail. The first draft of this comment claimed every other label was fenced;
- * a grep says otherwise. `name` wants the same treatment on a card of its own,
- * because the doc `body` beside it is a document and a one-line fence is the
- * wrong tool for that half.
+ * `scope: 'learned'`) was the same shape of thing — a one-line label that
+ * crossed a boundary unfenced. TASK-480 fenced it (see
+ * `LEARNED_DOC_FALLBACK_NAME`); the doc `body` beside it is a document, and a
+ * one-line fence is the wrong tool for that half, so it is still not fenced.
+ * The owner-authored `displayName` on the rail is also unfenced here: it is
+ * length-validated where it is written (`@ax/agents`' store), and stripping
+ * its bidi belongs at that write, not in one of its readers. The first draft
+ * of this comment claimed every other label was fenced; a grep says otherwise.
  *
  * 120 is `FILE_LABEL_MAX_CHARS` — a banner and a rail row are the same size
  * of thing — and the fallback below is unchanged, so a title that fences to
@@ -1686,6 +1688,16 @@ export const FILE_LABEL_MAX_CHARS = 120;
  * draw an empty banner.
  */
 export const CONVERSATION_TITLE_MAX_CHARS = 120;
+
+/**
+ * The tab label for a learned-memory doc whose `name` fences to nothing.
+ *
+ * TASK-480. The name is bounded at `FILE_LABEL_MAX_CHARS` and bidi-stripped
+ * on the way out, like every other label here. A name made of nothing but
+ * invisibles would otherwise draw an empty tab — a button with no text, which
+ * reads as broken rather than as "this doc has no name".
+ */
+export const LEARNED_DOC_FALLBACK_NAME = 'Untitled note';
 
 /**
  * How many rows one listing will carry, and how much of one file we will send.
@@ -2961,9 +2973,16 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         );
         learned = {
           status: 'ok',
-          // Model output. It rides as a plain string and React renders it as text.
+          // The BODY is model output. It rides as a plain string and React
+          // renders it as text; a one-line fence is the wrong tool for a
+          // document, so it is deliberately left alone here.
+          //
+          // The NAME becomes a tab label, and it arrives from another plugin
+          // across the bus. Today's @ax/memory-strata names are three fixed
+          // strings, but the hook does not promise that, so it is fenced at
+          // this boundary like every other label leaving the file (TASK-480).
           docs: out.docs.map((d): MemoryDoc => ({
-            name: d.name,
+            name: fenceLine(d.name, FILE_LABEL_MAX_CHARS) ?? LEARNED_DOC_FALLBACK_NAME,
             scope: 'learned',
             body: d.body,
           })),
