@@ -65,11 +65,13 @@ const quill: WorkspaceAgent = {
 /**
  * The card's live region, by the attribute the shared component marks it with.
  *
- * NOT `getByRole('alert')`: `DecisionRow`'s open branch renders a stale reason
- * and a failed-POST notice inside shadcn's `Alert`, which carries `role="alert"`
- * of its own. A role query would be satisfied by one of those and would say
- * nothing about the region this card is for. The role IS asserted — once, on
- * this node, in its own case below.
+ * NOT `getByRole('alert')`: until TASK-535, `DecisionRow`'s open branch drew
+ * its stale reason and failed-POST notice inside shadcn's `Alert` WITH the
+ * `role="alert"` shadcn gives it, and a role query would have been satisfied by
+ * one of those. They have given the role up (the region is the one voice), but
+ * the attribute stays the query: it names the node this file is about rather
+ * than whichever live region happens to be on the page. The role IS asserted —
+ * once, on this node, in its own case below.
  */
 function region(): HTMLElement {
   const el = document.querySelector<HTMLElement>('[data-consent-said]');

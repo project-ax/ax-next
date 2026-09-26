@@ -232,8 +232,9 @@ const undoButton = () => screen.getByRole('button', { name: /Undo/ });
  * audible, and keeping it EMPTY until something changes is what makes it
  * audible safely (a live region inserted already holding its message is not
  * reliably announced). So "the alert on this card" stopped being a unique
- * query, while the thing these two cases are about — the shadcn `Alert` the
- * notice and the stale reason are drawn in — did not change at all.
+ * query. The thing these cases are about is the shadcn `Alert` the notice and
+ * the stale reason are drawn in — still there, still the focus landing, though
+ * since TASK-535 without a role of its own (see below).
  *
  * It still pins uniqueness: two VISIBLE alerts on one row would mean focus had
  * a choice it could get wrong, which is the bug this file is for.
@@ -249,6 +250,13 @@ function visibleAlert(text: string): HTMLElement {
     document.querySelectorAll<HTMLElement>('[tabindex="-1"]'),
   ).filter((el) => (el.textContent ?? '').includes(text));
   expect(visible).toHaveLength(1);
+  // And only ONE destructive box on the page, whatever it says — the
+  // uniqueness the role query used to pin before the role went.
+  expect(
+    Array.from(document.querySelectorAll<HTMLElement>('[tabindex="-1"]')).filter(
+      (el) => el.className.includes('border-destructive'),
+    ),
+  ).toHaveLength(1);
   return visible[0]!;
 }
 
