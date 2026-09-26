@@ -13,6 +13,7 @@ import {
   agentTierAvailable,
   flushAgentTier,
   hydrateAgentTier,
+  scratchRelToTierPath,
   type HydratedTier,
 } from './agent-tier-sync.js';
 import {
@@ -20,7 +21,8 @@ import {
   noCredentialFields,
   NO_CREDENTIAL_EVENT,
 } from './llm-failure.js';
-import { bootstrapMemoryTree } from './bootstrap.js';
+import { BOOTSTRAP_SEED_FILES, bootstrapMemoryTree } from './bootstrap.js';
+import { systemFile } from './paths.js';
 import { composeIdentityFromFiles, composeIdentityFromTier } from './compose-identity.js';
 import { runConsolidation, type ConsolidationInput, type ConsolidationResult } from './consolidator.js';
 import { createDebouncer, type Debouncer } from './debounce.js';
@@ -571,6 +573,10 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
   };
 }
 
+/** The bootstrap seed files as `/agent` tier paths — what chat:start hydrates. */
+const SEED_TIER_PATHS: readonly string[] = BOOTSTRAP_SEED_FILES.map(scratchRelToTierPath);
+const SEED_AGENT_TIER_PATH = scratchRelToTierPath(systemFile('agent'));
+
 async function handleChatStart(
   bus: HookBus,
   ctx: AgentContext,
@@ -593,11 +599,24 @@ async function handleChatStart(
   // sandbox:open-session materializes `/agent`, so a flush here is visible to
   // the runner on the same turn.
   if (agentTierAvailable(bus)) {
-    const hydrated = await hydrateAgentTier(bus, ctx);
+    // TASK-513: hydrate ONLY the bootstrap seed files, not the whole
+    // `memory/**` subtree. Each tier read is a round trip to the storage
+    // backend (~80 ms on git-server), serialised, on the blocking dispatch
+    // path — a full hydrate made chat:start linear in the agent's memory size
+    // (8.4 s at 100 docs). Bootstrap only asks "does each seed file exist?",
+    // and it only creates, so a partial hydrate is safe for the flush below:
+    // deletions are baseline-minus-scratch, and unread files are in neither.
+    const hydrated = await hydrateAgentTier(bus, ctx, { only: SEED_TIER_PATHS });
     try {
       // Identity lives in the tier at `.ax/IDENTITY.md` + `.ax/SOUL.md`, not on
       // the host FS — read it through the workspace hook (owner-routed by ctx).
-      const composedIdentity = await composeIdentityFromTier(bus, ctx);
+      // It is only ever the body of a NEW `system/agent.md`; once that file
+      // exists bootstrap never rewrites it, so skip both reads in the (every
+      // turn after the first) case where the hydrate found it. When read, pin
+      // to the snapshot the memory came from.
+      const composedIdentity = hydrated.baseline.has(SEED_AGENT_TIER_PATH)
+        ? ''
+        : await composeIdentityFromTier(bus, ctx, hydrated.baseVersion ?? undefined);
       await bootstrapMemoryTree({
         workspaceRoot: hydrated.scratchRoot,
         composedIdentity,

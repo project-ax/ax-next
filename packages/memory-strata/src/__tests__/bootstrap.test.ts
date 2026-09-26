@@ -186,3 +186,17 @@ describe('paths', () => {
     expect(systemFile('session')).toBe('permanent/memory/system/session.md');
   });
 });
+
+describe('BOOTSTRAP_SEED_FILES drift guard (TASK-513)', () => {
+  it('equals exactly the set of files bootstrapMemoryTree creates on an empty root', async () => {
+    // Dynamic import so this one test (not the whole file) goes red if the
+    // export is missing. chat:start hydrates ONLY these paths from the tier,
+    // so a seed file bootstrap creates but this list omits would be re-created
+    // (and overwritten) on every turn.
+    const mod = (await import('../bootstrap.js')) as { BOOTSTRAP_SEED_FILES?: readonly string[] };
+    const { created } = await bootstrapMemoryTree({ workspaceRoot, composedIdentity: '' });
+    expect(mod.BOOTSTRAP_SEED_FILES).toBeDefined();
+    expect([...(mod.BOOTSTRAP_SEED_FILES ?? [])].sort()).toEqual([...created].sort());
+    expect(created.length).toBe(4);
+  });
+});

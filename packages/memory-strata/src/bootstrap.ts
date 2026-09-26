@@ -14,6 +14,26 @@ type SeededSystemFileName = Exclude<SystemFileName, 'rules'>;
 import type { MemoryFrontmatter } from './types.js';
 import { guardAutomaticWrite } from './human-tier.js';
 
+/** The seeded system files, in creation order. `rules` is absent (see above). */
+const SEEDED_SYSTEM_FILES: readonly SeededSystemFileName[] = ['agent', 'user', 'session'];
+
+/**
+ * Every file `bootstrapMemoryTree` may create, as scratch-relative paths
+ * (`permanent/memory/system/...`). This is the ONE list: bootstrap's own loops
+ * are driven from the same sources below, and a drift test asserts it equals
+ * what bootstrap creates on an empty root.
+ *
+ * Why it's exported (TASK-513): chat:start hydrates ONLY these paths from the
+ * `/agent` tier instead of the whole memory subtree, because bootstrap needs
+ * nothing else — it only asks "does each seed file exist?". A seed file missing
+ * from this list would look absent on every turn and be re-seeded over the
+ * agent's real content.
+ */
+export const BOOTSTRAP_SEED_FILES: readonly string[] = Object.freeze([
+  ...SEEDED_SYSTEM_FILES.map((name) => systemFile(name)),
+  mapFile(),
+]);
+
 export interface BootstrapInput {
   /**
    * Absolute path to the agent's workspace root. Memory files land
@@ -60,7 +80,7 @@ export async function bootstrapMemoryTree(
   // `rules` is deliberately absent from this list: it is the HUMAN tier
   // (TASK-234), and bootstrap is an automatic writer. The guard below turns
   // that from a fact about this literal into a fact the process enforces.
-  for (const name of ['agent', 'user', 'session'] as const) {
+  for (const name of SEEDED_SYSTEM_FILES) {
     const rel = systemFile(name);
     guardAutomaticWrite('bootstrap', rel);
     const abs = join(input.workspaceRoot, rel);
