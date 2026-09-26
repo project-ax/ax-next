@@ -2078,3 +2078,151 @@ describe("SessionRow's confirm-delete row clears AA in every state", () => {
     );
   });
 });
+
+/**
+ * Routines' two error surfaces, in every state they can paint (TASK-548).
+ *
+ * `StatusChip`'s `error` arm (a routine's last-fire status, on every routine
+ * row and every fire row) and `RoutinesList`'s error banner both painted
+ * `text-destructive` on `bg-destructive/10`. That is the pairing TASK-538
+ * measured on SessionRow's confirm row: over the white Settings page the /10
+ * alpha drags the fill toward the red ink and lands at **4.44:1** in light
+ * mode, under the floor. Dark was fine (5.71) — the same alpha over a black
+ * page and over a white one are two different pixels, which is why the fix is
+ * a solid per-theme token rather than a different alpha.
+ *
+ * The fix is the one #692/#705 made: solid `bg-destructive-soft` (4.57 light /
+ * 4.63 dark with `text-destructive`). The banner also holds a ghost Dismiss
+ * button. At rest it has no ink of its own and inherits the banner's red, so
+ * it is measured on the banner fill; on hover it swaps to its own solid
+ * `accent` / `accent-foreground` pair, measured on that.
+ *
+ * Classes are read OFF THE COMPONENTS. The surface is AdminShell's root: the
+ * Routines tab, its list and FireRowsTable paint no fill of their own between
+ * it and these two.
+ */
+const STATUS_CHIP_FILE = 'components/routines/StatusChip.tsx';
+const ROUTINES_LIST_FILE = 'components/routines/RoutinesList.tsx';
+const ADMIN_SHELL_FILE = 'components/admin/AdminShell.tsx';
+const BUTTON_FILE = 'components/ui/button.tsx';
+
+/** One arm of StatusChip's `styles` record, comments stripped. */
+function statusChipArm(src: string, arm: string): string {
+  const hits = [...stripComments(src).matchAll(new RegExp(`(?<![\\w-])${arm}:\\s*'([^']*)'`, 'g'))];
+  if (hits.length !== 1) throw new Error(`expected exactly one "${arm}:" style arm, found ${hits.length}`);
+  return hits[0]![1]!;
+}
+
+/**
+ * A ghost-style variant: no resting fill and no ink of its own, exactly one
+ * `hover:bg-*` and one `hover:text-*`. Any other fill or ink is refused.
+ */
+function ghostPaint(cls: string): { hover: { token: string; alpha: number; cls: string }; hoverText: string } {
+  const tokens = cls.split(/\s+/).filter(Boolean);
+  const bgs = tokens.filter((t) => /(^|:)bg-/.test(t));
+  const inks = tokens.filter((t) => /(^|:)text-[a-z]/.test(t));
+  if (bgs.length !== 1 || !bgs[0]!.startsWith('hover:bg-')) {
+    throw new Error(`expected one bare "hover:bg-*" and no other fill, found ${bgs.join(', ') || 'none'}`);
+  }
+  if (inks.length !== 1 || !inks[0]!.startsWith('hover:text-')) {
+    throw new Error(`expected one bare "hover:text-*" and no other ink, found ${inks.join(', ') || 'none'}`);
+  }
+  return { hover: bgFill(bgs[0]!.slice('hover:'.length)), hoverText: `--${inks[0]!.slice('hover:text-'.length)}` };
+}
+
+const routinesCasesRegistered: string[] = [];
+
+describe("Routines' error chip and banner clear AA in every state", () => {
+  const surface = bgFill(classNameOf(readSource(ADMIN_SHELL_FILE), 'flex flex-1 min-w-0 h-full'));
+  const listSrc = readSource(ROUTINES_LIST_FILE);
+  const dismiss = ghostPaint(variantClasses(readSource(BUTTON_FILE), 'ghost'));
+  const chip = controlPaint(statusChipArm(readSource(STATUS_CHIP_FILE), 'error'));
+  const banner = controlPaint(classNameOf(listSrc, 'data-testid="routines-list-error"'));
+  const sites = [
+    ['StatusChip error', chip],
+    ['RoutinesList error banner', banner],
+  ] as const;
+
+  function fillColour(tokens: Map<string, string>, fill: { token: string; alpha: number }): Colour {
+    const under = tokens.get(surface.token);
+    const v = tokens.get(fill.token);
+    expect(under, `${surface.token} missing`).toBeDefined();
+    expect(v, `${fill.token} missing`).toBeDefined();
+    return fill.alpha === 1 ? v! : composite(v!, fill.alpha, under!);
+  }
+
+  for (const [themeName, selector] of THEMES) {
+    for (const [label, paint] of sites) {
+      routinesCasesRegistered.push(`${themeName}:${label}`);
+      it(`${themeName}: ${label} (${paint.text}) on ${paint.fills.map((f) => f.cls).join(', ')}`, () => {
+        const tokens = tokensAfter(selector);
+        const ink = tokens.get(paint.text);
+        expect(ink, `${paint.text} missing`).toBeDefined();
+        expect(paint.fills.length, 'an error surface paints a fill').toBeGreaterThan(0);
+        for (const fill of paint.fills) {
+          expect(contrast(ink!, fillColour(tokens, fill)), `${fill.state}: ${fill.cls}`).toBeGreaterThanOrEqual(
+            AA_NORMAL,
+          );
+        }
+      });
+    }
+
+    routinesCasesRegistered.push(`${themeName}:Dismiss`);
+    it(`${themeName}: the banner's ghost Dismiss, on the banner at rest and on its own hover pair`, () => {
+      const tokens = tokensAfter(selector);
+      const rest = banner.fills.find((f) => f.state === 'rest');
+      expect(rest, 'the banner paints a resting fill').toBeDefined();
+      expect(
+        contrast(tokens.get(banner.text)!, fillColour(tokens, rest!)),
+        `resting: inherited ${banner.text} on ${rest!.cls}`,
+      ).toBeGreaterThanOrEqual(AA_NORMAL);
+      const hoverInk = tokens.get(dismiss.hoverText);
+      expect(hoverInk, `${dismiss.hoverText} missing`).toBeDefined();
+      expect(
+        contrast(hoverInk!, fillColour(tokens, dismiss.hover)),
+        `hover: ${dismiss.hover.cls}`,
+      ).toBeGreaterThanOrEqual(AA_NORMAL);
+    });
+  }
+
+  it('sits on an opaque page, and each error fill is one solid per-theme tint', () => {
+    expect(surface).toEqual({ token: '--background', alpha: 1, cls: 'bg-background' });
+    for (const [label, paint] of sites) {
+      expect(paint.text, label).toBe('--destructive');
+      expect(paint.hoverText, `${label} swaps no ink`).toBeUndefined();
+      expect(paint.fills.map((f) => f.state), `${label}: exactly one resting fill`).toEqual(['rest']);
+      expect(paint.fills[0]!.alpha, `${label}: ${paint.fills[0]!.cls} must be solid`).toBe(1);
+    }
+    expect(dismiss.hover.alpha, 'the ghost hover must stay solid').toBe(1);
+  });
+
+  it('measures the old `bg-destructive/10` under the floor in light mode', () => {
+    const old = controlPaint('bg-destructive/10 text-destructive border border-destructive/25');
+    expect(old.fills).toEqual([{ state: 'rest', token: '--destructive', alpha: 0.1, cls: 'bg-destructive/10' }]);
+    const tokens = tokensAfter(':root {');
+    const ink = tokens.get('--destructive')!;
+    expect(contrast(ink, composite(ink, 0.1, tokens.get('--background')!))).toBeLessThan(AA_NORMAL);
+  });
+
+  it('reads a StatusChip arm and a ghost variant, and refuses shapes it cannot measure', () => {
+    expect(statusChipArm("const s = { ok: 'bg-muted', error: 'bg-x text-y' };", 'error')).toBe('bg-x text-y');
+    expect(() => statusChipArm("{ ok: 'a' }", 'error')).toThrow(/found 0/);
+    expect(() => statusChipArm("{ error: 'a', error: 'b' }", 'error')).toThrow(/found 2/);
+    expect(statusChipArm("{ /* error: 'old' */ error: 'new' }", 'error')).toBe('new');
+    expect(ghostPaint('hover:bg-accent hover:text-accent-foreground')).toEqual({
+      hover: { token: '--accent', alpha: 1, cls: 'bg-accent' },
+      hoverText: '--accent-foreground',
+    });
+    expect(() => ghostPaint('bg-muted hover:bg-accent hover:text-accent-foreground')).toThrow(/other fill/);
+    expect(() => ghostPaint('hover:bg-accent text-foreground hover:text-accent-foreground')).toThrow(/other ink/);
+    expect(() => ghostPaint('dark:hover:bg-accent hover:text-accent-foreground')).toThrow(/other fill/);
+  });
+
+  it('registers one case per theme per site', () => {
+    expect(routinesCasesRegistered).toEqual(
+      THEMES.flatMap(([name]) =>
+        ['StatusChip error', 'RoutinesList error banner', 'Dismiss'].map((l) => `${name}:${l}`),
+      ),
+    );
+  });
+});

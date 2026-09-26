@@ -233,7 +233,8 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
       {error !== null && (
         <div
           role="alert"
-          className="px-3 py-2 bg-destructive/10 border border-destructive/25 rounded-md text-[12.5px] text-destructive flex items-center gap-2 mb-3"
+          className="px-3 py-2 bg-destructive-soft border border-destructive/25 rounded-md text-[12.5px] text-destructive flex items-center gap-2 mb-3"
+          data-testid="routines-list-error"
         >
           <span className="flex-1">Error: {error}</span>
           <Button variant="ghost" size="sm" aria-label="Dismiss error" onClick={() => setError(null)}>
