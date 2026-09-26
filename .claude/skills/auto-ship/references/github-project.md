@@ -175,12 +175,14 @@ board_laneless() {
   [ "$n" -le 0 ] && { echo "FATAL: board_laneless: '$f' holds no items (bad read?) — NOT swept" >&2; return 2; }
   [ "$n" -ge "$BOARD_LIMIT" ] && { echo "FATAL: board_laneless: '$f' has $n items, at/over BOARD_LIMIT $BOARD_LIMIT — truncated read, NOT swept" >&2; return 2; }
   local hits k
+  # Count in jq, not `wc -l` over rendered lines: a title holding a newline would inflate it.
+  k=$(jq -r '[.items[] | select((.status // "") == "")] | length' "$f") \
+    || { echo "FATAL: board_laneless: jq failed on '$f' — NOT swept" >&2; return 2; }
+  if [ "$k" = "0" ]; then echo "laneless: 0 of $n items"; return 0; fi
   hits=$(jq -r '.items[] | select((.status // "") == "") | "LANELESS \(.id) \(.title // "(untitled)")"' "$f") \
     || { echo "FATAL: board_laneless: jq failed on '$f' — NOT swept" >&2; return 2; }
-  if [ -z "$hits" ]; then echo "laneless: 0 of $n items"; return 0; fi
   printf '%s\n' "$hits"
-  k=$(printf '%s\n' "$hits" | wc -l | tr -d ' ')
-  echo "laneless: $k of $n items have NO Status — invisible to every lane query; NOT auto-routed (§3)"
+  echo "laneless: $k of $n items have NO Status — invisible to every lane query; NOT auto-routed (§3a)"
   return 1
 }
 # board_batch <projectId> <op>...  — ONE aliased mutation for many writes.
@@ -310,14 +312,14 @@ stalled for ~6 min). **Read the whole board exactly once per pass** and derive
 everything from that single JSON:
 
 ```bash
-BOARD_LIMIT=700   # keep in lockstep with board_snapshot's BOARD_LIMIT (§2b) — one number, two call sites
-ITEMS=$(gh project item-list "$PNUM" --owner "$OWNER" --format json --limit "$BOARD_LIMIT")   # the ONLY board read this pass
-# Both failure modes are silent and both poison the ready set, so assert BOTH — a
-# truncated read and an empty one are different bugs with the same symptom (a card
-# that is simply never dispatched). This mirrors board_snapshot; prefer calling it.
-n=$(printf '%s' "$ITEMS" | jq '.items|length')
-[ "${n:-0}" -le 0 ]             && echo "FATAL: board read came back empty (rate-limited?)"
-[ "${n:-0}" -ge "$BOARD_LIMIT" ] && echo "FATAL: board truncated at --limit $BOARD_LIMIT — raise it"
+source .claude/auto-ship-board.sh
+# board_snapshot IS the pass's one read: it asserts non-empty AND non-truncated (§2b)
+# and caches the JSON to $BOARD_CACHE, so the §3a laneless sweep reuses the same file
+# instead of paying another ~102 points. A failed read leaves SNAP and ITEMS EMPTY —
+# derive NOTHING from the board this pass (an empty ready set is a wrong answer, not "idle").
+if SNAP=$(board_snapshot); then ITEMS=$(cat "$SNAP")    # the ONLY board read this pass
+else SNAP=""; ITEMS=""; echo "FATAL: board read failed — do NOT derive a ready set, sweep or reconcile from it this pass" >&2
+fi
 # ready set + deps:
 printf '%s' "$ITEMS" | jq -r '.items[] | select(.status=="To Do") | "\(.title)\tdeps=\(."depends on" // "")"'
 # an item's node id AND its body come from the SAME JSON — never re-query for them:
@@ -348,11 +350,12 @@ notification landed between `claim` and its routing `board_batch`; it surfaced o
 because a lane tally printed a `1 null` row. `claim` deliberately does not route (§4 —
 routing is orchestrator-owned), so "remember the second call" is the only thing that
 prevents it, and that is not a mechanism. This sweep is the mechanism: run it on the
-pass's one snapshot, right after reading it.
+pass's one snapshot (§3's `$SNAP`), right after reading it.
 
 ```bash
-source .claude/auto-ship-board.sh
-if SNAP=$(board_snapshot); then
+# NO second board read: sweep the file §3's one read produced ($SNAP). Never call
+# board_snapshot again here — that doubles the pass's heaviest GraphQL cost.
+if [ -n "${SNAP:-}" ]; then
   board_laneless "$SNAP"; LANELESS_RC=$?     # 0 clean · 1 hits (listed) · 2 could NOT sweep
   [ "$LANELESS_RC" -eq 2 ] && echo "FATAL: laneless sweep did not run — treat the board as unswept this pass" >&2
 else

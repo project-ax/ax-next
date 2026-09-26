@@ -47,6 +47,23 @@ function boardHelper() {
   return m[1];
 }
 
+/** The §3 runnable block: the pass's ONE board read. */
+function readBlock() {
+  const start = DOC.indexOf('\n## 3. ');
+  const end = DOC.indexOf('\n### 3a. ', start + 1);
+  if (start < 0 || end < 0) throw new Error('§3 read section missing');
+  const m = /```bash\n([\s\S]*?)\n```/.exec(DOC.slice(start, end));
+  if (!m) throw new Error('§3 has no bash block');
+  return m[1];
+}
+
+/** The §4 claim-then-route snippet, from `if CLAIM=` to its closing `fi`. */
+function claimBlock() {
+  const m = /^(if CLAIM=\$\(scripts\/board-task-id\.sh claim[\s\S]*?\n)fi$/m.exec(DOC);
+  if (!m) throw new Error('§4 claim-then-route block missing');
+  return `${m[1]}fi`;
+}
+
 /** The §3a runnable block (the one the loop pass actually runs). */
 function sweepBlock() {
   const start = DOC.indexOf('\n### 3a. ');
@@ -70,25 +87,38 @@ const full = (n, extra = []) =>
   board(...Array.from({ length: n - extra.length }, (_, i) => card(`PVTI_${i}`, `[TASK-${i}] x`, 'Done')), ...extra);
 
 /** Run `script` in a fresh repo-like dir with the regenerated helper and a stub `gh`. */
-function run(shell, script, { snapshot, ghOut } = {}) {
+function run(shell, script, { snapshot, ghOut, graphqlRc = 0 } = {}) {
   const root = mkdtempSync(join(TMP, 'repo-'));
   mkdirSync(join(root, '.claude'));
   mkdirSync(join(root, 'bin'));
   writeFileSync(join(root, '.claude/auto-ship-board.sh'), boardHelper(), { mode: 0o755 });
   if (snapshot !== undefined) writeFileSync(join(root, 'snap.json'), snapshot);
   writeFileSync(join(root, 'gh.out'), ghOut ?? '');
-  // Only `gh project item-list` is expected; anything else is a test bug, and loud.
+  // `gh project item-list` serves the fixture and logs each call (so a test can count
+  // board reads); `gh api graphql` (board_batch) exits graphqlRc; anything else is loud.
   writeFileSync(
     join(root, 'bin/gh'),
-    `#!/bin/sh\n[ "$1 $2" = "project item-list" ] || { echo "unexpected gh $*" >&2; exit 64; }\ncat "${join(root, 'gh.out')}"\n`,
+    `#!/bin/sh
+if [ "$1 $2" = "project item-list" ]; then echo x >> "${join(root, 'gh.calls')}"; cat "${join(root, 'gh.out')}"; exit 0; fi
+if [ "$1 $2" = "api graphql" ]; then [ ${graphqlRc} -eq 0 ] || echo "stub graphql error" >&2; exit ${graphqlRc}; fi
+echo "unexpected gh $*" >&2; exit 64
+`,
     { mode: 0o755 },
   );
+  mkdirSync(join(root, 'scripts'));
+  writeFileSync(join(root, 'scripts/board-task-id.sh'), '#!/bin/sh\necho "TASK-900 PVTI_new"\n', { mode: 0o755 });
   const r = spawnSync(shell, ['-c', script], {
     cwd: root,
     encoding: 'utf8',
     env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}` },
   });
-  return { rc: r.status, out: r.stdout, err: r.stderr };
+  let reads = 0;
+  try {
+    reads = readFileSync(join(root, 'gh.calls'), 'utf8').split('\n').filter(Boolean).length;
+  } catch {
+    reads = 0;
+  }
+  return { rc: r.status, out: r.stdout, err: r.stderr, reads };
 }
 const sweep = (shell, snapshot, arg = 'snap.json') =>
   run(shell, `. .claude/auto-ship-board.sh; board_laneless ${arg}`, { snapshot });
@@ -145,14 +175,32 @@ describe.each(SHELLS)('board_laneless under %s', (shell) => {
     }
   });
 
-  it('the §3a pass block reports a laneless card end to end through board_snapshot', () => {
-    const r = run(shell, `${sweepBlock()}\necho "RC=$LANELESS_RC"`, { ghOut: board(...routed, LANELESS) });
+  const pass = () => `${readBlock()}\n${sweepBlock()}\necho "RC=$LANELESS_RC"`;
+
+  it('the §3 read + §3a sweep report a laneless card end to end, on ONE board read', () => {
+    const r = run(shell, pass(), { ghOut: board(...routed, LANELESS) });
     expect(r.out).toContain('LANELESS PVTI_z [TASK-476] stranded');
     expect(r.out).toContain('RC=1');
+    // The sweep must reuse the pass's snapshot, not pay for a second ~102-pt read.
+    expect(r.reads).toBe(1);
   });
 
-  it('the §3a pass block never reaches a quiet verdict when the board read is truncated', () => {
-    const r = run(shell, sweepBlock(), { ghOut: full(BOARD_LIMIT, [LANELESS]) });
+  it('the laneless count is exact even when a title holds a newline', () => {
+    const r = sweep(shell, board(...routed, card('PVTI_nl', '[TASK-7] two\nlines')));
+    expect(r.rc).toBe(1);
+    expect(r.out).toMatch(/laneless: 1 of 3 items/);
+  });
+
+  it('§4: a claim whose route FAILS announces the stranded card; a clean route stays silent', () => {
+    const failed = run(shell, `. .claude/auto-ship-board.sh\n${claimBlock()}`, { graphqlRc: 1 });
+    expect(failed.err).toContain('⚠ [TASK-900] PVTI_new was CREATED but NOT routed');
+    const ok = run(shell, `. .claude/auto-ship-board.sh\n${claimBlock()}`, { graphqlRc: 0 });
+    expect(ok.err).not.toContain('NOT routed');
+    expect(ok.out).toContain('board_batch: 2 write(s) in 1 request');
+  });
+
+  it('the §3 read + §3a sweep never reach a quiet verdict when the board read is truncated', () => {
+    const r = run(shell, pass(), { ghOut: full(BOARD_LIMIT, [LANELESS]) });
     expect(r.out).not.toMatch(/laneless: 0/);
     expect(r.err).toMatch(/FATAL: board_snapshot hit --limit/);
     expect(r.err).toMatch(/laneless sweep NOT run/);
@@ -170,7 +218,11 @@ describe('the sweep is wired into the loop, not just defined', () => {
     expect(DOC).toMatch(/for f in board_snapshot board_laneless board_batch; do/);
   });
 
-  it('§4 claim-then-route block announces a failed route instead of stranding the card silently', () => {
-    expect(DOC).toMatch(/"\$ID\|\$DEPS_FIELD_ID\|text\|none" \\\n\s+\|\| echo "⚠ \[\$TASK_ID\] \$ID was CREATED but NOT routed/);
+  it('§3a does not issue its own board read', () => {
+    const code = sweepBlock()
+      .split('\n')
+      .filter((l) => !/^\s*#/.test(l))
+      .join('\n');
+    expect(code).not.toMatch(/board_snapshot|item-list/);
   });
 });
