@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -60,7 +60,16 @@ type Snapshot = Map<string, Uint8Array>;
 
 /** Per-agent in-memory workspace tier. One linear-history store per
  *  (userId, agentId) key — the multi-tenant shape the bug violated. */
-function createPerAgentWorkspace(): { plugin: ReturnType<typeof buildPlugin> } {
+interface TierProbe {
+  /** When set, every `workspace:read` waits on it first (a slow/cold tier). */
+  readGate?: Promise<void>;
+  /** When set, only reads whose path starts with this wait on `readGate`. */
+  readGatePrefix?: string;
+  /** Counts `workspace:apply` calls — the tier writes. */
+  applies: number;
+}
+
+function createPerAgentWorkspace(probe?: TierProbe): { plugin: ReturnType<typeof buildPlugin> } {
   function buildPlugin(): import('@ax/core').Plugin {
     const stores = new Map<
       string,
@@ -98,6 +107,7 @@ function createPerAgentWorkspace(): { plugin: ReturnType<typeof buildPlugin> } {
           'workspace:apply',
           'test-per-agent-workspace',
           async (ctx, input) => {
+            if (probe !== undefined) probe.applies += 1;
             const s = storeFor(ctx);
             if (input.parent !== s.latest) {
               throw new PluginError({
@@ -123,6 +133,12 @@ function createPerAgentWorkspace(): { plugin: ReturnType<typeof buildPlugin> } {
           'workspace:read',
           'test-per-agent-workspace',
           async (ctx, input) => {
+            if (
+              probe?.readGate !== undefined &&
+              (probe.readGatePrefix === undefined || input.path.startsWith(probe.readGatePrefix))
+            ) {
+              await probe.readGate;
+            }
             const s = storeFor(ctx);
             const v = input.version ?? s.latest;
             if (v === null) return { found: false };
@@ -152,7 +168,7 @@ function createPerAgentWorkspace(): { plugin: ReturnType<typeof buildPlugin> } {
 
 const SHARED_HOST_CWD = '/opt/ax-next/host'; // the pooling trap: same for all agents
 
-async function buildBus(observations: Record<string, string>): Promise<{
+async function buildBus(observations: Record<string, string>, probe?: TierProbe): Promise<{
   bus: HookBus;
   settleObserver: (agentId: string) => Promise<void>;
   settleConsolidation: (agentId: string) => Promise<void>;
@@ -177,7 +193,7 @@ async function buildBus(observations: Record<string, string>): Promise<{
   bus.registerService('tool:register', 'test-tool-dispatcher', async () => ({ ok: true as const }));
 
   // The per-agent workspace tier (the fix's target).
-  const { plugin } = createPerAgentWorkspace();
+  const { plugin } = createPerAgentWorkspace(probe);
   const wsPlugin = plugin();
   await wsPlugin.init?.({ bus, config: {} });
 
@@ -630,5 +646,108 @@ describe('host-tool + index per-agent keying on the tier path (TASK-186)', () =>
     expect(zephyrSummaries).not.toContain('Atlas canary marker');
 
     await idx.shutdown?.();
+  });
+});
+
+/**
+ * TASK-552 — a chat:start bootstrap the bus has given up on stops before it
+ * writes. chat:start is fired with a subscriber bound; past it the turn moves
+ * on and the bus aborts the subscriber's signal. Before this, a bootstrap
+ * stuck on a slow tier kept going and flushed into the agent's tier after the
+ * turn it belonged to had already started without it.
+ */
+describe('chat:start bootstrap honours the bus abort signal (TASK-552)', () => {
+  const capture = (sink: Array<{ msg: string; bindings: Record<string, unknown> }>) => {
+    const logger: import('@ax/core').Logger = {
+      debug: () => undefined,
+      info: () => undefined,
+      warn: (msg, bindings) => {
+        sink.push({ msg, bindings: bindings ?? {} });
+      },
+      error: (msg, bindings) => {
+        sink.push({ msg, bindings: bindings ?? {} });
+      },
+      child: () => logger,
+    };
+    return logger;
+  };
+
+  const run = async (subscriberTimeoutMs: number | undefined, readGatePrefix?: string) => {
+    let release!: () => void;
+    const probe: TierProbe = {
+      readGate: new Promise<void>((r) => {
+        release = r;
+      }),
+      ...(readGatePrefix !== undefined ? { readGatePrefix } : {}),
+      applies: 0,
+    };
+    const { bus } = await buildBus({}, probe);
+    const logged: Array<{ msg: string; bindings: Record<string, unknown> }> = [];
+    const ctx = makeAgentContext({
+      sessionId: 'slow-session',
+      agentId: 'slow-agent',
+      userId: 'u',
+      workspace: { rootPath: SHARED_HOST_CWD },
+      logger: capture(logged),
+    });
+    const fired = bus.fire(
+      'chat:start',
+      ctx,
+      {},
+      subscriberTimeoutMs === undefined ? undefined : { subscriberTimeoutMs },
+    );
+    return { bus, ctx, probe, logged, fired, release };
+  };
+
+  it('stops before the tier flush when its bound elapses mid-hydrate', async () => {
+    const { bus, ctx, probe, logged, fired, release } = await run(20);
+    // The fire returns at the bound while the tier read is still stuck.
+    await expect(fired).resolves.toMatchObject({ rejected: false });
+    expect(logged.map((l) => l.msg)).toContain('hook_subscriber_timed_out');
+    // Now the tier recovers. The abandoned bootstrap must notice it was told
+    // to stop and write nothing.
+    release();
+    await vi.waitFor(() => {
+      expect(logged.map((l) => l.msg)).toContain('memory_strata_bootstrap_aborted');
+    });
+    expect(logged.find((l) => l.msg === 'memory_strata_bootstrap_aborted')!.bindings).toEqual({
+      agentId: 'slow-agent',
+      stage: 'hydrated',
+    });
+    expect(probe.applies, 'no tier write after the bus gave up').toBe(0);
+    expect((await readTierMemory(bus, ctx)).size).toBe(0);
+  });
+
+  it('stops at the last check — right before the flush — when the bound elapses after hydrate', async () => {
+    // Only the identity reads (`.ax/…`, after the hydrate) are slow, so the
+    // hydrate check passes and the seed is written to the scratch; the check
+    // guarding the shared-storage flush is the one that must catch it.
+    // 100 ms, not 20: the UN-gated hydrate must beat the bound for the abort
+    // to land at the pre-flush check rather than the post-hydrate one. The
+    // gated identity read holds until `release()`, so a wider bound costs
+    // nothing in determinism.
+    const { bus, ctx, probe, logged, fired, release } = await run(100, '.ax/');
+    await expect(fired).resolves.toMatchObject({ rejected: false });
+    release();
+    await vi.waitFor(() => {
+      expect(logged.map((l) => l.msg)).toContain('memory_strata_bootstrap_aborted');
+    });
+    expect(logged.find((l) => l.msg === 'memory_strata_bootstrap_aborted')!.bindings).toEqual({
+      agentId: 'slow-agent',
+      stage: 'seeded',
+    });
+    expect(probe.applies, 'no tier write after the bus gave up').toBe(0);
+    expect((await readTierMemory(bus, ctx)).size).toBe(0);
+  });
+
+  it('control: the same slow tier with no bound DOES flush the seed', async () => {
+    // Without this, the case above could pass because bootstrap never writes
+    // on this fixture at all.
+    const { bus, ctx, probe, logged, fired, release } = await run(undefined);
+    release();
+    await fired;
+    expect(probe.applies).toBeGreaterThan(0);
+    expect((await readTierMemory(bus, ctx)).size).toBeGreaterThan(0);
+    expect(logged.map((l) => l.msg)).not.toContain('memory_strata_bootstrap_aborted');
   });
 });

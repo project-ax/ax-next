@@ -950,3 +950,159 @@ describe('HookBus — per-fire subscriber timeout (TASK-514)', () => {
     expect(res).toBe('pending');
   });
 });
+
+/**
+ * TASK-552 — a timed-out subscriber is told to stop.
+ *
+ * TASK-514 bounded a subscriber's say over the fire but not its work: past the
+ * bound it kept running, holding whatever it was doing (network, disk, spend).
+ * Every subscriber now receives `{ signal }` as a third argument, and the bus
+ * aborts that signal at the moment it gives up on the subscriber — so a
+ * well-behaved one can actually stop.
+ */
+describe('HookBus — subscriber abort signal (TASK-552)', () => {
+  interface Logged {
+    level: 'debug' | 'warn' | 'error';
+    msg: string;
+    bindings: Record<string, unknown>;
+  }
+
+  const capturingCtx = (sink: Logged[]) => {
+    const logger: Logger = {
+      debug: (msg: string, bindings?: Record<string, unknown>) => {
+        sink.push({ level: 'debug', msg, bindings: bindings ?? {} });
+      },
+      info: () => undefined,
+      warn: (msg: string, bindings?: Record<string, unknown>) => {
+        sink.push({ level: 'warn', msg, bindings: bindings ?? {} });
+      },
+      error: (msg: string, bindings?: Record<string, unknown>) => {
+        sink.push({ level: 'error', msg, bindings: bindings ?? {} });
+      },
+      child: () => logger,
+    };
+    return makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u', logger });
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('aborts the signal exactly at the bound — not a millisecond before', async () => {
+    vi.useFakeTimers();
+    const bus = new HookBus({ stallWarnMs: Number.POSITIVE_INFINITY });
+    let seen: AbortSignal | undefined;
+    bus.subscribe('h', '@ax/test-hanger', (_ctx, _p, { signal }) => {
+      seen = signal;
+      return new Promise<never>(() => {});
+    });
+
+    const fired = bus.fire('h', silentCtx(), {}, { subscriberTimeoutMs: 100 });
+    await vi.advanceTimersByTimeAsync(99);
+    expect(seen, 'the subscriber must receive a signal').toBeInstanceOf(AbortSignal);
+    expect(seen!.aborted, 'aborted before the bound').toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(seen!.aborted, 'not aborted AT the bound').toBe(true);
+    expect(seen!.reason).toBeInstanceOf(DOMException);
+    expect((seen!.reason as DOMException).name).toBe('TimeoutError');
+    await expect(fired).resolves.toEqual({ rejected: false, payload: {} });
+  });
+
+  it('abort listeners run while the fire moves on, so a subscriber can stop its work', async () => {
+    const bus = new HookBus({ stallWarnMs: Number.POSITIVE_INFINITY });
+    let stoppedWork = false;
+    bus.subscribe('h', 'honours', (_ctx, _p, { signal }) => {
+      return new Promise<undefined>((resolve) => {
+        const work = setTimeout(() => resolve(undefined), 10_000);
+        signal.addEventListener('abort', () => {
+          clearTimeout(work);
+          stoppedWork = true;
+          resolve(undefined);
+        });
+      });
+    });
+    await bus.fire('h', silentCtx(), {}, { subscriberTimeoutMs: 10 });
+    expect(stoppedWork).toBe(true);
+  });
+
+  it('a subscriber that settles inside the bound never sees an abort', async () => {
+    const bus = new HookBus({ stallWarnMs: Number.POSITIVE_INFINITY });
+    let seen: AbortSignal | undefined;
+    bus.subscribe('h', 'quick', async (_ctx, _p, { signal }) => {
+      seen = signal;
+      return undefined;
+    });
+    await bus.fire('h', silentCtx(), {}, { subscriberTimeoutMs: 20 });
+    // Well past the bound: the timer was cleared, so nothing aborts later.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(seen!.aborted).toBe(false);
+  });
+
+  it('each subscriber gets its own signal; only the timed-out one is aborted', async () => {
+    const bus = new HookBus({ stallWarnMs: Number.POSITIVE_INFINITY });
+    const signals: AbortSignal[] = [];
+    bus.subscribe('h', 'hanger', (_ctx, _p, { signal }) => {
+      signals.push(signal);
+      return new Promise<never>(() => {});
+    });
+    bus.subscribe('h', 'after', async (_ctx, _p, { signal }) => {
+      signals.push(signal);
+      return undefined;
+    });
+    await bus.fire('h', silentCtx(), {}, { subscriberTimeoutMs: 10 });
+    expect(signals).toHaveLength(2);
+    expect(signals[0]).not.toBe(signals[1]);
+    expect(signals.map((s) => s.aborted)).toEqual([true, false]);
+  });
+
+  it('an unbounded fire still hands every subscriber a live, never-aborted signal', async () => {
+    const bus = new HookBus({ stallWarnMs: Number.POSITIVE_INFINITY });
+    const signals: AbortSignal[] = [];
+    for (const name of ['a', 'b']) {
+      bus.subscribe('h', name, async (_ctx, _p, { signal }) => {
+        signals.push(signal);
+        return undefined;
+      });
+    }
+    await bus.fire('h', silentCtx(), {});
+    expect(signals).toHaveLength(2);
+    expect(signals[0]).not.toBe(signals[1]);
+    expect(signals.every((s) => s instanceof AbortSignal && !s.aborted)).toBe(true);
+  });
+
+  it('a subscriber that stops by throwing the abort reason is not reported as a failure', async () => {
+    // Honouring the signal with `signal.throwIfAborted()` is the idiomatic
+    // stop. The timeout was already warned; an error line on top would page
+    // someone for a subscriber that did exactly what it was asked.
+    const logged: Logged[] = [];
+    const bus = new HookBus({ stallWarnMs: Number.POSITIVE_INFINITY });
+    bus.subscribe('h', '@ax/test-honours', async (_ctx, _p, { signal }) => {
+      await new Promise((r) => setTimeout(r, 40));
+      signal.throwIfAborted();
+      return undefined;
+    });
+    await bus.fire('h', capturingCtx(logged), {}, { subscriberTimeoutMs: 10 });
+    await new Promise((r) => setTimeout(r, 80));
+    expect(logged.map((l) => [l.level, l.msg])).toEqual([
+      ['warn', 'hook_subscriber_timed_out'],
+      ['debug', 'hook_subscriber_aborted'],
+    ]);
+    expect(logged[1]!.bindings).toEqual({ hook: 'h', plugin: '@ax/test-honours' });
+  });
+
+  it('a timed-out subscriber that throws something ELSE is still reported', async () => {
+    const logged: Logged[] = [];
+    const bus = new HookBus({ stallWarnMs: Number.POSITIVE_INFINITY });
+    bus.subscribe('h', '@ax/test-late-thrower', async () => {
+      await new Promise((r) => setTimeout(r, 40));
+      throw new Error('late failure');
+    });
+    await bus.fire('h', capturingCtx(logged), {}, { subscriberTimeoutMs: 10 });
+    await new Promise((r) => setTimeout(r, 80));
+    expect(logged.map((l) => l.msg)).toEqual([
+      'hook_subscriber_timed_out',
+      'hook_subscriber_failed',
+    ]);
+  });
+});
