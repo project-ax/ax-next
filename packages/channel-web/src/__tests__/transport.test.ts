@@ -1676,7 +1676,7 @@ describe('AxChatTransport reconnectToStream — the post-approval continuation (
         `data: {"reqId":"req-cont-1","done":true}\n\n`,
     );
     // Stage the id the way the approval path does (a runtime is mounted).
-    continuationActions.registerResume(vi.fn());
+    continuationActions.registerResume(vi.fn(), () => null);
     continuationActions.resumeContinuation('req-cont-1');
 
     const stream = await transport.reconnectToStream({ chatId: 'c1' });
@@ -1701,7 +1701,7 @@ describe('AxChatTransport reconnectToStream — the post-approval continuation (
     // and could DUPLICATE the already-running turn. Null is the SDK's quiet
     // "nothing to resume".
     const { transport, calls } = servedTransport('', 404);
-    continuationActions.registerResume(vi.fn());
+    continuationActions.registerResume(vi.fn(), () => null);
     continuationActions.resumeContinuation('req-cont-1');
     expect(await transport.reconnectToStream({ chatId: 'c1' })).toBeNull();
     expect(calls).toEqual(['/api/chat/stream/req-cont-1']);

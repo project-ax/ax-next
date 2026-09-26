@@ -133,26 +133,14 @@ export function useConversationDecisions(): ConversationDecisions {
   const conversationId = useConversationId();
   /*
     TASK-278 — attach a stream consumer for the continuation turn, but ONLY
-    for the thread on screen. The approve POST resolves asynchronously, and
-    the reader may have switched threads (or landed on the welcome state)
-    while it was in flight — resuming into the wrong thread would render one
-    conversation's answer inside another's. So the check reads the CURRENT
-    id through a ref at settle time, not the render-time value the click
-    closed over. A null id or a null `streamReqId` (no turn runs to watch)
-    resumes nothing: the receipts stand as they did before.
+    for the thread on screen. The rule (and the settle-time read of which
+    thread that is) lives in `continuationActions.continueApprovedTurn`,
+    shared with the agent workspace's thread (TASK-542) so the two surfaces
+    cannot disagree about when a continuation is theirs to render.
   */
-  const conversationIdRef = useRef(conversationId);
-  conversationIdRef.current = conversationId;
-  const onDecisionApproved = useCallback(
-    (decision: Decision, streamReqId: string | null) => {
-      if (streamReqId === null) return;
-      const open = conversationIdRef.current;
-      if (open === null || decision.conversationId !== open) return;
-      continuationActions.resumeContinuation(streamReqId);
-    },
-    [],
-  );
-  const queue = useDecisionQueue({ onDecisionApproved });
+  const queue = useDecisionQueue({
+    onDecisionApproved: continuationActions.continueApprovedTurn,
+  });
   const { raised } = useDecisionRaised();
 
   const { decisions, refresh } = queue;

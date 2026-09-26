@@ -457,7 +457,7 @@ describe('useConversationDecisions', () => {
 
     beforeEach(() => {
       continuationActions.reset();
-      continuationActions.registerResume(vi.fn());
+      continuationActions.registerResume(vi.fn(), () => mockConversationId);
     });
 
     it('an approval on the open thread stages a stream consumer for the continuation reqId', async () => {

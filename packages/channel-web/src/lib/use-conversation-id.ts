@@ -22,6 +22,15 @@ export function setActiveConversationId(id: string | null): void {
   for (const sub of subscribers) sub();
 }
 
+/**
+ * The same id, read at call time rather than render time — for a settle path
+ * that must ask "which thread is open NOW" after an async POST (TASK-278's
+ * continuation guard, via `continuationActions`).
+ */
+export function getActiveConversationId(): string | null {
+  return current;
+}
+
 export function useConversationId(): string | null {
   return useSyncExternalStore(
     (cb) => {
