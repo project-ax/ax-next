@@ -53,7 +53,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { scanHookTimeouts } from '../hook-timeout-scan.mjs';
+import { scanHookTimeouts, scanTestTimeouts } from '../hook-timeout-scan.mjs';
 
 const SCRIPTS_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const TESTS_DIR = join(SCRIPTS_ROOT, '__tests__');
@@ -155,6 +155,36 @@ function readTimeout(configText, key) {
  * passes a config that is too low. See the scanner for the per-failure-mode
  * direction; the one fail-open gap left is a hook invoked through an alias.
  */
+/**
+ * TASK-575: the out-of-process guard's TASK-567 rule, for this suite's one
+ * config. `undefined` when every BARE `afterAll` / `afterEach` in `files` runs
+ * under a `hookTimeout` at least the largest budget a test in `files` declares;
+ * otherwise the failure message. Suite-wide, like the hook rule above: one
+ * config governs every file here.
+ */
+function bareTeardownViolation(hookTimeout, files) {
+  let maxTest = 0;
+  let testAt = '(none)';
+  let firstBare;
+  for (const { name, text } of files) {
+    const scan = scanTestTimeouts(text, name);
+    for (const d of scan.testDeclared) {
+      if (d.ms > maxTest) {
+        maxTest = d.ms;
+        testAt = `${name}:${d.line}`;
+      }
+    }
+    if (firstBare === undefined && scan.bareTeardowns.length > 0) {
+      firstBare = `${scan.bareTeardowns[0].hook} at ${name}:${scan.bareTeardowns[0].line}`;
+    }
+  }
+  if (firstBare === undefined || hookTimeout >= maxTest) return undefined;
+  return (
+    `hookTimeout ${hookTimeout} < ${maxTest} declared by a test at ${testAt}, and a bare teardown ` +
+    `(${firstBare}) runs under hookTimeout — raise hookTimeout, or give the teardown its own timeout`
+  );
+}
+
 const testFiles = readdirSync(TESTS_DIR)
   .filter((f) => f.endsWith('.test.js'))
   .map((f) => ({ name: f, text: readFileSync(join(TESTS_DIR, f), 'utf8') }));
@@ -257,6 +287,50 @@ describe('the scripts vitest root declares its own timeouts (TASK-331)', () => {
       `hookTimeout ${configured} < ${maxDeclared} declared by a hook in ${declaredBy} — ` +
         'a bare afterAll here gets less budget than its own suite asks for',
     ).toBeGreaterThanOrEqual(maxDeclared);
+  });
+
+  it('no guard file declares a TEST budget this test cannot read (TASK-575)', () => {
+    // The bare-teardown rule below folds test budgets into a maximum, so an
+    // unreadable one would count as absent. Fail closed, as for hooks.
+    const unreadable = [];
+    for (const { name, text } of testFiles) {
+      for (const u of scanTestTimeouts(text, name).testUnreadable) {
+        unreadable.push(`${name}:${u.line}: test budget \`${u.expr}\` on ${u.call} cannot be read`);
+      }
+    }
+    expect(unreadable).toEqual([]);
+  });
+
+  it('a BARE teardown gets a hookTimeout of at least the largest declared test budget (TASK-567 rule, TASK-575)', () => {
+    // The out-of-process guard's TASK-567 rule, applied to this suite: a bare
+    // afterAll/afterEach runs under `hookTimeout`, and the cleanup of a test
+    // that asks for N ms lands there. Measured when this was added: largest
+    // declared test budget 30_000 (`board-task-id-race.test.js`), 21 bare
+    // teardowns, hookTimeout 120_000 — green, and meant to stay that way.
+    if (configText === undefined) return; // reported by the config test above
+    const configured = readTimeout(configText, 'hookTimeout');
+    if (configured === undefined) return; // ditto
+    expect(bareTeardownViolation(configured, testFiles)).toBeUndefined();
+  });
+
+  describe('bareTeardownViolation (TASK-575)', () => {
+    const big = { name: 'big.test.js', text: "it('slow', async () => { await go(); }, 180_000);" };
+    const bare = { name: 'bare.test.js', text: 'afterAll(async () => { await cleanup(); });' };
+    const timed = { name: 'timed.test.js', text: 'afterAll(async () => { await cleanup(); }, 30_000);' };
+
+    it('REDDENS: a bare teardown under a hookTimeout below a test budget, across files', () => {
+      expect(bareTeardownViolation(120_000, [big, bare])).toContain('hookTimeout 120000 < 180000');
+    });
+    it('passes at the equality edge', () => {
+      expect(bareTeardownViolation(180_000, [big, bare])).toBeUndefined();
+    });
+    it('passes when the teardown carries its own timeout (not bare)', () => {
+      expect(bareTeardownViolation(120_000, [big, timed])).toBeUndefined();
+    });
+    it('passes when no teardown is bare, or no test declares a budget', () => {
+      expect(bareTeardownViolation(120_000, [big])).toBeUndefined();
+      expect(bareTeardownViolation(120_000, [bare])).toBeUndefined();
+    });
   });
 
   // The scanners' own regression tests. Every case below is one this file got

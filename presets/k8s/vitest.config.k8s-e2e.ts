@@ -17,7 +17,14 @@ export default defineConfig({
     // protects against a slow first model call without normalizing
     // pathological latency.
     testTimeout: 240_000,
-    hookTimeout: 60_000,
+    // 180_000, not 60_000 (TASK-575). The suite's tests declare
+    // `{ timeout: 180_000 }`, and its cleanup `afterAll` (deleting every agent
+    // and conversation the run created, over the port-forward) is BARE, so it
+    // runs under this value. Below the tests' own budget, a slow cleanup fails
+    // the run after every assertion passed. Same rule as `vitest.config.ts`
+    // (TASK-567); `scripts/__tests__/out-of-process-test-timeouts.test.js` now
+    // reads every vitest config a package uses, this one included.
+    hookTimeout: 180_000,
     // Sequential — the cluster is shared mutable state. Two tests racing
     // on the same `ax-next-runners` namespace would tear each other's
     // pod-count assertions apart.
