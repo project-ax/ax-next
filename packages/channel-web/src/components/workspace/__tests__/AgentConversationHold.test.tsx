@@ -67,6 +67,23 @@ function sendButton() {
   return screen.getByRole('button', { name: 'Send' });
 }
 
+/**
+ * The hold announcer — the one polite `status` node this surface owns.
+ *
+ * Not simply `getByRole('status')`: since TASK-540 every approval card also
+ * mounts its own polite `status` region (`data-consent-said="open"`) for what
+ * its open branch picks up. That is the CARD's voice, asserted in
+ * `consent-announce.test.tsx`; this file is about the composer hold's, so it
+ * excludes the cards' and still insists there is exactly one left.
+ */
+function holdAnnouncer(): HTMLElement {
+  const own = screen
+    .getAllByRole('status')
+    .filter((el) => !el.hasAttribute('data-consent-said'));
+  expect(own).toHaveLength(1);
+  return own[0]!;
+}
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -86,7 +103,7 @@ describe('AgentConversation — composer hold while an approval is open', () => 
     expect(box()).toBeDisabled();
     expect(sendButton()).toBeDisabled();
     expect(screen.getByText(HOLD_COPY)).toBeTruthy();
-    expect(screen.getByRole('status').textContent).toBe(LIVE_SENTENCE);
+    expect(holdAnnouncer().textContent).toBe(LIVE_SENTENCE);
   });
 
   it("stays live over another thread's open decision — the queue is global, the hold is not", () => {
@@ -102,7 +119,7 @@ describe('AgentConversation — composer hold while an approval is open', () => 
     expect(box()).not.toBeDisabled();
     expect(sendButton()).not.toBeDisabled();
     expect(screen.queryByText(HOLD_COPY)).toBeNull();
-    expect(screen.getByRole('status').textContent).toBe('');
+    expect(holdAnnouncer().textContent).toBe('');
   });
 
   it('stays live with no copy when only settled decisions remain', () => {
@@ -113,7 +130,7 @@ describe('AgentConversation — composer hold while an approval is open', () => 
     expect(box()).not.toBeDisabled();
     expect(sendButton()).not.toBeDisabled();
     expect(screen.queryByText(HOLD_COPY)).toBeNull();
-    expect(screen.getByRole('status').textContent).toBe('');
+    expect(holdAnnouncer().textContent).toBe('');
   });
 
   it('treats a stale row as still open — it is a question again, not a receipt', () => {
@@ -132,7 +149,7 @@ describe('AgentConversation — composer hold while an approval is open', () => 
     expect(box()).toBeDisabled();
     expect(sendButton()).toBeDisabled();
     expect(screen.queryByText(HOLD_COPY)).toBeNull();
-    expect(screen.getByRole('status').textContent).toBe('');
+    expect(holdAnnouncer().textContent).toBe('');
   });
 
   it('sends nothing while held — click or Enter — and keeps the draft', () => {
@@ -236,7 +253,7 @@ describe('AgentConversation — the hold announcer carries no counter', () => {
       vi.advanceTimersByTime(1500);
     });
 
-    const announcer = screen.getByRole('status');
+    const announcer = holdAnnouncer();
     expect(announcer.textContent).toBe(LIVE_SENTENCE);
     expect(announcer.textContent).not.toMatch(/\d/);
   });

@@ -63,28 +63,45 @@ const quill: WorkspaceAgent = {
 };
 
 /**
- * The card's live region, by the attribute the shared component marks it with.
+ * One of the card's two live regions, by the attribute the shared component
+ * marks it with (TASK-540): `receipt` is the assertive one that says an
+ * ANSWER, `open` the polite one that says what an open card picked up while
+ * nobody pressed anything (a stale reason, a notice).
  *
  * NOT `getByRole('alert')`: until TASK-535, `DecisionRow`'s open branch drew
  * its stale reason and failed-POST notice inside shadcn's `Alert` WITH the
  * `role="alert"` shadcn gives it, and a role query would have been satisfied by
  * one of those. They have given the role up (the region is the one voice), but
  * the attribute stays the query: it names the node this file is about rather
- * than whichever live region happens to be on the page. The role IS asserted —
- * once, on this node, in its own case below.
+ * than whichever live region happens to be on the page. The politeness IS
+ * asserted — on the node that speaks, in the cases that make it speak.
  */
-function region(): HTMLElement {
-  const el = document.querySelector<HTMLElement>('[data-consent-said]');
+type Voice = 'receipt' | 'open';
+
+function region(voice: Voice): HTMLElement {
+  const el = document.querySelector<HTMLElement>(`[data-consent-said="${voice}"]`);
   if (el === null) {
-    throw new Error('no consent announcement region is mounted on this card');
+    throw new Error(`no ${voice} consent announcement region is mounted on this card`);
   }
   return el;
 }
 
-/** What a screen reader would have just been handed. */
-function said(): string {
-  return region().textContent ?? '';
+/** What a screen reader would have just been handed, by that region. */
+function said(voice: Voice): string {
+  return region(voice).textContent ?? '';
 }
+
+/**
+ * How loudly a region speaks. `role="alert"` is assertive and `role="status"`
+ * polite by definition; the explicit `aria-live` is pinned too, because an
+ * explicit attribute outranks the role's implicit value — a stray
+ * `aria-live="assertive"` on a status node would make it interrupt.
+ */
+function politeness(el: HTMLElement): string {
+  return `${el.getAttribute('role')}/${el.getAttribute('aria-live')}`;
+}
+const ASSERTIVE = 'alert/assertive';
+const POLITE = 'status/polite';
 
 /** The in-thread card, driven the way `useConversationDecisions` drives it. */
 function ThreadHarness({ resolved }: { resolved: Decision }) {
@@ -166,16 +183,20 @@ describe.each([
 
     // Mounted, empty, and waiting — the only shape assistive tech reliably
     // announces a later change in.
-    const before = region();
-    expect(said()).toBe('');
+    const before = region('receipt');
+    expect(said('receipt')).toBe('');
 
     fireEvent.click(screen.getByRole('button', { name: 'Move it' }));
 
-    expect(said()).toBe(resolved.approvedText);
+    expect(said('receipt')).toBe(resolved.approvedText);
     // THE LOAD-BEARING ASSERTION. A conditionally-rendered alert would put the
     // same words on screen and fail here, because its node did not exist a
     // moment ago.
-    expect(region()).toBe(before);
+    expect(region('receipt')).toBe(before);
+    // The answer to the person's own press, inside a ten-second undo window:
+    // said assertively, and by that region alone.
+    expect(politeness(before)).toBe(ASSERTIVE);
+    expect(said('open')).toBe('');
   });
 
   it('announces the quiet second line too — the part focus never reads', () => {
@@ -195,7 +216,7 @@ describe.each([
 
     fireEvent.click(screen.getByRole('button', { name: 'Move it' }));
 
-    expect(said()).toBe(`${DECISION_GOING_OUT} ${DECISION_GOING_OUT_NOTE}`);
+    expect(said('receipt')).toBe(`${DECISION_GOING_OUT} ${DECISION_GOING_OUT_NOTE}`);
   });
 
   it('a REFUSED undo is announced, on a row that is otherwise unchanged', () => {
@@ -207,13 +228,17 @@ describe.each([
     */
     render(<RefusedUndoHarness renderer={renderer} />);
 
-    const before = region();
-    expect(said()).toBe('');
+    const before = region('receipt');
+    expect(said('receipt')).toBe('');
 
     fireEvent.click(screen.getByRole('button', { name: /Undo/ }));
 
-    expect(said()).toBe(DECISION_UNDO_TOO_LATE);
-    expect(region()).toBe(before);
+    expect(said('receipt')).toBe(DECISION_UNDO_TOO_LATE);
+    expect(region('receipt')).toBe(before);
+    // A notice on a RESOLVED row is still the answer to a press, so it keeps
+    // the receipt's politeness (TASK-540 changes only the open branch).
+    expect(politeness(before)).toBe(ASSERTIVE);
+    expect(said('open')).toBe('');
   });
 
   it('a receipt drawn on page load announces nothing', () => {
@@ -250,7 +275,7 @@ describe.each([
 
     // The receipt IS on screen — this is not a case of nothing having rendered.
     expect(screen.getByText(resolved.approvedText)).toBeTruthy();
-    expect(said()).toBe('');
+    expect(said('receipt')).toBe('');
   });
 
   it('the ten-second countdown does not re-announce the receipt', () => {
@@ -264,8 +289,8 @@ describe.each([
     render(<Harness resolved={resolvedFixture('executed')} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Move it' }));
-    const announced = said();
-    const before = region();
+    const announced = said('receipt');
+    const before = region('receipt');
     const countdown = screen.getByRole('button', { name: /Undo/ }).textContent;
 
     act(() => {
@@ -277,8 +302,8 @@ describe.each([
     expect(screen.getByRole('button', { name: /Undo/ }).textContent).not.toBe(
       countdown,
     );
-    expect(said()).toBe(announced);
-    expect(region()).toBe(before);
+    expect(said('receipt')).toBe(announced);
+    expect(region('receipt')).toBe(before);
   });
 
   it('the region is assertive, and invisible', () => {
@@ -295,8 +320,12 @@ describe.each([
     */
     render(<Harness resolved={resolvedFixture('executed')} />);
 
-    expect(region().getAttribute('role')).toBe('alert');
-    expect(region().className).toContain('sr-only');
+    expect(politeness(region('receipt'))).toBe(ASSERTIVE);
+    expect(region('receipt').className).toContain('sr-only');
+    // Its polite sibling (TASK-540) is mounted from the start too, for the
+    // same reason, and just as invisible.
+    expect(politeness(region('open'))).toBe(POLITE);
+    expect(region('open').className).toContain('sr-only');
   });
 });
 
@@ -321,6 +350,13 @@ describe.each([
  *     the shared region says them there too (TASK-535), and the `Alert`s give
  *     up their own `role="alert"` so that it stays ONE voice, expanded or
  *     collapsed.
+ *
+ * POLITELY, since TASK-540. The human ruling on TASK-275 is that a card which
+ * changes because of the agent is announced politely and focus does not move.
+ * The receipt region's reason for interrupting — a ten-second undo window —
+ * does not exist on an open card, so these sentences go out through the
+ * card's OTHER region, the polite one, and every case that makes it speak
+ * pins its politeness and that the assertive region stayed empty.
  *
  * WHICH DIRECTION DOES THIS FAIL IN? Silent — open. A region created in the
  * same commit as its sentence reads correctly to jsdom and says nothing to
@@ -374,26 +410,37 @@ function Passive({
   );
 }
 
-/** Every `role="alert"` node on the page whose words include `text`. */
+/**
+ * Every live region on the page — assertive or polite — whose words include
+ * `text`. Both politenesses, so that moving a sentence from one region to the
+ * other cannot leave a copy behind in the first unnoticed.
+ */
 function voicesSaying(text: string): HTMLElement[] {
-  return Array.from(document.querySelectorAll<HTMLElement>('[role="alert"]')).filter(
-    (el) => (el.textContent ?? '').includes(text),
-  );
+  return Array.from(
+    document.querySelectorAll<HTMLElement>('[role="alert"], [role="status"], [aria-live]'),
+  ).filter((el) => (el.textContent ?? '').includes(text));
+}
+
+/** The open branch spoke through the polite region, and only through it. */
+function spokePolitely(before: HTMLElement) {
+  expect(politeness(before)).toBe(POLITE);
+  expect(said('receipt')).toBe('');
 }
 
 describe('ApprovalCard — the open branch speaks when it changes on its own', () => {
   it('a card that goes stale while on screen says so, in the region already there', () => {
     const { rerender } = render(<Passive renderer="thread" change={null} />);
-    const before = region();
-    expect(said()).toBe('');
+    const before = region('open');
+    expect(said('open')).toBe('');
 
     rerender(
       <Passive renderer="thread" change={{ decision: staleFixture(), notice: null }} />,
     );
 
-    expect(said()).toBe(STALE_SENTENCE);
+    expect(said('open')).toBe(STALE_SENTENCE);
     // THE LOAD-BEARING ASSERTION — see the block header.
-    expect(region()).toBe(before);
+    expect(region('open')).toBe(before);
+    spokePolitely(before);
     // And only once: the paragraph on screen is not a second live region.
     expect(voicesSaying(STALE_REASON)).toEqual([before]);
   });
@@ -401,14 +448,16 @@ describe('ApprovalCard — the open branch speaks when it changes on its own', (
   it('a notice that arrives with no press behind it is said', () => {
     const notice = 'That did not go through. Nothing was sent.';
     const { rerender } = render(<Passive renderer="thread" change={null} />);
-    const before = region();
+    const before = region('open');
 
     rerender(
       <Passive renderer="thread" change={{ decision: decisionFixture(), notice }} />,
     );
 
-    expect(said()).toBe(notice);
-    expect(region()).toBe(before);
+    expect(said('open')).toBe(notice);
+    expect(region('open')).toBe(before);
+    spokePolitely(before);
+    expect(voicesSaying(notice)).toEqual([before]);
   });
 
   it('a notice outranks the stale reason it lands on, as it does for focus', () => {
@@ -421,7 +470,8 @@ describe('ApprovalCard — the open branch speaks when it changes on its own', (
       <Passive renderer="thread" change={{ decision: staleFixture(), notice }} />,
     );
 
-    expect(said()).toBe(notice);
+    expect(said('open')).toBe(notice);
+    spokePolitely(region('open'));
   });
 
   it('a notice that clears empties the region, so the same refusal later is news again', () => {
@@ -429,16 +479,16 @@ describe('ApprovalCard — the open branch speaks when it changes on its own', (
     const { rerender } = render(
       <Passive renderer="thread" change={{ decision: decisionFixture(), notice }} />,
     );
-    const before = region();
+    const before = region('open');
 
     rerender(<Passive renderer="thread" change={null} />);
-    expect(said()).toBe('');
+    expect(said('open')).toBe('');
 
     rerender(
       <Passive renderer="thread" change={{ decision: decisionFixture(), notice }} />,
     );
-    expect(said()).toBe(notice);
-    expect(region()).toBe(before);
+    expect(said('open')).toBe(notice);
+    expect(region('open')).toBe(before);
   });
 
   it('an undo that re-opens a receipt clears what the region last said', () => {
@@ -446,14 +496,41 @@ describe('ApprovalCard — the open branch speaks when it changes on its own', (
     const { rerender } = render(
       <Passive renderer="thread" change={{ decision: decisionFixture(), notice: null }} />,
     );
-    const before = region();
+    const before = region('receipt');
 
     rerender(<Passive renderer="thread" change={{ decision: resolved, notice: null }} />);
-    expect(said()).toBe(resolved.approvedText);
+    expect(said('receipt')).toBe(resolved.approvedText);
 
     rerender(<Passive renderer="thread" change={{ decision: decisionFixture(), notice: null }} />);
-    expect(said()).toBe('');
-    expect(region()).toBe(before);
+    expect(said('receipt')).toBe('');
+    expect(said('open')).toBe('');
+    expect(region('receipt')).toBe(before);
+  });
+
+  it('a stale card that then resolves hands over to the assertive region', () => {
+    /*
+      Both regions stay mounted across the open-to-resolved swap — the swap
+      renders an entirely different subtree, which is exactly why the regions
+      hang above the branch split. The polite one empties as the receipt
+      goes out, so a reader moving through the page does not find the stale
+      sentence still sitting beside an answer that superseded it.
+    */
+    const resolved = resolvedFixture('executed');
+    const { rerender } = render(<Passive renderer="thread" change={null} />);
+    const open = region('open');
+    const receipt = region('receipt');
+
+    rerender(
+      <Passive renderer="thread" change={{ decision: staleFixture(), notice: null }} />,
+    );
+    expect(said('open')).toBe(STALE_SENTENCE);
+
+    rerender(<Passive renderer="thread" change={{ decision: resolved, notice: null }} />);
+    expect(said('receipt')).toBe(resolved.approvedText);
+    expect(politeness(receipt)).toBe(ASSERTIVE);
+    expect(said('open')).toBe('');
+    expect(region('open')).toBe(open);
+    expect(region('receipt')).toBe(receipt);
   });
 
   it('a card that MOUNTS stale stays quiet — the mount rule does not bend', () => {
@@ -473,7 +550,8 @@ describe('ApprovalCard — the open branch speaks when it changes on its own', (
     );
 
     expect(screen.getByText(DECISION_STALE_LEAD)).toBeTruthy();
-    expect(said()).toBe('');
+    expect(said('open')).toBe('');
+    expect(said('receipt')).toBe('');
   });
 });
 
@@ -496,9 +574,9 @@ describe.each([
     const { rerender } = render(
       <Passive renderer="queue" change={null} expanded={expanded} />,
     );
-    const before = region();
+    const before = region('open');
     const focused = document.activeElement;
-    expect(said()).toBe('');
+    expect(said('open')).toBe('');
 
     rerender(
       <Passive
@@ -508,9 +586,10 @@ describe.each([
       />,
     );
 
-    expect(said()).toBe(STALE_SENTENCE);
+    expect(said('open')).toBe(STALE_SENTENCE);
     // THE LOAD-BEARING ASSERTION — see the block header above.
-    expect(region()).toBe(before);
+    expect(region('open')).toBe(before);
+    spokePolitely(before);
     // ONE voice: the visible `Alert` (expanded) is not a second live region.
     expect(voicesSaying(STALE_REASON)).toEqual([before]);
     expect(document.activeElement).toBe(focused);
@@ -521,7 +600,7 @@ describe.each([
     const { rerender } = render(
       <Passive renderer="queue" change={null} expanded={expanded} />,
     );
-    const before = region();
+    const before = region('open');
     const focused = document.activeElement;
 
     rerender(
@@ -532,8 +611,9 @@ describe.each([
       />,
     );
 
-    expect(said()).toBe(notice);
-    expect(region()).toBe(before);
+    expect(said('open')).toBe(notice);
+    expect(region('open')).toBe(before);
+    spokePolitely(before);
     expect(voicesSaying(notice)).toEqual([before]);
     expect(document.activeElement).toBe(focused);
   });
@@ -556,7 +636,39 @@ describe.each([
       />,
     );
 
-    expect(said()).toBe(notice);
+    expect(said('open')).toBe(notice);
+    spokePolitely(region('open'));
+  });
+
+  it('a stale row that then resolves hands over to the assertive region', () => {
+    const resolved = resolvedFixture('executed');
+    const { rerender } = render(
+      <Passive renderer="queue" change={null} expanded={expanded} />,
+    );
+    const open = region('open');
+    const receipt = region('receipt');
+
+    rerender(
+      <Passive
+        renderer="queue"
+        change={{ decision: staleFixture(), notice: null }}
+        expanded={expanded}
+      />,
+    );
+    expect(said('open')).toBe(STALE_SENTENCE);
+
+    rerender(
+      <Passive
+        renderer="queue"
+        change={{ decision: resolved, notice: null }}
+        expanded={expanded}
+      />,
+    );
+    expect(said('receipt')).toBe(resolved.approvedText);
+    expect(politeness(receipt)).toBe(ASSERTIVE);
+    expect(said('open')).toBe('');
+    expect(region('open')).toBe(open);
+    expect(region('receipt')).toBe(receipt);
   });
 
   it('a row that MOUNTS stale stays quiet, and so does its Alert', () => {
@@ -573,7 +685,7 @@ describe.each([
       />,
     );
 
-    expect(said()).toBe('');
+    expect(said('open')).toBe('');
     expect(voicesSaying(STALE_REASON)).toEqual([]);
   });
 });
@@ -589,18 +701,18 @@ describe('DecisionRow — opening and closing a stale row is not news', () => {
     const { rerender } = render(
       <Passive renderer="queue" change={null} expanded={false} />,
     );
-    const before = region();
+    const before = region('open');
     rerender(<Passive renderer="queue" change={change} expanded={false} />);
-    expect(said()).toBe(STALE_SENTENCE);
+    expect(said('open')).toBe(STALE_SENTENCE);
 
     // A toggle-dependent note would empty the region here, and say the
     // sentence again on the collapse below.
     rerender(<Passive renderer="queue" change={change} expanded />);
-    expect(said()).toBe(STALE_SENTENCE);
-    expect(region()).toBe(before);
+    expect(said('open')).toBe(STALE_SENTENCE);
+    expect(region('open')).toBe(before);
     rerender(<Passive renderer="queue" change={change} expanded={false} />);
-    expect(said()).toBe(STALE_SENTENCE);
-    expect(region()).toBe(before);
+    expect(said('open')).toBe(STALE_SENTENCE);
+    expect(region('open')).toBe(before);
     expect(voicesSaying(STALE_REASON)).toEqual([before]);
   });
 });
