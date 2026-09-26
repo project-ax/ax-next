@@ -5,10 +5,19 @@
 Schema bootstrap for the embedded postgres subchart.
 
 Waits for the subchart pod to accept connections, then enables the
-`vector` extension (used by future memory plugins; harmless if absent
-on the image). The migrations themselves are run by the host pod on
-boot — see @ax/database-postgres / @ax/storage-postgres / etc — so this
-job is intentionally minimal.
+`vector` (pgvector) extension and proves it from `pg_extension`. The
+migrations themselves are run by the host pod on boot — see
+@ax/database-postgres / @ax/storage-postgres / etc — so this job is
+intentionally minimal.
+
+pgvector is REQUIRED on the embedded path, and this Job FAILS the
+install/upgrade when it cannot be enabled (TASK-458). It used to end
+`|| echo "non-fatal"`, which made failure and success the same exit
+code. The default image (`postgresql.image.*`) ships pgvector 0.8.0;
+if you override the image, pick one that ships it too.
+__tests__/pgvector-bootstrap.test.ts runs this rendered script against
+the chart's image and against one without pgvector, so the image and
+the failure mode are both checked.
 
 External mode skips this job entirely; operators are expected to have
 already run their own bootstrap against the cloud DB.
@@ -42,18 +51,27 @@ spec:
           command: ["/bin/bash", "-c"]
           args:
             - |
-              set -e
+              set -euo pipefail
               PG_HOST="{{ .Release.Name }}-postgresql"
               PG_PORT="5432"
-              until PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$PG_HOST" -p "$PG_PORT" -U postgres -c "SELECT 1" >/dev/null 2>&1; do
+              export PGPASSWORD="$POSTGRES_PASSWORD"
+              until psql -h "$PG_HOST" -p "$PG_PORT" -U postgres -c "SELECT 1" >/dev/null 2>&1; do
                 echo "Waiting for PostgreSQL..."
                 sleep 2
               done
               echo "PostgreSQL is ready."
-              PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$PG_HOST" -p "$PG_PORT" -U postgres -d "{{ $pgDb }}" \
-                -c "CREATE EXTENSION IF NOT EXISTS vector;" \
-                && echo "pgvector extension enabled." \
-                || echo "pgvector not available in this image (non-fatal — memory plugins requiring vector will fail later if needed)."
+              if ! psql -v ON_ERROR_STOP=1 -h "$PG_HOST" -p "$PG_PORT" -U postgres -d "{{ $pgDb }}" \
+                -c "CREATE EXTENSION IF NOT EXISTS vector;"; then
+                echo "FATAL: could not enable pgvector (CREATE EXTENSION vector failed) on image {{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}. The embedded postgres must ship pgvector; see templates/postgresql-init-job.yaml." >&2
+                exit 1
+              fi
+              PGVECTOR_VERSION="$(psql -v ON_ERROR_STOP=1 -h "$PG_HOST" -p "$PG_PORT" -U postgres -d "{{ $pgDb }}" \
+                -tAc "SELECT extversion FROM pg_extension WHERE extname = 'vector';")"
+              if [ -z "$PGVECTOR_VERSION" ]; then
+                echo "FATAL: CREATE EXTENSION vector reported success but pg_extension has no vector row." >&2
+                exit 1
+              fi
+              echo "pgvector $PGVECTOR_VERSION enabled on {{ $pgDb }}."
               echo "PostgreSQL initialization complete."
           env:
             - name: POSTGRES_PASSWORD

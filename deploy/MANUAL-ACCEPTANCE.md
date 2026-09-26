@@ -101,6 +101,14 @@ path to a chat-capable state on a fresh cluster.
         -c "SELECT count(*) FROM session_postgres_v1_sessions;"
       ```
       Returns `count > 0`.
+- [ ] pgvector is enabled on the embedded postgres (the `pg-init` hook Job fails the
+      install if it is not, so this should never be empty — TASK-458):
+      ```bash
+      kubectl exec -n ax-next deploy/ax-next-host -- \
+        psql -U ax-next -d ax-next \
+        -tAc "SELECT extversion FROM pg_extension WHERE extname = 'vector';"
+      ```
+      Prints a version (0.8.0 on the default image), not an empty line.
 - [ ] A row landed in storage (audit log + chat-event log both write here):
       ```bash
       kubectl exec -n ax-next deploy/ax-next-host -- \

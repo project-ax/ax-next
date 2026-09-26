@@ -14,7 +14,7 @@
 // skipped in CI"). Local runs leave it unset and keep the friendly skip.
 
 /** Truthy-ish env values that opt into strict mode. `0`/`false`/`""`/unset = off. */
-function isStrictValue(raw: string | undefined): boolean {
+export function isStrictValue(raw: string | undefined): boolean {
   if (raw === undefined) return false;
   const v = raw.trim().toLowerCase();
   return v !== '' && v !== '0' && v !== 'false' && v !== 'no' && v !== 'off';

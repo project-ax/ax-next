@@ -280,6 +280,14 @@ jobs:
           # Flip the chart-render suites from "skip when helm absent" to
           # "fail when helm absent" — this lane exists to prove the guards run.
           AX_REQUIRE_HELM: '1'
+          # The pgvector bootstrap proof (pgvector-bootstrap.test.ts, TASK-458)
+          # runs the RENDERED pg-init Job script in the chart's postgres image,
+          # so it needs helm AND Docker — and this is the only lane with both.
+          # The suite never guesses a daemon (explicit DOCKER_HOST, same as the
+          # test job), and AX_REQUIRE_DOCKER makes an unusable one a failure
+          # rather than a skip, for the same reason AX_REQUIRE_HELM exists.
+          DOCKER_HOST: unix:///var/run/docker.sock
+          AX_REQUIRE_DOCKER: '1'
         run: pnpm --filter @ax/chart-tests test
 
   # Builds the container images so the Dockerfile pins are exercised on every
