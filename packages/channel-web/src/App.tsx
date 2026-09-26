@@ -49,7 +49,10 @@ import { LoginPage } from './components/LoginPage';
 import { WorkspaceShell } from './components/workspace/WorkspaceShell';
 import { fetchFeatures, DEFAULT_FEATURES, type Features } from './lib/features';
 import { focusSettingsOpenerWhenReady } from './lib/settings-return-focus';
-import { focusNewAgentOpenerWhenReady } from './lib/new-agent-return-focus';
+import {
+  focusNewAgentOpenerWhenReady,
+  focusNewAgentViewWhenReady,
+} from './lib/new-agent-return-focus';
 import { Sidebar } from './components/Sidebar';
 import { SessionHeader } from './components/SessionHeader';
 import { Thread } from './components/Thread';
@@ -311,15 +314,26 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
   // the explicit flow: Escape and the ✕ (the dialog's `onOpenChange`) and a
   // finished create (`FirstRunAutoCreate`'s `onDone`). First run never sets
   // `createAgentOpen`, so it arms nothing — nobody opened it from a control.
+  //
+  // TASK-533 — a finished create is not the same exit as the other two. By
+  // the time focus can land the screen shows the NEW agent, so focus goes into
+  // its conversation instead of back to the row. `onDone` records the id here
+  // before it closes the flow; Escape and ✕ leave it null.
   const createAgentWasOpen = useRef(false);
+  const createdAgentId = useRef<string | null>(null);
   useEffect(() => {
     if (createAgentOpen) {
       createAgentWasOpen.current = true;
+      createdAgentId.current = null;
       return;
     }
     if (!createAgentWasOpen.current) return;
     createAgentWasOpen.current = false;
-    return focusNewAgentOpenerWhenReady();
+    const created = createdAgentId.current;
+    createdAgentId.current = null;
+    return created !== null
+      ? focusNewAgentViewWhenReady(created)
+      : focusNewAgentOpenerWhenReady();
   }, [createAgentOpen]);
   // `bootstrapAgentName` holds the name the user enters in the NewAgentDialog
   // before the bootstrap starts. null = dialog not yet submitted.
@@ -442,6 +456,8 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
           // The workspace has its own send (`workspaceApi.sendMessage`), so
           // it gets handed the agent id and greets it there.
           onDone={(agentId) => {
+            // Before the close below, so the close effect sees it (TASK-533).
+            createdAgentId.current = agentId;
             setCreateAgentOpen(false);
             setBootstrapAgentName(null);
             if (rendersWorkspace) {

@@ -84,6 +84,7 @@ import {
 } from './ThreadFind';
 import { WorkspaceAttachmentChip } from './WorkspaceAttachmentChip';
 import { AttachmentChip } from '@/components/AttachmentChip';
+import { AGENT_CONVERSATION_ATTR } from '@/lib/new-agent-return-focus';
 
 /**
  * What this thread can honestly say about its approvals.
@@ -554,6 +555,9 @@ export function AgentConversation({
         tabIndex={-1}
         role="region"
         aria-label={`Conversation with ${agent.name}`}
+        // Where a finished create lands focus (TASK-533) — see
+        // `lib/new-agent-return-focus.ts`.
+        {...{ [AGENT_CONVERSATION_ATTR]: agent.id }}
         className="flex-1 overflow-y-auto px-6 py-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
         <div ref={contentRef} className="flex max-w-[720px] flex-col gap-5">
