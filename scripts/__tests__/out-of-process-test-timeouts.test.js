@@ -67,6 +67,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { scanHookTimeouts } from '../hook-timeout-scan.mjs';
+
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 /** Where publishable packages live. Each child dir is one package. */
@@ -126,161 +128,45 @@ const TEST_LEAVES_PROCESS =
   /^[ \t]*import[\s\S]{0,300}?from\s*'(?:node:)?child_process'|await import\('(?:node:)?child_process'\)|new\s+Stdio(?:Client|Server)Transport\s*\(/m;
 
 /**
- * A hook that declares its own timeout: `beforeAll(async () => { ... }, 60_000);`
+ * Hook timeouts are read by PARSING each source — `scanHookTimeouts` in
+ * `scripts/hook-timeout-scan.mjs`, shared with `scripts-suite-timeouts.test.js`.
+ * That file states, per failure mode, which direction each one fails in; read it
+ * before changing how hooks are found.
  *
- * Two things about this pattern, and the second one bit.
+ * This used to be a pair of regexes (`HOOK_WITH_TIMEOUT` for numeric literals,
+ * `UNREADABLE_HOOK_TIMEOUT` for named constants) that matched from a hook keyword
+ * lazily to the first line closing `}, <x>);`. Three lessons from their history
+ * still bind whatever finds hooks here, which is why they are kept:
  *
- * The body match is non-greedy, so in a file where a bare hook is followed by a
- * timed one this can attribute the timed hook's argument to the bare hook above
- * it. That IS harmless and is deliberately not worked around: the assertion
- * consumes the MAXIMUM over the package, and mis-attributing a value between two
- * hooks in the same package cannot change a maximum.
+ *   1. A MISSED hook LOWERS `maxDeclaredHookTimeout`, and a lower maximum makes
+ *      the `hookTimeout >= max` assertion pass a config that is too low. The
+ *      first draft anchored the closing brace at column 0, so every
+ *      describe-nested hook was invisible and the guard went green on
+ *      `packages/cli`'s `beforeAll(..., 120000)` against a 60_000 config — in
+ *      the PR that introduced it.
+ *   2. TASK-462: brace structure is not a regular language. Anything inside a
+ *      hook's body that closed the same way — a nested hook, or merely a
+ *      multi-line `setTimeout(() => { ... }, 50);` — ended the match early, so
+ *      the hook was credited with the INNER number and its own budget was never
+ *      seen. Same direction as (1): an under-read, reported as success. The
+ *      regex also could not see a single-line hook or a brace-less arrow body.
+ *   3. The same laziness ran the other way too, crediting a hook with the budget
+ *      of an `it(..., MS)` further down the file. That was tolerated because it
+ *      could only RAISE the maximum. MEASURED when the parser replaced it, over
+ *      the 35 in-scope packages: 0 parse errors, 0 unreadable budgets, 29 maxima
+ *      unchanged and 6 LOWER — `agent-claude-sdk-runner` and `agent-runner-core`
+ *      30_000 -> 0, `database-postgres` / `ipc-core` / `session-postgres`
+ *      15_000 -> 0, `workspace-git-server` 20_000 -> 0 — every one of them an
+ *      `it` budget that the regex had run past a hook to reach. None raised; no
+ *      config needed changing. An `it` budget is not a hook budget, so those
+ *      packages' bare hooks were never governed by it.
  *
- * It captures a NUMERIC literal only, on a multi-line hook body. Three other
- * spellings exist and are NOT read by this pattern:
- *
- *   1. a named constant — `}, TIMEOUT_MS)`. A live idiom elsewhere in this repo:
- *      `agent-runner-core` uses `REAL_GIT_TIMEOUT_MS`, `agent-claude-sdk-runner`
- *      uses `E2E_TIMEOUT_MS`.
- *   2. a single-line hook — `beforeAll(() => { ... }, 120000);` with no newline
- *      before the `}`.
- *   3. a brace-less arrow body — `beforeAll(() => setup(), 120000);`.
- *
- * `UNREADABLE_HOOK_TIMEOUT` below covers **(1) only**, and being precise about
- * that is the point: it shares this pattern's `\n\s*\}` prefix, so (2) and (3)
- * are matched by NEITHER regex and remain silent blind spots of exactly the kind
- * described next. They are stated here rather than implied away, the same way
- * `ITERATION_POLL` states its own gaps — an earlier draft of this comment
- * claimed all three were covered, which was wrong, and a confidently wrong
- * comment in a guard is the failure this whole file exists to make harder.
- * None of the three is used by a package in scope today.
- *
- * The closing brace is `\n\s*\}` — indentation-tolerant — and the leading `\s*`
- * is load-bearing. It was `\n\}` in this guard's first draft, which only matched
- * hooks whose closing brace sits at column 0, i.e. top-level ones. Every hook
- * nested inside a `describe(...)` block is indented and was therefore invisible,
- * and that is a categorically worse bug than mis-attribution: a MISSED hook
- * LOWERS `maxDeclaredHookTimeout`, so the guard cheerfully passes a config that
- * is too low. It did exactly that on `packages/cli`, whose describe-nested
- * `beforeAll(..., 120000)` in `e2e.test.ts` went unseen while the config sat at
- * 60_000 — the guard was green on the very violation it exists to catch, in the
- * PR that introduced it. If you touch this regex, re-check it against a
- * describe-nested hook first.
- *
- * NOTE this scan reads SOURCES, where a match inside a comment inflates the
- * maximum and so reddens loudly — fail-CLOSED, and documented rather than
- * guarded. The CONFIG side used to be scanned the same way and failed in the
- * OPPOSITE direction; see `readResolvedTestBudgets` for what replaced it.
+ * A timeout argument the parser cannot evaluate (an imported name, `2 * 60_000`)
+ * lands in `unreadable` and is REPORTED, never counted as zero. A name declared
+ * as a numeric literal anywhere in the same file resolves, and a name declared
+ * twice resolves to the LARGER value — TASK-410 found last-write-wins made the
+ * verdict turn on declaration order, and one of the two orders under-read.
  */
-const HOOK_WITH_TIMEOUT =
-  /\b(?:beforeAll|afterAll|beforeEach|afterEach)\s*\([\s\S]*?\n\s*\}\s*,\s*(\d[\d_]*)\s*\)\s*;/g;
-
-/**
- * A hook that declares a timeout this file CANNOT evaluate — a named constant
- * rather than a numeric literal (`}, TIMEOUT_MS)`).
- *
- * This exists because of how this guard's first version failed. It could not see
- * describe-nested hooks, and a hook it cannot see contributes 0 to the package
- * maximum, so the guard PASSES a config that is too low — it went green on
- * `packages/cli`, the exact violation it was written to catch. Every remaining
- * blind spot fails the same way. So where this shape is recognisable, the guard
- * fails loudly and asks to be extended rather than quietly reading the budget as
- * absent. Fail closed: a guard that under-reports is worse than no guard,
- * because it also reports success.
- *
- * Scope, precisely: this covers the NAMED-CONSTANT spelling on a multi-line hook
- * body. Single-line hooks and brace-less arrows are NOT covered — see
- * HOOK_WITH_TIMEOUT above — so for those two shapes this assertion is green
- * either way and buys nothing. Closing them means dropping the `\n` anchor,
- * which widens the false-positive surface described next; that trade wasn't
- * worth making for shapes no package in scope uses.
- *
- * Known false positive: the `[\s\S]*?` is not anchored to the hook's own call,
- * so a match can start at a hook keyword and run PAST it to a later
- * `\n}, <identifier>);` — an unrelated two-argument call, or an `it(..., MS)`
- * further down the file, reads as an unreadable hook timeout. TASK-400 met both
- * instances the moment the scope widened past containers:
- * `agent-runner-core/src/__tests__/git-workspace.test.ts` and
- * `agent-claude-sdk-runner/src/__tests__/flush-workspace-host.e2e.test.ts` spell
- * 44 and 4 **`it`** budgets `}, REAL_GIT_TIMEOUT_MS)` / `}, E2E_TIMEOUT_MS)`,
- * and this pattern attributed them to a hook above. That is why the fix was
- * NAMED_NUMERIC_CONST rather than an exemption: both names resolve to 30_000 in
- * their own file, so folding them into the package maximum costs nothing and is
- * conservative in the fail-CLOSED direction even when the attribution is wrong.
- * That direction is now PINNED rather than merely argued — see "folds a
- * MISATTRIBUTED `it` budget into the maximum" below, which exists so that an
- * edit turning this tolerance into an under-read reddens.
- * If this list ever reddens again, check the captured identifier really IS a
- * hook's timeout before believing the message — and fix the regex, never the
- * config.
- */
-const UNREADABLE_HOOK_TIMEOUT =
-  /\b(?:beforeAll|afterAll|beforeEach|afterEach)\s*\([\s\S]*?\n\s*\}\s*,\s*([A-Za-z_$][\w$]*)\s*\)\s*;/g;
-
-/**
- * A file-local numeric constant: `const REAL_GIT_TIMEOUT_MS = 30_000;`
- *
- * This is what lets a named-constant budget be READ instead of merely reported
- * as unreadable. The guard's standing instruction when it meets a spelling it
- * cannot parse is "teach the scanner the spelling — do not relax the assertion,
- * and do not lower the config to match", and this is that, for the one spelling
- * that actually occurs.
- *
- * Deliberately shallow: same file, top-level-ish (`^[ \t]*`), numeric literal
- * only. It does NOT follow an import, an arithmetic expression (`30 * 1000`) or
- * a constant declared in a helper module. Those stay in the unreadable list,
- * which is the fail-closed side — an unresolved name is reported, never silently
- * counted as zero.
- *
- * "Top-level-ish" is the part that needs care: the `[ \t]*` tolerance means this
- * also matches a const declared inside a `describe`, so one name can be declared
- * twice in a file with two different values. `numericConsts` resolves that to the
- * LARGER value — see its comment for why last-write-wins was fail-open here.
- */
-const NAMED_NUMERIC_CONST =
-  /^[ \t]*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::\s*number\s*)?=\s*(\d[\d_]*)\s*;/gm;
-
-/**
- * `name -> milliseconds` for every file-local numeric constant in `text`.
- *
- * A repeated name resolves to the LARGEST value declared, not the last one.
- * That is a safety property, not a tidy-up, and it is the only place in this
- * file where the source scan had a genuine fail-OPEN direction.
- *
- * `NAMED_NUMERIC_CONST`'s `^[ \t]*` anchor is indentation-tolerant on purpose —
- * it has to be, to reach a const declared inside a `describe` block — so a
- * shadowing declaration matches just as readily as the top-level one. With
- * last-write-wins, a file spelling
- *
- *     const TIMEOUT_MS = 120_000;            // the beforeAll's budget
- *     describe(..., () => { const TIMEOUT_MS = 5_000; ... });
- *
- * reported its package maximum as **5_000**. `maxDeclaredHookTimeout` would then
- * sit below what a hook in that package actually declares, and the
- * `hookTimeout >= max` assertion passes a config that is far too low — the
- * `packages/cli` shape again, green on the violation it exists to catch.
- * Reversing the two declarations reported 120_000, so the guard's verdict turned
- * on nothing but declaration order.
- *
- * Taking the maximum makes the resolution order-independent and monotone upward,
- * which is the direction this file is already committed to everywhere else: an
- * over-read reddens loudly (see the note on `HOOK_WITH_TIMEOUT`), an under-read
- * reports success. MEASURED at the commit that made this change: it moves **0 of
- * 32** in-scope package maxima — three files do repeat a name with differing
- * values (`N` in `conversations/…/events-store.test.ts`, `cap` in
- * `ipc-core/…/body.test.ts`) but none of those names is spelled as a timeout, so
- * nothing resolves through them today. The fix is for the edit that comes later.
- */
-function numericConsts(text) {
-  const out = new Map();
-  for (const m of text.matchAll(NAMED_NUMERIC_CONST)) {
-    const name = m[1];
-    const ms = Number(m[2].replace(/_/g, ''));
-    const seen = out.get(name);
-    out.set(name, seen === undefined ? ms : Math.max(seen, ms));
-  }
-  return out;
-}
 
 /**
  * A poll loop with an ITERATION budget instead of a wall-clock one:
@@ -364,20 +250,13 @@ function outOfProcessPackages(repoRoot) {
     let maxDeclaredHookTimeout = 0;
     const unreadable = [];
     for (const f of files) {
-      const text = readFileSync(f, 'utf8');
-      for (const m of text.matchAll(HOOK_WITH_TIMEOUT)) {
-        maxDeclaredHookTimeout = Math.max(maxDeclaredHookTimeout, Number(m[1].replace(/_/g, '')));
-      }
-      let consts;
-      for (const m of text.matchAll(UNREADABLE_HOOK_TIMEOUT)) {
-        consts ??= numericConsts(text);
-        const value = consts.get(m[1]);
-        // Resolved names fold into the maximum (conservative: see the note on
-        // UNREADABLE_HOOK_TIMEOUT's false positive). Unresolved ones are
-        // reported rather than counted as zero.
-        if (value === undefined) unreadable.push({ file: f, name: m[1] });
-        else maxDeclaredHookTimeout = Math.max(maxDeclaredHookTimeout, value);
-      }
+      const scan = scanHookTimeouts(readFileSync(f, 'utf8'), f);
+      for (const d of scan.declared) maxDeclaredHookTimeout = Math.max(maxDeclaredHookTimeout, d.ms);
+      // Reported, never counted as zero — see the note above `outOfProcessPackages`.
+      for (const u of scan.unreadable) unreadable.push({ file: f, line: u.line, name: u.expr, why: 'expr' });
+      // A file that does not parse cleanly cannot be trusted to have shown us
+      // every hook, so it is unreadable as a whole. Fail closed.
+      for (const e of scan.parseErrors) unreadable.push({ file: f, line: e.line, name: e.message, why: 'parse' });
     }
     out.push({ ...pkg, files, reason: reasons.join(' + '), maxDeclaredHookTimeout, unreadable });
   }
@@ -526,23 +405,21 @@ describe('packages that leave the process declare their own timeouts (TASK-323, 
   });
 
   it('no package in scope declares a hook timeout this guard cannot read', () => {
-    // Fail closed. See UNREADABLE_HOOK_TIMEOUT: a budget this file cannot parse
-    // is counted as absent, which lowers the package maximum and makes the
-    // assertion below pass a config that is too low. Covers the named-constant
-    // spelling only — single-line hooks and brace-less arrows are documented,
-    // uncovered gaps, not silent ones.
+    // Fail closed. A budget this guard cannot evaluate would otherwise count as
+    // absent, which lowers the package maximum and makes the assertion below
+    // pass a config that is too low. Two things land here: a hook timeout that
+    // is neither a numeric literal nor a same-file numeric const, and a source
+    // file that does not parse cleanly (it cannot be trusted to have shown us
+    // every hook).
     //
-    // If this reddens: first check the captured identifier really IS a hook's
-    // timeout (the regex can escape past a hook into an unrelated two-argument
-    // call). If it is, teach the scanner the new spelling — do not relax this
-    // assertion, and do not lower the config to match. NAMED_NUMERIC_CONST is
-    // the last such extension: a `const X = 30_000` in the same file now
-    // resolves, so only names that resolve NOWHERE reach this list.
+    // If this reddens: teach `scripts/hook-timeout-scan.mjs` the new spelling —
+    // do not relax this assertion, and do not lower the config to match.
     const unreadable = packages.flatMap((pkg) =>
-      pkg.unreadable.map(
-        (u) =>
-          `${relative(REPO_ROOT, u.file)}: hook timeout \`${u.name}\` is not a numeric literal ` +
-          'and is not a file-local numeric const',
+      pkg.unreadable.map((u) =>
+        u.why === 'parse'
+          ? `${relative(REPO_ROOT, u.file)}:${u.line}: does not parse (${u.name}) — its hooks cannot be read`
+          : `${relative(REPO_ROOT, u.file)}:${u.line}: hook timeout \`${u.name}\` is not a numeric literal ` +
+            'and is not a file-local numeric const',
       ),
     );
     expect(unreadable).toEqual([]);
@@ -714,7 +591,7 @@ describe('the scan catches a NEW package, and the config read is a read (TASK-40
   it('resolves a hook timeout spelled as a file-local const, and folds it into the maximum', () => {
     // The real instance: `agent-runner-core` spells 44 budgets
     // `}, REAL_GIT_TIMEOUT_MS)` against `const REAL_GIT_TIMEOUT_MS = 30_000`.
-    // Before NAMED_NUMERIC_CONST that landed in the unreadable list and the
+    // Before same-file consts resolved, that landed in the unreadable list and the
     // package maximum stayed 0 — the fail-closed direction, but noisy enough
     // that the tempting "fix" is an exemption.
     makePackage('named-const', {
@@ -755,29 +632,22 @@ describe('the scan catches a NEW package, and the config read is a read (TASK-40
     expect(pkg.maxDeclaredHookTimeout).toBe(0);
   });
 
-  it('folds a MISATTRIBUTED `it` budget into the maximum — the safe direction, pinned', () => {
-    // UNREADABLE_HOOK_TIMEOUT's `[\s\S]*?` is not anchored to its own hook, so a
-    // BARE hook followed by `it(..., NAMED_MS)` captures the `it`'s budget and
-    // credits it to the hook. That is a real misattribution and it is deliberately
-    // not worked around — but "deliberately" was only ever a comment. This asserts
-    // it, because the reason it is tolerable is a DIRECTION: the wrong value can
-    // only RAISE `maxDeclaredHookTimeout`, and a higher maximum makes the
-    // `hookTimeout >= max` assertion harder to satisfy, never easier.
+  it('does NOT credit a hook with an `it` budget below it — and still reads the hook that has one', () => {
+    // This test used to be "folds a MISATTRIBUTED `it` budget into the maximum —
+    // the safe direction, pinned". The regex scanner ran lazily from a BARE hook
+    // past its end to an `it(..., NAMED_MS)` and credited the hook with the
+    // `it`'s budget; that was tolerated because it could only raise the maximum,
+    // and the old comment said that if someone anchored the scan to the hook's
+    // own call this fixture would drop 90_000 -> 0 and the test should be
+    // REWRITTEN rather than restored. TASK-462 did that anchoring (by parsing),
+    // so this is the rewrite.
     //
-    // Against the unfixed code this test passes — that is the point. It is not
-    // here to catch a bug; it is here so that an edit which makes the
-    // misattribution LOWER the maximum (an "exemption" for `it`, a first-wins
-    // resolver, a narrower fold) reddens instead of quietly opening the guard.
-    //
-    // Be clear about its breadth, because it is wider than that sentence: ANY
-    // change to the attribution reddens this, including a legitimate one. If
-    // someone correctly anchors UNREADABLE_HOOK_TIMEOUT to its own hook so `it`
-    // budgets stop being folded in at all, this fixture drops 90_000 -> 0 and
-    // fails — and that would be a GOOD change. So this is a tripwire, not a
-    // verdict: when it reddens, decide which direction the edit moved the
-    // maximum. Down-and-silent is the bug; down-because-the-fold-was-removed is
-    // the fix, and then this test should be rewritten rather than restored.
-    makePackage('it-budget-misattributed', {
+    // What makes the drop safe rather than fail-open: an `it`'s budget governs
+    // that test, not any hook, so the bare `beforeAll` here really is governed
+    // by the config's `hookTimeout` and nothing in this file asks for more. The
+    // second half is what keeps this from being satisfied by a scanner that
+    // simply reads nothing: the timed `afterAll` AFTER the `it` must still count.
+    makePackage('it-budget-not-a-hook-budget', {
       testSource: [
         "import { spawn } from 'node:child_process';",
         'const E2E_TIMEOUT_MS = 90_000;',
@@ -788,20 +658,52 @@ describe('the scan catches a NEW package, and the config read is a read (TASK-40
         '  it("slow", async () => {',
         '    await go();',
         '  }, E2E_TIMEOUT_MS);',
+        '  afterAll(async () => { await stop(); }, 40_000);',
         '});',
       ].join('\n'),
       config: "export default { test: { include: ['src/**/*.test.ts'] } };",
     });
-    const pkg = outOfProcessPackages(root).find((p) => p.name === 'packages/it-budget-misattributed');
+    const pkg = outOfProcessPackages(root).find((p) => p.name === 'packages/it-budget-not-a-hook-budget');
     expect(pkg.unreadable).toEqual([]);
-    expect(pkg.maxDeclaredHookTimeout).toBe(90_000);
+    expect(pkg.maxDeclaredHookTimeout).toBe(40_000);
+  });
+
+  it('reads the shapes the regex never could: a single-line hook and a brace-less arrow', () => {
+    // Both were documented, uncovered, fail-OPEN gaps of the regex scanner
+    // (its `\n\s*\}` anchor needs a newline before the closing brace).
+    makePackage('one-liners', {
+      testSource: [
+        "import { spawn } from 'node:child_process';",
+        'beforeAll(() => { warm(); }, 70_000);',
+        'afterAll(() => stop(), 80_000);',
+      ].join('\n'),
+      config: "export default { test: { include: ['src/**/*.test.ts'] } };",
+    });
+    const pkg = outOfProcessPackages(root).find((p) => p.name === 'packages/one-liners');
+    expect(pkg.maxDeclaredHookTimeout).toBe(80_000);
+  });
+
+  it('reports a source that does not parse, rather than trusting the hooks it could see', () => {
+    // A syntax error can hide a hook from any scanner. Fail closed: the file is
+    // unreadable as a whole, even though one hook in it was read.
+    makePackage('broken-source', {
+      testSource: [
+        "import { spawn } from 'node:child_process';",
+        'beforeAll(async () => {',
+        '  await warm(;',
+        '}, 120_000);',
+      ].join('\n'),
+      config: "export default { test: { include: ['src/**/*.test.ts'] } };",
+    });
+    const pkg = outOfProcessPackages(root).find((p) => p.name === 'packages/broken-source');
+    expect(pkg.unreadable.map((u) => u.why)).toContain('parse');
   });
 
   it('resolves a SHADOWED constant to the larger value, whichever order it is declared in', () => {
     // The half that was NOT fail-closed, and the mutation that proves it.
     //
-    // `numericConsts` built its map with `out.set(name, value)` — last-write-wins.
-    // NAMED_NUMERIC_CONST's `^[ \t]*` anchor is indentation-tolerant, so a nested
+    // The regex-era `numericConsts` built its map with `out.set(name, value)` —
+    // last-write-wins — and its indentation-tolerant `^[ \t]*` anchor let a nested
     // `const TIMEOUT_MS = 5_000` inside a describe block overwrites a top-level
     // `const TIMEOUT_MS = 120_000`. MEASURED against the unfixed resolver: the two
     // fixtures below are the same two declarations in opposite orders and reported
@@ -846,6 +748,76 @@ describe('the scan catches a NEW package, and the config read is a read (TASK-40
 
     expect(bigFirstMax).toBe(smallFirstMax);
     expect(bigFirstMax).toBe(120_000);
+  });
+
+  // TASK-462. The three shapes below are the ones a brace-matching regex cannot
+  // read, and every one of them failed OPEN: the regex's lazy `[\s\S]*?\n\s*\}`
+  // stops at the FIRST `\n  }, <x>);` after a hook keyword, so anything inside
+  // the hook's body that closes the same way hands the hook the wrong number and
+  // swallows the real one. MEASURED against the regex scanner at `be8fc794`:
+  // `nested-hook` read 30_000, `timer-in-hook` read 50, and `nested-unresolved`
+  // reported NOTHING unreadable — all three against a true outer budget the
+  // guard never saw.
+  it('reads the OUTER budget when a hook is registered inside another hook', () => {
+    makePackage('nested-hook', {
+      testSource: [
+        "import { spawn } from 'node:child_process';",
+        'describe("x", () => {',
+        '  beforeAll(async () => {',
+        '    beforeEach(async () => {',
+        '      await reset();',
+        '    }, 30_000);',
+        '    await warm();',
+        '  }, 120_000);',
+        '});',
+      ].join('\n'),
+      config: "export default { test: { include: ['src/**/*.test.ts'] } };",
+    });
+    const pkg = outOfProcessPackages(root).find((p) => p.name === 'packages/nested-hook');
+    expect(pkg.unreadable).toEqual([]);
+    expect(pkg.maxDeclaredHookTimeout).toBe(120_000);
+  });
+
+  it('is not fooled by a NON-hook call inside the body that closes the same way', () => {
+    // The shape that needs no questionable vitest at all: any
+    // `setTimeout(() => {\n ... \n}, 50);` statement inside a hook body.
+    makePackage('timer-in-hook', {
+      testSource: [
+        "import { spawn } from 'node:child_process';",
+        'beforeAll(async () => {',
+        '  const t = setTimeout(() => {',
+        '    warn();',
+        '  }, 50);',
+        '  await warm();',
+        '  clearTimeout(t);',
+        '}, 120_000);',
+      ].join('\n'),
+      config: "export default { test: { include: ['src/**/*.test.ts'] } };",
+    });
+    const pkg = outOfProcessPackages(root).find((p) => p.name === 'packages/timer-in-hook');
+    expect(pkg.maxDeclaredHookTimeout).toBe(120_000);
+  });
+
+  it('reports an unresolvable OUTER budget even when an inner hook resolves', () => {
+    // The unreadable list's half of the same defect: the inner hook's resolvable
+    // `INNER_MS` is consumed, and the outer `}, OUTER_MS)` — imported, so it
+    // cannot be resolved — is never reported. Fail-closed means it is.
+    makePackage('nested-unresolved', {
+      testSource: [
+        "import { spawn } from 'node:child_process';",
+        "import { OUTER_MS } from '../budgets.js';",
+        'const INNER_MS = 30_000;',
+        'beforeAll(async () => {',
+        '  afterEach(async () => {',
+        '    await reset();',
+        '  }, INNER_MS);',
+        '}, OUTER_MS);',
+      ].join('\n'),
+      config: "export default { test: { include: ['src/**/*.test.ts'] } };",
+    });
+    const pkg = outOfProcessPackages(root).find((p) => p.name === 'packages/nested-unresolved');
+    expect(pkg.unreadable.map((u) => u.name)).toEqual(['OUTER_MS']);
+    expect(pkg.maxDeclaredHookTimeout).toBe(30_000);
   });
 
   // Bare, like the setup hook, and for the same reason: what the suite's
