@@ -326,6 +326,12 @@ function bootHandler(opts: BootOpts = {}) {
   };
 }
 
+function dataFrames(writes: string[]): Array<Record<string, unknown>> {
+  return writes
+    .filter((w) => w.startsWith('data: '))
+    .map((w) => JSON.parse(w.slice(6)) as Record<string, unknown>);
+}
+
 function ctxWithConversation(ctx: AgentContext, conversationId: string): AgentContext {
   // makeAgentContext spreads conversationId only when defined; reuse to
   // produce a context the turn-end subscriber will match.
@@ -529,6 +535,72 @@ describe('@ax/channel-web SSE handler', () => {
       // No done frame.
       const frames = captured.streamWrites.filter((s) => s.startsWith('data:'));
       expect(frames).toEqual([]);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  // TASK-569 — approve while the held reply is still streaming. The approve
+  // binds a NEW reqId (the continuation) on the SAME conversation while the
+  // held turn is still in flight under its own reqId. The held turn's
+  // turn-end then lands on a conversation whose open stream is the
+  // continuation's — and must not close it, or the continuation never renders.
+  it('turn-end for a DIFFERENT reqId on the SAME conversation does not close us (held turn ending under an open continuation stream)', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const { res, captured } = fakeRes();
+      // The continuation stream the client attached to after approving.
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+
+      // The held turn ends — same conversation, its own reqId. The runner
+      // stamps the inbox entry's reqId onto both turn-ends it emits.
+      const sameConversation = ctxWithConversation(initCtx, 'cnv_test');
+      await bus.fire('chat:turn-end', sameConversation, {
+        reqId: 'r-held',
+        reason: 'user-message-wait',
+        role: 'tool',
+      });
+      await bus.fire('chat:turn-end', sameConversation, {
+        reqId: 'r-held',
+        reason: 'user-message-wait',
+        role: 'assistant',
+      });
+      expect(captured.streamClosed).toBe(false);
+      expect(dataFrames(captured.streamWrites).some((f) => f.done === true)).toBe(false);
+
+      // The continuation now streams live on the still-open connection…
+      await bus.fire<StreamChunk>('chat:stream-chunk', initCtx, {
+        reqId: 'r-test',
+        text: 'continuation',
+        kind: 'text',
+      });
+      // …and closes on ITS OWN turn-end.
+      await bus.fire('chat:turn-end', sameConversation, {
+        reqId: 'r-test',
+        reason: 'user-message-wait',
+      });
+
+      const frames = dataFrames(captured.streamWrites);
+      expect(frames.map((f) => f.text).filter((t) => t !== undefined)).toEqual(['continuation']);
+      expect(frames[frames.length - 1]).toEqual({ reqId: 'r-test', done: true });
+      expect(captured.streamClosed).toBe(true);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('turn-end with NO reqId on the same conversation still closes us (a producer that names no turn keeps the old conversation match)', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+
+      await bus.fire('chat:turn-end', ctxWithConversation(initCtx, 'cnv_test'), {
+        reason: 'complete',
+      });
+
+      expect(dataFrames(captured.streamWrites).at(-1)).toEqual({ reqId: 'r-test', done: true });
+      expect(captured.streamClosed).toBe(true);
     } finally {
       buffer.dispose();
     }

@@ -29,7 +29,8 @@ import type { PermissionRequest, PhaseEvent, SseFrame, StreamChunk } from './typ
 //   4. Open the stream, replay the buffer's current chunks for this
 //      reqId, then attach BOTH a `chat:stream-chunk` subscriber (filtered
 //      by reqId) AND a `chat:turn-end` subscriber (filtered by
-//      conversationId). The chunk subscriber emits one `data:` frame
+//      conversationId, and by the payload's reqId when it names one —
+//      TASK-569). The chunk subscriber emits one `data:` frame
 //      per chunk; the turn-end subscriber emits a final `done: true`
 //      and closes.
 //
@@ -467,11 +468,27 @@ export function createSseHandler(deps: SseHandlerDeps) {
 
     // 4c) Attach the turn-end subscriber. Filter by ctx.conversationId
     // so a turn-end on a different conversation doesn't close us out.
+    //
+    // AND by the payload's reqId whenever it names one (TASK-569). The ctx
+    // reqId is useless here — the IPC listener restamps it per request — but
+    // the runner stamps the inbox entry's reqId onto every turn-end it emits,
+    // and that IS this connection's key. Two turns can overlap on one
+    // conversation: approving a hold while the held reply is still streaming
+    // binds the continuation's reqId (this stream) while the held turn is
+    // still running under its own. Matching on conversation alone let the
+    // HELD turn's turn-end close the continuation's stream ~1s in, and the
+    // continuation never rendered until the next send. A turn-end that names
+    // no reqId (a turn run dark, with no stream to address) keeps the old
+    // conversation-only match, so nothing that used to close us now hangs.
     deps.bus.subscribe<{ reqId?: string; reason?: string }>(
       'chat:turn-end',
       turnEndSubKey,
-      async (ctx, _payload) => {
+      async (ctx, payload) => {
         if (ctx.conversationId !== conversationId) return undefined;
+        const endedReqId = payload?.reqId;
+        if (typeof endedReqId === 'string' && endedReqId.length > 0 && endedReqId !== reqId) {
+          return undefined;
+        }
         // Emit the done frame, evict the buffer (this turn is over),
         // then close. The eviction here is the success path; the TTL
         // sweep in chunk-buffer is the fallback for browsers that
