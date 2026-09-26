@@ -133,8 +133,22 @@ export function ApprovalCard({
     assistive tech does not reliably announce. `ConsentAnnouncement` carries
     the rest of the argument, including why it stays quiet on mount for the
     settled receipts `InThreadApprovals` draws above the composer.
+
+    THE OPEN BRANCH SPEAKS HERE TOO (TASK-473). Its stale reason and its
+    notice are plain paragraphs below, not `Alert`s, so nothing else on this
+    card says them when they appear without a click — a queue read bringing
+    back `stale`, say. Built notice-first, the order `answerKey` uses; the
+    stale sentence is the paragraph's own words, joined the way it draws them.
   */
-  const announcement = <ConsentAnnouncement outcome={outcome} notice={notice} />;
+  const openNote =
+    notice !== null
+      ? notice
+      : stale && d.staleReason
+        ? `${DECISION_STALE_LEAD} ${d.staleReason} ${DECISION_STALE_ADVICE}`
+        : null;
+  const announcement = (
+    <ConsentAnnouncement outcome={outcome} notice={notice} openNote={openNote} />
+  );
 
   if (outcome !== null) {
     const undoLeft = undoSecondsLeft(d, now);
@@ -251,10 +265,11 @@ export function ApprovalCard({
             A FOCUS TARGET, because this is an ANSWER (TASK-427). Approving a row
             the guard trips re-opens it rather than resolving it, so there is no
             receipt to land on and the controls the person was standing in are
-            still here — just re-worded. Focusing it is also what gets it read
-            out: unlike the queue row's version this is a plain paragraph rather
-            than an `Alert`, matching the compact in-thread treatment the rest of
-            this card uses, so nothing announces it on its own.
+            still here — just re-worded. Unlike the queue row's version this is
+            a plain paragraph rather than an `Alert`, matching the compact
+            in-thread treatment the rest of this card uses, so it is not a live
+            region itself: `openNote` above is what reads it out when it
+            appears (TASK-473), click or no click.
           */}
           {stale && d.staleReason && (
             <p

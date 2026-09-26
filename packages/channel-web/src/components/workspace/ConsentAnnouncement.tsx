@@ -63,19 +63,34 @@
  * without making the announcement conditional on a focus move that may not have
  * carried the words anyway (see the `outcome.note` hole above).
  *
- * THE OPEN BRANCH IS DELIBERATELY SILENT HERE, and the two renderers reach that
- * silence by different roads — worth saying, because one of them is weaker.
- * `DecisionRow` draws a tripped freshness guard and a failed-POST notice inside
- * shadcn's `Alert`, which is already `role="alert"`; repeating those would be
- * two voices for one sentence. `ApprovalCard` draws the same two as plain
- * paragraphs and leans entirely on the TASK-427 focus landing, which only fires
- * for the person's own click. A card that ARRIVES stale on a passive load —
- * rare, not never, by its own note — therefore says nothing. That gap predates
- * this component and is left where it is rather than widened into the branch
- * this card is scoped to; it is filed as a follow-up.
+ * The same trade holds on `ApprovalCard`'s OPEN branch since TASK-473: press
+ * "Move it" on a row whose guard trips and focus lands on the stale paragraph
+ * while this region says the same sentence. Twice on a click, once with no
+ * click, never zero — do not "optimise" the click path back to silence here.
+ *
+ * THE OPEN BRANCH IS PER-RENDERER (TASK-473), because the two renderers do not
+ * start from the same place. `DecisionRow` draws a tripped freshness guard and
+ * a failed-POST notice inside shadcn's `Alert`, which is already
+ * `role="alert"`; saying those here too would be two voices for one sentence.
+ * `ApprovalCard` draws the same two as plain paragraphs, and its only voice
+ * used to be the TASK-427 focus landing — which fires for the person's own
+ * click and nobody else's. A card that went stale while it sat there (another
+ * tab answered it, a queue read brought the new status back) said nothing.
+ *
+ * So each renderer hands this `openNote`: the sentence its open branch has
+ * that nothing else on the card voices. `ApprovalCard` passes it; `DecisionRow`
+ * passes `null`, on purpose. The shared half still owns the MECHANISM — the
+ * already-mounted region, the silent mount — and only the renderer knows
+ * whether it already has a voice.
+ *
+ * The mount rule does not bend for this. A card that MOUNTS already stale (a
+ * page load) says nothing here: a region created holding its sentence is the
+ * shape this component exists to avoid, and the arrival of a hold is already
+ * spoken, politely, by the surface that draws it (`InThreadApprovals`). Only a
+ * card that CHANGES to stale, or picks up a notice, while on screen is news.
  *
  * ONE REGION PER CARD, not one per surface, and that is the opposite of where
- * `TodayView` keeps the FOCUS region (`data-consent-region`, which has to
+ * a surface such as `TodayView` keeps the FOCUS region (`data-consent-region`, which has to
  * outlive the row that is disappearing). A region that only has to survive a
  * card's own open-to-resolved swap has no such requirement, and keeping it
  * local is what lets both renderers share one component instead of asking
@@ -95,16 +110,17 @@ import type { DecisionOutcome } from './decision-copy';
  * already resolved, so the receipt beside it is unchanged and stale news, and
  * the freshest thing the card has to say wins.
  *
- * The match stops there, deliberately. `answerKey` puts a notice first
- * UNCONDITIONALLY, because focus must land on one wherever it appears; this
- * returns `null` for an open row whatever its notice says, because that branch
- * has its own voice (see the header). Same order, narrower scope.
+ * An OPEN row says whatever its renderer handed over as `openNote`, and
+ * nothing when that is `null` — the renderer either has nothing to add or
+ * already voices it (see the header). The renderer builds `openNote` in the
+ * same notice-first order `answerKey` uses, so the precedence still matches.
  */
 function announcedAnswer(
   outcome: DecisionOutcome | null,
   notice: string | null,
+  openNote: string | null,
 ): string | null {
-  if (outcome === null) return null;
+  if (outcome === null) return openNote;
   if (notice !== null) return notice;
   return outcome.note === null ? outcome.line : `${outcome.line} ${outcome.note}`;
 }
@@ -114,10 +130,17 @@ interface Props {
   outcome: DecisionOutcome | null;
   /** What the last action came back with, when it was not what was asked for. */
   notice: string | null;
+  /**
+   * What the OPEN card says that nothing else on it voices, or `null`
+   * (TASK-473). Required, not defaulted, so each renderer states its answer:
+   * `null` from a renderer that already announces its open branch is a
+   * decision, and an omitted prop would look like one without being one.
+   */
+  openNote: string | null;
 }
 
-export function ConsentAnnouncement({ outcome, notice }: Props) {
-  const say = announcedAnswer(outcome, notice);
+export function ConsentAnnouncement({ outcome, notice, openNote }: Props) {
+  const say = announcedAnswer(outcome, notice, openNote);
   /*
     React's own "adjust state when a prop changes" pattern, and a ref would be
     wrong here: the comparison has to survive a double render (and a rendered

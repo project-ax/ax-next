@@ -189,8 +189,9 @@ export function InThreadApprovals() {
         mattered. A live region and a ticking countdown must not share a node.
 
         So this holds one stable sentence that changes only when the answer to
-        "is something waiting" changes, and the cards below are announced by
-        nothing.
+        "is something waiting" changes. What each card below then says back —
+        an answer, a notice, a guard that tripped — is that card's own
+        `ConsentAnnouncement`, so do not add card announcements here.
       */}
       <span className="sr-only" role="status" aria-live="polite">
         {next !== null ? 'Your agent is waiting for your approval.' : ''}
