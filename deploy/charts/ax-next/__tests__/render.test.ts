@@ -13,7 +13,7 @@
 // the StatefulSet, when `gitServer.enabled=true`.
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1672,4 +1672,103 @@ describeIfHelm('ax-next chart: a quoted boolean cannot flip a gate (TASK-504)', 
       },
     );
   }
+
+  // ── The enforcement-gate exception (TASK-516) ─────────────────────────────
+  // `ax-next.bool` resolves any unrecognised string to OFF. For the capability
+  // gates that is the closed direction. For these two it is the OPEN one: off
+  // means no NetworkPolicies / no TLS block. Before the helper, the same garbage
+  // string was truthy and happened to enforce. The render still moves toward
+  // off here, as it does on every gate; what inverts is the SAFETY of off, so
+  // on these two gates garbage input went from enforced to open, and only the
+  // schema stands in the way. Pinned here so the helper comment's claim is a tested fact, and so a
+  // future "never open" rewrite of it has something to contradict it.
+  const ENFORCEMENT_GATES = ['networkPolicies.enabled', 'ingress.tls'] as const;
+
+  it.each(ENFORCEMENT_GATES)(
+    'schema-less: an unrecognised string for %s renders the gate OFF (the open posture)',
+    (path) => {
+      const garbage = renderNoSchema(['--set-string', `${path}=maybe`]);
+      const off = renderNoSchema(['--set', `${path}=false`]);
+      const on = renderNoSchema(['--set', `${path}=true`]);
+      expect(garbage.status).toBe(0);
+      // Non-vacuity: the gate must actually change the render, or "garbage
+      // equals off" would hold for a gate that does nothing.
+      expect(on.stdout, `${path} does not change the render at all`).not.toBe(off.stdout);
+      expect(garbage.stdout, `${path}="maybe" no longer renders as off`).toBe(off.stdout);
+    },
+  );
+
+  it('schema-less: networkPolicies.enabled="maybe" drops the enforcing NetworkPolicies', () => {
+    const count = (args: readonly string[]): number =>
+      (loadAll(renderNoSchema(args).stdout) as Array<K8sDoc | null>).filter(
+        (d) => d?.kind === 'NetworkPolicy',
+      ).length;
+    const enforced = count(['--set', 'networkPolicies.enabled=true']);
+    const garbage = count(['--set-string', 'networkPolicies.enabled=maybe']);
+    expect(garbage).toBeLessThan(enforced);
+  });
+
+  it.each(ENFORCEMENT_GATES)(
+    'the real chart REJECTS an unrecognised string for %s (the actual defence)',
+    (path) => {
+      const r = helmTemplateExpectFailure([
+        ...QUOTED_BOOL_CONTEXT,
+        '--set-string', `${path}=maybe`,
+      ]);
+      expect(r.status, `helm rendered ${path}="maybe" instead of refusing it`).not.toBe(0);
+      const dotted = `${path}: Invalid type. Expected: boolean, given: string`;
+      const pointer = `at '/${path.split('.').join('/')}': got string, want boolean`;
+      expect(r.stderr.includes(dotted) || r.stderr.includes(pointer), r.stderr).toBe(true);
+    },
+  );
+});
+
+// ── Every ax-next.bool argument has a values.yaml boolean default (TASK-516) ──
+// BOOLEAN_PATHS is derived from values.yaml, which is what makes the guards
+// above cover tomorrow's flag automatically. The flip side: a template calling
+// `include "ax-next.bool" .Values.new.gate` with NO values.yaml default would be
+// invisible to every one of them. This closes that hole with a check rather
+// than a convention comment. It reads template SOURCE, so it needs no helm.
+describe('ax-next chart: every ax-next.bool gate is enumerated (TASK-516)', () => {
+  function templateSources(dir: string): string[] {
+    return readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory()
+        ? templateSources(join(dir, e.name))
+        : [readFileSync(join(dir, e.name), 'utf8')],
+    );
+  }
+  // Template comments (`{{/* ... */}}`) are stripped first: the helper's own
+  // doc block carries example call sites that are not gates.
+  const source = templateSources(resolve(chartDir, 'templates'))
+    .map((s) => s.replace(/\{\{-?\s*\/\*[\s\S]*?\*\/\s*-?\}\}/g, ''))
+    .join('\n');
+  const calls = [...source.matchAll(/include\s+"ax-next\.bool"\s+(\S+?)\s*\)/g)].map(
+    (m) => m[1] as string,
+  );
+  // Every mention, whatever its shape. The parse above needs a closing `)`, so
+  // a paren-less `{{ if include "ax-next.bool" .Values.x }}` would slip past it
+  // silently; comparing against this count makes that shape fail loudly.
+  const mentions = source.match(/"ax-next\.bool"/g)?.length ?? 0;
+
+  it('finds the call sites (non-vacuity)', () => {
+    expect(calls.length).toBeGreaterThanOrEqual(30);
+  });
+
+  it('parses every ax-next.bool call site (none skipped by an unexpected shape)', () => {
+    // The `define` itself is one mention and is not a call.
+    expect(calls.length, 'a call site is shaped so the path check cannot see it').toBe(
+      mentions - 1,
+    );
+  });
+
+  // Written as `.Values.<path>` on purpose: `$.Values.<path>`, a `$var` or a
+  // sub-pipeline all fail here, loudly, rather than being guessed at.
+  it('every call passes a .Values path, not a variable the path check cannot see', () => {
+    expect(calls.filter((c) => !c.startsWith('.Values.'))).toEqual([]);
+  });
+
+  it('every .Values path passed to ax-next.bool has a boolean default in values.yaml', () => {
+    const paths = [...new Set(calls.map((c) => c.slice('.Values.'.length)))].sort();
+    expect(paths.filter((p) => !BOOLEAN_PATHS.includes(p))).toEqual([]);
+  });
 });

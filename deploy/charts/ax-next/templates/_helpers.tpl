@@ -45,8 +45,30 @@ Returns the string "true" (truthy in a template `if`) or "" (falsy):
   - a real YAML boolean            → unchanged semantics
   - the string "true" (any case)   → on   — what the operator plainly meant
   - the string "false" (any case)  → off  — the bug this exists to kill
-  - any other non-boolean          → off  — fail CLOSED, never open
+  - any other non-boolean          → off  — see "which way is closed" below
   - nil / absent                   → off
+
+Which way is closed depends on the gate, and "off" is NOT always the safe
+answer. For the other 13 gates (the Ingress, `/api/workspace/*`, the TCP
+credential proxy, MinIO, …) off withholds reach or keeps a guard on (for
+skipKubeVersionCheck, off keeps the 1.29+ check running), so an unrecognised
+string failing to off fails CLOSED. For the two ENFORCEMENT
+gates, `networkPolicies.enabled` and `ingress.tls`, off is the OPEN posture:
+`networkPolicies.enabled=maybe` renders 1 NetworkPolicy instead of 3 and
+`ingress.tls=maybe` drops the `tls:` block, where before this helper the same
+garbage was truthy and happened to enforce. The helper does not know which
+kind of gate it is serving, so it cannot pick per gate; values.schema.json is
+the real defence for those two (it rejects every non-boolean at install
+time), and this row only matters once the schema has been bypassed.
+render.test.ts pins both halves of that ("enforcement gates" block).
+
+Every value passed to this helper needs a boolean default in values.yaml.
+render.test.ts derives its gate list from values.yaml, so a gate with no
+default would be invisible to the schema-drift and rejection guards; a test
+there fails if a template calls this helper on a path values.yaml does not
+define as a boolean. Pass the path as `.Values.<path>` inside parentheses,
+as every call below does; the test fails on any other shape rather than
+skipping it.
 
 Usage: {{- if (include "ax-next.bool" .Values.some.flag) }} … {{- end }}
 `not`, `and` and `or` compose with it as usual. `ternary` demands a real
