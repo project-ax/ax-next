@@ -43,9 +43,13 @@ import type { DecisionReadError } from '@/lib/workspace-decisions';
 import {
   applyToolResult,
   applyToolUse,
+  liveStreamHolds,
+  settleHolds,
   shapeSteps,
+  witnessHolds,
   type WorkspaceToolCall,
 } from '@/lib/workspace-steps';
+import { isOpenDecision } from '@/lib/workspace-types';
 import type { SendableAttachment } from '@/lib/workspace-attachments';
 import type { PhaseKind } from '@/server/types';
 import { ActivityFeed } from './ActivityFeed';
@@ -392,6 +396,18 @@ export function AgentView({
    */
   const [liveCalls, setLiveCalls] = useState<readonly WorkspaceToolCall[]>([]);
   /**
+   * The conversation the in-flight turn belongs to, captured when it starts
+   * (TASK-532). The live panel asks the queue what is still open HERE, and a
+   * follow-up send moving `conversationRef` must not move the question.
+   */
+  const [streamConversation, setStreamConversation] = useState<string | null>(null);
+  /**
+   * Live held calls seen waiting while their conversation had a question open
+   * — the race guard `liveStreamHolds` needs before it settles one. Cleared
+   * with `liveCalls`.
+   */
+  const [witnessed, setWitnessed] = useState<ReadonlySet<string>>(() => new Set());
+  /**
    * The agent's last reported phase, shown as the pre-content status line.
    *
    * Cleared at the start of every turn so a stale `sandbox-starting` cannot
@@ -495,10 +511,31 @@ export function AgentView({
     setSent(null);
     setStreamed('');
     setLiveCalls([]);
+    setWitnessed(new Set());
+    setStreamConversation(null);
     setPhase(null);
     setStreaming(false);
     setTurnError(null);
   }, [agentId]);
+
+  /*
+    How many questions in the in-flight turn's conversation are still open, or
+    `null` when that is not known (TASK-532). The queue is the shell's read of
+    the decision store — the same rows the in-thread cards draw from — so the
+    live step and the card beside it cannot disagree about whether anything is
+    left to answer. A failed queue read, or a turn with no conversation yet, is
+    unknown, and unknown leaves every hold waiting.
+  */
+  const openInConversation =
+    decisionsError !== null || streamConversation === null
+      ? null
+      : decisions.filter(
+          (d) => d.conversationId === streamConversation && isOpenDecision(d),
+        ).length;
+
+  useEffect(() => {
+    setWitnessed((prev) => witnessHolds(liveCalls, openInConversation, prev));
+  }, [liveCalls, openInConversation]);
 
   // Abort any live stream when we unmount or switch agents — a reader left
   // running would keep writing into a component nobody is looking at.
@@ -514,6 +551,8 @@ export function AgentView({
       setStreaming(true);
       setStreamed('');
       setLiveCalls([]);
+      setWitnessed(new Set());
+      setStreamConversation(conversationRef.current);
       setPhase(null);
       setTurnError(null);
       await workspaceApi.streamReply(reqId, {
@@ -540,6 +579,8 @@ export function AgentView({
           setSent(null);
           setStreamed('');
           setLiveCalls([]);
+          setWitnessed(new Set());
+          setStreamConversation(null);
           setPhase(null);
           // The durable thread is the source of truth — re-read it rather than
           // keeping our transient copy around to drift.
@@ -826,7 +867,15 @@ export function AgentView({
     when the turn has produced neither text nor a step, which is what keeps a
     phase label from appearing after content has started.
   */
-  const livePanel = shapeSteps(liveCalls);
+  /*
+    A hold the person has since answered stops reading "waiting for you" here
+    too, not only after a reload (TASK-532). The same `settleHolds` the reload
+    path calls does the settling; `liveStreamHolds` only says which holds are
+    still being asked about, from what the browser can see.
+  */
+  const livePanel = shapeSteps(
+    settleHolds(liveCalls, liveStreamHolds(liveCalls, openInConversation, witnessed)),
+  );
   const hasLiveContent = streamed.length > 0 || livePanel !== null;
   if (streaming || hasLiveContent) {
     if (hasLiveContent) {
