@@ -17,6 +17,7 @@ import { UserMenu } from '@/components/UserMenu';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import type { WorkspaceAgent } from '@/lib/workspace-api';
+import { NEW_AGENT_OPENER_ATTR } from '@/lib/new-agent-return-focus';
 import { StateDot } from './bits';
 
 interface Props {
@@ -162,7 +163,16 @@ export function WorkspaceSidebarNav({
           create door, since reachability is the whole point of this row.
         */}
         {onCreateAgent && (
-          <button type="button" onClick={go(onCreateAgent)} className={row(false)}>
+          <button
+            type="button"
+            onClick={go(onCreateAgent)}
+            className={row(false)}
+            // TASK-510 — where focus comes back to when the new-agent dialog
+            // closes. The dialog replaces the whole workspace, so this node is
+            // gone by then; the restore finds its successor by this attribute.
+            // See `lib/new-agent-return-focus.ts`.
+            {...{ [NEW_AGENT_OPENER_ATTR]: '' }}
+          >
             <Plus size={14} className="shrink-0" />
             New agent…
           </button>
