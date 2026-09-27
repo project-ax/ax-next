@@ -61,6 +61,26 @@ What the data can and cannot tell apart:
   rollout gate) has no fires and stays OFF. The brief's "k8s base defaults
   skill-reflection ON" is not what the code does: the seed is `enabled=false`.
 
+## Known limits of the signal (from review)
+
+- **Self-inflation.** A reflection fire runs in a fresh per-fire conversation, and
+  `@ax/memory`'s observer does not skip routine-origin turns. So after two passes,
+  rows extracted from reflection turns can carry two conversation numbers. The
+  prompt excludes rows about reflection or skills, but that is a prose guard
+  only. This is live on deployments the migration re-enables, not only after an
+  operator flip. The real fix is an observer skip for `ctx.source === 'routine'`,
+  deferred because TASK-612 owns the observer right now.
+- **Page-bounded.** Two genuine occurrences must land in ONE recall page (15 by
+  default, 40 at most). This errs towards false negatives, the safe direction for
+  a gate on auto-active skills.
+- **Short-circuit dates are event dates.** The When column is when a fact became
+  true, not when it was recorded. A new fact about an old event does not count as
+  "after the last pass".
+- **Team agents.** On a team agent the page spans members, so "2 conversations"
+  can mean two people once each. No id is exposed; this only changes the meaning.
+- **Operator-edited prompts** (`source_md <> 'seed'`) are left alone and may
+  still name Strata paths. Operators fix those by hand.
+
 ## Tests
 
 - `@ax/memory`: one conversation → one number and "1"; two conversations → two
