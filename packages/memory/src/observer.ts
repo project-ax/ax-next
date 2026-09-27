@@ -51,6 +51,13 @@ export type ObserverResult =
   /** Nothing worth extracting; no call was made and nothing was written. */
   | { kind: 'skipped'; reason: 'no-dialogue' | 'no-user-content' | 'no-facts' }
   /**
+   * Every fact the extractor produced was the agent describing its own
+   * context (TASK-612, `self-report.ts`). Ordinary, but counted and named
+   * apart from `no-facts`, so a filter that over-drops a whole batch leaves a
+   * trace instead of reading as "nothing durable was said".
+   */
+  | { kind: 'skipped'; reason: 'only-self-reports'; selfReports: number }
+  /**
    * The extractor produced facts and EVERY ONE of them was unusable, so the
    * batch is empty for a reason.
    *
@@ -140,8 +147,9 @@ export async function runObserver(input: RunObserverInput): Promise<ObserverResu
     // "The extractor found nothing durable" and "the extractor found things
     // and every one was unreadable" are different events, and only the first
     // is ordinary.
-    return mapped.unusable > 0
-      ? { kind: 'all-unusable', unusable: mapped.unusable }
+    if (mapped.unusable > 0) return { kind: 'all-unusable', unusable: mapped.unusable };
+    return mapped.selfReports > 0
+      ? { kind: 'skipped', reason: 'only-self-reports', selfReports: mapped.selfReports }
       : { kind: 'skipped', reason: 'no-facts' };
   }
 

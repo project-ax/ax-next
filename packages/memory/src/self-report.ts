@@ -39,16 +39,29 @@
  * said about rules, because a person's statement is theirs to keep.
  */
 
-/** Subjects the extractor uses for the agent itself, after {@link normalizeSubject}. */
+/**
+ * Subjects the extractor uses for the agent itself, after
+ * {@link normalizeSubject}. The pinned prompt tells it to use `assistant`
+ * (and the walk measured exactly that); the rest are its near spellings.
+ * Deliberately NOT `ai` or `bot`: those are as likely to be a topic.
+ */
 const AGENT_SUBJECTS = new Set([
   'assistant',
   'the_assistant',
   'ai_assistant',
-  'ai',
   'agent',
   'the_agent',
-  'bot',
 ]);
+
+/**
+ * "rules"/"instructions" as the agent's OWN, not a topic: "rules of chess",
+ * "instructions for the desk" and "rules about parking" are content.
+ */
+// The `\b` before the lookahead matters: without it the engine backtracks to
+// "rule" + "s of thumb" and the lookahead never sees " of".
+const RULES = String.raw`(?:rules?|instructions?)\b(?! (?:of|for|on|about)\b)`;
+const MEMORY = String.raw`(?:memor(?:y|ies)|saved facts|(?:prior|previous) (?:conversations?|sessions?|chats?))\b`;
+const NEGATION = String.raw`(?:don't|do not|doesn't|does not|cannot|can't|haven't|have not|hasn't|has not|hadn't|had not|wasn't|was not|weren't|were not|never|has no|have no|had no|without)`;
 
 /**
  * Phrases that tie rules/instructions/memory to the agent's own context. Run
@@ -56,17 +69,26 @@ const AGENT_SUBJECTS = new Set([
  */
 const CONTEXT_PATTERNS: readonly RegExp[] = [
   // "no rules", "no standing instructions", "no saved memories"
-  /\bno (standing |saved |stored |custom )?(rules?|instructions?|memor(y|ies)|saved facts)\b/,
+  new RegExp(String.raw`\bno (?:standing |saved |stored |custom )?(?:${RULES}|${MEMORY})`),
   // "rules have been given by the user", "instructions from you"
-  /\b(rules?|instructions?) (have been |has been |were |was )?(given |set |provided |saved )?(from|by) (you|the user|user|me)\b/,
+  new RegExp(
+    String.raw`\b${RULES} (?:have been |has been |were |was )?(?:given |set |provided |saved )?(?:from|by) (?:you|the user|user|me)\b`,
+  ),
   // "the rules I was given", "instructions it received"
-  /\b(rules?|instructions?) (i|it) (was |were |have been |has been |had been )?(given|received|set|provided)\b/,
-  // "the system prompt", "the bootstrap prompt"
-  /\b(system|bootstrap) prompt\b/,
-  // "doesn't have any memory of", "cannot remember prior sessions"
-  /\b(don't|do not|doesn't|does not|cannot|can't|has no|have no|had no|without) (have |see |remember |recall |retain |keep )?(any )?(saved )?(rules?|instructions?|memor(y|ies)|prior (conversations?|sessions?|chats?)|previous (conversations?|sessions?|chats?))\b/,
+  new RegExp(
+    String.raw`\b${RULES} (?:i|it) (?:was |were |have been |has been |had been )?(?:given|received|set|provided)\b`,
+  ),
+  // "I haven't been given any rules", "doesn't have any memory of",
+  // "cannot remember prior sessions", "never received any instructions"
+  new RegExp(
+    String.raw`\b${NEGATION} (?:been )?(?:have |see |remember |recall |retain |keep |given |received |told |shown |set )?(?:any )?(?:saved |standing )?(?:${RULES}|${MEMORY})`,
+  ),
+  // Its OWN prompt: "came from the system bootstrap prompt", "in its system
+  // prompt". Not any mention — "how to write a good system prompt" and "a
+  // system prompt injection attack" are topics a person asked about.
+  /\b(?:(?:from|in|by|via) (?:the|my|its)|my|its) (?:system |bootstrap )+prompt\b/,
   // "its instructions", "my memory"
-  /\b(my|its|the assistant's|the agent's) (rules|instructions|memory|memories|system prompt)\b/,
+  /\b(?:my|its|the assistant's|the agent's) (?:rules|instructions|memory|memories)\b/,
 ];
 
 /** A predicate that is itself about the agent's rules/memory: `has_no_rules`, `has_rules`. */

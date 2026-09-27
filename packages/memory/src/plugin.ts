@@ -1163,7 +1163,12 @@ function logObserverResult(ctx: AgentContext, result: ObserverResult): void {
     case 'skipped':
       // `debug`: an ordinary turn with nothing durable in it is the common
       // case, not a problem.
-      ctx.logger.debug(OBSERVER_RUN_EVENT, { ...base, outcome: 'skipped', reason: result.reason });
+      ctx.logger.debug(OBSERVER_RUN_EVENT, {
+        ...base,
+        outcome: 'skipped',
+        reason: result.reason,
+        ...('selfReports' in result ? { selfReports: result.selfReports } : {}),
+      });
       return;
     case 'all-unusable':
       // `warn`, not `debug`: the extractor produced facts and every one was

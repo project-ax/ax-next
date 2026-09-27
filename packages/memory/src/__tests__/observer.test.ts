@@ -805,7 +805,7 @@ describe("the agent's reports about its own context are not facts (TASK-612)", (
     expect(run?.bindings.unusable).toBe(0);
   });
 
-  it('a batch of nothing but self-reports is an ordinary skip, not a failure', async () => {
+  it('a batch of nothing but self-reports is a counted skip, not a failure', async () => {
     const h = await withLlm(() => reply(extraction([fact(STALE_SELF_REPORT)])));
     await chatEnd(h);
 
@@ -815,7 +815,10 @@ describe("the agent's reports about its own context are not facts (TASK-612)", (
       (l) => l.bindings.outcome === 'skipped',
     );
     expect(skipped).toHaveLength(1);
-    expect(skipped[0]?.bindings.reason).toBe('no-facts');
+    // Distinct from an empty extraction, and counted: an over-eager filter
+    // that ate a whole batch must leave a trace.
+    expect(skipped[0]?.bindings.reason).toBe('only-self-reports');
+    expect(skipped[0]?.bindings.selfReports).toBe(1);
   });
 });
 

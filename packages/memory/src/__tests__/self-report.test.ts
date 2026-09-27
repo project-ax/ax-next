@@ -31,8 +31,23 @@ describe('isAgentContextSelfReport', () => {
     ['has_rules', 'none'],
     ['stated', 'The rules I was given by the user are: none'],
     ['stated', 'no rules have been set by the user'],
+    // First-person negations: the likeliest way a running agent says it.
+    ['stated', "I haven't been given any rules"],
+    ['stated', 'I have not been given any rules'],
+    ['stated', "I wasn't given any rules"],
+    ['stated', 'I was not given any rules'],
+    ['stated', "hasn't received any instructions"],
+    ['stated', 'I never received any instructions'],
+    ['stated', 'has not been told any rules by the user'],
+    // A self-tied mention of its prompt is still about its own context.
+    ['stated', 'the only instructions came from the system bootstrap prompt'],
+    ['stated', 'follows only what is in its system prompt'],
   ])('flags the assistant self-report %s | %s', (predicate, object) => {
     expect(isAgentContextSelfReport({ subject: 'assistant', predicate, object })).toBe(true);
+  });
+
+  it.each(['ai', 'bot', 'sourdough'])('does not treat the topic subject %s as the agent', (subject) => {
+    expect(isAgentContextSelfReport({ ...WALK_FACT, subject })).toBe(false);
   });
 
   it.each(['Assistant', 'the_assistant', 'AI assistant', 'agent'])(
@@ -48,6 +63,10 @@ describe('isAgentContextSelfReport', () => {
     ['assistant', 'recommended_sealant', 'Mod Podge, to seal the newspaper flower vase'],
     ['assistant', 'explained', 'house rules for the rental: no parties after 10pm'],
     ['assistant', 'recommended', 'a memory foam pillow'],
+    // "system prompt" as a TOPIC the person asked about is real content.
+    ['assistant', 'explained', 'how to write a good system prompt for GPT models'],
+    ['assistant', 'described', 'a system prompt injection attack technique'],
+    ['assistant', 'recommended', 'never given any rules of thumb for sourdough — weigh the flour'],
     // Not the agent speaking: a person's own statement is theirs to keep.
     ['user', 'stated', 'no rules have been given by the user'],
     ['user', 'prefers', 'no memory foam pillows'],
