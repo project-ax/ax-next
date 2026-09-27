@@ -140,6 +140,7 @@ export function createChatOrchestratorPlugin(
         'event.http-egress',
         'skills:proposed',
         'connectors:proposed',
+        'system-prompt:augment-changed',
       ],
     },
     init({ bus }) {
@@ -275,6 +276,20 @@ export function createChatOrchestratorPlugin(
         async (ctx, event) => {
           await orch.onSkillsProposed(ctx, event);
           return undefined; // mark-only; never vetoes/transforms.
+        },
+      );
+
+      // TASK-612 — an augment provider (the Rules providers today) says this
+      // agent's system-prompt augment changed. Mark-only: the agent's live
+      // sessions are retired at their NEXT turn and the fresh spawn
+      // re-augments. Never terminates here — a mid-turn terminate hangs the
+      // SSE (the Fault-A class bug). Observation-only; never vetoes.
+      bus.subscribe<{ agentId: string }>(
+        'system-prompt:augment-changed',
+        PLUGIN_NAME,
+        async (ctx, payload) => {
+          orch.onSystemPromptAugmentChanged(ctx, payload);
+          return undefined;
         },
       );
 

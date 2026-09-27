@@ -5598,7 +5598,7 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
   // A keepalive harness: one conversation, one warm sandbox handle, a
   // bind-session that marks the bound session alive (so turn 2 routes warm
   // unless the dirty-set forces a fresh spawn). Tracks open / terminate counts.
-  async function makeKeepaliveHarness() {
+  async function makeKeepaliveHarness(extraServices: Record<string, ServiceHandler> = {}) {
     const conv: Record<string, { activeSessionId: string | null }> = {
       'conv-1': { activeSessionId: null },
     };
@@ -5655,6 +5655,7 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
         envMap: {},
       }),
       'proxy:close-session': async () => ({}),
+      ...extraServices,
     };
 
     const h = await createTestHarness({
@@ -5849,5 +5850,119 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
     // The outcome is a normal agent outcome (not a thrown error propagated out).
     expect(outcome).toBeDefined();
     expect((outcome as AgentOutcome).kind).toBeDefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // TASK-612 — a person saved a Rule while the agent's sandbox was running.
+  // The runner's prompt (Rules included) is fixed at spawn, so walk TASK-607
+  // measured the Rule never reaching that conversation. The Rules provider
+  // fires `system-prompt:augment-changed { agentId }` from a HOST ctx (the
+  // Memory tab's save route, not the session), and the next turn of every
+  // live session of that agent must re-spawn so `system-prompt:augment` runs
+  // again.
+  // -------------------------------------------------------------------------
+  async function fireAugmentChanged(bus: HookBus, payload: unknown) {
+    await bus.fire(
+      'system-prompt:augment-changed',
+      makeAgentContext({
+        sessionId: 'memory-tab-save',
+        agentId: 'test-agent',
+        userId: 'test-user',
+        reqId: 'rules-save',
+        logger: createLogger({ reqId: 'rules-save', writer: () => undefined }),
+      }),
+      payload,
+    );
+  }
+
+  async function turn(h: { bus: HookBus }, reqId: string) {
+    fireTurnEnd(h.bus, 's-1', reqId);
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId }),
+      { message: { role: 'user', content: reqId } },
+    );
+  }
+
+  function countingAugment(onCall: () => Promise<void> = async () => undefined) {
+    const calls = { n: 0 };
+    const service: ServiceHandler = async () => {
+      calls.n += 1;
+      await onCall();
+      return { contributions: [{ source: 'test', body: `rules v${calls.n}`, bootstrapSafe: true }] };
+    };
+    return { calls, service };
+  }
+
+  it('re-spawns at the next turn after the agent\'s Rules change, then stays warm (TASK-612)', async () => {
+    const augment = countingAugment();
+    const { h, counters } = await makeKeepaliveHarness({ 'system-prompt:augment': augment.service });
+
+    await turn(h, 'req-1');
+    expect(counters.opens).toBe(1);
+    expect(augment.calls.n).toBe(1);
+
+    await fireAugmentChanged(h.bus, { agentId: 'test-agent' });
+
+    await turn(h, 'req-2');
+    expect(counters.opens).toBe(2); // stale prompt retired
+    expect(counters.terminates).toContain('s-1');
+    expect(augment.calls.n).toBe(2); // the fresh spawn rebuilt the prompt
+
+    // The fresh spawn is current: one change costs one re-spawn, not one per turn.
+    await turn(h, 'req-3');
+    expect(counters.opens).toBe(2);
+    expect(augment.calls.n).toBe(2);
+  });
+
+  it('a Rules change for a DIFFERENT agent leaves this session warm', async () => {
+    const augment = countingAugment();
+    const { h, counters } = await makeKeepaliveHarness({ 'system-prompt:augment': augment.service });
+
+    await turn(h, 'req-1');
+    await fireAugmentChanged(h.bus, { agentId: 'someone-elses-agent' });
+    await turn(h, 'req-2');
+
+    expect(counters.opens).toBe(1);
+    expect(counters.terminates).not.toContain('s-1');
+  });
+
+  it('ignores a malformed change event rather than re-spawning on it', async () => {
+    const augment = countingAugment();
+    const { h, counters } = await makeKeepaliveHarness({ 'system-prompt:augment': augment.service });
+
+    await turn(h, 'req-1');
+    await fireAugmentChanged(h.bus, {});
+    await fireAugmentChanged(h.bus, { agentId: '' });
+    await fireAugmentChanged(h.bus, { agentId: 42 });
+    // Coerces to THIS agent's id (String(['test-agent']) === 'test-agent'),
+    // so a validation that stringified instead of type-checking goes red.
+    await fireAugmentChanged(h.bus, { agentId: ['test-agent'] });
+    await turn(h, 'req-2');
+
+    expect(counters.opens).toBe(1);
+  });
+
+  it('a Rule saved WHILE the prompt is being built still reaches the next turn', async () => {
+    // The race: the augment has already read the old Rules when the save
+    // lands. The session's generation is snapshotted BEFORE the augment call,
+    // so this spawn counts as stale and the next turn re-spawns.
+    const bus: { current?: HookBus } = {};
+    let fired = false;
+    const augment = countingAugment(async () => {
+      if (!fired && bus.current !== undefined) {
+        fired = true;
+        await fireAugmentChanged(bus.current, { agentId: 'test-agent' });
+      }
+    });
+    const { h, counters } = await makeKeepaliveHarness({ 'system-prompt:augment': augment.service });
+    bus.current = h.bus;
+
+    await turn(h, 'req-1');
+    expect(fired).toBe(true);
+    await turn(h, 'req-2');
+
+    expect(counters.opens).toBe(2);
+    expect(augment.calls.n).toBe(2);
   });
 });

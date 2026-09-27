@@ -1163,7 +1163,12 @@ function logObserverResult(ctx: AgentContext, result: ObserverResult): void {
     case 'skipped':
       // `debug`: an ordinary turn with nothing durable in it is the common
       // case, not a problem.
-      ctx.logger.debug(OBSERVER_RUN_EVENT, { ...base, outcome: 'skipped', reason: result.reason });
+      ctx.logger.debug(OBSERVER_RUN_EVENT, {
+        ...base,
+        outcome: 'skipped',
+        reason: result.reason,
+        ...('selfReports' in result ? { selfReports: result.selfReports } : {}),
+      });
       return;
     case 'all-unusable':
       // `warn`, not `debug`: the extractor produced facts and every one was
@@ -1200,6 +1205,9 @@ function logObserverResult(ctx: AgentContext, result: ObserverResult): void {
         // A persistent non-zero here means the extractor is emitting dates
         // nothing can read — never silent, because the facts are lost.
         unusable: result.unusable,
+        // The agent's own "I have no rules" style statements, dropped
+        // (TASK-612). Informational; not a failure.
+        selfReports: result.selfReports,
         // A persistent `true` means the prompt and the model have drifted
         // apart; one retry is the budget, and it is being spent every turn.
         retried: result.retried,
