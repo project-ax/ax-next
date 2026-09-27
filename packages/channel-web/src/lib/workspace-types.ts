@@ -667,23 +667,18 @@ export type ThreadMessage =
   | { kind: 'fold'; id: string; text: string };
 
 /**
- * Memory is split because two different writers own it. Collapsing them into
- * one editor invites a human to hand-write something the agent's rollup later
- * eats.
- *
- *   - `rules`   — the human's, verbatim, always injected, safe to hand-edit.
- *   - `learned` — the agent's, subject to rollup and GC. Read-only on this
- *                 surface, and the UI says why: it is folded and dropped over
- *                 time, so anything that needs to stick belongs in `rules`.
+ * The human's memory tier: `rules`, verbatim, always injected, safe to
+ * hand-edit. (There was a second scope, `learned` — the agent's consolidated
+ * docs — whose only provider, @ax/memory-strata, was deleted in TASK-608.)
  */
 export interface MemoryDoc {
   name: string;
-  scope: 'rules' | 'learned';
+  scope: 'rules';
   body: string;
 }
 
 /**
- * How the Memory tab's two reads went — status first, rows second.
+ * How the Memory tab's rules read went — status first, doc second.
  *
  * `MemoryDoc[]` on its own could not carry this, and the gap was a live bug
  * (TASK-417). On a deployment with no memory plugin loaded at all, the server
@@ -692,12 +687,6 @@ export interface MemoryDoc {
  * half offered "try again in a moment", which is a promise nothing can keep —
  * there is no backend to come back. An empty array is a CLAIM on this surface;
  * see `WorkspaceReadStatus` for the same argument made once for the rail.
- *
- * The two tiers carry their own status rather than sharing one because they are
- * two different service hooks (`memory:rules:read`, `memory:learned:read`) and
- * either can be absent or fail on its own. One status for both would have to
- * pick a winner, and the loser's section would then word itself off a fact that
- * is not about it.
  *
  * THE SHAPE IS `{ status, payload }`, FLAT, and deliberately not a
  * discriminated union. A union would make `ok`-with-no-doc unrepresentable,
@@ -710,13 +699,10 @@ export interface MemoryDoc {
  * site for which of the three it picks and why.
  *
  * So: `rules.doc` is non-null whenever `rules.status === 'ok'`, and the editor
- * appears only over storage we actually read. `learned.docs` is meaningful only
- * when `learned.status === 'ok'`; on any other status it is empty and means
- * nothing.
+ * appears only over storage we actually read.
  */
 export interface AgentMemoryRead {
   rules: { status: WorkspaceReadStatus; doc: MemoryDoc | null };
-  learned: { status: WorkspaceReadStatus; docs: MemoryDoc[] };
   factsAvailable?: boolean;
   factsVisibility?: 'personal' | 'team';
   /**

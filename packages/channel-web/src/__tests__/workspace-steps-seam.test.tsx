@@ -300,7 +300,7 @@ function liveDetail(): AgentDetail {
     thread: [{ kind: 'user', id: 't1', text: 'file that issue' }],
     decisions: { status: 'ok' },
     past: [],
-    memory: { rules: { status: 'unavailable', doc: null }, learned: { status: 'unavailable', docs: [] } },
+    memory: { rules: { status: 'unavailable', doc: null } },
   } as unknown as AgentDetail;
 }
 

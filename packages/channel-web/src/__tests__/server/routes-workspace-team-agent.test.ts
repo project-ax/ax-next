@@ -25,7 +25,6 @@
  *     alice's bytes on a shared agentId, and exactly one bare repo exists.
  *   - `workspace-git-server/src/client/__tests__/workspace-id.test.ts` —
  *     pinned outputs plus the userId-invariance cases.
- *   - `memory-strata-index-contract`'s Test 11, for the index tier.
  *
  * WHAT THIS FILE IS STILL WORTH, which is why it exists:
  *   1-3. The route hands the workspace hooks a ctx carrying the TARGET

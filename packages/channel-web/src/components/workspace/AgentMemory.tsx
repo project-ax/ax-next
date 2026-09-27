@@ -1,44 +1,38 @@
 /**
- * Memory — split by WHO OWNS IT, which is the whole point.
+ * Memory — the human's tier: "Rules you gave me".
  *
- * "Rules you gave me" is the human's: verbatim, always injected, and the one
- * file in the memory tree that no automatic writer may touch. `@ax/memory-strata`
- * enforces that (AW-13 / TASK-234), which is what earns us the right to say it
- * here. Before that tier existed, an editor over these files promised
- * "anything you write here sticks" and the storage did not keep the promise.
+ * Verbatim, always injected, and the one file in the memory tree that no
+ * automatic writer may touch. Today that tier is served by @ax/memory's
+ * `memory:rules:read` / `memory:rules:write` (registered when its `rules`
+ * option is on), and the no-automatic-writer promise is enforced below it:
+ * the rules file is in core's `RUNNER_IMMUTABLE_PATHS`, so an agent's sandbox
+ * can never author it, and @ax/memory writes it only through that write
+ * hook, on a person's Save. That is what earns us the right to say "nothing it does afterwards
+ * rewrites them" here.
  *
- * "What it worked out" is the agent's: readable, and NOT presented as a place
- * to write, because it is folded and dropped as the strata consolidates. That
- * sentence is a deliverable, not a disclaimer — a test asserts it renders, so a
- * later copy edit that quietly drops it fails.
+ * This component is the Memory tab only on deployments WITHOUT facts memory
+ * (`MemorySurface` in `FactsMemory.tsx` falls back to it when
+ * `factsAvailable !== true`). It used to carry a second section, "What it
+ * worked out", over `memory:learned:read`; that hook's only provider,
+ * @ax/memory-strata, was deleted in TASK-608 and the section went with it.
  *
- * THE THIRD THING EACH HALF HAS TO SAY (TASK-417). Not every deployment runs a
- * memory backend at all — `@ax/memory-strata` is loaded only where the preset
- * turns it on, and a deployment without it registers neither `memory:rules:read`
- * nor `memory:learned:read`. The tab used to receive a bare `MemoryDoc[]` from
- * the server and could not tell that apart from "the read broke" or from "there
- * is genuinely nothing here", so it said the most confident thing available:
- * "Nothing yet", a claim about the agent, and "try again in a moment", a promise
- * nothing can keep. Each half now takes a `WorkspaceReadStatus` and writes the
- * sentence that is actually true. The retry appears only where retrying can
- * work.
+ * THE THIRD THING THE TIER HAS TO SAY (TASK-417). Not every deployment runs a
+ * rules provider at all, and a deployment without one registers no
+ * `memory:rules:read`. The tab used to receive a bare `MemoryDoc[]` from the
+ * server and could not tell that apart from "the read broke" or from "there
+ * is genuinely nothing here", so it said the most confident thing available —
+ * "try again in a moment", a promise nothing can keep. The tier now takes a
+ * `WorkspaceReadStatus` and writes the sentence that is actually true. The
+ * retry appears only where retrying can work.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Lock, Sparkles } from 'lucide-react';
+import { Lock } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { userFacingMessage } from '@/lib/http';
-import type { AgentMemoryRead, MemoryDoc } from '@/lib/workspace-api';
-import { ReadFailure, SectionLabel } from './bits';
-
-/**
- * The sentence the agent's own section owes the reader. Exported so the test
- * asserts the SAME string the component renders — a copy edit that loses the
- * meaning has to come here and see why it is here.
- */
-export const COMPACTION_NOTICE =
-  'We fold these together over time, and drop the ones that stop being useful. If something here needs to stick, move it up to your rules.';
+import type { AgentMemoryRead } from '@/lib/workspace-api';
+import { SectionLabel } from './bits';
 
 const RULES_PLACEHOLDER =
   'No rules yet. For example:\nAlways cc Priya on customer email.\nNever touch the billing spreadsheet without asking.';
@@ -66,7 +60,7 @@ export function AgentMemory({
    */
   onSaveRules?: (body: string) => Promise<string>;
   /**
-   * Re-read the agent detail, which is what both halves of this tab ride on.
+   * Re-read the agent detail, which is what this tab rides on.
    *
    * Optional, and the optionality is load-bearing rather than defensive: the
    * "Try again" button exists only when there is something for it to run. A
@@ -75,7 +69,7 @@ export function AgentMemory({
    */
   onRetry?: () => void;
 }) {
-  const { rules, learned } = memory;
+  const { rules } = memory;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-8 overflow-y-auto px-6 py-6">
@@ -101,11 +95,6 @@ export function AgentMemory({
           {...(onRetry ? { onRetry } : {})}
         />
       )}
-      <LearnedSection
-        status={learned.status}
-        docs={learned.docs}
-        agentName={agentName}
-      />
     </div>
   );
 }
@@ -294,97 +283,6 @@ export function RulesEditor({
               : ''}
         </span>
       </div>
-    </section>
-  );
-}
-
-/**
- * The agent's own tier — and, when there is nothing to list, WHY.
- *
- * Three answers, three sentences, and the reason this component takes a status
- * at all (TASK-417):
- *
- *   `ok` + no docs   — genuinely empty. The agent has not written anything yet.
- *                      This is the only case where we get to say that, because
- *                      it is the only case where we know it.
- *   `failed`         — the read broke. Unknown, not empty.
- *   `unavailable`    — this deployment keeps no agent memory at all. The
- *                      compaction blurb goes away with it: describing how we
- *                      fold notes together is describing machinery that is not
- *                      running here.
- *
- * The last two borrow `bits.tsx`'s `ReadFailure` rather than writing a third
- * and fourth wording of the same two facts.
- */
-function LearnedSection({
-  status,
-  docs,
-  agentName,
-}: {
-  status: AgentMemoryRead['learned']['status'];
-  docs: MemoryDoc[];
-  agentName: string;
-}) {
-  const [open, setOpen] = useState(docs[0]?.name ?? '');
-  const doc = docs.find((d) => d.name === open) ?? docs[0];
-
-  return (
-    <section className="flex flex-col gap-2.5">
-      <SectionLabel>
-        <span className="flex items-center gap-2">
-          <Sparkles size={12} aria-hidden="true" />
-          What it worked out
-        </span>
-      </SectionLabel>
-
-      {/*
-        The blurb is about THESE — the notes below it. With nothing below it,
-        "{agentName} wrote these itself" points at an empty room: on
-        `unavailable` it describes machinery that is not running here at all,
-        and on `failed` it introduces a list we then admit we could not read.
-        An `ok` read with zero docs is different and keeps it, because there the
-        sentence is explaining the rules of a section that really is empty.
-      */}
-      {status === 'ok' && (
-        <p className="max-w-[62ch] text-[12.5px] leading-relaxed text-muted-foreground">
-          {agentName} wrote these itself. {COMPACTION_NOTICE}
-        </p>
-      )}
-
-      {status !== 'ok' ? (
-        <ReadFailure
-          status={status}
-          what={`what ${agentName} works out on its own`}
-          className="max-w-[62ch] text-[12.5px]"
-        />
-      ) : doc === undefined ? (
-        <p className="text-[12.5px] text-muted-foreground">
-          Nothing yet — {agentName} writes this down as it works.
-        </p>
-      ) : (
-        <>
-          <div className="flex flex-wrap gap-1.5">
-            {docs.map((d) => (
-              <Button
-                key={d.name}
-                type="button"
-                size="sm"
-                variant={d.name === doc.name ? 'secondary' : 'ghost'}
-                onClick={() => setOpen(d.name)}
-              >
-                {d.name}
-              </Button>
-            ))}
-          </div>
-          {/*
-            Model output. It arrives as a plain string and renders as text —
-            we never build markup out of it.
-          */}
-          <pre className="max-h-[340px] overflow-auto whitespace-pre-wrap rounded-md border border-border bg-muted/40 px-4 py-3 font-mono text-[12px] leading-relaxed">
-            {doc.body}
-          </pre>
-        </>
-      )}
     </section>
   );
 }

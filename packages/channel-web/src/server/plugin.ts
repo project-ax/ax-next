@@ -59,12 +59,13 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     activity feed reads the optional routines:recent-fires-for-agent and
 //     routines:list, and degrades to an empty feed without them.
 //     TASK-234 (AW-13) adds no hard call either: the Memory tab's
-//     memory:rules:read / memory:rules:write / memory:learned:read are
-//     @ax/memory-strata's, and memory-strata is OPTIONAL in both presets (the
-//     CLI gates it on --memory, k8s on cfg.hostLlmTools). Declaring them would
-//     make the kernel's verifyCalls refuse to boot a deployment that simply
-//     chose not to run memory. So the routes gate on bus.hasService and the
-//     write answers 503 when nothing is there to keep the promise.
+//     memory:rules:read / memory:rules:write are @ax/memory's, registered only
+//     when its `rules` option is on, and @ax/memory itself is optional.
+//     (memory:learned:read went with @ax/memory-strata, deleted in TASK-608.)
+//     Declaring them would make the kernel's verifyCalls refuse to boot a
+//     deployment that simply chose not to run memory. So the routes gate on
+//     bus.hasService and the write answers 503 when nothing is there to keep
+//     the promise.
 //     TASK-235 (AW-14) adds no hard call either: the rail's four blocks read
 //     tool-policy:*, agent-activity:get, tool:list, the two grant records and
 //     decisions:count, every one of them optional and every one of them with a

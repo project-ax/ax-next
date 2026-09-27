@@ -74,7 +74,6 @@ function detail(): AgentDetail {
     past: [],
     memory: {
       rules: { status: 'unavailable', doc: null },
-      learned: { status: 'unavailable', docs: [] },
     },
   };
 }
@@ -157,7 +156,6 @@ describe('AgentView heading outline', () => {
         'h1: Quill',
         'h2: Memory',
         'h3: Rules you gave me',
-        'h3: What it worked out',
       ]),
     );
   });

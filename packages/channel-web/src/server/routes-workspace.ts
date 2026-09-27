@@ -135,7 +135,6 @@ import type {
   ExecutionPath,
   GrantRef,
   GrantRow,
-  MemoryDoc,
   PastConversation,
   PermissionRow,
   RailActivity,
@@ -616,7 +615,8 @@ interface RoutinesListOutput {
 }
 
 /**
- * @ax/memory-strata's Memory-tab hooks (AW-13). Duck-typed like every other
+ * The Memory tab's human-tier hooks (AW-13), registered today by @ax/memory
+ * when its `rules` option is on. Duck-typed like every other
  * hook on this surface (I2). Note what these payloads do NOT carry: no path,
  * no revision, no tier vocabulary — the human tier could be a database row
  * tomorrow and this file would not change.
@@ -635,9 +635,6 @@ interface MemoryRulesWriteOutput {
   written: boolean;
   /** What is stored now, normalized by the writer. See `SaveRulesResult`. */
   body: string;
-}
-interface MemoryLearnedReadOutput {
-  docs: Array<{ name: string; body: string }>;
 }
 /**
  * The memory engine's `memory:status` — ctx-only (it answers for the caller
@@ -1689,13 +1686,11 @@ export const FILE_LABEL_MAX_CHARS = 120;
  * sink for a value that had never been bounded or stripped of bidi overrides.
  *
  * NOT THE LAST ONE, and the honest version of that sentence matters. A second
- * review pass found the learned-memory doc `name` below (search
- * `scope: 'learned'`) was the same shape of thing — a one-line label that
- * crossed a boundary unfenced. TASK-480 fenced it (see
- * `LEARNED_DOC_FALLBACK_NAME`); the doc `body` beside it is a document, and a
- * one-line fence is the wrong tool for that half, so it is still not fenced.
- * The owner-authored `displayName` on the rail is not fenced here, on
- * purpose: `@ax/agents` owns it, and since TASK-558 its store refuses the same
+ * review pass found the learned-memory doc `name` was the same shape of thing
+ * — a one-line label that crossed a boundary unfenced — and TASK-480 fenced
+ * it. (That read, `memory:learned:read`, was removed in TASK-608.) The
+ * owner-authored `displayName` on the rail is not fenced here, on purpose:
+ * `@ax/agents` owns it, and since TASK-558 its store refuses the same
  * character class at the write (`DISPLAY_NAME_FORBIDDEN`) and fences rows
  * written before that on every read (`fenceStoredDisplayName`). So it arrives
  * here already clean, from the one place that stores it, rather than being
@@ -1709,16 +1704,6 @@ export const FILE_LABEL_MAX_CHARS = 120;
  * draw an empty banner.
  */
 export const CONVERSATION_TITLE_MAX_CHARS = 120;
-
-/**
- * The tab label for a learned-memory doc whose `name` fences to nothing.
- *
- * TASK-480. The name is bounded at `FILE_LABEL_MAX_CHARS` and bidi-stripped
- * on the way out, like every other label here. A name made of nothing but
- * invisibles would otherwise draw an empty tab — a button with no text, which
- * reads as broken rather than as "this doc has no name".
- */
-export const LEARNED_DOC_FALLBACK_NAME = 'Untitled note';
 
 /**
  * How many rows one listing will carry, and how much of one file we will send.
@@ -2936,9 +2921,11 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * can keep. `unavailable` and `failed` are now different answers on the wire,
    * so the UI can stop guessing.
    *
-   * The tiers are read INDEPENDENTLY, and a failed rules read no longer skips
-   * the learned one. They are two service hooks; either can be absent or
-   * broken on its own, and a reader is better served by the half we have.
+   * There used to be a second tier here — the agent's own consolidated docs,
+   * read through `memory:learned:read`. Its only provider, @ax/memory-strata,
+   * was deleted in TASK-608 and @ax/memory never registered it, so the read
+   * went too rather than linger as a branch nothing can reach. The agent's
+   * facts have their own surface (`factsAvailable` below).
    *
    * ⚠ Takes the RESOLVED agent, not a bare `agentId`, and that is the whole
    * point of the signature. Since TASK-257 an agent's memory is shared by
@@ -2975,39 +2962,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
     }
 
-    let learned: AgentMemoryRead['learned'] = { status: 'unavailable', docs: [] };
-    if (bus.hasService('memory:learned:read')) {
-      try {
-        const out = await bus.call<MemoryAgentInput, MemoryLearnedReadOutput>(
-          'memory:learned:read',
-          ctx,
-          { agentId },
-        );
-        learned = {
-          status: 'ok',
-          // The BODY is model output. It rides as a plain string and React
-          // renders it as text; a one-line fence is the wrong tool for a
-          // document, so it is deliberately left alone here.
-          //
-          // The NAME becomes a tab label, and it arrives from another plugin
-          // across the bus. Today's @ax/memory-strata names are three fixed
-          // strings, but the hook does not promise that, so it is fenced at
-          // this boundary like every other label leaving the file (TASK-480).
-          docs: out.docs.map((d): MemoryDoc => ({
-            name: fenceLine(d.name, FILE_LABEL_MAX_CHARS) ?? LEARNED_DOC_FALLBACK_NAME,
-            scope: 'learned',
-            body: d.body,
-          })),
-        };
-      } catch (err) {
-        initCtx.logger.warn('workspace_memory_learned_read_failed', {
-          agentId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        learned = { status: 'failed', docs: [] };
-      }
-    }
-
     const factsAvailable = bus.hasService('memory:recall');
 
     // Is the memory engine still learning for THIS user? `memory:status` is
@@ -3032,7 +2986,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
 
     return {
       rules,
-      learned,
       ...(factsAvailable
         ? {
             factsAvailable: true,
@@ -3612,7 +3565,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       sailed through and rendered as a live ALLOW under a heading that promises
       to describe what is installed today. The walk found the rail advertising
       `memory_search`, `memory_note`, `web_search` and `web_extract` on a
-      deployment that loads neither @ax/memory-strata nor @ax/web-tools, with
+      deployment that loads neither a memory plugin nor @ax/web-tools, with
       the agent contradicting its own rail in conversation.
 
       WHY THE TABLE HAS TO SAY WHICH TOOLS ARE HOST-PROVIDED, rather than this

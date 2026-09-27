@@ -7,8 +7,8 @@
  * and a "key" on the tab that button lives in. None of it is wrong, exactly —
  * it just makes a reader work out that three words mean one thing.
  *
- * A copy fix does not stay fixed, so this scans the source the way
- * `memory-strata`'s deprecated-model-ids test does. Comments are stripped
+ * A copy fix does not stay fixed, so this scans the source for the retired
+ * words. Comments are stripped
  * before scanning, deliberately: a comment explaining what a string USED to say
  * is history worth keeping, while the same text in a rendered literal is
  * something we would actually show someone.

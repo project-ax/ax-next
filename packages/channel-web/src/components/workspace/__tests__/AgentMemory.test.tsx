@@ -1,70 +1,43 @@
 /**
- * The Memory tab's whole job is telling the truth about who owns what
- * (AW-13 / TASK-234). These tests pin the two sentences that make it true:
- *
- *   - the human's rules are kept word for word, and they are editable here;
- *   - the agent's own notes are folded and dropped over time, and the UI SAYS
- *     so — a later copy edit that quietly removes that fails this file.
- *
- * The second one is the deliverable. The storage keeps the promise; this is
- * where the user finds out the promise exists.
+ * The rules-only Memory tab (AW-13 / TASK-234) — what a deployment without
+ * facts memory shows. These tests pin that the human's rules are kept word for
+ * word and editable here, and that each read state gets a sentence that is
+ * true of it (TASK-417).
  */
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { AgentMemoryRead, MemoryDoc } from '@/lib/workspace-api';
-import { AgentMemory, COMPACTION_NOTICE } from '../AgentMemory';
-
-const learnedDoc = (name: string, body: string): MemoryDoc => ({
-  name,
-  scope: 'learned',
-  body,
-});
+import type { AgentMemoryRead } from '@/lib/workspace-api';
+import { AgentMemory } from '../AgentMemory';
 
 /**
- * A read that WORKED, with whatever the tiers happen to hold.
+ * A read that WORKED, with whatever the rules happen to hold.
  *
  * Every fixture goes through one of these three rather than through a literal,
  * because the whole point of the shape is that a caller cannot accidentally
  * write "we read nothing" when it means "we could not read" (TASK-417).
  */
-const read = (rulesBody = '', learned: MemoryDoc[] = []): AgentMemoryRead => ({
+const read = (rulesBody = ''): AgentMemoryRead => ({
   rules: {
     status: 'ok',
     doc: { name: 'Your rules', scope: 'rules', body: rulesBody },
   },
-  learned: { status: 'ok', docs: learned },
 });
 
-/** Both tiers exist and neither would answer. Retrying is a real offer. */
+/** A rules provider exists and would not answer. Retrying is a real offer. */
 const failed = (): AgentMemoryRead => ({
   rules: { status: 'failed', doc: null },
-  learned: { status: 'failed', docs: [] },
 });
 
 /** No memory plugin is loaded on this deployment. Retrying is not an offer. */
 const unavailable = (): AgentMemoryRead => ({
   rules: { status: 'unavailable', doc: null },
-  learned: { status: 'unavailable', docs: [] },
 });
 
 describe('AgentMemory', () => {
-  it('labels both halves and says what happens to the agent\'s half', () => {
-    render(
-      <AgentMemory
-        agentName="Quill"
-        memory={read('- Always cc Priya', [learnedDoc('What it knows about you', '# User')])}
-        onSaveRules={vi.fn()}
-      />,
-    );
-
+  it('draws only the rules tier — the agent-notes section went with TASK-608', () => {
+    render(<AgentMemory agentName="Quill" memory={read('- cc Priya')} onSaveRules={vi.fn()} />);
     expect(screen.getByText('Rules you gave me')).toBeInTheDocument();
-    expect(screen.getByText('What it worked out')).toBeInTheDocument();
-
-    // THE deliverable. Asserted against the exported constant so a copy edit
-    // has to come to the component and read why the sentence is there.
-    expect(screen.getByText(new RegExp(escapeRe(COMPACTION_NOTICE)))).toBeInTheDocument();
-    expect(COMPACTION_NOTICE).toMatch(/drop the ones that stop being useful/u);
-    expect(COMPACTION_NOTICE).toMatch(/move it up to your rules/u);
+    expect(screen.queryByText('What it worked out')).toBeNull();
   });
 
   it('promises the rules are kept verbatim and never rewritten', () => {
@@ -162,32 +135,6 @@ describe('AgentMemory', () => {
     expect(screen.getByLabelText('Rules you gave me')).toHaveValue('- cc Priya');
   });
 
-  it('renders the agent\'s notes as text, and never as markup', () => {
-    render(
-      <AgentMemory
-        agentName="Quill"
-        memory={read('', [
-          learnedDoc('What it knows about you', '<img src=x onerror=alert(1)>'),
-        ])}
-        onSaveRules={vi.fn()}
-      />,
-    );
-    // Untrusted model output. It shows up as characters, not as an element.
-    expect(screen.getByText('<img src=x onerror=alert(1)>')).toBeInTheDocument();
-    expect(document.querySelector('img')).toBeNull();
-  });
-
-  it('keeps the agent\'s section labelled and honest when it has written nothing', () => {
-    render(<AgentMemory agentName="Quill" memory={read()} onSaveRules={vi.fn()} />);
-    expect(screen.getByText('What it worked out')).toBeInTheDocument();
-    expect(
-      screen.getByText(/Nothing yet — Quill writes this down as it works/u),
-    ).toBeInTheDocument();
-    // The compaction sentence stays: it explains the rules of the section,
-    // not the contents of it.
-    expect(screen.getByText(new RegExp(escapeRe(COMPACTION_NOTICE)))).toBeInTheDocument();
-  });
-
   it('refuses to show an empty editor when no rules row came back', () => {
     // The dangerous case: an unreadable rules file must NOT render as a
     // blank box, or the next Save overwrites rules the user still has.
@@ -234,36 +181,15 @@ describe('AgentMemory', () => {
     TASK-417 — three states, three sentences, and no promise we cannot keep.
 
     The walk that filed this found the tab on a deployment running no memory
-    backend at all. It said two confident things, and both were false: the
-    agent's half said "Nothing yet", which is a claim about the agent, and the
-    human's half said "try again in a moment", which is a promise nothing can
-    keep — there is no backend to come back.
+    backend at all. It said confident things that were false — among them
+    "try again in a moment" over the rules, a promise nothing can keep when
+    there is no backend to come back.
 
     Every row below fails against the shape that existed before this card,
     because that shape (`MemoryDoc[]`) had nowhere to put the difference.
     ───────────────────────────────────────────────────────────────────────────
   */
   describe('with no memory backend on this deployment', () => {
-    it('never says the agent has learned nothing, because we do not know that', () => {
-      render(
-        <AgentMemory agentName="Quill" memory={unavailable()} onSaveRules={vi.fn()} />,
-      );
-      expect(screen.getByText('What it worked out')).toBeInTheDocument();
-      expect(screen.queryByText(/Nothing yet/u)).toBeNull();
-      expect(
-        screen.getByText(
-          /This deployment doesn't keep what Quill works out on its own/u,
-        ),
-      ).toBeInTheDocument();
-    });
-
-    it('drops the compaction blurb, which describes machinery that is not running', () => {
-      render(
-        <AgentMemory agentName="Quill" memory={unavailable()} onSaveRules={vi.fn()} />,
-      );
-      expect(screen.queryByText(new RegExp(escapeRe(COMPACTION_NOTICE)))).toBeNull();
-    });
-
     it('offers NO retry for the rules tier — there is nothing to come back', () => {
       render(
         <AgentMemory
@@ -312,60 +238,14 @@ describe('AgentMemory', () => {
       render(<AgentMemory agentName="Quill" memory={failed()} onSaveRules={vi.fn()} />);
       expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
     });
-
-    it("calls the agent's half unknown rather than empty", () => {
-      render(<AgentMemory agentName="Quill" memory={failed()} onSaveRules={vi.fn()} />);
-      expect(screen.queryByText(/Nothing yet/u)).toBeNull();
-      expect(
-        screen.getByText(/Treat this as unknown rather than empty/u),
-      ).toBeInTheDocument();
-    });
-  });
-
-  it('lets the two halves be in different states at once', () => {
-    /*
-      The headline behaviour, and the one the helpers above cannot express
-      because they set both tiers alike. `memory:rules:read` and
-      `memory:learned:read` are separate hooks and either can break alone — the
-      server reads them independently for exactly this reason — so the tab has
-      to word each half off its OWN status rather than off whichever it checked
-      first.
-    */
-    render(
-      <AgentMemory
-        agentName="Quill"
-        memory={{
-          rules: {
-            status: 'ok',
-            doc: { name: 'Your rules', scope: 'rules', body: '- cc Priya' },
-          },
-          learned: { status: 'failed', docs: [] },
-        }}
-        onSaveRules={vi.fn()}
-        onRetry={vi.fn()}
-      />,
-    );
-
-    // The human's half is fine, so the editor is there with their text in it.
-    expect(screen.getByLabelText('Rules you gave me')).toHaveValue('- cc Priya');
-    // ...and the agent's half does not borrow that good news.
-    expect(screen.queryByText(/Nothing yet/u)).toBeNull();
-    expect(
-      screen.getByText(/Treat this as unknown rather than empty/u),
-    ).toBeInTheDocument();
-    // No withheld-editor notice: nothing was withheld.
-    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
-    // And the "we fold these together" blurb goes with the list it describes —
-    // it introduces notes we have just said we could not read.
-    expect(screen.queryByText(new RegExp(escapeRe(COMPACTION_NOTICE)))).toBeNull();
   });
 
   it('keeps the three states in three different words', () => {
     /*
       The point of the card in one row: render all three and check that no two
       of them say the same thing. An earlier version of this tab drew
-      `unavailable` in `ok`-empty's words on one half and in `failed`'s words on
-      the other, and a reader had no way to tell which situation they were in.
+      `unavailable` in `ok`-empty's or `failed`'s words, and a reader had no way
+      to tell which situation they were in.
     */
     const sentences = (memory: AgentMemoryRead): string => {
       const { container, unmount } = render(
@@ -382,13 +262,5 @@ describe('AgentMemory', () => {
     expect(empty).not.toEqual(broke);
     expect(broke).not.toEqual(absent);
     expect(empty).not.toEqual(absent);
-    // And the one sentence that is only ever true of a read that SUCCEEDED.
-    expect(empty).toMatch(/Nothing yet/u);
-    expect(broke).not.toMatch(/Nothing yet/u);
-    expect(absent).not.toMatch(/Nothing yet/u);
   });
 });
-
-function escapeRe(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-}

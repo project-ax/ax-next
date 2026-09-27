@@ -73,7 +73,6 @@ function detail(): AgentDetail {
     past: [],
     memory: {
       rules: { status: 'unavailable', doc: null },
-      learned: { status: 'unavailable', docs: [] },
     },
   };
 }
@@ -304,16 +303,15 @@ describe('AgentView tab set — the accessibility tree', () => {
   });
 
   const memoryStates = ['ok', 'failed', 'unavailable'] as const;
-  it.each(memoryStates.flatMap((rules) => memoryStates.map((learned) => ({ rules, learned }))))(
-    'keeps Memory reachable with rules=$rules and learned=$learned',
-    async ({ rules, learned }) => {
+  it.each(memoryStates.map((rules) => ({ rules })))(
+    'keeps Memory reachable with rules=$rules',
+    async ({ rules }) => {
       const data = detail();
       data.memory = {
         rules: {
           status: rules,
           doc: rules === 'ok' ? { name: 'Your rules', scope: 'rules', body: '' } : null,
         },
-        learned: { status: learned, docs: [] },
       };
       agentMock.mockResolvedValue(data);
       renderView({ tab: 'memory' });
@@ -323,7 +321,6 @@ describe('AgentView tab set — the accessibility tree', () => {
       const panel = screen.getByRole('tabpanel', { name: 'Memory' });
       expect(panel).not.toHaveAttribute('hidden');
       expect(panel).toHaveTextContent('Rules you gave me');
-      expect(panel).toHaveTextContent('What it worked out');
     },
   );
 });

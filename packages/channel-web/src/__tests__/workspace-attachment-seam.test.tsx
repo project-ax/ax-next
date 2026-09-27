@@ -254,7 +254,6 @@ function liveDetail(): AgentDetail {
     past: [],
     memory: {
       rules: { status: 'unavailable', doc: null },
-      learned: { status: 'unavailable', docs: [] },
     },
   } as unknown as AgentDetail;
 }

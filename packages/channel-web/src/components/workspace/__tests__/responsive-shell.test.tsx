@@ -108,7 +108,6 @@ function detail(over: Partial<AgentDetail> = {}): AgentDetail {
     past: [],
     memory: {
       rules: { status: 'unavailable', doc: null },
-      learned: { status: 'unavailable', docs: [] },
     },
     ...over,
   };

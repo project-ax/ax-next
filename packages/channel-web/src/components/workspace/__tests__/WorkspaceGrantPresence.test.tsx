@@ -180,7 +180,7 @@ beforeEach(() => {
     thread: [{ kind: 'user' as const, id: 't1', text: 'file my open issues' }],
     decisions: { status: 'ok' as const },
     past: [],
-    memory: { rules: { status: 'unavailable', doc: null }, learned: { status: 'unavailable', docs: [] } },
+    memory: { rules: { status: 'unavailable', doc: null } },
   }));
   sendMock.mockReset();
   sendMock.mockResolvedValue({ conversationId: 'cnv-1', reqId: 'req-resume' });

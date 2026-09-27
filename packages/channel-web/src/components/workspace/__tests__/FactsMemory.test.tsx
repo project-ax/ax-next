@@ -40,7 +40,6 @@ const read = (
     status: 'ok',
     doc: { name: 'Your rules', scope: 'rules', body: '- Always cc Priya' },
   },
-  learned: { status: 'ok', docs: [] },
   ...(factsAvailable ? { factsAvailable: true } : {}),
   ...(factsVisibility !== undefined ? { factsVisibility } : {}),
 });
@@ -53,7 +52,7 @@ beforeEach(() => {
 });
 
 describe('MemorySurface', () => {
-  it('leaves the Strata surface untouched when facts are unavailable', () => {
+  it('falls back to the rules-only surface when facts are unavailable', () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(false)} />);
     expect(screen.getByText('Rules you gave me')).toBeInTheDocument();
     expect(screen.queryByText('Profile')).toBeNull();
@@ -69,8 +68,6 @@ describe('MemorySurface', () => {
     await waitFor(() =>
       expect(recallMock).toHaveBeenCalledWith('a1', { profile: true, history: false }),
     );
-    expect(screen.queryByText('What it worked out')).toBeNull();
-    expect(screen.queryByText(/drop the ones that stop being useful/)).toBeNull();
   });
 
   it('shows the profile rows the product picked, one row per slot', async () => {
@@ -605,7 +602,7 @@ describe('MemorySurface — extraction paused', () => {
     expect(screen.queryByText(/AI model keys/)).toBeNull();
   });
 
-  it('renders no notice on the Strata surface (only the facts surface reads the flag)', () => {
+  it('renders no notice on the rules-only fallback surface (only the facts surface reads the flag)', () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={paused(false)} />);
     expect(screen.getByText('Rules you gave me')).toBeInTheDocument();
     expect(screen.queryByText('Memory is paused')).toBeNull();
