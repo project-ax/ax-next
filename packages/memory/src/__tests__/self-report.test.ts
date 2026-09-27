@@ -75,6 +75,7 @@ describe('isAgentContextSelfReport', () => {
     // "system prompt" as a TOPIC the person asked about is real content.
     ['assistant', 'explained', 'how to write a good system prompt for GPT models'],
     ['assistant', 'described', 'a system prompt injection attack technique'],
+    ['assistant', 'stated', 'a clear system prompt is all you need for a good agent'],
     ['assistant', 'recommended', 'never given any rules of thumb for sourdough — weigh the flour'],
     // Not the agent speaking: a person's own statement is theirs to keep.
     ['user', 'stated', 'no rules have been given by the user'],

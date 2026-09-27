@@ -95,8 +95,9 @@ const CONTEXT_PATTERNS: readonly RegExp[] = [
   // prompt". Not any mention — "how to write a good system prompt" and "a
   // system prompt injection attack" are topics a person asked about.
   /\b(?:(?:from|in|by|via) (?:the|my|its)|my|its) (?:system |bootstrap )+prompt\b/,
-  // "the system prompt is all I was given", "... was the only instruction"
-  /\b(?:system |bootstrap )+prompt (?:is|was) (?:all|the only)\b/,
+  // "the system prompt is all I was given", "... was the only instruction".
+  // Needs the agent in it: "a system prompt is all you need" is advice.
+  /\b(?:system |bootstrap )+prompt (?:is|was) (?:all (?:i|it)|the only)\b/,
   // "its instructions", "my memory"
   /\b(?:my|its|the assistant's|the agent's) (?:rules|instructions|memory|memories)\b/,
 ];
