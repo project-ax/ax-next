@@ -65,6 +65,24 @@ describe('createMemoryPlugins composition', () => {
     expect(memory?.manifest.registers).toContain('memory:rules:write');
   });
 
+  it('always turns the one-time old-memory wipe on, and the assembly serves every hook it needs (TASK-576)', () => {
+    const plugins = createMemoryPlugins(baseConfig);
+    const memory = plugins.find((p) => p.manifest.name === '@ax/memory');
+    // The wipe's hard calls appear in the manifest ONLY when `wipeOldMemory`
+    // is true — so this is the observable form of "the preset passes it".
+    for (const hook of [
+      'agents:list-ids',
+      'storage:get',
+      'storage:set',
+      'workspace:purge',
+      'memory:facts:clear',
+    ]) {
+      expect(memory?.manifest.calls, hook).toContain(hook);
+      const owners = plugins.filter((p) => p.manifest.registers.includes(hook));
+      expect(owners.map((p) => p.manifest.name), `${hook} has exactly one owner`).toHaveLength(1);
+    }
+  });
+
   it('keeps the k8s default assembly on strata when hostLlmTools is set', () => {
     const k8s = createK8sPlugins({ ...baseK8s, hostLlmTools: true }).map(
       (p) => p.manifest.name,

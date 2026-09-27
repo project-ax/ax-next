@@ -161,6 +161,17 @@ export function createMemoryPlugins(config: MemoryPresetConfig): Plugin[] {
     }),
     createMemoryPlugin({
       rules: true,
+      // TASK-576 (owner ruling, 2026-09-27): switching a deployment to this
+      // preset IS the switch to facts memory, and every agent starts fresh.
+      // So the one-time, IRREVERSIBLE wipe of old (Strata) memory is always
+      // on here — no knob: `memory/**` (except `memory/system/rules.md`) and
+      // the facts export leave each agent's workspace AND its history, facts
+      // rows are cleared, the export slot is emptied. It runs once per
+      // deployment, guarded by storage markers (every later boot is one
+      // `storage:get`), and a failure fails the boot loudly rather than
+      // serving an agent its old memory. See `@ax/memory`'s
+      // `old-memory-wipe.ts`.
+      wipeOldMemory: true,
       exports: { volume: config.memoryExportVolume },
       ...(config.onObserverDetached !== undefined
         ? { onObserverDetached: config.onObserverDetached }
