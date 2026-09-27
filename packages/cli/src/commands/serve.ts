@@ -62,13 +62,17 @@ env (optional):
 
 env (required unless AX_PRESET=k8s):
   AX_MEMORY_FACTS_DB_PATH     sqlite facts database path
+
+env (optional, 'memory' preset — set all three or none):
   AX_MEMORY_EXPORT_HOST_ROOT  host dir holding exported memory profiles
   AX_MEMORY_EXPORT_NFS_SERVER export backing NFS server
   AX_MEMORY_EXPORT_NFS_PATH   export backing NFS path
 
-  First boot on the 'memory' preset permanently deletes each agent's old
-  (Strata) memory files, and their history, plus any facts memory, once —
-  see deploy/GKE.md.`;
+  Without them runners get no read-only /memory mount; recall and the
+  Memory tab still work. Setting only some of them is a boot error.
+
+  Switching an existing deployment to facts memory: see deploy/README.md
+  'Switching an existing deployment to facts memory'.`;
 
 /**
  * Env names that used to switch the agent workspace (the web interface) on and

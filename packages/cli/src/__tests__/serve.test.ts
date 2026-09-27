@@ -138,6 +138,28 @@ describe('serve command — argument parsing', () => {
     expect(code).toBe(0);
   });
 
+  it('--help: only the facts DB path is required; the export vars are optional all-or-none; no wipe claim (TASK-576)', async () => {
+    const out: string[] = [];
+    await runServeCommand({
+      argv: ['--help'],
+      env: {},
+      stdout: (line: string) => out.push(line),
+      stderr: () => undefined,
+    });
+    const help = out.join('\n');
+    const required = help.slice(
+      help.indexOf('env (required unless AX_PRESET=k8s):'),
+      help.indexOf("env (optional, 'memory' preset"),
+    );
+    expect(required).toContain('AX_MEMORY_FACTS_DB_PATH');
+    expect(required).not.toContain('AX_MEMORY_EXPORT_');
+    expect(help).toMatch(/set all three or none/);
+    expect(help).toContain('no read-only /memory mount');
+    expect(help).toContain('recall and the\n  Memory tab still work');
+    expect(help).toContain("deploy/README.md\n  'Switching an existing deployment to facts memory'");
+    expect(help).not.toMatch(/permanently deletes|first boot/i);
+  });
+
   it('without pluginsFactory, env-driven preset config is required (default preset is memory)', async () => {
     const code = await runServeCommand({
       argv: [],
