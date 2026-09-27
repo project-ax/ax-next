@@ -16,9 +16,9 @@ than a lifetime tolerates"*):
   planner's 1.6 s. The growing part is small at this size.
 - **But recall latency does grow with store size, linearly, and the whole growth is
   local.** Local work (FTS5 + `vec0` + fusion, all on the host's event loop) grows
-  **+253 ms p95 per 100k rows** (r² 0.998; +163 ms at p50). Sparse (FTS5) is two thirds
+  **+252 ms p95 per 100k rows** (r² 0.998; +163 ms at p50). Sparse (FTS5) is two thirds
   of it (**+167 ms p95 / 100k**), dense (`vec0` brute force) the rest (**+72 ms / 100k**),
-  fusion+hydrate +14 ms. The recency channel is flat. The two provider round trips do not
+  fusion+hydrate +13 ms. The recency channel is flat. The two provider round trips do not
   grow (embed ~170–200 ms p50, rerank ~170–190 ms p50 at every size).
 - **Extrapolated (not measured):** local p95 ≈ 650 ms at 250k and ≈ 1.28 s at 500k.
   Adding the ~515 ms of non-local p95 measured at 50k, recall p95 would cross **1.6 s at
@@ -75,7 +75,7 @@ vector the product just embedded. Milliseconds, nearest-rank p50 / p95.
 
 | Rows | Recall | Embed | Rerank | Local (recall − providers) | Sparse | Dense | Fusion + hydrate | Recency |
 |---:|---|---|---|---|---|---|---|---|
-| 10,000 | 380 / 695 | 179 / 320 | 167 / 320 | 31 / 40 | 20 / 28 | 9 / 11 | 2.1 / 2.5 | 0.09 |
+| 10,000 | 380 / 695 | 179 / 320 | 167 / 320 | 31 / 41 | 20 / 28 | 9 / 11 | 2.1 / 2.5 | 0.09 |
 | 25,000 | 501 / 645 | 203 / 366 | 192 / 303 | 66 / 81 | 47 / 60 | 17 / 21 | 3.5 / 4.3 | 0.09 |
 | 32,501 | 440 / 643 | 177 / 301 | 182 / 288 | 76 / 96 | 53 / 74 | 20 / 25 | 4.3 / 5.0 | 0.11 |
 | 50,000 | 457 / 657 | 162 / 296 | 172 / 307 | 98 / 142 | 62 / 95 | 28 / 40 | 6.5 / 7.9 | 0.11 |
@@ -84,12 +84,18 @@ Least-squares slope over the four checkpoints:
 
 | Stage | p50 ms per 100k rows | p95 ms per 100k rows | r² (p95) |
 |---|---:|---:|---:|
-| Local, total | +163 | **+253** | 0.998 |
+| Local, total | +163 | **+252** | 0.998 |
 | Sparse (FTS5 + join + `bm25` sort) | +104 | **+167** | 0.972 |
 | Dense (`vec0`, k = 160, exact) | +47 | **+72** | 0.986 |
-| Fusion + hydrate | +11 | +14 | 0.984 |
+| Fusion + hydrate | +11 | +13 | 0.984 |
 | Recency | +0.05 | — | — |
 | Embed, rerank | no trend (r² 0.29 / 0.005) | | |
+
+"Local" counts clean calls only. The one degraded call at 10k (below) lost the rerank
+budget race, so its rerank span outlived the recall and `recall − providers` came out at
+−1,605 ms; it is excluded (99 calls at 10k). The harness as committed now records no local
+figure for such a call; the captured `results.json` predates that fix, and this table was
+recomputed from it.
 
 End-to-end recall shows no clean trend across 10k–50k (r² 0.25) because provider jitter
 (~±150 ms) is still bigger than the local growth at this size. That is exactly why the

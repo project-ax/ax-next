@@ -48,6 +48,22 @@ describe('soak store', () => {
     expect(t.candidates).toBe(2);
   });
 
+  it('gives no local figure to a recall whose rerank lost the product budget race', async () => {
+    const fast = fakeProviderFetch();
+    const slowRerank = async (input, init) => {
+      if (new URL(String(input)).pathname === '/api/v1/rerank') await new Promise(r => setTimeout(r, 2_400));
+      return fast(input, init);
+    };
+    const store = await openStore({ directory: temporary(), env, providerFetch: slowRerank });
+    stores.push(store);
+    store.insert([withVector(fact('a', 'hiking'), 1)]);
+    const r = await store.recall('hiking', 15);
+    expect(r.degraded).toEqual(['ranking']);
+    // The span is the handler's full, late settle; `ms` is only what the recall waited.
+    expect(r.rerank.ms).toBeGreaterThan(r.ms - r.embed.ms);
+    expect(r.localMs).toBeNull();
+  });
+
   it('re-embeds vector-less rows through memory:facts:reindex', async () => {
     const store = await openStore({ directory: temporary(), env, providerFetch: fakeProviderFetch() });
     stores.push(store);
@@ -100,7 +116,7 @@ describe('summary', () => {
   it('fits per-stage growth per 100k rows and summarizes displacement by step', () => {
     const checkpoint = (rows, localMs) => ({
       checkpoint: rows, rows, realRows: rows, syntheticRows: 0, active: rows, closed: 0, bytes: rows * 3000,
-      recalls: [{ ms: 1000 + localMs, embedMs: 400, rerankMs: 600, localMs, degraded: [] }, { ms: 1, embedMs: 1, rerankMs: 1, localMs, degraded: ['semantic'] }],
+      recalls: [{ ms: 1000 + localMs, embedMs: 400, rerankMs: 600, localMs, degraded: [] }, { ms: 2224, embedMs: 196, rerankMs: 3633, localMs: -1605, degraded: ['ranking'] }],
       channels: [{ sparseMs: localMs / 2, denseMs: localMs / 2, temporalMs: 0.1, fusionMs: 1 }],
       ranks: [{ rank: 1 }, { rank: null }],
     });
@@ -111,6 +127,8 @@ describe('summary', () => {
     expect(summary.growthP50.local.msPer100kRows).toBeCloseTo(50, 9);
     expect(summary.growthP50.sparse.msPer100kRows).toBeCloseTo(25, 9);
     expect(summary.perCheckpoint[0].degradedCalls).toBe(1);
+    // A budget-race loser's negative residual (a real 10k capture) is not local time.
+    expect(summary.perCheckpoint[0].local).toMatchObject({ n: 1, mean: 50, p50: 50 });
     expect(summary.perCheckpoint[0].rank).toMatchObject({ probes: 2, hitAt1: 0.5, absent: 1 });
     expect(summary.perProbeBySize).toEqual([
       expect.objectContaining({ step: 0, meanRows: 310, hitAt5: 1, absent: 0 }),

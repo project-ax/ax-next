@@ -138,9 +138,13 @@ export async function openStore({ directory, env, providerFetch, assertBudget = 
     if (mine && (hook === 'embeddings:embed' || hook === 'embeddings:rerank')) {
       const key = hook === 'embeddings:embed' ? 'embed' : 'rerank';
       promise.then(out => {
-        mine[key] = { ms: performance.now() - started, ok: true };
+        const endAt = performance.now();
+        mine[key] = { ms: endAt - started, endAt, ok: true };
         if (key === 'embed' && input?.task === 'query') mine.queryVector = out?.vectors?.[0];
-      }, error => { mine[key] = { ms: performance.now() - started, ok: false, error: sanitizeError(error) }; });
+      }, error => {
+        const endAt = performance.now();
+        mine[key] = { ms: endAt - started, endAt, ok: false, error: sanitizeError(error) };
+      });
     }
     inflight.add(promise);
     void promise.then(() => inflight.delete(promise), () => inflight.delete(promise));
@@ -237,16 +241,20 @@ export async function openStore({ directory, env, providerFetch, assertBudget = 
       } catch (e) {
         error = sanitizeError(e);
       }
-      const ms = performance.now() - started;
+      const endedAt = performance.now();
+      const ms = endedAt - started;
       capture = null;
       await drain(); // untimed: late provider spans land before we read them
       // The producers swallow a refused reservation into a degraded recall, so without
       // this the cap would stop spend silently while the run kept "measuring".
       assertBudget();
-      const embedMs = mine.embed?.ms ?? 0;
-      const rerankMs = mine.rerank?.ms ?? 0;
+      // `recall − providers` is local time only when both producers settled INSIDE the
+      // recall. One that lost the product's budget race settles later, and subtracting its
+      // full span would make "local" negative; that call has no local figure.
+      const late = [mine.embed, mine.rerank].some(span => span && span.endAt > endedAt);
+      const localMs = late ? null : ms - (mine.embed?.ms ?? 0) - (mine.rerank?.ms ?? 0);
       return {
-        ms, embed: mine.embed, rerank: mine.rerank, localMs: ms - embedMs - rerankMs,
+        ms, embed: mine.embed, rerank: mine.rerank, localMs,
         ids: out?.statements.map(s => s.id) ?? [], degraded: out?.degraded ?? null, queryVector: mine.queryVector,
         ...(error ? { error } : {}),
       };
@@ -534,7 +542,9 @@ export function summarizeRun(results) {
       degradedCalls: c.recalls.length - clean.length,
       embed: summarize(c.recalls.map(r => r.embedMs)),
       rerank: summarize(c.recalls.map(r => r.rerankMs)),
-      local: summarize(c.recalls.map(r => r.localMs)),
+      // Clean calls only: a degraded call lost a producer's budget race, so its
+      // `recall − providers` residual is not local time (older captures stored it negative).
+      local: summarize(clean.map(r => r.localMs)),
       sparse: channel('sparseMs'), dense: channel('denseMs'), temporal: channel('temporalMs'), fusion: channel('fusionMs'),
       ...(c.ranks ? { rank: rankSummary(c.ranks.map(r => r.rank)) } : {}),
     };
@@ -564,7 +574,7 @@ function rankSummary(ranks) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   main().then(() => { process.exitCode = 0; }).catch(error => {
-    console.error('Soak failed; no credential values are printed.', sanitizeError(error), error?.message?.slice(0, 300));
+    console.error('Soak failed; no credential values are printed.', sanitizeError(error));
     process.exitCode = 1;
   });
 }
