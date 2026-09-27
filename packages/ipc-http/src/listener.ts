@@ -177,8 +177,9 @@ export async function createHttpListener(
     // k8s backend, so the runner-completed `chat:end` lands here for k8s
     // sessions; without the stamp a routine-fire guard on `chat:end` could
     // never fire on a successful k8s turn. (The guard that motivated this,
-    // @ax/memory-strata's, was deleted in TASK-608 and nothing in-tree reads
-    // it now; it is kept as generic provenance.) `source` comes from the session
+    // @ax/memory-strata's, was deleted in TASK-608. @ax/memory now reads it to
+    // store a routine turn's rows with no conversation, keeping scheduled runs
+    // out of the skill-reflection recurrence count — TASK-616.) `source` comes from the session
     // record (set at session:create from the orchestrator's ctx.source), NEVER
     // from a runner-supplied frame — it's absent from @ax/ipc-protocol and
     // never read off the inbound payload. Null ⇒ field off (user turn).

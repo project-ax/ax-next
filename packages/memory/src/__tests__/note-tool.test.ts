@@ -260,6 +260,20 @@ describe('a valid note', () => {
     expect(row.conversation_id).toBeNull();
   });
 
+  it('a note made during a routine run carries no conversation (TASK-616)', async () => {
+    // A routine fire runs in its own hidden conversation; counting it would
+    // let the skill-reflection routine inflate its own recurrence gate.
+    const h = await withHarness();
+    await note(
+      h,
+      { about: 'user', relation: 'lives in', value: 'Boston' },
+      h.ctx({ conversationId: 'conv-routine', source: 'routine' }),
+    );
+    const row = readRows(h.databasePath)[0]!;
+    expect(row.value).toBe('Boston');
+    expect(row.conversation_id).toBeNull();
+  });
+
   it('honors a caller-supplied when, and judges an unreadable one itself', async () => {
     const h = await withHarness();
     expect(await note(h, { about: 'user', relation: 'r', value: 'v', when: JAN })).toEqual({

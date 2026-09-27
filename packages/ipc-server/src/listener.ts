@@ -171,11 +171,14 @@ export async function createListener(opts: CreateListenerOptions): Promise<Liste
     // observer + consolidator on a scheduled @ax/routines fire — without this,
     // that guard only fired on the orchestrator-synthesized error/terminated
     // paths and in unit tests, never on a successful turn. Strata was deleted
-    // in TASK-608 and nothing in-tree reads it now (@ax/memory deliberately
-    // does not skip routine turns); it is kept as generic provenance. SECURITY: `source`
+    // in TASK-608. @ax/memory stores routine turns but reads `source` to leave
+    // their rows unattributed to the routine's hidden conversation (TASK-616),
+    // so this stamp is what keeps a scheduled run out of the skill-reflection
+    // recurrence count on a successful turn. SECURITY: `source`
     // comes from the session record (set at session:create from the
     // orchestrator's ctx.source), NOT from any runner-supplied frame field; an
-    // untrusted runner cannot forge `source: 'routine'` to suppress its memory.
+    // untrusted runner cannot forge `source: 'routine'` to change how its memory
+    // is attributed.
     // It is deliberately absent from @ax/ipc-protocol and never read off the
     // inbound payload here. AgentContext.source is OPTIONAL — null on the auth
     // result leaves the field off entirely (treated as a user turn).

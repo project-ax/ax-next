@@ -121,7 +121,9 @@ export function createFireRoutine(deps: FireDeps) {
       // Mark this as a routine-originated (non-user) turn. A subscriber that
       // must not act on internally-generated turns would key off ctx.source.
       // None in-tree does since @ax/memory-strata's deletion (TASK-608);
-      // @ax/memory deliberately stores routine turns too. See AgentContext.source.
+      // @ax/memory stores routine turns too, but with no conversation, so a
+      // routine run never counts as one the person had (TASK-616). See
+      // AgentContext.source.
       source: 'routine',
       // Human-authored label for a status line ("Right now this agent is…").
       // Must be set here, at the moment the turn starts: @ax/routines only

@@ -20,6 +20,7 @@ import {
   memoryFailureEvent,
   noCredentialFields,
 } from './failure.js';
+import { conversationField, conversationOf } from './conversation.js';
 import { runObserver, type ObserverRecordInput, type ObserverResult } from './observer.js';
 import {
   dropRementionedSlotRows,
@@ -888,10 +889,9 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
                   ownerUserId,
                   // Provenance only, never a retrieval key — and absent
                   // rather than faked when the turn has no conversation
-                  // (a canary, an admin probe).
-                  ...(ctx.conversationId !== undefined
-                    ? { conversationId: ctx.conversationId }
-                    : {}),
+                  // (a canary, an admin probe) or is a routine run
+                  // (`conversationOf`, TASK-616).
+                  ...conversationField(ctx),
                 },
               ],
             },
@@ -1001,6 +1001,12 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         // is a rule for how a routine's statements are STORED, not a reason
         // not to store them. `owner.ts` says the same in as many words and
         // does not branch on `source`.
+        //
+        // What `source` DOES change is attribution (TASK-616): a routine
+        // turn's rows are stored with no conversation, because a routine's
+        // hidden per-fire conversation is not one the person had, and
+        // counting it let skill-reflection's own passes inflate the
+        // distinct-conversation gate. See `conversation.ts`.
         const work = observeChatEnd(bus, ctx, payload, {
           memoryOpsHook,
           model: parsedMemoryOps.modelId,
@@ -1118,7 +1124,11 @@ async function observeChatEnd(
         return out;
       },
       ownerUserId,
+      // The batch identity keeps the real conversation; the rows are
+      // attributed per `conversationOf` (a routine run is not a
+      // conversation the person had — TASK-616).
       conversationId: ctx.conversationId,
+      statementConversationId: conversationOf(ctx),
       model: cfg.model,
       now: new Date(),
       timeoutMs: cfg.observerTimeoutMs,

@@ -6,6 +6,7 @@ import { createMemoryPlugin } from '../plugin.js';
 import { buildBatchKey } from '../observer.js';
 import { EXTRACTION_SYSTEM_PROMPT } from '../extraction-prompt.js';
 import { OBSERVER_FAILED_EVENT, NO_CREDENTIAL_EVENT, OBSERVER_RUN_EVENT } from '../failure.js';
+import { MEMORY_RECALL_TOOL_HOOK } from '../recall-tool.js';
 import {
   ALICE,
   BOB,
@@ -819,6 +820,86 @@ describe("the agent's reports about its own context are not facts (TASK-612)", (
     // that ate a whole batch must leave a trace.
     expect(skipped[0]?.bindings.reason).toBe('only-self-reports');
     expect(skipped[0]?.bindings.selfReports).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('a routine run is not a conversation the person had (TASK-616)', () => {
+  // The skill-reflection gate counts DISTINCT conversations in one recall
+  // answer. Every routine fire (skill-reflection's own included) runs in a
+  // fresh hidden conversation, so if its extracted rows carried that
+  // conversation, N reflection passes restating a one-off procedure would
+  // read as N+1 conversations and clear the >=2 threshold on their own.
+  const PROCEDURE = fact({
+    network: 'experience',
+    predicate: 'deploy_procedure',
+    object: 'run the migration script, then restart the workers',
+  });
+
+  it('N reflection runs over a one-off procedure stay at ONE distinct conversation', async () => {
+    const h = await withLlm(() => reply(extraction([PROCEDURE])));
+    // The one real conversation where the person walked through it.
+    await chatEnd(h, {
+      ctx: h.ctx({ conversationId: 'conv-real' }),
+      messages: [
+        { role: 'user', content: 'To deploy, run the migration script, then restart the workers.' },
+        { role: 'assistant', content: 'Got it.' },
+      ],
+    });
+    // Three reflection passes, each in its own fresh routine conversation,
+    // each restating the procedure it found in recall.
+    for (const n of [1, 2, 3]) {
+      await chatEnd(h, {
+        ctx: h.ctx({
+          conversationId: `conv-routine-${n}`,
+          sessionId: `routine-session-${n}`,
+          source: 'routine',
+        }),
+        messages: [
+          { role: 'user', content: `Reflection pass ${n}: review procedures in memory.` },
+          { role: 'assistant', content: 'The user deploys by running the migration script, then restarting the workers.' },
+        ],
+      });
+    }
+
+    // Still stored — design §3.2 stores routine turns under the routine
+    // owner; the fix is what they count as, not whether they exist.
+    const rows = readRows(h.databasePath);
+    expect(rows).toHaveLength(4);
+    expect(rows.filter((r) => r.conversation_id !== null).map((r) => r.conversation_id)).toEqual([
+      'conv-real',
+    ]);
+
+    const { statements } = await h.recall({ limit: 20, activeOnly: false });
+    const conversations = new Set(
+      statements.map((s) => s.conversation).filter((c) => c !== undefined),
+    );
+    expect(conversations.size).toBe(1);
+
+    const rendered = await h.bus.call<{ input?: unknown }, string>(MEMORY_RECALL_TOOL_HOOK, h.ctx(), {
+      input: { query: 'deploy procedure migration script' },
+    });
+    expect(rendered).toContain('Distinct conversations in this evidence: 1.');
+  });
+
+  it('still dedups a routine re-fire per conversation: two fires with identical dialogue both record', async () => {
+    // The routine conversation leaves the ROW, not the batch key. Were the
+    // key built from the stripped id, the second fire's byte-identical
+    // transcript would collide with the first and write nothing.
+    const h = await withLlm(() => reply(extraction([PROCEDURE])));
+    for (const n of [1, 2]) {
+      await chatEnd(h, {
+        ctx: h.ctx({ conversationId: `conv-routine-${n}`, source: 'routine' }),
+      });
+    }
+    expect(readRows(h.databasePath)).toHaveLength(2);
+  });
+
+  it('a user turn (source unset or `user`) still carries its conversation', async () => {
+    const h = await withLlm(() => reply(extraction([fact()])));
+    await chatEnd(h, { ctx: h.ctx({ conversationId: 'conv-u', source: 'user' }) });
+    expect(readRows(h.databasePath).map((r) => r.conversation_id)).toEqual(['conv-u']);
   });
 });
 

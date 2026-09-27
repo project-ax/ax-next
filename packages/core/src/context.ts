@@ -103,10 +103,12 @@ export interface AgentContext {
    * hidden, non-user turn); `'user'` marks an interactive user turn. Optional
    * because most callers don't need to distinguish, and an unset value means
    * "unspecified" (treated the same as `'user'` by consumers). A subscriber
-   * that must NOT act on internally-generated turns would key off this. No
-   * in-tree subscriber does today: @ax/memory-strata did (it skipped its
-   * `chat:end` extraction on routine fires) and was deleted in TASK-608, and
-   * @ax/memory deliberately does not. It is kept as generic provenance.
+   * that must NOT act on internally-generated turns would key off this.
+   * @ax/memory-strata did (it skipped its `chat:end` extraction on routine
+   * fires) and was deleted in TASK-608. @ax/memory still stores routine
+   * turns, but stores their rows with no conversation (TASK-616): a routine's
+   * hidden conversation is not one the person had, and must not count
+   * toward the skill-reflection recurrence gate.
    *
    * Origin label only — no transport/storage vocabulary, so it stays
    * transport-agnostic per Invariant 1.

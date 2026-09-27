@@ -133,6 +133,24 @@ describe('@ax/memory — speaker rewrite and the ownership stamp', () => {
     ).rejects.toMatchObject({ code: 'forbidden' });
   });
 
+  it('a routine turn keeps its owner but not its conversation (TASK-616)', async () => {
+    // Stored, owned — and not attributed to the routine's hidden
+    // conversation, which would count as a conversation the person had.
+    harness = await makeMemoryHarness({}, { agent: { ownerUserId: BOB } });
+    await harness.remember(
+      { about: 'user', relation: 'lives_in', value: 'Lisbon' },
+      harness.ctx({ userId: BOB, source: 'routine', conversationId: 'conv-routine' }),
+    );
+    await harness.remember(
+      { about: 'user', relation: 'works_at', value: 'Acme' },
+      harness.ctx({ userId: BOB, conversationId: 'conv-real' }),
+    );
+    const { statements } = await engineRecall(harness.bus, harness.ctx(), { limit: 10 });
+    const byValue = new Map(statements.map((s) => [s.value, s]));
+    expect(byValue.get('Lisbon')).not.toHaveProperty('conversationId');
+    expect(byValue.get('Acme')?.conversationId).toBe('conv-real');
+  });
+
   it('REFUSES an owner-less session rather than minting a private partition', async () => {
     harness = await makeMemoryHarness();
     const ownerless = harness.ctx({ userId: ownerlessIdFor('session-1') });
