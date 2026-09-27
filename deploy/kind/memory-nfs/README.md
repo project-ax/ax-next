@@ -37,8 +37,9 @@ helm --kube-context kind-ax-next-dev upgrade --install ax-next deploy/charts/ax-
   -f <your-previous-values.yaml>
 ```
 
-To go back to the legacy Strata preset instead, pass `--set host.preset=k8s`
-(and skip this server entirely — it does nothing on that preset).
+There is no going back to the legacy Strata preset: it was deleted in TASK-608,
+and `--set host.preset=k8s` now fails `helm template` with a pointer to the
+switch runbook in `deploy/README.md`.
 
 Check it took:
 

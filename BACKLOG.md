@@ -30,14 +30,6 @@ These wait on stated triggers — don't ship pre-emptively.
 - [ ] **User-delete wiring in `@ax/auth-better`.** When a user-delete service hook lands, it should call `credentials:purge-by-owner({ scope: 'user', ownerId })` — the facade hook + the matching agent-delete wiring already exist; only the auth-better side is missing.
 - [ ] **Bulk "all credentials" admin inventory view.** Design §3 non-goal; revisit when an operator needs a single audit surface.
 
-## Memory-strata Phase 5+ (friction-driven; don't pre-schedule)
-
-Listed here only so the triggers are easy to find. Per the roadmap, these stay dormant until their stated trigger fires.
-
-- [ ] **Multi-tenant memory scoping** — when ax-next opens to multi-tenant beyond per-agent isolation.
-- [ ] **Curator-as-patch pipeline** — when user-facing memory governance is requested OR bad-observation incidents surface.
-- [ ] **Reranker (Level 6) re-spike** — only with new candidate model + production BM25 recall evidence.
-- [ ] **Memory replay / time-travel queries** — when a user asks "what did the agent know on date X?"
 - [ ] **Cross-agent memory sharing** — explicit user request only (likely requires the Curator pipeline first).
 - [ ] **Bring-your-own embedding provider** — Phase 3 dropped vectors; reopen only if Level 7 is re-spiked and lands "IN".
 

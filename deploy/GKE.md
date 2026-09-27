@@ -150,7 +150,7 @@ echo "Cloud SQL private IP: $DB_PRIVATE_IP"
 > edition upgrade (sub-second downtime, keeps the same name / IP / DSN) if you
 > need the data cache or more performance. So start small and grow.
 
-### 1c. Enable pgvector (only if you'll use memory/strata plugins)
+### 1c. Enable pgvector
 
 External Postgres **skips the chart's pgvector init job** — you enable the
 extension yourself. The default chat path doesn't need it, but it's harmless to
@@ -442,10 +442,10 @@ token's in a Secret, not your values/shell history — same posture as the DB DS
 
 `host.preset` defaults to `memory` — an LLM observer (@ax/memory) extracts
 durable facts from conversations into a sqlite-backed store, with semantic
-recall over embeddings + reranking. The legacy Strata memory (markdown files
-written straight into each agent's git-tracked workspace, no LLM extraction)
-is still there as `host.preset: k8s`, but it is no longer what a fresh
-install gets.
+recall over embeddings + reranking. It is the only memory now: the legacy
+Strata memory (`host.preset: k8s`) was deleted in TASK-608, and setting
+`host.preset: k8s` makes `helm template` fail with a pointer to the switch
+runbook.
 
 ### Provision the NFS export
 
@@ -506,7 +506,8 @@ the chart; the key lives in the credential store, not in values.
 
 ### Switching an existing deployment from Strata
 
-Nothing in the code clears old memory. When an existing deployment moves from
+Nothing in the code clears old memory (apart from Strata's Postgres search
+index, which the host drops on boot). When an existing deployment moves from
 `host.preset: k8s` (Strata) to facts memory and nobody needs the old data, follow
 the one-time operator runbook **"Switching an existing deployment to facts memory"**
 in [`deploy/README.md`](README.md). Read its warning first: the workspace step
@@ -516,7 +517,8 @@ git-server to reset. The runbook deletes the `ws-*.git` repos on the host PVC an
 leaves `blobs/` alone, and it erases the Filestore memory-exports share if
 `memory.exports` is set.
 
-To keep the legacy Strata memory instead, set `host.preset: k8s`.
+Keeping the legacy Strata memory is no longer an option: it was deleted in
+TASK-608.
 
 ---
 
