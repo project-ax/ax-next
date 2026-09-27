@@ -436,12 +436,21 @@ describe('@ax/preset-memory canary', () => {
     expect(bus.hasService('memory:learned:read')).toBe(false);
   });
 
-  it('skill-reflection is OFF and cannot be turned on under facts memory (TASK-609)', async () => {
+  it('skill-reflection runs the facts-memory prompt and can be turned on (TASK-611)', async () => {
     const ctx = ctxFor('canary-routines', ALICE);
-    const def = await bus.call<{ defaultRoutineId: string }, { enabled: boolean }>(
-      'routines:get-default', ctx, { defaultRoutineId: 'skill-reflection' },
-    );
+    const def = await bus.call<
+      { defaultRoutineId: string },
+      { enabled: boolean; promptBody: string }
+    >('routines:get-default', ctx, { defaultRoutineId: 'skill-reflection' });
+    // The seed ships OFF (the operator rollout gate); what TASK-611 removes is
+    // the TASK-609 refusal and the Strata-only recurrence gate.
     expect(def.enabled).toBe(false);
+    expect(def.promptBody).toContain('memory_recall');
+    expect(def.promptBody).toContain('2 or more different conversation numbers');
+    expect(def.promptBody).not.toContain('memory/docs');
+    expect(def.promptBody).not.toContain('source_conversations');
+    expect(bus.hasService('tool:execute:memory_recall')).toBe(true);
+
     const sourceMd = [
       '---',
       'name: skill-reflection',
@@ -454,9 +463,13 @@ describe('@ax/preset-memory canary', () => {
       'reflect',
       '',
     ].join('\n');
-    await expect(
-      bus.call('routines:upsert-default', ctx, { sourceMd, enabled: true }),
-    ).rejects.toMatchObject({ code: 'default-disabled-by-deployment' });
+    await bus.call('routines:upsert-default', ctx, { sourceMd, enabled: true });
+    const after = await bus.call<{ defaultRoutineId: string }, { enabled: boolean }>(
+      'routines:get-default', ctx, { defaultRoutineId: 'skill-reflection' },
+    );
+    expect(after.enabled).toBe(true);
+    // Back off, so no later case in this file races a reflection fire.
+    await bus.call('routines:upsert-default', ctx, { sourceMd, enabled: false });
   });
 
   it('agent detail exposes the memory surface; rules save+read round-trip over HTTP', async () => {
@@ -651,7 +664,9 @@ describe('@ax/preset-memory canary', () => {
       ctxFor(aliceAgentId, ALICE),
       { input: { query: 'work' } },
     );
-    expect(table).toContain('| Network | When | Statement |');
+    // TASK-611: the Conv column carries the per-answer conversation number.
+    expect(table).toContain('| Network | When | Conv | Statement |');
+    expect(table).toMatch(/Distinct conversations in this evidence: \d+\./);
     // TASK-526: a kind-less row says who saved it, and the caller's own
     // subject renders as DEM's literal `user`, never the stored `user:<id>`.
     expect(table).toContain('| [AGENT] |');

@@ -1,41 +1,13 @@
 import { sql, type Kysely, type Generated, type ColumnType } from 'kysely';
-import { SKILL_REFLECTION_PROMPT, SKILL_REFLECTION_ROUTINE_NAME } from './reflection-prompt.js';
+import {
+  SKILL_REFLECTION_PROMPT,
+  SKILL_REFLECTION_ROUTINE_NAME,
+  SKILL_REFLECTION_SEED_HASH,
+  SKILL_REFLECTION_STRATA_SEED_HASH,
+} from './reflection-prompt.js';
 
 // Heartbeat default seed content — mirrors heartbeat-template.ts (which is
 // deleted in Task 7; keep both in sync until then).
-/**
- * Keep the named default routines OFF (TASK-609). Scoped to exactly `names`:
- * sets each one's GLOBAL `enabled` to false (which stops both materialization
- * and the tick claim) and deletes its already-materialized per-agent rows, so
- * an existing deployment that had flipped it on stops firing and stops listing
- * it. Fire history (`routines_v1_fires`) has no FK to definitions and is kept.
- * Idempotent: a second run matches no rows. `updated_at` is deliberately not
- * bumped — it drives `refreshStale`, and nothing about the spec changed.
- */
-export async function disableDefaultRoutines(
-  db: Kysely<RoutinesDatabase>,
-  names: readonly string[],
-): Promise<{ disabled: number; removed: number }> {
-  if (names.length === 0) return { disabled: 0, removed: 0 };
-  const list = [...names];
-  const disabled = await sql`
-    UPDATE default_routines_v1
-       SET enabled = false
-     WHERE name = ANY(${list}::text[])
-       AND enabled
-  `.execute(db);
-  const removed = await sql`
-    DELETE FROM routines_v1_definitions r
-     USING default_routines_v1 d
-     WHERE r.definition_id = d.default_routine_id
-       AND d.name = ANY(${list}::text[])
-  `.execute(db);
-  return {
-    disabled: Number(disabled.numAffectedRows ?? 0),
-    removed: Number(removed.numAffectedRows ?? 0),
-  };
-}
-
 const HEARTBEAT_SEED_MD: string = [
   '---',
   'name: heartbeat',
@@ -360,11 +332,46 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
     VALUES
       (${SKILL_REFLECTION_ROUTINE_NAME}, ${SKILL_REFLECTION_ROUTINE_NAME},
        'Autonomously graduate recurring procedures from memory into durable skills.',
-       'seed-2026-06-08',
+       ${SKILL_REFLECTION_SEED_HASH},
        'interval', ${'{"kind":"interval","every":"24h"}'}::jsonb, 86400,
        'REFLECTION_DONE', 4000, 'per-fire',
        ${SKILL_REFLECTION_PROMPT}, 'seed', false)
     ON CONFLICT (name) DO NOTHING
+  `.execute(db);
+
+  // TASK-611: bring skill-reflection back under facts memory — ONE-SHOT, by
+  // construction. It matches only the skill-reflection row still carrying the
+  // untouched Strata-era seed (`spec_hash` + `source_md = 'seed'`; an operator's
+  // own upsert replaces both), and it moves `spec_hash` off that value, so a
+  // re-run matches nothing.
+  //
+  // 1. Swap in the facts-memory prompt. The seed above is ON CONFLICT DO
+  //    NOTHING, so without this an existing deployment would keep reading the
+  //    deleted `memory/docs/**` frontmatter forever. `updated_at` is bumped so
+  //    `refreshStale` carries the new prompt to already-materialized rows.
+  // 2. Undo what TASK-609's `forceDisabledDefaults` did. That boot step set the
+  //    GLOBAL flag false and left no marker, so the only surviving evidence
+  //    that a deployment had reflection ON is its fire history (fires have no
+  //    FK to definitions and were kept). A row that already fired is turned
+  //    back ON; one that never fired is left as it is — the seed ships OFF,
+  //    so "never fired" means "never turned on", not "turned off by #763".
+  //    What the data CANNOT tell apart: an operator who switched the GLOBAL
+  //    flag off themselves after it had fired (bus or raw SQL only; there is
+  //    no UI for it) is re-enabled too. Per-agent opt-outs live in
+  //    agent_default_routine_overrides_v1, which neither #763 nor this
+  //    touches, so a person's own toggle survives.
+  await sql`
+    UPDATE default_routines_v1 d
+       SET prompt_body = ${SKILL_REFLECTION_PROMPT},
+           spec_hash   = ${SKILL_REFLECTION_SEED_HASH},
+           updated_at  = now(),
+           enabled     = d.enabled OR EXISTS (
+             SELECT 1 FROM routines_v1_fires f
+              WHERE f.path = 'default:' || d.default_routine_id
+           )
+     WHERE d.name = ${SKILL_REFLECTION_ROUTINE_NAME}
+       AND d.spec_hash = ${SKILL_REFLECTION_STRATA_SEED_HASH}
+       AND d.source_md = 'seed'
   `.execute(db);
 
   // PR #105 backfill: drop default-sourced rows materialized with the

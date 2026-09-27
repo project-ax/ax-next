@@ -82,7 +82,7 @@ describe('createMemoryPlugins composition', () => {
     expect(mem).toContain('@ax/memory-facts-sqlite');
   });
 
-  it('loads @ax/routines exactly once, and the k8s base still loads its own (TASK-609)', () => {
+  it('loads @ax/routines exactly once — the k8s base\'s own instance (TASK-611)', () => {
     expect(names(baseConfig).filter((n) => n === '@ax/routines')).toHaveLength(1);
     expect(
       createK8sPlugins(baseK8s).filter((p) => p.manifest.name === '@ax/routines'),

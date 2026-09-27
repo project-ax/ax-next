@@ -44,9 +44,9 @@ describe('renderEvidenceTable', () => {
         AS_OF,
       ),
     ).toBe(
-      '| Network | When | Statement |\n' +
-        '| :---- | :---- | :---- |\n' +
-        '| [FACT] | 2023-06-01 (Thu, 2 weeks ago) | user likes artist: Khalid |',
+      '| Network | When | Conv | Statement |\n' +
+        '| :---- | :---- | :---- | :---- |\n' +
+        '| [FACT] | 2023-06-01 (Thu, 2 weeks ago) | - | user likes artist: Khalid |',
     );
   });
 
@@ -61,8 +61,8 @@ describe('renderEvidenceTable', () => {
       AS_OF,
     );
     const lines = table.split('\n');
-    expect(lines[0]).toBe('| Network | When | Statement |');
-    expect(lines[1]).toBe('| :---- | :---- | :---- |');
+    expect(lines[0]).toBe('| Network | When | Conv | Statement |');
+    expect(lines[1]).toBe('| :---- | :---- | :---- | :---- |');
     expect(lines.slice(2).map((l) => l.split('|')[1])).toEqual([
       ' [FACT] ',
       ' [FACT] ',
@@ -208,7 +208,63 @@ describe('renderRecallResult', () => {
     const out = renderRecallResult({ statements: [], degraded: ['semantic', 'rank|ing\nx'] }, AS_OF);
     expect(out).toContain('Degraded: semantic, rank\\|ing x');
   });
+
+  it('counts zero distinct conversations when no statement carries one', () => {
+    const out = renderRecallResult(
+      { statements: [row({ id: 'a', when: '2023-01-01T00:00:00.000Z' })], degraded: [] },
+      AS_OF,
+    );
+    expect(out).toContain('Distinct conversations in this evidence: 0.');
+  });
+
+  it('counts the distinct conversation ordinals actually present, not the statement count', () => {
+    const out = renderRecallResult(
+      {
+        statements: [
+          row({ id: 'a', when: '2023-01-01T00:00:00.000Z', conversation: 1 }),
+          row({ id: 'b', when: '2023-02-01T00:00:00.000Z', conversation: 1 }),
+          row({ id: 'c', when: '2023-03-01T00:00:00.000Z', conversation: 2 }),
+        ],
+        degraded: [],
+      },
+      AS_OF,
+    );
+    expect(out).toContain('Distinct conversations in this evidence: 2.');
+  });
 });
+
+describe('renderEvidenceTable — Conv column', () => {
+  it('renders `#<n>` for a numbered statement and `-` for one with none', () => {
+    const table = renderEvidenceTable(
+      [
+        row({ id: 'a', when: '2023-01-01T00:00:00.000Z', conversation: 1 }),
+        row({ id: 'b', when: '2023-02-01T00:00:00.000Z' }),
+        row({ id: 'c', when: '2023-03-01T00:00:00.000Z', conversation: 2 }),
+      ],
+      AS_OF,
+    );
+    const lines = table.split('\n').slice(2);
+    expect(lines.map((l) => l.split('|')[3])).toEqual([' #1 ', ' - ', ' #2 ']);
+  });
+});
+
+// DEM's `compileEvidenceTable` predates the Conv column (TASK-611) and never
+// will carry one — it has no conversation-ordinal concept. The parity tests
+// below still assert every OTHER cell is byte-identical to DEM's output, so
+// this inserts the column DEM's table lacks (always `-` here: none of the
+// parity fixtures below set `conversation`) at the same position ours does,
+// rather than weakening the comparison to skip the column entirely.
+function withConvColumn(table: string): string {
+  return table
+    .split('\n')
+    .map((line, i) => {
+      const cells = line.split('|');
+      const insertion = i === 0 ? ' Conv ' : i === 1 ? ' :---- ' : ' - ';
+      cells.splice(3, 0, insertion);
+      return cells.join('|');
+    })
+    .join('\n');
+}
 
 describe('DEM parity', () => {
   async function loadDemReflect(): Promise<{
@@ -274,7 +330,7 @@ describe('DEM parity', () => {
       })),
       AS_OF,
     );
-    expect(ours).toBe(demTable);
+    expect(ours).toBe(withConvColumn(demTable));
   });
 
   it('is byte-identical for a superseded (closed) row too', async () => {
@@ -310,7 +366,7 @@ describe('DEM parity', () => {
       ],
       AS_OF,
     );
-    expect(ours).toBe(demTable);
+    expect(ours).toBe(withConvColumn(demTable));
   });
 
   it('documents the deliberate exception: DEM would let a hostile value forge a row', async () => {

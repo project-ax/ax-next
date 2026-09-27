@@ -41,9 +41,10 @@
  *      and that a guard keyed on it skips — the established TASK-176 source path.
  *      (The REAL observer that carried this guard was @ax/memory-strata's,
  *      deleted in TASK-608. @ax/memory's observer deliberately does NOT skip
- *      routine turns, so no in-tree subscriber enforces this today; the
- *      skill-reflection routine is forced OFF under facts memory until
- *      TASK-611.)
+ *      routine turns, so no in-tree subscriber enforces this today. TASK-611
+ *      turned skill-reflection back on under facts memory; its prompt tells
+ *      the model not to count rows about reflection passes or skills, and
+ *      the observer-side guard is a separate follow-up.)
  *
  *   4. recurrence prompt-guard — assert SKILL_REFLECTION_PROMPT carries the
  *      ≥2-distinct-conversations clause, the anti-pattern list, prefer-patch,
@@ -406,13 +407,25 @@ describe('skill-crystallization wiring canary (TASK-178)', () => {
     // Recurrence ≥2 distinct conversations (the structural inversion of Hermes).
     expect(p).toMatch(/2 DISTINCT past conversations/);
     expect(p).toMatch(/at least 2 DISTINCT past conversations/);
-    // TASK-187 (option b′): the recurrence signal comes from consolidated
-    // memory's `source_conversations` frontmatter, NOT from grepping transcripts
-    // (TASK-67 gitignores `.claude/projects/` out of /agent, so a transcript
-    // grep always saw only the current session and always no-op'd). Lock in:
-    //   - the prompt names the materialized signal it reads, and
-    //   - it no longer instructs the agent to grep `.claude/projects/` transcripts.
-    expect(p).toMatch(/source_conversations/);
+    // TASK-611: the recurrence signal is `memory_recall`'s per-answer
+    // conversation numbers (Strata's `source_conversations` frontmatter went
+    // with Strata in TASK-608), and still NOT a transcript grep (TASK-67
+    // gitignores `.claude/projects/` out of /agent, so a transcript grep always
+    // saw only the current session and always no-op'd). Lock in:
+    //   - the prompt names the signal it reads and the >=2-numbers rule,
+    //   - numbers are compared within ONE answer (they are per-answer ordinals),
+    //   - rows saved outside a conversation, and rows about reflection itself,
+    //     do not count,
+    //   - no Strata-era path survives, and
+    //   - it does not instruct the agent to grep `.claude/projects/` transcripts.
+    expect(p).toMatch(/memory_recall/);
+    expect(p).toMatch(/2 or more different conversation numbers in the same answer/);
+    expect(p).toMatch(/only comparable within ONE answer/);
+    expect(p).toMatch(/Rows marked "-" were saved outside a conversation and do not count/);
+    expect(p).toMatch(/Rows about these reflection passes, or about skills you created or proposed, do not count/);
+    expect(p).not.toMatch(/source_conversations/);
+    expect(p).not.toMatch(/memory\/docs/);
+    expect(p).not.toMatch(/memory\/system/);
     expect(p).not.toMatch(/\.claude\/projects/);
     expect(p).not.toMatch(/\.jsonl/);
     expect(p.toLowerCase()).not.toContain('grep your own transcripts');
@@ -420,8 +433,8 @@ describe('skill-crystallization wiring canary (TASK-178)', () => {
     // transcripts" clause in the recurrence step. Naming the deprecated path —
     // even to forbid it — still cued the model to go grep `.claude/projects/`
     // transcripts and then second-guess itself (2 of 3 reflection fires in the
-    // TASK-180 walk). The recurrence step must reference ONLY the consolidated
-    // `source_conversations` signal and must not mention transcripts or grepping
+    // TASK-180 walk). The recurrence step must reference ONLY the memory_recall
+    // recurrence signal and must not mention transcripts or grepping
     // them at all (neither permitting nor prohibiting). Guard the prompt body
     // against re-acquiring any transcript/grep vocabulary.
     expect(p.toLowerCase()).not.toContain('transcript');

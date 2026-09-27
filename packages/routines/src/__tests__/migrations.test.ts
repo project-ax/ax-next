@@ -7,7 +7,11 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
 import { runRoutinesMigration, type RoutinesDatabase } from '../migrations.js';
-import { SKILL_REFLECTION_PROMPT } from '../reflection-prompt.js';
+import {
+  SKILL_REFLECTION_PROMPT,
+  SKILL_REFLECTION_SEED_HASH,
+  SKILL_REFLECTION_STRATA_SEED_HASH,
+} from '../reflection-prompt.js';
 
 // pg returns BIGINT (OID 20) as string by default; parse as number for test assertions.
 pg.types.setTypeParser(20, (v) => Number(v));
@@ -196,9 +200,10 @@ describe('runRoutinesMigration', () => {
       silence_max: number;
       conversation: string;
       prompt_body: string;
+      spec_hash: string;
     }>`
       SELECT default_routine_id, name, enabled, trigger_kind, interval_seconds,
-             silence_token, silence_max, conversation, prompt_body
+             silence_token, silence_max, conversation, prompt_body, spec_hash
         FROM default_routines_v1 WHERE name = 'skill-reflection'
     `.execute(db);
 
@@ -216,6 +221,7 @@ describe('runRoutinesMigration', () => {
     expect(r.conversation).toBe('per-fire');
     // The seeded body is the canonical reflection meta-prompt verbatim.
     expect(r.prompt_body).toBe(SKILL_REFLECTION_PROMPT);
+    expect(r.spec_hash).toBe(SKILL_REFLECTION_SEED_HASH);
   });
 
   it('skill-reflection seed never clobbers a later operator edit (ON CONFLICT DO NOTHING)', async () => {
@@ -230,6 +236,98 @@ describe('runRoutinesMigration', () => {
     const r = await db.selectFrom('default_routines_v1')
       .select('enabled').where('name', '=', 'skill-reflection').executeTakeFirstOrThrow();
     expect(r.enabled).toBe(true);
+  });
+
+  // TASK-611: the one-shot swap from the Strata-era seed to the facts prompt,
+  // and the re-enable of what TASK-609's boot step switched off.
+  describe('skill-reflection facts-memory swap (TASK-611)', () => {
+    const OLD_PROMPT = 'old strata prompt reading memory/docs source_conversations';
+
+    /** Put the row back on the Strata-era seed, as a pre-TASK-611 deployment has it. */
+    async function asStrataSeed(enabled: boolean): Promise<void> {
+      await db.updateTable('default_routines_v1')
+        .set({ enabled, spec_hash: SKILL_REFLECTION_STRATA_SEED_HASH, prompt_body: OLD_PROMPT })
+        .where('name', '=', 'skill-reflection')
+        .execute();
+    }
+
+    async function recordReflectionFire(): Promise<void> {
+      await db.insertInto('routines_v1_fires').values({
+        agent_id: 'agt_a', path: 'default:skill-reflection',
+        trigger_source: 'tick', status: 'silenced',
+      }).execute();
+    }
+
+    async function row() {
+      return db.selectFrom('default_routines_v1')
+        .selectAll()
+        .where('name', '=', 'skill-reflection')
+        .executeTakeFirstOrThrow();
+    }
+
+    it('re-enables a row TASK-609 switched off (it had fired), swaps the prompt, and is a no-op on re-run', async () => {
+      await runRoutinesMigration(db);
+      await asStrataSeed(false);
+      await recordReflectionFire();
+      const before = await row();
+
+      await runRoutinesMigration(db);
+      const once = await row();
+      expect(once.enabled).toBe(true);
+      expect(once.prompt_body).toBe(SKILL_REFLECTION_PROMPT);
+      expect(once.spec_hash).toBe(SKILL_REFLECTION_SEED_HASH);
+      // Bumped, so refreshStale carries the new prompt to materialized rows.
+      expect(once.updated_at.getTime()).toBeGreaterThan(before.updated_at.getTime());
+
+      await runRoutinesMigration(db);
+      expect(await row()).toEqual(once);
+    });
+
+    it('leaves a row that never fired OFF (the seed ships OFF) but still swaps its prompt', async () => {
+      await runRoutinesMigration(db);
+      await asStrataSeed(false);
+
+      await runRoutinesMigration(db);
+      const r = await row();
+      expect(r.enabled).toBe(false);
+      expect(r.prompt_body).toBe(SKILL_REFLECTION_PROMPT);
+      expect(r.spec_hash).toBe(SKILL_REFLECTION_SEED_HASH);
+    });
+
+    it('keeps a still-ON pre-TASK-609 row ON and swaps its prompt', async () => {
+      await runRoutinesMigration(db);
+      await asStrataSeed(true);
+
+      await runRoutinesMigration(db);
+      const r = await row();
+      expect(r.enabled).toBe(true);
+      expect(r.prompt_body).toBe(SKILL_REFLECTION_PROMPT);
+    });
+
+    it('never touches an operator-edited row, even one that fired and is OFF', async () => {
+      await runRoutinesMigration(db);
+      await db.updateTable('default_routines_v1')
+        .set({ enabled: false, spec_hash: 'operator-hash', source_md: '---\nname: skill-reflection\n---\nmine', prompt_body: 'mine' })
+        .where('name', '=', 'skill-reflection')
+        .execute();
+      await recordReflectionFire();
+      const before = await row();
+
+      await runRoutinesMigration(db);
+      expect(await row()).toEqual(before);
+    });
+
+    it('does not re-enable on a fire of some other routine', async () => {
+      await runRoutinesMigration(db);
+      await asStrataSeed(false);
+      await db.insertInto('routines_v1_fires').values({
+        agent_id: 'agt_a', path: 'default:default-heartbeat-2026-05-19',
+        trigger_source: 'tick', status: 'ok',
+      }).execute();
+
+      await runRoutinesMigration(db);
+      expect((await row()).enabled).toBe(false);
+    });
   });
 
   it('routines_v1_definitions_default_idx exists', async () => {

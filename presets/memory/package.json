@@ -25,8 +25,7 @@
     "@ax/embeddings": "workspace:*",
     "@ax/memory": "workspace:*",
     "@ax/memory-facts-sqlite": "workspace:*",
-    "@ax/preset-k8s": "workspace:*",
-    "@ax/routines": "workspace:*"
+    "@ax/preset-k8s": "workspace:*"
   },
   "devDependencies": {
     "@ax/sandbox-k8s": "workspace:*",

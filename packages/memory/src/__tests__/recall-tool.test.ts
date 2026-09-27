@@ -5,7 +5,7 @@ import type { RecallOutput } from '@ax/memory-facts-contract';
 import { MEMORY_NOTE_DESCRIPTOR } from '../note-tool.js';
 import { MEMORY_RECALL_DESCRIPTOR, MEMORY_RECALL_TOOL_HOOK } from '../recall-tool.js';
 import { createMemoryPlugin } from '../plugin.js';
-import { makeMemoryHarness, registerMemoryAgents, type MemoryHarness } from './harness.js';
+import { engineRecord, makeMemoryHarness, registerMemoryAgents, type MemoryHarness } from './harness.js';
 
 let harness: MemoryHarness | undefined;
 afterEach(async () => {
@@ -19,6 +19,10 @@ const ctx = makeAgentContext({
   userId: 'owner-alice',
   workspace: { rootPath: '/tmp' },
 });
+
+// `makeMemoryHarness`'s default owner (see `ALICE` in harness.ts) — engineRecord
+// bypasses the product surface, so it needs the owner spelled out per row.
+const ALICE_USER = 'user-alice';
 
 async function busWithEngine(
   responses: { recall?: unknown } = {},
@@ -193,7 +197,7 @@ describe('@ax/memory — the memory_recall tool', () => {
 });
 
 describe('@ax/memory — the memory_recall tool against a real store', () => {
-  it('renders the DEM evidence table: Network | When | Statement', async () => {
+  it('renders the DEM evidence table: Network | When | Conv | Statement', async () => {
     harness = await makeMemoryHarness();
     await harness.remember({
       about: 'user',
@@ -202,9 +206,10 @@ describe('@ax/memory — the memory_recall tool against a real store', () => {
       when: '2023-01-01T00:00:00Z',
     });
     const out = await recallCall(harness.bus, { query: 'where do I live' }, harness.ctx());
-    expect(out).toContain('| Network | When | Statement |');
-    expect(out).toContain('| :---- | :---- | :---- |');
+    expect(out).toContain('| Network | When | Conv | Statement |');
+    expect(out).toContain('| :---- | :---- | :---- | :---- |');
     expect(out).toContain('Boston');
+    expect(out).toContain('Distinct conversations in this evidence: 0.');
     expect(out).not.toContain('fact-');
     expect(out).toMatch(/^Today is \d{4}-\d{2}-\d{2} \([A-Z][a-z]+\)\./);
     expect(out).toContain(
@@ -333,5 +338,114 @@ describe('@ax/memory — the memory_recall tool against a real store', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // TASK-611: the per-answer conversation ordinal. Two rows from the SAME
+  // conversation get the same number; rows from two DIFFERENT conversations
+  // get two numbers; a row recorded with no conversation carries none; and
+  // the raw conversation id never reaches the tool's rendered text (nor,
+  // transitively, `memory:recall`'s JSON).
+  describe('conversation ordinals', () => {
+    it('gives two statements from one conversation the same number, and says "1" distinct', async () => {
+      harness = await makeMemoryHarness();
+      await engineRecord(harness.bus, harness.ctx(), [
+        {
+          about: 'acme_corp',
+          relation: 'deploy_procedure',
+          value: 'run the migration script first',
+          when: '2023-01-01T00:00:00Z',
+          provenance: 'extracted',
+          ownerUserId: ALICE_USER,
+          conversationId: 'conv-a',
+        },
+        {
+          about: 'acme_corp',
+          relation: 'deploy_note',
+          value: 'then restart the workers',
+          when: '2023-01-01T00:05:00Z',
+          provenance: 'extracted',
+          ownerUserId: ALICE_USER,
+          conversationId: 'conv-a',
+        },
+      ]);
+
+      const { statements } = await harness.recall({ about: 'acme_corp', activeOnly: false });
+      expect(statements).toHaveLength(2);
+      expect(statements.every((s) => s.conversation === 1)).toBe(true);
+
+      const rendered = await recallCall(harness.bus, { query: 'deploy procedure' }, harness.ctx());
+      expect(rendered).toContain('Distinct conversations in this evidence: 1.');
+    });
+
+    it('gives statements from two conversations two distinct numbers, and says "2" distinct', async () => {
+      harness = await makeMemoryHarness();
+      await engineRecord(harness.bus, harness.ctx(), [
+        {
+          about: 'acme_corp',
+          relation: 'deploy_procedure',
+          value: 'run the migration script first',
+          when: '2023-01-01T00:00:00Z',
+          provenance: 'extracted',
+          ownerUserId: ALICE_USER,
+          conversationId: 'conv-a',
+        },
+        {
+          about: 'acme_corp',
+          relation: 'deploy_procedure',
+          value: 'run the migration script first, again',
+          when: '2023-02-01T00:00:00Z',
+          provenance: 'extracted',
+          ownerUserId: ALICE_USER,
+          conversationId: 'conv-b',
+        },
+      ]);
+
+      const { statements } = await harness.recall({ about: 'acme_corp', activeOnly: false });
+      const byConversation = new Set(statements.map((s) => s.conversation));
+      expect(byConversation).toEqual(new Set([1, 2]));
+
+      const rendered = await recallCall(harness.bus, { query: 'deploy procedure' }, harness.ctx());
+      expect(rendered).toContain('Distinct conversations in this evidence: 2.');
+    });
+
+    it('carries no `conversation` key for a row recorded outside a conversation', async () => {
+      harness = await makeMemoryHarness();
+      await harness.remember({ about: 'acme_corp', relation: 'stage', value: 'series B' });
+      const { statements } = await harness.recall({ about: 'acme_corp' });
+      expect(statements[0]).not.toHaveProperty('conversation');
+    });
+
+    it('never leaks the raw conversation id into the recall JSON or the tool text', async () => {
+      harness = await makeMemoryHarness();
+      await engineRecord(harness.bus, harness.ctx(), [
+        {
+          about: 'acme_corp',
+          relation: 'deploy_procedure',
+          value: 'run the migration script first',
+          when: '2023-01-01T00:00:00Z',
+          provenance: 'extracted',
+          ownerUserId: ALICE_USER,
+          conversationId: 'conv-a',
+        },
+        {
+          about: 'acme_corp',
+          relation: 'deploy_procedure',
+          value: 'run the migration script first, again',
+          when: '2023-02-01T00:00:00Z',
+          provenance: 'extracted',
+          ownerUserId: ALICE_USER,
+          conversationId: 'conv-b',
+        },
+      ]);
+
+      const result = await harness.recall({ about: 'acme_corp', activeOnly: false });
+      const asJson = JSON.stringify(result);
+      expect(asJson).not.toContain('conv-a');
+      expect(asJson).not.toContain('conv-b');
+
+      const rendered = await recallCall(harness.bus, { query: 'deploy procedure' }, harness.ctx());
+      expect(rendered).not.toContain('conv-a');
+      expect(rendered).not.toContain('conv-b');
+    });
   });
 });

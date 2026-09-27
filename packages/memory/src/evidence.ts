@@ -95,8 +95,8 @@ export function renderEvidenceTable(rows: readonly MemoryStatement[], asOf: stri
     (a, b) => a.when.localeCompare(b.when) || a.id.localeCompare(b.id),
   );
   return [
-    '| Network | When | Statement |',
-    '| :---- | :---- | :---- |',
+    '| Network | When | Conv | Statement |',
+    '| :---- | :---- | :---- | :---- |',
     ...ordered.map((row) => {
       const words = (value: string) => value.replace(/_/g, ' ').trim();
       // The caller's own subject is stored as `user:<id>`; DEM canonicalized
@@ -111,19 +111,29 @@ export function renderEvidenceTable(rows: readonly MemoryStatement[], asOf: stri
         row.kind !== undefined
           ? (NETWORK_TAG.get(row.kind) ?? 'UNKNOWN')
           : (SAVED_BY_TAG.get(row.savedBy ?? '') ?? 'UNKNOWN');
-      return `| [${tag}] | ${escapeStatementText(formatEvidenceWhen(row, asOf))} | ${statement} |`;
+      // `conversation` is a per-answer ordinal, never the raw conversation
+      // id (see MemoryStatement.conversation) — `-` means "recorded outside
+      // a conversation", not "unknown".
+      const conv = typeof row.conversation === 'number' ? `#${row.conversation}` : '-';
+      return `| [${tag}] | ${escapeStatementText(formatEvidenceWhen(row, asOf))} | ${conv} | ${statement} |`;
     }),
   ].join('\n');
 }
 
 export function renderRecallResult(result: MemoryRecallOutput, asOf: string): string {
   const date = new Date(asOf);
+  const distinctConversations = new Set(
+    result.statements
+      .map((row) => row.conversation)
+      .filter((conversation): conversation is number => typeof conversation === 'number'),
+  ).size;
   return [
     `Today is ${asOf.slice(0, 10)} (${WEEKDAY_LONG[date.getUTCDay()]}).`,
     ...(result.degraded.length > 0
       ? [`Degraded: ${result.degraded.map((flag) => escapeStatementText(String(flag))).join(', ')}`]
       : []),
     'Ground all claims in the evidence table. Never invent entities, events, dates, or preferences.',
+    `Distinct conversations in this evidence: ${distinctConversations}.`,
     '',
     'Evidence table:',
     renderEvidenceTable(result.statements, asOf),
