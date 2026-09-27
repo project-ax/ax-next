@@ -56,7 +56,30 @@ namespace:
 
 # ─── Host pod ────────────────────────────────────────────────────
 host:
-  preset: k8s
+  # Which memory the host boots with. TWO memories exist:
+  #
+  #   - "memory" (the default) — facts memory (@ax/memory): an LLM observer
+  #     extracts durable facts from conversations into a sqlite-backed store,
+  #     with semantic recall via embeddings + reranking. Needs
+  #     `memory.exports.server` / `memory.exports.exportPath` set to a
+  #     dedicated NFS export (Filestore on GKE) — `helm template` FAILS
+  #     without them, with a message naming exactly what's missing. That
+  #     export must NOT be the same one as `sandbox.filestore.exportPath`
+  #     (the durable per-agent user-files mount): the chart fails template
+  #     if they collide, in either direction.
+  #   - "k8s" — the legacy Strata memory (@ax/memory-strata): markdown
+  #     documents written straight into each agent's git-tracked workspace.
+  #     No NFS export, no extra values needed.
+  #
+  # IRREVERSIBLE ON FIRST BOOT: the first time a host boots with
+  # `preset: memory`, it PERMANENTLY deletes every agent's old Strata memory
+  # files (and their git history), clears any facts memory already stored,
+  # and empties the memory NFS export — once, per agent, logged. Rules
+  # (`memory/system/rules.md`) are kept. This cannot be previewed or undone.
+  # Back up the workspace PVC first if that matters to you. See
+  # `deploy/GKE.md` ("Memory: facts memory is the default") for the full
+  # warning and how to stay on Strata (`preset: k8s`) instead.
+  preset: memory
   ports:
     # @ax/ipc-http listener — runner pods reach back to the host here.
     # NOT public traffic. NetworkPolicy + the runner pod's own egress
@@ -739,6 +762,15 @@ memory:
   facts:
     storage: 10Gi
     storageClassName: ''
+  # The NFS export the host writes each agent's memory projection to
+  # (mounted read-write on the host, read-only on runner pods at `/memory`).
+  # REQUIRED when host.preset=memory (the default): `helm template` FAILS
+  # with `memory.exports.server is required when host.preset=memory ...` /
+  # the exportPath equivalent until both are set. On GKE, provision a
+  # DEDICATED Filestore share for this — see `deploy/GKE.md`. It must NOT be
+  # the same server+exportPath as `sandbox.filestore.exportPath` (the
+  # separate durable per-agent user-files mount); the chart fails template
+  # if they collide, whichever one was configured second.
   exports:
     server: ''
     exportPath: ''
@@ -773,13 +805,13 @@ chat:
 # Rendered verbatim into a ConfigMap mounted at /etc/ax-next/ax.config.yaml.
 #
 # Heads up: nothing actually reads that file. AX_CONFIG_PATH is stamped onto
-# the host pod, but no code path loads it — the k8s preset configures itself
-# from AX_* env vars instead. So `preset` and `history.maxTurns` below are
-# inert (the preset is baked into host.args; turn limits come from the chat
-# request). `models.default` is the one key here that reaches the host, and
-# only because the template stamps it as an env var.
+# the host pod, but no code path loads it — `host.preset` above (baked into
+# host.args as AX_PRESET) is what actually selects memory vs. k8s at boot.
+# So `preset` and `history.maxTurns` below are inert (turn limits come from
+# the chat request). `models.default` is the one key here that reaches the
+# host, and only because the template stamps it as an env var.
 config:
-  preset: k8s
+  preset: memory
   models:
     # The models an agent may be assigned. Stamped onto the host pod as
     # AX_AGENT_MODELS_ALLOWED, which @ax/agents reads at startup.

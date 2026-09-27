@@ -67,24 +67,36 @@ helm dependency update deploy/charts/ax-next
 # 4. Create the runner namespace. The chart does NOT create it; the host
 #    pod's RBAC binding scopes there.
 kubectl create namespace ax-next-runners
+kubectl create namespace ax-next
 
-# 5. Install. Generate the keys fresh — they encrypt secrets / sign
+# 5. Bring up the dev NFS server (TASK-576: `host.preset: memory` — facts
+#    memory — is the chart-wide default now, and `kind-dev-values.yaml`
+#    points memory.exports at this server, so it has to exist before the
+#    chart installs, or the host pod hangs on a mount it can't reach).
+#    Equivalent to `make dev-kind-memory-nfs`. See `deploy/kind/memory-nfs/`
+#    for what this stands up and why it's dev-only.
+docker build -t ax-next/memory-nfs:dev deploy/kind/memory-nfs
+kind load docker-image ax-next/memory-nfs:dev --name ax-next-dev
+kubectl --context kind-ax-next-dev apply -f deploy/kind/memory-nfs/nfs-server.yaml
+kubectl --context kind-ax-next-dev -n ax-next rollout status deploy/ax-next-memory-nfs
+
+# 6. Install. Generate the keys fresh — they encrypt secrets / sign
 #    cookies. SAVE the values somewhere safe; reusing them on every
 #    upgrade is required (regenerating credentials.key bricks every
 #    stored credential — see "Credentials key rotation" below).
 export AX_CREDENTIALS_KEY=$(openssl rand -base64 32)
 export AX_HTTP_COOKIE_KEY=$(openssl rand -hex 32)
-helm install ax-next deploy/charts/ax-next \
+helm install ax-next deploy/charts/ax-next --namespace ax-next \
   -f deploy/charts/ax-next/kind-dev-values.yaml \
   --set credentials.key="$AX_CREDENTIALS_KEY" \
   --set http.cookieKey="$AX_HTTP_COOKIE_KEY"
 
-# 6. Wait for the host pod and the postgres pod to come up.
-kubectl rollout status deployment/ax-next-host
-kubectl rollout status statefulset/ax-next-postgresql
+# 7. Wait for the host pod and the postgres pod to come up.
+kubectl -n ax-next rollout status deployment/ax-next-host
+kubectl -n ax-next rollout status statefulset/ax-next-postgresql
 
-# 7. Port-forward to the host pod and poke at it.
-kubectl port-forward svc/ax-next-host 8080:80
+# 8. Port-forward to the host pod and poke at it.
+kubectl -n ax-next port-forward svc/ax-next-host 8080:80
 ```
 
 To pick up code changes:

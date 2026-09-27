@@ -354,7 +354,7 @@ spec:
             {{- end }}
             {{- end }}
 
-            {{- if eq (.Values.host.preset | default "k8s") "memory" }}
+            {{- if eq (.Values.host.preset | default "memory") "memory" }}
             - name: AX_PRESET
               value: "memory"
             - name: AX_MEMORY_FACTS_DB_PATH
@@ -524,7 +524,7 @@ spec:
               mountPath: {{ .Values.sandbox.filestore.hostReadPath | quote }}
               readOnly: true
             {{- end }}
-            {{- if eq (.Values.host.preset | default "k8s") "memory" }}
+            {{- if eq (.Values.host.preset | default "memory") "memory" }}
             - name: memory-facts
               mountPath: {{ include "ax-next.memoryFactsRoot" . }}
             - name: memory-exports
@@ -572,7 +572,7 @@ spec:
             path: {{ .Values.sandbox.filestore.exportPath | quote }}
             readOnly: true
         {{- end }}
-        {{- if eq (.Values.host.preset | default "k8s") "memory" }}
+        {{- if eq (.Values.host.preset | default "memory") "memory" }}
         - name: memory-facts
           persistentVolumeClaim:
             claimName: {{ include "ax-next.fullname" . }}-memory-facts

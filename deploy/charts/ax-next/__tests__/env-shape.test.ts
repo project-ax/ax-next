@@ -51,6 +51,13 @@ const REQUIRED = [
   // No auth provider flag — auth-better is DB-driven (Phase 3). The
   // chart no longer fails template on missing auth env; the operator
   // walks /setup/* after install to mint the first admin user.
+  //
+  // TASK-576: host.preset now defaults to memory. This suite's env-vs-loader
+  // check reads ONLY presets/k8s/src/index.ts (presetSourcePath below), so it
+  // pins host.preset=k8s explicitly rather than also satisfying memory's NFS
+  // export requirement — see memory.test.ts for the memory-preset checks.
+  '--set',
+  'host.preset=k8s',
 ];
 
 type K8sDoc = {

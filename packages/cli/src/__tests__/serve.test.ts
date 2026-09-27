@@ -138,14 +138,14 @@ describe('serve command — argument parsing', () => {
     expect(code).toBe(0);
   });
 
-  it('without pluginsFactory, env-driven preset config is required (DATABASE_URL etc.)', async () => {
+  it('without pluginsFactory, env-driven preset config is required (default preset is memory)', async () => {
     const code = await runServeCommand({
       argv: [],
       env: {},
       stdout: () => undefined,
       stderr: () => undefined,
     });
-    // Missing DATABASE_URL → 2
+    // Missing AX_MEMORY_* (default preset is now 'memory') → 2
     expect(code).toBe(2);
   });
 });

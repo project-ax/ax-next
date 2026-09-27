@@ -67,14 +67,14 @@ describe('serve AX_PRESET selection', () => {
     vi.clearAllMocks();
   });
 
-  it('defaults to the k8s preset when AX_PRESET is unset', async () => {
-    k8sLoader.mockReturnValue({});
-    k8sFactory.mockReturnValue([providerStub()]);
+  it('defaults to the memory preset when AX_PRESET is unset', async () => {
+    memoryLoader.mockReturnValue({});
+    memoryFactory.mockReturnValue([providerStub()]);
     const { code } = await run({ AX_SERVE_TOKEN: 'x' });
     expect(code).toBe(0);
-    expect(k8sLoader).toHaveBeenCalled();
-    expect(k8sFactory).toHaveBeenCalled();
-    expect(memoryFactory).not.toHaveBeenCalled();
+    expect(memoryLoader).toHaveBeenCalled();
+    expect(memoryFactory).toHaveBeenCalled();
+    expect(k8sFactory).not.toHaveBeenCalled();
   });
 
   it('selects the memory preset when AX_PRESET=memory', async () => {
@@ -85,6 +85,16 @@ describe('serve AX_PRESET selection', () => {
     expect(memoryLoader).toHaveBeenCalled();
     expect(memoryFactory).toHaveBeenCalled();
     expect(k8sFactory).not.toHaveBeenCalled();
+  });
+
+  it('selects the k8s preset when AX_PRESET=k8s', async () => {
+    k8sLoader.mockReturnValue({});
+    k8sFactory.mockReturnValue([providerStub()]);
+    const { code } = await run({ AX_SERVE_TOKEN: 'x', AX_PRESET: 'k8s' });
+    expect(code).toBe(0);
+    expect(k8sLoader).toHaveBeenCalled();
+    expect(k8sFactory).toHaveBeenCalled();
+    expect(memoryFactory).not.toHaveBeenCalled();
   });
 
   it('rejects an unknown AX_PRESET with a static message', async () => {
@@ -121,13 +131,14 @@ describe('serve AX_PRESET selection', () => {
 describe('serve retired agent-workspace env names', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    k8sLoader.mockReturnValue({});
-    k8sFactory.mockReturnValue([providerStub()]);
+    // Default preset is 'memory' since TASK-576.
+    memoryLoader.mockReturnValue({});
+    memoryFactory.mockReturnValue([providerStub()]);
   });
 
   function envSeenByLoader(): NodeJS.ProcessEnv {
-    expect(k8sLoader).toHaveBeenCalledTimes(1);
-    return k8sLoader.mock.calls[0]![0] as NodeJS.ProcessEnv;
+    expect(memoryLoader).toHaveBeenCalledTimes(1);
+    return memoryLoader.mock.calls[0]![0] as NodeJS.ProcessEnv;
   }
 
   const retiredLines = (stderr: string[]): string[] =>
@@ -157,7 +168,7 @@ describe('serve retired agent-workspace env names', () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain(`${name}=${value}`);
     expect(lines[0]).toMatch(/web interface is still ON/);
-    expect(k8sFactory).toHaveBeenCalled();
+    expect(memoryFactory).toHaveBeenCalled();
   });
 
   it('warns once per name when both are set', async () => {
@@ -209,5 +220,18 @@ describe('serve retired agent-workspace env names', () => {
     expect(code).toBe(0);
     expect(retiredLines(stderr)).toHaveLength(1);
     expect(memoryFactory).toHaveBeenCalled();
+  });
+
+  it('warns for the k8s (legacy Strata) preset too', async () => {
+    k8sLoader.mockReturnValue({});
+    k8sFactory.mockReturnValue([providerStub()]);
+    const { code, stderr } = await run({
+      AX_SERVE_TOKEN: 'x',
+      AX_PRESET: 'k8s',
+      AX_AGENT_WORKSPACE: '0',
+    });
+    expect(code).toBe(0);
+    expect(retiredLines(stderr)).toHaveLength(1);
+    expect(k8sFactory).toHaveBeenCalled();
   });
 });

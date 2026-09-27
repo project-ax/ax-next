@@ -391,14 +391,25 @@ Invoked from `host/deployment.yaml`, which always renders.
 {{- fail "host.preset must be one of [k8s, memory]" -}}
 {{- end -}}
 {{- end -}}
-{{- $preset := .Values.host.preset | default "k8s" -}}
+{{- $preset := .Values.host.preset | default "memory" -}}
 {{- if eq $preset "memory" -}}
 {{- $mem := .Values.memory | default dict -}}
 {{- if not (dig "exports" "server" "" $mem) -}}
-{{- fail "memory.exports.server is required when host.preset=memory" -}}
+{{- fail "memory.exports.server is required when host.preset=memory (the default, facts memory). Set it to your memory NFS server, or set host.preset=k8s to keep the legacy Strata memory." -}}
 {{- end -}}
 {{- if not (dig "exports" "exportPath" "" $mem) -}}
-{{- fail "memory.exports.exportPath is required when host.preset=memory" -}}
+{{- fail "memory.exports.exportPath is required when host.preset=memory (the default, facts memory). Set it to your memory NFS export path, or set host.preset=k8s to keep the legacy Strata memory." -}}
+{{- end -}}
+{{- $sandboxFs := .Values.sandbox | default dict -}}
+{{- $fsServer := dig "filestore" "server" "" $sandboxFs -}}
+{{- $fsExportPath := dig "filestore" "exportPath" "" $sandboxFs -}}
+{{- $memExportPath := dig "exports" "exportPath" "" $mem -}}
+{{- $memServer := dig "exports" "server" "" $mem -}}
+{{/* Checked symmetrically: whichever of memory.exports / sandbox.filestore was
+     configured last, the same (server, exportPath) pair on both is the same
+     overlap and fails the same way. */}}
+{{- if and $fsServer $memServer $fsExportPath $memExportPath (eq $fsServer $memServer) (eq $fsExportPath $memExportPath) -}}
+{{- fail "memory.exports and sandbox.filestore point at the same NFS export (server+exportPath) — memory and the sandbox filestore need separate exports." -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

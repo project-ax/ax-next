@@ -49,7 +49,7 @@ env (required):
   AX_CREDENTIALS_KEY          used by @ax/credentials at init
 
 env (optional):
-  AX_PRESET                   'k8s' (default) | 'memory'
+  AX_PRESET                   'memory' (default — facts memory) | 'k8s' (legacy Strata memory)
   AX_SERVE_TOKEN              if set, /chat requires Bearer <token>
                               if unset, /chat is unauthenticated (loud warn)
   AX_HTTP_ALLOWED_ORIGINS     comma-separated CSRF allow-list
@@ -57,14 +57,18 @@ env (optional):
   BIND_HOST / PORT            @ax/ipc-http listener (default 0.0.0.0:8080)
   AX_RUNNER_BINARY / AX_CHAT_TIMEOUT_MS
 
-env (required when AX_PRESET=memory):
+  Embeddings and reranking use the stored provider:openrouter key (admin
+  Provider keys screen) — no env var.
+
+env (required unless AX_PRESET=k8s):
   AX_MEMORY_FACTS_DB_PATH     sqlite facts database path
   AX_MEMORY_EXPORT_HOST_ROOT  host dir holding exported memory profiles
   AX_MEMORY_EXPORT_NFS_SERVER export backing NFS server
   AX_MEMORY_EXPORT_NFS_PATH   export backing NFS path
 
-  Embeddings and reranking use the stored provider:openrouter key (admin
-  Provider keys screen) — no env var.`;
+  First boot on the 'memory' preset permanently deletes each agent's old
+  (Strata) memory files, and their history, plus any facts memory, once —
+  see deploy/GKE.md.`;
 
 /**
  * Env names that used to switch the agent workspace (the web interface) on and
@@ -205,7 +209,7 @@ export async function runServeCommand(opts: RunServeOptions): Promise<number> {
   if (opts.pluginsFactory !== undefined) {
     basePlugins = await opts.pluginsFactory(env);
   } else {
-    const preset = env.AX_PRESET ?? 'k8s';
+    const preset = env.AX_PRESET ?? 'memory';
     try {
       if (preset === 'k8s') {
         basePlugins = createK8sPlugins(loadK8sConfigFromEnv(env));

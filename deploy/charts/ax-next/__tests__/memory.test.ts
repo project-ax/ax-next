@@ -161,12 +161,29 @@ describeIfHelm('memory preset opt-in (TASK-496)', () => {
     }
   });
 
-  it('default render stamps no memory env, mounts, volumes, or PVC', () => {
+  it('TASK-576: kind-dev-values.yaml renders memory by default, with NO extra --set', () => {
+    // kind-dev-values.yaml folds in the former kind-memory-values.yaml overlay
+    // (dev NFS server address) — host.preset itself comes from the chart's
+    // own default (values.yaml), not from kind-dev-values.yaml.
     const docs = render(['-f', KIND_DEV_VALUES]);
     const { container, spec } = hostSpec(hostDeployment(docs));
     const env = envMap(container);
+    expect(env.get('AX_PRESET')).toBe('memory');
+    const mounts = container.volumeMounts ?? [];
+    expect(mounts.find((m) => m.name === 'memory-facts')).toBeDefined();
+    expect(mounts.find((m) => m.name === 'memory-exports')).toBeDefined();
+    const volumes = spec.volumes ?? [];
+    expect(volumes.find((v) => v.name === 'memory-facts')).toBeDefined();
+    expect(volumes.find((v) => v.name === 'memory-exports')).toBeDefined();
+    expect(docs.find((d) => (d.metadata?.name ?? '').endsWith('-memory-facts'))).toBeDefined();
+  });
+
+  it('TASK-576: host.preset=k8s renders with no memory env, mounts, volumes, or PVC (the old default)', () => {
+    const docs = render(['-f', KIND_DEV_VALUES, '--set', 'host.preset=k8s']);
+    const { container, spec } = hostSpec(hostDeployment(docs));
+    const env = envMap(container);
     for (const name of MEMORY_ENV_NAMES) {
-      expect(env.has(name), `${name} must not appear in the default render`).toBe(false);
+      expect(env.has(name), `${name} must not appear when host.preset=k8s`).toBe(false);
     }
     const mounts = container.volumeMounts ?? [];
     expect(mounts.find((m) => m.name === 'memory-facts')).toBeUndefined();
@@ -175,6 +192,63 @@ describeIfHelm('memory preset opt-in (TASK-496)', () => {
     expect(volumes.find((v) => v.name === 'memory-facts')).toBeUndefined();
     expect(volumes.find((v) => v.name === 'memory-exports')).toBeUndefined();
     expect(docs.find((d) => (d.metadata?.name ?? '').endsWith('-memory-facts'))).toBeUndefined();
+  });
+
+  it('TASK-576: bare defaults (no -f, no memory.exports) fail template with the new message', () => {
+    const out = renderFails([]);
+    expect(out).toContain('memory.exports.server is required when host.preset=memory');
+    expect(out).toContain('the default, facts memory');
+    expect(out).toContain('host.preset=k8s');
+  });
+
+  it('TASK-576: gke-values.yaml without memory.exports fails template', () => {
+    const out = renderFails(['-f', resolve(chartDir, 'gke-values.yaml')]);
+    expect(out).toContain('memory.exports.server is required when host.preset=memory');
+  });
+
+  it('TASK-576: gke-values.yaml with memory.exports set renders memory', () => {
+    const { container } = hostSpec(hostDeployment(render([
+      '-f',
+      resolve(chartDir, 'gke-values.yaml'),
+      '--set',
+      'memory.exports.server=10.1.2.3',
+      '--set',
+      'memory.exports.exportPath=/memory_vol',
+    ])));
+    const env = envMap(container);
+    expect(env.get('AX_PRESET')).toBe('memory');
+    expect(env.get('AX_MEMORY_EXPORT_NFS_SERVER')).toBe('10.1.2.3');
+    expect(env.get('AX_MEMORY_EXPORT_NFS_PATH')).toBe('/memory_vol');
+  });
+
+  it('TASK-576: memory.exports colliding with sandbox.filestore fails template, in both directions', () => {
+    const filestoreArgs = [
+      '--set', 'sandbox.filestore.server=10.9.9.9',
+      '--set', 'sandbox.filestore.exportPath=/shared',
+    ];
+    const memoryArgs = [
+      '--set', 'memory.exports.server=10.9.9.9',
+      '--set', 'memory.exports.exportPath=/shared',
+    ];
+    // Order on the command line doesn't matter (both --set), but check both
+    // orderings anyway: whichever export "arrived second" conceptually, the
+    // failure fires the same way.
+    for (const args of [
+      [...filestoreArgs, ...memoryArgs],
+      [...memoryArgs, ...filestoreArgs],
+    ]) {
+      const out = renderFails(args);
+      expect(out).toContain('memory.exports and sandbox.filestore point at the same NFS export');
+    }
+  });
+
+  it('TASK-576: memory.exports does NOT collide with the default (disabled) sandbox.filestore', () => {
+    // sandbox.filestore.exportPath defaults to "/vol1" even when the feature
+    // is off (server empty) — that must never trip the overlap guard.
+    const { container } = hostSpec(hostDeployment(render([
+      '-f', KIND_DEV_VALUES, '--set', 'memory.exports.exportPath=/vol1',
+    ])));
+    expect(envMap(container).get('AX_PRESET')).toBe('memory');
   });
 
   it('memory mode stamps AX_PRESET + all four memory env vars from values', () => {

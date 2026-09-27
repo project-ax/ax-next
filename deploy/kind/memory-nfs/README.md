@@ -8,10 +8,18 @@ and backed by an `emptyDir`. Please don't point anything real at it.
 
 ## Bring it up
 
-Assumes the kind cluster `ax-next-dev` is running and the chart is installed
-with `kind-dev-values.yaml` (see `deploy/README.md`). Always name the context:
-this machine's kubeconfig may also hold production clusters, and a bare
-`kubectl` picks whichever one is current.
+TASK-576 made `host.preset: memory` (facts memory) the chart-wide default, and
+folded this server's address into `kind-dev-values.yaml` itself — there is no
+separate preset switch or overlay file to pass any more (the old
+`kind-memory-values.yaml` overlay is kept only as a documented no-op, for a
+script that still names it). So the only thing left to do here is stand up
+this server BEFORE the chart installs or upgrades, since the chart now
+expects it to be reachable by default.
+
+Assumes the kind cluster `ax-next-dev` is running (see `deploy/README.md`, or
+run `make dev-kind-memory-nfs`, which does the same two steps below). Always
+name the context: this machine's kubeconfig may also hold production
+clusters, and a bare `kubectl` picks whichever one is current.
 
 ```bash
 # 1. The NFS server image — built locally, loaded into kind, never pulled.
@@ -22,15 +30,15 @@ kind load docker-image ax-next/memory-nfs:dev --name ax-next-dev
 kubectl --context kind-ax-next-dev apply -f deploy/kind/memory-nfs/nfs-server.yaml
 kubectl --context kind-ax-next-dev -n ax-next rollout status deploy/ax-next-memory-nfs
 
-# 3. Switch the release to the memory preset. Keep the release's existing
-#    values (dump them with `helm get values ax-next -n ax-next -o yaml`, or
-#    use --reset-then-reuse-values on helm >= 3.14) so the credentials key
-#    doesn't change — a new one bricks every stored credential.
-helm --kube-context kind-ax-next-dev upgrade ax-next deploy/charts/ax-next -n ax-next \
+# 3. Install or upgrade the chart, same as any other change — no separate
+#    preset flag needed, `kind-dev-values.yaml` already carries it:
+helm --kube-context kind-ax-next-dev upgrade --install ax-next deploy/charts/ax-next -n ax-next \
   -f deploy/charts/ax-next/kind-dev-values.yaml \
-  -f <your-previous-values.yaml> \
-  -f deploy/charts/ax-next/kind-memory-values.yaml
+  -f <your-previous-values.yaml>
 ```
+
+To go back to the legacy Strata preset instead, pass `--set host.preset=k8s`
+(and skip this server entirely — it does nothing on that preset).
 
 Check it took:
 
