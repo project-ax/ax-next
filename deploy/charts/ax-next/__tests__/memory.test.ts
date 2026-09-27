@@ -211,23 +211,23 @@ describeIfHelm('memory preset opt-in (TASK-496)', () => {
       '-f',
       resolve(chartDir, 'gke-values.yaml'),
       '--set',
-      'memory.exports.server=10.1.2.3',
+      'memory.exports.server=192.0.2.3',
       '--set',
       'memory.exports.exportPath=/memory_vol',
     ])));
     const env = envMap(container);
     expect(env.get('AX_PRESET')).toBe('memory');
-    expect(env.get('AX_MEMORY_EXPORT_NFS_SERVER')).toBe('10.1.2.3');
+    expect(env.get('AX_MEMORY_EXPORT_NFS_SERVER')).toBe('192.0.2.3');
     expect(env.get('AX_MEMORY_EXPORT_NFS_PATH')).toBe('/memory_vol');
   });
 
   it('TASK-576: memory.exports colliding with sandbox.filestore fails template, in both directions', () => {
     const filestoreArgs = [
-      '--set', 'sandbox.filestore.server=10.9.9.9',
+      '--set', 'sandbox.filestore.server=192.0.2.9',
       '--set', 'sandbox.filestore.exportPath=/shared',
     ];
     const memoryArgs = [
-      '--set', 'memory.exports.server=10.9.9.9',
+      '--set', 'memory.exports.server=192.0.2.9',
       '--set', 'memory.exports.exportPath=/shared',
     ];
     // Order on the command line doesn't matter (both --set), but check both
