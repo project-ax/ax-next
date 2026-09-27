@@ -719,10 +719,10 @@ interface OpenSessionInput {
      * @ax/routines fire, `'user'`/absent for an interactive turn. Taken from
      * `ctx.source` (set host-side: routines `fire.ts` stamps `'routine'`; user
      * turns leave it unset). Forwarded into session:create so the IPC server
-     * can stamp it onto the happy-path runner-completed chat:end ctx. No
-     * in-tree subscriber reads it there since @ax/memory-strata was deleted
-     * (TASK-608; @ax/memory deliberately does not skip routine turns) — it is
-     * kept as generic provenance.
+     * can stamp it onto the happy-path runner-completed chat:end ctx.
+     * @ax/memory reads it there (and on a routine turn's tool calls): it still
+     * stores a routine turn's rows, but with no conversation, so a scheduled
+     * run never counts toward the skill-reflection recurrence gate (TASK-616).
      * SECURITY: never sourced from a runner-supplied frame — only from
      * ctx.source on the host.
      */
@@ -2745,9 +2745,9 @@ export function createOrchestrator(
             : {}),
           // TASK-181 — forward the HOST-DERIVED session origin so session:create
           // persists it on the session record and the IPC server stamps it onto
-          // the happy-path runner-completed chat:end ctx (no in-tree subscriber
-          // reads it there since @ax/memory-strata's deletion in TASK-608; kept
-          // as generic provenance). ctx.source is set host-side ONLY: routines `fire.ts` stamps 'routine'; a user turn
+          // the happy-path runner-completed chat:end ctx (@ax/memory reads it to
+          // store a routine turn's rows with no conversation — TASK-616).
+          // ctx.source is set host-side ONLY: routines `fire.ts` stamps 'routine'; a user turn
           // leaves it unset. The runner can't reach this — it travels the
           // host-internal sandbox:open-session hook, never the IPC wire. Conditional
           // spread keeps the key ABSENT (not `undefined`) for user turns, matching

@@ -22,8 +22,9 @@ import { createListener, type Listener } from '../listener.js';
 // result. Before TASK-181 the auth result didn't carry `source`, so that
 // chat:end had `ctx.source === undefined` even for a session a routine fire
 // opened. @ax/memory-strata's routine-fire guard (`ctx.source === 'routine'`
-// → skip observer + consolidator; Strata was deleted in TASK-608 and no
-// in-tree subscriber reads `source` now) therefore fired on the orchestrator's
+// → skip observer + consolidator; Strata was deleted in TASK-608, and today
+// @ax/memory reads `source` to store a routine turn's rows with no
+// conversation — TASK-616) therefore fired on the orchestrator's
 // synthesized error/terminated chat:end and in unit tests, but NEVER on a
 // successful turn → a scheduled fire (e.g. the future skill-reflection
 // routine) would pollute its own agent's memory and reflect on its own
