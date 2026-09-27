@@ -14,7 +14,6 @@ import type {
   SupersedeInput,
   SupersedeOutput,
   ClearInput,
-  ClearOutput,
   FactKind,
   Provenance,
   ReindexInput,
@@ -1476,15 +1475,15 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
         },
       );
 
-      bus.registerService<ClearInput, ClearOutput>(
+      bus.registerService<ClearInput, void>(
         'memory:facts:clear',
         PLUGIN_NAME,
         async (ctx, _input) => {
           const agentKey = agentScopeKey(ctx);
-          // A swallowed failure here would report success for a tenant whose
-          // data is still there — the worst possible lie for a "forget this"
-          // operation.
-          return inStore('memory:facts:clear', () => {
+          // `clear` returns void, so a swallowed failure would report success
+          // for a tenant whose data is still there — the worst possible lie
+          // for a "forget this" operation.
+          inStore('memory:facts:clear', () => {
             const db = requireDriver();
             // The derived rows go too, in the same transaction. Everywhere
             // else the FTS shadow is left alone when a fact stops being
@@ -1502,10 +1501,8 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
               ).map((row) => row.id);
               deleteIndexedFactRows(db, ids, vectorExtensionLoaded);
               db.prepare(`DELETE FROM ${TABLE} WHERE agent_key = ?`).run(agentKey);
-              return ids.length;
             });
-            const removed = forget();
-            return { removed };
+            forget();
           });
         },
       );

@@ -28,7 +28,6 @@ import type {
   ReindexInput,
   ReindexOutput,
   ClearInput,
-  ClearOutput,
   SupersedeInput,
   SupersedeOutput,
 } from '@ax/memory-facts-contract';
@@ -930,8 +929,7 @@ describe('@ax/memory-facts-sqlite — reindex backfill', () => {
       statements: [BOSTON],
     });
 
-    const cleared = await bus.call<ClearInput, ClearOutput>('memory:facts:clear', ctxOf(), {});
-    expect(cleared.removed).toBe(1);
+    await bus.call<ClearInput, void>('memory:facts:clear', ctxOf(), {});
 
     const after = openDatabase(databasePath);
     toClose.push(after.driver);

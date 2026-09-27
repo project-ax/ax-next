@@ -402,11 +402,6 @@ export interface SupersedeOutput extends ResettleOutcome {
 
 export type ClearInput = Record<string, never>;
 
-export interface ClearOutput {
-  /** Base fact rows deleted for the calling tenant (`ctx.agentId`) by this call. */
-  removed: number;
-}
-
 /**
  * The reserved `slot` value meaning "not derived yet" (design §3.5). A row
  * carrying it is stored and retrievable but INERT for closure — it closes
@@ -637,8 +632,8 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
       });
     }
 
-    async function clear(ctx = makeCtx()): Promise<ClearOutput> {
-      return bus.call<ClearInput, ClearOutput>('memory:facts:clear', ctx, {});
+    async function clear(ctx = makeCtx()): Promise<void> {
+      await bus.call<ClearInput, void>('memory:facts:clear', ctx, {});
     }
 
     async function reindex(input: ReindexInput = {}, ctx = makeCtx()): Promise<ReindexOutput> {
@@ -1674,44 +1669,11 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         const stillThere = await recall({ about: 'user', limit: 10 }, ctxB);
         expect(stillThere.statements.map((s) => s.value)).toEqual(['Denver']);
 
-        const cleared = await clear(ctxA);
-        expect(cleared).toEqual({ removed: 1 });
+        await clear(ctxA);
         const aAfterClear = await recall({ about: 'user', limit: 10 }, ctxA);
         expect(aAfterClear.statements).toHaveLength(0);
         const bAfterAClear = await recall({ about: 'user', limit: 10 }, ctxB);
         expect(bAfterAClear.statements.map((s) => s.value)).toEqual(['Denver']);
-      });
-
-      it('reports the count of removed rows, scoped to the caller — and 0 on a repeat clear', async () => {
-        await record(
-          {
-            statements: [
-              { about: 'user', relation: 'lives_in', value: 'Boston', when: JAN, slot: 'lives_in' },
-              { about: 'user', relation: 'works_at', value: 'Acme', when: JAN, slot: 'works_at' },
-              { about: 'alice', relation: 'lives_in', value: 'Denver', when: JAN, slot: 'lives_in' },
-            ],
-          },
-          ctxA,
-        );
-        await record(
-          {
-            statements: [
-              { about: 'user', relation: 'lives_in', value: 'Denver', when: JAN, slot: 'lives_in' },
-            ],
-          },
-          ctxB,
-        );
-
-        const clearedA = await clear(ctxA);
-        expect(clearedA).toEqual({ removed: 3 });
-
-        // Clearing an already-empty tenant removes nothing.
-        const clearedAgain = await clear(ctxA);
-        expect(clearedAgain).toEqual({ removed: 0 });
-
-        // B's rows are untouched and still recallable.
-        const outB = await recall({ about: 'user', limit: 10 }, ctxB);
-        expect(outB.statements.map((s) => s.value)).toEqual(['Denver']);
       });
 
       // Partition is agentId ALONE (mirrors memory-strata-index-contract's

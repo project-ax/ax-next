@@ -14,7 +14,6 @@ import type {
   SupersedeInput,
   SupersedeOutput,
   ClearInput,
-  ClearOutput,
   FactKind,
   Provenance,
   ReindexInput,
@@ -927,20 +926,16 @@ export function createMemoryFactsPostgresPlugin(): Plugin {
         },
       );
 
-      bus.registerService<ClearInput, ClearOutput>(
+      bus.registerService<ClearInput, void>(
         'memory:facts:clear',
         PLUGIN_NAME,
         async (ctx, _input) => {
           const agentKey = agentScopeKey(ctx);
-          // A swallowed failure here would report success for a tenant whose
-          // data is still there — the worst possible lie for a "forget this"
-          // operation.
-          return inStore('memory:facts:clear', async () => {
-            const result = await requireDb()
-              .deleteFrom(TABLE)
-              .where('agent_key', '=', agentKey)
-              .executeTakeFirst();
-            return { removed: Number(result.numDeletedRows) };
+          // `clear` returns void, so a swallowed failure would report success
+          // for a tenant whose data is still there — the worst possible lie
+          // for a "forget this" operation.
+          await inStore('memory:facts:clear', async () => {
+            await requireDb().deleteFrom(TABLE).where('agent_key', '=', agentKey).execute();
           });
         },
       );
