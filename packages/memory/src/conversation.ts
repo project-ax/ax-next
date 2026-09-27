@@ -30,6 +30,13 @@ import type { AgentContext } from '@ax/core';
  * This is the STORED provenance only. The observer's batch idempotency key
  * still hashes `ctx.conversationId` itself, so two routine fires with a
  * byte-identical transcript remain two batches (see `buildBatchKey`).
+ *
+ * Rows stored BEFORE this change keep their routine conversation, and nothing
+ * backfills them (TASK-619): the facts store has no column that marks a row as
+ * routine-sourced, and the only record of a conversation's origin is the
+ * conversations table in a different database. The residual and the operator
+ * remedy are in `deploy/README.md` ("Facts memory that ran routines on an
+ * image older than TASK-616").
  */
 export function conversationOf(
   ctx: Pick<AgentContext, 'conversationId' | 'source'>,

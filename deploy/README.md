@@ -329,6 +329,21 @@ kubectl -n ax-next rollout status deploy/ax-next-host
 - Have one chat that states a fact. Wait about 5 minutes after the chat goes idle, then check that the Memory tab shows it.
 - Rules went with the workspace, so re-enter any that are still wanted in the Memory tab.
 
+### Facts memory that ran routines on an image older than TASK-616
+
+Short version: run this runbook on an image at or after TASK-616 (PR #768), and there's nothing to do here.
+
+Before TASK-616, when a routine ran, the facts memory stored its rows under the routine's own hidden conversation. Memory recall counts *distinct conversations* in its evidence, and the skill-reflection routine uses that count to decide whether a procedure really came up more than once (it wants at least 2). So each of those routine conversations can count as one extra conversation the person never had. From TASK-616 on, rows from a routine run carry no conversation, so new rows are fine. Old rows keep theirs.
+
+There's no automatic cleanup for the old rows, and that's deliberate:
+
+- **The facts store can't tell which rows came from a routine.** `facts.db` has no column that says so. Only the conversations table in Postgres knows that a conversation was opened by a routine (`origin = 'routine'`). Those are two different databases, so no single query can join them.
+- **The window was about half a day.** Facts memory became the default in TASK-576 (PR #762), and TASK-616 landed the same day.
+- **The damage is bounded.** A `conversation: shared` routine, like the default heartbeat, keeps one conversation, so it adds at most one per routine per agent. A `per-fire` routine adds one per fire. Skill-reflection is a per-fire routine. It stays off unless an operator switched it on, and it fires at most once a day per agent.
+- **The Postgres facts table has nothing to fix.** Under `host.preset: memory` it has no writer (step 3 truncates it anyway).
+
+So a deployment is affected only if it ran `host.preset: memory` on a pre-TASK-616 image **and** routines fired in that time. Usually the right move is to do nothing: it's a small over-count, and it doesn't grow. If the owner has already decided that **no memory needs keeping**, clearing it is steps 2, 4 and 6 above. That deletes **all** facts memory for **every** agent, and it can't be undone.
+
 ## Linting and validating
 
 ```bash
