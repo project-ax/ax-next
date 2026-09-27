@@ -23,6 +23,12 @@ import { denseChannel, factStatementText } from '../recall.js';
 import { agentScopeKey } from '../agent-scope-key.js';
 import { EMBED_HOOK, hashVector } from './hash-embedder.js';
 import type { EmbedInput, EmbedOutput } from '../producers.js';
+import { EMBEDDING_RECIPE_GENERATION } from '../plugin.js';
+
+/** Appends the current recipe generation, matching `embeddingFingerprint` in `plugin.ts`. */
+function withGeneration(fingerprint: string): string {
+  return `${fingerprint}#${EMBEDDING_RECIPE_GENERATION}`;
+}
 
 const JAN = '2023-01-01T00:00:00.000Z';
 const JUN = '2023-06-01T00:00:00.000Z';
@@ -168,7 +174,7 @@ describe('@ax/memory-facts-sqlite — embedding-model fingerprint + re-embed', (
     await stop(plugin);
     const db = peek();
     expect(vecCount(db)).toBe(2);
-    expect(storedFingerprint(db)).toBe('A');
+    expect(storedFingerprint(db)).toBe(withGeneration('A'));
     db.close();
   }
 
@@ -179,7 +185,7 @@ describe('@ax/memory-facts-sqlite — embedding-model fingerprint + re-embed', (
 
     const db = peek();
     expect(vecCount(db)).toBe(0);
-    expect(storedFingerprint(db)).toBe('B');
+    expect(storedFingerprint(db)).toBe(withGeneration('B'));
     // Nothing model-A is left for a model-B query to be compared against —
     // including the exact vector that would have been Khalid's nearest match.
     const scope = { agentKey: AGENT_A, activeOnly: true, limit: 40 };
@@ -221,7 +227,7 @@ describe('@ax/memory-facts-sqlite — embedding-model fingerprint + re-embed', (
 
     const db = peek();
     expect(vecCount(db)).toBe(2);
-    expect(storedFingerprint(db)).toBe('A');
+    expect(storedFingerprint(db)).toBe(withGeneration('A'));
     const after = db
       .prepare(`SELECT embedding FROM ${VEC_TABLE} WHERE id = ?`)
       .get(idOf(db, 'Khalid')) as { embedding: Buffer };
@@ -245,7 +251,54 @@ describe('@ax/memory-facts-sqlite — embedding-model fingerprint + re-embed', (
     // Even though the configured model happens to be the one that wrote them:
     // the store cannot know that, and guessing is how spaces get mixed.
     expect(vecCount(db)).toBe(0);
-    expect(storedFingerprint(db)).toBe('A');
+    expect(storedFingerprint(db)).toBe(withGeneration('A'));
+  });
+
+  /**
+   * A pre-TASK-590 store: the fingerprint was recorded as the BARE model id
+   * (what `embeddingFingerprint` returned before the generation suffix
+   * existed), with vectors that are actually query-embedded — OpenRouter
+   * dropped `task` on every call, so every stored fact was embedded as a
+   * query, not a document.
+   */
+  async function seedPreTask590(): Promise<void> {
+    await seedUnderModelA();
+    const db = peek();
+    db.prepare(`UPDATE ${EMBEDDING_META_TABLE} SET value = ? WHERE key = 'model'`).run('A');
+    db.close();
+  }
+
+  it('wipes vectors recorded under the bare model id (pre-TASK-590), and records the generation-suffixed fingerprint', async () => {
+    await seedPreTask590();
+    const before = peek();
+    expect(storedFingerprint(before)).toBe('A');
+    before.close();
+
+    await start({ embedder: { hook: EMBED_HOOK, model: 'A' } });
+
+    const db = peek();
+    // Same model id, but the recipe generation changed underneath it — the
+    // bare-id fingerprint mismatches the new `A#<generation>` exactly once.
+    expect(vecCount(db)).toBe(0);
+    expect(storedFingerprint(db)).toBe(withGeneration('A'));
+  });
+
+  it('re-embeds a pre-TASK-590 wipe as documents on the next successful record, restoring every vector', async () => {
+    await seedPreTask590();
+    const { bus, embedder, background } = await start({
+      embedder: { hook: EMBED_HOOK, model: 'A' },
+    });
+
+    await record(bus, [ACME]);
+    expect(background).toHaveLength(1);
+    await Promise.all(background);
+
+    const db = peek();
+    // Khalid + Boston (backfilled) + Acme (recorded) — every fact has a
+    // vector again, none of them query-embedded this time.
+    expect(vecCount(db)).toBe(3);
+    expect(embedder.calls.length).toBeGreaterThanOrEqual(2);
+    expect(embedder.calls.every((c) => c.task === 'document')).toBe(true);
   });
 
   it('touches nothing when no embedder is configured', async () => {
@@ -261,7 +314,7 @@ describe('@ax/memory-facts-sqlite — embedding-model fingerprint + re-embed', (
   it('fingerprints a model-less embedder by its hook name', async () => {
     await start({ embedder: { hook: EMBED_HOOK } });
     const db = peek();
-    expect(storedFingerprint(db)).toBe(`hook-default:${EMBED_HOOK}`);
+    expect(storedFingerprint(db)).toBe(withGeneration(`hook-default:${EMBED_HOOK}`));
   });
 
   it('starts no background work when the recording embed failed', async () => {

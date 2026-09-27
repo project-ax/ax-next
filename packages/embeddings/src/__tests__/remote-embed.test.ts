@@ -117,24 +117,29 @@ describe('remote embed — the happy path', () => {
     expect(call?.rawBody).not.toContain(TOKEN);
   });
 
-  it.each(['document' as const, 'query' as const])(
-    'sends EXACTLY {model, input, dimensions, encoding_format} for task %s — no input_type, no task field',
-    async (task) => {
+  it.each([
+    ['document' as const, 'search_document'],
+    ['query' as const, 'search_query'],
+  ])(
+    'sends EXACTLY {model, input, dimensions, encoding_format, input_type} for task %s — no task field',
+    async (task, inputType) => {
       const stub = fetchStub((call) => jsonResponse(dataFor(call)));
       const bus = await busWithPlugin(configWith(stub), { credential: TOKEN });
 
       await embed(bus, { texts: texts(2), task });
 
       const body = stub.calls[0]?.body as Record<string, unknown>;
-      // A deep-equal key-set pin: a driver that added `input_type` or
-      // `task_type` here risks a 400 that would take the whole dense channel
-      // dark on a field OpenRouter's Google route may not map. See the
+      // A deep-equal key-set pin on BOTH call shapes: TASK-589 measured, on
+      // kind against live OpenRouter, that `input_type` reaches Gemini's task
+      // type — so `task: 'document'` MUST wire `input_type: 'search_document'`
+      // and `task: 'query'` MUST wire `input_type: 'search_query'`. See the
       // comment on `openrouterEmbed` in `remote.ts`.
       expect(body).toEqual({
         model: DEFAULT_MODEL,
         input: texts(2),
         dimensions: DIMENSIONS,
         encoding_format: 'float',
+        input_type: inputType,
       });
     },
   );
@@ -257,6 +262,19 @@ describe('remote embed — chunking', () => {
     expect(out?.vectors.map((v) => v[0])).toEqual(
       Array.from({ length: 130 }, (_, i) => i),
     );
+  });
+
+  it('carries input_type on EVERY chunk, not just the first', async () => {
+    const stub = fetchStub((call) => jsonResponse(dataFor(call)));
+    const bus = await busWithPlugin(configWith(stub), { credential: TOKEN });
+
+    await embed(bus, { texts: texts(130), task: 'query' });
+
+    expect(stub.calls).toHaveLength(3);
+    for (const call of stub.calls) {
+      expect((call.body as Record<string, unknown>).input_type).toBe('search_query');
+      expect((call.body as Record<string, unknown>).task).toBeUndefined();
+    }
   });
 
   it('answers undefined when ONE chunk fails — never a partial batch', async () => {

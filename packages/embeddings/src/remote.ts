@@ -23,6 +23,7 @@
 // bearer token to end up and a terrible place for it to live.
 
 import type { EmbedEndpoint, RerankEndpoint } from './endpoints.js';
+import type { EmbeddingTask } from './wire.js';
 import { validateScores, validateVectors } from './validate.js';
 
 export interface RemoteDeps {
@@ -91,7 +92,19 @@ export interface OpenRouterEmbedArgs {
   model: string;
   token: string;
   dimensions: number;
+  task: EmbeddingTask;
 }
+
+/**
+ * Wire vocabulary OpenRouter expects for its Google/Gemini route.
+ * `Record<EmbeddingTask, string>` rather than a switch with a `default`: a
+ * third `EmbeddingTask` value added later fails this object literal at
+ * compile time instead of silently falling through to a guessed default.
+ */
+const INPUT_TYPE_OF: Record<EmbeddingTask, string> = {
+  document: 'search_document',
+  query: 'search_query',
+};
 
 /**
  * Embed `texts` through OpenRouter's `/api/v1/embeddings`, placing each
@@ -102,16 +115,18 @@ export interface OpenRouterEmbedArgs {
  * placement, the same logic `cohereRerank` used: every index in `0..n-1`
  * exactly once, or `undefined`.
  *
- * WE DO NOT SEND `input_type` OR ANY TASK TYPE. OpenRouter's OpenAPI spec
- * documents an `input_type` field (`search_query` / `search_document`), but
- * nothing confirms whether its Google route actually maps that onto Gemini's
- * asymmetric task type — and an unmapped field risks a 400 that would take
- * the whole dense channel dark for every caller, not just the one that lost
- * a few points of asymmetric-embedding quality. So the body is exactly
- * `{ model, input, dimensions, encoding_format }` for BOTH `task: 'document'`
- * and `task: 'query'`; `payload.test.ts` pins the exact key set. Follow-up:
- * probe the field with a real key once one is available, and turn it on if
- * the two tasks measurably diverge.
+ * WE SEND `input_type` EXPLICITLY FOR BOTH TASKS. Walk TASK-589 measured, on
+ * kind against live OpenRouter (`google/gemini-embedding-001:nitro` @ 384),
+ * that OpenRouter passes `input_type` through to Gemini's task type: a bogus
+ * value gets Google's 400 back on `task_type`, `search_document` yields a
+ * measurably different vector from `search_query` (cosine 0.94 against the
+ * query vector), and OMITTING the field is equivalent to `search_query`
+ * (cosine 1.0). `task: 'document'` maps to `input_type: 'search_document'`
+ * and `task: 'query'` maps to `input_type: 'search_query'` — see
+ * `INPUT_TYPE_OF` above. We send it explicitly for both rather than relying
+ * on the omitted default for `query`, because relying on that default is
+ * exactly how TASK-523 shipped with every stored fact embedded as a query
+ * (TASK-590). `remote-embed.test.ts` pins both call shapes by deep-equal.
  *
  * `model` MUST already have passed `OPENROUTER_MODEL_RE` — `plugin.ts`
  * validates both the configured model at construction and the payload-
@@ -142,6 +157,7 @@ export async function openrouterEmbed(
       input: batch,
       dimensions: args.dimensions,
       encoding_format: 'float',
+      input_type: INPUT_TYPE_OF[args.task],
     });
 
     const data = fieldOf(body, 'data');

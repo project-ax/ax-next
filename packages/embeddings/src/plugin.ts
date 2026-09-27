@@ -260,6 +260,7 @@ export function createEmbeddingsPlugin(config: EmbeddingsConfig = {}): Plugin {
       model,
       token,
       dimensions,
+      task: input.task,
     });
     return vectors === undefined ? undefined : { vectors };
   }

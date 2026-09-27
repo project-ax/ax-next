@@ -25,6 +25,9 @@ Reverses TASK-496's "Vertex `text-embedding-005` + Cohere `rerank-v4.0-pro`".
    the body is exactly `{model, input, dimensions, encoding_format}` for both
    tasks; a test pins that. `EmbeddingTask` stays on the hook (vendor-neutral,
    other producers use it). Follow-up: probe with a key; enable if vectors differ.
+   **Superseded by TASK-590:** walk TASK-589 measured that OpenRouter does pass
+   `input_type` to Gemini, so the driver now sends `search_document` /
+   `search_query` — see `2026-09-26-task-590-embed-input-types.md`.
 4. **Embedding fingerprint is store-level, owned by the fact store.** The store
    already sends `model` in the `embeddings:embed` payload (the producer honours
    a payload model), so the model the store asks for IS the model that produced

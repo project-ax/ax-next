@@ -71,3 +71,7 @@ kubectl --context kind-ax-next-dev -n ax-next exec deploy/ax-next-host -c host -
   rather than compare two incompatible vector spaces, and re-embeds each
   agent's facts in the background after that agent's next successful memory
   write. Until then recall for that agent is lexical-plus-recency.
+  The same happens once, on the first boot after an upgrade that changes how
+  vectors are made with the same model (TASK-590: stored facts are now embedded
+  as documents rather than as queries). A walk after that upgrade should
+  record something before it checks recall.
