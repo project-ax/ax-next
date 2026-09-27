@@ -468,7 +468,8 @@ describe('@ax/memory-facts-sqlite — embedding-model fingerprint + re-embed', (
     });
 
     // The state every agent is in on the first boot after TASK-590: same
-    // model, new recipe generation, every vector wiped until its next record.
+    // model, new recipe generation, every vector wiped until its next healthy
+    // record or `query` recall starts the re-embed (TASK-598).
     it('raises it after the TASK-590 recipe-generation wipe, with the model unchanged', async () => {
       await seedPreTask590();
       const { bus } = await start({ embedder: { hook: EMBED_HOOK, model: 'A' } });
@@ -496,6 +497,126 @@ describe('@ax/memory-facts-sqlite — embedding-model fingerprint + re-embed', (
       expect(embedder.calls.length).toBeGreaterThan(0);
       expect(out.statements).toEqual([]);
       expect(out.degraded).not.toContain('semantic');
+    });
+  });
+
+  // TASK-598: the post-record trigger alone left an agent that only RECALLS
+  // (or is idle between a wipe and its next write) at `['semantic']` forever.
+  // A `query` recall whose embed succeeded is the same proof of a working
+  // producer a healthy record is, so it starts the same detached, single-
+  // flight backfill.
+  describe('recall-triggered re-embed', () => {
+    function recall(bus: HookBus, input: RecallInput): Promise<RecallOutput> {
+      return bus.call<RecallInput, RecallOutput>('memory:facts:recall', ctxOf(), input);
+    }
+
+    it('a recall-only agent gets its vectors back after the TASK-590 wipe, with no record at all', async () => {
+      await seedPreTask590();
+      const { bus, embedder, background } = await start({
+        embedder: { hook: EMBED_HOOK, model: 'A' },
+      });
+      expect(vecCount(peek())).toBe(0);
+
+      const first = await recall(bus, { query: 'Khalid', limit: 10 });
+      // The recall that notices is itself still lexical — the re-embed is
+      // detached, never awaited on the recall path.
+      expect(first.degraded).toContain('semantic');
+      expect(background).toHaveLength(1);
+      await Promise.all(background);
+
+      expect(vecCount(peek())).toBe(2);
+      // Stored facts are embedded as DOCUMENTS (TASK-590); the only query
+      // embed is the recall's own.
+      const backfillCalls = embedder.calls.filter((c) => c.task === 'document');
+      expect(backfillCalls.flatMap((c) => c.texts).sort()).toEqual(
+        [
+          factStatementText('user', 'likes_artist', 'Khalid'),
+          factStatementText('user', 'lives_in', 'Boston'),
+        ].sort(),
+      );
+
+      const second = await recall(bus, { query: 'Khalid', limit: 10 });
+      expect(second.degraded).not.toContain('semantic');
+    });
+
+    it('answers the recall without waiting for the re-embed', async () => {
+      await seedPreTask590();
+      const { bus, embedder, background } = await start({
+        embedder: { hook: EMBED_HOOK, model: 'A' },
+      });
+      // The recall's own query text is 'Khalid' and passes; the backfill's
+      // chunk carries Boston's statement and parks on the gate.
+      embedder.gateOn = 'Boston';
+
+      const out = await recall(bus, { query: 'Khalid', limit: 10 });
+      expect(out.statements.map((s) => s.value)).toContain('Khalid');
+      expect(background).toHaveLength(1);
+      const settled = await Promise.race([
+        background[0]!.then(() => 'settled'),
+        new Promise((resolve) => setTimeout(() => resolve('pending'), 20)),
+      ]);
+      expect(settled).toBe('pending');
+
+      embedder.release();
+      await Promise.all(background);
+      expect(vecCount(peek())).toBe(2);
+    });
+
+    it('starts no background work when the query embed failed', async () => {
+      await seedPreTask590();
+      const { bus, embedder, background } = await start({
+        embedder: { hook: EMBED_HOOK, model: 'A' },
+      });
+      embedder.mode = 'fail';
+
+      const out = await recall(bus, { query: 'Khalid', limit: 10 });
+      expect(out.degraded).toContain('semantic');
+      expect(background).toHaveLength(0);
+      expect(embedder.calls).toHaveLength(1);
+      expect(vecCount(peek())).toBe(0);
+    });
+
+    it('a listing recall (no query) starts nothing', async () => {
+      await seedPreTask590();
+      const { bus, embedder, background } = await start({
+        embedder: { hook: EMBED_HOOK, model: 'A' },
+      });
+
+      await recall(bus, { about: 'user', limit: 10 });
+      expect(background).toHaveLength(0);
+      expect(embedder.calls).toHaveLength(0);
+    });
+
+    it('runs one re-embed per agent at a time across concurrent recalls, and none once the agent is complete', async () => {
+      await seedPreTask590();
+      const { bus, embedder, background } = await start({
+        embedder: { hook: EMBED_HOOK, model: 'A' },
+      });
+      embedder.gateOn = 'Boston';
+
+      await Promise.all([
+        recall(bus, { query: 'Khalid', limit: 10 }),
+        recall(bus, { query: 'Acme', limit: 10 }),
+        recall(bus, { query: 'music', limit: 10 }),
+      ]);
+      expect(background).toHaveLength(1);
+      embedder.release();
+      await Promise.all(background);
+
+      const bostonCalls = embedder.calls.filter((c) => c.texts.some((t) => t.includes('Boston')));
+      expect(bostonCalls).toHaveLength(1);
+      expect(vecCount(peek())).toBe(2);
+
+      // Complete now: the next recall probes nothing and starts nothing.
+      await recall(bus, { query: 'Khalid', limit: 10 });
+      await recall(bus, { query: 'Boston', limit: 10 });
+      // The first post-completion recall may run one probe that finds the
+      // agent complete; after that, nothing.
+      const afterComplete = background.length;
+      await recall(bus, { query: 'Khalid', limit: 10 });
+      expect(background.length).toBe(afterComplete);
+      await Promise.all(background);
+      expect(embedder.calls.filter((c) => c.task === 'document')).toHaveLength(1);
     });
   });
 });

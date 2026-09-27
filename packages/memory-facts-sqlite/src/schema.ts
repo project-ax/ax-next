@@ -345,7 +345,8 @@ function migrateAddColumns(driver: BetterSqliteDb, vectorExtensionLoaded: boolea
  *
  * Only callable with the extension loaded on this connection (deleting from
  * `vec0` needs the module) — the caller's job to check; see `plugin.ts`.
- * Wiped vectors come back through the post-record backfill in `plugin.ts`.
+ * Wiped vectors come back through the detached backfill in `plugin.ts`, started
+ * by the next record or `query` recall whose embed succeeds (TASK-598).
  */
 export function reconcileEmbeddingFingerprint(
   driver: BetterSqliteDb,
