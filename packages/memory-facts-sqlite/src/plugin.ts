@@ -761,9 +761,8 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
       ? await embedTexts(bus, ctx, config.embedder, [args.query], 'query', EMBEDDING_DIMENSIONS)
       : undefined;
     const queryVector = queryVectors?.[0];
-    const denseContributed = queryVector !== undefined;
 
-    const { fusedRows, pendingFlags } = inStore('memory:facts:recall', () => {
+    const { fusedRows, pendingFlags, denseContributed } = inStore('memory:facts:recall', () => {
       const db = requireDriver();
 
       // The sanitizer returns null when nothing survives tokenizing; that is
@@ -787,6 +786,19 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           args.ownerUserId,
         ),
         pendingFlags: pendingStatus(db, args.agentKey).degraded,
+        // A query vector is not the same thing as a dense contribution
+        // (TASK-591). Right after a model change wipes every stored vector —
+        // or while rows recorded without a provider await backfill — the embed
+        // succeeds and the channel searches an index holding none of this
+        // scope's rows, so it returns nothing and the answer is lexical. That
+        // is `'semantic'`, measured on kind as a silent `degraded: []`.
+        //
+        // The carve-out mirrors `'ranking'`'s: when the fused list is empty
+        // there were no rows in scope for ANY channel to find (the temporal
+        // channel admits every scope's recent rows regardless of the query),
+        // so an empty dense answer lost nothing — a day-one empty store with a
+        // healthy embedder must not read as degraded.
+        denseContributed: queryVector !== undefined && (dense.length > 0 || fused.length === 0),
       };
     });
 

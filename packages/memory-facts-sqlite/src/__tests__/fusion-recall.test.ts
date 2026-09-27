@@ -507,9 +507,14 @@ describe('@ax/memory-facts-sqlite — embedder/reranker seam', () => {
     registerHashEmbedder(bus);
 
     const out = await recall({ query: 'Khalid', limit: 10 });
-    // The embed call succeeded, so the dense channel DID run — it just had
-    // nothing to find. That is not a degradation.
-    expect(out.degraded).toEqual(['ranking']);
+    // The embed call succeeded and the dense channel ran — but over an index
+    // holding none of these rows, so it contributed nothing and the answer is
+    // lexical. This used to assert `['ranking']` ("had nothing to find is not
+    // a degradation"); TASK-591 reversed it after walk TASK-589 measured that
+    // exact state on kind as a silent `degraded: []` right after a model-change
+    // wipe. A recall that quietly runs without its dense channel looks healthy
+    // to every consumer.
+    expect(out.degraded).toEqual(['semantic', 'ranking']);
     expect(out.statements[0]?.value).toBe('Khalid');
   });
 
