@@ -86,9 +86,10 @@ describe('selectProfileRows — TASK-602', () => {
   });
 
   it('ignores a closed row passed as a candidate — only active rows can be shown', () => {
+    // Forgotten (no closedBy), so it is NOT a re-mention: only the
+    // active-row filter keeps this newest value off the profile.
     const closed = r('c', 'Tacoma', '2026-09-26T00:00:00.000Z', 'extracted', {
       until: '2026-09-27T00:00:00.000Z',
-      closedBy: 'z',
     });
     const seattle = r('s', 'Seattle', '2026-09-25T00:00:00.000Z', 'agent');
     expect(pick([closed, seattle])).toEqual(['Seattle']);
