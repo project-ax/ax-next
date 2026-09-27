@@ -897,9 +897,16 @@ describe('a routine run is not a conversation the person had (TASK-616)', () => 
   });
 
   it('a user turn (source unset or `user`) still carries its conversation', async () => {
+    // Guards an over-strip, not the original bug: only `routine` loses it.
     const h = await withLlm(() => reply(extraction([fact()])));
     await chatEnd(h, { ctx: h.ctx({ conversationId: 'conv-u', source: 'user' }) });
-    expect(readRows(h.databasePath).map((r) => r.conversation_id)).toEqual(['conv-u']);
+    await chatEnd(h, {
+      ctx: h.ctx({ conversationId: 'conv-unset' }),
+      messages: [{ role: 'user', content: 'A different thing entirely.' }],
+    });
+    expect(new Set(readRows(h.databasePath).map((r) => r.conversation_id))).toEqual(
+      new Set(['conv-u', 'conv-unset']),
+    );
   });
 });
 
