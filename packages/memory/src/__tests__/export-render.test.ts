@@ -131,6 +131,27 @@ describe('buildFactsExport — escaping', () => {
 });
 
 describe('buildFactsExport — profile', () => {
+  it('TASK-602: a newer extracted value beats an older agent note; a re-mention does not', () => {
+    const profileOf = (rows: ExportFact[]): string => {
+      const out = buildFactsExport(rows, PERSONAL);
+      return out.get([...out.keys()].find((k) => String(k) === `${ROOT}/profile.md`)!)!;
+    };
+    const moved = profileOf([
+      row({ id: 's', slot: 'lives_in', value: 'Seattle', when: '2026-09-01T00:00:00.000Z', provenance: 'agent' }),
+      row({ id: 't', slot: 'lives_in', value: 'Tacoma', when: '2026-09-05T00:00:00.000Z', provenance: 'extracted' }),
+    ]);
+    expect(moved).toContain('- lives_in: Tacoma');
+    expect(moved).not.toContain('Seattle');
+
+    const restated = profileOf([
+      row({ id: 'p1', slot: 'lives_in', value: 'Portland', when: '2026-08-01T00:00:00.000Z', until: '2026-09-01T00:00:00.000Z', closedBy: 's' }),
+      row({ id: 's', slot: 'lives_in', value: 'Seattle', when: '2026-09-01T00:00:00.000Z', provenance: 'agent' }),
+      row({ id: 'p2', slot: 'lives_in', value: 'Portland', when: '2026-09-05T00:00:00.000Z' }),
+    ]);
+    expect(restated).toContain('- lives_in: Seattle');
+    expect(restated).not.toContain('Portland');
+  });
+
   it('personal profile shows only the caller’s own subject, one row per slot', () => {
     const out = buildFactsExport(
       [

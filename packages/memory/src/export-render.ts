@@ -97,8 +97,14 @@ function buildProfile(rows: readonly ExportFact[], access: MemoryAccess): string
     (r) => r.until === undefined && r.slot !== undefined && SLOT_SET.has(r.slot),
   );
   let out = '# Profile\n\n';
+  // Closed rows ride along as history so the pick can tell a re-mention of a
+  // replaced value from a genuinely newer one (TASK-602).
   const renderGroup = (group: readonly ExportFact[]): string[] =>
-    selectProfileRows(group, SLOTS.length).map(
+    selectProfileRows(
+      group,
+      SLOTS.length,
+      rows.filter((r) => r.until !== undefined && group.some((g) => g.about === r.about)),
+    ).map(
       (row) =>
         `- ${escapeStatementText(row.slot!, UNBOUNDED)}: ${escapeStatementText(row.value, UNBOUNDED)}${renderNotedAt(row.when)}`,
     );

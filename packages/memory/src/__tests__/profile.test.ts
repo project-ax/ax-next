@@ -466,3 +466,81 @@ describe('@ax/memory — recall display fields', () => {
     expect(history.statements.some((s) => s.closure === 'overridden')).toBe(false);
   });
 });
+
+// TASK-602 (walk TASK-596): "I moved to Tacoma" in chat never displaced an
+// older agent note saying Seattle. Storage rule 3 stays as it is — the
+// extracted row cannot CLOSE the agent row — so the fix is which active row
+// the profile SHOWS: newest non-human value, unless it is a re-mention.
+describe('@ax/memory — profile pick among non-human rows (TASK-602)', () => {
+  const row = (
+    value: string,
+    when: string,
+    provenance: 'extracted' | 'agent' | 'human',
+    extra: Record<string, unknown> = {},
+  ) => ({
+    about: `user:${ALICE}`,
+    relation: 'lives_in',
+    value,
+    when,
+    slot: 'lives_in',
+    provenance,
+    ownerUserId: ALICE,
+    ...extra,
+  });
+
+  it('a newer extracted value beats an older agent note; the note stays open and still recalls', async () => {
+    harness = await makeMemoryHarness();
+    await engineRecord(harness.bus, harness.ctx(), [
+      row('Seattle, Washington', '2026-09-25T21:31:51.890Z', 'agent'),
+    ]);
+    await engineRecord(harness.bus, harness.ctx(), [
+      row('Tacoma, Washington', '2026-09-26T00:30:22.000Z', 'extracted', { conversationId: 'conv-moved' }),
+    ]);
+
+    const active = await harness.recall({ profile: true, limit: 100 });
+    expect(active.statements.map((s) => s.value)).toEqual(['Tacoma, Washington']);
+
+    const history = await harness.recall({ profile: true, activeOnly: false, limit: 100 });
+    const by = (value: string) => history.statements.find((s) => s.value === value);
+    expect(by('Seattle, Washington')?.closure).toBe('overridden');
+    expect(by('Seattle, Washington')).not.toHaveProperty('until');
+    expect(by('Tacoma, Washington')).not.toHaveProperty('closure');
+
+    // Not closed in storage: an ordinary recall still returns the note.
+    const recall = await harness.recall({ limit: 100 });
+    expect(recall.statements.map((s) => s.value).sort()).toEqual([
+      'Seattle, Washington',
+      'Tacoma, Washington',
+    ]);
+  });
+
+  it("a person's own edit still beats a newer extracted value", async () => {
+    harness = await makeMemoryHarness();
+    await engineRecord(harness.bus, harness.ctx(), [row('Boston', '2026-01-01T00:00:00.000Z', 'human')]);
+    await engineRecord(harness.bus, harness.ctx(), [row('Denver', '2026-02-01T00:00:00.000Z', 'agent')]);
+    await engineRecord(harness.bus, harness.ctx(), [row('Austin', '2026-03-01T00:00:00.000Z', 'extracted')]);
+    const active = await harness.recall({ profile: true, limit: 100 });
+    expect(active.statements.map((s) => s.value)).toEqual(['Boston']);
+  });
+
+  it('a re-mention of a replaced value does not count as newer', async () => {
+    harness = await makeMemoryHarness();
+    // Portland (extracted) is replaced by the agent's Seattle; chat later says
+    // Portland again. The agent row outranks it, so it is not closed — and it
+    // must not win the profile either.
+    await engineRecord(harness.bus, harness.ctx(), [row('Portland, Oregon', '2026-01-10T12:00:00.000Z', 'extracted')]);
+    await engineRecord(harness.bus, harness.ctx(), [row('Seattle, Washington', '2026-02-10T12:00:00.000Z', 'agent')]);
+    await engineRecord(harness.bus, harness.ctx(), [
+      row('Portland, Oregon', '2026-06-10T12:00:00.000Z', 'extracted', { conversationId: 'conv-restated' }),
+    ]);
+
+    const active = await harness.recall({ profile: true, limit: 100 });
+    expect(active.statements.map((s) => s.value)).toEqual(['Seattle, Washington']);
+
+    const history = await harness.recall({ profile: true, activeOnly: false, limit: 100 });
+    const portlands = history.statements.filter((s) => s.value === 'Portland, Oregon');
+    expect(portlands.map((s) => s.closure).sort()).toEqual(['overridden', 'replaced']);
+    const seattle = history.statements.find((s) => s.value === 'Seattle, Washington');
+    expect(seattle).not.toHaveProperty('closure');
+  });
+});
