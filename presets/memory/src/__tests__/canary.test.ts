@@ -485,6 +485,15 @@ describe('@ax/preset-memory canary', () => {
     expect(memory.rules?.status).toBe('ok');
     expect(memory.rules?.doc?.body ?? '').toBe('');
 
+    // TASK-612: the real save route announces the change, for the right
+    // agent, so the orchestrator can retire that agent's live sessions at
+    // their next turn and the new Rules reach the conversation.
+    const announced: unknown[] = [];
+    bus.subscribe('system-prompt:augment-changed', 'canary-rules-spy', async (_ctx, payload) => {
+      announced.push(payload);
+      return undefined;
+    });
+
     const saved = await apiJson(
       'PUT',
       `/api/workspace/agents/${aliceAgentId}/memory/rules`,
@@ -493,6 +502,7 @@ describe('@ax/preset-memory canary', () => {
     );
     expect(saved.status).toBe(200);
     expect(saved.json.saved).toBe(true);
+    expect(announced).toEqual([{ agentId: aliceAgentId }]);
 
     const again = await apiJson('GET', `/api/workspace/agents/${aliceAgentId}`, ALICE);
     const mem2 = again.json.memory as { rules?: { doc?: { body?: string } | null } };
