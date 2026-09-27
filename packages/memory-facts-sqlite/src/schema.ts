@@ -13,9 +13,10 @@ export const VEC_TABLE = 'memory_facts_v1_vec';
 
 /**
  * Key/value facts ABOUT the store's derived indexes (TASK-523). Today one
- * key, `model`: the embedding-model fingerprint every vector in
- * {@link VEC_TABLE} was produced under — see
- * {@link reconcileEmbeddingFingerprint}.
+ * key, `model`: the embedding RECIPE fingerprint every vector in
+ * {@link VEC_TABLE} was produced under — model plus how it was asked
+ * (`plugin.ts`'s `embeddingFingerprint`, generation-suffixed since
+ * TASK-590) — see {@link reconcileEmbeddingFingerprint}.
  */
 export const EMBEDDING_META_TABLE = 'memory_facts_v1_embedding_meta';
 
@@ -319,10 +320,12 @@ function migrateAddColumns(driver: BetterSqliteDb, vectorExtensionLoaded: boolea
 }
 
 /**
- * Make {@link VEC_TABLE} hold vectors from exactly ONE embedding model: the
- * one this deployment is configured to ask for (TASK-523 decision 4).
+ * Make {@link VEC_TABLE} hold vectors from exactly ONE embedding RECIPE: the
+ * model this deployment is configured to ask for, asked for the same way
+ * every time (TASK-523 decision 4; the "asked for" half added by TASK-590's
+ * generation suffix — see `plugin.ts`'s `EMBEDDING_RECIPE_GENERATION`).
  *
- * Vectors from two models are not comparable — different geometry, same
+ * Vectors from two recipes are not comparable — different geometry, same
  * dimensionality — and nothing errors when they are compared: `vec0` returns
  * real distances and the dense channel returns confident nonsense. So when
  * the stored fingerprint differs from `fingerprint`, every vector is deleted
@@ -335,7 +338,10 @@ function migrateAddColumns(driver: BetterSqliteDb, vectorExtensionLoaded: boolea
  * `text-embedding-005`, before OpenRouter). Even when the configured model
  * might be the one that wrote them, the store cannot know that, and guessing
  * is exactly how two spaces end up side by side. An EMPTY vec table with no
- * fingerprint just records it — there is nothing to be wrong about.
+ * fingerprint just records it — there is nothing to be wrong about. The same
+ * "cannot know, so wipe" logic is what makes a bumped generation safe: a
+ * pre-TASK-590 store recorded the bare model id, which mismatches the new
+ * `<model>#<generation>` even when the model itself never changed.
  *
  * Only callable with the extension loaded on this connection (deleting from
  * `vec0` needs the module) — the caller's job to check; see `plugin.ts`.

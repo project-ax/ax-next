@@ -608,15 +608,18 @@ export interface MemoryFactsSqliteConfig {
    * embedder and §3.3's write-path (slot-normalization) one the SAME seam —
    * one provider, one credential, one egress host.
    *
-   * The model is also the store's EMBEDDING FINGERPRINT (TASK-523): `model` is
-   * sent on every embed call, so the model asked for is the model that
-   * produced the vectors. At `init` the store compares it with the one it
-   * recorded; on a change every stored vector is deleted (two models' vectors
-   * are not comparable) and the post-record backfill re-embeds them under the
-   * new one. Without a `model` the fingerprint falls back to
-   * `hook-default:<hook>` — whatever the producer defaults to, which the store
-   * cannot see change. `@ax/preset-memory` always pins a model, so that
-   * fallback is for tests and hand-built configs only.
+   * The model also feeds the store's EMBEDDING FINGERPRINT (TASK-523,
+   * generation-suffixed since TASK-590 — see `EMBEDDING_RECIPE_GENERATION` in
+   * `plugin.ts`): the fingerprint names the RECIPE that produced the vectors
+   * in `vec0` — the model asked for, plus how it was asked. At `init` the
+   * store compares it with the one it recorded; on a mismatch (a different
+   * model, OR the same model under a bumped recipe generation) every stored
+   * vector is deleted (two recipes' vectors are not comparable) and the
+   * post-record backfill re-embeds them under the new one. Without a `model`
+   * the fingerprint falls back to `hook-default:<hook>` — whatever the
+   * producer defaults to, which the store cannot see change. `@ax/preset-
+   * memory` always pins a model, so that fallback is for tests and hand-built
+   * configs only.
    */
   embedder?: ProducerRef;
   /**
@@ -650,13 +653,33 @@ const BACKFILL_LIMIT = 200;
 const BACKFILL_EMBED_CHUNK = 32;
 
 /**
+ * Names the RECIPE that produced the vectors sitting in `vec0` — not just the
+ * model, but how it was asked. `embeddingFingerprint` is `<model-or-hook-
+ * sentinel>#<generation>`; bump this string whenever the recipe changes
+ * WITHOUT the model id changing, so two incompatible vector spaces never sit
+ * side by side under one fingerprint (see `reconcileEmbeddingFingerprint` in
+ * `schema.ts`).
+ *
+ * TASK-590: the OpenRouter producer dropped the document/query `task` on
+ * every embed call, so every fact ever stored was embedded as a QUERY, not a
+ * document — model unchanged, recipe silently different. Bumping this
+ * generation makes every pre-TASK-590 fingerprint (the bare model id) mismatch
+ * once, which wipes `vec0` (`reconcileEmbeddingFingerprint`) and lets the
+ * TASK-523 post-record backfill (`triggerVectorBackfill` →
+ * `backfillMissingVectors`, which only re-embeds rows with no vector) redo
+ * them as documents.
+ */
+export const EMBEDDING_RECIPE_GENERATION = 'tasks-v1';
+
+/**
  * The embedding fingerprint for a configured embedder — see
- * `MemoryFactsSqliteConfig.embedder`. The pinned model when there is one;
- * otherwise a sentinel naming the hook, which is the best the store can say
- * about "whatever that producer defaults to".
+ * `MemoryFactsSqliteConfig.embedder`. The pinned model when there is one,
+ * otherwise a sentinel naming the hook (the best the store can say about
+ * "whatever that producer defaults to"), suffixed with the recipe generation
+ * — see {@link EMBEDDING_RECIPE_GENERATION}.
  */
 function embeddingFingerprint(ref: ProducerRef): string {
-  return ref.model ?? `hook-default:${ref.hook}`;
+  return `${ref.model ?? `hook-default:${ref.hook}`}#${EMBEDDING_RECIPE_GENERATION}`;
 }
 
 export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): Plugin {
