@@ -617,10 +617,11 @@ interface SessionIsAliveOutput {
 //
 // Note: augmentation applies ONLY on the fresh-spawn path. The routed-into-
 // existing-sandbox path reuses the originally-frozen `agentConfig.systemPromptAugment`
-// that was baked into the runner's session at first spawn — re-augmenting
-// mid-conversation would silently shift the prompt under the running agent,
-// which neither matches caller expectations nor improves anything (the
-// runner already has its prompt context).
+// that was baked into the runner's session at first spawn; the prompt is never
+// shifted under a running runner. When a provider's content changes (a person
+// edits Rules), it fires `system-prompt:augment-changed { agentId }` and the
+// orchestrator retires that agent's live sessions at their NEXT turn boundary,
+// so the fresh spawn re-augments (TASK-612).
 // Provider reads from ctx (userId, agentId, sessionId, etc.) — payload is empty.
 //
 // TASK-524: a contribution may set `bootstrapSafe: true`. Bootstrap mode (the
@@ -1137,6 +1138,7 @@ export function createOrchestrator(
   onHttpEgress(ctx: AgentContext, payload: HttpEgressEventLike): Promise<void>;
   onSkillsProposed(ctx: AgentContext, event: SkillsProposedLike): Promise<void>;
   onConnectorProposed(ctx: AgentContext, event: ConnectorProposedLike): Promise<void>;
+  onSystemPromptAugmentChanged(ctx: AgentContext, payload: unknown): void;
 } {
   // Waiters are tracked by ctx.reqId (server-minted, J9, unique per
   // agent:invoke). On the J6 routed path, two concurrent agent:invokes for the
@@ -1368,6 +1370,7 @@ export function createOrchestrator(
     // next turn), prune it now — the session is gone so the entry would never
     // be consumed and would leak indefinitely.
     respawnSessions.delete(sessionId);
+    augmentGenBySession.delete(sessionId);
   }
 
   // Reactive egress wall (TASK-37) — turn an allowlist-MISS 403 into the
@@ -1576,6 +1579,33 @@ export function createOrchestrator(
   // single-replica — same posture as the warm-session map.
   const respawnSessions = new Set<string>();
 
+  // TASK-612 — the second reason a warm session is retired at its next turn:
+  // its system prompt is older than the agent's augment. An augment provider
+  // (today the Rules providers in @ax/memory / @ax/memory-strata) fires
+  // `system-prompt:augment-changed { agentId }` when a person edits something
+  // the prompt carries; that bumps the agent's generation. Every fresh spawn
+  // records the generation it was built at, snapshotted BEFORE the augment
+  // call so a save that lands mid-build still counts as newer. A session this
+  // process did not spawn has no record and counts as stale once the agent has
+  // any change — conservative, worst case one extra re-spawn. Counters, not
+  // timestamps, so there is no clock to skew. In-memory + single-replica, same
+  // posture as `respawnSessions` and the warm-session map.
+  const augmentGenByAgent = new Map<string, number>();
+  const augmentGenBySession = new Map<string, number>();
+
+  function isAugmentStale(sessionId: string, agentId: string): boolean {
+    const agentGen = augmentGenByAgent.get(agentId) ?? 0;
+    if (agentGen === 0) return false;
+    const sessionGen = augmentGenBySession.get(sessionId);
+    return sessionGen === undefined || sessionGen < agentGen;
+  }
+
+  function onSystemPromptAugmentChanged(_ctx: AgentContext, payload: unknown): void {
+    const agentId = (payload as { agentId?: unknown } | null | undefined)?.agentId;
+    if (typeof agentId !== 'string' || agentId.length === 0) return;
+    augmentGenByAgent.set(agentId, (augmentGenByAgent.get(agentId) ?? 0) + 1);
+  }
+
   async function runAgentInvoke(
     ctx: AgentContext,
     input: AgentInvokeInput,
@@ -1747,13 +1777,24 @@ export function createOrchestrator(
             SessionIsAliveOutput
           >('session:is-alive', ctx, { sessionId: candidate });
           if (aliveResult.alive) {
-            if (respawnSessions.has(candidate)) {
+            const skillsDirty = respawnSessions.has(candidate);
+            const augmentStale = isAugmentStale(candidate, ctx.agentId);
+            if (skillsDirty || augmentStale) {
               // B3: this session's agent's draft-skills changed since it
               // spawned (the runner freezes the projection at spawn). Retire it
               // and fall through to a fresh spawn that re-derives the
               // projection. Safe HERE (between turns), unlike a mid-commit
               // terminate in the workspace:applied subscriber.
+              //
+              // TASK-612: same treatment when the session's system prompt
+              // predates a change to the agent's augment (a person edited
+              // Rules). The fresh spawn re-runs `system-prompt:augment`.
+              ctx.logger.info('stale_session_respawn', {
+                sessionId: candidate,
+                reason: skillsDirty ? 'skills-proposed' : 'system-prompt-augment-changed',
+              });
               respawnSessions.delete(candidate);
+              augmentGenBySession.delete(candidate);
               try {
                 await bus.call('session:terminate', ctx, { sessionId: candidate });
               } catch (err) {
@@ -1922,9 +1963,17 @@ export function createOrchestrator(
 
     // Phase 2B — system-prompt:augment. Fresh-spawn path only: a routed
     // agent:invoke reuses an existing live sandbox whose systemPromptAugment was
-    // baked into the runner at first spawn; re-augmenting mid-conversation
-    // would silently shift the prompt under the running agent (and the
-    // runner doesn't reload it anyway).
+    // baked into the runner at first spawn, and the runner never reloads it.
+    // The prompt is never changed under a running runner. When the augment
+    // itself changes (a person edited Rules — `system-prompt:augment-changed`,
+    // TASK-612), the routing above retires the session at its next turn and
+    // this path runs again, which is how "reads them before every run" on the
+    // Memory tab stays true.
+    //
+    // Record the agent's augment generation BEFORE the call: a change that
+    // lands while the augment is being built is then newer than this spawn,
+    // and the next turn re-spawns instead of keeping a prompt that missed it.
+    augmentGenBySession.set(ctx.sessionId, augmentGenByAgent.get(ctx.agentId) ?? 0);
     //
     // Single-provider service hook (one registration at MVP; promoted to
     // a subscriber chain in Phase 5+ if a second provider lands). When
@@ -2737,6 +2786,7 @@ export function createOrchestrator(
             // proxy close below) so every turn on this warm session keeps
             // rotating credentials; we drop it only once the runner exits.
             sessionsNeedingRotation.delete(sessionId);
+            augmentGenBySession.delete(sessionId);
             if (proxyOpened) {
               void bus
                 .call<ProxyCloseSessionInput, Record<string, never>>(
@@ -3514,6 +3564,7 @@ export function createOrchestrator(
     onHttpEgress,
     onSkillsProposed,
     onConnectorProposed,
+    onSystemPromptAugmentChanged,
   };
 }
 
