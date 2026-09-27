@@ -12,6 +12,7 @@
     { "path": "../../packages/memory-facts-sqlite" },
     { "path": "../../packages/embeddings" },
     { "path": "../../packages/channel-web" },
+    { "path": "../../packages/routines" },
     { "path": "../k8s" }
   ]
 }

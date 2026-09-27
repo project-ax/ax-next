@@ -156,6 +156,14 @@ export interface RoutinesConfig {
   claimBatchSize?: number;
   claimWindowMinutes?: number;
   electionRetryMs?: number;
+  /**
+   * Default-routine NAMES this deployment keeps OFF (TASK-609). At boot each
+   * one's GLOBAL `enabled` flag is set false and its materialized per-agent
+   * rows are removed (idempotent), and `routines:upsert-default` refuses to
+   * turn one back on. Other defaults are untouched. Omitted = no change from
+   * the pre-TASK-609 behaviour.
+   */
+  forceDisabledDefaults?: readonly string[];
 }
 
 export interface DefaultRoutineSummary {

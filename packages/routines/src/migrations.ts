@@ -1,8 +1,41 @@
 import { sql, type Kysely, type Generated, type ColumnType } from 'kysely';
-import { SKILL_REFLECTION_PROMPT } from './reflection-prompt.js';
+import { SKILL_REFLECTION_PROMPT, SKILL_REFLECTION_ROUTINE_NAME } from './reflection-prompt.js';
 
 // Heartbeat default seed content — mirrors heartbeat-template.ts (which is
 // deleted in Task 7; keep both in sync until then).
+/**
+ * Keep the named default routines OFF (TASK-609). Scoped to exactly `names`:
+ * sets each one's GLOBAL `enabled` to false (which stops both materialization
+ * and the tick claim) and deletes its already-materialized per-agent rows, so
+ * an existing deployment that had flipped it on stops firing and stops listing
+ * it. Fire history (`routines_v1_fires`) has no FK to definitions and is kept.
+ * Idempotent: a second run matches no rows. `updated_at` is deliberately not
+ * bumped — it drives `refreshStale`, and nothing about the spec changed.
+ */
+export async function disableDefaultRoutines(
+  db: Kysely<RoutinesDatabase>,
+  names: readonly string[],
+): Promise<{ disabled: number; removed: number }> {
+  if (names.length === 0) return { disabled: 0, removed: 0 };
+  const list = [...names];
+  const disabled = await sql`
+    UPDATE default_routines_v1
+       SET enabled = false
+     WHERE name = ANY(${list}::text[])
+       AND enabled
+  `.execute(db);
+  const removed = await sql`
+    DELETE FROM routines_v1_definitions r
+     USING default_routines_v1 d
+     WHERE r.definition_id = d.default_routine_id
+       AND d.name = ANY(${list}::text[])
+  `.execute(db);
+  return {
+    disabled: Number(disabled.numAffectedRows ?? 0),
+    removed: Number(removed.numAffectedRows ?? 0),
+  };
+}
+
 const HEARTBEAT_SEED_MD: string = [
   '---',
   'name: heartbeat',
@@ -325,7 +358,7 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
        trigger_spec, interval_seconds, silence_token, silence_max,
        conversation, prompt_body, source_md, enabled)
     VALUES
-      ('skill-reflection', 'skill-reflection',
+      (${SKILL_REFLECTION_ROUTINE_NAME}, ${SKILL_REFLECTION_ROUTINE_NAME},
        'Autonomously graduate recurring procedures from memory into durable skills.',
        'seed-2026-06-08',
        'interval', ${'{"kind":"interval","every":"24h"}'}::jsonb, 86400,
