@@ -398,7 +398,15 @@ function isFactMemoryStatement(v: unknown): v is FactMemoryStatement {
   for (const field of OPTIONAL_STATEMENT_STRINGS) {
     if (v[field] !== undefined && typeof v[field] !== 'string') return false;
   }
-  if (v.closure !== undefined && v.closure !== 'replaced' && v.closure !== 'forgotten') {
+  if (
+    v.closure !== undefined &&
+    v.closure !== 'replaced' &&
+    v.closure !== 'forgotten' &&
+    v.closure !== 'overridden'
+  ) {
+    return false;
+  }
+  if (v.savedBy !== undefined && v.savedBy !== 'person' && v.savedBy !== 'agent') {
     return false;
   }
   return true;

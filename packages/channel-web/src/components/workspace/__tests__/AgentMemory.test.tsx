@@ -82,6 +82,15 @@ describe('AgentMemory', () => {
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
   });
 
+  it('placeholders the empty editor with two example rules, not a bare example', () => {
+    render(<AgentMemory agentName="Quill" memory={read()} onSaveRules={vi.fn()} />);
+    const box = screen.getByLabelText('Rules you gave me');
+    expect(box).toHaveAttribute(
+      'placeholder',
+      'No rules yet. For example:\nAlways cc Priya on customer email.\nNever touch the billing spreadsheet without asking.',
+    );
+  });
+
   it('saves what the user typed, through the caller\'s write path', async () => {
     const onSaveRules = vi.fn().mockImplementation(async (b: string) => `${b}\n`);
     render(<AgentMemory agentName="Quill" memory={read()} onSaveRules={onSaveRules} />);

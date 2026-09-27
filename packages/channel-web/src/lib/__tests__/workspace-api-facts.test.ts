@@ -38,6 +38,8 @@ describe('workspaceApi facts memory boundary', () => {
     ['a non-string degraded flag', { statements: [], degraded: [42] }],
     ['a bad closure value', { statements: [{ ...goodStatement, closure: 'hidden' }], degraded: [] }],
     ['a non-string aboutText', { statements: [{ ...goodStatement, aboutText: 9 }], degraded: [] }],
+    ['a bad savedBy value', { statements: [{ ...goodStatement, savedBy: 'system' }], degraded: [] }],
+    ['a non-string savedBy', { statements: [{ ...goodStatement, savedBy: 1 }], degraded: [] }],
     ['a non-enum page visibility type', { statements: [], degraded: [], visibility: 3 }],
     ['a missing degraded', { statements: [] }],
     ['an invalid page visibility', { statements: [], degraded: [], visibility: 'world' }],
@@ -52,6 +54,21 @@ describe('workspaceApi facts memory boundary', () => {
     respondWith({ statements: [goodStatement], degraded: [], visibility: 'team' });
     const page = await workspaceApi.recallMemory('a1', {});
     expect(page.visibility).toBe('team');
+  });
+
+  it('recallMemory accepts savedBy person/agent and the overridden closure', async () => {
+    respondWith({
+      statements: [
+        { ...goodStatement, id: 'm1', savedBy: 'person' },
+        { ...goodStatement, id: 'm2', savedBy: 'agent' },
+        { ...goodStatement, id: 'm3', closure: 'overridden' },
+      ],
+      degraded: [],
+    });
+    const page = await workspaceApi.recallMemory('a1', {});
+    expect(page.statements[0]?.savedBy).toBe('person');
+    expect(page.statements[1]?.savedBy).toBe('agent');
+    expect(page.statements[2]?.closure).toBe('overridden');
   });
 
   it('rememberMemory resolves only a body carrying a nonblank id', async () => {

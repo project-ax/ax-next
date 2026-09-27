@@ -621,8 +621,12 @@ describe('@ax/preset-memory canary', () => {
       { input: { query: 'work' } },
     );
     expect(table).toContain('| Network | When | Statement |');
-    expect(table).toContain('[UNKNOWN]');
-    expect(table).toContain('Acme Corp');
+    // TASK-526: a kind-less row says who saved it, and the caller's own
+    // subject renders as DEM's literal `user`, never the stored `user:<id>`.
+    expect(table).toContain('| [AGENT] |');
+    expect(table).toContain('| user works at: Acme Corp |');
+    expect(table).not.toContain('[UNKNOWN]');
+    expect(table).not.toContain(`user:${ALICE}`);
 
     const corrected = await apiJson(
       'POST',

@@ -731,9 +731,21 @@ export interface FactMemoryStatement {
   kind?: string;
   slot?: string;
   closedBy?: string;
-  closure?: 'replaced' | 'forgotten';
+  /**
+   * `overridden` is a history-only mark (TASK-526): set on an ACTIVE row (no
+   * `until`) that the equivalent active read would hide because a
+   * higher-provenance row outranks it. It never appears on an active read.
+   */
+  closure?: 'replaced' | 'forgotten' | 'overridden';
   whenText?: string;
   aboutText?: string;
+  /**
+   * Who saved a row that was not extracted from a conversation — a
+   * READ-ONLY coarsening of the engine's provenance for display (TASK-526).
+   * `person` = a human wrote or edited it; `agent` = the agent's own
+   * `memory_note`. Absent for extracted rows and unknown provenance.
+   */
+  savedBy?: 'person' | 'agent';
 }
 
 export interface FactMemoryPage {

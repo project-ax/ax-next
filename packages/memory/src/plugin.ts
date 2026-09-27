@@ -11,7 +11,7 @@ import {
 import { PLUGIN_NAME } from './plugin-name.js';
 import { AGENTS_RESOLVE_HOOK, memoryReadScope, resolveMemoryAccess } from './access.js';
 import { deriveSlot, SLOTS } from './slots.js';
-import { rewriteSpeaker } from './subject.js';
+import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
 import {
   NO_CREDENTIAL_EVENT,
   OBSERVER_FAILED_EVENT,
@@ -21,7 +21,7 @@ import {
   noCredentialFields,
 } from './failure.js';
 import { runObserver, type ObserverRecordInput, type ObserverResult } from './observer.js';
-import { dropRementionedSlotRows, selectProfileRows } from './profile.js';
+import { dropRementionedSlotRows, rementionedSlotRows, selectProfileRows } from './profile.js';
 import { formatEvidenceWhen } from './evidence.js';
 import { MEMORY_RECALL_TOOL_HOOK, registerMemoryRecall } from './recall-tool.js';
 import { MEMORY_NOTE_TOOL_HOOK, registerMemoryNote } from './note-tool.js';
@@ -140,6 +140,9 @@ const MEMORY_OPS_REASONING = 'minimal' as const;
  */
 const FORBIDDEN_PAYLOAD_FIELDS = [
   'provenance',
+  // The read-only display coarsening of provenance (TASK-526). Refused like
+  // provenance so a caller setting it learns it did nothing.
+  'savedBy',
   'ownerUserId',
   'scope',
   'visibility',
@@ -158,6 +161,7 @@ const FORBIDDEN_PAYLOAD_FIELDS = [
  * declaration keeps the production graph honest about what actually crosses
  * the bus. `provenance` and `closedBy` reach a caller only through the bounded
  * paths in the recall handler: `provenance` feeds profile selection and
+ * reaches a caller only as the two-value `savedBy` display coarsening, and
  * `closedBy` is forwarded only when it names a row already in the same
  * returned page — never verbatim.
  */
@@ -605,17 +609,10 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             toMemoryStatement(row);
           }
           const activeOnly = input.activeOnly !== false;
-          let page: EngineFactRecord[];
-          if (input.profile === true && activeOnly) {
-            page = selectProfileRows(result.statements, limit);
-          } else if (activeOnly) {
-            // §3.4 on the read path: a correction survives the next chat
-            // mention. A lower-provenance row that merely restates a value the
-            // person replaced is the stale value coming back, not news — see
-            // `dropRementionedSlotRows`. The replaced row and the correction
-            // may sit outside this pool, so each subject's slot chains are
-            // read whole (closed rows included). History (`activeOnly: false`)
-            // shows everything, as it should.
+          // Each subject's slot chains read whole (closed rows included): the
+          // replaced row and the correction may sit outside the retrieved
+          // pool while the stale re-mention ranks inside it.
+          const readSlotGroup = async (): Promise<EngineFactRecord[]> => {
             const abouts = [
               ...new Set(
                 result.statements
@@ -638,25 +635,102 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
               );
               if (Array.isArray(slotRows.statements)) group.push(...slotRows.statements);
             }
-            page = dropRementionedSlotRows(result.statements, group).slice(0, limit);
+            return group;
+          };
+          let page: EngineFactRecord[];
+          // History only: active rows the equivalent active read would hide.
+          let overridden = new Set<EngineFactRecord>();
+          if (input.profile === true && activeOnly) {
+            page = selectProfileRows(result.statements, limit);
+          } else if (activeOnly) {
+            // §3.4 on the read path: a correction survives the next chat
+            // mention. A lower-provenance row that merely restates a value the
+            // person replaced is the stale value coming back, not news — see
+            // `dropRementionedSlotRows`.
+            page = dropRementionedSlotRows(result.statements, await readSlotGroup()).slice(0, limit);
           } else {
+            // History shows every row, but says which active ones the active
+            // read hides — otherwise an outranked row looks current and a
+            // person edits the one the agent never uses. The same selection
+            // functions as the active branches decide, so the mark and the
+            // hide cannot drift.
             page = result.statements.slice(0, limit);
+            if (input.profile === true) {
+              // The winners come from the ACTIVE slot rows read on their own,
+              // not from this page: the page is recency-ordered and capped,
+              // and an old human correction (never closed) is exactly the row
+              // that falls off it — which would crown a newer outranked row.
+              const activeRows = requireEngineResult(
+                await bus.call<unknown, EngineRecallOutput | null>(FACTS_RECALL_HOOK, ctx, {
+                  limit: 200,
+                  ...memoryReadScope(access),
+                  about: rewriteSpeaker(SPEAKER_SUBJECT, ownerUserId),
+                  slots: [...SLOTS],
+                  activeOnly: true,
+                }),
+                MEMORY_RECALL_HOOK,
+                FACTS_RECALL_HOOK,
+              );
+              // Refused, not coerced: an empty winner set would mark every
+              // active row overridden — nonsense rendered as an answer, the
+              // same lie the primary read's array check refuses.
+              if (!Array.isArray(activeRows.statements)) {
+                throw new PluginError({
+                  code: 'invalid-return',
+                  plugin: PLUGIN_NAME,
+                  hookName: MEMORY_RECALL_HOOK,
+                  message: `${FACTS_RECALL_HOOK} returned a non-array statements; memory cannot say which profile rows are in effect`,
+                });
+              }
+              const winners = new Set(
+                selectProfileRows(activeRows.statements, Number.MAX_SAFE_INTEGER).map(
+                  (row) => row.id,
+                ),
+              );
+              overridden = new Set(
+                result.statements.filter(
+                  (row) =>
+                    row.until === undefined &&
+                    typeof row.slot === 'string' &&
+                    row.slot !== '' &&
+                    !winners.has(row.id),
+                ),
+              );
+            } else {
+              overridden = rementionedSlotRows(result.statements, await readSlotGroup());
+            }
           }
           const visibleIds = new Set(page.map((row) => row.id));
+          const ownSubject = rewriteSpeaker(SPEAKER_SUBJECT, ownerUserId);
 
           return {
             statements: page.map((row) => {
               const mapped = toMemoryStatement(row);
+              const savedBy =
+                row.provenance === 'human'
+                  ? ('person' as const)
+                  : row.provenance === 'agent'
+                    ? ('agent' as const)
+                    : undefined;
               return {
                 ...mapped,
+                // Another person's speaker subject is `user:<their id>`; a
+                // caller is never handed that id, only that it is someone else.
                 aboutText:
-                  row.about === rewriteSpeaker('user', ownerUserId)
+                  row.about === ownSubject
                     ? 'you'
-                    : row.about.replace(/_/g, ' '),
-                whenText: formatEvidenceWhen(mapped, asOf),
+                    : row.about.startsWith(`${SPEAKER_SUBJECT}:`)
+                      ? 'a teammate'
+                      : row.about.replace(/_/g, ' '),
+                // No until suffix: `closure` owns closure, and a "→ superseded"
+                // beside a Forgotten badge is the contradiction TASK-526 fixed.
+                whenText: formatEvidenceWhen({ when: mapped.when }, asOf),
+                ...(savedBy !== undefined ? { savedBy } : {}),
                 ...(row.until !== undefined
                   ? { closure: row.closedBy === undefined ? ('forgotten' as const) : ('replaced' as const) }
-                  : {}),
+                  : overridden.has(row)
+                    ? { closure: 'overridden' as const }
+                    : {}),
                 ...(typeof row.closedBy === 'string' && visibleIds.has(row.closedBy)
                   ? { closedBy: row.closedBy }
                   : {}),
@@ -1063,7 +1137,8 @@ const MEMORY_STATEMENT_KINDS: readonly MemoryStatementKind[] = [
  *    names a row only when that row is already in the same returned page, never
  *    verbatim — and `provenance` feeds profile selection without being handed
  *    out, which would start the argument about whether it can be handed back
- *    IN.
+ *    IN. The recall handler derives the read-only `savedBy` display field from
+ *    it; the column itself never leaves.
  * 2. A spread would silently widen this surface every time the engine's
  *    `FactRecord` grows a column — which is how a storage detail ends up in a
  *    transport-agnostic payload without anybody deciding to put it there

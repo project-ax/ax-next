@@ -41,7 +41,7 @@ export const COMPACTION_NOTICE =
   'We fold these together over time, and drop the ones that stop being useful. If something here needs to stick, move it up to your rules.';
 
 const RULES_PLACEHOLDER =
-  'Always cc Priya on customer email.\nNever touch the billing spreadsheet without asking.';
+  'No rules yet. For example:\nAlways cc Priya on customer email.\nNever touch the billing spreadsheet without asking.';
 
 export function AgentMemory({
   memory,

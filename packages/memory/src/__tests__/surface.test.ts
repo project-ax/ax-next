@@ -188,11 +188,15 @@ describe('@ax/memory — memory:recall', () => {
     // owner-scoped page — this active row has none.
     expect(statements[0]).not.toHaveProperty('provenance');
     expect(statements[0]).not.toHaveProperty('closedBy');
+    // `savedBy` is the bounded display path for provenance: a two-value
+    // read-only coarsening, present here because this row came from
+    // memory:remember.
     expect(Object.keys(statements[0]!).sort()).toEqual([
       'about',
       'aboutText',
       'id',
       'relation',
+      'savedBy',
       'value',
       'when',
       'whenText',

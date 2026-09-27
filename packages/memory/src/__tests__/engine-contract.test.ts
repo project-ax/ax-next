@@ -358,3 +358,39 @@ describe('@ax/memory — boot', () => {
     expect(out).toEqual({ id: 'fact-1' });
   });
 });
+
+describe('@ax/memory — the profile-history winner read refuses a malformed answer (TASK-526)', () => {
+  it('throws instead of marking every active row overridden', async () => {
+    // Coercing a non-array here to [] leaves no winners, so every active row
+    // on the history page would read "another memory is used instead" — the
+    // same "nonsense renders as an answer" lie the primary read refuses.
+    const bus = new HookBus();
+    bus.registerService('memory:facts:recall', 'stub', async (_c: AgentContext, input: unknown) =>
+      (input as { activeOnly?: boolean }).activeOnly === true
+        ? { statements: 'not-an-array', degraded: [] }
+        : {
+            statements: [
+              {
+                id: 'r1',
+                about: 'user:user-alice',
+                relation: 'lives_in',
+                value: 'Boston',
+                when: '2023-01-01T00:00:00Z',
+                slot: 'lives_in',
+                provenance: 'human',
+              },
+            ],
+            degraded: [],
+          },
+    );
+    bus.registerService('memory:facts:record', 'stub', async () => ({ records: [] }));
+    bus.registerService('memory:facts:supersede', 'stub', async () => ({}));
+    bus.registerService('tool:register', 'stub-catalog', async () => ({}));
+    registerMemoryAgents(bus);
+    await createMemoryPlugin().init({ bus, config: {} });
+
+    await expect(
+      bus.call('memory:recall', ctx(), { profile: true, activeOnly: false }),
+    ).rejects.toThrow(/memory cannot say which profile rows are in effect/);
+  });
+});

@@ -70,15 +70,43 @@ function words(v: string): string {
   return v.replace(/_/g, ' ');
 }
 
-function statementText(row: FactMemoryStatement): string {
-  return `${row.aboutText ?? words(row.about)} ${words(row.relation)}: ${row.value}`;
+function capitalize(s: string): string {
+  return s.length === 0 ? s : s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function kindLabel(kind: string | undefined): string {
-  if (kind === 'world' || kind === 'experience') return 'Fact';
-  if (kind === 'observation') return 'Observation';
-  if (kind === 'opinion') return 'Opinion';
-  return 'Unclassified';
+function subjectText(row: FactMemoryStatement): string {
+  if (row.aboutText === 'you') return 'You';
+  if (row.aboutText !== undefined) return capitalize(row.aboutText);
+  return capitalize(words(row.about));
+}
+
+function statementText(row: FactMemoryStatement): string {
+  return `${subjectText(row)} — ${words(row.relation)}: ${row.value}`;
+}
+
+/**
+ * The row's TYPE label. `kind` wins when the engine classified it; otherwise
+ * we say who saved it rather than claim "Unclassified" — a word that reads as
+ * a judgment about the memory rather than an honest gap in our own metadata
+ * (TASK-526, card item 1).
+ */
+function kindLabel(row: FactMemoryStatement): string {
+  if (row.kind === 'world' || row.kind === 'experience') return 'Fact';
+  if (row.kind === 'observation') return 'Observation';
+  if (row.kind === 'opinion') return 'Opinion';
+  if (row.savedBy === 'person') return 'Saved by a person';
+  if (row.savedBy === 'agent') return 'Agent note';
+  return 'Older memory';
+}
+
+/**
+ * A row is CURRENT — active, editable, forgettable — iff it has no `until`
+ * AND a higher-provenance row does not outrank it. `overridden` marks the
+ * second case: an active row a history read still returns, but the engine's
+ * own active read would hide (TASK-526, card item 8).
+ */
+function isCurrent(row: FactMemoryStatement): boolean {
+  return row.until === undefined && row.closure !== 'overridden';
 }
 
 function sortOldestFirst(rows: readonly FactMemoryStatement[]): FactMemoryStatement[] {
@@ -157,6 +185,17 @@ function ClosureNote({
   row: FactMemoryStatement;
   page: FactMemoryPage;
 }) {
+  if (row.closure === 'overridden') {
+    // No `until` on this row — it is still active. Must render anyway: the
+    // badge is the only thing on screen that says this row is not the one in
+    // effect (TASK-526, card item 8).
+    return (
+      <span className="text-sm text-muted-foreground">
+        <Badge variant="secondary">Overridden</Badge> — another memory is used
+        instead
+      </span>
+    );
+  }
   if (row.until === undefined) return null;
   return (
     <span className="text-sm text-muted-foreground">
@@ -296,8 +335,8 @@ function ProfileCard({
   }, [agentId, history, refresh, tick]);
 
   const rows = state.status === 'ready' ? state.data.statements : [];
-  const active = rows.filter((r) => r.until === undefined);
-  const closed = sortOldestFirst(rows.filter((r) => r.until !== undefined));
+  const active = rows.filter(isCurrent);
+  const closed = sortOldestFirst(rows.filter((r) => !isCurrent(r)));
 
   return (
     <Card>
@@ -418,13 +457,15 @@ function SearchCard({
     };
   }, [agentId, committed, history, refresh, tick]);
 
-  const rows =
-    state.status === 'ready' ? sortOldestFirst(state.data.statements) : [];
+  // The ENGINE's own order — best match first. Re-sorting by date here was
+  // the bug (card item 5): it made a relevance-ranked list look unfiltered,
+  // as if it had simply dumped every match by age.
+  const rows = state.status === 'ready' ? state.data.statements : [];
 
   function renderRow(row: FactMemoryStatement) {
-    const isHistory = row.until !== undefined;
+    const isClosed = !isCurrent(row);
     const label = statementText(row);
-    const actions = !isHistory && (
+    const actions = !isClosed && (
       <Button
         type="button"
         variant="ghost"
@@ -442,9 +483,9 @@ function SearchCard({
             <CardContent className="flex flex-col gap-1 p-3">
               <span className="text-sm">{label}</span>
               <span className="text-sm text-muted-foreground">
-                {kindLabel(row.kind)} · {row.whenText ?? row.when}
+                {kindLabel(row)} · {row.whenText ?? row.when}
               </span>
-              {isHistory && state.status === 'ready' && (
+              {isClosed && state.status === 'ready' && (
                 <ClosureNote row={row} page={state.data} />
               )}
               {actions}
@@ -455,11 +496,11 @@ function SearchCard({
     }
     return (
       <TableRow key={row.id}>
-        <TableCell>{kindLabel(row.kind)}</TableCell>
+        <TableCell>{kindLabel(row)}</TableCell>
         <TableCell>{row.whenText ?? row.when}</TableCell>
         <TableCell>
           {label}
-          {isHistory && state.status === 'ready' && (
+          {isClosed && state.status === 'ready' && (
             <ClosureNote row={row} page={state.data} />
           )}
         </TableCell>
@@ -527,6 +568,9 @@ function SearchCard({
                 </TableHeader>
                 <TableBody>{rows.map(renderRow)}</TableBody>
               </Table>
+            )}
+            {state.data.statements.length > 0 && (
+              <p className="text-sm text-muted-foreground">Best matches first.</p>
             )}
             {state.data.statements.length === 40 && (
               <p className="text-sm text-muted-foreground">
