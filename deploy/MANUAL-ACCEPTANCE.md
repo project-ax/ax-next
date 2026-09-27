@@ -509,6 +509,15 @@ the right layer to enforce that.
 
 ## Scenario: multi-replica chat (workspace.backend=git-protocol)
 
+> **Retired — this scenario no longer runs as written.** Step 1's
+> `--set replicas=2` now fails `helm template` on purpose: the chart's
+> `ax-next.validateHostReplicas` guard (ARCH-1) refuses a host with more
+> than one replica. The chat stream buffer, the orchestrator's warm-session
+> map, and the Rules-change signal (TASK-617) all live in one host process,
+> so a second replica would quietly break chat rather than scale it. The
+> steps below are kept as a record of the April 2026 git-server slice; don't
+> try to follow them until that guard is lifted.
+
 This scenario proves that two host replicas can serve concurrent chat
 requests against a shared workspace, and that the resulting git history
 is linear with both sessions' writes visible. It exists to validate the
