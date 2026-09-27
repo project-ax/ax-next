@@ -70,3 +70,34 @@ table, repos of already-deleted agents (no agent id to derive them from).
 
 YAGNI: no dry-run mode (the card's dry-run was for import, option b; wipe has
 nothing to preview beyond the log), no import, no Strata deletion.
+
+---
+
+## REVISED RULING (Vinay, 2026-09-27, later the same day) — supersedes the wipe above
+
+The owner doesn't need to keep **any** old memory data, so rewriting each agent's
+git history is unnecessary. The ruling is now "drop tables + reset git-server":
+
+1. **Removed from the PR entirely:** `@ax/workspace-git-purge`, the core
+   `workspace:purge` hook, the purge implementations in workspace-git-core and
+   workspace-git-server (and their SECURITY.md edits), `@ax/memory`'s
+   `old-memory-wipe.ts` and its boot wiring, the `memory:facts:clear → {removed}`
+   change (it existed only for the wipe's logs), and every test for them. Tasks 1–7
+   above are void.
+2. **Kept:** facts memory is the chart and CLI default (task 8). The memory NFS
+   export (`memory.exports`) is now **optional**, so a default `helm install`
+   renders and boots. Without the export, runners get no read-only `/memory`
+   mount. Recall, Rules and the Memory tab are unaffected. `gke-values.yaml` pins
+   `host.preset: memory`.
+3. **Replaced by an operator runbook**, "Switching an existing deployment to facts
+   memory" in `deploy/README.md` (linked from `deploy/GKE.md`). It is run by hand,
+   once, never by code:
+   - drop `memory_strata_index_v2_docs` and truncate the postgres `memory_facts_v1`;
+   - remove the SQLite facts store (and the NFS export contents);
+   - reset workspace storage: delete the git-server StatefulSet's `repo-*` PVCs
+     for `git-protocol` (kind), or the `ws-*.git` repos on the host PVC for
+     `local`. The production (GKE) backend is `local`, so it has no git-server.
+     Its volume also holds blobs, so the runbook deletes the repos, not the volume.
+
+   The runbook says loudly that the reset deletes ALL agents' workspace repos
+   and files, not just memory, and that it can't be undone.
