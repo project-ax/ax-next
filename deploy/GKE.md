@@ -378,9 +378,9 @@ http:
     - https://your.domain.example      # MUST exactly match the origin, or the CSRF gate 403s
 onboarding:
   publicBaseUrl: https://your.domain.example
-# REQUIRED: host.preset defaults to "memory" (facts memory) — helm template
-# fails without these two. See "Memory: facts memory is the default" below
-# before you run the install command.
+# OPTIONAL (both-or-neither): gives runner pods a read-only /memory view.
+# Facts memory renders and runs without it. See "Memory: facts memory is the
+# default" below.
 memory:
   exports:
     server: <your memory Filestore instance IP>
@@ -482,8 +482,9 @@ memory:
     exportPath: /memory_vol
 ```
 
-`helm template` / `helm install` fail loudly, naming exactly which field is
-missing, until both are set.
+Both-or-neither: leave both empty and facts memory still renders and runs
+(runners just get no `/memory` mount); set only one and `helm template` /
+`helm install` fail loudly, naming both fields.
 
 ### The facts database PVC
 

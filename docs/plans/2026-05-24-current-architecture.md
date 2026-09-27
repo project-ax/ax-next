@@ -331,9 +331,7 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
 
 - **Orchestration:** `agent:invoke` (`@ax/chat-orchestrator`).
 - **Workspace:** `workspace:read`, `workspace:list`, `workspace:apply` (via the
-  core facade), `workspace:diff`, and `workspace:purge` (TASK-576: irrecoverably
-  erase a path selector from the current version AND all past versions; host-only,
-  never on the runner IPC surface; does NOT fire pre-apply/applied). The `workspace:pre-apply` / `workspace:applied`
+  core facade), and `workspace:diff`. The `workspace:pre-apply` / `workspace:applied`
   subscriber pair is the policy/scanner chokepoint. The bundle fast-path hooks
   (`workspace:apply-bundle`, `workspace:export-baseline-bundle`) are **optional**
   and git-specific; their payload types live in `@ax/workspace-bundle-protocol`
@@ -408,10 +406,9 @@ profiles exist (three, counting the memory preset below):
   k8s set minus `@ax/memory-strata` / its postgres index / the postgres facts
   engine, plus `@ax/memory-facts-sqlite` + `@ax/embeddings` + `@ax/memory`
   (facts memory, Rules, exports). `host.preset=k8s` still selects Strata. The
-  first boot on `memory` runs a one-time wipe of each agent's old memory
-  (workspace `memory/**` except `memory/system/rules.md`, and
-  `permanent/memory/facts/**`, from the tree AND history via `workspace:purge`;
-  facts rows; the export volume slot).
+  NFS export volume (the runner's read-only `/memory` view) is optional; without
+  it facts are still exported into the workspace. Switching an existing
+  deployment is an operator runbook (deploy/README.md), not code.
 
 `@ax/cli` and `presets/**` are the only packages allowed to import sibling
 plugins directly (eslint `no-restricted-imports` allowlist); everything else talks
