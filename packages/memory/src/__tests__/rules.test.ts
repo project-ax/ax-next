@@ -6,7 +6,11 @@ import { HookBus, MEMORY_RULES_PATH, PluginError, makeAgentContext } from '@ax/c
 import { createWorkspaceGitPlugin } from '@ax/workspace-git';
 
 import { MEMORY_NOTE_TOOL_HOOK } from '../note-tool.js';
-import { MAX_RULES_CHARS, RULES_WRITE_HOOK } from '../rules.js';
+import {
+  MAX_RULES_CHARS,
+  RULES_WRITE_HOOK,
+  SYSTEM_PROMPT_AUGMENT_CHANGED_HOOK,
+} from '../rules.js';
 import { RULES_READ_HOOK } from '../augment.js';
 import { MEMORY_EXPORT_FLUSH_HOOK } from '../exporter.js';
 import {
@@ -198,6 +202,37 @@ describe('memory:rules:write', () => {
     expect((await writeRules(h, 'Be brief.')).written).toBe(true);
     const second = await writeRules(h, 'Be brief.   \n');
     expect(second).toEqual({ written: false, body: 'Be brief.\n' });
+  });
+
+  it('announces a changed Rules file so live sessions pick it up next turn (TASK-612)', async () => {
+    const h = await withWorkspace();
+    const seen: Array<{ agentId: string; payload: unknown }> = [];
+    h.bus.subscribe(SYSTEM_PROMPT_AUGMENT_CHANGED_HOOK, 'test-observer', async (ctx, payload) => {
+      seen.push({ agentId: ctx.agentId, payload });
+      return undefined;
+    });
+
+    await writeRules(h, 'Always cc Priya.');
+    expect(seen).toEqual([
+      { agentId: h.ctx().agentId, payload: { agentId: h.ctx().agentId } },
+    ]);
+
+    // An identical save changed nothing, so nothing needs a fresh prompt.
+    await writeRules(h, 'Always cc Priya.  \n');
+    expect(seen).toHaveLength(1);
+
+    // A real edit announces again.
+    await writeRules(h, 'Always cc Priya and Sam.');
+    expect(seen).toHaveLength(2);
+  });
+
+  it('a subscriber that throws does not turn a saved Rule into a failed save', async () => {
+    const h = await withWorkspace();
+    h.bus.subscribe(SYSTEM_PROMPT_AUGMENT_CHANGED_HOOK, 'test-thrower', async () => {
+      throw new Error('subscriber blew up');
+    });
+    expect((await writeRules(h, 'Be brief.')).written).toBe(true);
+    expect(await readRules(h)).toEqual({ body: 'Be brief.\n' });
   });
 
   it('enforces the cap and the type on body', async () => {

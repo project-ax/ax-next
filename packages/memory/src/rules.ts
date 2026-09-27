@@ -12,6 +12,19 @@ import { PLUGIN_NAME } from './plugin-name.js';
 
 export const RULES_WRITE_HOOK = 'memory:rules:write';
 
+/**
+ * Subscriber hook, payload `{ agentId }`: "this agent's system-prompt augment
+ * changed, so a prompt built before now is stale" (TASK-612).
+ *
+ * A running sandbox's system prompt, Rules included, is fixed when it spawns.
+ * Walk TASK-607 measured a Rule saved mid-session never reaching that session.
+ * The orchestrator subscribes and retires the agent's live sessions at their
+ * next turn boundary, and the fresh spawn re-builds the prompt. Generic on
+ * purpose: nothing in the name or payload is about memory or files, so any
+ * augment provider can announce a change.
+ */
+export const SYSTEM_PROMPT_AUGMENT_CHANGED_HOOK = 'system-prompt:augment-changed';
+
 export const MAX_RULES_CHARS = 16_384;
 
 const MAX_ATTEMPTS = 3;
@@ -199,6 +212,12 @@ export function registerRulesHooks(bus: HookBus): void {
       }
       await resolveMemoryAccess(bus, ctx);
       const { stored, changed } = await writeRules(bus, ctx, body);
+      if (changed) {
+        // `fire`, not `call`: HookBus.fire isolates a subscriber's throw, so
+        // a saved Rule is never reported as a failed save because a listener
+        // broke. An identical save changed nothing and announces nothing.
+        await bus.fire(SYSTEM_PROMPT_AUGMENT_CHANGED_HOOK, ctx, { agentId: input.agentId });
+      }
       return { written: changed, body: stored };
     },
   );
