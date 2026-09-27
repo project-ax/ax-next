@@ -1,21 +1,21 @@
-# kind overlay for the facts-memory preset (TASK-519). Layer it ON TOP of
-# kind-dev-values.yaml, never instead of it:
+# FOLDED IN (TASK-576). This overlay used to be required on top of
+# kind-dev-values.yaml to opt a kind cluster into the facts-memory preset
+# (TASK-519). The facts-memory preset is now the chart-wide default, and
+# kind-dev-values.yaml carries the dev NFS server settings that used to live
+# here, so kind comes up on facts memory with NO extra `-f` flag:
 #
 #   helm upgrade --install ax-next deploy/charts/ax-next \
-#     -f deploy/charts/ax-next/kind-dev-values.yaml \
-#     -f deploy/charts/ax-next/kind-memory-values.yaml ...
+#     -f deploy/charts/ax-next/kind-dev-values.yaml ...
 #
-# It needs the dev NFS server from deploy/kind/memory-nfs/ running first —
-# see the README there. The one memory credential (provider:openrouter) is
-# NOT set here; it goes in through the admin Provider keys screen.
+# This file is kept as a harmless no-op (setting the same values
+# kind-dev-values.yaml already sets) so that any script or doc that still
+# passes `-f kind-memory-values.yaml` keeps working unchanged, rather than
+# erroring on a missing file. New scripts and docs should not reference it —
+# point them at kind-dev-values.yaml alone.
 host:
   preset: memory
 
 memory:
   exports:
-    # The pinned ClusterIP of the ax-next-memory-nfs Service
-    # (deploy/kind/memory-nfs/nfs-server.yaml). kubelet mounts from the node,
-    # so this has to be an address the node can route — not a cluster DNS name.
     server: 10.96.200.49
-    # Relative to the server's NFSv4 pseudo-root (/exports, fsid=0).
     exportPath: /memory

@@ -33,6 +33,11 @@ const baseConfig: MemoryPresetConfig = {
   },
 };
 
+const noVolumeConfig: MemoryPresetConfig = (() => {
+  const { memoryExportVolume: _dropped, ...rest } = baseConfig;
+  return rest;
+})();
+
 const names = (cfg: MemoryPresetConfig) =>
   createMemoryPlugins(cfg).map((p) => p.manifest.name);
 
@@ -82,6 +87,51 @@ describe('createMemoryPlugins composition', () => {
   it('has no duplicate plugin manifest names', () => {
     const n = names(baseConfig);
     expect(new Set(n).size).toBe(n.length);
+  });
+});
+
+describe('createMemoryPlugins without the export volume', () => {
+  const memoryPlugin = (cfg: MemoryPresetConfig) =>
+    createMemoryPlugins(cfg).find((p) => p.manifest.name === '@ax/memory');
+
+  it('builds, and @ax/memory does not register sandbox:memory-mounts', () => {
+    expect(() => createMemoryPlugins(noVolumeConfig)).not.toThrow();
+    const memory = memoryPlugin(noVolumeConfig);
+    expect(memory).toBeDefined();
+    expect(memory?.manifest.registers).not.toContain('sandbox:memory-mounts');
+    // The workspace facts export still runs (exports configured, no volume).
+    expect(memory?.manifest.registers).toContain('memory:export:flush');
+  });
+
+  it('registers sandbox:memory-mounts when the volume is configured', () => {
+    expect(memoryPlugin(baseConfig)?.manifest.registers).toContain(
+      'sandbox:memory-mounts',
+    );
+  });
+
+  it('still enforces the factsDatabasePath overlap checks', () => {
+    expect(() =>
+      createMemoryPlugins({
+        ...noVolumeConfig,
+        factsDatabasePath: '/tmp/preset-memory-stub/ws/facts.db',
+      }),
+    ).toThrow(/factsDatabasePath/);
+    expect(() =>
+      createMemoryPlugins({
+        ...noVolumeConfig,
+        factsDatabasePath: '/tmp/preset-memory-stub/userfiles/facts.db',
+        sandbox: { userFilesHostReadRoot: '/tmp/preset-memory-stub/userfiles' },
+      }),
+    ).toThrow(/factsDatabasePath/);
+  });
+
+  it('skips the export-path overlap check (no export to overlap with)', () => {
+    expect(() =>
+      createMemoryPlugins({
+        ...noVolumeConfig,
+        filestore: { server: 'filestore.example.invalid', exportPath: '/' },
+      }),
+    ).not.toThrow();
   });
 });
 
@@ -293,15 +343,64 @@ describe('loadMemoryConfigFromEnv', () => {
     expect(cfg.database).toEqual({ connectionString: 'postgres://x' });
   });
 
-  it.each([
-    'AX_MEMORY_FACTS_DB_PATH',
+  it('throws naming AX_MEMORY_FACTS_DB_PATH when it is missing', () => {
+    const env = { ...baseEnv };
+    delete env.AX_MEMORY_FACTS_DB_PATH;
+    expect(() => loadMemoryConfigFromEnv(env)).toThrow(/AX_MEMORY_FACTS_DB_PATH/);
+  });
+
+  const EXPORT_VARS = [
     'AX_MEMORY_EXPORT_HOST_ROOT',
     'AX_MEMORY_EXPORT_NFS_SERVER',
     'AX_MEMORY_EXPORT_NFS_PATH',
-  ])('throws naming %s when it is missing', (name) => {
+  ] as const;
+
+  it('loads with no export volume when none of the export vars are set', () => {
+    for (const blank of [undefined, '']) {
+      const env = { ...baseEnv };
+      for (const name of EXPORT_VARS) {
+        if (blank === undefined) delete env[name];
+        else env[name] = blank;
+      }
+      const cfg = loadMemoryConfigFromEnv(env);
+      expect('memoryExportVolume' in cfg).toBe(false);
+      expect(cfg.factsDatabasePath).toBe('/var/lib/ax-next/memory-facts/facts.db');
+    }
+  });
+
+  it.each(EXPORT_VARS)(
+    'throws naming %s when only it is missing (all-or-none)',
+    (name) => {
+      const env = { ...baseEnv };
+      delete env[name];
+      expect(() => loadMemoryConfigFromEnv(env)).toThrow(
+        new RegExp(`${name} is required.*all-or-none`),
+      );
+    },
+  );
+
+  it.each(EXPORT_VARS)('throws naming the other two when only %s is set', (name) => {
     const env = { ...baseEnv };
-    delete env[name];
-    expect(() => loadMemoryConfigFromEnv(env)).toThrow(new RegExp(name));
+    for (const other of EXPORT_VARS) if (other !== name) delete env[other];
+    let message = '';
+    try {
+      loadMemoryConfigFromEnv(env);
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    for (const other of EXPORT_VARS) {
+      if (other !== name) expect(message).toContain(other);
+    }
+    expect(message).toMatch(/are required when .* is set/);
+  });
+
+  it('still enforces the hostRoot overlap checks when the volume is set', () => {
+    expect(() =>
+      loadMemoryConfigFromEnv({
+        ...baseEnv,
+        AX_MEMORY_EXPORT_HOST_ROOT: '/var/lib/ax-next/workspaces/exports',
+      }),
+    ).toThrow(/hostRoot/);
   });
 
   it('ignores the retired Vertex/Cohere env vars (TASK-523 — never a boot error)', () => {

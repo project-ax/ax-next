@@ -14,6 +14,23 @@
 #
 # Code changes are picked up after `kind load docker-image ax-next/agent:dev`
 # + `kubectl rollout restart deployment/<release>-host`.
+#
+# ─── Memory (TASK-576, folds in the former kind-memory-values.yaml
+# overlay from TASK-519) ────────────────────────────────────────────
+# `host.preset: memory` is the chart-wide default now, so this file only
+# needs to point it at kind's dev NFS server instead of a real Filestore
+# export. That server is a plain Deployment + Service the kind bring-up flow
+# applies before `helm template`/`helm install` — see
+# `deploy/kind/memory-nfs/` and the Makefile target `dev-kind-memory-nfs`.
+# kubelet mounts NFS from the NODE, which cannot resolve cluster DNS, so this
+# is the Service's pinned ClusterIP, not a DNS name — see
+# `deploy/kind/memory-nfs/nfs-server.yaml` and
+# `deploy/charts/ax-next/__tests__/memory.test.ts` (kind memory overlay).
+memory:
+  exports:
+    server: 10.96.200.49
+    # Relative to the server's NFSv4 pseudo-root (/exports, fsid=0).
+    exportPath: /memory
 
 replicas: 1
 

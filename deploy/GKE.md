@@ -378,6 +378,13 @@ http:
     - https://your.domain.example      # MUST exactly match the origin, or the CSRF gate 403s
 onboarding:
   publicBaseUrl: https://your.domain.example
+# OPTIONAL (both-or-neither): gives runner pods a read-only /memory view.
+# Facts memory renders and runs without it. See "Memory: facts memory is the
+# default" below.
+memory:
+  exports:
+    server: <your memory Filestore instance IP>
+    exportPath: /memory_vol
 # If you named the static IP / cert something other than ax-next-ip / ax-next-cert
 # in Step 5, override ingress.annotations here too.
 ```
@@ -428,6 +435,88 @@ serve:
 
 After this, `/chat` callers need `Authorization: Bearer $SERVE_TOKEN`. (The
 token's in a Secret, not your values/shell history — same posture as the DB DSN.)
+
+---
+
+## Memory: facts memory is the default
+
+`host.preset` defaults to `memory` — an LLM observer (@ax/memory) extracts
+durable facts from conversations into a sqlite-backed store, with semantic
+recall over embeddings + reranking. The legacy Strata memory (markdown files
+written straight into each agent's git-tracked workspace, no LLM extraction)
+is still there as `host.preset: k8s`, but it is no longer what a fresh
+install gets.
+
+### Provision the NFS export
+
+The host writes each agent's memory as an export on an NFS share and mounts
+it read-only into runner pods at `/memory`. On GKE that share is a Filestore
+instance. Provision a **dedicated** one — a second `gcloud filestore
+instances create`, or a second share on an existing multi-share instance —
+separate from any Filestore you point `sandbox.filestore.*` at. The chart
+checks this: `helm template` fails if `memory.exports` and
+`sandbox.filestore` ever end up naming the same server + export path.
+
+```bash
+gcloud filestore instances create ax-next-memory \
+  --project=$PROJECT_ID \
+  --zone=us-central1-a \
+  --tier=BASIC_HDD \
+  --file-share=name=memory_vol,capacity=1TB \
+  --network=name=default
+```
+
+Read back the instance IP and put it in `gke-values.local.yaml` (already
+sketched in Step 6 above):
+
+```bash
+gcloud filestore instances describe ax-next-memory \
+  --project=$PROJECT_ID --zone=us-central1-a \
+  --format='value(networks[0].ipAddresses[0])'
+```
+
+```yaml
+memory:
+  exports:
+    server: <the IP from the command above>
+    exportPath: /memory_vol
+```
+
+Both-or-neither: leave both empty and facts memory still renders and runs
+(runners just get no `/memory` mount); set only one and `helm template` /
+`helm install` fail loudly, naming both fields.
+
+### The facts database PVC
+
+`memory.facts.storage` (default `10Gi`) sizes a dedicated PVC for the
+sqlite facts database. It's separate from the workspace PVC and keeps
+`helm.sh/resource-policy: keep`, same as the workspace PVC — an `helm
+uninstall` doesn't take it with it. Raise `memory.facts.storageClassName`
+if you want faster storage than the cluster default.
+
+### The one credential it needs
+
+Facts memory needs exactly one credential: `provider:openrouter`, stored
+through **Admin → AI model keys** after you're through the first-run wizard
+(Step 8). It drives the extraction model, embeddings, and reranking. Without
+it, nothing new is remembered — the host logs `memory_no_llm_credential` and
+the Memory tab says "Memory is paused" — and recall still answers, lexically,
+saying so (`degraded: ["semantic", "ranking"]`). There's no field for this in
+the chart; the key lives in the credential store, not in values.
+
+### Switching an existing deployment from Strata
+
+Nothing in the code clears old memory. When an existing deployment moves from
+`host.preset: k8s` (Strata) to facts memory and nobody needs the old data, follow
+the one-time operator runbook **"Switching an existing deployment to facts memory"**
+in [`deploy/README.md`](README.md). Read its warning first: the workspace step
+deletes **every agent's workspace repos and files**, not just memory, and none of
+it can be undone. On GKE the workspace backend is `local`, so there is no
+git-server to reset. The runbook deletes the `ws-*.git` repos on the host PVC and
+leaves `blobs/` alone, and it erases the Filestore memory-exports share if
+`memory.exports` is set.
+
+To keep the legacy Strata memory instead, set `host.preset: k8s`.
 
 ---
 

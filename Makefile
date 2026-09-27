@@ -68,18 +68,19 @@ GKE_TAG           ?= $(shell git rev-parse --short HEAD)
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
-.PHONY: help dev-fast image dev-mount-up dev-mount-down rollout build-spa kind-prune reset-bootstrap gke-deploy
+.PHONY: help dev-fast image dev-mount-up dev-mount-down rollout build-spa kind-prune reset-bootstrap gke-deploy dev-kind-memory-nfs
 
 help:
 	@echo "Targets:"
-	@echo "  dev-fast        Rebuild SPA + push to kind dev-mount + restart pod (~10s)."
-	@echo "  image           Full docker rebuild + reload, drops fast mount (~90s)."
-	@echo "  kind-prune      Remove dangling image layers from the kind node."
-	@echo "  reset-bootstrap Wipe bootstrap + admin/agent/credential rows; print fresh token."
-	@echo "  dev-mount-up    Patch the deployment to add the dev-web mount."
-	@echo "  dev-mount-down  Remove the dev-web mount from the deployment."
-	@echo "  rollout         Restart the host deployment and wait for it."
-	@echo "  gke-deploy      Build+push linux/amd64 image (tag=git SHA) + helm upgrade GKE."
+	@echo "  dev-fast           Rebuild SPA + push to kind dev-mount + restart pod (~10s)."
+	@echo "  image              Full docker rebuild + reload, drops fast mount (~90s)."
+	@echo "  kind-prune         Remove dangling image layers from the kind node."
+	@echo "  reset-bootstrap    Wipe bootstrap + admin/agent/credential rows; print fresh token."
+	@echo "  dev-mount-up       Patch the deployment to add the dev-web mount."
+	@echo "  dev-mount-down     Remove the dev-web mount from the deployment."
+	@echo "  rollout            Restart the host deployment and wait for it."
+	@echo "  dev-kind-memory-nfs  Build+load+apply the dev NFS server that facts memory needs on kind."
+	@echo "  gke-deploy         Build+push linux/amd64 image (tag=git SHA) + helm upgrade GKE."
 
 # ----------------------------------------------------------------------------
 # dev-fast — SPA-only fast loop
@@ -179,6 +180,27 @@ dev-mount-down:
 rollout:
 	kubectl -n $(NAMESPACE) rollout restart deployment/$(DEPLOYMENT)
 	kubectl -n $(NAMESPACE) rollout status  deployment/$(DEPLOYMENT) --timeout=120s
+
+# ----------------------------------------------------------------------------
+# dev-kind-memory-nfs — stand up the dev-only in-cluster NFS server that the
+# facts-memory preset needs (TASK-576: `host.preset: memory` is now the
+# chart's default, and `kind-dev-values.yaml` points `memory.exports` at this
+# server's pinned ClusterIP). Run this BEFORE the first `helm install` on a
+# fresh kind cluster, or the host pod hangs on a mount it can't reach. See
+# `deploy/kind/memory-nfs/README.md` for what this stands up and why it's
+# dev-only (privileged, unauthenticated, backed by an emptyDir).
+#
+# Idempotent: `kubectl apply` on an already-running server is a no-op.
+# ----------------------------------------------------------------------------
+MEMORY_NFS_IMAGE := ax-next/memory-nfs:dev
+
+dev-kind-memory-nfs:
+	@echo "==> Building + loading the dev NFS server image"
+	docker build -t $(MEMORY_NFS_IMAGE) deploy/kind/memory-nfs
+	kind load docker-image $(MEMORY_NFS_IMAGE) --name $(KIND_CLUSTER)
+	@echo "==> Applying the dev NFS server + Service"
+	kubectl --context kind-$(KIND_CLUSTER) apply -f deploy/kind/memory-nfs/nfs-server.yaml
+	kubectl --context kind-$(KIND_CLUSTER) -n $(NAMESPACE) rollout status deploy/ax-next-memory-nfs
 
 # ----------------------------------------------------------------------------
 # reset-bootstrap — execute `ax-next admin reset-bootstrap --force` inside

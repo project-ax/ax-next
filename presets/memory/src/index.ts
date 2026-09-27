@@ -42,7 +42,13 @@ export const MEMORY_RERANK_MODEL = 'voyageai/rerank-2.5:nitro';
 
 export interface MemoryPresetConfig extends K8sPresetConfig {
   factsDatabasePath: string;
-  memoryExportVolume: MemoryVolumeConfig;
+  /**
+   * The NFS-backed read-only `/memory` view for runners. Optional: without it
+   * the memory plugin still exports each agent's facts into the workspace
+   * (`permanent/memory/facts/**`), recall and the Memory tab work, but runners
+   * get no `/memory` mount (`sandbox:memory-mounts` is not registered).
+   */
+  memoryExportVolume?: MemoryVolumeConfig;
   /** Test seam: the fetch the embed/rerank drivers use. Production leaves it unset. */
   memoryEmbeddings?: {
     fetchImpl?: typeof fetch;
@@ -75,26 +81,28 @@ function validateMemoryPresetConfig(config: MemoryPresetConfig): void {
     );
   }
 
-  validateVolumeConfig(config.memoryExportVolume);
-
-  const hostRoot = config.memoryExportVolume.hostRoot;
   const repoRoot =
     config.workspace.backend === 'local' ? config.workspace.repoRoot : undefined;
   const userFilesRoot = config.sandbox?.userFilesHostReadRoot;
-  if (repoRoot !== undefined && hostPathsOverlap(hostRoot, repoRoot)) {
-    throw new Error(
-      'memory export hostRoot must not equal or overlap the workspace repoRoot',
-    );
-  }
-  if (userFilesRoot !== undefined && hostPathsOverlap(hostRoot, userFilesRoot)) {
-    throw new Error(
-      'memory export hostRoot must not equal or overlap sandbox.userFilesHostReadRoot',
-    );
-  }
-  if (hostPathsOverlap(dbPath, hostRoot)) {
-    throw new Error(
-      'factsDatabasePath must not equal or overlap the memory export hostRoot',
-    );
+  const volume = config.memoryExportVolume;
+  if (volume !== undefined) {
+    validateVolumeConfig(volume);
+    const hostRoot = volume.hostRoot;
+    if (repoRoot !== undefined && hostPathsOverlap(hostRoot, repoRoot)) {
+      throw new Error(
+        'memory export hostRoot must not equal or overlap the workspace repoRoot',
+      );
+    }
+    if (userFilesRoot !== undefined && hostPathsOverlap(hostRoot, userFilesRoot)) {
+      throw new Error(
+        'memory export hostRoot must not equal or overlap sandbox.userFilesHostReadRoot',
+      );
+    }
+    if (hostPathsOverlap(dbPath, hostRoot)) {
+      throw new Error(
+        'factsDatabasePath must not equal or overlap the memory export hostRoot',
+      );
+    }
   }
   if (repoRoot !== undefined && hostPathsOverlap(dbPath, repoRoot)) {
     throw new Error(
@@ -109,11 +117,16 @@ function validateMemoryPresetConfig(config: MemoryPresetConfig): void {
 
   const filestore = config.filestore;
   if (filestore !== undefined) {
-    if (posixPathsOverlap(config.memoryExportVolume.backing.exportPath, filestore.exportPath)) {
+    if (
+      volume !== undefined &&
+      posixPathsOverlap(volume.backing.exportPath, filestore.exportPath)
+    ) {
       throw new Error(
         'memory export backing exportPath must not equal or overlap the filestore exportPath',
       );
     }
+    // Checked even without the export volume: `/memory` stays reserved so
+    // turning the volume on later can never collide with an existing mount.
     const filestoreMount = filestore.mountPath ?? '/files';
     if (posixPathsOverlap(filestoreMount, '/memory')) {
       throw new Error(
@@ -161,7 +174,12 @@ export function createMemoryPlugins(config: MemoryPresetConfig): Plugin[] {
     }),
     createMemoryPlugin({
       rules: true,
-      exports: { volume: config.memoryExportVolume },
+      // Always export: the workspace facts view (permanent/memory/facts/**)
+      // needs no volume. The volume only adds the runner's /memory mount.
+      exports:
+        config.memoryExportVolume !== undefined
+          ? { volume: config.memoryExportVolume }
+          : {},
       ...(config.onObserverDetached !== undefined
         ? { onObserverDetached: config.onObserverDetached }
         : {}),
@@ -178,26 +196,48 @@ export function loadMemoryConfigFromEnv(
   if (factsDatabasePath === undefined || factsDatabasePath === '') {
     throw new Error('AX_MEMORY_FACTS_DB_PATH is required');
   }
-  const exportHostRoot = env.AX_MEMORY_EXPORT_HOST_ROOT;
-  if (exportHostRoot === undefined || exportHostRoot === '') {
-    throw new Error('AX_MEMORY_EXPORT_HOST_ROOT is required');
-  }
-  const nfsServer = env.AX_MEMORY_EXPORT_NFS_SERVER;
-  if (nfsServer === undefined || nfsServer === '') {
-    throw new Error('AX_MEMORY_EXPORT_NFS_SERVER is required');
-  }
-  const nfsExportPath = env.AX_MEMORY_EXPORT_NFS_PATH;
-  if (nfsExportPath === undefined || nfsExportPath === '') {
-    throw new Error('AX_MEMORY_EXPORT_NFS_PATH is required');
-  }
+  const memoryExportVolume = loadMemoryExportVolumeFromEnv(env);
   const config: MemoryPresetConfig = {
     ...base,
     factsDatabasePath,
-    memoryExportVolume: {
-      hostRoot: exportHostRoot,
-      backing: { server: nfsServer, exportPath: nfsExportPath },
-    },
+    ...(memoryExportVolume !== undefined ? { memoryExportVolume } : {}),
   };
   validateMemoryPresetConfig(config);
   return config;
+}
+
+const MEMORY_EXPORT_ENV = [
+  'AX_MEMORY_EXPORT_HOST_ROOT',
+  'AX_MEMORY_EXPORT_NFS_SERVER',
+  'AX_MEMORY_EXPORT_NFS_PATH',
+] as const;
+
+/**
+ * The three export vars are all-or-none: none set means no `/memory` mount for
+ * runners (a supported shape); a partial set is a misconfiguration we refuse
+ * to boot with rather than silently dropping the mount.
+ */
+function loadMemoryExportVolumeFromEnv(
+  env: NodeJS.ProcessEnv,
+): MemoryVolumeConfig | undefined {
+  const present = MEMORY_EXPORT_ENV.filter((name) => {
+    const v = env[name];
+    return v !== undefined && v !== '';
+  });
+  if (present.length === 0) return undefined;
+  if (present.length < MEMORY_EXPORT_ENV.length) {
+    const missing = MEMORY_EXPORT_ENV.filter((name) => !present.includes(name));
+    throw new Error(
+      `${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} required when ` +
+        `${present.join(', ')} ${present.length === 1 ? 'is' : 'are'} set ` +
+        '(the memory export vars are all-or-none)',
+    );
+  }
+  return {
+    hostRoot: env.AX_MEMORY_EXPORT_HOST_ROOT as string,
+    backing: {
+      server: env.AX_MEMORY_EXPORT_NFS_SERVER as string,
+      exportPath: env.AX_MEMORY_EXPORT_NFS_PATH as string,
+    },
+  };
 }

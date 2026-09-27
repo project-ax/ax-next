@@ -331,7 +331,7 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
 
 - **Orchestration:** `agent:invoke` (`@ax/chat-orchestrator`).
 - **Workspace:** `workspace:read`, `workspace:list`, `workspace:apply` (via the
-  core facade), `workspace:diff`. The `workspace:pre-apply` / `workspace:applied`
+  core facade), and `workspace:diff`. The `workspace:pre-apply` / `workspace:applied`
   subscriber pair is the policy/scanner chokepoint. The bundle fast-path hooks
   (`workspace:apply-bundle`, `workspace:export-baseline-bundle`) are **optional**
   and git-specific; their payload types live in `@ax/workspace-bundle-protocol`
@@ -387,7 +387,7 @@ intentionally unschema'd — there's nothing to validate.
 ## Section 7 — Deployment profiles (as-built)
 
 The 04-22 doc's "deployment shapes fall out of plugin selection" held. Two
-profiles exist:
+profiles exist (three, counting the memory preset below):
 
 - **Local / CLI** — `@ax/cli` assembles: `storage-sqlite`, `session-inmemory`,
   `sandbox-subprocess`, `ipc-server` (unix socket), `workspace-git` (local),
@@ -401,6 +401,14 @@ profiles exist:
   `onboarding`, `agents`, `skills`, `conversations`, `attachments`,
   `channel-web`, and (env-gated on `ANTHROPIC_API_KEY`) `conversation-titles` +
   memory-strata + web-tools.
+
+- **memory** (the default since TASK-576, 2026-09-27) — `presets/memory` is the
+  k8s set minus `@ax/memory-strata` / its postgres index / the postgres facts
+  engine, plus `@ax/memory-facts-sqlite` + `@ax/embeddings` + `@ax/memory`
+  (facts memory, Rules, exports). `host.preset=k8s` still selects Strata. The
+  NFS export volume (the runner's read-only `/memory` view) is optional; without
+  it facts are still exported into the workspace. Switching an existing
+  deployment is an operator runbook (deploy/README.md), not code.
 
 `@ax/cli` and `presets/**` are the only packages allowed to import sibling
 plugins directly (eslint `no-restricted-imports` allowlist); everything else talks

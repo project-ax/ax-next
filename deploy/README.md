@@ -67,24 +67,36 @@ helm dependency update deploy/charts/ax-next
 # 4. Create the runner namespace. The chart does NOT create it; the host
 #    pod's RBAC binding scopes there.
 kubectl create namespace ax-next-runners
+kubectl create namespace ax-next
 
-# 5. Install. Generate the keys fresh — they encrypt secrets / sign
+# 5. Bring up the dev NFS server (TASK-576: `host.preset: memory` — facts
+#    memory — is the chart-wide default now, and `kind-dev-values.yaml`
+#    points memory.exports at this server, so it has to exist before the
+#    chart installs, or the host pod hangs on a mount it can't reach).
+#    Equivalent to `make dev-kind-memory-nfs`. See `deploy/kind/memory-nfs/`
+#    for what this stands up and why it's dev-only.
+docker build -t ax-next/memory-nfs:dev deploy/kind/memory-nfs
+kind load docker-image ax-next/memory-nfs:dev --name ax-next-dev
+kubectl --context kind-ax-next-dev apply -f deploy/kind/memory-nfs/nfs-server.yaml
+kubectl --context kind-ax-next-dev -n ax-next rollout status deploy/ax-next-memory-nfs
+
+# 6. Install. Generate the keys fresh — they encrypt secrets / sign
 #    cookies. SAVE the values somewhere safe; reusing them on every
 #    upgrade is required (regenerating credentials.key bricks every
 #    stored credential — see "Credentials key rotation" below).
 export AX_CREDENTIALS_KEY=$(openssl rand -base64 32)
 export AX_HTTP_COOKIE_KEY=$(openssl rand -hex 32)
-helm install ax-next deploy/charts/ax-next \
+helm install ax-next deploy/charts/ax-next --namespace ax-next \
   -f deploy/charts/ax-next/kind-dev-values.yaml \
   --set credentials.key="$AX_CREDENTIALS_KEY" \
   --set http.cookieKey="$AX_HTTP_COOKIE_KEY"
 
-# 6. Wait for the host pod and the postgres pod to come up.
-kubectl rollout status deployment/ax-next-host
-kubectl rollout status statefulset/ax-next-postgresql
+# 7. Wait for the host pod and the postgres pod to come up.
+kubectl -n ax-next rollout status deployment/ax-next-host
+kubectl -n ax-next rollout status statefulset/ax-next-postgresql
 
-# 7. Port-forward to the host pod and poke at it.
-kubectl port-forward svc/ax-next-host 8080:80
+# 8. Port-forward to the host pod and poke at it.
+kubectl -n ax-next port-forward svc/ax-next-host 8080:80
 ```
 
 To pick up code changes:
@@ -94,6 +106,228 @@ docker build -t ax-next/agent:dev -f container/agent/Dockerfile .
 kind load docker-image ax-next/agent:dev --name ax-next-dev
 kubectl rollout restart deployment/ax-next-host
 ```
+
+## Switching an existing deployment to facts memory (one-time operator runbook)
+
+Facts memory (`host.preset: memory`) is now the chart default, so a fresh install can skip this section.
+
+An **existing** deployment that ran the old Strata memory (`host.preset: k8s`, the default before TASK-576) still holds that old memory. The new memory never reads it, and **nothing in the code clears it or runs any of this for you.** We run these steps by hand, once per deployment, and only when the owner has decided that **no old data needs keeping**.
+
+> ### ⚠ STOP — read this before running anything
+>
+> - **Every step below is irreversible.** There's no undo, and nothing is backed up for us. If in doubt, snapshot the volumes and the database first.
+> - **Step 5 deletes ALL agent workspace repos and files, for EVERY agent** — not just memory. That includes identity files (`.ax/IDENTITY.md`, `.ax/SOUL.md`), Rules, notes, anything an agent or a person saved into a workspace, and all of its history. Every agent starts with an empty workspace.
+> - Only use this runbook on a deployment where **none** of that data needs keeping.
+> - Chats are down from step 2 until step 6. Announce a maintenance window.
+
+The commands below assume release `ax-next` in namespace `ax-next`, which is what `deploy/README.md` and `deploy/GKE.md` install. If you named things differently, adjust the resource names (they follow the pattern `<release>-host`, `<release>-git-server-experimental`, …).
+
+**The order matters.** First we switch, then we stop the host, then we erase everything, then we start it again. While the host is down, nothing can re-export or re-record stale memory in the middle of the reset.
+
+### Step 1 — Switch the preset
+
+Set `host.preset: memory` in your values file. It's the default, but pin it anyway, then run `helm upgrade` as usual. The chart now includes the facts store's PVC, `ax-next-memory-facts`.
+
+### Step 2 — Stop the host (and the git-server, if there is one)
+
+```bash
+kubectl -n ax-next scale deploy/ax-next-host --replicas=0
+kubectl -n ax-next wait --for=delete pod -l app.kubernetes.io/name=ax-next-host --timeout=180s
+# Only when workspace.backend=git-protocol (kind dev):
+kubectl -n ax-next scale statefulset/ax-next-git-server-experimental --replicas=0
+kubectl -n ax-next wait --for=delete pod -l app.kubernetes.io/name=ax-next-git-server-experimental --timeout=180s
+```
+
+### Step 3 — Postgres: drop the Strata index, truncate the old facts table
+
+This runs against the deployment's main database, `ax_next`, as user `ax_next`. On kind that's the in-cluster `ax-next-postgresql`; on GKE it's Cloud SQL.
+
+- `memory_strata_index_v2_docs` is Strata's search index. It holds copies of the old memory text.
+- `memory_facts_v1` is the old preset's facts table. It's usually empty.
+
+```sql
+DROP TABLE IF EXISTS memory_strata_index_v2_docs;
+DO $$ BEGIN
+  IF to_regclass('public.memory_facts_v1') IS NOT NULL THEN
+    TRUNCATE TABLE memory_facts_v1;
+  END IF;
+END $$;
+```
+
+kind:
+
+```bash
+kubectl -n ax-next exec -i statefulset/ax-next-postgresql -- \
+  sh -c 'PGPASSWORD="${POSTGRES_PASSWORD:-$(cat "$POSTGRES_PASSWORD_FILE")}" psql -U ax_next -d ax_next -v ON_ERROR_STOP=1' <<'SQL'
+DROP TABLE IF EXISTS memory_strata_index_v2_docs;
+DO $$ BEGIN
+  IF to_regclass('public.memory_facts_v1') IS NOT NULL THEN
+    TRUNCATE TABLE memory_facts_v1;
+  END IF;
+END $$;
+SQL
+```
+
+GKE: Cloud SQL is only reachable from inside the cluster, so we use a throwaway pod, the same way as the pgvector step in `deploy/GKE.md`:
+
+```bash
+kubectl run memory-reset-sql -n default --restart=Never \
+  --image=postgres:17 --env="PGPASSWORD=$DB_PASSWORD" --command -- \
+  psql "host=$DB_PRIVATE_IP user=ax_next dbname=ax_next sslmode=require" -v ON_ERROR_STOP=1 \
+    -c "DROP TABLE IF EXISTS memory_strata_index_v2_docs;" \
+    -c "DO \$\$ BEGIN IF to_regclass('public.memory_facts_v1') IS NOT NULL THEN TRUNCATE TABLE memory_facts_v1; END IF; END \$\$;"
+kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/memory-reset-sql -n default --timeout=120s
+kubectl delete pod memory-reset-sql -n default
+```
+
+If you ever switch back to `host.preset: k8s`, Strata recreates its index table empty at boot.
+
+### Step 4 — Facts store and memory exports
+
+**(a) The facts store.** Under `host.preset: memory`, facts live in a SQLite file, `facts.db`, on the PVC `ax-next-memory-facts`. It is **not** in Postgres. All four of its tables (`memory_facts_v1`, `_fts`, `_vec`, `_embedding_meta`) are in that one file.
+
+- **What we do:** delete the file (and its `-wal`/`-shm` siblings) and **keep the PVC.** When the host boots, it creates a fresh, empty store.
+- **Why not delete the PVC:** it carries `helm.sh/resource-policy: keep`. If we deleted it, the host would sit in Pending until the next `helm upgrade` put the PVC back.
+
+The erase runs in a throwaway pod that mounts the PVC. This only works because the host is down: the volume is ReadWriteOnce.
+
+**(b) The memory-exports share.** Skip this if `memory.exports` isn't set. When it is set, it's the per-agent profile export on NFS. Two things mount it:
+
+- the host, read-write, at `/var/lib/ax-next/memory-exports`;
+- every runner pod, read-only, at `/memory`.
+
+On **GKE** it's the Filestore share you set as `memory.exports.server` + `memory.exports.exportPath`. The throwaway pod mounts exactly that path, so the erase is scoped to the memory-exports share and nothing else on the instance. kubelet does the NFS mount from the node, so NetworkPolicies don't get in the way.
+
+On **kind** it's the dev NFS server in `deploy/kind/memory-nfs/`, which is backed by an `emptyDir`. Deleting its pod empties it: the Deployment starts a new pod with a fresh, empty `emptyDir`, and the entrypoint recreates `/exports/memory`.
+
+**GKE** (facts file and Filestore memory export in one pod; fill in your two values):
+
+```bash
+kubectl -n ax-next apply -f - <<'YAML'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: memory-reset
+spec:
+  restartPolicy: Never
+  containers:
+    - name: reset
+      image: busybox:1.36
+      command: ["sh", "-c"]
+      args:
+        - |
+          set -eu
+          echo "facts files before:"; ls -la /facts
+          rm -f /facts/facts.db /facts/facts.db-wal /facts/facts.db-shm
+          echo "export entries before: $(find /exports -mindepth 1 | wc -l)"
+          find /exports -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          echo "export entries after: $(find /exports -mindepth 1 | wc -l)"
+      volumeMounts:
+        - { name: facts, mountPath: /facts }
+        - { name: exports, mountPath: /exports }
+  volumes:
+    - name: facts
+      persistentVolumeClaim: { claimName: ax-next-memory-facts }
+    - name: exports
+      nfs:
+        server: <memory.exports.server>        # the memory Filestore IP, NOT sandbox.filestore
+        path: <memory.exports.exportPath>      # e.g. /memory
+YAML
+kubectl -n ax-next wait --for=jsonpath='{.status.phase}'=Succeeded pod/memory-reset --timeout=180s
+kubectl -n ax-next logs memory-reset
+kubectl -n ax-next delete pod memory-reset
+```
+
+If you don't use `memory.exports`, drop the `exports` mount, the `exports` volume and the three `/exports` lines.
+
+**kind:**
+
+```bash
+kubectl -n ax-next apply -f - <<'YAML'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: memory-reset
+spec:
+  restartPolicy: Never
+  containers:
+    - name: reset
+      image: busybox:1.36
+      command: ["sh", "-c", "set -eu; ls -la /facts; rm -f /facts/facts.db /facts/facts.db-wal /facts/facts.db-shm"]
+      volumeMounts:
+        - { name: facts, mountPath: /facts }
+  volumes:
+    - name: facts
+      persistentVolumeClaim: { claimName: ax-next-memory-facts }
+YAML
+kubectl -n ax-next wait --for=jsonpath='{.status.phase}'=Succeeded pod/memory-reset --timeout=180s
+kubectl -n ax-next delete pod memory-reset
+
+# The dev NFS export: deleting the pod empties its emptyDir.
+kubectl -n ax-next delete pod -l app.kubernetes.io/name=ax-next-memory-nfs
+kubectl -n ax-next rollout status deploy/ax-next-memory-nfs
+```
+
+### Step 5 — Reset workspace storage (⚠ deletes ALL agents' workspace repos and files)
+
+Old memory also lives in each agent's workspace repo and its history (`memory/**`, `permanent/memory/facts/**`). We reset workspace storage as a whole. Which commands to use depends on `workspace.backend`.
+
+**`workspace.backend: git-protocol` (kind dev).** The repos live on the git-server StatefulSet's volume. We delete its PVCs, one per shard, named after the `volumeClaimTemplate` called `repo`. When the StatefulSet scales back up, it recreates them empty.
+
+```bash
+kubectl -n ax-next get pvc -o name | grep '^persistentvolumeclaim/repo-ax-next-git-server-experimental-'
+kubectl -n ax-next get pvc -o name | grep '^persistentvolumeclaim/repo-ax-next-git-server-experimental-' \
+  | xargs kubectl -n ax-next delete
+kubectl -n ax-next scale statefulset/ax-next-git-server-experimental --replicas=<gitServer.shards, default 1>
+kubectl -n ax-next rollout status statefulset/ax-next-git-server-experimental
+```
+
+**`workspace.backend: local` (GKE and production; there is no git-server).** The repos are `ws-*.git` directories on the host's workspace PVC, `ax-next-workspace`. **Don't delete that PVC.** It also holds the blob store (`blobs/`, which has attachments and published artifacts) and `skill-bundles/`. We delete only the repos:
+
+```bash
+kubectl -n ax-next apply -f - <<'YAML'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: workspace-reset
+spec:
+  restartPolicy: Never
+  containers:
+    - name: reset
+      image: busybox:1.36
+      command: ["sh", "-c"]
+      args:
+        - |
+          set -eu
+          cd /ws
+          echo "repos before: $(ls -d ws-*.git repo.git 2>/dev/null | wc -l)"
+          rm -rf ws-*.git repo.git
+          echo "repos after: $(ls -d ws-*.git repo.git 2>/dev/null | wc -l)"
+          ls -la /ws
+      volumeMounts:
+        - { name: ws, mountPath: /ws }
+  volumes:
+    - name: ws
+      persistentVolumeClaim: { claimName: ax-next-workspace }
+YAML
+kubectl -n ax-next wait --for=jsonpath='{.status.phase}'=Succeeded pod/workspace-reset --timeout=180s
+kubectl -n ax-next logs workspace-reset
+kubectl -n ax-next delete pod workspace-reset
+```
+
+### Step 6 — Start the host again
+
+```bash
+kubectl -n ax-next scale deploy/ax-next-host --replicas=1
+kubectl -n ax-next rollout status deploy/ax-next-host
+```
+
+### Step 7 — Check it worked
+
+- `kubectl -n ax-next logs deploy/ax-next-host -c host | grep -iE 'error|fail'` shows nothing new.
+- Open an agent. Its Files tab is empty, and the Memory tab has nothing remembered yet.
+- Have one chat that states a fact. Wait about 5 minutes after the chat goes idle, then check that the Memory tab shows it.
+- Rules went with the workspace, so re-enter any that are still wanted in the Memory tab.
 
 ## Linting and validating
 

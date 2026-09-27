@@ -56,7 +56,25 @@ namespace:
 
 # ─── Host pod ────────────────────────────────────────────────────
 host:
-  preset: k8s
+  # Which memory the host boots with. TWO memories exist:
+  #
+  #   - "memory" (the default) — facts memory (@ax/memory): an LLM observer
+  #     extracts durable facts from conversations into a sqlite-backed store,
+  #     with semantic recall via embeddings + reranking. Renders and boots
+  #     with no extra values: the facts database lives on its own PVC
+  #     (`memory.facts`). `memory.exports` (an NFS export) is OPTIONAL — set
+  #     it to give runner pods a read-only `/memory` view; leave it empty and
+  #     recall and the Memory tab still work.
+  #   - "k8s" — the legacy Strata memory (@ax/memory-strata): markdown
+  #     documents written straight into each agent's git-tracked workspace.
+  #     No NFS export, no extra values needed.
+  #
+  # Switching an EXISTING deployment from Strata to facts memory does not
+  # clear the old memory for you — that is an operator runbook: see
+  # deploy/README.md ("Switching an existing deployment to facts memory").
+  # Production values files should pin `preset` explicitly rather than
+  # inherit this default.
+  preset: memory
   ports:
     # @ax/ipc-http listener — runner pods reach back to the host here.
     # NOT public traffic. NetworkPolicy + the runner pod's own egress
@@ -739,6 +757,16 @@ memory:
   facts:
     storage: 10Gi
     storageClassName: ''
+  # OPTIONAL NFS export the host writes each agent's memory projection to
+  # (mounted read-write on the host, read-only on runner pods at `/memory`).
+  # Both-or-neither: set `server` AND `exportPath`, or leave both empty —
+  # `helm template` fails if exactly one is set. Empty means runners get no
+  # `/memory` mount; recall and the Memory tab still work, and each agent's
+  # facts are still exported into its workspace. On GKE, provision a
+  # DEDICATED Filestore share for this — see `deploy/GKE.md`. When set, it
+  # must NOT be the same server+exportPath as `sandbox.filestore.exportPath`
+  # (the separate durable per-agent user-files mount); the chart fails
+  # template if they collide, whichever one was configured second.
   exports:
     server: ''
     exportPath: ''
@@ -773,13 +801,13 @@ chat:
 # Rendered verbatim into a ConfigMap mounted at /etc/ax-next/ax.config.yaml.
 #
 # Heads up: nothing actually reads that file. AX_CONFIG_PATH is stamped onto
-# the host pod, but no code path loads it — the k8s preset configures itself
-# from AX_* env vars instead. So `preset` and `history.maxTurns` below are
-# inert (the preset is baked into host.args; turn limits come from the chat
-# request). `models.default` is the one key here that reaches the host, and
-# only because the template stamps it as an env var.
+# the host pod, but no code path loads it — `host.preset` above (baked into
+# host.args as AX_PRESET) is what actually selects memory vs. k8s at boot.
+# So `preset` and `history.maxTurns` below are inert (turn limits come from
+# the chat request). `models.default` is the one key here that reaches the
+# host, and only because the template stamps it as an env var.
 config:
-  preset: k8s
+  preset: memory
   models:
     # The models an agent may be assigned. Stamped onto the host pod as
     # AX_AGENT_MODELS_ALLOWED, which @ax/agents reads at startup.
