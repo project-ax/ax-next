@@ -134,8 +134,8 @@ export interface SessionCreateInput {
      * @ax/routines fire, `'user'`/absent for an interactive turn. Persisted
      * on the session record and echoed back by `session:resolve-token` so the
      * IPC server can stamp it onto the happy-path runner-completed `chat:end`
-     * ctx (no in-tree subscriber reads it there since @ax/memory-strata's
-     * deletion in TASK-608; kept as generic provenance). Host-only — it never arrives from the
+     * ctx (@ax/memory reads it there to store a routine turn's rows with no
+     * conversation — TASK-616). Host-only — it never arrives from the
      * runner wire (absent from @ax/ipc-protocol). Optional; absent ≡ user.
      */
     source?: 'routine' | 'user';

@@ -259,9 +259,9 @@ describe('@ax/ipc-http: auth-resolved ids propagate onto per-request ctx', () =>
   it('stamps host-derived source onto ctx for the happy-path chat:end (TASK-181, k8s/TCP transport)', async () => {
     // The k8s sandbox backend reaches the host over THIS TCP listener, so the
     // runner-completed chat:end for a k8s session lands here. A routine-opened
-    // session must surface ctx.source='routine' so a routine-fire guard could
-    // fire on a successful k8s turn (none in-tree since @ax/memory-strata's
-    // deletion in TASK-608) — same property @ax/ipc-server provides for
+    // session must surface ctx.source='routine' so @ax/memory can store a
+    // successful k8s routine turn's rows with no conversation (TASK-616) —
+    // same property @ax/ipc-server provides for
     // the subprocess (unix-socket) transport.
     let capturedCtx: AgentContext | null = null;
     let resolveFire: (() => void) | null = null;

@@ -1281,8 +1281,8 @@ describe('chat-orchestrator', () => {
   // -------------------------------------------------------------------------
   // TASK-181 — the orchestrator forwards the HOST-DERIVED ctx.source into
   // owner.source on sandbox:open-session (→ session:create → the IPC server
-  // stamps it on the happy-path chat:end, where a routine-fire guard could
-  // read it — none in-tree since @ax/memory-strata's deletion in TASK-608).
+  // stamps it on the happy-path chat:end, where @ax/memory reads it to store
+  // a routine turn's rows with no conversation — TASK-616).
   // A routine fire stamps ctx.source='routine'; a
   // user turn leaves it unset. The value comes ONLY from ctx (host-side),
   // never from the runner wire.

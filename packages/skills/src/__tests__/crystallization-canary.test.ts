@@ -41,10 +41,11 @@
  *      and that a guard keyed on it skips — the established TASK-176 source path.
  *      (The REAL observer that carried this guard was @ax/memory-strata's,
  *      deleted in TASK-608. @ax/memory's observer deliberately does NOT skip
- *      routine turns, so no in-tree subscriber enforces this today. TASK-611
+ *      routine turns, so no in-tree subscriber enforces this via a skip today. TASK-611
  *      turned skill-reflection back on under facts memory; its prompt tells
- *      the model not to count rows about reflection passes or skills, and
- *      the observer-side guard is a separate follow-up.)
+ *      the model not to count rows about reflection passes or skills. TASK-616
+ *      then chose attribution over a skip: a routine turn's rows are stored
+ *      with no conversation, so they never count toward the recurrence gate.)
  *
  *   4. recurrence prompt-guard — assert SKILL_REFLECTION_PROMPT carries the
  *      ≥2-distinct-conversations clause, the anti-pattern list, prefer-patch,
