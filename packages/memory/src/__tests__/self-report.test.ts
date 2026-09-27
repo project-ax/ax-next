@@ -38,7 +38,16 @@ describe('isAgentContextSelfReport', () => {
     ['stated', 'I was not given any rules'],
     ['stated', "hasn't received any instructions"],
     ['stated', 'I never received any instructions'],
-    ['stated', 'has not been told any rules by the user'],
+    ['stated', 'has not been told any rules'],
+    // "for/of/on/about" + the agent's OWN scope is still a self-report; only a
+    // topic after it ("rules of chess") is content.
+    ['stated', 'I have no rules for this conversation'],
+    ['stated', 'no rules for you yet'],
+    ['stated', 'I have no instructions for this task'],
+    ['stated', 'I have not been given any instructions for our chat'],
+    ["stated", "I don't have any rules about how to respond"],
+    ['stated', 'there are no instructions on what to do'],
+    ['stated', 'the system prompt is all I was given'],
     // A self-tied mention of its prompt is still about its own context.
     ['stated', 'the only instructions came from the system bootstrap prompt'],
     ['stated', 'follows only what is in its system prompt'],

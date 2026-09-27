@@ -59,7 +59,15 @@ const AGENT_SUBJECTS = new Set([
  */
 // The `\b` before the lookahead matters: without it the engine backtracks to
 // "rule" + "s of thumb" and the lookahead never sees " of".
-const RULES = String.raw`(?:rules?|instructions?)\b(?! (?:of|for|on|about)\b)`;
+//
+// "for/of/on/about" + a TOPIC ("rules of chess", "instructions for the desk")
+// is content. The same words + the agent's OWN scope ("no rules for this
+// conversation", "no instructions on what to do", "rules for you yet") are
+// still a self-report, so the exclusion only applies when what follows is not
+// one of those scope words. Accepted limitation: "no instructions for the
+// task" reads as a topic and is kept.
+const SELF_SCOPE = String.raw`(?:you|me|us|this|our|now|yet|how|what)\b`;
+const RULES = String.raw`(?:rules?|instructions?)\b(?! (?:of|for|on|about) (?!${SELF_SCOPE}))`;
 const MEMORY = String.raw`(?:memor(?:y|ies)|saved facts|(?:prior|previous) (?:conversations?|sessions?|chats?))\b`;
 const NEGATION = String.raw`(?:don't|do not|doesn't|does not|cannot|can't|haven't|have not|hasn't|has not|hadn't|had not|wasn't|was not|weren't|were not|never|has no|have no|had no|without)`;
 
@@ -87,6 +95,8 @@ const CONTEXT_PATTERNS: readonly RegExp[] = [
   // prompt". Not any mention — "how to write a good system prompt" and "a
   // system prompt injection attack" are topics a person asked about.
   /\b(?:(?:from|in|by|via) (?:the|my|its)|my|its) (?:system |bootstrap )+prompt\b/,
+  // "the system prompt is all I was given", "... was the only instruction"
+  /\b(?:system |bootstrap )+prompt (?:is|was) (?:all|the only)\b/,
   // "its instructions", "my memory"
   /\b(?:my|its|the assistant's|the agent's) (?:rules|instructions|memory|memories)\b/,
 ];
