@@ -148,7 +148,7 @@ describe('serve command — argument parsing', () => {
     });
     const help = out.join('\n');
     const required = help.slice(
-      help.indexOf('env (required unless AX_PRESET=k8s):'),
+      help.indexOf('env (required, facts memory):'),
       help.indexOf("env (optional, 'memory' preset"),
     );
     expect(required).toContain('AX_MEMORY_FACTS_DB_PATH');

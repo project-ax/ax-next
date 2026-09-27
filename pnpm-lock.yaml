@@ -781,9 +781,6 @@ importers:
       '@ax/onboarding':
         specifier: workspace:*
         version: link:../onboarding
-      '@ax/preset-k8s':
-        specifier: workspace:*
-        version: link:../../presets/k8s
       '@ax/preset-memory':
         specifier: workspace:*
         version: link:../../presets/memory
