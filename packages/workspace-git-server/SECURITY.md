@@ -276,7 +276,7 @@ The only caller-derived elements that ever land in argv are:
   - `workspace:export-baseline-bundle`'s `version` never becomes an argv token at all. It is only string-compared against the rev-parsed head (or the deterministic empty-baseline OID); the bundle is then cut against the constant ref `main`.
   - `workspace:apply-bundle`'s `baselineCommit` does become one, at `merge-base --is-ancestor`, but only after an enforced equality check against `seededOid` or `mirrorHead` — both git-minted — that throws otherwise. This is a code check, not the caller-discipline argument #583 rejected.
 
-  One field is deliberately **not** run through `requireOid`: `parent`. Narrowing it would turn a garbage parent's `parent-mismatch` into a different error code, and that code is the workspace-CAS rebase-retry contract — `@ax/memory-strata`'s `agent-tier-sync`, `channel-web`'s `workspace-cas` (plus the agent bootstrap and identity routes), `@ax/routines-admin-routes`, and `ipc-core`'s `workspace.commit-notify` all key on it. But `parent` is *not* inert here the way it is in the sibling: on an empty mirror it was passed to `buildDelta`, which makes it the `<from>` argv token of `git diff-tree`. So it is closed the other way — by enforcing the invariant the code already documented in prose, that on an empty mirror `parent` must be null or equal the declared `baselineCommit`. `baselineCommit` is itself pinned to a git-minted OID, so `parent` ends up a real OID and the error code is untouched.
+  One field is deliberately **not** run through `requireOid`: `parent`. Narrowing it would turn a garbage parent's `parent-mismatch` into a different error code, and that code is the workspace-CAS rebase-retry contract — `@ax/memory`'s `memory:rules:write`, `channel-web`'s `workspace-cas` (plus the agent bootstrap and identity routes), `@ax/routines-admin-routes`, and `ipc-core`'s `workspace.commit-notify` all key on it. But `parent` is *not* inert here the way it is in the sibling: on an empty mirror it was passed to `buildDelta`, which makes it the `<from>` argv token of `git diff-tree`. So it is closed the other way — by enforcing the invariant the code already documented in prose, that on an empty mirror `parent` must be null or equal the declared `baselineCommit`. `baselineCommit` is itself pinned to a git-minted OID, so `parent` ends up a real OID and the error code is untouched.
 - **`remoteUrl`** — composed from a chart-stamped `baseUrl` (e.g. `http://<release>-ax-next-git-server-experimental.<ns>.svc.cluster.local:7780`) plus the regex-validated `workspaceId`. Both halves are regex-safe; there's no place to slip a shell metacharacter in.
 
 The child env is locked down to a constant — `HOST_GIT_ENV` in `git-engine.ts` is a **full env replacement**, never `{ ...process.env, ... }`:
@@ -347,8 +347,8 @@ user. A null check cannot see that; a marker can.
 
 The listeners now stamp `ownerlessIdFor(sessionId)`, which is per-session, so
 nothing pools even in the agent-partitioned stores that have no gate of their own
-(both `@ax/memory-strata-index-*` backends derive the same key and would
-otherwise have inherited the same bucket). This gate is the stronger half: an
+(both `@ax/memory-facts-*` backends derive the same key and would otherwise
+have inherited the same bucket). This gate is the stronger half: an
 owner-less caller gets nothing at all rather than a private, pointless shard.
 
 ### Bearer token discipline

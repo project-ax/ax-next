@@ -307,9 +307,10 @@ export async function engineRecord(
 /**
  * Register a stand-in `memory:rules:read`.
  *
- * The human tier's provider is `@ax/memory-strata` today and is not part of
- * this plugin (design §10.4 keeps `memory:rules:*` a shared contract), so the
- * block reaches it through the bus. A test that wants a Rules section
+ * The human tier's provider is this plugin's own `rules.ts`, but only when
+ * `rules: true` (as `presets/memory` sets it; `@ax/memory-strata` provided it
+ * until TASK-608). Design §10.4 keeps `memory:rules:*` a shared contract, so
+ * the block reaches it through the bus either way. A test that wants a Rules section
  * registers this; a test that wants the no-provider case simply does not.
  */
 export function registerRulesStub(

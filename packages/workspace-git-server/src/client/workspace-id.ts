@@ -36,11 +36,12 @@
  * pinned-output tests in `__tests__/workspace-id.test.ts` exist to catch
  * unintentional drift across SHA-256 implementation or formatting changes.
  *
- * ⚠ LOCKSTEP — `@ax/memory-strata-index-postgres` and
- * `@ax/memory-strata-index-sqlite` each carry an `agent-scope-key.ts` that
- * mirrors this derivation, so the memory-index partition lines up with the
- * file-tier partition. Invariant 2 (no cross-plugin imports) forbids sharing
- * the code, so the three copies must change together. Each carries pinned
+ * ⚠ LOCKSTEP — `@ax/memory-facts-postgres` and `@ax/memory-facts-sqlite`
+ * each carry an `agent-scope-key.ts` that mirrors this derivation, so the
+ * memory partition lines up with the file-tier partition (and
+ * `@ax/workspace-git-core`'s `workspaceIdForAgent` is a fourth copy).
+ * Invariant 2 (no cross-plugin imports) forbids sharing the code, so the
+ * copies must change together. Each carries pinned
  * vectors over the same inputs; editing one copy fails that copy's pins, which
  * is what makes the lockstep enforceable rather than aspirational.
  *

@@ -1,9 +1,9 @@
 /**
  * Fail with the WHOLE list of missing keys, not the first one.
  *
- * Same helper the memory-strata bench uses, for the same small reason: a bench
- * that dies one key at a time makes someone run it three times to learn what it
- * needed.
+ * Same helper the memory-strata bench used (deleted in TASK-608), for the same
+ * small reason: a bench that dies one key at a time makes someone run it three
+ * times to learn what it needed.
  */
 export function requireKeys<T extends Record<string, string | undefined>>(
   env: T,

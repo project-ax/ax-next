@@ -757,9 +757,10 @@ describe('workspace.commit-notify handler — runner-immutable paths (TASK-486)'
   });
 
   it('leaves the agent’s OWN memory writes alone', async () => {
-    // Scope check. The strata's machine-written files are the agent's to write
-    // — guarding `memory/**` wholesale would break consolidation. Only the one
-    // file nothing ever regenerates is immutable.
+    // Scope check. The rest of `memory/**` is the agent's to write — these
+    // paths were Strata's machine-written files (deleted in TASK-608), and
+    // guarding `memory/**` wholesale would refuse legitimate agent writes.
+    // Only the one file nothing but a person ever writes is immutable.
     const { result, applyBundle } = await driveTurn(
       [
         { path: 'memory/system/user.md', kind: 'put', content: new Uint8Array([1]) },

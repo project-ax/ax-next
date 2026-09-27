@@ -53,7 +53,7 @@ afterAll(async () => {
 // `shutdown()` of its own — it borrows the shared Kysely and must never
 // destroy a pool it does not own — so the only thing that can pull the store
 // out from under it is the db plugin whose pool it borrowed. Sharing one pool
-// across all cases (which the strata-postgres contract does) would make those
+// across all cases (which the deleted strata-postgres contract did) would make those
 // cases untestable, and a second test file's pool would go down with it.
 //
 // Once destroyed, the captured Kysely rejects every query from its own

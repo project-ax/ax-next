@@ -63,9 +63,9 @@ export interface FusedCandidate {
  * Ties are broken by ascending id, and that tiebreak is load-bearing rather
  * than cosmetic: `Array.prototype.sort` is stable, so without it the order of
  * two equally-scored rows is whatever order the channels happened to be passed
- * in. (The in-repo bench copy at
- * `packages/memory-strata/test/bench/configs/c-rrf.ts` omits it; this is the
- * port of `dem-memory/src/engine/recall.ts`, which does not.)
+ * in. (The bench copy that lived at
+ * `packages/memory-strata/test/bench/configs/c-rrf.ts` until TASK-608 omitted
+ * it; this is the port of `dem-memory/src/engine/recall.ts`, which does not.)
  */
 export function reciprocalRankFusion(lists: string[][], k: number = RRF_K): FusedCandidate[] {
   const scores = new Map<string, number>();
@@ -101,8 +101,8 @@ export function factStatementText(about: string, relation: string, value: string
  * text reaches this engine as model or user output through `@ax/memory`, and a
  * parser that honours operators in raw input INVERTS the query — unescaped,
  * `-graduated` matches every row LACKING the term. The contract pins this
- * (`memory-strata-index-contract`'s Test 8c pins the same class on the
- * document index); design §6.3 lists "FTS operators neutralized" as an
+ * (as `memory-strata-index-contract`'s Test 8c did on the document index
+ * until TASK-608); design §6.3 lists "FTS operators neutralized" as an
  * injection control.
  *
  * Deduped so a repeated word cannot weight itself, and capped at 24 tokens so

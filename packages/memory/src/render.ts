@@ -150,7 +150,8 @@ export function escapeStatementText(raw: string, maxChars: number = MAX_VALUE_CH
 
 /**
  * Approximate token count — 4 characters per token, the same rough estimate
- * `@ax/memory-strata`'s injection budget has used since I21.
+ * `@ax/memory-strata`'s injection budget used from I21 until its deletion in
+ * TASK-608.
  *
  * Deliberately a heuristic and not a tokenizer. A real count would mean
  * carrying a tokenizer for whichever model happens to be answering, and the

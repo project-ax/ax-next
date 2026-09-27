@@ -167,10 +167,12 @@ export async function createListener(opts: CreateListenerOptions): Promise<Liste
     //
     // TASK-181: also stamp the resolved session's HOST-DERIVED origin so the
     // happy-path runner-completed `chat:end` (fired by /event.chat-end on THIS
-    // ctx) carries `ctx.source`. @ax/memory-strata reads it to skip its memory
+    // ctx) carries `ctx.source`. @ax/memory-strata read it to skip its memory
     // observer + consolidator on a scheduled @ax/routines fire — without this,
-    // the guard only fired on the orchestrator-synthesized error/terminated
-    // paths and in unit tests, never on a successful turn. SECURITY: `source`
+    // that guard only fired on the orchestrator-synthesized error/terminated
+    // paths and in unit tests, never on a successful turn. Strata was deleted
+    // in TASK-608 and nothing in-tree reads it now (@ax/memory deliberately
+    // does not skip routine turns); it is kept as generic provenance. SECURITY: `source`
     // comes from the session record (set at session:create from the
     // orchestrator's ctx.source), NOT from any runner-supplied frame field; an
     // untrusted runner cannot forge `source: 'routine'` to suppress its memory.

@@ -102,7 +102,7 @@ export const CHAT_END_HOOK = 'chat:end';
  * questions and answerer), so letting it follow whatever model a user picked
  * for chat would make memory quality unstatable — and would silently move it
  * every time somebody changed their chat model. Same call `@ax/memory-strata`
- * made on 2026-09-14, and the same model, which is the one every number in
+ * (deleted in TASK-608) made on 2026-09-14, and the same model, which is the one every number in
  * the design was measured on.
  */
 export const DEFAULT_MEMORY_OPS_MODEL = 'openrouter/z-ai/glm-5.3-flash:nitro';
@@ -120,7 +120,8 @@ export const DEFAULT_OBSERVER_TIMEOUT_MS = 30_000;
  * Deliberation level for the extraction call.
  *
  * `minimal` because this is a schema-constrained extraction job with a hard
- * deadline, and GLM reasons by DEFAULT: `@ax/memory-strata` measured p50 ~3.4s
+ * deadline, and GLM reasons by DEFAULT: `@ax/memory-strata` (since deleted,
+ * TASK-608) measured p50 ~3.4s
  * with the field absent versus ~865ms with it. Blowing the deadline degrades
  * silently (a dropped batch), which is precisely the failure mode that hides a
  * slow model.
@@ -302,12 +303,10 @@ function requireEngineResult<T>(result: T | null | undefined, hookName: string, 
  * cross-plugin import here and no engine vocabulary in any payload
  * (CLAUDE.md invariants 1 and 2).
  *
- * ⚠ **Not wired into a preset by this card.** Design §10.4 settled that
- * `@ax/memory` lands in its OWN preset with its own canary and that
- * `presets/k8s` keeps `@ax/memory-strata` untouched — one memory plugin per
- * preset, so invariant 4 holds trivially. That preset and the canary
- * reachability invariant 3 requires are the epic's final card; this one
- * deliberately stops at the hook surface the rest of the epic builds against.
+ * Wired by `presets/memory` (design §10.4: its OWN preset with its own
+ * canary). §10.4 also kept `presets/k8s` on `@ax/memory-strata` — one memory
+ * plugin per preset, so invariant 4 held trivially — until TASK-576 made this
+ * the default and TASK-608 deleted Strata. It is now the only memory plugin.
  */
 export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
   const maxRecallLimit = config.maxRecallLimit ?? DEFAULT_MAX_RECALL_LIMIT;
@@ -414,8 +413,8 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
       //
       // The human tier is a SOFT dependency too, and the distinction is
       // deliberate. `memory:rules:*` stays the shared contract across memory
-      // implementations (design §10.4) but the provider is not part of this
-      // plugin, so a preset can legitimately load `@ax/memory` without one —
+      // implementations (design §10.4). This plugin provides it only with
+      // `rules: true`, so a preset can legitimately load `@ax/memory` without one —
       // and a hard `calls` entry would turn that configuration into a boot
       // failure. Absent, the injected block simply has no Rules section. A
       // provider that THROWS is a different story and is not swallowed; see
@@ -958,8 +957,9 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         // already non-throwing, so there is nothing here for `fire` to log.
         //
         // NOTE this deliberately does NOT skip `ctx.source === 'routine'` the
-        // way `@ax/memory-strata`'s observer does. Strata's memory is the
-        // agent's own episodic tree, which a scheduled fire would pollute
+        // way `@ax/memory-strata`'s observer did (deleted in TASK-608). Strata's
+        // memory was the
+        // agent's own episodic tree, which a scheduled fire would have polluted
         // with its own internal work. This store is owner-scoped statements,
         // and design §3.2 settles the case explicitly: "Conversations with no
         // live person — a routine run — carry the routine owner's id", which

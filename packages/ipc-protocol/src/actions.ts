@@ -473,7 +473,7 @@ export type ProxyDrainEgressBlocksResponse = z.infer<
 // I10 — switching agents = new session, not mutate). `displayName` is the
 // agent's display name (the runner's fallback identity when no `.ax/IDENTITY.md`
 // exists) and `systemPromptAugment` carries the host `system-prompt:augment`
-// contribution (e.g. the memory-strata injection). Both flow into the LLM's
+// contribution (e.g. @ax/memory's memory block). Both flow into the LLM's
 // prompt; the runner must NOT interpolate them into shell commands, file paths,
 // or HTML. TASK-142 dropped the legacy `systemPrompt` field when the
 // `agents_v1_agents.system_prompt` column was removed — identity now lives in
@@ -495,8 +495,8 @@ export const AgentConfigSchema = z.object({
   /** The agent's display name — the runner's fallback identity, used only when
    * the agent has no `.ax/IDENTITY.md` of its own (TASK-142). */
   displayName: z.string(),
-  /** The host `system-prompt:augment` contribution (e.g. memory-strata's
-   * injection), prepended on top of the composed system prompt in normal mode.
+  /** The host `system-prompt:augment` contribution (e.g. @ax/memory's
+   * memory block), prepended on top of the composed system prompt in normal mode.
    * Empty string when no augment provider is registered. */
   systemPromptAugment: z.string(),
   /** Bootstrap-safe subset of `system-prompt:augment` contributions (currently

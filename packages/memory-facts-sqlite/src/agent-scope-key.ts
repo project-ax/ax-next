@@ -18,10 +18,12 @@ import { createHash } from 'node:crypto';
  * ACL that runs before every per-agent read.
  *
  * ⚠ LOCKSTEP — this is BYTE-FOR-BYTE the same derivation as
- * `@ax/memory-strata-index-sqlite`'s `agent-scope-key.ts` (and its postgres
- * sibling, and `@ax/workspace-git-server`'s `workspaceIdFor`): same
- * `sha256(JSON.stringify([agentId]))`, same 16-hex truncation, so this
- * engine's partition lines up with the index tier and the file tier.
+ * `@ax/memory-facts-postgres`'s `agent-scope-key.ts` and the file tier's
+ * `workspaceIdFor` (`@ax/workspace-git-server`) / `workspaceIdForAgent`
+ * (`@ax/workspace-git-core`): same `sha256(JSON.stringify([agentId]))`, same
+ * 16-hex truncation, so this engine's partition lines up with its postgres
+ * twin and the file tier. (The `@ax/memory-strata-index-*` copies were
+ * deleted in TASK-608.)
  * Invariant 2 (no cross-plugin imports) forbids importing that helper, so
  * this package carries its own copy.
  *

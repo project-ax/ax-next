@@ -81,7 +81,7 @@ const MAIN_REF = 'refs/heads/main';
  *
  * WARNING -- LOCKSTEP. This is a byte-for-byte copy of
  * `@ax/workspace-git-server`'s `workspaceIdFor` (and of the
- * `agent-scope-key.ts` in both `@ax/memory-strata-index-*` packages).
+ * `agent-scope-key.ts` in both `@ax/memory-facts-*` packages).
  * Invariant 2 forbids importing across plugins, so the copies must change
  * together; a deployment migrating from `local` to `git-protocol` finds its
  * workspaces under the same names only while they agree.
@@ -1036,7 +1036,7 @@ export function registerWorkspaceGitHooks(
             hookName: 'workspace:apply-internal',
             message: `expected parent ${currentVersion === null ? 'null' : currentVersion}, got ${input.parent === null ? 'null' : input.parent}`,
             // The freshly-read mirror head so a rebase-on-mismatch consumer
-            // can recover — `@ax/memory-strata`'s agent-tier-sync,
+            // can recover — `@ax/memory`'s `memory:rules:write`,
             // `channel-web`'s workspace-cas (agent bootstrap + identity
             // routes), `@ax/routines-admin-routes`, and ipc-core's
             // commit-notify, each of which reads `cause.actualParent` and
@@ -1303,7 +1303,7 @@ export function registerWorkspaceGitHooks(
       // against the current head — so it is deliberately left unvalidated:
       // narrowing it would turn a garbage parent's `parent-mismatch` into a
       // different code, and that code is the workspace-CAS rebase-retry
-      // contract: @ax/memory-strata's agent-tier-sync, channel-web's
+      // contract: @ax/memory's memory:rules:write, channel-web's
       // workspace-cas, @ax/routines-admin-routes and ipc-core's commit-notify
       // all key on it. NOT @ax/attachments, which an earlier draft of this
       // comment credited — TASK-68 moved it to blob:put and off this path.)

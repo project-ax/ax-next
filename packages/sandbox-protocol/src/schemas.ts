@@ -315,8 +315,9 @@ export const OpenSessionInputSchema = z.object({
       // it: `'routine'` for a scheduled @ax/routines fire, `'user'`/absent for
       // an interactive turn. Forwarded into session:create so the session
       // record carries it and the IPC server can stamp it onto the happy-path
-      // runner-completed chat:end ctx (where @ax/memory-strata reads it to skip
-      // memory extraction on internal turns). SECURITY: this rides the
+      // runner-completed chat:end ctx (no in-tree subscriber reads it there
+      // since @ax/memory-strata's deletion in TASK-608; kept as generic
+      // provenance). SECURITY: this rides the
       // HOST-INTERNAL `sandbox:open-session` hook (orchestrator → sandbox
       // plugin → session:create), NEVER the runner wire (@ax/ipc-protocol). An
       // untrusted runner has no way to set it — it is sourced only from

@@ -32,7 +32,7 @@
 //     compacted prompt is still over the ceiling the turn fails with a message
 //     a person can act on. A failed rung 3 falls through to exactly that path
 //     and is not attempted again until the conversation has grown materially.
-//   - It does not touch `@ax/memory-strata`. That plugin owns CROSS-conversation
+//   - It does not touch `@ax/memory`. That plugin owns CROSS-conversation
 //     memory off `chat:end`; this owns IN-turn context. Neither reads the
 //     other (invariant 4).
 //

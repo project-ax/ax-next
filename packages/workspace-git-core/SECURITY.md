@@ -65,7 +65,7 @@ Why the check lives HERE and not in `@ax/core`: `asWorkspaceVersion` is a bare c
 
 What this replaced is worth recording, because it is the more interesting half. The previous version of this section argued from CALLER DISCIPLINE — "no untrusted caller can reach a version parameter" — and that argument required a census of every plugin that forwards a version. The census was wrong: `@ax/validator-identity`, from a `workspace:pre-apply` subscriber, forwards the runner's `parent` into `workspace:read`, reaching `cat-file blob <version>:<path>`. Nothing was exploitable (git errors on a bad ref, and the ordering happened to save us), but a claim that depends on enumerating every current subscriber is not a boundary — it is a snapshot that the next plugin invalidates. A regex at the entry point is true regardless of who calls.
 
-One field is deliberately NOT validated: `parent` on `apply` / `apply-bundle`. It never becomes an argv token — it is only string-compared against the current head, and interpolated into an error message — and narrowing it would turn a garbage parent's `parent-mismatch` into a different error code. That code is a contract: it is what the workspace-CAS rebase-retry path keys on, in `@ax/memory-strata` (`agent-tier-sync.ts`), `channel-web` (`workspace-cas.ts`, plus the agent bootstrap and identity routes), `@ax/routines-admin-routes`, and `ipc-core`'s `workspace.commit-notify` handler.
+One field is deliberately NOT validated: `parent` on `apply` / `apply-bundle`. It never becomes an argv token — it is only string-compared against the current head, and interpolated into an error message — and narrowing it would turn a garbage parent's `parent-mismatch` into a different error code. That code is a contract: it is what the workspace-CAS rebase-retry path keys on, in `@ax/memory` (`rules.ts`, `memory:rules:write`), `channel-web` (`workspace-cas.ts`, plus the agent bootstrap and identity routes), `@ax/routines-admin-routes`, and `ipc-core`'s `workspace.commit-notify` handler.
 
   (An earlier draft of this paragraph credited `@ax/attachments` for that retry. It no longer does any such thing — TASK-68 moved attachment bytes to `blob:put`, and `attachments/src/handlers.ts` says the `workspace:apply` → `parent-mismatch` rebase race "is gone entirely". Worth correcting rather than deleting: a maintainer auditing "who still needs `parent-mismatch`?" would check attachments, find nothing, conclude the justification was bogus, and tighten `parent` — breaking the five consumers that DO rely on it. The same stale credit also survived in `core/src/workspace-apply-facade.ts` and in this file's own `apply-internal` cause comment; TASK-414 corrected both, and named the five real consumers in each place rather than restating a count.)
 
@@ -113,8 +113,8 @@ How it works now:
 
   The listeners now stamp `ownerlessIdFor(sessionId)`: per-session, so nothing
   pools even in stores that do not know about the marker (the two
-  `@ax/memory-strata-index-*` backends hash `agentId` the same way and have no
-  gate), and marked, so we can refuse it here. Note what changed our mind about
+  `@ax/memory-facts-*` backends hash `agentId` the same way and have no gate of
+  their own), and marked, so we can refuse it here. Note what changed our mind about
   refusing: this used to say blocklisting the placeholders would couple the
   backend to another plugin's constants, which was correct. `isOwnerlessId` is
   a KERNEL concept, so there is nothing to couple to.

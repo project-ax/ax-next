@@ -283,7 +283,7 @@ export function composeNormalModePrompt(input: ComposeNormalModeInput): string {
  *   used in normal mode only when the agent has no `.ax/IDENTITY.md` of its own
  *   ("You are <displayName>, a helpful personal assistant."). Host-controlled.
  * @param augment the host `system-prompt:augment` contribution (e.g. the
- *   memory-strata injection), prepended on top in normal mode. Empty string =>
+ *   @ax/memory block), prepended on top in normal mode. Empty string =>
  *   no prepend. NEVER used in bootstrap mode.
  * @param bootstrapAugment the bootstrap-safe SUBSET of that contribution
  *   (TASK-524), prepended on top in bootstrap mode only. It is a subset, so

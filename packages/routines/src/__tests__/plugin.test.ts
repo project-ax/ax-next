@@ -347,8 +347,9 @@ describe('routines:delete-default', () => {
 
 // TASK-609: the facts-memory preset boots @ax/routines with
 // `forceDisabledDefaults: ['skill-reflection']` — reflection's recurrence gate
-// reads Strata-only memory, so it stays OFF there until TASK-608. The k8s
-// (Strata) preset passes nothing and must behave exactly as before.
+// reads memory only Strata wrote (deleted in TASK-608), so it stays OFF there
+// until TASK-611. A caller that passes nothing (`presets/k8s` still does) must
+// behave exactly as before.
 describe('forceDisabledDefaults (TASK-609)', () => {
   const FORCED: RoutinesConfig = { forceDisabledDefaults: [SKILL_REFLECTION_ROUTINE_NAME] };
 
@@ -430,7 +431,7 @@ describe('forceDisabledDefaults (TASK-609)', () => {
     }
   });
 
-  it('without the option (the k8s/Strata preset) an ON skill-reflection and its rows survive a boot', async () => {
+  it('without the option (as presets/k8s passes it) an ON skill-reflection and its rows survive a boot', async () => {
     const k = kysely();
     try {
       await seedReflectionOn(k);

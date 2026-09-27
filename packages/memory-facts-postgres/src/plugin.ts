@@ -41,7 +41,7 @@ import { agentScopeKey } from './agent-scope-key.js';
 const PLUGIN_NAME = '@ax/memory-facts-postgres';
 
 // Hard upper bound on `limit`, mirroring @ax/memory-facts-sqlite's MAX_LIMIT
-// (and @ax/memory-strata-index-*'s MAX_TOP_K) — a non-positive limit is a
+// (and the TASK-608-deleted @ax/memory-strata-index-*'s MAX_TOP_K) — a non-positive limit is a
 // real risk to clamp/reject rather than let through to the driver.
 //
 // Duplicated rather than imported: Invariant 2 forbids cross-plugin imports
@@ -700,8 +700,7 @@ export function createMemoryFactsPostgresPlugin(): Plugin {
 
       // Every handler derives the per-agent scope key from the calling ctx
       // so the single shared table is partitioned by agentId alone (mirrors
-      // @ax/memory-facts-sqlite, and @ax/memory-strata-index-*'s TASK-257
-      // partition). The hook I/O payloads stay unchanged — the key is
+      // @ax/memory-facts-sqlite; the TASK-257 partition). The hook I/O payloads stay unchanged — the key is
       // ambient (from ctx), never a wire field.
       bus.registerService<RecordInput, RecordOutput>(
         'memory:facts:record',

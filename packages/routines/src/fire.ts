@@ -118,10 +118,10 @@ export function createFireRoutine(deps: FireDeps) {
       agentId: row.agentId,
       userId: row.ownerUserId,
       conversationId,
-      // Mark this as a routine-originated (non-user) turn. Subscribers that
-      // must not act on internally-generated turns key off ctx.source — notably
-      // @ax/memory-strata, which skips its chat:end memory extraction so a
-      // scheduled fire doesn't pollute the agent's memory. See AgentContext.source.
+      // Mark this as a routine-originated (non-user) turn. A subscriber that
+      // must not act on internally-generated turns would key off ctx.source.
+      // None in-tree does since @ax/memory-strata's deletion (TASK-608);
+      // @ax/memory deliberately stores routine turns too. See AgentContext.source.
       source: 'routine',
       // Human-authored label for a status line ("Right now this agent is…").
       // Must be set here, at the moment the turn starts: @ax/routines only

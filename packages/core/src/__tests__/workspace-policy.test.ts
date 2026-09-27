@@ -103,7 +103,7 @@ describe('findRunnerImmutableViolations', () => {
     ).toEqual(['memory/system/rules.md']);
   });
 
-  it('exports the list so @ax/memory-strata can share the literal', () => {
+  it('exports the list built from MEMORY_RULES_PATH, the literal @ax/memory imports', () => {
     expect([...RUNNER_IMMUTABLE_PATHS]).toEqual(['memory/system/rules.md']);
   });
 });

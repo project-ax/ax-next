@@ -606,7 +606,7 @@ interface SessionIsAliveOutput {
   alive: boolean;
 }
 
-// system-prompt:augment — registered by @ax/memory-strata (Phase 2B), and
+// system-prompt:augment — registered by @ax/memory (`augment.ts`), and
 // potentially other plugins in the future (personalization, tenant policy).
 // Returns markdown contributions that the orchestrator prepends to the
 // system prompt envelope before fresh-spawning the sandbox.
@@ -718,8 +718,10 @@ interface OpenSessionInput {
      * @ax/routines fire, `'user'`/absent for an interactive turn. Taken from
      * `ctx.source` (set host-side: routines `fire.ts` stamps `'routine'`; user
      * turns leave it unset). Forwarded into session:create so the IPC server
-     * can stamp it onto the happy-path runner-completed chat:end ctx, where
-     * @ax/memory-strata reads it to skip memory extraction on internal turns.
+     * can stamp it onto the happy-path runner-completed chat:end ctx. No
+     * in-tree subscriber reads it there since @ax/memory-strata was deleted
+     * (TASK-608; @ax/memory deliberately does not skip routine turns) — it is
+     * kept as generic provenance.
      * SECURITY: never sourced from a runner-supplied frame — only from
      * ctx.source on the host.
      */
@@ -883,24 +885,22 @@ export const AGENT_INVOKE_TIMEOUT_MS = Number.POSITIVE_INFINITY;
  * whatever the subscriber eventually returns — including a late veto — and
  * runs the rest. We proceed rather than fail the turn because no `chat:start`
  * subscriber today is load-bearing for the turn's correctness: `@ax/agent-
- * activity` records a status line, and `@ax/memory-strata` seeds the agent's
- * memory tree, which is idempotent and re-attempted on the next turn. Losing
- * either for one turn is a degraded turn; failing it would turn a slow
+ * activity` records a status line. (`@ax/memory-strata` used to seed the
+ * agent's memory tree here, idempotently; it was deleted in TASK-608.) Losing
+ * that for one turn is a degraded turn; failing it would turn a slow
  * observer into a user-facing error. A subscriber that NEEDS to stop a turn
  * vetoes, and a veto that arrives inside the bound still works.
  *
  * WHY 60 s. Four times the 15 s stall watch, so a slow subscriber has already
  * named itself (`hook_subscriber_stalled`) with 45 s of runway before it is
  * cut off. It is a hang backstop, not a latency budget — and it is not
- * measured against a real cold start: memory-strata's k8s bootstrap fans out
- * into a `workspace:list`, N `workspace:read`s and two `workspace:apply`s,
- * each separately bounded at 120 s with nothing bounding their sum. A large
- * or cold tier can therefore be cut off while HEALTHY, not hung. That costs
- * the memory seed for this turn: since TASK-552 the bootstrap honours the
- * bus's abort signal and stops before its tier flush, and the next turn
- * retries (logged `memory_strata_bootstrap_aborted`). The
- * `hook_subscriber_timed_out` line makes it countable — if it shows up on
- * healthy first turns, raise this, do not remove it.
+ * measured against a real cold start. It was sized while memory-strata's k8s
+ * bootstrap (deleted in TASK-608) was a subscriber — a `workspace:list`, N
+ * `workspace:read`s and two `workspace:apply`s, each separately bounded at
+ * 120 s with nothing bounding their sum, so a large or cold tier could be cut
+ * off while HEALTHY, not hung. No current subscriber does that much. The
+ * `hook_subscriber_timed_out` line makes a cut-off countable — if it shows up
+ * on healthy first turns, raise this, do not remove it.
  *
  * WHAT IT DOES NOT DO: force the subscriber to stop. At the bound the bus
  * aborts that subscriber's `signal` (TASK-552), and a subscriber that checks
@@ -939,8 +939,7 @@ export const CHAT_START_SUBSCRIBER_TIMEOUT_MS = 60_000;
  * Nothing that subscribes to them is load-bearing for the turn's outcome: the
  * subscribers write an SSE frame, persist a display event (@ax/conversations),
  * forget an activity line (@ax/agent-activity), or kick off DETACHED memory
- * extraction that returns to the bus immediately (@ax/memory,
- * @ax/memory-strata). So we proceed past a hung one, as chat:start does, and
+ * extraction that returns to the bus immediately (@ax/memory). So we proceed past a hung one, as chat:start does, and
  * the turn ends with the outcome it already had. The cost of a skip is that
  * one subscriber's view of that event may be missing (e.g. no persisted error
  * row), which the timed-out line makes visible.
@@ -1539,7 +1538,7 @@ export function createOrchestrator(
     entry.idleTimer = setTimeout(() => {
       entry.idleTimer = null;
       // Graceful first: queue a cancel so a HEALTHY runner drains and emits
-      // its single chat:end (memory-strata's consolidation trigger). Dedup so
+      // its single chat:end (@ax/memory's extraction trigger). Dedup so
       // a re-arm race can't double-queue.
       if (!cancelledSessions.has(sessionId)) {
         cancelledSessions.add(sessionId);
@@ -2689,9 +2688,9 @@ export function createOrchestrator(
             : {}),
           // TASK-181 — forward the HOST-DERIVED session origin so session:create
           // persists it on the session record and the IPC server stamps it onto
-          // the happy-path runner-completed chat:end ctx (where @ax/memory-strata
-          // reads ctx.source to skip memory extraction on routine fires). ctx.source
-          // is set host-side ONLY: routines `fire.ts` stamps 'routine'; a user turn
+          // the happy-path runner-completed chat:end ctx (no in-tree subscriber
+          // reads it there since @ax/memory-strata's deletion in TASK-608; kept
+          // as generic provenance). ctx.source is set host-side ONLY: routines `fire.ts` stamps 'routine'; a user turn
           // leaves it unset. The runner can't reach this — it travels the
           // host-internal sandbox:open-session hook, never the IPC wire. Conditional
           // spread keeps the key ABSENT (not `undefined`) for user turns, matching

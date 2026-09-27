@@ -26,19 +26,17 @@ import { PluginError } from '@ax/core';
  * one distinct, greppable, alertable event — the "memory paused" state — at
  * `error` volume, while everything else stays a `warn`.
  *
- * ## Why this is a copy of `@ax/memory-strata`'s `llm-failure.ts`
+ * ## Why this started as a copy of `@ax/memory-strata`'s `llm-failure.ts`
  *
  * Invariant 2: no cross-plugin imports. `@ax/memory` and `@ax/memory-strata`
- * are two plugins, and the hook bus is the only thing between them — there is
- * no hook here to call, because this is a local decision about a local log
- * line. Invariant 4 ("one source of truth per concept") is about STATE, and
- * these two plugins never both own a row: design §10.4 puts them in separate
- * presets, one memory plugin per preset. So the duplication is the boundary
- * working, not drifting.
+ * were two plugins, with the hook bus the only thing between them, so this
+ * was copied rather than imported. Strata was deleted in TASK-608; this is now
+ * the only copy.
  *
- * The event NAMES are deliberately distinct (`memory_*`, not
- * `memory_strata_*`) so an operator reading a log can tell which plugin
- * produced the line.
+ * The event NAMES were deliberately distinct (`memory_*`, not
+ * `memory_strata_*`) so an operator reading a log could tell which plugin
+ * produced the line — which still means an old `memory_strata_*` line in a
+ * log predates TASK-608.
  */
 
 /** The event every `@ax/memory` path emits when the cause is an absent credential. */

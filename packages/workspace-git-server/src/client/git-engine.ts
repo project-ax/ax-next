@@ -1254,7 +1254,7 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
         // AND keeps the error code intact: `baselineCommit` is itself pinned
         // to a git-minted OID by the checks below, so `parent` ends up a real
         // OID without narrowing `parent-mismatch` into a different code. That
-        // code is the workspace-CAS rebase-retry contract — `@ax/memory-strata`,
+        // code is the workspace-CAS rebase-retry contract — `@ax/memory`,
         // `channel-web`, `@ax/routines-admin-routes` and `ipc-core`'s
         // commit-notify all key on it — which is why running `requireOid`
         // over `parent` would have been the wrong fix.
