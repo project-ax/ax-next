@@ -203,14 +203,8 @@ export async function createBank({ sample, directory, env, clients, providerFetc
   const ctx = conversationId => makeAgentContext({ sessionId: `bench-${agentId}`, agentId, userId: OWNER, logger,
     workspace: { rootPath: directory }, ...(conversationId ? { conversationId } : {}) });
   const support = {
-    manifest: { name: '@ax/benchmark-support', version: '0.0.0', registers: ['agents:resolve', 'credentials:get', 'llm:call:openrouter', 'agents:list-ids', 'storage:get', 'storage:set'], calls: [], subscribes: [] },
+    manifest: { name: '@ax/benchmark-support', version: '0.0.0', registers: ['agents:resolve', 'credentials:get', 'llm:call:openrouter'], calls: [], subscribes: [] },
     init({ bus: b }) {
-      // The preset's one-time old-memory wipe (TASK-576) runs at boot. A benchmark
-      // bank is born empty, so it sees no agents and an in-memory marker store.
-      const kv = new Map();
-      b.registerService('agents:list-ids', '@ax/benchmark-support', async () => ({ agentIds: [] }));
-      b.registerService('storage:get', '@ax/benchmark-support', async (_ctx, input) => ({ value: kv.get(input.key) }));
-      b.registerService('storage:set', '@ax/benchmark-support', async (_ctx, input) => { kv.set(input.key, input.value); });
       b.registerService('agents:resolve', '@ax/benchmark-support', async (_ctx, input) => {
         if (input.agentId !== agentId || input.userId !== OWNER) throw new PluginError({ code: 'forbidden', plugin: '@ax/benchmark-support', message: 'Wrong benchmark owner or bank' });
         return { agent: { id: agentId, ownerId: OWNER, ownerType: 'user', visibility: 'personal' } };
