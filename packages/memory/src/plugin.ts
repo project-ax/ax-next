@@ -193,6 +193,14 @@ interface EngineFactRecord {
   slot?: string;
   closedBy?: string;
   provenance?: string;
+  /**
+   * Engine-side only. Never forwarded verbatim to a caller — the recall
+   * handler consumes it to derive the per-answer {@link MemoryStatement.conversation}
+   * ordinal and drops the raw id. A non-string value here is treated as
+   * absent, not thrown on: this is a hint the product layer derives from,
+   * not a contract field it validates.
+   */
+  conversationId?: string;
 }
 
 interface EngineRecallOutput {
@@ -738,9 +746,35 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           const visibleIds = new Set(page.map((row) => row.id));
           const ownSubject = rewriteSpeaker(SPEAKER_SUBJECT, ownerUserId);
 
+          // Per-answer conversation ordinals (design doc "Signal" section,
+          // TASK-611): a copy of `page` sorted chronologically the same way
+          // `renderEvidenceTable` orders rows (`when` asc, then `id` asc), so
+          // the numbers read #1, #2, ... top to bottom in the rendered
+          // evidence table. One ordinal per DISTINCT non-empty string
+          // `conversationId`, assigned in first-appearance order over that
+          // chronological pass — not over `page`'s own (recency) order. A
+          // non-string `conversationId` is treated as absent, never thrown
+          // on: this is a derived display hint, not a validated contract
+          // field. The raw id is never put on the ordinal map's values or on
+          // any output payload.
+          const conversationOrdinals = new Map<string, number>();
+          for (const row of [...page].sort(
+            (a, b) => a.when.localeCompare(b.when) || a.id.localeCompare(b.id),
+          )) {
+            if (typeof row.conversationId === 'string' && row.conversationId !== '') {
+              if (!conversationOrdinals.has(row.conversationId)) {
+                conversationOrdinals.set(row.conversationId, conversationOrdinals.size + 1);
+              }
+            }
+          }
+
           return {
             statements: page.map((row) => {
               const mapped = toMemoryStatement(row);
+              const conversation =
+                typeof row.conversationId === 'string'
+                  ? conversationOrdinals.get(row.conversationId)
+                  : undefined;
               const savedBy =
                 row.provenance === 'human'
                   ? ('person' as const)
@@ -761,6 +795,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
                 // beside a Forgotten badge is the contradiction TASK-526 fixed.
                 whenText: formatEvidenceWhen({ when: mapped.when }, asOf),
                 ...(savedBy !== undefined ? { savedBy } : {}),
+                ...(conversation !== undefined ? { conversation } : {}),
                 ...(row.until !== undefined
                   ? { closure: row.closedBy === undefined ? ('forgotten' as const) : ('replaced' as const) }
                   : overridden.has(row)

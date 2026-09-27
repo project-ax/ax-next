@@ -73,6 +73,23 @@ export interface MemoryStatement {
   savedBy?: 'person' | 'agent';
   whenText?: string;
   aboutText?: string;
+  /**
+   * A 1-based ordinal LOCAL TO ONE ANSWER. Two statements carrying the same
+   * number in the same `memory:recall` answer were recorded in the same
+   * conversation; that is all this number claims. It is not an id, it is not
+   * stable across answers (a different recall may hand the same underlying
+   * conversation a different number, or none at all if it falls outside the
+   * page), and it reveals nothing about WHICH conversation a row came from —
+   * the raw conversation id never reaches this payload. Absent when the row
+   * was recorded outside a conversation (`memory:remember`, `memory_note`
+   * without one).
+   *
+   * Exists so recurrence — "this procedure showed up in 2+ distinct
+   * conversations", the gate the `skill-reflection` routine reads — is
+   * answerable from `memory:recall` alone, without handing callers a
+   * conversation id to key off of.
+   */
+  conversation?: number;
 }
 
 /**

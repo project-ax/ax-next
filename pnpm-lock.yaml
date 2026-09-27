@@ -2819,9 +2819,6 @@ importers:
       '@ax/preset-k8s':
         specifier: workspace:*
         version: link:../k8s
-      '@ax/routines':
-        specifier: workspace:*
-        version: link:../../packages/routines
     devDependencies:
       '@ax/sandbox-k8s':
         specifier: workspace:*
