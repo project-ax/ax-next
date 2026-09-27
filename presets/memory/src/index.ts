@@ -18,6 +18,7 @@ import {
   RERANK_HOOK,
 } from '@ax/embeddings';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
+import { createRoutinesPlugin, SKILL_REFLECTION_ROUTINE_NAME } from '@ax/routines';
 
 /**
  * The ONE provider credential the memory preset needs (TASK-523). The
@@ -141,6 +142,8 @@ const EXCLUDED_PLUGINS = new Set([
   '@ax/memory-strata-index-postgres',
   '@ax/memory-facts-postgres',
   '@ax/channel-web',
+  // Re-added below with skill-reflection forced OFF (TASK-609).
+  '@ax/routines',
 ]);
 
 export function createMemoryPlugins(config: MemoryPresetConfig): Plugin[] {
@@ -185,6 +188,12 @@ export function createMemoryPlugins(config: MemoryPresetConfig): Plugin[] {
         : {}),
     }),
     createChannelWebServerPlugin({ chatTimeoutMs }),
+    // TASK-609: skill-reflection's recurrence gate reads Strata's
+    // `memory/docs/**` `source_conversations` frontmatter, which facts memory
+    // does not have — so under this preset it stays OFF (existing deployments
+    // included) until TASK-608 deletes Strata. Everything else about routines
+    // is the k8s preset's `createRoutinesPlugin()` default.
+    createRoutinesPlugin({ forceDisabledDefaults: [SKILL_REFLECTION_ROUTINE_NAME] }),
   ];
 }
 

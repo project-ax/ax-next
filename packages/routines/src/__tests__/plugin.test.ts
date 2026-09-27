@@ -11,6 +11,9 @@ import {
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createRoutinesPlugin } from '../plugin.js';
 import type { RoutinesDatabase } from '../migrations.js';
+import type { RoutinesConfig } from '../types.js';
+import { createRoutinesStore } from '../store.js';
+import { SKILL_REFLECTION_ROUTINE_NAME } from '../index.js';
 
 pg.types.setTypeParser(20, (v) => Number(v));
 
@@ -18,7 +21,7 @@ let container: StartedPostgreSqlContainer;
 let connectionString: string;
 const harnesses: TestHarness[] = [];
 
-async function harness(): Promise<TestHarness> {
+async function harness(config: RoutinesConfig = {}): Promise<TestHarness> {
   const h = await createTestHarness({
     services: {
       'agents:resolve': async (_ctx, input: unknown) => {
@@ -47,7 +50,7 @@ async function harness(): Promise<TestHarness> {
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
-      createRoutinesPlugin({ tickIntervalMs: 60_000 }),
+      createRoutinesPlugin({ tickIntervalMs: 60_000, ...config }),
     ],
   });
   harnesses.push(h);
@@ -336,6 +339,133 @@ describe('routines:delete-default', () => {
       const defaults = await k.selectFrom('default_routines_v1')
         .selectAll().where('default_routine_id', '=', defaultRoutineId).execute();
       expect(defaults).toHaveLength(0);
+    } finally {
+      await k.destroy();
+    }
+  });
+});
+
+// TASK-609: the facts-memory preset boots @ax/routines with
+// `forceDisabledDefaults: ['skill-reflection']` — reflection's recurrence gate
+// reads Strata-only memory, so it stays OFF there until TASK-608. The k8s
+// (Strata) preset passes nothing and must behave exactly as before.
+describe('forceDisabledDefaults (TASK-609)', () => {
+  const FORCED: RoutinesConfig = { forceDisabledDefaults: [SKILL_REFLECTION_ROUTINE_NAME] };
+
+  function kysely(): Kysely<RoutinesDatabase> {
+    return new Kysely<RoutinesDatabase>({
+      dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString }) }),
+    });
+  }
+
+  async function reboot(config: RoutinesConfig = {}): Promise<TestHarness> {
+    while (harnesses.length > 0) await harnesses.pop()!.close({ onError: () => {} });
+    return harness(config);
+  }
+
+  async function flagOf(k: Kysely<RoutinesDatabase>, name: string): Promise<boolean> {
+    const row = await k.selectFrom('default_routines_v1')
+      .select(['enabled']).where('name', '=', name).executeTakeFirstOrThrow();
+    return row.enabled;
+  }
+
+  async function agentsWith(k: Kysely<RoutinesDatabase>, name: string): Promise<string[]> {
+    const rows = await k.selectFrom('routines_v1_definitions')
+      .select(['agent_id'])
+      .where('definition_id', 'is not', null)
+      .where('name', '=', name)
+      .orderBy('agent_id')
+      .execute();
+    return rows.map((r) => r.agent_id);
+  }
+
+  /** A deployment that already turned reflection ON and materialized it. */
+  async function seedReflectionOn(k: Kysely<RoutinesDatabase>): Promise<void> {
+    await harness();
+    await k.updateTable('default_routines_v1')
+      .set({ enabled: true }).where('name', '=', SKILL_REFLECTION_ROUTINE_NAME).execute();
+    await createRoutinesStore(k).materializeMissing({
+      agents: [
+        { agentId: 'agt_1', ownerUserId: 'u1' },
+        { agentId: 'agt_2', ownerUserId: 'u2' },
+      ],
+      now: new Date(),
+    });
+    expect(await agentsWith(k, SKILL_REFLECTION_ROUTINE_NAME)).toEqual(['agt_1', 'agt_2']);
+    expect(await agentsWith(k, 'heartbeat')).toEqual(['agt_1', 'agt_2']);
+  }
+
+  it('turns an already-ON, already-materialized skill-reflection off at boot, leaves heartbeat alone, and is a no-op on re-run', async () => {
+    const k = kysely();
+    try {
+      await seedReflectionOn(k);
+
+      await reboot(FORCED);
+      expect(await flagOf(k, SKILL_REFLECTION_ROUTINE_NAME)).toBe(false);
+      expect(await agentsWith(k, SKILL_REFLECTION_ROUTINE_NAME)).toEqual([]);
+      expect(await flagOf(k, 'heartbeat')).toBe(true);
+      expect(await agentsWith(k, 'heartbeat')).toEqual(['agt_1', 'agt_2']);
+
+      const heartbeatBefore = await k.selectFrom('default_routines_v1')
+        .selectAll().where('name', '=', 'heartbeat').executeTakeFirstOrThrow();
+
+      // Idempotent: a second boot finds nothing to change.
+      await reboot(FORCED);
+      expect(await flagOf(k, SKILL_REFLECTION_ROUTINE_NAME)).toBe(false);
+      expect(await agentsWith(k, SKILL_REFLECTION_ROUTINE_NAME)).toEqual([]);
+      expect(await agentsWith(k, 'heartbeat')).toEqual(['agt_1', 'agt_2']);
+      const heartbeatAfter = await k.selectFrom('default_routines_v1')
+        .selectAll().where('name', '=', 'heartbeat').executeTakeFirstOrThrow();
+      expect(heartbeatAfter).toEqual(heartbeatBefore);
+
+      // A new agent gets heartbeat, never reflection.
+      await createRoutinesStore(k).materializeMissing({
+        agents: [{ agentId: 'agt_3', ownerUserId: 'u3' }],
+        now: new Date(),
+      });
+      expect(await agentsWith(k, 'heartbeat')).toEqual(['agt_1', 'agt_2', 'agt_3']);
+      expect(await agentsWith(k, SKILL_REFLECTION_ROUTINE_NAME)).toEqual([]);
+    } finally {
+      await k.destroy();
+    }
+  });
+
+  it('without the option (the k8s/Strata preset) an ON skill-reflection and its rows survive a boot', async () => {
+    const k = kysely();
+    try {
+      await seedReflectionOn(k);
+      await reboot();
+      expect(await flagOf(k, SKILL_REFLECTION_ROUTINE_NAME)).toBe(true);
+      expect(await agentsWith(k, SKILL_REFLECTION_ROUTINE_NAME)).toEqual(['agt_1', 'agt_2']);
+    } finally {
+      await k.destroy();
+    }
+  });
+
+  it('refuses to turn a forced-off default back on, and a re-created one lands off', async () => {
+    const h = await harness(FORCED);
+    const md = intervalMd(SKILL_REFLECTION_ROUTINE_NAME, 'skill-reflection routine', '24h');
+    await expect(
+      h.bus.call('routines:upsert-default', h.ctx({ userId: 'u1' }), { sourceMd: md, enabled: true }),
+    ).rejects.toMatchObject({ code: 'default-disabled-by-deployment' });
+
+    const k = kysely();
+    try {
+      expect(await flagOf(k, SKILL_REFLECTION_ROUTINE_NAME)).toBe(false);
+      // delete-default, then a plain spec upsert would INSERT with enabled
+      // defaulting to true — a forced name must still land OFF.
+      await h.bus.call('routines:delete-default', h.ctx({ userId: 'u1' }), {
+        defaultRoutineId: SKILL_REFLECTION_ROUTINE_NAME,
+      });
+      await h.bus.call('routines:upsert-default', h.ctx({ userId: 'u1' }), { sourceMd: md });
+      expect(await flagOf(k, SKILL_REFLECTION_ROUTINE_NAME)).toBe(false);
+
+      // Other defaults are not affected by the option.
+      await h.bus.call('routines:upsert-default', h.ctx({ userId: 'u1' }), {
+        sourceMd: intervalMd('demo', 'demo routine', '5m'),
+        enabled: true,
+      });
+      expect(await flagOf(k, 'demo')).toBe(true);
     } finally {
       await k.destroy();
     }

@@ -1,7 +1,7 @@
 import type { Plugin, WorkspaceDelta } from '@ax/core';
 import { makeAgentContext, PluginError } from '@ax/core';
 import type { Kysely } from 'kysely';
-import { runRoutinesMigration, type RoutinesDatabase } from './migrations.js';
+import { disableDefaultRoutines, runRoutinesMigration, type RoutinesDatabase } from './migrations.js';
 import { createRoutinesStore, type RoutinesStore } from './store.js';
 import { handleWorkspaceApplied, mountAllWebhookRoutesOnStartup, rebindWebhooksForAgent } from './sync.js';
 import { systemClock, type Clock } from './clock.js';
@@ -65,6 +65,7 @@ export function createRoutinesPlugin(
   let store: RoutinesStore | undefined;
   let abortCtl: AbortController | undefined;
   const webhookRoutes = new Map<string, () => void>();
+  const forceDisabled = new Set(config.forceDisabledDefaults ?? []);
 
   return {
     manifest: {
@@ -108,6 +109,16 @@ export function createRoutinesPlugin(
       );
       db = shared as Kysely<RoutinesDatabase>;
       await runRoutinesMigration(db);
+      if (forceDisabled.size > 0) {
+        // TASK-609: the deployment keeps these defaults OFF (the facts-memory
+        // preset names skill-reflection). Runs every boot; a no-op once done.
+        const { disabled, removed } = await disableDefaultRoutines(db, [...forceDisabled]);
+        initCtx.logger.info('routines_defaults_force_disabled', {
+          names: [...forceDisabled],
+          disabled,
+          removed,
+        });
+      }
       store = createRoutinesStore(db);
       const localStore = store;
       const localDb = db;
@@ -384,6 +395,18 @@ export function createRoutinesPlugin(
               message: 'interval must resolve to a positive duration',
             });
           }
+          // TASK-609: a default this deployment forces OFF cannot be turned
+          // back on, and any other upsert of it (including a re-create after
+          // delete-default, whose INSERT would otherwise default to ON) lands OFF.
+          const forcedOff = forceDisabled.has(parsed.fields.name);
+          if (forcedOff && input.enabled === true) {
+            throw new PluginError({
+              code: 'default-disabled-by-deployment', plugin: PLUGIN_NAME,
+              hookName: 'routines:upsert-default',
+              message: `default routine '${parsed.fields.name}' is turned off in this deployment`,
+            });
+          }
+          const enabled = forcedOff ? false : input.enabled;
           return localStore.upsertDefault({
             name: parsed.fields.name,
             description: parsed.fields.description,
@@ -401,7 +424,7 @@ export function createRoutinesPlugin(
             // global on/off (e.g. flipping the seeded skill-reflection default
             // ON after the cluster walk validates it). When omitted, a plain
             // spec re-upsert leaves the existing flag untouched (store.ts).
-            ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
+            ...(enabled === undefined ? {} : { enabled }),
           });
         },
         { returns: RoutinesUpsertDefaultOutputSchema },

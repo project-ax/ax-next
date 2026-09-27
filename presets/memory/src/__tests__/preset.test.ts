@@ -84,6 +84,13 @@ describe('createMemoryPlugins composition', () => {
     expect(mem).toContain('@ax/memory-facts-sqlite');
   });
 
+  it('loads @ax/routines exactly once, and the k8s base still loads its own (TASK-609)', () => {
+    expect(names(baseConfig).filter((n) => n === '@ax/routines')).toHaveLength(1);
+    expect(
+      createK8sPlugins(baseK8s).filter((p) => p.manifest.name === '@ax/routines'),
+    ).toHaveLength(1);
+  });
+
   it('has no duplicate plugin manifest names', () => {
     const n = names(baseConfig);
     expect(new Set(n).size).toBe(n.length);

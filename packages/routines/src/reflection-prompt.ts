@@ -40,6 +40,15 @@
  * marker path in sync with the seed in `migrations.ts` (silence_token) and the
  * crystallization canary in `@ax/skills` (prompt-guard assertions).
  */
+/**
+ * The seeded skill-reflection default routine's name (== its
+ * `default_routine_id`). Exported so a preset can name it in
+ * `RoutinesConfig.forceDisabledDefaults` (TASK-609: the facts-memory preset
+ * keeps reflection OFF, because the recurrence gate below reads Strata-only
+ * `memory/docs/` frontmatter that facts memory does not have).
+ */
+export const SKILL_REFLECTION_ROUTINE_NAME = 'skill-reflection';
+
 export const SKILL_REFLECTION_PROMPT = `You are running an autonomous self-improvement reflection on your own past work. Nobody is waiting on this; it is a background pass.
 
 Your job: graduate procedures you have PROVEN repeatedly into durable skills, and fix skills you've found wrong. A pass that changes nothing is the correct, common outcome — do NOT invent work.

@@ -436,6 +436,29 @@ describe('@ax/preset-memory canary', () => {
     expect(bus.hasService('memory:learned:read')).toBe(false);
   });
 
+  it('skill-reflection is OFF and cannot be turned on under facts memory (TASK-609)', async () => {
+    const ctx = ctxFor('canary-routines', ALICE);
+    const def = await bus.call<{ defaultRoutineId: string }, { enabled: boolean }>(
+      'routines:get-default', ctx, { defaultRoutineId: 'skill-reflection' },
+    );
+    expect(def.enabled).toBe(false);
+    const sourceMd = [
+      '---',
+      'name: skill-reflection',
+      'description: reflection',
+      'trigger:',
+      '  kind: interval',
+      '  every: "24h"',
+      'conversation: per-fire',
+      '---',
+      'reflect',
+      '',
+    ].join('\n');
+    await expect(
+      bus.call('routines:upsert-default', ctx, { sourceMd, enabled: true }),
+    ).rejects.toMatchObject({ code: 'default-disabled-by-deployment' });
+  });
+
   it('agent detail exposes the memory surface; rules save+read round-trip over HTTP', async () => {
     const detail = await apiJson('GET', `/api/workspace/agents/${aliceAgentId}`, ALICE);
     expect(detail.status).toBe(200);
