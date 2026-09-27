@@ -85,6 +85,7 @@ interface SessionGetConfigOutput {
   agentConfig: {
     displayName: string;
     systemPromptAugment: string;
+    systemPromptBootstrapAugment?: string;
     allowedTools: string[];
     mcpConfigIds: string[];
     model: string;

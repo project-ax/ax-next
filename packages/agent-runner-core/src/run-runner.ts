@@ -1100,7 +1100,8 @@ async function runRunnerInner(
   // agent's IDENTITY/SOUL/AGENTS files + evolution guidance + operational
   // notes; a file-less agent falls back to its displayName identity line).
   // `agentConfig.systemPromptAugment` carries the host `system-prompt:augment`
-  // contribution, prepended on top in normal mode; `agentConfig.displayName` is
+  // contribution, prepended on top in normal mode (and its bootstrap-safe
+  // slice, `systemPromptBootstrapAugment`, is prepended in bootstrap mode); `agentConfig.displayName` is
   // the host-controlled fallback identity used when no IDENTITY.md exists. Both
   // are intended for the LLM and never interpolated into shell, paths, or HTML.
   // The `.ax/` files are agent-authored (untrusted): the hardcoded safety floor
@@ -1122,6 +1123,10 @@ async function runRunnerInner(
     // governed root, not the new cwd.
     homeDir,
     env.memoryRoot,
+    // TASK-524: the bootstrap-safe slice of the augment (the person's Rules),
+    // the ONLY augment content bootstrap mode admits. Optional on the wire —
+    // a session frozen before TASK-524 carries none, which means none.
+    agentConfig.systemPromptBootstrapAugment ?? '',
   );
 
   // Turn boundary (Phase 3). Replaces the legacy PostToolUse-based

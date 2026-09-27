@@ -644,6 +644,69 @@ describe('@ax/session-postgres plugin', () => {
     expect(result.agentConfig.runner).toBe('aisdk');
   });
 
+  // TASK-524: the bootstrap-safe augment slice must survive the postgres hop
+  // (validateOwner rebuilds agentConfig field-by-field, and the get-config
+  // schema is a stripping z.object), and stay ABSENT for rows that never had it.
+  it('session:create -> session:get-config round-trips owner.agentConfig.systemPromptBootstrapAugment', async () => {
+    const h = await makeHarness();
+    const owner = {
+      ...OWNER,
+      agentConfig: { ...OWNER.agentConfig, systemPromptBootstrapAugment: 'rules-content' },
+    };
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      h.ctx(),
+      { sessionId: 's-boot-aug', workspaceRoot: '/tmp/ws', owner },
+    );
+    const result = await h.bus.call<SessionGetConfigInput, SessionGetConfigOutput>(
+      'session:get-config',
+      h.ctx({ sessionId: 's-boot-aug' }),
+      {},
+    );
+    expect(result.agentConfig.systemPromptBootstrapAugment).toBe('rules-content');
+  });
+
+  it('session:get-config leaves systemPromptBootstrapAugment absent when the owner omitted it', async () => {
+    const h = await makeHarness();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      h.ctx(),
+      { sessionId: 's-no-boot-aug', workspaceRoot: '/tmp/ws', owner: OWNER },
+    );
+    const result = await h.bus.call<SessionGetConfigInput, SessionGetConfigOutput>(
+      'session:get-config',
+      h.ctx({ sessionId: 's-no-boot-aug' }),
+      {},
+    );
+    expect('systemPromptBootstrapAugment' in result.agentConfig).toBe(false);
+  });
+
+  it('session:create rejects a non-string owner.agentConfig.systemPromptBootstrapAugment', async () => {
+    const h = await makeHarness();
+    let caught: unknown;
+    try {
+      await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+        'session:create',
+        h.ctx(),
+        {
+          sessionId: 's-bad-boot-aug',
+          workspaceRoot: '/tmp/ws',
+          owner: {
+            ...OWNER,
+            agentConfig: {
+              ...OWNER.agentConfig,
+              systemPromptBootstrapAugment: 123 as unknown as string,
+            },
+          },
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
+  });
+
   it('session:get-config returns conversationId when owner carries one (Task 15)', async () => {
     const h = await makeHarness();
     await h.bus.call<SessionCreateInput, SessionCreateOutput>(

@@ -1150,6 +1150,8 @@ describe('chat-orchestrator', () => {
       // provider is registered in this test).
       displayName: 'Test',
       systemPromptAugment: '',
+      // TASK-524: and an EMPTY bootstrap-safe slice of it.
+      systemPromptBootstrapAugment: '',
       // TASK-51/76: this agent is non-wildcard (explicit tools + mcpConfigIds),
       // so the always-on broker tools (incl. skill_propose, TASK-76) are locked
       // into the frozen allowedTools at session-open. The agent's own tools come

@@ -44,6 +44,12 @@ const MCP_ENV_LEN_MAX = 256;
 export const AgentConfigSchema = z.object({
   displayName: z.string(),
   systemPromptAugment: z.string(),
+  /** Bootstrap-safe subset of `system-prompt:augment` contributions (currently
+   * only the person's own Rules) that the runner prepends in bootstrap mode.
+   * Optional: absent means '' (no bootstrap augment) — session rows persisted
+   * before this field existed don't carry it. Flows into the LLM prompt like
+   * `systemPromptAugment`; never interpolate into shell/paths/HTML. */
+  systemPromptBootstrapAugment: z.string().optional(),
   allowedTools: z.array(z.string()),
   mcpConfigIds: z.array(z.string()),
   model: z.string(),

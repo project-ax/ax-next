@@ -267,6 +267,62 @@ describe('buildSystemPrompt — bootstrap mode (exclusive)', () => {
   });
 });
 
+describe('buildSystemPrompt — bootstrap mode admits ONLY the bootstrap-safe augment (TASK-524)', () => {
+  const bootstrap = '# Bootstrap\nYou just woke up. Talk to your user.';
+
+  it("prepends the bootstrap-safe augment (the person's Rules) above the preamble; the full augment stays out", async () => {
+    await writeAx('BOOTSTRAP.md', bootstrap);
+    const out = await buildSystemPrompt(
+      'Display Name',
+      'RULES-SECTION\n\nRECALLED-FACTS',
+      dir,
+      '/ephemeral',
+      true,
+      undefined,
+      dir,
+      undefined,
+      'RULES-SECTION',
+    );
+    expect(out).toBe(`RULES-SECTION\n\n${bootstrapPreamble('Display Name')}\n\n${bootstrap}`);
+    // Recalled facts are the half the exclusivity exists to keep out.
+    expect(out).not.toContain('RECALLED-FACTS');
+    expect(out).not.toContain(safetyFloorNote());
+  });
+
+  it('an empty bootstrap-safe augment leaves the bootstrap prompt byte-identical', async () => {
+    await writeAx('BOOTSTRAP.md', bootstrap);
+    const out = await buildSystemPrompt(
+      'Display Name',
+      'RECALLED-FACTS',
+      dir,
+      undefined,
+      false,
+      undefined,
+      dir,
+      undefined,
+      '',
+    );
+    expect(out).toBe(`${bootstrapPreamble('Display Name')}\n\n${bootstrap}`);
+  });
+
+  it('normal mode never prepends the bootstrap-safe augment on its own (it is a subset of the full augment)', async () => {
+    await writeAx('IDENTITY.md', 'I am Ada.');
+    const out = await buildSystemPrompt(
+      'Ada',
+      'FULL-AUGMENT',
+      dir,
+      undefined,
+      false,
+      undefined,
+      dir,
+      undefined,
+      'BOOT-ONLY-SENTINEL',
+    );
+    expect(out).toContain('FULL-AUGMENT');
+    expect(out).not.toContain('BOOT-ONLY-SENTINEL');
+  });
+});
+
 describe('buildSystemPrompt — normal mode', () => {
   it('composes [augment] + floor + AGENTS + identity + soul + evolution + notes; injects each .ax/ file if present', async () => {
     await writeAx('IDENTITY.md', 'I am Ada.');

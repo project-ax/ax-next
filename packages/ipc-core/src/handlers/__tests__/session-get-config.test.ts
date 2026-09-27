@@ -147,6 +147,40 @@ describe('session.get-config handler', () => {
     expect(md.calls).toHaveLength(0);
   });
 
+  it('preserves owner.agentConfig.systemPromptBootstrapAugment through the full hop when present', async () => {
+    const { bus, ctx } = await makeEnv();
+    const owner = {
+      ...OWNER,
+      agentConfig: { ...OWNER.agentConfig, systemPromptBootstrapAugment: 'rules-content' },
+    };
+    await bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx('init'),
+      { sessionId: 's-bootstrap-augment', workspaceRoot: '/tmp/ws', owner },
+    );
+    const result = await sessionGetConfigHandler({}, ctx('s-bootstrap-augment'), bus);
+    expect(result.status).toBe(200);
+    expect(
+      (result.body as { agentConfig: { systemPromptBootstrapAugment?: string } }).agentConfig
+        .systemPromptBootstrapAugment,
+    ).toBe('rules-content');
+  });
+
+  it('leaves agentConfig.systemPromptBootstrapAugment absent when the owner never carried one', async () => {
+    const { bus, ctx } = await makeEnv();
+    await bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx('init'),
+      { sessionId: 's-no-bootstrap-augment', workspaceRoot: '/tmp/ws', owner: OWNER },
+    );
+    const result = await sessionGetConfigHandler({}, ctx('s-no-bootstrap-augment'), bus);
+    expect(result.status).toBe(200);
+    expect(
+      'systemPromptBootstrapAugment' in
+        (result.body as { agentConfig: object }).agentConfig,
+    ).toBe(false);
+  });
+
   it('returns conversationId when the session was created with one (Task 15)', async () => {
     const md = makeMetadataMock();
     md.byConversationId.set('cnv_test_1', null);

@@ -630,6 +630,39 @@ describe('session.get-config', () => {
     });
     expect(r.success).toBe(false);
   });
+
+  it('preserves agentConfig.systemPromptBootstrapAugment when present', () => {
+    const parsed = SessionGetConfigResponseSchema.parse({
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: { ...baseConfig, systemPromptBootstrapAugment: 'rules-content' },
+      conversationId: null,
+      runnerSessionId: null,
+    });
+    expect(parsed.agentConfig.systemPromptBootstrapAugment).toBe('rules-content');
+  });
+
+  it('leaves agentConfig.systemPromptBootstrapAugment absent when omitted', () => {
+    const parsed = SessionGetConfigResponseSchema.parse({
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: baseConfig,
+      conversationId: null,
+      runnerSessionId: null,
+    });
+    expect('systemPromptBootstrapAugment' in parsed.agentConfig).toBe(false);
+  });
+
+  it('rejects agentConfig.systemPromptBootstrapAugment set to a non-string', () => {
+    const r = SessionGetConfigResponseSchema.safeParse({
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: { ...baseConfig, systemPromptBootstrapAugment: 42 },
+      conversationId: null,
+      runnerSessionId: null,
+    });
+    expect(r.success).toBe(false);
+  });
 });
 
 describe('conversation.store-runner-session', () => {

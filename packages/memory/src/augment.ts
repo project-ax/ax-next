@@ -147,8 +147,16 @@ export const RULES_READ_HOOK = 'memory:rules:read';
 /** Payload of the hook the orchestrator calls. It carries nothing; `ctx` is the input. */
 export type SystemPromptAugmentInput = Record<string, never>;
 
+/**
+ * One contribution. `bootstrapSafe: true` admits it into the agent's
+ * bootstrap-mode prompt (its first-run identity conversation), which otherwise
+ * carries none of this block (TASK-524). Only the `## Rules From Your User`
+ * section sets it: the person's own words, read host-side through
+ * `memory:rules:read`, never agent-writable (TASK-486). Everything recalled
+ * from the store is agent-derived and stays out of bootstrap.
+ */
 export interface SystemPromptAugmentOutput {
-  contributions: Array<{ source: string; body: string }>;
+  contributions: Array<{ source: string; body: string; bootstrapSafe?: boolean }>;
 }
 
 /** `memory:rules:read`'s shape, declared structurally — no cross-plugin import. */
@@ -591,6 +599,28 @@ export async function buildMemoryBlock(
   factsRecallHook: string,
   config: MemoryBlockConfig = {},
 ): Promise<string> {
+  const { rules, rest } = await buildMemoryBlockSplit(bus, ctx, factsRecallHook, config);
+  return [rules, rest].filter((b) => b !== '').join('\n\n');
+}
+
+/**
+ * The block as two halves (TASK-524): `rules` is the `## Rules From Your User`
+ * section, `rest` is everything the budget kept after it (degraded notice and
+ * the store sections). The budget runs over the WHOLE block first, so
+ * `[rules, rest]` joined with `'\n\n'` (empties dropped) is exactly
+ * {@link buildMemoryBlock}'s output — normal mode does not change by a byte.
+ */
+export interface MemoryBlockSplit {
+  rules: string;
+  rest: string;
+}
+
+async function buildMemoryBlockSplit(
+  bus: HookBus,
+  ctx: AgentContext,
+  factsRecallHook: string,
+  config: MemoryBlockConfig,
+): Promise<MemoryBlockSplit> {
   const cfg = { ...DEFAULTS, ...config };
   const access = await resolveMemoryAccess(bus, ctx);
   const ownerUserId = access.userId;
@@ -660,19 +690,28 @@ export async function buildMemoryBlock(
     droppable: false,
   };
 
-  const assembled = assembleUnderCap(
-    [
-      rulesPart,
-      { id: 'store-header', body: storeHeader, droppable: false },
-      degradedPart,
-      // Drop order is the reverse of this list's tail: digest, then recent,
-      // then profile.
-      { id: 'profile', body: profile, droppable: true },
-      { id: 'recent', body: recent, droppable: true },
-      { id: 'digest', body: digest, droppable: true },
-    ],
-    cfg.maxTokens,
-  );
+  const allParts: BlockPart[] = [
+    rulesPart,
+    { id: 'store-header', body: storeHeader, droppable: false },
+    degradedPart,
+    // Drop order is the reverse of this list's tail: digest, then recent,
+    // then profile.
+    { id: 'profile', body: profile, droppable: true },
+    { id: 'recent', body: recent, droppable: true },
+    { id: 'digest', body: digest, droppable: true },
+  ];
+  const assembled = assembleUnderCap(allParts, cfg.maxTokens);
+
+  // Split what the budget kept into the Rules section and everything after it.
+  // `rulesPart` is non-droppable and first, so it is either kept whole or was
+  // empty to begin with; the rest re-joins in the same order and separator.
+  const split = (kept: string[]): MemoryBlockSplit => ({
+    rules: kept.includes('rules') ? rulesPart.body : '',
+    rest: allParts
+      .filter((p) => p.id !== 'rules' && p.body !== '' && kept.includes(p.id))
+      .map((p) => p.body)
+      .join('\n\n'),
+  });
 
   // A store heading whose every section the budget dropped is a promise with
   // nothing behind it — and worse, it asserts to the model that it is looking
@@ -681,9 +720,9 @@ export async function buildMemoryBlock(
   // rendered text for a `###`, which the degraded notice also uses.
   const storeSections = ['profile', 'recent', 'digest'];
   if (storeHeader !== '' && !assembled.kept.some((id) => storeSections.includes(id))) {
-    return assembleUnderCap([rulesPart, degradedPart], cfg.maxTokens).body;
+    return split(assembleUnderCap([rulesPart, degradedPart], cfg.maxTokens).kept);
   }
-  return assembled.body;
+  return split(assembled.kept);
 }
 
 /**
@@ -722,8 +761,19 @@ export function registerSystemPromptAugment(
       if (typeof ctx.userId !== 'string' || ctx.userId === '' || isOwnerlessId(ctx.userId)) {
         return { contributions: [] };
       }
-      const body = await buildMemoryBlock(bus, ctx, factsRecallHook, config);
-      return { contributions: body === '' ? [] : [{ source: PLUGIN_NAME, body }] };
+      // Two contributions, not one (TASK-524): the Rules section is flagged
+      // bootstrap-safe so it reaches a brand-new agent's first-run prompt —
+      // the Memory tab promises the agent reads Rules before EVERY run. The
+      // recalled sections are not, and bootstrap keeps them out. The
+      // orchestrator joins all contributions with the same '\n\n' the block
+      // used, so normal mode is byte-identical to the single-block shape.
+      const { rules, rest } = await buildMemoryBlockSplit(bus, ctx, factsRecallHook, config);
+      const contributions: SystemPromptAugmentOutput['contributions'] = [];
+      if (rules !== '') {
+        contributions.push({ source: PLUGIN_NAME, body: rules, bootstrapSafe: true });
+      }
+      if (rest !== '') contributions.push({ source: PLUGIN_NAME, body: rest });
+      return { contributions };
     },
   );
 }
