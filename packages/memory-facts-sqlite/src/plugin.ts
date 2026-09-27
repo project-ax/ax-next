@@ -877,8 +877,8 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
    * store, unreachable by search.
    *
    * NOT the only road back for vectors: nothing in production calls
-   * `reindex`, so the dense half also runs detached after a healthy record
-   * (`triggerVectorBackfill`, TASK-523). The sparse half has no such trigger
+   * `reindex`, so the dense half also runs detached after a healthy record or `query` recall
+   * (`triggerVectorBackfill`, TASK-523/TASK-598). The sparse half has no such trigger
    * — FTS rows are written with every record, so only a pre-TASK-434 store
    * lacks them.
    *
@@ -1281,7 +1281,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           // returns `[]` for zero texts without calling anyone, which proves
           // nothing about the producer. A batch that stored rows WITHOUT
           // vectors (producer down) instead marks the agent as having a
-          // backlog, so the next healthy record goes looking for it.
+          // backlog, so the next healthy record or `query` recall goes looking for it.
           if (vectorExtensionLoaded && config.embedder !== undefined && statements.length > 0) {
             if (vectors !== undefined) {
               triggerVectorBackfill(bus, ctx, agentKey, 'memory:facts:record');
