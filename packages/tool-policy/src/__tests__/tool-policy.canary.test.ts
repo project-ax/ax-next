@@ -198,7 +198,7 @@ describe('tool-policy canary', () => {
       ),
     );
     // Non-vacuous, and specific: the field survived with content in it.
-    expect(caps.hostProvidedTools).toContain('memory_search');
+    expect(caps.hostProvidedTools).toContain('memory_recall');
     for (const tool of ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep']) {
       expect(caps.hostProvidedTools, tool).not.toContain(tool);
     }
