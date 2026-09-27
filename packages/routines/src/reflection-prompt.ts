@@ -30,6 +30,13 @@
  *     transcripts: TASK-67 gitignores transcripts out of `/agent`, and TASK-187
  *     moved the signal to consolidated memory (materialized by @ax/memory-strata's
  *     consolidator) so no transcript-read surface is needed.
+ *
+ *     ⚠ STALE SINCE TASK-608. Strata was deleted, and nothing writes
+ *     `memory/docs/` frontmatter or `memory/system/recent.md` any more — the
+ *     recurrence gate and the short-circuit below read files that no longer
+ *     exist anywhere. `presets/memory` therefore forces this routine OFF
+ *     (`forceDisabledDefaults`, TASK-609) until TASK-611 rewrites the prompt.
+ *     The prompt text is deliberately left as-is until then.
  *   - Hard limits: ≤3 author/patch ops per pass; an explicit anti-pattern list
  *     of what NOT to crystallize.
  *   - Silence token: the turn ends with exactly `REFLECTION_DONE`, which the
@@ -44,8 +51,9 @@
  * The seeded skill-reflection default routine's name (== its
  * `default_routine_id`). Exported so a preset can name it in
  * `RoutinesConfig.forceDisabledDefaults` (TASK-609: the facts-memory preset
- * keeps reflection OFF, because the recurrence gate below reads Strata-only
- * `memory/docs/` frontmatter that facts memory does not have).
+ * keeps reflection OFF, because the recurrence gate below reads `memory/docs/`
+ * frontmatter that only Strata wrote, and Strata was deleted in TASK-608; it
+ * stays OFF until TASK-611 rewrites the prompt).
  */
 export const SKILL_REFLECTION_ROUTINE_NAME = 'skill-reflection';
 

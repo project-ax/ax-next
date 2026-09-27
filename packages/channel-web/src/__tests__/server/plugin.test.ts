@@ -339,7 +339,7 @@ function skillsMockPlugin(): Plugin {
 }
 
 /**
- * AW-13 — @ax/memory-strata's Memory-tab hooks, in memory.
+ * AW-13 — the Memory-tab hooks (today @ax/memory's `memory:rules:*`), in memory.
  *
  * Deliberately records the CTX each call arrives on. `memory:rules:write`
  * reaches `workspace:apply`, which routes by `agentId` (TASK-257); a route
@@ -348,7 +348,6 @@ function skillsMockPlugin(): Plugin {
  */
 function memoryMockPlugin(state: {
   rules: string;
-  learned: Array<{ name: string; body: string }>;
   writeCtx: Array<{ agentId: string; userId: string; payloadAgentId: string }>;
   failWrite?: PluginError;
   facts?: {
@@ -364,7 +363,6 @@ function memoryMockPlugin(state: {
       registers: [
         'memory:rules:read',
         'memory:rules:write',
-        'memory:learned:read',
         ...(state.facts === undefined
           ? []
           : ['memory:recall', 'memory:remember', 'memory:forget']),
@@ -417,9 +415,6 @@ function memoryMockPlugin(state: {
         state.rules = body;
         return { written: true, body };
       });
-      bus.registerService('memory:learned:read', 'mock-memory', async () => ({
-        docs: state.learned,
-      }));
     },
   };
 }
@@ -984,7 +979,6 @@ describe('@ax/channel-web server plugin (integration)', () => {
     it('PUT /api/workspace/agents/:agentId/memory/rules saves the human tier', async () => {
       const memory = {
         rules: '',
-        learned: [{ name: 'What it knows about you', body: '# User\n\nLikes oat milk.\n' }],
         writeCtx: [] as Array<{ agentId: string; userId: string; payloadAgentId: string }>,
       };
       const booted = await boot({
@@ -994,13 +988,11 @@ describe('@ax/channel-web server plugin (integration)', () => {
       harness = booted.harness;
       const base = `http://127.0.0.1:${booted.port}/api/workspace/agents/agt_test`;
 
-      // Before: the editor is present and empty, and the agent's own doc is
-      // listed separately. An absent rules row would mean no editor at all.
+      // Before: the editor is present and empty. An absent rules row would
+      // mean no editor at all.
       const before = (await (await fetch(base)).json()) as { memory: AgentMemoryRead };
       expect(before.memory.rules.status).toBe('ok');
       expect(before.memory.rules.doc?.body).toBe('');
-      expect(before.memory.learned.status).toBe('ok');
-      expect(before.memory.learned.docs.map((d) => d.scope)).toEqual(['learned']);
 
       const put = await fetch(`${base}/memory/rules`, {
         method: 'PUT',
@@ -1026,7 +1018,6 @@ describe('@ax/channel-web server plugin (integration)', () => {
     it('reports a refused rules write instead of claiming it saved', async () => {
       const memory = {
         rules: '',
-        learned: [],
         writeCtx: [] as Array<{ agentId: string; userId: string; payloadAgentId: string }>,
         failWrite: new PluginError({
           code: 'invalid-payload',
@@ -1080,14 +1071,12 @@ describe('@ax/channel-web server plugin (integration)', () => {
       ).json()) as { memory: AgentMemoryRead };
       expect(detail.memory).toEqual({
         rules: { status: 'unavailable', doc: null },
-        learned: { status: 'unavailable', docs: [] },
       });
     });
 
     it('404s a rules write for an agent the caller cannot reach', async () => {
       const memory = {
         rules: '',
-        learned: [],
         writeCtx: [] as Array<{ agentId: string; userId: string; payloadAgentId: string }>,
       };
       const booted = await boot({
@@ -1112,7 +1101,6 @@ describe('@ax/channel-web server plugin (integration)', () => {
     it('mounts the facts recall route and gates the writes on CSRF', async () => {
       const memory = {
         rules: '',
-        learned: [],
         writeCtx: [] as Array<{ agentId: string; userId: string; payloadAgentId: string }>,
         facts: {
           statements: [

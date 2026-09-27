@@ -99,7 +99,7 @@ const SKIP_DIRS = new Set(['node_modules', 'dist', 'dist-web', 'build', 'coverag
  * how TASK-323 drew it and is left alone: a package that merely wraps
  * testcontainers is one whose tests will start one.
  *
- * `packages/memory-strata/test/bench/` carries a benchmark corpus whose JSON
+ * `packages/memory-strata/test/bench/` (deleted in TASK-608) carried a benchmark corpus whose JSON
  * *document text* contains testcontainers code as DATA; `.ts`-only scanning is
  * what keeps that from inventing a container package out of a fixture.
  */
@@ -121,7 +121,7 @@ const STARTS_CONTAINER = /new\s+[A-Za-z]*Container\s*\(|\bstartPostgresContainer
  *
  * Why TEST sources only, where the container scan takes any source. `spawn` is a
  * commonplace of production code in this repo — `sandbox-subprocess`,
- * `memory-strata` and `validator-identity` all implement it and all mock it in
+ * `memory-strata` (deleted in TASK-608) and `validator-identity` all implement it and all mock it in
  * their tests. Scanning their sources would budget suites that never leave the
  * process. A container dependency is rarer and is a reliable proxy for what the
  * tests do; a `child_process` import is not.

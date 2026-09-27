@@ -1,7 +1,8 @@
 // ---------------------------------------------------------------------------
 // Grading one post-compaction answer.
 //
-// Same shape as the memory-strata bench's judge, and for the same reason: a
+// Same shape as the memory-strata bench's judge (now
+// `scripts/memory-bench/judge.ts`, since TASK-608), and for the same reason: a
 // string comparison against the gold answer scores paraphrase as failure, and
 // paraphrase is what a model recalling a fact from a summary actually produces.
 //

@@ -121,9 +121,9 @@ export async function runSessionMigration<DB>(db: Kysely<DB>): Promise<void> {
   // orchestrator populates this from `ctx.source` when minting a session: a
   // scheduled @ax/routines fire stamps `'routine'`, an interactive user turn
   // leaves it NULL. `resolveToken` reads it back so the IPC server can stamp
-  // it onto the happy-path runner-completed `chat:end` ctx, where
-  // @ax/memory-strata's routine-fire guard reads `ctx.source` to skip memory
-  // extraction on internal turns. Existing rows are NULL → treated as user.
+  // it onto the happy-path runner-completed `chat:end` ctx. (@ax/memory-strata's
+  // routine-fire guard read it there; Strata was deleted in TASK-608 and no
+  // in-tree subscriber reads it now.) Existing rows are NULL → treated as user.
   //
   // INSERT-once with the rest of the owner triple (no UPDATE path), so a
   // nullable column doesn't dent I10 (session ↔ agent immutability). Stored as

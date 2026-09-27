@@ -28,7 +28,7 @@ describe('BOOTSTRAP_TEMPLATE (v2-adapted from openclaw canonical)', () => {
     expect(t).toContain('delete');
   });
 
-  it('adapts the memory section to @ax/memory-strata (memory_note), not raw memory files', () => {
+  it('adapts the memory section to @ax/memory (memory_note), not raw memory files', () => {
     expect(BOOTSTRAP_TEMPLATE).toContain('memory_note');
   });
 

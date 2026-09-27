@@ -1,6 +1,7 @@
 // ax-next serve
 //
-// Boots the k8s preset (postgres trio + workspace + sandbox-k8s + chat
+// Boots the facts-memory preset (@ax/preset-memory, which composes the k8s
+// base assembly: postgres trio + workspace + sandbox-k8s + chat
 // orchestrator + ipc-http + http-server + auth + agents + channel-web +
 // tools) and adds the serve-routes plugin, which registers `POST /chat` +
 // `GET /health` against @ax/http-server.
@@ -25,10 +26,6 @@ import {
   type Plugin,
 } from '@ax/core';
 import {
-  createK8sPlugins,
-  loadK8sConfigFromEnv,
-} from '@ax/preset-k8s';
-import {
   createMemoryPlugins,
   loadMemoryConfigFromEnv,
 } from '@ax/preset-memory';
@@ -49,7 +46,9 @@ env (required):
   AX_CREDENTIALS_KEY          used by @ax/credentials at init
 
 env (optional):
-  AX_PRESET                   'memory' (default — facts memory) | 'k8s' (legacy Strata memory)
+  AX_PRESET                   'memory' (the default and only value — facts memory).
+                              'k8s' (the legacy Strata memory) was removed and
+                              now refuses to boot.
   AX_SERVE_TOKEN              if set, /chat requires Bearer <token>
                               if unset, /chat is unauthenticated (loud warn)
   AX_HTTP_ALLOWED_ORIGINS     comma-separated CSRF allow-list
@@ -60,7 +59,7 @@ env (optional):
   Embeddings and reranking use the stored provider:openrouter key (admin
   Provider keys screen) — no env var.
 
-env (required unless AX_PRESET=k8s):
+env (required, facts memory):
   AX_MEMORY_FACTS_DB_PATH     sqlite facts database path
 
 env (optional, 'memory' preset — set all three or none):
@@ -124,6 +123,15 @@ export function warnRetiredEnvNames(
   }
 }
 
+/**
+ * What `serve` says, and exits 2 on, when AX_PRESET=k8s (TASK-608). Exported
+ * so the test asserts the same sentence the operator reads.
+ */
+export const RETIRED_K8S_PRESET_MESSAGE =
+  "serve: AX_PRESET=k8s (the legacy Strata memory) was removed. Set AX_PRESET=memory " +
+  "(or leave it unset; memory is the default). If this deployment ran Strata, follow " +
+  "deploy/README.md 'Switching an existing deployment to facts memory' to reset the old memory first.";
+
 export interface RunServeOptions {
   argv: string[];
   /** Defaults to `process.env`. Tests pass an explicit map. */
@@ -131,7 +139,7 @@ export interface RunServeOptions {
   stdout?: (line: string) => void;
   stderr?: (line: string) => void;
   /**
-   * Test-only seam. When set, skips `loadK8sConfigFromEnv` + `createK8sPlugins`
+   * Test-only seam. When set, skips `loadMemoryConfigFromEnv` + `createMemoryPlugins`
    * and uses the returned plugins instead — typically a stub @ax/http-server
    * + stubs registering `session:create` / `agent:invoke`. Production callers
    * don't pass this.
@@ -154,7 +162,8 @@ export async function runServeCommand(opts: RunServeOptions): Promise<number> {
 
   // Argument parsing. The standalone HTTP listener is gone (issue #39); the
   // public listener's host/port now come from AX_HTTP_HOST / AX_HTTP_PORT
-  // (read by the k8s preset's loadK8sConfigFromEnv). Only --help remains.
+  // (read by the k8s base's loadK8sConfigFromEnv, via the memory preset's
+  // loader). Only --help remains.
   for (const a of opts.argv) {
     if (a === '--help' || a === '-h') {
       out(USAGE);
@@ -205,7 +214,7 @@ export async function runServeCommand(opts: RunServeOptions): Promise<number> {
     process.on('SIGINT', () => void shutdown('SIGINT'));
   }
 
-  // Build the plugin list. Production: env → K8sPresetConfig → createK8sPlugins.
+  // Build the plugin list. Production: env → MemoryPresetConfig → createMemoryPlugins.
   // Tests: caller-provided base plugins (typically a stub @ax/http-server +
   // session/agent stubs). The serve-routes plugin is appended in BOTH
   // branches — it's the whole point of the `serve` subcommand.
@@ -215,12 +224,16 @@ export async function runServeCommand(opts: RunServeOptions): Promise<number> {
   } else {
     const preset = env.AX_PRESET ?? 'memory';
     try {
-      if (preset === 'k8s') {
-        basePlugins = createK8sPlugins(loadK8sConfigFromEnv(env));
-      } else if (preset === 'memory') {
+      if (preset === 'memory') {
         basePlugins = createMemoryPlugins(loadMemoryConfigFromEnv(env));
+      } else if (preset === 'k8s') {
+        // TASK-608. 'k8s' selected the legacy Strata memory, which is gone.
+        // Booting it anyway would quietly run a host with no memory at all,
+        // so we stop here and say where to go instead.
+        err(RETIRED_K8S_PRESET_MESSAGE);
+        return 2;
       } else {
-        err(`serve: unknown AX_PRESET value; expected 'k8s' or 'memory'`);
+        err(`serve: unknown AX_PRESET value; expected 'memory'`);
         return 2;
       }
     } catch (e) {

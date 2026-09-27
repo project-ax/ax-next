@@ -70,7 +70,7 @@ export const DEFAULT_SERVICE_TIMEOUT_MS = 120_000;
  *  2. It covers `fire()` too. Subscribers are the untimed half of the bus, so
  *     they were exactly where a hang could hide.
  *  3. It names the plugin and hook. "Something is slow" is not a thread to
- *     pull; "@ax/memory-strata is 15 s into chat:start" is.
+ *     pull; "@ax/memory is 15 s into chat:start" is.
  *
  * 15 s is chosen to be far above what a hook on a per-turn path costs when it
  * is healthy, and far below the 120 s timeout, so a stalling call reports

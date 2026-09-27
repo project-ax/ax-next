@@ -188,7 +188,7 @@ describe('chat-orchestrator system-prompt:augment (Phase 2B)', () => {
     const mocks = buildMocks({
       busRef,
       augmentProvider: async () => ({
-        contributions: [{ source: 'memory-strata', body: 'INJECT-ME' }],
+        contributions: [{ source: 'memory', body: 'INJECT-ME' }],
       }),
     });
     const h = await createTestHarness({
@@ -318,7 +318,7 @@ describe('chat-orchestrator system-prompt:augment (Phase 2B)', () => {
     const mocks = buildMocks({
       busRef,
       augmentProvider: async () => ({
-        contributions: [{ source: 'memory-strata', body: 'SHOULD-NOT-APPEAR' }],
+        contributions: [{ source: 'memory', body: 'SHOULD-NOT-APPEAR' }],
       }),
       routedSession: {
         conversationId: 'conv-routed',

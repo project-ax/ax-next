@@ -39,8 +39,11 @@
  *      memory (which would make the loop reflect on itself). We assert the
  *      source-stamped ctx the fire path produces carries `source: 'routine'`
  *      and that a guard keyed on it skips — the established TASK-176 source path.
- *      (The end-to-end happy-path guarantee against the REAL memory-strata
- *      observer is TASK-181, asserted in @ax/memory-strata's own suite.)
+ *      (The REAL observer that carried this guard was @ax/memory-strata's,
+ *      deleted in TASK-608. @ax/memory's observer deliberately does NOT skip
+ *      routine turns, so no in-tree subscriber enforces this today; the
+ *      skill-reflection routine is forced OFF under facts memory until
+ *      TASK-611.)
  *
  *   4. recurrence prompt-guard — assert SKILL_REFLECTION_PROMPT carries the
  *      ≥2-distinct-conversations clause, the anti-pattern list, prefer-patch,
@@ -357,7 +360,8 @@ describe('skill-crystallization wiring canary (TASK-178)', () => {
     // A stand-in for the memory observer's extraction LLM. It must NOT run for
     // a routine-origin turn.
     const observerExtraction = vi.fn();
-    // The guard, copied from @ax/memory-strata's chat:end observer (plugin.ts):
+    // The guard, copied from @ax/memory-strata's chat:end observer (plugin.ts;
+    // deleted in TASK-608 — @ax/memory has no equivalent):
     //   if (ctx.source === 'routine') return undefined;
     const observerGuard = (ctx: AgentContext): void => {
       if (ctx.source === 'routine') return; // skip — don't reflect on automated turns

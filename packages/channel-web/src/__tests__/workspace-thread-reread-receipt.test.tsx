@@ -90,7 +90,6 @@ function detail(thread: ThreadMessage[], conversationId = 'c1'): AgentDetail {
     past: [],
     memory: {
       rules: { status: 'unavailable', doc: null },
-      learned: { status: 'unavailable', docs: [] },
     },
   };
 }

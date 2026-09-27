@@ -75,11 +75,11 @@ export function createChatOrchestratorPlugin(
       // the peers loaded.
       //
       // Phase 2B adds `system-prompt:augment` to this same category. The
-      // hook is registered by @ax/memory-strata (auto-inject path) and any
-      // future personalization / tenant-policy provider. Listing it in
-      // `calls` would force every preset wiring the orchestrator to also
+      // hook is registered by @ax/memory (its always-injected memory block)
+      // and any future personalization / tenant-policy provider. Listing it
+      // in `calls` would force every preset wiring the orchestrator to also
       // wire a provider — but the CLI canary, the single-tenant preset,
-      // and any deploy that doesn't load memory-strata MUST stay functional
+      // and any deploy that doesn't load @ax/memory MUST stay functional
       // without one. The orchestrator gates with `bus.hasService(...)` and
       // no-ops when absent.
       //

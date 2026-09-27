@@ -57,8 +57,8 @@ import type { Database as BetterSqliteDb } from 'better-sqlite3';
 
 const PLUGIN_NAME = '@ax/memory-facts-sqlite';
 
-// Hard upper bound on `limit`, mirroring `@ax/memory-strata-index-sqlite`'s
-// MAX_TOP_K — a non-positive limit is a real risk to clamp/reject rather
+// Hard upper bound on `limit`, mirroring the (TASK-608-deleted)
+// `@ax/memory-strata-index-sqlite`'s MAX_TOP_K — a non-positive limit is a real risk to clamp/reject rather
 // than let through to `LIMIT -1` (unbounded in SQLite).
 const MAX_LIMIT = 200;
 
@@ -1145,7 +1145,8 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
 
       // Every handler derives the per-agent scope key from the calling ctx
       // so the single shared sqlite db is partitioned by agentId alone
-      // (mirrors @ax/memory-strata-index-sqlite's TASK-257 partition). The
+      // (the TASK-257 partition, first used by the now-deleted
+      // @ax/memory-strata-index-sqlite). The
       // hook I/O payloads stay unchanged — the key is ambient (from ctx),
       // never a wire field.
       bus.registerService<RecordInput, RecordOutput>(

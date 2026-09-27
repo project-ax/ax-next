@@ -16,7 +16,7 @@
 // a credential — `ax-cred:<hex>` is substituted mid-flight by the host's
 // credential proxy (invariant 5). That machinery is not what this measures, so
 // the bench talks to the provider directly with a key the operator supplies,
-// the same way the memory-strata bench does. Nothing here runs in the sandbox
+// the same way the memory-strata bench did (deleted in TASK-608). Nothing here runs in the sandbox
 // or ships in the image.
 // ---------------------------------------------------------------------------
 

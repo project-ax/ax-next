@@ -56,22 +56,21 @@ namespace:
 
 # ─── Host pod ────────────────────────────────────────────────────
 host:
-  # Which memory the host boots with. TWO memories exist:
+  # Which memory the host boots with. Only one exists: "memory" (the
+  # default) — facts memory (@ax/memory). An LLM observer extracts durable
+  # facts from conversations into a sqlite-backed store, with semantic
+  # recall via embeddings + reranking. Renders and boots with no extra
+  # values: the facts database lives on its own PVC (`memory.facts`).
+  # `memory.exports` (an NFS export) is OPTIONAL — set it to give runner
+  # pods a read-only `/memory` view; leave it empty and recall and the
+  # Memory tab still work.
   #
-  #   - "memory" (the default) — facts memory (@ax/memory): an LLM observer
-  #     extracts durable facts from conversations into a sqlite-backed store,
-  #     with semantic recall via embeddings + reranking. Renders and boots
-  #     with no extra values: the facts database lives on its own PVC
-  #     (`memory.facts`). `memory.exports` (an NFS export) is OPTIONAL — set
-  #     it to give runner pods a read-only `/memory` view; leave it empty and
-  #     recall and the Memory tab still work.
-  #   - "k8s" — the legacy Strata memory (@ax/memory-strata): markdown
-  #     documents written straight into each agent's git-tracked workspace.
-  #     No NFS export, no extra values needed.
+  # "k8s" (the legacy Strata memory) was removed in TASK-608 and now fails
+  # `helm template` on purpose, with a message pointing here. If you're
+  # upgrading a deployment that still has old Strata memory on disk, that
+  # isn't cleared automatically — see deploy/README.md ("Switching an
+  # existing deployment to facts memory") before or after the upgrade.
   #
-  # Switching an EXISTING deployment from Strata to facts memory does not
-  # clear the old memory for you — that is an operator runbook: see
-  # deploy/README.md ("Switching an existing deployment to facts memory").
   # Production values files should pin `preset` explicitly rather than
   # inherit this default.
   preset: memory
@@ -708,45 +707,7 @@ skills:
   allowUserInstalled: true
 
 # ─── Memory ───────────────────────────────────────────────────────
-# The model `memory_search`'s retrieval orchestrator runs on, as a BARE
-# OpenRouter model id (`z-ai/glm-5.3-flash:nitro`, NOT `openrouter/z-ai/...` —
-# the provider is already decided by the hook it routes through, so a
-# provider prefix here 404s at call time and degrades to BM25 in silence).
-# Empty keeps the preset's default.
-#
-# The orchestrator needs NO key of its own: it goes through the same
-# @ax/llm-openrouter plugin as everything else, which resolves a credential per
-# call (the user's key, then the global one). Store an OpenRouter key in the
-# credentials UI and the orchestrator starts working with no deploy. Store
-# none and memory_search runs plain BM25, which is what it has always done.
-#
-# Empty uses the preset's default, `z-ai/glm-5.3-flash:nitro` — this
-# deployment runs GLM 5.3 Flash for every service role and no Anthropic or xAI
-# model (2026-09-14).
-#
-# We ask it for minimal reasoning, which is not optional: GLM thinks before
-# answering by default and the orchestrator throws that thinking away, so
-# without the request it measured ~3.4s p50 against a 5s budget instead of
-# ~865ms.
-#
-# Measured 2026-09-14, two probe runs: p50 1.4-1.6s with minimal reasoning
-# versus 4.9-5.1s without it (and without it, EVERY call is slow — the model
-# thinks first and we throw the thinking away). Over the n=500 accuracy run the
-# whole retrieval step measured p95 1.6s.
-#
-# What to watch, because the failure is quiet: the orchestrator only earns its
-# keep if it answers inside ~5s, and it falls back to BM25 SILENTLY when it
-# doesn't. Rare routing spikes do happen — one run caught a 13s call, the next
-# run's worst was 4.2s, and gemini-3.8-flash:nitro spikes the same way. That is
-# the `:nitro` suffix re-sorting a heterogeneous provider pool per call, not a
-# property of GLM. The cost when it bites is bounded: at n=500 on LongMemEval-S
-# the orchestrator scores 33-36% against BM25's 21.2%, so a miss loses the lift,
-# not correctness. Watch `memory_strata_orchestrator_failed`.
-#
-# Worth changing without waiting for a release — which model is both fast and
-# cheap moves much faster than this chart does.
 memory:
-  orchestratorModel: ""
   # host.preset=memory needs ONE provider credential: `provider:openrouter`,
   # stored through Admin → AI model keys. It drives the observer's extraction
   # model, embeddings (google/gemini-embedding-001) and reranking

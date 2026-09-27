@@ -16,7 +16,7 @@
 //     so if either derivation drifts, one of the two suites goes red. That is
 //     the only mechanism keeping two hand-copied functions honest. The same
 //     vectors are pinned a third and fourth time by the `agent-scope-key`
-//     suites in `@ax/memory-strata-index-{sqlite,postgres}`.
+//     suites in `@ax/memory-facts-{sqlite,postgres}`.
 
 import { describe, it, expect } from 'vitest';
 import { workspaceIdForAgent } from '../impl.js';

@@ -48,7 +48,8 @@ import { PLUGIN_NAME } from './plugin-name.js';
  *    the whole reason `isOwnerlessId` lives in the kernel. Memory joins the
  *    REFUSE side of that split (`@ax/workspace-git-core`,
  *    `@ax/workspace-git-server`, `skill.propose`, `connector_propose`) rather
- *    than the merely-partition side the memory-strata index backends are on:
+ *    than the merely-partition side (where the `@ax/memory-facts-*` engines
+ *    themselves sit, as Strata's index backends did before TASK-608):
  *    a private per-session partition of a person's *memory* is a store that
  *    accumulates rows nobody will ever read back, and "remembered" is a
  *    promise we would be breaking quietly.

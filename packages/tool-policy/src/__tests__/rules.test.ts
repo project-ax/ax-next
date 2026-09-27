@@ -54,7 +54,7 @@ describe('BUILTIN_RULES', () => {
     // Note what this does NOT assert: that `allow` implies `catalog`. A
     // genuinely reviewed allow is legitimate and is the design's own §4.3.2
     // example ("Can reply to scheduling requests — on its own"). The invariant
-    // is one-directional: the seven catalog facts below must stay `catalog`.
+    // is one-directional: the five catalog facts below must stay `catalog`.
     //
     // `web.extract` USED TO BE ON THIS LIST and is deliberately no longer
     // (TASK-330). Its permission is now a reviewed decision — held unless the
@@ -62,8 +62,6 @@ describe('BUILTIN_RULES', () => {
     // gates it", which stopped being true the moment one did.
     const CATALOG_FACTS = new Set([
       'web.search',
-      'memory.search',
-      'memory.read-section',
       'memory.note',
       'memory.recall',
       'skills.search-catalog',
@@ -209,7 +207,7 @@ describe('BUILTIN_RULES', () => {
     // than "everything on the rail is spends" — if `indexRules()` ever set
     // `effect` unconditionally, this line would catch it even though the two
     // assertions above would still pass.
-    const memorySearch = bySource.get('rule:memory.search');
+    const memorySearch = bySource.get('rule:memory.recall');
     expect(memorySearch).toBeDefined();
     expect('effect' in memorySearch!).toBe(false);
   });
@@ -310,9 +308,7 @@ describe('BUILTIN_RULES', () => {
         'artifact_publish',
         'connector_propose',
         'memory_note',
-        'memory_read_section',
         'memory_recall',
-        'memory_search',
         'request_capability',
         'search_catalog',
         'skill_propose',
@@ -347,7 +343,7 @@ describe('BUILTIN_RULES', () => {
     }
     // Non-vacuity: the list has something in it, and it has the two tools the
     // walk caught the rail advertising.
-    expect(offered.has('memory_search')).toBe(true);
+    expect(offered.has('memory_recall')).toBe(true);
     expect(offered.has('web_search')).toBe(true);
   });
 

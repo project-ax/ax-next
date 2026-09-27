@@ -24,7 +24,8 @@
 //     accident.
 //   - Some questions are UNANSWERABLE. Recall alone rewards a model that
 //     confabulates confidently; the abstention questions are the control, and
-//     the memory-strata bench learned that lesson the expensive way.
+//     the memory-strata bench (deleted in TASK-608) learned that lesson the
+//     expensive way.
 // ---------------------------------------------------------------------------
 
 import type { ModelMessage } from 'ai';

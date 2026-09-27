@@ -7,8 +7,9 @@
 //   pnpm exec tsx scripts/memory-lifetime-soak.mjs --env <path>/.env.walk                 # the paid run
 //   pnpm exec tsx scripts/memory-lifetime-soak.mjs --fake-providers --scale 20 --probes 5 # free smoke
 //
-// `tsx`, not bare `node`: the pinned-probe loader is TASK-497's, which imports the Strata
-// bench's TypeScript (parameter properties), and Node's strip-only mode rejects those.
+// `tsx`, not bare `node`: the pinned-probe loader is TASK-497's, which imports
+// scripts/memory-bench TypeScript (parameter properties; moved out of the deleted
+// Strata bench in TASK-608), and Node's strip-only mode rejects those.
 //
 // Every run gets a NEW run id and directory. The rung-4 banks are copied, hashed and read
 // from the copy; the originals are opened by nothing. Spend goes through TASK-497's

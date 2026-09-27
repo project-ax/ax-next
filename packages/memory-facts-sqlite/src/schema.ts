@@ -24,7 +24,7 @@ const FINGERPRINT_KEY = 'model';
 
 /**
  * Dimensionality of the stored embedding (bge-small, matching `dem-memory` and
- * `memory-strata-index-sqlite`'s own `vec0` table). `vectorToBlob` enforces
+ * the `vec0` table of `memory-strata-index-sqlite`, deleted in TASK-608). `vectorToBlob` enforces
  * this at the boundary so a mismatched embedder fails loudly at the write
  * site rather than corrupting `vec0`'s fixed-width column silently.
  */
@@ -89,7 +89,7 @@ export interface FactRow {
 
 // ---------------------------------------------------------------------------
 // Close-on-exit safety net — copied verbatim (pattern and rationale) from
-// `@ax/memory-strata-index-sqlite`'s `schema.ts`.
+// `@ax/memory-strata-index-sqlite`'s `schema.ts` (deleted in TASK-608).
 //
 // better-sqlite3's `Database` destructor calls `RemoveEnvironmentCleanupHook`.
 // If a Database is still OPEN when the Node environment tears down, that hook
@@ -252,8 +252,8 @@ export function openDatabase(databasePath: string): OpenDatabaseResult {
  * guard, so no `PRAGMA table_info`-style presence check is needed for them.
  * (Virtual tables have no `ALTER TABLE ADD COLUMN` story at all — if a future
  * change needs new columns on either shadow table, that IS a second
- * migration, e.g. `memory-strata-index-sqlite`'s versioned-table approach,
- * not an extension of this one.)
+ * migration, e.g. the versioned-table approach the now-deleted
+ * `memory-strata-index-sqlite` used, not an extension of this one.)
  */
 function migrateAddColumns(driver: BetterSqliteDb, vectorExtensionLoaded: boolean): void {
   const present = new Set(
@@ -274,8 +274,8 @@ function migrateAddColumns(driver: BetterSqliteDb, vectorExtensionLoaded: boolea
   }
 
   // Sparse channel (TASK-434). `porter unicode61` matches both `dem-memory`
-  // and `@ax/memory-strata-index-sqlite` — same stemming/tokenizing behaviour
-  // for the same class of query. `id UNINDEXED`: it is an exact-match join key
+  // and the (TASK-608-deleted) `@ax/memory-strata-index-sqlite` — same
+  // stemming/tokenizing behaviour for the same class of query. `id UNINDEXED`: it is an exact-match join key
   // back to `TABLE`, never itself full-text-searched. Built into
   // better-sqlite3 (FTS5 ships compiled in), so unlike `vec0` this needs no
   // extension load and no availability guard.

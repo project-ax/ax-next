@@ -29,8 +29,6 @@ import {
   DECISION_RECEIPT_MAX_CHARS,
   DECISION_SUMMARY_MAX_CHARS,
   CONVERSATION_TITLE_MAX_CHARS,
-  FILE_LABEL_MAX_CHARS,
-  LEARNED_DOC_FALLBACK_NAME,
   DECISION_RECEIPT_TAG,
   DECISION_UNRESOLVED_TAG,
   FIRE_NO_SUMMARY,
@@ -585,14 +583,13 @@ describe('channel-web agent-workspace BFF', () => {
     // stop making. Each is its own route now.
     expect(body).not.toHaveProperty('permissions');
     expect(body).not.toHaveProperty('files');
-    // No memory plugin registered in this bus → both tiers report
+    // No memory plugin registered in this bus → the rules tier reports
     // `unavailable`. NOT an empty rules doc, which would draw an editor over
     // storage that does not exist (the promise AW-13 stops us making), and
     // NOT a bare `[]`, which the tab used to read as "nothing here yet"
     // (TASK-417).
     expect(body.memory).toEqual({
       rules: { status: 'unavailable', doc: null },
-      learned: { status: 'unavailable', docs: [] },
     });
     // A zero is a claim. We are not counting anything yet, so there is no
     // place on the wire to put one.
@@ -610,10 +607,8 @@ describe('channel-web agent-workspace BFF', () => {
 
   function registerMemory(state: {
     rules: string;
-    learned: Array<{ name: string; body: string }>;
     calls: Array<{ hook: string; agentId: string; userId: string }>;
     readThrows?: boolean;
-    learnedThrows?: boolean;
   }): void {
     bus.registerService('memory:rules:read', 'memory', async (ctx, i: unknown) => {
       state.calls.push({
@@ -624,15 +619,6 @@ describe('channel-web agent-workspace BFF', () => {
       void i;
       if (state.readThrows === true) throw new Error('tier unreachable');
       return { body: state.rules };
-    });
-    bus.registerService('memory:learned:read', 'memory', async (ctx) => {
-      state.calls.push({
-        hook: 'learned',
-        agentId: ctx.agentId,
-        userId: ctx.userId ?? '',
-      });
-      if (state.learnedThrows === true) throw new Error('tier unreachable');
-      return { docs: state.learned };
     });
     bus.registerService('memory:rules:write', 'memory', async (ctx, i: unknown) => {
       const { agentId, body } = i as { agentId: string; body: string };
@@ -647,11 +633,10 @@ describe('channel-web agent-workspace BFF', () => {
     });
   }
 
-  it('splits memory by owner, and routes every read on the agent\'s own ctx', async () => {
+  it('reads the rules on the agent\'s own ctx', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     const state = {
       rules: '- Always cc Priya',
-      learned: [{ name: 'What it knows about you', body: '# User\n' }],
       calls: [] as Array<{ hook: string; agentId: string; userId: string }>,
     };
     registerMemory(state);
@@ -665,64 +650,41 @@ describe('channel-web agent-workspace BFF', () => {
         status: 'ok',
         doc: { name: 'Your rules', scope: 'rules', body: '- Always cc Priya' },
       },
-      learned: {
-        status: 'ok',
-        docs: [{ name: 'What it knows about you', scope: 'learned', body: '# User\n' }],
-      },
     });
     // Every call carried the agent + the authenticated caller — never
     // initCtx's `@ax/channel-web` / `system` identity, which would route a
     // later write into the wrong workspace.
-    expect(state.calls).toEqual([
-      { hook: 'read', agentId: 'a1', userId: 'u1' },
-      { hook: 'learned', agentId: 'a1', userId: 'u1' },
-    ]);
+    expect(state.calls).toEqual([{ hook: 'read', agentId: 'a1', userId: 'u1' }]);
   });
 
-  it('fences a learned-memory doc name like every other label out of this file', async () => {
+  it('neither calls nor answers memory:learned:read, even on a host that registers it', async () => {
     /*
-      TASK-480. `memory:learned:read` hands back `{ name, body }` across a
-      plugin boundary, and the name became a tab label with no bound and no
-      bidi strip. Today's @ax/memory-strata names are three fixed strings, so
-      this is the fence at the boundary rather than a patch for a live
-      exploit: an alternate impl of the hook is free to name docs however it
-      likes, and the tab is where the Trojan-source reorder would land.
-
-      The body is deliberately NOT fenced — it is a document, not a line.
+      TASK-608. The agent's consolidated "What it worked out" docs rode on
+      `memory:learned:read`, whose only provider (@ax/memory-strata) was
+      deleted. The read went with it rather than linger as a branch nothing
+      can reach — so a stray registrant must neither be called nor put a
+      `learned` key back on the wire.
     */
     registerAuth({ id: 'u1', isAdmin: false });
-    const longBody = `# Notes\n${'y'.repeat(500)}\n‮keep me\n`;
-    registerMemory({
-      rules: '',
-      learned: [
-        { name: `The‮gnp.dorp-eteled ${'x'.repeat(FILE_LABEL_MAX_CHARS + 50)}`, body: longBody },
-        { name: '‮​  ', body: '# Empty name\n' },
-      ],
-      calls: [],
+    registerMemory({ rules: '- Always cc Priya', calls: [] });
+    let learnedCalls = 0;
+    bus.registerService('memory:learned:read', 'stray', async () => {
+      learnedCalls += 1;
+      return { docs: [{ name: 'What it knows about you', body: '# User\n' }] };
     });
     const h = makeWorkspaceHandlers({ bus, initCtx });
     const { res, captured } = mkRes();
     await h.agentDetail(mkReq({ agentId: 'a1' }), res);
 
     expect(captured.statusCode).toBe(200);
-    const docs = (
-      captured.body as { memory: { learned: { docs: Array<{ name: string; body: string }> } } }
-    ).memory.learned.docs;
-    const name = docs[0]!.name;
-    // Bounded…
-    expect([...name]).toHaveLength(FILE_LABEL_MAX_CHARS);
-    // …and stripped of the override that reorders what the reader sees.
-    expect(name).not.toContain('‮');
-    expect(name.startsWith('The gnp.dorp-eteled')).toBe(true);
-    // A name with nothing legible left still reads as a tab, not a blank.
-    expect(docs[1]!.name).toBe(LEARNED_DOC_FALLBACK_NAME);
-    // The body is a document and rides through untouched (out of scope here).
-    expect(docs[0]!.body).toBe(longBody);
+    const memory = (captured.body as { memory: Record<string, unknown> }).memory;
+    expect('learned' in memory).toBe(false);
+    expect(learnedCalls).toBe(0);
   });
 
   it('emits factsVisibility from the RESOLVED agent, never the request', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
-    registerMemory({ rules: '', learned: [], calls: [] });
+    registerMemory({ rules: '', calls: [] });
     bus.registerService('memory:recall', 'memory', async () => ({
       statements: [],
       degraded: [],
@@ -871,7 +833,6 @@ describe('channel-web agent-workspace BFF', () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerMemory({
       rules: '- Always cc Priya',
-      learned: [{ name: 'ignored', body: 'ignored' }],
       calls: [],
       readThrows: true,
     });
@@ -895,68 +856,14 @@ describe('channel-web agent-workspace BFF', () => {
     });
   });
 
-  it('reads the learned tier even when the RULES read blew up', async () => {
-    /*
-      It used to `return []` on a failed rules read and never call the learned
-      hook at all, so one broken tier erased the other (TASK-417). They are two
-      service hooks; half an answer beats none.
-    */
-    registerAuth({ id: 'u1', isAdmin: false });
-    const state = {
-      rules: '- Always cc Priya',
-      learned: [{ name: 'What it knows about you', body: '# User\n' }],
-      calls: [] as Array<{ hook: string; agentId: string; userId: string }>,
-      readThrows: true,
-    };
-    registerMemory(state);
-    const h = makeWorkspaceHandlers({ bus, initCtx });
-    const { res, captured } = mkRes();
-    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
-
-    expect(state.calls.map((c) => c.hook)).toEqual(['read', 'learned']);
-    expect((captured.body as { memory: unknown }).memory).toEqual({
-      rules: { status: 'failed', doc: null },
-      learned: {
-        status: 'ok',
-        docs: [{ name: 'What it knows about you', scope: 'learned', body: '# User\n' }],
-      },
-    });
-  });
-
-  it('keeps the editor when only the LEARNED read fails, and invents no learned doc', async () => {
-    registerAuth({ id: 'u1', isAdmin: false });
-    registerMemory({
-      rules: '- Always cc Priya',
-      learned: [{ name: 'ignored', body: 'ignored' }],
-      calls: [],
-      learnedThrows: true,
-    });
-    const h = makeWorkspaceHandlers({ bus, initCtx });
-    const { res, captured } = mkRes();
-    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
-
-    expect(captured.statusCode).toBe(200);
-    // The editor stays, and the agent's half reports the failure instead of
-    // passing for "nothing written yet".
-    expect((captured.body as { memory: unknown }).memory).toEqual({
-      rules: {
-        status: 'ok',
-        doc: { name: 'Your rules', scope: 'rules', body: '- Always cc Priya' },
-      },
-      learned: { status: 'failed', docs: [] },
-    });
-  });
-
   /*
     THE TASK-417 CASE, and the one a live deployment is actually in.
 
-    `@ax/memory-strata` is loaded only where the preset switches it on — on the
-    k8s preset that is `cfg.hostLlmTools`, which is set iff `ANTHROPIC_API_KEY`
-    is in the boot env (`presets/k8s/src/index.ts`). Without it NEITHER memory
-    hook is registered, and the route used to answer `[]` — byte-identical to
-    "this user has written no rules and this agent has learned nothing". The tab
-    then said "Nothing yet" and offered a retry against a backend that does not
-    exist.
+    A rules provider is loaded only where the preset switches one on (today
+    @ax/memory with its `rules` option). Without it `memory:rules:read` is not
+    registered, and the route used to answer `[]` — byte-identical to "this
+    user has written no rules". The tab then offered a retry against a backend
+    that does not exist.
 
     Against this file before the fix, this expectation reads `[]`.
   */
@@ -970,13 +877,12 @@ describe('channel-web agent-workspace BFF', () => {
     expect(captured.statusCode).toBe(200);
     expect((captured.body as { memory: unknown }).memory).toEqual({
       rules: { status: 'unavailable', doc: null },
-      learned: { status: 'unavailable', docs: [] },
     });
   });
 
   it('saveRules writes through the hook and never touches storage itself', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
-    const state = { rules: '', learned: [], calls: [] as Array<{ hook: string; agentId: string; userId: string }> };
+    const state = { rules: '', calls: [] as Array<{ hook: string; agentId: string; userId: string }> };
     registerMemory(state);
     const h = makeWorkspaceHandlers({ bus, initCtx });
     const { res, captured } = mkRes();
@@ -1004,7 +910,7 @@ describe('channel-web agent-workspace BFF', () => {
       if (agentId !== 'a1') throw notFound();
       return { agent: { id: 'a1', displayName: 'Inbox' } };
     });
-    registerMemory({ rules: '', learned: [], calls: [] });
+    registerMemory({ rules: '', calls: [] });
     const h = makeWorkspaceHandlers({ bus, initCtx });
 
     const missing = mkRes();
@@ -1445,8 +1351,8 @@ describe('channel-web agent-workspace BFF', () => {
       bidi override in it had two sinks instead of one.
 
       It was NOT the last unfenced label here — the learned-memory doc `name`
-      was the same shape of thing, and TASK-480 fenced it (see the test
-      beside the Memory-tab block). See CONVERSATION_TITLE_MAX_CHARS.
+      was the same shape of thing, and TASK-480 fenced it (that read was
+      removed in TASK-608). See CONVERSATION_TITLE_MAX_CHARS.
     */
     registerAuth({ id: 'u1', isAdmin: false });
     conversations = [

@@ -1,17 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Plugin } from '@ax/core';
-import { runServeCommand } from '../commands/serve.js';
+import { RETIRED_K8S_PRESET_MESSAGE, runServeCommand } from '../commands/serve.js';
 
 
-const k8sLoader = vi.hoisted(() => vi.fn());
-const k8sFactory = vi.hoisted(() => vi.fn());
 const memoryLoader = vi.hoisted(() => vi.fn());
 const memoryFactory = vi.hoisted(() => vi.fn());
 
-vi.mock('@ax/preset-k8s', () => ({
-  loadK8sConfigFromEnv: k8sLoader,
-  createK8sPlugins: k8sFactory,
-}));
 vi.mock('@ax/preset-memory', () => ({
   loadMemoryConfigFromEnv: memoryLoader,
   createMemoryPlugins: memoryFactory,
@@ -74,7 +68,6 @@ describe('serve AX_PRESET selection', () => {
     expect(code).toBe(0);
     expect(memoryLoader).toHaveBeenCalled();
     expect(memoryFactory).toHaveBeenCalled();
-    expect(k8sFactory).not.toHaveBeenCalled();
   });
 
   it('selects the memory preset when AX_PRESET=memory', async () => {
@@ -84,16 +77,20 @@ describe('serve AX_PRESET selection', () => {
     expect(code).toBe(0);
     expect(memoryLoader).toHaveBeenCalled();
     expect(memoryFactory).toHaveBeenCalled();
-    expect(k8sFactory).not.toHaveBeenCalled();
   });
 
-  it('selects the k8s preset when AX_PRESET=k8s', async () => {
-    k8sLoader.mockReturnValue({});
-    k8sFactory.mockReturnValue([providerStub()]);
-    const { code } = await run({ AX_SERVE_TOKEN: 'x', AX_PRESET: 'k8s' });
-    expect(code).toBe(0);
-    expect(k8sLoader).toHaveBeenCalled();
-    expect(k8sFactory).toHaveBeenCalled();
+  // TASK-608: 'k8s' selected the legacy Strata memory, which is deleted.
+  // Booting anything for it would be a host with no memory and no error, so
+  // it refuses — naming the replacement and the runbook — and loads nothing.
+  it('refuses AX_PRESET=k8s loudly, pointing at the memory preset and the runbook', async () => {
+    const { code, stderr } = await run({ AX_SERVE_TOKEN: 'x', AX_PRESET: 'k8s' });
+    expect(code).toBe(2);
+    expect(stderr).toContain(RETIRED_K8S_PRESET_MESSAGE);
+    expect(RETIRED_K8S_PRESET_MESSAGE).toContain('AX_PRESET=memory');
+    expect(RETIRED_K8S_PRESET_MESSAGE).toContain(
+      'Switching an existing deployment to facts memory',
+    );
+    expect(memoryLoader).not.toHaveBeenCalled();
     expect(memoryFactory).not.toHaveBeenCalled();
   });
 
@@ -101,7 +98,6 @@ describe('serve AX_PRESET selection', () => {
     const { code, stderr } = await run({ AX_PRESET: 'bogus' });
     expect(code).toBe(2);
     expect(stderr.some((l) => l.includes('unknown AX_PRESET'))).toBe(true);
-    expect(k8sLoader).not.toHaveBeenCalled();
     expect(memoryLoader).not.toHaveBeenCalled();
   });
 
@@ -222,16 +218,4 @@ describe('serve retired agent-workspace env names', () => {
     expect(memoryFactory).toHaveBeenCalled();
   });
 
-  it('warns for the k8s (legacy Strata) preset too', async () => {
-    k8sLoader.mockReturnValue({});
-    k8sFactory.mockReturnValue([providerStub()]);
-    const { code, stderr } = await run({
-      AX_SERVE_TOKEN: 'x',
-      AX_PRESET: 'k8s',
-      AX_AGENT_WORKSPACE: '0',
-    });
-    expect(code).toBe(0);
-    expect(retiredLines(stderr)).toHaveLength(1);
-    expect(k8sFactory).toHaveBeenCalled();
-  });
 });

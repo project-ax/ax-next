@@ -203,10 +203,10 @@ describe('workspaceIdFor — pinned outputs', () => {
   //
   // ⚠ LOCKSTEP: the 16 hex chars after `ws-` are the SAME strings, over the
   // same agentIds, as the pins in
-  //   packages/memory-strata-index-sqlite/src/__tests__/agent-scope-key.test.ts
-  //   packages/memory-strata-index-postgres/src/__tests__/agent-scope-key.test.ts
-  // because the memory index must partition exactly like the file tier and
-  // Invariant 2 forbids sharing the code. Editing any one of the three copies
+  //   packages/memory-facts-sqlite/src/__tests__/agent-scope-key.test.ts
+  //   packages/memory-facts-postgres/src/__tests__/agent-scope-key.test.ts
+  // because the memory store must partition exactly like the file tier and
+  // Invariant 2 forbids sharing the code. Editing any one of the copies
   // fails that copy's pins, which is the only thing that actually keeps them
   // together.
   it.each([

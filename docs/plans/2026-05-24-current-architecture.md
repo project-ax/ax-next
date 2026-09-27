@@ -359,7 +359,7 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
 
 `returns` schemas now also cover skills (7), routines (7), teams (5), the storage
 backends, `llm:call:anthropic` + `models:list-supported`, mcp `tool:register` /
-`tool:list`, `http:register-route`, `memory:index:search` (both backends),
+`tool:list`, `http:register-route`, `memory:index:search` (both backends; deleted with Strata in TASK-608),
 `bootstrap:status`/`reset`, attachments (3), and `eventbus:subscribe` (both
 backends) — ~32 hooks. Live-handle hooks (`http:register-route`,
 `eventbus:subscribe`) use a bare `z.object({}).passthrough()` so the capability
@@ -392,20 +392,24 @@ profiles exist (three, counting the memory preset below):
 - **Local / CLI** — `@ax/cli` assembles: `storage-sqlite`, `session-inmemory`,
   `sandbox-subprocess`, `ipc-server` (unix socket), `workspace-git` (local),
   `chat-orchestrator`, the credential proxy, mcp-client, `llm-anthropic`,
-  memory-strata (sqlite index), web-tools. Single laptop; drives the canary.
-- **k8s** — `presets/k8s` assembles the production set: the Postgres trio
+  web-tools, and the sqlite facts engine (no memory product layer yet).
+  Single laptop; drives the canary.
+- **k8s** — `presets/k8s` assembles the production BASE set (no longer
+  bootable on its own; `presets/memory` composes it): the Postgres trio
   (`database-postgres` + `storage-postgres` + `eventbus-postgres` +
   `session-postgres`), `workspace-git` (local PVC) **or** `workspace-git-server`
   (git-protocol), `sandbox-k8s`, `ipc-http` (TCP), `chat-orchestrator`
   (keepAlive), `http-server` (public listener), `auth-better`, `teams`,
   `onboarding`, `agents`, `skills`, `conversations`, `attachments`,
-  `channel-web`, and (env-gated on `ANTHROPIC_API_KEY`) `conversation-titles` +
-  memory-strata + web-tools.
+  `channel-web`, `conversation-titles`, and (env-gated on
+  `ANTHROPIC_API_KEY`) web-tools.
 
-- **memory** (the default since TASK-576, 2026-09-27) — `presets/memory` is the
-  k8s set minus `@ax/memory-strata` / its postgres index / the postgres facts
-  engine, plus `@ax/memory-facts-sqlite` + `@ax/embeddings` + `@ax/memory`
-  (facts memory, Rules, exports). `host.preset=k8s` still selects Strata. The
+- **memory** (the default since TASK-576, and the only bootable preset since
+  TASK-608 deleted Strata) — `presets/memory` is the k8s base set minus the
+  postgres facts engine, plus `@ax/memory-facts-sqlite` + `@ax/embeddings` +
+  `@ax/memory` (facts memory, Rules, exports). `host.preset=k8s` /
+  `AX_PRESET=k8s` now fail loudly (render error / exit 2) with a pointer to
+  the runbook. The
   NFS export volume (the runner's read-only `/memory` view) is optional; without
   it facts are still exported into the workspace. Switching an existing
   deployment is an operator runbook (deploy/README.md), not code.

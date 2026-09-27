@@ -7,7 +7,7 @@ Runner ns: {{ include "ax-next.runnerNamespace" . }}
 {{- $preset := .Values.host.preset | default "memory" }}
 Components:
   - Host pod:      {{ .Values.replicas | default 1 }} replica(s)
-  - Memory:        {{ if eq $preset "memory" }}facts memory (host.preset=memory, the default){{ else }}legacy Strata memory (host.preset=k8s){{ end }}
+  - Memory:        facts memory (host.preset=memory, the default)
   - PostgreSQL:    {{ if (include "ax-next.bool" .Values.postgres.external.enabled) }}external{{ else }}in-cluster (subchart){{ end }}
   - NetworkPolicy: {{ if (include "ax-next.bool" .Values.networkPolicies.enabled) }}enforced{{ else }}DISABLED — host/runner traffic is unrestricted{{ end }}
   - gVisor:        {{ if .Values.sandbox.runtimeClassName }}runtimeClassName={{ .Values.sandbox.runtimeClassName }}{{ else }}NOT SET — runner pods use the host kernel{{ end }}
@@ -20,8 +20,8 @@ Components:
                    memory.exports.server and memory.exports.exportPath to add it.
 {{- end }}
 
-Switching an existing deployment from Strata to facts memory? Old memory is
-not cleared automatically — see deploy/README.md 'Switching an existing
+Upgrading a deployment that still has old Strata memory on disk? It's not
+cleared automatically — see deploy/README.md 'Switching an existing
 deployment to facts memory'.
 {{- end }}
 

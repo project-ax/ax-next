@@ -138,8 +138,6 @@ function validateMemoryPresetConfig(config: MemoryPresetConfig): void {
 }
 
 const EXCLUDED_PLUGINS = new Set([
-  '@ax/memory-strata',
-  '@ax/memory-strata-index-postgres',
   '@ax/memory-facts-postgres',
   '@ax/channel-web',
   // Re-added below with skill-reflection forced OFF (TASK-609).
@@ -188,11 +186,13 @@ export function createMemoryPlugins(config: MemoryPresetConfig): Plugin[] {
         : {}),
     }),
     createChannelWebServerPlugin({ chatTimeoutMs }),
-    // TASK-609: skill-reflection's recurrence gate reads Strata's
+    // TASK-609: skill-reflection's recurrence gate reads the old Strata
     // `memory/docs/**` `source_conversations` frontmatter, which facts memory
     // does not have — so under this preset it stays OFF (existing deployments
-    // included) until TASK-608 deletes Strata. Everything else about routines
-    // is the k8s preset's `createRoutinesPlugin()` default.
+    // included). Strata itself is gone (TASK-608); the override stays until
+    // TASK-611 gives reflection a recurrence signal facts memory can supply.
+    // Everything else about routines is the k8s preset's
+    // `createRoutinesPlugin()` default.
     createRoutinesPlugin({ forceDisabledDefaults: [SKILL_REFLECTION_ROUTINE_NAME] }),
   ];
 }

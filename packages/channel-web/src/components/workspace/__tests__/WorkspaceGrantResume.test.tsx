@@ -120,7 +120,7 @@ const detailFor = (
   thread,
   decisions: { status: 'ok' },
   past: [],
-  memory: { rules: { status: 'unavailable', doc: null }, learned: { status: 'unavailable', docs: [] } },
+  memory: { rules: { status: 'unavailable', doc: null } },
 });
 
 /**

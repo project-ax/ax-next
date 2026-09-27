@@ -7,12 +7,12 @@ import { agentScopeKey } from '../agent-scope-key.js';
 // This derivation is byte-for-byte identical to the sibling copies in:
 //
 //   packages/workspace-git-server/src/client/workspace-id.ts      (file tier)
-//   packages/memory-strata-index-sqlite/src/agent-scope-key.ts    (index tier)
-//   packages/memory-strata-index-postgres/src/agent-scope-key.ts
+//   packages/memory-facts-postgres/src/agent-scope-key.ts         (this engine's twin)
+//   packages/workspace-git-core/src/impl.ts                       (file tier, local)
 //
 // because Invariant 2 (no cross-plugin imports) forbids sharing the code. If
-// they drift, this engine's partition stops lining up with the index/file
-// tiers for the same agent.
+// they drift, this engine's partition stops lining up with the file tier
+// for the same agent.
 //
 // The VECTORS BELOW ARE IDENTICAL, input and digest, to the ones in the
 // sibling packages' pin tests. Change this copy of the derivation and its

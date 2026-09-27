@@ -16,7 +16,7 @@
 //   - the `Write` tool (not openclaw's `write_file`)
 //   - `.ax/` paths under the durable /agent workspace
 //   - a completion ritual that names + deletes its own path (.ax/BOOTSTRAP.md)
-//   - the memory section points at @ax/memory-strata's `memory_note` tool
+//   - the memory section points at @ax/memory's `memory_note` tool
 //   - USER.md and channel-linking (WhatsApp/Telegram) are trimmed (out of scope
 //     for this epic — design "Deferred / out of scope")
 //

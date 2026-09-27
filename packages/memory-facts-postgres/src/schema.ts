@@ -58,7 +58,7 @@ export interface MemoryFactsDatabase {
 
 /**
  * Idempotent DDL, run at `init()` — the repo-wide convention (no migrations
- * table; the table NAME carries the version, as in
+ * table; the table NAME carries the version, as in the now-deleted
  * `@ax/memory-strata-index-postgres`'s `runIndexMigration`).
  *
  * Schema-agnostic on purpose (mirrors `runIndexMigration`): callers pass

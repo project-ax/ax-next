@@ -97,7 +97,7 @@ export function renderDialogue(turns: readonly DialogueTurn[]): string {
  * A transcript with no USER turn is either a synthetic/system exchange or one
  * whose user side was filtered away; extracting from the assistant alone
  * records the model talking to itself. Mirrors the `no-user-content` skip the
- * Strata observer has had since Phase 1.
+ * Strata observer had from Phase 1 until its deletion in TASK-608.
  */
 export function hasUserContent(turns: readonly DialogueTurn[]): boolean {
   return turns.some((turn) => turn.role === 'user');

@@ -89,7 +89,7 @@ beforeEach(() => {
     thread: [],
     decisions: { status: 'ok' },
     past: [],
-    memory: { rules: { status: 'unavailable', doc: null }, learned: { status: 'unavailable', docs: [] } },
+    memory: { rules: { status: 'unavailable', doc: null } },
   });
   activityMock.mockReset();
   activityMock.mockResolvedValue({ events: [], nextBefore: null });

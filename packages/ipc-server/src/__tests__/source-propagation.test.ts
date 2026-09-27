@@ -22,7 +22,8 @@ import { createListener, type Listener } from '../listener.js';
 // result. Before TASK-181 the auth result didn't carry `source`, so that
 // chat:end had `ctx.source === undefined` even for a session a routine fire
 // opened. @ax/memory-strata's routine-fire guard (`ctx.source === 'routine'`
-// → skip observer + consolidator) therefore fired on the orchestrator's
+// → skip observer + consolidator; Strata was deleted in TASK-608 and no
+// in-tree subscriber reads `source` now) therefore fired on the orchestrator's
 // synthesized error/terminated chat:end and in unit tests, but NEVER on a
 // successful turn → a scheduled fire (e.g. the future skill-reflection
 // routine) would pollute its own agent's memory and reflect on its own
@@ -191,8 +192,8 @@ describe('@ax/ipc-server: AgentContext.source propagation through token resoluti
     await fired;
     expect(capturedCtx).not.toBeNull();
     // The whole point: the per-connection ctx the chat:end subscriber sees must
-    // carry the session's host-derived source, so @ax/memory-strata's guard
-    // fires on a SUCCESSFUL turn (not just error/terminated/unit paths).
+    // carry the session's host-derived source, so a routine-fire guard can
+    // fire on a SUCCESSFUL turn (not just error/terminated/unit paths).
     expect((capturedCtx as AgentContext | null)?.source).toBe('routine');
     expect((capturedCtx as AgentContext | null)?.sessionId).toBe('s-src-routine');
   });
@@ -222,7 +223,7 @@ describe('@ax/ipc-server: AgentContext.source propagation through token resoluti
     expect(res.status).toBe(202);
     await fired;
     expect(capturedCtx).not.toBeNull();
-    // unset (or 'user') → memory-strata's guard does NOT fire; memory runs.
+    // unset (or 'user') → a routine-fire guard would NOT fire.
     expect((capturedCtx as AgentContext | null)?.source).toBeUndefined();
   });
 

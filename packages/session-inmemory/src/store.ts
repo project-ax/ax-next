@@ -81,8 +81,9 @@ export interface ResolveTokenResult {
    * TASK-181: host-derived session origin. Carried on the resolve-token
    * result so the IPC server stamps it onto the per-request AgentContext —
    * without it, the happy-path runner-completed `chat:end` carries no
-   * `source` and @ax/memory-strata's routine-fire guard never fires on a
-   * successful turn. Null ≡ user / canary / pre-TASK-181.
+   * `source` and a routine-fire guard could never fire on a successful turn
+   * (none in-tree since @ax/memory-strata's deletion in TASK-608). Null ≡
+   * user / canary / pre-TASK-181.
    */
   source: 'routine' | 'user' | null;
 }

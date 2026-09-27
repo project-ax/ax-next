@@ -2,7 +2,8 @@
 //
 // Both are injected as a HOOK NAME plus an optional model, never as a function
 // handed in through plugin config. That is the in-repo precedent twice over —
-// `presets/k8s` hands `@ax/memory-strata` `orchestrator: { hook, model }`, and
+// `presets/k8s` handed `@ax/memory-strata` `orchestrator: { hook, model }`
+// (both since deleted, TASK-608), and
 // `@ax/llm-anthropic` declares `credentials:get` under `optionalCalls` and
 // falls back cleanly when nothing registers it — and it kept the read-path
 // embedder and §3.3's write-path (slot-normalization) one on the SAME seam:

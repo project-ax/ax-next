@@ -269,6 +269,11 @@ const PLUGINS_TO_DROP = new Set<string>([
   // yet). Its static wiring + all five hooks are pinned in preset.test.ts, and
   // it boots for real against a testcontainer in prod-bootstrap.test.ts.
   '@ax/memory-facts-postgres',
+  // Retired Strata index cleanup (TASK-608): `calls` database:get-instance,
+  // dropped above, and has nothing to do on a chat path. Its statements are
+  // pinned in retire-strata-index.test.ts, and prod-bootstrap.test.ts proves
+  // it drops a real seeded table.
+  '@ax/preset-k8s/retire-strata-index',
 ]);
 
 // Stub `agents:resolve` — production presets register `@ax/agents` (postgres-

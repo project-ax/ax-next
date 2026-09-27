@@ -551,9 +551,9 @@ export interface FusedCandidate {
  * than cosmetic: `Array.prototype.sort` is stable, so without it the output
  * order of two equally-scored rows is whatever order the channels happened to
  * be passed in — which differs between backends and makes every ordering
- * assertion in the contract suite quietly backend-specific. (The in-repo bench
- * copy at `packages/memory-strata/test/bench/configs/c-rrf.ts` omits it; this
- * is the port of `dem-memory/src/engine/recall.ts`, which does not.)
+ * assertion in the contract suite quietly backend-specific. (The bench copy
+ * that lived at `packages/memory-strata/test/bench/configs/c-rrf.ts` until
+ * TASK-608 omitted it; this is the port of `dem-memory/src/engine/recall.ts`, which does not.)
  *
  * An id repeated within a single list is summed twice, same as the reference
  * implementation; channels are expected to return distinct ids.
@@ -1676,8 +1676,8 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         expect(bAfterAClear.statements.map((s) => s.value)).toEqual(['Denver']);
       });
 
-      // Partition is agentId ALONE (mirrors memory-strata-index-contract's
-      // TASK-257 pattern): two users on the SAME agent share one history;
+      // Partition is agentId ALONE (the TASK-257 pattern, first pinned by the
+      // now-deleted memory-strata-index-contract): two users on the SAME agent share one history;
       // the same user on a DIFFERENT agent is isolated. Pinned directly per
       // the TASK-257 lesson — an isolation-only case like the one above is
       // satisfied by the wrong partition (e.g. sha256([userId, agentId])).
@@ -2647,8 +2647,8 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         // operators in raw input INVERTS this query: `-graduated` matches
         // every row LACKING the term, so the answer becomes the unrelated row
         // and the relevant one disappears. Mirrors
-        // `memory-strata-index-contract`'s Test 8c, which pins the same class
-        // on the document index.
+        // `memory-strata-index-contract`'s Test 8c, which pinned the same class
+        // on the document index until TASK-608 deleted it.
         const graduated = await recordOne({
           about: 'user',
           relation: 'stated',

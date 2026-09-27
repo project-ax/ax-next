@@ -20,8 +20,9 @@
 // other.
 //
 // The mechanism is `pnpm -r --if-present run typecheck`, so a package opts in
-// simply by having the script. Two do today (@ax/memory-strata,
-// @ax/agent-aisdk-runner), both `tsc --noEmit -p tsconfig.bench.json`.
+// simply by having the script. `@ax/agent-aisdk-runner` does today, via
+// `tsc --noEmit -p tsconfig.bench.json` (`@ax/memory-strata` used to as well,
+// before TASK-608 deleted the package).
 //
 // Opt-in alone would be a weaker promise than "the directories tsc --build
 // never reaches", so the last test closes the gap: EVERY tsconfig that the
@@ -87,7 +88,7 @@ describe('root typecheck gate covers per-package typecheck scripts', () => {
     // passing while checking nothing. Named rather than counted, so the failure
     // says which one went missing.
     const names = packagesWithTypecheckScript().map((p) => p.name);
-    expect(names).toContain('@ax/memory-strata');
+    expect(names).toContain('@ax/agent-aisdk-runner');
   });
 
   it('every tsconfig outside the reference graph is named by a typecheck script', () => {

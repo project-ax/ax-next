@@ -44,7 +44,7 @@ function detail(over: Partial<AgentDetail> = {}): AgentDetail {
     thread: [],
     decisions: { status: 'ok' },
     past: [],
-    memory: { rules: { status: 'unavailable', doc: null }, learned: { status: 'unavailable', docs: [] } },
+    memory: { rules: { status: 'unavailable', doc: null } },
     ...over,
   };
 }

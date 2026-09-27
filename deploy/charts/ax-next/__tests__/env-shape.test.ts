@@ -52,12 +52,14 @@ const REQUIRED = [
   // chart no longer fails template on missing auth env; the operator
   // walks /setup/* after install to mint the first admin user.
   //
-  // TASK-576: host.preset now defaults to memory. This suite's env-vs-loader
-  // check reads ONLY presets/k8s/src/index.ts (presetSourcePath below), so it
-  // pins host.preset=k8s to render the env set that loader owns — see
-  // memory.test.ts for the memory preset's own env-vs-loader checks.
-  '--set',
-  'host.preset=k8s',
+  // TASK-608: host.preset=k8s (the legacy Strata memory) was removed and now
+  // fails `helm template` on purpose, so this suite can no longer pin it to
+  // isolate the base env set. `memory` is the only value left, and it's the
+  // chart's own default, so there's nothing to --set here any more. The
+  // memory-specific env vars that come along with it (AX_PRESET,
+  // AX_MEMORY_*) aren't read by presets/k8s/src/index.ts — see
+  // EXTERNAL_READERS below — and memory.test.ts covers the memory preset's
+  // own env-vs-loader checks.
 ];
 
 type K8sDoc = {
@@ -165,6 +167,16 @@ const EXTERNAL_READERS: ReadonlySet<string> = new Set([
   // reads it today, but the values file sets it; allow-listing keeps
   // the test from failing on the kind path.
   'LOG_LEVEL',
+  // TASK-608: this suite scans ONLY presets/k8s/src/index.ts, the base k8s
+  // assembly loader. `memory` (the chart's only preset now) always renders
+  // these too, but they're read by presets/memory/src/index.ts and
+  // packages/cli/src/commands/serve.ts, one layer up — see memory.test.ts
+  // for the memory preset's own env-vs-loader coverage.
+  'AX_PRESET',
+  'AX_MEMORY_FACTS_DB_PATH',
+  'AX_MEMORY_EXPORT_HOST_ROOT',
+  'AX_MEMORY_EXPORT_NFS_SERVER',
+  'AX_MEMORY_EXPORT_NFS_PATH',
 ]);
 
 // The subchart fetch this file used to run in its own `beforeAll` — a copy of

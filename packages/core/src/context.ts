@@ -102,10 +102,11 @@ export interface AgentContext {
    * `'routine'` marks a context minted by a scheduled @ax/routines fire (a
    * hidden, non-user turn); `'user'` marks an interactive user turn. Optional
    * because most callers don't need to distinguish, and an unset value means
-   * "unspecified" (treated the same as `'user'` by consumers). Subscribers that
-   * must NOT act on internally-generated turns key off this — e.g.
-   * @ax/memory-strata skips its `chat:end` memory extraction when
-   * `source === 'routine'` so routine fires don't pollute the agent's memory.
+   * "unspecified" (treated the same as `'user'` by consumers). A subscriber
+   * that must NOT act on internally-generated turns would key off this. No
+   * in-tree subscriber does today: @ax/memory-strata did (it skipped its
+   * `chat:end` extraction on routine fires) and was deleted in TASK-608, and
+   * @ax/memory deliberately does not. It is kept as generic provenance.
    *
    * Origin label only — no transport/storage vocabulary, so it stays
    * transport-agnostic per Invariant 1.
@@ -179,7 +180,7 @@ export function makeAgentContext(opts: MakeAgentContextOptions): AgentContext {
 // `'ipc-server'`, substituted by each listener. That is the bug this section
 // exists to make unrepeatable. Agent-partitioned stores key on `agentId`
 // (`sha256(JSON.stringify([agentId]))` in @ax/workspace-git-core,
-// @ax/workspace-git-server and both memory-strata index backends), so ONE
+// @ax/workspace-git-server and both @ax/memory-facts-* backends), so ONE
 // literal means ONE partition shared by every owner-less session in the
 // deployment, across every user. A null check does not catch it: the value is
 // a perfectly good non-empty string. It just isn't anybody's.
@@ -216,9 +217,12 @@ export function makeAgentContext(opts: MakeAgentContextOptions): AgentContext {
 //   - REFUSE: `@ax/workspace-git-core` (`requireAgent`) and
 //     `@ax/workspace-git-server` (`resolveWorkspaceId`), plus `skill.propose`
 //     and `connector_propose`.
-//   - MERELY PARTITION: both `@ax/memory-strata-index-*` backends hash
-//     `agentId` the same way with no gate of their own. An owner-less caller
-//     gets a private, per-session key there rather than an error.
+//   - MERELY PARTITION: both `@ax/memory-facts-*` backends hash `agentId`
+//     the same way with no gate of their own. An owner-less caller that
+//     reached them directly would get a private, per-session key rather than
+//     an error. Their one in-tree consumer, `@ax/memory`, refuses first
+//     (`access.ts` / `owner.ts`). (The `@ax/memory-strata-index-*` backends
+//     that used to sit here were deleted in TASK-608.)
 //
 // Partitioning is enough to stop POOLING, which is what this helper's
 // uniqueness buys and why it holds in stores nobody edited. It is not enough

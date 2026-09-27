@@ -251,8 +251,9 @@ describe('@ax/session-inmemory plugin', () => {
       SessionResolveTokenOutput
     >('session:resolve-token', ctx, { token });
     // Bug regression (TASK-181): a missing source here meant the happy-path
-    // runner-completed chat:end carried no origin, so @ax/memory-strata's
-    // routine-fire guard never fired on a successful turn.
+    // runner-completed chat:end carried no origin, so a routine-fire guard
+    // (then @ax/memory-strata's, deleted in TASK-608) never fired on a
+    // successful turn.
     expect(resolved).toEqual({
       sessionId: 's-src-resolve',
       workspaceRoot: '/tmp/ws',

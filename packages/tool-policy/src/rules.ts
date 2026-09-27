@@ -26,8 +26,9 @@ import type { PolicyRule } from './types.js';
 // agent indeed may not do it) and is a lie for an ALLOW: the rail renders it
 // under a heading promising what is installed today, and the TASK-357 walk
 // caught it advertising `memory_search`, `memory_note`, `web_search` and
-// `web_extract` on a deployment that loads neither @ax/memory-strata nor
-// @ax/web-tools — with the agent contradicting its own rail in conversation.
+// `web_extract` on a deployment that loads neither the (since deleted) Strata
+// memory plugin nor @ax/web-tools — with the agent contradicting its own rail
+// in conversation.
 //
 // So every rule now declares `providedBy` (see `PolicyRule`), and the rail
 // subtracts the host-provided ones its tool catalog does not hold. A row is
@@ -173,7 +174,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   // sentences live.
   //
   // `web_search` / `web_extract` need a provider API key; the memory tools need
-  // @ax/memory-strata. All five are `providedBy: 'host'`, which is what lets
+  // @ax/memory. All four are `providedBy: 'host'`, which is what lets
   // the rail DROP these rows where the plugin never loaded instead of
   // advertising a capability the deployment does not have (TASK-416).
   //
@@ -244,24 +245,6 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     egress: { urlField: 'url' },
   },
   {
-    id: 'memory.search',
-    match: { tool: 'memory_search' },
-    providedBy: 'host',
-    verdict: 'allow',
-    capability: 'look things up in its own memory',
-    subject: 'agent',
-    provenance: 'catalog',
-  },
-  {
-    id: 'memory.read-section',
-    match: { tool: 'memory_read_section' },
-    providedBy: 'host',
-    verdict: 'allow',
-    capability: 'read a section of its own memory',
-    subject: 'agent',
-    provenance: 'catalog',
-  },
-  {
     id: 'memory.note',
     match: { tool: 'memory_note' },
     providedBy: 'host',
@@ -270,11 +253,10 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     subject: 'agent',
     provenance: 'catalog',
   },
-  // `@ax/memory`'s search tool (the facts engine). `memory_search` above is
-  // `@ax/memory-strata`'s; a deployment loads one or the other, and the rail's
-  // not-installed subtraction drops whichever it does not. Without this row the
-  // rail read "Can use `memory_recall` — We haven't described this one."
-  // (TASK-526, off the TASK-519 walk).
+  // `@ax/memory`'s search tool (the facts engine). Without this row the rail
+  // read "Can use `memory_recall` — We haven't described this one." (TASK-526,
+  // off the TASK-519 walk). Strata's `memory_search` / `memory_read_section`
+  // rows went with Strata (TASK-608).
   {
     id: 'memory.recall',
     match: { tool: 'memory_recall' },

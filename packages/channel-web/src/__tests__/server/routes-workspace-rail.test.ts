@@ -925,8 +925,8 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     /*
       TASK-416, found by the TASK-357 walk against the live deployment: the rail
       advertised `memory.search`, `memory.note`, `web.search` and `web.extract`
-      on a host that loads neither @ax/memory-strata nor @ax/web-tools (both are
-      gated on a provider key). The agent contradicted its own rail in
+      on a host that loaded neither its memory-tools plugin nor @ax/web-tools
+      (both were gated on a provider key). The agent contradicted its own rail in
       conversation — "I don't have a standalone 'save to memory' tool."
 
       WHY THE SCOPE SUBTRACTION DID NOT ALREADY CATCH IT. `outOfReach` was built

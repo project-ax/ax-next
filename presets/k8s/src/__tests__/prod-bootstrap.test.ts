@@ -9,6 +9,7 @@ import {
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 
+import pg from 'pg';
 import { HookBus, bootstrap, type Plugin } from '@ax/core';
 import { createSandboxK8sPlugin, type K8sCoreApi } from '@ax/sandbox-k8s';
 
@@ -185,8 +186,8 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
       },
       titles: { model: 'anthropic/claude-haiku-4-5-20251001' },
       // hostLlmTools mirrors the ANTHROPIC_API_KEY env this test sets — it's
-      // what now gates the web-tools + memory-strata bundle (titles load
-      // unconditionally; only the host-tools bundle still needs a boot key).
+      // what now gates the web-tools bundle (titles load unconditionally;
+      // only the host-tools bundle still needs a boot key).
       hostLlmTools: true,
       onboarding: { publicBaseUrl: 'http://127.0.0.1:0' },
     };
@@ -195,7 +196,7 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
   // The UNCONDITIONAL production plugins createK8sPlugins always assembles for
   // this config shape (the config-gated ones — credentials-admin-routes,
   // static-files, and the titles branch llm-anthropic/web-tools/
-  // conversation-titles/memory-strata* — are deliberately NOT here; they're
+  // conversation-titles — are deliberately NOT here; they're
   // pinned separately where the config turns them on). Most of these are
   // plugins the OLD canary used to DROP: keeping every one in a real boot is
   // the whole point of this lane, so if a future refactor pulls any out of the
@@ -231,10 +232,13 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
     '@ax/channel-web',
     // TASK-423 — the facts engine is UNCONDITIONAL (it borrows the shared
     // Kysely and has no LLM dependency), so it belongs in this list rather
-    // than with the ANTHROPIC_API_KEY-gated memory-strata pair below. This
+    // than with the ANTHROPIC_API_KEY-gated host-tools bundle. This
     // lane is also where its migration actually runs: the boot test below
     // inits it against the real testcontainer.
     '@ax/memory-facts-postgres',
+    // TASK-608 — drops the retired Strata index tables at init. The boot test
+    // below seeds one and proves it is gone.
+    '@ax/preset-k8s/retire-strata-index',
   ] as const;
 
   it(
@@ -262,11 +266,11 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
         '@ax/llm-anthropic',
         '@ax/web-tools',
         '@ax/conversation-titles',
-        '@ax/memory-strata',
-        '@ax/memory-strata-index-postgres',
       ]) {
         expect(nameSet.has(gated)).toBe(true);
       }
+      // TASK-608 — Strata is deleted; nothing of it may come back.
+      for (const n of names) expect(n).not.toMatch(/^@ax\/memory-strata/);
     },
   );
 
@@ -278,9 +282,35 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
       const config = makeConfig(connectionString);
       const plugins = buildProdAssemblyWithFakeK8s(config);
 
+      // TASK-608 — an upgraded deployment still has Strata's index table
+      // (with a copy of old memory text in it). Seed one so the boot below
+      // has something real to drop.
+      const seed = new pg.Client({ connectionString });
+      await seed.connect();
+      try {
+        await seed.query(
+          'CREATE TABLE IF NOT EXISTS memory_strata_index_v2_docs (agent_key TEXT, doc_id TEXT, body TEXT)',
+        );
+        await seed.query(
+          "INSERT INTO memory_strata_index_v2_docs VALUES ('a', 'd', 'old memory text')",
+        );
+      } finally {
+        await seed.end();
+      }
+
       const bus = new HookBus();
       const handle = await bootstrap({ bus, plugins, config: {} });
       try {
+        const probe = new pg.Client({ connectionString });
+        await probe.connect();
+        try {
+          const { rows } = await probe.query<{ t: string | null }>(
+            "SELECT to_regclass('public.memory_strata_index_v2_docs')::text AS t",
+          );
+          expect(rows[0]?.t).toBeNull();
+        } finally {
+          await probe.end();
+        }
         // The whole production graph topo-sorted and every init() ran:
         // postgres trio migrations, credential-proxy CA + socket, http-server
         // + ipc-http listeners bound, auth/agents/teams/skills/attachments/

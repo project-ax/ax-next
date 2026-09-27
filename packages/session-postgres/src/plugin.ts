@@ -118,9 +118,8 @@ export type SessionResolveTokenOutput =
       /**
        * TASK-181: host-derived session origin. The IPC server stamps it onto
        * the per-request AgentContext so the happy-path runner-completed
-       * `chat:end` carries `source: 'routine'` for scheduled fires and
-       * @ax/memory-strata's guard fires end-to-end. Null ≡ user / canary /
-       * pre-TASK-181.
+       * `chat:end` carries `source: 'routine'` for scheduled fires. Null ≡
+       * user / canary / pre-TASK-181.
        */
       source: 'routine' | 'user' | null;
     }

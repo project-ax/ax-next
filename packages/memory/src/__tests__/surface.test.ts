@@ -20,9 +20,9 @@ describe('@ax/memory — manifest', () => {
       // The per-user "extraction paused" signal the UI reads.
       'memory:status',
       // TASK-491, design 4.1. A SINGLE-provider service hook, which is what
-      // makes `@ax/memory` and `@ax/memory-strata` mutually exclusive in a
-      // preset -- 10.4's "one memory plugin per preset" enforced by the bus
-      // rather than by a convention.
+      // made `@ax/memory` and `@ax/memory-strata` (deleted in TASK-608)
+      // mutually exclusive in a preset -- 10.4's "one memory plugin per
+      // preset" enforced by the bus rather than by a convention.
       'system-prompt:augment',
       'tool:execute:memory_recall',
       'tool:execute:memory_note',
@@ -110,7 +110,7 @@ describe('@ax/memory — manifest', () => {
 
   // The human tier is the ONE soft dependency, and the asymmetry is the
   // point: `memory:rules:*` stays a shared contract across memory
-  // implementations (§10.4) but the provider is not part of this plugin, so a
+  // implementations (§10.4); this plugin provides it only with `rules: true`, so a
   // preset may legitimately load `@ax/memory` without one. A hard `calls`
   // entry would turn that configuration into a boot failure.
   it('names the human tier as the one OPTIONAL dependency, with its degradation spelled out', () => {

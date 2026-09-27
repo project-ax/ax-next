@@ -62,7 +62,8 @@ export interface ReplayOutcome {
  * `tool.execute-host` call carries, which gets the session's workspace root
  * from the IPC listener — there is no session here, because the turn ended.
  * `process.cwd()` is the same value host-side plugins already see on their
- * host-initiated paths (see @ax/memory-strata's agent-tier-sync note). A host
+ * host-initiated paths (the note that explained it lived in
+ * @ax/memory-strata's agent-tier-sync, deleted in TASK-608). A host
  * executor that needs a PER-AGENT workspace must resolve it through the
  * `workspace:*` hooks, which route on ctx.agentId (TASK-257) — set correctly
  * here; `ownerUserId` is still carried for attribution.

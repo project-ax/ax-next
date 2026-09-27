@@ -109,9 +109,11 @@ kubectl rollout restart deployment/ax-next-host
 
 ## Switching an existing deployment to facts memory (one-time operator runbook)
 
-Facts memory (`host.preset: memory`) is now the chart default, so a fresh install can skip this section.
+Facts memory (`host.preset: memory`) is the chart default, so a fresh install can skip this section.
 
-An **existing** deployment that ran the old Strata memory (`host.preset: k8s`, the default before TASK-576) still holds that old memory. The new memory never reads it, and **nothing in the code clears it or runs any of this for you.** We run these steps by hand, once per deployment, and only when the owner has decided that **no old data needs keeping**.
+The old Strata memory is gone from the code (TASK-608). `host.preset: k8s` now fails `helm template`, and `AX_PRESET=k8s` makes the host refuse to boot. Both errors point here. That's on purpose: quietly booting with no memory at all would be worse than a loud stop.
+
+An **existing** deployment that ran the old Strata memory (`host.preset: k8s`, the default before TASK-576) still holds that old memory. The new memory never reads it. The host does drop Strata's Postgres search index on boot (step 3 explains), but **nothing in the code clears the rest or runs any of this for you.** We run these steps by hand, once per deployment, and only when the owner has decided that **no old data needs keeping**.
 
 > ### ⚠ STOP — read this before running anything
 >
@@ -142,7 +144,7 @@ kubectl -n ax-next wait --for=delete pod -l app.kubernetes.io/name=ax-next-git-s
 
 This runs against the deployment's main database, `ax_next`, as user `ax_next`. On kind that's the in-cluster `ax-next-postgresql`; on GKE it's Cloud SQL.
 
-- `memory_strata_index_v2_docs` is Strata's search index. It holds copies of the old memory text.
+- `memory_strata_index_v2_docs` is Strata's search index. It holds copies of the old memory text. Since TASK-608 the host drops it (and the older `memory_strata_index_v1_docs`) on every boot, so on a current image this line is belt-and-braces. It's harmless to run.
 - `memory_facts_v1` is the old preset's facts table. It's usually empty.
 
 ```sql
@@ -179,8 +181,6 @@ kubectl run memory-reset-sql -n default --restart=Never \
 kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/memory-reset-sql -n default --timeout=120s
 kubectl delete pod memory-reset-sql -n default
 ```
-
-If you ever switch back to `host.preset: k8s`, Strata recreates its index table empty at boot.
 
 ### Step 4 — Facts store and memory exports
 

@@ -177,7 +177,6 @@ beforeEach(() => {
     past: [],
     memory: {
       rules: { status: 'unavailable' as const, doc: null },
-      learned: { status: 'unavailable' as const, docs: [] },
     },
   }));
   decisionsMock.mockReset();

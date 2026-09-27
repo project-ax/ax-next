@@ -19,9 +19,9 @@ export default defineConfig({
     // which usually skips this package, so `main` runs the full suite and eats
     // the failure alone. No failing assertion was ever behind it — the budget
     // was simply wrong for the work. Matches the sibling
-    // Postgres-testcontainer packages (@ax/agents, @ax/storage-postgres,
-    // @ax/memory-strata-index-postgres), which all landed on the same 60s pair
-    // for the same reason.
+    // Postgres-testcontainer packages (@ax/agents, @ax/storage-postgres, and
+    // @ax/memory-strata-index-postgres before TASK-608 deleted it), which all
+    // landed on the same 60s pair for the same reason.
     //
     // hookTimeout governs only the *bare* hooks — an explicit `}, N)` on a
     // hook overrides it. This package already declares 120_000 on some

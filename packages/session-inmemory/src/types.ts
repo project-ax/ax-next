@@ -27,8 +27,8 @@ export interface AgentConfig {
    * agent has no `.ax/IDENTITY.md` of its own (TASK-142). Intended destination
    * is the LLM prompt. */
   displayName: string;
-  /** The host `system-prompt:augment` contribution (e.g. memory-strata's
-   * injection), prepended on top of the composed system prompt. Empty when no
+  /** The host `system-prompt:augment` contribution (e.g. @ax/memory's
+   * memory block), prepended on top of the composed system prompt. Empty when no
    * augment provider is registered. Intended destination is the LLM prompt. */
   systemPromptAugment: string;
   /** Bootstrap-safe subset of `system-prompt:augment` contributions (currently
@@ -134,8 +134,8 @@ export interface SessionCreateInput {
      * @ax/routines fire, `'user'`/absent for an interactive turn. Persisted
      * on the session record and echoed back by `session:resolve-token` so the
      * IPC server can stamp it onto the happy-path runner-completed `chat:end`
-     * ctx, where @ax/memory-strata reads `ctx.source` to skip memory
-     * extraction on internal turns. Host-only — it never arrives from the
+     * ctx (no in-tree subscriber reads it there since @ax/memory-strata's
+     * deletion in TASK-608; kept as generic provenance). Host-only — it never arrives from the
      * runner wire (absent from @ax/ipc-protocol). Optional; absent ≡ user.
      */
     source?: 'routine' | 'user';
@@ -174,9 +174,9 @@ export type SessionResolveTokenOutput =
        * TASK-181: host-derived session origin recorded at create time. The
        * IPC server stamps it onto the per-request AgentContext so the
        * happy-path runner-completed `chat:end` carries `source: 'routine'`
-       * for scheduled fires (and @ax/memory-strata's guard fires end-to-end,
-       * not just on the error/terminated/unit paths). Null for user / canary
-       * / admin / pre-TASK-181 sessions → memory runs normally.
+       * for scheduled fires, on the happy path too, not just on the
+       * error/terminated/unit paths. Null for user / canary / admin /
+       * pre-TASK-181 sessions.
        */
       source: 'routine' | 'user' | null;
     }

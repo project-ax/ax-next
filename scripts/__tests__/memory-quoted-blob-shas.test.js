@@ -36,7 +36,7 @@
 //     Someone evading this guard could equally just delete the row.
 //   - It only sees `.claude/memory/`. The same class of unguarded measurement
 //     lives in ordinary code comments, where nothing checks it — a comment in
-//     `packages/memory-strata/test/bench/corpora/internal.ts` picked up two
+//     `packages/memory-strata/test/bench/corpora/internal.ts` (deleted in TASK-608) picked up two
 //     such numbers in the very commit that added this guard.
 //
 // WHEN THIS GOES RED: do NOT just edit the sha to match. The sha is a label on

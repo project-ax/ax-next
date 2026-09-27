@@ -8,10 +8,10 @@ import { parseArgs, parseEnv } from 'node:util';
 import { HookBus, PluginError, bootstrap, makeAgentContext } from '../packages/core/dist/index.js';
 import { createMemoryPlugins } from '../presets/memory/dist/index.js';
 import { EXTRACTION_PROMPT_FINGERPRINT, EXTRACTION_PROMPT_MODEL_FINGERPRINT } from '../packages/memory/dist/index.js';
-import { BenchCache } from '../packages/memory-strata/test/bench/cache.ts';
-import { loadLongMemEvalSSamples } from '../packages/memory-strata/test/bench/corpora/longmemeval-s.ts';
-import { parseCorpusDate } from '../packages/memory-strata/test/bench/e2e-driver.ts';
-import { judgeAnswer } from '../packages/memory-strata/test/bench/judge.ts';
+import { BenchCache } from './memory-bench/cache.ts';
+import { loadLongMemEvalSSamples } from './memory-bench/longmemeval-s.ts';
+import { parseCorpusDate } from './memory-bench/corpus-date.ts';
+import { judgeAnswer } from './memory-bench/judge.ts';
 import { CONFIG, ANSWER_PREAMBLE, BudgetExceeded, ProviderError, Ledger, aggregate, buildSystem, makeClients, readJsonl } from './memory-product-e2e-lib.mjs';
 import { PROVIDER_HOSTS, attemptStats, latencyBreakdown, makeDiagnosticsSinks, monoNow, openAttemptLog, realNow, sanitizeError, startEnvironmentMonitor, tlsProbe } from './memory-product-e2e-trace.mjs';
 
