@@ -394,10 +394,13 @@ true
 {{- define "ax-next.validatePreset" -}}
 {{- if hasKey .Values.host "preset" -}}
 {{- if not (kindIs "string" .Values.host.preset) -}}
-{{- fail "host.preset must be a string, one of [k8s, memory]" -}}
+{{- fail "host.preset must be a string, \"memory\"" -}}
 {{- end -}}
-{{- if not (or (eq .Values.host.preset "k8s") (eq .Values.host.preset "memory")) -}}
-{{- fail "host.preset must be one of [k8s, memory]" -}}
+{{- if eq .Values.host.preset "k8s" -}}
+{{- fail "host.preset=k8s (the legacy Strata memory) was removed in TASK-608. Use host.preset: memory (the default) and follow deploy/README.md \"Switching an existing deployment to facts memory\" to reset the old memory." -}}
+{{- end -}}
+{{- if ne .Values.host.preset "memory" -}}
+{{- fail "host.preset must be \"memory\"" -}}
 {{- end -}}
 {{- end -}}
 {{- $preset := .Values.host.preset | default "memory" -}}

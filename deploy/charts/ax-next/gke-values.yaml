@@ -49,10 +49,12 @@ namespace:
 host:
   # Which memory the host boots. Pinned explicitly (TASK-576) rather than
   # inherited from the chart default, so a future default change never
-  # silently switches this deployment's memory. `memory` = facts memory; set
-  # `k8s` to keep the legacy Strata memory instead. Switching an existing
-  # deployment from Strata to facts memory is an operator runbook: see
-  # deploy/README.md ("Switching an existing deployment to facts memory").
+  # silently switches this deployment's memory. `memory` (facts memory) is
+  # the only value that renders — `k8s` (the legacy Strata memory) was
+  # removed in TASK-608 and now fails `helm template` on purpose. If this
+  # deployment still has old Strata memory on disk from before the switch,
+  # see deploy/README.md ("Switching an existing deployment to facts
+  # memory").
   preset: memory
   resources:
     requests:
@@ -131,9 +133,10 @@ credentialProxy:
 # ─── Postgres: Cloud SQL (external) ──────────────────────────────
 # The host reads DATABASE_URL from a Secret you create out-of-band (the runbook
 # builds the DSN against the Cloud SQL private IP). Embedded subchart disabled.
-# NOTE: external mode SKIPS the pgvector init Job — if you enable memory/strata
-# plugins you must run `CREATE EXTENSION vector` against the Cloud SQL DB
-# yourself (runbook covers it).
+# NOTE: external mode SKIPS the pgvector init Job, so run `CREATE EXTENSION
+# vector` against the Cloud SQL DB yourself (runbook covers it). The default
+# memory keeps its facts in SQLite, so today this is precautionary: it keeps
+# the Postgres facts engine usable without a surprise later.
 postgres:
   external:
     enabled: true
@@ -222,8 +225,8 @@ anthropic:
 # This block renders into the ax.config.yaml ConfigMap — which, heads up,
 # nothing actually reads. AX_CONFIG_PATH is stamped onto the host pod, but
 # no code path loads it — `host.preset` above (baked into host.args as
-# AX_PRESET) is what actually selects memory vs. k8s at boot. So `preset`
-# and `history.maxTurns` below are inert (turn limits come from the chat
+# AX_PRESET) is what actually selects the memory at boot. So `preset` and
+# `history.maxTurns` below are inert (turn limits come from the chat
 # request). `models.default` is the one key here that reaches the host,
 # and only because the template stamps it as an env var.
 config:

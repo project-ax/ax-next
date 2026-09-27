@@ -143,8 +143,6 @@ const OPTIONAL_EXPORT_ENV_NAMES = [
   'AX_MEMORY_EXPORT_NFS_PATH',
 ];
 
-const MEMORY_ENV_NAMES = ['AX_PRESET', 'AX_MEMORY_FACTS_DB_PATH', ...OPTIONAL_EXPORT_ENV_NAMES];
-
 // TASK-523: embeddings + rerank moved to OpenRouter on `provider:openrouter`,
 // which the Provider keys screen writes. There is no Vertex project and no
 // per-provider credential ref left to configure, so none of these may render.
@@ -179,20 +177,12 @@ describeIfHelm('memory preset opt-in (TASK-496)', () => {
     expect(docs.find((d) => (d.metadata?.name ?? '').endsWith('-memory-facts'))).toBeDefined();
   });
 
-  it('TASK-576: host.preset=k8s renders with no memory env, mounts, volumes, or PVC (the old default)', () => {
-    const docs = render(['-f', KIND_DEV_VALUES, '--set', 'host.preset=k8s']);
-    const { container, spec } = hostSpec(hostDeployment(docs));
-    const env = envMap(container);
-    for (const name of MEMORY_ENV_NAMES) {
-      expect(env.has(name), `${name} must not appear when host.preset=k8s`).toBe(false);
-    }
-    const mounts = container.volumeMounts ?? [];
-    expect(mounts.find((m) => m.name === 'memory-facts')).toBeUndefined();
-    expect(mounts.find((m) => m.name === 'memory-exports')).toBeUndefined();
-    const volumes = spec.volumes ?? [];
-    expect(volumes.find((v) => v.name === 'memory-facts')).toBeUndefined();
-    expect(volumes.find((v) => v.name === 'memory-exports')).toBeUndefined();
-    expect(docs.find((d) => (d.metadata?.name ?? '').endsWith('-memory-facts'))).toBeUndefined();
+  it('TASK-608: host.preset=k8s (the old default) FAILS render with a pointer to the facts-memory runbook', () => {
+    const out = renderFails(['-f', KIND_DEV_VALUES, '--set', 'host.preset=k8s']);
+    expect(out).toContain('host.preset=k8s');
+    expect(out).toContain('TASK-608');
+    expect(out).toContain('deploy/README.md');
+    expect(out).toContain('Switching an existing deployment to facts memory');
   });
 
   it('TASK-576: a bare default render SUCCEEDS on facts memory, with no export env or NFS volume', () => {
