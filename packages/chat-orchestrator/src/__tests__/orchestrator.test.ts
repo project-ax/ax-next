@@ -5935,6 +5935,9 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
     await fireAugmentChanged(h.bus, {});
     await fireAugmentChanged(h.bus, { agentId: '' });
     await fireAugmentChanged(h.bus, { agentId: 42 });
+    // Coerces to THIS agent's id (String(['test-agent']) === 'test-agent'),
+    // so a validation that stringified instead of type-checking goes red.
+    await fireAugmentChanged(h.bus, { agentId: ['test-agent'] });
     await turn(h, 'req-2');
 
     expect(counters.opens).toBe(1);

@@ -1589,7 +1589,10 @@ export function createOrchestrator(
   // process did not spawn has no record and counts as stale once the agent has
   // any change — conservative, worst case one extra re-spawn. Counters, not
   // timestamps, so there is no clock to skew. In-memory + single-replica, same
-  // posture as `respawnSessions` and the warm-session map.
+  // posture as `respawnSessions` and the warm-session map — which means a
+  // second host replica would not see a save handled by another replica (see
+  // the TASK-612 follow-up). `augmentGenByAgent` is never pruned: one small
+  // entry per agent that ever had a change, bounded by the agent population.
   const augmentGenByAgent = new Map<string, number>();
   const augmentGenBySession = new Map<string, number>();
 
@@ -1970,10 +1973,12 @@ export function createOrchestrator(
     // this path runs again, which is how "reads them before every run" on the
     // Memory tab stays true.
     //
-    // Record the agent's augment generation BEFORE the call: a change that
+    // Snapshot the agent's augment generation BEFORE the call: a change that
     // lands while the augment is being built is then newer than this spawn,
     // and the next turn re-spawns instead of keeping a prompt that missed it.
-    augmentGenBySession.set(ctx.sessionId, augmentGenByAgent.get(ctx.agentId) ?? 0);
+    // Recorded into `augmentGenBySession` only once the sandbox has opened,
+    // so a spawn that fails early leaves no entry behind.
+    const augmentGenAtSpawn = augmentGenByAgent.get(ctx.agentId) ?? 0;
     //
     // Single-provider service hook (one registration at MVP; promoted to
     // a subscriber chain in Phase 5+ if a second provider lands). When
@@ -2763,6 +2768,7 @@ export function createOrchestrator(
         sandboxInput,
       );
       handle = opened.handle;
+      augmentGenBySession.set(sessionId, augmentGenAtSpawn);
       if (keepAlive) {
         // Warm the session: the runner outlives this request. One handle.exited
         // cleanup covers every reap path (graceful cancel, force kill, runner
@@ -3053,6 +3059,9 @@ export function createOrchestrator(
         // to handle.exited (Step 5); clearing it here would disable
         // proxy:rotate-session for every turn after the first.
         sessionsNeedingRotation.delete(ctx.sessionId);
+        // Same lifetime rule for the augment generation (TASK-612): a warm
+        // session drops it in handle.exited; a one-shot session is done now.
+        augmentGenBySession.delete(ctx.sessionId);
       }
     }
   }
