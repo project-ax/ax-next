@@ -40,7 +40,7 @@
 //
 // A note on the counts in this file: they come from the scan below, not from a
 // `git grep`. A grep for the constructor also matches
-// `packages/memory-strata/test/bench/internal-corpus.json`, a benchmark corpus
+// `packages/memory-strata/test/bench/internal-corpus.json` (deleted in TASK-608), a benchmark corpus
 // whose document text contains testcontainers code as DATA — which is why a
 // naive count reads 118/22 where this scan (correctly, `.json` excluded) reads
 // 115/21. If you update these numbers, take them from a failing assertion here.

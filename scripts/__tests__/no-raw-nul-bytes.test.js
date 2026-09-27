@@ -1,7 +1,7 @@
 // Guard: no tracked, non-binary source file may contain a raw NUL byte.
 //
 // Why this exists (TASK-218). Four tracked files --
-// packages/memory-strata/src/__tests__/agent-tier-sync.test.ts,
+// packages/memory-strata/src/__tests__/agent-tier-sync.test.ts (deleted in TASK-608),
 // packages/workspace-git-server/src/{client,shared}/__tests__/workspace-id.test.ts,
 // packages/workspace-git-server/src/server/__tests__/integration/argv-injection.test.ts
 // -- carried a LITERAL NUL byte inside a string literal instead of the
@@ -9,7 +9,7 @@
 // silently returned NOTHING for the entire file -- no error, no warning, just
 // an empty result indistinguishable from "no match". That produced a real
 // false negative: a grep for `filterSensitive` in a fifth file
-// (packages/memory-strata/src/map.ts, fixed separately under TASK-217)
+// (packages/memory-strata/src/map.ts, fixed separately under TASK-217; deleted in TASK-608)
 // returned nothing while the import sat in plain view.
 //
 // The fix in each case was byte-identical at runtime: swap the raw 0x00 byte
