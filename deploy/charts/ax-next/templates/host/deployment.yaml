@@ -359,12 +359,16 @@ spec:
               value: "memory"
             - name: AX_MEMORY_FACTS_DB_PATH
               value: {{ printf "%s/facts.db" (include "ax-next.memoryFactsRoot" .) | quote }}
+            {{- if include "ax-next.memoryExportsEnabled" . }}
+            # Optional (all-or-none): without these, runners get no read-only
+            # /memory mount; recall and the Memory tab still work.
             - name: AX_MEMORY_EXPORT_HOST_ROOT
               value: {{ include "ax-next.memoryExportsRoot" . | quote }}
             - name: AX_MEMORY_EXPORT_NFS_SERVER
               value: {{ .Values.memory.exports.server | quote }}
             - name: AX_MEMORY_EXPORT_NFS_PATH
               value: {{ .Values.memory.exports.exportPath | quote }}
+            {{- end }}
             {{- end }}
 
             # Credentials key — encrypts secrets at rest. Required.
@@ -527,8 +531,10 @@ spec:
             {{- if eq (.Values.host.preset | default "memory") "memory" }}
             - name: memory-facts
               mountPath: {{ include "ax-next.memoryFactsRoot" . }}
+            {{- if include "ax-next.memoryExportsEnabled" . }}
             - name: memory-exports
               mountPath: {{ include "ax-next.memoryExportsRoot" . }}
+            {{- end }}
             {{- end }}
       volumes:
         - name: ax-config
@@ -576,8 +582,10 @@ spec:
         - name: memory-facts
           persistentVolumeClaim:
             claimName: {{ include "ax-next.fullname" . }}-memory-facts
+        {{- if include "ax-next.memoryExportsEnabled" . }}
         - name: memory-exports
           nfs:
             server: {{ .Values.memory.exports.server | quote }}
             path: {{ .Values.memory.exports.exportPath | quote }}
+        {{- end }}
         {{- end }}

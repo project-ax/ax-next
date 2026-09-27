@@ -381,6 +381,15 @@ Invoked from `host/deployment.yaml`, which always renders.
 {{- define "ax-next.memoryExportsRoot" -}}
 /var/lib/ax-next/memory-exports
 {{- end -}}
+{{/* "true" when host.preset=memory AND memory.exports is configured — the
+     only case that stamps AX_MEMORY_EXPORT_* and the host NFS export mount.
+     validatePreset has already rejected the one-of-two case. */}}
+{{- define "ax-next.memoryExportsEnabled" -}}
+{{- $mem := .Values.memory | default dict -}}
+{{- if and (eq (.Values.host.preset | default "memory") "memory") (dig "exports" "server" "" $mem) (dig "exports" "exportPath" "" $mem) -}}
+true
+{{- end -}}
+{{- end -}}
 
 {{- define "ax-next.validatePreset" -}}
 {{- if hasKey .Values.host "preset" -}}
@@ -394,11 +403,13 @@ Invoked from `host/deployment.yaml`, which always renders.
 {{- $preset := .Values.host.preset | default "memory" -}}
 {{- if eq $preset "memory" -}}
 {{- $mem := .Values.memory | default dict -}}
-{{- if not (dig "exports" "server" "" $mem) -}}
-{{- fail "memory.exports.server is required when host.preset=memory (the default, facts memory). Set it to your memory NFS server, or set host.preset=k8s to keep the legacy Strata memory." -}}
-{{- end -}}
-{{- if not (dig "exports" "exportPath" "" $mem) -}}
-{{- fail "memory.exports.exportPath is required when host.preset=memory (the default, facts memory). Set it to your memory NFS export path, or set host.preset=k8s to keep the legacy Strata memory." -}}
+{{/* memory.exports is OPTIONAL (TASK-576): both empty is a supported install
+     (runners get no /memory mount; recall and the Memory tab still work).
+     Exactly one set is a half-configured export and fails. */}}
+{{- $hasServer := ne (dig "exports" "server" "" $mem) "" -}}
+{{- $hasPath := ne (dig "exports" "exportPath" "" $mem) "" -}}
+{{- if ne $hasServer $hasPath -}}
+{{- fail "memory.exports.server and memory.exports.exportPath must be set together (both-or-neither). Set both to give runners a read-only /memory mount, or leave both empty to run facts memory without it." -}}
 {{- end -}}
 {{- $sandboxFs := .Values.sandbox | default dict -}}
 {{- $fsServer := dig "filestore" "server" "" $sandboxFs -}}
@@ -407,7 +418,8 @@ Invoked from `host/deployment.yaml`, which always renders.
 {{- $memServer := dig "exports" "server" "" $mem -}}
 {{/* Checked symmetrically: whichever of memory.exports / sandbox.filestore was
      configured last, the same (server, exportPath) pair on both is the same
-     overlap and fails the same way. */}}
+     overlap and fails the same way. Only applies when memory.exports is set:
+     the $memServer/$memExportPath guards below make it a no-op otherwise. */}}
 {{- if and $fsServer $memServer $fsExportPath $memExportPath (eq $fsServer $memServer) (eq $fsExportPath $memExportPath) -}}
 {{- fail "memory.exports and sandbox.filestore point at the same NFS export (server+exportPath) — memory and the sandbox filestore need separate exports." -}}
 {{- end -}}

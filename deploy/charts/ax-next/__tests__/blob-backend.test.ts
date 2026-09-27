@@ -33,13 +33,6 @@ const REQUIRED = [
   'anthropic.apiKey=test',
   '--set',
   'http.cookieKey=0000000000000000000000000000000000000000000000000000000000000000',
-  // TASK-576: host.preset now defaults to memory, which needs an NFS export.
-  // This suite tests the blob backend, not memory — see memory.test.ts for
-  // the memory-preset render tests themselves.
-  '--set',
-  'memory.exports.server=nfs.example.invalid',
-  '--set',
-  'memory.exports.exportPath=/exports/ax-memory',
 ];
 
 type EnvVar = { name?: string; value?: string; valueFrom?: unknown };

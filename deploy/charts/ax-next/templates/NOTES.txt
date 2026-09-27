@@ -12,14 +12,17 @@ Components:
   - NetworkPolicy: {{ if (include "ax-next.bool" .Values.networkPolicies.enabled) }}enforced{{ else }}DISABLED — host/runner traffic is unrestricted{{ end }}
   - gVisor:        {{ if .Values.sandbox.runtimeClassName }}runtimeClassName={{ .Values.sandbox.runtimeClassName }}{{ else }}NOT SET — runner pods use the host kernel{{ end }}
 {{- if eq $preset "memory" }}
+{{- if include "ax-next.memoryExportsEnabled" . }}
+  - Memory mount:  runners get a read-only /memory view from memory.exports
+{{- else }}
+  - Memory mount:  none — memory.exports is unset, so runners get no /memory
+                   mount. Recall and the Memory tab still work. Set both
+                   memory.exports.server and memory.exports.exportPath to add it.
+{{- end }}
 
-WARNING: if this is the FIRST boot with host.preset=memory against this
-release, the host permanently deletes every agent's old Strata memory files
-(and their workspace history), clears any stored facts memory, and empties
-the memory NFS export — once, logged per agent. Rules
-(memory/system/rules.md) are kept. This cannot be previewed or undone; back
-up the workspace PVC first if that matters. See deploy/GKE.md ("Memory: facts
-memory is the default").
+Switching an existing deployment from Strata to facts memory? Old memory is
+not cleared automatically — see deploy/README.md 'Switching an existing
+deployment to facts memory'.
 {{- end }}
 
 {{- if (include "ax-next.bool" .Values.ingress.enabled) }}

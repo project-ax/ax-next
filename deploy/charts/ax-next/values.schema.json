@@ -179,7 +179,7 @@
             "k8s",
             "memory"
           ],
-          "description": "Which plugin assembly `serve` boots. 'memory' requires the memory.* block and renders its env/mounts/PVC."
+          "description": "Which plugin assembly `serve` boots. 'memory' (the default) renders the facts PVC and env; memory.exports is optional (both-or-neither) and adds the /memory NFS export."
         }
       }
     },

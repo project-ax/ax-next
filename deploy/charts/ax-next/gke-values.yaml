@@ -47,6 +47,13 @@ namespace:
 # credential-proxy MITM'ing a multi-MB download on top of the chat orchestrator
 # OOM-killed the host at 512Mi during kind testing (TASK-24).
 host:
+  # Which memory the host boots. Pinned explicitly (TASK-576) rather than
+  # inherited from the chart default, so a future default change never
+  # silently switches this deployment's memory. `memory` = facts memory; set
+  # `k8s` to keep the legacy Strata memory instead. Switching an existing
+  # deployment from Strata to facts memory is an operator runbook: see
+  # deploy/README.md ("Switching an existing deployment to facts memory").
+  preset: memory
   resources:
     requests:
       cpu: "1"
@@ -56,26 +63,22 @@ host:
       memory: 2Gi
 
 # ─── Memory ───────────────────────────────────────────────────────
-# `host.preset` is not set here — it inherits the chart's default,
-# `memory` (facts memory, TASK-576). `helm template` FAILS until
-# memory.exports.server and memory.exports.exportPath are both set:
+# `host.preset: memory` is pinned in the host block above.
+# memory.exports is OPTIONAL. Left empty, facts memory renders and runs:
+# recall and the Memory tab work, but runner pods get no read-only `/memory`
+# view. Set BOTH fields (both-or-neither) when you want that view:
 #
-#   >>> EDIT: provision a SEPARATE Filestore instance/share for memory
-#   (a second `gcloud filestore instances create`, or a second share on an
-#   existing multi-share instance) — this must NOT be the same server +
-#   exportPath as any `sandbox.filestore.*` you configure. The host writes
-#   each agent's memory export here; runner pods mount it read-only at
-#   `/memory`. See deploy/GKE.md ("Memory: facts memory is the default")
-#   for the full walkthrough, including the credential you still need
-#   (provider:openrouter, via Admin → AI model keys) and the WARNING about
-#   what first boot on this preset deletes.
-#
-#   To skip all of this and keep the legacy Strata memory instead, set
-#   `host.preset: k8s` here and delete/ignore this `memory:` block.
+#   >>> OPTIONAL EDIT: provision a SEPARATE Filestore instance/share for
+#   memory (a second `gcloud filestore instances create`, or a second share
+#   on an existing multi-share instance) — this must NOT be the same server +
+#   exportPath as any `sandbox.filestore.*` you configure. See deploy/GKE.md
+#   ("Memory: facts memory is the default") for the walkthrough, including
+#   the credential you still need (provider:openrouter, via Admin → AI model
+#   keys).
 memory:
   exports:
-    server: ""        # >>> EDIT: your memory Filestore instance IP
-    exportPath: ""     # >>> EDIT: the share name, e.g. /memory_vol
+    server: ""        # optional: your memory Filestore instance IP
+    exportPath: ""     # optional: the share name, e.g. /memory_vol
 
 # ─── Workspace + blobs: both on one host PVC ─────────────────────
 # Single-replica posture. `local` keeps the bare git repos on the host PVC;

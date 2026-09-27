@@ -136,13 +136,14 @@ function envMap(container: Container): Map<string, string> {
   return m;
 }
 
-const MEMORY_ENV_NAMES = [
-  'AX_PRESET',
-  'AX_MEMORY_FACTS_DB_PATH',
+// Optional, all-or-none (TASK-576): stamped only when memory.exports is set.
+const OPTIONAL_EXPORT_ENV_NAMES = [
   'AX_MEMORY_EXPORT_HOST_ROOT',
   'AX_MEMORY_EXPORT_NFS_SERVER',
   'AX_MEMORY_EXPORT_NFS_PATH',
 ];
+
+const MEMORY_ENV_NAMES = ['AX_PRESET', 'AX_MEMORY_FACTS_DB_PATH', ...OPTIONAL_EXPORT_ENV_NAMES];
 
 // TASK-523: embeddings + rerank moved to OpenRouter on `provider:openrouter`,
 // which the Provider keys screen writes. There is no Vertex project and no
@@ -194,16 +195,39 @@ describeIfHelm('memory preset opt-in (TASK-496)', () => {
     expect(docs.find((d) => (d.metadata?.name ?? '').endsWith('-memory-facts'))).toBeUndefined();
   });
 
-  it('TASK-576: bare defaults (no -f, no memory.exports) fail template with the new message', () => {
-    const out = renderFails([]);
-    expect(out).toContain('memory.exports.server is required when host.preset=memory');
-    expect(out).toContain('the default, facts memory');
-    expect(out).toContain('host.preset=k8s');
+  it('TASK-576: a bare default render SUCCEEDS on facts memory, with no export env or NFS volume', () => {
+    const docs = render([]);
+    const { container, spec } = hostSpec(hostDeployment(docs));
+    const env = envMap(container);
+    expect(env.get('AX_PRESET')).toBe('memory');
+    expect(env.get('AX_MEMORY_FACTS_DB_PATH')).toBe('/var/lib/ax-next/memory-facts/facts.db');
+    for (const name of OPTIONAL_EXPORT_ENV_NAMES) {
+      expect(env.has(name), `${name} must not render without memory.exports`).toBe(false);
+    }
+    const mounts = container.volumeMounts ?? [];
+    expect(mounts.find((m) => m.name === 'memory-facts')).toBeDefined();
+    expect(mounts.find((m) => m.name === 'memory-exports')).toBeUndefined();
+    const volumes = spec.volumes ?? [];
+    expect(volumes.find((v) => v.name === 'memory-facts')).toBeDefined();
+    expect(volumes.find((v) => v.name === 'memory-exports')).toBeUndefined();
+    expect(volumes.some((v) => 'nfs' in v)).toBe(false);
+    expect(
+      docs.find(
+        (d) => d.kind === 'PersistentVolumeClaim' && (d.metadata?.name ?? '').endsWith('-memory-facts'),
+      ),
+      'facts PVC still renders without exports',
+    ).toBeDefined();
   });
 
-  it('TASK-576: gke-values.yaml without memory.exports fails template', () => {
-    const out = renderFails(['-f', resolve(chartDir, 'gke-values.yaml')]);
-    expect(out).toContain('memory.exports.server is required when host.preset=memory');
+  it('TASK-576: gke-values.yaml alone pins and renders facts memory, exports optional', () => {
+    const gke = readFileSync(resolve(chartDir, 'gke-values.yaml'), 'utf8');
+    const parsed = loadAll(gke)[0] as { host?: { preset?: string } };
+    expect(parsed.host?.preset, 'gke-values.yaml pins host.preset explicitly').toBe('memory');
+    const { container, spec } = hostSpec(hostDeployment(render(['-f', resolve(chartDir, 'gke-values.yaml')])));
+    const env = envMap(container);
+    expect(env.get('AX_PRESET')).toBe('memory');
+    expect(env.has('AX_MEMORY_EXPORT_NFS_SERVER')).toBe(false);
+    expect((spec.volumes ?? []).find((v) => v.name === 'memory-exports')).toBeUndefined();
   });
 
   it('TASK-576: gke-values.yaml with memory.exports set renders memory', () => {
@@ -361,17 +385,48 @@ describeIfHelm('memory preset opt-in (TASK-496)', () => {
   it.each([
     'host.preset=memory,memory.exports.exportPath=/e',
     'host.preset=memory,memory.exports.server=nfs.example.invalid',
-  ])('render fails on missing memory fields even with the schema out of the way: %s', (sets) => {
+  ])('render fails on exactly one memory.exports field even with the schema out of the way: %s', (sets) => {
     const out = renderFails(['--set', sets], schemaSkippedChart());
-    expect(out).toContain('memory.');
+    expect(out).toContain('memory.exports.server and memory.exports.exportPath must be set together');
   });
 
   it.each([
-    ['memory.exports.server', 'host.preset=memory,memory.exports.exportPath=/e'],
-    ['memory.exports.exportPath', 'host.preset=memory,memory.exports.server=nfs.example.invalid'],
-  ])('render fails when %s is missing under host.preset=memory', (field, sets) => {
-    const out = renderFails(['--set', sets]);
-    expect(out).toContain(field);
+    ['server only', 'memory.exports.server=192.0.2.4'],
+    ['exportPath only', 'memory.exports.exportPath=/e'],
+  ])('render fails when memory.exports has %s (both-or-neither)', (_label, set) => {
+    const out = renderFails(['--set', set]);
+    expect(out).toContain('memory.exports.server');
+    expect(out).toContain('memory.exports.exportPath');
+    expect(out).toContain('both-or-neither');
+  });
+
+  it('memory.exports set (no kind overlay) stamps the export env and the host NFS mount', () => {
+    const { container, spec } = hostSpec(hostDeployment(render([
+      '--set', 'memory.exports.server=192.0.2.5',
+      '--set', 'memory.exports.exportPath=/memory_vol',
+    ])));
+    const env = envMap(container);
+    expect(env.get('AX_MEMORY_EXPORT_HOST_ROOT')).toBe('/var/lib/ax-next/memory-exports');
+    expect(env.get('AX_MEMORY_EXPORT_NFS_SERVER')).toBe('192.0.2.5');
+    expect(env.get('AX_MEMORY_EXPORT_NFS_PATH')).toBe('/memory_vol');
+    expect((container.volumeMounts ?? []).find((m) => m.name === 'memory-exports')?.mountPath)
+      .toBe('/var/lib/ax-next/memory-exports');
+    const vol = (spec.volumes ?? []).find((v) => v.name === 'memory-exports') as
+      | { nfs?: { server?: string; path?: string } }
+      | undefined;
+    expect(vol?.nfs).toMatchObject({ server: '192.0.2.5', path: '/memory_vol' });
+  });
+
+  it('with memory.exports unset, the loader reads nothing the render leaves out except the optional export vars', () => {
+    const src = readFileSync(memoryPresetSourcePath, 'utf8');
+    const loaderReads = new Set<string>(['AX_PRESET']);
+    for (const m of src.matchAll(/\benv\.([A-Z][A-Z0-9_]*)\b/g)) loaderReads.add(m[1]!);
+    // The export vars are read by name from a list, not `env.X` — pin that the
+    // source still names each one so this test can't pass vacuously.
+    for (const n of OPTIONAL_EXPORT_ENV_NAMES) expect(src).toContain(`'${n}'`);
+    const env = envMap(hostSpec(hostDeployment(render([]))).container);
+    const missing = [...loaderReads].filter((n) => !env.has(n));
+    expect(missing.filter((n) => !OPTIONAL_EXPORT_ENV_NAMES.includes(n))).toEqual([]);
   });
 
   it('every env var the memory preset loader reads is stamped in memory mode', () => {

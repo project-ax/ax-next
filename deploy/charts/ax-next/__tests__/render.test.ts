@@ -37,15 +37,6 @@ const REQUIRED = [
   // (Auth-provider env is gone since Phase 3 — auth-better is DB-driven.)
   '--set',
   'http.cookieKey=0000000000000000000000000000000000000000000000000000000000000000',
-  // Required since TASK-576: host.preset now defaults to memory, and memory
-  // mode needs an NFS export. This suite isn't testing memory — it's testing
-  // git-server / RBAC / NetworkPolicy shape — so a fixed placeholder just
-  // satisfies validatePreset and gets out of the way. See memory.test.ts for
-  // the memory-preset render tests themselves.
-  '--set',
-  'memory.exports.server=nfs.example.invalid',
-  '--set',
-  'memory.exports.exportPath=/exports/ax-memory',
 ];
 
 /** A rendered k8s resource. Loose typing — tests narrow as needed. */
