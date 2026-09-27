@@ -81,17 +81,6 @@
 //                           confinement is the load-bearing cross-tenant
 //                           property here, and a third copy of it would mean a
 //                           third place a fix has to land.
-//   @ax/workspace-git-purge
-//                         — the ONE verified history-purge routine behind the
-//                           git realizations of `workspace:purge`
-//                           (@ax/workspace-git-core in-process and the
-//                           git-server pod). No manifest, no hooks; depends
-//                           only on @ax/core. It never spawns a process itself
-//                           — each caller injects its own sandboxed `git`
-//                           runner. A library rather than a copy because it
-//                           irreversibly rewrites every agent's history, and
-//                           its fail-closed verification must exist exactly
-//                           once.
 //
 // These shared-import expansions of the kernel-only allowlist form the
 // documented one-way boundary between host-side plugins and sandbox-side
@@ -160,11 +149,10 @@ group: [
   '!@ax/skills-parser',
   '!@ax/agent-identity-templates',
   '!@ax/user-files-read',
-  '!@ax/workspace-git-purge',
 ],
 allowTypeImports: true,
 message:
-  'Cross-plugin runtime imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. Type-only imports (`import type {...}` / `export type {...}`) are allowed — boundary types are how plugins agree on a shared contract without runtime coupling. The only @ax/* runtime imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol + @ax/sandbox-protocol + @ax/workspace-bundle-protocol (wire / hook-bus contracts), @ax/ipc-core (transport-agnostic IPC library), @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser), @ax/validator-routine (pure-function routine frontmatter parser shared between the validator and the routines plugin), @ax/skills-parser (pure-function SKILL.md parser + capability types shared between @ax/skills and @ax/agents), @ax/agent-identity-templates (pure-data bootstrap/identity template strings shared between @ax/agent-claude-sdk-runner and @ax/channel-web), @ax/user-files-read (the one realpath-confined reader for an agent durable user-files subtree, shared by both sandbox providers), and @ax/workspace-git-purge (the one verified history-purge routine shared by the git workspace backends)',
+  'Cross-plugin runtime imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. Type-only imports (`import type {...}` / `export type {...}`) are allowed — boundary types are how plugins agree on a shared contract without runtime coupling. The only @ax/* runtime imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol + @ax/sandbox-protocol + @ax/workspace-bundle-protocol (wire / hook-bus contracts), @ax/ipc-core (transport-agnostic IPC library), @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser), @ax/validator-routine (pure-function routine frontmatter parser shared between the validator and the routines plugin), @ax/skills-parser (pure-function SKILL.md parser + capability types shared between @ax/skills and @ax/agents), @ax/agent-identity-templates (pure-data bootstrap/identity template strings shared between @ax/agent-claude-sdk-runner and @ax/channel-web), and @ax/user-files-read (the one realpath-confined reader for an agent durable user-files subtree, shared by both sandbox providers)',
 };
 
 export default tseslint.config(

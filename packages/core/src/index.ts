@@ -21,10 +21,6 @@ export {
   WorkspaceDeltaSchema,
   WorkspaceApplyOutputSchema,
   WorkspaceDiffOutputSchema,
-  WorkspacePurgeOutputSchema,
-  validatePurgeSelector,
-  PURGE_MAX_PREFIXES,
-  PURGE_MAX_KEEP,
 } from './workspace.js';
 export {
   filterToPolicy,
@@ -50,8 +46,6 @@ export type {
   WorkspaceDiffOutput,
   WorkspaceListInput,
   WorkspaceListOutput,
-  WorkspacePurgeInput,
-  WorkspacePurgeOutput,
   WorkspaceReadInput,
   WorkspaceReadOutput,
   WorkspaceVersion,
