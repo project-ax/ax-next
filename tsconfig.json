@@ -77,6 +77,7 @@
     { "path": "packages/sandbox-protocol" },
     { "path": "packages/sandbox-mount-protocol" },
     { "path": "packages/user-files-read" },
+    { "path": "packages/workspace-git-purge" },
     { "path": "packages/workspace-bundle-protocol" },
     { "path": "packages/blob-store-fs" },
     { "path": "packages/blob-store-s3" }

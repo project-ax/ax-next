@@ -12,6 +12,7 @@
 // ---------------------------------------------------------------------------
 
 import { z, type ZodType } from 'zod';
+import { PluginError } from './errors.js';
 
 export type WorkspaceVersion = string & { readonly __brand: 'WorkspaceVersion' };
 
@@ -185,3 +186,100 @@ export interface WorkspaceDiffOutput {
 export const WorkspaceDiffOutputSchema = z.object({
   delta: WorkspaceDeltaSchema as unknown as ZodType<WorkspaceDelta>,
 }) as unknown as ZodType<WorkspaceDiffOutput>;
+
+// ---------------------------------------------------------------------------
+// `workspace:purge` (TASK-576) — irrecoverable removal of a path selector.
+//
+// Semantics: remove every path under `prefixes` (except the exact paths in
+// `keep`) from the CURRENT version AND from EVERY RETAINED PAST VERSION, so
+// that no version the backend still holds — and no storage it still holds —
+// can yield the removed bytes again. Paths outside the selector, and the
+// `keep` paths, are untouched in every version (their content and their
+// history survive).
+//
+// This is deliberately storage-agnostic: a versioned-object backend deletes
+// the objects under the prefixes from every retained manifest and purges the
+// noncurrent object versions; a history-based backend rewrites its history and
+// drops the unreachable storage. Neither backend's vocabulary appears here.
+//
+//   - `purged`              sorted, distinct paths erased from ANY version
+//                           (current or past). Empty when nothing matched.
+//   - `version`             the current version after the purge; null when
+//                           the workspace holds no versions at all.
+//   - `pastVersionsChanged` true when past version identifiers were rewritten.
+//                           A caller holding an older WorkspaceVersion must
+//                           re-read; the old identifier no longer resolves.
+//
+// `prefixes` are relative POSIX directory prefixes ending in '/'. `keep` are
+// exact file paths, each lying under at least one prefix. Both are validated
+// by `validatePurgeSelector` — every backend calls it before touching storage.
+// ---------------------------------------------------------------------------
+export interface WorkspacePurgeInput {
+  prefixes: string[];
+  keep?: string[];
+}
+export interface WorkspacePurgeOutput {
+  purged: string[];
+  version: WorkspaceVersion | null;
+  pastVersionsChanged: boolean;
+}
+export const WorkspacePurgeOutputSchema = z.object({
+  purged: z.array(z.string()),
+  version: z.string().nullable(),
+  pastVersionsChanged: z.boolean(),
+}) as unknown as ZodType<WorkspacePurgeOutput>;
+
+export const PURGE_MAX_PREFIXES = 16;
+export const PURGE_MAX_KEEP = 64;
+
+function purgeInvalid(message: string): PluginError {
+  return new PluginError({
+    code: 'invalid-input',
+    plugin: 'core',
+    hookName: 'workspace:purge',
+    message: `workspace:purge selector rejected: ${message}`,
+  });
+}
+
+// Relative POSIX path made of non-empty segments; none is '.', '..' or '.git';
+// no NUL, no backslash. The path text itself is never echoed into the error
+// (it may be caller-supplied), only its index.
+function isSafeRelativePath(p: string): boolean {
+  if (p.length === 0 || p.startsWith('/')) return false;
+  if (p.includes('\0') || p.includes('\\')) return false;
+  for (const seg of p.split('/')) {
+    if (seg === '' || seg === '.' || seg === '..' || seg === '.git') return false;
+  }
+  return true;
+}
+
+/**
+ * Throws PluginError('invalid-input') unless `input` is a well-formed purge
+ * selector (see the `workspace:purge` block comment above). Pure; no I/O.
+ */
+export function validatePurgeSelector(input: WorkspacePurgeInput): void {
+  if (input === null || typeof input !== 'object') throw purgeInvalid('input must be an object');
+  const { prefixes, keep } = input as { prefixes?: unknown; keep?: unknown };
+  if (!Array.isArray(prefixes) || prefixes.length === 0) {
+    throw purgeInvalid('prefixes must be a non-empty array');
+  }
+  if (prefixes.length > PURGE_MAX_PREFIXES) {
+    throw purgeInvalid(`at most ${PURGE_MAX_PREFIXES} prefixes`);
+  }
+  prefixes.forEach((p: unknown, i) => {
+    if (typeof p !== 'string' || !p.endsWith('/') || !isSafeRelativePath(p.slice(0, -1))) {
+      throw purgeInvalid(`prefixes[${i}] must be a relative POSIX directory prefix ending in '/'`);
+    }
+  });
+  if (keep === undefined) return;
+  if (!Array.isArray(keep)) throw purgeInvalid('keep must be an array');
+  if (keep.length > PURGE_MAX_KEEP) throw purgeInvalid(`at most ${PURGE_MAX_KEEP} keep paths`);
+  keep.forEach((k: unknown, i) => {
+    if (typeof k !== 'string' || k.endsWith('/') || !isSafeRelativePath(k)) {
+      throw purgeInvalid(`keep[${i}] must be a relative POSIX file path`);
+    }
+    if (!(prefixes as string[]).some((p) => k.startsWith(p))) {
+      throw purgeInvalid(`keep[${i}] must lie under one of the prefixes`);
+    }
+  });
+}
