@@ -21,7 +21,12 @@ import {
   noCredentialFields,
 } from './failure.js';
 import { runObserver, type ObserverRecordInput, type ObserverResult } from './observer.js';
-import { dropRementionedSlotRows, rementionedSlotRows, selectProfileRows } from './profile.js';
+import {
+  dropRementionedSlotRows,
+  hasContestedSlot,
+  rementionedSlotRows,
+  selectProfileRows,
+} from './profile.js';
 import { formatEvidenceWhen } from './evidence.js';
 import { MEMORY_RECALL_TOOL_HOOK, registerMemoryRecall } from './recall-tool.js';
 import { MEMORY_NOTE_TOOL_HOOK, registerMemoryNote } from './note-tool.js';
@@ -630,10 +635,12 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           // Each subject's slot chains read whole (closed rows included): the
           // replaced row and the correction may sit outside the retrieved
           // pool while the stale re-mention ranks inside it.
-          const readSlotGroup = async (): Promise<EngineFactRecord[]> => {
+          const readSlotGroup = async (
+            seed: readonly EngineFactRecord[] = result.statements,
+          ): Promise<EngineFactRecord[]> => {
             const abouts = [
               ...new Set(
-                result.statements
+                seed
                   .filter((row) => typeof row.slot === 'string' && row.slot !== '')
                   .map((row) => row.about),
               ),
@@ -659,7 +666,13 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           // History only: active rows the equivalent active read would hide.
           let overridden = new Set<EngineFactRecord>();
           if (input.profile === true && activeOnly) {
-            page = selectProfileRows(result.statements, limit);
+            // The chains (closed rows included) let the pick recognise a
+            // re-mention of a replaced value (TASK-602).
+            page = selectProfileRows(
+              result.statements,
+              limit,
+              hasContestedSlot(result.statements) ? await readSlotGroup() : [],
+            );
           } else if (activeOnly) {
             // §3.4 on the read path: a correction survives the next chat
             // mention. A lower-provenance row that merely restates a value the
@@ -700,8 +713,13 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
                   message: `${FACTS_RECALL_HOOK} returned a non-array statements; memory cannot say which profile rows are in effect`,
                 });
               }
+              // Same chains the active profile read passes, so the mark and
+              // the pick cannot drift.
+              const chain = hasContestedSlot(activeRows.statements)
+                ? await readSlotGroup(activeRows.statements)
+                : [];
               const winners = new Set(
-                selectProfileRows(activeRows.statements, Number.MAX_SAFE_INTEGER).map(
+                selectProfileRows(activeRows.statements, Number.MAX_SAFE_INTEGER, chain).map(
                   (row) => row.id,
                 ),
               );

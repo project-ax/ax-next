@@ -16,7 +16,7 @@
  *
  * ## Why chat start, and why there is no per-turn refresh
  *
- * Three store queries take milliseconds, which is what makes chat start the
+ * Three store queries (four when a profile slot is contested) take milliseconds, which is what makes chat start the
  * right seam. The block is therefore STALE for the rest of the conversation if
  * memory changes mid-chat — the same property Strata's block already has, and
  * `memory_recall` is the fresh path. A per-turn refresh is deliberately not
@@ -55,7 +55,7 @@ import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
 // a copy (design 3.3/4.1, Invariant 4).
 // `scripts/__tests__/slot-vocabulary-single-owner.test.js` fails if a second
 // copy of the eight ever appears in production source.
-import { selectProfileRows } from './profile.js';
+import { hasContestedSlot, selectProfileRows } from './profile.js';
 import { SLOTS } from './slots.js';
 import {
   approxTokens,
@@ -212,7 +212,7 @@ export const DEFAULTS = {
   // `agent`, `extracted`). The store answers this query in RECENCY order, and
   // a person's own correction is stated once and is therefore usually the
   // OLDEST row in its slot — so a fetch limit equal to the render limit cuts
-  // the page before {@link beatsForSlot} ever runs, and the renderer then
+  // the page before {@link selectProfileRows} ever runs, and the renderer then
   // shows the model the exact value the person overrode. That is the failure
   // provenance immunity exists to prevent, reintroduced by a `LIMIT`.
   //
@@ -313,8 +313,12 @@ function renderSubject(about: string, ownerUserId: string): string {
  * Rows arrive slot-filtered from the store, so this does not re-derive a slot
  * from `relation` — that mapping has one owner and it is not this file.
  */
-function renderProfile(rows: EngineFactRecord[], maxRows: number): string {
-  const lines = selectProfileRows(rows, maxRows)
+function renderProfile(
+  rows: EngineFactRecord[],
+  history: EngineFactRecord[],
+  maxRows: number,
+): string {
+  const lines = selectProfileRows(rows, maxRows, history)
     .map((row) => {
       const slot = row.slot!;
       const value = escapeStatementText(row.value);
@@ -651,8 +655,8 @@ async function buildMemoryBlockSplit(
     return { statements: raw.statements, degraded };
   };
 
-  // Three store queries. No embedding, no rerank, no model call — none of the
-  // three passes a `query`, so not one of them reaches a retrieval channel.
+  // Three store queries (a fourth below only for a contested slot). No
+  // embedding, no rerank, no model call — none of them passes a `query`, so not one of them reaches a retrieval channel.
   const [profileOut, recentOut, digestOut] = await Promise.all([
     // `profileScanRows`, NOT `profileRows` — the per-slot pick below has to
     // see every active row of a slot to apply provenance immunity, and a
@@ -663,14 +667,28 @@ async function buildMemoryBlockSplit(
     recall({ limit: cfg.digestScanRows }),
   ]);
 
+  // Only when a slot holds two or more active non-human rows does the pick
+  // need the chains' CLOSED rows — to tell a re-mention of a replaced value
+  // from a genuinely newer one (TASK-602). Otherwise it is a wasted read. A
+  // chain longer than the scan loses its oldest closed rows, which can only
+  // under-detect a re-mention (newest wins) — never hide a human row.
+  const profileChainOut = hasContestedSlot(profileOut.statements)
+    ? await recall({
+        about: speakerSubject,
+        limit: cfg.profileScanRows,
+        slots: [...SLOTS],
+        activeOnly: false,
+      })
+    : { statements: [], degraded: [] };
+
   const rules = await readRulesBody(bus, ctx);
 
-  // Degradation from any of the three is degradation of the block.
-  const degraded = [...profileOut.degraded, ...recentOut.degraded, ...digestOut.degraded].filter(
+  // Degradation from any of them is degradation of the block.
+  const degraded = [...profileOut.degraded, ...profileChainOut.degraded, ...recentOut.degraded, ...digestOut.degraded].filter(
     (flag, i, all) => all.indexOf(flag) === i,
   );
 
-  const profile = renderProfile(profileOut.statements, cfg.profileRows);
+  const profile = renderProfile(profileOut.statements, profileChainOut.statements, cfg.profileRows);
   const recent = renderRecent(
     recentOut.statements,
     ownerUserId,

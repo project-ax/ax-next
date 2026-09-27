@@ -298,6 +298,52 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
       expect(body).not.toContain('Portland');
     });
 
+    // TASK-602 (walk TASK-596): among non-human rows the NEWEST value wins —
+    // "I moved to Tacoma" in chat replaces the agent's older "Seattle" note,
+    // which rule 3 keeps open in storage.
+    it('renders a newer extracted value over an older agent note', async () => {
+      const h = await makeHarness();
+      const ctx = h.ctx();
+      const lives = (value: string, when: string, provenance: 'agent' | 'extracted') => ({
+        about: `user:${ALICE}`,
+        relation: 'lives_in',
+        value,
+        when,
+        slot: 'lives_in',
+        provenance,
+        ownerUserId: ALICE,
+      });
+      await engineRecord(h.bus, ctx, [lives('Seattle', MAR, 'agent')]);
+      await engineRecord(h.bus, ctx, [lives('Tacoma', SEP, 'extracted')]);
+
+      const body = await augment(h, ctx);
+      const profile = body.slice(body.indexOf('### Profile'), body.indexOf('### Recent'));
+      expect(profile).toContain('- lives_in: Tacoma');
+      expect(profile).not.toContain('Seattle');
+    });
+
+    it('keeps the agent note when the newer extracted row re-mentions a replaced value', async () => {
+      const h = await makeHarness();
+      const ctx = h.ctx();
+      const lives = (value: string, when: string, provenance: 'agent' | 'extracted') => ({
+        about: `user:${ALICE}`,
+        relation: 'lives_in',
+        value,
+        when,
+        slot: 'lives_in',
+        provenance,
+        ownerUserId: ALICE,
+      });
+      await engineRecord(h.bus, ctx, [lives('Portland', JAN, 'extracted')]);
+      await engineRecord(h.bus, ctx, [lives('Seattle', MAR, 'agent')]);
+      await engineRecord(h.bus, ctx, [lives('Portland', SEP, 'extracted')]);
+
+      const body = await augment(h, ctx);
+      const profile = body.slice(body.indexOf('### Profile'), body.indexOf('### Recent'));
+      expect(profile).toContain('- lives_in: Seattle');
+      expect(profile).not.toContain('Portland');
+    });
+
     // The regression the case above does NOT catch, because two rows fit under
     // any limit. The profile query's FETCH limit has to be wider than the
     // RENDER limit: a slot can hold three active rows (§3.4 rule 3 closes a

@@ -2,9 +2,13 @@ import { SLOTS } from './slots.js';
 
 export interface ProfileRow {
   id: string;
+  about: string;
   slot?: string;
   provenance?: string;
+  value: string;
   when: string;
+  until?: string;
+  closedBy?: string;
 }
 
 /**
@@ -24,15 +28,16 @@ export interface ProfileRow {
 const SLOT_RANK = new Map<string, number>(SLOTS.map((slot, i) => [slot, i]));
 
 /**
- * Trust rank for picking ONE active row per slot. Higher wins.
+ * Trust rank. Used two ways, and only two:
  *
- * Two active rows can legitimately share a slot: §3.4's rule 3 closes a row
- * only with one of equal-or-higher provenance, so a `human` row and a later
- * `extracted` row about the same slot both stay active — that immunity is the
- * whole reason a person's correction survives the next chat mention. The
- * profile renders one line per slot, so it has to pick, and picking anything
- * other than the highest-provenance row would undo the immunity at render
- * time and show the person the correction they already overrode.
+ * - by {@link rementionedSlotRows}, to ask whether a re-mention sits under a
+ *   higher-provenance active row (the recall path);
+ * - by {@link selectProfileRows}, to single out `human` rows (a person's own
+ *   edit is authoritative) and to break a tie on `when`.
+ *
+ * It is NOT "highest provenance wins the profile" any more (TASK-602): among
+ * non-human rows the newest non-re-mention value wins. Storage rule 3 is a
+ * separate thing and still uses `human > agent > extracted` for closure.
  */
 const PROVENANCE_RANK = new Map<string, number>([
   ['human', 3],
@@ -41,6 +46,8 @@ const PROVENANCE_RANK = new Map<string, number>([
 ]);
 
 export interface SlotGroupRow {
+  /** Present on every stored row; lets the profile pick look up a closer. */
+  id?: string;
   about: string;
   slot?: string;
   provenance?: string;
@@ -118,26 +125,92 @@ export function rementionedSlotRows<T extends SlotGroupRow>(
   );
 }
 
-/** Higher provenance wins; equal provenance, the later `when`; then the id, for stability. */
+/**
+ * One active row per slot — the row the profile SHOWS (TASK-602 ruling).
+ *
+ * Two active rows can share a single-valued slot, because §3.4's rule 3 closes
+ * a row only with one of equal-or-higher provenance: a later `extracted` row
+ * cannot close an `agent` or `human` one. That storage rule is unchanged. What
+ * the profile renders from the survivors is decided here:
+ *
+ * 1. **A person's own edit (`human`) is authoritative.** If the slot holds any
+ *    active human row, the newest human row is shown, whatever came after it.
+ *    This is the immunity that lets a correction survive the next chat mention.
+ * 2. **Otherwise the newest value wins** — an `agent` note is model output
+ *    too, and "I moved to Tacoma" in a later chat must replace the agent's
+ *    older "Seattle" (the TASK-596 walk found it did not).
+ * 3. **Except a re-mention.** A candidate whose value was already REPLACED in
+ *    the same `(about, slot)` chain (a closed row with a `closedBy` successor)
+ *    is the stale value coming back, not news, so it does not count as newer —
+ *    the same test `rementionedSlotRows` applies on the recall path. A
+ *    forgotten value (closed with no successor) is not a replaced one.
+ *
+ * Ties on `when` go to the higher provenance, then the id, so the pick is
+ * stable across input order.
+ *
+ * `history` is every row, active and closed, of the slot chains — read
+ * separately by the caller, because the replaced row sits outside an
+ * active-only page. Without it no candidate can be recognised as a re-mention
+ * and the newest non-human value simply wins. Closed rows passed in `rows`
+ * are never candidates and also count as history.
+ */
 export function selectProfileRows<T extends ProfileRow>(
   rows: readonly T[],
   limit: number,
+  history: readonly SlotGroupRow[] = [],
 ): T[] {
-  const bySlot = new Map<string, T>();
-  for (const row of rows) {
+  const chainKey = (row: { about: string; slot?: string }): string =>
+    JSON.stringify([row.about, row.slot]);
+  const known = [...history, ...rows];
+  const byId = new Map<string, SlotGroupRow>();
+  for (const row of known) if (typeof row.id === 'string') byId.set(row.id, row);
+  const replaced = new Map<string, Set<string>>();
+  for (const row of known) {
     if (typeof row.slot !== 'string' || row.slot === '') continue;
-    const held = bySlot.get(row.slot);
-    const rank = PROVENANCE_RANK.get(row.provenance ?? '') ?? 0;
-    const heldRank = PROVENANCE_RANK.get(held?.provenance ?? '') ?? 0;
-    if (
-      held === undefined ||
-      rank > heldRank ||
-      (rank === heldRank &&
-        (row.when > held.when || (row.when === held.when && row.id > held.id)))
-    )
-      bySlot.set(row.slot, row);
+    if (row.until === undefined || typeof row.closedBy !== 'string') continue;
+    // Closed by a restatement of the SAME value is not a replacement of it:
+    // an agent note that says "Seattle" again must not turn itself into a
+    // re-mention of the extracted "Seattle" it closed.
+    const successor = byId.get(row.closedBy);
+    if (successor !== undefined && sameValue(successor.value) === sameValue(row.value)) continue;
+    const values = replaced.get(chainKey(row)) ?? new Set<string>();
+    values.add(sameValue(row.value));
+    replaced.set(chainKey(row), values);
   }
-  return [...bySlot.entries()]
+
+  const bySlot = new Map<string, T[]>();
+  for (const row of rows) {
+    if (typeof row.slot !== 'string' || row.slot === '' || row.until !== undefined) continue;
+    const bucket = bySlot.get(row.slot);
+    if (bucket === undefined) bySlot.set(row.slot, [row]);
+    else bucket.push(row);
+  }
+
+  const rankOf = (row: ProfileRow): number => PROVENANCE_RANK.get(row.provenance ?? '') ?? 0;
+  const HUMAN = PROVENANCE_RANK.get('human')!;
+  // Newest first; equal `when` → higher provenance; then the id.
+  const newer = (a: T, b: T): boolean =>
+    a.when > b.when ||
+    (a.when === b.when && (rankOf(a) > rankOf(b) || (rankOf(a) === rankOf(b) && a.id > b.id)));
+  const newest = (candidates: readonly T[]): T =>
+    candidates.reduce((held, row) => (newer(row, held) ? row : held));
+
+  const picked = new Map<string, T>();
+  for (const [slot, candidates] of bySlot) {
+    const human = candidates.filter((row) => rankOf(row) >= HUMAN);
+    if (human.length > 0) {
+      picked.set(slot, newest(human));
+      continue;
+    }
+    const fresh = candidates.filter(
+      (row) => replaced.get(chainKey(row))?.has(sameValue(row.value)) !== true,
+    );
+    // Every candidate a re-mention: there is no fresh value to prefer, so fall
+    // back to the plain newest rather than showing nothing.
+    picked.set(slot, newest(fresh.length > 0 ? fresh : candidates));
+  }
+
+  return [...picked.entries()]
     // Sort comparator over slot names; unknown slots sort last, then by name.
     .sort(
       ([a], [b]) =>
@@ -146,4 +219,22 @@ export function selectProfileRows<T extends ProfileRow>(
     )
     .slice(0, limit)
     .map(([, row]) => row);
+}
+
+/**
+ * True when some slot holds two or more active non-human rows — the only case
+ * in which {@link selectProfileRows} consults `history` (a human row decides
+ * its slot outright, and a lone candidate has nothing to beat). Lets a caller
+ * skip the extra chain read in the common case.
+ */
+export function hasContestedSlot(rows: readonly ProfileRow[]): boolean {
+  const HUMAN = PROVENANCE_RANK.get('human')!;
+  const humanSlots = new Set<string>();
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    if (typeof row.slot !== 'string' || row.slot === '' || row.until !== undefined) continue;
+    if ((PROVENANCE_RANK.get(row.provenance ?? '') ?? 0) >= HUMAN) humanSlots.add(row.slot);
+    else counts.set(row.slot, (counts.get(row.slot) ?? 0) + 1);
+  }
+  return [...counts].some(([slot, n]) => n >= 2 && !humanSlots.has(slot));
 }
