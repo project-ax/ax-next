@@ -129,3 +129,20 @@ describe('selectProfileRows — a same-value restatement is not a replacement', 
     ).toEqual(['Seattle']);
   });
 });
+
+describe('selectProfileRows — value comparison stays linear (CodeQL js/polynomial-redos)', () => {
+  it('compares a value with a long run of punctuation not at the end in well under a second', () => {
+    // A regex like /[.!,;:]+$/ backtracks quadratically on "!!!…!x": every
+    // start position scans the whole run before failing at the "x".
+    const hostile = `${'!'.repeat(50_000)}x`;
+    const replaced = r('p1', hostile, '2026-01-01T00:00:00.000Z', 'extracted', {
+      until: '2026-02-01T00:00:00.000Z',
+      closedBy: 's',
+    });
+    const seattle = r('s', 'Seattle', '2026-02-01T00:00:00.000Z', 'agent');
+    const again = r('p2', `${hostile}!!`, '2026-06-01T00:00:00.000Z', 'extracted');
+    const started = performance.now();
+    expect(pick([seattle, again], [replaced, seattle, again])).toEqual(['Seattle']);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+});

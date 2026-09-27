@@ -56,9 +56,17 @@ export interface SlotGroupRow {
   closedBy?: string;
 }
 
+const TRAILING_PUNCTUATION = new Set(['.', '!', ',', ';', ':']);
+
 /** Case, whitespace and trailing punctuation don't make a value different. */
 function sameValue(value: string): string {
-  return value.toLowerCase().replace(/\s+/g, ' ').trim().replace(/[.!,;:]+$/, '');
+  const collapsed = value.toLowerCase().replace(/\s+/g, ' ').trim();
+  // Trailing punctuation stripped by a backwards scan, not `/[.!,;:]+$/`:
+  // that regex backtracks quadratically on a long punctuation run that is
+  // not at the end, and `value` is model output (CodeQL js/polynomial-redos).
+  let end = collapsed.length;
+  while (end > 0 && TRAILING_PUNCTUATION.has(collapsed[end - 1]!)) end -= 1;
+  return collapsed.slice(0, end);
 }
 
 /**
