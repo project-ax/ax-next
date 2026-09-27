@@ -345,7 +345,7 @@ Every rung has a gate and a price, and any rung can end it. Cheapest first, whic
 | **3 — Product layer** | Observer → rewrite → normalize → record; block; `memory_recall`; `memory_note`; export; UI; `memory:recall/remember/forget` | build | Unit + reachable from the canary acceptance test (invariant 3) |
 | **4 — Product e2e, like-for-like** | Strata's own e2e bench with an *agent* holding `memory_recall`, n=100, two answer arms | ~$1 | **Accuracy ≥ 76.0% replicated across arms**; tool-call rate, tool calls/question, $/100q, recall p95 (< the planner's 1.6 s) all reported |
 | **5 — Walk on kind** | Day-one empty state; profile after one chat; correction survives re-mention; Forget; History; export visible from the runner; `rules.md` unwritable from the sandbox | walk | Passes |
-| **6 — Lifetime soak** | The full corpus as one bank (130k rows): §7's numbers | ~$0 | Produces the numbers the forgetting decision was deferred *for* |
+| **6 — Lifetime soak** | The full corpus as one bank (130k rows): §7's numbers. *As run (TASK-520): the 130k extraction cache was gone, so rung 4's 32.5k real facts plus synthetic filler; measured to 50k before the disk guard stopped it — `2026-09-26-dem-rung6-lifetime-soak-report.md`* | ~$0 (actual $0.44) | Produces the numbers the forgetting decision was deferred *for* |
 
 **What stops it.** Rung 1 losing accuracy. Rung 4 below Strata, or a tool-call rate that says the agent doesn't search without a map — the digest upgrade is the next experiment, not a rewrite. Rung 6 showing recall latency growing with store size faster than a lifetime tolerates.
 
