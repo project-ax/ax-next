@@ -7,6 +7,7 @@ import {
 } from '@ax/core';
 
 import { resolveMemoryAccess } from './access.js';
+import { conversationField } from './conversation.js';
 import { isMissingCredential, memoryFailureEvent, NOTE_FAILED_EVENT } from './failure.js';
 import { PLUGIN_NAME } from './plugin-name.js';
 import { deriveSlot } from './slots.js';
@@ -174,9 +175,8 @@ export async function registerMemoryNote(
               ...(slot !== null ? { slot } : {}),
               provenance: 'agent',
               ownerUserId: access.userId,
-              ...(ctx.conversationId !== undefined
-                ? { conversationId: ctx.conversationId }
-                : {}),
+              // Not a routine run's hidden conversation (TASK-616).
+              ...conversationField(ctx),
             },
           ],
         });

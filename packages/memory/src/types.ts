@@ -82,7 +82,9 @@ export interface MemoryStatement {
    * page), and it reveals nothing about WHICH conversation a row came from —
    * the raw conversation id never reaches this payload. Absent when the row
    * was recorded outside a conversation (`memory:remember`, `memory_note`
-   * without one).
+   * without one) or during a routine run, whose hidden per-fire conversation
+   * is not one the person had (TASK-616) — otherwise skill-reflection's own
+   * passes would count toward the gate below.
    *
    * Exists so recurrence — "this procedure showed up in 2+ distinct
    * conversations", the gate the `skill-reflection` routine reads — is

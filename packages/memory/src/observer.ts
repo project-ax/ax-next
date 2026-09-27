@@ -104,8 +104,19 @@ export interface RunObserverInput {
   record: ObserverRecordFn;
   /** Owner of every statement this batch writes. From `ctx`, never a payload. */
   ownerUserId: string;
-  /** Provenance only, never a retrieval key. Absent on a turn with no conversation. */
+  /**
+   * The turn's conversation, as the batch IDENTITY: hashed into `batchKey`.
+   * Absent on a turn with no conversation.
+   */
   conversationId?: string | undefined;
+  /**
+   * The conversation the stored statements are ATTRIBUTED to — provenance
+   * only, never a retrieval key. Usually `conversationId`; absent for a
+   * routine turn, which is not a conversation the person had (TASK-616,
+   * `conversation.ts`). Kept apart from `conversationId` so the dedup key
+   * does not change with it.
+   */
+  statementConversationId?: string | undefined;
   /** Model id passed verbatim to `llm:call:<provider>`. */
   model: string;
   /** Injected for deterministic tests. */
@@ -141,7 +152,7 @@ export async function runObserver(input: RunObserverInput): Promise<ObserverResu
 
   const mapped = toStatements(extraction.facts, {
     ownerUserId: input.ownerUserId,
-    conversationId: input.conversationId,
+    conversationId: input.statementConversationId,
   });
   if (mapped.statements.length === 0) {
     // "The extractor found nothing durable" and "the extractor found things

@@ -68,8 +68,11 @@ What the data can and cannot tell apart:
   rows extracted from reflection turns can carry two conversation numbers. The
   prompt excludes rows about reflection or skills, but that is a prose guard
   only. This is live on deployments the migration re-enables, not only after an
-  operator flip. The real fix is an observer skip for `ctx.source === 'routine'`,
-  deferred because TASK-612 owns the observer right now.
+  operator flip. Deferred here because TASK-612 owned the observer at the time.
+  **Fixed by TASK-616:** rows written during a routine turn (observer,
+  `memory_note`, `memory:remember`) are still stored but carry no
+  conversation, so they render as `-` and are not counted. Rows written
+  before that fix keep their routine conversation.
 - **Page-bounded.** Two genuine occurrences must land in ONE recall page (15 by
   default, 40 at most). This errs towards false negatives, the safe direction for
   a gate on auto-active skills.
