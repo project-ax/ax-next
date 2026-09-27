@@ -4,6 +4,7 @@ export {
   MEMORY_RECALL_HOOK,
   MEMORY_REMEMBER_HOOK,
   MEMORY_FORGET_HOOK,
+  MEMORY_STATUS_HOOK,
   FACTS_RECALL_HOOK,
   FACTS_RECORD_HOOK,
   FACTS_SUPERSEDE_HOOK,
@@ -112,4 +113,5 @@ export type {
   MemoryRememberOutput,
   MemoryForgetInput,
   MemoryForgetOutput,
+  MemoryStatusOutput,
 } from './types.js';

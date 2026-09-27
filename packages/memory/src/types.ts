@@ -162,6 +162,18 @@ export interface MemoryForgetInput {
 export type MemoryForgetOutput = Record<string, never>;
 
 /**
+ * `memory:status` output — whether background extraction is working for the
+ * CALLER. Answers only for `ctx.userId`; the input carries no user id, so no
+ * caller can probe another person's state.
+ *
+ * `'ok'` means "not known to be paused", not "verified working": right after
+ * a host restart, before any `chat:end` has run, every user reads `'ok'`.
+ */
+export type MemoryStatusOutput =
+  | { extraction: 'paused'; reason: 'missing-credential' }
+  | { extraction: 'ok' };
+
+/**
  * How many statements `memory:recall` returns when the caller names no limit.
  * A ceiling the engine may lower further; never a target.
  */

@@ -17,6 +17,8 @@ describe('@ax/memory — manifest', () => {
       'memory:recall',
       'memory:remember',
       'memory:forget',
+      // The per-user "extraction paused" signal the UI reads.
+      'memory:status',
       // TASK-491, design 4.1. A SINGLE-provider service hook, which is what
       // makes `@ax/memory` and `@ax/memory-strata` mutually exclusive in a
       // preset -- 10.4's "one memory plugin per preset" enforced by the bus
@@ -53,6 +55,7 @@ describe('@ax/memory — manifest', () => {
         'memory:recall',
         'memory:remember',
         'memory:forget',
+        'memory:status',
         'system-prompt:augment',
         'tool:register',
         'tool:execute:memory_recall',

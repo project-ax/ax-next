@@ -730,10 +730,12 @@ skills:
 memory:
   orchestratorModel: ""
   # host.preset=memory needs ONE provider credential: `provider:openrouter`,
-  # stored through the admin Provider keys screen. It drives the observer's
-  # extraction model, embeddings (google/gemini-embedding-001) and reranking
-  # (voyageai/rerank-2.5). Without it recall still answers, lexically, and says
-  # so: degraded ["semantic", "ranking"]. There is nothing to set here for it.
+  # stored through Admin → AI model keys. It drives the observer's extraction
+  # model, embeddings (google/gemini-embedding-001) and reranking
+  # (voyageai/rerank-2.5). Without it nothing new is remembered (the Memory tab
+  # says "Memory is paused") and recall still answers, lexically, and says so:
+  # degraded ["semantic", "ranking"]. There is nothing to set here for it, and
+  # nothing validatePreset can check: the key lives in the credential store.
   facts:
     storage: 10Gi
     storageClassName: ''

@@ -639,6 +639,14 @@ interface MemoryRulesWriteOutput {
 interface MemoryLearnedReadOutput {
   docs: Array<{ name: string; body: string }>;
 }
+/**
+ * The memory engine's `memory:status` — ctx-only (it answers for the caller
+ * ctx's user), so the input is empty. Its reply is declared here for the
+ * reader but validated as `unknown` at the call site, because it crossed the
+ * bus: `{ extraction: 'paused'; reason: 'missing-credential' } |
+ * { extraction: 'ok' }`.
+ */
+type MemoryStatusInput = Record<string, never>;
 
 /**
  * The decision row as @ax/decisions stores it — the FULL one, `call` and all.
@@ -3000,15 +3008,38 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
     }
 
+    const factsAvailable = bus.hasService('memory:recall');
+
+    // Is the memory engine still learning for THIS user? `memory:status` is
+    // optional (gated like every memory hook here), and its reply crossed the
+    // bus, so only an exact `'paused'` sets the flag. A failed read omits it —
+    // "not known to be paused" — rather than failing the whole workspace read.
+    let factsExtractionPaused = false;
+    if (factsAvailable && bus.hasService('memory:status')) {
+      try {
+        const out = await bus.call<MemoryStatusInput, unknown>('memory:status', ctx, {});
+        factsExtractionPaused =
+          typeof out === 'object' &&
+          out !== null &&
+          (out as { extraction?: unknown }).extraction === 'paused';
+      } catch (err) {
+        initCtx.logger.warn('workspace_memory_status_read_failed', {
+          agentId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     return {
       rules,
       learned,
-      ...(bus.hasService('memory:recall')
+      ...(factsAvailable
         ? {
             factsAvailable: true,
             ...(agent.visibility === 'personal' || agent.visibility === 'team'
               ? { factsVisibility: agent.visibility }
               : {}),
+            ...(factsExtractionPaused ? { factsExtraction: 'paused' as const } : {}),
           }
         : {}),
     };

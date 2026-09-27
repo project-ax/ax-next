@@ -61,11 +61,11 @@ kubectl --context kind-ax-next-dev -n ax-next exec deploy/ax-next-host -c host -
   speaking NFS directly gets `Permission denied`. Runners reach the export only
   through their read-only `/memory` mount.
 - **The memory preset needs one credential, and it is OpenRouter.**
-  `provider:openrouter`, stored through the admin Provider keys screen, drives
-  the observer's extraction model, embeddings and reranking. Without it,
+  `provider:openrouter`, stored through Admin → AI model keys, drives the
+  observer's extraction model, embeddings and reranking. Without it,
   nothing is extracted from conversations (the host logs
-  `memory_no_llm_credential`) and recall answers lexically with
-  `degraded: ["semantic", "ranking"]`.
+  `memory_no_llm_credential`, and the Memory tab says "Memory is paused") and
+  recall answers lexically with `degraded: ["semantic", "ranking"]`.
 - **Changing the embedding model wipes the stored vectors.** The fact store
   remembers which model made its vectors; on a mismatch it drops them all
   rather than compare two incompatible vector spaces, and re-embeds each

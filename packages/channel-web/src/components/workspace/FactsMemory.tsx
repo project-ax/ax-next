@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -146,6 +146,20 @@ function DegradedNotice() {
   );
 }
 
+function ExtractionPausedNotice() {
+  return (
+    <Alert>
+      <AlertTitle>Memory is paused</AlertTitle>
+      <AlertDescription>
+        We&apos;re not picking up anything new from your conversations right now, because
+        this workspace doesn&apos;t have an OpenRouter key yet. An admin can add one under
+        Admin → AI model keys, and memory starts again with the next conversation.
+        Anything already saved here still works.
+      </AlertDescription>
+    </Alert>
+  );
+}
+
 function EmptyMemories({ children }: { children: string }) {
   return (
     <Empty>
@@ -230,9 +244,11 @@ function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry }: Memor
   const bump = () => setRefresh((n) => n + 1);
   const [editTarget, setEditTarget] = useState<MutationTarget | null>(null);
   const [forgetTarget, setForgetTarget] = useState<MutationTarget | null>(null);
+  const extractionPaused = memory.factsExtraction === 'paused';
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-8 overflow-y-auto px-6 py-6">
+      {extractionPaused && <ExtractionPausedNotice />}
       {rules.status === 'ok' && rules.doc !== null ? (
         <RulesEditor
           agentName={agentName}
@@ -265,6 +281,7 @@ function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry }: Memor
         agentId={agentId}
         refresh={refresh}
         visibility={visibility}
+        extractionPaused={extractionPaused}
         onEdit={(row) => setEditTarget({ row })}
         onForget={(row) => setForgetTarget({ row })}
       />
@@ -303,12 +320,14 @@ function ProfileCard({
   agentId,
   refresh,
   visibility,
+  extractionPaused = false,
   onEdit,
   onForget,
 }: {
   agentId: string;
   refresh: number;
   visibility: FactsVisibility;
+  extractionPaused?: boolean;
   onEdit: (row: FactMemoryStatement) => void;
   onForget: (row: FactMemoryStatement) => void;
 }) {
@@ -355,7 +374,10 @@ function ProfileCard({
         {state.status === 'ready' && (
           <>
             {state.data.degraded.length > 0 && <DegradedNotice />}
-            {rows.length === 0 ? (
+            {rows.length === 0 && extractionPaused ? (
+              // Paused: the notice above explains why; don't promise what won't happen.
+              <EmptyMemories>No profile memories yet.</EmptyMemories>
+            ) : rows.length === 0 ? (
               <EmptyMemories>
                 No profile memories yet. Details we remember from your conversations will
                 appear here.
