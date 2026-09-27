@@ -22,6 +22,11 @@ export const RULES_WRITE_HOOK = 'memory:rules:write';
  * next turn boundary, and the fresh spawn re-builds the prompt. Generic on
  * purpose: nothing in the name or payload is about memory or files, so any
  * augment provider can announce a change.
+ *
+ * Fired on the in-process bus, so only this host process hears it. That is
+ * complete because the host is single-replica (the k8s chart's
+ * `ax-next.validateHostReplicas` refuses more — TASK-617); a multi-replica
+ * host would have to carry it across replicas.
  */
 export const SYSTEM_PROMPT_AUGMENT_CHANGED_HOOK = 'system-prompt:augment-changed';
 

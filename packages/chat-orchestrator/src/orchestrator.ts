@@ -1589,9 +1589,12 @@ export function createOrchestrator(
   // process did not spawn has no record and counts as stale once the agent has
   // any change — conservative, worst case one extra re-spawn. Counters, not
   // timestamps, so there is no clock to skew. In-memory + single-replica, same
-  // posture as `respawnSessions` and the warm-session map — which means a
-  // second host replica would not see a save handled by another replica (see
-  // the TASK-612 follow-up). `augmentGenByAgent` is never pruned: one small
+  // posture as `respawnSessions` and the warm-session map. A second host
+  // replica would not see a save handled by another replica, which is one of
+  // the reasons the k8s chart refuses to render replicas > 1
+  // (`ax-next.validateHostReplicas`, TASK-617). Lifting that guard means
+  // routing this event (and the warm-session map) across replicas first.
+  // `augmentGenByAgent` is never pruned: one small
   // entry per agent that ever had a change, bounded by the agent population.
   const augmentGenByAgent = new Map<string, number>();
   const augmentGenBySession = new Map<string, number>();

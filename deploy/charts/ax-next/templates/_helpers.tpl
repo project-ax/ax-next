@@ -442,6 +442,15 @@ silently breaks. The host PVC (workspace.backend=local) is also RWO and the
 Deployment strategy is Recreate, so multi-replica isn't supported at the
 storage tier either.
 
+The chat stream is not the only replica-local state this guard protects. Lifting
+it also needs, at minimum (each is in-process today and says so at its site):
+  - @ax/chat-orchestrator's warm-session map and its `respawnSessions` /
+    augment-generation maps. A Rules save fires
+    `system-prompt:augment-changed` in-process only on the replica that
+    handled it (@ax/memory rules.ts), so a session warm on another replica
+    would keep its stale Rules (TASK-617).
+  - @ax/memory's per-user "extraction paused" status (`memory:status`).
+
 So we refuse to render a multi-replica host until a distributed stream broker
 (and a multi-replica workspace backend) lands. Better to fail the `helm
 template` than to ship a valid-looking Deployment that drops chat streams.
