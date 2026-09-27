@@ -46,6 +46,7 @@ import type {
   ResolveMountsInput,
   ResolveMountsOutput,
 } from '@ax/sandbox-mount-protocol';
+import { OLD_MEMORY_WIPE_HOOKS, runOldMemoryWipe } from './old-memory-wipe.js';
 import {
   registerSystemPromptAugment,
   RULES_READ_HOOK,
@@ -234,6 +235,13 @@ export interface MemoryPluginConfig {
   block?: MemoryBlockConfig;
   exports?: MemoryExportConfig;
   rules?: boolean;
+  /**
+   * TASK-576: run the one-time, IRREVERSIBLE wipe of old (Strata) memory at
+   * the end of `init()` — see `old-memory-wipe.ts` for exactly what goes.
+   * Off by default; the memory preset turns it on. When on, the boot does not
+   * finish until the wipe has, and a failed wipe fails the boot.
+   */
+  wipeOldMemory?: boolean;
 }
 
 const DEFAULT_MAX_RECALL_LIMIT = 100;
@@ -345,6 +353,14 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
     });
   }
 
+  if (config.wipeOldMemory !== undefined && typeof config.wipeOldMemory !== 'boolean') {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: `wipeOldMemory must be a boolean when set (got ${typeof config.wipeOldMemory})`,
+    });
+  }
+
   const exportsCfg = config.exports;
   if (
     exportsCfg !== undefined &&
@@ -398,6 +414,10 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           : config.rules === true
             ? ['workspace:read', 'workspace:apply']
             : []),
+        // Hard, and only when the one-time wipe is on: a wipe that cannot
+        // reach any one of these cannot run, and a boot that silently skipped
+        // it would serve agents their old memory.
+        ...(config.wipeOldMemory === true ? OLD_MEMORY_WIPE_HOOKS : []),
       ],
       // The extraction provider is OPTIONAL, and that asymmetry with the
       // three engine hooks above is deliberate. A memory surface with no
@@ -1001,6 +1021,16 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
       if (config.rules === true) registerRulesHooks(bus);
       await registerMemoryRecall(bus);
       await registerMemoryNote(bus, onFactsChanged);
+
+      // TASK-576: the one-time wipe of old memory. LAST, after every
+      // registerService above, and awaited: init must not resolve (and the
+      // host must not serve) until it has finished, and any failure rejects
+      // init. A no-op single storage read on every boot after the first.
+      if (config.wipeOldMemory === true) {
+        await runOldMemoryWipe(bus, {
+          ...(exportsCfg?.volume !== undefined ? { volume: exportsCfg.volume } : {}),
+        });
+      }
     },
 
     async shutdown() {

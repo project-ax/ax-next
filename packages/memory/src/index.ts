@@ -115,3 +115,14 @@ export type {
   MemoryForgetOutput,
   MemoryStatusOutput,
 } from './types.js';
+export {
+  OLD_MEMORY_WIPE_COHORT_KEY,
+  OLD_MEMORY_WIPE_COMPLETE_KEY,
+  OLD_MEMORY_WIPE_HOOKS,
+  OLD_MEMORY_WIPE_KEEP,
+  OLD_MEMORY_WIPE_PREFIXES,
+  OLD_MEMORY_WIPED_EVENT,
+  oldMemoryWipeDoneKey,
+  runOldMemoryWipe,
+} from './old-memory-wipe.js';
+export type { OldMemoryWipeOptions, OldMemoryWipeResult } from './old-memory-wipe.js';
