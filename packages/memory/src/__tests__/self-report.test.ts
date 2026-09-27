@@ -39,6 +39,11 @@ describe('isAgentContextSelfReport', () => {
     ['stated', "hasn't received any instructions"],
     ['stated', 'I never received any instructions'],
     ['stated', 'has not been told any rules'],
+    ['stated', 'I have no instructions to follow'],
+    ['stated', 'I have no rules to go by'],
+    ['stated', 'no rules to speak of'],
+    ['stated', 'I have no rules in place'],
+    ['stated', 'there are no rules around here for me'],
     ['stated', 'I was not provided any rules'],
     ['stated', 'I have not been provided any instructions'],
     // "for/of/on/about" + the agent's OWN scope is still a self-report; only a

@@ -60,14 +60,17 @@ const AGENT_SUBJECTS = new Set([
 // The `\b` before the lookahead matters: without it the engine backtracks to
 // "rule" + "s of thumb" and the lookahead never sees " of".
 //
-// "for/of/on/about" + a TOPIC ("rules of chess", "instructions for the desk")
-// is content. The same words + the agent's OWN scope ("no rules for this
-// conversation", "no instructions on what to do", "rules for you yet") are
-// still a self-report, so the exclusion only applies when what follows is not
-// one of those scope words. Accepted limitation: "no instructions for the
+// "for/of/on/about/in/against" + a TOPIC ("rules of chess", "instructions for
+// the desk", "rules in baseball", "rules against it") is content. The same
+// words + the agent's OWN scope ("no rules for this conversation", "no
+// instructions on what to do", "no rules in place") are still a self-report,
+// so the exclusion only applies when what follows is not a scope word.
+// Deliberately NOT excluded: "to" and "around" — "no instructions to follow",
+// "no rules to speak of", "no rules around here" are the agent's own context
+// far more often than a topic. Accepted limitation: "no instructions for the
 // task" reads as a topic and is kept.
-const SELF_SCOPE = String.raw`(?:you|me|us|this|our|now|yet|how|what)\b`;
-const RULES = String.raw`(?:rules?|instructions?)\b(?! (?:of|for|on|about|in|against|around|to) (?!${SELF_SCOPE}))`;
+const SELF_SCOPE = String.raw`(?:you|me|us|this|our|now|yet|how|what|place|here)\b`;
+const RULES = String.raw`(?:rules?|instructions?)\b(?! (?:of|for|on|about|in|against) (?!${SELF_SCOPE}))`;
 // "memory" the product ("memory foam", "a memory card") is not the agent's.
 const MEMORY = String.raw`(?:memor(?:y|ies)\b(?! (?:foam|cards?|sticks?|lanes?|leaks?|games?|loss|palace)\b)|(?:saved facts|(?:prior|previous) (?:conversations?|sessions?|chats?))\b)`;
 const NEGATION = String.raw`(?:don't|do not|doesn't|does not|cannot|can't|haven't|have not|hasn't|has not|hadn't|had not|wasn't|was not|weren't|were not|never|has no|have no|had no|without)`;
