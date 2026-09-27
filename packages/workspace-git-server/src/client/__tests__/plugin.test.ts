@@ -118,6 +118,7 @@ describe('createWorkspaceGitServerPlugin — manifest', () => {
       'workspace:read',
       'workspace:list',
       'workspace:diff',
+      'workspace:purge',
     ]);
     expect(plugin.manifest.calls).toEqual([]);
     expect(plugin.manifest.subscribes).toEqual([]);

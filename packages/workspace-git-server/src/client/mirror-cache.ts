@@ -74,6 +74,17 @@ export interface MirrorCache {
     workspaceId: string,
     fn: (handle: MirrorHandle) => Promise<T>,
   ): Promise<T>;
+  /**
+   * Drop `workspaceId`'s mirror and DELETE its directory (TASK-576: after the
+   * storage tier rewrote that workspace's history, the mirror still holds the
+   * erased objects, and a pinned read of an old version is served from it
+   * without a fetch). The entry is detached synchronously, so every
+   * `withMirror` that starts after this call builds a fresh mirror; the old
+   * directory is removed once every op already running against it has
+   * released its pin. Resolves when the old directory is gone. A no-op for an
+   * id with no mirror.
+   */
+  invalidate(workspaceId: string): Promise<void>;
   shutdown(): Promise<void>;
 }
 
@@ -143,6 +154,13 @@ export function createMirrorCache(
   // decremented on exit (success OR failure). Eviction skips entries with
   // pinCount > 0 so an in-flight git op can't get its dir rm'd from under it.
   const pinCount = new Map<string, number>();
+  // Per-HANDLE pins (TASK-576). `pinCount` is per id, which cannot tell the
+  // old mirror's users from the fresh one's after an `invalidate`. These
+  // count only ops holding a specific handle, so an invalidated handle's dir
+  // is removed exactly when its last user lets go.
+  const handlePins = new Map<MirrorHandle, number>();
+  const retired = new WeakSet<MirrorHandle>();
+  const drainWaiters = new Map<MirrorHandle, () => void>();
   let closed = false;
 
   function bump(workspaceId: string): void {
@@ -258,12 +276,28 @@ export function createMirrorCache(
     // `withMirror(otherId)` that arrives during our `acquireInternal` await.
     pinCount.set(workspaceId, (pinCount.get(workspaceId) ?? 0) + 1);
     try {
-      const handle = await acquireInternal(workspaceId);
-      // Run eviction once the new entry is in place. With pins respected,
-      // we won't evict ourselves here; we may evict OTHER unpinned entries
-      // that pushed us over the cap.
-      await evictLruIfOver();
-      return await fn(handle);
+      let handle = await acquireInternal(workspaceId);
+      // An `invalidate` may have retired this handle while we awaited it.
+      // Its entry is already detached, so re-acquiring builds a fresh one.
+      while (retired.has(handle)) handle = await acquireInternal(workspaceId);
+      // Synchronously after the check — no await in between — so an
+      // `invalidate` either retired it before (we looped) or sees our pin.
+      handlePins.set(handle, (handlePins.get(handle) ?? 0) + 1);
+      try {
+        // Run eviction once the new entry is in place. With pins respected,
+        // we won't evict ourselves here; we may evict OTHER unpinned entries
+        // that pushed us over the cap.
+        await evictLruIfOver();
+        return await fn(handle);
+      } finally {
+        const left = (handlePins.get(handle) ?? 1) - 1;
+        if (left <= 0) {
+          handlePins.delete(handle);
+          drainWaiters.get(handle)?.();
+        } else {
+          handlePins.set(handle, left);
+        }
+      }
     } finally {
       const n = pinCount.get(workspaceId) ?? 0;
       if (n <= 1) {
@@ -278,6 +312,50 @@ export function createMirrorCache(
         await evictLruIfOver();
       }
     }
+  }
+
+  // Removals still in progress, so a second `invalidate` of the same id waits
+  // for the first one's directory to be gone instead of returning early.
+  const pendingRemovals = new Map<string, Promise<void>>();
+
+  function invalidate(workspaceId: string): Promise<void> {
+    const pending = pendingRemovals.get(workspaceId);
+    const inflight = entries.get(workspaceId);
+    if (inflight === undefined) return pending ?? Promise.resolve();
+    // Detach synchronously: from here on, `withMirror(workspaceId)` builds a
+    // NEW handle in a NEW directory (buildHandle mints a unique dir).
+    entries.delete(workspaceId);
+    const idx = accessOrder.indexOf(workspaceId);
+    if (idx >= 0) accessOrder.splice(idx, 1);
+    const mine = removeRetired(inflight);
+    // Wait for an earlier removal of the same id too; surface our own error.
+    const removal =
+      pending === undefined
+        ? mine
+        : Promise.allSettled([pending, mine]).then(() => mine);
+    pendingRemovals.set(workspaceId, removal);
+    const clear = (): void => {
+      if (pendingRemovals.get(workspaceId) === removal) pendingRemovals.delete(workspaceId);
+    };
+    removal.then(clear, clear);
+    return removal;
+  }
+
+  async function removeRetired(inflight: Promise<MirrorHandle>): Promise<void> {
+    let handle: MirrorHandle;
+    try {
+      handle = await inflight;
+    } catch {
+      return; // init failed; buildHandle already removed its partial dir
+    }
+    retired.add(handle);
+    if ((handlePins.get(handle) ?? 0) > 0) {
+      await new Promise<void>((resolve) => drainWaiters.set(handle, resolve));
+      drainWaiters.delete(handle);
+    }
+    // Not best-effort: a mirror we failed to delete still holds whatever the
+    // caller invalidated it to get rid of. Surface it.
+    await rm(handle.dir, { recursive: true, force: true });
   }
 
   async function shutdown(): Promise<void> {
@@ -304,5 +382,5 @@ export function createMirrorCache(
     }
   }
 
-  return { withMirror, shutdown };
+  return { withMirror, invalidate, shutdown };
 }

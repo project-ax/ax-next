@@ -13,8 +13,10 @@ import {
   asWorkspaceVersion,
   isOwnerlessId,
   registerWorkspaceApplyFacade,
+  validatePurgeSelector,
   WorkspaceDiffOutputSchema,
   WorkspaceListOutputSchema,
+  WorkspacePurgeOutputSchema,
   WorkspaceReadOutputSchema,
   type Bytes,
   type FileChange,
@@ -27,6 +29,8 @@ import {
   type WorkspaceDiffOutput,
   type WorkspaceListInput,
   type WorkspaceListOutput,
+  type WorkspacePurgeInput,
+  type WorkspacePurgeOutput,
   type WorkspaceReadInput,
   type WorkspaceReadOutput,
   type WorkspaceVersion,
@@ -37,6 +41,7 @@ import type {
   WorkspaceExportBaselineBundleInput,
   WorkspaceExportBaselineBundleOutput,
 } from '@ax/workspace-bundle-protocol';
+import { purgeHistoryPaths, type GitRunResult } from '@ax/workspace-git-purge';
 /**
  * Config for `registerWorkspaceGitHooks`. `repoRoot` is the absolute path to
  * the directory that holds this deployment's bare repos. Each AGENT gets its
@@ -352,6 +357,43 @@ function runGitBinary(
         stderr: Buffer.concat(err).toString('utf8'),
       }),
     );
+  });
+}
+
+/**
+ * The `runGit` handed to `purgeHistoryPaths` (TASK-576): same spawn discipline
+ * as `runGitBinary` — argv array, no shell, the locked-down GIT_PROCESS_ENV and
+ * nothing inherited — plus stdin, which `fast-import` needs for its stream.
+ * stdout stays binary: the purge algorithm parses raw path bytes.
+ */
+function runGitForPurge(
+  args: readonly string[],
+  opts?: { input?: Buffer },
+): Promise<GitRunResult> {
+  return new Promise((resolve, reject) => {
+    const input = opts?.input;
+    const child = spawn('git', [...args], {
+      env: { ...GIT_PROCESS_ENV },
+      stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+    });
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    child.stdout?.on('data', (c: Buffer) => out.push(c));
+    child.stderr?.on('data', (c: Buffer) => err.push(c));
+    child.once('error', reject);
+    child.once('close', (code) =>
+      resolve({
+        code,
+        stdout: Buffer.concat(out),
+        stderr: Buffer.concat(err).toString('utf8'),
+      }),
+    );
+    if (input !== undefined && child.stdin !== null) {
+      // A child that exits before draining stdin raises EPIPE here; its exit
+      // code is what the caller checks, so the pipe error itself is noise.
+      child.stdin.on('error', () => undefined);
+      child.stdin.end(input);
+    }
   });
 }
 
@@ -976,14 +1018,14 @@ export function registerWorkspaceGitHooks(
   function agentRepo(
     ctx: AgentContext,
     hookName: string,
-  ): { gitdir: string; mutex: Mutex } {
+  ): { gitdir: string; mutex: Mutex; workspaceId: string } {
     const workspaceId = requireAgent(ctx, hookName);
     let mutex = mutexes.get(workspaceId);
     if (mutex === undefined) {
       mutex = new Mutex();
       mutexes.set(workspaceId, mutex);
     }
-    return { gitdir: join(config.repoRoot, `${workspaceId}.git`), mutex };
+    return { gitdir: join(config.repoRoot, `${workspaceId}.git`), mutex, workspaceId };
   }
 
   // Resolve a version that callers may pass. `version` undefined → HEAD.
@@ -1233,6 +1275,73 @@ export function registerWorkspaceGitHooks(
       return { delta };
     },
     { returns: WorkspaceDiffOutputSchema },
+  );
+
+  // -------------------------------------------------------------------------
+  // workspace:purge (TASK-576) — irrecoverably erase a path selector from the
+  // tip AND every past version of the caller's workspace. Host-only: nothing
+  // in the IPC dispatcher routes to it (the runner-facing actions are an
+  // explicit allow-list in @ax/ipc-core), and it is called once per agent by
+  // the memory-retirement migration at host boot.
+  //
+  // Fail-closed ordering:
+  //   1. identity gate (same `requireAgent` as every other hook),
+  //   2. selector validation — rejected input never reaches storage,
+  //   3. the SAME per-repo mutex as apply/apply-bundle/export, so no write
+  //      lands between the history scan and the compare-and-swap of main,
+  //   4. a missing repo answers `version: null` WITHOUT being created
+  //      (`ensureRepo` is deliberately not called),
+  //   5. our own transient `refs/bundle/*` are cleared first — the purge
+  //      refuses any ref it does not know, because one would keep the old
+  //      history (and the erased bytes) reachable.
+  //
+  // Caches: this module keeps none keyed by version or snapshot. isomorphic-git
+  // is always called without a `cache` object and every read shells out to
+  // the git binary, so nothing in-process can serve pre-purge bytes afterwards.
+  // -------------------------------------------------------------------------
+  bus.registerService<WorkspacePurgeInput, WorkspacePurgeOutput>(
+    'workspace:purge',
+    PLUGIN_NAME,
+    async (ctx, input) => {
+      const { gitdir, mutex, workspaceId } = agentRepo(ctx, 'workspace:purge');
+      validatePurgeSelector(input);
+      const prefixes = [...input.prefixes];
+      const keep = [...(input.keep ?? [])];
+      return mutex.run(async () => {
+        if (!existsSync(join(gitdir, 'HEAD'))) {
+          return { purged: [], version: null, pastVersionsChanged: false };
+        }
+        try {
+          await clearBundleRefs(gitdir);
+          const result = await purgeHistoryPaths({
+            gitdir,
+            prefixes,
+            keep,
+            runGit: runGitForPurge,
+          });
+          return {
+            purged: result.purged,
+            version: result.version === null ? null : asWorkspaceVersion(result.version),
+            pastVersionsChanged: result.pastVersionsChanged,
+          };
+        } catch (err) {
+          if (err instanceof PluginError) throw err;
+          // The algorithm's messages name the failed step, never a path or
+          // git's stderr: the paths under the selector are the data being
+          // erased, so nothing here may echo them.
+          throw new PluginError({
+            code: 'purge-failed',
+            plugin: PLUGIN_NAME,
+            hookName: 'workspace:purge',
+            message: `workspace:purge failed for workspace ${workspaceId}: ${
+              err instanceof Error ? err.message : 'unknown error'
+            }`,
+            cause: err,
+          });
+        }
+      });
+    },
+    { returns: WorkspacePurgeOutputSchema },
   );
 
   bus.registerService<

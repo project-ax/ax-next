@@ -63,9 +63,12 @@ import {
   type WorkspaceDiffOutput,
   type WorkspaceListInput,
   type WorkspaceListOutput,
+  type WorkspacePurgeInput,
+  type WorkspacePurgeOutput,
   type WorkspaceReadInput,
   type WorkspaceReadOutput,
   type WorkspaceVersion,
+  validatePurgeSelector,
 } from '@ax/core';
 import type {
   WorkspaceApplyBundleInput,
@@ -989,6 +992,12 @@ export interface GitEngine {
   read(workspaceId: string, input: WorkspaceReadInput): Promise<WorkspaceReadOutput>;
   list(workspaceId: string, input: WorkspaceListInput): Promise<WorkspaceListOutput>;
   diff(workspaceId: string, input: WorkspaceDiffInput): Promise<WorkspaceDiffOutput>;
+  /**
+   * TASK-576: irreversibly erase a path selector from every version on the
+   * storage tier, then delete this host's mirror of the workspace. ONE
+   * attempt, no retry.
+   */
+  purge(workspaceId: string, input: WorkspacePurgeInput): Promise<WorkspacePurgeOutput>;
   shutdown(): Promise<void>;
   /**
    * @internal Test-only seam: returns the current size of the per-workspace
@@ -1787,6 +1796,68 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
     });
   };
 
+  // TASK-576. Runs as ONE op in the workspace's queue, so no read/list/diff/
+  // apply of this engine interleaves with it: everything queued before sees
+  // the pre-purge history, everything after sees a freshly built mirror.
+  //
+  // The mirror MUST go even when the request fails: a failure after the
+  // storage tier's branch swap (e.g. during compaction) leaves the history
+  // already rewritten, and the mirror would keep serving the erased objects
+  // to pinned reads, which skip the fetch. Deleting it only costs a refetch.
+  //
+  // Other host replicas' mirrors are NOT reached from here. The migration that
+  // calls this runs at host boot, and a booting host's mirror cache is a
+  // fresh per-process tempdir, so there is nothing stale to serve.
+  const purge = async (
+    workspaceId: string,
+    input: WorkspacePurgeInput,
+  ): Promise<WorkspacePurgeOutput> => {
+    guardClosed();
+    // Rejected input never reaches the queue, the network, or the mirror.
+    validatePurgeSelector(input);
+    const selector: { prefixes: string[]; keep?: string[] } = {
+      prefixes: [...input.prefixes],
+    };
+    if (input.keep !== undefined) selector.keep = [...input.keep];
+    return enqueue(workspaceId, async () => {
+      guardClosed();
+      let reply: Awaited<ReturnType<RepoLifecycleClient['purgeRepo']>>;
+      try {
+        try {
+          reply = await opts.lifecycleClient.purgeRepo(workspaceId, selector);
+        } finally {
+          await opts.mirrorCache.invalidate(workspaceId);
+        }
+      } catch (err) {
+        throw new PluginError({
+          code: 'purge-failed',
+          plugin: PLUGIN_NAME,
+          hookName: 'workspace:purge',
+          message: `workspace:purge failed for workspace ${workspaceId}: ${
+            err instanceof Error ? err.message : 'unknown error'
+          }`,
+          cause: err,
+        });
+      }
+      if (reply === null) {
+        return { purged: [], version: null, pastVersionsChanged: false };
+      }
+      if (reply.headOid !== null && !OID_RE.test(reply.headOid)) {
+        throw new PluginError({
+          code: 'purge-failed',
+          plugin: PLUGIN_NAME,
+          hookName: 'workspace:purge',
+          message: `workspace:purge for workspace ${workspaceId}: storage tier returned a malformed head`,
+        });
+      }
+      return {
+        purged: reply.purged,
+        version: reply.headOid === null ? null : asWorkspaceVersion(reply.headOid),
+        pastVersionsChanged: reply.rewritten,
+      };
+    });
+  };
+
   const shutdown = async (): Promise<void> => {
     if (closed) return;
     closed = true;
@@ -1808,6 +1879,7 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
     read,
     list,
     diff,
+    purge,
     shutdown,
     _internalQueueSize,
   };

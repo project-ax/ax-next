@@ -19,8 +19,9 @@ export interface WorkspaceGitConfig {
  * whole deployment before, which is how a user got served another user's
  * agent's file). Thin wrapper over `@ax/workspace-git-core` — registers the
  * four base `workspace:*` service hooks plus the two Phase 3 bundle hooks
- * (`workspace:apply-bundle` + `workspace:export-baseline-bundle`) against a
- * local repoRoot. Use this for the local CLI / single-pod deployments.
+ * (`workspace:apply-bundle` + `workspace:export-baseline-bundle`) and the
+ * host-only `workspace:purge` (TASK-576; irreversible history rewrite, never
+ * reachable from the runner IPC surface) against a local repoRoot. Use this for the local CLI / single-pod deployments.
  * Multi-replica deployments use `@ax/workspace-git-server` instead.
  *
  * Be precise about what the partition does and does not buy, because the
@@ -49,6 +50,7 @@ export function createWorkspaceGitPlugin(config: WorkspaceGitConfig): Plugin {
         'workspace:read',
         'workspace:list',
         'workspace:diff',
+        'workspace:purge',
       ],
       calls: [],
       subscribes: [],

@@ -6,7 +6,7 @@ This package replaces the storage tier of `@ax/workspace-git-http` with a sharde
 
    **Correction (TASK-414).** This line used to read "The sibling uses pure-JS `isomorphic-git` and never touches `child_process`." That was false when it was written. `packages/workspace-git-core/src/impl.ts` line 1 is `import { spawn } from 'node:child_process'`, and it shells out to real `git ls-tree` and `git cat-file` on purpose (see its own comments at `impl.ts:730` and `:910` — isomorphic-git's `fs.read` adapter coalesced error codes it needed to tell apart). Both backends spawn git. If you are here deciding whether a mitigation from one applies to the other, do not use this document's word for it — read the imports. A claim that a neighbouring package lacks a capability is exactly the claim that let a cross-tenant read survive months in #583.
 2. We deploy as a **`StatefulSet` with `replicas: <gitServer.shards>`** (per-shard PVC, headless `Service` for stable DNS), not a single `Deployment`. Within a shard, single-writer; across shards, no contention. Blast radius is now per-shard.
-3. We expose a small **lifecycle REST API** (`POST /repos`, `GET /repos/<id>`, `DELETE /repos/<id>`) on top of standard git smart-HTTP. The sibling has only the four `workspace:*` actions.
+3. We expose a small **lifecycle REST API** (`POST /repos`, `GET /repos/<id>`, `DELETE /repos/<id>`, and since TASK-576 `POST /repos/<id>/purge` — see its own section below) on top of standard git smart-HTTP. The sibling has only the four `workspace:*` actions.
 
 Everything else (Zod, the bearer-token wall, the SecurityContext story, `MAX_FRAME` body caps, fixed-string auth errors) is the same posture as the sibling. We didn't reinvent the parts that were already paranoid enough.
 
@@ -376,6 +376,70 @@ The same shape as Phase 1's walks above, applied to the host plugin's own capabi
 - **Payload field names that might leak:** None on the bus. The plugin keeps `headOid` and other git-shaped vocabulary inside the package — `WorkspaceVersion` is brand-typed at the hook boundary, and subscribers can't legally do anything with it but pass it back into a follow-up call. The Phase 1 boundary review's promise ("Phase 2's plan will include a test that asserts this") is kept by the subscriber-no-leak test (`__tests__/subscriber-no-leak.test.ts`).
 - **Subscriber risk:** Phase 2's subscribers — the kernel's `workspace:*` callers in agent runtimes — never see a `headOid` or a shard ordinal. The brand type plus the test keeps it that way.
 - **Wire surface:** The plugin doesn't add any new IPC actions in Phase 2. The storage-tier wire (REST + smart-HTTP) lives in `src/server/repos.ts` + `src/server/smart-http.ts` and is unchanged.
+
+## `POST /repos/<id>/purge` and `workspace:purge` (TASK-576)
+
+This is the one route that **rewrites history**. It erases a path selector
+(`{prefixes, keep?}`) from the tip and every past commit of one bare repo, then
+runs `reflog expire` + `gc --prune=now` so the erased objects leave the disk
+too. It is irreversible, and its only caller is the host's one-time
+memory-retirement migration at boot. So we fence it harder than the others.
+
+**Server (`src/server/purge.ts`):**
+
+- Same gates as every JSON route: method, `application/json`, bearer auth
+  (constant-time), 1 MiB body cap, strict id regex in the URL (a malformed id
+  is a 400, not an unknown route).
+- Strict Zod body (`prefixes` 1..16, `keep` 0..64, no extra keys) **plus**
+  `@ax/core`'s `validatePurgeSelector` — relative POSIX prefixes ending in `/`,
+  no `..`/`.git`/NUL/backslash, every `keep` under a prefix. Rejected bodies
+  never touch disk.
+- 404 for a repo that does not exist; it is never created here.
+- The rewrite is the shared `@ax/workspace-git-purge` routine: it verifies the
+  new history (graph, per-commit metadata, everything outside the selector
+  byte-identical) **before** its single compare-and-swap `update-ref` of
+  `main`, and refuses to run while any unknown ref exists.
+- **New spawn surface:** `for-each-ref`, `symbolic-ref`, `rev-parse`, `log`,
+  `fast-export`, `fast-import` (fed on stdin), `update-ref`, `reflog expire`,
+  `gc`, `rev-list`, `cat-file`, `ls-tree`. Same rules as every other spawn
+  here: literal `git` argv0, constant subcommands, the resolved repo path as
+  `--git-dir`, `PARANOID_GIT_ENV` as the whole env, no shell. Children are
+  registered with the drain bookkeeping, so a shutdown timeout SIGKILLs them —
+  safe, because `main` only moves by the one verified CAS and a leftover temp
+  ref is recovered on the next run.
+- Purges of one repo serialize on an in-process per-repo mutex. A concurrent
+  `receive-pack` does not; the CAS refuses to clobber a push that lands during
+  the rewrite (409 `purge_conflict`). A push in flight during the **gc** after
+  the swap could lose unreferenced objects — accepted, because the migration
+  runs before the host serves traffic and runners only push through the host.
+- `receive.denyNonFastForwards=true` and `receive.denyDeletes=true` stay set.
+  The rewrite moves `main` with a local `update-ref`, which those settings do
+  not govern; pushes are exactly as protected as before (pinned by a test).
+- Errors: 409 `purge_conflict` when `main` moved under us, 500 `purge_failed`
+  otherwise. Messages name the failed step only — never a path or git's
+  stderr, because the paths under the selector are the data being erased.
+- The socket idle timeout is raised for this request only (a big repo's gc can
+  outlast the listener's 60 s default).
+
+**Host plugin (`workspace:purge`):**
+
+- Same fail-closed identity gate as every other hook; selector validated
+  before the queue, the network or the mirror.
+- **One attempt, no retry** (the retry wrapper deliberately passes it through).
+  A failure surfaces as `PluginError('purge-failed')`; the purge is
+  idempotent, so the caller re-runs it on purpose.
+- Runs as one op in the workspace's engine queue, then **deletes this host's
+  mirror of the workspace** (`MirrorCache.invalidate`) — even when the request
+  failed. Pinned reads of an old version are answered from the mirror without
+  a fetch, so a surviving mirror would keep serving erased bytes. Other host
+  replicas' mirrors are not reached; the migration runs at boot, when a host's
+  mirror cache is a fresh per-process tempdir.
+- Not reachable from the sandbox: `@ax/ipc-core`'s dispatcher is an explicit
+  allow-list of runner actions and `workspace:purge` is not on it.
+- **Boundary review:** alternate impl — a versioned-object store deleting the
+  objects under the prefixes from every retained manifest. Bus payload fields
+  (`purged`, `version`, `pastVersionsChanged`) are backend-neutral; `headOid`
+  and `rewritten` stay on the storage-tier wire and are translated here.
 
 ## Security contact
 

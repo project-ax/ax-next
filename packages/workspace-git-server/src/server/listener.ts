@@ -10,6 +10,7 @@ import {
   handleDeleteRepo,
   handleGetRepo,
 } from './repos.js';
+import { handlePurgeRepo } from './purge.js';
 import {
   handleDiscovery,
   handleReceivePack,
@@ -23,7 +24,8 @@ import {
 // lifecycle routes (POST /repos, GET /repos/<id>, DELETE /repos/<id>) and the
 // smart-HTTP routes (*/info/refs, git-upload-pack, git-receive-pack) are
 // recognized by the router but stubbed as 503 not_implemented; later slices
-// fill them in.
+// fill them in. TASK-576 adds POST /repos/<id>/purge (./purge.ts), a JSON
+// route behind the same five gates.
 //
 // Five inbound gates (in order):
 //   1. Method        — only GET / POST / DELETE. Other -> 405.
@@ -81,6 +83,8 @@ export type ErrorTag =
   | 'validation'
   | 'unsupported_method'
   | 'unsupported_content_type'
+  | 'purge_conflict'
+  | 'purge_failed'
   | 'internal_error'
   | 'not_implemented';
 
@@ -120,6 +124,7 @@ export type RouteMatch =
   | { kind: 'create-repo' }
   | { kind: 'get-repo'; workspaceId: string }
   | { kind: 'delete-repo'; workspaceId: string }
+  | { kind: 'purge-repo'; workspaceId: string }
   | { kind: 'smart-http-discovery'; workspaceId: string; service: string }
   | { kind: 'smart-http-upload-pack'; workspaceId: string }
   | { kind: 'smart-http-receive-pack'; workspaceId: string }
@@ -128,7 +133,9 @@ export type RouteMatch =
   // a malformed id from a totally-unknown path). Only GET + DELETE reach this
   // now: the POST/PUT producers were all LFS-shaped paths (removed in
   // TASK-70), and PUT/PATCH 405 at the method gate before routing.
-  | { kind: 'invalid-repo-id'; method: 'GET' | 'DELETE' }
+  //
+  // POST reaches it again for `/repos/<bad-id>/purge` (TASK-576).
+  | { kind: 'invalid-repo-id'; method: 'GET' | 'DELETE' | 'POST' }
   | { kind: 'unknown' };
 
 // URL extraction regexes — strict to defend against argv injection:
@@ -139,6 +146,10 @@ const REPO_ID_RE = /^\/repos\/([a-z0-9][a-z0-9_-]{0,62})$/;
 // unknown. We use a permissive prefix match; the strict REPO_ID_RE has
 // already had its shot above.
 const REPO_ID_LOOSE_RE = /^\/repos\/.+/;
+// POST /repos/<id>/purge (TASK-576) — strict id class first, then a loose
+// fallback so a malformed id is a 400 invalid_workspace_id, not unknown.
+const REPO_PURGE_RE = /^\/repos\/([a-z0-9][a-z0-9_-]{0,62})\/purge$/;
+const REPO_PURGE_LOOSE_RE = /^\/repos\/.+\/purge$/;
 const SMART_HTTP_INFO_REFS_RE =
   /^\/([a-z0-9][a-z0-9_-]{0,62})\.git\/info\/refs$/;
 const SMART_HTTP_UPLOAD_PACK_RE =
@@ -179,6 +190,11 @@ export function matchRoute(method: string, url: string): RouteMatch {
     }
   }
   if (method === 'POST') {
+    const pm = REPO_PURGE_RE.exec(pathname);
+    if (pm !== null) return { kind: 'purge-repo', workspaceId: pm[1]! };
+    if (REPO_PURGE_LOOSE_RE.test(pathname)) {
+      return { kind: 'invalid-repo-id', method: 'POST' };
+    }
     const up = SMART_HTTP_UPLOAD_PACK_RE.exec(pathname);
     if (up !== null) {
       return { kind: 'smart-http-upload-pack', workspaceId: up[1]! };
@@ -608,6 +624,11 @@ async function dispatch(ctx: DispatchContext): Promise<void> {
     case 'delete-repo':
       return handleDeleteRepo(ctx.match.workspaceId, ctx.res, {
         repoRoot: ctx.opts.repoRoot,
+      });
+    case 'purge-repo':
+      return handlePurgeRepo(ctx.match.workspaceId, ctx.body, ctx.req, ctx.res, {
+        repoRoot: ctx.opts.repoRoot,
+        registerChild: ctx.registerChild,
       });
     case 'invalid-repo-id':
       return writeError(

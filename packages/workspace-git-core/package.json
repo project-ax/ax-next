@@ -20,6 +20,7 @@
   "dependencies": {
     "@ax/core": "workspace:*",
     "@ax/workspace-bundle-protocol": "workspace:*",
+    "@ax/workspace-git-purge": "workspace:*",
     "isomorphic-git": "1.37.5",
     "picomatch": "4.0.4"
   },

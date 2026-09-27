@@ -2638,6 +2638,9 @@ importers:
       '@ax/workspace-bundle-protocol':
         specifier: workspace:*
         version: link:../workspace-bundle-protocol
+      '@ax/workspace-git-purge':
+        specifier: workspace:*
+        version: link:../workspace-git-purge
       isomorphic-git:
         specifier: 1.37.5
         version: 1.37.5
@@ -2685,6 +2688,9 @@ importers:
       '@ax/workspace-bundle-protocol':
         specifier: workspace:*
         version: link:../workspace-bundle-protocol
+      '@ax/workspace-git-purge':
+        specifier: workspace:*
+        version: link:../workspace-git-purge
       zod:
         specifier: ^3.23.8
         version: 3.25.76

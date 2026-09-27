@@ -408,3 +408,65 @@ describe('mirror-cache — pin protects in-flight op from eviction race', () => 
     }
   });
 });
+
+// --------------------------------------------------------------------------
+// invalidate (TASK-576) — after a history purge the mirror still holds the
+// erased objects; invalidate must delete it, without yanking the dir out from
+// under an op that is still using it.
+// --------------------------------------------------------------------------
+
+describe('MirrorCache.invalidate', () => {
+  it('deletes the mirror dir; the next withMirror builds a fresh one', async () => {
+    const cache = createMirrorCache({ cacheRoot });
+    const first = await cache.withMirror('ws-a', async (h) => h.dir);
+    expect(existsSync(first)).toBe(true);
+    await cache.invalidate('ws-a');
+    expect(existsSync(first)).toBe(false);
+    const second = await cache.withMirror('ws-a', async (h) => h.dir);
+    expect(second).not.toBe(first);
+    expect(existsSync(second)).toBe(true);
+    await cache.shutdown();
+  });
+
+  it('waits for an op still holding the old handle before removing its dir', async () => {
+    const cache = createMirrorCache({ cacheRoot });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let heldDir = '';
+    const held = cache.withMirror('ws-b', async (h) => {
+      heldDir = h.dir;
+      await gate;
+      return existsSync(h.dir);
+    });
+    await vi.waitFor(() => expect(heldDir).not.toBe(''));
+    let invalidated = false;
+    const inv = cache.invalidate('ws-b').then(() => {
+      invalidated = true;
+    });
+    // A new op after invalidate gets a NEW dir right away, not the held one.
+    const fresh = await cache.withMirror('ws-b', async (h) => h.dir);
+    expect(fresh).not.toBe(heldDir);
+    expect(invalidated).toBe(false);
+    expect(existsSync(heldDir)).toBe(true);
+    release();
+    expect(await held).toBe(true);
+    await inv;
+    expect(existsSync(heldDir)).toBe(false);
+    expect(existsSync(fresh)).toBe(true);
+    await cache.shutdown();
+  });
+
+  it('is a no-op for an id with no mirror, and a second call awaits the first', async () => {
+    const cache = createMirrorCache({ cacheRoot });
+    await expect(cache.invalidate('ws-none')).resolves.toBeUndefined();
+    const dir = await cache.withMirror('ws-c', async (h) => h.dir);
+    const a = cache.invalidate('ws-c');
+    const b = cache.invalidate('ws-c');
+    await b;
+    expect(existsSync(dir)).toBe(false);
+    await a;
+    await cache.shutdown();
+  });
+});

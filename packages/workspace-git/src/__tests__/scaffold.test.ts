@@ -11,6 +11,7 @@ describe('@ax/workspace-git scaffold', () => {
         'workspace:read',
         'workspace:list',
         'workspace:diff',
+        'workspace:purge',
       ]),
     );
   });

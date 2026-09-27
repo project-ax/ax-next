@@ -1128,6 +1128,7 @@ describe('@ax/preset-k8s workspace backend selection', () => {
       'workspace:diff',
       'workspace:export-baseline-bundle',
       'workspace:list',
+      'workspace:purge',
       'workspace:read',
     ];
     const localPlugins = createK8sPlugins({
