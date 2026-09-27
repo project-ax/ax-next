@@ -1581,7 +1581,7 @@ export function createOrchestrator(
 
   // TASK-612 — the second reason a warm session is retired at its next turn:
   // its system prompt is older than the agent's augment. An augment provider
-  // (today the Rules providers in @ax/memory / @ax/memory-strata) fires
+  // (today @ax/memory's Rules provider) fires
   // `system-prompt:augment-changed { agentId }` when a person edits something
   // the prompt carries; that bumps the agent's generation. Every fresh spawn
   // records the generation it was built at, snapshotted BEFORE the augment
