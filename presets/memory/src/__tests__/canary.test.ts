@@ -213,7 +213,9 @@ function ctxFor(agentId: string, userId: string, extra: Partial<AgentContext> = 
 
 const DROPPED = new Set(['@ax/sandbox-k8s', '@ax/auth-better', '@ax/llm-openrouter']);
 
-async function boot(): Promise<void> {
+async function boot(opts: { withVolume: boolean } = { withVolume: true }): Promise<void> {
+  createdPods.length = 0;
+  detached.length = 0;
   container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   const connectionString = container.getConnectionUri();
   tmp = await fsp.realpath(await fsp.mkdtemp(path.join(os.tmpdir(), 'ax-memory-preset-')));
@@ -249,10 +251,14 @@ async function boot(): Promise<void> {
       caDir: path.join(tmp, 'proxy-ca'),
     },
     factsDatabasePath: path.join(tmp, 'facts', 'facts.db'),
-    memoryExportVolume: {
-      hostRoot: exportHostRoot,
-      backing: { server: 'nfs.example.invalid', exportPath: '/exports/ax-memory' },
-    },
+    ...(opts.withVolume
+      ? {
+          memoryExportVolume: {
+            hostRoot: exportHostRoot,
+            backing: { server: 'nfs.example.invalid', exportPath: '/exports/ax-memory' },
+          },
+        }
+      : {}),
     memoryEmbeddings: { fetchImpl: fakeFetch },
     onObserverDetached: (work) => {
       detached.push(work);
@@ -260,7 +266,7 @@ async function boot(): Promise<void> {
   };
 
   await fsp.mkdir(path.dirname(config.factsDatabasePath), { recursive: true });
-  await fsp.mkdir(exportHostRoot, { recursive: true });
+  if (opts.withVolume) await fsp.mkdir(exportHostRoot, { recursive: true });
 
   const plugins = createMemoryPlugins(config).filter(
     (p) => !DROPPED.has(p.manifest.name),
@@ -308,6 +314,8 @@ async function teardown(): Promise<void> {
   }
   if (container !== null) await container.stop();
   if (tmp !== '') await fsp.rm(tmp, { recursive: true, force: true });
+  container = null;
+  tmp = '';
 }
 
 let aliceAgentId = '';
@@ -998,5 +1006,82 @@ describe('@ax/preset-memory canary', () => {
     await bus.call('memory:export:flush', ctxFor(aliceAgentId, ALICE), {});
 
     expect(await read()).toBe(beforeBytes);
+  });
+});
+
+// TASK-576: the NFS export volume is optional. Without it the assembly still
+// boots, recall works and the workspace facts export still runs; runners just
+// get no /memory mount.
+describe('@ax/preset-memory canary without the export volume', () => {
+  beforeAll(async () => {
+    await boot({ withVolume: false });
+    await seedAgents();
+  }, 120_000);
+
+  afterAll(async () => {
+    await teardown();
+  }, 120_000);
+
+  it('boots with no sandbox:memory-mounts; remember, recall and the workspace export still work; no /memory on the pod', async () => {
+    expect(bus.hasService('sandbox:memory-mounts')).toBe(false);
+    expect(bus.hasService('memory:export:flush')).toBe(true);
+    expect(bus.hasService('memory:facts:recall')).toBe(true);
+
+    const lisbon = await apiJson(
+      'POST',
+      `/api/workspace/agents/${aliceAgentId}/memory/remember`,
+      ALICE,
+      { about: 'user', relation: 'lives in', value: 'Lisbon', when: '2023-01-01T00:00:00Z' },
+    );
+    expect(lisbon.status).toBe(200);
+    const recalled = await apiJson(
+      'POST',
+      `/api/workspace/agents/${aliceAgentId}/memory/recall`,
+      ALICE,
+      { query: 'where does the user live' },
+    );
+    expect(recalled.status).toBe(200);
+    const stmts = recalled.json.statements as Array<{ value: string }>;
+    expect(stmts.some((st) => st.value === 'Lisbon')).toBe(true);
+
+    await bus.call('memory:export:flush', ctxFor(aliceAgentId, ALICE), {});
+    const read = await bus.call<{ path: string }, { found: boolean; bytes?: Uint8Array }>(
+      'workspace:read',
+      ctxFor(aliceAgentId, ALICE),
+      { path: 'permanent/memory/facts/profile.md' },
+    );
+    expect(read.found).toBe(true);
+    expect(new TextDecoder().decode(read.bytes)).toContain('Lisbon');
+    expect(fs.existsSync(exportHostRoot)).toBe(false);
+
+    await bus.call('sandbox:open-session', ctxFor(aliceAgentId, ALICE), {
+      sessionId: 'canary-pod-session-novol',
+      workspaceRoot: '/tmp/workspace',
+      runnerBinary: '/tmp/stub-runner.js',
+      owner: {
+        userId: ALICE,
+        agentId: aliceAgentId,
+        agentConfig: {
+          displayName: 'Alice personal',
+          systemPromptAugment: '',
+          allowedTools: [],
+          mcpConfigIds: [],
+          model: 'anthropic/claude-sonnet-4-6',
+          runner: 'claude-sdk',
+        },
+      },
+    });
+    expect(createdPods.length).toBe(1);
+    const pod = createdPods[0]! as {
+      spec?: {
+        containers?: Array<{
+          volumeMounts?: Array<{ mountPath: string }>;
+          env?: Array<{ name: string }>;
+        }>;
+      };
+    };
+    const c0 = pod.spec?.containers?.[0];
+    expect(c0?.volumeMounts?.some((m) => m.mountPath === '/memory') ?? false).toBe(false);
+    expect(c0?.env?.some((e) => e.name === 'AX_MEMORY_ROOT') ?? false).toBe(false);
   });
 });
