@@ -67,9 +67,18 @@ const AGENT_SUBJECTS = new Set([
 // one of those scope words. Accepted limitation: "no instructions for the
 // task" reads as a topic and is kept.
 const SELF_SCOPE = String.raw`(?:you|me|us|this|our|now|yet|how|what)\b`;
-const RULES = String.raw`(?:rules?|instructions?)\b(?! (?:of|for|on|about) (?!${SELF_SCOPE}))`;
-const MEMORY = String.raw`(?:memor(?:y|ies)|saved facts|(?:prior|previous) (?:conversations?|sessions?|chats?))\b`;
+const RULES = String.raw`(?:rules?|instructions?)\b(?! (?:of|for|on|about|in|against|around|to) (?!${SELF_SCOPE}))`;
+// "memory" the product ("memory foam", "a memory card") is not the agent's.
+const MEMORY = String.raw`(?:memor(?:y|ies)\b(?! (?:foam|cards?|sticks?|lanes?|leaks?|games?|loss|palace)\b)|(?:saved facts|(?:prior|previous) (?:conversations?|sessions?|chats?))\b)`;
 const NEGATION = String.raw`(?:don't|do not|doesn't|does not|cannot|can't|haven't|have not|hasn't|has not|hadn't|had not|wasn't|was not|weren't|were not|never|has no|have no|had no|without)`;
+
+/**
+ * The longest text the patterns scan. The object is untrusted model output
+ * with no length cap upstream, and this runs synchronously on the host. A
+ * self-report is a sentence or two; the extraction prompt already asks for
+ * assistant objects under 400 characters.
+ */
+const MAX_SCANNED_CHARS = 1_000;
 
 /**
  * Phrases that tie rules/instructions/memory to the agent's own context. Run
@@ -89,15 +98,17 @@ const CONTEXT_PATTERNS: readonly RegExp[] = [
   // "I haven't been given any rules", "doesn't have any memory of",
   // "cannot remember prior sessions", "never received any instructions"
   new RegExp(
-    String.raw`\b${NEGATION} (?:been )?(?:have |see |remember |recall |retain |keep |given |received |told |shown |set )?(?:any )?(?:saved |standing )?(?:${RULES}|${MEMORY})`,
+    String.raw`\b${NEGATION} (?:been )?(?:have |see |remember |recall |retain |keep |given |received |provided |offered |told |shown |set )?(?:any )?(?:saved |standing )?(?:${RULES}|${MEMORY})`,
   ),
   // Its OWN prompt: "came from the system bootstrap prompt", "in its system
   // prompt". Not any mention — "how to write a good system prompt" and "a
   // system prompt injection attack" are topics a person asked about.
-  /\b(?:(?:from|in|by|via) (?:the|my|its)|my|its) (?:system |bootstrap )+prompt\b/,
+  // `{1,2}`, never `+`: an unbounded repeat here is O(n^2) on a long run of
+  // "system system …" (measured ~2.6 s at 40k repeats).
+  /\b(?:(?:from|in|by|via) (?:the|my|its)|my|its) (?:system |bootstrap ){1,2}prompt\b/,
   // "the system prompt is all I was given", "... was the only instruction".
   // Needs the agent in it: "a system prompt is all you need" is advice.
-  /\b(?:system |bootstrap )+prompt (?:is|was) (?:all (?:i|it)|the only)\b/,
+  /\b(?:system |bootstrap ){1,2}prompt (?:is|was) (?:all (?:i|it)|the only)\b/,
   // "its instructions", "my memory"
   /\b(?:my|its|the assistant's|the agent's) (?:rules|instructions|memory|memories)\b/,
 ];
@@ -118,6 +129,7 @@ export function isAgentContextSelfReport(fact: {
   const predicate = fact.predicate.trim().toLowerCase();
   if (CONTEXT_PREDICATE.test(predicate)) return true;
   const text = `${predicate.replace(/_/g, ' ')} ${fact.object}`
+    .slice(0, MAX_SCANNED_CHARS)
     .toLowerCase()
     .replace(/[‘’]/g, "'");
   return CONTEXT_PATTERNS.some((pattern) => pattern.test(text));

@@ -39,6 +39,8 @@ describe('isAgentContextSelfReport', () => {
     ['stated', "hasn't received any instructions"],
     ['stated', 'I never received any instructions'],
     ['stated', 'has not been told any rules'],
+    ['stated', 'I was not provided any rules'],
+    ['stated', 'I have not been provided any instructions'],
     // "for/of/on/about" + the agent's OWN scope is still a self-report; only a
     // topic after it ("rules of chess") is content.
     ['stated', 'I have no rules for this conversation'],
@@ -53,6 +55,20 @@ describe('isAgentContextSelfReport', () => {
     ['stated', 'follows only what is in its system prompt'],
   ])('flags the assistant self-report %s | %s', (predicate, object) => {
     expect(isAgentContextSelfReport({ subject: 'assistant', predicate, object })).toBe(true);
+  });
+
+  it('stays fast on a huge, repetitive, untrusted object', () => {
+    // The object is model output with no length cap upstream. An unbounded
+    // `(system |bootstrap )+` here measured O(n^2): ~2.6 s at 40k repeats.
+    const start = performance.now();
+    for (const word of ['system ', 'bootstrap ', 'no ', 'never been ']) {
+      isAgentContextSelfReport({
+        subject: 'assistant',
+        predicate: 'stated',
+        object: `${word.repeat(40_000)}x`,
+      });
+    }
+    expect(performance.now() - start).toBeLessThan(250);
   });
 
   it.each(['ai', 'bot', 'sourdough'])('does not treat the topic subject %s as the agent', (subject) => {
@@ -76,6 +92,10 @@ describe('isAgentContextSelfReport', () => {
     ['assistant', 'explained', 'how to write a good system prompt for GPT models'],
     ['assistant', 'described', 'a system prompt injection attack technique'],
     ['assistant', 'stated', 'a clear system prompt is all you need for a good agent'],
+    // "no <topic>" where the noun is only a word, not the agent's context.
+    ['assistant', 'recommended', 'no memory foam is needed'],
+    ['assistant', 'stated', 'there are no rules in baseball about bat length'],
+    ['assistant', 'stated', 'there are no rules against it, so castle freely'],
     ['assistant', 'recommended', 'never given any rules of thumb for sourdough — weigh the flour'],
     // Not the agent speaking: a person's own statement is theirs to keep.
     ['user', 'stated', 'no rules have been given by the user'],
