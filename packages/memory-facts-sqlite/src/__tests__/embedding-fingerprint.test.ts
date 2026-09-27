@@ -16,7 +16,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { Database as BetterSqliteDb } from 'better-sqlite3';
 import { HookBus, makeAgentContext } from '@ax/core';
 import type { AgentContext } from '@ax/core';
-import type { RecordInput, RecordOutput } from '@ax/memory-facts-contract';
+import type {
+  RecallInput,
+  RecallOutput,
+  RecordInput,
+  RecordOutput,
+} from '@ax/memory-facts-contract';
 import { createMemoryFactsSqlitePlugin, type MemoryFactsSqliteConfig } from '../plugin.js';
 import { openDatabase, EMBEDDING_META_TABLE, FTS_TABLE, TABLE, VEC_TABLE } from '../schema.js';
 import { denseChannel, factStatementText } from '../recall.js';
@@ -434,5 +439,63 @@ describe('@ax/memory-facts-sqlite — embedding-model fingerprint + re-embed', (
     // And the job really did stop at the closed store: Khalid never got a vector.
     const db = peek();
     expect(vecCount(db)).toBe(1);
+  });
+
+  // TASK-591, measured on kind in walk TASK-589: right after a model change
+  // wiped every stored vector, a `query` recall reported `degraded: []`. The
+  // embed of the QUERY succeeded, so the old probe ("did we get a query
+  // vector?") said the dense channel ran — but it searched an empty index and
+  // contributed nothing. An answer built lexically while claiming the full
+  // machinery is the silent failure §4.4's flag exists to prevent.
+  describe("'semantic' when the dense channel has nothing to search", () => {
+    function recall(bus: HookBus, input: RecallInput): Promise<RecallOutput> {
+      return bus.call<RecallInput, RecallOutput>('memory:facts:recall', ctxOf(), input);
+    }
+
+    it('raises it right after a model change wiped every vector', async () => {
+      await seedUnderModelA();
+      const { bus, embedder } = await start({ embedder: { hook: EMBED_HOOK, model: 'B' } });
+      expect(vecCount(peek())).toBe(0);
+
+      const out = await recall(bus, { query: 'Khalid', limit: 10 });
+      // The query embed really ran and succeeded — the flag is about the
+      // empty index, not a failed producer.
+      expect(embedder.calls.some((c) => c.texts.includes('Khalid'))).toBe(true);
+      // The rows are still there (the lexical and recency channels found them)...
+      expect(out.statements.map((s) => s.value)).toContain('Khalid');
+      // ...but the dense channel contributed nothing, and the answer says so.
+      expect(out.degraded).toContain('semantic');
+    });
+
+    // The state every agent is in on the first boot after TASK-590: same
+    // model, new recipe generation, every vector wiped until its next record.
+    it('raises it after the TASK-590 recipe-generation wipe, with the model unchanged', async () => {
+      await seedPreTask590();
+      const { bus } = await start({ embedder: { hook: EMBED_HOOK, model: 'A' } });
+      expect(vecCount(peek())).toBe(0);
+
+      const out = await recall(bus, { query: 'Khalid', limit: 10 });
+      expect(out.statements.map((s) => s.value)).toContain('Khalid');
+      expect(out.degraded).toContain('semantic');
+    });
+
+    it('drops it again once the background re-embed has restored the vectors', async () => {
+      await seedUnderModelA();
+      const { bus, background } = await start({ embedder: { hook: EMBED_HOOK, model: 'B' } });
+      await record(bus, [ACME]);
+      await Promise.all(background);
+      expect(vecCount(peek())).toBe(3);
+
+      const out = await recall(bus, { query: 'Khalid', limit: 10 });
+      expect(out.degraded).not.toContain('semantic');
+    });
+
+    it('does not raise it on an empty store, where there was nothing to search and nothing was lost', async () => {
+      const { bus, embedder } = await start({ embedder: { hook: EMBED_HOOK, model: 'B' } });
+      const out = await recall(bus, { query: 'Khalid', limit: 10 });
+      expect(embedder.calls.length).toBeGreaterThan(0);
+      expect(out.statements).toEqual([]);
+      expect(out.degraded).not.toContain('semantic');
+    });
   });
 });
