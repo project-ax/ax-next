@@ -504,36 +504,19 @@ the Memory tab says "Memory is paused" — and recall still answers, lexically,
 saying so (`degraded: ["semantic", "ranking"]`). There's no field for this in
 the chart; the key lives in the credential store, not in values.
 
-### WARNING: first boot permanently wipes old memory
+### Switching an existing deployment from Strata
 
-The first time a host with this release boots on `host.preset: memory`, it
-runs a one-time migration that:
+Nothing in the code clears old memory. When an existing deployment moves from
+`host.preset: k8s` (Strata) to facts memory and nobody needs the old data, follow
+the one-time operator runbook **"Switching an existing deployment to facts memory"**
+in [`deploy/README.md`](README.md). Read its warning first: the workspace step
+deletes **every agent's workspace repos and files**, not just memory, and none of
+it can be undone. On GKE the workspace backend is `local`, so there is no
+git-server to reset. The runbook deletes the `ws-*.git` repos on the host PVC and
+leaves `blobs/` alone, and it erases the Filestore memory-exports share if
+`memory.exports` is set.
 
-- **Permanently deletes** every agent's old Strata memory files from its
-  workspace (`memory/**`, everything except `memory/system/rules.md`) —
-  including that workspace's **git history** for those files. This is not
-  recoverable from the workspace afterward.
-- **Clears** any facts memory already stored for that agent.
-- **Empties** that agent's slot on the memory NFS export.
-
-**Rules are kept.** `memory/system/rules.md` — the human-authored rules file
-— and its history are left alone; both the Strata and facts memory read the
-same path.
-
-This cannot be previewed and cannot be undone. **Back up the workspace PVC
-before upgrading to this release** if any of that data matters to you (see
-"Disaster recovery" below for how the chart's PVCs are structured).
-
-It runs once, and it is safe to retry: it logs one line per agent (paths and
-counts removed — never file content), and if any step fails, it throws and
-**stops the host from starting** rather than leaving an agent half-migrated.
-Every step is idempotent or marker-guarded, so re-running (a pod restart, a
-retried rollout) picks up where it left off instead of repeating work or
-double-deleting.
-
-To skip all of this and keep the legacy Strata memory instead, set
-`host.preset: k8s` in your values and do not provision the memory NFS export
-at all.
+To keep the legacy Strata memory instead, set `host.preset: k8s`.
 
 ---
 
