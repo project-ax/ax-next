@@ -467,6 +467,18 @@ describe('@ax/memory-facts-sqlite — embedding-model fingerprint + re-embed', (
       expect(out.degraded).toContain('semantic');
     });
 
+    // The state every agent is in on the first boot after TASK-590: same
+    // model, new recipe generation, every vector wiped until its next record.
+    it('raises it after the TASK-590 recipe-generation wipe, with the model unchanged', async () => {
+      await seedPreTask590();
+      const { bus } = await start({ embedder: { hook: EMBED_HOOK, model: 'A' } });
+      expect(vecCount(peek())).toBe(0);
+
+      const out = await recall(bus, { query: 'Khalid', limit: 10 });
+      expect(out.statements.map((s) => s.value)).toContain('Khalid');
+      expect(out.degraded).toContain('semantic');
+    });
+
     it('drops it again once the background re-embed has restored the vectors', async () => {
       await seedUnderModelA();
       const { bus, background } = await start({ embedder: { hook: EMBED_HOOK, model: 'B' } });

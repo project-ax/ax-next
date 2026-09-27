@@ -793,6 +793,13 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
         // scope's rows, so it returns nothing and the answer is lexical. That
         // is `'semantic'`, measured on kind as a silent `degraded: []`.
         //
+        // The test is on the channel's OUTPUT, so it also fires when this
+        // scope's vectors are present but `denseChannel`'s fixed-k search over
+        // the shared `vec0` table is crowded out by other tenants' neighbours
+        // (see that function's comment). That is the same honest answer —
+        // the dense channel did not contribute to THIS recall — just a rarer
+        // cause than a wipe.
+        //
         // The carve-out mirrors `'ranking'`'s: when the fused list is empty
         // there were no rows in scope for ANY channel to find (the temporal
         // channel admits every scope's recent rows regardless of the query),

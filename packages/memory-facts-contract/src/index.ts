@@ -427,9 +427,10 @@ export const PENDING_SLOT = 'pending';
  *   Produced by every backend that implements the pending drain.
  * - `'semantic'` — the dense/embedding channel did not contribute, because no
  *   embedder was registered, the embed call failed, or the embed succeeded but
- *   the search found nothing while the scope held rows (the stored vectors
- *   were wiped by a model change or are still awaiting backfill — TASK-591; a
- *   query vector alone is not a contribution). Raised only by a backend
+ *   the search found nothing while the scope held rows (TASK-591: the stored
+ *   vectors were wiped by a model change or are still awaiting backfill, or a
+ *   shared index's nearest-neighbour search was crowded out by other tenants;
+ *   a query vector alone is not a contribution). Raised only by a backend
  *   declaring {@link FactsBackendCapabilities.fusionRecall}, and only on a
  *   `query` recall: an `about`-only listing runs no channels, so flagging it
  *   there would be noise rather than signal.

@@ -76,9 +76,10 @@ export function pendingStatus(driver: BetterSqliteDb, agentKey: string): Pending
  *
  * All four causes collapse to one flag on purpose — no embedder producer is
  * registered, the vector extension is unavailable on this host, the embed
- * call failed or timed out, or the embed succeeded but the index held none of
- * the rows in scope, so the search returned nothing (TASK-591: every vector
- * wiped by a model change, or rows still awaiting backfill). `recall` decides
+ * call failed or timed out, or the embed succeeded but the search returned
+ * nothing while the scope held rows (TASK-591: every vector wiped by a model
+ * or recipe change, rows still awaiting backfill, or — rarer — the scope's
+ * neighbours crowded out of the shared index's fixed-k search). `recall` decides
  * the last one, including its empty-scope carve-out, at the call site where
  * the channel's output is in hand. The caller cannot act differently on any of them:
  * the answer in hand was built lexically either way, and the distinction
