@@ -514,3 +514,39 @@ describe('MemorySurface', () => {
     ).toBeInTheDocument();
   });
 });
+
+describe('MemorySurface — extraction paused', () => {
+  const paused = (factsAvailable: boolean): AgentMemoryRead => ({
+    ...read(factsAvailable),
+    factsExtraction: 'paused',
+  });
+
+  it('says memory is paused, points at the admin fix, and drops the empty-state promise', async () => {
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={paused(true)} />);
+    expect(screen.getByText('Memory is paused')).toBeInTheDocument();
+    expect(screen.getByText(/Admin → AI model keys/)).toBeInTheDocument();
+    expect(screen.getByText(/doesn't have an OpenRouter key yet/)).toBeInTheDocument();
+    // One notice for the whole surface, not one per card.
+    expect(screen.getAllByText('Memory is paused')).toHaveLength(1);
+
+    expect(await screen.findByText('No profile memories yet.')).toBeInTheDocument();
+    expect(screen.queryByText(/will appear here/)).toBeNull();
+  });
+
+  it('shows no notice and keeps the full empty-state sentence when not paused', async () => {
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    expect(
+      await screen.findByText(
+        'No profile memories yet. Details we remember from your conversations will appear here.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Memory is paused')).toBeNull();
+    expect(screen.queryByText(/AI model keys/)).toBeNull();
+  });
+
+  it('renders no notice on the Strata surface (only the facts surface reads the flag)', () => {
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={paused(false)} />);
+    expect(screen.getByText('Rules you gave me')).toBeInTheDocument();
+    expect(screen.queryByText('Memory is paused')).toBeNull();
+  });
+});

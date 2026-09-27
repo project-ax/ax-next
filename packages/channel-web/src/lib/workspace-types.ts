@@ -719,6 +719,12 @@ export interface AgentMemoryRead {
   learned: { status: WorkspaceReadStatus; docs: MemoryDoc[] };
   factsAvailable?: boolean;
   factsVisibility?: 'personal' | 'team';
+  /**
+   * Present only when the memory engine reports that it has stopped learning
+   * new facts for this user (their last extraction had no model key to run
+   * on). Absent means "not known to be paused", not "definitely fine".
+   */
+  factsExtraction?: 'paused';
 }
 
 export interface FactMemoryStatement {

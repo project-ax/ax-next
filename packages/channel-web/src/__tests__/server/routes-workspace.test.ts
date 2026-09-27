@@ -7,7 +7,7 @@
  * key, no fixture decisions, no guessed state.
  */
 import { REWRITES_THE_SURFACE as SHARED_SURFACE_CLASS } from '@ax/core/surface-text';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
 import {
   ACTIVITY_AGENT_ID_QUERY_KEY,
@@ -755,6 +755,115 @@ describe('channel-web agent-workspace BFF', () => {
     await h2.agentDetail(mkReq({ agentId: 'a1' }), second.res);
     expect(second.captured.body).toMatchObject({
       memory: { factsAvailable: true, factsVisibility: 'team' },
+    });
+  });
+
+  describe('factsExtraction (memory:status)', () => {
+    /*
+      `memory:status` tells us whether the memory engine has stopped learning
+      for THIS user (no model key → extraction paused). The route only asks
+      when facts are on, and a broken or odd answer never costs the read.
+    */
+    function registerFacts(): void {
+      bus.registerService('memory:recall', 'memory', async () => ({
+        statements: [],
+        degraded: [],
+      }));
+    }
+
+    async function readMemoryBody(): Promise<{
+      statusCode: number | undefined;
+      memory: Record<string, unknown>;
+    }> {
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+      return {
+        statusCode: captured.statusCode,
+        memory: (captured.body as { memory: Record<string, unknown> }).memory,
+      };
+    }
+
+    it("flags paused extraction, asking with {} on the requesting user's ctx", async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      registerFacts();
+      const seen: Array<{ input: unknown; agentId: string; userId: string | undefined }> = [];
+      bus.registerService('memory:status', 'memory', async (ctx, input) => {
+        seen.push({ input, agentId: ctx.agentId, userId: ctx.userId });
+        return { extraction: 'paused', reason: 'missing-credential' };
+      });
+
+      const { statusCode, memory } = await readMemoryBody();
+      expect(statusCode).toBe(200);
+      expect(memory.factsExtraction).toBe('paused');
+      expect(seen).toEqual([{ input: {}, agentId: 'a1', userId: 'u1' }]);
+    });
+
+    it('omits the field when extraction is ok', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      registerFacts();
+      bus.registerService('memory:status', 'memory', async () => ({ extraction: 'ok' }));
+
+      const { statusCode, memory } = await readMemoryBody();
+      expect(statusCode).toBe(200);
+      expect(memory.factsAvailable).toBe(true);
+      expect('factsExtraction' in memory).toBe(false);
+    });
+
+    it('omits the field on a malformed reply (it crossed the bus)', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      registerFacts();
+      bus.registerService('memory:status', 'memory', async () => ({ extraction: 'PAUSED' }));
+
+      const { memory } = await readMemoryBody();
+      expect('factsExtraction' in memory).toBe(false);
+    });
+
+    it('omits the field and still answers 200 when memory:status throws', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      registerFacts();
+      let called = 0;
+      bus.registerService('memory:status', 'memory', async () => {
+        called += 1;
+        throw new Error('status store down');
+      });
+      const warn = vi.spyOn(initCtx.logger, 'warn');
+      try {
+        const { statusCode, memory } = await readMemoryBody();
+        expect(called).toBe(1);
+        expect(statusCode).toBe(200);
+        expect(memory.factsAvailable).toBe(true);
+        expect('factsExtraction' in memory).toBe(false);
+        expect(warn).toHaveBeenCalledWith('workspace_memory_status_read_failed', {
+          agentId: 'a1',
+          error: expect.stringContaining('status store down'),
+        });
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('omits the field when no memory:status service is registered', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      registerFacts();
+
+      const { statusCode, memory } = await readMemoryBody();
+      expect(statusCode).toBe(200);
+      expect(memory.factsAvailable).toBe(true);
+      expect('factsExtraction' in memory).toBe(false);
+    });
+
+    it('does not ask memory:status when facts are unavailable', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      let called = 0;
+      bus.registerService('memory:status', 'memory', async () => {
+        called += 1;
+        return { extraction: 'paused', reason: 'missing-credential' };
+      });
+
+      const { memory } = await readMemoryBody();
+      expect(called).toBe(0);
+      expect('factsExtraction' in memory).toBe(false);
     });
   });
 
