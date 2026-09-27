@@ -615,7 +615,8 @@ export interface MemoryFactsSqliteConfig {
    * store compares it with the one it recorded; on a mismatch (a different
    * model, OR the same model under a bumped recipe generation) every stored
    * vector is deleted (two recipes' vectors are not comparable) and the
-   * post-record backfill re-embeds them under the new one. Without a `model`
+   * detached backfill — started by the agent's next healthy record or
+   * `query` recall — re-embeds them under the new one. Without a `model`
    * the fingerprint falls back to `hook-default:<hook>` — whatever the
    * producer defaults to, which the store cannot see change. `@ax/preset-
    * memory` always pins a model, so that fallback is for tests and hand-built
@@ -630,7 +631,7 @@ export interface MemoryFactsSqliteConfig {
   reranker?: ProducerRef;
   /**
    * Test/observability seam: handed every DETACHED background job this store
-   * starts — today only the post-record vector backfill — so a test can await
+   * starts — today only the vector backfill a record or recall triggers — so a test can await
    * it instead of sleeping. Mirrors `@ax/preset-memory`'s `onObserverDetached`.
    * The promise never rejects. Production leaves it unset.
    */
@@ -665,9 +666,9 @@ const BACKFILL_EMBED_CHUNK = 32;
  * document — model unchanged, recipe silently different. Bumping this
  * generation makes every pre-TASK-590 fingerprint (the bare model id) mismatch
  * once, which wipes `vec0` (`reconcileEmbeddingFingerprint`) and lets the
- * TASK-523 post-record backfill (`triggerVectorBackfill` →
- * `backfillMissingVectors`, which only re-embeds rows with no vector) redo
- * them as documents.
+ * TASK-523 backfill (`triggerVectorBackfill` → `backfillMissingVectors`,
+ * which only re-embeds rows with no vector; started by a healthy record and,
+ * since TASK-598, by a healthy `query` recall) redo them as documents.
  */
 export const EMBEDDING_RECIPE_GENERATION = 'tasks-v1';
 
@@ -851,6 +852,15 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
       // opposite of §4.4's "degraded mode is a signal".
       ...rankingStatus(pool.length === 0 || scores !== undefined),
     ];
+    // TASK-598: the query embed answered, so the producer works — the same
+    // proof a healthy record gives. Start (or skip, if already complete or
+    // running) this agent's detached vector backfill, so an agent that only
+    // reads after a fingerprint wipe recovers without waiting for a write.
+    // Last, after the rerank, and never awaited: this recall's answer is
+    // already built and does not wait on it.
+    if (queryVector !== undefined) {
+      triggerVectorBackfill(bus, ctx, args.agentKey, 'memory:facts:recall');
+    }
     return { statements: ranked.slice(0, args.limit).map(rowToFactRecord), degraded };
   }
 
@@ -921,11 +931,12 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
 
   /**
    * Agents whose every fact is KNOWN to have a vector, as of the last check in
-   * this process. Purely a cost cut for the post-record trigger: without it
-   * every successful record would run the missing-vector probe, which is a
-   * point lookup into `vec0` per tenant row — measured ~40ms at 5k rows,
-   * synchronous, on the event loop. Starts empty on every boot, so the first
-   * successful record per agent per process always checks — which is also
+   * this process. Purely a cost cut for the backfill trigger: without it
+   * every successful record or `query` recall would run the missing-vector
+   * probe, which is a point lookup into `vec0` per tenant row — measured
+   * ~40ms at 5k rows, synchronous, on the event loop. Starts empty on every
+   * boot, so the first successful record or `query` recall per agent per
+   * process always checks — which is also
    * what picks up rows an earlier process stored without vectors, and the
    * whole table after a fingerprint wipe.
    *
@@ -941,7 +952,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
   /**
    * Re-embed up to {@link BACKFILL_LIMIT} of this agent's facts that have no
    * vector — the dense half of the backfill, shared by `memory:facts:reindex`
-   * (awaited) and the post-record trigger (detached; TASK-523 decision 5).
+   * (awaited) and the post-record/post-recall trigger (detached; TASK-523 decision 5, TASK-598).
    *
    * The probe is a `NOT EXISTS ... LIMIT` against `vec0`'s `id` primary key,
    * which sqlite-vec answers as a point lookup (EXPLAIN: `SCAN v VIRTUAL
@@ -1012,34 +1023,56 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
   }
 
   /**
-   * TASK-523 decision 5: the post-record re-embed trigger. Nothing in
-   * production calls `memory:facts:reindex`, so without this, vectors wiped by
-   * a model change — or never written because the producer was down at record
-   * time — would never come back.
+   * The re-embed trigger (TASK-523 decision 5, widened by TASK-598). Nothing
+   * in production calls `memory:facts:reindex`, so without this, vectors wiped
+   * by a model or recipe change — or never written because the producer was
+   * down at record time — would never come back.
    *
-   * Called only after a record whose embed SUCCEEDED and whose transaction
-   * committed: that success is the proof the producer and its credential work
-   * right now, so the backfill is not a speculative outbound call.
+   * Two callers, one gate: a `memory:facts:record` whose embed SUCCEEDED and
+   * whose transaction committed, and a `query` recall whose query embed
+   * SUCCEEDED. Either success is the proof the producer and its credential
+   * work right now, so the backfill is not a speculative outbound call. The
+   * recall caller is what reaches an agent that only reads: before TASK-598,
+   * an agent that never recorded again after a fingerprint wipe answered
+   * `degraded: ['semantic']` for as long as the process lived.
    *
-   * DETACHED — record's latency must not grow by a backfill's worth of embed
+   * DETACHED — neither caller's latency grows by a backfill's worth of embed
    * calls — and SINGLE-FLIGHT per agent: a second trigger while one runs is a
    * no-op, since the running one is already working through the same backlog
    * (and a duplicate would pay twice for the same vectors). The bound per run
-   * is `backfillMissingVectors`'s; a backlog past it drains over later records.
+   * is `backfillMissingVectors`'s; a backlog past it drains over later
+   * triggers. Once a probe finds nothing missing, the agent is known complete
+   * (`vectorsCompleteFor`) and every later trigger returns before touching
+   * the store, so a healthy agent's recall pays two Set lookups.
    *
-   * It runs under the recording call's ctx, exactly as `reindex`'s backfill
+   * Deferred one macrotask (`setImmediate`) before its first store read, so
+   * even the missing-vector PROBE — synchronous, and on a complete agent a
+   * walk over all of its rows — runs after the triggering call has returned
+   * rather than inside it (TASK-520 measured recall's store work as
+   * synchronous and linear in rows; this must not add to it).
+   *
+   * It runs under the triggering call's ctx, exactly as `reindex`'s backfill
    * does — agent-scoped, and the producer sees the same caller identity.
    */
-  function triggerVectorBackfill(bus: HookBus, ctx: AgentContext, agentKey: string): void {
+  function triggerVectorBackfill(
+    bus: HookBus,
+    ctx: AgentContext,
+    agentKey: string,
+    hookName: 'memory:facts:record' | 'memory:facts:recall',
+  ): void {
     if (vectorsCompleteFor.has(agentKey) || backfillInFlight.has(agentKey)) return;
     backfillInFlight.add(agentKey);
-    const work = backfillMissingVectors(bus, ctx, agentKey, 'memory:facts:record')
+    const work = new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    })
+      .then(() => backfillMissingVectors(bus, ctx, agentKey, hookName))
       // Swallowed, all of it, because nobody is awaiting this promise: a
       // rejection here is an unhandled rejection, which can take the process
       // down. The realistic one is `shutdown()` closing the driver while an
-      // embed is in flight — `requireDriver` then says `store-unavailable`,
-      // and there is nothing to do about that but stop; the rows are still
-      // missing their vectors and the next process's first record retries.
+      // embed is in flight (or before the deferred probe ran) —
+      // `requireDriver` then says `store-unavailable`, and there is nothing
+      // to do about that but stop; the rows are still missing their vectors
+      // and the next process's first trigger retries.
       // Anything else is the same backlog, left for the next trigger.
       .catch(() => {})
       .finally(() => {
@@ -1061,7 +1094,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           {
             hook: config.embedder.hook,
             degradation:
-              "the dense (semantic) recall channel does not run: `memory:facts:recall` answers a `query` from the lexical and recency channels alone and reports degraded: ['semantic']; newly recorded facts store no vector, and they are backfilled after the first record whose embed succeeds (or by `memory:facts:reindex`)",
+              "the dense (semantic) recall channel does not run: `memory:facts:recall` answers a `query` from the lexical and recency channels alone and reports degraded: ['semantic']; newly recorded facts store no vector, and they are backfilled after the first record or `query` recall whose embed succeeds (or by `memory:facts:reindex`)",
           },
         ]
       : []),
@@ -1251,7 +1284,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           // backlog, so the next healthy record goes looking for it.
           if (vectorExtensionLoaded && config.embedder !== undefined && statements.length > 0) {
             if (vectors !== undefined) {
-              triggerVectorBackfill(bus, ctx, agentKey);
+              triggerVectorBackfill(bus, ctx, agentKey, 'memory:facts:record');
             } else {
               vectorsCompleteFor.delete(agentKey);
             }

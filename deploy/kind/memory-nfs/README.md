@@ -70,10 +70,12 @@ kubectl --context kind-ax-next-dev -n ax-next exec deploy/ax-next-host -c host -
   remembers which model made its vectors; on a mismatch it drops them all
   rather than compare two incompatible vector spaces, and re-embeds each
   agent's facts in the background after that agent's next successful memory
-  write. Until then recall for that agent is lexical-plus-recency, and says
-  so with `degraded: ["semantic"]` (the Memory tab shows no notice for this:
-  it heals itself on the next memory write, and there is nothing to fix).
+  write OR search (TASK-598 — an agent that only reads recovers too). The
+  search that notices still answers lexical-plus-recency, and says so with
+  `degraded: ["semantic"]`; the re-embed runs detached (up to 200 facts per
+  pass), so a search a moment later is back to full strength. The Memory tab
+  shows no notice for this: it heals itself, and there is nothing to fix.
   The same happens once, on the first boot after an upgrade that changes how
   vectors are made with the same model (TASK-590: stored facts are now embedded
-  as documents rather than as queries). A walk after that upgrade should
-  record something before it checks recall.
+  as documents rather than as queries). A walk after that upgrade should expect
+  the FIRST recall per agent to say `["semantic"]` and a later one not to.
