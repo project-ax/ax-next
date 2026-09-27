@@ -30,11 +30,6 @@ import { createToolDispatcherPlugin, createMcpClientPlugin } from '@ax/mcp-clien
 import { createToolArtifactPublishPlugin } from '@ax/tool-artifact-publish';
 import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
 import { createLlmOpenRouterPlugin } from '@ax/llm-openrouter';
-import {
-  createMemoryStrataPlugin,
-  DEFAULT_ORCHESTRATOR_MODEL,
-} from '@ax/memory-strata';
-import { createMemoryStrataIndexSqlitePlugin } from '@ax/memory-strata-index-sqlite';
 import { createMemoryFactsSqlitePlugin } from '@ax/memory-facts-sqlite';
 import { createWebToolsPlugin } from '@ax/web-tools';
 import { createDevAgentsStubPlugin } from './dev-agents-stub.js';
@@ -300,23 +295,11 @@ export async function main(opts: MainOptions): Promise<number> {
   // no collision with storage-sqlite's), so it loads unconditionally here like
   // the other no-external-dep plugins above.
   //
-  // TASK-423 CLOSED the backend half of what this used to open: @ax/memory-
-  // facts-postgres now exists and presets/k8s pushes it UNCONDITIONALLY too,
-  // so `memory:facts:*` is reachable on every deployment rather than only
-  // where a CLI runs. The two engines are the same five hooks over the same
-  // shared contract (`runFactsContract` runs against both) — the two-preset
-  // shape memory-strata-index-{sqlite,postgres} already had. The k8s side is
-  // pinned by presets/k8s/src/__tests__/preset.test.ts (all five hooks, with
-  // NO hostLlmTools set) and boots for real against a postgres testcontainer
-  // in prod-bootstrap.test.ts.
-  //
-  // ONE half-wired window is still open, and it is the CONSUMER half:
-  // @ax/memory (observer, speaker rewrite, memory_recall/memory_note, export
-  // materializer) does not exist and has no card yet, so nothing in either
-  // preset CALLS these hooks. Both engine pushes buy the same thing — a
-  // consumer can land without also having to wire an engine underneath it on
-  // a deployment that happens not to have one. See
-  // docs/plans/2026-09-19-dem-first-handoff.md §3.4.
+  // The CONSUMER of these hooks, @ax/memory (observer, memory_recall /
+  // memory_note, export), is loaded by the facts-memory preset
+  // (presets/memory) but not by this CLI, so nothing here calls them yet.
+  // The CLI had Strata memory behind ANTHROPIC_API_KEY until TASK-608 deleted
+  // Strata; wiring @ax/memory into the CLI is a separate follow-up.
   // See .claude/memory/decisions.md's TASK-421/TASK-422 archive rows and the
   // .claude/memory/decisions/2026-09-19-TASK-423.md shard.
   plugins.push(
@@ -401,18 +384,13 @@ export async function main(opts: MainOptions): Promise<number> {
   // push order aligned with the call graph keeps readers grounded.
   plugins.push(createMcpClientPlugin());
 
-  // Memory-strata (@ax/memory-strata) — Phase 1: hot-tier markdown +
-  // Observer extracting facts to permanent/memory/inbox/. The Observer
-  // calls llm:call:anthropic, so we load both as a set behind the
-  // ANTHROPIC_API_KEY env gate. CLI users without the env var get the
-  // pre-Phase-1 behavior (no host-side LLM, no memory writes); users
-  // with it get auto-extraction. This mirrors the k8s preset's pattern
-  // for @ax/conversation-titles + @ax/llm-anthropic — both load behind
-  // the same env condition or neither does.
+  // Host-side LLM capabilities behind the ANTHROPIC_API_KEY env gate. CLI
+  // users without the env var get no host-side LLM. (This gate used to load
+  // the Strata memory plugins too; TASK-608 deleted them.)
   //
   // The runner still reaches Anthropic via the credential-proxy for
   // chat itself; this env-driven LLM plugin is a SEPARATE host-side
-  // capability used only by host plugins (titles, memory observer).
+  // capability used only by host plugins.
   if (process.env.ANTHROPIC_API_KEY !== undefined && process.env.ANTHROPIC_API_KEY.length > 0) {
     plugins.push(createLlmAnthropicPlugin());
     // @ax/web-tools — host-executed web_search + web_extract backed by
@@ -420,29 +398,6 @@ export async function main(opts: MainOptions): Promise<number> {
     // the other host-side LLM capabilities (it constructs its own
     // Anthropic client from ANTHROPIC_API_KEY). Available to all agents.
     plugins.push(createWebToolsPlugin());
-    // TASK-191: memory_search's retrieval path is the orchestrator (config E
-    // from the n=500 spike — orchestrator over system/map.md, BM25 fallback).
-    //
-    // Routed through `llm:call:openrouter`, which this file registers below iff
-    // OPENROUTER_API_KEY is set. The hook is resolved per CALL, not at boot, so
-    // the order of these two pushes does not matter — and a CLI user with no
-    // OpenRouter key just gets plain BM25.
-    //
-    // It used to hold its own direct-xAI client off `XAI_API_KEY`. Dropping
-    // that means one less key to carry, and the same key that already buys the
-    // OpenRouter provider now also buys the orchestrator.
-    plugins.push(
-      createMemoryStrataPlugin({
-        orchestrator: {
-          hook: 'llm:call:openrouter',
-          model: DEFAULT_ORCHESTRATOR_MODEL,
-        },
-      }),
-    );
-    // I24 — indexer loads as a pair with memory-strata (same gate). The sqlite
-    // indexer shares the same DB file as storage-sqlite; each plugin owns its
-    // own table (kv vs memory_strata_index_v1_docs) — no collision.
-    plugins.push(createMemoryStrataIndexSqlitePlugin({ databasePath: opts.sqlitePath ?? DEFAULT_SQLITE_PATH }));
   }
 
   // @ax/llm-openrouter (PR 4) — the second provider. Registers

@@ -778,12 +778,6 @@ importers:
       '@ax/memory-facts-sqlite':
         specifier: workspace:*
         version: link:../memory-facts-sqlite
-      '@ax/memory-strata':
-        specifier: workspace:*
-        version: link:../memory-strata
-      '@ax/memory-strata-index-sqlite':
-        specifier: workspace:*
-        version: link:../memory-strata-index-sqlite
       '@ax/onboarding':
         specifier: workspace:*
         version: link:../onboarding
@@ -1656,142 +1650,6 @@ importers:
       '@ax/memory-facts-contract':
         specifier: workspace:*
         version: link:../memory-facts-contract
-      '@types/better-sqlite3':
-        specifier: ^7.6.12
-        version: 7.6.13
-      '@types/node':
-        specifier: ^25.6.0
-        version: 25.6.0
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
-      vitest:
-        specifier: ^5.0.1
-        version: 5.0.1(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.2.1(@types/node@25.6.0)(esbuild@0.28.1)(jiti@1.21.7)(tsx@4.21.0)(yaml@2.8.3))
-
-  packages/memory-strata:
-    dependencies:
-      '@ax/core':
-        specifier: workspace:*
-        version: link:../core
-      js-yaml:
-        specifier: ^4.3.2
-        version: 4.3.2
-    devDependencies:
-      '@anthropic-ai/sdk':
-        specifier: ^0.91.1
-        version: 0.91.1(zod@3.25.76)
-      '@ax/memory-strata-index-sqlite':
-        specifier: workspace:*
-        version: link:../memory-strata-index-sqlite
-      '@huggingface/hub':
-        specifier: ^0.20.0
-        version: 0.20.0
-      '@types/better-sqlite3':
-        specifier: ^7.6.12
-        version: 7.6.13
-      '@types/js-yaml':
-        specifier: ^4.0.9
-        version: 4.0.9
-      '@types/node':
-        specifier: ^25.6.0
-        version: 25.6.0
-      better-sqlite3:
-        specifier: 13.0.3
-        version: 13.0.3
-      openai:
-        specifier: ^4.68.0
-        version: 4.104.0(ws@8.21.0)(zod@3.25.76)
-      sqlite-vec:
-        specifier: ^0.1.6
-        version: 0.1.9
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
-      vitest:
-        specifier: ^5.0.1
-        version: 5.0.1(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.2.1(@types/node@25.6.0)(esbuild@0.28.1)(jiti@1.21.7)(tsx@4.21.0)(yaml@2.8.3))
-      zeroentropy:
-        specifier: 0.1.0-alpha.10
-        version: 0.1.0-alpha.10
-
-  packages/memory-strata-index-contract:
-    dependencies:
-      '@ax/core':
-        specifier: workspace:*
-        version: link:../core
-      vitest:
-        specifier: ^5.0.1
-        version: 5.0.1(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.2.1(@types/node@25.6.0)(esbuild@0.28.1)(jiti@1.21.7)(tsx@4.21.0)(yaml@2.8.3))
-    devDependencies:
-      '@types/node':
-        specifier: ^25.6.0
-        version: 25.6.0
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
-
-  packages/memory-strata-index-postgres:
-    dependencies:
-      '@ax/core':
-        specifier: workspace:*
-        version: link:../core
-      kysely:
-        specifier: 0.28.17
-        version: 0.28.17
-      zod:
-        specifier: ^3.23.8
-        version: 3.25.76
-    devDependencies:
-      '@ax/database-postgres':
-        specifier: workspace:*
-        version: link:../database-postgres
-      '@ax/memory-strata-index-contract':
-        specifier: workspace:*
-        version: link:../memory-strata-index-contract
-      '@ax/test-harness':
-        specifier: workspace:*
-        version: link:../test-harness
-      '@testcontainers/postgresql':
-        specifier: 11.14.0
-        version: 11.14.0
-      '@types/node':
-        specifier: ^25.6.0
-        version: 25.6.0
-      '@types/pg':
-        specifier: ^8
-        version: 8.20.0
-      pg:
-        specifier: ^8
-        version: 8.20.0
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
-      vitest:
-        specifier: ^5.0.1
-        version: 5.0.1(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.2.1(@types/node@25.6.0)(esbuild@0.28.1)(jiti@1.21.7)(tsx@4.21.0)(yaml@2.8.3))
-
-  packages/memory-strata-index-sqlite:
-    dependencies:
-      '@ax/core':
-        specifier: workspace:*
-        version: link:../core
-      better-sqlite3:
-        specifier: 13.0.3
-        version: 13.0.3
-      kysely:
-        specifier: ^0.28.17
-        version: 0.28.17
-      zod:
-        specifier: ^3.23.8
-        version: 3.25.76
-    devDependencies:
-      '@ax/memory-strata-index-contract':
-        specifier: workspace:*
-        version: link:../memory-strata-index-contract
-      '@ax/test-harness':
-        specifier: workspace:*
-        version: link:../test-harness
       '@types/better-sqlite3':
         specifier: ^7.6.12
         version: 7.6.13
@@ -2828,12 +2686,6 @@ importers:
       '@ax/memory-facts-postgres':
         specifier: workspace:*
         version: link:../../packages/memory-facts-postgres
-      '@ax/memory-strata':
-        specifier: workspace:*
-        version: link:../../packages/memory-strata
-      '@ax/memory-strata-index-postgres':
-        specifier: workspace:*
-        version: link:../../packages/memory-strata-index-postgres
       '@ax/onboarding':
         specifier: workspace:*
         version: link:../../packages/onboarding
@@ -3869,13 +3721,6 @@ packages:
     engines: {node: '>=20'}
     peerDependencies:
       hono: '>=4.13.5 <5.0.0'
-
-  '@huggingface/hub@0.20.0':
-    resolution: {integrity: sha512-fBSepQk9/4FjyHmBkMr48hYcB59gHkwNraYhxEiCRH2Zhw/Gw9oX+8NWaKg5rM1o0mKLj565DcbpG0khrSlYnQ==}
-    engines: {node: '>=18'}
-
-  '@huggingface/tasks@0.13.17':
-    resolution: {integrity: sha512-nytJPvVMlMpaeDOhjp0vJJKSWyHEKziPEQ5WbzeU2Av0W1y/xkvIE9XHdWcOXXOSOFieoJmSCUf2HI23umlzZw==}
 
   '@humanfs/core@0.19.2':
     resolution: {integrity: sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA==}
@@ -5386,10 +5231,6 @@ packages:
     resolution: {integrity: sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==}
     engines: {node: '>= 14'}
 
-  agentkeepalive@4.6.0:
-    resolution: {integrity: sha512-kja8j7PjmncONqaTsB8fQ+wE2mSU2DJ9D4XKoJ5PFWIdRMa6SLSN1ff4mOr4jCbfRSsxR4keIiySJU0N9T5hIQ==}
-    engines: {node: '>= 8.0.0'}
-
   ai@7.0.70:
     resolution: {integrity: sha512-r7Y0alVQqairf0WvT3puyjz5wPMjRV5zYSHiGz87K3uoqkCeK1EaN6O8lLqduSszLcfqC6XVJAIdy3/RkPwPHg==}
     engines: {node: '>=22'}
@@ -6188,16 +6029,9 @@ packages:
     resolution: {integrity: sha512-gIXjKqtFuWEgzFRJA9WCQeSJLZDjgJUOMCMzxtvFq/37KojM1BFGufqsCy0r4qSQmYLsZYMeyRqzIWOMup03sw==}
     engines: {node: '>=14'}
 
-  form-data-encoder@1.7.2:
-    resolution: {integrity: sha512-qfqtYan3rxrnCk1VYaA4H+Ms9xdpPqvLZa6xmMgFvhO32x7/3J/ExcTd6qpxM0vH2GdMI+poehyBZvqfMTto8A==}
-
   form-data@4.0.6:
     resolution: {integrity: sha512-vKatAh4SlVfgbv+YtmhiRjhEMJsYpsG1Y2rMQtR+SVSbytsSD1YGzDIcrAJmdFec88u/+VoGmxnl+80gL1tRCQ==}
     engines: {node: '>= 6'}
-
-  formdata-node@4.4.1:
-    resolution: {integrity: sha512-0iirZp3uVDjVGt9p49aTaqjk84TrglENEDuqfdlZQ1roC9CWlPk6Avf8EEnZNcAqPonwkG35x4n3ww/1THYAeQ==}
-    engines: {node: '>= 12.20'}
 
   forwarded@0.2.0:
     resolution: {integrity: sha512-buRG0fpBtRHSTCOASe6hD258tEubFoRLb4ZNA6NxMVHNw2gOcwHo9wyablzMzOA5z9xA9L1KNjk/Nt6MT9aYow==}
@@ -6340,9 +6174,6 @@ packages:
   human-id@4.1.3:
     resolution: {integrity: sha512-tsYlhAYpjCKa//8rXZ9DqKEawhPoSytweBC2eNvcaDK+57RZLHGqNs3PZTQO6yekLFSuvA6AlnAfrw1uBvtb+Q==}
     hasBin: true
-
-  humanize-ms@1.2.1:
-    resolution: {integrity: sha512-Fl70vYtsAFb/C06PTS9dZBo7ihau+Tu/DNCk/OyHhea07S+aeMWpFFkUaXRa8fI+ScZbEI8dfSxwY7gxZ9SAVQ==}
 
   iconv-lite@0.6.3:
     resolution: {integrity: sha512-4fCk79wshMdzMp2rH06qWrJE4iolqLhCUH+OiuIgU++RB0+94NlDL81atO7GX55uUKueo0txHNtvEyI6D7WdMw==}
@@ -6994,11 +6825,6 @@ packages:
     resolution: {integrity: sha512-VijLXbi3UACN69I0JVXJsX4tjACjNoQDgv2gTF6sx2wWEi8tkSg2eX8p5gSIFi8z2+DL3oHmY6OyKce38SDolg==}
     engines: {node: ^18 || ^20 || >= 21}
 
-  node-domexception@1.0.0:
-    resolution: {integrity: sha512-/jKZoMpw0F8GRwl4/eLROPA3cfcXtLApP0QzLmUT/HuPCZWyB7IY9ZrMeKw2O/nFIqPQB3PVM9aYm0F312AXDQ==}
-    engines: {node: '>=10.5.0'}
-    deprecated: Use your platform's native DOMException instead
-
   node-fetch@2.7.0:
     resolution: {integrity: sha512-c4FRfUm/dbcWZ7U+1Wq0AwCyFL+3nt2bEw05wfxSz+DWpWsitgmSgYmy2dQdWyKC1694ELPqMs/YzUSNozLt8A==}
     engines: {node: 4.x || >=6.0.0}
@@ -7048,18 +6874,6 @@ packages:
 
   once@1.4.0:
     resolution: {integrity: sha512-lNaJgI+2Q5URQBkccEKHTQOPaXdUxnZZElQTZY0MFUAuaEqe1E+Nyvgdz/aIyNi6Z9MzO5dv1H8n58/GELp3+w==}
-
-  openai@4.104.0:
-    resolution: {integrity: sha512-p99EFNsA/yX6UhVO93f5kJsDRLAg+CTA2RBqdHK4RtK8u5IJw32Hyb2dTGKbnnFmnuoBv5r7Z2CURI9sGZpSuA==}
-    hasBin: true
-    peerDependencies:
-      ws: '>=8.21.0'
-      zod: ^3.23.8
-    peerDependenciesMeta:
-      ws:
-        optional: true
-      zod:
-        optional: true
 
   openid-client@6.8.3:
     resolution: {integrity: sha512-AoY/NaN9esS3+xvHInFSK0g3skSfeE0uqQAKRj4rB6/GsBIvzwTUaYo9+HcqpKIaP0dP85p5W07hayKgS4GAeA==}
@@ -8149,10 +7963,6 @@ packages:
     resolution: {integrity: sha512-o8qghlI8NZHU1lLPrpi2+Uq7abh4GGPpYANlalzWxyWteJOCsr/P+oPBA49TOLu5FTZO4d3F9MnWJfiMo4BkmA==}
     engines: {node: '>=18'}
 
-  web-streams-polyfill@4.0.0-beta.3:
-    resolution: {integrity: sha512-QW95TCTaHmsYfHDybGMwO5IJIM93I/6vTRk+daHTWFPhwh+C8Cg7j7XyKrwrj8Ib6vYXe0ocYNrmzY4xAAN6ug==}
-    engines: {node: '>= 14'}
-
   webidl-conversions@3.0.1:
     resolution: {integrity: sha512-2JAn3z8AR6rjK8Sm8orRC0h/bcl/DqL7tRPdGZ4I1CjdF+EaMLmYxBHyXuKL849eucPFhvBoxMsflfOb8kxaeQ==}
 
@@ -8255,9 +8065,6 @@ packages:
   yocto-queue@0.1.0:
     resolution: {integrity: sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==}
     engines: {node: '>=10'}
-
-  zeroentropy@0.1.0-alpha.10:
-    resolution: {integrity: sha512-4OwBUNuAQZzigzU75Nk+vbPGmL449U4XJtZTsZWu7cpztVHOx9gc9v0GPoyymmqtf0AnyUPPs8IWinNTUZLHhA==}
 
   zip-stream@6.0.1:
     resolution: {integrity: sha512-zK7YHHz4ZXpW89AHXUPbQVGKI7uvkd3hzusTdotCg1UxyaVtg0zFJSTfW/Dq5f7OBBVnq6cZIaC8Ti4hb6dtCA==}
@@ -9227,12 +9034,6 @@ snapshots:
   '@hono/node-server@2.1.0(hono@4.13.7)':
     dependencies:
       hono: 4.13.7
-
-  '@huggingface/hub@0.20.0':
-    dependencies:
-      '@huggingface/tasks': 0.13.17
-
-  '@huggingface/tasks@0.13.17': {}
 
   '@humanfs/core@0.19.2':
     dependencies:
@@ -10652,10 +10453,6 @@ snapshots:
 
   agent-base@7.1.4: {}
 
-  agentkeepalive@4.6.0:
-    dependencies:
-      humanize-ms: 1.2.1
-
   ai@7.0.70(zod@4.4.3):
     dependencies:
       '@ai-sdk/gateway': 4.0.56(zod@4.4.3)
@@ -11488,8 +11285,6 @@ snapshots:
       cross-spawn: 7.0.6
       signal-exit: 4.1.0
 
-  form-data-encoder@1.7.2: {}
-
   form-data@4.0.6:
     dependencies:
       asynckit: 0.4.0
@@ -11497,11 +11292,6 @@ snapshots:
       es-set-tostringtag: 2.1.0
       hasown: 2.0.4
       mime-types: 2.1.35
-
-  formdata-node@4.4.1:
-    dependencies:
-      node-domexception: 1.0.0
-      web-streams-polyfill: 4.0.0-beta.3
 
   forwarded@0.2.0: {}
 
@@ -11666,10 +11456,6 @@ snapshots:
       - supports-color
 
   human-id@4.1.3: {}
-
-  humanize-ms@1.2.1:
-    dependencies:
-      ms: 2.1.3
 
   iconv-lite@0.6.3:
     dependencies:
@@ -12421,8 +12207,6 @@ snapshots:
 
   node-addon-api@8.9.2: {}
 
-  node-domexception@1.0.0: {}
-
   node-fetch@2.7.0:
     dependencies:
       whatwg-url: 5.0.0
@@ -12452,21 +12236,6 @@ snapshots:
   once@1.4.0:
     dependencies:
       wrappy: 1.0.2
-
-  openai@4.104.0(ws@8.21.0)(zod@3.25.76):
-    dependencies:
-      '@types/node': 18.19.130
-      '@types/node-fetch': 2.6.13
-      abort-controller: 3.0.0
-      agentkeepalive: 4.6.0
-      form-data-encoder: 1.7.2
-      formdata-node: 4.4.1
-      node-fetch: 2.7.0
-    optionalDependencies:
-      ws: 8.21.0
-      zod: 3.25.76
-    transitivePeerDependencies:
-      - encoding
 
   openid-client@6.8.3:
     dependencies:
@@ -13673,8 +13442,6 @@ snapshots:
     dependencies:
       xml-name-validator: 5.0.0
 
-  web-streams-polyfill@4.0.0-beta.3: {}
-
   webidl-conversions@3.0.1: {}
 
   webidl-conversions@7.0.0: {}
@@ -13759,18 +13526,6 @@ snapshots:
       yargs-parser: 21.1.1
 
   yocto-queue@0.1.0: {}
-
-  zeroentropy@0.1.0-alpha.10:
-    dependencies:
-      '@types/node': 18.19.130
-      '@types/node-fetch': 2.6.13
-      abort-controller: 3.0.0
-      agentkeepalive: 4.6.0
-      form-data-encoder: 1.7.2
-      formdata-node: 4.4.1
-      node-fetch: 2.7.0
-    transitivePeerDependencies:
-      - encoding
 
   zip-stream@6.0.1:
     dependencies:

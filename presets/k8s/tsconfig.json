@@ -35,8 +35,6 @@
     { "path": "../../packages/mcp-client" },
     { "path": "../../packages/mcp-oauth" },
     { "path": "../../packages/memory-facts-postgres" },
-    { "path": "../../packages/memory-strata" },
-    { "path": "../../packages/memory-strata-index-postgres" },
     { "path": "../../packages/credential-proxy" },
     { "path": "../../packages/credentials" },
     { "path": "../../packages/credentials-store-db" },

@@ -14,11 +14,11 @@ import { main } from '../main.js';
 // ---------------------------------------------------------------------------
 // TASK-421/TASK-422 — invariant 3 (no half-wired plugins). @ax/memory-facts-sqlite is
 // loaded unconditionally by main() (it's postgres-free and has no external
-// dependency to gate on, unlike the ANTHROPIC_API_KEY-gated memory-strata
+// dependency to gate on, unlike the ANTHROPIC_API_KEY-gated host-LLM
 // bundle). This proves it is actually reachable from a real CLI boot, not
 // just from its own package's contract test — the gap the TASK-421 review
-// flagged. See .claude/memory/decisions.md's TASK-421 entries: there is still
-// no product-layer consumer (@ax/memory doesn't exist yet), so this pins only
+// flagged. The CLI does not load the consumer (@ax/memory, which the
+// facts-memory preset loads), so this pins only
 // that the engine's hooks land on the real bus, not that anything calls them.
 //
 // TASK-422 added a FIFTH hook, `memory:facts:reindex`, so it is pinned here

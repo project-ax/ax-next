@@ -54,8 +54,6 @@
     "@ax/mcp-client": "workspace:*",
     "@ax/mcp-oauth": "workspace:*",
     "@ax/memory-facts-postgres": "workspace:*",
-    "@ax/memory-strata": "workspace:*",
-    "@ax/memory-strata-index-postgres": "workspace:*",
     "@ax/onboarding": "workspace:*",
     "@ax/routines": "workspace:*",
     "@ax/routines-admin-routes": "workspace:*",

@@ -49,13 +49,9 @@ import {
   createConversationTitlesPlugin,
   DEFAULT_TITLE_MODEL,
 } from '@ax/conversation-titles';
-import {
-  createMemoryStrataPlugin,
-  DEFAULT_ORCHESTRATOR_MODEL,
-} from '@ax/memory-strata';
-import { createMemoryStrataIndexPostgresPlugin } from '@ax/memory-strata-index-postgres';
 import { createMemoryFactsPostgresPlugin } from '@ax/memory-facts-postgres';
 import { createWebToolsPlugin } from '@ax/web-tools';
+import { createRetireStrataIndexPlugin } from './retire-strata-index.js';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
 import { createOnboardingPlugin, type OnboardingConfig } from '@ax/onboarding';
 import { createBlobStoreFsPlugin } from '@ax/blob-store-fs';
@@ -407,12 +403,11 @@ export interface K8sPresetConfig {
     model?: string;
   };
   /**
-   * Load the host-side LLM TOOLS bundle (@ax/web-tools + @ax/memory-strata +
-   * its postgres indexer). UNLIKE auto-titling, these construct their own
-   * Anthropic client from `ANTHROPIC_API_KEY` at init, so they require a shared
-   * host key in the boot env. `loadK8sConfigFromEnv` sets this iff
-   * `ANTHROPIC_API_KEY` is present; a deploy without it gets titles (off the DB
-   * credential) but not these host tools.
+   * Load the host-side LLM TOOLS bundle (@ax/web-tools). UNLIKE auto-titling,
+   * it constructs its own Anthropic client from `ANTHROPIC_API_KEY` at init,
+   * so it requires a shared host key in the boot env. `loadK8sConfigFromEnv`
+   * sets this iff `ANTHROPIC_API_KEY` is present; a deploy without it gets
+   * titles (off the DB credential) but not the host tools.
    */
   hostLlmTools?: boolean;
   /**
@@ -439,19 +434,6 @@ export interface K8sPresetConfig {
    * silently "did not take" — check the init log if one seems to be ignored.
    */
   webExtractAllowedHosts?: string[];
-  /**
-   * Model the memory_search retrieval orchestrator runs on, as a BARE
-   * OpenRouter model id (`anthropic/claude-haiku-4.5`, not `openrouter/...` — the
-   * hook name already carries the provider). Defaults to
-   * `DEFAULT_ORCHESTRATOR_MODEL` (@ax/memory-strata).
-   *
-   * Worth being able to change without a release: the orchestrator's value
-   * depends on it answering inside the 5s budget, and which model is both fast
-   * and cheap moves faster than this repo does. The n=500 spike's own
-   * conclusion was "direct xAI OR another equivalently-fast provider" — this is
-   * the knob that lets an operator go find one.
-   */
-  memoryOrchestratorModel?: string;
   /**
    * @ax/http-server config. The host listener that serves /admin/*, /auth/*,
    * /admin/me, /admin/sign-out, and (Week 10-12) the admin UI. Distinct from
@@ -1391,43 +1373,23 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   plugins.push(...llmProviderPlugins);
   plugins.push(createConversationTitlesPlugin({ model: titleModel }));
 
-  // Host-side LLM TOOLS bundle (@ax/web-tools + @ax/memory-strata + its
-  // postgres indexer). UNLIKE titles, these construct their OWN Anthropic
-  // client from `ANTHROPIC_API_KEY` at init, so they stay gated on a shared
-  // host key being present in the boot env (config.hostLlmTools, set by
-  // loadK8sConfigFromEnv iff ANTHROPIC_API_KEY is non-empty). They're separate
-  // features with their own behavior/security surface — NOT part of the
-  // auto-titling fix — so this preserves their current behavior exactly (off on
-  // deploys without a shared host key). They depend on `llm:call:anthropic`,
-  // registered unconditionally above. (Migrating them to credentialResolution
-  // is a follow-up if host tools should also work off the DB credential.)
+  // Host-side LLM TOOLS bundle (@ax/web-tools). UNLIKE titles, it constructs
+  // its OWN Anthropic client from `ANTHROPIC_API_KEY` at init, so it stays
+  // gated on a shared host key being present in the boot env
+  // (config.hostLlmTools, set by loadK8sConfigFromEnv iff ANTHROPIC_API_KEY is
+  // non-empty). It depends on `llm:call:anthropic`, registered unconditionally
+  // above. (Migrating it to credentialResolution is a follow-up if host tools
+  // should also work off the DB credential.) This bundle also carried the
+  // Strata memory plugins until TASK-608 deleted them.
   if (config.hostLlmTools === true) {
     plugins.push(createWebToolsPlugin());
-    // TASK-191: memory_search's retrieval path is the orchestrator (config E
-    // from the n=500 spike — orchestrator over system/map.md, BM25 fallback).
-    //
-    // It routes through `llm:call:openrouter`, which is registered just above
-    // with `credentialResolution: true`. That is the whole configuration: the
-    // provider resolves the key per call (user → global → env), so the
-    // orchestrator needs no key, no env var and no chart value of its own, and
-    // an operator who stores an OpenRouter key in the credentials UI gets the
-    // orchestrator with no deploy. It degrades to plain BM25 when no credential
-    // resolves, which is what every deployment gets until one is stored.
-    //
-    // It used to build a direct-xAI fetch client from `XAI_API_KEY` instead.
-    // That key had no chart value, so it was never set anywhere and the
-    // orchestrator has been dark in production since it shipped — the defect
-    // TASK-347's third gate found.
-    plugins.push(
-      createMemoryStrataPlugin({
-        orchestrator: {
-          hook: 'llm:call:openrouter',
-          model: config.memoryOrchestratorModel ?? DEFAULT_ORCHESTRATOR_MODEL,
-        },
-      }),
-    );
-    plugins.push(createMemoryStrataIndexPostgresPlugin());
   }
+
+  // ----- 9d. retired Strata index tables (TASK-608) -----------------------
+  // Drops `memory_strata_index_v{1,2}_docs` at init. Their owning plugin is
+  // deleted, so this preset (which wired it) owns the cleanup. See
+  // retire-strata-index.ts.
+  plugins.push(createRetireStrataIndexPlugin());
 
   // ----- 9e. memory facts engine (UNCONDITIONAL, outside the block above) -
   // @ax/memory-facts-postgres registers memory:facts:record|recall|supersede|
@@ -1435,20 +1397,18 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // `database:get-instance` (pushed in section 1 — no direct import,
   // invariant I2; the kernel's topo-sort inits database-postgres first).
   //
-  // Deliberately NOT gated on `config.hostLlmTools`, unlike the
-  // memory-strata bundle two lines up. That gate exists because those plugins
-  // build their own Anthropic client from a boot-env ANTHROPIC_API_KEY. A
+  // Deliberately NOT gated on `config.hostLlmTools`, unlike the web-tools
+  // bundle above. That gate exists because web-tools builds its own Anthropic
+  // client from a boot-env ANTHROPIC_API_KEY. A
   // facts engine has NO LLM dependency at all — it is storage plus closure
   // rules — and the CLI pushes its sqlite twin (@ax/memory-facts-sqlite)
   // unconditionally for the same reason. Gating it here would leave
   // `memory:facts:*` unreachable on any deployment without an API key, which
   // is the exact half-wired window TASK-423 exists to close.
   //
-  // Still open, and honestly so: there is no product-layer CONSUMER yet
-  // (@ax/memory — observer, tools, export — doesn't exist), so nothing in
-  // this preset CALLS these hooks. What this push buys is that the engine is
-  // reachable the day a consumer lands, on every deployment, rather than on
-  // the subset that happens to have a host LLM key.
+  // Still open, and honestly so: the product-layer CONSUMER (@ax/memory) is
+  // loaded only by @ax/preset-memory, which DROPS this engine and uses
+  // @ax/memory-facts-sqlite instead — so nothing CALLS these hooks today.
   plugins.push(createMemoryFactsPostgresPlugin());
 
   // ----- 10. channel-web HTTP surface -----------------------------------
@@ -2093,20 +2053,14 @@ export function loadK8sConfigFromEnv(
     config.titles = { model: titleModel };
   }
 
-  // ---- host-side LLM tools bundle (web-tools + memory-strata) --------------
-  // These construct their own Anthropic client from ANTHROPIC_API_KEY at init,
-  // so they DO still require a shared host key in the boot env — gate on its
+  // ---- host-side LLM tools bundle (web-tools) ------------------------------
+  // It constructs its own Anthropic client from ANTHROPIC_API_KEY at init,
+  // so it DOES still require a shared host key in the boot env — gate on its
   // presence (the same condition that used to gate titles). A multi-tenant
   // deploy without a shared host key gets titles (via the DB credential) but
-  // not the host tools, unchanged from today's behavior for these two.
+  // not the host tools.
   if (env.ANTHROPIC_API_KEY !== undefined && env.ANTHROPIC_API_KEY !== '') {
     config.hostLlmTools = true;
-  }
-  if (
-    env.AX_MEMORY_ORCHESTRATOR_MODEL !== undefined &&
-    env.AX_MEMORY_ORCHESTRATOR_MODEL !== ''
-  ) {
-    config.memoryOrchestratorModel = env.AX_MEMORY_ORCHESTRATOR_MODEL;
   }
 
   // ---- web_extract egress allowlist (TASK-330) ----------------------------

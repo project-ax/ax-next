@@ -1,9 +1,4 @@
 import type { ToolDescriptor } from '@ax/core';
-import {
-  MEMORY_NOTE_DESCRIPTOR,
-  MEMORY_READ_SECTION_DESCRIPTOR,
-  MEMORY_SEARCH_DESCRIPTOR,
-} from '@ax/memory-strata';
 import { REQUEST_CAPABILITY_DESCRIPTOR, SEARCH_CATALOG_DESCRIPTOR } from '@ax/skill-broker';
 import { ARTIFACT_PUBLISH_DESCRIPTOR } from '@ax/tool-artifact-publish';
 import { CONNECTOR_PROPOSE_DESCRIPTOR } from '@ax/tool-connector-propose';
@@ -220,6 +215,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/mcp-oauth',
         '@ax/memory-facts-postgres',
         '@ax/onboarding',
+        '@ax/preset-k8s/retire-strata-index',
         '@ax/routines',
         '@ax/routines-admin-routes',
         '@ax/sandbox-k8s',
@@ -253,7 +249,7 @@ describe('@ax/preset-k8s wiring', () => {
     // production no matter what the CLI did. The assertion that matters is
     // the config used here — `stubConfig` sets NO `hostLlmTools`, so this
     // goes red the moment someone moves the push inside that gate (where the
-    // memory-STRATA bundle correctly lives, because it needs an Anthropic
+    // web-tools bundle correctly lives, because it needs an Anthropic
     // key; a facts engine has no LLM dependency).
     //
     // All six hooks are listed by name on purpose, the same way
@@ -550,7 +546,7 @@ describe('@ax/preset-k8s wiring', () => {
   // -------------------------------------------------------------------------
   // Every built-in tool descriptor that ships in this preset (TASK-229).
   //
-  // This is the one package that already depends on all six tool packages, so
+  // This is the one package that already depends on all five tool packages, so
   // it is where the roll-call lives. Add a built-in tool, add it here — a tool
   // with no `activityPhrase` falls silently to the T0 floor, and silence is
   // exactly what a missing field looks like on a status line.
@@ -559,9 +555,6 @@ describe('@ax/preset-k8s wiring', () => {
   // from a third party, so they get no phrase and fall to T0 by design.
   // -------------------------------------------------------------------------
   const BUILTIN_TOOL_DESCRIPTORS: ToolDescriptor[] = [
-    MEMORY_SEARCH_DESCRIPTOR,
-    MEMORY_READ_SECTION_DESCRIPTOR,
-    MEMORY_NOTE_DESCRIPTOR,
     SEARCH_CATALOG_DESCRIPTOR,
     REQUEST_CAPABILITY_DESCRIPTOR,
     WEB_SEARCH_DESCRIPTOR,
@@ -1602,7 +1595,7 @@ describe('createK8sPlugins — title + host-LLM-tools plugins', () => {
     expect(names).toContain('@ax/conversation-titles');
     // The host-LLM-tools bundle stays OFF without cfg.hostLlmTools.
     expect(names).not.toContain('@ax/web-tools');
-    expect(names).not.toContain('@ax/memory-strata');
+    for (const n of names) expect(n).not.toMatch(/^@ax\/memory-strata/);
   });
 
   it.each(['@ax/llm-anthropic', '@ax/llm-openrouter'])(
@@ -1617,7 +1610,7 @@ describe('createK8sPlugins — title + host-LLM-tools plugins', () => {
     },
   );
 
-  it('loads the host-LLM-tools bundle (web-tools + memory-strata) when cfg.hostLlmTools is set', () => {
+  it('loads the host-LLM-tools bundle (web-tools; Strata is gone, TASK-608) when cfg.hostLlmTools is set', () => {
     const plugins = createK8sPlugins({
       ...stubConfig,
       hostLlmTools: true,
@@ -1626,7 +1619,7 @@ describe('createK8sPlugins — title + host-LLM-tools plugins', () => {
     expect(names).toContain('@ax/llm-anthropic');
     expect(names).toContain('@ax/conversation-titles');
     expect(names).toContain('@ax/web-tools');
-    expect(names).toContain('@ax/memory-strata');
+    for (const n of names) expect(n).not.toMatch(/^@ax\/memory-strata/);
   });
 
   it('passes cfg.titles.model into the conversation-titles plugin manifest', () => {

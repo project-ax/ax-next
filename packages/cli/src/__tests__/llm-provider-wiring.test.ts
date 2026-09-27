@@ -120,17 +120,19 @@ describe('@ax/cli host-side LLM provider wiring', () => {
   );
 
   it(
-    'FAILS THE BOOT when memory is loaded but OpenRouter is not',
+    'boots with ANTHROPIC_API_KEY alone: nothing in the host-LLM bundle needs OpenRouter',
     { timeout: 20_000 },
     async () => {
-      // ANTHROPIC_API_KEY gates the host-LLM bundle, which includes
-      // @ax/memory-strata — and memory's provider is OpenRouter now. That
-      // combination cannot work, and it is knowable before a single turn runs,
-      // so the kernel refuses the plugin graph instead of booting a host whose
-      // memory silently does nothing on every turn.
+      // The ANTHROPIC_API_KEY bundle used to include Strata memory, whose
+      // provider was OpenRouter, so this combination refused to boot. TASK-608
+      // deleted Strata; a leftover hard call on `llm:call:openrouter` would
+      // make every Anthropic-only CLI boot fail, and this pins that it does not.
       process.env.ANTHROPIC_API_KEY = 'sk-ant-fake-for-init';
       delete process.env.OPENROUTER_API_KEY;
-      await expect(boot()).rejects.toThrow(/llm:call:openrouter/);
+      const bus = await boot();
+      expect(bus.hasService('llm:call:anthropic')).toBe(true);
+      expect(bus.hasService('llm:call:openrouter')).toBe(false);
+      expect(bus.hasService('tool:execute:memory_search')).toBe(false);
     },
   );
 });

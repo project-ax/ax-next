@@ -202,6 +202,9 @@ const PLUGINS_TO_DROP = new Set<string>([
   // multi-tenant ACL canary's path. Static wiring is pinned in preset.test.ts;
   // the real boot lives in prod-bootstrap.test.ts.
   '@ax/memory-facts-postgres',
+  // Retired Strata index cleanup (TASK-608): same reason — it `calls`
+  // database:get-instance. Real boot in prod-bootstrap.test.ts.
+  '@ax/preset-k8s/retire-strata-index',
 ]);
 
 // Stub producer for the dispatcher's REQUIRED dep this canary drops.

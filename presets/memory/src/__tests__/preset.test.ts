@@ -42,16 +42,14 @@ const names = (cfg: MemoryPresetConfig) =>
   createMemoryPlugins(cfg).map((p) => p.manifest.name);
 
 describe('createMemoryPlugins composition', () => {
-  it('drops strata, strata-index-postgres, memory-facts-postgres and the base channel-web', () => {
+  it('drops memory-facts-postgres and the base channel-web', () => {
     const n = names(baseConfig);
-    for (const dropped of [
-      '@ax/memory-strata',
-      '@ax/memory-strata-index-postgres',
-      '@ax/memory-facts-postgres',
-    ]) {
-      expect(n).not.toContain(dropped);
-    }
+    expect(n).not.toContain('@ax/memory-facts-postgres');
     expect(n.filter((name) => name === '@ax/channel-web')).toHaveLength(1);
+  });
+
+  it('carries the k8s base retired-Strata-index cleanup (TASK-608)', () => {
+    expect(names(baseConfig)).toContain('@ax/preset-k8s/retire-strata-index');
   });
 
   it('loads the sqlite facts engine, embeddings, memory and channel-web', () => {
@@ -70,16 +68,16 @@ describe('createMemoryPlugins composition', () => {
     expect(memory?.manifest.registers).toContain('memory:rules:write');
   });
 
-  it('keeps the k8s default assembly on strata when hostLlmTools is set', () => {
+  it('loads no Strata plugin in either assembly, even with hostLlmTools set (TASK-608)', () => {
     const k8s = createK8sPlugins({ ...baseK8s, hostLlmTools: true }).map(
       (p) => p.manifest.name,
     );
-    expect(k8s).toContain('@ax/memory-strata');
-    expect(k8s).toContain('@ax/memory-facts-postgres');
-    expect(k8s).not.toContain('@ax/memory-facts-sqlite');
-
     const mem = names({ ...baseConfig, hostLlmTools: true });
-    expect(mem).not.toContain('@ax/memory-strata');
+    for (const n of [...k8s, ...mem]) {
+      expect(n).not.toMatch(/^@ax\/memory-strata/);
+    }
+    expect(k8s).toContain('@ax/web-tools');
+    expect(mem).toContain('@ax/web-tools');
     expect(mem).not.toContain('@ax/memory-facts-postgres');
     expect(mem).toContain('@ax/memory-facts-sqlite');
   });
