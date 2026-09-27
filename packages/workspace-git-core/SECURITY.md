@@ -1,6 +1,6 @@
 # Security — `@ax/workspace-git-core`
 
-This package is the implementation behind the `workspace:*` contract. It exports one function — `registerWorkspaceGitHooks` — that registers **six** service hooks (the four base ones, `workspace:apply`, `workspace:read`, `workspace:list`, `workspace:diff`, plus the two Phase 3 bundle hooks, `workspace:apply-bundle` and `workspace:export-baseline-bundle`), plus the host-only `workspace:purge` (TASK-576; see its own section below), on a host-side bus and stores every snapshot in a bare git repository at `<repoRoot>/<workspaceId>.git`, where `workspaceId` is derived from the calling `agentId` — one repo per agent, never one for the deployment. **Linear-history-only by construction:** every `workspace:apply` is a CAS on `refs/heads/main`. There are no branches, no merges, no rebase. The `WorkspaceVersion` opaque string happens to be a 40-hex commit SHA today, but subscribers MUST treat it as opaque (Invariant 1).
+This package is the implementation behind the `workspace:*` contract. It exports one function — `registerWorkspaceGitHooks` — that registers **six** service hooks (the four base ones, `workspace:apply`, `workspace:read`, `workspace:list`, `workspace:diff`, plus the two Phase 3 bundle hooks, `workspace:apply-bundle` and `workspace:export-baseline-bundle`) on a host-side bus and stores every snapshot in a bare git repository at `<repoRoot>/<workspaceId>.git`, where `workspaceId` is derived from the calling `agentId` — one repo per agent, never one for the deployment. **Linear-history-only by construction:** every `workspace:apply` is a CAS on `refs/heads/main`. There are no branches, no merges, no rebase. The `WorkspaceVersion` opaque string happens to be a 40-hex commit SHA today, but subscribers MUST treat it as opaque (Invariant 1).
 
 **One** consumer wraps this core: `@ax/workspace-git`, the in-process plugin for single-pod / local-CLI deployments. It imports the core directly and calls `registerWorkspaceGitHooks` at `init()` time. It is also the **chart's default** (`workspace.backend: local`), which makes this the code that serves production unless an operator opts out.
 
@@ -140,35 +140,6 @@ read by anything. We do NOT migrate or delete it, because nothing in it records
 which agent wrote which file — guessing would be worse than leaving it. Operators
 should treat it as what it is (a tree every user of that deployment could read)
 and delete it once they've salvaged anything they want.
-
-## `workspace:purge` (TASK-576) — the one hook that rewrites history
-
-This hook deliberately breaks the linear-history-only rule above: it erases a
-path selector from the tip **and every past commit** of one agent's repo, then
-`reflog expire` + `gc --prune=now` so the bytes are gone from the object store
-too. It is irreversible, so it is fenced harder than the other hooks:
-
-- **Host-only.** Nothing in `@ax/ipc-core`'s dispatcher routes to it — the
-  runner-facing actions are an explicit allow-list and `workspace:purge` is not
-  on it. Its one caller is the memory-retirement migration at host boot.
-- **Same identity gate** (`requireAgent`) as every other hook: it can only
-  reach the caller's own `<workspaceId>.git`.
-- **Selector validated before storage** (`validatePurgeSelector` in
-  `@ax/core`): relative POSIX directory prefixes ending in `/`, no `..`/`.git`/
-  NUL/backslash, bounded counts, `keep` paths must lie under a prefix.
-- **Serialized** under the same per-repo mutex as apply / apply-bundle /
-  export, so no write lands between the history scan and the compare-and-swap
-  of `refs/heads/main`.
-- **A missing repo is not created** — the purge answers `version: null`.
-- **Verified before the branch moves.** The shared
-  `@ax/workspace-git-purge` routine checks the rewritten history (commit graph,
-  per-commit metadata, everything outside the selector byte-identical) before
-  its single CAS `update-ref`, and refuses to run while any unknown ref
-  exists (we clear our own `refs/bundle/*` first).
-- **Spawn:** same closed env and argv-only spawn as the other git calls, with
-  stdin added for `fast-import`. Errors surface as `PluginError('purge-failed')`
-  naming the workspace id and the failed step — never a path or git's stderr,
-  because the paths under the selector are the data being erased.
 
 ## Prompt injection / untrusted content
 

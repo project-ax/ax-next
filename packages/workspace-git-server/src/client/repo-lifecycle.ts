@@ -23,8 +23,6 @@ export interface RepoLifecycleClientOptions {
    * caller indefinitely. Default 10 s.
    */
   timeoutMs?: number;
-  /** Timeout for `purgeRepo` alone (history rewrite + gc). Default 10 min. */
-  purgeTimeoutMs?: number;
 }
 
 export interface CreateRepoResponse {
@@ -38,47 +36,12 @@ export interface GetRepoResponse {
   headOid: string | null;
 }
 
-/** Body of `POST /repos/<id>/purge` (TASK-576). */
-export interface PurgeRepoRequest {
-  prefixes: string[];
-  keep?: string[];
-}
-
-/** 200 reply of `POST /repos/<id>/purge`. */
-export interface PurgeRepoResponse {
-  purged: string[];
-  headOid: string | null;
-  rewritten: boolean;
-}
-
 export interface RepoLifecycleClient {
   createRepo(workspaceId: string): Promise<CreateRepoResponse>;
   getRepo(workspaceId: string): Promise<GetRepoResponse | null>;
   deleteRepo(workspaceId: string): Promise<void>;
-  /**
-   * Irreversibly erase `selector` from every version of the repo. Resolves
-   * `null` when the repo does not exist (404). ONE attempt: callers must not
-   * wrap this in a retry — a failure is surfaced, and the operation is
-   * idempotent, so the caller re-runs it deliberately instead.
-   */
-  purgeRepo(workspaceId: string, selector: PurgeRepoRequest): Promise<PurgeRepoResponse | null>;
   isHealthy(): Promise<boolean>;
 }
-
-/** Thrown by `purgeRepo` on a non-2xx, non-404 reply. Carries the status. */
-export class PurgeRepoError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'PurgeRepoError';
-  }
-}
-
-// A purge rewrites history and gc's the repo; on a big workspace that is well
-// past the 10 s default of the other lifecycle calls.
-const DEFAULT_PURGE_TIMEOUT_MS = 10 * 60_000;
 
 export function createRepoLifecycleClient(
   opts: RepoLifecycleClientOptions,
@@ -92,10 +55,9 @@ export function createRepoLifecycleClient(
   const fetchWithTimeout = async (
     url: string,
     init: RequestInit,
-    callTimeoutMs: number = timeoutMs,
   ): Promise<Response> => {
     const ac = new AbortController();
-    const t = setTimeout(() => ac.abort(), callTimeoutMs);
+    const t = setTimeout(() => ac.abort(), timeoutMs);
     try {
       return await fetchImpl(url, { ...init, signal: ac.signal });
     } finally {
@@ -169,43 +131,6 @@ export function createRepoLifecycleClient(
       if (res.status === 401) throw new Error('unauthorized');
       const text = await safeText(res);
       throw opError('DELETE', url, `unexpected status ${res.status}: ${text}`);
-    },
-
-    async purgeRepo(
-      workspaceId: string,
-      selector: PurgeRepoRequest,
-    ): Promise<PurgeRepoResponse | null> {
-      const url = `${baseUrl}/repos/${workspaceId}/purge`;
-      const body: PurgeRepoRequest = { prefixes: [...selector.prefixes] };
-      if (selector.keep !== undefined) body.keep = [...selector.keep];
-      let res: Response;
-      try {
-        res = await fetchWithTimeout(
-          url,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: authHeader,
-            },
-            body: JSON.stringify(body),
-          },
-          opts.purgeTimeoutMs ?? DEFAULT_PURGE_TIMEOUT_MS,
-        );
-      } catch (err) {
-        throw opError('POST', url, (err as Error).message);
-      }
-      if (res.status === 200) return (await res.json()) as PurgeRepoResponse;
-      if (res.status === 404) {
-        await safeText(res);
-        return null;
-      }
-      if (res.status === 401) throw new PurgeRepoError(401, 'unauthorized');
-      const text = await safeText(res);
-      throw new PurgeRepoError(
-        res.status,
-        `POST ${url} failed: unexpected status ${res.status}: ${text}`,
-      );
     },
 
     async isHealthy(): Promise<boolean> {

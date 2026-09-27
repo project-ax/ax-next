@@ -28,7 +28,6 @@
   "dependencies": {
     "@ax/core": "workspace:*",
     "@ax/workspace-bundle-protocol": "workspace:*",
-    "@ax/workspace-git-purge": "workspace:*",
     "zod": "^3.23.8"
   },
   "devDependencies": {

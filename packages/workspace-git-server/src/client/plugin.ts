@@ -48,7 +48,6 @@ import {
   registerWorkspaceApplyFacade,
   WorkspaceDiffOutputSchema,
   WorkspaceListOutputSchema,
-  WorkspacePurgeOutputSchema,
   WorkspaceReadOutputSchema,
 } from '@ax/core';
 import type { AgentContext, Plugin, WorkspaceDelta } from '@ax/core';
@@ -59,8 +58,6 @@ import type {
   WorkspaceDiffOutput,
   WorkspaceListInput,
   WorkspaceListOutput,
-  WorkspacePurgeInput,
-  WorkspacePurgeOutput,
   WorkspaceReadInput,
   WorkspaceReadOutput,
 } from '@ax/core';
@@ -120,11 +117,6 @@ function withRetryClient(
     createRepo: (id) => withRetry(() => client.createRepo(id), retry),
     getRepo: (id) => withRetry(() => client.getRepo(id), retry),
     deleteRepo: (id) => withRetry(() => client.deleteRepo(id), retry),
-    // TASK-576: deliberately NOT retried. An irreversible history rewrite
-    // gets one attempt and fails loudly; the migration that calls it re-runs
-    // it on purpose (the purge is idempotent), rather than a retry loop
-    // re-issuing it behind a connection blip it cannot see the outcome of.
-    purgeRepo: (id, selector) => client.purgeRepo(id, selector),
     isHealthy: () => withRetry(() => client.isHealthy(), retry),
   };
 }
@@ -252,7 +244,6 @@ export function createWorkspaceGitServerPlugin(
         'workspace:read',
         'workspace:list',
         'workspace:diff',
-        'workspace:purge',
       ],
       calls: [],
       subscribes: [],
@@ -376,23 +367,6 @@ export function createWorkspaceGitServerPlugin(
           }
         },
         { returns: WorkspaceDiffOutputSchema },
-      );
-
-      // TASK-576 — host-only (never on the runner IPC allow-list). Erases a
-      // path selector from every version on the storage tier, then drops this
-      // host's mirror so no pre-purge object can be served from it.
-      bus.registerService<WorkspacePurgeInput, WorkspacePurgeOutput>(
-        'workspace:purge',
-        PLUGIN_NAME,
-        async (ctx, input) => {
-          const workspaceId = resolveWorkspaceId(ctx);
-          try {
-            return await engine.purge(workspaceId, input);
-          } catch (err) {
-            throw _sanitizeTokenLeak(err, opts.token);
-          }
-        },
-        { returns: WorkspacePurgeOutputSchema },
       );
     },
 
