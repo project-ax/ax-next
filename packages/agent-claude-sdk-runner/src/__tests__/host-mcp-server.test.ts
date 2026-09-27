@@ -407,4 +407,47 @@ describe('createHostMcpServer', () => {
     expect(server.type).toBe('sdk');
     expect(server.name).toBe('ax-host-tools');
   });
+
+  it('advertises per-property descriptions from the JSON Schema in tools/list', async () => {
+    const toolWithDescribedProps: ToolDescriptor = {
+      name: 'memory.recall.described',
+      description: 'recall with a described input schema',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          about: { type: 'string', description: 'what to recall about' },
+          limit: { type: 'number' },
+          when: { type: 'string', description: 42 },
+        },
+      },
+      executesIn: 'host',
+    };
+    const { client } = mkClient(async () => ({ output: 'ok' }));
+    const server = createHostMcpServer({
+      client,
+      tools: [toolWithDescribedProps],
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const handler = (server.instance as any).server._requestHandlers.get(
+      'tools/list',
+    );
+    expect(handler).toBeTypeOf('function');
+
+    const res = await handler({ method: 'tools/list', params: {} }, {});
+    const advertised = res.tools.find(
+      (t: { name: string }) => t.name === 'memory.recall.described',
+    );
+    expect(advertised).toBeDefined();
+    const props = advertised.inputSchema.properties;
+
+    // Described property: the model sees the authored description.
+    expect(props.about.description).toBe('what to recall about');
+    // Undescribed property: key survives, no description.
+    expect(props.limit).toBeDefined();
+    expect(props.limit.description).toBeUndefined();
+    // Non-string `description`: key survives, no description, no throw.
+    expect(props.when).toBeDefined();
+    expect(props.when.description).toBeUndefined();
+  });
 });

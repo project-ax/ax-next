@@ -18,6 +18,10 @@
 // shape of `z.unknown()` from each tool's JSON Schema so the keys survive;
 // real input validation still happens host-side in `tool:pre-call` and in
 // each host tool's own handler (we never re-implement JSON Schema → Zod).
+// Each property's authored `description` (when present and a non-empty
+// string) is carried over via `.describe()` so the model still sees it in
+// `tools/list` — that's free, doesn't add validation, and without it every
+// property is advertised as a bare `{}` with no hint of what it means.
 // ---------------------------------------------------------------------------
 
 import { randomUUID } from 'node:crypto';
@@ -55,7 +59,8 @@ export interface CreateHostMcpServerOptions {
 
 /**
  * Build a minimal Zod raw shape from a tool's JSON Schema so the SDK
- * preserves the model-supplied input keys.
+ * preserves the model-supplied input keys, while still carrying each
+ * property's authored `description` through to the advertised MCP schema.
  *
  * `tool()` treats its third argument as a `ZodRawShape`, i.e. a plain
  * `{[key]: ZodType}` map. Internally the SDK does `z.object(shape)` and
@@ -68,9 +73,19 @@ export interface CreateHostMcpServerOptions {
  * To avoid that, we translate the JSON Schema's declared `properties` into
  * a one-key-per-property shape, each value `z.unknown()` (so we don't
  * re-implement JSON Schema → Zod; real validation still happens host-side
- * in `tool:pre-call` and in each host tool's own handler). Tools without
- * declared properties fall back to an empty shape — they genuinely
- * expect no input.
+ * in `tool:pre-call` and in each host tool's own handler) — except that
+ * when a property carries a string `description`, we attach it via
+ * `.describe()`. Without this, the model sees every property advertised
+ * as a bare `{}` in `tools/list`: no types (deliberately — see above) AND
+ * no hint of what the field means, which is exactly the part of the JSON
+ * Schema we CAN carry over for free. A model that can't see a property's
+ * description has been observed inferring the wrong shape for it (e.g. a
+ * malformed `when`) and failing host-side validation on a call that a
+ * one-line description would have prevented. We deliberately do NOT map
+ * types or `required` here (that would add SDK-side validation to every
+ * host tool); `description` is metadata only and changes no validation
+ * behavior. Tools without declared properties fall back to an empty
+ * shape — they genuinely expect no input.
  */
 function shapeFromInputSchema(
   inputSchema: Record<string, unknown>,
@@ -87,8 +102,17 @@ function shapeFromInputSchema(
     return {};
   }
   const shape: Record<string, z.ZodTypeAny> = {};
-  for (const key of Object.keys(rawProps as Record<string, unknown>)) {
-    shape[key] = z.unknown();
+  for (const [key, value] of Object.entries(
+    rawProps as Record<string, unknown>,
+  )) {
+    const description =
+      value !== null && typeof value === 'object' && !Array.isArray(value)
+        ? (value as { description?: unknown }).description
+        : undefined;
+    shape[key] =
+      typeof description === 'string' && description.length > 0
+        ? z.unknown().describe(description)
+        : z.unknown();
   }
   return shape;
 }
