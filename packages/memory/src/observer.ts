@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { extractFacts, type ExtractedFact, type LlmCallFn } from './extract.js';
+import { isAgentContextSelfReport } from './self-report.js';
 import { deriveSlot, type Slot } from './slots.js';
 import { rewriteSpeaker } from './subject.js';
 import type { MemoryStatementKind } from './types.js';
@@ -79,6 +80,12 @@ export type ObserverResult =
       recorded: number;
       /** Facts the extractor produced that could not be stored. */
       unusable: number;
+      /**
+       * Facts dropped because they were the agent describing its own runtime
+       * context ("I have no rules") — see `self-report.ts`. Not `unusable`:
+       * nothing is wrong with the extractor when this is non-zero.
+       */
+      selfReports: number;
       retried: boolean;
       batchKey: string;
     };
@@ -158,6 +165,7 @@ export async function runObserver(input: RunObserverInput): Promise<ObserverResu
     kind: 'recorded',
     recorded: result.records.length,
     unusable: mapped.unusable,
+    selfReports: mapped.selfReports,
     retried: extraction.retried,
     batchKey,
   };
@@ -228,10 +236,20 @@ export function buildBatchKey(input: {
 export function toStatements(
   facts: readonly ExtractedFact[],
   opts: { ownerUserId: string; conversationId?: string | undefined },
-): { statements: ObserverStatement[]; unusable: number } {
+): { statements: ObserverStatement[]; unusable: number; selfReports: number } {
   const statements: ObserverStatement[] = [];
   let unusable = 0;
+  let selfReports = 0;
   for (const fact of facts) {
+    // TASK-612: the agent describing what rules/instructions/memory it can
+    // see is a snapshot of one session's system prompt, not a fact about the
+    // world, and it goes stale the moment a person saves a Rule. Dropped
+    // before anything else, and counted apart from `unusable` because it is
+    // not an extractor failure.
+    if (isAgentContextSelfReport(fact)) {
+      selfReports += 1;
+      continue;
+    }
     const when = normalizeInstant(fact.validStart);
     if (when === undefined) {
       unusable += 1;
@@ -273,7 +291,7 @@ export function toStatements(
       ...(slot !== null ? { slot } : {}),
     });
   }
-  return { statements, unusable };
+  return { statements, unusable, selfReports };
 }
 
 /**

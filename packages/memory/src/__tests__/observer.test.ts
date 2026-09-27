@@ -780,6 +780,47 @@ describe('extraction schema failures', () => {
 
 // ---------------------------------------------------------------------------
 
+describe("the agent's reports about its own context are not facts (TASK-612)", () => {
+  // Walk TASK-607, verbatim: a Rule saved mid-session never reached the
+  // running sandbox, the agent said it had none, and this row was stored.
+  const STALE_SELF_REPORT = {
+    network: 'experience',
+    subject: 'assistant',
+    predicate: 'stated',
+    object:
+      'No rules have been given by the user; the only instructions came from the system bootstrap prompt (figuring out identity, writing identity files)',
+  };
+
+  it('drops the self-report and keeps the rest of the batch', async () => {
+    const h = await withLlm(() => reply(extraction([fact(), fact(STALE_SELF_REPORT)])));
+    await chatEnd(h);
+
+    const rows = readRows(h.databasePath);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.relation).toBe('lives_in');
+    const run = eventsNamed(h.logs, OBSERVER_RUN_EVENT).find((l) => l.bindings.outcome === 'recorded');
+    expect(run?.bindings.recorded).toBe(1);
+    expect(run?.bindings.selfReports).toBe(1);
+    // A dropped self-report is not an unreadable fact.
+    expect(run?.bindings.unusable).toBe(0);
+  });
+
+  it('a batch of nothing but self-reports is an ordinary skip, not a failure', async () => {
+    const h = await withLlm(() => reply(extraction([fact(STALE_SELF_REPORT)])));
+    await chatEnd(h);
+
+    expect(readRows(h.databasePath)).toHaveLength(0);
+    expect(eventsNamed(h.logs, OBSERVER_FAILED_EVENT)).toHaveLength(0);
+    const skipped = eventsNamed(h.logs, OBSERVER_RUN_EVENT).filter(
+      (l) => l.bindings.outcome === 'skipped',
+    );
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]?.bindings.reason).toBe('no-facts');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
 describe('every failure path emits an event', () => {
   it('a missing credential lands in the "memory paused" state, at error volume', async () => {
     const h = await withLlm(() => {
