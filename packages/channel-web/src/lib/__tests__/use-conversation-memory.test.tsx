@@ -228,3 +228,76 @@ describe('useConversationMemory', () => {
     expect(result.current.unseen).toBe(1);
   });
 });
+
+/*
+  TASK-643: one ledger of fixes for the conversation, written by the rail and
+  by the "Used N memories" chip alike.
+*/
+describe('useConversationMemory — the fix ledger', () => {
+  it('records a fix and swaps the listed row for its fixed form, in place', async () => {
+    controllableStream();
+    recall.mockResolvedValueOnce(page(st('a', { value: 'Boston', sourceTurnId: 't1' }), st('b')));
+    const { result } = mount();
+    await waitFor(() => expect(result.current.rows).toHaveLength(2));
+
+    // The chip hands in ITS copy of the row, which carries no source turn.
+    act(() =>
+      result.current.recordFix({ row: st('a', { value: 'Boston' }), id: 'a2', value: 'Denver' }, 'changed'),
+    );
+    expect(result.current.fixes.get('a')).toEqual({ kind: 'replaced', id: 'a2', value: 'Denver' });
+    expect(result.current.rows.map((r) => r.row.id)).toEqual(['a2', 'b']);
+    // The rail keeps its own fields (the source link) on the fixed row.
+    expect(result.current.rows[0]?.row).toMatchObject({ id: 'a2', value: 'Denver', sourceTurnId: 't1' });
+  });
+
+  it('"It was never right" is recorded as retracted', async () => {
+    controllableStream();
+    recall.mockResolvedValueOnce(page(st('a')));
+    const { result } = mount();
+    await waitFor(() => expect(result.current.rows).toHaveLength(1));
+    act(() => result.current.recordFix({ row: st('a'), id: 'a2', value: 'x' }, 'never-right'));
+    expect(result.current.fixes.get('a')?.kind).toBe('retracted');
+  });
+
+  it('records a fix to a row the rail does not list, without adding it to the list', async () => {
+    controllableStream();
+    recall.mockResolvedValueOnce(page(st('b')));
+    const { result } = mount();
+    await waitFor(() => expect(result.current.rows).toHaveLength(1));
+    act(() => result.current.recordFix({ row: st('elsewhere'), id: 'e2', value: 'x' }, 'changed'));
+    expect(result.current.fixes.has('elsewhere')).toBe(true);
+    expect(result.current.rows.map((r) => r.row.id)).toEqual(['b']);
+  });
+
+  it('undoFix drops the entry and puts back the row the rail listed, not the caller’s copy', async () => {
+    controllableStream();
+    const listed = st('a', { value: 'Boston', sourceTurnId: 't1' });
+    recall.mockResolvedValueOnce(page(listed));
+    const { result } = mount();
+    await waitFor(() => expect(result.current.rows).toHaveLength(1));
+    const fix = { row: st('a', { value: 'Boston' }), id: 'a2', value: 'Denver' };
+    act(() => result.current.recordFix(fix, 'changed'));
+    act(() => result.current.undoFix(fix));
+    expect(result.current.fixes.has('a')).toBe(false);
+    expect(result.current.rows.map((r) => r.row)).toEqual([listed]);
+  });
+
+  it('keeps the ledger through a retry, and starts over for another conversation', async () => {
+    controllableStream();
+    recall.mockResolvedValue(page(st('a')));
+    const { result, rerender } = renderHook(
+      ({ conversationId }: { conversationId: string }) =>
+        useConversationMemory({ agentId: 'a1', conversationId, enabled: true, announce }),
+      { initialProps: { conversationId: 'c1' } },
+    );
+    await waitFor(() => expect(result.current.rows).toHaveLength(1));
+    act(() => result.current.recordFix({ row: st('a'), id: 'a2', value: 'x' }, 'changed'));
+
+    act(() => result.current.retry());
+    await waitFor(() => expect(recall).toHaveBeenCalledTimes(2));
+    expect(result.current.fixes.has('a')).toBe(true);
+
+    rerender({ conversationId: 'c2' });
+    await waitFor(() => expect(result.current.fixes.size).toBe(0));
+  });
+});

@@ -18,6 +18,12 @@ import type { AgentTab } from '@/lib/workspace-route';
 import { MEMORY_SOURCE_ATTR, TURN_ID_ATTR } from '@/lib/thread-jump';
 import { AgentView } from '../AgentView';
 import {
+  MEMORY_FIX_FIELD_LABEL,
+  MEMORY_FIX_SAVE,
+  MEMORY_USED_SINCE,
+  memoryFixLabel,
+  memoryStatementText,
+  memoryUndoFixLabel,
   LEARNED_FROM_MY_REPLY,
   LEARNED_FROM_YOUR_MESSAGE,
   learnedSourceLabel,
@@ -43,6 +49,8 @@ vi.mock('@/lib/workspace-api', async () => {
       streamReply: vi.fn(),
       recallMemory: vi.fn(),
       memoryEvents: vi.fn(),
+      correctMemory: vi.fn(),
+      uncorrectMemory: vi.fn(),
     },
   };
 });
@@ -50,6 +58,8 @@ vi.mock('@/lib/workspace-api', async () => {
 const agentMock = vi.mocked(workspaceApi.agent);
 const recall = vi.mocked(workspaceApi.recallMemory);
 const events = vi.mocked(workspaceApi.memoryEvents);
+const correct = vi.mocked(workspaceApi.correctMemory);
+const uncorrect = vi.mocked(workspaceApi.uncorrectMemory);
 
 const quill: WorkspaceAgent = {
   id: 'a-quill',
@@ -255,5 +265,100 @@ describe('AgentView — the block below md', () => {
     expect(reply).toBeDefined();
     expect(reply).toHaveTextContent('Got it');
     await waitFor(() => expect(reply!.getAttribute(MEMORY_SOURCE_ATTR)).toBe('flash'));
+  });
+});
+
+/*
+  TASK-643, measured on kind (walk TASK-629): a Fix saved from the "Used N
+  memories" chip updated the chip, but the rail kept the old row until a
+  reload — the two surfaces each kept their own overlay. They now share one
+  ledger, owned by `AgentView`.
+*/
+describe('AgentView — the chip and the rail share one set of fixes', () => {
+  const boston = st('m1', { value: 'Boston', sourceTurnId: 't1' });
+  const bostonText = memoryStatementText(boston);
+
+  function withChip() {
+    setViewport(false);
+    agentMock.mockResolvedValue(
+      detail({
+        thread: [
+          { kind: 'user', id: 't1', text: 'Where do I live?' },
+          {
+            kind: 'agent',
+            id: 't2',
+            text: 'Boston.',
+            at: '2026-09-28T06:38:00.000Z',
+            memoryUsed: { statements: [boston] },
+          },
+        ],
+      }),
+    );
+    recall.mockResolvedValue({ statements: [boston], degraded: [] });
+    correct.mockResolvedValue({ id: 'm1-fixed' });
+    uncorrect.mockResolvedValue({ undone: true });
+  }
+
+  async function rail(): Promise<HTMLElement> {
+    const title = await screen.findByText(LEARNED_TITLE);
+    const section = title.closest('section');
+    expect(section).not.toBeNull();
+    return section as HTMLElement;
+  }
+
+  async function chip(): Promise<HTMLElement> {
+    const el = await screen.findByTestId('workspace-memory-used');
+    const trigger = within(el).getByRole('button', { name: /^Used / });
+    if (trigger.getAttribute('aria-expanded') !== 'true') fireEvent.click(trigger);
+    return el;
+  }
+
+  async function saveFix(value: string) {
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText(MEMORY_FIX_FIELD_LABEL), {
+      target: { value },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: MEMORY_FIX_SAVE }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  }
+
+  it('a fix saved from the chip shows in the rail at once, and its Undo puts the rail row back', async () => {
+    withChip();
+    renderView();
+    const railEl = await rail();
+    await within(railEl).findByText(bostonText);
+
+    const chipEl = await chip();
+    fireEvent.click(within(chipEl).getByRole('button', { name: memoryFixLabel('Boston') }));
+    await saveFix('Denver');
+
+    const fixedText = memoryStatementText({ ...boston, value: 'Denver' });
+    expect(await within(railEl).findByText(fixedText)).toBeTruthy();
+    expect(within(railEl).queryByText(bostonText)).toBeNull();
+    // No re-read did it: the rail changed from the shared ledger alone.
+    expect(recall).toHaveBeenCalledTimes(1);
+    expect(within(chipEl).getByText(MEMORY_USED_SINCE.replaced)).toBeTruthy();
+
+    fireEvent.click(within(chipEl).getByRole('button', { name: memoryUndoFixLabel('Denver') }));
+    await waitFor(() =>
+      expect(uncorrect).toHaveBeenCalledWith('a-quill', { id: 'm1-fixed', restore: 'm1' }),
+    );
+    expect(await within(railEl).findByText(bostonText)).toBeTruthy();
+    expect(within(railEl).queryByText(fixedText)).toBeNull();
+    expect(within(chipEl).queryByText(MEMORY_USED_SINCE.replaced)).toBeNull();
+  });
+
+  it('a fix saved from the rail shows in the chip at once', async () => {
+    withChip();
+    renderView();
+    const railEl = await rail();
+    fireEvent.click(
+      await within(railEl).findByRole('button', { name: memoryFixLabel(bostonText) }),
+    );
+    await saveFix('Denver');
+
+    const chipEl = await chip();
+    expect(within(chipEl).getByText(MEMORY_USED_SINCE.replaced)).toBeTruthy();
+    expect(within(chipEl).queryByRole('button', { name: memoryFixLabel('Boston') })).toBeNull();
   });
 });

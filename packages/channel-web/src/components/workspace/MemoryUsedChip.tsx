@@ -15,7 +15,7 @@
  * Every statement is untrusted (it came out of a conversation). It is drawn as
  * text nodes only — no markdown, no HTML — and long values wrap.
  */
-import { useState } from 'react';
+import { useContext, useState } from 'react';
 import { BookOpen, ChevronRight } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -25,6 +25,7 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
+import { MemoryFixesContext, useFixLedger } from '@/lib/use-conversation-memory';
 import type { MemoryUsed, MemoryUsedStatement } from '@/lib/workspace-types';
 import { MemoryFixDialog, MemoryReceipt, useMemoryReceipt } from './MemoryCorrection';
 import {
@@ -55,19 +56,18 @@ const noop = () => {};
 
 export function MemoryUsedChip({ used, agentId }: { used: MemoryUsed; agentId: string }) {
   const [fixTarget, setFixTarget] = useState<MemoryUsedStatement | null>(null);
-  /** Rows fixed from this chip since it was drawn, by id. */
-  const [fixed, setFixed] = useState<ReadonlyMap<string, MemoryUsedSinceKind>>(
-    () => new Map(),
-  );
-  // An undone fix hands the row its Fix button back.
-  const receipt = useMemoryReceipt(agentId, noop, {
-    onFixUndone: (fix) =>
-      setFixed((m) => {
-        const next = new Map(m);
-        next.delete(fix.row.id);
-        return next;
-      }),
-  });
+  /*
+    Which rows have been fixed since this answer is the CONVERSATION's to
+    know, not this chip's (TASK-643): a fix saved here has to show in the
+    rail's "What I learned in this chat" at once, and one saved there has to
+    show here. `AgentView` provides that one ledger; a chip drawn outside it
+    (on its own, in a test) keeps a ledger of its own.
+  */
+  const shared = useContext(MemoryFixesContext);
+  const own = useFixLedger(agentId);
+  const { fixes, recordFix, undoFix } = shared ?? own;
+  // An undone fix hands the row its Fix button back — everywhere it is drawn.
+  const receipt = useMemoryReceipt(agentId, noop, { onFixUndone: undoFix });
 
   return (
     <Collapsible
@@ -86,7 +86,8 @@ export function MemoryUsedChip({ used, agentId }: { used: MemoryUsed; agentId: s
       <CollapsibleContent>
         <ul className="px-3.5 py-1">
           {used.statements.map((row, i) => {
-            const since = fixed.get(row.id) ?? row.closedSince;
+            const since: MemoryUsedSinceKind | undefined =
+              fixes.get(row.id)?.kind ?? row.closedSince;
             return (
               <li
                 key={`${i}-${row.id}`}
@@ -140,10 +141,9 @@ export function MemoryUsedChip({ used, agentId }: { used: MemoryUsed; agentId: s
           const target = fixTarget;
           setFixTarget(null);
           if (target !== null) {
-            setFixed((m) =>
-              new Map(m).set(target.id, reason === 'never-right' ? 'retracted' : 'replaced'),
-            );
-            receipt.updated({ row: target, ...saved });
+            const fix = { row: target, ...saved };
+            recordFix(fix, reason);
+            receipt.updated(fix);
           }
         }}
       />
