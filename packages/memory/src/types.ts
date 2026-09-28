@@ -255,6 +255,31 @@ export interface MemoryForgetInput {
 export type MemoryForgetOutput = Record<string, never>;
 
 /**
+ * `memory:unforget` input (TASK-630) — Undo for a Forget. Puts the forgotten
+ * memories back AS THEY WERE: same id, and the same "who saved it" — an
+ * agent-saved memory comes back agent-saved, not re-saved as the person who
+ * pressed Undo. Scoped exactly like `memory:forget`: whoever could forget a
+ * memory can bring it back, and nobody else.
+ */
+export interface MemoryUnforgetInput {
+  ids: string[];
+}
+
+/**
+ * `restored` lists the ids that are no longer forgotten, in the caller's
+ * order. An id that was not forgotten (still in effect, replaced by a newer
+ * value, missing) or that the caller may not touch is simply absent.
+ *
+ * Unlike `memory:forget`, this names ids, because Undo has to know whether it
+ * worked. That is no existence oracle: an id outside the caller's scope is
+ * absent whether it exists or not, and every id inside it is one the caller
+ * can already read back from its own History.
+ */
+export interface MemoryUnforgetOutput {
+  restored: string[];
+}
+
+/**
  * `memory:status` output — whether background extraction is working for the
  * CALLER. Answers only for `ctx.userId`; the input carries no user id, so no
  * caller can probe another person's state.

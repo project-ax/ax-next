@@ -19,6 +19,8 @@ describe('@ax/memory — manifest', () => {
       // TASK-624: a person's Fix, with WHY it was wrong.
       'memory:correct',
       'memory:forget',
+      // TASK-630: Undo for a Forget, keeping the row's own provenance.
+      'memory:unforget',
       // The per-user "extraction paused" signal the UI reads.
       'memory:status',
       // TASK-491, design 4.1. A SINGLE-provider service hook, which is what
@@ -37,6 +39,7 @@ describe('@ax/memory — manifest', () => {
       'memory:facts:recall',
       'memory:facts:record',
       'memory:facts:supersede',
+      'memory:facts:reinstate',
       'tool:register',
       'agents:resolve',
     ]);
@@ -63,6 +66,7 @@ describe('@ax/memory — manifest', () => {
         'memory:remember',
         'memory:correct',
         'memory:forget',
+        'memory:unforget',
         'memory:status',
         'system-prompt:augment',
         'tool:register',
@@ -82,6 +86,7 @@ describe('@ax/memory — manifest', () => {
       'memory:facts:recall',
       'memory:facts:record',
       'memory:facts:supersede',
+      'memory:facts:reinstate',
       'tool:register',
     ]) {
       expect(optional).not.toContain(engineHook);
