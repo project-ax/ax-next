@@ -990,7 +990,9 @@ export const workspaceApi = {
   /**
    * The Fix receipt's Undo (TASK-634). `id` is the row the Fix wrote and
    * `restore` the row it fixed; the old one comes back as it was. `undone:
-   * false` means the fix was already undone (a retry after a lost response).
+   * false` means there was nothing to undo: the fix was already undone (a
+   * retry after a lost response), a newer value has replaced it since, or the
+   * row is not one this caller may touch — deliberately indistinguishable.
    */
   uncorrectMemory: (agentId: string, input: { id: string; restore: string }) =>
     req<unknown>(`/agents/${encodeURIComponent(agentId)}/memory/uncorrect`, {

@@ -5826,6 +5826,46 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         await expectUndone(before, activeBefore, n);
       });
 
+      it('refuses once a newer row has closed N: nothing moves', async () => {
+        const [, o] = await slottedChain();
+        const n = await fixChanged(o.id, DENVER);
+        // A later value lands in the same chain after the Fix and closes N.
+        const later = await recordOne({ ...DENVER, value: 'Austin', when: '2023-12-01T00:00:00.000Z', provenance: 'human' });
+        const settled = await rows();
+        expect(settled.get(n)!.closedBy).toBe(later.id);
+
+        expect(await revert({ id: n, restore: o.id })).toEqual({
+          reverted: [],
+          restored: [],
+          resettled: [],
+        });
+        expect(await rows()).toEqual(settled);
+      });
+
+      it('a Fix whose new row landed in a different chain: N is retracted, O was never closed', async () => {
+        const [p, o] = await slottedChain();
+        const before = await rows();
+        const activeBefore = await activeIds();
+        // "It changed", but the new relation derives a different slot, so the
+        // slot rule never reached O (and `by` refuses a slotted O).
+        const n = await fixChanged(o.id, {
+          about: 'user',
+          relation: 'works_at',
+          value: 'Acme',
+          when: SEP,
+          slot: 'works_at',
+        });
+        expect('until' in (await rows()).get(o.id)!).toBe(false);
+
+        expect(await revert({ id: n, restore: o.id })).toEqual({
+          reverted: [n],
+          restored: [],
+          resettled: [],
+        });
+        await expectUndone(before, activeBefore, n);
+        expect((await rows()).get(p.id)!.closedBy).toBe(o.id);
+      });
+
       it('a second revert is a no-op', async () => {
         const [, o] = await slottedChain();
         const n = await fixNeverRight(o.id, DENVER);
