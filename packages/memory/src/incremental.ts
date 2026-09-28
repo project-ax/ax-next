@@ -66,9 +66,12 @@ export function canExtractIncrementally(bus: HookBus): boolean {
  * turn a pass covered. Kept in `storage:*` so a host restart resumes where it
  * stopped instead of re-extracting the conversation from the top.
  *
- * Written only AFTER the batch is recorded. If the write is lost, the next
- * pass covers the same range again under the same batch key — an engine
- * no-op — plus whatever came after.
+ * Written only AFTER the batch is recorded. If the write fails, the plugin
+ * carries the position in-process until a later write succeeds (see
+ * `persistCursor` in `plugin.ts`). Only a host restart inside that window
+ * falls back to the stored cursor: the same range again is an engine no-op
+ * under the range key, but a range that grew meanwhile is a new key and
+ * re-records the turns the lost write covered.
  */
 export function cursorKey(conversationId: string): string {
   return `memory:observer-cursor:${conversationId}`;

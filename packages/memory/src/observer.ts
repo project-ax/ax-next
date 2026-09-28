@@ -185,9 +185,10 @@ export interface RunTurnObserverInput extends Omit<RunObserverInput, 'messages' 
 /**
  * One INCREMENTAL pass (TASK-625): extract from `fresh` with `context` in
  * view, attribute each fact to its source turn, and record the batch under a
- * key made of the turn RANGE — so a pass that re-runs over the same turns (a
- * retry, a duplicate trigger, `chat:end` overlapping an idle pass whose
- * cursor write was lost) is an engine no-op rather than a second copy.
+ * key made of the turn RANGE — so a pass that re-runs over EXACTLY the same
+ * turns (a retry, a restart after a lost cursor write with nothing said
+ * since) is an engine no-op rather than a second copy. A range that grew is
+ * a different key; keeping passes from overlapping is the cursor's job.
  *
  * Same extraction, same pinned prompt, same statement mapping as
  * {@link runObserver}; only the input shape, the attribution step and the

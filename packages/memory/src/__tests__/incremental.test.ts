@@ -432,7 +432,7 @@ describe('overlapping and repeated passes never double-record', () => {
     expect(env.rows()).toHaveLength(2);
   });
 
-  it('a lost cursor write re-runs the SAME range, and the batch key makes it a no-op', async () => {
+  it('a lost cursor write: the batch still reads as recorded, nothing is re-extracted, and storage catches up', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const env = await setup();
     await env.exchange('I moved to Boston.', 'Welcome to Boston!', 'req-1');
@@ -451,8 +451,25 @@ describe('overlapping and repeated passes never double-record', () => {
       trigger: 'idle',
     });
 
+    expect(env.storage.has(cursorKey(CONV))).toBe(false);
+
     await env.chatEnd();
-    // Same turns, same key: the engine returned the rows it already had.
+    // The position was carried in-process: no second extraction, no second
+    // copy — and the no-new-turns pass paid the durable write it owed.
+    expect(env.h.llmCalls).toHaveLength(1);
+    expect(env.rows()).toHaveLength(2);
+    expect(JSON.parse(new TextDecoder().decode(env.storage.get(cursorKey(CONV))))).toEqual({ next: 2 });
+  });
+
+  it('a pass that re-runs over the SAME range is an engine no-op under the range key', async () => {
+    // What a host restart after a lost cursor write looks like when nothing
+    // was said since: the stored cursor is behind, and the pass repeats.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const env = await setup();
+    await env.exchange('I moved to Boston.', 'Welcome to Boston!', 'req-1');
+    await idle(env);
+    env.storage.delete(cursorKey(CONV));
+    await env.chatEnd();
     expect(env.h.llmCalls).toHaveLength(2);
     expect(env.rows()).toHaveLength(2);
     expect(new Set(env.rows().map((r) => r.batch_key))).toEqual(
@@ -460,6 +477,28 @@ describe('overlapping and repeated passes never double-record', () => {
         buildTurnRangeBatchKey({ conversationId: CONV, ownerUserId: ALICE, firstTurnId: '0', lastTurnId: '1' }),
       ]),
     );
+  });
+
+  it('a lost cursor write followed by MORE turns does not re-record the covered ones', async () => {
+    // The range key alone cannot save this case: the next pass would cover
+    // [0..3], a different range and so a different key, and store turns 0-1
+    // a second time. The in-process cursor carries the position across.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const env = await setup();
+    await env.exchange('I moved to Boston.', 'Welcome to Boston!', 'req-1');
+    env.failCursorWrites(1);
+    await idle(env);
+    await env.exchange('My sister lives in Paris.', 'Paris is lovely.', 'req-2');
+    await idle(env);
+
+    expect(env.rows().map((r) => r.value)).toEqual([
+      'I moved to Boston.',
+      'Welcome to Boston!',
+      'My sister lives in Paris.',
+      'Paris is lovely.',
+    ]);
+    // And the durable cursor caught up on the write that worked.
+    expect(JSON.parse(new TextDecoder().decode(env.storage.get(cursorKey(CONV))))).toEqual({ next: 4 });
   });
 
   it('keeps the cursor in storage, so a restarted host resumes instead of starting over', async () => {

@@ -1064,6 +1064,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         observerTimeoutMs,
         onFactsChanged,
         pausedUsers,
+        pendingCursors: new Map<string, number>(),
       };
       const scheduler =
         incrementalCfg === undefined
@@ -1187,6 +1188,15 @@ interface ObserveConfig {
   observerTimeoutMs: number;
   onFactsChanged?: (ctx: AgentContext) => void;
   pausedUsers: Set<string>;
+  /**
+   * Cursors whose durable write FAILED, kept in-process until a write
+   * succeeds (TASK-625). Without it, the next pass would start from the
+   * stale stored cursor and, if the conversation had moved on, cover a
+   * LONGER range under a new batch key — re-recording the turns the lost
+   * write had already covered. Holds only conversations with a failed
+   * write, so it stays small; single-replica host, as for `pausedUsers`.
+   */
+  pendingCursors: Map<string, number>;
 }
 
 /** What a producer gets: the wired extraction call, the wired write, the owner. */
@@ -1369,7 +1379,8 @@ const CONTEXT_TURNS = 2;
  * as the `chat:end` path always has. It stays put when anything throws (the
  * transcript read, the provider, the engine), so those turns are retried by
  * the next pass under the same key. A failed cursor WRITE is reported on its
- * own reason (`cursor-write-failed`) after the pass's result is logged.
+ * own reason (`cursor-write-failed`, logged just before the pass's result)
+ * and the position is carried in-process until a write succeeds.
  */
 async function runConversationPass(
   bus: HookBus,
@@ -1387,7 +1398,12 @@ async function runConversationPass(
       throw new Error('an incremental pass needs the caller userId to read the transcript');
     }
 
-    const cursor = await readCursor(bus, ctx, conversationId);
+    // The durable cursor, unless a write this process could not persist got
+    // further — see `pendingCursors`.
+    const cursor = Math.max(
+      await readCursor(bus, ctx, conversationId),
+      cfg.pendingCursors.get(conversationId) ?? 0,
+    );
     let rawTurns: unknown[];
     try {
       const read = await bus.call<{ conversationId: string; userId: string }, { turns?: unknown } | null>(
@@ -1425,7 +1441,13 @@ async function runConversationPass(
       fresh = fresh.slice(0, lastAssistant + 1);
     }
     const last = fresh[fresh.length - 1];
-    if (last === undefined) return { kind: 'skipped', reason: 'no-new-turns' };
+    if (last === undefined) {
+      // Nothing new, but a carried cursor is still owed to storage: retry
+      // it here, so the durable copy catches up without waiting for a turn.
+      const pending = cfg.pendingCursors.get(conversationId);
+      if (pending !== undefined) await persistCursor(bus, ctx, cfg, trigger, pending);
+      return { kind: 'skipped', reason: 'no-new-turns' };
+    }
     const context = dialogue.filter((turn) => turn.turnIndex < cursor).slice(-CONTEXT_TURNS);
 
     const result = await runTurnObserver({
@@ -1442,22 +1464,45 @@ async function runConversationPass(
       now: new Date(),
       timeoutMs: cfg.observerTimeoutMs,
     });
-    try {
-      await writeCursor(bus, ctx, conversationId, last.turnIndex + 1);
-    } catch (err) {
-      // Reported on its OWN reason, and the pass's result is still returned
-      // and logged: the batch may well be stored, and folding this into
-      // `observer-threw` would show a recorded batch as a pure failure. The
-      // next pass re-covers the same range under the same key — a no-op.
-      ctx.logger.warn(OBSERVER_FAILED_EVENT, {
-        err: err instanceof Error ? err : new Error(String(err)),
-        agentId: ctx.agentId,
-        reason: 'cursor-write-failed',
-        trigger,
-      });
-    }
+    await persistCursor(bus, ctx, cfg, trigger, last.turnIndex + 1);
     return result;
   });
+}
+
+/**
+ * Write the cursor durably; on failure, carry it in-process and say so.
+ *
+ * Carried so the next pass starts AFTER these turns even though storage
+ * still has the old cursor. Only a host restart before a later write succeeds
+ * loses it; then the next pass re-covers from the stored cursor — the same
+ * range if nothing was said since (same key, an engine no-op), a longer one
+ * if the conversation moved on (a new key: those turns are recorded again).
+ * Stated, not hidden.
+ *
+ * Reported on its OWN reason, and the pass's result is still returned and
+ * logged (this line first, then the `recorded` line): the batch is stored,
+ * and folding this into `observer-threw` would show a recorded batch as a
+ * pure failure. Never throws.
+ */
+async function persistCursor(
+  bus: HookBus,
+  ctx: AgentContext & { conversationId: string },
+  cfg: ObserveConfig,
+  trigger: PassTrigger,
+  next: number,
+): Promise<void> {
+  try {
+    await writeCursor(bus, ctx, ctx.conversationId, next);
+    cfg.pendingCursors.delete(ctx.conversationId);
+  } catch (err) {
+    cfg.pendingCursors.set(ctx.conversationId, next);
+    ctx.logger.warn(OBSERVER_FAILED_EVENT, {
+      err: err instanceof Error ? err : new Error(String(err)),
+      agentId: ctx.agentId,
+      reason: 'cursor-write-failed',
+      trigger,
+    });
+  }
 }
 
 /**
