@@ -33,7 +33,9 @@ import {
   runTurnObserver,
   type ObserverRecordInput,
   type ObserverResult,
+  type PriorRowsFn,
 } from './observer.js';
+import type { PriorRow } from './twins.js';
 import {
   canExtractIncrementally,
   CHAT_TURN_END_HOOK,
@@ -51,7 +53,7 @@ import {
 } from './incremental.js';
 import {
   dropRementionedSlotRows,
-  hasContestedSlot,
+  needsSlotHistory,
   rementionedSlotRows,
   selectProfileRows,
 } from './profile.js';
@@ -847,7 +849,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             page = selectProfileRows(
               result.statements,
               limit,
-              hasContestedSlot(result.statements) ? await readSlotGroup() : [],
+              needsSlotHistory(result.statements) ? await readSlotGroup() : [],
             );
           } else if (activeOnly) {
             // §3.4 on the read path: a correction survives the next chat
@@ -891,7 +893,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
               }
               // Same chains the active profile read passes, so the mark and
               // the pick cannot drift.
-              const chain = hasContestedSlot(activeRows.statements)
+              const chain = needsSlotHistory(activeRows.statements)
                 ? await readSlotGroup(activeRows.statements)
                 : [];
               const winners = new Set(
@@ -1561,6 +1563,8 @@ interface ObserveConfig {
 interface ObserveDeps {
   llmCall: (input: LlmCallInput) => Promise<LlmCallOutput>;
   record: (input: ObserverRecordInput) => Promise<{ records?: Array<{ id?: unknown }> } | null>;
+  /** The twin check's read (TASK-641) — see {@link readPriorRows}. */
+  priorRows: PriorRowsFn;
   ownerUserId: string;
   userId: string | undefined;
 }
@@ -1633,6 +1637,7 @@ async function observe(
         cfg.onFactsChanged?.(ctx);
         return out;
       },
+      priorRows: (query) => readPriorRows(bus, ctx, query),
       ownerUserId,
       userId,
     });
@@ -1705,12 +1710,13 @@ function observeMessages(
   ctx: AgentContext,
   cfg: ObserveConfig,
   messages: UntrustedMessage[],
-  { llmCall, record, ownerUserId }: ObserveDeps,
+  { llmCall, record, priorRows, ownerUserId }: ObserveDeps,
 ): Promise<ObserverResult> {
   return runObserver({
     messages,
     llmCall,
     record,
+    priorRows,
     ownerUserId,
     // The batch identity keeps the real conversation; the rows are
     // attributed per `conversationOf` (a routine run is not a
@@ -1781,7 +1787,7 @@ async function runConversationPass(
   };
 
   const produced = await observe(bus, ctx, cfg, trigger, async (deps) => {
-    const { llmCall, ownerUserId, userId } = deps;
+    const { llmCall, priorRows, ownerUserId, userId } = deps;
     const record: ObserveDeps['record'] = async (input) => {
       const out = await deps.record(input);
       for (const row of out?.records ?? []) {
@@ -1830,7 +1836,7 @@ async function runConversationPass(
       const messages = chatEndMessages(chatEndPayload);
       if (messages === undefined) return { kind: 'skipped', reason: 'no-new-turns' };
       await beginExtracting();
-      return observeMessages(ctx, cfg, messages, { llmCall, record, ownerUserId, userId });
+      return observeMessages(ctx, cfg, messages, { llmCall, record, priorRows, ownerUserId, userId });
     }
     const dialogue = filterTranscriptTurns(rawTurns);
 
@@ -1858,6 +1864,7 @@ async function runConversationPass(
       fresh,
       llmCall,
       record,
+      priorRows,
       ownerUserId,
       // Batch identity: the real conversation. Stored attribution: per
       // `conversationOf`, so a routine turn's rows carry none (TASK-616).
@@ -1893,6 +1900,55 @@ async function runConversationPass(
     state: terminal,
     ...(terminal === 'recorded' ? { statementIds: [...writtenIds] } : {}),
   });
+}
+
+/**
+ * Rows at most this many per subject are read for the twin check — the
+ * engines' own listing cap. A conversation with more rows than this about one
+ * subject is checked against its most recent ones only; an older twin is then
+ * missed, which leaves the pre-TASK-641 duplicate rather than losing a fact.
+ */
+const PRIOR_ROWS_PER_ABOUT = 200;
+
+/**
+ * The twin check's read (TASK-641, `twins.ts`): every row — active AND closed
+ * — about each subject, in this conversation, owned by this owner.
+ *
+ * Owner-scoped ALWAYS, even on a team agent, for the same reason the
+ * conversation feed is: a conversation belongs to one person. Access was
+ * resolved by `observe()` before this runs. Throws on an unreadable answer;
+ * the caller fails open (see `TwinCheck`).
+ */
+async function readPriorRows(
+  bus: HookBus,
+  ctx: AgentContext,
+  query: { abouts: string[]; ownerUserId: string; conversationId: string },
+): Promise<PriorRow[]> {
+  const rows: PriorRow[] = [];
+  for (const about of query.abouts) {
+    const raw = await bus.call<unknown, EngineRecallOutput | null>(FACTS_RECALL_HOOK, ctx, {
+      about,
+      ownerUserId: query.ownerUserId,
+      conversationId: query.conversationId,
+      activeOnly: false,
+      limit: PRIOR_ROWS_PER_ABOUT,
+    });
+    if (raw == null || !Array.isArray(raw.statements)) {
+      throw new Error(`${FACTS_RECALL_HOOK} returned no statements array for the twin check`);
+    }
+    for (const row of raw.statements as unknown[]) {
+      if (row === null || typeof row !== 'object') continue;
+      const { about: a, relation, value, provenance } = row as Record<string, unknown>;
+      if (typeof a !== 'string' || typeof relation !== 'string' || typeof value !== 'string') continue;
+      rows.push({
+        about: a,
+        relation,
+        value,
+        ...(typeof provenance === 'string' ? { provenance } : {}),
+      });
+    }
+  }
+  return rows;
 }
 
 /**
@@ -1962,6 +2018,7 @@ function logObserverResult(
         reason: result.reason,
         ...('selfReports' in result ? { selfReports: result.selfReports } : {}),
         ...('contextOnly' in result ? { contextOnly: result.contextOnly } : {}),
+        ...('twins' in result ? { twins: result.twins } : {}),
       });
       return;
     case 'all-unusable':
@@ -1992,6 +2049,7 @@ function logObserverResult(
       });
       return;
     case 'recorded':
+      if (result.twinCheck === 'failed') logTwinCheckFailed(ctx, base);
       ctx.logger.info(OBSERVER_RUN_EVENT, {
         ...base,
         outcome: 'recorded',
@@ -2005,12 +2063,24 @@ function logObserverResult(
         // Facts only a context turn supported, dropped (TASK-625). Only an
         // incremental pass has context turns.
         ...(trigger !== undefined ? { contextOnly: result.contextOnly } : {}),
+        // Restatements of an agent- or human-saved row in this conversation,
+        // not stored (TASK-641). Informational; not a failure.
+        twins: result.twins,
         // A persistent `true` means the prompt and the model have drifted
         // apart; one retry is the budget, and it is being spent every turn.
         retried: result.retried,
       });
       return;
   }
+}
+
+/**
+ * The twin read threw and the batch was recorded unfiltered (TASK-641). Its
+ * own `warn` line, because a fail-open that nobody hears about is a silent
+ * return of the duplicates this check exists to stop.
+ */
+function logTwinCheckFailed(ctx: AgentContext, base: Record<string, unknown>): void {
+  ctx.logger.warn(OBSERVER_FAILED_EVENT, { ...base, reason: 'twin-check-failed' });
 }
 
 function isUsableString(v: unknown): v is string {

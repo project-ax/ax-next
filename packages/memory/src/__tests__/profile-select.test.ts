@@ -177,11 +177,54 @@ describe('selectProfileRows — a retracted (never-right) value is a replaced on
     expect(pick([tacoma, mine, later], [retracted(), tacoma, mine, later])).toEqual(['Portland']);
   });
 
-  it('a lone re-mention of a retracted value falls back to showing it, as for any re-mention', () => {
-    // Same fallback as a replaced value (TASK-602): with no fresh value to
-    // prefer, the slot shows the plain newest rather than nothing.
+  // TASK-639 ruling (Vinay, 2026-09-28): HIDE it. A value the person said was
+  // never right must not resurface on its own — not even through TASK-602's
+  // "nothing fresh, show the newest" fallback. Only a person restating it
+  // (a `human` row) brings it back.
+  it('a lone re-mention of a retracted value is hidden — the slot shows nothing', () => {
     const again = r('p2', 'Portland', '2026-06-01T00:00:00.000Z', 'extracted');
-    expect(pick([again], [retracted(), again])).toEqual(['Portland']);
+    expect(pick([again], [retracted(), again])).toEqual([]);
+    const agentAgain = r('p3', 'portland.', '2026-06-02T00:00:00.000Z', 'agent');
+    expect(pick([agentAgain], [retracted(), agentAgain])).toEqual([]);
+  });
+
+  it('two re-mentions of a retracted value, nothing else: still hidden', () => {
+    const a = r('p2', 'Portland', '2026-06-01T00:00:00.000Z', 'extracted');
+    const b = r('p3', 'Portland', '2026-06-02T00:00:00.000Z', 'agent');
+    expect(pick([a, b], [retracted(), a, b])).toEqual([]);
+  });
+
+  it('the fallback survives for a REPLACED (not retracted) value re-mentioned alone', () => {
+    // TASK-602's fallback is narrowed, not removed: a value the chain merely
+    // replaced, said again with no rival left, is still shown.
+    const replaced = r('p1', 'Portland', '2026-01-01T00:00:00.000Z', 'extracted', {
+      until: '2026-02-01T00:00:00.000Z',
+      closedBy: 's',
+    });
+    const seattleForgotten = r('s', 'Seattle', '2026-02-01T00:00:00.000Z', 'agent', {
+      until: '2026-03-01T00:00:00.000Z',
+    });
+    const again = r('p2', 'Portland', '2026-06-01T00:00:00.000Z', 'extracted');
+    expect(pick([again], [replaced, seattleForgotten, again])).toEqual(['Portland']);
+  });
+
+  it('a re-mentioned retracted value does not fall back past a rival that is itself a re-mention', () => {
+    // Every candidate a re-mention: the replaced one may still fall back, the
+    // retracted one never does.
+    const replaced = r('s1', 'Seattle', '2026-01-01T00:00:00.000Z', 'extracted', {
+      until: '2026-02-01T00:00:00.000Z',
+      closedBy: 'x',
+    });
+    const seattleAgain = r('s2', 'Seattle', '2026-05-01T00:00:00.000Z', 'agent');
+    const portlandAgain = r('p2', 'Portland', '2026-06-01T00:00:00.000Z', 'extracted');
+    expect(
+      pick([seattleAgain, portlandAgain], [replaced, retracted(), seattleAgain, portlandAgain]),
+    ).toEqual(['Seattle']);
+  });
+
+  it('a retracted value restated by the person alone shows', () => {
+    const mine = r('h', 'Portland', '2026-06-01T00:00:00.000Z', 'human');
+    expect(pick([mine], [retracted(), mine])).toEqual(['Portland']);
   });
 
   it('a reinstated row (neverTrue cleared, no successor) reads as forgotten, not replaced', () => {

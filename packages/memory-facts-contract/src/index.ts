@@ -115,8 +115,9 @@ export interface FactStatementInput {
    * The conversation turn this statement was extracted from — an opaque id
    * supplied by the producer (today `@ax/memory`'s observer passes the
    * display transcript's turnId, the id the chat UI keys each message on),
-   * so a UI can link a statement to "from your message". Echoed back exactly
-   * as supplied.
+   * so a UI can link a statement to the message it came from — the person's
+   * or the agent's reply; the id alone does not say which. Echoed back
+   * exactly as supplied.
    *
    * ⚠ Provenance, never a retrieval key (design §3.1): no input on this
    * contract filters or ranks by it. Absent on rows not extracted from a
@@ -224,8 +225,9 @@ export interface FactRecord {
    * The conversation turn this statement was extracted from — an opaque id
    * supplied by the producer (today `@ax/memory`'s observer passes the
    * display transcript's turnId, the id the chat UI keys each message on),
-   * so a UI can link a statement to "from your message". Echoed back exactly
-   * as supplied.
+   * so a UI can link a statement to the message it came from — the person's
+   * or the agent's reply; the id alone does not say which. Echoed back
+   * exactly as supplied.
    *
    * ⚠ Provenance, never a retrieval key (design §3.1): no input on this
    * contract filters or ranks by it. Absent on rows not extracted from a

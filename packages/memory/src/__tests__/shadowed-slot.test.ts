@@ -232,3 +232,99 @@ describe('@ax/memory — a retracted (never-right) value re-mentioned later', ()
     expect(listed).not.toContain('Seattle, Washington');
   });
 });
+
+// ---------------------------------------------------------------------------
+// TASK-639 — HUMAN RULING (Vinay, 2026-09-28): HIDE it. The TASK-633 cases
+// above all had a RIVAL in the slot. With none, the profile fell back to the
+// plain newest row (TASK-602) and recall's drop needed a higher-provenance
+// active row to hide under — so a retracted value said again, alone, came
+// straight back. A value the person marked never right must never resurface
+// on its own; only a person restating it (a `human` row) brings it back.
+// ---------------------------------------------------------------------------
+
+describe('@ax/memory — a retracted value re-mentioned with NO rival in its slot', () => {
+  it.each([
+    ['extraction', 'extracted'],
+    ['a model note', 'agent'],
+  ] as const)('a re-mention by %s stays hidden in the profile AND recall', async (_label, provenance) => {
+    harness = await makeMemoryHarness();
+    const [portland] = await record(harness, row('Portland, Oregon', JAN, 'extracted'));
+    await retract(harness, portland!);
+    await record(harness, row('portland, oregon.', JUN, provenance, { conversationId: 'conv-again' }));
+
+    expect(values(await harness.recall({ profile: true }))).toEqual([]);
+    expect(values(await harness.recall({}))).toEqual([]);
+    expect(values(await harness.recall({ query: 'Portland, Oregon' }))).toEqual([]);
+  });
+
+  it('history marks the lone re-mention overridden, and the profile history agrees', async () => {
+    harness = await makeMemoryHarness();
+    const [portland] = await record(harness, row('Portland, Oregon', JAN, 'extracted'));
+    await retract(harness, portland!);
+    await record(harness, row('Portland, Oregon', JUN, 'extracted', { conversationId: 'conv-again' }));
+
+    for (const input of [{ activeOnly: false }, { activeOnly: false, profile: true }]) {
+      const out = await harness.recall(input);
+      expect(out.statements.map((s) => [s.value, s.closure ?? 'current'])).toEqual(
+        expect.arrayContaining([
+          ['Portland, Oregon', 'retracted'],
+          ['Portland, Oregon', 'overridden'],
+        ]),
+      );
+    }
+  });
+
+  it('the person restating it brings it back — and it outlives a later model re-mention', async () => {
+    harness = await makeMemoryHarness();
+    const [portland] = await record(harness, row('Portland, Oregon', JAN, 'extracted'));
+    await retract(harness, portland!);
+    await record(harness, row('Portland, Oregon', JUN, 'human'));
+
+    expect(values(await harness.recall({ profile: true }))).toEqual(['Portland, Oregon']);
+    expect(values(await harness.recall({}))).toEqual(['Portland, Oregon']);
+
+    await record(harness, row('Portland, Oregon', JUL, 'extracted', { conversationId: 'conv-later' }));
+    expect(values(await harness.recall({ profile: true }))).toEqual(['Portland, Oregon']);
+  });
+
+  it('a new value in the emptied slot is news, not a re-mention', async () => {
+    harness = await makeMemoryHarness();
+    const [portland] = await record(harness, row('Portland, Oregon', JAN, 'extracted'));
+    await retract(harness, portland!);
+    await record(harness, row('Tacoma, Washington', JUN, 'extracted', { conversationId: 'conv-new' }));
+
+    expect(values(await harness.recall({ profile: true }))).toEqual(['Tacoma, Washington']);
+    expect(values(await harness.recall({}))).toEqual(['Tacoma, Washington']);
+  });
+
+  // TASK-634 (#780): Undo for a Fix leaves the Fix's own row as a plain
+  // Forget precisely so it does NOT suppress a later mention of that value,
+  // and it clears the never-right bit on the row it restores. Hiding retracted
+  // values must not turn either of those back into a suppression. A forward
+  // guard: it passes on the pre-TASK-639 code too, and reddens if a later
+  // change starts treating a forgotten or reinstated row as retracted.
+  it('Undo of a never-right Fix: neither the Fix value nor the restored value is suppressed', async () => {
+    harness = await makeMemoryHarness();
+    const [seattle] = await record(harness, row('Seattle, Washington', JAN, 'agent'));
+    const { id: fixed } = await harness.correct({
+      id: seattle!,
+      about: 'user',
+      relation: 'lives_in',
+      value: 'Denver, Colorado',
+      reason: 'never-right',
+    });
+    expect(await harness.uncorrect({ id: fixed, restore: seattle! })).toEqual({ undone: true });
+    expect(values(await harness.recall({ profile: true }))).toEqual(['Seattle, Washington']);
+
+    // The model says the Fix's value again: it is news, and the newest wins.
+    await record(harness, row('Denver, Colorado', JUN, 'extracted', { conversationId: 'conv-denver' }));
+    expect(values(await harness.recall({ profile: true }))).toEqual(['Denver, Colorado']);
+    expect(values(await harness.recall({}))).toContain('Denver, Colorado');
+
+    // The restored value is no longer "never right": forgotten, then said
+    // again alone, it shows.
+    await harness.forget({ ids: [seattle!] });
+    await record(harness, row('Seattle, Washington', JUL, 'extracted', { conversationId: 'conv-seattle' }));
+    expect(values(await harness.recall({}))).toContain('Seattle, Washington');
+  });
+});
