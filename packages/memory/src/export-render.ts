@@ -25,6 +25,12 @@ export interface ExportFact {
    * Such a row is dropped from every export file — see `buildFactsExport`.
    */
   neverTrue?: boolean;
+  /**
+   * Who spoke the source turn (TASK-648). Read only by the profile pick: an
+   * extracted row from the person's own turn can bring back a value they
+   * retracted. Anything but `'user'` counts as not the person.
+   */
+  sourceRole?: string;
 }
 
 const PROVENANCES = new Set(['extracted', 'agent', 'human']);

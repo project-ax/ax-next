@@ -11,6 +11,8 @@ export interface ProfileRow {
   closedBy?: string;
   /** Closed by a person's "it was never right" — see {@link isRetracted}. */
   neverTrue?: boolean;
+  /** Who spoke the turn an extracted row came from — see {@link restatedByPerson}. */
+  sourceRole?: string;
 }
 
 /**
@@ -58,6 +60,8 @@ export interface SlotGroupRow {
   closedBy?: string;
   /** Closed by a person's "it was never right" — see {@link isRetracted}. */
   neverTrue?: boolean;
+  /** Who spoke the turn an extracted row came from — see {@link restatedByPerson}. */
+  sourceRole?: string;
 }
 
 /**
@@ -77,7 +81,8 @@ function isRetracted(row: SlotGroupRow): boolean {
  * TASK-639 ruling (Vinay, 2026-09-28): a value a person marked never right
  * must never resurface ON ITS OWN. A non-human row carrying one is hidden
  * outright — with or without a rival in its slot — on both read paths. Only a
- * person restating it (a `human` row) brings it back.
+ * person restating it brings it back: a `human` row, or — TASK-648 — the
+ * person saying it in their own chat message ({@link restatedByPerson}).
  */
 function retractedValues(
   rows: readonly SlotGroupRow[],
@@ -91,6 +96,39 @@ function retractedValues(
     out.set(key(row), values);
   }
   return out;
+}
+
+/**
+ * The person restated a value they had marked never right — in their OWN chat
+ * message (TASK-648 ruling, Vinay, 2026-09-28).
+ *
+ * The row is an ACTIVE `extracted` row the observer attributed to one of the
+ * person's turns (`sourceRole: 'user'`, stored only when that turn actually
+ * contains the fact's words), and its value is retracted in its chain. Such a
+ * row counts as the person's own word — the same tier as a `human` row — on
+ * both read paths, so it resurfaces the value and, being the newer statement,
+ * wins over the correction the retraction came with. A correction made AFTER
+ * it still wins (newest person-statement).
+ *
+ * Deliberately narrow:
+ * - The agent repeating the value in its reply (`sourceRole: 'assistant'`),
+ *   an agent note, and a row whose speaker is unknown stay hidden (TASK-639).
+ * - Only a RETRACTED value gets this. A REPLACED one restated in chat behaves
+ *   exactly as before (TASK-602/633) — the ruling left that alone.
+ * - The row's provenance is untouched: it is still `extracted`, so who SAVED
+ *   it (TASK-526's savedBy) and every storage closure rule are unchanged.
+ */
+function restatedByPerson(
+  row: SlotGroupRow,
+  retracted: ReadonlyMap<string, ReadonlySet<string>>,
+  key: (row: SlotGroupRow) => string,
+): boolean {
+  return (
+    row.until === undefined &&
+    row.provenance === 'extracted' &&
+    row.sourceRole === 'user' &&
+    retracted.get(key(row))?.has(sameValue(row.value)) === true
+  );
 }
 
 const TRAILING_PUNCTUATION = new Set(['.', '!', ',', ';', ':']);
@@ -150,12 +188,18 @@ export function rementionedSlotRows<T extends SlotGroupRow>(
   group: readonly SlotGroupRow[],
 ): Set<T> {
   const key = (row: SlotGroupRow): string => `${row.about}\u0000${row.slot}`;
+  const retracted = retractedValues([...group, ...rows], key);
+  const HUMAN = PROVENANCE_RANK.get('human')!;
+  // A person's own chat restatement of a retracted value ranks as theirs
+  // (TASK-648) — for outranking others and for not being hidden itself.
+  const rankOf = (row: SlotGroupRow): number =>
+    restatedByPerson(row, retracted, key) ? HUMAN : (PROVENANCE_RANK.get(row.provenance ?? '') ?? 0);
   const topActiveRank = new Map<string, number>();
   const replaced = new Map<string, Set<string>>();
   for (const row of [...group, ...rows]) {
     if (typeof row.slot !== 'string' || row.slot === '') continue;
     if (row.until === undefined) {
-      const rank = PROVENANCE_RANK.get(row.provenance ?? '') ?? 0;
+      const rank = rankOf(row);
       if (rank > (topActiveRank.get(key(row)) ?? 0)) topActiveRank.set(key(row), rank);
     } else if (typeof row.closedBy === 'string' || isRetracted(row)) {
       const values = replaced.get(key(row)) ?? new Set<string>();
@@ -163,14 +207,12 @@ export function rementionedSlotRows<T extends SlotGroupRow>(
       replaced.set(key(row), values);
     }
   }
-  const retracted = retractedValues([...group, ...rows], key);
-  const HUMAN = PROVENANCE_RANK.get('human')!;
   return new Set(
     rows.filter((row) => {
       if (typeof row.slot !== 'string' || row.slot === '' || row.until !== undefined) return false;
-      const rank = PROVENANCE_RANK.get(row.provenance ?? '') ?? 0;
+      const rank = rankOf(row);
       // A retracted value said again by anyone but a person: hidden, rival or
-      // not (TASK-639).
+      // not (TASK-639). The person's own chat message counts (TASK-648).
       if (rank < HUMAN && retracted.get(key(row))?.has(sameValue(row.value)) === true) return true;
       const outranked = rank < (topActiveRank.get(key(row)) ?? 0);
       return outranked && replaced.get(key(row))?.has(sameValue(row.value)) === true;
@@ -203,7 +245,9 @@ export function rementionedSlotRows<T extends SlotGroupRow>(
  *    candidate whose value a person said was NEVER right (TASK-624/633) is
  *    dropped before rules 2-3, so not even the fallback brings it back; a slot
  *    left with no candidate shows nothing. A person restating a retracted
- *    value is a `human` row and wins under rule 1.
+ *    value is a `human` row and wins under rule 1 — and so is the person
+ *    saying it in their own chat message (TASK-648, {@link restatedByPerson}),
+ *    which joins rule 1's tier: the newest person-statement is shown.
  *
  * Ties on `when` go to the higher provenance, then the id, so the pick is
  * stable across input order.
@@ -250,8 +294,13 @@ export function selectProfileRows<T extends ProfileRow>(
     else bucket.push(row);
   }
 
-  const rankOf = (row: ProfileRow): number => PROVENANCE_RANK.get(row.provenance ?? '') ?? 0;
   const HUMAN = PROVENANCE_RANK.get('human')!;
+  // A person's own chat restatement of a retracted value is the person's word
+  // (TASK-648): it joins rule 1's human tier below.
+  const rankOf = (row: ProfileRow): number =>
+    restatedByPerson(row, retracted, chainKey)
+      ? HUMAN
+      : (PROVENANCE_RANK.get(row.provenance ?? '') ?? 0);
   // Newest first; equal `when` → higher provenance; then the id.
   const newer = (a: T, b: T): boolean =>
     a.when > b.when ||
@@ -301,6 +350,11 @@ export function selectProfileRows<T extends ProfileRow>(
  * A LONE non-human candidate needs the history too (TASK-639): it has nothing
  * to beat, but it may be a re-mention of a value the person retracted, and
  * that is hidden rather than shown. This used to require two candidates.
+ *
+ * And a slot a human row DOES hold still needs it when an extracted row there
+ * came from the person's own turn (TASK-648): it may restate a value they
+ * retracted, which then outranks the correction — and only the chain's closed
+ * rows can say so.
  */
 export function needsSlotHistory(rows: readonly ProfileRow[]): boolean {
   const HUMAN = PROVENANCE_RANK.get('human')!;
@@ -309,6 +363,7 @@ export function needsSlotHistory(rows: readonly ProfileRow[]): boolean {
   for (const row of rows) {
     if (typeof row.slot !== 'string' || row.slot === '' || row.until !== undefined) continue;
     if ((PROVENANCE_RANK.get(row.provenance ?? '') ?? 0) >= HUMAN) humanSlots.add(row.slot);
+    else if (row.provenance === 'extracted' && row.sourceRole === 'user') return true;
     else otherSlots.add(row.slot);
   }
   return [...otherSlots].some((slot) => !humanSlots.has(slot));

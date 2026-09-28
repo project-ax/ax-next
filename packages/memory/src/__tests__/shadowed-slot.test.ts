@@ -328,3 +328,120 @@ describe('@ax/memory — a retracted value re-mentioned with NO rival in its slo
     expect(values(await harness.recall({}))).toContain('Seattle, Washington');
   });
 });
+
+// ---------------------------------------------------------------------------
+// TASK-648 — HUMAN RULING (Vinay, 2026-09-28): the PERSON restating a retracted
+// value in their own chat message brings it back; the agent repeating it in
+// its reply does not. The observer marks which turn a fact came from
+// (`sourceRole`); the row itself stays `extracted`. Driven through the real
+// engine and `memory:correct`, so the Fix's human correction is the rival.
+// ---------------------------------------------------------------------------
+
+describe('@ax/memory — the person restating a retracted value in chat (TASK-648)', () => {
+  /** Denver (extracted) → Fix "never right" → Boston (human). */
+  async function fixedNeverRight(h: MemoryHarness): Promise<{ denver: string; boston: string }> {
+    const [denver] = await record(h, row('Denver, Colorado', JAN, 'extracted'));
+    const { id: boston } = await h.correct({
+      id: denver!,
+      about: 'user',
+      relation: 'lives_in',
+      value: 'Boston, Massachusetts',
+      reason: 'never-right',
+    });
+    return { denver: denver!, boston };
+  }
+  // The Fix's correction is dated NOW (a correction is true from now), so the
+  // chat restatement — which the observer dates when it is said — comes after.
+  const restated = (role: 'user' | 'assistant'): Row =>
+    row('Denver, Colorado', new Date(Date.now() + 60_000).toISOString(), 'extracted', {
+      conversationId: 'conv-back',
+      sourceTurnId: `turn-${role}`,
+      sourceRole: role,
+    });
+
+  it("the person's own message brings it back — profile, recall, and a query", async () => {
+    harness = await makeMemoryHarness();
+    await fixedNeverRight(harness);
+    await record(harness, restated('user'));
+
+    expect(values(await harness.recall({ profile: true }))).toEqual(['Denver, Colorado']);
+    expect(values(await harness.recall({}))).toContain('Denver, Colorado');
+    expect(values(await harness.recall({ query: 'Denver, Colorado' }))).toContain('Denver, Colorado');
+  });
+
+  it("the agent's reply repeating it stays hidden", async () => {
+    harness = await makeMemoryHarness();
+    await fixedNeverRight(harness);
+    await record(harness, restated('assistant'));
+
+    expect(values(await harness.recall({ profile: true }))).toEqual(['Boston, Massachusetts']);
+    expect(values(await harness.recall({}))).not.toContain('Denver, Colorado');
+    expect(values(await harness.recall({ query: 'Denver, Colorado' }))).not.toContain('Denver, Colorado');
+  });
+
+  it('history marks the correction, not the restatement, as overridden', async () => {
+    harness = await makeMemoryHarness();
+    await fixedNeverRight(harness);
+    await record(harness, restated('user'));
+
+    const out = await harness.recall({ activeOnly: false, profile: true });
+    expect(out.statements.map((s) => [s.value, s.closure ?? 'current'])).toEqual(
+      expect.arrayContaining([
+        ['Denver, Colorado', 'retracted'],
+        ['Denver, Colorado', 'current'],
+        ['Boston, Massachusetts', 'overridden'],
+      ]),
+    );
+  });
+
+  it('Forget on the restatement puts the correction back', async () => {
+    harness = await makeMemoryHarness();
+    await fixedNeverRight(harness);
+    const [again] = await record(harness, restated('user'));
+    await harness.forget({ ids: [again!] });
+
+    expect(values(await harness.recall({ profile: true }))).toEqual(['Boston, Massachusetts']);
+    expect(values(await harness.recall({}))).not.toContain('Denver, Colorado');
+  });
+
+  it('a second never-right Fix on the restatement hides it again', async () => {
+    harness = await makeMemoryHarness();
+    await fixedNeverRight(harness);
+    const [again] = await record(harness, restated('user'));
+    await harness.correct({
+      id: again!,
+      about: 'user',
+      relation: 'lives_in',
+      value: 'Austin, Texas',
+      reason: 'never-right',
+    });
+
+    expect(values(await harness.recall({ profile: true }))).toEqual(['Austin, Texas']);
+    expect(values(await harness.recall({}))).not.toContain('Denver, Colorado');
+  });
+
+  it('Undo of the original Fix leaves nothing retracted, so the restatement just shows', async () => {
+    harness = await makeMemoryHarness();
+    const { denver, boston } = await fixedNeverRight(harness);
+    await record(harness, restated('user'));
+    expect(await harness.uncorrect({ id: boston, restore: denver })).toEqual({ undone: true });
+
+    expect(values(await harness.recall({ profile: true }))).toEqual(['Denver, Colorado']);
+  });
+
+  it('a REPLACED value the person restates is unchanged: their correction still wins', async () => {
+    harness = await makeMemoryHarness();
+    const [denver] = await record(harness, row('Denver, Colorado', JAN, 'extracted'));
+    await harness.correct({
+      id: denver!,
+      about: 'user',
+      relation: 'lives_in',
+      value: 'Boston, Massachusetts',
+      reason: 'changed',
+    });
+    await record(harness, restated('user'));
+
+    expect(values(await harness.recall({ profile: true }))).toEqual(['Boston, Massachusetts']);
+    expect(values(await harness.recall({}))).not.toContain('Denver, Colorado');
+  });
+});

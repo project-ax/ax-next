@@ -180,6 +180,9 @@ interface EngineFactRecord {
   until?: string;
   closedBy?: string;
   neverTrue?: boolean;
+  // Read by `selectProfileRows`/`needsSlotHistory` (TASK-648): an extracted
+  // row from the person's own turn can bring back a value they retracted.
+  sourceRole?: string;
 }
 
 interface EngineRecallOutput {

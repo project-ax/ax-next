@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { selectProfileRows } from '../profile.js';
+import { dropRementionedSlotRows, needsSlotHistory, selectProfileRows } from '../profile.js';
 
 // TASK-602 — which row the profile SHOWS when a single-valued slot holds more
 // than one active row. Storage rule 3 (`human > agent > extracted`) decides
@@ -21,6 +21,7 @@ interface Row {
   provenance?: string;
   until?: string;
   closedBy?: string;
+  sourceRole?: 'user' | 'assistant';
 }
 
 function r(id: string, value: string, when: string, provenance: string, extra: Partial<Row> = {}): Row {
@@ -241,5 +242,106 @@ describe('selectProfileRows — a retracted (never-right) value is a replaced on
     const tacoma = r('t', 'Tacoma', '2026-03-01T00:00:00.000Z', 'agent');
     const again = r('p2', 'Portland', '2026-06-01T00:00:00.000Z', 'extracted');
     expect(pick([tacoma, again], [odd, tacoma, again])).toEqual(['Portland']);
+  });
+});
+
+// TASK-648 ruling (Vinay, 2026-09-28): a retracted (never-right) value restated
+// in the PERSON's OWN chat message resurfaces. The extracted row stays
+// `extracted` (no faked human row); what marks it is `sourceRole: 'user'` —
+// the observer's record of which turn it came from. The agent repeating the
+// value in its reply (`sourceRole: 'assistant'`) does not bring it back, and a
+// REPLACED (not retracted) value re-mentioned behaves exactly as before.
+describe('the person restating a retracted value in chat (TASK-648)', () => {
+  const retracted = (value = 'Denver'): Row & { neverTrue: boolean } => ({
+    ...r('d1', value, '2026-01-01T00:00:00.000Z', 'extracted', { until: '2026-01-15T00:00:00.000Z' }),
+    neverTrue: true,
+  });
+  // The Fix that retracted Denver always writes the person's correction.
+  const boston = r('b', 'Boston', '2026-01-15T00:00:00.000Z', 'human');
+  const said = (
+    role: 'user' | 'assistant' | undefined,
+    provenance = 'extracted',
+    value = 'denver.',
+  ): Row => r('d2', value, '2026-06-01T00:00:00.000Z', provenance, role !== undefined ? { sourceRole: role } : {});
+
+  it("the person's own restatement beats the older correction in the profile", () => {
+    const mine = said('user');
+    expect(pick([boston, mine], [retracted(), boston, mine])).toEqual(['denver.']);
+    expect(pick([mine, boston], [mine, boston, retracted()])).toEqual(['denver.']);
+  });
+
+  it('with no rival left, the restatement shows alone', () => {
+    const mine = said('user');
+    expect(pick([mine], [retracted(), mine])).toEqual(['denver.']);
+  });
+
+  it("the agent's reply repeating it stays hidden — beside the correction and alone", () => {
+    const theirs = said('assistant');
+    expect(pick([boston, theirs], [retracted(), boston, theirs])).toEqual(['Boston']);
+    expect(pick([theirs], [retracted(), theirs])).toEqual([]);
+  });
+
+  it('only an EXTRACTED row speaks for a turn: an agent note carrying a user source stays hidden', () => {
+    const note = said('user', 'agent');
+    expect(pick([boston, note], [retracted(), boston, note])).toEqual(['Boston']);
+    expect(pick([note], [retracted(), note])).toEqual([]);
+  });
+
+  it('a row with no known speaker (legacy, or no word overlap) stays hidden', () => {
+    const unknown = said(undefined);
+    expect(pick([boston, unknown], [retracted(), boston, unknown])).toEqual(['Boston']);
+    expect(pick([unknown], [retracted(), unknown])).toEqual([]);
+  });
+
+  it("a person's correction made AFTER the restatement still wins", () => {
+    const mine = said('user');
+    const later = r('h2', 'Austin', '2026-07-01T00:00:00.000Z', 'human');
+    expect(pick([mine, later], [retracted(), mine, later])).toEqual(['Austin']);
+  });
+
+  it('a REPLACED (not retracted) value restated by the person is unchanged', () => {
+    const replaced = r('d1', 'Denver', '2026-01-01T00:00:00.000Z', 'extracted', {
+      until: '2026-01-15T00:00:00.000Z',
+      closedBy: 'b',
+    });
+    const mine = said('user');
+    // Under a correction: the correction wins, as before.
+    expect(pick([boston, mine], [replaced, boston, mine])).toEqual(['Boston']);
+    // Under a newer non-human value: not news, the rival wins, as before.
+    const tacoma = r('t', 'Tacoma', '2026-03-01T00:00:00.000Z', 'agent');
+    expect(pick([tacoma, mine], [replaced, tacoma, mine])).toEqual(['Tacoma']);
+    // Alone: TASK-602's fallback shows it, as before.
+    expect(pick([mine], [replaced, mine])).toEqual(['denver.']);
+  });
+
+  it('a user-sourced row whose value was never retracted gets no lift over a correction', () => {
+    const mine = said('user', 'extracted', 'Chicago');
+    expect(pick([boston, mine], [retracted(), boston, mine])).toEqual(['Boston']);
+  });
+
+  it('recall keeps the restatement and still drops the agent echo', () => {
+    const mine = said('user');
+    expect(dropRementionedSlotRows([boston, mine], [retracted(), boston, mine])).toEqual([boston, mine]);
+    expect(dropRementionedSlotRows([mine], [retracted(), mine])).toEqual([mine]);
+    const theirs = said('assistant');
+    expect(dropRementionedSlotRows([boston, theirs], [retracted(), boston, theirs])).toEqual([boston]);
+    expect(dropRementionedSlotRows([theirs], [retracted(), theirs])).toEqual([]);
+  });
+
+  it('recall: a REPLACED value restated by the person under a correction is still dropped', () => {
+    const replaced = r('d1', 'Denver', '2026-01-01T00:00:00.000Z', 'extracted', {
+      until: '2026-01-15T00:00:00.000Z',
+      closedBy: 'b',
+    });
+    const mine = said('user');
+    expect(dropRementionedSlotRows([boston, mine], [replaced, boston, mine])).toEqual([boston]);
+  });
+
+  it('needsSlotHistory: a user-sourced row beside a human row needs the chain read', () => {
+    // Without the history the pick cannot see the retraction, and the human
+    // correction would win by rule 1.
+    expect(needsSlotHistory([boston, said('user') as never])).toBe(true);
+    expect(needsSlotHistory([boston, said('assistant') as never])).toBe(false);
+    expect(needsSlotHistory([boston])).toBe(false);
   });
 });
