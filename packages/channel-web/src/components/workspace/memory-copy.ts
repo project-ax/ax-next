@@ -111,10 +111,11 @@ export const MEMORY_UNDO_RETRY = 'Try again';
 
 /**
  * Whole seconds of Undo left on a receipt that started at `since`, or 0 once
- * the offer is over. The same window `ApprovalCard` counts down.
+ * the offer is over. The same window `ApprovalCard` counts down. Clamped to
+ * the window: a clock read from before `since` must not promise "Undo 73s".
  */
 export function memoryUndoSecondsLeft(since: number, now: number = Date.now()): number {
-  const left = UNDO_WINDOW_MS - (now - since);
+  const left = Math.min(UNDO_WINDOW_MS, UNDO_WINDOW_MS - (now - since));
   return left <= 0 ? 0 : Math.ceil(left / 1000);
 }
 

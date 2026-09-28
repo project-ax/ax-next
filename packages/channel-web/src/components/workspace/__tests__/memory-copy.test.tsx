@@ -162,6 +162,16 @@ describe('memory-copy — the Forgotten receipt', () => {
     expect(rememberMock).not.toHaveBeenCalled();
   });
 
+  it('announces Forgotten politely, with the ticking Undo outside every live region', async () => {
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read()} />);
+    await forgetBoston();
+    const status = await screen.findByRole('status');
+    expect(status.textContent).toBe(MEMORY_FORGOTTEN);
+    const undo = screen.getByRole('button', { name: memoryUndoLabel('Boston') });
+    expect(undo.closest('[role="alert"], [role="status"], [aria-live]')).toBeNull();
+    expect(status.closest('[role="alert"]')).toBeNull();
+  });
+
   it('Undo puts the same memory back and says so', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read()} />);
     await forgetBoston();
@@ -184,6 +194,7 @@ describe('memory-copy — the Forgotten receipt', () => {
     await forgetBoston();
     fireEvent.click(await screen.findByRole('button', { name: memoryUndoLabel('Boston') }));
     expect(await screen.findByText(MEMORY_UNDO_FAILED)).toBeInTheDocument();
+    expect(screen.getByRole('alert').textContent).toContain(MEMORY_UNDO_FAILED);
     expect(screen.queryByText(MEMORY_RESTORED)).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: MEMORY_UNDO_RETRY }));
@@ -198,6 +209,10 @@ describe('memory-copy — the module itself', () => {
     expect(memoryUndoSecondsLeft(1000, 1001)).toBe(UNDO_WINDOW_MS / 1000);
     expect(memoryUndoSecondsLeft(1000, 1000 + UNDO_WINDOW_MS)).toBe(0);
     expect(memoryUndoSecondsLeft(1000, 1000 + UNDO_WINDOW_MS * 2)).toBe(0);
+  });
+
+  it('never promises more than the window, even from a clock read before the receipt began', () => {
+    expect(memoryUndoSecondsLeft(61_000, 0)).toBe(UNDO_WINDOW_MS / 1000);
   });
 
   it('keeps the history vocabulary, with Retracted reserved', () => {
@@ -243,6 +258,9 @@ describe('memory-copy — no correction string stays inline', () => {
     /Edit remembered detail/,
     /What we should remember/,
     /can correct or forget/,
+    // The module's templates, rebuilt inline — a constant scan cannot see these.
+    /`(Fix|Forget|Undo)[: ]\s*\$\{/,
+    /`[^`]*— Replaced by/,
   ];
 
   function escape(s: string): string {

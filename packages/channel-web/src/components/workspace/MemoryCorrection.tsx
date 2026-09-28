@@ -241,7 +241,10 @@ export type MemoryReceiptState =
  * The receipt and its clock, for a surface that offers Fix and Forget.
  *
  * `onChanged` runs after any write that changed what is in memory (the Undo
- * re-save), so the surface can re-read.
+ * re-save), so the surface can re-read. `element` is the receipt drawn for the
+ * Memory tab (pinned to the bottom of the scroll area); a surface with other
+ * room — the rail, an inline chip — renders `MemoryReceipt` itself from
+ * `receipt`, `now` and `undo`, with its own `className`.
  */
 export function useMemoryReceipt(agentId: string, onChanged: () => void) {
   const [receipt, setReceipt] = useState<MemoryReceiptState | null>(null);
@@ -250,7 +253,6 @@ export function useMemoryReceipt(agentId: string, onChanged: () => void) {
   const timed = receipt !== null && receipt.kind !== 'undo-failed';
   useEffect(() => {
     if (!timed) return;
-    setNow(Date.now());
     const id = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(id);
   }, [timed, receipt]);
@@ -262,52 +264,76 @@ export function useMemoryReceipt(agentId: string, onChanged: () => void) {
     if (now - receipt.since >= UNDO_WINDOW_MS) setReceipt(null);
   }, [receipt, now]);
 
-  const forgotten = useCallback((row: FactMemoryStatement) => {
-    setReceipt({ kind: 'forgotten', row, since: Date.now(), status: 'idle' });
-  }, []);
-  const updated = useCallback(() => {
-    setReceipt({ kind: 'updated', since: Date.now() });
+  // Every receipt starts its clock and `now` together, so its first paint never
+  // counts from a stale `now` (it would read "Undo 73s" for a frame).
+  const start = useCallback((next: (at: number) => MemoryReceiptState) => {
+    const at = Date.now();
+    setNow(at);
+    setReceipt(next(at));
   }, []);
 
-  async function undo(row: FactMemoryStatement) {
-    setReceipt((r) =>
-      r !== null && (r.kind === 'forgotten' || r.kind === 'undo-failed')
-        ? { ...r, status: 'undoing' }
-        : r,
-    );
-    try {
-      await workspaceApi.rememberMemory(agentId, {
-        about: row.about,
-        relation: row.relation,
-        value: row.value,
-      });
-      setReceipt({ kind: 'restored', since: Date.now() });
-      onChanged();
-    } catch {
-      setReceipt({ kind: 'undo-failed', row, status: 'idle' });
-    }
-  }
+  const forgotten = useCallback(
+    (row: FactMemoryStatement) =>
+      start((since) => ({ kind: 'forgotten', row, since, status: 'idle' })),
+    [start],
+  );
+  const updated = useCallback(() => start((since) => ({ kind: 'updated', since })), [start]);
+
+  const undo = useCallback(
+    async (row: FactMemoryStatement) => {
+      setReceipt((r) =>
+        r !== null && (r.kind === 'forgotten' || r.kind === 'undo-failed')
+          ? { ...r, status: 'undoing' }
+          : r,
+      );
+      try {
+        await workspaceApi.rememberMemory(agentId, {
+          about: row.about,
+          relation: row.relation,
+          value: row.value,
+        });
+        start((since) => ({ kind: 'restored', since }));
+        onChanged();
+      } catch {
+        setReceipt({ kind: 'undo-failed', row, status: 'idle' });
+      }
+    },
+    [agentId, onChanged, start],
+  );
 
   const element =
     receipt === null ? null : (
-      <MemoryReceipt receipt={receipt} now={now} onUndo={(row) => void undo(row)} />
+      <MemoryReceipt
+        receipt={receipt}
+        now={now}
+        onUndo={(row) => void undo(row)}
+        className="sticky bottom-0"
+      />
     );
 
-  return { receipt, forgotten, updated, element };
+  return { receipt, now, forgotten, updated, undo, element };
 }
 
-function MemoryReceipt({
+/**
+ * One receipt. Only the failure is an alert; the others are polite status
+ * lines, and the ticking Undo button sits OUTSIDE the live region so a screen
+ * reader hears "Forgotten" once rather than a number every second. shadcn's
+ * `Alert` hard-codes `role="alert"`, so the polite ones clear it.
+ */
+export function MemoryReceipt({
   receipt,
   now,
   onUndo,
+  className,
 }: {
   receipt: MemoryReceiptState;
   now: number;
   onUndo: (row: FactMemoryStatement) => void;
+  className?: string;
 }) {
   if (receipt.kind === 'updated' || receipt.kind === 'restored') {
     return (
-      <Alert className="sticky bottom-0">
+      <Alert role={undefined} className={className}>
         <AlertDescription>
           <span role="status">
             {receipt.kind === 'updated' ? MEMORY_UPDATED : MEMORY_RESTORED}
@@ -318,9 +344,9 @@ function MemoryReceipt({
   }
   if (receipt.kind === 'undo-failed') {
     return (
-      <Alert variant="destructive" className="sticky bottom-0">
+      <Alert variant="destructive" className={className}>
         <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
-          <span role="alert">{MEMORY_UNDO_FAILED}</span>
+          <span>{MEMORY_UNDO_FAILED}</span>
           <Button
             type="button"
             variant="secondary"
@@ -335,16 +361,17 @@ function MemoryReceipt({
     );
   }
   const left = memoryUndoSecondsLeft(receipt.since, now);
+  const offer = left > 0 || receipt.status === 'undoing';
   return (
-    <Alert className="sticky bottom-0">
+    <Alert role={undefined} className={className}>
       <AlertDescription className="flex flex-wrap items-center gap-2">
         <span role="status">{MEMORY_FORGOTTEN}</span>
-        {(left > 0 || receipt.status === 'undoing') && (
+        {offer && (
           <span aria-hidden="true" className="text-muted-foreground">
             ·
           </span>
         )}
-        {(left > 0 || receipt.status === 'undoing') && (
+        {offer && (
           <Button
             type="button"
             variant="secondary"
