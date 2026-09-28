@@ -299,11 +299,48 @@ function validateSlotsFilter(input: RecallInput): void {
   }
 }
 
+/**
+ * Validate `RecallInput.conversationId` (the filtered-listing conversation
+ * scope). Same three-part shape as `validateSlotsFilter`, minus the array
+ * concern:
+ *
+ *  - a non-string, or an EMPTY string: `''` is a perfectly good TEXT value in
+ *    SQLite, and treating it as absent would answer a caller who asked to be
+ *    scoped with every conversation instead — a read silently WIDER than the
+ *    one it requested, the one direction a scope must never fail in;
+ *  - `conversationId` together with `query`: ranked retrieval fuses three
+ *    channels and this filter is not plumbed through them, so honouring the
+ *    `query` and dropping the `conversationId` would return an unfiltered
+ *    ranked set dressed up as a filtered one.
+ *
+ * Shared by both this backend and the postgres twin by CONVENTION, same as
+ * `validateSlotsFilter` — see that function's doc comment for why.
+ */
+function validateConversationIdFilter(input: RecallInput): void {
+  if (input.conversationId === undefined) return;
+  if (!isNonEmptyString(input.conversationId)) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'conversationId must be a non-empty string when set',
+    });
+  }
+  if (input.query !== undefined) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message:
+        'conversationId cannot be combined with query: the conversation filter is not plumbed through the ranked-retrieval channels, and returning an unfiltered ranked set would answer a filter the caller cannot see was ignored',
+    });
+  }
+}
+
 function validateRecallInput(input: RecallInput): {
   about?: string;
   query?: string;
   ownerUserId?: string;
   slots?: string[];
+  conversationId?: string;
   limit: number;
   poolSize: number;
   activeOnly: boolean;
@@ -370,11 +407,13 @@ function validateRecallInput(input: RecallInput): {
     });
   }
   validateSlotsFilter(input);
+  validateConversationIdFilter(input);
   return {
     ...(input.about !== undefined ? { about: input.about } : {}),
     ...(input.query !== undefined ? { query: input.query } : {}),
     ...(input.ownerUserId !== undefined ? { ownerUserId: input.ownerUserId } : {}),
     ...(input.slots !== undefined ? { slots: [...input.slots] } : {}),
+    ...(input.conversationId !== undefined ? { conversationId: input.conversationId } : {}),
     limit: Math.min(Math.floor(input.limit), MAX_LIMIT),
     // Clamped by the same ceiling as `limit`, for the same reason: this one
     // sizes the payload handed to a third-party reranker, so an unbounded
@@ -1316,7 +1355,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
         PLUGIN_NAME,
         async (ctx, input) => {
           // Validation before the store region — see `record`.
-          const { about, query, ownerUserId, slots, limit, poolSize, activeOnly } =
+          const { about, query, ownerUserId, slots, conversationId, limit, poolSize, activeOnly } =
             validateRecallInput(input);
           const agentKey = agentScopeKey(ctx);
 
@@ -1378,6 +1417,15 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
             if (slots !== undefined) {
               conditions.push(`slot IN (${slots.map(() => '?').join(', ')})`);
               params.push(...slots);
+            }
+            // Conversation filter, in the WHERE for the identical reason the
+            // owner scope and slot filter are: `LIMIT` below has to count
+            // rows FROM this conversation, not a widened pool cut before the
+            // filter is applied. Strict `=`, so a row with no
+            // `conversation_id` never matches a scoped read.
+            if (conversationId !== undefined) {
+              conditions.push('conversation_id = ?');
+              params.push(conversationId);
             }
             if (activeOnly) {
               conditions.push('valid_end = ?');
