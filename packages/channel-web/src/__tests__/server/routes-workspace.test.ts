@@ -4485,4 +4485,126 @@ describe('channel-web agent-workspace BFF', () => {
       expect(captured.statusCode).toBe(0);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // TASK-628 — "Used N memories": recall receipts on the agent detail thread.
+  // -------------------------------------------------------------------------
+
+  describe('memoryUsed on the agent detail thread (TASK-628)', () => {
+    function seedTwoExchanges(): void {
+      conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
+      turnsByConversation.set('c1', [
+        {
+          turnId: 't1',
+          turnIndex: 0,
+          role: 'user',
+          contentBlocks: [{ type: 'text', text: 'what coffee do I like?' }],
+          createdAt: '2026-09-27T10:00:00.000Z',
+        },
+        {
+          turnId: 't2',
+          turnIndex: 1,
+          role: 'assistant',
+          contentBlocks: [{ type: 'text', text: 'Flat white.' }],
+          createdAt: '2026-09-27T10:00:05.000Z',
+        },
+        {
+          turnId: 't3',
+          turnIndex: 2,
+          role: 'user',
+          contentBlocks: [{ type: 'text', text: 'thanks' }],
+          createdAt: '2026-09-27T10:01:00.000Z',
+        },
+        {
+          turnId: 't4',
+          turnIndex: 3,
+          role: 'assistant',
+          contentBlocks: [{ type: 'text', text: 'Any time.' }],
+          createdAt: '2026-09-27T10:01:02.000Z',
+        },
+      ]);
+    }
+
+    const coffee = {
+      id: 'm1',
+      about: 'person',
+      relation: 'prefers',
+      value: 'flat white',
+      when: '2026-09-01T00:00:00.000Z',
+    };
+
+    async function detail(): Promise<{
+      statusCode: number;
+      thread: Array<Record<string, unknown>>;
+    }> {
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+      return {
+        statusCode: captured.statusCode,
+        thread: (captured.body as { thread: Array<Record<string, unknown>> }).thread,
+      };
+    }
+
+    it('attaches the receipt to the answer of the exchange it was taken in', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      seedTwoExchanges();
+      const calls: Array<{ agentId: string; userId: string; input: unknown }> = [];
+      bus.registerService('memory:recall-receipts', 'memory', async (ctx, input) => {
+        calls.push({ agentId: ctx.agentId, userId: ctx.userId ?? '', input });
+        return {
+          receipts: [{ at: '2026-09-27T10:00:02.000Z', statements: [coffee] }],
+          visibility: 'personal',
+        };
+      });
+      const { statusCode, thread } = await detail();
+      expect(statusCode).toBe(200);
+      expect(calls).toEqual([{ agentId: 'a1', userId: 'u1', input: { conversationId: 'c1' } }]);
+      expect(thread.find((m) => m.id === 't2')?.memoryUsed).toEqual({
+        statements: [coffee],
+        visibility: 'personal',
+      });
+      expect(thread.find((m) => m.id === 't4')).not.toHaveProperty('memoryUsed');
+    });
+
+    it('leaves the thread unchanged (and 200) when the receipts read throws', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      seedTwoExchanges();
+      bus.registerService('memory:recall-receipts', 'memory', async () => {
+        throw new Error('kv down');
+      });
+      const warn = vi.spyOn(initCtx.logger, 'warn');
+      try {
+        const { statusCode, thread } = await detail();
+        expect(statusCode).toBe(200);
+        expect(thread.map((m) => m.id)).toEqual(['t1', 't2', 't3', 't4']);
+        expect(thread.some((m) => 'memoryUsed' in m)).toBe(false);
+        expect(warn).toHaveBeenCalledWith(
+          'workspace_memory_used_read_failed',
+          expect.objectContaining({ agentId: 'a1' }),
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('ignores a malformed reply rather than failing the thread', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      seedTwoExchanges();
+      bus.registerService('memory:recall-receipts', 'memory', async () => ({
+        receipts: 'nope',
+      }));
+      const { statusCode, thread } = await detail();
+      expect(statusCode).toBe(200);
+      expect(thread.some((m) => 'memoryUsed' in m)).toBe(false);
+    });
+
+    it('carries no memoryUsed when no receipts service is registered', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      seedTwoExchanges();
+      const { statusCode, thread } = await detail();
+      expect(statusCode).toBe(200);
+      expect(thread.some((m) => 'memoryUsed' in m)).toBe(false);
+    });
+  });
 });

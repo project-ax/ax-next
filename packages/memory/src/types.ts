@@ -343,3 +343,47 @@ export interface MemoryConversationActivity {
  * A ceiling the engine may lower further; never a target.
  */
 export const DEFAULT_RECALL_LIMIT = 20;
+
+/**
+ * One statement as the model was handed it by `memory_recall` — a snapshot
+ * taken when the tool answered, read back by `memory:recall-receipts`
+ * (TASK-628).
+ *
+ * Only the recall-surface fields that describe the statement itself. The
+ * per-answer ones (`conversation` ordinal, `whenText`, `closure`, `closedBy`)
+ * and `sourceTurnId` are left out: they were true of one answer, not of the
+ * statement, and a later read would present them as current.
+ */
+export type MemoryUsedStatement = Pick<
+  MemoryStatement,
+  'id' | 'about' | 'relation' | 'value' | 'when' | 'until' | 'kind' | 'slot' | 'savedBy' | 'aboutText'
+> & {
+  /**
+   * The row's CURRENT closure when it has been closed since the answer —
+   * see {@link MemoryStatement.closure}. Absent means still in effect, or
+   * not determinable (the status read failed or did not reach the row).
+   */
+  closedSince?: 'replaced' | 'forgotten' | 'retracted';
+};
+
+/** One `memory_recall` answer inside a conversation: when, and what it handed the model. */
+export interface MemoryRecallReceipt {
+  /** ISO-8601 instant the tool answered. */
+  at: string;
+  statements: MemoryUsedStatement[];
+}
+
+/**
+ * `memory:recall-receipts` input. The conversation is a filter, never an
+ * authority: a receipt is returned only when it was recorded for
+ * `ctx.agentId` AND `ctx.userId`.
+ */
+export interface MemoryRecallReceiptsInput {
+  conversationId: string;
+}
+
+export interface MemoryRecallReceiptsOutput {
+  /** Oldest first. Empty when none were recorded, or none are the caller's. */
+  receipts: MemoryRecallReceipt[];
+  visibility?: 'personal' | 'team';
+}

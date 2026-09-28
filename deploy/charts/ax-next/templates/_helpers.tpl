@@ -450,6 +450,9 @@ it also needs, at minimum (each is in-process today and says so at its site):
     handled it (@ax/memory rules.ts), so a session warm on another replica
     would keep its stale Rules (TASK-617).
   - @ax/memory's per-user "extraction paused" status (`memory:status`).
+  - @ax/memory's per-conversation recall-receipt write chain (TASK-628,
+    recall-receipts.ts): two replicas could each append a receipt to the
+    same conversation and one would be lost.
 
 So we refuse to render a multi-replica host until a distributed stream broker
 (and a multi-replica workspace backend) lands. Better to fail the `helm

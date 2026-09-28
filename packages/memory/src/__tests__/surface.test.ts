@@ -23,6 +23,8 @@ describe('@ax/memory — manifest', () => {
       'memory:unforget',
       // The per-user "extraction paused" signal the UI reads.
       'memory:status',
+      // TASK-628: the recall receipts behind "used N memories".
+      'memory:recall-receipts',
       // TASK-491, design 4.1. A SINGLE-provider service hook, which is what
       // made `@ax/memory` and `@ax/memory-strata` (deleted in TASK-608)
       // mutually exclusive in a preset -- 10.4's "one memory plugin per
@@ -68,6 +70,7 @@ describe('@ax/memory — manifest', () => {
         'memory:forget',
         'memory:unforget',
         'memory:status',
+        'memory:recall-receipts',
         'system-prompt:augment',
         'tool:register',
         'tool:execute:memory_recall',
@@ -115,9 +118,26 @@ describe('@ax/memory — manifest', () => {
       const entry = manifest.optionalCalls?.find((oc) => oc.hook === hook);
       expect(entry?.degradation).toMatch(/only at chat:end/);
     }
-    expect(
-      createMemoryPlugin({ incremental: false }).manifest.optionalCalls?.map((oc) => oc.hook),
-    ).toEqual(['llm:call:openrouter', 'memory:rules:read']);
+    // TASK-628: storage also holds the recall receipts, so it stays declared
+    // with incremental extraction off — with that degradation, not this one.
+    const off = createMemoryPlugin({ incremental: false }).manifest.optionalCalls;
+    expect(off?.map((oc) => oc.hook)).toEqual([
+      'llm:call:openrouter',
+      'memory:rules:read',
+      'storage:get',
+      'storage:set',
+    ]);
+    for (const entry of off!.slice(2)) {
+      expect(entry.degradation).not.toMatch(/chat:end/);
+      expect(entry.degradation).toMatch(/recall receipts/);
+    }
+  });
+
+  it('names storage as OPTIONAL for recall receipts too, when incremental extraction is on', () => {
+    const { manifest } = createMemoryPlugin();
+    for (const hook of ['storage:get', 'storage:set']) {
+      expect(manifest.optionalCalls?.find((oc) => oc.hook === hook)?.degradation).toMatch(/recall receipts/);
+    }
   });
 
   it('refuses a malformed incremental config at construction', () => {
@@ -148,7 +168,8 @@ describe('@ax/memory — manifest', () => {
   // entry would turn that configuration into a boot failure.
   it('names the human tier as the one OPTIONAL dependency, with its degradation spelled out', () => {
     const { manifest } = createMemoryPlugin({ incremental: false });
-    expect(manifest.optionalCalls).toHaveLength(2);
+    // Two plus `storage:get`/`storage:set`, which the recall receipts use (TASK-628).
+    expect(manifest.optionalCalls).toHaveLength(4);
     expect(manifest.optionalCalls![1]!.hook).toBe('memory:rules:read');
     expect(manifest.optionalCalls![1]!.degradation).toMatch(/Rules From Your User/);
   });
