@@ -751,6 +751,13 @@ export interface FactMemoryStatement {
    * `memory_note`. Absent for extracted rows and unknown provenance.
    */
   savedBy?: 'person' | 'agent';
+  /**
+   * The id of the person's message this row was extracted from (TASK-626) —
+   * the same id the thread keys that message on, so the rail's "What I
+   * learned in this chat" block can point back at it. Opaque; only compared,
+   * never parsed. Absent on rows not extracted from a turn.
+   */
+  sourceTurnId?: string;
 }
 
 /**
