@@ -9,14 +9,6 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty';
 import {
   Field,
@@ -44,6 +36,24 @@ import {
   type FactMemoryStatement,
 } from '@/lib/workspace-api';
 import { AgentMemory, RulesEditor, RulesWithoutEditor } from './AgentMemory';
+import { MemoryFixDialog, MemoryForgetDialog, useMemoryReceipt } from './MemoryCorrection';
+import {
+  MEMORY_CLOSURE_BADGE,
+  MEMORY_FIX,
+  MEMORY_FORGET,
+  MEMORY_HISTORY_TOGGLE,
+  MEMORY_HISTORY_TOGGLE_HELPER,
+  MEMORY_OVERRIDDEN_NOTE,
+  MEMORY_PERSONAL_NOTICE,
+  MEMORY_REPLACED_BY_UNKNOWN,
+  MEMORY_TEAM_NOTICE,
+  memoryFixLabel,
+  memoryForgetLabel,
+  memoryReplacedBy,
+  memorySlotText,
+  memoryStatementText,
+  type MemoryVisibility,
+} from './memory-copy';
 
 export interface MemorySurfaceProps {
   agentId: string;
@@ -65,24 +75,6 @@ type ReadState =
   | { status: 'loading' }
   | { status: 'failed' }
   | { status: 'ready'; data: FactMemoryPage };
-
-function words(v: string): string {
-  return v.replace(/_/g, ' ');
-}
-
-function capitalize(s: string): string {
-  return s.length === 0 ? s : s.charAt(0).toUpperCase() + s.slice(1);
-}
-
-function subjectText(row: FactMemoryStatement): string {
-  if (row.aboutText === 'you') return 'You';
-  if (row.aboutText !== undefined) return capitalize(row.aboutText);
-  return capitalize(words(row.about));
-}
-
-function statementText(row: FactMemoryStatement): string {
-  return `${subjectText(row)} — ${words(row.relation)}: ${row.value}`;
-}
 
 /**
  * The row's TYPE label. `kind` wins when the engine classified it; otherwise
@@ -183,10 +175,8 @@ function HistoryToggle({
     <Field orientation="horizontal">
       <Switch id={id} checked={checked} onCheckedChange={onChange} />
       <FieldContent>
-        <FieldLabel htmlFor={id}>Show history</FieldLabel>
-        <FieldDescription>
-          Include memories that were replaced or forgotten.
-        </FieldDescription>
+        <FieldLabel htmlFor={id}>{MEMORY_HISTORY_TOGGLE}</FieldLabel>
+        <FieldDescription>{MEMORY_HISTORY_TOGGLE_HELPER}</FieldDescription>
       </FieldContent>
     </Field>
   );
@@ -205,33 +195,30 @@ function ClosureNote({
     // effect (TASK-526, card item 8).
     return (
       <span className="text-sm text-muted-foreground">
-        <Badge variant="secondary">Overridden</Badge> — another memory is used
-        instead
+        <Badge variant="secondary">{MEMORY_CLOSURE_BADGE.overridden}</Badge>
+        {MEMORY_OVERRIDDEN_NOTE}
       </span>
     );
   }
   if (row.until === undefined) return null;
+  const replacement =
+    row.closure === 'replaced' && row.closedBy !== undefined
+      ? page.statements.find((s) => s.id === row.closedBy)
+      : undefined;
   return (
     <span className="text-sm text-muted-foreground">
-      {row.closure === 'forgotten' ? (
-        <Badge variant="secondary">Forgotten</Badge>
-      ) : (
-        <Badge variant="secondary">Replaced</Badge>
-      )}{' '}
+      <Badge variant="secondary">
+        {row.closure === 'forgotten'
+          ? MEMORY_CLOSURE_BADGE.forgotten
+          : MEMORY_CLOSURE_BADGE.replaced}
+      </Badge>{' '}
       {row.until.slice(0, 10)}
       {row.closure === 'replaced' &&
-        (row.closedBy !== undefined
-          ? (() => {
-              const replacement = page.statements.find((s) => s.id === row.closedBy);
-              return ` — Replaced by: ${replacement !== undefined ? replacement.value : 'a newer memory'}`;
-            })()
-          : ' — Replaced by a newer memory')}
+        (replacement !== undefined
+          ? memoryReplacedBy(replacement.value)
+          : MEMORY_REPLACED_BY_UNKNOWN)}
     </span>
   );
-}
-
-interface MutationTarget {
-  row: FactMemoryStatement;
 }
 
 function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry }: MemorySurfaceProps) {
@@ -242,8 +229,9 @@ function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry }: Memor
       : undefined;
   const [refresh, setRefresh] = useState(0);
   const bump = () => setRefresh((n) => n + 1);
-  const [editTarget, setEditTarget] = useState<MutationTarget | null>(null);
-  const [forgetTarget, setForgetTarget] = useState<MutationTarget | null>(null);
+  const [fixTarget, setFixTarget] = useState<FactMemoryStatement | null>(null);
+  const [forgetTarget, setForgetTarget] = useState<FactMemoryStatement | null>(null);
+  const receipt = useMemoryReceipt(agentId, bump);
   const extractionPaused = memory.factsExtraction === 'paused';
 
   return (
@@ -264,17 +252,12 @@ function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry }: Memor
       )}
       {visibility === 'team' && (
         <Alert>
-          <AlertDescription>
-            Memories saved with this shared agent are visible to its team. Team members
-            can correct or forget them.
-          </AlertDescription>
+          <AlertDescription>{MEMORY_TEAM_NOTICE}</AlertDescription>
         </Alert>
       )}
       {visibility === 'personal' && (
         <Alert>
-          <AlertDescription>
-            Memories saved with this personal agent are private to you.
-          </AlertDescription>
+          <AlertDescription>{MEMORY_PERSONAL_NOTICE}</AlertDescription>
         </Alert>
       )}
       <ProfileCard
@@ -282,31 +265,30 @@ function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry }: Memor
         refresh={refresh}
         visibility={visibility}
         extractionPaused={extractionPaused}
-        onEdit={(row) => setEditTarget({ row })}
-        onForget={(row) => setForgetTarget({ row })}
+        onFix={setFixTarget}
+        onForget={setForgetTarget}
       />
-      <SearchCard
-        agentId={agentId}
-        refresh={refresh}
-        onForget={(row) => setForgetTarget({ row })}
-      />
-      <EditDialog
-        target={editTarget}
+      <SearchCard agentId={agentId} refresh={refresh} onForget={setForgetTarget} />
+      {receipt.element}
+      <MemoryFixDialog
+        target={fixTarget}
         agentId={agentId}
         visibility={visibility}
-        onClose={() => setEditTarget(null)}
+        onClose={() => setFixTarget(null)}
         onSaved={() => {
-          setEditTarget(null);
+          setFixTarget(null);
+          receipt.updated();
           bump();
         }}
       />
-      <ForgetDialog
+      <MemoryForgetDialog
         target={forgetTarget}
         agentId={agentId}
         visibility={visibility}
         onClose={() => setForgetTarget(null)}
-        onForgotten={() => {
+        onForgotten={(row) => {
           setForgetTarget(null);
+          receipt.forgotten(row);
           bump();
         }}
       />
@@ -314,21 +296,19 @@ function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry }: Memor
   );
 }
 
-type FactsVisibility = 'personal' | 'team' | undefined;
-
 function ProfileCard({
   agentId,
   refresh,
   visibility,
   extractionPaused = false,
-  onEdit,
+  onFix,
   onForget,
 }: {
   agentId: string;
   refresh: number;
-  visibility: FactsVisibility;
+  visibility: MemoryVisibility;
   extractionPaused?: boolean;
-  onEdit: (row: FactMemoryStatement) => void;
+  onFix: (row: FactMemoryStatement) => void;
   onForget: (row: FactMemoryStatement) => void;
 }) {
   const [history, setHistory] = useState(false);
@@ -389,7 +369,7 @@ function ProfileCard({
                     <div className="flex flex-col gap-0.5">
                       <span className="text-sm">
                         <span className="text-muted-foreground">
-                          {words(row.slot ?? row.relation)}:
+                          {memorySlotText(row)}:
                         </span>{' '}
                         {row.value}
                       </span>
@@ -402,19 +382,19 @@ function ProfileCard({
                         type="button"
                         variant="ghost"
                         size="sm"
-                        aria-label={`Edit: ${row.value}`}
-                        onClick={() => onEdit(row)}
+                        aria-label={memoryFixLabel(row.value)}
+                        onClick={() => onFix(row)}
                       >
-                        Edit
+                        {MEMORY_FIX}
                       </Button>
                       <Button
                         type="button"
                         variant="ghost"
                         size="sm"
-                        aria-label={`Forget: ${row.value}`}
+                        aria-label={memoryForgetLabel(row.value)}
                         onClick={() => onForget(row)}
                       >
-                        Forget
+                        {MEMORY_FORGET}
                       </Button>
                     </div>
                   </li>
@@ -423,7 +403,7 @@ function ProfileCard({
                   <li key={row.id} className="flex flex-col gap-0.5">
                     <span className="text-sm">
                       <span className="text-muted-foreground">
-                        {words(row.slot ?? row.relation)}:
+                        {memorySlotText(row)}:
                       </span>{' '}
                       {row.value}
                     </span>
@@ -486,16 +466,16 @@ function SearchCard({
 
   function renderRow(row: FactMemoryStatement) {
     const isClosed = !isCurrent(row);
-    const label = statementText(row);
+    const label = memoryStatementText(row);
     const actions = !isClosed && (
       <Button
         type="button"
         variant="ghost"
         size="sm"
-        aria-label={`Forget: ${label}`}
+        aria-label={memoryForgetLabel(label)}
         onClick={() => onForget(row)}
       >
-        Forget
+        {MEMORY_FORGET}
       </Button>
     );
     if (compact) {
@@ -603,190 +583,5 @@ function SearchCard({
         )}
       </CardContent>
     </Card>
-  );
-}
-
-function EditDialog({
-  target,
-  agentId,
-  visibility,
-  onClose,
-  onSaved,
-}: {
-  target: MutationTarget | null;
-  agentId: string;
-  visibility: FactsVisibility;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const [value, setValue] = useState('');
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState(false);
-
-  useEffect(() => {
-    if (target !== null) {
-      setValue(target.row.value);
-      setError(false);
-      setPending(false);
-    }
-  }, [target]);
-
-  async function save() {
-    if (target === null || pending || value.trim() === '') return;
-    setPending(true);
-    setError(false);
-    try {
-      await workspaceApi.rememberMemory(agentId, {
-        about: target.row.about,
-        relation: target.row.relation,
-        value,
-      });
-      onSaved();
-    } catch {
-      setPending(false);
-      setError(true);
-    }
-  }
-
-  return (
-    <Dialog
-      open={target !== null}
-      onOpenChange={(open) => {
-        if (!open && !pending) onClose();
-      }}
-    >
-      <DialogContent
-        onEscapeKeyDown={(e) => {
-          if (pending) e.preventDefault();
-        }}
-        onInteractOutside={(e) => {
-          if (pending) e.preventDefault();
-        }}
-      >
-        <DialogHeader>
-          <DialogTitle>Edit remembered detail</DialogTitle>
-          <DialogDescription>
-            {visibility === 'team'
-              ? 'Saving replaces the current value for the team. The earlier memory stays in History.'
-              : 'Saving replaces the current value. The earlier memory stays in History.'}
-          </DialogDescription>
-        </DialogHeader>
-        <FieldGroup>
-          <Field>
-            <FieldLabel htmlFor="memory-edit-value">What we should remember</FieldLabel>
-            <Input
-              id="memory-edit-value"
-              value={value}
-              disabled={pending}
-              onChange={(e) => setValue(e.target.value)}
-            />
-          </Field>
-        </FieldGroup>
-        {error && (
-          <Alert variant="destructive">
-            <AlertDescription>
-              We could not save this detail. Your changes are still here.
-            </AlertDescription>
-          </Alert>
-        )}
-        <DialogFooter>
-          <Button type="button" variant="secondary" disabled={pending} onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            type="button"
-            disabled={pending || value.trim() === ''}
-            onClick={() => void save()}
-          >
-            Save
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function ForgetDialog({
-  target,
-  agentId,
-  visibility,
-  onClose,
-  onForgotten,
-}: {
-  target: MutationTarget | null;
-  agentId: string;
-  visibility: FactsVisibility;
-  onClose: () => void;
-  onForgotten: () => void;
-}) {
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState(false);
-
-  useEffect(() => {
-    if (target !== null) {
-      setPending(false);
-      setError(false);
-    }
-  }, [target]);
-
-  async function forget() {
-    if (target === null || pending) return;
-    setPending(true);
-    setError(false);
-    try {
-      await workspaceApi.forgetMemory(agentId, [target.row.id]);
-      onForgotten();
-    } catch {
-      setPending(false);
-      setError(true);
-    }
-  }
-
-  return (
-    <Dialog
-      open={target !== null}
-      onOpenChange={(open) => {
-        if (!open && !pending) onClose();
-      }}
-    >
-      <DialogContent
-        onEscapeKeyDown={(e) => {
-          if (pending) e.preventDefault();
-        }}
-        onInteractOutside={(e) => {
-          if (pending) e.preventDefault();
-        }}
-      >
-        <DialogHeader>
-          <DialogTitle>Forget this memory?</DialogTitle>
-          <DialogDescription>
-            {visibility === 'team'
-              ? 'This memory will be removed from active results for the team. It stays in History, and past conversations do not change.'
-              : 'This memory will be removed from active results. It stays in History, and past conversations do not change.'}
-          </DialogDescription>
-        </DialogHeader>
-        {target !== null && <p className="text-sm">{statementText(target.row)}</p>}
-        {error && (
-          <Alert variant="destructive">
-            <AlertDescription>
-              We could not forget this memory. Try again.
-            </AlertDescription>
-          </Alert>
-        )}
-        <DialogFooter>
-          <Button type="button" variant="secondary" disabled={pending} onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            type="button"
-            variant="destructive"
-            disabled={pending}
-            onClick={() => void forget()}
-          >
-            Forget
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }

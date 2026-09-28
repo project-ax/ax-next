@@ -1,0 +1,362 @@
+/**
+ * The pieces every memory-correction surface shares: the Fix dialog, the
+ * Forget dialog, and the receipt that follows either one.
+ *
+ * They live outside `FactsMemory` so the rail's "What I learned in this chat"
+ * block and the "Memory used" chip can offer the same Fix and Forget with the
+ * same words and the same receipt, instead of growing their own. The words
+ * themselves are in `memory-copy.ts`; nothing in this file spells one out.
+ *
+ * WHY UNDO RE-SAVES. The server has no "un-forget": `memory:forget` closes a
+ * row and that is final. So Undo puts the memory back by saving the same
+ * subject, relation and value again, as the person who pressed it — the same
+ * write Fix makes. History keeps the forgotten row, which is honest: it was
+ * forgotten, for a few seconds, and then it was remembered again. The forget
+ * itself is never deferred to make Undo cheaper; a person who asks us to
+ * forget something and closes the tab has had it forgotten.
+ */
+import { useCallback, useEffect, useState } from 'react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
+import { Input } from '@/components/ui/input';
+import { workspaceApi, type FactMemoryStatement } from '@/lib/workspace-api';
+import { UNDO_WINDOW_MS } from '@/lib/workspace-types';
+import {
+  MEMORY_CANCEL,
+  MEMORY_FIX_FIELD_LABEL,
+  MEMORY_FIX_SAVE,
+  MEMORY_FIX_SAVE_FAILED,
+  MEMORY_FIX_TITLE,
+  MEMORY_FORGET,
+  MEMORY_FORGET_FAILED,
+  MEMORY_FORGET_TITLE,
+  MEMORY_FORGOTTEN,
+  MEMORY_RESTORED,
+  MEMORY_UNDO_FAILED,
+  MEMORY_UNDO_RETRY,
+  MEMORY_UPDATED,
+  memoryFixHelper,
+  memoryForgetHelper,
+  memoryStatementText,
+  memoryUndoLabel,
+  memoryUndoSecondsLeft,
+  memoryUndoText,
+  type MemoryVisibility,
+} from './memory-copy';
+
+export function MemoryFixDialog({
+  target,
+  agentId,
+  visibility,
+  onClose,
+  onSaved,
+}: {
+  target: FactMemoryStatement | null;
+  agentId: string;
+  visibility: MemoryVisibility;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [value, setValue] = useState('');
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    if (target !== null) {
+      setValue(target.value);
+      setError(false);
+      setPending(false);
+    }
+  }, [target]);
+
+  async function save() {
+    if (target === null || pending || value.trim() === '') return;
+    setPending(true);
+    setError(false);
+    try {
+      await workspaceApi.rememberMemory(agentId, {
+        about: target.about,
+        relation: target.relation,
+        value,
+      });
+      onSaved();
+    } catch {
+      setPending(false);
+      setError(true);
+    }
+  }
+
+  return (
+    <Dialog
+      open={target !== null}
+      onOpenChange={(open) => {
+        if (!open && !pending) onClose();
+      }}
+    >
+      <DialogContent
+        onEscapeKeyDown={(e) => {
+          if (pending) e.preventDefault();
+        }}
+        onInteractOutside={(e) => {
+          if (pending) e.preventDefault();
+        }}
+      >
+        <DialogHeader>
+          <DialogTitle>{MEMORY_FIX_TITLE}</DialogTitle>
+          <DialogDescription>{memoryFixHelper(visibility)}</DialogDescription>
+        </DialogHeader>
+        <FieldGroup>
+          <Field>
+            <FieldLabel htmlFor="memory-fix-value">{MEMORY_FIX_FIELD_LABEL}</FieldLabel>
+            <Input
+              id="memory-fix-value"
+              value={value}
+              disabled={pending}
+              onChange={(e) => setValue(e.target.value)}
+            />
+          </Field>
+        </FieldGroup>
+        {error && (
+          <Alert variant="destructive">
+            <AlertDescription>{MEMORY_FIX_SAVE_FAILED}</AlertDescription>
+          </Alert>
+        )}
+        <DialogFooter>
+          <Button type="button" variant="secondary" disabled={pending} onClick={onClose}>
+            {MEMORY_CANCEL}
+          </Button>
+          <Button
+            type="button"
+            disabled={pending || value.trim() === ''}
+            onClick={() => void save()}
+          >
+            {MEMORY_FIX_SAVE}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function MemoryForgetDialog({
+  target,
+  agentId,
+  visibility,
+  onClose,
+  onForgotten,
+}: {
+  target: FactMemoryStatement | null;
+  agentId: string;
+  visibility: MemoryVisibility;
+  onClose: () => void;
+  /** Called with the row that is now forgotten, so the caller can offer Undo. */
+  onForgotten: (row: FactMemoryStatement) => void;
+}) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    if (target !== null) {
+      setPending(false);
+      setError(false);
+    }
+  }, [target]);
+
+  async function forget() {
+    if (target === null || pending) return;
+    setPending(true);
+    setError(false);
+    try {
+      await workspaceApi.forgetMemory(agentId, [target.id]);
+      onForgotten(target);
+    } catch {
+      setPending(false);
+      setError(true);
+    }
+  }
+
+  return (
+    <Dialog
+      open={target !== null}
+      onOpenChange={(open) => {
+        if (!open && !pending) onClose();
+      }}
+    >
+      <DialogContent
+        onEscapeKeyDown={(e) => {
+          if (pending) e.preventDefault();
+        }}
+        onInteractOutside={(e) => {
+          if (pending) e.preventDefault();
+        }}
+      >
+        <DialogHeader>
+          <DialogTitle>{MEMORY_FORGET_TITLE}</DialogTitle>
+          <DialogDescription>{memoryForgetHelper(visibility)}</DialogDescription>
+        </DialogHeader>
+        {target !== null && <p className="text-sm">{memoryStatementText(target)}</p>}
+        {error && (
+          <Alert variant="destructive">
+            <AlertDescription>{MEMORY_FORGET_FAILED}</AlertDescription>
+          </Alert>
+        )}
+        <DialogFooter>
+          <Button type="button" variant="secondary" disabled={pending} onClick={onClose}>
+            {MEMORY_CANCEL}
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            disabled={pending}
+            onClick={() => void forget()}
+          >
+            {MEMORY_FORGET}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * What just happened to a memory. One at a time: a new correction replaces the
+ * previous receipt, the way a second approval replaces the first one's toast.
+ */
+export type MemoryReceiptState =
+  | { kind: 'forgotten'; row: FactMemoryStatement; since: number; status: 'idle' | 'undoing' }
+  | { kind: 'undo-failed'; row: FactMemoryStatement; status: 'idle' | 'undoing' }
+  | { kind: 'updated'; since: number }
+  | { kind: 'restored'; since: number };
+
+/**
+ * The receipt and its clock, for a surface that offers Fix and Forget.
+ *
+ * `onChanged` runs after any write that changed what is in memory (the Undo
+ * re-save), so the surface can re-read.
+ */
+export function useMemoryReceipt(agentId: string, onChanged: () => void) {
+  const [receipt, setReceipt] = useState<MemoryReceiptState | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+
+  const timed = receipt !== null && receipt.kind !== 'undo-failed';
+  useEffect(() => {
+    if (!timed) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(id);
+  }, [timed, receipt]);
+
+  // The offer ends on the clock, not on the next render that happens to look.
+  useEffect(() => {
+    if (receipt === null || receipt.kind === 'undo-failed') return;
+    if (receipt.kind === 'forgotten' && receipt.status === 'undoing') return;
+    if (now - receipt.since >= UNDO_WINDOW_MS) setReceipt(null);
+  }, [receipt, now]);
+
+  const forgotten = useCallback((row: FactMemoryStatement) => {
+    setReceipt({ kind: 'forgotten', row, since: Date.now(), status: 'idle' });
+  }, []);
+  const updated = useCallback(() => {
+    setReceipt({ kind: 'updated', since: Date.now() });
+  }, []);
+
+  async function undo(row: FactMemoryStatement) {
+    setReceipt((r) =>
+      r !== null && (r.kind === 'forgotten' || r.kind === 'undo-failed')
+        ? { ...r, status: 'undoing' }
+        : r,
+    );
+    try {
+      await workspaceApi.rememberMemory(agentId, {
+        about: row.about,
+        relation: row.relation,
+        value: row.value,
+      });
+      setReceipt({ kind: 'restored', since: Date.now() });
+      onChanged();
+    } catch {
+      setReceipt({ kind: 'undo-failed', row, status: 'idle' });
+    }
+  }
+
+  const element =
+    receipt === null ? null : (
+      <MemoryReceipt receipt={receipt} now={now} onUndo={(row) => void undo(row)} />
+    );
+
+  return { receipt, forgotten, updated, element };
+}
+
+function MemoryReceipt({
+  receipt,
+  now,
+  onUndo,
+}: {
+  receipt: MemoryReceiptState;
+  now: number;
+  onUndo: (row: FactMemoryStatement) => void;
+}) {
+  if (receipt.kind === 'updated' || receipt.kind === 'restored') {
+    return (
+      <Alert className="sticky bottom-0">
+        <AlertDescription>
+          <span role="status">
+            {receipt.kind === 'updated' ? MEMORY_UPDATED : MEMORY_RESTORED}
+          </span>
+        </AlertDescription>
+      </Alert>
+    );
+  }
+  if (receipt.kind === 'undo-failed') {
+    return (
+      <Alert variant="destructive" className="sticky bottom-0">
+        <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+          <span role="alert">{MEMORY_UNDO_FAILED}</span>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            disabled={receipt.status === 'undoing'}
+            onClick={() => onUndo(receipt.row)}
+          >
+            {MEMORY_UNDO_RETRY}
+          </Button>
+        </AlertDescription>
+      </Alert>
+    );
+  }
+  const left = memoryUndoSecondsLeft(receipt.since, now);
+  return (
+    <Alert className="sticky bottom-0">
+      <AlertDescription className="flex flex-wrap items-center gap-2">
+        <span role="status">{MEMORY_FORGOTTEN}</span>
+        {(left > 0 || receipt.status === 'undoing') && (
+          <span aria-hidden="true" className="text-muted-foreground">
+            ·
+          </span>
+        )}
+        {(left > 0 || receipt.status === 'undoing') && (
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            aria-label={memoryUndoLabel(receipt.row.value)}
+            disabled={receipt.status === 'undoing'}
+            onClick={() => onUndo(receipt.row)}
+          >
+            {memoryUndoText(Math.max(left, 1))}
+          </Button>
+        )}
+      </AlertDescription>
+    </Alert>
+  );
+}
