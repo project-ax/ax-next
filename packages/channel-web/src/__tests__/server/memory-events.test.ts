@@ -281,6 +281,70 @@ describe('memory-events handler', () => {
     captured.fireClientClose();
   });
 
+  it('TASK-645: re-reads memory:status after a live idle ending, so a cleared pause reaches the rail', async () => {
+    // Paused at connect; the key is then stored and a pass resolves but
+    // records nothing (`idle`). `idle` alone says nothing about the pause —
+    // the fresh status frame is what tells the client it is over.
+    let paused = true;
+    const { handler, activity, statusCalls } = boot({
+      status: async () =>
+        paused
+          ? { extraction: 'paused', reason: 'missing-credential', conversation: { state: 'idle' } }
+          : { extraction: 'ok', conversation: { state: 'idle' } },
+    });
+    const { res, captured } = fakeRes();
+    await handler(fakeReq(), res);
+    paused = false;
+    await activity({ conversationId: 'cnv_1', userId: 'userA', state: 'idle' });
+    expect(frames(captured)).toEqual([
+      { memoryStatus: { extraction: 'paused', conversation: 'idle' } },
+      { memoryActivity: { state: 'idle' } },
+      { memoryStatus: { extraction: 'ok', conversation: 'idle' } },
+    ]);
+    // Same ctx shape as the snapshot read: this agent, this caller.
+    expect(statusCalls.at(-1)).toMatchObject({
+      agentId: 'agt_1',
+      userId: 'userA',
+      input: { conversationId: 'cnv_1' },
+    });
+    captured.fireClientClose();
+  });
+
+  it('re-reads after failed too, but not after extracting, recorded or paused', async () => {
+    const { handler, activity, statusCalls } = boot();
+    const { res, captured } = fakeRes();
+    await handler(fakeReq(), res);
+    expect(statusCalls).toHaveLength(1);
+    for (const state of ['extracting', 'recorded', 'paused']) {
+      await activity({ conversationId: 'cnv_1', userId: 'userA', state, statementIds: [] });
+    }
+    expect(statusCalls).toHaveLength(1);
+    await activity({ conversationId: 'cnv_1', userId: 'userA', state: 'failed' });
+    expect(statusCalls).toHaveLength(2);
+    expect(frames(captured).at(-1)).toEqual({ memoryStatus: { extraction: 'ok', conversation: 'idle' } });
+    captured.fireClientClose();
+  });
+
+  it('a failed re-read writes nothing and keeps the stream open', async () => {
+    let calls = 0;
+    const { handler, activity } = boot({
+      status: async () => {
+        calls += 1;
+        if (calls > 1) throw new Error('status down');
+        return { extraction: 'paused', conversation: { state: 'idle' } };
+      },
+    });
+    const { res, captured } = fakeRes();
+    await handler(fakeReq(), res);
+    await activity({ conversationId: 'cnv_1', userId: 'userA', state: 'idle' });
+    expect(frames(captured)).toEqual([
+      { memoryStatus: { extraction: 'paused', conversation: 'idle' } },
+      { memoryActivity: { state: 'idle' } },
+    ]);
+    expect(captured.streamClosed).toBe(false);
+    captured.fireClientClose();
+  });
+
   it('does not deliver activity for another conversation or another user', async () => {
     const { handler, activity } = boot();
     const { res, captured } = fakeRes();

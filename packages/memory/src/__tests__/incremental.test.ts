@@ -719,6 +719,29 @@ describe('the paused state', () => {
     ]);
   });
 
+  it('a pass that starts paused does not TRACK extracting either — pull agrees with push', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const key = switchableKey();
+    const during: unknown[] = [];
+    const ref: { env?: Env } = {};
+    const env = await setup({}, async (input, call) => {
+      during.push(await ref.env!.h.bus.call('memory:status', ref.env!.ctx(), { conversationId: CONV }));
+      return key.llm!(input, call);
+    });
+    ref.env = env;
+
+    await env.exchange('I moved to Boston.', 'Welcome to Boston!', 'req-1');
+    await idle(env);
+    await env.exchange('My sister lives in Paris.', 'Paris is lovely.', 'req-2');
+    await idle(env);
+    // First pass: not yet paused, so it tracked `extracting`. Second pass
+    // started paused: no push, and no pull state behind it either.
+    expect(during).toEqual([
+      { extraction: 'ok', conversation: { state: 'extracting' } },
+      { extraction: 'paused', reason: 'missing-credential', conversation: { state: 'idle' } },
+    ]);
+  });
+
   it('a pass that starts paused and succeeds reports recorded, with no "extracting" before it', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const key = switchableKey();

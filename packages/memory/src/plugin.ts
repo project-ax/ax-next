@@ -1765,18 +1765,18 @@ async function runConversationPass(
   // nothing — "extracting… nothing" every idle tick would be noise.
   let started = false;
   // A pass that starts while its user is paused is a retry that most likely
-  // hits the same missing key. It still tracks and fires its terminal —
-  // `recorded`/`idle` is how the rail learns the pause is over — but it does
-  // not announce `extracting`, or every quiet spell would flash "noting…".
+  // hits the same missing key. It still fires its terminal — that ending is
+  // how the rail learns the pause is over — but it neither announces nor
+  // tracks `extracting`: the push and the pull stay in step (activity.ts),
+  // and every quiet spell would otherwise flash "noting…".
   const startedPaused = target !== undefined && cfg.pausedUsers.has(target.userId);
   // Ids the engine reported writing during this pass, from the record
   // wrapper below — the ids actually stored, not the facts extracted.
   const writtenIds = new Set<string>();
   const beginExtracting = async (): Promise<void> => {
     started = true;
-    if (target === undefined) return;
+    if (target === undefined || startedPaused) return;
     cfg.activity.begin(target);
-    if (startedPaused) return;
     await fireConversationActivity(bus, ctx, { ...target, state: 'extracting' });
   };
 
@@ -1791,9 +1791,10 @@ async function runConversationPass(
     };
     // No paused gate here (TASK-645): a paused user's pass still tries,
     // because only a resolved call clears the pause, and skipping would leave
-    // a restored key unnoticed until `chat:end`. The miss is cheap (the
-    // provider fails at credential lookup, before any network call), and
-    // `observe()` logs a repeat of a known pause at `debug`, not `error`.
+    // a restored key unnoticed until `chat:end`. The retry costs a cursor
+    // read and a transcript read per pass (passes are activity-driven, never
+    // a loop), then fails at the provider's credential lookup, before any
+    // network call. `observe()` logs a repeat of a known pause at `debug`.
     if (userId === undefined) {
       throw new Error('an incremental pass needs the caller userId to read the transcript');
     }

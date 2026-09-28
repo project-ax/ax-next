@@ -27,6 +27,9 @@ import type { RouteRequest, RouteResponse } from './sse.js';
 //      the memory:status snapshot. Subscribe-first means a pass that starts
 //      while the snapshot is being read is still seen (it may arrive before
 //      the snapshot frame; the UI treats both as "latest wins").
+//   6. After a live `idle` or `failed` activity frame, re-read memory:status
+//      and write a fresh `memoryStatus` frame (TASK-645): those endings do
+//      not say whether the per-user pause cleared, and the pass may have.
 //
 // Frames (no `kind`, no `seq` — the client's frame reader dedups on those):
 //   data: {"memoryStatus":{"extraction":"ok"|"paused","conversation":"idle"|"extracting"|"failed"}}
@@ -197,14 +200,45 @@ export function createMemoryEventsHandler(deps: MemoryEventsHandlerDeps) {
     // first, then every event the read raced, in order, so the last word is
     // always the newest.
     let held: MemoryEventFrame[] | null = [];
+    // The memory:status reads below run on a ctx for this agent and caller.
+    const ctx = makeAgentContext({
+      sessionId: 'memory-events',
+      agentId,
+      userId,
+      conversationId,
+      workspace: initCtx.workspace,
+    });
     bus.subscribe<unknown>('memory:conversation-activity', subKey, async (_ctx, payload) => {
       if (typeof payload !== 'object' || payload === null) return undefined;
       const p = payload as Record<string, unknown>;
       if (p.conversationId !== conversationId || p.userId !== userId) return undefined;
       const frame = activityFrame(p);
       if (frame === null) return undefined;
-      if (held !== null) held.push(frame);
-      else safeWrite(frame);
+      if (held !== null) {
+        // The snapshot read is still in flight and will answer `extraction`.
+        held.push(frame);
+        return undefined;
+      }
+      safeWrite(frame);
+      // TASK-645: an `idle` or `failed` ending says nothing about the per-user
+      // pause, yet the pass may have just cleared it (a stored key resolved,
+      // then nothing durable was said) — `recorded` and `paused` answer it
+      // themselves. Re-read the ONE source (`memory:status`) rather than have
+      // the client guess, so the rail never keeps saying "paused" after
+      // extraction has resumed.
+      if (p.state === 'idle' || p.state === 'failed') {
+        try {
+          const reply = await bus.call<{ conversationId: string }, unknown>('memory:status', ctx, {
+            conversationId,
+          });
+          safeWrite({ memoryStatus: readStatus(reply) });
+        } catch (err) {
+          // Advisory: the next snapshot (reconnect) or `recorded` corrects it.
+          initCtx.logger.warn('memory_events_status_read_failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
       return undefined;
     });
 
@@ -222,14 +256,7 @@ export function createMemoryEventsHandler(deps: MemoryEventsHandlerDeps) {
       (keepaliveTimer as { unref: () => void }).unref();
     }
 
-    // 5c) THEN the snapshot, on a ctx for this agent and this caller.
-    const ctx = makeAgentContext({
-      sessionId: 'memory-events',
-      agentId,
-      userId,
-      conversationId,
-      workspace: initCtx.workspace,
-    });
+    // 5c) THEN the snapshot, on the ctx above.
     try {
       const reply = await bus.call<{ conversationId: string }, unknown>('memory:status', ctx, {
         conversationId,
