@@ -727,7 +727,7 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
       ['the person’s own message', 'user', true],
       ['the agent’s reply', 'assistant', false],
     ] as const)(
-      'a re-mention of a retracted value from %s: shown in Recent = %s',
+      'a re-mention of a retracted value from %s (sourceRole %s): shown in Recent = %s',
       async (_label, sourceRole, shown) => {
         const h = await makeHarness();
         const ctx = h.ctx();
