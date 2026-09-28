@@ -62,6 +62,7 @@ export interface FactRow {
   owner_user_id: string | null;
   conversation_id: string | null;
   source_turn_id: string | null;
+  source_role: 'user' | 'assistant' | null;
   kind: FactKind | null;
   valid_start: string;
   valid_end: string;
@@ -191,6 +192,7 @@ export function openDatabase(databasePath: string): OpenDatabaseResult {
       owner_user_id TEXT,
       conversation_id TEXT,
       source_turn_id TEXT,
+      source_role TEXT,
       kind TEXT,
       valid_start TEXT NOT NULL,
       valid_end TEXT NOT NULL DEFAULT '${INFINITY_SENTINEL}',
@@ -288,6 +290,10 @@ function migrateAddColumns(driver: BetterSqliteDb, vectorExtensionLoaded: boolea
   // no default, no backfill. An older row genuinely has no source turn.
   if (!present.has('source_turn_id')) {
     driver.exec(`ALTER TABLE ${TABLE} ADD COLUMN source_turn_id TEXT`);
+  }
+  // TASK-648 — same additive story: an older row's speaker is simply unknown.
+  if (!present.has('source_role')) {
+    driver.exec(`ALTER TABLE ${TABLE} ADD COLUMN source_role TEXT`);
   }
   // TASK-624. Nullable, no default, no backfill: every row that predates the
   // column was closed (if at all) by a rule or a plain retraction, and NULL

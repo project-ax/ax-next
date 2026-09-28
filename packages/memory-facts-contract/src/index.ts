@@ -74,6 +74,9 @@ export type Provenance = 'extracted' | 'agent' | 'human';
 
 export type FactKind = 'world' | 'experience' | 'observation' | 'opinion';
 
+/** Who spoke a source turn — see {@link FactStatementInput.sourceRole}. */
+export type SourceRole = 'user' | 'assistant';
+
 export interface FactStatementInput {
   /** Entity (dem-memory's subject): 1..1024 UTF-16 units; no C0, DEL or C1 controls. */
   about: string;
@@ -116,14 +119,26 @@ export interface FactStatementInput {
    * supplied by the producer (today `@ax/memory`'s observer passes the
    * display transcript's turnId, the id the chat UI keys each message on),
    * so a UI can link a statement to the message it came from — the person's
-   * or the agent's reply; the id alone does not say which. Echoed back
-   * exactly as supplied.
+   * or the agent's reply; the id alone does not say which ({@link sourceRole}
+   * does). Echoed back exactly as supplied.
    *
    * ⚠ Provenance, never a retrieval key (design §3.1): no input on this
    * contract filters or ranks by it. Absent on rows not extracted from a
    * specific turn.
    */
   sourceTurnId?: string;
+  /**
+   * WHO spoke the turn this statement was extracted from (TASK-648): the
+   * person (`user`) or the agent's reply (`assistant`). Supplied by the
+   * producer and echoed back exactly as supplied; absent when the producer
+   * could not tell.
+   *
+   * ⚠ Provenance, never a retrieval key and never an authority: it does NOT
+   * change {@link Provenance} or any closure rule in this contract. The
+   * product layer reads it only to let a person's own chat restatement of a
+   * value they had marked never-right show again.
+   */
+  sourceRole?: SourceRole;
 }
 
 export interface RecordInput {
@@ -226,14 +241,26 @@ export interface FactRecord {
    * supplied by the producer (today `@ax/memory`'s observer passes the
    * display transcript's turnId, the id the chat UI keys each message on),
    * so a UI can link a statement to the message it came from — the person's
-   * or the agent's reply; the id alone does not say which. Echoed back
-   * exactly as supplied.
+   * or the agent's reply; the id alone does not say which ({@link sourceRole}
+   * does). Echoed back exactly as supplied.
    *
    * ⚠ Provenance, never a retrieval key (design §3.1): no input on this
    * contract filters or ranks by it. Absent on rows not extracted from a
    * specific turn.
    */
   sourceTurnId?: string;
+  /**
+   * WHO spoke the turn this statement was extracted from (TASK-648): the
+   * person (`user`) or the agent's reply (`assistant`). Supplied by the
+   * producer and echoed back exactly as supplied; absent when the producer
+   * could not tell.
+   *
+   * ⚠ Provenance, never a retrieval key and never an authority: it does NOT
+   * change {@link Provenance} or any closure rule in this contract. The
+   * product layer reads it only to let a person's own chat restatement of a
+   * value they had marked never-right show again.
+   */
+  sourceRole?: SourceRole;
   kind?: FactKind;
 }
 
@@ -2144,6 +2171,59 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
                 when: JAN,
                 sourceTurnId: 7,
               },
+            ],
+          }),
+        );
+      });
+
+      // sourceRole (TASK-648) is the same kind of provenance as sourceTurnId:
+      // echoed verbatim, absent when not supplied, never an authority.
+      it.each(['user', 'assistant'] as const)(
+        'echoes sourceRole `%s` back on the record response, a recalled row and a replay',
+        async (role) => {
+          const statements = [
+            {
+              about: 'user',
+              relation: 'stated',
+              value: `source-role-${role}`,
+              when: JAN,
+              sourceTurnId: `turn-${role}`,
+              sourceRole: role,
+            },
+          ];
+          const first = await record({ batchKey: `source-role-${role}`, statements });
+          expect(first.records[0]!.sourceRole).toBe(role);
+          // It does not lend a higher tier: the row is whatever provenance it was given.
+          expect(first.records[0]!.provenance).toBe('extracted');
+
+          const out = await recall({ about: 'user', limit: 10 });
+          expect(out.statements[0]!.sourceRole).toBe(role);
+
+          const replay = await record({ batchKey: `source-role-${role}`, statements });
+          expect(replay.records[0]!.id).toBe(first.records[0]!.id);
+          expect(replay.records[0]!.sourceRole).toBe(role);
+        },
+      );
+
+      it('omits sourceRole entirely on a row that carries none', async () => {
+        const written = await recordOne({
+          about: 'user',
+          relation: 'stated',
+          value: 'hello',
+          when: JAN,
+          sourceTurnId: 'turn-1',
+        });
+        expect('sourceRole' in written).toBe(false);
+
+        const out = await recall({ about: 'user', limit: 10 });
+        expect('sourceRole' in out.statements[0]!).toBe(false);
+      });
+
+      it.each([7, 'person', '', 'USER'])('record rejects sourceRole %j', async (sourceRole) => {
+        await expectCode('invalid-payload', () =>
+          bus.call('memory:facts:record', makeCtx(), {
+            statements: [
+              { about: 'user', relation: 'stated', value: 'hello', when: JAN, sourceRole },
             ],
           }),
         );
