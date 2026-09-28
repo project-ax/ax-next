@@ -722,3 +722,58 @@ describe('MemorySurface — extraction paused', () => {
     expect(screen.queryByText('Memory is paused')).toBeNull();
   });
 });
+
+/** Activate a button the way a keyboard does: it has focus first, then it fires. */
+function press(el: HTMLElement): void {
+  el.focus();
+  expect(document.activeElement).toBe(el);
+  fireEvent.click(el);
+}
+
+describe('MemorySurface — where focus goes when a dialog closes (TASK-644)', () => {
+  beforeEach(() => {
+    recallMock.mockResolvedValue({ statements: [fact({ id: 'm1' })], degraded: [] });
+  });
+
+  it('Fix → Save lands on the receipt\'s "Updated." line, with Undo the next stop', async () => {
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    press(await screen.findByRole('button', { name: 'Fix: Boston' }));
+    fireEvent.change(await screen.findByLabelText('What should I remember?'), {
+      target: { value: 'Cambridge' },
+    });
+    press(screen.getByRole('button', { name: 'Save' }));
+
+    const outcome = await screen.findByText('Updated.');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(outcome));
+    const undo = screen.getByRole('button', { name: /^Undo/ });
+    expect(outcome.compareDocumentPosition(undo) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('Forget lands on the receipt\'s "Forgotten" line, with Undo the next stop', async () => {
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    press(await screen.findByRole('button', { name: 'Forget: Boston' }));
+    press(await screen.findByRole('button', { name: 'Forget' }));
+
+    const outcome = await screen.findByText('Forgotten');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(outcome));
+    const undo = screen.getByRole('button', { name: /^Undo/ });
+    expect(outcome.compareDocumentPosition(undo) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('Cancel returns focus to the button that opened the dialog', async () => {
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    const fix = await screen.findByRole('button', { name: 'Fix: Boston' });
+    press(fix);
+    press(await screen.findByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(fix));
+
+    const forgetBtn = screen.getByRole('button', { name: 'Forget: Boston' });
+    press(forgetBtn);
+    press(await screen.findByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(forgetBtn));
+  });
+});

@@ -246,9 +246,12 @@ function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry }: Memor
   const [forgetTarget, setForgetTarget] = useState<FactMemoryStatement | null>(null);
   const receipt = useMemoryReceipt(agentId, bump);
   const extractionPaused = memory.factsExtraction === 'paused';
+  // A save re-reads the list, so the button that opened the dialog is gone;
+  // focus lands on the receipt pinned at the bottom instead (TASK-644).
+  const rootRef = useRef<HTMLDivElement>(null);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-8 overflow-y-auto px-6 py-6">
+    <div ref={rootRef} className="flex min-h-0 flex-1 flex-col gap-8 overflow-y-auto px-6 py-6">
       {extractionPaused && <ExtractionPausedNotice />}
       {rules.status === 'ok' && rules.doc !== null ? (
         <RulesEditor
@@ -287,6 +290,7 @@ function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry }: Memor
         target={fixTarget}
         agentId={agentId}
         visibility={visibility}
+        outcomeScope={rootRef}
         onClose={() => setFixTarget(null)}
         onSaved={(_reason, saved) => {
           if (fixTarget !== null) receipt.updated({ row: fixTarget, ...saved });
@@ -298,6 +302,7 @@ function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry }: Memor
         target={forgetTarget}
         agentId={agentId}
         visibility={visibility}
+        outcomeScope={rootRef}
         onClose={() => setForgetTarget(null)}
         onForgotten={(row) => {
           setForgetTarget(null);
