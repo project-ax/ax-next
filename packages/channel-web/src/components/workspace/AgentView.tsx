@@ -25,7 +25,7 @@ import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useIsCompact } from '@/lib/use-compact';
 import { useConversationMemory } from '@/lib/use-conversation-memory';
-import { jumpToSource } from '@/lib/thread-jump';
+import { jumpToSource, turnSources } from '@/lib/thread-jump';
 import { useUser } from '@/lib/user-context';
 import {
   NAV_TRIGGER_ATTR,
@@ -348,7 +348,7 @@ export function AgentView({
     rail: below `md` the rail is a `Sheet` whose content is unmounted while it
     is shut, and the "N new" count on its toggle and the batch announcement
     both have to keep working exactly then. It follows the conversation ON
-    SCREEN — a past one when the rail opened one — because "from your message"
+    SCREEN — a past one when the rail opened one — because a row's source link
     points into the thread beside it. `undefined` while that id is not known
     yet, so the block says "checking" rather than "nothing new".
   */
@@ -985,8 +985,17 @@ export function AgentView({
   const past = detail.past.find((p) => p.id === pastId) ?? null;
 
   /*
-    One block element for both rail shapes. Below `md`, "from your message"
-    closes the sheet first — it covers the very thread it is pointing into.
+    Who said each turn of the thread on screen (TASK-642): the rail labels a
+    memory's source "your message" or "my reply" by the TURN, not by the
+    fact's subject, and draws no link to a turn that is not here to jump to.
+    The durable thread only — the in-flight turns' placeholder ids are never
+    a stored source.
+  */
+  const sources = turnSources(past !== null ? (pastDetail?.thread ?? []) : detail.thread);
+
+  /*
+    One block element for both rail shapes. Below `md`, the source link closes
+    the sheet first — it covers the very thread it is pointing into.
   */
   const learnedBlock = (
     <LearnedInChat
@@ -998,11 +1007,12 @@ export function AgentView({
           : undefined
       }
       onOpenModelKeys={isAdmin ? onOpenModelKeys : undefined}
+      sourceOf={(turnId) => sources.get(turnId)}
       /*
         `jumpToSource` answers false when the message is not in the rendered
-        thread. Ignored on purpose: every turn of the conversation on screen is
-        rendered (the thread is not virtualised), so a miss means the row came
-        from a turn this view never had, and there is nothing better to show.
+        thread. Ignored on purpose: `sourceOf` already withholds the link from
+        a turn that is not in the thread on screen, and every turn that is
+        gets rendered (the thread is not virtualised).
       */
       onJumpToSource={(turnId) => {
         if (compact) {

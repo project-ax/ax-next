@@ -23,7 +23,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
 import type { FactMemoryStatement } from '@/lib/workspace-api';
 import type { ConversationMemory, LearnedRow } from '@/lib/use-conversation-memory';
-import { previewSource } from '@/lib/thread-jump';
+import { previewSource, type TurnSource } from '@/lib/thread-jump';
 import { SectionLabel } from './bits';
 import {
   MemoryFixDialog,
@@ -34,7 +34,6 @@ import {
 import {
   LEARNED_EARLIER,
   LEARNED_EXTRACTING,
-  LEARNED_FROM_YOUR_MESSAGE,
   LEARNED_LOADING,
   LEARNED_NOTHING_NEW,
   LEARNED_NOT_ENABLED,
@@ -52,6 +51,8 @@ import {
   learnedAgo,
   learnedMore,
   learnedNewBadge,
+  learnedSourceLabel,
+  learnedSourceText,
   memoryFixLabel,
   memoryForgetLabel,
   memoryStatementText,
@@ -75,6 +76,12 @@ interface Props {
   onOpenModelKeys?: (() => void) | undefined;
   /** Scroll the transcript to a message and highlight it. */
   onJumpToSource: (turnId: string) => void;
+  /**
+   * Who said a turn in the thread on screen, and how it starts (TASK-642).
+   * `undefined` for a turn that is not there — no link is drawn for it,
+   * because there would be nothing to jump to.
+   */
+  sourceOf: (turnId: string) => TurnSource | undefined;
   /** Open the Memory tab. */
   onSeeAll: () => void;
 }
@@ -90,6 +97,7 @@ export function LearnedInChat({
   visibility,
   onOpenModelKeys,
   onJumpToSource,
+  sourceOf,
   onSeeAll,
 }: Props) {
   const rootRef = useRef<HTMLElement>(null);
@@ -221,6 +229,11 @@ export function LearnedInChat({
                   learned={r}
                   now={now}
                   note={note}
+                  source={
+                    statement.sourceTurnId === undefined
+                      ? undefined
+                      : sourceOf(statement.sourceTurnId)
+                  }
                   onJump={onJumpToSource}
                   onFix={() => setFixTarget(statement)}
                   onForget={() => setForgetTarget(statement)}
@@ -393,6 +406,7 @@ function LearnedLine({
   learned,
   now,
   note,
+  source,
   onJump,
   onFix,
   onForget,
@@ -400,23 +414,27 @@ function LearnedLine({
   learned: LearnedRow;
   now: number;
   note: string | null;
+  /** The row's source turn, when that turn is in the thread on screen. */
+  source: TurnSource | undefined;
   onJump: (turnId: string) => void;
   onFix: () => void;
   onForget: () => void;
 }) {
   const { row, arrivedAt } = learned;
   const text = memoryStatementText(row);
+  // A link only to a turn that is on screen (`source`): one that is not would jump nowhere.
   const turnId = row.sourceTurnId;
   return (
     <div className="flex flex-col gap-0.5">
       <p className="text-[13px] leading-snug">{text}</p>
       <div className="flex flex-wrap items-center gap-x-1.5 text-[11.5px] text-muted-foreground">
-        {turnId !== undefined && (
+        {turnId !== undefined && source !== undefined && (
           <Button
             type="button"
             variant="link"
             size="sm"
             className="h-auto p-0 text-[11.5px] font-normal text-muted-foreground underline"
+            aria-label={learnedSourceLabel(source.speaker, source.excerpt)}
             onMouseEnter={() => previewSource(turnId, true)}
             onMouseLeave={() => previewSource(turnId, false)}
             onFocus={() => previewSource(turnId, true)}
@@ -426,10 +444,10 @@ function LearnedLine({
               onJump(turnId);
             }}
           >
-            {LEARNED_FROM_YOUR_MESSAGE}
+            {learnedSourceText(source.speaker)}
           </Button>
         )}
-        {turnId !== undefined && arrivedAt !== null && <span aria-hidden="true">·</span>}
+        {turnId !== undefined && source !== undefined && arrivedAt !== null && <span aria-hidden="true">·</span>}
         {arrivedAt !== null && <span>{learnedAgo(Math.max(0, now - arrivedAt))}</span>}
         {note !== null && <span role="status">{note}</span>}
         <span className="ml-auto flex gap-0.5">

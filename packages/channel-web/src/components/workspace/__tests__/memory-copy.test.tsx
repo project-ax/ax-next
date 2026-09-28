@@ -402,6 +402,20 @@ describe('memory-copy — no correction string stays inline', () => {
   }
 });
 
+describe('memory-copy — where a learned row came from (TASK-642)', () => {
+  it('names the speaker of the source turn', () => {
+    expect(copy.learnedSourceText('person')).toBe('from your message');
+    expect(copy.learnedSourceText('agent')).toBe('from my reply');
+  });
+
+  it('accessible name starts with the visible words, then says which message', () => {
+    expect(copy.learnedSourceLabel('agent', 'Got it — Oct 14')).toBe(
+      'from my reply: “Got it — Oct 14”',
+    );
+    expect(copy.learnedSourceLabel('person', '')).toBe('from your message');
+  });
+});
+
 describe('memory-copy — the "Used N memories" chip (TASK-628)', () => {
   it('counts one memory in the singular and more in the plural', () => {
     expect(copy.memoryUsedLabel(1)).toBe('Used 1 memory');

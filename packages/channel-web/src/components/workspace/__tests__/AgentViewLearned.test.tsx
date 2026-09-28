@@ -15,10 +15,12 @@ import {
 } from '@/lib/workspace-api';
 import { UserProvider } from '@/lib/user-context';
 import type { AgentTab } from '@/lib/workspace-route';
-import { MEMORY_SOURCE_ATTR } from '@/lib/thread-jump';
+import { MEMORY_SOURCE_ATTR, TURN_ID_ATTR } from '@/lib/thread-jump';
 import { AgentView } from '../AgentView';
 import {
+  LEARNED_FROM_MY_REPLY,
   LEARNED_FROM_YOUR_MESSAGE,
+  learnedSourceLabel,
   LEARNED_PAUSED,
   LEARNED_PAUSED_ACTION,
   LEARNED_SEE_ALL,
@@ -213,10 +215,45 @@ describe('AgentView — the block below md', () => {
     renderView();
     fireEvent.click(await screen.findByRole('button', { name: 'Agent details' }));
     const sheet = await screen.findByRole('dialog');
-    fireEvent.click(await within(sheet).findByRole('button', { name: LEARNED_FROM_YOUR_MESSAGE }));
+    fireEvent.click(await within(sheet).findByRole('button', { name: learnedSourceLabel('person', 'I just moved to Denver') }));
 
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     const message = screen.getByTestId('workspace-user-message');
     await waitFor(() => expect(message.getAttribute(MEMORY_SOURCE_ATTR)).toBe('flash'));
+  });
+
+  /*
+    TASK-642, measured on kind: a fact taken from the AGENT's reply read "from
+    your message", and clicking it did nothing — only the person's bubble
+    carried a turn id to jump to.
+  */
+  it('a fact from the agent’s reply says so, and its link lands on that reply', async () => {
+    setViewport(false);
+    agentMock.mockResolvedValue(
+      detail({
+        thread: [
+          { kind: 'user', id: 't1', text: 'Our go-live moved to Oct 14' },
+          { kind: 'agent', id: 't2', text: 'Got it — **Oct 14**.', at: '2026-09-28T06:38:00.000Z' },
+        ],
+      }),
+    );
+    recall.mockResolvedValue({
+      statements: [st('echoed', { sourceTurnId: 't2' })],
+      degraded: [],
+    });
+    renderView();
+    const link = await screen.findByRole('button', {
+      name: learnedSourceLabel('agent', 'Got it — Oct 14.'),
+    });
+    expect(link).toHaveTextContent(LEARNED_FROM_MY_REPLY);
+    expect(screen.queryByRole('button', { name: new RegExp(`^${LEARNED_FROM_YOUR_MESSAGE}`) })).toBeNull();
+
+    fireEvent.click(link);
+    const reply = [...document.querySelectorAll(`[${TURN_ID_ATTR}]`)].find(
+      (el) => el.getAttribute(TURN_ID_ATTR) === 't2',
+    );
+    expect(reply).toBeDefined();
+    expect(reply).toHaveTextContent('Got it');
+    await waitFor(() => expect(reply!.getAttribute(MEMORY_SOURCE_ATTR)).toBe('flash'));
   });
 });
