@@ -526,6 +526,9 @@ describe('a user restatement of a retracted value survives an agent-note twin', 
       'user',
     ]);
     expect(await profile(env)).toEqual(['Denver, Colorado']);
+    // The agent note it twins is a retracted value on a non-human row
+    // (TASK-639): hidden, so the fact does not show twice.
+    expect(values(await env.feed())).toEqual(['Denver, Colorado']);
   });
 
   it('the pass first, then the note: the note is dropped and the value still comes back', async () => {
