@@ -4001,6 +4001,8 @@ describe('channel-web agent-workspace BFF', () => {
       correctThrows?: PluginError;
       unforgetThrows?: Error;
       unforgetReturns?: unknown;
+      uncorrectThrows?: Error;
+      uncorrectReturns?: unknown;
     }): void {
       bus.registerService('memory:recall', 'memory', async (ctx, input) => {
         state.calls.push({
@@ -4052,6 +4054,16 @@ describe('channel-web agent-workspace BFF', () => {
         if (state.correctThrows !== undefined) throw state.correctThrows;
         return { id: 'mem-2' };
       });
+      bus.registerService('memory:uncorrect', 'memory', async (ctx, input) => {
+        state.calls.push({
+          hook: 'uncorrect',
+          agentId: ctx.agentId,
+          userId: ctx.userId ?? '',
+          input,
+        });
+        if (state.uncorrectThrows !== undefined) throw state.uncorrectThrows;
+        return state.uncorrectReturns ?? { undone: true };
+      });
     }
 
     it('401s every facts route for an unauthenticated caller', async () => {
@@ -4063,6 +4075,7 @@ describe('channel-web agent-workspace BFF', () => {
         [h.forgetFacts, { ids: ['m1'] }],
         [h.unforgetFacts, { ids: ['m1'] }],
         [h.correctFact, { id: 'm1', about: 'u', relation: 'r', value: 'v', reason: 'changed' }],
+        [h.uncorrectFact, { id: 'm2', restore: 'm1' }],
       ] as const) {
         const { res, captured } = mkRes();
         await handler(mkReq({ agentId: 'a1' }, body), res);
@@ -4081,6 +4094,7 @@ describe('channel-web agent-workspace BFF', () => {
         [h.forgetFacts, { ids: ['m1'] }],
         [h.unforgetFacts, { ids: ['m1'] }],
         [h.correctFact, { id: 'm1', about: 'u', relation: 'r', value: 'v', reason: 'changed' }],
+        [h.uncorrectFact, { id: 'm2', restore: 'm1' }],
       ] as const) {
         const { res, captured } = mkRes();
         await handler(mkReq({ agentId: 'a9' }, body), res);
@@ -4100,6 +4114,7 @@ describe('channel-web agent-workspace BFF', () => {
         [h.forgetFacts, { ids: ['m1'] }],
         [h.unforgetFacts, { ids: ['m1'] }],
         [h.correctFact, { id: 'm1', about: 'u', relation: 'r', value: 'v', reason: 'changed' }],
+        [h.uncorrectFact, { id: 'm2', restore: 'm1' }],
       ];
       for (const [handler, body] of cases) {
         const { res, captured } = mkRes();
@@ -4466,6 +4481,77 @@ describe('channel-web agent-workspace BFF', () => {
       const h = makeWorkspaceHandlers({ bus, initCtx });
       const { res, captured } = mkRes();
       await h.unforgetFacts(mkReq({ agentId: 'a1' }, { ids: ['m1'] }), res);
+      expect(captured.statusCode).toBe(400);
+      expect(captured.body).toEqual({ error: 'invalid-memory-request' });
+    });
+
+    it.each([
+      ['not an object', 42],
+      ['an array', [{ id: 'm2', restore: 'm1' }]],
+      ['a missing id', { restore: 'm1' }],
+      ['a missing restore', { id: 'm2' }],
+      ['a blank id', { id: '  ', restore: 'm1' }],
+      ['a blank restore', { id: 'm2', restore: '' }],
+      ['a non-string id', { id: 7, restore: 'm1' }],
+      ['an extra field', { id: 'm2', restore: 'm1', ownerUserId: 'user-x' }],
+    ])('400s an uncorrect body with %s', async (_name, body) => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      const state = { calls: [] as Array<unknown> };
+      registerFacts(state as never);
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.uncorrectFact(mkReq({ agentId: 'a1' }, body), res);
+      expect(captured.statusCode).toBe(400);
+      expect(captured.body).toEqual({ error: 'invalid-memory-request' });
+      expect(state.calls).toEqual([]);
+    });
+
+    it.each([true, false])(
+      'un-does a fix on the agent ctx and passes undone=%s through',
+      async (undone) => {
+        registerAuth({ id: 'u1', isAdmin: false });
+        const state = {
+          calls: [] as Array<{ hook: string; agentId: string; userId: string; input: unknown }>,
+          uncorrectReturns: { undone },
+        };
+        registerFacts(state);
+        const h = makeWorkspaceHandlers({ bus, initCtx });
+        const { res, captured } = mkRes();
+        await h.uncorrectFact(mkReq({ agentId: 'a1' }, { id: 'm2', restore: 'm1' }), res);
+        expect(captured.statusCode).toBe(200);
+        expect(captured.body).toEqual({ undone });
+        expect(state.calls).toEqual([
+          { hook: 'uncorrect', agentId: 'a1', userId: 'u1', input: { id: 'm2', restore: 'm1' } },
+        ]);
+      },
+    );
+
+    it('refuses to answer 200 when the hook returns no undone flag', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      const state = { calls: [] as Array<unknown>, uncorrectReturns: { undone: 'yes' } };
+      registerFacts(state as never);
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await expect(
+        h.uncorrectFact(mkReq({ agentId: 'a1' }, { id: 'm2', restore: 'm1' }), res),
+      ).rejects.toThrow(/undone/);
+      expect(captured.statusCode).toBe(0);
+    });
+
+    it('400s when memory:uncorrect refuses the payload', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      const state = {
+        calls: [] as Array<unknown>,
+        uncorrectThrows: new PluginError({
+          code: 'invalid-payload',
+          plugin: '@ax/memory',
+          message: 'nope',
+        }),
+      };
+      registerFacts(state as never);
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.uncorrectFact(mkReq({ agentId: 'a1' }, { id: 'm2', restore: 'm1' }), res);
       expect(captured.statusCode).toBe(400);
       expect(captured.body).toEqual({ error: 'invalid-memory-request' });
     });

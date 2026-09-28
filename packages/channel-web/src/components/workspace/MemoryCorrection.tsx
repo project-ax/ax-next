@@ -50,6 +50,8 @@ import {
   MEMORY_FIX_SAVE,
   MEMORY_FIX_SAVE_FAILED,
   MEMORY_FIX_TITLE,
+  MEMORY_FIX_UNDO_FAILED,
+  MEMORY_FIX_UNDONE,
   MEMORY_FORGET,
   MEMORY_FORGET_FAILED,
   MEMORY_FORGET_TITLE,
@@ -61,6 +63,7 @@ import {
   memoryFixHelper,
   memoryForgetHelper,
   memoryStatementText,
+  memoryUndoFixLabel,
   memoryUndoLabel,
   memoryUndoSecondsLeft,
   memoryUndoText,
@@ -287,29 +290,62 @@ export function MemoryForgetDialog({
 }
 
 /**
+ * A saved Fix: the row it corrected (`row`), and the row it wrote in that
+ * row's place (`id`, `value`). The receipt keeps both so Undo can name the two
+ * rows `memory:uncorrect` needs, and a surface can redraw the old one.
+ */
+export interface MemoryFix {
+  row: FactMemoryStatement;
+  id: string;
+  value: string;
+}
+
+/**
  * What just happened to a memory. One at a time: a new correction replaces the
  * previous receipt, the way a second approval replaces the first one's toast.
  */
 export type MemoryReceiptState =
   | { kind: 'forgotten'; row: FactMemoryStatement; since: number; status: 'idle' | 'undoing' }
   | { kind: 'undo-failed'; row: FactMemoryStatement; status: 'idle' | 'undoing' }
-  | { kind: 'updated'; since: number }
-  | { kind: 'restored'; since: number };
+  | { kind: 'updated'; fix: MemoryFix; since: number; status: 'idle' | 'undoing' }
+  | { kind: 'fix-undo-failed'; fix: MemoryFix; status: 'idle' | 'undoing' }
+  | { kind: 'restored'; since: number }
+  | { kind: 'fix-undone'; since: number };
+
+/** The receipts that wait for a person (a retry) rather than for the clock. */
+function isUndoFailed(
+  r: MemoryReceiptState,
+): r is Extract<MemoryReceiptState, { kind: 'undo-failed' | 'fix-undo-failed' }> {
+  return r.kind === 'undo-failed' || r.kind === 'fix-undo-failed';
+}
 
 /**
  * The receipt and its clock, for a surface that offers Fix and Forget.
  *
- * `onChanged` runs after any write that changed what is in memory (the Undo
- * un-forget), so the surface can re-read. `element` is the receipt drawn for the
- * Memory tab (pinned to the bottom of the scroll area); a surface with other
- * room — the rail, an inline chip — renders `MemoryReceipt` itself from
- * `receipt`, `now` and `undo`, with its own `className`.
+ * `onChanged` runs after any write that changed what is in memory (either
+ * Undo), so the surface can re-read. `onFixUndone` runs once a Fix's Undo has
+ * worked, for a surface that keeps rows on screen itself (the rail block, the
+ * chip) and has to put the old row back by hand. `element` is the receipt
+ * drawn for the Memory tab (pinned to the bottom of the scroll area); a
+ * surface with other room — the rail, an inline chip — renders
+ * `MemoryReceipt` itself from `receipt`, `now`, `undo` and `undoFix`, with
+ * its own `className`.
+ *
+ * WHY A FIX'S UNDO UN-CORRECTS (TASK-634). A Fix wrote a new row and closed
+ * the old one. Undo calls `memory:uncorrect`, which retracts the new row and
+ * re-opens the old one as it was — not a second Fix back to the old value,
+ * which would re-save it as the person who pressed Undo.
  */
-export function useMemoryReceipt(agentId: string, onChanged: () => void) {
+export function useMemoryReceipt(
+  agentId: string,
+  onChanged: () => void,
+  options?: { onFixUndone?: (fix: MemoryFix) => void },
+) {
   const [receipt, setReceipt] = useState<MemoryReceiptState | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const onFixUndone = options?.onFixUndone;
 
-  const timed = receipt !== null && receipt.kind !== 'undo-failed';
+  const timed = receipt !== null && !isUndoFailed(receipt);
   useEffect(() => {
     if (!timed) return;
     const id = setInterval(() => setNow(Date.now()), 250);
@@ -318,8 +354,13 @@ export function useMemoryReceipt(agentId: string, onChanged: () => void) {
 
   // The offer ends on the clock, not on the next render that happens to look.
   useEffect(() => {
-    if (receipt === null || receipt.kind === 'undo-failed') return;
-    if (receipt.kind === 'forgotten' && receipt.status === 'undoing') return;
+    if (receipt === null || isUndoFailed(receipt)) return;
+    if (
+      (receipt.kind === 'forgotten' || receipt.kind === 'updated') &&
+      receipt.status === 'undoing'
+    ) {
+      return;
+    }
     if (now - receipt.since >= UNDO_WINDOW_MS) setReceipt(null);
   }, [receipt, now]);
 
@@ -336,7 +377,10 @@ export function useMemoryReceipt(agentId: string, onChanged: () => void) {
       start((since) => ({ kind: 'forgotten', row, since, status: 'idle' })),
     [start],
   );
-  const updated = useCallback(() => start((since) => ({ kind: 'updated', since })), [start]);
+  const updated = useCallback(
+    (fix: MemoryFix) => start((since) => ({ kind: 'updated', fix, since, status: 'idle' })),
+    [start],
+  );
 
   const undo = useCallback(
     async (row: FactMemoryStatement) => {
@@ -359,58 +403,87 @@ export function useMemoryReceipt(agentId: string, onChanged: () => void) {
     [agentId, onChanged, start],
   );
 
+  const undoFix = useCallback(
+    async (fix: MemoryFix) => {
+      setReceipt((r) =>
+        r !== null && (r.kind === 'updated' || r.kind === 'fix-undo-failed')
+          ? { ...r, status: 'undoing' }
+          : r,
+      );
+      try {
+        // `undone: false` means the fix was already taken back (a retry after
+        // a lost response) — the old row IS in effect, so the receipt says so.
+        await workspaceApi.uncorrectMemory(agentId, { id: fix.id, restore: fix.row.id });
+        start((since) => ({ kind: 'fix-undone', since }));
+        onFixUndone?.(fix);
+        onChanged();
+      } catch {
+        setReceipt({ kind: 'fix-undo-failed', fix, status: 'idle' });
+      }
+    },
+    [agentId, onChanged, onFixUndone, start],
+  );
+
   const element =
     receipt === null ? null : (
       <MemoryReceipt
         receipt={receipt}
         now={now}
         onUndo={(row) => void undo(row)}
+        onUndoFix={(fix) => void undoFix(fix)}
         className="sticky bottom-0"
       />
     );
 
-  return { receipt, now, forgotten, updated, undo, element };
+  return { receipt, now, forgotten, updated, undo, undoFix, element };
 }
 
 /**
  * One receipt. Only the failure is an alert; the others are polite status
  * lines, and the ticking Undo button sits OUTSIDE the live region so a screen
- * reader hears "Forgotten" once rather than a number every second. shadcn's
- * `Alert` hard-codes `role="alert"`, so the polite ones clear it.
+ * reader hears "Forgotten" (or "Updated.") once rather than a number every
+ * second. shadcn's `Alert` hard-codes `role="alert"`, so the polite ones
+ * clear it.
  */
 export function MemoryReceipt({
   receipt,
   now,
   onUndo,
+  onUndoFix,
   className,
 }: {
   receipt: MemoryReceiptState;
   now: number;
   onUndo: (row: FactMemoryStatement) => void;
+  onUndoFix: (fix: MemoryFix) => void;
   className?: string;
 }) {
-  if (receipt.kind === 'updated' || receipt.kind === 'restored') {
+  if (receipt.kind === 'restored' || receipt.kind === 'fix-undone') {
     return (
       <Alert role={undefined} className={className}>
         <AlertDescription>
           <span role="status">
-            {receipt.kind === 'updated' ? MEMORY_UPDATED : MEMORY_RESTORED}
+            {receipt.kind === 'restored' ? MEMORY_RESTORED : MEMORY_FIX_UNDONE}
           </span>
         </AlertDescription>
       </Alert>
     );
   }
-  if (receipt.kind === 'undo-failed') {
+  if (isUndoFailed(receipt)) {
+    const retry =
+      receipt.kind === 'undo-failed' ? () => onUndo(receipt.row) : () => onUndoFix(receipt.fix);
     return (
       <Alert variant="destructive" className={className}>
         <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
-          <span>{MEMORY_UNDO_FAILED}</span>
+          <span>
+            {receipt.kind === 'undo-failed' ? MEMORY_UNDO_FAILED : MEMORY_FIX_UNDO_FAILED}
+          </span>
           <Button
             type="button"
             variant="secondary"
             size="sm"
             disabled={receipt.status === 'undoing'}
-            onClick={() => onUndo(receipt.row)}
+            onClick={retry}
           >
             {MEMORY_UNDO_RETRY}
           </Button>
@@ -420,10 +493,18 @@ export function MemoryReceipt({
   }
   const left = memoryUndoSecondsLeft(receipt.since, now);
   const offer = left > 0 || receipt.status === 'undoing';
+  const label =
+    receipt.kind === 'forgotten'
+      ? memoryUndoLabel(receipt.row.value)
+      : memoryUndoFixLabel(receipt.fix.value);
+  const undo =
+    receipt.kind === 'forgotten' ? () => onUndo(receipt.row) : () => onUndoFix(receipt.fix);
   return (
     <Alert role={undefined} className={className}>
       <AlertDescription className="flex flex-wrap items-center gap-2">
-        <span role="status">{MEMORY_FORGOTTEN}</span>
+        <span role="status">
+          {receipt.kind === 'forgotten' ? MEMORY_FORGOTTEN : MEMORY_UPDATED}
+        </span>
         {offer && (
           <span aria-hidden="true" className="text-muted-foreground">
             ·
@@ -434,9 +515,9 @@ export function MemoryReceipt({
             type="button"
             variant="secondary"
             size="sm"
-            aria-label={memoryUndoLabel(receipt.row.value)}
+            aria-label={label}
             disabled={receipt.status === 'undoing'}
-            onClick={() => onUndo(receipt.row)}
+            onClick={undo}
           >
             {memoryUndoText(Math.max(left, 1))}
           </Button>

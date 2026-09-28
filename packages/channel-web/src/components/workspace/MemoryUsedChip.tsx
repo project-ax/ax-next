@@ -59,7 +59,15 @@ export function MemoryUsedChip({ used, agentId }: { used: MemoryUsed; agentId: s
   const [fixed, setFixed] = useState<ReadonlyMap<string, MemoryUsedSinceKind>>(
     () => new Map(),
   );
-  const receipt = useMemoryReceipt(agentId, noop);
+  // An undone fix hands the row its Fix button back.
+  const receipt = useMemoryReceipt(agentId, noop, {
+    onFixUndone: (fix) =>
+      setFixed((m) => {
+        const next = new Map(m);
+        next.delete(fix.row.id);
+        return next;
+      }),
+  });
 
   return (
     <Collapsible
@@ -118,6 +126,7 @@ export function MemoryUsedChip({ used, agentId }: { used: MemoryUsed; agentId: s
             receipt={receipt.receipt}
             now={receipt.now}
             onUndo={(row) => void receipt.undo(row)}
+            onUndoFix={(fix) => void receipt.undoFix(fix)}
             className="rounded-none border-x-0 border-b-0"
           />
         )}
@@ -127,15 +136,15 @@ export function MemoryUsedChip({ used, agentId }: { used: MemoryUsed; agentId: s
         agentId={agentId}
         visibility={used.visibility}
         onClose={() => setFixTarget(null)}
-        onSaved={(reason) => {
+        onSaved={(reason, saved) => {
           const target = fixTarget;
           setFixTarget(null);
           if (target !== null) {
             setFixed((m) =>
               new Map(m).set(target.id, reason === 'never-right' ? 'retracted' : 'replaced'),
             );
+            receipt.updated({ row: target, ...saved });
           }
-          receipt.updated();
         }}
       />
     </Collapsible>

@@ -288,9 +288,9 @@ function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry }: Memor
         agentId={agentId}
         visibility={visibility}
         onClose={() => setFixTarget(null)}
-        onSaved={() => {
+        onSaved={(_reason, saved) => {
+          if (fixTarget !== null) receipt.updated({ row: fixTarget, ...saved });
           setFixTarget(null);
-          receipt.updated();
           bump();
         }}
       />

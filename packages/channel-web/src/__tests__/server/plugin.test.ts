@@ -371,6 +371,7 @@ function memoryMockPlugin(state: {
               'memory:forget',
               'memory:unforget',
               'memory:correct',
+              'memory:uncorrect',
             ]),
       ],
       calls: [],
@@ -423,6 +424,15 @@ function memoryMockPlugin(state: {
             input,
           });
           return { id: 'mem-fixed' };
+        });
+        bus.registerService('memory:uncorrect', 'mock-memory', async (ctx, input) => {
+          facts.calls.push({
+            hook: 'uncorrect',
+            agentId: ctx.agentId,
+            userId: ctx.userId ?? '',
+            input,
+          });
+          return { undone: true };
         });
       }
       bus.registerService('memory:rules:read', 'mock-memory', async () => ({
@@ -1255,6 +1265,27 @@ describe('@ax/channel-web server plugin (integration)', () => {
         agentId: 'agt_test',
         userId: 'userA',
         input: { ids: ['mem-1'] },
+      });
+
+      // TASK-634: the Fix receipt's Undo, mounted and CSRF-guarded like correct.
+      const uncorrectNoCsrf = await fetch(`${base}/uncorrect`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: 'mem-fixed', restore: 'mem-1' }),
+      });
+      expect(uncorrectNoCsrf.status).toBe(403);
+      const uncorrect = await fetch(`${base}/uncorrect`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+        body: JSON.stringify({ id: 'mem-fixed', restore: 'mem-1' }),
+      });
+      expect(uncorrect.status).toBe(200);
+      expect(await uncorrect.json()).toEqual({ undone: true });
+      expect(memory.facts.calls[5]).toEqual({
+        hook: 'uncorrect',
+        agentId: 'agt_test',
+        userId: 'userA',
+        input: { id: 'mem-fixed', restore: 'mem-1' },
       });
     });
 

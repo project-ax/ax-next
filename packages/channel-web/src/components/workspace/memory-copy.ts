@@ -130,6 +130,24 @@ export const MEMORY_UNDO_FAILED =
 export const MEMORY_UNDO_RETRY = 'Try again';
 
 /**
+ * The Fix receipt's Undo button, named by the new value it takes back
+ * (TASK-634). Stable while the visible "Undo 9s" ticks, like the Forget one.
+ */
+export function memoryUndoFixLabel(subject: string): string {
+  return `${MEMORY_UNDO} fix: ${subject}`;
+}
+
+/** Undoing a Fix worked: the version from before the fix is in effect again. */
+export const MEMORY_FIX_UNDONE = 'Fix undone. The earlier version is back.';
+
+/**
+ * Undoing a Fix did not work. Leads with what is still true — the new value
+ * is still the one in effect — so nobody thinks the old one came back.
+ */
+export const MEMORY_FIX_UNDO_FAILED =
+  'We could not undo that fix, so the new version is still in place.';
+
+/**
  * Whole seconds of Undo left on a receipt that started at `since`, or 0 once
  * the offer is over. The same window `ApprovalCard` counts down. Clamped to
  * the window: a clock read from before `since` must not promise "Undo 73s".

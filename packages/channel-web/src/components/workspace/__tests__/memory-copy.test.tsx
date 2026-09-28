@@ -28,6 +28,8 @@ import {
   MEMORY_FIX_HELPER,
   MEMORY_FIX_HELPER_TEAM,
   MEMORY_FIX_TITLE,
+  MEMORY_FIX_UNDO_FAILED,
+  MEMORY_FIX_UNDONE,
   MEMORY_FORGET,
   MEMORY_FORGOTTEN,
   MEMORY_RESTORED,
@@ -37,6 +39,7 @@ import {
   MEMORY_UPDATED,
   memoryFixLabel,
   memoryForgetLabel,
+  memoryUndoFixLabel,
   memoryUndoLabel,
   memoryUndoSecondsLeft,
   memoryUndoText,
@@ -52,6 +55,7 @@ vi.mock('@/lib/workspace-api', async () => {
       correctMemory: vi.fn(),
       forgetMemory: vi.fn(),
       unforgetMemory: vi.fn(),
+      uncorrectMemory: vi.fn(),
     },
   };
 });
@@ -60,6 +64,7 @@ const recallMock = vi.mocked(workspaceApi.recallMemory);
 const rememberMock = vi.mocked(workspaceApi.rememberMemory);
 const forgetMock = vi.mocked(workspaceApi.forgetMemory);
 const unforgetMock = vi.mocked(workspaceApi.unforgetMemory);
+const uncorrectMock = vi.mocked(workspaceApi.uncorrectMemory);
 
 const boston: FactMemoryStatement = {
   id: 'm1',
@@ -83,6 +88,7 @@ beforeEach(() => {
   vi.mocked(workspaceApi.correctMemory).mockResolvedValue({ id: 'mem-new' });
   forgetMock.mockResolvedValue({ forgotten: true });
   unforgetMock.mockResolvedValue({ restored: ['m1'] });
+  uncorrectMock.mockResolvedValue({ undone: true });
 });
 
 afterEach(() => {
@@ -226,6 +232,83 @@ describe('memory-copy — the Forgotten receipt', () => {
   });
 });
 
+async function fixBostonToCambridge(): Promise<void> {
+  fireEvent.click(await screen.findByRole('button', { name: memoryFixLabel('Boston') }));
+  fireEvent.change(await screen.findByLabelText(MEMORY_FIX_FIELD_LABEL), {
+    target: { value: 'Cambridge' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+}
+
+describe('memory-copy — the Updated receipt (TASK-634)', () => {
+  it('offers Undo over the shared window, named by the fix, then takes the offer away', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read()} />);
+    await fixBostonToCambridge();
+
+    expect(await screen.findByText(MEMORY_UPDATED)).toBeInTheDocument();
+    const undo = screen.getByRole('button', { name: memoryUndoFixLabel('Cambridge') });
+    expect(undo.textContent).toBe(memoryUndoText(UNDO_WINDOW_MS / 1000));
+    // Polite, and the ticking button sits outside every live region.
+    expect(screen.getByRole('status').textContent).toBe(MEMORY_UPDATED);
+    expect(undo.closest('[role="alert"], [role="status"], [aria-live]')).toBeNull();
+
+    act(() => {
+      vi.advanceTimersByTime(3000);
+    });
+    expect(undo.textContent).toBe(memoryUndoText(UNDO_WINDOW_MS / 1000 - 3));
+
+    act(() => {
+      vi.advanceTimersByTime(UNDO_WINDOW_MS);
+    });
+    expect(screen.queryByRole('button', { name: memoryUndoFixLabel('Cambridge') })).toBeNull();
+    expect(screen.queryByText(MEMORY_UPDATED)).toBeNull();
+    expect(uncorrectMock).not.toHaveBeenCalled();
+  });
+
+  it('Undo takes the fix back — the new row out, the fixed row restored — and re-reads', async () => {
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read()} />);
+    await fixBostonToCambridge();
+    const recallsBefore = recallMock.mock.calls.length;
+    fireEvent.click(await screen.findByRole('button', { name: memoryUndoFixLabel('Cambridge') }));
+    await waitFor(() =>
+      expect(uncorrectMock).toHaveBeenCalledWith('a1', { id: 'mem-new', restore: 'm1' }),
+    );
+    expect(await screen.findByText(MEMORY_FIX_UNDONE)).toBeInTheDocument();
+    expect(screen.getByRole('status').textContent).toBe(MEMORY_FIX_UNDONE);
+    await waitFor(() => expect(recallMock.mock.calls.length).toBeGreaterThan(recallsBefore));
+    // Neither Forget's Undo nor a re-save stands in for it.
+    expect(unforgetMock).not.toHaveBeenCalled();
+    expect(rememberMock).not.toHaveBeenCalled();
+  });
+
+  it('an Undo that finds nothing left to undo still says the fix is undone', async () => {
+    uncorrectMock.mockResolvedValueOnce({ undone: false });
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read()} />);
+    await fixBostonToCambridge();
+    fireEvent.click(await screen.findByRole('button', { name: memoryUndoFixLabel('Cambridge') }));
+    expect(await screen.findByText(MEMORY_FIX_UNDONE)).toBeInTheDocument();
+  });
+
+  it('a failed Undo says the new version is still in place and offers to try again', async () => {
+    uncorrectMock.mockRejectedValueOnce(new Error('down'));
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read()} />);
+    await fixBostonToCambridge();
+    fireEvent.click(await screen.findByRole('button', { name: memoryUndoFixLabel('Cambridge') }));
+    expect(await screen.findByText(MEMORY_FIX_UNDO_FAILED)).toBeInTheDocument();
+    expect(screen.getByRole('alert').textContent).toContain(MEMORY_FIX_UNDO_FAILED);
+    // Not Forget's words: nothing was forgotten.
+    expect(screen.queryByText(MEMORY_UNDO_FAILED)).toBeNull();
+    expect(screen.queryByText(MEMORY_FIX_UNDONE)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: MEMORY_UNDO_RETRY }));
+    expect(await screen.findByText(MEMORY_FIX_UNDONE)).toBeInTheDocument();
+    expect(uncorrectMock).toHaveBeenCalledTimes(2);
+    expect(uncorrectMock).toHaveBeenLastCalledWith('a1', { id: 'mem-new', restore: 'm1' });
+  });
+});
+
 describe('memory-copy — the module itself', () => {
   it('counts whole seconds and never goes negative', () => {
     expect(memoryUndoSecondsLeft(1000, 1000)).toBe(UNDO_WINDOW_MS / 1000);
@@ -246,6 +329,10 @@ describe('memory-copy — the module itself', () => {
       retracted: 'Retracted',
     });
     expect(memoryUndoText(7)).toBe(`${MEMORY_UNDO} 7s`);
+  });
+
+  it('names a Fix Undo by the value it takes back', () => {
+    expect(memoryUndoFixLabel('Cambridge')).toBe('Undo fix: Cambridge');
   });
 });
 

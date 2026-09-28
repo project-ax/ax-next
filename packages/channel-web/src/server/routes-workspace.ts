@@ -5566,6 +5566,76 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     },
 
     /**
+     * POST /api/workspace/agents/:agentId/memory/uncorrect — the Fix
+     * receipt's Undo (TASK-634). `id` is the row the Fix wrote and `restore`
+     * the row it fixed; `memory:uncorrect` retracts the first and re-opens
+     * the second as it was. `undone: false` means there was nothing left to
+     * undo (a retry after a lost response) — the fix is already gone. Scope
+     * and auth are `unforget`'s: whoever could fix a memory here can take the
+     * fix back, and nobody else.
+     */
+    async uncorrectFact(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+      if (agent === null) return;
+
+      if (!bus.hasService('memory:uncorrect')) {
+        res.status(503).json({ error: 'memory-unavailable' });
+        return;
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(req.body.toString('utf-8'));
+      } catch {
+        res.status(400).json({ error: 'invalid-json' });
+        return;
+      }
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        res.status(400).json({ error: 'invalid-memory-request' });
+        return;
+      }
+      const body = parsed as Record<string, unknown>;
+      if (
+        Object.keys(body).some((k) => k !== 'id' && k !== 'restore') ||
+        typeof body.id !== 'string' ||
+        body.id.trim() === '' ||
+        typeof body.restore !== 'string' ||
+        body.restore.trim() === ''
+      ) {
+        res.status(400).json({ error: 'invalid-memory-request' });
+        return;
+      }
+
+      try {
+        // Awaited BEFORE `res.status` is touched: a failed call must not have
+        // already stamped a 200 on the response.
+        const out = await bus.call<unknown, { undone?: unknown } | null>(
+          'memory:uncorrect',
+          agentWorkspaceCtx(agentId, userId),
+          { id: body.id, restore: body.restore },
+        );
+        const undone = out?.undone;
+        if (typeof undone !== 'boolean') {
+          throw new Error('memory:uncorrect returned no undone flag');
+        }
+        res.status(200).json({ undone });
+      } catch (err) {
+        if (err instanceof PluginError && err.code === 'invalid-payload') {
+          res.status(400).json({ error: 'invalid-memory-request' });
+          return;
+        }
+        throw err;
+      }
+    },
+
+    /**
      * POST /api/workspace/route — "I typed something; who should hear it?"
      *
      * The body is accepted and discarded. The pick is derived from STRUCTURE
@@ -5846,6 +5916,11 @@ export async function registerWorkspaceRoutes(
       method: 'POST',
       path: '/api/workspace/agents/:agentId/memory/correct',
       handler: handlers.correctFact as unknown as RouteHandler,
+    },
+    {
+      method: 'POST',
+      path: '/api/workspace/agents/:agentId/memory/uncorrect',
+      handler: handlers.uncorrectFact as unknown as RouteHandler,
     },
     {
       method: 'POST',
