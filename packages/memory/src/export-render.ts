@@ -2,7 +2,7 @@ import { PluginError } from '@ax/core';
 
 import type { MemoryAccess } from './access.js';
 import { factsPath, subjectSlug, type FactsPath } from './export-paths.js';
-import { rementionedSlotRows, selectProfileRows } from './profile.js';
+import { isRetractedValue, rementionedSlotRows, selectProfileRows } from './profile.js';
 import { escapeStatementText, formatDay, renderNotedAt } from './render.js';
 import { SLOTS } from './slots.js';
 import { PLUGIN_NAME } from './plugin-name.js';
@@ -27,7 +27,8 @@ export interface ExportFact {
   neverTrue?: boolean;
   /**
    * Who spoke the source turn (TASK-648). Read only by the profile pick and
-   * Recent's hide rule (TASK-646), both through `profile.ts`: an extracted row
+   * the hide rule of Recent (TASK-646), the journals and the subject pages
+   * (TASK-655), all through `profile.ts`: an extracted row
    * from the person's own turn can bring back a value they retracted.
    * Anything but `'user'` counts as not the person.
    */
@@ -201,9 +202,19 @@ export function buildFactsExport(
   // read hides, decided by the same predicate: a re-mention of a value the
   // person said was never right (TASK-639 ruling, applied here by TASK-646),
   // or of one a higher-provenance row replaced. The scan is the whole store,
-  // so every chain is in it. Journals and subject pages are the record of
-  // what was said and keep the row.
+  // so every chain is in it.
   const hiddenFromRecent = rementionedSlotRows(rows, retracted);
+  // Journals and subject pages are the record of what was said, so a
+  // re-mention of a REPLACED value stays there. A RETRACTED value does not:
+  // one rule everywhere (TASK-655 ruling, "yes, everywhere") — hidden unless
+  // the person restated it. Same predicate, narrowed to its retracted branch,
+  // so the person's own edit and their own chat message (TASK-648) still
+  // bring it back. It judges active slotted rows only.
+  const hiddenFromRecord = new Set(
+    [...hiddenFromRecent].filter(
+      (row) => row.slot !== undefined && isRetractedValue(retracted, row.about, row.slot, row.value),
+    ),
+  );
 
   const out = new Map<FactsPath, string>();
   out.set(factsPath({ kind: 'profile' }), buildProfile(rows, retracted, access));
@@ -221,6 +232,7 @@ export function buildFactsExport(
     else list.push(row);
   };
   for (const row of rows) {
+    if (hiddenFromRecord.has(row)) continue;
     if (USER_SUBJECT.test(row.about)) push(userJournals, monthOf(row), row);
     else if (row.about === 'assistant') push(assistantJournals, monthOf(row), row);
     else push(subjects, row.about, row);
