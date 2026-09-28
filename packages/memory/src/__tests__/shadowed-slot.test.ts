@@ -473,4 +473,28 @@ describe('@ax/memory — the conversation feed hides a retracted value re-mentio
     await record(harness, row('Portland, Oregon', JUL, 'human', { conversationId: 'conv-rail' }));
     expect(values(await harness.recall({ conversationId: 'conv-rail' }))).toContain('Portland, Oregon');
   });
+
+  // TASK-648's exception holds on the rail too: the person's own message
+  // restating it shows; the agent's reply repeating it does not.
+  it.each([
+    ['user', true],
+    ['assistant', false],
+  ] as const)('a re-mention from a %s turn shows on the rail: %s', async (sourceRole, shown) => {
+    harness = await makeMemoryHarness();
+    const [portland] = await record(harness, row('Portland, Oregon', JAN, 'extracted'));
+    await retract(harness, portland!);
+    await record(harness, row('Seattle, Washington', FEB, 'human'));
+    await record(
+      harness,
+      row('Portland, Oregon', JUN, 'extracted', {
+        conversationId: 'conv-rail',
+        sourceTurnId: `turn-${sourceRole}`,
+        sourceRole,
+      }),
+    );
+
+    expect(values(await harness.recall({ conversationId: 'conv-rail' })).includes('Portland, Oregon')).toBe(
+      shown,
+    );
+  });
 });

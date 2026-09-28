@@ -365,6 +365,13 @@ describe('buildFactsExport — recent', () => {
       other,
     ]);
     expect(restated).toContain('Denver');
+
+    // TASK-648: the person saying it in their own chat message brings it
+    // back; the agent repeating it in its reply does not.
+    expect(recentOf([retraction, { ...rementioned, sourceRole: 'user' }, other])).toMatch(/denver/i);
+    expect(recentOf([retraction, { ...rementioned, sourceRole: 'assistant' }, other])).not.toMatch(
+      /denver/i,
+    );
   });
 });
 

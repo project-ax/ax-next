@@ -720,6 +720,68 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
       },
     );
 
+    // TASK-648's exception reaches Recent through the same predicate: the
+    // person saying it in their own message brings it back; the agent
+    // repeating it in its reply does not.
+    it.each([
+      ['the person’s own message', 'user', true],
+      ['the agent’s reply', 'assistant', false],
+    ] as const)(
+      'a re-mention of a retracted value from %s: shown in Recent = %s',
+      async (_label, sourceRole, shown) => {
+        const h = await makeHarness();
+        const ctx = h.ctx();
+        const { records } = await engineRecord(h.bus, ctx, [
+          {
+            about: `user:${ALICE}`,
+            relation: 'lives_in',
+            value: 'Denver',
+            when: JAN,
+            slot: 'lives_in',
+            provenance: 'extracted',
+            ownerUserId: ALICE,
+            conversationId: 'conv-a',
+          },
+        ]);
+        await h.bus.call('memory:facts:supersede', ctx, {
+          ids: [records[0]!.id],
+          neverTrue: true,
+          ownerUserId: ALICE,
+        });
+        await engineRecord(h.bus, ctx, [lives('Austin', MAR)]);
+        await engineRecord(h.bus, ctx, [
+          {
+            about: `user:${ALICE}`,
+            relation: 'lives_in',
+            value: 'Denver',
+            when: SEP,
+            slot: 'lives_in',
+            provenance: 'extracted',
+            ownerUserId: ALICE,
+            conversationId: 'conv-b',
+            sourceTurnId: `turn-${sourceRole}`,
+            sourceRole,
+          },
+        ]);
+
+        const body = await augment(h, ctx);
+        const recent = body.slice(body.indexOf('### Recent'), body.indexOf('### Digest'));
+        expect(recent.includes('Denver')).toBe(shown);
+
+        function lives(value: string, when: string) {
+          return {
+            about: `user:${ALICE}`,
+            relation: 'lives_in',
+            value,
+            when,
+            slot: 'lives_in',
+            provenance: 'human' as const,
+            ownerUserId: ALICE,
+          };
+        }
+      },
+    );
+
     it('renders the caller as "you" rather than leaking the internal subject key', async () => {
       const h = await makeHarness();
       const ctx = h.ctx();

@@ -26,9 +26,10 @@ export interface ExportFact {
    */
   neverTrue?: boolean;
   /**
-   * Who spoke the source turn (TASK-648). Read only by the profile pick: an
-   * extracted row from the person's own turn can bring back a value they
-   * retracted. Anything but `'user'` counts as not the person.
+   * Who spoke the source turn (TASK-648). Read only by the profile pick and
+   * Recent's hide rule (TASK-646), both through `profile.ts`: an extracted row
+   * from the person's own turn can bring back a value they retracted.
+   * Anything but `'user'` counts as not the person.
    */
   sourceRole?: string;
 }
