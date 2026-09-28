@@ -271,6 +271,8 @@ describe('a Fix on the note leaves nothing of the old value showing', () => {
     },
   );
 
+  // Pins the active-human-prior path. Not the two-word rule's guard: under the
+  // old one-word rule the closed note (sharing `october`) suppressed it too.
   it("the person's own Fix, still active, suppresses the extractor's restatement of it", async () => {
     vi.useFakeTimers();
     const env = await setup();

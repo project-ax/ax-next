@@ -57,6 +57,8 @@ describe('isTwin — the measured walk pairs', () => {
     ).toBe(true);
   });
 
+  // A boundary guard for the one-word branch of the two-word rule, not a
+  // regression test: it also passes under the old one-shared-word rule.
   it('a one-word value contained in the other is a twin', () => {
     expect(
       isTwin({ about: ME, relation: 'lives_in', value: 'Boston, MA' }, agent('lives in', 'Boston')),
