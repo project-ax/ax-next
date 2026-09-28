@@ -727,8 +727,12 @@ export interface FactMemoryStatement {
    * `overridden` is a history-only mark (TASK-526): set on an ACTIVE row (no
    * `until`) that the equivalent active read would hide because a
    * higher-provenance row outranks it. It never appears on an active read.
+   *
+   * `retracted` (TASK-624) is a closed row a person fixed with "It was never
+   * right": the old value was a mistake, not something that used to be true.
+   * `forgotten` is a plain Forget; `replaced` is a row a newer one closed.
    */
-  closure?: 'replaced' | 'forgotten' | 'overridden';
+  closure?: 'replaced' | 'forgotten' | 'overridden' | 'retracted';
   whenText?: string;
   aboutText?: string;
   /**

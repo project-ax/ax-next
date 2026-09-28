@@ -365,7 +365,7 @@ function memoryMockPlugin(state: {
         'memory:rules:write',
         ...(state.facts === undefined
           ? []
-          : ['memory:recall', 'memory:remember', 'memory:forget']),
+          : ['memory:recall', 'memory:remember', 'memory:forget', 'memory:correct']),
       ],
       calls: [],
       subscribes: [],
@@ -399,6 +399,15 @@ function memoryMockPlugin(state: {
             input,
           });
           return { forgotten: true };
+        });
+        bus.registerService('memory:correct', 'mock-memory', async (ctx, input) => {
+          facts.calls.push({
+            hook: 'correct',
+            agentId: ctx.agentId,
+            userId: ctx.userId ?? '',
+            input,
+          });
+          return { id: 'mem-fixed' };
         });
       }
       bus.registerService('memory:rules:read', 'mock-memory', async () => ({
@@ -1183,6 +1192,34 @@ describe('@ax/channel-web server plugin (integration)', () => {
       expect(await forget.json()).toEqual({ forgotten: true });
       expect(memory.facts.calls[1]).toMatchObject({ hook: 'remember', userId: 'userA' });
       expect(memory.facts.calls[2]).toMatchObject({ hook: 'forget', userId: 'userA' });
+
+      const correctBody = {
+        id: 'mem-1',
+        about: 'user',
+        relation: 'lives_in',
+        value: 'Denver',
+        reason: 'never-right',
+      };
+      const correctNoCsrf = await fetch(`${base}/correct`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(correctBody),
+      });
+      expect(correctNoCsrf.status).toBe(403);
+
+      const correct = await fetch(`${base}/correct`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+        body: JSON.stringify(correctBody),
+      });
+      expect(correct.status).toBe(200);
+      expect(await correct.json()).toEqual({ id: 'mem-fixed' });
+      expect(memory.facts.calls[3]).toEqual({
+        hook: 'correct',
+        agentId: 'agt_test',
+        userId: 'userA',
+        input: correctBody,
+      });
     });
 
     it('mounts the Files routes and the rest of the surface with no flag passed', async () => {

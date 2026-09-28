@@ -16,6 +16,8 @@ describe('@ax/memory — manifest', () => {
     expect(manifest.registers).toEqual([
       'memory:recall',
       'memory:remember',
+      // TASK-624: a person's Fix, with WHY it was wrong.
+      'memory:correct',
       'memory:forget',
       // The per-user "extraction paused" signal the UI reads.
       'memory:status',
@@ -59,6 +61,7 @@ describe('@ax/memory — manifest', () => {
       [
         'memory:recall',
         'memory:remember',
+        'memory:correct',
         'memory:forget',
         'memory:status',
         'system-prompt:augment',

@@ -402,7 +402,8 @@ function isFactMemoryStatement(v: unknown): v is FactMemoryStatement {
     v.closure !== undefined &&
     v.closure !== 'replaced' &&
     v.closure !== 'forgotten' &&
-    v.closure !== 'overridden'
+    v.closure !== 'overridden' &&
+    v.closure !== 'retracted'
   ) {
     return false;
   }
@@ -912,6 +913,33 @@ export const workspaceApi = {
     }).then((body) =>
       checkedRead<{ id: string }>(
         `/agents/${encodeURIComponent(agentId)}/memory/remember`,
+        body,
+        (v): v is { id: string } =>
+          isRecord(v) && !Array.isArray(v) && typeof v.id === 'string' && v.id.trim() !== '',
+      ),
+    ),
+
+  /**
+   * The Fix dialog's save (TASK-624). Unlike `rememberMemory` it names the
+   * row being fixed and why: `changed` keeps the old value in History as what
+   * used to be true; `never-right` marks it as a mistake.
+   */
+  correctMemory: (
+    agentId: string,
+    input: {
+      id: string;
+      about: string;
+      relation: string;
+      value: string;
+      reason: 'changed' | 'never-right';
+    },
+  ) =>
+    req<unknown>(`/agents/${encodeURIComponent(agentId)}/memory/correct`, {
+      method: 'POST',
+      body: input,
+    }).then((body) =>
+      checkedRead<{ id: string }>(
+        `/agents/${encodeURIComponent(agentId)}/memory/correct`,
         body,
         (v): v is { id: string } =>
           isRecord(v) && !Array.isArray(v) && typeof v.id === 'string' && v.id.trim() !== '',

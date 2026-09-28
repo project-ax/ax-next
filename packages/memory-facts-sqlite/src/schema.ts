@@ -68,6 +68,15 @@ export interface FactRow {
   transaction_time: string;
   closed_by: string | null;
   /**
+   * `1` when an explicit `memory:facts:supersede` with `neverTrue` closed
+   * this row — a person said it was never right, not that it stopped being
+   * right. NULL on every other row, including a plain retraction; nothing
+   * ever writes `0`, so "not never-true" has one spelling. Written only by
+   * the same UPDATE that closes the row (`supersedeIds`), never by the
+   * re-settle, and read back as `FactRecord.neverTrue`.
+   */
+  never_true: number | null;
+  /**
    * The `batchKey` of the `memory:facts:record` call that wrote this row, or
    * NULL when the caller passed none. Every row of one batch carries the same
    * value; dedup is `(agent_key, batch_key)`, never `batch_key` alone.
@@ -188,7 +197,8 @@ export function openDatabase(databasePath: string): OpenDatabaseResult {
       transaction_time TEXT NOT NULL,
       closed_by TEXT,
       batch_key TEXT,
-      batch_seq INTEGER
+      batch_seq INTEGER,
+      never_true INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_facts_slot ON ${TABLE}(agent_key, about, slot, valid_end);
   `);
@@ -278,6 +288,12 @@ function migrateAddColumns(driver: BetterSqliteDb, vectorExtensionLoaded: boolea
   // no default, no backfill. An older row genuinely has no source turn.
   if (!present.has('source_turn_id')) {
     driver.exec(`ALTER TABLE ${TABLE} ADD COLUMN source_turn_id TEXT`);
+  }
+  // TASK-624. Nullable, no default, no backfill: every row that predates the
+  // column was closed (if at all) by a rule or a plain retraction, and NULL
+  // says exactly "not never-true".
+  if (!present.has('never_true')) {
+    driver.exec(`ALTER TABLE ${TABLE} ADD COLUMN never_true INTEGER`);
   }
 
   // Sparse channel (TASK-434). `porter unicode61` matches both `dem-memory`

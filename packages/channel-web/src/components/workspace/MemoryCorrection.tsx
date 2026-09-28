@@ -9,8 +9,9 @@
  *
  * WHY UNDO RE-SAVES. The server has no "un-forget": `memory:forget` closes a
  * row and that is final. So Undo puts the memory back by saving the same
- * subject, relation and value again, as the person who pressed it — the same
- * write Fix makes. History keeps the forgotten row, which is honest: it was
+ * subject, relation and value again, as the person who pressed it — a plain
+ * save, not a Fix (a Fix also names the row it corrects, and why). History
+ * keeps the forgotten row, which is honest: it was
  * forgotten, for a few seconds, and then it was remembered again. The forget
  * itself is never deferred to make Undo cheaper; a person who asks us to
  * forget something and closes the tab has had it forgotten.
@@ -26,13 +27,27 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
+import {
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSet,
+} from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { workspaceApi, type FactMemoryStatement } from '@/lib/workspace-api';
 import { UNDO_WINDOW_MS } from '@/lib/workspace-types';
 import {
   MEMORY_CANCEL,
   MEMORY_FIX_FIELD_LABEL,
+  MEMORY_FIX_REASON_CHANGED,
+  MEMORY_FIX_REASON_CHANGED_HELPER,
+  MEMORY_FIX_REASON_LEGEND,
+  MEMORY_FIX_REASON_NEVER_RIGHT,
+  MEMORY_FIX_REASON_NEVER_RIGHT_HELPER,
   MEMORY_FIX_SAVE,
   MEMORY_FIX_SAVE_FAILED,
   MEMORY_FIX_TITLE,
@@ -50,8 +65,13 @@ import {
   memoryUndoLabel,
   memoryUndoSecondsLeft,
   memoryUndoText,
+  type MemoryFixReason,
   type MemoryVisibility,
 } from './memory-copy';
+
+function isFixReason(v: string): v is MemoryFixReason {
+  return v === 'changed' || v === 'never-right';
+}
 
 export function MemoryFixDialog({
   target,
@@ -67,12 +87,15 @@ export function MemoryFixDialog({
   onSaved: () => void;
 }) {
   const [value, setValue] = useState('');
+  const [reason, setReason] = useState<MemoryFixReason>('changed');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState(false);
 
   useEffect(() => {
     if (target !== null) {
       setValue(target.value);
+      // A new memory is a new question: never carry the last answer over.
+      setReason('changed');
       setError(false);
       setPending(false);
     }
@@ -83,10 +106,12 @@ export function MemoryFixDialog({
     setPending(true);
     setError(false);
     try {
-      await workspaceApi.rememberMemory(agentId, {
+      await workspaceApi.correctMemory(agentId, {
+        id: target.id,
         about: target.about,
         relation: target.relation,
         value,
+        reason,
       });
       onSaved();
     } catch {
@@ -124,6 +149,35 @@ export function MemoryFixDialog({
               onChange={(e) => setValue(e.target.value)}
             />
           </Field>
+          <FieldSet>
+            <FieldLegend variant="label">{MEMORY_FIX_REASON_LEGEND}</FieldLegend>
+            <RadioGroup
+              value={reason}
+              disabled={pending}
+              onValueChange={(v) => {
+                if (isFixReason(v)) setReason(v);
+              }}
+            >
+              <Field orientation="horizontal" data-disabled={pending || undefined}>
+                <RadioGroupItem value="changed" id="memory-fix-reason-changed" />
+                <FieldContent>
+                  <FieldLabel htmlFor="memory-fix-reason-changed">
+                    {MEMORY_FIX_REASON_CHANGED}
+                  </FieldLabel>
+                  <FieldDescription>{MEMORY_FIX_REASON_CHANGED_HELPER}</FieldDescription>
+                </FieldContent>
+              </Field>
+              <Field orientation="horizontal" data-disabled={pending || undefined}>
+                <RadioGroupItem value="never-right" id="memory-fix-reason-never-right" />
+                <FieldContent>
+                  <FieldLabel htmlFor="memory-fix-reason-never-right">
+                    {MEMORY_FIX_REASON_NEVER_RIGHT}
+                  </FieldLabel>
+                  <FieldDescription>{MEMORY_FIX_REASON_NEVER_RIGHT_HELPER}</FieldDescription>
+                </FieldContent>
+              </Field>
+            </RadioGroup>
+          </FieldSet>
         </FieldGroup>
         {error && (
           <Alert variant="destructive">

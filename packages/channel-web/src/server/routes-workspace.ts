@@ -5352,6 +5352,81 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
     },
 
+    /**
+     * POST /api/workspace/agents/:agentId/memory/correct — the Fix dialog's
+     * save. Carries WHICH row is being corrected (`id`) and the person's
+     * answer to "did it change, or was it never right?" (`reason`), which
+     * plain `remember` has no room for. `@ax/memory` owns what each reason
+     * does to the old row; this route only checks the shape and the caller.
+     */
+    async correctFact(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+      if (agent === null) return;
+
+      if (!bus.hasService('memory:correct')) {
+        res.status(503).json({ error: 'memory-unavailable' });
+        return;
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(req.body.toString('utf-8'));
+      } catch {
+        res.status(400).json({ error: 'invalid-json' });
+        return;
+      }
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        res.status(400).json({ error: 'invalid-memory-request' });
+        return;
+      }
+      const body = parsed as Record<string, unknown>;
+      if (
+        Object.keys(body).some(
+          (k) => k !== 'id' && k !== 'about' && k !== 'relation' && k !== 'value' && k !== 'reason',
+        ) ||
+        typeof body.id !== 'string' ||
+        body.id.trim() === '' ||
+        typeof body.about !== 'string' ||
+        body.about.trim() === '' ||
+        typeof body.relation !== 'string' ||
+        body.relation.trim() === '' ||
+        typeof body.value !== 'string' ||
+        body.value.trim() === '' ||
+        (body.reason !== 'changed' && body.reason !== 'never-right')
+      ) {
+        res.status(400).json({ error: 'invalid-memory-request' });
+        return;
+      }
+
+      try {
+        const out = await bus.call<unknown, { id: string }>(
+          'memory:correct',
+          agentWorkspaceCtx(agentId, userId),
+          {
+            id: body.id,
+            about: body.about,
+            relation: body.relation,
+            value: body.value,
+            reason: body.reason,
+          },
+        );
+        res.status(200).json({ id: out.id });
+      } catch (err) {
+        if (err instanceof PluginError && err.code === 'invalid-payload') {
+          res.status(400).json({ error: 'invalid-memory-request' });
+          return;
+        }
+        throw err;
+      }
+    },
+
     async forgetFacts(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);
       if (userId === null) return;
@@ -5678,6 +5753,11 @@ export async function registerWorkspaceRoutes(
       method: 'POST',
       path: '/api/workspace/agents/:agentId/memory/forget',
       handler: handlers.forgetFacts as unknown as RouteHandler,
+    },
+    {
+      method: 'POST',
+      path: '/api/workspace/agents/:agentId/memory/correct',
+      handler: handlers.correctFact as unknown as RouteHandler,
     },
     {
       method: 'POST',

@@ -3,6 +3,7 @@ export type { MemoryPluginConfig } from './plugin.js';
 export {
   MEMORY_RECALL_HOOK,
   MEMORY_REMEMBER_HOOK,
+  MEMORY_CORRECT_HOOK,
   MEMORY_FORGET_HOOK,
   MEMORY_STATUS_HOOK,
   FACTS_RECALL_HOOK,
@@ -112,6 +113,8 @@ export type {
   MemoryRecallOutput,
   MemoryRememberInput,
   MemoryRememberOutput,
+  MemoryCorrectInput,
+  MemoryCorrectOutput,
   MemoryForgetInput,
   MemoryForgetOutput,
   MemoryStatusInput,

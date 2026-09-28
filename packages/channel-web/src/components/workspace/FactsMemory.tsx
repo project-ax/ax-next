@@ -29,6 +29,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { useIsCompact } from '@/lib/use-compact';
+import { cn } from '@/lib/utils';
 import {
   workspaceApi,
   type AgentMemoryRead,
@@ -99,6 +100,18 @@ function kindLabel(row: FactMemoryStatement): string {
  */
 function isCurrent(row: FactMemoryStatement): boolean {
   return row.until === undefined && row.closure !== 'overridden';
+}
+
+/**
+ * A memory someone fixed with "It was never right" reads struck through in
+ * History: it was a mistake, not something that used to be true. The strike
+ * is decoration only — the Retracted badge beside it is what a screen reader
+ * hears.
+ */
+function RowValue({ row, children }: { row: FactMemoryStatement; children: string }) {
+  return (
+    <span className={cn(row.closure === 'retracted' && 'line-through')}>{children}</span>
+  );
 }
 
 function sortOldestFirst(rows: readonly FactMemoryStatement[]): FactMemoryStatement[] {
@@ -208,8 +221,8 @@ function ClosureNote({
   return (
     <span className="text-sm text-muted-foreground">
       <Badge variant="secondary">
-        {row.closure === 'forgotten'
-          ? MEMORY_CLOSURE_BADGE.forgotten
+        {row.closure === 'forgotten' || row.closure === 'retracted'
+          ? MEMORY_CLOSURE_BADGE[row.closure]
           : MEMORY_CLOSURE_BADGE.replaced}
       </Badge>{' '}
       {row.until.slice(0, 10)}
@@ -405,7 +418,7 @@ function ProfileCard({
                       <span className="text-muted-foreground">
                         {memorySlotText(row)}:
                       </span>{' '}
-                      {row.value}
+                      <RowValue row={row}>{row.value}</RowValue>
                     </span>
                     <ClosureNote row={row} page={state.data} />
                   </li>
@@ -483,7 +496,9 @@ function SearchCard({
         <li key={row.id}>
           <Card>
             <CardContent className="flex flex-col gap-1 p-3">
-              <span className="text-sm">{label}</span>
+              <span className="text-sm">
+                <RowValue row={row}>{label}</RowValue>
+              </span>
               <span className="text-sm text-muted-foreground">
                 {kindLabel(row)} · {row.whenText ?? row.when}
               </span>
@@ -501,7 +516,7 @@ function SearchCard({
         <TableCell>{kindLabel(row)}</TableCell>
         <TableCell>{row.whenText ?? row.when}</TableCell>
         <TableCell>
-          {label}
+          <RowValue row={row}>{label}</RowValue>
           {isClosed && state.status === 'ready' && (
             <ClosureNote row={row} page={state.data} />
           )}

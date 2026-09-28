@@ -9,7 +9,7 @@ import {
 } from '@ax/core';
 
 import { PLUGIN_NAME } from './plugin-name.js';
-import { AGENTS_RESOLVE_HOOK, memoryReadScope, resolveMemoryAccess } from './access.js';
+import { AGENTS_RESOLVE_HOOK, memoryReadScope, resolveMemoryAccess, type MemoryAccess } from './access.js';
 import { deriveSlot, SLOTS } from './slots.js';
 import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
 import {
@@ -84,6 +84,8 @@ import {
   DEFAULT_RECALL_LIMIT,
   type MemoryForgetInput,
   type MemoryForgetOutput,
+  type MemoryCorrectInput,
+  type MemoryCorrectOutput,
   type MemoryRecallInput,
   type MemoryRecallOutput,
   type MemoryRememberInput,
@@ -105,6 +107,11 @@ export const FACTS_SUPERSEDE_HOOK = 'memory:facts:supersede';
 export const MEMORY_RECALL_HOOK = 'memory:recall';
 export const MEMORY_REMEMBER_HOOK = 'memory:remember';
 export const MEMORY_FORGET_HOOK = 'memory:forget';
+/**
+ * A person's Fix, carrying WHY the old value was wrong — see
+ * `MemoryCorrectInput`. Provenance: human, by hook.
+ */
+export const MEMORY_CORRECT_HOOK = 'memory:correct';
 /**
  * Whether extraction is paused for the CALLER — see `MemoryStatusOutput`.
  *
@@ -222,6 +229,12 @@ interface EngineFactRecord {
   slot?: string;
   closedBy?: string;
   provenance?: string;
+  /**
+   * Engine-side only, and only ever `true`: the row was closed by a person's
+   * "it was never right". Consumed by the recall handler to derive
+   * `closure: 'retracted'`; never forwarded verbatim.
+   */
+  neverTrue?: boolean;
   /**
    * Engine-side only. Never forwarded verbatim to a caller — the recall
    * handler consumes it to derive the per-answer {@link MemoryStatement.conversation}
@@ -461,6 +474,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
       registers: [
         MEMORY_RECALL_HOOK,
         MEMORY_REMEMBER_HOOK,
+        MEMORY_CORRECT_HOOK,
         MEMORY_FORGET_HOOK,
         MEMORY_STATUS_HOOK,
         SYSTEM_PROMPT_AUGMENT_HOOK,
@@ -910,7 +924,16 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
                 ...(savedBy !== undefined ? { savedBy } : {}),
                 ...(conversation !== undefined ? { conversation } : {}),
                 ...(row.until !== undefined
-                  ? { closure: row.closedBy === undefined ? ('forgotten' as const) : ('replaced' as const) }
+                  ? {
+                      // A never-true row is a retraction too (no `closedBy`),
+                      // so the bit is tested FIRST or it would read Forgotten.
+                      closure:
+                        row.neverTrue === true
+                          ? ('retracted' as const)
+                          : row.closedBy === undefined
+                            ? ('forgotten' as const)
+                            : ('replaced' as const),
+                    }
                   : overridden.has(row)
                     ? { closure: 'overridden' as const }
                     : {}),
@@ -933,7 +956,99 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
       );
 
       // ---------------------------------------------------------------
-      // memory:remember — the human correction write. Provenance: human.
+      // The human write, shared by memory:remember and memory:correct.
+      // Provenance: human. Validates its own fields; the caller has already
+      // refused privilege fields and resolved access.
+      // ---------------------------------------------------------------
+      const recordHumanStatement = async (
+        ctx: AgentContext,
+        access: MemoryAccess,
+        input: { about?: unknown; relation?: unknown; value?: unknown; when?: unknown },
+        hookName: string,
+      ): Promise<string> => {
+        const ownerUserId = access.userId;
+
+        const about = requireNonEmptyString(input?.about, 'about', hookName);
+        const relation = requireNonEmptyString(input?.relation, 'relation', hookName);
+        const value = requireNonEmptyString(input?.value, 'value', hookName);
+        if (input.when !== undefined && !isUsableString(input.when)) {
+          throw invalid('when must be a non-empty string when set', hookName);
+        }
+        // The engine is the authority on what a valid instant is (it
+        // rejects an offsetless local time rather than guess a timezone),
+        // so we do not re-validate the format here — two validators for one
+        // rule is exactly the drift invariant 4 is about. We only supply a
+        // default, and the default is unambiguous by construction.
+        const when = (input.when as string | undefined) ?? new Date().toISOString();
+
+        // Derived here, in the product layer, not in the engine: the engine
+        // takes a slot it is given (design §3.3/§3.5) and has no vocabulary
+        // of its own. Cannot throw and cannot reach a network — see
+        // `deriveSlot`.
+        const slot = deriveSlot(relation);
+
+        const raw = await bus.call<unknown, EngineRecordOutput | null>(
+          FACTS_RECORD_HOOK,
+          ctx,
+          {
+            // No `batchKey`. Idempotency keys exist because `chat:end` can
+            // fire twice on the same dialogue; a person pressing "remember"
+            // twice means it twice, and dedup here would silently discard
+            // the second one.
+            statements: [
+              {
+                about: rewriteSpeaker(about, ownerUserId),
+                relation,
+                value,
+                when,
+                // The derived supersession key. OMITTED, not nulled, when
+                // the relation has no slot: `FactStatementInput.slot` is
+                // optional and absent means "no slot" — stored, retrievable,
+                // inert. Sending `slot: null` would be a different (and
+                // unsupported) claim.
+                //
+                // Most relations land here with no slot and that is the
+                // measured baseline, not a gap: a false positive
+                // (`visited` -> `lives_in`) CLOSES a true fact and no read
+                // path recovers it, while a false negative merely leaves two
+                // rows. See `slots.ts` for the rung-0 numbers that killed the
+                // embedding half.
+                //
+                // Never `PENDING_SLOT` either — and here it is unreachable
+                // rather than merely declined, because `deriveSlot` is a
+                // synchronous table lookup with no producer to be unavailable.
+                ...(slot !== null ? { slot } : {}),
+                // Hardcoded, and this line IS the provenance rule: `human`
+                // because this is a person's own write (`memory:remember` or
+                // `memory:correct`), not because anybody asked for it.
+                // Nothing reachable from a payload can change it.
+                provenance: 'human',
+                ownerUserId,
+                // Provenance only, never a retrieval key — and absent
+                // rather than faked when the turn has no conversation
+                // (a canary, an admin probe) or is a routine run
+                // (`conversationOf`, TASK-616).
+                ...conversationField(ctx),
+              },
+            ],
+          },
+        );
+
+        const result = requireEngineResult(raw, hookName, FACTS_RECORD_HOOK);
+        const id = result.records?.[0]?.id;
+        if (typeof id !== 'string' || id === '') {
+          throw new PluginError({
+            code: 'invalid-return',
+            plugin: PLUGIN_NAME,
+            hookName,
+            message: `${FACTS_RECORD_HOOK} recorded no statement for a single-statement batch`,
+          });
+        }
+        return id;
+      };
+
+      // ---------------------------------------------------------------
+      // memory:remember — the human write. Provenance: human.
       // ---------------------------------------------------------------
       bus.registerService<MemoryRememberInput, MemoryRememberOutput>(
         MEMORY_REMEMBER_HOOK,
@@ -941,86 +1056,66 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         async (ctx: AgentContext, input: MemoryRememberInput) => {
           rejectPrivilegeFields(input, MEMORY_REMEMBER_HOOK);
           const access = await resolveMemoryAccess(bus, ctx);
-          const ownerUserId = access.userId;
-
-          const about = requireNonEmptyString(input?.about, 'about', MEMORY_REMEMBER_HOOK);
-          const relation = requireNonEmptyString(input?.relation, 'relation', MEMORY_REMEMBER_HOOK);
-          const value = requireNonEmptyString(input?.value, 'value', MEMORY_REMEMBER_HOOK);
-          if (input.when !== undefined && !isUsableString(input.when)) {
-            throw invalid('when must be a non-empty string when set', MEMORY_REMEMBER_HOOK);
-          }
-          // The engine is the authority on what a valid instant is (it
-          // rejects an offsetless local time rather than guess a timezone),
-          // so we do not re-validate the format here — two validators for one
-          // rule is exactly the drift invariant 4 is about. We only supply a
-          // default, and the default is unambiguous by construction.
-          const when = input.when ?? new Date().toISOString();
-
-          // Derived here, in the product layer, not in the engine: the engine
-          // takes a slot it is given (design §3.3/§3.5) and has no vocabulary
-          // of its own. Cannot throw and cannot reach a network — see
-          // `deriveSlot`.
-          const slot = deriveSlot(relation);
-
-          const raw = await bus.call<unknown, EngineRecordOutput | null>(
-            FACTS_RECORD_HOOK,
-            ctx,
-            {
-              // No `batchKey`. Idempotency keys exist because `chat:end` can
-              // fire twice on the same dialogue; a person pressing "remember"
-              // twice means it twice, and dedup here would silently discard
-              // the second one.
-              statements: [
-                {
-                  about: rewriteSpeaker(about, ownerUserId),
-                  relation,
-                  value,
-                  when,
-                  // The derived supersession key. OMITTED, not nulled, when
-                  // the relation has no slot: `FactStatementInput.slot` is
-                  // optional and absent means "no slot" — stored, retrievable,
-                  // inert. Sending `slot: null` would be a different (and
-                  // unsupported) claim.
-                  //
-                  // Most relations land here with no slot and that is the
-                  // measured baseline, not a gap: a false positive
-                  // (`visited` -> `lives_in`) CLOSES a true fact and no read
-                  // path recovers it, while a false negative merely leaves two
-                  // rows. See `slots.ts` for the rung-0 numbers that killed the
-                  // embedding half.
-                  //
-                  // Never `PENDING_SLOT` either — and here it is unreachable
-                  // rather than merely declined, because `deriveSlot` is a
-                  // synchronous table lookup with no producer to be unavailable.
-                  ...(slot !== null ? { slot } : {}),
-                  // Hardcoded, and this line IS the provenance rule: `human`
-                  // because this is the `memory:remember` hook, not because
-                  // anybody asked for it. Nothing reachable from a payload
-                  // can change it.
-                  provenance: 'human',
-                  ownerUserId,
-                  // Provenance only, never a retrieval key — and absent
-                  // rather than faked when the turn has no conversation
-                  // (a canary, an admin probe) or is a routine run
-                  // (`conversationOf`, TASK-616).
-                  ...conversationField(ctx),
-                },
-              ],
-            },
-          );
-
-          const result = requireEngineResult(raw, MEMORY_REMEMBER_HOOK, FACTS_RECORD_HOOK);
-          const id = result.records?.[0]?.id;
-          if (typeof id !== 'string' || id === '') {
-            throw new PluginError({
-              code: 'invalid-return',
-              plugin: PLUGIN_NAME,
-              hookName: MEMORY_REMEMBER_HOOK,
-              message: `${FACTS_RECORD_HOOK} recorded no statement for a single-statement batch`,
-            });
-          }
+          const id = await recordHumanStatement(ctx, access, input, MEMORY_REMEMBER_HOOK);
           onFactsChanged(ctx);
           return { id };
+        },
+      );
+
+      // ---------------------------------------------------------------
+      // memory:correct — a person's Fix, with WHY. Provenance: human.
+      // ---------------------------------------------------------------
+      bus.registerService<MemoryCorrectInput, MemoryCorrectOutput>(
+        MEMORY_CORRECT_HOOK,
+        PLUGIN_NAME,
+        async (ctx: AgentContext, input: MemoryCorrectInput) => {
+          rejectPrivilegeFields(input, MEMORY_CORRECT_HOOK);
+          const access = await resolveMemoryAccess(bus, ctx);
+
+          // Everything is validated BEFORE the retract, so a refused call
+          // has written nothing. `when` is not a field of this hook: a
+          // correction is true from now, so it is never passed on.
+          const id = requireNonEmptyString(input?.id, 'id', MEMORY_CORRECT_HOOK);
+          requireNonEmptyString(input?.about, 'about', MEMORY_CORRECT_HOOK);
+          requireNonEmptyString(input?.relation, 'relation', MEMORY_CORRECT_HOOK);
+          requireNonEmptyString(input?.value, 'value', MEMORY_CORRECT_HOOK);
+          const reason: unknown = input?.reason;
+          if (reason !== 'changed' && reason !== 'never-right') {
+            throw invalid("reason must be 'changed' or 'never-right'", MEMORY_CORRECT_HOOK);
+          }
+
+          if (reason === 'never-right') {
+            // Retract FIRST. `supersede` acts only on ACTIVE rows, and the
+            // write below closes the old row by slot — so recording first
+            // would leave nothing for the retract to mark and the mistake
+            // would read "Replaced". Retracting first re-opens whatever the
+            // mistake had closed, and the write then closes THAT row.
+            //
+            // Scoped exactly like `memory:forget`: on a personal agent an id
+            // owned by somebody else is refused by not taking effect (no
+            // oracle), and on a team agent a member may retract any row of
+            // the agent's shared memory.
+            await bus.call<unknown, unknown>(FACTS_SUPERSEDE_HOOK, ctx, {
+              ids: [id],
+              neverTrue: true,
+              ...memoryReadScope(access),
+            });
+          }
+          // 'changed' is exactly the `memory:remember` write: the slot rule
+          // closes the old row. A SLOT-LESS old row stays active (known
+          // limitation — see `MemoryCorrectInput`).
+          //
+          // Failure window: if this write fails after a never-right retract,
+          // the retract stands and the error propagates. A retry converges —
+          // the second retract is a no-op on a row no longer active.
+          const newId = await recordHumanStatement(
+            ctx,
+            access,
+            { about: input.about, relation: input.relation, value: input.value },
+            MEMORY_CORRECT_HOOK,
+          );
+          onFactsChanged(ctx);
+          return { id: newId };
         },
       );
 
@@ -1791,6 +1886,9 @@ function toMemoryStatement(row: EngineFactRecord): MemoryStatement {
   }
   if (row.closedBy !== undefined && typeof row.closedBy !== 'string') {
     malformed('closedBy is present but not a string');
+  }
+  if (row.neverTrue !== undefined && row.neverTrue !== true) {
+    malformed('neverTrue is present but not true');
   }
   if (
     row.kind !== undefined &&

@@ -551,6 +551,8 @@ function rowToFactRecord(row: FactRow): FactRecord {
     provenance: row.provenance,
     ...(row.valid_end !== INFINITY_SENTINEL ? { until: row.valid_end } : {}),
     ...(row.closed_by !== null ? { closedBy: row.closed_by } : {}),
+    // Present only as `true`; NULL (and any other stored value) is absence.
+    ...(row.never_true === 1 ? { neverTrue: true as const } : {}),
     // Echoed, never re-derived. Slot derivation lives in `@ax/memory`; a
     // reader recomputing it from `relation` would be a second copy of the
     // mapping (Invariant 4). `PENDING_SLOT` comes back as itself.
@@ -1521,6 +1523,15 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
               message: 'ownerUserId must be a non-empty string when set',
             });
           }
+          // A boolean or nothing. A truthy string must not quietly label a
+          // row "never right", and `null` is not a spelling of "absent".
+          if (input.neverTrue !== undefined && typeof input.neverTrue !== 'boolean') {
+            throw new PluginError({
+              code: 'invalid-payload',
+              plugin: PLUGIN_NAME,
+              message: 'neverTrue must be a boolean when set',
+            });
+          }
           const agentKey = agentScopeKey(ctx);
           const at = new Date().toISOString();
           // A supersede that silently did nothing is indistinguishable from
@@ -1535,7 +1546,14 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           // `SupersedeOutput` are the same two fields, one in engine terms and
           // one in the hook's.
           return inStore('memory:facts:supersede', () =>
-            supersedeIds(requireDriver(), agentKey, input.ids, at, input.ownerUserId),
+            supersedeIds(
+              requireDriver(),
+              agentKey,
+              input.ids,
+              at,
+              input.ownerUserId,
+              input.neverTrue === true,
+            ),
           );
         },
       );

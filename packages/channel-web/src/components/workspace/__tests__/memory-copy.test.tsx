@@ -49,6 +49,7 @@ vi.mock('@/lib/workspace-api', async () => {
     workspaceApi: {
       recallMemory: vi.fn(),
       rememberMemory: vi.fn(),
+      correctMemory: vi.fn(),
       forgetMemory: vi.fn(),
     },
   };
@@ -77,6 +78,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   recallMock.mockResolvedValue({ statements: [boston], degraded: [] });
   rememberMock.mockResolvedValue({ id: 'mem-new' });
+  vi.mocked(workspaceApi.correctMemory).mockResolvedValue({ id: 'mem-new' });
   forgetMock.mockResolvedValue({ forgotten: true });
 });
 
@@ -119,6 +121,27 @@ describe('memory-copy — the Memory tab says what the module says', () => {
     expect(within(dialog).getByRole('heading').textContent).toBe(MEMORY_FIX_TITLE);
     expect(within(dialog).getByLabelText(MEMORY_FIX_FIELD_LABEL)).toBeInTheDocument();
     expect(within(dialog).getByText(MEMORY_FIX_HELPER)).toBeInTheDocument();
+  });
+
+  it('the Fix question draws its legend, options and helpers from the module', async () => {
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read()} />);
+    fireEvent.click(await screen.findByRole('button', { name: memoryFixLabel('Boston') }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(copy.MEMORY_FIX_REASON_LEGEND)).toBeInTheDocument();
+    expect(within(dialog).getAllByRole('radio')).toHaveLength(2);
+    expect(
+      within(dialog).getByRole('radio', { name: copy.MEMORY_FIX_REASON_CHANGED }),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole('radio', { name: copy.MEMORY_FIX_REASON_NEVER_RIGHT }),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText(copy.MEMORY_FIX_REASON_CHANGED_HELPER)).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(copy.MEMORY_FIX_REASON_NEVER_RIGHT_HELPER),
+    ).toBeInTheDocument();
+    expect(copy.MEMORY_FIX_REASON_NEVER_RIGHT_HELPER).toBe(
+      "I'll treat the old version as a mistake, not as something that used to be true.",
+    );
   });
 
   it('a shared agent gets the team helper on Fix', async () => {
@@ -215,7 +238,7 @@ describe('memory-copy — the module itself', () => {
     expect(memoryUndoSecondsLeft(61_000, 0)).toBe(UNDO_WINDOW_MS / 1000);
   });
 
-  it('keeps the history vocabulary, with Retracted reserved', () => {
+  it('keeps the history vocabulary, Retracted included', () => {
     expect(MEMORY_CLOSURE_BADGE).toEqual({
       replaced: 'Replaced',
       forgotten: 'Forgotten',

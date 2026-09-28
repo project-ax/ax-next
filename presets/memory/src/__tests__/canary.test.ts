@@ -598,6 +598,62 @@ describe('@ax/preset-memory canary', () => {
     expect(romeAfter?.closure).toBe('forgotten');
   });
 
+  it('correct "never right" over the real route: the mistake reads retracted, the fix is active (TASK-624)', async () => {
+    const remember = (value: string, when: string) =>
+      apiJson('POST', `/api/workspace/agents/${aliceAgentId}/memory/remember`, ALICE, {
+        about: 'user',
+        relation: 'works at',
+        value,
+        when,
+      });
+    const acme = await remember('Acme', '2023-01-01T00:00:00Z');
+    const globex = await remember('Globex', '2023-06-01T00:00:00Z');
+    expect(acme.status).toBe(200);
+    expect(globex.status).toBe(200);
+
+    const fixed = await apiJson(
+      'POST',
+      `/api/workspace/agents/${aliceAgentId}/memory/correct`,
+      ALICE,
+      {
+        id: globex.json.id,
+        about: 'user',
+        relation: 'works at',
+        value: 'Initech',
+        reason: 'never-right',
+      },
+    );
+    expect(fixed.status).toBe(200);
+    const initechId = fixed.json.id as string;
+    expect(typeof initechId).toBe('string');
+
+    const history = await apiJson(
+      'POST',
+      `/api/workspace/agents/${aliceAgentId}/memory/recall`,
+      ALICE,
+      { query: 'where does the user work', history: true },
+    );
+    expect(history.status).toBe(200);
+    const rows = history.json.statements as Array<{
+      id: string;
+      value: string;
+      until?: string;
+      closure?: string;
+      closedBy?: string;
+    }>;
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    expect(byId.get(globex.json.id as string)?.closure).toBe('retracted');
+    // The retracted row is not in the chain: Acme runs straight to Initech.
+    expect(byId.get(acme.json.id as string)).toMatchObject({
+      closure: 'replaced',
+      closedBy: initechId,
+    });
+    const initech = byId.get(initechId);
+    expect(initech?.value).toBe('Initech');
+    expect(initech?.until).toBeUndefined();
+    expect(initech?.closure).toBeUndefined();
+  });
+
   it('unauthenticated and foreign callers are denied; CSRF and authority payloads enforced', async () => {
     const unauth = await apiJson('GET', `/api/workspace/agents/${aliceAgentId}`, null);
     expect(unauth.status).toBe(401);
