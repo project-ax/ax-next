@@ -6,6 +6,7 @@ import {
   type FactMemoryStatement,
 } from '@/lib/workspace-api';
 import { MemorySurface } from '../FactsMemory';
+import { memoryForgetLabel, memoryStatementText } from '../memory-copy';
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
@@ -842,6 +843,48 @@ describe('MemorySurface — where focus goes after Undo or when the receipt runs
     await screen.findByRole('button', { name: 'Fix: Boston' });
     await waitFor(() => expect(document.activeElement).toBe(rowLine('Fix: Boston')));
     expect(document.activeElement?.textContent).toBe('lives in: Boston');
+  });
+
+  it('Fix → Undo lands on the row the Undo put back', async () => {
+    const uncorrectMock = vi.mocked(workspaceApi.uncorrectMemory);
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    press(await screen.findByRole('button', { name: 'Fix: Boston' }));
+    fireEvent.change(await screen.findByLabelText('What should I remember?'), {
+      target: { value: 'Cambridge' },
+    });
+    press(screen.getByRole('button', { name: 'Save' }));
+    const outcome = await screen.findByText('Updated.');
+    await waitFor(() => expect(document.activeElement).toBe(outcome));
+
+    uncorrectMock.mockImplementation(() => {
+      current = [fact({ id: 'm1' })];
+      return Promise.resolve({ undone: true });
+    });
+    press(screen.getByRole('button', { name: /^Undo/ }));
+    await screen.findByRole('button', { name: 'Fix: Boston' });
+    await waitFor(() => expect(document.activeElement).toBe(rowLine('Fix: Boston')));
+  });
+
+  it('a Forgotten receipt from Search that runs out with focus hands focus to the Profile heading', async () => {
+    const SEARCH_FORGET = memoryForgetLabel(memoryStatementText(fact({ id: 'm1' })));
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    fireEvent.change(await screen.findByLabelText('Search memories'), {
+      target: { value: 'Boston' },
+    });
+    press(screen.getByRole('button', { name: 'Search' }));
+    await waitFor(() =>
+      expect(screen.getAllByRole('button', { name: SEARCH_FORGET }).length).toBe(1),
+    );
+    press(screen.getByRole('button', { name: SEARCH_FORGET }));
+    press(await screen.findByRole('button', { name: 'Forget' }));
+    const outcome = await screen.findByText('Forgotten');
+    await waitFor(() => expect(document.activeElement).toBe(outcome));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(11_000);
+    });
+    await waitFor(() => expect(screen.queryByText('Forgotten')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByText('Profile')));
   });
 
   it('a Forgotten receipt that runs out while it has focus hands focus to the Profile heading', async () => {
