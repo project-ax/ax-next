@@ -619,37 +619,142 @@ describe('the incremental path reads user and assistant TEXT only', () => {
 });
 
 describe('the paused state', () => {
-  it('an incremental pass makes no call for a paused user; chat:end still tries', async () => {
+  /**
+   * A provider whose key can be taken away and put back mid-conversation —
+   * the walk's shape (TASK-629): no key, then the person stores one.
+   */
+  function switchableKey(): { llm: MemoryHarnessOptions['llm']; restore: () => void } {
+    let hasKey = false;
+    return {
+      llm: (input) => {
+        if (!hasKey) {
+          throw new PluginError({
+            code: 'no-openrouter-credential',
+            plugin: '@ax/llm-openrouter',
+            message: 'no credential resolved for openrouter',
+          });
+        }
+        return perLineExtractor(input);
+      },
+      restore: () => {
+        hasKey = true;
+      },
+    };
+  }
+
+  async function status(env: Env): Promise<unknown> {
+    return env.h.bus.call('memory:status', env.ctx(), {});
+  }
+
+  function activityStates(env: Env): string[] {
+    const seen: string[] = [];
+    env.h.bus.subscribe<{ state: string }>(
+      'memory:conversation-activity',
+      'test-activity',
+      async (_ctx, payload) => {
+        seen.push(payload.state);
+        return undefined;
+      },
+    );
+    return seen;
+  }
+
+  it('TASK-645: the next successful incremental pass clears the pause — no chat:end needed', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const env = await setup({}, () => {
-      throw new PluginError({
-        code: 'no-openrouter-credential',
-        plugin: '@ax/llm-openrouter',
-        message: 'no credential resolved for openrouter',
-      });
-    });
+    const key = switchableKey();
+    const env = await setup({}, key.llm);
+
     await env.exchange('I moved to Boston.', 'Welcome to Boston!', 'req-1');
     await idle(env);
     // The first pass discovers the missing key and pauses the user.
     expect(env.h.llmCalls).toHaveLength(1);
-    expect(eventsNamed(env.h.logs, NO_CREDENTIAL_EVENT)).toHaveLength(1);
+    expect(await status(env)).toEqual({ extraction: 'paused', reason: 'missing-credential' });
+
+    // The person stores a key. The very next idle pass — mid-conversation —
+    // is allowed to try, succeeds, and clears the ONE paused signal both the
+    // Memory tab and the memory-events stream read.
+    key.restore();
+    await env.exchange('My sister lives in Paris.', 'Paris is lovely.', 'req-2');
+    await idle(env);
+    expect(env.h.llmCalls).toHaveLength(2);
+    expect(await status(env)).toEqual({ extraction: 'ok' });
+    // The failed pass held its cursor, so the retry took the Boston turns too.
+    expect(env.dialogues()[1]).toContain('Boston');
+    expect(env.dialogues()[1]).toContain('Paris');
+    expect(env.rows().map((r) => r.value)).toEqual(
+      expect.arrayContaining(['I moved to Boston.', 'My sister lives in Paris.']),
+    );
+  });
+
+  it('a still-paused pass tries again quietly: one error line per pause, and no "extracting" flash', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const key = switchableKey();
+    const env = await setup({}, key.llm);
+    const states = activityStates(env);
+
+    await env.exchange('I moved to Boston.', 'Welcome to Boston!', 'req-1');
+    await idle(env);
+    expect(states).toEqual(['extracting', 'paused']);
 
     await env.exchange('My sister lives in Paris.', 'Paris is lovely.', 'req-2');
     await idle(env);
-    // Paused: skipped without a call, and without another error line.
-    expect(env.h.llmCalls).toHaveLength(1);
-    expect(eventsNamed(env.h.logs, OBSERVER_RUN_EVENT).at(-1)?.bindings).toMatchObject({
-      outcome: 'skipped',
-      reason: 'paused',
-      trigger: 'idle',
-    });
-
-    await env.chatEnd();
-    // chat:end always tries — only a resolved call can clear the pause —
-    // and the turns the paused passes left are all still there to take.
+    // It DID try (that is the only way a restored key is ever noticed)...
     expect(env.h.llmCalls).toHaveLength(2);
-    expect(env.dialogues()[1]).toContain('Boston');
-    expect(env.dialogues()[1]).toContain('Paris');
+    // ...but a repeat of a known pause is not news: the error line fired on
+    // the way INTO the pause only, and the retry is logged at debug.
+    const noKey = eventsNamed(env.h.logs, NO_CREDENTIAL_EVENT);
+    expect(noKey.map((e) => e.level)).toEqual(['error', 'debug']);
+    expect(noKey[1]?.bindings).toMatchObject({ trigger: 'idle' });
+    // A pass that starts paused does not announce "extracting" — the rail
+    // would flash "noting…" on every quiet spell for nothing.
+    expect(states).toEqual(['extracting', 'paused', 'paused']);
+    expect(await status(env)).toEqual({ extraction: 'paused', reason: 'missing-credential' });
+
+    // chat:end keeps its own error line: that bound is unchanged.
+    await env.chatEnd();
+    expect(eventsNamed(env.h.logs, NO_CREDENTIAL_EVENT).map((e) => e.level)).toEqual([
+      'error',
+      'debug',
+      'error',
+    ]);
+  });
+
+  it('a pass that starts paused does not TRACK extracting either — pull agrees with push', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const key = switchableKey();
+    const during: unknown[] = [];
+    const ref: { env?: Env } = {};
+    const env = await setup({}, async (input, call) => {
+      during.push(await ref.env!.h.bus.call('memory:status', ref.env!.ctx(), { conversationId: CONV }));
+      return key.llm!(input, call);
+    });
+    ref.env = env;
+
+    await env.exchange('I moved to Boston.', 'Welcome to Boston!', 'req-1');
+    await idle(env);
+    await env.exchange('My sister lives in Paris.', 'Paris is lovely.', 'req-2');
+    await idle(env);
+    // First pass: not yet paused, so it tracked `extracting`. Second pass
+    // started paused: no push, and no pull state behind it either.
+    expect(during).toEqual([
+      { extraction: 'ok', conversation: { state: 'extracting' } },
+      { extraction: 'paused', reason: 'missing-credential', conversation: { state: 'idle' } },
+    ]);
+  });
+
+  it('a pass that starts paused and succeeds reports recorded, with no "extracting" before it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const key = switchableKey();
+    const env = await setup({}, key.llm);
+    const states = activityStates(env);
+
+    await env.exchange('I moved to Boston.', 'Welcome to Boston!', 'req-1');
+    await idle(env);
+    key.restore();
+    await env.exchange('My sister lives in Paris.', 'Paris is lovely.', 'req-2');
+    await idle(env);
+    // `recorded` is what tells the chat's rail the pause is over.
+    expect(states).toEqual(['extracting', 'paused', 'recorded']);
   });
 });
 

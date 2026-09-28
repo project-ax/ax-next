@@ -66,12 +66,6 @@ export type ObserverResult =
    */
   | { kind: 'skipped'; reason: 'no-new-turns' }
   /**
-   * An incremental pass for a user in the "memory paused" state. No call was
-   * made: the turns stay for the `chat:end` pass, which always tries, because
-   * only a resolved call may clear the pause.
-   */
-  | { kind: 'skipped'; reason: 'paused' }
-  /**
    * Every fact was supported only by a context turn, which the previous pass
    * already covered — see `attribution.ts`.
    */

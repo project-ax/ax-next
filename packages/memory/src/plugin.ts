@@ -1650,14 +1650,22 @@ async function observe(
     // somebody stores a key, so it gets its own event at `error` volume —
     // the "memory paused" state. Everything else keeps the path's `warn`.
     if (isMissingCredential(err)) {
+      // An incremental pass retries a paused user (TASK-645), so without this
+      // every quiet spell would log a fresh `error` for a pause already
+      // reported. The line on the way INTO the pause, and `chat:end`'s own
+      // (at most one per session), stay at `error`.
+      const repeat =
+        trigger !== undefined && trigger !== 'chat-end' && userId !== undefined && cfg.pausedUsers.has(userId);
       if (userId !== undefined) cfg.pausedUsers.add(userId);
-      ctx.logger.error(NO_CREDENTIAL_EVENT, {
+      const bindings = {
         err: error,
         agentId: ctx.agentId,
         path: 'observer',
         ...(trigger !== undefined ? { trigger } : {}),
         ...noCredentialFields(),
-      });
+      };
+      if (repeat) ctx.logger.debug(NO_CREDENTIAL_EVENT, bindings);
+      else ctx.logger.error(NO_CREDENTIAL_EVENT, bindings);
       return false;
     }
     ctx.logger.warn(memoryFailureEvent(err, OBSERVER_FAILED_EVENT), {
@@ -1727,9 +1735,10 @@ const CONTEXT_TURNS = 2;
 /**
  * One incremental pass over a conversation's canonical transcript (TASK-625).
  *
- * 1. A paused user is skipped before anything is read — except at
- *    `chat:end`, which always tries, because only a resolved call may clear
- *    the pause.
+ * 1. A paused user is NOT skipped (TASK-645): every pass tries, because only
+ *    a resolved call may clear the pause, and the first one that resolves
+ *    after a key is stored clears it mid-conversation. A pass that starts
+ *    paused fires no `extracting`, and a repeat miss logs at `debug`.
  * 2. Read the cursor and the transcript. The new turns are those at or after
  *    the cursor, up to and including the LAST assistant turn: a user message
  *    with no reply yet is not a completed turn, and taking it now would split
@@ -1761,12 +1770,18 @@ async function runConversationPass(
   // that never gets there (nothing new, paused, an early throw) fires
   // nothing — "extracting… nothing" every idle tick would be noise.
   let started = false;
+  // A pass that starts while its user is paused is a retry that most likely
+  // hits the same missing key. It still fires its terminal — that ending is
+  // how the rail learns the pause is over — but it neither announces nor
+  // tracks `extracting`: the push and the pull stay in step (activity.ts),
+  // and every quiet spell would otherwise flash "noting…".
+  const startedPaused = target !== undefined && cfg.pausedUsers.has(target.userId);
   // Ids the engine reported writing during this pass, from the record
   // wrapper below — the ids actually stored, not the facts extracted.
   const writtenIds = new Set<string>();
   const beginExtracting = async (): Promise<void> => {
     started = true;
-    if (target === undefined) return;
+    if (target === undefined || startedPaused) return;
     cfg.activity.begin(target);
     await fireConversationActivity(bus, ctx, { ...target, state: 'extracting' });
   };
@@ -1780,9 +1795,12 @@ async function runConversationPass(
       }
       return out;
     };
-    if (trigger !== 'chat-end' && userId !== undefined && cfg.pausedUsers.has(userId)) {
-      return { kind: 'skipped', reason: 'paused' };
-    }
+    // No paused gate here (TASK-645): a paused user's pass still tries,
+    // because only a resolved call clears the pause, and skipping would leave
+    // a restored key unnoticed until `chat:end`. The retry costs a cursor
+    // read and a transcript read per pass (passes are activity-driven, never
+    // a loop), then fails at the provider's credential lookup, before any
+    // network call. `observe()` logs a repeat of a known pause at `debug`.
     if (userId === undefined) {
       throw new Error('an incremental pass needs the caller userId to read the transcript');
     }
