@@ -461,6 +461,30 @@ describe('overlapping and repeated passes never double-record', () => {
     expect(JSON.parse(new TextDecoder().decode(env.storage.get(cursorKey(CONV))))).toEqual({ next: 2 });
   });
 
+  it('a carried cursor keeps chat:end off the no-transcript fallback when the transcript read comes back empty', async () => {
+    // The fallback is safe only while nothing was ever covered. A covered
+    // range whose durable write was lost must still count as covered, or
+    // chat:end would re-extract its own messages under the legacy key.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const env = await setup();
+    await env.exchange('I moved to Boston.', 'Welcome to Boston!', 'req-1');
+    env.failCursorWrites(1);
+    await idle(env);
+    env.transcripts.delete(CONV);
+    await env.h.bus.fire('chat:end', env.ctx(), {
+      outcome: {
+        kind: 'complete',
+        messages: [
+          { role: 'user', content: 'I moved to Boston.' },
+          { role: 'assistant', content: 'Welcome to Boston!' },
+        ],
+      },
+    });
+    await env.h.settleObserver();
+    expect(env.h.llmCalls).toHaveLength(1);
+    expect(env.rows()).toHaveLength(2);
+  });
+
   it('a pass that re-runs over the SAME range is an engine no-op under the range key', async () => {
     // What a host restart after a lost cursor write looks like when nothing
     // was said since: the stored cursor is behind, and the pass repeats.
