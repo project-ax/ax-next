@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { attributeFacts } from '../attribution.js';
+import { attributeFacts, attributeSpeakers } from '../attribution.js';
 import type { ExtractedFact } from '../extract.js';
-import type { IdentifiedTurn } from '../transcript.js';
+import type { DialogueTurn, IdentifiedTurn } from '../transcript.js';
 
 function turn(turnIndex: number, role: 'user' | 'assistant', content: string): IdentifiedTurn {
   return { turnId: `t${turnIndex}`, turnIndex, role, content };
@@ -97,5 +97,39 @@ describe('attributeFacts', () => {
       facts: [],
       contextOnly: 1,
     });
+  });
+});
+
+// TASK-661: the legacy `chat:end` path — no turn ids, every turn new, speaker only.
+describe('attributeSpeakers', () => {
+  const said = (role: 'user' | 'assistant', content: string): DialogueTurn => ({ role, content });
+
+  it("is 'user' when the person's message holds the fact's words", () => {
+    const out = attributeSpeakers(
+      [fact('user', 'Denver')],
+      [said('user', 'I moved back to Denver last month.'), said('assistant', 'Noted, welcome home!')],
+    );
+    expect(out).toEqual([{ ...fact('user', 'Denver'), sourceRole: 'user' }]);
+  });
+
+  it("is 'assistant' when only the agent's reply holds them — even for a fact about the person", () => {
+    const out = attributeSpeakers(
+      [fact('user', 'Denver')],
+      [said('user', 'Where did you have me living?'), said('assistant', 'I had you in Denver.')],
+    );
+    expect(out[0]?.sourceRole).toBe('assistant');
+  });
+
+  it("a tie between the person's message and the agent's echo goes to the speaker the fact names", () => {
+    const turns = [said('user', 'I live in Denver.'), said('assistant', 'Denver, got it.')];
+    expect(attributeSpeakers([fact('user', 'Denver')], turns)[0]?.sourceRole).toBe('user');
+    expect(attributeSpeakers([fact('assistant', 'Denver')], turns)[0]?.sourceRole).toBe('assistant');
+  });
+
+  it('is absent when no message shares a word — and nothing else is added', () => {
+    const out = attributeSpeakers([fact('user', 'enjoys paddling')], [said('user', 'Hello there.')]);
+    expect(out).toEqual([fact('user', 'enjoys paddling')]);
+    expect('sourceRole' in out[0]!).toBe(false);
+    expect('sourceTurnId' in out[0]!).toBe(false);
   });
 });

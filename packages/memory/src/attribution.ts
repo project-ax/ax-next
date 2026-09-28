@@ -1,5 +1,5 @@
 import type { ExtractedFact } from './extract.js';
-import type { IdentifiedTurn } from './transcript.js';
+import type { DialogueTurn, IdentifiedTurn } from './transcript.js';
 
 /**
  * Which turn a fact came from — TASK-625.
@@ -119,6 +119,32 @@ function speakerRole(fact: ExtractedFact): 'user' | 'assistant' {
   return fact.subject === 'assistant' ? 'assistant' : 'user';
 }
 
+/**
+ * The turn that best supports a fact: the most of its words, ties to the
+ * turn whose role matches the fact's speaker, then to the later turn. One
+ * rule for both paths — {@link attributeFacts} and {@link attributeSpeakers}.
+ */
+function bestTurn<T extends DialogueTurn>(
+  want: Set<string>,
+  role: 'user' | 'assistant',
+  candidates: ReadonlyArray<{ turn: T; words: Set<string> }>,
+): { turn: T; score: number } | undefined {
+  let best: { turn: T; score: number; roleMatch: boolean } | undefined;
+  for (const candidate of candidates) {
+    const score = overlap(want, candidate.words);
+    const roleMatch = candidate.turn.role === role;
+    // A full tie goes to the LATER turn; the list is in order.
+    if (
+      best === undefined ||
+      score > best.score ||
+      (score === best.score && (roleMatch || !best.roleMatch))
+    ) {
+      best = { turn: candidate.turn, score, roleMatch };
+    }
+  }
+  return best;
+}
+
 export function attributeFacts(
   facts: readonly ExtractedFact[],
   turns: { context: readonly IdentifiedTurn[]; fresh: readonly IdentifiedTurn[] },
@@ -136,19 +162,7 @@ export function attributeFacts(
     const want = factWords(fact);
     const role = speakerRole(fact);
 
-    let best: { turn: IdentifiedTurn; score: number; roleMatch: boolean } | undefined;
-    for (const candidate of fresh) {
-      const score = overlap(want, candidate.words);
-      const roleMatch = candidate.turn.role === role;
-      // `>=` on a full tie so the LATER turn wins; the list is in order.
-      if (
-        best === undefined ||
-        score > best.score ||
-        (score === best.score && (roleMatch || !best.roleMatch))
-      ) {
-        best = { turn: candidate.turn, score, roleMatch };
-      }
-    }
+    const best = bestTurn(want, role, fresh);
     const bestContext = context.reduce((max, ctxWords) => Math.max(max, overlap(want, ctxWords)), 0);
     if (bestContext > (best?.score ?? 0)) {
       contextOnly += 1;
@@ -163,4 +177,37 @@ export function attributeFacts(
     out.push({ ...fact, sourceTurnId: best.turn.turnId, sourceRole: best.turn.role });
   }
   return { facts: out, contextOnly };
+}
+
+/**
+ * Who said each fact, on the legacy `chat:end` path (TASK-661).
+ *
+ * That path extracts over `chat:end`'s own messages, which carry no turn ids,
+ * so there is no `sourceTurnId` to give and no context turn to drop against:
+ * every turn is new. What it CAN answer is the speaker, by the same word
+ * overlap and tie rule as {@link attributeFacts} — and it has to: the
+ * TASK-648 ruling (the person's own restatement brings a never-right value
+ * back) and TASK-654's write-time drop both read `sourceRole`, and a fact
+ * with none is treated as not the person's.
+ *
+ * Same evidence bar: `sourceRole` only when the chosen turn shares at least
+ * one of the fact's words. A paraphrase no turn shares a word with gets none,
+ * and a retracted value stays hidden — the safe direction.
+ *
+ * Known limit: the messages are everything one warm runner saw, with no
+ * timestamps, so a value the person said EARLIER in that runner's life and
+ * then marked never right before `chat:end` reads as their restatement. The
+ * conversation twin check (TASK-641) still drops it when the batch carries a
+ * conversation and the retracted row is an agent note there.
+ */
+export function attributeSpeakers(
+  facts: readonly ExtractedFact[],
+  turns: readonly DialogueTurn[],
+): Array<ExtractedFact & { sourceRole?: 'user' | 'assistant' }> {
+  const candidates = turns.map((turn) => ({ turn, words: words(turn.content) }));
+  return facts.map((fact) => {
+    const best = bestTurn(factWords(fact), speakerRole(fact), candidates);
+    if (best === undefined || best.score === 0) return { ...fact };
+    return { ...fact, sourceRole: best.turn.role };
+  });
 }

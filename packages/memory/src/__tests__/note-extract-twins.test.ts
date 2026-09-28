@@ -935,4 +935,107 @@ describe('a slot-less value marked never right is not re-extracted from the agen
     );
     expect((failed?.bindings.err as Error | undefined)?.message).toBe('owner rows unavailable');
   });
+
+  // TASK-661 — the LEGACY path: one extraction over `chat:end`'s own
+  // messages (a turn with no conversation, a host without transcripts).
+  // Those messages carry no turn ids, and before this card the facts carried
+  // no `sourceRole` either, so the person's own restatement was read as an
+  // unknown speaker and dropped — contrary to the TASK-648 ruling. The
+  // speaker is now attributed there by the same word overlap.
+  describe('on the legacy chat:end path', () => {
+    /** A turn with no conversation: `chat:end` extracts over its own messages. */
+    async function chatEnd(env: Env, user: string, assistant: string): Promise<void> {
+      await env.h.bus.fire('chat:end', env.h.ctx(), {
+        outcome: {
+          kind: 'complete',
+          messages: [
+            { role: 'user', content: user },
+            { role: 'assistant', content: assistant },
+          ],
+        },
+      });
+      await env.h.settleObserver();
+    }
+
+    it('the person restating it in their own message brings it back', async () => {
+      const env = await setup();
+      await retracted(env);
+      env.extract([DENVER_EXTRACTED]);
+      await chatEnd(env, 'Actually I am relocating to Denver in November after all.', 'Got it.');
+
+      expect(extracted(env).map((r) => [r.value, r.source_role])).toEqual([
+        ['Relocating to Denver in November', 'user'],
+      ]);
+      expect(await active(env)).toEqual([CORRECTED, 'Relocating to Denver in November']);
+      const run = eventsNamed(env.h.logs, OBSERVER_RUN_EVENT).at(-1);
+      expect(run?.bindings).toMatchObject({ outcome: 'recorded', recorded: 1, retracted: 0 });
+    });
+
+    it("the agent's reply repeating it is not stored, and the value stays hidden", async () => {
+      const env = await setup();
+      await retracted(env);
+      env.extract([DENVER_EXTRACTED]);
+      await chatEnd(env, 'When is my move again?', 'You are relocating to Denver in November.');
+
+      expect(extracted(env)).toEqual([]);
+      expect(await active(env)).toEqual([CORRECTED]);
+      const run = eventsNamed(env.h.logs, OBSERVER_RUN_EVENT).at(-1);
+      expect(run?.bindings).toMatchObject({ outcome: 'skipped', reason: 'only-twins', retracted: 1 });
+    });
+
+    it('a paraphrase no message shares a word with has no known speaker, and stays hidden', async () => {
+      const env = await setup();
+      await retracted(env);
+      // "relocating" and "denver" are in no message: no evidence of who said it.
+      env.extract([{ subject: 'user', predicate: 'relocating_to', object: 'Denver in November' }]);
+      await chatEnd(env, 'Anything planned for the autumn?', 'A few things, yes.');
+
+      expect(extracted(env)).toEqual([]);
+      expect(await active(env)).toEqual([CORRECTED]);
+    });
+
+    // The read side's slotted rule (TASK-648's `restatedByPerson`) reads the
+    // same field, so the person's slotted restatement resurfaces here too.
+    it('a slotted retracted value the person restates comes back on read', async () => {
+      const env = await setup();
+      const old = env.h.ctx({ conversationId: OLD });
+      await env.note({ about: 'user', relation: 'lives in', value: 'Denver, Colorado' }, old);
+      const [noted] = (await env.h.recall({ conversationId: OLD }, old)).statements;
+      await env.h.correct(
+        { id: noted!.id, about: 'user', relation: noted!.relation, value: 'Boston, Massachusetts', reason: 'never-right' },
+        old,
+      );
+
+      // Dated after the Fix's correction (a correction is true from now).
+      const validStart = new Date(Date.now() + 86_400_000).toISOString();
+      env.extract([{ subject: 'user', predicate: 'lives_in', object: 'Denver, Colorado', validStart }]);
+      await chatEnd(env, 'I live in Denver, Colorado, actually.', 'Thanks for telling me.');
+
+      expect(extracted(env).map((r) => [r.value, r.source_role])).toEqual([['Denver, Colorado', 'user']]);
+      expect(values((await env.h.recall({ profile: true }, env.ctx())).statements)).toEqual([
+        'Denver, Colorado',
+      ]);
+    });
+
+    it("a slotted retracted value the agent repeats stays hidden on read", async () => {
+      const env = await setup();
+      const old = env.h.ctx({ conversationId: OLD });
+      await env.note({ about: 'user', relation: 'lives in', value: 'Denver, Colorado' }, old);
+      const [noted] = (await env.h.recall({ conversationId: OLD }, old)).statements;
+      await env.h.correct(
+        { id: noted!.id, about: 'user', relation: noted!.relation, value: 'Boston, Massachusetts', reason: 'never-right' },
+        old,
+      );
+
+      // Dated after the Fix too, so only the speaker keeps it hidden.
+      const validStart = new Date(Date.now() + 86_400_000).toISOString();
+      env.extract([{ subject: 'user', predicate: 'lives_in', object: 'Denver, Colorado', validStart }]);
+      await chatEnd(env, 'Where do I live?', 'You live in Denver, Colorado.');
+
+      expect(extracted(env).map((r) => [r.value, r.source_role])).toEqual([['Denver, Colorado', 'assistant']]);
+      expect(values((await env.h.recall({ profile: true }, env.ctx())).statements)).toEqual([
+        'Boston, Massachusetts',
+      ]);
+    });
+  });
 });
