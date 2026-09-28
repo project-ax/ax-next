@@ -613,7 +613,9 @@ export async function supersedeIds(
  * foreign-owner or retracted, a slotted or PENDING row (its closure belongs to
  * its chain, and the next replay would overwrite this one), an already-closed
  * row, and `by` itself. Retracting `by` later does not re-open the replaced
- * rows — the person said the old value changed. `resettled` is always empty:
+ * rows — the person said the old value changed; undoing the Fix itself
+ * ({@link revertIds}, `memory:facts:revert`, TASK-634) is the path that does
+ * re-open them. `resettled` is always empty:
  * a slot-less row is in no chain.
  *
  * The `valid_end` choice is made in application code, per row, rather than
@@ -748,6 +750,94 @@ export async function reinstateIds(
     // Tenant-scoped replay, not owner-scoped — see `supersedeIds`.
     return {
       reinstated,
+      resettled: await resettleSlotGroups(trx, agentKey, [...groups.values()]),
+    };
+  });
+}
+
+/** What one {@link revertIds} call did — see `RevertOutput` in the contract. */
+export interface RevertResult {
+  /** `[id]` when this call retracted it; `[]` means nothing moved at all. */
+  reverted: string[];
+  /** `[restore]` when this call re-opened it. */
+  restored: string[];
+  /** Ids whose closure CHANGED as a fallout — see {@link resettleSlotGroups}. */
+  resettled: string[];
+}
+
+/**
+ * Undo a person's Fix (TASK-634) — the twin of the sqlite engine's
+ * `revertIds`; see that docstring for the full rationale. In short, one
+ * transaction: retract `id` (N) like a plain supersede, only if ACTIVE in
+ * this tenant and owner scope (else — or when `id === restore` — return
+ * all-empty, touching nothing); re-open `restore` (O) iff N closed it or it is
+ * a never-true retraction, clearing `never_true`; replay the chains of N and
+ * O. `RETURNING` is the authority on what each UPDATE did.
+ */
+export async function revertIds(
+  db: FactsDatabase,
+  agentKey: string,
+  id: string,
+  restore: string,
+  at: string,
+  ownerUserId?: string,
+): Promise<RevertResult> {
+  const nothing = (): RevertResult => ({ reverted: [], restored: [], resettled: [] });
+  if (id === restore) return nothing();
+
+  return db.transaction().execute(async (trx) => {
+    let retract = trx
+      .updateTable(TABLE)
+      .set({ valid_end: at })
+      .where('id', '=', id)
+      .where('agent_key', '=', agentKey)
+      .where('valid_end', '=', INFINITY_SENTINEL);
+    if (ownerUserId !== undefined) retract = retract.where('owner_user_id', '=', ownerUserId);
+    const retracted = await retract.returning(['about', 'slot']).execute();
+    if (retracted.length === 0) return nothing();
+
+    let reopen = trx
+      .updateTable(TABLE)
+      .set({ valid_end: INFINITY_SENTINEL, closed_by: null, never_true: null })
+      .where('id', '=', restore)
+      .where('agent_key', '=', agentKey)
+      .where((eb) =>
+        eb.or([
+          eb('closed_by', '=', id),
+          eb.and([
+            eb('closed_by', 'is', null),
+            eb('valid_end', '<>', INFINITY_SENTINEL),
+            eb('never_true', '=', true),
+          ]),
+        ]),
+      );
+    if (ownerUserId !== undefined) reopen = reopen.where('owner_user_id', '=', ownerUserId);
+    const reopened = await reopen.returning(['id']).execute();
+    const restored = reopened.length > 0 ? [restore] : [];
+
+    // O's chain is read even when O did not move, matching the sqlite twin;
+    // the replay writes only what changes, so an untouched chain is a read.
+    let readRestore = trx
+      .selectFrom(TABLE)
+      .select(['about', 'slot'])
+      .where('id', '=', restore)
+      .where('agent_key', '=', agentKey);
+    if (ownerUserId !== undefined) {
+      readRestore = readRestore.where('owner_user_id', '=', ownerUserId);
+    }
+    const restoreRow = await readRestore.executeTakeFirst();
+
+    // Keyed structurally for the same reason as in `supersedeIds`.
+    const groups = new Map<string, SlotGroup>();
+    for (const row of [retracted[0]!, restoreRow]) {
+      if (row === undefined || row.slot === null || row.slot === PENDING_SLOT) continue;
+      groups.set(JSON.stringify([row.about, row.slot]), { about: row.about, slot: row.slot });
+    }
+
+    // Tenant-scoped replay, not owner-scoped — see `supersedeIds`.
+    return {
+      reverted: [id],
+      restored,
       resettled: await resettleSlotGroups(trx, agentKey, [...groups.values()]),
     };
   });

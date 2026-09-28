@@ -91,6 +91,8 @@ import {
   type MemoryForgetOutput,
   type MemoryUnforgetInput,
   type MemoryUnforgetOutput,
+  type MemoryUncorrectInput,
+  type MemoryUncorrectOutput,
   type MemoryCorrectInput,
   type MemoryCorrectOutput,
   type MemoryRecallInput,
@@ -112,6 +114,7 @@ export const FACTS_RECALL_HOOK = 'memory:facts:recall';
 export const FACTS_RECORD_HOOK = 'memory:facts:record';
 export const FACTS_SUPERSEDE_HOOK = 'memory:facts:supersede';
 export const FACTS_REINSTATE_HOOK = 'memory:facts:reinstate';
+export const FACTS_REVERT_HOOK = 'memory:facts:revert';
 
 /** The hooks this plugin registers — the caller-facing memory surface. */
 export const MEMORY_RECALL_HOOK = 'memory:recall';
@@ -123,6 +126,11 @@ export const MEMORY_FORGET_HOOK = 'memory:forget';
  * `MemoryUnforgetInput`.
  */
 export const MEMORY_UNFORGET_HOOK = 'memory:unforget';
+/**
+ * Undo for a Fix (TASK-634) — takes the Fix's new row back and puts the fixed
+ * row back exactly as it was. See `MemoryUncorrectInput`.
+ */
+export const MEMORY_UNCORRECT_HOOK = 'memory:uncorrect';
 /**
  * A person's Fix, carrying WHY the old value was wrong — see
  * `MemoryCorrectInput`. Provenance: human, by hook.
@@ -498,6 +506,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         MEMORY_CORRECT_HOOK,
         MEMORY_FORGET_HOOK,
         MEMORY_UNFORGET_HOOK,
+        MEMORY_UNCORRECT_HOOK,
         MEMORY_STATUS_HOOK,
         // TASK-628: what memory_recall handed the model, per conversation.
         MEMORY_RECALL_RECEIPTS_HOOK,
@@ -519,6 +528,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         FACTS_RECORD_HOOK,
         FACTS_SUPERSEDE_HOOK,
         FACTS_REINSTATE_HOOK,
+        FACTS_REVERT_HOOK,
         'tool:register',
         AGENTS_RESOLVE_HOOK,
         ...(exportsCfg !== undefined
@@ -1162,7 +1172,8 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             // re-opens a SLOTTED old row (the chain re-settles, TASK-448) but
             // NOT a slot-less one closed here — the person said it changed.
             // And `memory:facts:reinstate` re-opens neither (both have a
-            // successor). An Undo for Fix (TASK-634) needs its own path.
+            // successor). Undo for a Fix is `memory:uncorrect` (TASK-634),
+            // over `memory:facts:revert`, which re-opens either.
             //
             // Failure window: if this call fails, the new row stands and the
             // old one stays active (the pre-TASK-632 state) and the error
@@ -1267,6 +1278,53 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
 
           if (restored.length > 0) onFactsChanged(ctx);
           return { restored: [...restored] };
+        },
+      );
+
+      // ---------------------------------------------------------------
+      // memory:uncorrect — Undo for a Fix (TASK-634). Provenance: UNCHANGED.
+      // ---------------------------------------------------------------
+      //
+      // Nothing is recorded. The engine retracts the Fix's new row and
+      // re-opens the fixed one as the SAME row — in one transaction, whether
+      // the Fix said "it changed" (replaced, slotted or slot-less) or "it was
+      // never right" (a never-true retraction). Unforget cannot do this: a
+      // replaced row is not a retraction, and forgetting the new row alone
+      // re-opens a slotted old row but never a slot-less one.
+      bus.registerService<MemoryUncorrectInput, MemoryUncorrectOutput>(
+        MEMORY_UNCORRECT_HOOK,
+        PLUGIN_NAME,
+        async (ctx: AgentContext, input: MemoryUncorrectInput) => {
+          rejectPrivilegeFields(input, MEMORY_UNCORRECT_HOOK);
+          const access = await resolveMemoryAccess(bus, ctx);
+          const id = requireNonEmptyString(input?.id, 'id', MEMORY_UNCORRECT_HOOK);
+          const restore = requireNonEmptyString(input?.restore, 'restore', MEMORY_UNCORRECT_HOOK);
+
+          // The SAME scope `memory:forget` sends: whoever could forget the
+          // Fix's row can undo the Fix; a foreign id is refused by not taking
+          // effect.
+          const raw = await bus.call<unknown, { reverted?: unknown; restored?: unknown } | null>(
+            FACTS_REVERT_HOOK,
+            ctx,
+            { id, restore, ...memoryReadScope(access) },
+          );
+          const result = requireEngineResult(raw, MEMORY_UNCORRECT_HOOK, FACTS_REVERT_HOOK);
+          if (
+            !Array.isArray(result.reverted) ||
+            result.reverted.some((v) => typeof v !== 'string') ||
+            !Array.isArray(result.restored) ||
+            result.restored.some((v) => typeof v !== 'string')
+          ) {
+            throw new PluginError({
+              code: 'invalid-return',
+              plugin: PLUGIN_NAME,
+              hookName: MEMORY_UNCORRECT_HOOK,
+              message: `${FACTS_REVERT_HOOK} returned no reverted/restored lists`,
+            });
+          }
+          const undone = result.reverted.length > 0;
+          if (undone) onFactsChanged(ctx);
+          return { undone };
         },
       );
 

@@ -284,6 +284,35 @@ export interface MemoryUnforgetOutput {
 }
 
 /**
+ * `memory:uncorrect` input (TASK-634) — Undo for a Fix. `id` is the NEW
+ * memory the Fix saved (what `memory:correct` returned); `restore` is the
+ * memory that was fixed (what `memory:correct` was given as `id`).
+ *
+ * Undo takes the new memory back (it stays in History as forgotten) and puts
+ * the fixed one back exactly as it was: same id, same "who saved it", and not
+ * "replaced" or "never right" any more — whichever answer the Fix gave. It is
+ * not `memory:unforget`: a memory an "It changed" Fix replaced was never
+ * forgotten, so there is no retraction for unforget to undo.
+ *
+ * Scoped exactly like `memory:forget`: whoever could forget the new memory
+ * can undo the Fix, and nobody else.
+ */
+export interface MemoryUncorrectInput {
+  id: string;
+  restore: string;
+}
+
+/**
+ * `undone` is true when this call took the Fix back. False means there was
+ * nothing to undo — the new memory is no longer in effect (a second Undo, a
+ * retry after a lost response, a second tab) or the caller may not touch it.
+ * No oracle: an out-of-scope id and a missing one both read `false`.
+ */
+export interface MemoryUncorrectOutput {
+  undone: boolean;
+}
+
+/**
  * `memory:status` output — whether background extraction is working for the
  * CALLER. Answers only for `ctx.userId`; the input carries no user id, so no
  * caller can probe another person's state.

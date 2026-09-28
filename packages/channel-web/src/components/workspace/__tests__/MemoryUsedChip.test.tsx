@@ -15,8 +15,11 @@ import {
   MEMORY_FIX_FIELD_LABEL,
   MEMORY_FIX_HELPER_TEAM,
   MEMORY_FIX_REASON_NEVER_RIGHT,
+  MEMORY_FIX_UNDONE,
+  MEMORY_UPDATED,
   MEMORY_USED_SINCE,
   memoryFixLabel,
+  memoryUndoFixLabel,
   memoryStatementText,
   memoryUsedLabel,
 } from '../memory-copy';
@@ -30,11 +33,13 @@ vi.mock('@/lib/workspace-api', async () => {
       rememberMemory: vi.fn(),
       correctMemory: vi.fn(),
       forgetMemory: vi.fn(),
+      uncorrectMemory: vi.fn(),
     },
   };
 });
 
 const correctMock = vi.mocked(workspaceApi.correctMemory);
+const uncorrectMock = vi.mocked(workspaceApi.uncorrectMemory);
 
 const boston: MemoryUsedStatement = {
   id: 'm1',
@@ -82,6 +87,7 @@ function open(): void {
 beforeEach(() => {
   vi.clearAllMocks();
   correctMock.mockResolvedValue({ id: 'mem-new' });
+  uncorrectMock.mockResolvedValue({ undone: true });
 });
 
 describe('MemoryUsedChip', () => {
@@ -175,6 +181,27 @@ describe('MemoryUsedChip', () => {
       expect(correctMock).toHaveBeenCalledWith('a1', expect.objectContaining({ reason: 'never-right' })),
     );
     expect(await screen.findByText(MEMORY_USED_SINCE.retracted)).toBeInTheDocument();
+  });
+
+  it('Undo on the receipt takes the fix back, and the row offers Fix again (TASK-634)', async () => {
+    render(<MemoryUsedChip used={used([boston])} agentId="a1" />);
+    open();
+    fireEvent.click(await screen.findByRole('button', { name: memoryFixLabel('Boston') }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText(MEMORY_FIX_FIELD_LABEL), {
+      target: { value: 'Cambridge' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText(MEMORY_UPDATED)).toBeInTheDocument();
+    expect(screen.getByText(MEMORY_USED_SINCE.replaced)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: memoryUndoFixLabel('Cambridge') }));
+    await waitFor(() =>
+      expect(uncorrectMock).toHaveBeenCalledWith('a1', { id: 'mem-new', restore: 'm1' }),
+    );
+    expect(await screen.findByText(MEMORY_FIX_UNDONE)).toBeInTheDocument();
+    expect(screen.queryByText(MEMORY_USED_SINCE.replaced)).toBeNull();
+    expect(screen.getByRole('button', { name: memoryFixLabel('Boston') })).toBeInTheDocument();
   });
 
   it('renders untrusted memory text literally, never as markup', async () => {

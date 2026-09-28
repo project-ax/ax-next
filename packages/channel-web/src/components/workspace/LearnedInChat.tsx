@@ -46,9 +46,9 @@ import {
   LEARNED_SEE_ALL,
   LEARNED_TITLE,
   MEMORY_FIX,
+  MEMORY_FIX_UNDONE,
   MEMORY_FORGET,
   MEMORY_RESTORED,
-  MEMORY_UPDATED,
   learnedAgo,
   learnedMore,
   learnedNewBadge,
@@ -96,14 +96,21 @@ export function LearnedInChat({
   const [expanded, setExpanded] = useState(false);
   const [fixTarget, setFixTarget] = useState<FactMemoryStatement | null>(null);
   const [forgetTarget, setForgetTarget] = useState<FactMemoryStatement | null>(null);
-  /** The row a receipt with no row of its own ("Updated.") belongs to. */
+  /** The row a receipt that sits beside it ("Updated.") belongs to. */
   const [receiptRowId, setReceiptRowId] = useState<string | null>(null);
-  /*
-    No re-read after an Undo: it un-forgets the SAME statement (TASK-630), so
-    the row on screen — still listed, still pinned — is already right.
-  */
-  const receipt = useMemoryReceipt(agentId, () => {});
   const { markSeen, removeRow, pin, replaceRow, unseen } = memory;
+  /*
+    No re-read after an Undo: Forget's un-forgets the SAME statement
+    (TASK-630), so the row on screen — still listed, still pinned — is already
+    right. Fix's re-opens the row the fix replaced (TASK-634), so the fixed
+    row is swapped back for it here, and the receipt follows it.
+  */
+  const receipt = useMemoryReceipt(agentId, () => {}, {
+    onFixUndone: (fix) => {
+      replaceRow(fix.id, fix.row);
+      setReceiptRowId(fix.row.id);
+    },
+  });
 
   /*
     "New" clears when the block has actually been ON SCREEN, not when it
@@ -197,18 +204,19 @@ export function LearnedInChat({
                     receipt={current}
                     now={receipt.now}
                     onUndo={(row) => void receipt.undo(row)}
+                    onUndoFix={(fix) => void receipt.undoFix(fix)}
                     className="px-2.5 py-1.5 text-[12px]"
                   />
                 );
               }
+              const mine = current !== null && receiptRowId === statement.id;
               const note =
-                receiptRowId === statement.id &&
-                (current?.kind === 'updated' || current?.kind === 'restored')
-                  ? current.kind === 'updated'
-                    ? MEMORY_UPDATED
-                    : MEMORY_RESTORED
+                mine && (current.kind === 'restored' || current.kind === 'fix-undone')
+                  ? current.kind === 'restored'
+                    ? MEMORY_RESTORED
+                    : MEMORY_FIX_UNDONE
                   : null;
-              return (
+              const line = (
                 <LearnedLine
                   learned={r}
                   now={now}
@@ -218,6 +226,22 @@ export function LearnedInChat({
                   onForget={() => setForgetTarget(statement)}
                 />
               );
+              // A fix keeps its row (in its new form) and offers Undo under it.
+              if (mine && (current.kind === 'updated' || current.kind === 'fix-undo-failed')) {
+                return (
+                  <div className="flex flex-col gap-1.5">
+                    {line}
+                    <MemoryReceipt
+                      receipt={current}
+                      now={receipt.now}
+                      onUndo={(row) => void receipt.undo(row)}
+                      onUndoFix={(fix) => void receipt.undoFix(fix)}
+                      className="px-2.5 py-1.5 text-[12px]"
+                    />
+                  </div>
+                );
+              }
+              return line;
             }}
           />
           {memory.status !== 'not-enabled' && (
@@ -244,9 +268,9 @@ export function LearnedInChat({
           if (fixTarget !== null) {
             replaceRow(fixTarget.id, { ...fixTarget, id, value });
             setReceiptRowId(id);
+            receipt.updated({ row: fixTarget, id, value });
           }
           setFixTarget(null);
-          receipt.updated();
         }}
       />
       <MemoryForgetDialog

@@ -144,4 +144,27 @@ describe('workspaceApi facts memory boundary', () => {
       );
     }
   });
+
+  it('uncorrectMemory posts { id, restore } and resolves only a { undone: boolean } body', async () => {
+    const fetchMock = respondWith({ undone: true });
+    await expect(
+      workspaceApi.uncorrectMemory('a 1', { id: 'm2', restore: 'm1' }),
+    ).resolves.toEqual({ undone: true });
+    expect(fetchMock.mock.calls[0]?.[0] as string).toContain('/agents/a%201/memory/uncorrect');
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({ id: 'm2', restore: 'm1' }));
+    vi.restoreAllMocks();
+
+    respondWith({ undone: false });
+    await expect(
+      workspaceApi.uncorrectMemory('a1', { id: 'm2', restore: 'm1' }),
+    ).resolves.toEqual({ undone: false });
+
+    for (const body of [{}, null, { undone: 'yes' }, { undone: 1 }, { restored: [] }, []]) {
+      vi.restoreAllMocks();
+      respondWith(body);
+      await expect(
+        workspaceApi.uncorrectMemory('a1', { id: 'm2', restore: 'm1' }),
+      ).rejects.toBeInstanceOf(WorkspaceShapeError);
+    }
+  });
 });

@@ -27,6 +27,7 @@ import {
   LEARNED_SAVE_FAILED,
   LEARNED_SEE_ALL,
   MEMORY_FIX_SAVE,
+  MEMORY_FIX_UNDONE,
   MEMORY_FORGET,
   MEMORY_FORGOTTEN,
   MEMORY_RESTORED,
@@ -37,6 +38,7 @@ import {
   memoryFixLabel,
   memoryForgetLabel,
   memoryStatementText,
+  memoryUndoFixLabel,
   memoryUndoLabel,
 } from '../memory-copy';
 
@@ -50,6 +52,7 @@ vi.mock('@/lib/workspace-api', async () => {
       correctMemory: vi.fn(),
       forgetMemory: vi.fn(),
       unforgetMemory: vi.fn(),
+      uncorrectMemory: vi.fn(),
     },
   };
 });
@@ -59,6 +62,7 @@ const events = vi.mocked(workspaceApi.memoryEvents);
 const correct = vi.mocked(workspaceApi.correctMemory);
 const forget = vi.mocked(workspaceApi.forgetMemory);
 const unforget = vi.mocked(workspaceApi.unforgetMemory);
+const uncorrect = vi.mocked(workspaceApi.uncorrectMemory);
 
 function st(id: string, over: Partial<FactMemoryStatement> = {}): FactMemoryStatement {
   return {
@@ -323,6 +327,40 @@ describe('LearnedInChat — Fix, Forget, Undo', () => {
     await recordBatch([], []);
     await waitFor(() => expect(recall).toHaveBeenCalledTimes(2));
     expect(screen.getByText(memoryStatementText(st('a2', { value: 'Denver' })))).toBeTruthy();
+  });
+
+  it('Undo on a Fix puts the original row back in place of the fixed one (TASK-634)', async () => {
+    const original = st('a', { value: 'Boston' });
+    recall.mockResolvedValueOnce({ statements: [original], degraded: [] });
+    correct.mockResolvedValue({ id: 'a2' });
+    uncorrect.mockResolvedValue({ undone: true });
+    render(<Harness />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: memoryFixLabel(memoryStatementText(original)) }),
+    );
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'Denver' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: MEMORY_FIX_SAVE }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    const fixedText = memoryStatementText(st('a2', { value: 'Denver' }));
+    expect(screen.getByText(fixedText)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: memoryUndoFixLabel('Denver') }));
+    await waitFor(() => expect(uncorrect).toHaveBeenCalledWith('a1', { id: 'a2', restore: 'a' }));
+    expect(await screen.findByText(memoryStatementText(original))).toBeTruthy();
+    expect(screen.queryByText(fixedText)).toBeNull();
+    // The receipt follows the row back: it sits on the original, which offers Fix again.
+    const row = screen.getByText(memoryStatementText(original)).closest('li');
+    expect(row).not.toBeNull();
+    expect(within(row!).getByText(MEMORY_FIX_UNDONE)).toBeTruthy();
+    expect(
+      within(row!).getByRole('button', { name: memoryFixLabel(memoryStatementText(original)) }),
+    ).toBeTruthy();
+
+    // The original is not a new row in the feed; it stays listed anyway.
+    await recordBatch([], []);
+    await waitFor(() => expect(recall).toHaveBeenCalledTimes(2));
+    expect(screen.getByText(memoryStatementText(original))).toBeTruthy();
   });
 
   it('Forget collapses the row into its receipt, focuses Undo, and Undo brings it back', async () => {

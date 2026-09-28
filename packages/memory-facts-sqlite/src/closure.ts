@@ -599,7 +599,8 @@ export function supersedeIds(
  * value changed, and forgetting the new value does not make the old one
  * current again. Mechanically it falls out for free: the replaced row has no
  * slot, so no chain replay ever reads it, and `reinstateIds` only re-opens
- * retractions (`closed_by IS NULL`).
+ * retractions (`closed_by IS NULL`). Undoing the Fix itself is the path that
+ * does re-open them: {@link revertIds} (`memory:facts:revert`, TASK-634).
  *
  * `resettled` is always empty for the same reason — a slot-less row is in no
  * chain, so closing it strands no neighbour.
@@ -746,4 +747,92 @@ export function reinstateIds(
     };
   });
   return reopen();
+}
+
+/** What one {@link revertIds} call did — see `RevertOutput` in the contract. */
+export interface RevertResult {
+  /** `[id]` when this call retracted it; `[]` means nothing moved at all. */
+  reverted: string[];
+  /** `[restore]` when this call re-opened it. */
+  restored: string[];
+  /** Ids whose closure CHANGED as a fallout — see {@link resettleSlotGroups}. */
+  resettled: string[];
+}
+
+/**
+ * Undo a person's Fix (TASK-634): retract the row the Fix recorded (`id`, N)
+ * and re-open the row it corrected (`restore`, O), in ONE transaction, so the
+ * store ends as it was before the Fix except that N is a plain retraction.
+ *
+ * 1. N is retracted exactly as {@link supersedeIds} retracts (`valid_end =
+ *    at`, `closed_by` stays NULL, `never_true` untouched), and only if it is
+ *    ACTIVE in this tenant and owner scope. `changes === 0` — missing,
+ *    foreign, already closed (a second revert) — or `id === restore` returns
+ *    all-empty with nothing else touched. That is the idempotency, and a
+ *    foreign N learns nothing about O.
+ * 2. O is re-opened in one UPDATE whose predicate names exactly what a Fix
+ *    could have done to it: closed BY N (the slot rule, or {@link replaceIds}
+ *    for a slot-less "it changed"), or a never-true retraction ("it was never
+ *    right"). A plain Forget of O is not the Fix's doing and stays. The
+ *    owner predicate rides in the UPDATE, as everywhere else.
+ * 3. The chains of N and O are replayed ({@link resettleSlotGroups},
+ *    tenant-scoped like `supersedeIds`): O is a peer again, so a row the
+ *    never-right retraction had re-opened (and N had then closed) is closed
+ *    by O once more, and N — now a retraction — is out of the chain.
+ */
+export function revertIds(
+  driver: BetterSqliteDb,
+  agentKey: string,
+  id: string,
+  restore: string,
+  at: string,
+  ownerUserId?: string,
+): RevertResult {
+  const nothing = (): RevertResult => ({ reverted: [], restored: [], resettled: [] });
+  if (id === restore) return nothing();
+  const run = driver.transaction((): RevertResult => {
+    const ownerClause = ownerUserId === undefined ? '' : ' AND owner_user_id = ?';
+    const ownerParams: string[] = ownerUserId === undefined ? [] : [ownerUserId];
+
+    const retract = driver
+      .prepare(
+        `UPDATE ${TABLE} SET valid_end = ?
+          WHERE id = ? AND agent_key = ?${ownerClause} AND valid_end = ?`,
+      )
+      .run(at, id, agentKey, ...ownerParams, INFINITY_SENTINEL);
+    if (retract.changes === 0) return nothing();
+
+    const reopen = driver
+      .prepare(
+        `UPDATE ${TABLE} SET valid_end = ?, closed_by = NULL, never_true = NULL
+          WHERE id = ? AND agent_key = ?${ownerClause}
+            AND (closed_by = ?
+                 OR (closed_by IS NULL AND valid_end <> ? AND never_true = 1))`,
+      )
+      .run(INFINITY_SENTINEL, restore, agentKey, ...ownerParams, id, INFINITY_SENTINEL);
+    const restored = reopen.changes > 0 ? [restore] : [];
+
+    // Keyed structurally for the same reason as in `supersedeIds`.
+    const groups = new Map<string, SlotGroup>();
+    const readGroup = driver.prepare(
+      `SELECT about, slot FROM ${TABLE} WHERE id = ? AND agent_key = ?${ownerClause}`,
+    );
+    // Both chains, whether or not O moved: the replay writes only what
+    // actually changes, so an untouched chain costs a read and nothing else.
+    for (const rowId of [id, restore]) {
+      const row = readGroup.get(rowId, agentKey, ...ownerParams) as
+        | { about: string; slot: string | null }
+        | undefined;
+      if (row === undefined || row.slot === null || row.slot === PENDING_SLOT) continue;
+      groups.set(JSON.stringify([row.about, row.slot]), { about: row.about, slot: row.slot });
+    }
+
+    // Tenant-scoped replay, not owner-scoped — see `supersedeIds`.
+    return {
+      reverted: [id],
+      restored,
+      resettled: resettleSlotGroups(driver, agentKey, [...groups.values()]),
+    };
+  });
+  return run();
 }

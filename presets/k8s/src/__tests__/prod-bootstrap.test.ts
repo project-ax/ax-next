@@ -332,6 +332,7 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
         expect(bus.hasService('memory:facts:recall')).toBe(true);
         expect(bus.hasService('memory:facts:supersede')).toBe(true);
         expect(bus.hasService('memory:facts:reinstate')).toBe(true);
+        expect(bus.hasService('memory:facts:revert')).toBe(true);
         expect(bus.hasService('memory:facts:clear')).toBe(true);
         expect(bus.hasService('memory:facts:reindex')).toBe(true);
       } finally {

@@ -21,6 +21,8 @@ describe('@ax/memory — manifest', () => {
       'memory:forget',
       // TASK-630: Undo for a Forget, keeping the row's own provenance.
       'memory:unforget',
+      // TASK-634: Undo for a Fix.
+      'memory:uncorrect',
       // The per-user "extraction paused" signal the UI reads.
       'memory:status',
       // TASK-628: the recall receipts behind "used N memories".
@@ -42,6 +44,7 @@ describe('@ax/memory — manifest', () => {
       'memory:facts:record',
       'memory:facts:supersede',
       'memory:facts:reinstate',
+      'memory:facts:revert',
       'tool:register',
       'agents:resolve',
     ]);
@@ -69,6 +72,7 @@ describe('@ax/memory — manifest', () => {
         'memory:correct',
         'memory:forget',
         'memory:unforget',
+        'memory:uncorrect',
         'memory:status',
         'memory:recall-receipts',
         'system-prompt:augment',
@@ -90,6 +94,7 @@ describe('@ax/memory — manifest', () => {
       'memory:facts:record',
       'memory:facts:supersede',
       'memory:facts:reinstate',
+      'memory:facts:revert',
       'tool:register',
     ]) {
       expect(optional).not.toContain(engineHook);
