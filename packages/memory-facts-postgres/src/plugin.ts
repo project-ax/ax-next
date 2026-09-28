@@ -34,6 +34,7 @@ import {
   resettleSlotGroups,
   supersedeIds,
   reinstateIds,
+  replaceIds,
   type FactsDatabase,
   type FactsTransaction,
   type SlotGroup,
@@ -974,7 +975,33 @@ export function createMemoryFactsPostgresPlugin(): Plugin {
               message: 'neverTrue must be a boolean when set',
             });
           }
+          // `by` names a row, so `''` names nothing — and `null` is not a
+          // spelling of "absent" either (TASK-632).
+          if (input.by !== undefined && !isNonEmptyString(input.by)) {
+            throw new PluginError({
+              code: 'invalid-payload',
+              plugin: PLUGIN_NAME,
+              message: 'by must be a non-empty string when set',
+            });
+          }
+          // A replaced row held and then changed; a never-true row never held.
+          // One call cannot make both claims.
+          if (input.by !== undefined && input.neverTrue === true) {
+            throw new PluginError({
+              code: 'invalid-payload',
+              plugin: PLUGIN_NAME,
+              message: 'by cannot be combined with neverTrue: true',
+            });
+          }
           const agentKey = agentScopeKey(ctx);
+          const by = input.by;
+          if (by !== undefined) {
+            // Close-X-by-Y: a replacement, not a retraction — see `replaceIds`.
+            // Same reason for the store region as the retraction below.
+            return inStore('memory:facts:supersede', () =>
+              replaceIds(requireDb(), agentKey, input.ids, by, input.ownerUserId),
+            );
+          }
           const at = new Date().toISOString();
           // A supersede that silently did nothing is indistinguishable from
           // one whose ids were all foreign — `closed: []` is a legitimate

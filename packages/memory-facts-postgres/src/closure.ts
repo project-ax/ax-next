@@ -605,6 +605,85 @@ export async function supersedeIds(
   });
 }
 
+/**
+ * Close-X-by-Y (TASK-632) — the twin of the sqlite engine's `replaceIds`; see
+ * that docstring for the full rationale. In short: end each slot-less, ACTIVE
+ * id as REPLACED BY row `by` (`closed_by = by`, `valid_end` = the later of the
+ * row's own start and `by`'s), refusing a `by` that is missing, foreign,
+ * foreign-owner or retracted, a slotted or PENDING row (its closure belongs to
+ * its chain, and the next replay would overwrite this one), an already-closed
+ * row, and `by` itself. Retracting `by` later does not re-open the replaced
+ * rows — the person said the old value changed. `resettled` is always empty:
+ * a slot-less row is in no chain.
+ *
+ * The `valid_end` choice is made in application code, per row, rather than
+ * with SQL `GREATEST`: the columns are `TEXT` (see `schema.ts`), and a
+ * collation-dependent comparison inside postgres is exactly the drift the
+ * shared {@link settleArrival} string comparison exists to avoid.
+ *
+ * `RETURNING` is the authority on what each UPDATE closed — the reason is on
+ * {@link supersedeIds}. Unlike there, each id is its own UPDATE, because each
+ * gets its own `valid_end`; that also yields the caller's id order and reports
+ * a repeated id once (its second UPDATE no longer matches an active row).
+ */
+export async function replaceIds(
+  db: FactsDatabase,
+  agentKey: string,
+  ids: readonly string[],
+  by: string,
+  ownerUserId?: string,
+): Promise<SupersedeResult> {
+  if (ids.length === 0) return { closed: [], resettled: [] };
+
+  return db.transaction().execute(async (trx) => {
+    // `by` must still assert something: active, or closed by a rule. Held to
+    // the same tenant and owner scope as the rows it replaces.
+    let replacementQuery = trx
+      .selectFrom(TABLE)
+      .select('valid_start')
+      .where('id', '=', by)
+      .where('agent_key', '=', agentKey)
+      .where((eb) =>
+        eb.or([eb('valid_end', '=', INFINITY_SENTINEL), eb('closed_by', 'is not', null)]),
+      );
+    if (ownerUserId !== undefined) {
+      replacementQuery = replacementQuery.where('owner_user_id', '=', ownerUserId);
+    }
+    const replacement = await replacementQuery.executeTakeFirst();
+    if (replacement === undefined) return { closed: [], resettled: [] };
+
+    const closed: string[] = [];
+    for (const id of ids) {
+      if (id === by) continue;
+      let startQuery = trx
+        .selectFrom(TABLE)
+        .select('valid_start')
+        .where('id', '=', id)
+        .where('agent_key', '=', agentKey)
+        .where('valid_end', '=', INFINITY_SENTINEL)
+        .where('slot', 'is', null);
+      if (ownerUserId !== undefined) startQuery = startQuery.where('owner_user_id', '=', ownerUserId);
+      const row = await startQuery.executeTakeFirst();
+      if (row === undefined) continue;
+
+      const end =
+        row.valid_start > replacement.valid_start ? row.valid_start : replacement.valid_start;
+      // The whole predicate again, so RETURNING — not the read above — decides.
+      let update = trx
+        .updateTable(TABLE)
+        .set({ valid_end: end, closed_by: by })
+        .where('id', '=', id)
+        .where('agent_key', '=', agentKey)
+        .where('valid_end', '=', INFINITY_SENTINEL)
+        .where('slot', 'is', null);
+      if (ownerUserId !== undefined) update = update.where('owner_user_id', '=', ownerUserId);
+      const matched = await update.returning(['id']).execute();
+      if (matched.length > 0) closed.push(id);
+    }
+    return { closed, resettled: [] };
+  });
+}
+
 /** What one {@link reinstateIds} call did — the re-open and the repair it forced. */
 export interface ReinstateResult {
   /** Ids this call re-opened; a foreign, missing, active or rule-closed id is absent. */

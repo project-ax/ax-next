@@ -550,6 +550,118 @@ export function supersedeIds(
   return close();
 }
 
+/**
+ * Close-X-by-Y (TASK-632): end each of `ids` as REPLACED BY row `by` — the
+ * `memory:facts:supersede` path taken when the caller passes `by`. A person's
+ * "it changed" for a row the slot rule can never reach, because it has no
+ * slot: nothing else would ever close it, so the old value would stay active
+ * beside the new one.
+ *
+ * The closure it writes is a replacement, not a retraction: `closed_by = by`
+ * and a finite `valid_end`, the same two columns a rule-closure leaves. So the
+ * row reads `closedBy: by`, `by`'s `closes` lists it (it is the inverse of
+ * `closed_by`), and `never_true` is never touched.
+ *
+ * ## What it refuses, and why
+ *
+ * - **A `by` that asserts nothing.** `by` is read first, under the same tenant
+ *   AND owner predicate as the UPDATE, and must not be a retraction
+ *   (`closed_by IS NULL` with a finite `valid_end`). A rule-closed `by` is
+ *   fine — it still asserts a past value. Missing, foreign, foreign-owner or
+ *   retracted: nothing is closed, `closed: []`, no throw — the same forgiving
+ *   refusal a foreign id gets, so a caller cannot tell "not yours" from "not
+ *   there".
+ * - **A slotted or PENDING row.** Only `slot IS NULL` qualifies. A row with a
+ *   slot belongs to its `(about, slot)` chain, and {@link resettleSlotGroups}
+ *   re-derives that chain from scratch whenever something in it moves — a
+ *   later retraction, a reindex, a reinstate. An explicit closure written here
+ *   would be silently overwritten by the next replay (or worse, would survive
+ *   as a closure the rules never made). A PENDING row is on its way to a chain
+ *   and gets the same answer. Those rows are closed by their successor on
+ *   arrival, which is the path that already works.
+ * - **An already-closed row**, retracted or rule-closed: the `valid_end`
+ *   predicate fails, so a Forget is never re-labelled a replacement.
+ * - **`by` itself** in `ids`: a row cannot replace itself.
+ *
+ * ## `valid_end`
+ *
+ * The later of the row's own `valid_start` and `by`'s: a row ends when its
+ * replacement starts, but never before it itself started, even when the
+ * replacement is back-dated. Compared in application code, as
+ * {@link settleArrival} compares, rather than with SQL `MAX` — so both
+ * engines order the same `TEXT` values by the same rule.
+ *
+ * ## Retracting `by` later does NOT re-open these rows
+ *
+ * Deliberate. A rule-closed row is re-opened when its closer is retracted
+ * because the RULE closed it — the closure was inferred, and the inference's
+ * basis is gone. This closure was not inferred: the person asserted the old
+ * value changed, and forgetting the new value does not make the old one
+ * current again. Mechanically it falls out for free: the replaced row has no
+ * slot, so no chain replay ever reads it, and `reinstateIds` only re-opens
+ * retractions (`closed_by IS NULL`).
+ *
+ * `resettled` is always empty for the same reason — a slot-less row is in no
+ * chain, so closing it strands no neighbour.
+ *
+ * One transaction: the `by` read and every UPDATE commit together, so `by`
+ * cannot be retracted between the check and the closure. Each UPDATE repeats
+ * the whole predicate (tenant, owner, active, slot-less), so `changes > 0` is
+ * the single authority on what was closed, exactly as in {@link supersedeIds}.
+ * A repeated id fails its second UPDATE and is reported once.
+ */
+export function replaceIds(
+  driver: BetterSqliteDb,
+  agentKey: string,
+  ids: readonly string[],
+  by: string,
+  ownerUserId?: string,
+): SupersedeResult {
+  if (ids.length === 0) return { closed: [], resettled: [] };
+  const replace = driver.transaction((): SupersedeResult => {
+    // The owner predicate is spliced into BOTH statements or neither, so `by`
+    // and the rows it replaces are held to the same scope.
+    const ownerClause = ownerUserId === undefined ? '' : ' AND owner_user_id = ?';
+    const ownerParams: string[] = ownerUserId === undefined ? [] : [ownerUserId];
+
+    // `by` must still assert something: active, or closed by a rule.
+    const replacement = driver
+      .prepare(
+        `SELECT valid_start FROM ${TABLE}
+          WHERE id = ? AND agent_key = ?${ownerClause}
+            AND (valid_end = ? OR closed_by IS NOT NULL)`,
+      )
+      .get(by, agentKey, ...ownerParams, INFINITY_SENTINEL) as { valid_start: string } | undefined;
+    if (replacement === undefined) return { closed: [], resettled: [] };
+
+    const readStart = driver.prepare(
+      `SELECT valid_start FROM ${TABLE}
+        WHERE id = ? AND agent_key = ?${ownerClause} AND valid_end = ? AND slot IS NULL`,
+    );
+    const close = driver.prepare(
+      `UPDATE ${TABLE} SET valid_end = ?, closed_by = ?
+        WHERE id = ? AND agent_key = ?${ownerClause} AND valid_end = ? AND slot IS NULL`,
+    );
+
+    const closed: string[] = [];
+    for (const id of ids) {
+      if (id === by) continue;
+      const row = readStart.get(id, agentKey, ...ownerParams, INFINITY_SENTINEL) as
+        | { valid_start: string }
+        | undefined;
+      if (row === undefined) continue;
+      const end =
+        row.valid_start > replacement.valid_start ? row.valid_start : replacement.valid_start;
+      if (close.run(end, by, id, agentKey, ...ownerParams, INFINITY_SENTINEL).changes === 0) {
+        continue;
+      }
+      closed.push(id);
+    }
+    return { closed, resettled: [] };
+  });
+  return replace();
+}
+
 /** What one {@link reinstateIds} call did — the re-open and the repair it forced. */
 export interface ReinstateResult {
   /** Ids this call re-opened; a foreign, missing, active or rule-closed id is absent. */
