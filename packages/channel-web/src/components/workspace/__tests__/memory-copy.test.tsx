@@ -301,6 +301,7 @@ describe('memory-copy — no correction string stays inline', () => {
     'AgentMemory.tsx',
     'MemoryCorrection.tsx',
     'MemoryUsedChip.tsx',
+    'LearnedInChat.tsx',
   ]) {
     it(`${file} imports its memory-correction words`, () => {
       const src = code(file);

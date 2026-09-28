@@ -65,6 +65,7 @@ import { HomeComposer } from './HomeComposer';
 import { TodayView } from './TodayView';
 import { Segmented, WorkspaceHeader } from './WorkspaceHeader';
 import { WorkspaceSidebar, WorkspaceSidebarNav } from './WorkspaceSidebar';
+import type { AdminTabId } from '../admin/AdminSidebar';
 
 /** "Friday, August 21" — the date the queue is describing. */
 function today(): string {
@@ -158,8 +159,11 @@ export interface WorkspaceShellProps {
    * where the entry lives — see the note in `App.tsx`. Optional so the shell
    * still renders in tests that do not care, but the app always passes it: a
    * `UserMenu` without it shows a Settings item that does nothing.
+   *
+   * `tab` opens it on one tab — the rail's paused-memory "Fix this" opens AI
+   * model keys (TASK-627). The menu passes none and gets the default.
    */
-  onOpenAdminSettings?: (() => void) | undefined;
+  onOpenAdminSettings?: ((tab?: AdminTabId) => void) | undefined;
   /**
    * Opens the create-an-agent flow. Threaded to `WorkspaceSidebar`'s
    * "New agent…" row, same shape and same reason as `onOpenAdminSettings`:
@@ -980,6 +984,11 @@ function Inner({
               activityError={feed.error}
               agents={board.agents}
               onBack={() => navigate({ kind: 'today' })}
+              onOpenModelKeys={
+                onOpenAdminSettings === undefined
+                  ? undefined
+                  : () => onOpenAdminSettings('providers')
+              }
               {...(compact
                 ? /*
                     The roster, reachable from inside a thread below `md`. The

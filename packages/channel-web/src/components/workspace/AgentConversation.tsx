@@ -7,6 +7,7 @@
  * rail; routine fires never appear here at all, or 612 unattended runs would
  * bury the two conversations the human actually had.
  */
+import { MEMORY_SOURCE_CLASS, TURN_ID_ATTR } from '@/lib/thread-jump';
 import {
   useEffect,
   useLayoutEffect,
@@ -985,7 +986,15 @@ function Message({
     return (
       <div
         data-testid="workspace-user-message"
-        className="flex flex-col items-end gap-1.5"
+        /*
+          TASK-627 — the rail's "from your message" points here by turn id and
+          sets `data-memory-source` while it does (hover, or a brief flash
+          after a jump; see `lib/thread-jump.ts`). The highlight is
+          thread-find's own warning-soft pair, so "this is the bit you asked
+          about" looks the same whichever control asked.
+        */
+        {...{ [TURN_ID_ATTR]: m.id }}
+        className={`-mx-2 -my-1 flex flex-col items-end gap-1.5 rounded-lg px-2 py-1 ${MEMORY_SOURCE_CLASS}`}
       >
         {/*
           TASK-424 — the files the person sent, ABOVE their words.
