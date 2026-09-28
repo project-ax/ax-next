@@ -375,6 +375,125 @@ describe('buildFactsExport — recent', () => {
   });
 });
 
+// TASK-655, the "yes, everywhere" ruling: a value the person said was never
+// right is hidden from the journals and the per-subject pages too, unless the
+// person restated it — the same predicate profile, recall and Recent use.
+describe('buildFactsExport — retracted re-mentions in journals and subject pages (TASK-655)', () => {
+  const fileOf = (out: Map<unknown, string>, path: string): string | undefined =>
+    out.get([...out.keys()].find((k) => String(k) === path));
+  const USER_JOURNAL = `${ROOT}/user/2026-09.md`;
+
+  const retractionFor = (about: string): ExportFact =>
+    row({
+      about,
+      slot: 'lives_in',
+      relation: 'lives_in',
+      value: 'Denver',
+      when: '2026-08-01T00:00:00.000Z',
+      recordedAt: '2026-08-01T00:00:00.000Z',
+      until: '2026-08-10T00:00:00.000Z',
+      neverTrue: true,
+    });
+  const rementionFor = (about: string, over: Partial<ExportFact> = {}): ExportFact =>
+    row({
+      about,
+      slot: 'lives_in',
+      relation: 'lives_in',
+      value: 'denver.',
+      when: '2026-09-05T00:00:00.000Z',
+      recordedAt: '2026-09-05T00:00:00.000Z',
+      ...over,
+    });
+
+  it('the user journal hides a re-mention of a retracted value; a person restating it shows', () => {
+    const journalOf = (rows: ExportFact[]): string | undefined =>
+      fileOf(buildFactsExport(rows, PERSONAL), USER_JOURNAL);
+    const retraction = retractionFor('user:alice');
+    const other = row({ value: 'likes tea' });
+
+    const hidden = journalOf([retraction, rementionFor('user:alice'), other]);
+    expect(hidden).toContain('likes tea');
+    expect(hidden).not.toMatch(/denver/i);
+    // An agent note repeating it is not the person either.
+    expect(journalOf([retraction, rementionFor('user:alice', { provenance: 'agent' }), other])).not.toMatch(
+      /denver/i,
+    );
+    // Nor is the agent repeating it in its reply (TASK-648's narrow exception).
+    expect(
+      journalOf([retraction, rementionFor('user:alice', { sourceRole: 'assistant' }), other]),
+    ).not.toMatch(/denver/i);
+
+    // The person's own edit, and the person saying it in their own chat
+    // message (TASK-648), bring it back.
+    expect(
+      journalOf([retraction, rementionFor('user:alice', { provenance: 'human', value: 'Denver' }), other]),
+    ).toContain('2026-09-05 · lives_in · Denver');
+    expect(journalOf([retraction, rementionFor('user:alice', { sourceRole: 'user' }), other])).toContain(
+      '2026-09-05 · lives_in · denver.',
+    );
+  });
+
+  it('the assistant journal hides a re-mention of a retracted value too', () => {
+    const ASSISTANT_JOURNAL = `${ROOT}/assistant/2026-09.md`;
+    const out = buildFactsExport(
+      [retractionFor('assistant'), rementionFor('assistant'), row({ about: 'assistant', value: 'prefers bullets' })],
+      PERSONAL,
+    );
+    expect(fileOf(out, ASSISTANT_JOURNAL)).toContain('prefers bullets');
+    expect(fileOf(out, ASSISTANT_JOURNAL)).not.toMatch(/denver/i);
+  });
+
+  it('a journal month whose only row is a hidden re-mention is not made at all', () => {
+    const out = buildFactsExport([retractionFor('user:alice'), rementionFor('user:alice')], PERSONAL);
+    expect(fileOf(out, USER_JOURNAL)).toBeUndefined();
+  });
+
+  it('a subject page hides a re-mention of a retracted value; a person restating it shows', () => {
+    const SUBJECT = `${ROOT}/about/v-acme-corp.md`;
+    const pageOf = (rows: ExportFact[]): string | undefined =>
+      fileOf(buildFactsExport(rows, TEAM), SUBJECT);
+    const retraction = retractionFor('acme-corp');
+    const other = row({ about: 'acme-corp', value: 'makes widgets' });
+
+    const hidden = pageOf([retraction, rementionFor('acme-corp'), other]);
+    expect(hidden).toContain('makes widgets');
+    expect(hidden).not.toMatch(/denver/i);
+    // Its only row hidden, the page is not made — an empty page still claims a subject.
+    expect(pageOf([retraction, rementionFor('acme-corp')])).toBeUndefined();
+
+    expect(pageOf([retraction, rementionFor('acme-corp', { provenance: 'human' }), other])).toMatch(
+      /denver/i,
+    );
+    expect(pageOf([retraction, rementionFor('acme-corp', { sourceRole: 'user' }), other])).toMatch(
+      /denver/i,
+    );
+  });
+
+  it('a re-mention of a REPLACED value stays in the journal — the ruling covers retracted ones', () => {
+    // Portland corrected to Seattle by the person, then Portland said again in
+    // chat. Recall and Recent hide that re-mention (TASK-602); the journal is
+    // the record of what was said and keeps it.
+    const seattle = row({ id: 'fix', slot: 'lives_in', relation: 'lives_in', value: 'Seattle', provenance: 'human' });
+    const out = buildFactsExport(
+      [
+        row({
+          slot: 'lives_in',
+          relation: 'lives_in',
+          value: 'Portland',
+          when: '2026-08-01T00:00:00.000Z',
+          until: '2026-08-10T00:00:00.000Z',
+          closedBy: 'fix',
+        }),
+        seattle,
+        rementionFor('user:alice', { value: 'Portland', conversationId: 'c9' }),
+      ],
+      PERSONAL,
+    );
+    expect(fileOf(out, USER_JOURNAL)).toContain('2026-09-05 · lives_in · Portland');
+    expect(fileOf(out, `${ROOT}/recent.md`)).not.toContain('Portland');
+  });
+});
+
 describe('buildFactsExport — malformed rows', () => {
   it.each([
     ['missing id', { id: '' }],
