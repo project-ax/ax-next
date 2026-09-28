@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { dropTwins, isTwin, relationKey, type PriorRow } from '../twins.js';
+import {
+  dropTwins,
+  findActiveExtractedTwin,
+  hasActiveTwin,
+  isTwin,
+  relationKey,
+  type PriorRow,
+} from '../twins.js';
 
 /**
  * TASK-641 — an extracted statement that restates what the agent (or the
@@ -170,5 +177,65 @@ describe('dropTwins', () => {
   it('no priors keeps everything', () => {
     const statements = [{ about: ME, relation: 'lives_in', value: 'Boston' }];
     expect(dropTwins(statements, [])).toEqual({ kept: statements, twins: 0 });
+  });
+
+  it('keeps a twin the caller spares, and does not count it (TASK-649)', () => {
+    const statements = [
+      { about: ME, relation: 'lives_in', value: 'Denver, Colorado' },
+      { about: ME, relation: 'relocating_to', value: 'Relocating to Denver in November' },
+    ];
+    const out = dropTwins(
+      statements,
+      [agent('lives in', 'Denver, Colorado'), agent('relocating to', 'Denver, in November 2026')],
+      (s) => s === statements[0],
+    );
+    expect(out).toEqual({ kept: [statements[0]], twins: 1 });
+  });
+});
+
+describe('hasActiveTwin (TASK-649)', () => {
+  const s = { about: ME, relation: 'lives_in', value: 'Denver, Colorado' };
+
+  it('an active agent twin counts', () => {
+    expect(hasActiveTwin(s, [agent('lives in', 'Denver, Colorado')])).toBe(true);
+  });
+
+  it('a closed one alone does not', () => {
+    const closed = { ...agent('lives in', 'Denver, Colorado'), until: '2026-09-28T00:00:00Z' };
+    expect(hasActiveTwin(s, [closed])).toBe(false);
+  });
+});
+
+describe('findActiveExtractedTwin — the reverse order (TASK-649)', () => {
+  const extracted = (relation: string, value: string, until?: string): PriorRow => ({
+    about: ME,
+    relation,
+    value,
+    provenance: 'extracted',
+    ...(until !== undefined ? { until } : {}),
+  });
+  const note = { about: ME, relation: 'relocating to', value: 'Denver, in November 2026' };
+
+  it('finds the active extracted restatement of the note (the walk pair, reversed)', () => {
+    const row = extracted('relocating_to', 'Relocating to Denver in November');
+    expect(findActiveExtractedTwin(note, [row])).toBe(row);
+  });
+
+  it('a closed extracted row does not count', () => {
+    const closed = extracted('relocating_to', 'Relocating to Denver in November', '2026-09-28T00:00:00Z');
+    expect(findActiveExtractedTwin(note, [closed])).toBeUndefined();
+  });
+
+  it('an agent or human row does not count — only an extracted one', () => {
+    const human: PriorRow = { ...agent('relocating to', 'Denver, in November 2026'), provenance: 'human' };
+    expect(findActiveExtractedTwin(note, [agent('relocating to', 'Denver, in November 2026')])).toBeUndefined();
+    expect(findActiveExtractedTwin(note, [human])).toBeUndefined();
+  });
+
+  it('a different value, or another subject, is not a twin', () => {
+    const artist = { about: ME, relation: 'likes artist', value: 'Radiohead' };
+    expect(findActiveExtractedTwin(artist, [extracted('likes_artist', 'Bjork')])).toBeUndefined();
+    const bob = { ...extracted('relocating_to', 'Relocating to Denver in November'), about: 'user:bob' };
+    expect(findActiveExtractedTwin(note, [bob])).toBeUndefined();
   });
 });

@@ -5,7 +5,7 @@ import { extractFacts, type ExtractedFact, type LlmCallFn } from './extract.js';
 import { isAgentContextSelfReport } from './self-report.js';
 import { deriveSlot, type Slot } from './slots.js';
 import { rewriteSpeaker } from './subject.js';
-import { dropTwins, type PriorRow } from './twins.js';
+import { dropTwins, hasActiveTwin, type PriorRow } from './twins.js';
 import type { MemoryStatementKind } from './types.js';
 import {
   filterDialogue,
@@ -137,6 +137,8 @@ export type ObserverResult =
       twins: number;
       /** Whether the twin check ran — see {@link TwinCheck}. */
       twinCheck: TwinCheck;
+      /** Why the twin check failed, when it did (TASK-649). */
+      twinCheckError?: Error;
       retried: boolean;
       batchKey: string;
     };
@@ -148,10 +150,11 @@ export type ObserverResult =
  * - `skipped` — nothing to check against: the statements carry no
  *   conversation (a routine run, a conversation-less turn) or no reader was
  *   wired;
- * - `failed` — the read threw, and the batch was recorded UNFILTERED. Fail
- *   open on purpose: the check only removes a duplicate, and dropping a whole
- *   batch of real facts over a read error would be the worse loss. Reported
- *   so it is never silent.
+ * - `failed` — the read threw, and the batch was recorded UNFILTERED (or,
+ *   when only the TASK-649 chain read threw, with the statements it was
+ *   asked about kept). Fail open on purpose: the check only removes a
+ *   duplicate, and dropping a whole batch of real facts over a read error
+ *   would be the worse loss. Reported, with its cause, so it is never silent.
  */
 export type TwinCheck = 'ran' | 'skipped' | 'failed';
 
@@ -165,6 +168,18 @@ export type PriorRowsFn = (query: {
   ownerUserId: string;
   conversationId: string;
 }) => Promise<PriorRow[]>;
+
+/**
+ * Whether `value` is one the person marked NEVER right in the owner's
+ * `(about, slot)` chain — across conversations, closed rows included. The
+ * same rule `profile.ts`'s `restatedByPerson` applies at read time (TASK-648).
+ */
+export type RetractedValueFn = (query: {
+  about: string;
+  slot: string;
+  value: string;
+  ownerUserId: string;
+}) => Promise<boolean>;
 
 export interface RunObserverInput {
   /** `chat:end`'s `outcome.messages`, untrusted and unfiltered. */
@@ -197,6 +212,11 @@ export interface RunObserverInput {
    * pure-function tests that predate it keep their exact behaviour.
    */
   priorRows?: PriorRowsFn;
+  /**
+   * The chain read behind the twin check's one exception (TASK-649) — see
+   * {@link withoutTwins}. Absent = no exception.
+   */
+  retractedValue?: RetractedValueFn;
 }
 
 export async function runObserver(input: RunObserverInput): Promise<ObserverResult> {
@@ -312,7 +332,10 @@ async function extractAndRecord(
     return { kind: 'skipped', reason: 'no-facts' };
   }
 
-  const { statements, twins, twinCheck } = await withoutTwins(input, mapped.statements);
+  const { statements, twins, twinCheck, twinCheckError } = await withoutTwins(
+    input,
+    mapped.statements,
+  );
   if (statements.length === 0) {
     return { kind: 'skipped', reason: 'only-twins', twins, twinCheck };
   }
@@ -337,6 +360,7 @@ async function extractAndRecord(
     contextOnly: attributed.contextOnly,
     twins,
     twinCheck,
+    ...(twinCheckError !== undefined ? { twinCheckError } : {}),
     retried: extraction.retried,
     batchKey,
   };
@@ -352,11 +376,35 @@ async function extractAndRecord(
  * A batch that re-runs under the same key after a twin was saved can drop a
  * different set than the first run did; the engine answers a replayed key
  * with the rows it already holds, so nothing is written twice either way.
+ *
+ * ## The one exception (TASK-649, for TASK-648)
+ *
+ * A twin is KEPT when all of these hold: the person said it in their own turn
+ * (`sourceRole: 'user'`), it has a slot, one of its twins is still ACTIVE, and
+ * its value is one the person had marked never right in that slot's chain.
+ * That row is what `profile.ts`'s `restatedByPerson` resurfaces the value
+ * from; the agent note it twins stays hidden as a retracted value on a
+ * non-human row, so nothing shows twice. Dropping it instead left the value
+ * the person just restated hidden behind their old Fix.
+ *
+ * An active twin is required so TASK-641's in-window Fix still holds: when
+ * the note was Fixed as never right BEFORE the pass over the turn it came
+ * from, every twin is closed and the extractor's copy is still dropped.
+ * Residual, stated: the person restating it in a LATER turn of the same
+ * conversation with no fresh agent note looks the same and is dropped too.
  */
 async function withoutTwins(
-  input: Pick<RunObserverInput, 'priorRows' | 'ownerUserId' | 'statementConversationId'>,
+  input: Pick<
+    RunObserverInput,
+    'priorRows' | 'retractedValue' | 'ownerUserId' | 'statementConversationId'
+  >,
   statements: ObserverStatement[],
-): Promise<{ statements: ObserverStatement[]; twins: number; twinCheck: TwinCheck }> {
+): Promise<{
+  statements: ObserverStatement[];
+  twins: number;
+  twinCheck: TwinCheck;
+  twinCheckError?: Error;
+}> {
   const conversationId = input.statementConversationId;
   if (input.priorRows === undefined || conversationId === undefined) {
     return { statements, twins: 0, twinCheck: 'skipped' };
@@ -368,11 +416,36 @@ async function withoutTwins(
       ownerUserId: input.ownerUserId,
       conversationId,
     });
-  } catch {
-    return { statements, twins: 0, twinCheck: 'failed' };
+  } catch (err) {
+    return { statements, twins: 0, twinCheck: 'failed', twinCheckError: asError(err) };
   }
-  const { kept, twins } = dropTwins(statements, prior);
-  return { statements: kept, twins, twinCheck: 'ran' };
+  const spared = new Set<ObserverStatement>();
+  let twinCheckError: Error | undefined;
+  for (const s of statements) {
+    if (s.sourceRole !== 'user' || s.slot === undefined || input.retractedValue === undefined) continue;
+    if (!hasActiveTwin(s, prior)) continue;
+    try {
+      const retracted = await input.retractedValue({
+        about: s.about,
+        slot: s.slot,
+        value: s.value,
+        ownerUserId: input.ownerUserId,
+      });
+      if (retracted) spared.add(s);
+    } catch (err) {
+      // Fail open, like the read above: keep the statement, say so.
+      spared.add(s);
+      twinCheckError ??= asError(err);
+    }
+  }
+  const { kept, twins } = dropTwins(statements, prior, (s) => spared.has(s));
+  return twinCheckError !== undefined
+    ? { statements: kept, twins, twinCheck: 'failed', twinCheckError }
+    : { statements: kept, twins, twinCheck: 'ran' };
+}
+
+function asError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err));
 }
 
 /**
