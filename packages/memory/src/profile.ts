@@ -70,8 +70,12 @@ export interface SlotGroupRow {
  * person rejected the value itself, so the same value said again in chat is
  * the stale value coming back, not news (TASK-633). A Forget (closed, no
  * successor, no bit) still is not, and a reinstate clears the bit.
+ *
+ * Exported for the observer's write-time check on SLOT-LESS rows (TASK-654,
+ * `twins.ts`'s `hasRetractedTwin`), which no chain here can reach: one rule
+ * for what "retracted" means, on both sides.
  */
-function isRetracted(row: SlotGroupRow): boolean {
+export function isRetracted(row: Pick<SlotGroupRow, 'until' | 'neverTrue'>): boolean {
   return row.until !== undefined && row.neverTrue === true;
 }
 

@@ -60,6 +60,8 @@
  * a plain object with it.
  */
 
+import { isRetracted } from './profile.js';
+
 /** Provenance tiers that suppress an extracted twin. */
 const HIGHER_TIERS: ReadonlySet<string> = new Set(['agent', 'human']);
 
@@ -86,6 +88,8 @@ export interface PriorRow extends TwinCandidate {
   provenance?: string;
   /** Set when the row is closed (fixed, forgotten, replaced). Absent = active. */
   until?: string;
+  /** Closed by a person's "it was never right" (TASK-624) — see {@link hasRetractedTwin}. */
+  neverTrue?: boolean;
 }
 
 /**
@@ -160,6 +164,25 @@ function sameFact(statement: TwinCandidate, prior: TwinCandidate): boolean {
  */
 export function hasActiveTwin(statement: TwinCandidate, prior: readonly PriorRow[]): boolean {
   return prior.some((p) => p.until === undefined && isTwin(statement, p));
+}
+
+/**
+ * Whether `statement` restates a row the person said was NEVER right
+ * (TASK-654) — any provenance, any conversation the caller read.
+ *
+ * The read side hides a retracted value only inside a single-valued slot
+ * (`profile.ts`, keyed on `(about, slot)` + exact value). A slot-less row is
+ * in no chain, and its re-extraction is usually paraphrased ("Relocating to
+ * Denver in November" for "Denver, in November 2026"), so nothing on read can
+ * match it — TASK-646 measured fuzzy display-time matching and dropped it.
+ * The observer asks this instead, before it writes (human ruling, Vinay
+ * 2026-09-28: "observer checks at write"), with the same twin rule as
+ * everything above and `profile.ts`'s `isRetracted` as the one retraction
+ * rule. Tier-blind: an extracted row Fixed as never right is as retracted as
+ * an agent note.
+ */
+export function hasRetractedTwin(statement: TwinCandidate, rows: readonly PriorRow[]): boolean {
+  return rows.some((row) => isRetracted(row) && sameFact(statement, row));
 }
 
 /**

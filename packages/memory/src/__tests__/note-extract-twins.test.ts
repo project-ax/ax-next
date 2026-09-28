@@ -214,8 +214,9 @@ describe('an extracted restatement of an agent note is not stored', () => {
 
   // A SCOPE guard, not a fix test: it passes on the unfixed code too. It
   // fails if the check ever starts matching a routine batch against its
-  // hidden per-fire conversation.
-  it('a routine run carries no conversation, so nothing is checked (TASK-616 scope)', async () => {
+  // hidden per-fire conversation. (TASK-654's retracted-twin check is
+  // owner-scoped and does run here; it finds nothing retracted to drop.)
+  it('a routine run carries no conversation, so the conversation twin check is skipped (TASK-616 scope)', async () => {
     vi.useFakeTimers();
     const env = await setup();
     const routine = env.ctx('routine');
@@ -704,5 +705,234 @@ describe('a negation in the person’s own message never resurfaces a retracted 
     await env.idle();
 
     expect(await profile(env)).toEqual(['Denver, Colorado']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-654 — a SLOT-LESS value the person marked never right must not come
+// back on the agent's say-so. The read side hides a retracted value only in a
+// single-valued slot (`profile.ts`); the walk's "Denver" / "Oct 14" rows sit
+// in no slot, so the observer checks for a retracted TWIN before it writes
+// (human ruling, Vinay 2026-09-28: "observer checks at write"). The person
+// restating it in their own turn still brings it back (TASK-648 ruling).
+// ---------------------------------------------------------------------------
+
+describe('a slot-less value marked never right is not re-extracted from the agent', () => {
+  const OLD = 'conv-old';
+  const CORRECTED = 'Austin, in March 2027';
+  const PET: Fact = { subject: 'user', predicate: 'has_pet', object: 'a cat named Miso' };
+
+  /** In another conversation: the agent noted the move, the person Fixed it as never right. */
+  async function retracted(env: Env): Promise<{ notedId: string; correctionId: string }> {
+    const old = env.h.ctx({ conversationId: OLD });
+    await env.note(DENVER_NOTE, old);
+    const [noted] = (await env.h.recall({ conversationId: OLD }, old)).statements;
+    const { id } = await env.h.correct(
+      { id: noted!.id, about: 'user', relation: noted!.relation, value: CORRECTED, reason: 'never-right' },
+      old,
+    );
+    return { notedId: noted!.id, correctionId: id };
+  }
+  /** Every active row the owner has, any conversation. */
+  const active = async (env: Env): Promise<string[]> =>
+    values((await env.h.recall({ activeOnly: true }, env.ctx())).statements);
+  const extracted = (env: Env) => env.rows().filter((r) => r.provenance === 'extracted');
+
+  it('the premise: the note and its re-extraction sit in no slot', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    await retracted(env);
+    const rows = (await env.h.recall({ activeOnly: false }, env.ctx())).statements;
+    expect(rows.every((r) => r.slot === undefined)).toBe(true);
+  });
+
+  it("the agent's reply repeating it is not stored, and the value stays hidden", async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    await retracted(env);
+    env.extract([DENVER_EXTRACTED]);
+    await env.exchange('When is my move again?', 'You are relocating to Denver in November.', 'r1');
+    await env.idle();
+
+    expect(extracted(env)).toEqual([]);
+    expect(await active(env)).toEqual([CORRECTED]);
+    expect(await env.feed()).toEqual([]);
+    const run = eventsNamed(env.h.logs, OBSERVER_RUN_EVENT).at(-1);
+    expect(run?.bindings).toMatchObject({ outcome: 'skipped', reason: 'only-twins', twins: 0, retracted: 1 });
+  });
+
+  it('an unrelated slot-less fact in the same pass is still stored, and the drop is counted', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    await retracted(env);
+    env.extract([DENVER_EXTRACTED, PET]);
+    await env.exchange(
+      'I have a cat named Miso.',
+      'Lovely! And you are relocating to Denver in November.',
+      'r1',
+    );
+    await env.idle();
+
+    expect(extracted(env).map((r) => r.value)).toEqual(['a cat named Miso']);
+    expect(await active(env)).toEqual([CORRECTED, 'a cat named Miso']);
+    const run = eventsNamed(env.h.logs, OBSERVER_RUN_EVENT).at(-1);
+    expect(run?.bindings).toMatchObject({ outcome: 'recorded', recorded: 1, retracted: 1 });
+  });
+
+  it('the person restating it in their own turn brings it back', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    await retracted(env);
+    env.extract([DENVER_EXTRACTED]);
+    await env.exchange('Actually I am relocating to Denver in November after all.', 'Got it.', 'r1');
+    await env.idle();
+
+    expect(extracted(env).map((r) => [r.value, r.source_role])).toEqual([
+      ['Relocating to Denver in November', 'user'],
+    ]);
+    expect(await active(env)).toEqual([CORRECTED, 'Relocating to Denver in November']);
+    expect(values(await env.feed())).toEqual(['Relocating to Denver in November']);
+  });
+
+  it('after an Undo of the Fix the value is no longer retracted, and a re-extraction is stored', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    const { notedId, correctionId } = await retracted(env);
+    const { undone } = await env.h.uncorrect({ id: correctionId, restore: notedId }, env.ctx());
+    expect(undone).toBe(true);
+
+    env.extract([DENVER_EXTRACTED]);
+    await env.exchange('When is my move again?', 'You are relocating to Denver in November.', 'r1');
+    await env.idle();
+
+    expect(extracted(env).map((r) => r.value)).toEqual(['Relocating to Denver in November']);
+  });
+
+  it('a Forget is not "never right": a re-extraction is stored', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    const old = env.h.ctx({ conversationId: OLD });
+    await env.note(DENVER_NOTE, old);
+    const [noted] = (await env.h.recall({ conversationId: OLD }, old)).statements;
+    await env.h.forget({ ids: [noted!.id] }, old);
+
+    env.extract([DENVER_EXTRACTED]);
+    await env.exchange('When is my move again?', 'You are relocating to Denver in November.', 'r1');
+    await env.idle();
+
+    expect(extracted(env).map((r) => r.value)).toEqual(['Relocating to Denver in November']);
+  });
+
+  it('a Fix as "it changed" is not "never right" either: a re-extraction is stored', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    const old = env.h.ctx({ conversationId: OLD });
+    await env.note(DENVER_NOTE, old);
+    const [noted] = (await env.h.recall({ conversationId: OLD }, old)).statements;
+    await env.h.correct(
+      { id: noted!.id, about: 'user', relation: noted!.relation, value: CORRECTED, reason: 'changed' },
+      old,
+    );
+
+    env.extract([DENVER_EXTRACTED]);
+    await env.exchange('Where was I moving before?', 'You were relocating to Denver in November.', 'r1');
+    await env.idle();
+
+    expect(extracted(env).map((r) => r.value)).toEqual(['Relocating to Denver in November']);
+  });
+
+  // Scope: a SLOTTED value is the read side's (TASK-639 hides it on exact
+  // `(about, slot)` + value; TASK-648 resurfaces the person's restatement).
+  // The write-time check leaves it alone, so the two rules never disagree.
+  it('a slotted retracted value is left to the read side: written, and hidden there', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    const old = env.h.ctx({ conversationId: OLD });
+    await env.note({ about: 'user', relation: 'lives in', value: 'Denver, Colorado' }, old);
+    const [noted] = (await env.h.recall({ conversationId: OLD }, old)).statements;
+    await env.h.correct(
+      { id: noted!.id, about: 'user', relation: noted!.relation, value: 'Boston, Massachusetts', reason: 'never-right' },
+      old,
+    );
+
+    env.extract([{ subject: 'user', predicate: 'lives_in', object: 'Denver, Colorado' }]);
+    await env.exchange('Where do I live?', 'You live in Denver, Colorado.', 'r1');
+    await env.idle();
+
+    expect(extracted(env).map((r) => [r.value, r.source_role])).toEqual([['Denver, Colorado', 'assistant']]);
+    expect(values((await env.h.recall({ profile: true }, env.ctx())).statements)).toEqual([
+      'Boston, Massachusetts',
+    ]);
+    const run = eventsNamed(env.h.logs, OBSERVER_RUN_EVENT).at(-1);
+    expect(run?.bindings).toMatchObject({ outcome: 'recorded', retracted: 0 });
+  });
+
+  // Review finding: the CONVERSATION read failing and the retracted check
+  // then dropping every kept statement ends on `only-twins`, not `recorded`.
+  // The failure must still be reported, with its cause.
+  it('a failed conversation read is still reported when the retracted check drops everything', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    await retracted(env);
+
+    const bus = env.h.bus;
+    const original = bus.call.bind(bus);
+    bus.call = (async (name: string, c: AgentContext, input: unknown) => {
+      const i = input as { about?: unknown; conversationId?: unknown } | undefined;
+      if (name === 'memory:facts:recall' && i?.about !== undefined && i.conversationId === CONV) {
+        throw new Error('conversation rows unavailable');
+      }
+      return original(name, c, input);
+    }) as typeof bus.call;
+    try {
+      env.extract([DENVER_EXTRACTED]);
+      await env.exchange('When is my move again?', 'You are relocating to Denver in November.', 'r1');
+      await env.idle();
+    } finally {
+      bus.call = original;
+    }
+
+    expect(extracted(env)).toEqual([]);
+    const run = eventsNamed(env.h.logs, OBSERVER_RUN_EVENT).at(-1);
+    expect(run?.bindings).toMatchObject({ outcome: 'skipped', reason: 'only-twins', retracted: 1 });
+    const failed = eventsNamed(env.h.logs, OBSERVER_FAILED_EVENT).find(
+      (e) => e.bindings.reason === 'twin-check-failed',
+    );
+    expect((failed?.bindings.err as Error | undefined)?.message).toBe('conversation rows unavailable');
+  });
+
+  it('the read fails open: the statement is kept, and the warning carries the cause', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    await retracted(env);
+
+    const bus = env.h.bus;
+    const original = bus.call.bind(bus);
+    bus.call = (async (name: string, c: AgentContext, input: unknown) => {
+      // The retracted-twin read is the only one naming neither a slot nor a conversation.
+      const i = input as { slots?: unknown; conversationId?: unknown; activeOnly?: unknown } | undefined;
+      if (
+        name === 'memory:facts:recall' &&
+        i?.activeOnly === false &&
+        i.slots === undefined &&
+        i.conversationId === undefined
+      ) {
+        throw new Error('owner rows unavailable');
+      }
+      return original(name, c, input);
+    }) as typeof bus.call;
+    try {
+      env.extract([DENVER_EXTRACTED]);
+      await env.exchange('When is my move again?', 'You are relocating to Denver in November.', 'r1');
+      await env.idle();
+    } finally {
+      bus.call = original;
+    }
+
+    expect(extracted(env)).toHaveLength(1);
+    const failed = eventsNamed(env.h.logs, OBSERVER_FAILED_EVENT).find(
+      (e) => e.bindings.reason === 'twin-check-failed',
+    );
+    expect((failed?.bindings.err as Error | undefined)?.message).toBe('owner rows unavailable');
   });
 });
