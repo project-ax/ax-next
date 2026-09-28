@@ -548,3 +548,86 @@ export function supersedeIds(
   });
   return close();
 }
+
+/** What one {@link reinstateIds} call did — the re-open and the repair it forced. */
+export interface ReinstateResult {
+  /** Ids this call re-opened; a foreign, missing, active or rule-closed id is absent. */
+  reinstated: string[];
+  /** Ids whose closure CHANGED as a fallout — see {@link resettleSlotGroups}. */
+  resettled: string[];
+}
+
+/**
+ * The inverse of {@link supersedeIds} (TASK-630): re-open rows an explicit
+ * retraction closed, as the SAME rows — nothing is re-recorded, so the row's
+ * provenance, owner, `when` and conversation are exactly what they were.
+ *
+ * Only a retraction qualifies (`closed_by IS NULL` and a finite `valid_end`,
+ * the same test {@link resettleSlotGroups} uses to drop retractions from the
+ * replay). A rule-closed row and an active row fail the predicate and are
+ * left alone, so `changes > 0` is again the single authority on what this
+ * call did, and the owner predicate rides in the same UPDATE for the same
+ * reason it does in `supersedeIds`.
+ *
+ * `never_true` is cleared in that UPDATE: the label is a claim about a
+ * retraction, and a reinstated row is not one. Left set, the row would read
+ * "never right" again the moment the slot rule closed it.
+ *
+ * The re-open is only half of it. While the row was retracted its chain was
+ * re-derived without it (a neighbour it had closed was re-opened), and rows
+ * may have arrived since. So the chains of the reinstated rows are replayed
+ * in the same transaction — the reinstated row is now a peer again, which
+ * puts the store in the state it would be in had the retraction never
+ * happened: its old neighbour is closed again, and a newer row that arrived
+ * meanwhile closes it. That can include the reinstated row itself in
+ * `resettled`: it is re-opened here and immediately bounded by the replay.
+ */
+export function reinstateIds(
+  driver: BetterSqliteDb,
+  agentKey: string,
+  ids: readonly string[],
+  ownerUserId?: string,
+): ReinstateResult {
+  if (ids.length === 0) return { reinstated: [], resettled: [] };
+  const reopen = driver.transaction((): ReinstateResult => {
+    const reinstated: string[] = [];
+    // Keyed structurally for the same reason as in `supersedeIds`.
+    const groups = new Map<string, SlotGroup>();
+
+    const ownerClause = ownerUserId === undefined ? '' : ' AND owner_user_id = ?';
+    const ownerParams: string[] = ownerUserId === undefined ? [] : [ownerUserId];
+
+    const statement = driver.prepare(
+      `UPDATE ${TABLE} SET valid_end = ?, never_true = NULL
+        WHERE id = ? AND agent_key = ?${ownerClause}
+          AND closed_by IS NULL AND valid_end <> ?`,
+    );
+    const readGroup = driver.prepare(
+      `SELECT about, slot FROM ${TABLE} WHERE id = ? AND agent_key = ?${ownerClause}`,
+    );
+
+    for (const id of ids) {
+      // A duplicated id matches nothing the second time — the first UPDATE
+      // made it active — so it is reported once without a separate dedupe.
+      if (
+        statement.run(INFINITY_SENTINEL, id, agentKey, ...ownerParams, INFINITY_SENTINEL).changes ===
+        0
+      ) {
+        continue;
+      }
+      reinstated.push(id);
+      const row = readGroup.get(id, agentKey, ...ownerParams) as
+        | { about: string; slot: string | null }
+        | undefined;
+      if (row === undefined || row.slot === null || row.slot === PENDING_SLOT) continue;
+      groups.set(JSON.stringify([row.about, row.slot]), { about: row.about, slot: row.slot });
+    }
+
+    // Tenant-scoped replay, not owner-scoped — see `supersedeIds`.
+    return {
+      reinstated,
+      resettled: resettleSlotGroups(driver, agentKey, [...groups.values()]),
+    };
+  });
+  return reopen();
+}

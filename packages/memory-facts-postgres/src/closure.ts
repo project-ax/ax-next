@@ -604,3 +604,66 @@ export async function supersedeIds(
     return { closed, resettled: await resettleSlotGroups(trx, agentKey, [...groups.values()]) };
   });
 }
+
+/** What one {@link reinstateIds} call did — the re-open and the repair it forced. */
+export interface ReinstateResult {
+  /** Ids this call re-opened; a foreign, missing, active or rule-closed id is absent. */
+  reinstated: string[];
+  /** Ids whose closure CHANGED as a fallout — see {@link resettleSlotGroups}. */
+  resettled: string[];
+}
+
+/**
+ * The inverse of {@link supersedeIds} (TASK-630) — the twin of the sqlite
+ * engine's `reinstateIds`; see that docstring for the full rationale. In
+ * short: re-open only RETRACTIONS (`closed_by IS NULL`, finite `valid_end`)
+ * as the same rows, provenance untouched; clear `never_true` in the same
+ * UPDATE; then replay the reinstated rows' chains in the same transaction so
+ * the store ends as if the retraction had never happened.
+ */
+export async function reinstateIds(
+  db: FactsDatabase,
+  agentKey: string,
+  ids: readonly string[],
+  ownerUserId?: string,
+): Promise<ReinstateResult> {
+  if (ids.length === 0) return { reinstated: [], resettled: [] };
+
+  return db.transaction().execute(async (trx) => {
+    // One statement for the whole id list. A foreign, foreign-owner, missing,
+    // active or rule-closed id fails the predicate and is absent from
+    // RETURNING, so RETURNING is the single authority on what was re-opened.
+    let update = trx
+      .updateTable(TABLE)
+      .set({ valid_end: INFINITY_SENTINEL, never_true: null })
+      .where('agent_key', '=', agentKey)
+      .where('closed_by', 'is', null)
+      .where('valid_end', '<>', INFINITY_SENTINEL)
+      .where('id', 'in', [...ids]);
+    if (ownerUserId !== undefined) update = update.where('owner_user_id', '=', ownerUserId);
+    const reopened = await update.returning(['id', 'about', 'slot']).execute();
+
+    const reopenedById = new Map(reopened.map((row) => [row.id, row]));
+
+    // Caller's id order, each id once — the sqlite twin's per-id loop answer.
+    const reinstated: string[] = [];
+    // Keyed structurally for the same reason as in `supersedeIds`.
+    const groups = new Map<string, SlotGroup>();
+    const seen = new Set<string>();
+    for (const id of ids) {
+      if (seen.has(id)) continue;
+      const row = reopenedById.get(id);
+      if (row === undefined) continue;
+      seen.add(id);
+      reinstated.push(id);
+      if (row.slot === null || row.slot === PENDING_SLOT) continue;
+      groups.set(JSON.stringify([row.about, row.slot]), { about: row.about, slot: row.slot });
+    }
+
+    // Tenant-scoped replay, not owner-scoped — see `supersedeIds`.
+    return {
+      reinstated,
+      resettled: await resettleSlotGroups(trx, agentKey, [...groups.values()]),
+    };
+  });
+}
