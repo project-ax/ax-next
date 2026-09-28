@@ -140,32 +140,41 @@ export function buildSlotRequest(items: SlotItem[], mode: InputMode, model = JEV
   return { model, state, questions };
 }
 
-export interface ChoiceAnswer {
-  choice: SlotOption;
-  /** The chosen option's probability — what the threshold reads. */
+/** One `choice` answer over a fixed option set `O`. */
+export interface OptionAnswer<O extends string> {
+  choice: O;
+  /** The chosen option's probability — what a threshold reads. */
   p: number;
   confidence: number | null;
-  probabilities: Partial<Record<SlotOption, number>>;
+  probabilities: Partial<Record<O, number>>;
 }
 
-export interface ParsedResponse {
-  answers: Map<string, ChoiceAnswer>;
+export interface ParsedChoices<O extends string> {
+  answers: Map<string, OptionAnswer<O>>;
   model: string;
   cost: number;
   inputTokens: number;
   outputTokens: number;
 }
 
-const OPTIONS: ReadonlySet<string> = new Set<string>([...SLOTS, NO_SLOT]);
+export type ChoiceAnswer = OptionAnswer<SlotOption>;
+export type ParsedResponse = ParsedChoices<SlotOption>;
+
+const OPTIONS: ReadonlySet<SlotOption> = new Set<SlotOption>([...SLOTS, NO_SLOT]);
 
 /**
- * Parse a Decisions response, strictly about what matters and tolerant about the rest.
+ * Parse a Decisions response of `choice` answers, strictly about what matters and tolerant
+ * about the rest.
  *
- * Strict: every asked question must come back as a `choice` whose choice is one of the nine
- * options — an answer outside the offered set is a protocol error, not a slot. Tolerant:
- * rounded probabilities that do not sum to 1, an absent `confidence`, an absent `cost`.
+ * Strict: every asked question must come back as a `choice` whose choice is one of `options`
+ * — an answer outside the offered set is a protocol error, not a label. Tolerant: rounded
+ * probabilities that do not sum to 1, an absent `confidence`, an absent `cost`.
  */
-export function parseSlotResponse(payload: unknown, questionIds: readonly string[]): ParsedResponse {
+export function parseChoiceResponse<O extends string>(
+  payload: unknown,
+  questionIds: readonly string[],
+  options: ReadonlySet<O>,
+): ParsedChoices<O> {
   if (typeof payload !== "object" || payload === null) throw new Error("decisions: response is not an object");
   const body = payload as {
     model?: unknown;
@@ -175,21 +184,22 @@ export function parseSlotResponse(payload: unknown, questionIds: readonly string
   if (typeof body.answers !== "object" || body.answers === null) {
     throw new Error("decisions: response has no answers");
   }
-  const answers = new Map<string, ChoiceAnswer>();
+  const offered = options as ReadonlySet<string>;
+  const answers = new Map<string, OptionAnswer<O>>();
   for (const id of questionIds) {
     const raw = body.answers[id] as
       | { type?: unknown; choice?: unknown; confidence?: unknown; probabilities?: unknown }
       | undefined;
     if (!raw || raw.type !== "choice") throw new Error(`decisions: no choice answer for ${id}`);
-    if (typeof raw.choice !== "string" || !OPTIONS.has(raw.choice)) {
+    if (typeof raw.choice !== "string" || !offered.has(raw.choice)) {
       throw new Error(`decisions: ${id} chose ${JSON.stringify(raw.choice)}, not an offered option`);
     }
-    const choice = raw.choice as SlotOption;
-    const probabilities: Partial<Record<SlotOption, number>> = {};
+    const choice = raw.choice as O;
+    const probabilities: Partial<Record<O, number>> = {};
     if (typeof raw.probabilities === "object" && raw.probabilities !== null) {
       for (const [option, value] of Object.entries(raw.probabilities as Record<string, unknown>)) {
-        if (OPTIONS.has(option) && typeof value === "number" && Number.isFinite(value)) {
-          probabilities[option as SlotOption] = value;
+        if (offered.has(option) && typeof value === "number" && Number.isFinite(value)) {
+          probabilities[option as O] = value;
         }
       }
     }
@@ -205,6 +215,11 @@ export function parseSlotResponse(payload: unknown, questionIds: readonly string
     inputTokens: num(body.usage?.input_tokens),
     outputTokens: num(body.usage?.output_tokens),
   };
+}
+
+/** The slot question's parser: {@link parseChoiceResponse} over the eight slots plus `none`. */
+export function parseSlotResponse(payload: unknown, questionIds: readonly string[]): ParsedResponse {
+  return parseChoiceResponse(payload, questionIds, OPTIONS);
 }
 
 /**
@@ -348,8 +363,8 @@ export function isRetryableStatus(status: number): boolean {
   return status === 408 || status === 429 || status >= 500;
 }
 
-export interface DecideResult {
-  parsed: ParsedResponse;
+export interface DecideResult<T = ParsedResponse> {
+  parsed: T;
   latencyMs: number;
   cached: boolean;
 }
@@ -369,11 +384,20 @@ export class JevClient {
    * the determinism check needs fresh calls, not a cold cache.
    */
   async decide(request: DecisionsRequest, bypassCache = false): Promise<DecideResult> {
+    return this.decideWith(request, parseSlotResponse, bypassCache);
+  }
+
+  /** {@link decide} with the caller's parser, for questions other than the slot question. */
+  async decideWith<T extends { cost: number }>(
+    request: DecisionsRequest,
+    parse: (body: unknown, questionIds: readonly string[]) => T,
+    bypassCache = false,
+  ): Promise<DecideResult<T>> {
     const ids = Object.keys(request.questions);
     const key = decisionCacheKey(request);
     if (!bypassCache) {
       const hit = this.options.cache.get(key);
-      if (hit) return { parsed: parseSlotResponse(hit.body, ids), latencyMs: hit.latencyMs, cached: true };
+      if (hit) return { parsed: parse(hit.body, ids), latencyMs: hit.latencyMs, cached: true };
     }
     const attempts = this.options.attempts ?? 6;
     let lastError: unknown;
@@ -402,7 +426,7 @@ export class JevClient {
           continue;
         }
         const body = JSON.parse(text) as unknown;
-        const parsed = parseSlotResponse(body, ids);
+        const parsed = parse(body, ids);
         this.options.meter.settle(parsed.cost);
         settled = true;
         this.options.cache.put({ k: key, body, latencyMs });
