@@ -166,6 +166,17 @@ describe('known limitation, pinned so a change is deliberate', () => {
     expect(dropped("user: I don't live in the US.", fact('lives_in', 'US'))).toBe(false);
     expect(dropped('user: Nothing about Denver appeals to me.', fact('likes', 'Denver'))).toBe(false);
   });
+
+  // Review round 2: two-letter values are guarded, so a two-letter word that
+  // means something else and is only ever negated drops a same-spelled value.
+  // Narrow (a single plain mention anywhere keeps it) and in the over-drop
+  // direction slots.ts calls safe; and the idiom stops that keep "no place
+  // LIKE Denver" also keep "no place IN Denver" (a miss, the pre-guard
+  // behaviour).
+  it('a same-spelled two-letter word only ever negated drops the value; "no place in" is kept', () => {
+    expect(dropped("user: I don't work at that co.", fact('lives_in', 'CO'))).toBe(true);
+    expect(dropped('user: I have no place in Denver.', fact('lives_in', 'Denver'))).toBe(false);
+  });
 });
 
 describe('dropNegatedFacts', () => {
@@ -199,9 +210,17 @@ describe('dropNegatedFacts', () => {
       "'".repeat(100_000),
       ', '.repeat(50_000),
     ].join('\n');
-    const facts = Array.from({ length: 50 }, (_, i) => fact('lives_in', `Denver ${'x'.repeat(i)}`));
+    // Plus a multi-word value said whole under a negation and one of its words
+    // said plain, so every fact takes the per-fact phrase walk (review round 2).
+    const walked = `${hostile}\n${"I don't live in New York. ".repeat(20_000)}\na new plan`;
+    const facts = [
+      ...Array.from({ length: 50 }, (_, i) => fact('lives_in', `Denver ${'x'.repeat(i)}`)),
+      ...Array.from({ length: 50 }, () => fact('lives_in', 'New York')),
+    ];
     const started = performance.now();
-    dropNegatedFacts(facts, hostile);
-    expect(performance.now() - started).toBeLessThan(1_000);
+    const out = dropNegatedFacts(facts, walked);
+    expect(performance.now() - started).toBeLessThan(2_000);
+    // The walk really ran and decided: every New York fact is dropped.
+    expect(out.negated).toBe(50);
   });
 });
