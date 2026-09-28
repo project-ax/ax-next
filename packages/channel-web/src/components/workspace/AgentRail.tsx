@@ -95,7 +95,7 @@ export function AgentRail({ detail, learned, openPastId, onOpenPast }: Props) {
   return (
     <aside className="w-[296px] shrink-0 overflow-y-auto border-l border-border px-5 pb-6">
       {/*
-        The rail's own `h2` (TASK-446), so its five `SectionLabel` `h3`s hang
+        The rail's own `h2` (TASK-446), so its `SectionLabel` `h3`s hang
         off something instead of skipping a level straight from the page title.
 
         `sr-only`, and named exactly as the two controls that reach this panel
