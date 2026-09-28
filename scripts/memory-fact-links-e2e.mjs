@@ -140,19 +140,25 @@ function bankSource(source, questionId) {
 async function prepareBank({ sample, source, prepared, env, clients, providerFetch, ledger, storage }) {
   if (existsSync(join(prepared, 'READY'))) return;
   cpSync(bankSource(source, sample.question_id), prepared, { recursive: true });
-  const bank = await createBank({ sample, directory: prepared, env, clients, providerFetch, ledger, storage });
-  try {
-    await storage.run({ questionId: sample.question_id, phase: 'reembed' }, async () => {
-      for (let round = 0; round < 10; round += 1) {
-        await bank.bus.call('memory:facts:reindex', bank.ctx(), {});
-        await bank.drain();
-      }
-    });
-  } finally { await bank.close(); }
   // vec0's row-id shadow table is a plain table, so the sqlite3 CLI can count it.
   const count = (sql) => Number(execFileSync('sqlite3', [join(prepared, 'facts.db'), sql], { encoding: 'utf8' }).trim());
   const facts = count('SELECT count(*) FROM memory_facts_v1');
-  const vectors = count('SELECT count(*) FROM memory_facts_v1_vec_rowids');
+  let vectors = 0;
+  // The backfill stops at its first failed embed (a 429 is common with four shards), so
+  // back off and try again, counting progress between rounds.
+  for (let round = 0; round < 8 && vectors < facts; round += 1) {
+    if (round > 0) await new Promise((r) => setTimeout(r, 5000 * 2 ** Math.min(round - 1, 4)));
+    const bank = await createBank({ sample, directory: prepared, env, clients, providerFetch, ledger, storage });
+    try {
+      await storage.run({ questionId: sample.question_id, phase: 'reembed' }, async () => {
+        for (let pass = 0; pass < Math.ceil(facts / 200) + 1; pass += 1) {
+          await bank.bus.call('memory:facts:reindex', bank.ctx(), {});
+          await bank.drain();
+        }
+      });
+    } finally { await bank.close(); }
+    vectors = count('SELECT count(*) FROM memory_facts_v1_vec_rowids');
+  }
   if (vectors < facts) throw new Error(`re-embed incomplete for ${sample.question_id}: ${vectors}/${facts}`);
   writeFileSync(join(prepared, 'READY'), `${vectors}/${facts}\n`);
 }
