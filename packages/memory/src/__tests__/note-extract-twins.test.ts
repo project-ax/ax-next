@@ -971,6 +971,9 @@ describe('a slot-less value marked never right is not re-extracted from the agen
       expect(run?.bindings).toMatchObject({ outcome: 'recorded', recorded: 1, retracted: 0 });
     });
 
+    // This test and the next are guards for the OTHER direction: they pass on
+    // the unfixed code too (no role then meant dropped), and fail if the
+    // speaker attribution ever credits the person with the agent's words.
     it("the agent's reply repeating it is not stored, and the value stays hidden", async () => {
       const env = await setup();
       await retracted(env);
