@@ -5,6 +5,7 @@ import { extractFacts, type ExtractedFact, type LlmCallFn } from './extract.js';
 import { isAgentContextSelfReport } from './self-report.js';
 import { deriveSlot, type Slot } from './slots.js';
 import { rewriteSpeaker } from './subject.js';
+import { dropTwins, type PriorRow } from './twins.js';
 import type { MemoryStatementKind } from './types.js';
 import {
   filterDialogue,
@@ -83,6 +84,12 @@ export type ObserverResult =
    */
   | { kind: 'skipped'; reason: 'only-self-reports'; selfReports: number }
   /**
+   * Every fact restated something the agent or the person had already saved
+   * in this conversation (TASK-641, `twins.ts`). Ordinary: the fact IS in
+   * memory, once, under the higher tier.
+   */
+  | { kind: 'skipped'; reason: 'only-twins'; twins: number; twinCheck: TwinCheck }
+  /**
    * The extractor produced facts and EVERY ONE of them was unusable, so the
    * batch is empty for a reason.
    *
@@ -120,9 +127,41 @@ export type ObserverResult =
       selfReports: number;
       /** Facts dropped because only a context turn supported them. */
       contextOnly: number;
+      /**
+       * Facts dropped because an agent- or human-saved row in the same
+       * conversation already said them (TASK-641, `twins.ts`).
+       */
+      twins: number;
+      /** Whether the twin check ran — see {@link TwinCheck}. */
+      twinCheck: TwinCheck;
       retried: boolean;
       batchKey: string;
     };
+
+/**
+ * What happened to the twin check (TASK-641):
+ *
+ * - `ran` — the conversation's rows were read and twins dropped;
+ * - `skipped` — nothing to check against: the statements carry no
+ *   conversation (a routine run, a conversation-less turn) or no reader was
+ *   wired;
+ * - `failed` — the read threw, and the batch was recorded UNFILTERED. Fail
+ *   open on purpose: the check only removes a duplicate, and dropping a whole
+ *   batch of real facts over a read error would be the worse loss. Reported
+ *   so it is never silent.
+ */
+export type TwinCheck = 'ran' | 'skipped' | 'failed';
+
+/**
+ * Reads the rows already stored for the batch's conversation, for the twin
+ * check: every row (active or closed) for these subjects, owned by the
+ * batch's owner, in the batch's conversation. Provenance included.
+ */
+export type PriorRowsFn = (query: {
+  abouts: string[];
+  ownerUserId: string;
+  conversationId: string;
+}) => Promise<PriorRow[]>;
 
 export interface RunObserverInput {
   /** `chat:end`'s `outcome.messages`, untrusted and unfiltered. */
@@ -150,6 +189,11 @@ export interface RunObserverInput {
   now: Date;
   /** Hard deadline for the extraction round trip, retry included. */
   timeoutMs: number;
+  /**
+   * The twin check's read (TASK-641). Absent = no check, which is how the
+   * pure-function tests that predate it keep their exact behaviour.
+   */
+  priorRows?: PriorRowsFn;
 }
 
 export async function runObserver(input: RunObserverInput): Promise<ObserverResult> {
@@ -265,9 +309,14 @@ async function extractAndRecord(
     return { kind: 'skipped', reason: 'no-facts' };
   }
 
+  const { statements, twins, twinCheck } = await withoutTwins(input, mapped.statements);
+  if (statements.length === 0) {
+    return { kind: 'skipped', reason: 'only-twins', twins, twinCheck };
+  }
+
   const batchKey = how.batchKey();
 
-  const result = await input.record({ batchKey, statements: mapped.statements });
+  const result = await input.record({ batchKey, statements });
   // `== null`, deliberately: `HookBus.call` returns a handler's RAW value when
   // the hook declares no `returns` schema, and `memory:facts:record` declares
   // none — so an engine resolving to `null` arrives intact and `=== undefined`
@@ -283,9 +332,44 @@ async function extractAndRecord(
     unusable: mapped.unusable,
     selfReports: mapped.selfReports,
     contextOnly: attributed.contextOnly,
+    twins,
+    twinCheck,
     retried: extraction.retried,
     batchKey,
   };
+}
+
+/**
+ * Drop the statements that restate an agent- or human-saved row of the same
+ * conversation (TASK-641, `twins.ts`). Fails OPEN — see {@link TwinCheck}.
+ *
+ * Only a conversation-attributed batch is checked: the twin rule is scoped to
+ * one conversation, and a routine run's rows carry none (TASK-616).
+ *
+ * A batch that re-runs under the same key after a twin was saved can drop a
+ * different set than the first run did; the engine answers a replayed key
+ * with the rows it already holds, so nothing is written twice either way.
+ */
+async function withoutTwins(
+  input: Pick<RunObserverInput, 'priorRows' | 'ownerUserId' | 'statementConversationId'>,
+  statements: ObserverStatement[],
+): Promise<{ statements: ObserverStatement[]; twins: number; twinCheck: TwinCheck }> {
+  const conversationId = input.statementConversationId;
+  if (input.priorRows === undefined || conversationId === undefined) {
+    return { statements, twins: 0, twinCheck: 'skipped' };
+  }
+  let prior: PriorRow[];
+  try {
+    prior = await input.priorRows({
+      abouts: [...new Set(statements.map((s) => s.about))],
+      ownerUserId: input.ownerUserId,
+      conversationId,
+    });
+  } catch {
+    return { statements, twins: 0, twinCheck: 'failed' };
+  }
+  const { kept, twins } = dropTwins(statements, prior);
+  return { statements: kept, twins, twinCheck: 'ran' };
 }
 
 /**
