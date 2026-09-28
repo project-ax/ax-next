@@ -115,6 +115,8 @@ describe('a real positive statement is kept (controls)', () => {
     // A multi-word value mentioned whole and un-negated is kept, even if one
     // of its words is also negated somewhere.
     ["user: I don't live in York. I live in New York.", 'lives_in', 'New York'],
+    // Said whole both ways: the un-negated whole mention wins, as for Denver.
+    ['user: I never lived in New York.\nuser: Wait, actually I do live in New York.', 'lives_in', 'New York'],
     // Its words said apart, one negated: no evidence the whole was negated.
     ["user: I don't live in Denver, I live in Boulder.", 'lives_in', 'Boulder, near Denver'],
     // A paraphrase: nothing in the dialogue to say it was negated.
