@@ -49,7 +49,7 @@ vi.mock('@/lib/workspace-api', async () => {
       memoryEvents: vi.fn(),
       correctMemory: vi.fn(),
       forgetMemory: vi.fn(),
-      rememberMemory: vi.fn(),
+      unforgetMemory: vi.fn(),
     },
   };
 });
@@ -58,7 +58,7 @@ const recall = vi.mocked(workspaceApi.recallMemory);
 const events = vi.mocked(workspaceApi.memoryEvents);
 const correct = vi.mocked(workspaceApi.correctMemory);
 const forget = vi.mocked(workspaceApi.forgetMemory);
-const remember = vi.mocked(workspaceApi.rememberMemory);
+const unforget = vi.mocked(workspaceApi.unforgetMemory);
 
 function st(id: string, over: Partial<FactMemoryStatement> = {}): FactMemoryStatement {
   return {
@@ -328,7 +328,7 @@ describe('LearnedInChat — Fix, Forget, Undo', () => {
   it('Forget collapses the row into its receipt, focuses Undo, and Undo brings it back', async () => {
     recall.mockResolvedValueOnce({ statements: [st('a')], degraded: [] });
     forget.mockResolvedValue({ forgotten: true });
-    remember.mockResolvedValue({ id: 'a3' });
+    unforget.mockResolvedValue({ restored: ['a'] });
     render(<Harness />);
     const text = memoryStatementText(st('a'));
     fireEvent.click(await screen.findByRole('button', { name: memoryForgetLabel(text) }));
@@ -344,11 +344,8 @@ describe('LearnedInChat — Fix, Forget, Undo', () => {
 
     fireEvent.click(undo);
     expect(await screen.findByText(MEMORY_RESTORED)).toBeTruthy();
-    expect(remember).toHaveBeenCalledWith('a1', {
-      about: 'user',
-      relation: 'likes',
-      value: st('a').value,
-    });
+    // The same memory comes back (TASK-630's un-forget), so the row keeps its id.
+    expect(unforget).toHaveBeenCalledWith('a1', ['a']);
     expect(screen.getByText(text)).toBeTruthy();
   });
 

@@ -99,10 +99,8 @@ export function LearnedInChat({
   /** The row a receipt with no row of its own ("Updated.") belongs to. */
   const [receiptRowId, setReceiptRowId] = useState<string | null>(null);
   /*
-    No re-read after an Undo. KNOWN LIMIT: Undo re-saves the memory under a
-    NEW id (there is no un-forget yet), while this row keeps the old, closed
-    one — so a Fix or Forget on a restored row acts on the closed statement.
-    TASK-630's un-forget re-opens the SAME id, which removes the gap.
+    No re-read after an Undo: it un-forgets the SAME statement (TASK-630), so
+    the row on screen — still listed, still pinned — is already right.
   */
   const receipt = useMemoryReceipt(agentId, () => {});
   const { markSeen, removeRow, pin, replaceRow, unseen } = memory;
