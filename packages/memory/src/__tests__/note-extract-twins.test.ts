@@ -250,8 +250,11 @@ describe('a Fix on the note leaves nothing of the old value showing', () => {
       const env = await setup();
       await env.note(GO_LIVE_NOTE);
       const [noted] = await env.feed();
+      // The corrected value shares no word with the extracted one, so only
+      // the CLOSED note can recognise the extractor's copy — the check must
+      // read closed rows, not just active ones.
       await env.h.correct(
-        { id: noted!.id, about: 'user', relation: noted!.relation, value: 'October 20, 2026', reason },
+        { id: noted!.id, about: 'user', relation: noted!.relation, value: 'Pushed to spring', reason },
         env.ctx(),
       );
 
@@ -260,7 +263,7 @@ describe('a Fix on the note leaves nothing of the old value showing', () => {
       await env.idle();
 
       const all = (await env.h.recall({ about: 'user', limit: 50 }, env.ctx())).statements;
-      expect(values(all)).toEqual(['October 20, 2026']);
+      expect(values(all)).toEqual(['Pushed to spring']);
       expect(env.rows().some((r) => r.provenance === 'extracted')).toBe(false);
     },
   );
@@ -309,8 +312,10 @@ describe('the twin read fails open', () => {
     const bus = env.h.bus;
     const original = bus.call.bind(bus);
     bus.call = (async (name: string, c: AgentContext, input: unknown) => {
-      const i = input as { activeOnly?: unknown; conversationId?: unknown } | undefined;
-      if (name === 'memory:facts:recall' && i?.activeOnly === false && i.conversationId === CONV) {
+      // The twin read is the only facts read naming BOTH a subject and a
+      // conversation; the feed names the conversation alone.
+      const i = input as { about?: unknown; conversationId?: unknown } | undefined;
+      if (name === 'memory:facts:recall' && i?.about !== undefined && i.conversationId === CONV) {
         throw new Error('facts store unavailable');
       }
       return original(name, c, input);
