@@ -139,14 +139,16 @@ function bankSource(source, questionId) {
  */
 async function prepareBank({ sample, source, prepared, env, clients, providerFetch, ledger, storage }) {
   if (existsSync(join(prepared, 'READY'))) return;
-  cpSync(bankSource(source, sample.question_id), prepared, { recursive: true });
+  // Copy once: a retry keeps the vectors earlier rounds already paid for (the first open
+  // under the current embedder wipes the Vertex ones; later opens find the recipe matches).
+  if (!existsSync(join(prepared, 'facts.db'))) cpSync(bankSource(source, sample.question_id), prepared, { recursive: true });
   // vec0's row-id shadow table is a plain table, so the sqlite3 CLI can count it.
   const count = (sql) => Number(execFileSync('sqlite3', [join(prepared, 'facts.db'), sql], { encoding: 'utf8' }).trim());
   const facts = count('SELECT count(*) FROM memory_facts_v1');
   let vectors = 0;
   // The backfill stops at its first failed embed (a 429 is common with four shards), so
   // back off and try again, counting progress between rounds.
-  for (let round = 0; round < 8 && vectors < facts; round += 1) {
+  for (let round = 0; round < 16 && vectors < facts; round += 1) {
     if (round > 0) await new Promise((r) => setTimeout(r, 5000 * 2 ** Math.min(round - 1, 4)));
     const bank = await createBank({ sample, directory: prepared, env, clients, providerFetch, ledger, storage });
     try {
