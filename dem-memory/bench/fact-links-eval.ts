@@ -19,7 +19,7 @@
  *
  * Measurement only; nothing here writes to a bank (`readonly` connections).
  */
-import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -72,15 +72,22 @@ function findFactDbs(dir: string): string[] {
   return out;
 }
 
-function loadBanks(dir: string): Bank[] {
+function loadBanks(dir: string, completeOnly = false): Bank[] {
   const banks: Bank[] = [];
   for (const path of findFactDbs(dir)) {
     const bankDir = join(path, "..", "..");
+    // A bank still being built has no question.json yet; its pairs would change under us.
+    if (completeOnly && !existsSync(join(bankDir, "question.json"))) continue;
     let qid = bankDir;
-    try {
-      qid = (JSON.parse(readFileSync(join(bankDir, "answer-sonnet.json"), "utf8")) as { questionId: string }).questionId;
-    } catch {
-      /* a bank without a capture keeps its directory name */
+    // Rung-4 banks name their question in the answer capture; banks built by
+    // `scripts/memory-bench-build-banks.mjs` write `question.json`.
+    for (const file of ["question.json", "answer-sonnet.json"]) {
+      try {
+        qid = (JSON.parse(readFileSync(join(bankDir, file), "utf8")) as { questionId: string }).questionId;
+        break;
+      } catch {
+        /* try the next; a bank with neither keeps its directory name */
+      }
     }
     const db = new Database(path, { readonly: true, fileMustExist: true });
     sqliteVec.load(db);
@@ -114,10 +121,11 @@ function locateKnown(banks: Bank[]): Array<{ known: (typeof KNOWN_PAIRS)[number]
   });
 }
 
-function pairsFor(bank: Bank, k: number, minCosine: number, subjects: string): CandidatePair[] {
+function pairsFor(bank: Bank, k: number, minCosine: number, subjects: string, lexicalK = 0): CandidatePair[] {
   return candidatePairs(bank.facts, bank.vectors, {
     k,
     minCosine,
+    lexicalK,
     about: subjects === "all" ? undefined : isUser,
   });
 }
@@ -180,7 +188,7 @@ async function linksPhase(banks: Bank[], args: Record<string, string>, subjects:
   const jobs: Job[] = [];
   for (const bank of banks) {
     const byId = new Map(bank.facts.map((f) => [f.id, f]));
-    for (const pair of pairsFor(bank, k, minCosine, subjects)) {
+    for (const pair of pairsFor(bank, k, minCosine, subjects, Number(args["lexical-k"] ?? 0))) {
       const a = byId.get(pair.a);
       const b = byId.get(pair.b);
       if (a && b) jobs.push({ bank, pair, a, b });
@@ -329,7 +337,7 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   if (!args.banks) throw new Error("--banks <dir> is required");
   const subjects = args.subjects ?? "user";
-  const banks = loadBanks(args.banks.replace(/^~(?=\/)/, homedir()));
+  const banks = loadBanks(args.banks.replace(/^~(?=\/)/, homedir()), args["complete-only"] === "true");
   if ((args.phase ?? "candidates") === "candidates") candidatesPhase(banks, subjects);
   else await linksPhase(banks, args, subjects);
 }

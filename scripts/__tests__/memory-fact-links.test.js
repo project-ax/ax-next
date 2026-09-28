@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderEvidenceTable } from '../../packages/memory/dist/index.js';
-import { LINK_LEGEND, annotateEvidence, mcnemarExact, pairOutcomes, statementKey } from '../memory-fact-links-lib.mjs';
+import { LINK_LEGEND, annotateEvidence, answerForked, mcnemarExact, pairOutcomes, statementKey } from '../memory-fact-links-lib.mjs';
 
 const row = (id, relation, value, when) => ({ id, about: 'user:owner', aboutText: 'you', relation, value, when, kind: 'experience' });
 const toolText = (rows) => ['Today is 2023-03-16 (Thursday).', 'Ground all claims in the evidence table.', '', 'Evidence table:', renderEvidenceTable(rows, '2023-03-16T00:00:00.000Z')].join('\n');
@@ -55,5 +55,49 @@ describe('paired statistics', () => {
       { model: 'm', condition: 'off', questionId: 'c', verdict: 'abstained-correctly' }, { model: 'm', condition: 'on', questionId: 'c', verdict: 'correct' },
     ];
     expect(pairOutcomes(rows, 'm')).toEqual({ pairs: 3, bothRight: 1, bothWrong: 0, gained: ['a'], lost: ['b'] });
+  });
+});
+
+describe('answerForked', () => {
+  const config = { id: 'fake/model', effort: 'minimal', maxTokens: 64 };
+  const descriptor = { name: 'memory_recall', description: 'd', inputSchema: {} };
+  const call = (id, q) => ({ id, type: 'function', function: { name: 'memory_recall', arguments: JSON.stringify({ query: q }) } });
+  // A scripted model: round 1 asks one tool call, round 2 answers with whatever the last tool text said.
+  const scripted = () => async (body) => {
+    const last = body.messages[body.messages.length - 1];
+    if (last.role === 'user') return { choices: [{ message: { content: '', tool_calls: [call('t1', 'eggs')] } }] };
+    return { choices: [{ message: { content: `saw: ${last.content}` } }] };
+  };
+  const base = { config, maxToolTurns: 6, maxPrice: {}, system: 's', question: 'q', descriptor };
+
+  it('forks at the first noted recall and gives each branch its own tool text', async () => {
+    const out = await answerForked({ ...base, request: scripted(), toolResult: async () => ({ plain: 'PLAIN', annotated: 'NOTED', notes: 1 }) });
+    expect(out).toMatchObject({ forked: true, forkTurn: 0, off: { answer: 'saw: PLAIN' }, on: { answer: 'saw: NOTED' } });
+  });
+
+  it('does not fork when no recall would carry a note, and answers once', async () => {
+    let calls = 0;
+    const out = await answerForked({ ...base, request: scripted(), toolResult: async () => { calls += 1; return { plain: 'PLAIN', annotated: 'PLAIN', notes: 0 }; } });
+    expect(out).toEqual({ forked: false, answer: 'saw: PLAIN' });
+    expect(calls).toBe(1);
+  });
+
+  it('shares the prefix: rounds before the fork are asked once, not per branch', async () => {
+    let requests = 0;
+    const model = scripted();
+    const counted = async (body) => { requests += 1; return model(body); };
+    await answerForked({ ...base, request: counted, toolResult: async () => ({ plain: 'P', annotated: 'N', notes: 2 }) });
+    expect(requests).toBe(3); // one shared first round, then one answer round per branch
+  });
+
+  it('branches do not share message history after the fork', async () => {
+    const seen = [];
+    const model = scripted();
+    const spy = async (body) => { seen.push(body.messages.map((m) => m.content).join('|')); return model(body); };
+    await answerForked({ ...base, request: spy, toolResult: async () => ({ plain: 'P', annotated: 'N', notes: 1 }) });
+    const [offRound, onRound] = seen.slice(1);
+    expect(offRound.endsWith('|P')).toBe(true);
+    expect(onRound.endsWith('|N')).toBe(true);
+    expect(onRound).not.toContain('|P');
   });
 });

@@ -5,6 +5,7 @@ import {
   buildLinkRequest,
   candidatePairs,
   displayAbout,
+  factTokens,
   linkFromAnswer,
   type LinkFact,
 } from "../bench/fact-links.js";
@@ -100,5 +101,37 @@ describe("candidatePairs", () => {
   it("honours a subject filter", () => {
     const facts = [fact("other-subject", "2023-01-01", "assistant"), fact("later", "2023-01-02", "assistant")];
     expect(candidatePairs(facts, vectors, { k: 5, minCosine: 0, about: (a) => a.startsWith("user") })).toEqual([]);
+  });
+});
+
+describe("candidatePairs — lexical channel", () => {
+  const withText = (id: string, when: string, relation: string, value: string): LinkFact => ({ id, about: "user:owner", relation, value, when });
+  // Vectors make the "plans" distractor the nearest neighbour, the way gemini did for the sneakers pair.
+  const vectors = new Map([
+    ["old", vec(0, 1)],
+    ["distractor", vec(1, 0.05)],
+    ["new", vec(1, 0)],
+  ]);
+  const facts = [
+    withText("old", "2023-08-11", "stores_sneakers", "old sneakers kept under the bed"),
+    withText("distractor", "2023-09-01", "plans_inventory", "plans to take inventory of the garage this weekend"),
+    withText("new", "2023-11-30", "plans_to_organize", "closet this weekend, storing old sneakers in a shoe rack"),
+  ];
+
+  it("finds a pair that shares a rare word even when the vectors rank it last", () => {
+    const vectorOnly = candidatePairs(facts, vectors, { k: 1, minCosine: -1 }).filter((p) => p.b === "new");
+    expect(vectorOnly.map((p) => p.a)).toEqual(["distractor"]);
+    const hybrid = candidatePairs(facts, vectors, { k: 1, minCosine: -1, lexicalK: 1 }).filter((p) => p.b === "new");
+    expect(hybrid.map((p) => p.a).sort()).toEqual(["distractor", "old"]);
+    expect(hybrid.find((p) => p.a === "old")?.lexical).toBeGreaterThan(0);
+  });
+
+  it("does not duplicate a pair both channels choose", () => {
+    const pairs = candidatePairs(facts, vectors, { k: 2, minCosine: -1, lexicalK: 2 }).filter((p) => p.b === "new");
+    expect(new Set(pairs.map((p) => p.a)).size).toBe(pairs.length);
+  });
+
+  it("ignores stopwords and folds plurals", () => {
+    expect([...factTokens({ relation: "plans_to_organize", value: "the user plans sneakers" })].sort()).toEqual(["organize", "sneaker"]);
   });
 });

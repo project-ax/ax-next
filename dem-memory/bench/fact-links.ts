@@ -77,6 +77,8 @@ export interface CandidatePair {
   a: string;
   b: string;
   cosine: number;
+  /** Shared-rare-word score (Σ idf of shared tokens); 0 when not computed. */
+  lexical?: number;
 }
 
 export interface CandidateOptions {
@@ -86,6 +88,28 @@ export interface CandidateOptions {
   minCosine: number;
   /** Which subjects to link. Default: every subject. */
   about?: (about: string) => boolean;
+  /**
+   * Also take each fact's `lexicalK` earlier neighbours by shared RARE words (idf-weighted,
+   * within the bank). Measured need: under `gemini-embedding-001` the sneakers update pair
+   * ranks 12th by cosine — its nearest neighbours are other `plans_*` facts — but it shares
+   * the bank-rare word "sneakers". Default 0 (vector neighbours only).
+   */
+  lexicalK?: number;
+}
+
+const STOPWORDS = new Set(
+  "the and for with that this from their they them have has had was were are will would about into over after before been being than then when what which while also just more most some such very user users assistant plans plan planning wants want like likes using used uses".split(" "),
+);
+
+/** Content tokens of a fact: relation words + value, lowercased, stopwords and short words dropped, a crude plural fold. */
+export function factTokens(fact: Pick<LinkFact, "relation" | "value">): Set<string> {
+  const words = `${fact.relation.replace(/_/g, " ")} ${fact.value}`.toLowerCase().match(/[a-z][a-z'-]{2,}/g) ?? [];
+  const out = new Set<string>();
+  for (const word of words) {
+    if (STOPWORDS.has(word)) continue;
+    out.add(word.length > 4 && word.endsWith("s") && !word.endsWith("ss") ? word.slice(0, -1) : word);
+  }
+  return out;
 }
 
 function dot(a: Float32Array, b: Float32Array): number {
@@ -120,24 +144,50 @@ export function candidatePairs(
     const v = vectors.get(fact.id);
     if (v) norms.set(fact.id, norm(v));
   }
+  const lexicalK = options.lexicalK ?? 0;
+  const tokens = new Map<string, Set<string>>();
+  const idf = new Map<string, number>();
+  if (lexicalK > 0) {
+    const df = new Map<string, number>();
+    for (const fact of ordered) {
+      const t = factTokens(fact);
+      tokens.set(fact.id, t);
+      for (const w of t) df.set(w, (df.get(w) ?? 0) + 1);
+    }
+    for (const [w, n] of df) idf.set(w, Math.log(ordered.length / n));
+  }
   const pairs: CandidatePair[] = [];
   for (let i = 0; i < ordered.length; i += 1) {
     const b = ordered[i];
-    const vb = b === undefined ? undefined : vectors.get(b.id);
-    const nb = b === undefined ? 0 : (norms.get(b.id) ?? 0);
-    if (!b || !vb || nb === 0) continue;
-    const scored: CandidatePair[] = [];
+    if (!b) continue;
+    const vb = vectors.get(b.id);
+    const nb = norms.get(b.id) ?? 0;
+    const byCosine: CandidatePair[] = [];
+    const byWords: CandidatePair[] = [];
     for (let j = 0; j < i; j += 1) {
       const a = ordered[j];
       if (!a || a.about !== b.about) continue;
       const va = vectors.get(a.id);
       const na = norms.get(a.id) ?? 0;
-      if (!va || na === 0) continue;
-      const cosine = dot(va, vb) / (na * nb);
-      if (cosine >= options.minCosine) scored.push({ a: a.id, b: b.id, cosine });
+      const cosine = vb && va && nb > 0 && na > 0 ? dot(va, vb) / (na * nb) : Number.NaN;
+      if (vb && nb > 0 && cosine >= options.minCosine) byCosine.push({ a: a.id, b: b.id, cosine });
+      if (lexicalK > 0) {
+        const tb = tokens.get(b.id);
+        const ta = tokens.get(a.id);
+        let score = 0;
+        if (tb && ta) for (const w of tb) if (ta.has(w)) score += idf.get(w) ?? 0;
+        if (score > 0) byWords.push({ a: a.id, b: b.id, cosine, lexical: score });
+      }
     }
-    scored.sort((x, y) => y.cosine - x.cosine || x.a.localeCompare(y.a));
-    pairs.push(...scored.slice(0, options.k));
+    byCosine.sort((x, y) => y.cosine - x.cosine || x.a.localeCompare(y.a));
+    byWords.sort((x, y) => (y.lexical ?? 0) - (x.lexical ?? 0) || x.a.localeCompare(y.a));
+    const chosen = new Map<string, CandidatePair>();
+    for (const p of byCosine.slice(0, options.k)) chosen.set(p.a, p);
+    for (const p of byWords.slice(0, lexicalK)) {
+      const had = chosen.get(p.a);
+      chosen.set(p.a, had ? { ...had, lexical: p.lexical } : p);
+    }
+    pairs.push(...chosen.values());
   }
   return pairs;
 }

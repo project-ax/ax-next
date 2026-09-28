@@ -102,3 +102,66 @@ export function pairOutcomes(rows, model) {
   }
   return out;
 }
+
+/**
+ * The same loop, FORKED at the first link note (the variance-reduction design).
+ *
+ * The model answers exactly as in `off` until the first `memory_recall` whose result WOULD
+ * carry a note. There the conversation splits: one branch continues with the plain tool
+ * text, the other with the annotated text, both from the identical prefix. A run that never
+ * reaches a note is provably unaffected by the treatment, so it is answered once and counts
+ * as "no change" — which removes every pure-noise pair the unforked design had to pay for.
+ *
+ * `toolResult(use)` answers one tool call as `{ plain, annotated, notes }`; `request(body,
+ * upperUsd)` performs one chat-completions call. Both are injected, so this is testable
+ * with a fake model.
+ */
+export async function answerForked({ request, config, maxToolTurns, maxPrice, system, question, descriptor, toolResult }) {
+  const tool = { type: 'function', function: { name: descriptor.name, description: descriptor.description, parameters: descriptor.inputSchema } };
+  const step = async (messages, startTurn, mode) => {
+    for (let turn = startTurn; turn <= maxToolTurns; turn += 1) {
+      const toolsAllowed = turn < maxToolTurns;
+      const body = {
+        model: config.id, max_tokens: config.maxTokens, reasoning: { effort: config.effort },
+        provider: { ...(config.provider ?? {}), max_price: maxPrice },
+        messages: [{ role: 'system', content: system }, ...messages],
+        ...(toolsAllowed ? { tools: [tool] } : {}),
+      };
+      const bytes = Buffer.byteLength(JSON.stringify(body), 'utf8');
+      const upper = config.price
+        ? (bytes * config.price.input + config.maxTokens * config.price.output) / 1e6
+        : (bytes * 10 + config.maxTokens * 20) / 1e6;
+      const response = await request(body, upper);
+      const message = response.choices?.[0]?.message;
+      if (!message || typeof message !== 'object') throw new Error('Invalid OpenRouter message');
+      const uses = message.tool_calls ?? [];
+      const text = typeof message.content === 'string' ? message.content : '';
+      if (!toolsAllowed || !uses.length) return { answer: text };
+      messages.push({ role: 'assistant', content: message.content ?? '', tool_calls: uses });
+      for (let i = 0; i < uses.length; i += 1) {
+        const use = uses[i];
+        const result = await toolResult(use);
+        if (mode === 'probe' && result.notes > 0) {
+          const rest = uses.slice(i + 1);
+          const branch = async (arm) => {
+            const copy = structuredClone(messages);
+            copy.push({ role: 'tool', tool_call_id: use.id, content: arm === 'on' ? result.annotated : result.plain });
+            for (const other of rest) {
+              const r = await toolResult(other);
+              copy.push({ role: 'tool', tool_call_id: other.id, content: arm === 'on' ? r.annotated : r.plain });
+            }
+            return step(copy, turn + 1, arm);
+          };
+          const off = await branch('off');
+          const on = await branch('on');
+          return { forked: true, forkTurn: turn, off, on };
+        }
+        messages.push({ role: 'tool', tool_call_id: use.id, content: mode === 'on' ? result.annotated : result.plain });
+      }
+    }
+    return { answer: '' };
+  };
+  const probe = await step([{ role: 'user', content: question }], 0, 'probe');
+  return probe.forked ? probe : { forked: false, answer: probe.answer };
+}
+

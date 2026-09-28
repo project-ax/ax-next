@@ -24,10 +24,12 @@ import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSyn
 import { join, resolve } from 'node:path';
 import { parseArgs, parseEnv } from 'node:util';
 import { judgeAnswer } from './memory-bench/judge.ts';
+import { BenchCache } from './memory-bench/cache.ts';
+import { loadLongMemEvalSSamples } from './memory-bench/longmemeval-s.ts';
 import { parseCorpusDate } from './memory-bench/corpus-date.ts';
 import { CONFIG, BudgetExceeded, Ledger, buildSystem, makeClients, readJsonl } from './memory-product-e2e-lib.mjs';
 import { createBank, makeMeteredProviderFetch, makeRecall, pinnedSamples, withCorpusClock } from './memory-product-e2e.mjs';
-import { annotateEvidence, isCorrect, mcnemarExact, pairOutcomes } from './memory-fact-links-lib.mjs';
+import { annotateEvidence, answerForked, isCorrect, mcnemarExact, pairOutcomes } from './memory-fact-links-lib.mjs';
 
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 
@@ -121,65 +123,13 @@ async function answerWith({ request, model, system, question, descriptor, recall
   return { answer: '', reasoningTokens };
 }
 
-/**
- * The same loop, FORKED at the first link note (the variance-reduction design).
- *
- * The model answers exactly as in `off` until the first `memory_recall` whose result WOULD
- * carry a note. There the conversation splits: one branch continues with the plain tool
- * text, the other with the annotated text, both from the identical prefix. A run that never
- * reaches a note is provably unaffected by the treatment, so it is answered once and counts
- * as "no change" — which removes every pure-noise pair the unforked design had to pay for.
- *
- * `toolResult(use)` answers one tool call as `{ plain, annotated, notes }`.
- */
-async function answerForked({ request, model, system, question, descriptor, toolResult }) {
-  const config = MODELS[model];
-  const tool = { type: 'function', function: { name: descriptor.name, description: descriptor.description, parameters: descriptor.inputSchema } };
-  const step = async (messages, startTurn, mode) => {
-    for (let turn = startTurn; turn <= CONFIG.maxToolTurns; turn += 1) {
-      const toolsAllowed = turn < CONFIG.maxToolTurns;
-      const body = {
-        model: config.id, max_tokens: config.maxTokens, reasoning: { effort: config.effort },
-        provider: { ...(config.provider ?? {}), max_price: CONFIG.openRouterMaxPrice },
-        messages: [{ role: 'system', content: system }, ...messages],
-        ...(toolsAllowed ? { tools: [tool] } : {}),
-      };
-      const bytes = Buffer.byteLength(JSON.stringify(body), 'utf8');
-      const upper = config.price
-        ? (bytes * config.price.input + config.maxTokens * config.price.output) / 1e6
-        : (bytes * 10 + config.maxTokens * 20) / 1e6;
-      const response = await request(body, upper);
-      const message = response.choices?.[0]?.message;
-      if (!message || typeof message !== 'object') throw new Error('Invalid OpenRouter message');
-      const uses = message.tool_calls ?? [];
-      const text = typeof message.content === 'string' ? message.content : '';
-      if (!toolsAllowed || !uses.length) return { answer: text };
-      messages.push({ role: 'assistant', content: message.content ?? '', tool_calls: uses });
-      for (let i = 0; i < uses.length; i += 1) {
-        const use = uses[i];
-        const result = await toolResult(use);
-        if (mode === 'probe' && result.notes > 0) {
-          const rest = uses.slice(i + 1);
-          const branch = async (arm) => {
-            const copy = structuredClone(messages);
-            copy.push({ role: 'tool', tool_call_id: use.id, content: arm === 'on' ? result.annotated : result.plain });
-            for (const other of rest) {
-              const r = await toolResult(other);
-              copy.push({ role: 'tool', tool_call_id: other.id, content: arm === 'on' ? r.annotated : r.plain });
-            }
-            return step(copy, turn + 1, arm);
-          };
-          const off = await branch('off');
-          const on = await branch('on');
-          return { forked: true, forkTurn: turn, off, on };
-        }
-        messages.push({ role: 'tool', tool_call_id: use.id, content: mode === 'on' ? result.annotated : result.plain });
-      }
-    }
-    return { answer: '' };
-  };
-  const probe = await step([{ role: 'user', content: question }], 0, 'probe');
-  return probe.forked ? probe : { forked: false, answer: probe.answer };
+async function allSamples() {
+  const pinned = JSON.parse(readFileSync(new URL('./memory-product-e2e-inputs.json', import.meta.url), 'utf8'));
+  const cache = new BenchCache();
+  const corpus = await loadLongMemEvalSSamples(cache);
+  const raw = await cache.readIfHit('longmemeval-s', 'longmemeval_s_cleaned.json');
+  if (!raw || hash(raw) !== pinned.corpusSha256 || corpus.length !== pinned.corpusQuestions) throw new Error('Corpus does not match the pinned corpus digest');
+  return corpus.map((s) => ({ ...s, answer: String(s.answer) }));
 }
 
 function bankSource(source, questionId) {
@@ -264,6 +214,13 @@ function forkReport(runDir) {
       `  runs ${mine.length} over ${byQ.size} questions; forked ${forks.length} (${((forks.length / mine.length) * 100).toFixed(1)}%) on ${new Set(forks.map((r) => r.questionId)).size} questions`,
       `  off accuracy ${(offAcc * 100).toFixed(1)}%   on − off: ${(mean * 100).toFixed(2)} pp   95% CI [${(boots[100] * 100).toFixed(2)}, ${(boots[3899] * 100).toFixed(2)}] pp (question bootstrap)`,
       `  forked runs: gained ${gained}, lost ${lost}, same ${forks.length - gained - lost}; McNemar (runs, not independent) p=${mcnemarExact(gained, lost).toFixed(4)}`);
+    const types = [...new Set(mine.map((r) => r.questionType))].sort();
+    for (const type of types) {
+      const t = mine.filter((r) => r.questionType === type);
+      const off = t.reduce((a, r) => a + Number(isCorrect(r.offVerdict)), 0) / t.length;
+      const on = t.reduce((a, r) => a + Number(isCorrect(r.onVerdict)), 0) / t.length;
+      lines.push(`  ${type.padEnd(26)} runs ${String(t.length).padStart(4)}  forked ${String(t.filter((r) => r.forked).length).padStart(3)}  off ${(off * 100).toFixed(1)}%  on ${(on * 100).toFixed(1)}%  Δ ${((on - off) * 100).toFixed(2)} pp`);
+    }
     const perQ = [...byQ.entries()].filter(([, rs]) => rs.some((r) => r.forked))
       .map(([q, rs]) => `${q}[${rs[0].questionType}] ${rs.filter((r) => r.forked).length}/${rs.length} forked, on−off ${rs.map(delta).join(',')}`);
     for (const line of perQ) lines.push(`    ${line}`);
@@ -312,7 +269,7 @@ export async function main(argv = process.argv.slice(2)) {
     shard: { type: 'string', default: '0/1' }, cap: { type: 'string', default: '5' },
     'credentials-file': { type: 'string', multiple: true }, models: { type: 'string', default: 'glm,deepseek' },
     report: { type: 'boolean', default: false }, only: { type: 'string' },
-    fork: { type: 'string' }, prepared: { type: 'string' },
+    fork: { type: 'string' }, prepared: { type: 'string' }, all: { type: 'boolean', default: false },
   } });
   if (!values['run-dir']) throw new Error('--run-dir is required');
   const runDir = resolve(values['run-dir']);
@@ -332,7 +289,9 @@ export async function main(argv = process.argv.slice(2)) {
   const manifestPath = join(runDir, 'manifest.json');
   if (!existsSync(manifestPath)) writeFileSync(manifestPath, JSON.stringify({ revision, models: MODELS, judge: CONFIG.judgeModel, links: values.links, source: values.source }, null, 2));
 
-  const { samples } = await pinnedSamples();
+  // `--all`: every LongMemEval-S question (banks from `memory-bench-build-banks.mjs`);
+  // otherwise rung 4's pinned 100.
+  const samples = values.all ? await allSamples() : (await pinnedSamples()).samples;
   const linkFile = JSON.parse(readFileSync(resolve(values.links), 'utf8'));
   const linksFor = (qid) => linkFile.links.filter((l) => l.qid === qid);
   const only = values.only ? new Set(values.only.split(',')) : null;
@@ -431,7 +390,7 @@ async function forkMain({ values, mine, models, linksFor, preparedRoot, runDir, 
             const annotated = annotateEvidence(result.text, links);
             return { plain: result.text, annotated: annotated.text, notes: annotated.notes };
           };
-          const out = await answerForked({ request, model, system: buildSystem(memory, sample.question_date), question: sample.question, descriptor: bank.descriptor, toolResult });
+          const out = await answerForked({ request, config: MODELS[model], maxToolTurns: CONFIG.maxToolTurns, maxPrice: CONFIG.openRouterMaxPrice, system: buildSystem(memory, sample.question_date), question: sample.question, descriptor: bank.descriptor, toolResult });
           await bank.drain();
           let row;
           if (out.forked) {
