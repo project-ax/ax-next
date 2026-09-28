@@ -7,6 +7,7 @@ import {
 
 import { renderRecallResult } from './evidence.js';
 import { PLUGIN_NAME } from './plugin-name.js';
+import { recordRecallReceipt } from './recall-receipts.js';
 import type { MemoryRecallInput, MemoryRecallOutput } from './types.js';
 
 export const MEMORY_RECALL_TOOL_HOOK = 'tool:execute:memory_recall';
@@ -75,6 +76,9 @@ export async function registerMemoryRecall(bus: HookBus): Promise<void> {
           message: 'Memory recall returned an unreadable result',
         });
       }
+      // The receipt is the rows rendered below, exactly (TASK-628). Never
+      // throws: a lost receipt costs a chip, never the answer.
+      await recordRecallReceipt(bus, ctx, result.statements, asOf);
       return renderRecallResult(result, asOf);
     },
   );
