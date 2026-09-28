@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { attributeFacts } from './attribution.js';
+import { attributeFacts, attributeSpeakers } from './attribution.js';
 import { extractFacts, type ExtractedFact, type LlmCallFn } from './extract.js';
 import { dropNegatedFacts } from './negation.js';
 import { isAgentContextSelfReport } from './self-report.js';
@@ -47,6 +47,8 @@ export interface ObserverStatement {
    * Who spoke that turn (TASK-648) — set by `attribution.ts` from OUR
    * transcript's roles, only when the turn shares the fact's words. Never
    * from model output, and never a tier: the statement stays `extracted`.
+   * Set on the legacy `chat:end` path too, from its messages' roles
+   * (TASK-661), though that path has no `sourceTurnId`.
    */
   sourceRole?: 'user' | 'assistant';
   kind?: MemoryStatementKind;
@@ -276,7 +278,8 @@ export async function runObserver(input: RunObserverInput): Promise<ObserverResu
 
   const dialogue = renderDialogue(turns);
   return extractAndRecord(input, dialogue, {
-    attribute: (facts) => ({ facts, contextOnly: 0 }),
+    // No turn ids here, so no `sourceTurnId` — but the speaker (TASK-661).
+    attribute: (facts) => ({ facts: attributeSpeakers(facts, turns), contextOnly: 0 }),
     batchKey: () =>
       buildBatchKey({
         conversationId: input.conversationId,
@@ -483,8 +486,9 @@ async function withoutTwins(
  *
  * Kept when the person said it in their own turn (`sourceRole: 'user'`, the
  * TASK-648 ruling): nothing on read hides a slot-less row, so writing it is
- * what brings the value back. An unknown speaker (the legacy `chat:end` path,
- * a positional attribution) is not the person.
+ * what brings the value back. Both extraction paths attribute the speaker —
+ * the legacy `chat:end` path too, from its messages' roles (TASK-661). An
+ * UNKNOWN speaker (a paraphrase no turn shares a word with) is not the person.
  *
  * Slotted statements are left to the read side, whose exact `(about, slot)`
  * rule already hides them (TASK-639) and resurfaces a person's restatement
