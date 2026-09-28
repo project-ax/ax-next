@@ -543,6 +543,37 @@ describe('a user restatement of a retracted value survives an agent-note twin', 
     expect(await profile(env)).toEqual(['Denver, Colorado']);
   });
 
+  it('the chain read fails open: the statement is kept, and the warning carries the cause', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    await retracted(env);
+    await env.note(LIVES);
+
+    const bus = env.h.bus;
+    const original = bus.call.bind(bus);
+    bus.call = (async (name: string, c: AgentContext, input: unknown) => {
+      // The chain read is the only one naming slots with no conversation.
+      const i = input as { slots?: unknown; conversationId?: unknown } | undefined;
+      if (name === 'memory:facts:recall' && Array.isArray(i?.slots) && i.conversationId === undefined) {
+        throw new Error('chain unavailable');
+      }
+      return original(name, c, input);
+    }) as typeof bus.call;
+    try {
+      env.extract([restatement()]);
+      await env.exchange('Actually I do live in Denver, Colorado.', 'Got it.', 'r1');
+      await env.idle();
+    } finally {
+      bus.call = original;
+    }
+
+    expect(env.rows().filter((r) => r.provenance === 'extracted')).toHaveLength(1);
+    const failed = eventsNamed(env.h.logs, OBSERVER_FAILED_EVENT).find(
+      (e) => e.bindings.reason === 'twin-check-failed',
+    );
+    expect((failed?.bindings.err as Error | undefined)?.message).toBe('chain unavailable');
+  });
+
   // Guard: only the PERSON's message earns the exception.
   it("the agent's reply repeating it is still dropped as the note's twin", async () => {
     vi.useFakeTimers();
