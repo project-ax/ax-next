@@ -202,25 +202,52 @@ describe('dropNegatedFacts', () => {
   });
 
   it('is linear on a hostile dialogue (untrusted text, runs on the host)', () => {
-    const hostile = [
-      'not '.repeat(50_000),
-      "n't".repeat(50_000),
-      'no '.repeat(50_000),
-      'a'.repeat(200_000),
-      "'".repeat(100_000),
-      ', '.repeat(50_000),
-    ].join('\n');
-    // Plus a multi-word value said whole under a negation and one of its words
-    // said plain, so every fact takes the per-fact phrase walk (review round 2).
-    const walked = `${hostile}\n${"I don't live in New York. ".repeat(20_000)}\na new plan`;
+    // TASK-660: this used to assert an absolute wall-clock budget (< 2s),
+    // which went red on main's full parallel suite (3.6s) while the filter was
+    // measured linear (n / 2n / 4n = 285 / 559 / 1159 ms). So it asserts the
+    // SHAPE instead: the same hostile dialogue at 32x the size must cost
+    // roughly 32x, not ~1000x. A plain wall-clock ratio flaked too (2.5-11
+    // for a linear 4x under load), so it compares CPU time.
+    const hostileDialogue = (k: number): string => {
+      const hostile = [
+        'not '.repeat(5_000 * k),
+        "n't".repeat(5_000 * k),
+        'no '.repeat(5_000 * k),
+        'a'.repeat(20_000 * k),
+        "'".repeat(10_000 * k),
+        ', '.repeat(5_000 * k),
+      ].join('\n');
+      // Plus a multi-word value said whole under a negation and one of its
+      // words said plain, so every fact takes the per-fact phrase walk.
+      return `${hostile}\n${"I don't live in New York. ".repeat(2_000 * k)}\na new plan`;
+    };
     const facts = [
-      ...Array.from({ length: 50 }, (_, i) => fact('lives_in', `Denver ${'x'.repeat(i)}`)),
-      ...Array.from({ length: 50 }, () => fact('lives_in', 'New York')),
+      ...Array.from({ length: 10 }, (_, i) => fact('lives_in', `Denver ${'x'.repeat(i)}`)),
+      ...Array.from({ length: 10 }, () => fact('lives_in', 'New York')),
     ];
-    const started = performance.now();
-    const out = dropNegatedFacts(facts, walked);
-    expect(performance.now() - started).toBeLessThan(2_000);
-    // The walk really ran and decided: every New York fact is dropped.
-    expect(out.negated).toBe(50);
+    // CPU time this process spent, not wall-clock: a busy runner deschedules
+    // us (wall time grows) without making the filter do more work (CPU time
+    // does not). Fastest of three strips a one-off GC pause.
+    const cheapestCpu = (dialogue: string): number => {
+      let best = Infinity;
+      for (let run = 0; run < 3; run += 1) {
+        const before = process.cpuUsage();
+        const out = dropNegatedFacts(facts, dialogue);
+        const used = process.cpuUsage(before);
+        best = Math.min(best, used.user + used.system);
+        // The walk really ran and decided: every New York fact is dropped.
+        expect(out.negated).toBe(10);
+      }
+      return best;
+    };
+    const small = hostileDialogue(1);
+    const large = hostileDialogue(32);
+    cheapestCpu(small); // warm the JIT so the first size is not charged for it
+    const ratio = cheapestCpu(large) / cheapestCpu(small);
+    // 32x the input: linear costs ~32x, quadratic ~1024x. Measured 34-37 idle
+    // and 37-54 with the CPU 2x oversubscribed (CPU time still drifts up under
+    // load: shared caches), so 128 leaves ~2.4x headroom. A mutant with even a
+    // 1/64-strength quadratic scan in the index build measured ~200.
+    expect(ratio).toBeLessThan(128);
   });
 });
