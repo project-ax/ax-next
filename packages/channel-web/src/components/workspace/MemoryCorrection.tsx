@@ -83,7 +83,8 @@ export function MemoryFixDialog({
   agentId: string;
   visibility: MemoryVisibility;
   onClose: () => void;
-  onSaved: () => void;
+  /** Called with the answer to "What happened?" once the fix is saved. */
+  onSaved: (reason: MemoryFixReason) => void;
 }) {
   const [value, setValue] = useState('');
   const [reason, setReason] = useState<MemoryFixReason>('changed');
@@ -112,7 +113,7 @@ export function MemoryFixDialog({
         value,
         reason,
       });
-      onSaved();
+      onSaved(reason);
     } catch {
       setPending(false);
       setError(true);

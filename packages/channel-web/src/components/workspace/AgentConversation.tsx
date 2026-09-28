@@ -82,6 +82,7 @@ import {
 } from '@/lib/consent-focus';
 import { ApprovalCard } from './ApprovalCard';
 import { GrantRow } from './GrantRow';
+import { MemoryUsedChip } from './MemoryUsedChip';
 import {
   COMPOSER_HOLD_COPY,
   DECISION_SESSION_EXPIRED,
@@ -1270,6 +1271,14 @@ function Message({
           </div>
         )}
         {m.kind === 'steps' && <Steps label={m.stepsLabel} steps={m.steps} />}
+        {/*
+          What memory this answer was handed (TASK-628). Drawn only when it
+          used some, and on a tool-only turn too — that turn has no prose, but
+          it still answered from memory.
+        */}
+        {m.memoryUsed !== undefined && m.memoryUsed.statements.length > 0 && (
+          <MemoryUsedChip used={m.memoryUsed} agentId={agent.id} />
+        )}
         {/*
           `at` is `''` on the live streaming frame (no committed instant until
           the turn ends) and can be an unparseable instant in principle — either

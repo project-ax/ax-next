@@ -201,3 +201,42 @@ export function memoryStatementText(row: FactMemoryStatement): string {
 export function memorySlotText(row: FactMemoryStatement): string {
   return words(row.slot ?? row.relation);
 }
+
+// ── The "Used N memories" chip (TASK-628) ────────────────────────────────────
+
+/**
+ * The chip under an answer counts only what `memory_recall` handed the model
+ * for THAT answer — not everything the agent remembers, and not what it might
+ * have looked at. A row that has been closed since says how, in words that
+ * match what happened to it:
+ *
+ *   - `retracted` — someone fixed it with "It was never right": Fixed.
+ *   - `replaced` — a newer version replaced it. That is a person's "It
+ *     changed" fix OR a later chat learning something new, and the chip
+ *     cannot honestly tell the two apart, so it says "Updated", not "Fixed".
+ *   - `forgotten` — someone forgot it.
+ */
+export function memoryUsedLabel(n: number): string {
+  return n === 1 ? 'Used 1 memory' : `Used ${n} memories`;
+}
+
+/** Where a used memory came from. Extracted rows carry no `savedBy`. */
+export function memoryUsedSource(row: FactMemoryStatement): string {
+  if (row.savedBy === 'person') return 'Saved by a person';
+  if (row.savedBy === 'agent') return 'Noted by the agent';
+  return 'From a chat';
+}
+
+/** "Saved by a person · Sep 1, 2026"; just the source when there is no date. */
+export function memoryUsedDetail(row: FactMemoryStatement, date: string): string {
+  const source = memoryUsedSource(row);
+  return date === '' ? source : `${source} · ${date}`;
+}
+
+export type MemoryUsedSinceKind = 'replaced' | 'forgotten' | 'retracted';
+
+export const MEMORY_USED_SINCE: Readonly<Record<MemoryUsedSinceKind, string>> = {
+  replaced: 'Updated since this answer',
+  retracted: 'Fixed since this answer',
+  forgotten: 'Forgotten since this answer',
+};
