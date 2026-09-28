@@ -494,6 +494,146 @@ describe('buildFactsExport — retracted re-mentions in journals and subject pag
   });
 });
 
+// TASK-657: a hidden re-mention of a retracted value that is itself later
+// superseded (closed by a newer value, or forgotten) must not come back as a
+// closed "(until …)" line. Same rule, same person-restatement exception.
+describe('buildFactsExport — superseded retracted re-mentions (TASK-657)', () => {
+  const fileOf = (out: Map<unknown, string>, path: string): string | undefined =>
+    out.get([...out.keys()].find((k) => String(k) === path));
+  const USER_JOURNAL = `${ROOT}/user/2026-09.md`;
+  const RECENT = `${ROOT}/recent.md`;
+
+  const retractionFor = (about: string): ExportFact =>
+    row({
+      about,
+      slot: 'lives_in',
+      relation: 'lives_in',
+      value: 'Denver',
+      when: '2026-08-01T00:00:00.000Z',
+      recordedAt: '2026-08-01T00:00:00.000Z',
+      until: '2026-08-10T00:00:00.000Z',
+      neverTrue: true,
+    });
+  // The newer value that closed the re-mention.
+  const successorFor = (about: string): ExportFact =>
+    row({
+      id: `austin-${about}`,
+      about,
+      slot: 'lives_in',
+      relation: 'lives_in',
+      value: 'Austin',
+      when: '2026-09-20T00:00:00.000Z',
+      recordedAt: '2026-09-20T00:00:00.000Z',
+      conversationId: 'c3',
+    });
+  // A re-mention of the retracted value, since superseded by the successor.
+  const closedRementionFor = (about: string, over: Partial<ExportFact> = {}): ExportFact =>
+    row({
+      about,
+      slot: 'lives_in',
+      relation: 'lives_in',
+      value: 'denver.',
+      when: '2026-09-05T00:00:00.000Z',
+      recordedAt: '2026-09-05T00:00:00.000Z',
+      until: '2026-09-20T00:00:00.000Z',
+      closedBy: `austin-${about}`,
+      conversationId: 'c2',
+      ...over,
+    });
+
+  it('the user journal hides a superseded re-mention; a person restating it still shows', () => {
+    const journalOf = (rows: ExportFact[]): string | undefined =>
+      fileOf(buildFactsExport(rows, PERSONAL), USER_JOURNAL);
+    const retraction = retractionFor('user:alice');
+    const successor = successorFor('user:alice');
+
+    const hidden = journalOf([retraction, closedRementionFor('user:alice'), successor]);
+    expect(hidden).toContain('2026-09-20 · lives_in · Austin');
+    expect(hidden).not.toMatch(/denver/i);
+    // An agent note, or the agent's own reply, repeating it is not the person.
+    expect(
+      journalOf([retraction, closedRementionFor('user:alice', { provenance: 'agent' }), successor]),
+    ).not.toMatch(/denver/i);
+    expect(
+      journalOf([retraction, closedRementionFor('user:alice', { sourceRole: 'assistant' }), successor]),
+    ).not.toMatch(/denver/i);
+    // Forgotten rather than replaced (closed, no successor): still hidden.
+    expect(
+      journalOf([retraction, closedRementionFor('user:alice', { closedBy: undefined }), successor]),
+    ).not.toMatch(/denver/i);
+
+    // The person's own edit and their own chat message (TASK-648) stay in the
+    // record — superseded since, so with their "(until …)".
+    expect(
+      journalOf([
+        retraction,
+        closedRementionFor('user:alice', { provenance: 'human', value: 'Denver' }),
+        successor,
+      ]),
+    ).toContain('2026-09-05 · lives_in · Denver (until 2026-09-20)');
+    expect(
+      journalOf([retraction, closedRementionFor('user:alice', { sourceRole: 'user' }), successor]),
+    ).toContain('2026-09-05 · lives_in · denver. (until 2026-09-20)');
+  });
+
+  it('a subject page hides a superseded re-mention; a person restating it still shows', () => {
+    const SUBJECT = `${ROOT}/about/v-acme-corp.md`;
+    const pageOf = (rows: ExportFact[]): string | undefined =>
+      fileOf(buildFactsExport(rows, TEAM), SUBJECT);
+    const retraction = retractionFor('acme-corp');
+    const successor = successorFor('acme-corp');
+
+    const hidden = pageOf([retraction, closedRementionFor('acme-corp'), successor]);
+    expect(hidden).toContain('Austin');
+    expect(hidden).not.toMatch(/denver/i);
+    // Its only row hidden, the page is not made.
+    expect(pageOf([retraction, closedRementionFor('acme-corp', { closedBy: undefined })])).toBeUndefined();
+
+    expect(
+      pageOf([retraction, closedRementionFor('acme-corp', { provenance: 'human' }), successor]),
+    ).toMatch(/denver.*\(until 2026-09-20\)/i);
+    expect(
+      pageOf([retraction, closedRementionFor('acme-corp', { sourceRole: 'user' }), successor]),
+    ).toMatch(/denver.*\(until 2026-09-20\)/i);
+  });
+
+  it('Recent hides a superseded re-mention too; a person restating it still shows', () => {
+    const recentOf = (rows: ExportFact[]): string | undefined =>
+      fileOf(buildFactsExport(rows, PERSONAL), RECENT);
+    const retraction = retractionFor('user:alice');
+    const successor = successorFor('user:alice');
+
+    const hidden = recentOf([retraction, closedRementionFor('user:alice'), successor]);
+    expect(hidden).toContain('Austin');
+    expect(hidden).not.toMatch(/denver/i);
+    expect(
+      recentOf([retraction, closedRementionFor('user:alice', { sourceRole: 'user' }), successor]),
+    ).toMatch(/denver/i);
+  });
+
+  it('a superseded re-mention of a REPLACED (not retracted) value stays in the journal', () => {
+    // Portland replaced by the person's Seattle, said again in chat, then that
+    // re-mention closed by Austin: the record of what was said keeps it.
+    const out = buildFactsExport(
+      [
+        row({
+          slot: 'lives_in',
+          relation: 'lives_in',
+          value: 'Portland',
+          when: '2026-08-01T00:00:00.000Z',
+          until: '2026-08-10T00:00:00.000Z',
+          closedBy: 'fix',
+        }),
+        row({ id: 'fix', slot: 'lives_in', relation: 'lives_in', value: 'Seattle', provenance: 'human' }),
+        closedRementionFor('user:alice', { value: 'Portland' }),
+        successorFor('user:alice'),
+      ],
+      PERSONAL,
+    );
+    expect(fileOf(out, USER_JOURNAL)).toContain('2026-09-05 · lives_in · Portland (until 2026-09-20)');
+  });
+});
+
 describe('buildFactsExport — malformed rows', () => {
   it.each([
     ['missing id', { id: '' }],

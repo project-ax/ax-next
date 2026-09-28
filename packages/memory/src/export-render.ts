@@ -2,7 +2,7 @@ import { PluginError } from '@ax/core';
 
 import type { MemoryAccess } from './access.js';
 import { factsPath, subjectSlug, type FactsPath } from './export-paths.js';
-import { isRetractedValue, rementionedSlotRows, selectProfileRows } from './profile.js';
+import { rementionedSlotRows, retractedRementionRows, selectProfileRows } from './profile.js';
 import { escapeStatementText, formatDay, renderNotedAt } from './render.js';
 import { SLOTS } from './slots.js';
 import { PLUGIN_NAME } from './plugin-name.js';
@@ -203,18 +203,16 @@ export function buildFactsExport(
   // person said was never right (TASK-639 ruling, applied here by TASK-646),
   // or of one a higher-provenance row replaced. The scan is the whole store,
   // so every chain is in it.
-  const hiddenFromRecent = rementionedSlotRows(rows, retracted);
   // Journals and subject pages are the record of what was said, so a
   // re-mention of a REPLACED value stays there. A RETRACTED value does not:
   // one rule everywhere (TASK-655 ruling, "yes, everywhere") — hidden unless
-  // the person restated it. Same predicate, narrowed to its retracted branch,
-  // so the person's own edit and their own chat message (TASK-648) still
-  // bring it back. It judges active slotted rows only.
-  const hiddenFromRecord = new Set(
-    [...hiddenFromRecent].filter(
-      (row) => row.slot !== undefined && isRetractedValue(retracted, row.about, row.slot, row.value),
-    ),
-  );
+  // the person restated it (their own edit, or their own chat message,
+  // TASK-648). It judges closed rows too (TASK-657): a hidden re-mention that
+  // something newer superseded stays hidden instead of coming back as a
+  // closed "(until …)" line.
+  const hiddenFromRecord = retractedRementionRows(rows, retracted);
+  // Recent shows closed rows as well, so it hides that set too.
+  const hiddenFromRecent = new Set([...rementionedSlotRows(rows, retracted), ...hiddenFromRecord]);
 
   const out = new Map<FactsPath, string>();
   out.set(factsPath({ kind: 'profile' }), buildProfile(rows, retracted, access));
