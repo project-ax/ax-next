@@ -507,6 +507,18 @@ describe('@ax/channel-web server plugin (integration)', () => {
     expect(body.error).toBe('unauthenticated');
   });
 
+  it('registers GET /api/chat/conversations/:id/memory-events (401 unauthenticated)', async () => {
+    // TASK-626 — the conversation-scoped memory stream is reachable through the
+    // real http-server; an unregistered route would answer 404, not 401.
+    const booted = await boot({ user: null });
+    harness = booted.harness;
+    const r = await fetch(
+      `http://127.0.0.1:${booted.port}/api/chat/conversations/cnv_1/memory-events`,
+    );
+    expect(r.status).toBe(401);
+    expect(await r.json()).toEqual({ error: 'unauthenticated' });
+  });
+
   it('GET /api/chat/stream/:reqId returns 404 when reqId is foreign (J9)', async () => {
     const booted = await boot();
     harness = booted.harness;
@@ -741,7 +753,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
             'approvals never stream the continuation live (the turn still runs; it renders on the next read)',
         },
       ],
-      subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request'],
+      subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'memory:conversation-activity'],
     });
   });
 

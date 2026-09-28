@@ -5226,9 +5226,28 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         return;
       }
       const body = parsed as Record<string, unknown>;
-      if (Object.keys(body).some((k) => k !== 'query' && k !== 'profile' && k !== 'history')) {
+      if (
+        Object.keys(body).some(
+          (k) => k !== 'query' && k !== 'profile' && k !== 'history' && k !== 'conversationId',
+        )
+      ) {
         res.status(400).json({ error: 'invalid-memory-request' });
         return;
+      }
+      // TASK-626 — "what did this conversation teach it". A conversation id is
+      // a lookup key, not a search, so it stands alone: combined with a query
+      // or the profile view the question stops meaning one thing.
+      if (body.conversationId !== undefined) {
+        if (
+          typeof body.conversationId !== 'string' ||
+          body.conversationId.length === 0 ||
+          body.conversationId.length > 256 ||
+          body.query !== undefined ||
+          body.profile !== undefined
+        ) {
+          res.status(400).json({ error: 'invalid-memory-request' });
+          return;
+        }
       }
       if (body.query !== undefined && (typeof body.query !== 'string' || body.query.trim() === '')) {
         res.status(400).json({ error: 'invalid-memory-request' });
@@ -5247,12 +5266,18 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         const out = await bus.call<unknown, FactMemoryPage>(
           'memory:recall',
           agentWorkspaceCtx(agentId, userId),
-          {
-            ...(body.query !== undefined ? { query: body.query } : {}),
-            ...(body.profile === true ? { profile: true } : {}),
-            activeOnly: body.history !== true,
-            limit: body.profile === true ? 100 : 40,
-          },
+          typeof body.conversationId === 'string'
+            ? {
+                conversationId: body.conversationId,
+                activeOnly: body.history !== true,
+                limit: 100,
+              }
+            : {
+                ...(body.query !== undefined ? { query: body.query } : {}),
+                ...(body.profile === true ? { profile: true } : {}),
+                activeOnly: body.history !== true,
+                limit: body.profile === true ? 100 : 40,
+              },
         );
         res.status(200).json(out);
       } catch (err) {
