@@ -136,7 +136,7 @@ describe('MemorySurface', () => {
     expect(container.querySelector('a[href^="javascript"]')).toBeNull();
   });
 
-  it('edits a row through the dialog with exact arguments, then refreshes', async () => {
+  it('fixes a row through the dialog with exact arguments, then refreshes', async () => {
     recallMock.mockResolvedValue({
       statements: [
         fact({ id: 'm1', about: 'user:alice', relation: 'lives_in', value: 'Boston' }),
@@ -144,8 +144,8 @@ describe('MemorySurface', () => {
       degraded: [],
     });
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit: Boston' }));
-    const input = await screen.findByLabelText('What we should remember');
+    fireEvent.click(await screen.findByRole('button', { name: 'Fix: Boston' }));
+    const input = await screen.findByLabelText('What should I remember?');
     fireEvent.change(input, { target: { value: 'Cambridge' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() =>
@@ -156,21 +156,21 @@ describe('MemorySurface', () => {
       }),
     );
     await waitFor(() => expect(recallMock).toHaveBeenCalledTimes(2));
-    expect(screen.queryByText('Edit remembered detail')).toBeNull();
+    expect(screen.queryByText('Fix this memory')).toBeNull();
   });
 
   it('keeps the dialog and the draft when the save fails', async () => {
     recallMock.mockResolvedValue({ statements: [fact({ id: 'm1' })], degraded: [] });
     rememberMock.mockRejectedValueOnce(new Error('down'));
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit: Boston' }));
-    const input = await screen.findByLabelText('What we should remember');
+    fireEvent.click(await screen.findByRole('button', { name: 'Fix: Boston' }));
+    const input = await screen.findByLabelText('What should I remember?');
     fireEvent.change(input, { target: { value: 'Cambridge' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(
-      await screen.findByText('We could not save this detail. Your changes are still here.'),
+      await screen.findByText('We could not save this fix. Your changes are still here.'),
     ).toBeInTheDocument();
-    expect(screen.getByText('Edit remembered detail')).toBeInTheDocument();
+    expect(screen.getByText('Fix this memory')).toBeInTheDocument();
     expect((input as HTMLInputElement).value).toBe('Cambridge');
     expect(recallMock).toHaveBeenCalledTimes(1);
   });
@@ -204,7 +204,7 @@ describe('MemorySurface', () => {
     expect(screen.getByText('Boston')).toBeInTheDocument();
   });
 
-  it('shows closed rows in history with their closure, and no edit or forget on them', async () => {
+  it('shows closed rows in history with their closure, and no fix or forget on them', async () => {
     recallMock.mockImplementation(async (_id, input) => {
       if (input?.history === true) {
         return {
@@ -241,7 +241,7 @@ describe('MemorySurface', () => {
     expect(screen.getByText('Replaced')).toBeInTheDocument();
     expect(screen.getByText(/Replaced by: Cambridge/)).toBeInTheDocument();
     expect(screen.getByText('Forgotten')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Edit: Worcester' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Fix: Worcester' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Forget: Worcester' })).toBeNull();
   });
 
@@ -266,7 +266,7 @@ describe('MemorySurface', () => {
     expect(await screen.findByText('Outranked')).toBeInTheDocument();
     expect(screen.getByText('Overridden')).toBeInTheDocument();
     expect(screen.getByText(/another memory is used instead/)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Edit: Outranked' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Fix: Outranked' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Forget: Outranked' })).toBeNull();
   });
 
@@ -462,19 +462,19 @@ describe('MemorySurface', () => {
       () => new Promise<{ id: string }>((resolve) => { release = () => resolve({ id: 'x' }); }),
     );
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit: Boston' }));
-    const input = await screen.findByLabelText('What we should remember');
+    fireEvent.click(await screen.findByRole('button', { name: 'Fix: Boston' }));
+    const input = await screen.findByLabelText('What should I remember?');
     fireEvent.change(input, { target: { value: 'Cambridge' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(rememberMock).toHaveBeenCalledTimes(1));
 
     fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
-    expect(screen.getByText('Edit remembered detail')).toBeInTheDocument();
+    expect(screen.getByText('Fix this memory')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(rememberMock).toHaveBeenCalledTimes(1);
 
     release?.();
-    await waitFor(() => expect(screen.queryByText('Edit remembered detail')).toBeNull());
+    await waitFor(() => expect(screen.queryByText('Fix this memory')).toBeNull());
     await waitFor(() => expect(recallMock.mock.calls.length).toBeGreaterThan(1));
   });
 
@@ -509,17 +509,17 @@ describe('MemorySurface', () => {
     );
     expect(
       screen.getByText(
-        /Memories saved with this shared agent are visible to its team\. Team members can correct or forget them\./,
+        /Memories saved with this shared agent are visible to its team\. Team members can fix or forget them\./,
       ),
     ).toBeInTheDocument();
     expect(
       screen.getByText('These details are about you and are visible to the team.'),
     ).toBeInTheDocument();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit: Boston' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Fix: Boston' }));
     expect(
       await screen.findByText(
-        'Saving replaces the current value for the team. The earlier memory stays in History.',
+        'Saving replaces it for the team. The earlier version stays in History.',
       ),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
