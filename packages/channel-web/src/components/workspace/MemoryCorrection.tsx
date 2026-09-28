@@ -15,7 +15,14 @@
  * deferred to make Undo cheaper; a person who asks us to forget something
  * and closes the tab has had it forgotten.
  */
-import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type RefObject,
+} from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import {
@@ -82,6 +89,54 @@ function isFixReason(v: string): v is MemoryFixReason {
  * lands once a Fix or a Forget has saved (TASK-644).
  */
 const OUTCOME_ATTR = 'data-memory-outcome';
+
+/** Marks a drawn receipt, so the hook can tell whether it holds focus (TASK-651). */
+const RECEIPT_ATTR = 'data-memory-receipt';
+
+/** Marks a failed Undo's "Try again", where focus lands when an Undo fails. */
+const RETRY_ATTR = 'data-memory-retry';
+
+/**
+ * Marks a memory row's own line — the place focus lands when an Undo gives
+ * the row back, or a receipt runs out while it has focus (TASK-651). The value
+ * is the row's id.
+ */
+export const MEMORY_ROW_ATTR = 'data-memory-row';
+
+/**
+ * Marks the heading of a surface's list: where focus waits when the row it
+ * should land on is gone (a Forget whose Undo ran out) or not drawn yet (the
+ * Memory tab re-reading after an Undo).
+ */
+export const MEMORY_HEADING_ATTR = 'data-memory-heading';
+
+/**
+ * The props that make a row's line a landing place: focusable only by script
+ * (`tabIndex={-1}`), with the TASK-427 focus ring. It is the line and not the
+ * row's Fix or Forget, for the same reason the receipt lands on its outcome
+ * line and not on Undo: the key that just pressed Undo must not be one repeat
+ * away from Forget. Fix is the next Tab stop.
+ */
+export function memoryRowLanding(id: string, className?: string) {
+  return {
+    tabIndex: -1,
+    [MEMORY_ROW_ATTR]: id,
+    className: cn(className, 'rounded-sm', RESOLUTION_FOCUS_RING),
+  } as const;
+}
+
+/** As `memoryRowLanding`, for the list's heading. */
+export const memoryHeadingLanding = {
+  tabIndex: -1,
+  [MEMORY_HEADING_ATTR]: '',
+  className: cn('rounded-sm', RESOLUTION_FOCUS_RING),
+} as const;
+
+/**
+ * How long a landing waits for its row to be drawn (the Memory tab re-reads
+ * its list after an Undo). Past this, focus stays on the heading.
+ */
+const LAND_WAIT_MS = 5_000;
 
 /**
  * Where keyboard focus goes when a Fix or Forget dialog closes (TASK-644).
@@ -384,8 +439,46 @@ export type MemoryReceiptState =
   | { kind: 'undo-failed'; row: FactMemoryStatement; status: 'idle' | 'undoing' }
   | { kind: 'updated'; fix: MemoryFix; since: number; status: 'idle' | 'undoing' }
   | { kind: 'fix-undo-failed'; fix: MemoryFix; status: 'idle' | 'undoing' }
-  | { kind: 'restored'; since: number }
-  | { kind: 'fix-undone'; since: number };
+  | { kind: 'restored'; rowId: string; since: number }
+  | { kind: 'fix-undone'; rowId: string; since: number };
+
+/**
+ * Where focus should go once the receipt it was in changes (TASK-651): the
+ * first of `rows` that is drawn, else the failed Undo's "Try again" (`retry`),
+ * else the list heading. `wait` keeps watching for the row after parking on
+ * the heading, for a surface that re-reads its list before drawing it.
+ */
+interface Landing {
+  rows: string[];
+  retry: boolean;
+  wait: boolean;
+}
+
+function findRow(root: HTMLElement, ids: readonly string[]): HTMLElement | null {
+  const drawn = Array.from(root.querySelectorAll<HTMLElement>(`[${MEMORY_ROW_ATTR}]`));
+  for (const id of ids) {
+    const hit = drawn.find((el) => el.getAttribute(MEMORY_ROW_ATTR) === id);
+    if (hit !== undefined) return hit;
+  }
+  return null;
+}
+
+/** The rows a receipt that runs out while it has focus hands focus to. */
+function rowsAfterExpiry(r: MemoryReceiptState): string[] {
+  switch (r.kind) {
+    // A forgotten row leaves the list with its receipt: nothing to land on.
+    case 'forgotten':
+    case 'undo-failed':
+      return [];
+    // The fixed row, under its new id (rail, Memory tab) or its old one (chip).
+    case 'updated':
+    case 'fix-undo-failed':
+      return [r.fix.id, r.fix.row.id];
+    case 'restored':
+    case 'fix-undone':
+      return [r.rowId];
+  }
+}
 
 /** The receipts that wait for a person (a retry) rather than for the clock. */
 function isUndoFailed(
@@ -414,11 +507,90 @@ function isUndoFailed(
 export function useMemoryReceipt(
   agentId: string,
   onChanged: () => void,
-  options?: { onFixUndone?: (fix: MemoryFix) => void },
+  options?: {
+    onFixUndone?: (fix: MemoryFix) => void;
+    /**
+     * The surface the receipt and its rows are drawn in (TASK-651). When the
+     * receipt holds focus and goes away under it — an Undo, or its ten
+     * seconds running out — focus lands on the affected row's line
+     * (`memoryRowLanding`) or, when that row is gone, on the list heading
+     * (`memoryHeadingLanding`) inside it, instead of falling to `<body>`.
+     */
+    scope?: RefObject<HTMLElement | null>;
+  },
 ) {
   const [receipt, setReceipt] = useState<MemoryReceiptState | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const onFixUndone = options?.onFixUndone;
+  const scope = options?.scope;
+
+  /*
+    WHERE FOCUS GOES WHEN THE RECEIPT GOES (TASK-651). TASK-644 put focus on
+    the receipt once a dialog saves; the receipt then leaves on its own — Undo
+    swaps it for "Remembered again." (and drops the button that had focus), or
+    its window runs out — and focus fell to `<body>`. So whether the receipt
+    holds focus is read at the moment it is about to change (on the press, or
+    on the tick that ends it), and the landing runs in the commit that draws
+    what replaced it.
+
+    Only a receipt that HOLDS focus moves it. One that runs out while the
+    person is somewhere else leaves them there: moving focus nobody asked to
+    move is the focus theft `useResolutionFocus`'s arming avoids.
+  */
+  const landing = useRef<Landing | null>(null);
+  const stopWaiting = useRef<(() => void) | null>(null);
+  const holdsFocus = useCallback((): boolean => {
+    const root = scope?.current;
+    const active = document.activeElement;
+    if (root == null || !(active instanceof HTMLElement) || !root.contains(active)) return false;
+    return active.closest(`[${RECEIPT_ATTR}]`) !== null;
+  }, [scope]);
+
+  useLayoutEffect(() => {
+    const plan = landing.current;
+    landing.current = null;
+    const root = scope?.current;
+    if (plan === null || root == null) return;
+    stopWaiting.current?.();
+    const row = findRow(root, plan.rows);
+    if (row !== null) {
+      takeResolutionFocus(row);
+      return;
+    }
+    if (plan.retry) {
+      const retry = root.querySelector<HTMLElement>(`[${RETRY_ATTR}]`);
+      if (retry !== null) {
+        takeResolutionFocus(retry);
+        return;
+      }
+    }
+    const heading = root.querySelector<HTMLElement>(`[${MEMORY_HEADING_ATTR}]`);
+    takeResolutionFocus(heading);
+    if (!plan.wait || heading === null || plan.rows.length === 0) return;
+    // The row is on its way (a re-read): move on to it when it is drawn — but
+    // only if the person is still waiting on the heading, never from wherever
+    // they have gone since.
+    const observer = new MutationObserver(() => {
+      if (document.activeElement !== heading) {
+        stop();
+        return;
+      }
+      const drawn = findRow(root, plan.rows);
+      if (drawn !== null) {
+        takeResolutionFocus(drawn);
+        stop();
+      }
+    });
+    const timer = setTimeout(() => stop(), LAND_WAIT_MS);
+    function stop() {
+      observer.disconnect();
+      clearTimeout(timer);
+      if (stopWaiting.current === stop) stopWaiting.current = null;
+    }
+    stopWaiting.current = stop;
+    observer.observe(root, { childList: true, subtree: true });
+  }, [receipt, scope]);
+  useEffect(() => () => stopWaiting.current?.(), []);
 
   const timed = receipt !== null && !isUndoFailed(receipt);
   useEffect(() => {
@@ -436,8 +608,13 @@ export function useMemoryReceipt(
     ) {
       return;
     }
-    if (now - receipt.since >= UNDO_WINDOW_MS) setReceipt(null);
-  }, [receipt, now]);
+    if (now - receipt.since >= UNDO_WINDOW_MS) {
+      if (holdsFocus()) {
+        landing.current = { rows: rowsAfterExpiry(receipt), retry: false, wait: false };
+      }
+      setReceipt(null);
+    }
+  }, [receipt, now, holdsFocus]);
 
   // Every receipt starts its clock and `now` together, so its first paint never
   // counts from a stale `now` (it would read "Undo 73s" for a frame).
@@ -457,8 +634,25 @@ export function useMemoryReceipt(
     [start],
   );
 
+  /*
+    Where an Undo sends focus, read when it is PRESSED — the button is still
+    there then; it is disabled while the write is out and gone once the
+    receipt changes. It worked: the row it gave back (waiting for it, on a
+    surface that re-reads). It failed: "Try again".
+  */
+  const landAfterUndo = useCallback(
+    (held: boolean, rowId: string, ok: boolean) => {
+      if (!held) return;
+      landing.current = ok
+        ? { rows: [rowId], retry: false, wait: true }
+        : { rows: [], retry: true, wait: false };
+    },
+    [],
+  );
+
   const undo = useCallback(
     async (row: FactMemoryStatement) => {
+      const held = holdsFocus();
       setReceipt((r) =>
         r !== null && (r.kind === 'forgotten' || r.kind === 'undo-failed')
           ? { ...r, status: 'undoing' }
@@ -469,17 +663,20 @@ export function useMemoryReceipt(
         // after a lost response, a second tab) — it IS in effect, so the
         // receipt tells the truth, and the re-read below shows the rest.
         await workspaceApi.unforgetMemory(agentId, [row.id]);
-        start((since) => ({ kind: 'restored', since }));
+        landAfterUndo(held, row.id, true);
+        start((since) => ({ kind: 'restored', rowId: row.id, since }));
         onChanged();
       } catch {
+        landAfterUndo(held, row.id, false);
         setReceipt({ kind: 'undo-failed', row, status: 'idle' });
       }
     },
-    [agentId, onChanged, start],
+    [agentId, onChanged, start, holdsFocus, landAfterUndo],
   );
 
   const undoFix = useCallback(
     async (fix: MemoryFix) => {
+      const held = holdsFocus();
       setReceipt((r) =>
         r !== null && (r.kind === 'updated' || r.kind === 'fix-undo-failed')
           ? { ...r, status: 'undoing' }
@@ -489,14 +686,16 @@ export function useMemoryReceipt(
         // `undone: false` means the fix was already taken back (a retry after
         // a lost response) — the old row IS in effect, so the receipt says so.
         await workspaceApi.uncorrectMemory(agentId, { id: fix.id, restore: fix.row.id });
-        start((since) => ({ kind: 'fix-undone', since }));
+        landAfterUndo(held, fix.row.id, true);
+        start((since) => ({ kind: 'fix-undone', rowId: fix.row.id, since }));
         onFixUndone?.(fix);
         onChanged();
       } catch {
+        landAfterUndo(held, fix.row.id, false);
         setReceipt({ kind: 'fix-undo-failed', fix, status: 'idle' });
       }
     },
-    [agentId, onChanged, onFixUndone, start],
+    [agentId, onChanged, onFixUndone, start, holdsFocus, landAfterUndo],
   );
 
   const element =
@@ -510,15 +709,42 @@ export function useMemoryReceipt(
       />
     );
 
-  return { receipt, now, forgotten, updated, undo, undoFix, element };
+  /*
+    WHAT IS SAID OUT LOUD, AND BY WHOM — each outcome once (TASK-651).
+    "Updated." and "Forgotten" are said by FOCUS: the dialog lands on that
+    very line (TASK-644), so the line is not also a live region — it used to
+    be one, and a reader could hear it twice. "Remembered again." and "Fix
+    undone." are said HERE: after an Undo focus goes to the row, which does
+    not carry those words. It is a region the surface keeps mounted (one
+    inserted already holding its message is not reliably announced — see
+    `LearnedAnnouncer`), and the sentence is keyed by the receipt's clock so
+    two Undos in a row are two announcements. It is empty on mount and once
+    the receipt is gone, so a reader walking the page finds no stale news.
+  */
+  const said =
+    receipt?.kind === 'restored'
+      ? MEMORY_RESTORED
+      : receipt?.kind === 'fix-undone'
+        ? MEMORY_FIX_UNDONE
+        : null;
+  const announcer = (
+    <span className="sr-only" role="status" aria-live="polite" data-memory-said="">
+      {said !== null && receipt !== null && 'since' in receipt && (
+        <span key={receipt.since}>{said}</span>
+      )}
+    </span>
+  );
+
+  return { receipt, now, forgotten, updated, undo, undoFix, element, announcer };
 }
 
 /**
- * One receipt. Only the failure is an alert; the others are polite status
- * lines, and the ticking Undo button sits OUTSIDE the live region so a screen
- * reader hears "Forgotten" (or "Updated.") once rather than a number every
- * second. shadcn's `Alert` hard-codes `role="alert"`, so the polite ones
- * clear it.
+ * One receipt. Only the failure is an alert. The others are not live regions
+ * at all (TASK-651): "Forgotten" and "Updated." are read by the focus that
+ * lands on them, and "Remembered again." / "Fix undone." by the hook's
+ * `announcer` — never by a region wrapped around the ticking Undo, which would
+ * read a number every second. shadcn's `Alert` hard-codes `role="alert"`, so
+ * the quiet ones clear it.
  */
 export function MemoryReceipt({
   receipt,
@@ -533,13 +759,13 @@ export function MemoryReceipt({
   onUndoFix: (fix: MemoryFix) => void;
   className?: string;
 }) {
+  const drawn = { [RECEIPT_ATTR]: '' };
   if (receipt.kind === 'restored' || receipt.kind === 'fix-undone') {
+    // Said by the hook's `announcer`, not here (TASK-651): see `useMemoryReceipt`.
     return (
-      <Alert role={undefined} className={className}>
+      <Alert role={undefined} className={className} {...drawn}>
         <AlertDescription>
-          <span role="status">
-            {receipt.kind === 'restored' ? MEMORY_RESTORED : MEMORY_FIX_UNDONE}
-          </span>
+          <span>{receipt.kind === 'restored' ? MEMORY_RESTORED : MEMORY_FIX_UNDONE}</span>
         </AlertDescription>
       </Alert>
     );
@@ -548,17 +774,22 @@ export function MemoryReceipt({
     const retry =
       receipt.kind === 'undo-failed' ? () => onUndo(receipt.row) : () => onUndoFix(receipt.fix);
     return (
-      <Alert variant="destructive" className={className}>
+      <Alert variant="destructive" className={className} {...drawn}>
         <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
           <span>
             {receipt.kind === 'undo-failed' ? MEMORY_UNDO_FAILED : MEMORY_FIX_UNDO_FAILED}
           </span>
+          {/*
+            Where focus lands when an Undo fails (TASK-651): the one thing to
+            do next. The alert says what went wrong; the button is its own words.
+          */}
           <Button
             type="button"
             variant="secondary"
             size="sm"
             disabled={receipt.status === 'undoing'}
             onClick={retry}
+            {...{ [RETRY_ATTR]: '' }}
           >
             {MEMORY_UNDO_RETRY}
           </Button>
@@ -575,11 +806,14 @@ export function MemoryReceipt({
   const undo =
     receipt.kind === 'forgotten' ? () => onUndo(receipt.row) : () => onUndoFix(receipt.fix);
   return (
-    <Alert role={undefined} className={className}>
+    <Alert role={undefined} className={className} {...drawn}>
       <AlertDescription className="flex flex-wrap items-center gap-2">
-        {/* Where focus lands once the dialog that produced this closes (TASK-644). */}
+        {/*
+          Where focus lands once the dialog that produced this closes
+          (TASK-644). Not a live region (TASK-651): focus already reads it, and
+          a line that is both was one way to hear "Updated." twice.
+        */}
         <span
-          role="status"
           tabIndex={-1}
           {...{ [OUTCOME_ATTR]: '' }}
           className={cn('rounded-sm', RESOLUTION_FOCUS_RING)}

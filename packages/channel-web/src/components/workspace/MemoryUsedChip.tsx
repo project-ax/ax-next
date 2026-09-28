@@ -27,7 +27,13 @@ import {
 import { cn } from '@/lib/utils';
 import { MemoryFixesContext, useFixLedger } from '@/lib/use-conversation-memory';
 import type { MemoryUsed, MemoryUsedStatement } from '@/lib/workspace-types';
-import { MemoryFixDialog, MemoryReceipt, useMemoryReceipt } from './MemoryCorrection';
+import {
+  MEMORY_HEADING_ATTR,
+  MemoryFixDialog,
+  MemoryReceipt,
+  memoryRowLanding,
+  useMemoryReceipt,
+} from './MemoryCorrection';
 import {
   MEMORY_FIX,
   MEMORY_USED_SINCE,
@@ -66,10 +72,15 @@ export function MemoryUsedChip({ used, agentId }: { used: MemoryUsed; agentId: s
   const shared = useContext(MemoryFixesContext);
   const own = useFixLedger(agentId);
   const { fixes, recordFix, undoFix } = shared ?? own;
-  // An undone fix hands the row its Fix button back — everywhere it is drawn.
-  const receipt = useMemoryReceipt(agentId, noop, { onFixUndone: undoFix });
   // A saved Fix takes the row's Fix button away, so focus lands on the receipt (TASK-644).
   const rootRef = useRef<HTMLDivElement>(null);
+  /*
+    An undone fix hands the row its Fix button back — everywhere it is drawn.
+    When the receipt goes away with focus in it (an Undo, or its time running
+    out), focus lands on the row's line (TASK-651); the chip keeps every row,
+    so the trigger — the list's heading — is only a backstop.
+  */
+  const receipt = useMemoryReceipt(agentId, noop, { onFixUndone: undoFix, scope: rootRef });
 
   return (
     <Collapsible
@@ -77,7 +88,11 @@ export function MemoryUsedChip({ used, agentId }: { used: MemoryUsed; agentId: s
       data-testid="workspace-memory-used"
       className="mt-3 max-w-[600px] overflow-hidden rounded-lg border border-border"
     >
-      <CollapsibleTrigger className="group flex w-full items-center gap-2 bg-muted px-3.5 py-2 text-[12px] text-muted-foreground">
+      {receipt.announcer}
+      <CollapsibleTrigger
+        {...{ [MEMORY_HEADING_ATTR]: '' }}
+        className="group flex w-full items-center gap-2 bg-muted px-3.5 py-2 text-[12px] text-muted-foreground"
+      >
         <BookOpen size={12} aria-hidden="true" />
         {memoryUsedLabel(used.statements.length)}
         <ChevronRight
@@ -100,7 +115,9 @@ export function MemoryUsedChip({ used, agentId }: { used: MemoryUsed; agentId: s
                 )}
               >
                 <div className="flex min-w-0 flex-col gap-0.5">
-                  <span className="break-words text-[12.5px]">{memoryStatementText(row)}</span>
+                  <span {...memoryRowLanding(row.id, 'break-words text-[12.5px]')}>
+                    {memoryStatementText(row)}
+                  </span>
                   <span className="text-[11.5px] text-muted-foreground">
                     {memoryUsedDetail(row, usedDate(row.when))}
                   </span>

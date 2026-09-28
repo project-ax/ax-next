@@ -32,6 +32,7 @@ import {
   LEARNED_READ_FAILED_ACTION,
   LEARNED_SAVE_FAILED,
   LEARNED_SEE_ALL,
+  LEARNED_TITLE,
   MEMORY_FIX_SAVE,
   MEMORY_FIX_UNDONE,
   MEMORY_FORGET,
@@ -48,6 +49,12 @@ import {
   memoryUndoFixLabel,
   memoryUndoLabel,
 } from '../memory-copy';
+
+/**
+ * Text a person can SEE: leaves out the receipt's screen-reader announcer
+ * (TASK-651), which says "Remembered again." / "Fix undone." a second time.
+ */
+const VISIBLE = { ignore: 'script, style, [data-memory-said] *' };
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
@@ -362,7 +369,7 @@ describe('LearnedInChat — Fix, Forget, Undo', () => {
     // The receipt follows the row back: it sits on the original, which offers Fix again.
     const row = screen.getByText(memoryStatementText(original)).closest('li');
     expect(row).not.toBeNull();
-    expect(within(row!).getByText(MEMORY_FIX_UNDONE)).toBeTruthy();
+    expect(within(row!).getByText(MEMORY_FIX_UNDONE, VISIBLE)).toBeTruthy();
     expect(
       within(row!).getByRole('button', { name: memoryFixLabel(memoryStatementText(original)) }),
     ).toBeTruthy();
@@ -400,7 +407,7 @@ describe('LearnedInChat — Fix, Forget, Undo', () => {
     expect(outcome.compareDocumentPosition(undo) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     fireEvent.click(undo);
-    expect(await screen.findByText(MEMORY_RESTORED)).toBeTruthy();
+    expect(await screen.findByText(MEMORY_RESTORED, VISIBLE)).toBeTruthy();
     // The same memory comes back (TASK-630's un-forget), so the row keeps its id.
     expect(unforget).toHaveBeenCalledWith('a1', ['a']);
     expect(screen.getByText(text)).toBeTruthy();
@@ -580,5 +587,118 @@ describe('LearnedInChat — where focus goes when a dialog closes (TASK-644)', (
     press(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(btn));
+  });
+});
+
+describe('LearnedInChat — where focus goes after Undo or when the receipt runs out (TASK-651)', () => {
+  const boston = st('a', { value: 'Boston' });
+  const text = memoryStatementText(boston);
+
+  async function forgetBoston(): Promise<HTMLElement> {
+    press(await screen.findByRole('button', { name: memoryForgetLabel(text) }));
+    press(within(await screen.findByRole('dialog')).getByRole('button', { name: MEMORY_FORGET }));
+    const outcome = await screen.findByText(MEMORY_FORGOTTEN);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(outcome));
+    return outcome;
+  }
+
+  async function fixBoston(): Promise<HTMLElement> {
+    press(await screen.findByRole('button', { name: memoryFixLabel(text) }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'Denver' } });
+    press(within(dialog).getByRole('button', { name: MEMORY_FIX_SAVE }));
+    const outcome = await screen.findByText(MEMORY_UPDATED);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(outcome));
+    return outcome;
+  }
+
+  it('Forget → Undo lands on the row that came back, with Fix the next stop', async () => {
+    recall.mockResolvedValueOnce({ statements: [boston, st('b')], degraded: [] });
+    forget.mockResolvedValue({ forgotten: true });
+    unforget.mockResolvedValue({ restored: ['a'] });
+    render(<Harness />);
+    await forgetBoston();
+    press(screen.getByRole('button', { name: memoryUndoLabel('Boston') }));
+
+    const fix = await screen.findByRole('button', { name: memoryFixLabel(text) });
+    const row = screen.getByText(text);
+    await waitFor(() => expect(document.activeElement).toBe(row));
+    expect(row.compareDocumentPosition(fix) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('Fix → Undo lands on the earlier version the Undo put back', async () => {
+    recall.mockResolvedValueOnce({ statements: [boston], degraded: [] });
+    correct.mockResolvedValue({ id: 'a2' });
+    uncorrect.mockResolvedValue({ undone: true });
+    render(<Harness />);
+    await fixBoston();
+    press(screen.getByRole('button', { name: memoryUndoFixLabel('Denver') }));
+
+    await screen.findByRole('button', { name: memoryFixLabel(text) });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByText(text)));
+  });
+
+  it('an Undo that fails lands on "Try again"', async () => {
+    recall.mockResolvedValueOnce({ statements: [boston], degraded: [] });
+    forget.mockResolvedValue({ forgotten: true });
+    unforget.mockRejectedValue(new Error('down'));
+    render(<Harness />);
+    await forgetBoston();
+    press(screen.getByRole('button', { name: memoryUndoLabel('Boston') }));
+    const retry = await screen.findByRole('button', { name: 'Try again' });
+    await waitFor(() => expect(document.activeElement).toBe(retry));
+  });
+
+  it('a Forgotten receipt that runs out while it has focus hands focus to the block heading', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    recall.mockResolvedValueOnce({ statements: [boston, st('b')], degraded: [] });
+    forget.mockResolvedValue({ forgotten: true });
+    render(<Harness />);
+    await forgetBoston();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(11_000);
+    });
+    await waitFor(() => expect(screen.queryByText(MEMORY_FORGOTTEN)).toBeNull());
+    // The row is gone for good, so the block's own heading is where focus waits.
+    expect(screen.queryByText(text)).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByText(LEARNED_TITLE)));
+  });
+
+  it('an Updated receipt that runs out while it has focus hands focus to the fixed row', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    recall.mockResolvedValueOnce({ statements: [boston], degraded: [] });
+    correct.mockResolvedValue({ id: 'a2' });
+    render(<Harness />);
+    await fixBoston();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(11_000);
+    });
+    await waitFor(() => expect(screen.queryByText(MEMORY_UPDATED)).toBeNull());
+    const fixed = screen.getByText(memoryStatementText(st('a2', { value: 'Denver' })));
+    await waitFor(() => expect(document.activeElement).toBe(fixed));
+  });
+
+  it('says "Forgotten" by focus alone and "Remembered again." by the live region', async () => {
+    recall.mockResolvedValueOnce({ statements: [boston], degraded: [] });
+    forget.mockResolvedValue({ forgotten: true });
+    unforget.mockResolvedValue({ restored: ['a'] });
+    render(<Harness />);
+    const outcome = await forgetBoston();
+    expect(outcome.closest('[role="status"],[role="alert"],[aria-live]')).toBeNull();
+    const said = document.querySelector('[data-memory-said]');
+    expect(said).not.toBeNull();
+    expect(said!.textContent).toBe('');
+
+    press(screen.getByRole('button', { name: memoryUndoLabel('Boston') }));
+    await waitFor(() => expect(said!.textContent).toBe(MEMORY_RESTORED));
+    const visible = screen
+      .getAllByText(MEMORY_RESTORED)
+      .filter((n) => n.closest('[data-memory-said]') === null);
+    expect(visible.length).toBeGreaterThan(0);
+    for (const n of visible) {
+      expect(n.closest('[role="status"],[role="alert"],[aria-live]')).toBeNull();
+    }
   });
 });

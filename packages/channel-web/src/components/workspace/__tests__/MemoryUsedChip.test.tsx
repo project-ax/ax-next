@@ -5,8 +5,8 @@
  * the answer was handed, and Fix goes through the shared dialog — after which
  * the row says what happened to it instead of offering Fix again.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { MemoryUsed, MemoryUsedStatement } from '@/lib/workspace-types';
 import { MemoryUsedChip } from '../MemoryUsedChip';
@@ -23,6 +23,12 @@ import {
   memoryStatementText,
   memoryUsedLabel,
 } from '../memory-copy';
+
+/**
+ * Text a person can SEE: leaves out the receipt's screen-reader announcer
+ * (TASK-651), which says "Remembered again." / "Fix undone." a second time.
+ */
+const VISIBLE = { ignore: 'script, style, [data-memory-said] *' };
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
@@ -199,7 +205,7 @@ describe('MemoryUsedChip', () => {
     await waitFor(() =>
       expect(uncorrectMock).toHaveBeenCalledWith('a1', { id: 'mem-new', restore: 'm1' }),
     );
-    expect(await screen.findByText(MEMORY_FIX_UNDONE)).toBeInTheDocument();
+    expect(await screen.findByText(MEMORY_FIX_UNDONE, VISIBLE)).toBeInTheDocument();
     expect(screen.queryByText(MEMORY_USED_SINCE.replaced)).toBeNull();
     expect(screen.getByRole('button', { name: memoryFixLabel('Boston') })).toBeInTheDocument();
   });
@@ -264,5 +270,86 @@ describe('MemoryUsedChip — where focus goes when the dialog closes (TASK-644)'
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(fixTea));
     expect(screen.getByText(MEMORY_UPDATED)).toBeInTheDocument();
+  });
+});
+
+/** Save a fix to Boston from the keyboard and wait for focus on "Updated.". */
+async function fixBoston(): Promise<HTMLElement> {
+  press(await screen.findByRole('button', { name: memoryFixLabel('Boston') }));
+  const dialog = await screen.findByRole('dialog');
+  fireEvent.change(within(dialog).getByLabelText(MEMORY_FIX_FIELD_LABEL), {
+    target: { value: 'Cambridge' },
+  });
+  press(within(dialog).getByRole('button', { name: 'Save' }));
+  const outcome = await screen.findByText(MEMORY_UPDATED);
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  await waitFor(() => expect(document.activeElement).toBe(outcome));
+  return outcome;
+}
+
+describe('MemoryUsedChip — where focus goes after Undo or when the receipt runs out (TASK-651)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('Undo lands on the row it gave back — not <body> — with its Fix button the next stop', async () => {
+    render(<MemoryUsedChip used={used([boston])} agentId="a1" />);
+    open();
+    await fixBoston();
+    press(screen.getByRole('button', { name: memoryUndoFixLabel('Cambridge') }));
+
+    const fix = await screen.findByRole('button', { name: memoryFixLabel('Boston') });
+    const row = screen.getByText(memoryStatementText(boston));
+    await waitFor(() => expect(document.activeElement).toBe(row));
+    expect(row.compareDocumentPosition(fix) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('a receipt that runs out while it has focus hands focus to the fixed row', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    render(<MemoryUsedChip used={used([boston])} agentId="a1" />);
+    open();
+    await fixBoston();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(11_000);
+    });
+    await waitFor(() => expect(screen.queryByText(MEMORY_UPDATED)).toBeNull());
+    expect(document.activeElement).toBe(screen.getByText(memoryStatementText(boston)));
+  });
+
+  it('a receipt that runs out while focus is elsewhere leaves focus alone', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    render(<MemoryUsedChip used={used([boston])} agentId="a1" />);
+    open();
+    await fixBoston();
+    const t = trigger();
+    t.focus();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(11_000);
+    });
+    await waitFor(() => expect(screen.queryByText(MEMORY_UPDATED)).toBeNull());
+    expect(document.activeElement).toBe(t);
+  });
+
+  it('says each outcome once: "Updated." by focus alone, "Fix undone." by the live region', async () => {
+    render(<MemoryUsedChip used={used([boston])} agentId="a1" />);
+    open();
+    const outcome = await fixBoston();
+    // The node focus lands on is not itself a live region, so it is not read twice.
+    expect(outcome.closest('[role="status"],[role="alert"],[aria-live]')).toBeNull();
+    const said = document.querySelector('[data-memory-said]');
+    expect(said).not.toBeNull();
+    expect(said!.textContent).toBe('');
+
+    press(screen.getByRole('button', { name: memoryUndoFixLabel('Cambridge') }));
+    await waitFor(() => expect(said!.textContent).toBe(MEMORY_FIX_UNDONE));
+    expect(said!.getAttribute('role')).toBe('status');
+    // Focus went to the row, so the visible words are not a second live region.
+    const visible = screen
+      .getAllByText(MEMORY_FIX_UNDONE)
+      .filter((n) => n.closest('[data-memory-said]') === null);
+    expect(visible.length).toBeGreaterThan(0);
+    for (const n of visible) {
+      expect(n.closest('[role="status"],[role="alert"],[aria-live]')).toBeNull();
+    }
   });
 });
