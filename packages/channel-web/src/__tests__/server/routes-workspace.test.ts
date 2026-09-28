@@ -3998,6 +3998,7 @@ describe('channel-web agent-workspace BFF', () => {
       recallThrows?: PluginError;
       rememberThrows?: PluginError;
       forgetThrows?: PluginError;
+      correctThrows?: PluginError;
     }): void {
       bus.registerService('memory:recall', 'memory', async (ctx, input) => {
         state.calls.push({
@@ -4029,6 +4030,16 @@ describe('channel-web agent-workspace BFF', () => {
         if (state.forgetThrows !== undefined) throw state.forgetThrows;
         return { forgotten: true };
       });
+      bus.registerService('memory:correct', 'memory', async (ctx, input) => {
+        state.calls.push({
+          hook: 'correct',
+          agentId: ctx.agentId,
+          userId: ctx.userId ?? '',
+          input,
+        });
+        if (state.correctThrows !== undefined) throw state.correctThrows;
+        return { id: 'mem-2' };
+      });
     }
 
     it('401s every facts route for an unauthenticated caller', async () => {
@@ -4038,6 +4049,7 @@ describe('channel-web agent-workspace BFF', () => {
         [h.recallFacts, {}],
         [h.rememberFact, { about: 'u', relation: 'r', value: 'v' }],
         [h.forgetFacts, { ids: ['m1'] }],
+        [h.correctFact, { id: 'm1', about: 'u', relation: 'r', value: 'v', reason: 'changed' }],
       ] as const) {
         const { res, captured } = mkRes();
         await handler(mkReq({ agentId: 'a1' }, body), res);
@@ -4054,6 +4066,7 @@ describe('channel-web agent-workspace BFF', () => {
         [h.recallFacts, {}],
         [h.rememberFact, { about: 'u', relation: 'r', value: 'v' }],
         [h.forgetFacts, { ids: ['m1'] }],
+        [h.correctFact, { id: 'm1', about: 'u', relation: 'r', value: 'v', reason: 'changed' }],
       ] as const) {
         const { res, captured } = mkRes();
         await handler(mkReq({ agentId: 'a9' }, body), res);
@@ -4071,6 +4084,7 @@ describe('channel-web agent-workspace BFF', () => {
         [h.recallFacts, {}],
         [h.rememberFact, { about: 'u', relation: 'r', value: 'v' }],
         [h.forgetFacts, { ids: ['m1'] }],
+        [h.correctFact, { id: 'm1', about: 'u', relation: 'r', value: 'v', reason: 'changed' }],
       ];
       for (const [handler, body] of cases) {
         const { res, captured } = mkRes();
@@ -4188,6 +4202,92 @@ describe('channel-web agent-workspace BFF', () => {
           },
         },
       ]);
+    });
+
+    const goodCorrect = {
+      id: 'm1',
+      about: 'user',
+      relation: 'lives_in',
+      value: 'Denver',
+      reason: 'never-right',
+    };
+
+    it.each([
+      ['a missing id', { ...goodCorrect, id: undefined }],
+      ['a blank id', { ...goodCorrect, id: ' ' }],
+      ['a blank about', { ...goodCorrect, about: '' }],
+      ['a missing relation', { ...goodCorrect, relation: undefined }],
+      ['a blank value', { ...goodCorrect, value: '  ' }],
+      ['a missing reason', { ...goodCorrect, reason: undefined }],
+      ['an unknown reason', { ...goodCorrect, reason: 'oops' }],
+      ['a non-string reason', { ...goodCorrect, reason: true }],
+      ['a smuggled when', { ...goodCorrect, when: '2026-01-01T00:00:00Z' }],
+      ['an authority field', { ...goodCorrect, ownerUserId: 'user-x' }],
+      ['an array body', [goodCorrect]],
+    ])('400s a correct body with %s', async (_name, body) => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      const state = { calls: [] as Array<unknown> };
+      registerFacts(state as never);
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.correctFact(mkReq({ agentId: 'a1' }, body), res);
+      expect(captured.statusCode).toBe(400);
+      expect(captured.body).toEqual({ error: 'invalid-memory-request' });
+      expect(state.calls).toEqual([]);
+    });
+
+    it.each(['changed', 'never-right'] as const)(
+      'corrects on the agent ctx with reason %s and returns only the new id',
+      async (reason) => {
+        registerAuth({ id: 'u1', isAdmin: false });
+        const state = {
+          calls: [] as Array<{ hook: string; agentId: string; userId: string; input: unknown }>,
+        };
+        registerFacts(state);
+        const h = makeWorkspaceHandlers({ bus, initCtx });
+        const { res, captured } = mkRes();
+        await h.correctFact(mkReq({ agentId: 'a1' }, { ...goodCorrect, reason }), res);
+        expect(captured.statusCode).toBe(200);
+        expect(captured.body).toEqual({ id: 'mem-2' });
+        expect(state.calls).toEqual([
+          {
+            hook: 'correct',
+            agentId: 'a1',
+            userId: 'u1',
+            input: { ...goodCorrect, reason },
+          },
+        ]);
+      },
+    );
+
+    it('400s a correct request whose body is not JSON', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      const state = { calls: [] as Array<unknown> };
+      registerFacts(state as never);
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.correctFact(mkReq({ agentId: 'a1' }), res);
+      expect(captured.statusCode).toBe(400);
+      expect(captured.body).toEqual({ error: 'invalid-json' });
+      expect(state.calls).toEqual([]);
+    });
+
+    it('turns a correct invalid-payload into a 400, never echoing the detail', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      const state = {
+        calls: [] as Array<unknown>,
+        correctThrows: new PluginError({
+          code: 'invalid-payload',
+          plugin: 'memory',
+          message: 'value too long for engine',
+        }),
+      };
+      registerFacts(state as never);
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.correctFact(mkReq({ agentId: 'a1' }, goodCorrect), res);
+      expect(captured.statusCode).toBe(400);
+      expect(captured.body).toEqual({ error: 'invalid-memory-request' });
     });
 
     it.each([

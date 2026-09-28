@@ -18,10 +18,11 @@
  *   - **Undo** is never a row verb. It exists only on a receipt for something
  *     that just happened, and only for `UNDO_WINDOW_MS` — the same ten seconds
  *     an approval gets, so the app has one idea of "just happened".
- *   - History says **Replaced / Forgotten / Overridden**, and **Retracted** is
- *     reserved for the "did this change, or was it never right?" question on
- *     Fix (a separate card). The word is here so that card only has to wire
- *     it, not name it.
+ *   - History says **Replaced / Forgotten / Overridden / Retracted**. Fix
+ *     asks one question — "It changed" or "It was never right" — and the
+ *     answer decides which of the first and last a fixed memory gets:
+ *     Replaced keeps the old version as something that used to be true,
+ *     Retracted marks it as a mistake (TASK-624).
  *
  * Every string is a constant or a function of the row, never a sentence built
  * by string surgery out of another sentence. A test renders the Memory tab and
@@ -60,6 +61,25 @@ export const MEMORY_FIX_SAVE_FAILED =
 export function memoryFixHelper(visibility: MemoryVisibility): string {
   return visibility === 'team' ? MEMORY_FIX_HELPER_TEAM : MEMORY_FIX_HELPER;
 }
+
+/**
+ * Fix's one question: did this memory change, or was it never right? The
+ * answer is sent as `MemoryFixReason`; "It changed" is the default because it
+ * is the common case (people move, jobs change) and the gentler claim.
+ *
+ * The two helpers are written as a pair on purpose. The difference between
+ * the options is exactly what happens to the OLD version, so each one says
+ * that and nothing else.
+ */
+export type MemoryFixReason = 'changed' | 'never-right';
+
+export const MEMORY_FIX_REASON_LEGEND = 'What happened?';
+export const MEMORY_FIX_REASON_CHANGED = 'It changed';
+export const MEMORY_FIX_REASON_CHANGED_HELPER =
+  "I'll keep the old version as something that used to be true.";
+export const MEMORY_FIX_REASON_NEVER_RIGHT = 'It was never right';
+export const MEMORY_FIX_REASON_NEVER_RIGHT_HELPER =
+  "I'll treat the old version as a mistake, not as something that used to be true.";
 
 /** Said once a Fix has been saved. */
 export const MEMORY_UPDATED = 'Updated.';
@@ -124,11 +144,11 @@ export function memoryUndoSecondsLeft(since: number, now: number = Date.now()): 
 /**
  * Every way a memory stops being the one in effect, as a History badge.
  *
- * `retracted` is RESERVED: nothing sends it yet. It is the answer "it was
- * never right" to the question Fix will ask (TASK-624), as opposed to
- * "it changed", which stays `replaced`.
+ * `retracted` is a memory someone fixed with "It was never right": History
+ * shows it struck through, because it was a mistake rather than something
+ * that used to be true. "It changed" leaves the old row `replaced`.
  */
-export type MemoryClosureKind = NonNullable<FactMemoryStatement['closure']> | 'retracted';
+export type MemoryClosureKind = NonNullable<FactMemoryStatement['closure']>;
 
 export const MEMORY_CLOSURE_BADGE: Readonly<Record<MemoryClosureKind, string>> = {
   replaced: 'Replaced',

@@ -14,6 +14,7 @@ vi.mock('@/lib/workspace-api', async () => {
     workspaceApi: {
       recallMemory: vi.fn(),
       rememberMemory: vi.fn(),
+      correctMemory: vi.fn(),
       forgetMemory: vi.fn(),
     },
   };
@@ -21,6 +22,7 @@ vi.mock('@/lib/workspace-api', async () => {
 
 const recallMock = vi.mocked(workspaceApi.recallMemory);
 const rememberMock = vi.mocked(workspaceApi.rememberMemory);
+const correctMock = vi.mocked(workspaceApi.correctMemory);
 const forgetMock = vi.mocked(workspaceApi.forgetMemory);
 
 const fact = (over: Partial<FactMemoryStatement> & { id: string }): FactMemoryStatement => ({
@@ -48,6 +50,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   recallMock.mockResolvedValue({ statements: [], degraded: [] });
   rememberMock.mockResolvedValue({ id: 'mem-new' });
+  correctMock.mockResolvedValue({ id: 'mem-new' });
   forgetMock.mockResolvedValue({ forgotten: true });
 });
 
@@ -149,19 +152,86 @@ describe('MemorySurface', () => {
     fireEvent.change(input, { target: { value: 'Cambridge' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() =>
-      expect(rememberMock).toHaveBeenCalledWith('a1', {
+      expect(correctMock).toHaveBeenCalledWith('a1', {
+        id: 'm1',
         about: 'user:alice',
         relation: 'lives_in',
         value: 'Cambridge',
+        reason: 'changed',
       }),
     );
+    expect(rememberMock).not.toHaveBeenCalled();
     await waitFor(() => expect(recallMock).toHaveBeenCalledTimes(2));
     expect(screen.queryByText('Fix this memory')).toBeNull();
   });
 
+  it('asks what happened, defaulting to "It changed"', async () => {
+    recallMock.mockResolvedValue({ statements: [fact({ id: 'm1' })], degraded: [] });
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Fix: Boston' }));
+    const group = await screen.findByRole('radiogroup');
+    expect(group).toBeInTheDocument();
+    expect(screen.getByText('What happened?')).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'It changed' })).toBeChecked();
+    expect(screen.getByRole('radio', { name: 'It was never right' })).not.toBeChecked();
+    expect(
+      screen.getByText(
+        "I'll treat the old version as a mistake, not as something that used to be true.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it.each([
+    ['It changed', 'changed'],
+    ['It was never right', 'never-right'],
+  ] as const)('choosing "%s" sends reason %s', async (label, reason) => {
+    recallMock.mockResolvedValue({ statements: [fact({ id: 'm1' })], degraded: [] });
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Fix: Boston' }));
+    fireEvent.change(await screen.findByLabelText('What should I remember?'), {
+      target: { value: 'Denver' },
+    });
+    // Pick the other option first, so each case proves its click lands.
+    fireEvent.click(
+      screen.getByRole('radio', {
+        name: reason === 'changed' ? 'It was never right' : 'It changed',
+      }),
+    );
+    fireEvent.click(screen.getByRole('radio', { name: label }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(correctMock).toHaveBeenCalledWith('a1', {
+        id: 'm1',
+        about: 'user:alice',
+        relation: 'lives_in',
+        value: 'Denver',
+        reason,
+      }),
+    );
+  });
+
+  it('resets the answer to "It changed" when Fix opens on another memory', async () => {
+    recallMock.mockResolvedValue({
+      statements: [
+        fact({ id: 'm1', value: 'Boston' }),
+        fact({ id: 'm2', relation: 'works_at', value: 'Acme' }),
+      ],
+      degraded: [],
+    });
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Fix: Boston' }));
+    fireEvent.click(await screen.findByRole('radio', { name: 'It was never right' }));
+    expect(screen.getByRole('radio', { name: 'It was never right' })).toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByText('Fix this memory')).toBeNull());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fix: Acme' }));
+    expect(await screen.findByRole('radio', { name: 'It changed' })).toBeChecked();
+  });
+
   it('keeps the dialog and the draft when the save fails', async () => {
     recallMock.mockResolvedValue({ statements: [fact({ id: 'm1' })], degraded: [] });
-    rememberMock.mockRejectedValueOnce(new Error('down'));
+    correctMock.mockRejectedValueOnce(new Error('down'));
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Fix: Boston' }));
     const input = await screen.findByLabelText('What should I remember?');
@@ -243,6 +313,49 @@ describe('MemorySurface', () => {
     expect(screen.getByText('Forgotten')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Fix: Worcester' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Forget: Worcester' })).toBeNull();
+  });
+
+  it('strikes through a retracted value and badges it Retracted; a replaced row stays Replaced', async () => {
+    recallMock.mockImplementation(async (_id, input) => {
+      if (input?.history === true) {
+        return {
+          statements: [
+            fact({ id: 'm2', value: 'Denver' }),
+            fact({
+              id: 'm0',
+              value: 'Boston',
+              until: '2026-09-20T00:00:00.000Z',
+              closure: 'replaced',
+              closedBy: 'm2',
+            }),
+            fact({
+              id: 'm1',
+              value: 'Seattle',
+              until: '2026-09-27T00:00:00.000Z',
+              closure: 'retracted',
+            }),
+          ],
+          degraded: [],
+        };
+      }
+      return { statements: [fact({ id: 'm2', value: 'Denver' })], degraded: [] };
+    });
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    expect(await screen.findByText('Denver')).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole('switch', { name: 'Show history' })[0]!);
+
+    const seattle = await screen.findByText('Seattle');
+    expect(seattle).toHaveClass('line-through');
+    const seattleRow = seattle.closest('li')!;
+    expect(seattleRow.textContent).toContain('Retracted');
+    expect(seattleRow.textContent).toContain('2026-09-27');
+    expect(seattleRow.textContent).not.toContain('Replaced');
+    expect(screen.queryByRole('button', { name: 'Fix: Seattle' })).toBeNull();
+
+    const boston = screen.getByText('Boston');
+    expect(boston).not.toHaveClass('line-through');
+    expect(boston.closest('li')!.textContent).toContain('Replaced by: Denver');
+    expect(screen.getByText('Denver')).not.toHaveClass('line-through');
   });
 
   it('shows an overridden row as closed history with a badge, even though it has no until', async () => {
@@ -458,7 +571,7 @@ describe('MemorySurface', () => {
   it('cannot be dismissed or double-fired while a save is pending', async () => {
     recallMock.mockResolvedValue({ statements: [fact({ id: 'm1' })], degraded: [] });
     let release: (() => void) | undefined;
-    rememberMock.mockImplementation(
+    correctMock.mockImplementation(
       () => new Promise<{ id: string }>((resolve) => { release = () => resolve({ id: 'x' }); }),
     );
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
@@ -466,12 +579,13 @@ describe('MemorySurface', () => {
     const input = await screen.findByLabelText('What should I remember?');
     fireEvent.change(input, { target: { value: 'Cambridge' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(rememberMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(correctMock).toHaveBeenCalledTimes(1));
 
     fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
     expect(screen.getByText('Fix this memory')).toBeInTheDocument();
+    for (const radio of screen.getAllByRole('radio')) expect(radio).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(rememberMock).toHaveBeenCalledTimes(1);
+    expect(correctMock).toHaveBeenCalledTimes(1);
 
     release?.();
     await waitFor(() => expect(screen.queryByText('Fix this memory')).toBeNull());

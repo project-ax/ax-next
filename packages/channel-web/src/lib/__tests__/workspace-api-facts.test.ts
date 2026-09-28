@@ -85,6 +85,36 @@ describe('workspaceApi facts memory boundary', () => {
     }
   });
 
+  it('recallMemory accepts the retracted closure', async () => {
+    respondWith({
+      statements: [{ ...goodStatement, closure: 'retracted', until: '2026-09-27T00:00:00.000Z' }],
+      degraded: [],
+    });
+    const page = await workspaceApi.recallMemory('a1', { history: true });
+    expect(page.statements[0]?.closure).toBe('retracted');
+  });
+
+  it('correctMemory posts id + reason and resolves only a nonblank id', async () => {
+    const input = {
+      id: 'm1',
+      about: 'user',
+      relation: 'lives_in',
+      value: 'Denver',
+      reason: 'never-right' as const,
+    };
+    const fetchMock = respondWith({ id: 'mem-new' });
+    await expect(workspaceApi.correctMemory('a 1', input)).resolves.toEqual({ id: 'mem-new' });
+    expect(fetchMock.mock.calls[0]?.[0] as string).toContain('/agents/a%201/memory/correct');
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(JSON.stringify(input));
+
+    for (const body of [{}, null, { id: '' }, { id: 7 }, []]) {
+      respondWith(body);
+      await expect(workspaceApi.correctMemory('a1', input)).rejects.toBeInstanceOf(
+        WorkspaceShapeError,
+      );
+    }
+  });
+
   it('forgetMemory resolves only { forgotten: true }', async () => {
     respondWith({ forgotten: true });
     await expect(workspaceApi.forgetMemory('a1', ['m1'])).resolves.toEqual({
