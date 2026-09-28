@@ -20,7 +20,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseArgs, parseEnv } from 'node:util';
 import { judgeAnswer } from './memory-bench/judge.ts';
@@ -121,6 +121,67 @@ async function answerWith({ request, model, system, question, descriptor, recall
   return { answer: '', reasoningTokens };
 }
 
+/**
+ * The same loop, FORKED at the first link note (the variance-reduction design).
+ *
+ * The model answers exactly as in `off` until the first `memory_recall` whose result WOULD
+ * carry a note. There the conversation splits: one branch continues with the plain tool
+ * text, the other with the annotated text, both from the identical prefix. A run that never
+ * reaches a note is provably unaffected by the treatment, so it is answered once and counts
+ * as "no change" — which removes every pure-noise pair the unforked design had to pay for.
+ *
+ * `toolResult(use)` answers one tool call as `{ plain, annotated, notes }`.
+ */
+async function answerForked({ request, model, system, question, descriptor, toolResult }) {
+  const config = MODELS[model];
+  const tool = { type: 'function', function: { name: descriptor.name, description: descriptor.description, parameters: descriptor.inputSchema } };
+  const step = async (messages, startTurn, mode) => {
+    for (let turn = startTurn; turn <= CONFIG.maxToolTurns; turn += 1) {
+      const toolsAllowed = turn < CONFIG.maxToolTurns;
+      const body = {
+        model: config.id, max_tokens: config.maxTokens, reasoning: { effort: config.effort },
+        provider: { ...(config.provider ?? {}), max_price: CONFIG.openRouterMaxPrice },
+        messages: [{ role: 'system', content: system }, ...messages],
+        ...(toolsAllowed ? { tools: [tool] } : {}),
+      };
+      const bytes = Buffer.byteLength(JSON.stringify(body), 'utf8');
+      const upper = config.price
+        ? (bytes * config.price.input + config.maxTokens * config.price.output) / 1e6
+        : (bytes * 10 + config.maxTokens * 20) / 1e6;
+      const response = await request(body, upper);
+      const message = response.choices?.[0]?.message;
+      if (!message || typeof message !== 'object') throw new Error('Invalid OpenRouter message');
+      const uses = message.tool_calls ?? [];
+      const text = typeof message.content === 'string' ? message.content : '';
+      if (!toolsAllowed || !uses.length) return { answer: text };
+      messages.push({ role: 'assistant', content: message.content ?? '', tool_calls: uses });
+      for (let i = 0; i < uses.length; i += 1) {
+        const use = uses[i];
+        const result = await toolResult(use);
+        if (mode === 'probe' && result.notes > 0) {
+          const rest = uses.slice(i + 1);
+          const branch = async (arm) => {
+            const copy = structuredClone(messages);
+            copy.push({ role: 'tool', tool_call_id: use.id, content: arm === 'on' ? result.annotated : result.plain });
+            for (const other of rest) {
+              const r = await toolResult(other);
+              copy.push({ role: 'tool', tool_call_id: other.id, content: arm === 'on' ? r.annotated : r.plain });
+            }
+            return step(copy, turn + 1, arm);
+          };
+          const off = await branch('off');
+          const on = await branch('on');
+          return { forked: true, forkTurn: turn, off, on };
+        }
+        messages.push({ role: 'tool', tool_call_id: use.id, content: mode === 'on' ? result.annotated : result.plain });
+      }
+    }
+    return { answer: '' };
+  };
+  const probe = await step([{ role: 'user', content: question }], 0, 'probe');
+  return probe.forked ? probe : { forked: false, answer: probe.answer };
+}
+
 function bankSource(source, questionId) {
   const bankDir = join(source, `bank-${hash(questionId).slice(0, 24)}`);
   const generations = readdirSync(bankDir).filter((name) => statSync(join(bankDir, name)).isDirectory());
@@ -165,6 +226,54 @@ async function prepareBank({ sample, source, prepared, env, clients, providerFet
   writeFileSync(join(prepared, 'READY'), `${vectors}/${facts}\n`);
 }
 
+/**
+ * Fork-mode report. The overall-accuracy effect is the mean of (on − off) over EVERY
+ * (question, repeat) — unforked runs contribute exactly 0 — with a 95% interval from a
+ * bootstrap that resamples QUESTIONS (repeats of one question are not independent).
+ */
+function forkReport(runDir) {
+  const rows = readdirSync(runDir).filter((n) => /^fork-\d+\.jsonl$/.test(n)).flatMap((n) => readJsonl(join(runDir, n)));
+  const costs = readdirSync(runDir).filter((n) => /^costs-\d+\.jsonl$/.test(n)).flatMap((n) => readJsonl(join(runDir, n)));
+  const spent = costs.filter((e) => e.type === 'settle').reduce((s, e) => s + e.usd, 0);
+  const lines = [`fork rows ${rows.length}; spend $${spent.toFixed(4)}`, ''];
+  for (const model of Object.keys(MODELS)) {
+    const mine = rows.filter((r) => r.model === model);
+    if (!mine.length) continue;
+    const byQ = new Map();
+    for (const r of mine) {
+      if (!byQ.has(r.questionId)) byQ.set(r.questionId, []);
+      byQ.get(r.questionId).push(r);
+    }
+    const delta = (r) => (r.forked ? Number(isCorrect(r.onVerdict)) - Number(isCorrect(r.offVerdict)) : 0);
+    const qDelta = [...byQ.values()].map((rs) => rs.reduce((s, r) => s + delta(r), 0) / rs.length);
+    const mean = qDelta.reduce((a, b) => a + b, 0) / qDelta.length;
+    let seed = 0x5eed;
+    const rand = () => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return seed / 2 ** 32; };
+    const boots = [];
+    for (let b = 0; b < 4000; b += 1) {
+      let sum = 0;
+      for (let i = 0; i < qDelta.length; i += 1) sum += qDelta[Math.floor(rand() * qDelta.length)];
+      boots.push(sum / qDelta.length);
+    }
+    boots.sort((a, b) => a - b);
+    const forks = mine.filter((r) => r.forked);
+    const gained = forks.filter((r) => delta(r) > 0).length;
+    const lost = forks.filter((r) => delta(r) < 0).length;
+    const offAcc = mine.reduce((s, r) => s + Number(isCorrect(r.offVerdict)), 0) / mine.length;
+    lines.push(`## ${model} (${MODELS[model].id})`,
+      `  runs ${mine.length} over ${byQ.size} questions; forked ${forks.length} (${((forks.length / mine.length) * 100).toFixed(1)}%) on ${new Set(forks.map((r) => r.questionId)).size} questions`,
+      `  off accuracy ${(offAcc * 100).toFixed(1)}%   on − off: ${(mean * 100).toFixed(2)} pp   95% CI [${(boots[100] * 100).toFixed(2)}, ${(boots[3899] * 100).toFixed(2)}] pp (question bootstrap)`,
+      `  forked runs: gained ${gained}, lost ${lost}, same ${forks.length - gained - lost}; McNemar (runs, not independent) p=${mcnemarExact(gained, lost).toFixed(4)}`);
+    const perQ = [...byQ.entries()].filter(([, rs]) => rs.some((r) => r.forked))
+      .map(([q, rs]) => `${q}[${rs[0].questionType}] ${rs.filter((r) => r.forked).length}/${rs.length} forked, on−off ${rs.map(delta).join(',')}`);
+    for (const line of perQ) lines.push(`    ${line}`);
+    lines.push('');
+  }
+  const text = lines.join('\n');
+  writeFileSync(join(runDir, 'fork-report.txt'), text + '\n');
+  console.log(text);
+}
+
 function report(runDir) {
   const rows = readdirSync(runDir).filter((n) => /^results-\d+\.jsonl$/.test(n)).flatMap((n) => readJsonl(join(runDir, n)));
   const costs = readdirSync(runDir).filter((n) => /^costs-\d+\.jsonl$/.test(n)).flatMap((n) => readJsonl(join(runDir, n)));
@@ -203,10 +312,11 @@ export async function main(argv = process.argv.slice(2)) {
     shard: { type: 'string', default: '0/1' }, cap: { type: 'string', default: '5' },
     'credentials-file': { type: 'string', multiple: true }, models: { type: 'string', default: 'glm,deepseek' },
     report: { type: 'boolean', default: false }, only: { type: 'string' },
+    fork: { type: 'string' }, prepared: { type: 'string' },
   } });
   if (!values['run-dir']) throw new Error('--run-dir is required');
   const runDir = resolve(values['run-dir']);
-  if (values.report) return report(runDir);
+  if (values.report) return values.fork ? forkReport(runDir) : report(runDir);
   if (!values.source || !values.links) throw new Error('--source and --links are required');
   const [shardIndex, shardCount] = values.shard.split('/').map(Number);
   const models = values.models.split(',');
@@ -234,6 +344,14 @@ export async function main(argv = process.argv.slice(2)) {
   const clients = makeClients({ env, ledger, tags });
   const providerFetch = makeMeteredProviderFetch(ledger, tags);
   const request = openRouterClient({ env, ledger, tags });
+  const preparedRoot = values.prepared ? resolve(values.prepared) : join(runDir, 'banks');
+  const judge = (sample, answer) => judgeAnswer({ complete: async ({ system, user }) => {
+    const response = await clients.openrouter({ model: CONFIG.judgeModel, max_tokens: 120, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] });
+    const text = response.choices?.[0]?.message?.content;
+    if (typeof text !== 'string' || !/VERDICT:\s*\S/i.test(text)) throw new Error('Judge returned no usable verdict');
+    return { text, usage: { in: response.usage.prompt_tokens, out: response.usage.completion_tokens } };
+  } }, sample.question, sample.answer, answer, { unanswerable: sample.question_id.endsWith('_abs') });
+  if (values.fork) return forkMain({ values, mine, models, linksFor, preparedRoot, runDir, shardIndex, env, clients, providerFetch, ledger, storage, request, judge });
   const resultsPath = join(runDir, `results-${shardIndex}.jsonl`);
   const done = new Set(readJsonl(resultsPath).map((r) => `${r.questionId}|${r.model}|${r.condition}`));
 
@@ -243,7 +361,7 @@ export async function main(argv = process.argv.slice(2)) {
     for (const model of models) for (const condition of CONDITIONS) {
       const key = `${sample.question_id}|${model}|${condition}`;
       if (done.has(key)) continue;
-      const prepared = join(runDir, 'banks', `${hash(sample.question_id).slice(0, 12)}-prepared`);
+      const prepared = join(preparedRoot, `${hash(sample.question_id).slice(0, 12)}-prepared`);
       await prepareBank({ sample, source: values.source, prepared, env, clients, providerFetch, ledger, storage });
       const directory = join(runDir, 'banks', `${hash(sample.question_id).slice(0, 12)}-${model}-${condition}`);
       if (!existsSync(join(directory, 'facts.db'))) cpSync(prepared, directory, { recursive: true });
@@ -276,6 +394,63 @@ export async function main(argv = process.argv.slice(2)) {
           console.log(JSON.stringify({ q: row.questionId, model, condition, verdict: row.verdict, notes, spent: ledger.chargedUsd().toFixed(4) }));
         }));
       } finally { await bank.close(); }
+    }
+  }
+  return 0;
+}
+
+/** Fork mode: `--fork R` repeats per (question, model), each on a fresh copy of the prepared bank. */
+async function forkMain({ values, mine, models, linksFor, preparedRoot, runDir, shardIndex, env, clients, providerFetch, ledger, storage, request, judge }) {
+  const repeats = Number(values.fork);
+  if (!Number.isSafeInteger(repeats) || repeats < 1) throw new Error('--fork takes a positive repeat count');
+  const outPath = join(runDir, `fork-${shardIndex}.jsonl`);
+  const done = new Set(readJsonl(outPath).map((r) => `${r.questionId}|${r.model}|${r.rep}`));
+  for (const sample of mine) {
+    const questionInstant = parseCorpusDate(sample.question_date).toISOString();
+    const links = linksFor(sample.question_id);
+    const prepared = join(preparedRoot, `${hash(sample.question_id).slice(0, 12)}-prepared`);
+    await prepareBank({ sample, source: values.source, prepared, env, clients, providerFetch, ledger, storage });
+    for (const model of models) for (let rep = 1; rep <= repeats; rep += 1) {
+      if (done.has(`${sample.question_id}|${model}|${rep}`)) continue;
+      const directory = join(runDir, 'scratch', `${hash(sample.question_id).slice(0, 12)}-${model}-${rep}`);
+      rmSync(directory, { recursive: true, force: true });
+      cpSync(prepared, directory, { recursive: true });
+      const bank = await createBank({ sample, directory, env, clients, providerFetch, ledger, storage });
+      try {
+        await storage.run({ questionId: sample.question_id, phase: `${model}-fork` }, () => withCorpusClock(questionInstant, async () => {
+          const memory = await bank.injected();
+          const recalls = [];
+          const recall = makeRecall({ bank, storage, recalls, ledger });
+          const toolResult = async (use) => {
+            if (use.function?.name !== bank.descriptor.name) return { plain: 'Unknown tool', annotated: 'Unknown tool', notes: 0 };
+            let input;
+            try { input = JSON.parse(use.function.arguments); } catch { input = undefined; }
+            if (input === undefined) return { plain: 'Invalid tool arguments', annotated: 'Invalid tool arguments', notes: 0 };
+            const result = await recall(input);
+            if (!result.ok) return { plain: result.text, annotated: result.text, notes: 0 };
+            const annotated = annotateEvidence(result.text, links);
+            return { plain: result.text, annotated: annotated.text, notes: annotated.notes };
+          };
+          const out = await answerForked({ request, model, system: buildSystem(memory, sample.question_date), question: sample.question, descriptor: bank.descriptor, toolResult });
+          await bank.drain();
+          let row;
+          if (out.forked) {
+            const offJudge = await judge(sample, out.off.answer);
+            const onJudge = await judge(sample, out.on.answer);
+            row = { forked: true, forkTurn: out.forkTurn, offVerdict: offJudge.verdict, onVerdict: onJudge.verdict,
+              offReason: offJudge.reason, onReason: onJudge.reason, offAnswer: out.off.answer, onAnswer: out.on.answer };
+          } else {
+            const only = await judge(sample, out.answer);
+            row = { forked: false, offVerdict: only.verdict, onVerdict: only.verdict, reason: only.reason, answer: out.answer };
+          }
+          row = { questionId: sample.question_id, questionType: sample.question_type, model, rep, linksInBank: links.length, recalls: recalls.length, ...row };
+          appendFileSync(outPath, JSON.stringify(row) + '\n');
+          console.log(JSON.stringify({ q: row.questionId, model, rep, forked: row.forked, off: row.offVerdict, on: row.onVerdict, spent: ledger.chargedUsd().toFixed(4) }));
+        }));
+      } finally {
+        await bank.close();
+        rmSync(directory, { recursive: true, force: true });
+      }
     }
   }
   return 0;
