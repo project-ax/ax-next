@@ -5120,6 +5120,22 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         expect((await historyRow(x.id))!.closedBy).toBe(seattle.id);
       });
 
+      // A PENDING row is active and asserts a value; its slot is merely not
+      // resolved yet. The row being REPLACED is slot-less, so nothing about
+      // `by`'s later slot resolution can reach it.
+      it('accepts a PENDING `by` — it is active', async () => {
+        const x = await recordOne(slotless('Khalid', JAN));
+        const y = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JUN,
+          slot: PENDING_SLOT,
+        });
+        expect((await supersedeBy([x.id], y.id)).closed).toEqual([x.id]);
+        expect((await historyRow(x.id))!.closedBy).toBe(y.id);
+      });
+
       it('refuses a foreign-TENANT id', async () => {
         const other = makeCtx('other-agent');
         const x = await recordOne(slotless('Khalid', JAN), other);

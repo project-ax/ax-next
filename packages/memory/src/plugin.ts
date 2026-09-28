@@ -1137,6 +1137,12 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             // Same scope as the never-right retract and `memory:forget`: a
             // foreign id on a personal agent is refused by not taking effect.
             //
+            // ⚠ The two closures differ on undo. Forgetting the new row later
+            // re-opens a SLOTTED old row (the chain re-settles, TASK-448) but
+            // NOT a slot-less one closed here — the person said it changed.
+            // And `memory:facts:reinstate` re-opens neither (both have a
+            // successor). An Undo for Fix (TASK-634) needs its own path.
+            //
             // Failure window: if this call fails, the new row stands and the
             // old one stays active (the pre-TASK-632 state) and the error
             // propagates.

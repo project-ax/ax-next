@@ -604,8 +604,11 @@ export function supersedeIds(
  * `resettled` is always empty for the same reason — a slot-less row is in no
  * chain, so closing it strands no neighbour.
  *
- * One transaction: the `by` read and every UPDATE commit together, so `by`
- * cannot be retracted between the check and the closure. Each UPDATE repeats
+ * One transaction: the `by` read and every UPDATE commit together, and SQLite
+ * serializes writers, so `by` cannot be retracted between the check and the
+ * closure here. (The postgres twin does not lock `by`; a concurrent
+ * retraction can commit in between, which leaves exactly the state a
+ * retraction of `by` AFTER this call leaves — see above.) Each UPDATE repeats
  * the whole predicate (tenant, owner, active, slot-less), so `changes > 0` is
  * the single authority on what was closed, exactly as in {@link supersedeIds}.
  * A repeated id fails its second UPDATE and is reported once.

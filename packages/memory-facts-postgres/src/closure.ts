@@ -625,6 +625,12 @@ export async function supersedeIds(
  * {@link supersedeIds}. Unlike there, each id is its own UPDATE, because each
  * gets its own `valid_end`; that also yields the caller's id order and reports
  * a repeated id once (its second UPDATE no longer matches an active row).
+ *
+ * Unlike the sqlite twin, the `by` read does not lock the row: under READ
+ * COMMITTED a concurrent retraction of `by` can commit between the read and
+ * the UPDATEs. That is benign by design — it leaves exactly the state a
+ * retraction of `by` just after this call leaves (the replaced rows stay
+ * replaced), so no lock is taken for it.
  */
 export async function replaceIds(
   db: FactsDatabase,
