@@ -25,6 +25,7 @@ export interface StatementToInsert {
   provenance: Provenance;
   ownerUserId?: string;
   conversationId?: string;
+  sourceTurnId?: string;
   kind?: FactKind;
   transactionTime: string;
   /** The batch's idempotency key, or absent when the caller passed none. */
@@ -149,9 +150,9 @@ export function insertWithSlotClosure(
       .prepare(
         `INSERT INTO ${TABLE}
            (id, agent_key, about, relation, value, slot, provenance, owner_user_id,
-            conversation_id, kind, valid_start, valid_end, transaction_time, closed_by,
-            batch_key, batch_seq)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            conversation_id, source_turn_id, kind, valid_start, valid_end, transaction_time,
+            closed_by, batch_key, batch_seq)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         statement.id,
@@ -163,6 +164,7 @@ export function insertWithSlotClosure(
         statement.provenance,
         statement.ownerUserId ?? null,
         statement.conversationId ?? null,
+        statement.sourceTurnId ?? null,
         statement.kind ?? null,
         statement.when,
         INFINITY_SENTINEL,

@@ -110,6 +110,8 @@ No generative call, anywhere. Three deterministic channels (sparse, dense, tempo
 
 Fire-and-forget, as today: `chat:end` must not block on a ~30 s call. Every failure is an event (§6.4).
 
+**Amended 2026-09-27 (TASK-625): extraction also runs during a conversation.** `chat:end` fires once per runner session, which in k8s means when the idle reaper collects the warm runner, not when the person is done. So on a host with `conversations:get` and `storage:*`, a `chat:turn-end`-driven pass runs after a 2-minute pause or every 4 completed user turns, whichever comes first, over the canonical transcript's new turns (user/assistant `text` blocks only) with up to 2 earlier turns as read-only context; `chat:end` takes the remainder. Each statement stores its `sourceTurnId` (provenance only). The prompt is unchanged. See `packages/memory/src/incremental.ts` and `attribution.ts`.
+
 ### 3.1 Statement shape
 
 ```ts
@@ -153,7 +155,7 @@ On record of statement **S** with a slot, within the tenant and `(about, slot)`:
 
 ### 3.5 Batch semantics
 
-- **Idempotent.** `chat:end` can fire twice. `batchKey = conversationId + content hash` (the extraction cache's own key shape); a repeated batch is a no-op, not duplicate rows.
+- **Idempotent.** `chat:end` can fire twice. `batchKey = conversationId + content hash` (the extraction cache's own key shape); a repeated batch is a no-op, not duplicate rows. (TASK-625: an incremental pass keys on conversation + owner + the first/last turn id it covered, and a durable per-conversation cursor keeps passes from overlapping.)
 - **All-or-nothing per batch.**
 - **Pending, not lost.** Embedder unavailable → rows stored with `embedding: pending`, `slot: pending`; `reindex` drains. Pending slot = under-closing, the safe direction.
 

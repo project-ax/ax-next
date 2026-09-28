@@ -149,6 +149,66 @@ describe('@ax/memory-facts-sqlite — additive batch-column migration', () => {
     expect(row.kind).toBeNull();
   });
 
+  it('adds `source_turn_id` to a db created before it existed, and the pre-existing row keeps NULL', () => {
+    seedLegacyDatabase();
+
+    const { driver } = openDatabase(databasePath);
+    toClose.push(driver);
+
+    expect(columnsOf(driver).has('source_turn_id')).toBe(true);
+    const row = driver
+      .prepare(`SELECT source_turn_id FROM ${TABLE} WHERE id = ?`)
+      .get('legacy-1') as { source_turn_id: null };
+    expect(row.source_turn_id).toBeNull();
+  });
+
+  it('lets a migrated db store and recall a sourceTurnId like a fresh one', async () => {
+    seedLegacyDatabase();
+    {
+      const driver = new BetterSqlite3(databasePath);
+      driver
+        .prepare(`UPDATE ${TABLE} SET agent_key = ? WHERE id = 'legacy-1'`)
+        .run(agentScopeKey({ agentId: 'a' }));
+      driver.close();
+    }
+
+    const bus = new HookBus();
+    const plugin = createMemoryFactsSqlitePlugin({ databasePath });
+    await plugin.init({ bus, config: {} });
+    try {
+      const ctx = makeAgentContext({
+        sessionId: 's',
+        agentId: 'a',
+        userId: 'u',
+        workspace: { rootPath: '/tmp' },
+      });
+      const out = await bus.call<RecordInput, RecordOutput>('memory:facts:record', ctx, {
+        statements: [
+          {
+            about: 'user',
+            relation: 'opined',
+            value: 'the food was overpriced',
+            when: '2023-01-02T00:00:00.000Z',
+            sourceTurnId: 'turn-9',
+          },
+        ],
+      });
+      expect(out.records[0]!.sourceTurnId).toBe('turn-9');
+
+      const recalled = await bus.call<
+        { about: string; limit: number },
+        { statements: Array<{ value: string; sourceTurnId?: string }> }
+      >('memory:facts:recall', ctx, { about: 'user', limit: 10 });
+      expect(recalled.statements).toHaveLength(2);
+      const legacy = recalled.statements.find((s) => s.value === 'Khalid')!;
+      const fresh = recalled.statements.find((s) => s.value === 'the food was overpriced')!;
+      expect(legacy).not.toHaveProperty('sourceTurnId');
+      expect(fresh.sourceTurnId).toBe('turn-9');
+    } finally {
+      await plugin.shutdown?.();
+    }
+  });
+
   it('lets a migrated db store and recall a kind like a fresh one', async () => {
     seedLegacyDatabase();
     {

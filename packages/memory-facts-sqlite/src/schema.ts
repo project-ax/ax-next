@@ -61,6 +61,7 @@ export interface FactRow {
   provenance: 'extracted' | 'agent' | 'human';
   owner_user_id: string | null;
   conversation_id: string | null;
+  source_turn_id: string | null;
   kind: FactKind | null;
   valid_start: string;
   valid_end: string;
@@ -180,6 +181,7 @@ export function openDatabase(databasePath: string): OpenDatabaseResult {
       provenance TEXT NOT NULL CHECK(provenance IN ('extracted','agent','human')),
       owner_user_id TEXT,
       conversation_id TEXT,
+      source_turn_id TEXT,
       kind TEXT,
       valid_start TEXT NOT NULL,
       valid_end TEXT NOT NULL DEFAULT '${INFINITY_SENTINEL}',
@@ -271,6 +273,11 @@ function migrateAddColumns(driver: BetterSqliteDb, vectorExtensionLoaded: boolea
   }
   if (!present.has('kind')) {
     driver.exec(`ALTER TABLE ${TABLE} ADD COLUMN kind TEXT`);
+  }
+  // Provenance column (sourceTurnId) — same additive story as `kind`: nullable,
+  // no default, no backfill. An older row genuinely has no source turn.
+  if (!present.has('source_turn_id')) {
+    driver.exec(`ALTER TABLE ${TABLE} ADD COLUMN source_turn_id TEXT`);
   }
 
   // Sparse channel (TASK-434). `porter unicode61` matches both `dem-memory`

@@ -16,6 +16,7 @@ export interface FactRow {
   provenance: 'extracted' | 'agent' | 'human';
   owner_user_id: string | null;
   conversation_id: string | null;
+  source_turn_id: string | null;
   kind: FactKind | null;
   /**
    * ⚠ `TEXT`, not `timestamptz` — and so is {@link FactRow.valid_end}. See the
@@ -119,6 +120,7 @@ export async function runFactsMigration<DB>(db: Kysely<DB>): Promise<void> {
       provenance       TEXT NOT NULL CHECK (provenance IN ('extracted','agent','human')),
       owner_user_id    TEXT,
       conversation_id  TEXT,
+      source_turn_id   TEXT,
       kind             TEXT,
       valid_start      TEXT NOT NULL,
       valid_end        TEXT NOT NULL DEFAULT ${sql.lit(INFINITY_SENTINEL)},
@@ -139,6 +141,9 @@ export async function runFactsMigration<DB>(db: Kysely<DB>): Promise<void> {
   await sql`ALTER TABLE memory_facts_v1 ADD COLUMN IF NOT EXISTS batch_key TEXT`.execute(db);
   await sql`ALTER TABLE memory_facts_v1 ADD COLUMN IF NOT EXISTS batch_seq INTEGER`.execute(db);
   await sql`ALTER TABLE memory_facts_v1 ADD COLUMN IF NOT EXISTS kind TEXT`.execute(db);
+  // Provenance column (sourceTurnId) — same additive story as `kind`: nullable,
+  // no default, no backfill. An older row genuinely has no source turn.
+  await sql`ALTER TABLE memory_facts_v1 ADD COLUMN IF NOT EXISTS source_turn_id TEXT`.execute(db);
 
   // The slot chain — `insertWithSlotClosure`'s peer query and
   // `resettleSlotGroups`' group read.

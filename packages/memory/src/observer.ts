@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import { attributeFacts } from './attribution.js';
 import { extractFacts, type ExtractedFact, type LlmCallFn } from './extract.js';
 import { isAgentContextSelfReport } from './self-report.js';
 import { deriveSlot, type Slot } from './slots.js';
@@ -9,6 +10,7 @@ import {
   filterDialogue,
   hasUserContent,
   renderDialogue,
+  type IdentifiedTurn,
   type UntrustedMessage,
 } from './transcript.js';
 
@@ -33,6 +35,12 @@ export interface ObserverStatement {
   provenance: 'extracted';
   ownerUserId: string;
   conversationId?: string;
+  /**
+   * The canonical turn the fact came from (TASK-625) — provenance only,
+   * never a retrieval key. Absent on the legacy `chat:end` path, whose
+   * messages carry no turn ids.
+   */
+  sourceTurnId?: string;
   kind?: MemoryStatementKind;
   slot?: Slot;
 }
@@ -50,6 +58,23 @@ export type ObserverRecordFn = (input: ObserverRecordInput) => Promise<{
 export type ObserverResult =
   /** Nothing worth extracting; no call was made and nothing was written. */
   | { kind: 'skipped'; reason: 'no-dialogue' | 'no-user-content' | 'no-facts' }
+  /**
+   * An incremental pass found no turn after its cursor (TASK-625) — the
+   * normal outcome of `chat:end` after an idle pass already covered the
+   * conversation.
+   */
+  | { kind: 'skipped'; reason: 'no-new-turns' }
+  /**
+   * An incremental pass for a user in the "memory paused" state. No call was
+   * made: the turns stay for the `chat:end` pass, which always tries, because
+   * only a resolved call may clear the pause.
+   */
+  | { kind: 'skipped'; reason: 'paused' }
+  /**
+   * Every fact was supported only by a context turn, which the previous pass
+   * already covered — see `attribution.ts`.
+   */
+  | { kind: 'skipped'; reason: 'only-context'; contextOnly: number }
   /**
    * Every fact the extractor produced was the agent describing its own
    * context (TASK-612, `self-report.ts`). Ordinary, but counted and named
@@ -93,6 +118,8 @@ export type ObserverResult =
        * nothing is wrong with the extractor when this is non-zero.
        */
       selfReports: number;
+      /** Facts dropped because only a context turn supported them. */
+      contextOnly: number;
       retried: boolean;
       batchKey: string;
     };
@@ -131,6 +158,74 @@ export async function runObserver(input: RunObserverInput): Promise<ObserverResu
   if (!hasUserContent(turns)) return { kind: 'skipped', reason: 'no-user-content' };
 
   const dialogue = renderDialogue(turns);
+  return extractAndRecord(input, dialogue, {
+    attribute: (facts) => ({ facts, contextOnly: 0 }),
+    batchKey: () =>
+      buildBatchKey({
+        conversationId: input.conversationId,
+        ownerUserId: input.ownerUserId,
+        dialogue,
+      }),
+  });
+}
+
+export interface RunTurnObserverInput extends Omit<RunObserverInput, 'messages' | 'conversationId'> {
+  /** The canonical transcript's conversation — part of the batch identity. */
+  conversationId: string;
+  /**
+   * Up to two turns before `fresh`, shown to the extractor so references
+   * resolve. Read-only: no statement is attributed to one, and a fact only
+   * they support is dropped (`attribution.ts`).
+   */
+  context: readonly IdentifiedTurn[];
+  /** The turns this pass covers. Never empty — the caller checks. */
+  fresh: readonly IdentifiedTurn[];
+}
+
+/**
+ * One INCREMENTAL pass (TASK-625): extract from `fresh` with `context` in
+ * view, attribute each fact to its source turn, and record the batch under a
+ * key made of the turn RANGE — so a pass that re-runs over the same turns (a
+ * retry, a duplicate trigger, `chat:end` overlapping an idle pass whose
+ * cursor write was lost) is an engine no-op rather than a second copy.
+ *
+ * Same extraction, same pinned prompt, same statement mapping as
+ * {@link runObserver}; only the input shape, the attribution step and the
+ * batch key differ.
+ */
+export async function runTurnObserver(input: RunTurnObserverInput): Promise<ObserverResult> {
+  const first = input.fresh[0];
+  const last = input.fresh[input.fresh.length - 1];
+  if (first === undefined || last === undefined) return { kind: 'skipped', reason: 'no-new-turns' };
+  // User content anywhere in view: a long assistant answer that spans two
+  // passes is still a reply to the user turn in its context.
+  if (!hasUserContent([...input.context, ...input.fresh])) {
+    return { kind: 'skipped', reason: 'no-user-content' };
+  }
+  const dialogue = renderDialogue([...input.context, ...input.fresh]);
+  return extractAndRecord(input, dialogue, {
+    attribute: (facts) => attributeFacts(facts, { context: input.context, fresh: input.fresh }),
+    batchKey: () =>
+      buildTurnRangeBatchKey({
+        conversationId: input.conversationId,
+        ownerUserId: input.ownerUserId,
+        firstTurnId: first.turnId,
+        lastTurnId: last.turnId,
+      }),
+  });
+}
+
+async function extractAndRecord(
+  input: Omit<RunObserverInput, 'messages'>,
+  dialogue: string,
+  how: {
+    attribute: (facts: ExtractedFact[]) => {
+      facts: Array<ExtractedFact & { sourceTurnId?: string }>;
+      contextOnly: number;
+    };
+    batchKey: () => string;
+  },
+): Promise<ObserverResult> {
   const now = input.now.toISOString();
 
   let extraction;
@@ -150,7 +245,8 @@ export async function runObserver(input: RunObserverInput): Promise<ObserverResu
     return { kind: 'schema-failure', detail: extraction.detail };
   }
 
-  const mapped = toStatements(extraction.facts, {
+  const attributed = how.attribute(extraction.facts);
+  const mapped = toStatements(attributed.facts, {
     ownerUserId: input.ownerUserId,
     conversationId: input.statementConversationId,
   });
@@ -159,16 +255,16 @@ export async function runObserver(input: RunObserverInput): Promise<ObserverResu
     // and every one was unreadable" are different events, and only the first
     // is ordinary.
     if (mapped.unusable > 0) return { kind: 'all-unusable', unusable: mapped.unusable };
-    return mapped.selfReports > 0
-      ? { kind: 'skipped', reason: 'only-self-reports', selfReports: mapped.selfReports }
-      : { kind: 'skipped', reason: 'no-facts' };
+    if (mapped.selfReports > 0) {
+      return { kind: 'skipped', reason: 'only-self-reports', selfReports: mapped.selfReports };
+    }
+    if (attributed.contextOnly > 0) {
+      return { kind: 'skipped', reason: 'only-context', contextOnly: attributed.contextOnly };
+    }
+    return { kind: 'skipped', reason: 'no-facts' };
   }
 
-  const batchKey = buildBatchKey({
-    conversationId: input.conversationId,
-    ownerUserId: input.ownerUserId,
-    dialogue,
-  });
+  const batchKey = how.batchKey();
 
   const result = await input.record({ batchKey, statements: mapped.statements });
   // `== null`, deliberately: `HookBus.call` returns a handler's RAW value when
@@ -185,9 +281,40 @@ export async function runObserver(input: RunObserverInput): Promise<ObserverResu
     recorded: result.records.length,
     unusable: mapped.unusable,
     selfReports: mapped.selfReports,
+    contextOnly: attributed.contextOnly,
     retried: extraction.retried,
     batchKey,
   };
+}
+
+/**
+ * The batch key for an incremental pass — the conversation, the owner, and
+ * the RANGE of canonical turns covered (TASK-625).
+ *
+ * Range rather than content: the canonical transcript is append-only (the
+ * display log never deletes a turn), so a range names one set of turns
+ * forever and two passes over it are the same batch. The owner is hashed for
+ * the same reason as in {@link buildBatchKey}. The `turns` tag keeps these
+ * keys disjoint from the legacy `chat:end` path's.
+ */
+export function buildTurnRangeBatchKey(input: {
+  conversationId: string;
+  ownerUserId: string;
+  firstTurnId: string;
+  lastTurnId: string;
+}): string {
+  const digest = createHash('sha256')
+    .update(
+      JSON.stringify([
+        'turns',
+        input.conversationId,
+        input.ownerUserId,
+        input.firstTurnId,
+        input.lastTurnId,
+      ]),
+    )
+    .digest('hex');
+  return `memory-observer:${digest}`;
 }
 
 /**
@@ -253,7 +380,7 @@ export function buildBatchKey(input: {
  * model wrote, and reject what cannot be read at all.
  */
 export function toStatements(
-  facts: readonly ExtractedFact[],
+  facts: ReadonlyArray<ExtractedFact & { sourceTurnId?: string }>,
   opts: { ownerUserId: string; conversationId?: string | undefined },
 ): { statements: ObserverStatement[]; unusable: number; selfReports: number } {
   const statements: ObserverStatement[] = [];
@@ -296,6 +423,9 @@ export function toStatements(
       // Provenance only, never a retrieval key — and absent rather than faked
       // when the turn has no conversation.
       ...(opts.conversationId !== undefined ? { conversationId: opts.conversationId } : {}),
+      // Provenance only (TASK-625), set by `attribution.ts` from OUR turn
+      // ids — never from model output.
+      ...(fact.sourceTurnId !== undefined ? { sourceTurnId: fact.sourceTurnId } : {}),
       ...(fact.kind !== undefined ? { kind: fact.kind } : {}),
       // The slot comes from the deterministic synonym table (design §3.3,
       // TASK-489), derived HERE from the predicate we are about to store —
