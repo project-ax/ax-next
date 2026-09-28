@@ -320,7 +320,8 @@ interface ReplayState extends ClosurePeer {
  * is never a peer, so it can neither close nor bound its neighbours. That is
  * the same exclusion `insertWithSlotClosure`'s peer query makes, and it is the
  * one thing this function must not get wrong — resurrecting a retracted row
- * would un-forget something a person asked us to forget.
+ * would un-forget something a person asked us to forget. (Un-forgetting is
+ * {@link reinstateIds}'s job alone, and only when a person asks for it.)
  *
  * Consequence worth stating: because a retracted row is absent from the
  * replay, a NEIGHBOUR whose closure was decided by it is re-derived without
