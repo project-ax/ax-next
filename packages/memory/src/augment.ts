@@ -16,7 +16,7 @@
  *
  * ## Why chat start, and why there is no per-turn refresh
  *
- * Three store queries (four when a profile slot is contested) take milliseconds, which is what makes chat start the
+ * Three store queries (four when a profile slot is not settled by a human edit) take milliseconds, which is what makes chat start the
  * right seam. The block is therefore STALE for the rest of the conversation if
  * memory changes mid-chat — the same property Strata's block already has, and
  * `memory_recall` is the fresh path. A per-turn refresh is deliberately not
@@ -55,7 +55,7 @@ import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
 // a copy (design 3.3/4.1, Invariant 4).
 // `scripts/__tests__/slot-vocabulary-single-owner.test.js` fails if a second
 // copy of the eight ever appears in production source.
-import { hasContestedSlot, selectProfileRows } from './profile.js';
+import { needsSlotHistory, selectProfileRows } from './profile.js';
 import { SLOTS } from './slots.js';
 import {
   approxTokens,
@@ -283,6 +283,12 @@ const KNOWN_PROVENANCE = new Set(['human', 'agent', 'extracted']);
  * engine's RRF uses. See {@link rankDigestSubjects}.
  */
 const DIGEST_RRF_K = 60;
+
+/**
+ * Rows of the profile's slot chains (closed ones included) read for the pick.
+ * The same 200 the `memory:recall` profile path reads; the engine clamps.
+ */
+const PROFILE_CHAIN_ROWS = 200;
 
 // ---------------------------------------------------------------------------
 // Rendering
@@ -661,7 +667,7 @@ async function buildMemoryBlockSplit(
     return { statements: raw.statements, degraded };
   };
 
-  // Three store queries (a fourth below only for a contested slot). No
+  // Three store queries (a fourth below unless every profile slot is settled by a human edit). No
   // embedding, no rerank, no model call — none of them passes a `query`, so not one of them reaches a retrieval channel.
   const [profileOut, recentOut, digestOut] = await Promise.all([
     // `profileScanRows`, NOT `profileRows` — the per-slot pick below has to
@@ -673,15 +679,21 @@ async function buildMemoryBlockSplit(
     recall({ limit: cfg.digestScanRows }),
   ]);
 
-  // Only when a slot holds two or more active non-human rows does the pick
-  // need the chains' CLOSED rows — to tell a re-mention of a replaced value
-  // from a genuinely newer one (TASK-602). Otherwise it is a wasted read. A
-  // chain longer than the scan loses its oldest closed rows, which can only
-  // under-detect a re-mention (newest wins) — never hide a human row.
-  const profileChainOut = hasContestedSlot(profileOut.statements)
+  // Unless a human edit settles every slot, the pick needs the chains' CLOSED
+  // rows — to tell a re-mention of a replaced value from a genuinely newer one
+  // (TASK-602), and to hide a value the person retracted even when it is the
+  // slot's only candidate (TASK-639). When human edits settle them all it is
+  // a wasted read.
+  //
+  // The chain read is wider than the profile scan, the same 200 rows the
+  // `memory:recall` profile path reads: closed rows pile up across all eight
+  // slots, and a retraction that fell off a 32-row page would let the value
+  // it retracted straight back into the prompt. A chain longer than even this
+  // loses its oldest closed rows — never hides a human row.
+  const profileChainOut = needsSlotHistory(profileOut.statements)
     ? await recall({
         about: speakerSubject,
-        limit: cfg.profileScanRows,
+        limit: PROFILE_CHAIN_ROWS,
         slots: [...SLOTS],
         activeOnly: false,
       })

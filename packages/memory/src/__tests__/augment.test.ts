@@ -374,6 +374,70 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
       expect(profile).not.toContain('Portland');
     });
 
+    // TASK-639 ruling: HIDE it. The same re-mention with NO rival in its slot
+    // must not come back through TASK-602's fallback — and a lone candidate is
+    // exactly the case that used to skip the chain read, so the pick never saw
+    // the retraction at all.
+    it('does not inject a lone re-mention of a retracted value', async () => {
+      const h = await makeHarness();
+      const ctx = h.ctx();
+      const lives = (value: string, when: string, provenance: 'agent' | 'extracted' | 'human') => ({
+        about: `user:${ALICE}`,
+        relation: 'lives_in',
+        value,
+        when,
+        slot: 'lives_in',
+        provenance,
+        ownerUserId: ALICE,
+      });
+      const { records } = await engineRecord(h.bus, ctx, [lives('Portland', JAN, 'extracted')]);
+      await h.bus.call('memory:facts:supersede', ctx, {
+        ids: [records[0]!.id],
+        neverTrue: true,
+        ownerUserId: ALICE,
+      });
+      await engineRecord(h.bus, ctx, [lives('Portland', SEP, 'extracted')]);
+
+      expect(await augment(h, ctx)).not.toContain('- lives_in: Portland');
+
+      // The person saying it themselves brings it back.
+      await engineRecord(h.bus, ctx, [lives('Portland', '2026-10-01T00:00:00.000Z', 'human')]);
+      expect(await augment(h, ctx)).toContain('- lives_in: Portland');
+    });
+
+    // The chain read used to share the 32-row profile SCAN limit. Closed rows
+    // pile up across every slot, and a retraction older than 32 of them fell
+    // off the page — letting the retracted value straight back in.
+    it('still hides it when the retraction is older than 40 closed rows in other slots', async () => {
+      const h = await makeHarness();
+      const ctx = h.ctx();
+      const fact = (slot: string, value: string, when: string) => ({
+        about: `user:${ALICE}`,
+        relation: slot,
+        value,
+        when,
+        slot,
+        provenance: 'extracted' as const,
+        ownerUserId: ALICE,
+      });
+      const { records } = await engineRecord(h.bus, ctx, [fact('lives_in', 'Portland', JAN)]);
+      await h.bus.call('memory:facts:supersede', ctx, {
+        ids: [records[0]!.id],
+        neverTrue: true,
+        ownerUserId: ALICE,
+      });
+      // Each new employer closes the one before: 40 closed rows, all newer.
+      for (let i = 0; i <= 40; i += 1) {
+        const when = new Date(Date.parse(MAR) + i * 86_400_000).toISOString();
+        await engineRecord(h.bus, ctx, [fact('works_at', `Employer ${i}`, when)]);
+      }
+      await engineRecord(h.bus, ctx, [fact('lives_in', 'Portland', SEP)]);
+
+      const body = await augment(h, ctx);
+      expect(body).toContain('- works_at: Employer 40');
+      expect(body).not.toContain('- lives_in: Portland');
+    });
+
     // The regression the case above does NOT catch, because two rows fit under
     // any limit. The profile query's FETCH limit has to be wider than the
     // RENDER limit: a slot can hold three active rows (§3.4 rule 3 closes a

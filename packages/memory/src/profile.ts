@@ -71,6 +71,28 @@ function isRetracted(row: SlotGroupRow): boolean {
   return row.until !== undefined && row.neverTrue === true;
 }
 
+/**
+ * The retracted values of each `(about, slot)` chain, keyed by `key`.
+ *
+ * TASK-639 ruling (Vinay, 2026-09-28): a value a person marked never right
+ * must never resurface ON ITS OWN. A non-human row carrying one is hidden
+ * outright — with or without a rival in its slot — on both read paths. Only a
+ * person restating it (a `human` row) brings it back.
+ */
+function retractedValues(
+  rows: readonly SlotGroupRow[],
+  key: (row: SlotGroupRow) => string,
+): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const row of rows) {
+    if (typeof row.slot !== 'string' || row.slot === '' || !isRetracted(row)) continue;
+    const values = out.get(key(row)) ?? new Set<string>();
+    values.add(sameValue(row.value));
+    out.set(key(row), values);
+  }
+  return out;
+}
+
 const TRAILING_PUNCTUATION = new Set(['.', '!', ',', ';', ':']);
 
 /** Case, whitespace and trailing punctuation don't make a value different. */
@@ -101,8 +123,10 @@ function sameValue(value: string): string {
  * visible even under an old human row — the model reads the dated evidence
  * and newest wins, as before. A FORGOTTEN value (closed with no `closedBy`)
  * does not count as replaced: forgetting is not a correction to something
- * else. A RETRACTED one (closed as never right, TASK-633) does. Slot-less
- * rows are never touched.
+ * else. A RETRACTED one (closed as never right, TASK-633) does — and more:
+ * a retracted value said again on any non-human row is dropped whether or not
+ * anything outranks it (TASK-639 ruling), so it never resurfaces on its own.
+ * Slot-less rows are never touched.
  *
  * `group` is every row, active and closed, of the subjects' slot chains,
  * looked up separately by the caller: the replaced row and the correction can
@@ -139,10 +163,15 @@ export function rementionedSlotRows<T extends SlotGroupRow>(
       replaced.set(key(row), values);
     }
   }
+  const retracted = retractedValues([...group, ...rows], key);
+  const HUMAN = PROVENANCE_RANK.get('human')!;
   return new Set(
     rows.filter((row) => {
       if (typeof row.slot !== 'string' || row.slot === '' || row.until !== undefined) return false;
       const rank = PROVENANCE_RANK.get(row.provenance ?? '') ?? 0;
+      // A retracted value said again by anyone but a person: hidden, rival or
+      // not (TASK-639).
+      if (rank < HUMAN && retracted.get(key(row))?.has(sameValue(row.value)) === true) return true;
       const outranked = rank < (topActiveRank.get(key(row)) ?? 0);
       return outranked && replaced.get(key(row))?.has(sameValue(row.value)) === true;
     }),
@@ -167,9 +196,13 @@ export function rementionedSlotRows<T extends SlotGroupRow>(
  *    the same `(about, slot)` chain (a closed row with a `closedBy` successor)
  *    is the stale value coming back, not news, so it does not count as newer —
  *    the same test `rementionedSlotRows` applies on the recall path. A
- *    RETRACTED value (a person said it was never right) counts as replaced
- *    too (TASK-633); a forgotten value (closed with no successor, no
- *    never-right bit) is not a replaced one. A person restating a retracted
+ *    forgotten value (closed with no successor, no never-right bit) is not a
+ *    replaced one. If every candidate is a re-mention, the plain newest is
+ *    shown rather than nothing (TASK-602's fallback).
+ * 4. **A retracted value never shows on its own** (TASK-639 ruling). A
+ *    candidate whose value a person said was NEVER right (TASK-624/633) is
+ *    dropped before rules 2-3, so not even the fallback brings it back; a slot
+ *    left with no candidate shows nothing. A person restating a retracted
  *    value is a `human` row and wins under rule 1.
  *
  * Ties on `when` go to the higher provenance, then the id, so the pick is
@@ -207,6 +240,7 @@ export function selectProfileRows<T extends ProfileRow>(
     values.add(sameValue(row.value));
     replaced.set(chainKey(row), values);
   }
+  const retracted = retractedValues(known, chainKey);
 
   const bySlot = new Map<string, T[]>();
   for (const row of rows) {
@@ -232,12 +266,19 @@ export function selectProfileRows<T extends ProfileRow>(
       picked.set(slot, newest(human));
       continue;
     }
-    const fresh = candidates.filter(
+    // A retracted value is never shown on a non-human row's say-so — not even
+    // by the fallback below (TASK-639). A slot left with none shows nothing.
+    const allowed = candidates.filter(
+      (row) => retracted.get(chainKey(row))?.has(sameValue(row.value)) !== true,
+    );
+    if (allowed.length === 0) continue;
+    const fresh = allowed.filter(
       (row) => replaced.get(chainKey(row))?.has(sameValue(row.value)) !== true,
     );
-    // Every candidate a re-mention: there is no fresh value to prefer, so fall
-    // back to the plain newest rather than showing nothing.
-    picked.set(slot, newest(fresh.length > 0 ? fresh : candidates));
+    // Every candidate a re-mention of a REPLACED value: there is no fresh
+    // value to prefer, so fall back to the plain newest rather than showing
+    // nothing (TASK-602).
+    picked.set(slot, newest(fresh.length > 0 ? fresh : allowed));
   }
 
   return [...picked.entries()]
@@ -252,19 +293,23 @@ export function selectProfileRows<T extends ProfileRow>(
 }
 
 /**
- * True when some slot holds two or more active non-human rows — the only case
- * in which {@link selectProfileRows} consults `history` (a human row decides
- * its slot outright, and a lone candidate has nothing to beat). Lets a caller
- * skip the extra chain read in the common case.
+ * True when some slot holds an active non-human row and no active human row —
+ * the only case in which {@link selectProfileRows} consults `history` (a human
+ * row decides its slot outright). Lets a caller skip the extra chain read when
+ * every slot is settled by a person's own edit.
+ *
+ * A LONE non-human candidate needs the history too (TASK-639): it has nothing
+ * to beat, but it may be a re-mention of a value the person retracted, and
+ * that is hidden rather than shown. This used to require two candidates.
  */
-export function hasContestedSlot(rows: readonly ProfileRow[]): boolean {
+export function needsSlotHistory(rows: readonly ProfileRow[]): boolean {
   const HUMAN = PROVENANCE_RANK.get('human')!;
   const humanSlots = new Set<string>();
-  const counts = new Map<string, number>();
+  const otherSlots = new Set<string>();
   for (const row of rows) {
     if (typeof row.slot !== 'string' || row.slot === '' || row.until !== undefined) continue;
     if ((PROVENANCE_RANK.get(row.provenance ?? '') ?? 0) >= HUMAN) humanSlots.add(row.slot);
-    else counts.set(row.slot, (counts.get(row.slot) ?? 0) + 1);
+    else otherSlots.add(row.slot);
   }
-  return [...counts].some(([slot, n]) => n >= 2 && !humanSlots.has(slot));
+  return [...otherSlots].some((slot) => !humanSlots.has(slot));
 }
