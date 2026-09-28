@@ -37,7 +37,13 @@ import {
   type FactMemoryStatement,
 } from '@/lib/workspace-api';
 import { AgentMemory, RulesEditor, RulesWithoutEditor } from './AgentMemory';
-import { MemoryFixDialog, MemoryForgetDialog, useMemoryReceipt } from './MemoryCorrection';
+import {
+  MemoryFixDialog,
+  MemoryForgetDialog,
+  memoryHeadingLanding,
+  memoryRowLanding,
+  useMemoryReceipt,
+} from './MemoryCorrection';
 import {
   MEMORY_CLOSURE_BADGE,
   MEMORY_FIX,
@@ -244,14 +250,21 @@ function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry }: Memor
   const bump = () => setRefresh((n) => n + 1);
   const [fixTarget, setFixTarget] = useState<FactMemoryStatement | null>(null);
   const [forgetTarget, setForgetTarget] = useState<FactMemoryStatement | null>(null);
-  const receipt = useMemoryReceipt(agentId, bump);
   const extractionPaused = memory.factsExtraction === 'paused';
   // A save re-reads the list, so the button that opened the dialog is gone;
   // focus lands on the receipt pinned at the bottom instead (TASK-644).
   const rootRef = useRef<HTMLDivElement>(null);
+  /*
+    When that receipt goes with focus in it (TASK-651): an Undo re-reads the
+    list, so focus waits on the Profile heading and moves to the row once it
+    is drawn; a receipt that runs out lands on the row, or on the heading when
+    the row was forgotten.
+  */
+  const receipt = useMemoryReceipt(agentId, bump, { scope: rootRef });
 
   return (
     <div ref={rootRef} className="flex min-h-0 flex-1 flex-col gap-8 overflow-y-auto px-6 py-6">
+      {receipt.announcer}
       {extractionPaused && <ExtractionPausedNotice />}
       {rules.status === 'ok' && rules.doc !== null ? (
         <RulesEditor
@@ -358,7 +371,7 @@ function ProfileCard({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Profile</CardTitle>
+        <CardTitle {...memoryHeadingLanding}>Profile</CardTitle>
         {visibility === 'team' && (
           <CardDescription>
             These details are about you and are visible to the team.
@@ -385,7 +398,7 @@ function ProfileCard({
                 {active.map((row) => (
                   <li key={row.id} className="flex items-start justify-between gap-3">
                     <div className="flex flex-col gap-0.5">
-                      <span className="text-sm">
+                      <span {...memoryRowLanding(row.id, 'text-sm')}>
                         <span className="text-muted-foreground">
                           {memorySlotText(row)}:
                         </span>{' '}
@@ -485,6 +498,8 @@ function SearchCard({
   function renderRow(row: FactMemoryStatement) {
     const isClosed = !isCurrent(row);
     const label = memoryStatementText(row);
+    // A row an Undo can give back is a place focus can land (TASK-651).
+    const landing = isClosed ? { className: undefined } : memoryRowLanding(row.id);
     const actions = !isClosed && (
       <Button
         type="button"
@@ -501,7 +516,7 @@ function SearchCard({
         <li key={row.id}>
           <Card>
             <CardContent className="flex flex-col gap-1 p-3">
-              <span className="text-sm">
+              <span {...landing} className={cn('text-sm', landing.className)}>
                 <RowValue row={row}>{label}</RowValue>
               </span>
               <span className="text-sm text-muted-foreground">
@@ -521,7 +536,9 @@ function SearchCard({
         <TableCell>{kindLabel(row)}</TableCell>
         <TableCell>{row.whenText ?? row.when}</TableCell>
         <TableCell>
-          <RowValue row={row}>{label}</RowValue>
+          <span {...landing}>
+            <RowValue row={row}>{label}</RowValue>
+          </span>
           {isClosed && state.status === 'ready' && (
             <ClosureNote row={row} page={state.data} />
           )}

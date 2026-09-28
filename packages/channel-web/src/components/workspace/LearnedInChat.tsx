@@ -29,6 +29,8 @@ import {
   MemoryFixDialog,
   MemoryForgetDialog,
   MemoryReceipt,
+  memoryHeadingLanding,
+  memoryRowLanding,
   useMemoryReceipt,
 } from './MemoryCorrection';
 import {
@@ -116,6 +118,9 @@ export function LearnedInChat({
       undoFix(fix);
       setReceiptRowId(fix.row.id);
     },
+    // Undo, or a receipt running out with focus in it, lands on the row's
+    // line — or on this block's heading once a forgotten row has left (TASK-651).
+    scope: rootRef,
   });
 
   /*
@@ -174,8 +179,11 @@ export function LearnedInChat({
 
   return (
     <section ref={rootRef} aria-labelledby="learned-in-chat-title">
+      {receipt.announcer}
       <SectionLabel>
-        <span id="learned-in-chat-title">{LEARNED_TITLE}</span>
+        <span id="learned-in-chat-title" {...memoryHeadingLanding}>
+          {LEARNED_TITLE}
+        </span>
         {unseen > 0 && (
           <Badge variant="secondary" className="ml-1.5 px-1.5 py-0 text-[11px]">
             {learnedNewBadge(unseen)}
@@ -418,7 +426,7 @@ function LearnedLine({
   const turnId = row.sourceTurnId;
   return (
     <div className="flex flex-col gap-0.5">
-      <p className="text-[13px] leading-snug">{text}</p>
+      <p {...memoryRowLanding(row.id, 'text-[13px] leading-snug')}>{text}</p>
       <div className="flex flex-wrap items-center gap-x-1.5 text-[11.5px] text-muted-foreground">
         {turnId !== undefined && source !== undefined && (
           <Button
@@ -441,7 +449,8 @@ function LearnedLine({
         )}
         {turnId !== undefined && source !== undefined && arrivedAt !== null && <span aria-hidden="true">·</span>}
         {arrivedAt !== null && <span>{learnedAgo(Math.max(0, now - arrivedAt))}</span>}
-        {note !== null && <span role="status">{note}</span>}
+        {/* Said out loud by the receipt's announcer, not here (TASK-651). */}
+        {note !== null && <span>{note}</span>}
         <span className="ml-auto flex gap-0.5">
           {/* Styled like GrantLine's Revoke, and never behind a ⋯ menu. */}
           <Button

@@ -1,11 +1,12 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import {
   workspaceApi,
   type AgentMemoryRead,
   type FactMemoryStatement,
 } from '@/lib/workspace-api';
 import { MemorySurface } from '../FactsMemory';
+import { memoryForgetLabel, memoryStatementText } from '../memory-copy';
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
@@ -16,6 +17,8 @@ vi.mock('@/lib/workspace-api', async () => {
       rememberMemory: vi.fn(),
       correctMemory: vi.fn(),
       forgetMemory: vi.fn(),
+      unforgetMemory: vi.fn(),
+      uncorrectMemory: vi.fn(),
     },
   };
 });
@@ -24,6 +27,7 @@ const recallMock = vi.mocked(workspaceApi.recallMemory);
 const rememberMock = vi.mocked(workspaceApi.rememberMemory);
 const correctMock = vi.mocked(workspaceApi.correctMemory);
 const forgetMock = vi.mocked(workspaceApi.forgetMemory);
+const unforgetMock = vi.mocked(workspaceApi.unforgetMemory);
 
 const fact = (over: Partial<FactMemoryStatement> & { id: string }): FactMemoryStatement => ({
   about: 'user:alice',
@@ -775,5 +779,141 @@ describe('MemorySurface — where focus goes when a dialog closes (TASK-644)', (
     press(await screen.findByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(forgetBtn));
+  });
+});
+
+describe('MemorySurface — where focus goes after Undo or when the receipt runs out (TASK-651)', () => {
+  let current: FactMemoryStatement[] = [];
+
+  beforeEach(() => {
+    current = [fact({ id: 'm1' })];
+    recallMock.mockImplementation(() => Promise.resolve({ statements: current, degraded: [] }));
+    forgetMock.mockImplementation(() => {
+      current = [];
+      return Promise.resolve({ forgotten: true });
+    });
+    correctMock.mockImplementation(() => {
+      current = [fact({ id: 'm2', value: 'Cambridge' })];
+      return Promise.resolve({ id: 'm2' });
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** The row's own line — what focus should land on — inside the row that has `fixLabel`. */
+  function rowLine(fixLabel: string): Element {
+    const li = screen.getByRole('button', { name: fixLabel }).closest('li');
+    expect(li).not.toBeNull();
+    const line = li!.firstElementChild?.firstElementChild;
+    expect(line).toBeTruthy();
+    return line!;
+  }
+
+  async function forgetBoston(): Promise<void> {
+    press(await screen.findByRole('button', { name: 'Forget: Boston' }));
+    press(await screen.findByRole('button', { name: 'Forget' }));
+    const outcome = await screen.findByText('Forgotten');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(outcome));
+  }
+
+  it('Forget → Undo waits on the Profile heading while the list re-reads, then lands on the row', async () => {
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    await forgetBoston();
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Fix: Boston' })).toBeNull());
+
+    let finish: () => void = () => {};
+    recallMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = () => resolve({ statements: [fact({ id: 'm1' })], degraded: [] });
+        }),
+    );
+    unforgetMock.mockImplementation(() => {
+      current = [fact({ id: 'm1' })];
+      return Promise.resolve({ restored: ['m1'] });
+    });
+    press(screen.getByRole('button', { name: /^Undo/ }));
+
+    const heading = screen.getByText('Profile');
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+    act(() => finish());
+    await screen.findByRole('button', { name: 'Fix: Boston' });
+    await waitFor(() => expect(document.activeElement).toBe(rowLine('Fix: Boston')));
+    expect(document.activeElement?.textContent).toBe('lives in: Boston');
+  });
+
+  it('Fix → Undo lands on the row the Undo put back', async () => {
+    const uncorrectMock = vi.mocked(workspaceApi.uncorrectMemory);
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    press(await screen.findByRole('button', { name: 'Fix: Boston' }));
+    fireEvent.change(await screen.findByLabelText('What should I remember?'), {
+      target: { value: 'Cambridge' },
+    });
+    press(screen.getByRole('button', { name: 'Save' }));
+    const outcome = await screen.findByText('Updated.');
+    await waitFor(() => expect(document.activeElement).toBe(outcome));
+
+    uncorrectMock.mockImplementation(() => {
+      current = [fact({ id: 'm1' })];
+      return Promise.resolve({ undone: true });
+    });
+    press(screen.getByRole('button', { name: /^Undo/ }));
+    await screen.findByRole('button', { name: 'Fix: Boston' });
+    await waitFor(() => expect(document.activeElement).toBe(rowLine('Fix: Boston')));
+  });
+
+  it('a Forgotten receipt from Search that runs out with focus hands focus to the Profile heading', async () => {
+    const SEARCH_FORGET = memoryForgetLabel(memoryStatementText(fact({ id: 'm1' })));
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    fireEvent.change(await screen.findByLabelText('Search memories'), {
+      target: { value: 'Boston' },
+    });
+    press(screen.getByRole('button', { name: 'Search' }));
+    await waitFor(() =>
+      expect(screen.getAllByRole('button', { name: SEARCH_FORGET }).length).toBe(1),
+    );
+    press(screen.getByRole('button', { name: SEARCH_FORGET }));
+    press(await screen.findByRole('button', { name: 'Forget' }));
+    const outcome = await screen.findByText('Forgotten');
+    await waitFor(() => expect(document.activeElement).toBe(outcome));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(11_000);
+    });
+    await waitFor(() => expect(screen.queryByText('Forgotten')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByText('Profile')));
+  });
+
+  it('a Forgotten receipt that runs out while it has focus hands focus to the Profile heading', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    await forgetBoston();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(11_000);
+    });
+    await waitFor(() => expect(screen.queryByText('Forgotten')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByText('Profile')));
+  });
+
+  it('an Updated receipt that runs out while it has focus hands focus to the fixed row', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    press(await screen.findByRole('button', { name: 'Fix: Boston' }));
+    fireEvent.change(await screen.findByLabelText('What should I remember?'), {
+      target: { value: 'Cambridge' },
+    });
+    press(screen.getByRole('button', { name: 'Save' }));
+    const outcome = await screen.findByText('Updated.');
+    await waitFor(() => expect(document.activeElement).toBe(outcome));
+    await screen.findByRole('button', { name: 'Fix: Cambridge' });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(11_000);
+    });
+    await waitFor(() => expect(screen.queryByText('Updated.')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(rowLine('Fix: Cambridge')));
   });
 });

@@ -45,6 +45,12 @@ import {
   memoryUndoText,
 } from '../memory-copy';
 
+/**
+ * Text a person can SEE: leaves out the receipt's screen-reader announcer
+ * (TASK-651), which says "Remembered again." / "Fix undone." a second time.
+ */
+const VISIBLE = { ignore: 'script, style, [data-memory-said] *' };
+
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
   return {
@@ -194,14 +200,16 @@ describe('memory-copy — the Forgotten receipt', () => {
     expect(rememberMock).not.toHaveBeenCalled();
   });
 
-  it('announces Forgotten politely, with the ticking Undo outside every live region', async () => {
+  it('says Forgotten once — by the focus that lands on it — with the ticking Undo outside every live region', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read()} />);
     await forgetBoston();
-    const status = await screen.findByRole('status');
-    expect(status.textContent).toBe(MEMORY_FORGOTTEN);
+    const outcome = await screen.findByText(MEMORY_FORGOTTEN);
+    await waitFor(() => expect(document.activeElement).toBe(outcome));
+    // TASK-651: the line focus reads is not also a live region (it was read twice).
+    expect(outcome.closest('[role="alert"], [role="status"], [aria-live]')).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe('');
     const undo = screen.getByRole('button', { name: memoryUndoLabel('Boston') });
     expect(undo.closest('[role="alert"], [role="status"], [aria-live]')).toBeNull();
-    expect(status.closest('[role="alert"]')).toBeNull();
   });
 
   it('Undo un-forgets the SAME row — it never re-saves it as the person', async () => {
@@ -212,7 +220,7 @@ describe('memory-copy — the Forgotten receipt', () => {
     await waitFor(() => expect(unforgetMock).toHaveBeenCalledWith('a1', ['m1']));
     // TASK-630: a re-save would make an agent-saved memory person-saved.
     expect(rememberMock).not.toHaveBeenCalled();
-    expect(await screen.findByText(MEMORY_RESTORED)).toBeInTheDocument();
+    expect(await screen.findByText(MEMORY_RESTORED, VISIBLE)).toBeInTheDocument();
     await waitFor(() => expect(recallMock.mock.calls.length).toBeGreaterThan(recallsBefore));
   });
 
@@ -223,10 +231,10 @@ describe('memory-copy — the Forgotten receipt', () => {
     fireEvent.click(await screen.findByRole('button', { name: memoryUndoLabel('Boston') }));
     expect(await screen.findByText(MEMORY_UNDO_FAILED)).toBeInTheDocument();
     expect(screen.getByRole('alert').textContent).toContain(MEMORY_UNDO_FAILED);
-    expect(screen.queryByText(MEMORY_RESTORED)).toBeNull();
+    expect(screen.queryByText(MEMORY_RESTORED, VISIBLE)).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: MEMORY_UNDO_RETRY }));
-    expect(await screen.findByText(MEMORY_RESTORED)).toBeInTheDocument();
+    expect(await screen.findByText(MEMORY_RESTORED, VISIBLE)).toBeInTheDocument();
     expect(unforgetMock).toHaveBeenCalledTimes(2);
     expect(rememberMock).not.toHaveBeenCalled();
   });
@@ -250,8 +258,11 @@ describe('memory-copy — the Updated receipt (TASK-634)', () => {
     expect(await screen.findByText(MEMORY_UPDATED)).toBeInTheDocument();
     const undo = screen.getByRole('button', { name: memoryUndoFixLabel('Cambridge') });
     expect(undo.textContent).toBe(memoryUndoText(UNDO_WINDOW_MS / 1000));
-    // Polite, and the ticking button sits outside every live region.
-    expect(screen.getByRole('status').textContent).toBe(MEMORY_UPDATED);
+    // Said by focus alone (TASK-651), and the ticking button sits outside every live region.
+    expect(
+      screen.getByText(MEMORY_UPDATED).closest('[role="alert"], [role="status"], [aria-live]'),
+    ).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe('');
     expect(undo.closest('[role="alert"], [role="status"], [aria-live]')).toBeNull();
 
     act(() => {
@@ -275,7 +286,7 @@ describe('memory-copy — the Updated receipt (TASK-634)', () => {
     await waitFor(() =>
       expect(uncorrectMock).toHaveBeenCalledWith('a1', { id: 'mem-new', restore: 'm1' }),
     );
-    expect(await screen.findByText(MEMORY_FIX_UNDONE)).toBeInTheDocument();
+    expect(await screen.findByText(MEMORY_FIX_UNDONE, VISIBLE)).toBeInTheDocument();
     expect(screen.getByRole('status').textContent).toBe(MEMORY_FIX_UNDONE);
     await waitFor(() => expect(recallMock.mock.calls.length).toBeGreaterThan(recallsBefore));
     // Neither Forget's Undo nor a re-save stands in for it.
@@ -288,7 +299,7 @@ describe('memory-copy — the Updated receipt (TASK-634)', () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read()} />);
     await fixBostonToCambridge();
     fireEvent.click(await screen.findByRole('button', { name: memoryUndoFixLabel('Cambridge') }));
-    expect(await screen.findByText(MEMORY_FIX_UNDONE)).toBeInTheDocument();
+    expect(await screen.findByText(MEMORY_FIX_UNDONE, VISIBLE)).toBeInTheDocument();
   });
 
   it('a failed Undo says the new version is still in place and offers to try again', async () => {
@@ -300,10 +311,10 @@ describe('memory-copy — the Updated receipt (TASK-634)', () => {
     expect(screen.getByRole('alert').textContent).toContain(MEMORY_FIX_UNDO_FAILED);
     // Not Forget's words: nothing was forgotten.
     expect(screen.queryByText(MEMORY_UNDO_FAILED)).toBeNull();
-    expect(screen.queryByText(MEMORY_FIX_UNDONE)).toBeNull();
+    expect(screen.queryByText(MEMORY_FIX_UNDONE, VISIBLE)).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: MEMORY_UNDO_RETRY }));
-    expect(await screen.findByText(MEMORY_FIX_UNDONE)).toBeInTheDocument();
+    expect(await screen.findByText(MEMORY_FIX_UNDONE, VISIBLE)).toBeInTheDocument();
     expect(uncorrectMock).toHaveBeenCalledTimes(2);
     expect(uncorrectMock).toHaveBeenLastCalledWith('a1', { id: 'mem-new', restore: 'm1' });
   });
