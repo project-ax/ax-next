@@ -752,8 +752,10 @@ export interface FactMemoryStatement {
    */
   savedBy?: 'person' | 'agent';
   /**
-   * The id of the person's message this row was extracted from (TASK-626) —
-   * the same id the thread keys that message on, so the rail's "What I
+   * The id of the turn this row was extracted from (TASK-626) — the person's
+   * message OR the agent's reply (TASK-642: the rail reads which from the
+   * turn, never from `about`) — the same id the thread keys that message
+   * on, so the rail's "What I
    * learned in this chat" block can point back at it. Opaque; only compared,
    * never parsed. Absent on rows not extracted from a turn.
    */

@@ -987,7 +987,7 @@ function Message({
       <div
         data-testid="workspace-user-message"
         /*
-          TASK-627 — the rail's "from your message" points here by turn id and
+          TASK-627 — the rail's source link points here by turn id and
           sets `data-memory-source` while it does (hover, or a brief flash
           after a jump; see `lib/thread-jump.ts`). The highlight is
           thread-find's own warning-soft pair, so "this is the bit you asked
@@ -1250,7 +1250,16 @@ function Message({
   const clock = localTime(m.at);
 
   return (
-    <div className="flex gap-3">
+    <div
+      /*
+        TASK-642 — the agent's reply is a source too: a fact the reply said
+        back ("Got it — Oct 14") is attributed to THIS turn, and without the
+        id here the rail's link to it found nothing and did nothing. Same
+        attribute and highlight as the person's bubble above.
+      */
+      {...{ [TURN_ID_ATTR]: m.id }}
+      className={`-mx-2 -my-1 flex gap-3 rounded-lg px-2 py-1 ${MEMORY_SOURCE_CLASS}`}
+    >
       <AgentTile agent={agent} />
       <div className="min-w-0 flex-1">
         {/*

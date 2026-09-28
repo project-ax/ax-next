@@ -12,11 +12,17 @@ import {
   type MemoryEventFrame,
 } from '@/lib/workspace-api';
 import { useConversationMemory } from '@/lib/use-conversation-memory';
-import { jumpToSource, MEMORY_SOURCE_ATTR, TURN_ID_ATTR } from '@/lib/thread-jump';
+import {
+  jumpToSource,
+  MEMORY_SOURCE_ATTR,
+  TURN_ID_ATTR,
+  type TurnSource,
+} from '@/lib/thread-jump';
 import { LearnedAnnouncer, LearnedInChat, LEARNED_ROW_CAP } from '../LearnedInChat';
 import {
   LEARNED_EARLIER,
   LEARNED_EXTRACTING,
+  LEARNED_FROM_MY_REPLY,
   LEARNED_FROM_YOUR_MESSAGE,
   LEARNED_NOTHING_NEW,
   LEARNED_NOT_ENABLED,
@@ -35,6 +41,7 @@ import {
   learnedAnnouncement,
   learnedMore,
   learnedNewBadge,
+  learnedSourceLabel,
   memoryFixLabel,
   memoryForgetLabel,
   memoryStatementText,
@@ -83,12 +90,14 @@ function Harness({
   onJump = vi.fn(),
   onSeeAll = vi.fn(),
   onOpenModelKeys,
+  sources = new Map(),
 }: {
   enabled?: boolean;
   conversationId?: string | null;
   onJump?: (id: string) => void;
   onSeeAll?: () => void;
   onOpenModelKeys?: () => void;
+  sources?: ReadonlyMap<string, TurnSource>;
 }) {
   const memory = useConversationMemory({
     agentId: 'a1',
@@ -104,6 +113,7 @@ function Harness({
         visibility="personal"
         onOpenModelKeys={onOpenModelKeys}
         onJumpToSource={onJump}
+        sourceOf={(turnId) => sources.get(turnId)}
         onSeeAll={onSeeAll}
       />
       <LearnedAnnouncer announcement={memory.announcement} />
@@ -437,8 +447,12 @@ describe('LearnedInChat — "from your message"', () => {
       statements: [st('a', { sourceTurnId: 't-7' }), st('b')],
       degraded: [],
     });
-    render(<Harness onJump={onJump} />);
-    const links = await screen.findAllByRole('button', { name: LEARNED_FROM_YOUR_MESSAGE });
+    const sources = new Map([['t-7', { speaker: 'person' as const, excerpt: 'Moving to Denver' }]]);
+    render(<Harness onJump={onJump} sources={sources} />);
+    const links = await screen.findAllByRole('button', {
+      name: learnedSourceLabel('person', 'Moving to Denver'),
+    });
+    expect(links[0]).toHaveTextContent(LEARNED_FROM_YOUR_MESSAGE);
     // Only the row that came from a message points at one.
     expect(links).toHaveLength(1);
 
@@ -450,6 +464,43 @@ describe('LearnedInChat — "from your message"', () => {
     fireEvent.click(links[0]!);
     expect(onJump).toHaveBeenCalledWith('t-7');
     msg.remove();
+  });
+
+  it('labels a row by who said its source turn, not by who the fact is about', async () => {
+    // Both facts are ABOUT the person; one was said back in the agent's reply.
+    recall.mockResolvedValueOnce({
+      statements: [
+        st('mine', { sourceTurnId: 't-user' }),
+        st('echoed', { sourceTurnId: 't-agent' }),
+      ],
+      degraded: [],
+    });
+    const sources = new Map<string, TurnSource>([
+      ['t-user', { speaker: 'person', excerpt: 'Our go-live moved to Oct 14' }],
+      ['t-agent', { speaker: 'agent', excerpt: 'Got it — Oct 14 for the go-live' }],
+    ]);
+    render(<Harness sources={sources} />);
+    const yours = await screen.findByRole('button', {
+      name: learnedSourceLabel('person', 'Our go-live moved to Oct 14'),
+    });
+    const reply = screen.getByRole('button', {
+      name: learnedSourceLabel('agent', 'Got it — Oct 14 for the go-live'),
+    });
+    expect(yours).toHaveTextContent(LEARNED_FROM_YOUR_MESSAGE);
+    expect(reply).toHaveTextContent(LEARNED_FROM_MY_REPLY);
+    // Each link says WHICH message — no two read the same.
+    expect(yours.getAttribute('aria-label')).not.toBe(reply.getAttribute('aria-label'));
+  });
+
+  it('draws no link for a turn that is not in the thread on screen — nothing to jump to', async () => {
+    recall.mockResolvedValueOnce({
+      statements: [st('a', { sourceTurnId: 't-gone' })],
+      degraded: [],
+    });
+    render(<Harness />);
+    await screen.findByText(memoryStatementText(st('a')));
+    expect(screen.queryByText(LEARNED_FROM_YOUR_MESSAGE)).toBeNull();
+    expect(screen.queryByText(LEARNED_FROM_MY_REPLY)).toBeNull();
   });
 
   it('jumpToSource scrolls the message into view and highlights it briefly', () => {

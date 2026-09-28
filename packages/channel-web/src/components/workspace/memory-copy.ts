@@ -279,7 +279,28 @@ export function learnedAnnouncement(count: number): string {
 }
 
 export const LEARNED_EARLIER = 'Earlier in this chat';
+/*
+  Where a row came from, by who said it (TASK-642). The block speaks as the
+  agent ("What I learned…"), so its own turn is "my reply". A fact about the
+  person can come from either side — the agent's reply often repeats it back —
+  so this is chosen by the SOURCE TURN's speaker, never by the fact's subject.
+*/
 export const LEARNED_FROM_YOUR_MESSAGE = 'from your message';
+export const LEARNED_FROM_MY_REPLY = 'from my reply';
+
+export function learnedSourceText(speaker: 'person' | 'agent'): string {
+  return speaker === 'person' ? LEARNED_FROM_YOUR_MESSAGE : LEARNED_FROM_MY_REPLY;
+}
+
+/**
+ * The source link's accessible name: the visible words first (so voice
+ * control can say what it sees), then which message — every row's link would
+ * otherwise sound the same.
+ */
+export function learnedSourceLabel(speaker: 'person' | 'agent', excerpt: string): string {
+  const text = learnedSourceText(speaker);
+  return excerpt === '' ? text : `${text}: “${excerpt}”`;
+}
 
 /** When a live batch landed. Whole minutes and hours; never a date. */
 export function learnedAgo(ms: number): string {

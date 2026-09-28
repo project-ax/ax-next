@@ -11,7 +11,9 @@ import type { IdentifiedTurn } from './transcript.js';
  * asked neither:
  *
  * 1. **Which new turn is its source** — stored as `sourceTurnId`, so a UI can
- *    say "from your message". Provenance only, never a retrieval key.
+ *    point at the message it came from. That turn may be the person's OR the
+ *    assistant's (a reply often repeats a fact back); the UI reads which from
+ *    the turn itself. Provenance only, never a retrieval key.
  * 2. **Whether it came from a context turn alone** — in which case it is
  *    dropped: the pass that covered that turn as NEW already extracted it,
  *    and extracting it again is exactly the double-recording this card
