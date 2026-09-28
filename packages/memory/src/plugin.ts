@@ -1112,10 +1112,6 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
               ...memoryReadScope(access),
             });
           }
-          // 'changed' is exactly the `memory:remember` write: the slot rule
-          // closes the old row. A SLOT-LESS old row stays active (known
-          // limitation — see `MemoryCorrectInput`).
-          //
           // Failure window: if this write fails after a never-right retract,
           // the retract stands and the error propagates. A retry converges —
           // the second retract is a no-op on a row no longer active.
@@ -1125,6 +1121,31 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             { about: input.about, relation: input.relation, value: input.value },
             MEMORY_CORRECT_HOOK,
           );
+          if (reason === 'changed') {
+            // The write above closes a SLOTTED old row through the slot rule.
+            // A slot-less old row is in no chain, so nothing closed it — we
+            // close it here, BY the new row, so it reads "Replaced" rather
+            // than staying active beside it (TASK-632).
+            //
+            // Sent unconditionally, because the engine decides and this layer
+            // does not know the old row's slot: `by` closes only a row that is
+            // still active AND slot-less. A slotted row the slot rule already
+            // closed is not active; one in a different chain is refused (its
+            // closure belongs to that chain). Either way it is left exactly as
+            // the write left it — slot-ful rows behave as before.
+            //
+            // Same scope as the never-right retract and `memory:forget`: a
+            // foreign id on a personal agent is refused by not taking effect.
+            //
+            // Failure window: if this call fails, the new row stands and the
+            // old one stays active (the pre-TASK-632 state) and the error
+            // propagates.
+            await bus.call<unknown, unknown>(FACTS_SUPERSEDE_HOOK, ctx, {
+              ids: [id],
+              by: newId,
+              ...memoryReadScope(access),
+            });
+          }
           onFactsChanged(ctx);
           return { id: newId };
         },
