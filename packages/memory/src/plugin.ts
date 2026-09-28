@@ -21,7 +21,27 @@ import {
   noCredentialFields,
 } from './failure.js';
 import { conversationField, conversationOf } from './conversation.js';
-import { runObserver, type ObserverRecordInput, type ObserverResult } from './observer.js';
+import {
+  runObserver,
+  runTurnObserver,
+  type ObserverRecordInput,
+  type ObserverResult,
+} from './observer.js';
+import {
+  canExtractIncrementally,
+  CHAT_TURN_END_HOOK,
+  CONVERSATIONS_GET_HOOK,
+  createIncrementalScheduler,
+  DEFAULT_EVERY_USER_TURNS,
+  DEFAULT_IDLE_MS,
+  readCursor,
+  STORAGE_GET_HOOK,
+  STORAGE_SET_HOOK,
+  writeCursor,
+  type IncrementalConfig,
+  type IncrementalScheduler,
+  type PassTrigger,
+} from './incremental.js';
 import {
   dropRementionedSlotRows,
   hasContestedSlot,
@@ -32,7 +52,7 @@ import { formatEvidenceWhen } from './evidence.js';
 import { MEMORY_RECALL_TOOL_HOOK, registerMemoryRecall } from './recall-tool.js';
 import { MEMORY_NOTE_TOOL_HOOK, registerMemoryNote } from './note-tool.js';
 import { registerRulesHooks, RULES_WRITE_HOOK } from './rules.js';
-import type { UntrustedMessage } from './transcript.js';
+import { filterTranscriptTurns, type UntrustedMessage } from './transcript.js';
 import {
   createMemoryExporter,
   FACTS_SCAN_HOOK,
@@ -238,6 +258,15 @@ export interface MemoryPluginConfig {
    */
   onObserverDetached?: (work: Promise<void>) => void;
   /**
+   * Extraction DURING a conversation (TASK-625): a pass after an idle pause
+   * (`idleMs`, default 2 min) or every `everyUserTurns` completed user turns
+   * (default 4), whichever comes first, and a final pass at `chat:end`.
+   * Active only when the host also has `conversations:get` and `storage:*`
+   * (see `incremental.ts`); otherwise, and with `false`, memory is extracted
+   * at `chat:end` only, as before.
+   */
+  incremental?: IncrementalConfig | false;
+  /**
    * Sizing for the always-injected block (design §4.1). Every field defaults;
    * see `augment.ts`'s `DEFAULTS`.
    */
@@ -247,6 +276,36 @@ export interface MemoryPluginConfig {
 }
 
 const DEFAULT_MAX_RECALL_LIMIT = 100;
+
+function resolveIncrementalConfig(
+  value: MemoryPluginConfig['incremental'],
+): { idleMs: number; everyUserTurns: number } | undefined {
+  if (value === false) return undefined;
+  if (value !== undefined && (value === null || typeof value !== 'object' || Array.isArray(value))) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'incremental must be an object or false when set',
+    });
+  }
+  const idleMs = value?.idleMs ?? DEFAULT_IDLE_MS;
+  if (!Number.isFinite(idleMs) || idleMs < 1) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: `incremental.idleMs must be a positive number (got ${String(value?.idleMs)})`,
+    });
+  }
+  const everyUserTurns = value?.everyUserTurns ?? DEFAULT_EVERY_USER_TURNS;
+  if (!Number.isInteger(everyUserTurns) || everyUserTurns < 1) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: `incremental.everyUserTurns must be a positive integer (got ${String(value?.everyUserTurns)})`,
+    });
+  }
+  return { idleMs, everyUserTurns };
+}
 
 function invalid(message: string, hookName: string): PluginError {
   return new PluginError({ code: 'invalid-payload', plugin: PLUGIN_NAME, hookName, message });
@@ -336,6 +395,8 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
     });
   }
 
+  const incrementalCfg = resolveIncrementalConfig(config.incremental);
+
   // Resolved ONCE, at construction, so a malformed ref throws HERE rather than
   // degrading on every turn: an unparseable model ref is a static
   // misconfiguration and there is no turn at which it starts working. It also
@@ -366,6 +427,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
   }
   if (exportsCfg?.volume !== undefined) validateVolumeConfig(exportsCfg.volume);
   let exporterRef: ReturnType<typeof createMemoryExporter> | undefined;
+  let schedulerRef: IncrementalScheduler | undefined;
   // userIds whose last observer LLM call failed for want of a credential.
   // Per plugin INSTANCE (not module-global) so two instances never share it.
   // Set by the observer's missing-credential catch; cleared only by an
@@ -439,8 +501,17 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           degradation:
             "the always-injected memory block renders no '## Rules From Your User' section; the person's own standing instructions are not in the prompt, and nothing else changes",
         },
+        // TASK-625. All three are needed together; without any one of them
+        // the plugin keeps the chat:end-only path it always had.
+        ...(incrementalCfg !== undefined
+          ? [CONVERSATIONS_GET_HOOK, STORAGE_GET_HOOK, STORAGE_SET_HOOK].map((hook) => ({
+              hook,
+              degradation:
+                'memory is extracted only at chat:end, from that session\'s own messages, with no source turn on the stored statements; nothing is extracted during a conversation',
+            }))
+          : []),
       ],
-      subscribes: [CHAT_END_HOOK],
+      subscribes: [CHAT_END_HOOK, ...(incrementalCfg !== undefined ? [CHAT_TURN_END_HOOK] : [])],
     },
 
     async init({ bus }: { bus: HookBus }) {
@@ -987,6 +1058,27 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
       // `async` with nothing awaited inside, deliberately: `SubscriberHandler`
       // is typed as returning a promise, and the whole point of this handler
       // is that it awaits nothing.
+      const observeCfg: ObserveConfig = {
+        memoryOpsHook,
+        model: parsedMemoryOps.modelId,
+        observerTimeoutMs,
+        onFactsChanged,
+        pausedUsers,
+        pendingCursors: new Map<string, number>(),
+      };
+      const scheduler =
+        incrementalCfg === undefined
+          ? undefined
+          : createIncrementalScheduler({
+              ...incrementalCfg,
+              runPass: (ctx, trigger, chatEndPayload) =>
+                runConversationPass(bus, ctx, trigger, observeCfg, chatEndPayload),
+              ...(config.onObserverDetached !== undefined
+                ? { onDetached: config.onObserverDetached }
+                : {}),
+            });
+      schedulerRef = scheduler;
+
       bus.subscribe<{ outcome?: unknown }>(CHAT_END_HOOK, PLUGIN_NAME, async (ctx, payload) => {
         // Fire-and-forget. `void` rather than `await`, and the whole body is
         // already non-throwing, so there is nothing here for `fire` to log.
@@ -1007,13 +1099,29 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         // hidden per-fire conversation is not one the person had, and
         // counting it let skill-reflection's own passes inflate the
         // distinct-conversation gate. See `conversation.ts`.
-        const work = observeChatEnd(bus, ctx, payload, {
-          memoryOpsHook,
-          model: parsedMemoryOps.modelId,
-          observerTimeoutMs,
-          onFactsChanged,
-          pausedUsers,
-        }).catch(() => {
+        //
+        // TASK-625: when this host extracts incrementally, `chat:end` is the
+        // FINAL pass over the canonical transcript's remaining turns — queued
+        // behind any pass still running for the conversation, and whatever
+        // the outcome kind, because the turns a crashed session persisted are
+        // real. Otherwise it is the one extraction, over its own messages.
+        const conversationId = ctx.conversationId;
+        if (
+          scheduler !== undefined &&
+          typeof conversationId === 'string' &&
+          conversationId !== '' &&
+          canExtractIncrementally(bus)
+        ) {
+          try {
+            scheduler.onChatEnd(ctx as AgentContext & { conversationId: string }, payload);
+          } catch {
+            // Non-throwing today (maps and a timer); guarded like the
+            // turn-end handler so a future change cannot reach `fire`'s
+            // unguarded logger path described above.
+          }
+          return undefined;
+        }
+        const work = observeChatEnd(bus, ctx, payload, observeCfg).catch(() => {
           // Unreachable: `observeChatEnd` catches everything and logs it.
           // Present because a detached promise that CAN reject is an
           // unhandled rejection, and "unreachable" is a claim about today's
@@ -1022,6 +1130,29 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         config.onObserverDetached?.(work);
         return undefined;
       });
+
+      // ---------------------------------------------------------------
+      // chat:turn-end — incremental extraction triggers (TASK-625).
+      // ---------------------------------------------------------------
+      //
+      // Same posture as `chat:end`: returns at once, never throws, and every
+      // pass is detached (see `incremental.ts`). A turn never waits on memory.
+      if (scheduler !== undefined) {
+        const sched = scheduler;
+        bus.subscribe<{ role?: unknown; reqId?: unknown }>(
+          CHAT_TURN_END_HOOK,
+          PLUGIN_NAME,
+          async (ctx, payload) => {
+            try {
+              if (canExtractIncrementally(bus)) sched.onTurnEnd(ctx, payload);
+            } catch {
+              // `onTurnEnd` only touches in-memory state and a timer; there is
+              // nothing to report and no turn to fail.
+            }
+            return undefined;
+          },
+        );
+      }
 
       // ---------------------------------------------------------------
       // memory:status — the caller's own "extraction paused" state. The
@@ -1045,37 +1176,58 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
     },
 
     async shutdown() {
+      schedulerRef?.shutdown();
       await exporterRef?.shutdown();
     },
   };
 }
 
+interface ObserveConfig {
+  memoryOpsHook: string;
+  model: string;
+  observerTimeoutMs: number;
+  onFactsChanged?: (ctx: AgentContext) => void;
+  pausedUsers: Set<string>;
+  /**
+   * Cursors whose durable write FAILED, kept in-process until a write
+   * succeeds (TASK-625). Without it, the next pass would start from the
+   * stale stored cursor and, if the conversation had moved on, cover a
+   * LONGER range under a new batch key — re-recording the turns the lost
+   * write had already covered. Holds only conversations with a failed
+   * write, so it stays small; single-replica host, as for `pausedUsers`.
+   */
+  pendingCursors: Map<string, number>;
+}
+
+/** What a producer gets: the wired extraction call, the wired write, the owner. */
+interface ObserveDeps {
+  llmCall: (input: LlmCallInput) => Promise<LlmCallOutput>;
+  record: (input: ObserverRecordInput) => Promise<{ records?: Array<{ id?: unknown }> } | null>;
+  ownerUserId: string;
+  userId: string | undefined;
+}
+
 /**
  * Run one observation. **Never throws** — see the subscriber's comment for
  * why that is load-bearing rather than tidy.
+ *
+ * Shared by the legacy `chat:end` path and the incremental passes
+ * (TASK-625): access, the provider check, the wrapped provider and engine
+ * calls, the paused-state bookkeeping and the failure events live here once.
+ * `produce` supplies only WHAT is extracted. Resolves `true` when the
+ * producer returned (whatever it reported) and `false` when anything threw —
+ * the incremental pass keeps its cursor on `false`, so the turns are tried
+ * again.
  */
-async function observeChatEnd(
+async function observe(
   bus: HookBus,
   ctx: AgentContext,
-  payload: { outcome?: unknown } | undefined,
-  cfg: {
-    memoryOpsHook: string;
-    model: string;
-    observerTimeoutMs: number;
-    onFactsChanged?: (ctx: AgentContext) => void;
-    pausedUsers: Set<string>;
-  },
-): Promise<void> {
+  cfg: ObserveConfig,
+  trigger: PassTrigger | undefined,
+  produce: (deps: ObserveDeps) => Promise<ObserverResult | undefined>,
+): Promise<boolean> {
   const userId = typeof ctx.userId === 'string' && ctx.userId !== '' ? ctx.userId : undefined;
   try {
-    // A terminated outcome (a `chat:start` veto, a runner crash, a timeout)
-    // carries no transcript, and a malformed payload carries nothing we can
-    // read. Both skip silently: neither is a failure of the memory path.
-    const outcome = payload?.outcome;
-    if (outcome === null || typeof outcome !== 'object') return;
-    const { kind, messages } = outcome as { kind?: unknown; messages?: unknown };
-    if (kind !== 'complete' || !Array.isArray(messages) || messages.length === 0) return;
-
     // Access from `ctx`, resolved through `agents:resolve` BEFORE any
     // provider or engine call. This THROWS for a context with no owner (an
     // owner-less canary session) and for a caller whose membership was
@@ -1095,12 +1247,12 @@ async function observeChatEnd(
         agentId: ctx.agentId,
         reason: 'llm-provider-unregistered',
         hook: cfg.memoryOpsHook,
+        ...(trigger !== undefined ? { trigger } : {}),
       });
-      return;
+      return false;
     }
 
-    const result = await runObserver({
-      messages: messages as UntrustedMessage[],
+    const result = await produce({
       llmCall: async (input: LlmCallInput) => {
         const out = await bus.call<LlmCallInput, LlmCallOutput>(cfg.memoryOpsHook, ctx, {
           ...input,
@@ -1124,17 +1276,11 @@ async function observeChatEnd(
         return out;
       },
       ownerUserId,
-      // The batch identity keeps the real conversation; the rows are
-      // attributed per `conversationOf` (a routine run is not a
-      // conversation the person had — TASK-616).
-      conversationId: ctx.conversationId,
-      statementConversationId: conversationOf(ctx),
-      model: cfg.model,
-      now: new Date(),
-      timeoutMs: cfg.observerTimeoutMs,
+      userId,
     });
 
-    logObserverResult(ctx, result);
+    if (result !== undefined) logObserverResult(ctx, result, trigger);
+    return true;
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
     // A missing credential will not fix itself and costs every turn until
@@ -1146,14 +1292,215 @@ async function observeChatEnd(
         err: error,
         agentId: ctx.agentId,
         path: 'observer',
+        ...(trigger !== undefined ? { trigger } : {}),
         ...noCredentialFields(),
       });
-      return;
+      return false;
     }
     ctx.logger.warn(memoryFailureEvent(err, OBSERVER_FAILED_EVENT), {
       err: error,
       agentId: ctx.agentId,
       reason: 'observer-threw',
+      ...(trigger !== undefined ? { trigger } : {}),
+    });
+    return false;
+  }
+}
+
+/** The legacy path: one extraction over `chat:end`'s own messages. */
+async function observeChatEnd(
+  bus: HookBus,
+  ctx: AgentContext,
+  payload: { outcome?: unknown } | undefined,
+  cfg: ObserveConfig,
+): Promise<void> {
+  const messages = chatEndMessages(payload);
+  if (messages === undefined) return;
+  await observe(bus, ctx, cfg, undefined, (deps) => observeMessages(ctx, cfg, messages, deps));
+}
+
+/**
+ * `chat:end`'s own messages, or `undefined` when there are none to read.
+ *
+ * A terminated outcome (a `chat:start` veto, a runner crash, a timeout)
+ * carries no transcript, and a malformed payload carries nothing we can
+ * read. Both skip silently: neither is a failure of the memory path.
+ */
+function chatEndMessages(payload: { outcome?: unknown } | undefined): UntrustedMessage[] | undefined {
+  const outcome = payload?.outcome;
+  if (outcome === null || typeof outcome !== 'object') return undefined;
+  const { kind, messages } = outcome as { kind?: unknown; messages?: unknown };
+  if (kind !== 'complete' || !Array.isArray(messages) || messages.length === 0) return undefined;
+  return messages as UntrustedMessage[];
+}
+
+/** One extraction over a list of `chat:end` messages — the legacy shape. */
+function observeMessages(
+  ctx: AgentContext,
+  cfg: ObserveConfig,
+  messages: UntrustedMessage[],
+  { llmCall, record, ownerUserId }: ObserveDeps,
+): Promise<ObserverResult> {
+  return runObserver({
+    messages,
+    llmCall,
+    record,
+    ownerUserId,
+    // The batch identity keeps the real conversation; the rows are
+    // attributed per `conversationOf` (a routine run is not a
+    // conversation the person had — TASK-616).
+    conversationId: ctx.conversationId,
+    statementConversationId: conversationOf(ctx),
+    model: cfg.model,
+    now: new Date(),
+    timeoutMs: cfg.observerTimeoutMs,
+  });
+}
+
+/** How many dialogue turns before a pass's first new turn it may see. */
+const CONTEXT_TURNS = 2;
+
+/**
+ * One incremental pass over a conversation's canonical transcript (TASK-625).
+ *
+ * 1. A paused user is skipped before anything is read — except at
+ *    `chat:end`, which always tries, because only a resolved call may clear
+ *    the pause.
+ * 2. Read the cursor and the transcript. The new turns are those at or after
+ *    the cursor, up to and including the LAST assistant turn: a user message
+ *    with no reply yet is not a completed turn, and taking it now would split
+ *    it from its answer. `chat:end` takes everything — the session is over.
+ * 3. Extract with up to {@link CONTEXT_TURNS} earlier dialogue turns in view,
+ *    record under the range key, then move the cursor past every turn the
+ *    range spans (tool turns included).
+ *
+ * The cursor moves on every outcome the producer RETURNS — recorded,
+ * skipped, and also a timeout or schema failure, which drop the batch exactly
+ * as the `chat:end` path always has. It stays put when anything throws (the
+ * transcript read, the provider, the engine), so those turns are retried by
+ * the next pass under the same key. A failed cursor WRITE is reported on its
+ * own reason (`cursor-write-failed`, logged just before the pass's result)
+ * and the position is carried in-process until a write succeeds.
+ */
+async function runConversationPass(
+  bus: HookBus,
+  ctx: AgentContext & { conversationId: string },
+  trigger: PassTrigger,
+  cfg: ObserveConfig,
+  chatEndPayload: { outcome?: unknown } | undefined,
+): Promise<void> {
+  const conversationId = ctx.conversationId;
+  await observe(bus, ctx, cfg, trigger, async ({ llmCall, record, ownerUserId, userId }) => {
+    if (trigger !== 'chat-end' && userId !== undefined && cfg.pausedUsers.has(userId)) {
+      return { kind: 'skipped', reason: 'paused' };
+    }
+    if (userId === undefined) {
+      throw new Error('an incremental pass needs the caller userId to read the transcript');
+    }
+
+    // The durable cursor, unless a write this process could not persist got
+    // further — see `pendingCursors`.
+    const cursor = Math.max(
+      await readCursor(bus, ctx, conversationId),
+      cfg.pendingCursors.get(conversationId) ?? 0,
+    );
+    let rawTurns: unknown[];
+    try {
+      const read = await bus.call<{ conversationId: string; userId: string }, { turns?: unknown } | null>(
+        CONVERSATIONS_GET_HOOK,
+        ctx,
+        { conversationId, userId },
+      );
+      rawTurns = Array.isArray(read?.turns) ? (read.turns as unknown[]) : [];
+    } catch (err) {
+      if (!(trigger === 'chat-end' && err instanceof PluginError && err.code === 'not-found')) throw err;
+      rawTurns = [];
+    }
+
+    // A conversation with NO canonical transcript — the store has never
+    // heard of it, or it has no turns — at `chat:end`, with nothing ever
+    // covered: fall back to `chat:end`'s own messages, exactly as before.
+    // Safe from double-recording by construction: every pass reads the same
+    // transcript, so if it is empty no pass has recorded anything for this
+    // conversation. Without this, a session whose turns were never
+    // persisted (a host with the store loaded but a producer that does not
+    // write to it) would silently stop being remembered at all.
+    if (trigger === 'chat-end' && cursor === 0 && rawTurns.length === 0) {
+      const messages = chatEndMessages(chatEndPayload);
+      if (messages === undefined) return { kind: 'skipped', reason: 'no-new-turns' };
+      return observeMessages(ctx, cfg, messages, { llmCall, record, ownerUserId, userId });
+    }
+    const dialogue = filterTranscriptTurns(rawTurns);
+
+    let fresh = dialogue.filter((turn) => turn.turnIndex >= cursor);
+    if (trigger !== 'chat-end') {
+      let lastAssistant = -1;
+      fresh.forEach((turn, i) => {
+        if (turn.role === 'assistant') lastAssistant = i;
+      });
+      fresh = fresh.slice(0, lastAssistant + 1);
+    }
+    const last = fresh[fresh.length - 1];
+    if (last === undefined) {
+      // Nothing new, but a carried cursor is still owed to storage: retry
+      // it here, so the durable copy catches up without waiting for a turn.
+      const pending = cfg.pendingCursors.get(conversationId);
+      if (pending !== undefined) await persistCursor(bus, ctx, cfg, trigger, pending);
+      return { kind: 'skipped', reason: 'no-new-turns' };
+    }
+    const context = dialogue.filter((turn) => turn.turnIndex < cursor).slice(-CONTEXT_TURNS);
+
+    const result = await runTurnObserver({
+      context,
+      fresh,
+      llmCall,
+      record,
+      ownerUserId,
+      // Batch identity: the real conversation. Stored attribution: per
+      // `conversationOf`, so a routine turn's rows carry none (TASK-616).
+      conversationId,
+      statementConversationId: conversationOf(ctx),
+      model: cfg.model,
+      now: new Date(),
+      timeoutMs: cfg.observerTimeoutMs,
+    });
+    await persistCursor(bus, ctx, cfg, trigger, last.turnIndex + 1);
+    return result;
+  });
+}
+
+/**
+ * Write the cursor durably; on failure, carry it in-process and say so.
+ *
+ * Carried so the next pass starts AFTER these turns even though storage
+ * still has the old cursor. Only a host restart before a later write succeeds
+ * loses it; then the next pass re-covers from the stored cursor — the same
+ * range if nothing was said since (same key, an engine no-op), a longer one
+ * if the conversation moved on (a new key: those turns are recorded again).
+ * Stated, not hidden.
+ *
+ * Reported on its OWN reason, and the pass's result is still returned and
+ * logged (this line first, then the `recorded` line): the batch is stored,
+ * and folding this into `observer-threw` would show a recorded batch as a
+ * pure failure. Never throws.
+ */
+async function persistCursor(
+  bus: HookBus,
+  ctx: AgentContext & { conversationId: string },
+  cfg: ObserveConfig,
+  trigger: PassTrigger,
+  next: number,
+): Promise<void> {
+  try {
+    await writeCursor(bus, ctx, ctx.conversationId, next);
+    cfg.pendingCursors.delete(ctx.conversationId);
+  } catch (err) {
+    cfg.pendingCursors.set(ctx.conversationId, next);
+    ctx.logger.warn(OBSERVER_FAILED_EVENT, {
+      err: err instanceof Error ? err : new Error(String(err)),
+      agentId: ctx.agentId,
+      reason: 'cursor-write-failed',
+      trigger,
     });
   }
 }
@@ -1167,8 +1514,18 @@ async function observeChatEnd(
  * detached: a batch that was dropped is otherwise indistinguishable from a
  * conversation that had nothing worth remembering.
  */
-function logObserverResult(ctx: AgentContext, result: ObserverResult): void {
-  const base = { agentId: ctx.agentId, sessionId: ctx.sessionId };
+function logObserverResult(
+  ctx: AgentContext,
+  result: ObserverResult,
+  trigger?: PassTrigger,
+): void {
+  // `trigger` names which incremental pass ran (TASK-625); absent on the
+  // legacy `chat:end` path, so its lines are unchanged.
+  const base = {
+    agentId: ctx.agentId,
+    sessionId: ctx.sessionId,
+    ...(trigger !== undefined ? { trigger } : {}),
+  };
   switch (result.kind) {
     case 'skipped':
       // `debug`: an ordinary turn with nothing durable in it is the common
@@ -1178,6 +1535,7 @@ function logObserverResult(ctx: AgentContext, result: ObserverResult): void {
         outcome: 'skipped',
         reason: result.reason,
         ...('selfReports' in result ? { selfReports: result.selfReports } : {}),
+        ...('contextOnly' in result ? { contextOnly: result.contextOnly } : {}),
       });
       return;
     case 'all-unusable':
@@ -1218,6 +1576,9 @@ function logObserverResult(ctx: AgentContext, result: ObserverResult): void {
         // The agent's own "I have no rules" style statements, dropped
         // (TASK-612). Informational; not a failure.
         selfReports: result.selfReports,
+        // Facts only a context turn supported, dropped (TASK-625). Only an
+        // incremental pass has context turns.
+        ...(trigger !== undefined ? { contextOnly: result.contextOnly } : {}),
         // A persistent `true` means the prompt and the model have drifted
         // apart; one retry is the budget, and it is being spent every turn.
         retried: result.retried,

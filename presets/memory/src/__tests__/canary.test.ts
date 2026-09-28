@@ -700,6 +700,62 @@ describe('@ax/preset-memory canary', () => {
     expect(fresh).not.toContain('Acme Corp');
   });
 
+  it('TASK-625: a conversation is extracted DURING the chat, from the real transcript, each fact pointing at its turn', async () => {
+    const created = await bus.call<{ userId: string; agentId: string }, { conversationId: string }>(
+      'conversations:create',
+      ctxFor(aliceAgentId, ALICE),
+      { userId: ALICE, agentId: aliceAgentId },
+    );
+    const conversationId = created.conversationId;
+    const ctx = ctxFor(aliceAgentId, ALICE, { conversationId });
+    llmFacts = [
+      { subject: 'user', predicate: 'moved to', object: 'Braga', validStart: '2023-06-01T00:00:00Z' },
+    ];
+    // Only the memory extractor's calls: `@ax/conversation-titles` also calls
+    // the provider on an early assistant turn of a real conversation.
+    const extractions = () =>
+      llmCalls.filter((c) => String(c.system ?? '').includes('memory-extraction engine')).length;
+    const before = extractions();
+
+    // Four completed exchanges, persisted and announced the way the host
+    // does it: the turn lands in the display log, then `chat:turn-end`.
+    // The fourth user turn is the default trigger; no chat:end yet.
+    for (let i = 1; i <= 4; i++) {
+      const userText = i === 1 ? 'I moved to Braga in June 2023' : `Follow-up question ${i}`;
+      for (const [role, text] of [
+        ['user', userText],
+        ['assistant', 'noted'],
+      ] as const) {
+        await bus.call('conversations:append-event', ctx, {
+          conversationId,
+          kind: 'turn',
+          role,
+          payload: { blocks: [{ type: 'text', text }] },
+        });
+      }
+      await bus.fire('chat:turn-end', ctx, {
+        role: 'assistant',
+        reqId: `req-canary-625-${i}`,
+        reason: 'user-message-wait',
+      });
+    }
+    await settleObserver();
+    expect(extractions()).toBe(before + 1);
+
+    const engine = await bus.call<
+      { limit: number; ownerUserId: string },
+      { statements: Array<{ value: string; sourceTurnId?: string; conversationId?: string }> }
+    >('memory:facts:recall', ctx, { limit: 100, ownerUserId: ALICE });
+    const braga = engine.statements.find((s) => s.value === 'Braga');
+    expect(braga?.sourceTurnId).toBe('0');
+    expect(braga?.conversationId).toBe(conversationId);
+
+    // The session ends: nothing is left, so no second call and no second row.
+    await bus.fire('chat:end', ctx, { outcome: { kind: 'complete', messages: [] } });
+    await settleObserver();
+    expect(extractions()).toBe(before + 1);
+  });
+
   it('chat:end drives the observer; extracted facts close by slot and never close human rows', async () => {
     const fireTurn = async (conversationId: string, content: string) => {
       const before = llmCalls.length;

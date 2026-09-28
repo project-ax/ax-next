@@ -43,7 +43,12 @@ describe('@ax/memory — manifest', () => {
     // invariant 3 forbids — this card is the one that wires it, so the
     // assertion moves rather than loosens: still EXACTLY one entry, still
     // one that the tests below drive end to end.
-    expect(manifest.subscribes).toEqual(['chat:end']);
+    //
+    // TASK-625 adds `chat:turn-end`, the incremental-extraction trigger,
+    // driven end to end in `incremental.test.ts`; `incremental: false`
+    // removes it again.
+    expect(manifest.subscribes).toEqual(['chat:end', 'chat:turn-end']);
+    expect(createMemoryPlugin({ incremental: false }).manifest.subscribes).toEqual(['chat:end']);
   });
 
   it('actually puts exactly those on the bus and no sixth', async () => {
@@ -89,13 +94,33 @@ describe('@ax/memory — manifest', () => {
     expect(manifest.optionalCalls?.map((oc) => oc.hook)).toEqual([
       'llm:call:openrouter',
       'memory:rules:read',
+      'conversations:get',
+      'storage:get',
+      'storage:set',
     ]);
     expect(manifest.optionalCalls?.[0]?.degradation).toContain('chat:end');
   });
 
+  it('names the transcript and cursor store as OPTIONAL — without them extraction waits for chat:end', () => {
+    const { manifest } = createMemoryPlugin();
+    for (const hook of ['conversations:get', 'storage:get', 'storage:set']) {
+      const entry = manifest.optionalCalls?.find((oc) => oc.hook === hook);
+      expect(entry?.degradation).toMatch(/only at chat:end/);
+    }
+    expect(
+      createMemoryPlugin({ incremental: false }).manifest.optionalCalls?.map((oc) => oc.hook),
+    ).toEqual(['llm:call:openrouter', 'memory:rules:read']);
+  });
+
+  it('refuses a malformed incremental config at construction', () => {
+    expect(() => createMemoryPlugin({ incremental: { idleMs: 0 } })).toThrow(/idleMs/);
+    expect(() => createMemoryPlugin({ incremental: { everyUserTurns: 1.5 } })).toThrow(/everyUserTurns/);
+    expect(() => createMemoryPlugin({ incremental: { everyUserTurns: 0 } })).toThrow(/everyUserTurns/);
+  });
+
   it('derives the provider hook from the configured model ref, not a constant', () => {
     const { manifest } = createMemoryPlugin({ memoryOpsModel: 'anthropic/claude-haiku-4-5' });
-    expect(manifest.optionalCalls?.map((oc) => oc.hook)).toEqual([
+    expect(manifest.optionalCalls?.map((oc) => oc.hook).slice(0, 2)).toEqual([
       'llm:call:anthropic',
       'memory:rules:read',
     ]);
@@ -114,7 +139,7 @@ describe('@ax/memory — manifest', () => {
   // preset may legitimately load `@ax/memory` without one. A hard `calls`
   // entry would turn that configuration into a boot failure.
   it('names the human tier as the one OPTIONAL dependency, with its degradation spelled out', () => {
-    const { manifest } = createMemoryPlugin();
+    const { manifest } = createMemoryPlugin({ incremental: false });
     expect(manifest.optionalCalls).toHaveLength(2);
     expect(manifest.optionalCalls![1]!.hook).toBe('memory:rules:read');
     expect(manifest.optionalCalls![1]!.degradation).toMatch(/Rules From Your User/);

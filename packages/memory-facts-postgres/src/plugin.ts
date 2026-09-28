@@ -182,6 +182,13 @@ function validateStatement(input: unknown): FactStatementInput {
       message: 'statement.conversationId must be a string when set',
     });
   }
+  if (s.sourceTurnId !== undefined && typeof s.sourceTurnId !== 'string') {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'statement.sourceTurnId must be a string when set',
+    });
+  }
   if (s.kind !== undefined && !KINDS.includes(s.kind as FactKind)) {
     throw new PluginError({
       code: 'invalid-payload',
@@ -486,6 +493,9 @@ function rowToFactRecord(row: FactRow): FactRecord {
     // Provenance only — nothing in `RecallInput` filters or ranks by it.
     // `@ax/memory` groups design §4.1's Recent section by it.
     ...(row.conversation_id !== null ? { conversationId: row.conversation_id } : {}),
+    // Provenance only, mirroring conversationId exactly — see
+    // FactRecord.sourceTurnId's docblock.
+    ...(row.source_turn_id !== null ? { sourceTurnId: row.source_turn_id } : {}),
     ...(row.kind !== null ? { kind: row.kind } : {}),
   };
 }
@@ -763,6 +773,9 @@ export function createMemoryFactsPostgresPlugin(): Plugin {
                   ...(statement.conversationId !== undefined
                     ? { conversationId: statement.conversationId }
                     : {}),
+                  ...(statement.sourceTurnId !== undefined
+                    ? { sourceTurnId: statement.sourceTurnId }
+                    : {}),
                   ...(statement.kind !== undefined ? { kind: statement.kind } : {}),
                 });
 
@@ -777,6 +790,9 @@ export function createMemoryFactsPostgresPlugin(): Plugin {
                   ...(closure.selfClosedAt !== null ? { until: closure.selfClosedAt } : {}),
                   ...(closure.selfClosedBy !== null ? { closedBy: closure.selfClosedBy } : {}),
                   ...(statement.kind !== undefined ? { kind: statement.kind } : {}),
+                  ...(statement.sourceTurnId !== undefined
+                    ? { sourceTurnId: statement.sourceTurnId }
+                    : {}),
                 });
               }
               return written;

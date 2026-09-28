@@ -111,6 +111,18 @@ export interface FactStatementInput {
   kind?: FactKind;
   ownerUserId?: string;
   conversationId?: string;
+  /**
+   * The conversation turn this statement was extracted from — an opaque id
+   * supplied by the producer (today `@ax/memory`'s observer passes the
+   * display transcript's turnId, the id the chat UI keys each message on),
+   * so a UI can link a statement to "from your message". Echoed back exactly
+   * as supplied.
+   *
+   * ⚠ Provenance, never a retrieval key (design §3.1): no input on this
+   * contract filters or ranks by it. Absent on rows not extracted from a
+   * specific turn.
+   */
+  sourceTurnId?: string;
 }
 
 export interface RecordInput {
@@ -179,6 +191,18 @@ export interface FactRecord {
    * product layer.
    */
   conversationId?: string;
+  /**
+   * The conversation turn this statement was extracted from — an opaque id
+   * supplied by the producer (today `@ax/memory`'s observer passes the
+   * display transcript's turnId, the id the chat UI keys each message on),
+   * so a UI can link a statement to "from your message". Echoed back exactly
+   * as supplied.
+   *
+   * ⚠ Provenance, never a retrieval key (design §3.1): no input on this
+   * contract filters or ranks by it. Absent on rows not extracted from a
+   * specific turn.
+   */
+  sourceTurnId?: string;
   kind?: FactKind;
 }
 
@@ -1796,6 +1820,24 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         expect(out.statements[0]!.conversationId).toBe('conv-1');
       });
 
+      // sourceTurnId mirrors conversationId exactly: opaque provenance,
+      // echoed back verbatim on both the `record` response and a recalled
+      // row, never used to filter or rank.
+      it('echoes sourceTurnId back on both the record response and a recalled row', async () => {
+        const written = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JAN,
+          sourceTurnId: 'turn-1',
+        });
+        expect(written.sourceTurnId).toBe('turn-1');
+
+        const out = await recall({ about: 'user', limit: 10 });
+        expect(out.statements).toHaveLength(1);
+        expect(out.statements[0]!.sourceTurnId).toBe('turn-1');
+      });
+
       // Absent, not null and not `''`. A consumer branches on presence, and a
       // row that never had either is the overwhelming majority of rows.
       it('omits both fields entirely on a row that carries neither', async () => {
@@ -1804,6 +1846,45 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         const out = await recall({ about: 'user', limit: 10 });
         expect(out.statements[0]).not.toHaveProperty('slot');
         expect(out.statements[0]).not.toHaveProperty('conversationId');
+      });
+
+      it('omits sourceTurnId entirely on a row that carries none', async () => {
+        await recordOne({ about: 'user', relation: 'stated', value: 'hello', when: JAN });
+
+        const out = await recall({ about: 'user', limit: 10 });
+        expect(out.statements[0]).not.toHaveProperty('sourceTurnId');
+      });
+
+      it('a batchKey replay returns the original rows\' sourceTurnId', async () => {
+        const statements = [
+          {
+            about: 'user',
+            relation: 'stated',
+            value: 'source-turn-replay',
+            when: JAN,
+            sourceTurnId: 'turn-replay-1',
+          },
+        ];
+        const first = await record({ batchKey: 'source-turn-replay-key', statements });
+        const replay = await record({ batchKey: 'source-turn-replay-key', statements });
+        expect(replay.records[0]!.id).toBe(first.records[0]!.id);
+        expect(replay.records[0]!.sourceTurnId).toBe('turn-replay-1');
+      });
+
+      it('record rejects a non-string sourceTurnId', async () => {
+        await expectCode('invalid-payload', () =>
+          bus.call('memory:facts:record', makeCtx(), {
+            statements: [
+              {
+                about: 'user',
+                relation: 'stated',
+                value: 'hello',
+                when: JAN,
+                sourceTurnId: 7,
+              },
+            ],
+          }),
+        );
       });
 
       // PENDING_SLOT comes back as ITSELF rather than being smoothed into
