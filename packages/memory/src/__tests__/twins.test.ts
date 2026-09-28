@@ -57,6 +57,12 @@ describe('isTwin — the measured walk pairs', () => {
     ).toBe(true);
   });
 
+  it('a one-word value contained in the other is a twin', () => {
+    expect(
+      isTwin({ about: ME, relation: 'lives_in', value: 'Boston, MA' }, agent('lives in', 'Boston')),
+    ).toBe(true);
+  });
+
   it('a human row is a prior too', () => {
     expect(
       isTwin(
@@ -72,6 +78,14 @@ describe('isTwin — what must NOT match', () => {
     expect(
       isTwin({ about: ME, relation: 'likes_artist', value: 'Bjork' }, agent('likes artist', 'Radiohead')),
     ).toBe(false);
+  });
+
+  it.each([
+    ['goal', 'Learn Spanish', 'Learn French'],
+    ['plans_to', 'Visit Japan', 'Visit Peru'],
+    ['likes', 'Thai food', 'Italian food'],
+  ])('%s: one shared word between two-word values is not enough (%s / %s)', (relation, noted, extracted) => {
+    expect(isTwin({ about: ME, relation, value: extracted }, agent(relation, noted))).toBe(false);
   });
 
   it('words the relation or subject already carry do not count as shared value', () => {

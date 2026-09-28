@@ -205,6 +205,9 @@ describe('an extracted restatement of an agent note is not stored', () => {
     expect(run?.bindings).toMatchObject({ outcome: 'recorded', recorded: 2, twins: 1 });
   });
 
+  // A SCOPE guard, not a fix test: it passes on the unfixed code too. It
+  // fails if the check ever starts matching a routine batch against its
+  // hidden per-fire conversation.
   it('a routine run carries no conversation, so nothing is checked (TASK-616 scope)', async () => {
     vi.useFakeTimers();
     const env = await setup();
@@ -267,6 +270,26 @@ describe('a Fix on the note leaves nothing of the old value showing', () => {
       expect(env.rows().some((r) => r.provenance === 'extracted')).toBe(false);
     },
   );
+
+  it("the person's own Fix, still active, suppresses the extractor's restatement of it", async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    await env.note(GO_LIVE_NOTE);
+    const [noted] = await env.feed();
+    await env.h.correct(
+      { id: noted!.id, about: 'user', relation: noted!.relation, value: 'October 20, 2026', reason: 'changed' },
+      env.ctx(),
+    );
+
+    env.extract([{ ...GO_LIVE_EXTRACTED, object: 'Product go-live moved to October 20' }]);
+    await env.exchange('Actually the go-live moved to Oct 20.', 'Updated.', 'r1');
+    await env.idle();
+
+    const feed = await env.feed();
+    expect(values(feed)).toEqual(['October 20, 2026']);
+    expect(feed[0]?.savedBy).toBe('person');
+    expect(env.rows().some((r) => r.provenance === 'extracted')).toBe(false);
+  });
 
   it('Undo-for-Fix restores the note — once', async () => {
     vi.useFakeTimers();

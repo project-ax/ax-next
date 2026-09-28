@@ -19,8 +19,9 @@
  *
  * 1. the same `about`;
  * 2. the same relation once case and `_` / `-` / whitespace are folded;
- * 3. at least one shared VALUE word — ignoring stopwords and the words the
- *    relation and subject already carry.
+ * 3. shared VALUE words — at least two, or the only one when either value
+ *    has just one — ignoring stopwords and the words the relation and
+ *    subject already carry.
  *
  * The higher tier survives because it already outranks the extracted row
  * (design §3.4, `human > agent > extracted`). With one row there is nothing to
@@ -38,9 +39,12 @@
  * (`likes_artist`: Radiohead noted, Bjork extracted). The shared-word check
  * keeps those apart without a model or an embedder — the same exact-or-nothing
  * posture `slots.ts` takes, for the same asymmetric reason: under-matching
- * leaves the pre-TASK-641 duplicate, over-matching loses a fact. Its known
- * residual: two values under one relation, in one conversation, that share a
- * content word ("Thai food" / "Italian food") still drop the extracted one.
+ * leaves the pre-TASK-641 duplicate, over-matching loses a fact. One shared
+ * word is not enough between multi-word values: a shared leading verb or
+ * modifier ("Learn Spanish" / "Learn French", "Thai food" / "Italian food")
+ * is common and names two facts. Known residual: a one-word value contained
+ * in the other ("Spanish" / "Learn Spanish") is a twin, and two multi-word
+ * values sharing two content words are too.
  *
  * Pure and synchronous. Every input is model output, so nothing here indexes
  * a plain object with it.
@@ -101,10 +105,13 @@ export function isTwin(statement: TwinCandidate, prior: PriorRow): boolean {
   if (key === '' || key !== relationKey(prior.relation)) return false;
   const exclude = new Set([...words(key), ...words(statement.about)]);
   const mine = valueWords(statement.value, exclude);
-  for (const w of valueWords(prior.value, exclude)) {
-    if (mine.has(w)) return true;
-  }
-  return false;
+  const theirs = valueWords(prior.value, exclude);
+  let shared = 0;
+  for (const w of theirs) if (mine.has(w)) shared += 1;
+  // Two shared words — or, when either value has only one, that one. A single
+  // shared word between two multi-word values is usually a shared verb or
+  // modifier ("Learn Spanish" / "Learn French"), not the same fact.
+  return shared > 0 && shared >= Math.min(2, mine.size, theirs.size);
 }
 
 /** Split `statements` into the ones to store and a count of dropped twins. */
