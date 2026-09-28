@@ -144,7 +144,7 @@ export function useConversationMemory({
           const page = await workspaceApi.recallMemory(agentId, { conversationId });
           statements = page.statements;
         } catch (e) {
-          if (!alive()) return;
+          if (!alive()) return false;
           console.warn('[workspace] conversation memory read failed', e);
           setStatus('read-failed');
           return false;

@@ -276,6 +276,9 @@ export function learnedMore(count: number): string {
 }
 export const LEARNED_SEE_ALL = 'See all memory →';
 
+/** Before the first read lands. Not one of the six: it is gone in a moment. */
+export const LEARNED_LOADING = 'Checking what I’ve picked up from this chat…';
+
 // The six states. Each one says which state it is: an empty list is a claim.
 export const LEARNED_NOTHING_NEW = 'Nothing new to remember from this chat yet.';
 export const LEARNED_EXTRACTING = 'Reading over your last few messages…';
