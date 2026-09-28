@@ -42,9 +42,18 @@ export interface ObserverStatement {
    * messages carry no turn ids.
    */
   sourceTurnId?: string;
+  /**
+   * Who spoke that turn (TASK-648) — set by `attribution.ts` from OUR
+   * transcript's roles, only when the turn shares the fact's words. Never
+   * from model output, and never a tier: the statement stays `extracted`.
+   */
+  sourceRole?: 'user' | 'assistant';
   kind?: MemoryStatementKind;
   slot?: Slot;
 }
+
+/** Where an extracted fact came from, as `attribution.ts` decided it. */
+type SourceTurn = { sourceTurnId?: string; sourceRole?: 'user' | 'assistant' };
 
 export interface ObserverRecordInput {
   batchKey: string;
@@ -259,7 +268,7 @@ async function extractAndRecord(
   dialogue: string,
   how: {
     attribute: (facts: ExtractedFact[]) => {
-      facts: Array<ExtractedFact & { sourceTurnId?: string }>;
+      facts: Array<ExtractedFact & SourceTurn>;
       contextOnly: number;
     };
     batchKey: () => string;
@@ -459,7 +468,7 @@ export function buildBatchKey(input: {
  * model wrote, and reject what cannot be read at all.
  */
 export function toStatements(
-  facts: ReadonlyArray<ExtractedFact & { sourceTurnId?: string }>,
+  facts: ReadonlyArray<ExtractedFact & SourceTurn>,
   opts: { ownerUserId: string; conversationId?: string | undefined },
 ): { statements: ObserverStatement[]; unusable: number; selfReports: number } {
   const statements: ObserverStatement[] = [];
@@ -505,6 +514,13 @@ export function toStatements(
       // Provenance only (TASK-625), set by `attribution.ts` from OUR turn
       // ids — never from model output.
       ...(fact.sourceTurnId !== undefined ? { sourceTurnId: fact.sourceTurnId } : {}),
+      // Provenance only (TASK-648), same source as `sourceTurnId`. An explicit
+      // allowlist rather than a copy: the fact object passed through the
+      // extractor's parse, so nothing but these two literals may reach the
+      // store under this name.
+      ...(fact.sourceRole === 'user' || fact.sourceRole === 'assistant'
+        ? { sourceRole: fact.sourceRole }
+        : {}),
       ...(fact.kind !== undefined ? { kind: fact.kind } : {}),
       // The slot comes from the deterministic synonym table (design §3.3,
       // TASK-489), derived HERE from the predicate we are about to store —

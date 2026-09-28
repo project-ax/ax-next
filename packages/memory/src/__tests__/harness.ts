@@ -314,6 +314,8 @@ export async function engineRecord(
     provenance?: 'extracted' | 'agent' | 'human';
     ownerUserId?: string;
     conversationId?: string;
+    sourceTurnId?: string;
+    sourceRole?: 'user' | 'assistant';
   }>,
 ): Promise<{ records: Array<{ id: string }> }> {
   return bus.call('memory:facts:record', ctx, { statements });

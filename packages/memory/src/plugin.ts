@@ -278,6 +278,12 @@ interface EngineFactRecord {
    * not a contract field this layer validates.
    */
   sourceTurnId?: string;
+  /**
+   * Engine-side only, never forwarded: who spoke the source turn (TASK-648).
+   * Read by `profile.ts` — a person's own chat restatement of a value they
+   * retracted resurfaces it. Anything but `'user'` counts as not the person.
+   */
+  sourceRole?: string;
 }
 
 interface EngineRecallOutput {

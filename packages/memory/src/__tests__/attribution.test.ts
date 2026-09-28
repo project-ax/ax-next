@@ -65,6 +65,33 @@ describe('attributeFacts', () => {
     expect(out.facts[0]?.sourceTurnId).toBe('t5');
   });
 
+  // TASK-648: who spoke the source turn, returned only on evidence.
+  describe('sourceRole', () => {
+    it("is 'user' when the person's turn holds the fact's words", () => {
+      const fresh = [
+        turn(2, 'user', 'I moved back to Denver last month.'),
+        turn(3, 'assistant', 'Noted, welcome home!'),
+      ];
+      const out = attributeFacts([fact('user', 'Denver')], { context: [], fresh });
+      expect(out.facts[0]).toMatchObject({ sourceTurnId: 't2', sourceRole: 'user' });
+    });
+
+    it("is 'assistant' when only the agent's reply holds them — even for a fact about the person", () => {
+      const fresh = [
+        turn(2, 'user', 'Where did you have me living?'),
+        turn(3, 'assistant', 'I had you in Denver.'),
+      ];
+      const out = attributeFacts([fact('user', 'Denver')], { context: [], fresh });
+      expect(out.facts[0]).toMatchObject({ sourceTurnId: 't3', sourceRole: 'assistant' });
+    });
+
+    it('is absent on the positional fallback (no turn shares a word)', () => {
+      const out = attributeFacts([fact('user', 'enjoys paddling')], { context: CONTEXT, fresh: FRESH });
+      expect(out.facts[0]?.sourceTurnId).toBe('t2');
+      expect('sourceRole' in out.facts[0]!).toBe(false);
+    });
+  });
+
   it('attributes nothing when there are no new turns', () => {
     expect(attributeFacts([fact('user', 'x')], { context: CONTEXT, fresh: [] })).toEqual({
       facts: [],

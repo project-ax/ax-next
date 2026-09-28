@@ -40,6 +40,16 @@ import type { IdentifiedTurn } from './transcript.js';
  *   turn of the matching role. Dropping it would lose a fact the new turns
  *   may well have produced; there is no evidence it came from context.
  *
+ * ## Who said it — `sourceRole` (TASK-648)
+ *
+ * When the source turn was chosen on EVIDENCE (it shares at least one of the
+ * fact's words), its role is returned as `sourceRole`. A paraphrase placed
+ * on the positional fallback gets none: guessing "the person said it" there
+ * would be a guess, and `profile.ts` lets a person's own restatement bring
+ * back a value they had marked never right — that must rest on the person's
+ * turn actually containing the words. Under-attributing is the safe
+ * direction: a missing role leaves the value hidden, as before TASK-648.
+ *
  * ## What this cannot see
  *
  * A new turn that only CONFIRMS a context turn ("yes, book that one") yields
@@ -57,6 +67,8 @@ import type { IdentifiedTurn } from './transcript.js';
 
 export interface AttributedFact extends ExtractedFact {
   sourceTurnId: string;
+  /** The source turn's speaker — present only when chosen on word overlap. */
+  sourceRole?: 'user' | 'assistant';
 }
 
 export interface AttributionResult {
@@ -144,9 +156,11 @@ export function attributeFacts(
     }
     if (best === undefined || best.score === 0) {
       const sameRole = [...turns.fresh].reverse().find((turn) => turn.role === role);
-      best = { turn: sameRole ?? turns.fresh[turns.fresh.length - 1]!, score: 0, roleMatch: true };
+      const fallback = sameRole ?? turns.fresh[turns.fresh.length - 1]!;
+      out.push({ ...fact, sourceTurnId: fallback.turnId });
+      continue;
     }
-    out.push({ ...fact, sourceTurnId: best.turn.turnId });
+    out.push({ ...fact, sourceTurnId: best.turn.turnId, sourceRole: best.turn.role });
   }
   return { facts: out, contextOnly };
 }

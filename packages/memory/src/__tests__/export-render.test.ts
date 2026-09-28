@@ -371,4 +371,18 @@ describe('buildFactsExport — profile, TASK-633', () => {
     ]);
     expect(profile).not.toContain('lives_in');
   });
+
+  // TASK-648 ruling: the person restating it in their own message brings it
+  // back in the exported profile too; the agent's reply does not.
+  it.each([
+    ['user', 'Portland'],
+    ['assistant', 'Seattle'],
+  ] as const)('a retracted value restated from a %s turn: the profile shows %s', (role, shown) => {
+    const profile = profileOf([
+      row({ id: 'p1', slot: 'lives_in', value: 'Portland', when: '2026-08-01T00:00:00.000Z', until: '2026-08-10T00:00:00.000Z', neverTrue: true }),
+      row({ id: 's', slot: 'lives_in', value: 'Seattle', when: '2026-08-10T00:00:00.000Z', provenance: 'human' }),
+      row({ id: 'p2', slot: 'lives_in', value: 'Portland', when: '2026-09-05T00:00:00.000Z', sourceRole: role }),
+    ]);
+    expect(profile).toContain(`lives_in: ${shown}`);
+  });
 });

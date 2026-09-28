@@ -204,6 +204,13 @@ function validateStatement(input: unknown): FactStatementInput {
       message: 'statement.sourceTurnId must be a string when set',
     });
   }
+  if (s.sourceRole !== undefined && s.sourceRole !== 'user' && s.sourceRole !== 'assistant') {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: "statement.sourceRole must be 'user' or 'assistant' when set",
+    });
+  }
   if (s.kind !== undefined && !KINDS.includes(s.kind as FactKind)) {
     throw new PluginError({
       code: 'invalid-payload',
@@ -570,6 +577,8 @@ function rowToFactRecord(row: FactRow): FactRecord {
     // Provenance only, mirroring conversationId exactly — see
     // FactRecord.sourceTurnId's docblock.
     ...(row.source_turn_id !== null ? { sourceTurnId: row.source_turn_id } : {}),
+    // TASK-648 — who spoke that turn; provenance only, echoed as stored.
+    ...(row.source_role !== null ? { sourceRole: row.source_role } : {}),
     ...(row.kind !== null ? { kind: row.kind } : {}),
   };
 }
@@ -1300,6 +1309,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
                   ...(statement.sourceTurnId !== undefined
                     ? { sourceTurnId: statement.sourceTurnId }
                     : {}),
+                  ...(statement.sourceRole !== undefined ? { sourceRole: statement.sourceRole } : {}),
                   ...(statement.kind !== undefined ? { kind: statement.kind } : {}),
                 });
 
@@ -1336,6 +1346,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
                   ...(statement.sourceTurnId !== undefined
                     ? { sourceTurnId: statement.sourceTurnId }
                     : {}),
+                  ...(statement.sourceRole !== undefined ? { sourceRole: statement.sourceRole } : {}),
                 };
               });
             });

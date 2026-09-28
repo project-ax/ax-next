@@ -261,6 +261,17 @@ describe('memory:conversation-activity', () => {
     // The recorded rows carry the display-log turn they came from.
     const feed = await env.h.recall({ conversationId: CONV }, env.ctx());
     expect(feed.statements.map((s) => s.sourceTurnId).sort()).toEqual(['t0', 't1']);
+
+    // …and who spoke that turn (TASK-648), stored engine-side only: the
+    // product payload does not carry it.
+    const roles = (stored.statements as Array<{ sourceTurnId?: string; sourceRole?: string }>)
+      .map((s) => [s.sourceTurnId, s.sourceRole])
+      .sort();
+    expect(roles).toEqual([
+      ['t0', 'user'],
+      ['t1', 'assistant'],
+    ]);
+    for (const s of feed.statements) expect('sourceRole' in s).toBe(false);
   });
 
   it('a pass with no new turns fires nothing', async () => {

@@ -405,6 +405,45 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
       expect(await augment(h, ctx)).toContain('- lives_in: Portland');
     });
 
+    // TASK-648 ruling: the PERSON saying a retracted value in their own chat
+    // message brings it back into the injected block — even beside the human
+    // correction, a slot `needsSlotHistory` used to settle without reading the
+    // chain (so the pick never saw the retraction). The agent's reply does not.
+    it("injects a retracted value the person restated in their own message, not the agent's echo", async () => {
+      const h = await makeHarness();
+      const ctx = h.ctx();
+      const lives = (
+        value: string,
+        when: string,
+        provenance: 'agent' | 'extracted' | 'human',
+        sourceRole?: 'user' | 'assistant',
+      ) => ({
+        about: `user:${ALICE}`,
+        relation: 'lives_in',
+        value,
+        when,
+        slot: 'lives_in',
+        provenance,
+        ownerUserId: ALICE,
+        ...(sourceRole !== undefined ? { sourceRole } : {}),
+      });
+      const { records } = await engineRecord(h.bus, ctx, [lives('Portland', JAN, 'extracted')]);
+      await h.bus.call('memory:facts:supersede', ctx, {
+        ids: [records[0]!.id],
+        neverTrue: true,
+        ownerUserId: ALICE,
+      });
+      await engineRecord(h.bus, ctx, [lives('Seattle', '2026-02-01T00:00:00.000Z', 'human')]);
+
+      await engineRecord(h.bus, ctx, [lives('Portland', SEP, 'extracted', 'assistant')]);
+      expect(await augment(h, ctx)).toContain('- lives_in: Seattle');
+      expect(await augment(h, ctx)).not.toContain('- lives_in: Portland');
+
+      await engineRecord(h.bus, ctx, [lives('Portland', '2026-10-01T00:00:00.000Z', 'extracted', 'user')]);
+      expect(await augment(h, ctx)).toContain('- lives_in: Portland');
+      expect(await augment(h, ctx)).not.toContain('- lives_in: Seattle');
+    });
+
     // The chain read used to share the 32-row profile SCAN limit. Closed rows
     // pile up across every slot, and a retraction older than 32 of them fell
     // off the page — letting the retracted value straight back in.
