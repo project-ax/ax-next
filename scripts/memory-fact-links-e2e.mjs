@@ -33,13 +33,15 @@ const hash = (value) => createHash('sha256').update(value).digest('hex');
 
 /**
  * The two answer models. GLM keeps rung-4's exact answer configuration; DeepSeek runs at
- * maximum reasoning, pinned to its first-party provider so every call is the same weights
- * and price, with room in `max_tokens` for the reasoning it spends.
+ * MINIMAL reasoning (max effort averaged ~2,800 reasoning tokens an answer — too slow for a
+ * chat turn; its partial run is archived beside the results), pinned to its first-party
+ * provider so every call is the same weights and price. Minimal still spends ~170 reasoning
+ * tokens, which count against `max_tokens`, hence 2,048 rather than GLM's 512.
  */
 export const MODELS = Object.freeze({
   glm: { id: CONFIG.answerModels.glm, effort: 'minimal', maxTokens: CONFIG.answerMaxTokens },
   deepseek: {
-    id: 'deepseek/deepseek-v4.1-flash', effort: 'max', maxTokens: 16384,
+    id: 'deepseek/deepseek-v4.1-flash', effort: 'minimal', maxTokens: 2048,
     provider: { order: ['DeepSeek'], allow_fallbacks: false },
     // First-party list price, USD per million tokens; for reservations only.
     price: { input: 0.15, output: 0.6 },
