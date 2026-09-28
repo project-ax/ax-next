@@ -2063,6 +2063,7 @@ function logObserverResult(
         outcome: 'skipped',
         reason: result.reason,
         ...('selfReports' in result ? { selfReports: result.selfReports } : {}),
+        ...('negated' in result ? { negated: result.negated } : {}),
         ...('contextOnly' in result ? { contextOnly: result.contextOnly } : {}),
         ...('twins' in result ? { twins: result.twins } : {}),
       });
@@ -2106,6 +2107,9 @@ function logObserverResult(
         // The agent's own "I have no rules" style statements, dropped
         // (TASK-612). Informational; not a failure.
         selfReports: result.selfReports,
+        // Positive readings of a negated statement, dropped (TASK-652).
+        // Informational; not a failure.
+        negated: result.negated,
         // Facts only a context turn supported, dropped (TASK-625). Only an
         // incremental pass has context turns.
         ...(trigger !== undefined ? { contextOnly: result.contextOnly } : {}),

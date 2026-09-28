@@ -611,3 +611,98 @@ describe('a user restatement of a retracted value survives an agent-note twin', 
     expect(await profile(env)).toEqual(['Boston, Massachusetts']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// TASK-652 — the person NEGATING a value they marked never right must not
+// bring it back. Since TASK-648 a user-sourced extracted row restating a
+// retracted value resurfaces it; an extractor that reads "I never lived in
+// Denver" as `lives_in | Denver` would therefore resurface the very value the
+// person is rejecting again. `negation.ts` drops that misreading.
+// ---------------------------------------------------------------------------
+
+describe('a negation in the person’s own message never resurfaces a retracted value', () => {
+  const OLD = 'conv-old';
+  const LIVES = { about: 'user', relation: 'lives in', value: 'Denver, Colorado' };
+
+  async function retracted(env: Env): Promise<void> {
+    const old = env.h.ctx({ conversationId: OLD });
+    await env.note(LIVES, old);
+    const [noted] = (await env.h.recall({ conversationId: OLD }, old)).statements;
+    await env.h.correct(
+      { id: noted!.id, about: 'user', relation: noted!.relation, value: 'Boston, Massachusetts', reason: 'never-right' },
+      old,
+    );
+  }
+  // The misreading an extractor can produce for every phrasing below. Dated
+  // after the Fix, so if it were stored it would win the slot.
+  const misreading = (): Fact => ({
+    subject: 'user',
+    predicate: 'lives_in',
+    object: 'Denver, Colorado',
+    validStart: new Date(Date.now() + 86_400_000).toISOString(),
+  });
+  const profile = async (env: Env): Promise<string[]> =>
+    values((await env.h.recall({ profile: true }, env.ctx())).statements);
+
+  it.each([
+    'I never lived in Denver, Colorado.',
+    'Not Denver, Colorado anymore.',
+    "I don't live in Denver, Colorado.",
+    'I no longer live in Denver, Colorado.',
+    'I have never lived in Denver, Colorado, to be clear.',
+  ])('"%s" read as lives_in Denver: nothing stored, the Fix holds', async (said) => {
+    vi.useFakeTimers();
+    const env = await setup();
+    await retracted(env);
+    env.extract([misreading()]);
+    await env.exchange(said, 'Understood.', 'r1');
+    await env.idle();
+
+    expect(env.rows().some((r) => r.provenance === 'extracted')).toBe(false);
+    expect(await profile(env)).toEqual(['Boston, Massachusetts']);
+    const run = eventsNamed(env.h.logs, OBSERVER_RUN_EVENT).at(-1);
+    expect(run?.bindings).toMatchObject({ outcome: 'skipped', reason: 'only-negations', negated: 1 });
+  });
+
+  it('the rest of the batch is still recorded, and the drop is counted', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    await retracted(env);
+    env.extract([misreading(), { subject: 'user', predicate: 'works_at', object: 'Acme Robotics' }]);
+    await env.exchange('I never lived in Denver, Colorado. I work at Acme Robotics.', 'Noted.', 'r1');
+    await env.idle();
+
+    expect(env.rows().filter((r) => r.provenance === 'extracted').map((r) => r.value)).toEqual([
+      'Acme Robotics',
+    ]);
+    expect(await profile(env)).toEqual(['Acme Robotics', 'Boston, Massachusetts']);
+    const run = eventsNamed(env.h.logs, OBSERVER_RUN_EVENT).at(-1);
+    expect(run?.bindings).toMatchObject({ outcome: 'recorded', recorded: 1, negated: 1 });
+  });
+
+  // Control: the TASK-648 ruling still holds for a real restatement.
+  it('a real positive restatement still brings the value back', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    await retracted(env);
+    env.extract([misreading()]);
+    await env.exchange('Actually I do live in Denver, Colorado.', 'Got it.', 'r1');
+    await env.idle();
+
+    expect(env.rows().filter((r) => r.provenance === 'extracted').map((r) => r.source_role)).toEqual([
+      'user',
+    ]);
+    expect(await profile(env)).toEqual(['Denver, Colorado']);
+  });
+
+  it('"No, Denver, Colorado." is an answer, not a negation: the value comes back', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    await retracted(env);
+    env.extract([misreading()]);
+    await env.exchange('No, Denver, Colorado.', 'Got it.', 'r1');
+    await env.idle();
+
+    expect(await profile(env)).toEqual(['Denver, Colorado']);
+  });
+});
