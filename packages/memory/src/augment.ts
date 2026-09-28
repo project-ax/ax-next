@@ -174,6 +174,12 @@ interface EngineFactRecord {
   provenance?: string;
   slot?: string;
   conversationId?: string;
+  // Read by `selectProfileRows` off the chain history: a closed row with a
+  // successor, or one a person said was never right (TASK-633), makes the
+  // same value said again a re-mention rather than news.
+  until?: string;
+  closedBy?: string;
+  neverTrue?: boolean;
 }
 
 interface EngineRecallOutput {

@@ -145,3 +145,90 @@ describe('@ax/memory — memory:recall hides a re-mention of a value the person 
     ]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// TASK-633 — a value the person said was NEVER right must not come back on the
+// next chat mention either. "Never right" (memory:correct, TASK-624) retracts
+// the old row as never-true — closed with NO successor — then writes the
+// person's value. Before this, only a row closed WITH a successor counted as
+// replaced, so the retracted value, said again in chat, read as news.
+//
+// Built from the engine calls memory:correct makes (supersede neverTrue, then
+// a human record), so each row can carry an explicit date.
+// ---------------------------------------------------------------------------
+
+const MAR = '2026-03-10T12:00:00.000Z';
+const JUL = '2026-07-10T12:00:00.000Z';
+
+async function retract(h: MemoryHarness, id: string): Promise<void> {
+  await h.bus.call('memory:facts:supersede', h.ctx(), { ids: [id], neverTrue: true, ownerUserId: ALICE });
+}
+
+describe('@ax/memory — a retracted (never-right) value re-mentioned later', () => {
+  it('recall hides the re-mention under the person’s correction', async () => {
+    harness = await makeMemoryHarness();
+    const [portland] = await record(harness, row('Portland, Oregon', JAN, 'extracted'));
+    await retract(harness, portland!);
+    await record(
+      harness,
+      row('Seattle, Washington', FEB, 'human'),
+      row('portland, oregon.', JUN, 'extracted', { conversationId: 'conv-again' }),
+    );
+
+    expect(values(await harness.recall({}))).toEqual(['Seattle, Washington']);
+    expect(values(await harness.recall({ query: 'Portland, Oregon', limit: 1 }))).not.toContain(
+      'portland, oregon.',
+    );
+  });
+
+  it('history marks the re-mention overridden rather than current', async () => {
+    harness = await makeMemoryHarness();
+    const [portland] = await record(harness, row('Portland, Oregon', JAN, 'extracted'));
+    await retract(harness, portland!);
+    await record(
+      harness,
+      row('Seattle, Washington', FEB, 'human'),
+      row('Portland, Oregon', JUN, 'extracted', { conversationId: 'conv-again' }),
+    );
+
+    const out = await harness.recall({ activeOnly: false });
+    const closures = out.statements.map((s) => [s.value, s.closure ?? 'current']);
+    expect(closures).toEqual(
+      expect.arrayContaining([
+        ['Portland, Oregon', 'retracted'],
+        ['Portland, Oregon', 'overridden'],
+        ['Seattle, Washington', 'current'],
+      ]),
+    );
+  });
+
+  it('the profile does not pick the re-mention over a fresh value', async () => {
+    harness = await makeMemoryHarness();
+    const [portland] = await record(harness, row('Portland, Oregon', JAN, 'extracted'));
+    await retract(harness, portland!);
+    await record(
+      harness,
+      row('Tacoma, Washington', MAR, 'agent'),
+      row('Portland, Oregon', JUN, 'extracted', { conversationId: 'conv-again' }),
+    );
+
+    expect(values(await harness.recall({ profile: true }))).toEqual(['Tacoma, Washington']);
+  });
+
+  it('the person restating the retracted value themselves is authoritative', async () => {
+    harness = await makeMemoryHarness();
+    const [portland] = await record(harness, row('Portland, Oregon', JAN, 'extracted'));
+    await retract(harness, portland!);
+    await record(
+      harness,
+      row('Seattle, Washington', FEB, 'human'),
+      row('Portland, Oregon', JUN, 'human'),
+      row('Tacoma, Washington', JUL, 'extracted', { conversationId: 'conv-later' }),
+    );
+
+    expect(values(await harness.recall({ profile: true }))).toEqual(['Portland, Oregon']);
+    const listed = values(await harness.recall({}));
+    expect(listed).toContain('Portland, Oregon');
+    expect(listed).not.toContain('Seattle, Washington');
+  });
+});
