@@ -259,7 +259,7 @@ describe('memory-copy — no correction string stays inline', () => {
     /What we should remember/,
     /can correct or forget/,
     // The module's templates, rebuilt inline — a constant scan cannot see these.
-    /`(Fix|Forget|Undo)[: ]\s*\$\{/,
+    /`(Fix|Forget|Undo)\b[^`$]*\$\{/,
     /`[^`]*— Replaced by/,
   ];
 
