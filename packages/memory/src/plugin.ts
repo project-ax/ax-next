@@ -34,6 +34,7 @@ import {
   type ObserverRecordInput,
   type ObserverResult,
   type PriorRowsFn,
+  type RetractedRowsFn,
   type RetractedValueFn,
 } from './observer.js';
 import type { PriorRow } from './twins.js';
@@ -1575,6 +1576,8 @@ interface ObserveDeps {
   priorRows: PriorRowsFn;
   /** The twin check's chain read (TASK-649) — see {@link readRetractedValue}. */
   retractedValue: RetractedValueFn;
+  /** The retracted-twin check's read (TASK-654) — see {@link readRetractedRows}. */
+  retractedRows: RetractedRowsFn;
   ownerUserId: string;
   userId: string | undefined;
 }
@@ -1649,6 +1652,7 @@ async function observe(
       },
       priorRows: (query) => readPriorRows(bus, ctx, query),
       retractedValue: (query) => readRetractedValue(bus, ctx, query),
+      retractedRows: (query) => readRetractedRows(bus, ctx, query),
       ownerUserId,
       userId,
     });
@@ -1721,7 +1725,7 @@ function observeMessages(
   ctx: AgentContext,
   cfg: ObserveConfig,
   messages: UntrustedMessage[],
-  { llmCall, record, priorRows, retractedValue, ownerUserId }: ObserveDeps,
+  { llmCall, record, priorRows, retractedValue, retractedRows, ownerUserId }: ObserveDeps,
 ): Promise<ObserverResult> {
   return runObserver({
     messages,
@@ -1729,6 +1733,7 @@ function observeMessages(
     record,
     priorRows,
     retractedValue,
+    retractedRows,
     ownerUserId,
     // The batch identity keeps the real conversation; the rows are
     // attributed per `conversationOf` (a routine run is not a
@@ -1799,7 +1804,7 @@ async function runConversationPass(
   };
 
   const produced = await observe(bus, ctx, cfg, trigger, async (deps) => {
-    const { llmCall, priorRows, retractedValue, ownerUserId, userId } = deps;
+    const { llmCall, priorRows, retractedValue, retractedRows, ownerUserId, userId } = deps;
     const record: ObserveDeps['record'] = async (input) => {
       const out = await deps.record(input);
       for (const row of out?.records ?? []) {
@@ -1853,6 +1858,7 @@ async function runConversationPass(
         record,
         priorRows,
         retractedValue,
+        retractedRows,
         ownerUserId,
         userId,
       });
@@ -1885,6 +1891,7 @@ async function runConversationPass(
       record,
       priorRows,
       retractedValue,
+      retractedRows,
       ownerUserId,
       // Batch identity: the real conversation. Stored attribution: per
       // `conversationOf`, so a routine turn's rows carry none (TASK-616).
@@ -1998,6 +2005,49 @@ async function readRetractedValue(
 }
 
 /**
+ * The retracted-twin check's read (TASK-654): every row — active AND closed,
+ * with its never-right mark — about each subject, owned by this owner, in
+ * EVERY conversation (the Fix may have been made anywhere). The newest
+ * {@link PRIOR_ROWS_PER_ABOUT} per subject; an older retraction is not seen
+ * and the statement is written, which is the pre-TASK-654 behaviour.
+ *
+ * Owner-scoped for the same reason {@link readPriorRows} is. Throws on an
+ * unreadable answer; the caller fails open.
+ */
+async function readRetractedRows(
+  bus: HookBus,
+  ctx: AgentContext,
+  query: { abouts: string[]; ownerUserId: string },
+): Promise<PriorRow[]> {
+  const rows: PriorRow[] = [];
+  for (const about of query.abouts) {
+    const raw = await bus.call<unknown, EngineRecallOutput | null>(FACTS_RECALL_HOOK, ctx, {
+      about,
+      ownerUserId: query.ownerUserId,
+      activeOnly: false,
+      limit: PRIOR_ROWS_PER_ABOUT,
+    });
+    if (raw == null || !Array.isArray(raw.statements)) {
+      throw new Error(`${FACTS_RECALL_HOOK} returned no statements array for the retracted-twin check`);
+    }
+    for (const row of raw.statements as unknown[]) {
+      if (row === null || typeof row !== 'object') continue;
+      const { about: a, relation, value, provenance, until, neverTrue } = row as Record<string, unknown>;
+      if (typeof a !== 'string' || typeof relation !== 'string' || typeof value !== 'string') continue;
+      rows.push({
+        about: a,
+        relation,
+        value,
+        ...(typeof provenance === 'string' ? { provenance } : {}),
+        ...(typeof until === 'string' ? { until } : {}),
+        ...(neverTrue === true ? { neverTrue: true } : {}),
+      });
+    }
+  }
+  return rows;
+}
+
+/**
  * Write the cursor durably; on failure, carry it in-process and say so.
  *
  * Carried so the next pass starts AFTER these turns even though storage
@@ -2066,6 +2116,7 @@ function logObserverResult(
         ...('negated' in result ? { negated: result.negated } : {}),
         ...('contextOnly' in result ? { contextOnly: result.contextOnly } : {}),
         ...('twins' in result ? { twins: result.twins } : {}),
+        ...('retracted' in result ? { retracted: result.retracted } : {}),
       });
       return;
     case 'all-unusable':
@@ -2116,6 +2167,9 @@ function logObserverResult(
         // Restatements of an agent- or human-saved row in this conversation,
         // not stored (TASK-641). Informational; not a failure.
         twins: result.twins,
+        // Restatements of a value the person marked never right, from anyone
+        // but the person, not stored (TASK-654). Informational; not a failure.
+        retracted: result.retracted,
         // A persistent `true` means the prompt and the model have drifted
         // apart; one retry is the budget, and it is being spent every turn.
         retried: result.retried,

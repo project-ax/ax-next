@@ -6,7 +6,7 @@ import { dropNegatedFacts } from './negation.js';
 import { isAgentContextSelfReport } from './self-report.js';
 import { deriveSlot, type Slot } from './slots.js';
 import { rewriteSpeaker } from './subject.js';
-import { dropTwins, hasActiveTwin, type PriorRow } from './twins.js';
+import { dropTwins, hasActiveTwin, hasRetractedTwin, type PriorRow } from './twins.js';
 import type { MemoryStatementKind } from './types.js';
 import {
   filterDialogue,
@@ -95,10 +95,18 @@ export type ObserverResult =
   | { kind: 'skipped'; reason: 'only-negations'; negated: number }
   /**
    * Every fact restated something the agent or the person had already saved
-   * in this conversation (TASK-641, `twins.ts`). Ordinary: the fact IS in
-   * memory, once, under the higher tier.
+   * in this conversation (TASK-641, `twins.ts`), or a value the person had
+   * marked never right (TASK-654). Ordinary: the first IS in memory, once,
+   * under the higher tier; the second is what the person asked for.
    */
-  | { kind: 'skipped'; reason: 'only-twins'; twins: number; twinCheck: TwinCheck }
+  | {
+      kind: 'skipped';
+      reason: 'only-twins';
+      twins: number;
+      /** Restatements of a value marked never right, dropped (TASK-654). */
+      retracted: number;
+      twinCheck: TwinCheck;
+    }
   /**
    * The extractor produced facts and EVERY ONE of them was unusable, so the
    * batch is empty for a reason.
@@ -148,6 +156,12 @@ export type ObserverResult =
        * conversation already said them (TASK-641, `twins.ts`).
        */
       twins: number;
+      /**
+       * Facts dropped because they restated a SLOT-LESS row the person had
+       * marked never right, in any conversation, and did not come from the
+       * person's own turn (TASK-654, `twins.ts`'s `hasRetractedTwin`).
+       */
+      retracted: number;
       /** Whether the twin check ran — see {@link TwinCheck}. */
       twinCheck: TwinCheck;
       /** Why the twin check failed, when it did (TASK-649). */
@@ -194,6 +208,15 @@ export type RetractedValueFn = (query: {
   ownerUserId: string;
 }) => Promise<boolean>;
 
+/**
+ * Reads the owner's rows about these subjects in EVERY conversation, active
+ * and closed, for the retracted-twin check (TASK-654). `neverTrue` included.
+ */
+export type RetractedRowsFn = (query: {
+  abouts: string[];
+  ownerUserId: string;
+}) => Promise<PriorRow[]>;
+
 export interface RunObserverInput {
   /** `chat:end`'s `outcome.messages`, untrusted and unfiltered. */
   messages: readonly UntrustedMessage[];
@@ -230,6 +253,11 @@ export interface RunObserverInput {
    * {@link withoutTwins}. Absent = no exception.
    */
   retractedValue?: RetractedValueFn;
+  /**
+   * The read behind the retracted-twin check (TASK-654) — see
+   * {@link withoutTwins}. Absent = no check.
+   */
+  retractedRows?: RetractedRowsFn;
 }
 
 export async function runObserver(input: RunObserverInput): Promise<ObserverResult> {
@@ -352,12 +380,12 @@ async function extractAndRecord(
     return { kind: 'skipped', reason: 'no-facts' };
   }
 
-  const { statements, twins, twinCheck, twinCheckError } = await withoutTwins(
+  const { statements, twins, retracted, twinCheck, twinCheckError } = await withoutTwins(
     input,
     mapped.statements,
   );
   if (statements.length === 0) {
-    return { kind: 'skipped', reason: 'only-twins', twins, twinCheck };
+    return { kind: 'skipped', reason: 'only-twins', twins, retracted, twinCheck };
   }
 
   const batchKey = how.batchKey();
@@ -380,10 +408,99 @@ async function extractAndRecord(
     negated: polarity.negated,
     contextOnly: attributed.contextOnly,
     twins,
+    retracted,
     twinCheck,
     ...(twinCheckError !== undefined ? { twinCheckError } : {}),
     retried: extraction.retried,
     batchKey,
+  };
+}
+
+/**
+ * Both write-time twin checks, in order: the conversation's own twins
+ * ({@link withoutConversationTwins}), then a restatement of a value the
+ * person marked never right ({@link withoutRetractedTwins}). Either read
+ * failing reports `failed` and keeps what it was asked about.
+ */
+async function withoutTwins(
+  input: Pick<
+    RunObserverInput,
+    'priorRows' | 'retractedValue' | 'retractedRows' | 'ownerUserId' | 'statementConversationId'
+  >,
+  statements: ObserverStatement[],
+): Promise<{
+  statements: ObserverStatement[];
+  twins: number;
+  retracted: number;
+  twinCheck: TwinCheck;
+  twinCheckError?: Error;
+}> {
+  const same = await withoutConversationTwins(input, statements);
+  const never = await withoutRetractedTwins(input, same.statements);
+  const twinCheckError = same.twinCheckError ?? never.error;
+  const twinCheck: TwinCheck =
+    twinCheckError !== undefined
+      ? 'failed'
+      : same.twinCheck === 'ran' || never.ran
+        ? 'ran'
+        : 'skipped';
+  return {
+    statements: never.statements,
+    twins: same.twins,
+    retracted: never.retracted,
+    twinCheck,
+    ...(twinCheckError !== undefined ? { twinCheckError } : {}),
+  };
+}
+
+/**
+ * The retracted-twin check (TASK-654; human ruling, Vinay 2026-09-28:
+ * "observer checks at write").
+ *
+ * A value the person marked NEVER right is hidden on read only inside a
+ * single-valued slot (`profile.ts`). A SLOT-LESS row is in no chain, and its
+ * re-extraction is usually paraphrased, so no read can match it — the walk's
+ * "Denver" / "Oct 14" rows came straight back. So, before writing, a
+ * slot-less statement that twins (`twins.ts`'s `hasRetractedTwin`) a
+ * never-right row of the owner's — any conversation, any provenance — is
+ * dropped.
+ *
+ * Kept when the person said it in their own turn (`sourceRole: 'user'`, the
+ * TASK-648 ruling): nothing on read hides a slot-less row, so writing it is
+ * what brings the value back. An unknown speaker (the legacy `chat:end` path,
+ * a positional attribution) is not the person.
+ *
+ * Slotted statements are left to the read side, whose exact `(about, slot)`
+ * rule already hides them (TASK-639) and resurfaces a person's restatement
+ * (TASK-648). Negation misreadings were dropped upstream (TASK-652).
+ *
+ * Fails OPEN like the rest of the twin check: a read error keeps every
+ * statement and is reported. Known limit: the read is the owner's newest
+ * {@link RetractedRowsFn} page per subject; a retraction older than that page
+ * is not seen, and the statement is written (the pre-TASK-654 behaviour).
+ */
+async function withoutRetractedTwins(
+  input: Pick<RunObserverInput, 'retractedRows' | 'ownerUserId'>,
+  statements: ObserverStatement[],
+): Promise<{ statements: ObserverStatement[]; retracted: number; ran: boolean; error?: Error }> {
+  const candidates = statements.filter((s) => s.slot === undefined && s.sourceRole !== 'user');
+  if (input.retractedRows === undefined || candidates.length === 0) {
+    return { statements, retracted: 0, ran: false };
+  }
+  let rows: PriorRow[];
+  try {
+    rows = await input.retractedRows({
+      abouts: [...new Set(candidates.map((s) => s.about))],
+      ownerUserId: input.ownerUserId,
+    });
+  } catch (err) {
+    return { statements, retracted: 0, ran: false, error: asError(err) };
+  }
+  const drop = new Set(candidates.filter((s) => hasRetractedTwin(s, rows)));
+  return {
+    statements: statements.filter((s) => !drop.has(s)),
+    retracted: drop.size,
+    ran: true,
   };
 }
 
@@ -414,7 +531,7 @@ async function extractAndRecord(
  * Residual, stated: the person restating it in a LATER turn of the same
  * conversation with no fresh agent note looks the same and is dropped too.
  */
-async function withoutTwins(
+async function withoutConversationTwins(
   input: Pick<
     RunObserverInput,
     'priorRows' | 'retractedValue' | 'ownerUserId' | 'statementConversationId'

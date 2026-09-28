@@ -4,6 +4,7 @@ import {
   dropTwins,
   findActiveExtractedTwin,
   hasActiveTwin,
+  hasRetractedTwin,
   isTwin,
   relationKey,
   type PriorRow,
@@ -237,5 +238,44 @@ describe('findActiveExtractedTwin — the reverse order (TASK-649)', () => {
     expect(findActiveExtractedTwin(artist, [extracted('likes_artist', 'Bjork')])).toBeUndefined();
     const bob = { ...extracted('relocating_to', 'Relocating to Denver in November'), about: 'user:bob' };
     expect(findActiveExtractedTwin(note, [bob])).toBeUndefined();
+  });
+});
+
+describe('hasRetractedTwin — a value the person said was never right (TASK-654)', () => {
+  const CLOSED = '2026-09-28T00:00:00Z';
+  const retracted = (relation: string, value: string, provenance = 'agent'): PriorRow => ({
+    about: ME,
+    relation,
+    value,
+    provenance,
+    until: CLOSED,
+    neverTrue: true,
+  });
+  const s = { about: ME, relation: 'relocating_to', value: 'Relocating to Denver in November' };
+
+  it('a never-right row saying the same thing is a retracted twin (the walk pair)', () => {
+    expect(hasRetractedTwin(s, [retracted('relocating to', 'Denver, in November 2026')])).toBe(true);
+  });
+
+  it('is tier-blind: an extracted row Fixed as never right counts too', () => {
+    const row = retracted('relocating to', 'Denver, in November 2026', 'extracted');
+    expect(hasRetractedTwin(s, [row])).toBe(true);
+  });
+
+  it('a Forget (closed, no never-right mark) is not a retraction', () => {
+    const forgotten: PriorRow = { ...agent('relocating to', 'Denver, in November 2026'), until: CLOSED };
+    expect(hasRetractedTwin(s, [forgotten])).toBe(false);
+  });
+
+  it('an ACTIVE row is not a retraction, whatever it carries', () => {
+    const active: PriorRow = { ...agent('relocating to', 'Denver, in November 2026'), neverTrue: true };
+    expect(hasRetractedTwin(s, [active])).toBe(false);
+  });
+
+  it('a different fact, relation or subject is not a twin', () => {
+    expect(hasRetractedTwin(s, [retracted('relocating to', 'Austin, in March 2027')])).toBe(false);
+    expect(hasRetractedTwin(s, [retracted('visited', 'Denver, in November 2026')])).toBe(false);
+    const bob: PriorRow = { ...retracted('relocating to', 'Denver, in November 2026'), about: 'user:bob' };
+    expect(hasRetractedTwin(s, [bob])).toBe(false);
   });
 });
