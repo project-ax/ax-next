@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { attributeFacts } from './attribution.js';
 import { extractFacts, type ExtractedFact, type LlmCallFn } from './extract.js';
+import { dropNegatedFacts } from './negation.js';
 import { isAgentContextSelfReport } from './self-report.js';
 import { deriveSlot, type Slot } from './slots.js';
 import { rewriteSpeaker } from './subject.js';
@@ -87,6 +88,12 @@ export type ObserverResult =
    */
   | { kind: 'skipped'; reason: 'only-self-reports'; selfReports: number }
   /**
+   * Every fact was a positive reading of something the dialogue only ever
+   * negated ("I never lived in Denver" -> `lives_in | Denver`) — TASK-652,
+   * `negation.ts`. Counted and named apart, like the self-reports.
+   */
+  | { kind: 'skipped'; reason: 'only-negations'; negated: number }
+  /**
    * Every fact restated something the agent or the person had already saved
    * in this conversation (TASK-641, `twins.ts`). Ordinary: the fact IS in
    * memory, once, under the higher tier.
@@ -128,6 +135,12 @@ export type ObserverResult =
        * nothing is wrong with the extractor when this is non-zero.
        */
       selfReports: number;
+      /**
+       * Facts dropped because they read a negated statement as the positive
+       * fact (TASK-652, `negation.ts`). Not `unusable`: the fact parsed fine,
+       * it just said the opposite of the dialogue.
+       */
+      negated: number;
       /** Facts dropped because only a context turn supported them. */
       contextOnly: number;
       /**
@@ -314,7 +327,11 @@ async function extractAndRecord(
   }
 
   const attributed = how.attribute(extraction.facts);
-  const mapped = toStatements(attributed.facts, {
+  // TASK-652: a negated statement read as the positive fact is dropped before
+  // anything is mapped. Checked against the whole dialogue the extractor saw,
+  // so one un-negated mention anywhere keeps the fact.
+  const polarity = dropNegatedFacts(attributed.facts, dialogue);
+  const mapped = toStatements(polarity.facts, {
     ownerUserId: input.ownerUserId,
     conversationId: input.statementConversationId,
   });
@@ -325,6 +342,9 @@ async function extractAndRecord(
     if (mapped.unusable > 0) return { kind: 'all-unusable', unusable: mapped.unusable };
     if (mapped.selfReports > 0) {
       return { kind: 'skipped', reason: 'only-self-reports', selfReports: mapped.selfReports };
+    }
+    if (polarity.negated > 0) {
+      return { kind: 'skipped', reason: 'only-negations', negated: polarity.negated };
     }
     if (attributed.contextOnly > 0) {
       return { kind: 'skipped', reason: 'only-context', contextOnly: attributed.contextOnly };
@@ -357,6 +377,7 @@ async function extractAndRecord(
     recorded: result.records.length,
     unusable: mapped.unusable,
     selfReports: mapped.selfReports,
+    negated: polarity.negated,
     contextOnly: attributed.contextOnly,
     twins,
     twinCheck,
