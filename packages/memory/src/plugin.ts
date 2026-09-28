@@ -1070,7 +1070,8 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           ? undefined
           : createIncrementalScheduler({
               ...incrementalCfg,
-              runPass: (ctx, trigger) => runConversationPass(bus, ctx, trigger, observeCfg),
+              runPass: (ctx, trigger, chatEndPayload) =>
+                runConversationPass(bus, ctx, trigger, observeCfg, chatEndPayload),
               ...(config.onObserverDetached !== undefined
                 ? { onDetached: config.onObserverDetached }
                 : {}),
@@ -1110,7 +1111,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           conversationId !== '' &&
           canExtractIncrementally(bus)
         ) {
-          scheduler.onChatEnd(ctx as AgentContext & { conversationId: string });
+          scheduler.onChatEnd(ctx as AgentContext & { conversationId: string }, payload);
           return undefined;
         }
         const work = observeChatEnd(bus, ctx, payload, observeCfg).catch(() => {
@@ -1297,30 +1298,47 @@ async function observeChatEnd(
   payload: { outcome?: unknown } | undefined,
   cfg: ObserveConfig,
 ): Promise<void> {
-  // A terminated outcome (a `chat:start` veto, a runner crash, a timeout)
-  // carries no transcript, and a malformed payload carries nothing we can
-  // read. Both skip silently: neither is a failure of the memory path.
-  const outcome = payload?.outcome;
-  if (outcome === null || typeof outcome !== 'object') return;
-  const { kind, messages } = outcome as { kind?: unknown; messages?: unknown };
-  if (kind !== 'complete' || !Array.isArray(messages) || messages.length === 0) return;
+  const messages = chatEndMessages(payload);
+  if (messages === undefined) return;
+  await observe(bus, ctx, cfg, undefined, (deps) => observeMessages(ctx, cfg, messages, deps));
+}
 
-  await observe(bus, ctx, cfg, undefined, ({ llmCall, record, ownerUserId }) =>
-    runObserver({
-      messages: messages as UntrustedMessage[],
-      llmCall,
-      record,
-      ownerUserId,
-      // The batch identity keeps the real conversation; the rows are
-      // attributed per `conversationOf` (a routine run is not a
-      // conversation the person had — TASK-616).
-      conversationId: ctx.conversationId,
-      statementConversationId: conversationOf(ctx),
-      model: cfg.model,
-      now: new Date(),
-      timeoutMs: cfg.observerTimeoutMs,
-    }),
-  );
+/**
+ * `chat:end`'s own messages, or `undefined` when there are none to read.
+ *
+ * A terminated outcome (a `chat:start` veto, a runner crash, a timeout)
+ * carries no transcript, and a malformed payload carries nothing we can
+ * read. Both skip silently: neither is a failure of the memory path.
+ */
+function chatEndMessages(payload: { outcome?: unknown } | undefined): UntrustedMessage[] | undefined {
+  const outcome = payload?.outcome;
+  if (outcome === null || typeof outcome !== 'object') return undefined;
+  const { kind, messages } = outcome as { kind?: unknown; messages?: unknown };
+  if (kind !== 'complete' || !Array.isArray(messages) || messages.length === 0) return undefined;
+  return messages as UntrustedMessage[];
+}
+
+/** One extraction over a list of `chat:end` messages — the legacy shape. */
+function observeMessages(
+  ctx: AgentContext,
+  cfg: ObserveConfig,
+  messages: UntrustedMessage[],
+  { llmCall, record, ownerUserId }: ObserveDeps,
+): Promise<ObserverResult> {
+  return runObserver({
+    messages,
+    llmCall,
+    record,
+    ownerUserId,
+    // The batch identity keeps the real conversation; the rows are
+    // attributed per `conversationOf` (a routine run is not a
+    // conversation the person had — TASK-616).
+    conversationId: ctx.conversationId,
+    statementConversationId: conversationOf(ctx),
+    model: cfg.model,
+    now: new Date(),
+    timeoutMs: cfg.observerTimeoutMs,
+  });
 }
 
 /** How many dialogue turns before a pass's first new turn it may see. */
@@ -1351,6 +1369,7 @@ async function runConversationPass(
   ctx: AgentContext & { conversationId: string },
   trigger: PassTrigger,
   cfg: ObserveConfig,
+  chatEndPayload: { outcome?: unknown } | undefined,
 ): Promise<void> {
   const conversationId = ctx.conversationId;
   await observe(bus, ctx, cfg, trigger, async ({ llmCall, record, ownerUserId, userId }) => {
@@ -1362,12 +1381,32 @@ async function runConversationPass(
     }
 
     const cursor = await readCursor(bus, ctx, conversationId);
-    const read = await bus.call<{ conversationId: string; userId: string }, { turns?: unknown } | null>(
-      CONVERSATIONS_GET_HOOK,
-      ctx,
-      { conversationId, userId },
-    );
-    const rawTurns = Array.isArray(read?.turns) ? (read.turns as unknown[]) : [];
+    let rawTurns: unknown[];
+    try {
+      const read = await bus.call<{ conversationId: string; userId: string }, { turns?: unknown } | null>(
+        CONVERSATIONS_GET_HOOK,
+        ctx,
+        { conversationId, userId },
+      );
+      rawTurns = Array.isArray(read?.turns) ? (read.turns as unknown[]) : [];
+    } catch (err) {
+      if (!(trigger === 'chat-end' && err instanceof PluginError && err.code === 'not-found')) throw err;
+      rawTurns = [];
+    }
+
+    // A conversation with NO canonical transcript — the store has never
+    // heard of it, or it has no turns — at `chat:end`, with nothing ever
+    // covered: fall back to `chat:end`'s own messages, exactly as before.
+    // Safe from double-recording by construction: every pass reads the same
+    // transcript, so if it is empty no pass has recorded anything for this
+    // conversation. Without this, a session whose turns were never
+    // persisted (a host with the store loaded but a producer that does not
+    // write to it) would silently stop being remembered at all.
+    if (trigger === 'chat-end' && cursor === 0 && rawTurns.length === 0) {
+      const messages = chatEndMessages(chatEndPayload);
+      if (messages === undefined) return { kind: 'skipped', reason: 'no-new-turns' };
+      return observeMessages(ctx, cfg, messages, { llmCall, record, ownerUserId, userId });
+    }
     const dialogue = filterTranscriptTurns(rawTurns);
 
     let fresh = dialogue.filter((turn) => turn.turnIndex >= cursor);

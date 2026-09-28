@@ -123,8 +123,11 @@ interface ConversationState {
 export interface IncrementalScheduler {
   /** A `chat:turn-end` arrived. Never throws, never awaits a pass. */
   onTurnEnd(ctx: AgentContext, payload: { role?: unknown; reqId?: unknown } | undefined): void;
-  /** `chat:end` for a conversation: cancel its timer, queue the final pass. */
-  onChatEnd(ctx: AgentContext & { conversationId: string }): void;
+  /**
+   * `chat:end` for a conversation: cancel its timer, queue the final pass.
+   * The payload rides along for the pass's no-transcript fallback.
+   */
+  onChatEnd(ctx: AgentContext & { conversationId: string }, payload: { outcome?: unknown } | undefined): void;
   shutdown(): void;
 }
 
@@ -132,7 +135,11 @@ export function createIncrementalScheduler(opts: {
   idleMs: number;
   everyUserTurns: number;
   /** One pass. Must never reject — the plugin's pass catches everything. */
-  runPass: (ctx: AgentContext & { conversationId: string }, trigger: PassTrigger) => Promise<void>;
+  runPass: (
+    ctx: AgentContext & { conversationId: string },
+    trigger: PassTrigger,
+    chatEndPayload: { outcome?: unknown } | undefined,
+  ) => Promise<void>;
   /** Every queued pass, for the test seam. */
   onDetached?: (work: Promise<void>) => void;
 }): IncrementalScheduler {
@@ -140,11 +147,15 @@ export function createIncrementalScheduler(opts: {
   /** The tail of each conversation's pass queue. */
   const tails = new Map<string, Promise<void>>();
 
-  const enqueue = (ctx: AgentContext & { conversationId: string }, trigger: PassTrigger): void => {
+  const enqueue = (
+    ctx: AgentContext & { conversationId: string },
+    trigger: PassTrigger,
+    chatEndPayload?: { outcome?: unknown },
+  ): void => {
     const id = ctx.conversationId;
     const previous = tails.get(id) ?? Promise.resolve();
     const work = previous
-      .then(() => opts.runPass(ctx, trigger))
+      .then(() => opts.runPass(ctx, trigger, chatEndPayload))
       // Unreachable by contract; present so the queue can never wedge on a
       // rejection and a detached promise can never be unhandled.
       .catch(() => undefined)
@@ -200,11 +211,11 @@ export function createIncrementalScheduler(opts: {
       armed.timer.unref?.();
     },
 
-    onChatEnd(ctx) {
+    onChatEnd(ctx, payload) {
       const state = states.get(ctx.conversationId);
       if (state !== undefined) clearTimer(state);
       states.delete(ctx.conversationId);
-      enqueue(ctx, 'chat-end');
+      enqueue(ctx, 'chat-end', payload);
     },
 
     shutdown() {

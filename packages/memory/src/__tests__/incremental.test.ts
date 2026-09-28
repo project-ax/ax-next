@@ -31,6 +31,7 @@ afterEach(async () => {
 });
 
 const CONV = 'conv-1';
+const UNKNOWN_CONV = 'conv-the-store-never-saw';
 const IDLE_MS = 1_000;
 
 interface FakeTurn {
@@ -108,6 +109,14 @@ async function setup(
       if (transcriptReadFailures > 0) {
         transcriptReadFailures -= 1;
         throw new Error('transcript store unavailable');
+      }
+      if (input.conversationId === UNKNOWN_CONV) {
+        throw new PluginError({
+          code: 'not-found',
+          plugin: 'fake-conversations',
+          hookName: 'conversations:get',
+          message: 'conversation not found',
+        });
       }
       return { conversation: { title: null }, turns: [...(transcripts.get(input.conversationId) ?? [])] };
     },
@@ -365,6 +374,47 @@ describe('chat:end extracts only what remains', () => {
     await env.chatEnd();
     expect(env.dialogues()[1]).toContain('user: Also I adopted a beagle.');
     expect(env.rows().map((r) => r.value)).toContain('Also I adopted a beagle.');
+  });
+});
+
+describe('chat:end on a conversation with no canonical transcript', () => {
+  const MESSAGES = [
+    { role: 'user', content: 'I moved to Boston.' },
+    { role: 'assistant', content: 'Welcome to Boston!' },
+  ];
+
+  it('falls back to its own messages when the store has never heard of the conversation', async () => {
+    const env = await setup();
+    await env.h.bus.fire('chat:end', env.ctx({ conversationId: UNKNOWN_CONV }), {
+      outcome: { kind: 'complete', messages: MESSAGES },
+    });
+    await env.h.settleObserver();
+    expect(env.h.llmCalls).toHaveLength(1);
+    expect(env.rows().map((r) => [r.value, r.source_turn_id, r.conversation_id])).toEqual([
+      ['I moved to Boston.', null, UNKNOWN_CONV],
+      ['Welcome to Boston!', null, UNKNOWN_CONV],
+    ]);
+    expect(eventsNamed(env.h.logs, OBSERVER_FAILED_EVENT)).toHaveLength(0);
+  });
+
+  it('falls back to its own messages when the transcript is empty', async () => {
+    const env = await setup();
+    await env.h.bus.fire('chat:end', env.ctx({ conversationId: 'conv-empty' }), {
+      outcome: { kind: 'complete', messages: MESSAGES },
+    });
+    await env.h.settleObserver();
+    expect(env.rows()).toHaveLength(2);
+  });
+
+  it('ignores its own messages when the transcript has the turns — they would be recorded twice', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const env = await setup();
+    await env.exchange('I moved to Boston.', 'Welcome to Boston!', 'req-1');
+    await idle(env);
+    await env.h.bus.fire('chat:end', env.ctx(), { outcome: { kind: 'complete', messages: MESSAGES } });
+    await env.h.settleObserver();
+    expect(env.h.llmCalls).toHaveLength(1);
+    expect(env.rows()).toHaveLength(2);
   });
 });
 
