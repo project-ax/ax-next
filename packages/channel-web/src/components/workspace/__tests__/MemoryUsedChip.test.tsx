@@ -248,4 +248,21 @@ describe('MemoryUsedChip — where focus goes when the dialog closes (TASK-644)'
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(fix));
   });
+
+  it('Cancel goes back to its opener even while an earlier fix\'s receipt is showing', async () => {
+    render(<MemoryUsedChip used={used([boston, tea])} agentId="a1" />);
+    open();
+    press(await screen.findByRole('button', { name: memoryFixLabel('Boston') }));
+    press(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Save' }));
+    const outcome = await screen.findByText(MEMORY_UPDATED);
+    await waitFor(() => expect(document.activeElement).toBe(outcome));
+
+    // Only the close that follows a save lands on the receipt.
+    const fixTea = screen.getByRole('button', { name: memoryFixLabel('tea') });
+    press(fixTea);
+    press(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(fixTea));
+    expect(screen.getByText(MEMORY_UPDATED)).toBeInTheDocument();
+  });
 });
