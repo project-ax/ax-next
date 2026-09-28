@@ -424,6 +424,8 @@ describe('@ax/preset-memory canary', () => {
     expect(bus.hasService('memory:facts:record')).toBe(true);
     expect(bus.hasService('memory:facts:recall')).toBe(true);
     expect(bus.hasService('memory:facts:supersede')).toBe(true);
+    expect(bus.hasService('memory:facts:reinstate')).toBe(true);
+    expect(bus.hasService('memory:unforget')).toBe(true);
     expect(bus.hasService('memory:facts:clear')).toBe(true);
     expect(bus.hasService('memory:rules:read')).toBe(true);
     expect(bus.hasService('memory:rules:write')).toBe(true);
@@ -683,6 +685,47 @@ describe('@ax/preset-memory canary', () => {
       { about: 'user', relation: 'likes', value: 'tea', provenance: 'human' },
     );
     expect(badBody.status).toBe(400);
+  });
+
+  it('Undo after Forget over the real routes brings an agent note back as the same agent row (TASK-630)', async () => {
+    const note = await bus.call<
+      { input: { about: string; relation: string; value: string } },
+      { ok?: boolean; error?: string }
+    >('tool:execute:memory_note', ctxFor(aliceAgentId, ALICE), {
+      input: { about: 'user', relation: 'plays', value: 'the oboe' },
+    });
+    expect(note.ok).toBe(true);
+    const scanRow = async () =>
+      (
+        await bus.call<
+          Record<string, unknown>,
+          { statements: Array<{ id: string; value: string; provenance?: string; until?: string }> }
+        >('memory:facts:scan', ctxFor(aliceAgentId, ALICE), {})
+      ).statements.find((s) => s.value === 'the oboe');
+    const before = await scanRow();
+    expect(before?.provenance).toBe('agent');
+
+    const forgotten = await apiJson(
+      'POST',
+      `/api/workspace/agents/${aliceAgentId}/memory/forget`,
+      ALICE,
+      { ids: [before!.id] },
+    );
+    expect(forgotten.status).toBe(200);
+    expect((await scanRow())?.until).toBeDefined();
+
+    const undone = await apiJson(
+      'POST',
+      `/api/workspace/agents/${aliceAgentId}/memory/unforget`,
+      ALICE,
+      { ids: [before!.id] },
+    );
+    expect(undone.status).toBe(200);
+    expect(undone.json).toEqual({ restored: [before!.id] });
+    const after = await scanRow();
+    expect(after?.id).toBe(before!.id);
+    expect(after?.provenance).toBe('agent');
+    expect(after?.until).toBeUndefined();
   });
 
   it('memory_note is in the tool catalog, stores agent provenance; memory_recall renders fresh rows', async () => {

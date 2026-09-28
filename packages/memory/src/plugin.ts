@@ -84,6 +84,8 @@ import {
   DEFAULT_RECALL_LIMIT,
   type MemoryForgetInput,
   type MemoryForgetOutput,
+  type MemoryUnforgetInput,
+  type MemoryUnforgetOutput,
   type MemoryCorrectInput,
   type MemoryCorrectOutput,
   type MemoryRecallInput,
@@ -102,11 +104,18 @@ const PLUGIN_VERSION = '0.0.0';
 export const FACTS_RECALL_HOOK = 'memory:facts:recall';
 export const FACTS_RECORD_HOOK = 'memory:facts:record';
 export const FACTS_SUPERSEDE_HOOK = 'memory:facts:supersede';
+export const FACTS_REINSTATE_HOOK = 'memory:facts:reinstate';
 
 /** The hooks this plugin registers — the caller-facing memory surface. */
 export const MEMORY_RECALL_HOOK = 'memory:recall';
 export const MEMORY_REMEMBER_HOOK = 'memory:remember';
 export const MEMORY_FORGET_HOOK = 'memory:forget';
+/**
+ * Undo for a Forget (TASK-630) — puts the forgotten row back with the
+ * provenance it had, rather than re-saving it as a person. See
+ * `MemoryUnforgetInput`.
+ */
+export const MEMORY_UNFORGET_HOOK = 'memory:unforget';
 /**
  * A person's Fix, carrying WHY the old value was wrong — see
  * `MemoryCorrectInput`. Provenance: human, by hook.
@@ -476,6 +485,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         MEMORY_REMEMBER_HOOK,
         MEMORY_CORRECT_HOOK,
         MEMORY_FORGET_HOOK,
+        MEMORY_UNFORGET_HOOK,
         MEMORY_STATUS_HOOK,
         SYSTEM_PROMPT_AUGMENT_HOOK,
         MEMORY_RECALL_TOOL_HOOK,
@@ -484,7 +494,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         ...(exportsCfg?.volume !== undefined ? ['sandbox:memory-mounts'] : []),
         ...(config.rules === true ? [RULES_READ_HOOK, RULES_WRITE_HOOK] : []),
       ],
-      // Hard dependencies, all five — plus the export projection's four when
+      // Hard dependencies, all six — plus the export projection's four when
       // `exports` is configured (TASK-494): this plugin has nothing to fall
       // back on. A memory surface with no store behind it cannot degrade into
       // anything honest — it can only answer "no memories" to a question it
@@ -494,6 +504,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         FACTS_RECALL_HOOK,
         FACTS_RECORD_HOOK,
         FACTS_SUPERSEDE_HOOK,
+        FACTS_REINSTATE_HOOK,
         'tool:register',
         AGENTS_RESOLVE_HOOK,
         ...(exportsCfg !== undefined
@@ -1154,6 +1165,60 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
 
           onFactsChanged(ctx);
           return {};
+        },
+      );
+
+      // ---------------------------------------------------------------
+      // memory:unforget — Undo for a Forget. Provenance: UNCHANGED.
+      // ---------------------------------------------------------------
+      //
+      // The row comes back as the same row: nothing is recorded, so an
+      // agent-saved memory stays agent-saved. Re-saving it as the person
+      // (what Undo did before TASK-630) raised its provenance to `human`, and
+      // a human row outranks newer non-human values — so one Undo silently
+      // changed which fact the profile picks.
+      bus.registerService<MemoryUnforgetInput, MemoryUnforgetOutput>(
+        MEMORY_UNFORGET_HOOK,
+        PLUGIN_NAME,
+        async (ctx: AgentContext, input: MemoryUnforgetInput) => {
+          rejectPrivilegeFields(input, MEMORY_UNFORGET_HOOK);
+          const access = await resolveMemoryAccess(bus, ctx);
+
+          if (!Array.isArray(input?.ids)) {
+            throw invalid('ids must be an array', MEMORY_UNFORGET_HOOK);
+          }
+          if (input.ids.length === 0) {
+            throw invalid('ids must not be empty', MEMORY_UNFORGET_HOOK);
+          }
+          input.ids.forEach((id, i) => {
+            requireNonEmptyString(id, `ids[${i}]`, MEMORY_UNFORGET_HOOK);
+          });
+
+          // The SAME scope `memory:forget` sends, for the same reasons: owner
+          // scope on a personal agent, tenant-only on a team agent. Whoever
+          // could forget a row can bring it back; a foreign id is refused by
+          // not taking effect.
+          const raw = await bus.call<unknown, { reinstated?: unknown } | null>(
+            FACTS_REINSTATE_HOOK,
+            ctx,
+            { ids: input.ids, ...memoryReadScope(access) },
+          );
+          const result = requireEngineResult(raw, MEMORY_UNFORGET_HOOK, FACTS_REINSTATE_HOOK);
+          if (
+            !Array.isArray(result.reinstated) ||
+            result.reinstated.some((id) => typeof id !== 'string')
+          ) {
+            throw new PluginError({
+              code: 'invalid-return',
+              plugin: PLUGIN_NAME,
+              hookName: MEMORY_UNFORGET_HOOK,
+              message: `${FACTS_REINSTATE_HOOK} returned no reinstated list`,
+            });
+          }
+          const restored = result.reinstated as string[];
+
+          if (restored.length > 0) onFactsChanged(ctx);
+          return { restored: [...restored] };
         },
       );
 

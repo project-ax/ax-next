@@ -504,6 +504,51 @@ export interface SupersedeOutput extends ResettleOutcome {
   closed: string[];
 }
 
+/**
+ * `memory:facts:reinstate` — the inverse of a retraction (TASK-630). Re-opens
+ * rows a `memory:facts:supersede` closed, exactly as they were stored: same
+ * id, same `about`/`relation`/`value`/`when`, same `provenance`, same owner.
+ * Nothing is re-recorded, so an agent-saved fact that is forgotten and then
+ * restored is still agent-saved — which is the whole point, because a
+ * person-saved copy would outrank newer extracted values it never outranked
+ * before.
+ *
+ * Only a RETRACTION can be reinstated: a row with `until` set and `closedBy`
+ * absent. A row the slot rule closed (`closedBy` set) was not forgotten by
+ * anybody, and an active row has nothing to undo; both are left exactly as
+ * they are and are absent from `reinstated`. So are foreign (tenant or owner)
+ * and missing ids — the same forgiving, no-throw refusal shape `supersede`
+ * has, and for the same reason.
+ */
+export interface ReinstateInput {
+  ids: string[];
+  /**
+   * Re-open only ids stamped with this owner; omitted = no owner check. The
+   * same SCOPE, enforced the same way (in the UPDATE's own predicate), as
+   * {@link SupersedeInput.ownerUserId}: whoever could retract a row can
+   * reinstate it, and nobody else.
+   */
+  ownerUserId?: string;
+}
+
+/**
+ * A reinstated row is dropped back into its `(about, slot)` chain and the
+ * chain is re-derived in the same transaction, so the store ends in the state
+ * it would be in had the row never been retracted: a neighbour the
+ * retraction had re-opened is closed by it again, and a newer row that
+ * arrived meanwhile closes IT. `resettled` names every row whose closure
+ * moved — including, possibly, the reinstated row itself (re-opened and then
+ * bounded by a later row).
+ *
+ * The `neverTrue` label does not survive a reinstate: "it was never right" is
+ * a claim about a retraction, and the row is no longer retracted. Leaving it
+ * would mislabel the row the next time the slot rule closes it.
+ */
+export interface ReinstateOutput extends ResettleOutcome {
+  /** Ids this call re-opened — a foreign, missing, active or rule-closed id is silently absent. */
+  reinstated: string[];
+}
+
 export type ClearInput = Record<string, never>;
 
 /**
@@ -4807,6 +4852,298 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         const theirsRow = await historyRow(theirs.id, team);
         expect(theirsRow!.until).toBeUndefined();
         expect('neverTrue' in theirsRow!).toBe(false);
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // memory:facts:reinstate — undoing a retraction (TASK-630)
+    //
+    // The row comes back as the SAME row: same id, same provenance, same
+    // fields. Every "left alone" case asserts the row did not move, not merely
+    // that `reinstated` is empty — a backend that re-opened a rule-closed row
+    // and forgot to report it would otherwise pass.
+    // -----------------------------------------------------------------------
+    describe('memory:facts:reinstate', () => {
+      async function reinstate(
+        ids: string[],
+        ctx = makeCtx(),
+        ownerUserId?: string,
+      ): Promise<ReinstateOutput> {
+        return bus.call<ReinstateInput, ReinstateOutput>('memory:facts:reinstate', ctx, {
+          ids,
+          ...(ownerUserId !== undefined ? { ownerUserId } : {}),
+        });
+      }
+
+      async function historyRow(id: string, ctx = makeCtx()): Promise<FactRecord | undefined> {
+        const out = await recall({ about: 'user', limit: 50, activeOnly: false }, ctx);
+        return out.statements.find((s) => s.id === id);
+      }
+
+      it('re-opens a retracted row as the same row, with its original provenance', async () => {
+        const rec = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Khalid',
+          when: JAN,
+          provenance: 'agent',
+          ownerUserId: 'owner-alice',
+        });
+        const before = await historyRow(rec.id);
+        expect((await supersede([rec.id])).closed).toEqual([rec.id]);
+
+        const out = await reinstate([rec.id]);
+        expect(out.reinstated).toEqual([rec.id]);
+        expect(out.resettled).toEqual([]);
+
+        const after = await historyRow(rec.id);
+        expect(after).toEqual(before);
+        expect(after!.provenance).toBe('agent');
+        expect('until' in after!).toBe(false);
+
+        const active = await recall({ about: 'user', limit: 10 });
+        expect(active.statements.map((s) => s.id)).toEqual([rec.id]);
+
+        // Still owned by the same person: an owner-scoped read finds it.
+        const owned = await recall({ about: 'user', limit: 10, ownerUserId: 'owner-alice' });
+        expect(owned.statements.map((s) => s.id)).toEqual([rec.id]);
+      });
+
+      it('clears neverTrue — the row is no longer a retraction', async () => {
+        const rec = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Khalid',
+          when: JAN,
+        });
+        await supersedeNeverTrue([rec.id]);
+        expect((await historyRow(rec.id))!.neverTrue).toBe(true);
+
+        expect((await reinstate([rec.id])).reinstated).toEqual([rec.id]);
+        const row = await historyRow(rec.id);
+        expect('neverTrue' in row!).toBe(false);
+        expect('until' in row!).toBe(false);
+      });
+
+      it('a never-true label does not come back when the slot rule later closes the row', async () => {
+        const seattle = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JAN,
+          slot: 'lives_in',
+        });
+        await supersedeNeverTrue([seattle.id]);
+        await reinstate([seattle.id]);
+        const denver = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Denver',
+          when: JUN,
+          slot: 'lives_in',
+        });
+        expect(denver.closes).toEqual([seattle.id]);
+        const row = await historyRow(seattle.id);
+        expect(row!.closedBy).toBe(denver.id);
+        expect('neverTrue' in row!).toBe(false);
+      });
+
+      it('re-settles the chain: the neighbour the retraction re-opened is closed again', async () => {
+        const boston = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Boston',
+          when: JAN,
+          slot: 'lives_in',
+        });
+        const seattle = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JUN,
+          slot: 'lives_in',
+        });
+        const bostonBefore = await historyRow(boston.id);
+        const seattleBefore = await historyRow(seattle.id);
+        expect(bostonBefore!.closedBy).toBe(seattle.id);
+
+        const forgotten = await supersede([seattle.id]);
+        expect(forgotten.resettled).toEqual([boston.id]);
+        expect((await historyRow(boston.id))!.until).toBeUndefined();
+
+        const out = await reinstate([seattle.id]);
+        expect(out.reinstated).toEqual([seattle.id]);
+        expect(out.resettled).toEqual([boston.id]);
+
+        // Byte-for-byte the state before the forget.
+        expect(await historyRow(boston.id)).toEqual(bostonBefore);
+        expect(await historyRow(seattle.id)).toEqual(seattleBefore);
+        const active = await recall({ about: 'user', limit: 10 });
+        expect(active.statements.map((s) => s.value)).toEqual(['Seattle']);
+      });
+
+      it('a newer row that arrived meanwhile closes the reinstated one', async () => {
+        const boston = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Boston',
+          when: JAN,
+          slot: 'lives_in',
+        });
+        await supersede([boston.id]);
+        const seattle = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JUN,
+          slot: 'lives_in',
+        });
+
+        const out = await reinstate([boston.id]);
+        expect(out.reinstated).toEqual([boston.id]);
+        expect(out.resettled).toEqual([boston.id]);
+
+        const row = await historyRow(boston.id);
+        expect(row!.until).toBe(JUN);
+        expect(row!.closedBy).toBe(seattle.id);
+        const active = await recall({ about: 'user', limit: 10 });
+        expect(active.statements.map((s) => s.id)).toEqual([seattle.id]);
+      });
+
+      it('provenance immunity still holds: a reinstated agent row does not close a human one', async () => {
+        // ONE batch, so the arrival order the replay walks is fixed by
+        // `batch_seq` rather than by two `record` calls that may land in the
+        // same millisecond and fall back to comparing random ids.
+        const [human, agent] = (
+          await record({
+            statements: [
+              {
+                about: 'user',
+                relation: 'lives_in',
+                value: 'Boston',
+                when: JAN,
+                slot: 'lives_in',
+                provenance: 'human',
+              },
+              {
+                about: 'user',
+                relation: 'lives_in',
+                value: 'Seattle',
+                when: JUN,
+                slot: 'lives_in',
+                provenance: 'agent',
+              },
+            ],
+          })
+        ).records as [RecordedStatement, RecordedStatement];
+        expect(agent.closes).toEqual([]);
+        await supersede([agent.id]);
+
+        const out = await reinstate([agent.id]);
+        expect(out.reinstated).toEqual([agent.id]);
+        expect(out.resettled).toEqual([]);
+        const humanRow = await historyRow(human.id);
+        expect('until' in humanRow!).toBe(false);
+        const agentRow = await historyRow(agent.id);
+        expect(agentRow!.provenance).toBe('agent');
+        expect('until' in agentRow!).toBe(false);
+      });
+
+      it('leaves a rule-closed row exactly as it is', async () => {
+        const boston = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Boston',
+          when: JAN,
+          slot: 'lives_in',
+        });
+        await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JUN,
+          slot: 'lives_in',
+        });
+        const before = await historyRow(boston.id);
+        expect(before!.closedBy).toBeDefined();
+
+        const out = await reinstate([boston.id]);
+        expect(out).toEqual({ reinstated: [], resettled: [] });
+        expect(await historyRow(boston.id)).toEqual(before);
+      });
+
+      it('an active id and a missing id are no-ops', async () => {
+        const rec = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Khalid',
+          when: JAN,
+        });
+        const before = await historyRow(rec.id);
+        const out = await reinstate([rec.id, 'no-such-id']);
+        expect(out).toEqual({ reinstated: [], resettled: [] });
+        expect(await historyRow(rec.id)).toEqual(before);
+      });
+
+      it('is idempotent, and a duplicated id is reported once', async () => {
+        const rec = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Khalid',
+          when: JAN,
+        });
+        await supersede([rec.id]);
+        expect((await reinstate([rec.id, rec.id])).reinstated).toEqual([rec.id]);
+        expect(await reinstate([rec.id])).toEqual({ reinstated: [], resettled: [] });
+      });
+
+      it('refuses a foreign-tenant id (scoped by ctx.agentId)', async () => {
+        const ctxA = makeCtx('agent-a', 'user-a');
+        const ctxB = makeCtx('agent-b', 'user-b');
+        const rec = await recordOne(
+          { about: 'user', relation: 'likes_artist', value: 'Khalid', when: JAN },
+          ctxA,
+        );
+        await supersede([rec.id], ctxA);
+
+        expect((await reinstate([rec.id], ctxB)).reinstated).toEqual([]);
+        expect((await historyRow(rec.id, ctxA))!.until).toBeDefined();
+      });
+
+      it('owner scope: re-opens only the named owner\'s rows', async () => {
+        const team = makeCtx('agent-team', 'u');
+        const mine = await recordOne(
+          { about: 'user', relation: 'likes_artist', value: 'Khalid', when: JAN, ownerUserId: 'owner-alice' },
+          team,
+        );
+        const theirs = await recordOne(
+          { about: 'user', relation: 'likes_artist', value: 'Sade', when: JUN, ownerUserId: 'owner-bob' },
+          team,
+        );
+        await supersede([mine.id, theirs.id], team);
+
+        const out = await reinstate([mine.id, theirs.id], team, 'owner-alice');
+        expect(out.reinstated).toEqual([mine.id]);
+        expect('until' in (await historyRow(mine.id, team))!).toBe(false);
+        expect((await historyRow(theirs.id, team))!.until).toBeDefined();
+      });
+
+      it.each([
+        ['ids not an array', (id: string) => ({ ids: id })],
+        ['ownerUserId empty', (id: string) => ({ ids: [id], ownerUserId: '' })],
+        ['ownerUserId not a string', (id: string) => ({ ids: [id], ownerUserId: 7 })],
+      ])('rejects %s with invalid-payload, re-opening nothing', async (_label, payloadFor) => {
+        const rec = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Khalid',
+          when: JAN,
+        });
+        await supersede([rec.id]);
+        await expectCode('invalid-payload', () =>
+          bus.call('memory:facts:reinstate', makeCtx(), payloadFor(rec.id)),
+        );
+        expect((await historyRow(rec.id))!.until).toBeDefined();
       });
     });
   });

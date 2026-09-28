@@ -960,6 +960,27 @@ export const workspaceApi = {
     ),
 
   /**
+   * The Forget receipt's Undo (TASK-630). Brings the forgotten memories back
+   * as they were — same row, same "saved by" — instead of re-saving them as
+   * the person. `restored` names the ids that are in effect again.
+   */
+  unforgetMemory: (agentId: string, ids: string[]) =>
+    req<unknown>(`/agents/${encodeURIComponent(agentId)}/memory/unforget`, {
+      method: 'POST',
+      body: { ids },
+    }).then((body) =>
+      checkedRead<{ restored: string[] }>(
+        `/agents/${encodeURIComponent(agentId)}/memory/unforget`,
+        body,
+        (v): v is { restored: string[] } =>
+          isRecord(v) &&
+          !Array.isArray(v) &&
+          Array.isArray(v.restored) &&
+          v.restored.every((id) => typeof id === 'string'),
+      ),
+    ),
+
+  /**
    * Auto-routing: proposes an agent for a free-text request. Never dispatches.
    *
    * The pick is made from STRUCTURE — how many agents there are, which one was

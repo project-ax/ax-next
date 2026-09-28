@@ -100,6 +100,7 @@ describe('@ax/cli host-side memory-facts wiring', () => {
       expect(bus.hasService('memory:facts:record')).toBe(true);
       expect(bus.hasService('memory:facts:recall')).toBe(true);
       expect(bus.hasService('memory:facts:supersede')).toBe(true);
+      expect(bus.hasService('memory:facts:reinstate')).toBe(true);
       expect(bus.hasService('memory:facts:clear')).toBe(true);
       expect(bus.hasService('memory:facts:reindex')).toBe(true);
     },

@@ -365,7 +365,13 @@ function memoryMockPlugin(state: {
         'memory:rules:write',
         ...(state.facts === undefined
           ? []
-          : ['memory:recall', 'memory:remember', 'memory:forget', 'memory:correct']),
+          : [
+              'memory:recall',
+              'memory:remember',
+              'memory:forget',
+              'memory:unforget',
+              'memory:correct',
+            ]),
       ],
       calls: [],
       subscribes: [],
@@ -399,6 +405,15 @@ function memoryMockPlugin(state: {
             input,
           });
           return { forgotten: true };
+        });
+        bus.registerService('memory:unforget', 'mock-memory', async (ctx, input) => {
+          facts.calls.push({
+            hook: 'unforget',
+            agentId: ctx.agentId,
+            userId: ctx.userId ?? '',
+            input,
+          });
+          return { restored: ['mem-1'] };
         });
         bus.registerService('memory:correct', 'mock-memory', async (ctx, input) => {
           facts.calls.push({
@@ -1219,6 +1234,27 @@ describe('@ax/channel-web server plugin (integration)', () => {
         agentId: 'agt_test',
         userId: 'userA',
         input: correctBody,
+      });
+
+      // TASK-630: the Forget receipt's Undo, mounted and CSRF-guarded like forget.
+      const unforgetNoCsrf = await fetch(`${base}/unforget`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ids: ['mem-1'] }),
+      });
+      expect(unforgetNoCsrf.status).toBe(403);
+      const unforget = await fetch(`${base}/unforget`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+        body: JSON.stringify({ ids: ['mem-1'] }),
+      });
+      expect(unforget.status).toBe(200);
+      expect(await unforget.json()).toEqual({ restored: ['mem-1'] });
+      expect(memory.facts.calls[4]).toEqual({
+        hook: 'unforget',
+        agentId: 'agt_test',
+        userId: 'userA',
+        input: { ids: ['mem-1'] },
       });
     });
 

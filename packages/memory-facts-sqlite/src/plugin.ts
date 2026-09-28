@@ -13,6 +13,8 @@ import type {
   DegradedFlag,
   SupersedeInput,
   SupersedeOutput,
+  ReinstateInput,
+  ReinstateOutput,
   ClearInput,
   FactKind,
   Provenance,
@@ -36,6 +38,7 @@ import {
   insertWithSlotClosure,
   resettleSlotGroups,
   supersedeIds,
+  reinstateIds,
   type SlotGroup,
 } from './closure.js';
 import { PENDING_SLOT, pendingStatus, semanticStatus, rankingStatus } from './pending.js';
@@ -1169,6 +1172,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
         'memory:facts:recall',
         'memory:facts:scan',
         'memory:facts:supersede',
+        'memory:facts:reinstate',
         'memory:facts:clear',
         'memory:facts:reindex',
       ],
@@ -1554,6 +1558,36 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
               input.ownerUserId,
               input.neverTrue === true,
             ),
+          );
+        },
+      );
+
+      bus.registerService<ReinstateInput, ReinstateOutput>(
+        'memory:facts:reinstate',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          // Validation before the store region, and the same two rules as
+          // `supersede`: an `ownerUserId` of `''` must not read as "no owner
+          // check", or an owner-scoped undo would fail OPEN across the tenant.
+          if (!Array.isArray(input.ids)) {
+            throw new PluginError({
+              code: 'invalid-payload',
+              plugin: PLUGIN_NAME,
+              message: 'ids must be an array',
+            });
+          }
+          if (input.ownerUserId !== undefined && !isNonEmptyString(input.ownerUserId)) {
+            throw new PluginError({
+              code: 'invalid-payload',
+              plugin: PLUGIN_NAME,
+              message: 'ownerUserId must be a non-empty string when set',
+            });
+          }
+          const agentKey = agentScopeKey(ctx);
+          // `reinstated: []` is a legitimate answer, so a store failure must
+          // be an error rather than an empty list — same as `supersede`.
+          return inStore('memory:facts:reinstate', () =>
+            reinstateIds(requireDriver(), agentKey, input.ids, input.ownerUserId),
           );
         },
       );

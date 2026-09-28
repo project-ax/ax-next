@@ -21,6 +21,8 @@ import type {
   MemoryCorrectOutput,
   MemoryForgetInput,
   MemoryForgetOutput,
+  MemoryUnforgetInput,
+  MemoryUnforgetOutput,
   MemoryRecallInput,
   MemoryRecallOutput,
   MemoryRememberInput,
@@ -61,6 +63,7 @@ export interface MemoryHarness {
   recall: (input: MemoryRecallInput, ctx?: AgentContext) => Promise<MemoryRecallOutput>;
   remember: (input: MemoryRememberInput, ctx?: AgentContext) => Promise<MemoryRememberOutput>;
   forget: (input: MemoryForgetInput, ctx?: AgentContext) => Promise<MemoryForgetOutput>;
+  unforget: (input: MemoryUnforgetInput, ctx?: AgentContext) => Promise<MemoryUnforgetOutput>;
   correct: (input: MemoryCorrectInput, ctx?: AgentContext) => Promise<MemoryCorrectOutput>;
   memoryPlugin: Plugin;
   /**
@@ -197,6 +200,8 @@ export async function makeMemoryHarness(
       bus.call<MemoryRememberInput, MemoryRememberOutput>('memory:remember', c ?? ctx(), input),
     forget: (input, c) =>
       bus.call<MemoryForgetInput, MemoryForgetOutput>('memory:forget', c ?? ctx(), input),
+    unforget: (input, c) =>
+      bus.call<MemoryUnforgetInput, MemoryUnforgetOutput>('memory:unforget', c ?? ctx(), input),
     correct: (input, c) =>
       bus.call<MemoryCorrectInput, MemoryCorrectOutput>('memory:correct', c ?? ctx(), input),
     teardown: async () => {

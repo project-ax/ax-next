@@ -51,6 +51,7 @@ vi.mock('@/lib/workspace-api', async () => {
       rememberMemory: vi.fn(),
       correctMemory: vi.fn(),
       forgetMemory: vi.fn(),
+      unforgetMemory: vi.fn(),
     },
   };
 });
@@ -58,6 +59,7 @@ vi.mock('@/lib/workspace-api', async () => {
 const recallMock = vi.mocked(workspaceApi.recallMemory);
 const rememberMock = vi.mocked(workspaceApi.rememberMemory);
 const forgetMock = vi.mocked(workspaceApi.forgetMemory);
+const unforgetMock = vi.mocked(workspaceApi.unforgetMemory);
 
 const boston: FactMemoryStatement = {
   id: 'm1',
@@ -80,6 +82,7 @@ beforeEach(() => {
   rememberMock.mockResolvedValue({ id: 'mem-new' });
   vi.mocked(workspaceApi.correctMemory).mockResolvedValue({ id: 'mem-new' });
   forgetMock.mockResolvedValue({ forgotten: true });
+  unforgetMock.mockResolvedValue({ restored: ['m1'] });
 });
 
 afterEach(() => {
@@ -195,24 +198,20 @@ describe('memory-copy — the Forgotten receipt', () => {
     expect(status.closest('[role="alert"]')).toBeNull();
   });
 
-  it('Undo puts the same memory back and says so', async () => {
+  it('Undo un-forgets the SAME row — it never re-saves it as the person', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read()} />);
     await forgetBoston();
     const recallsBefore = recallMock.mock.calls.length;
     fireEvent.click(await screen.findByRole('button', { name: memoryUndoLabel('Boston') }));
-    await waitFor(() =>
-      expect(rememberMock).toHaveBeenCalledWith('a1', {
-        about: 'user:alice',
-        relation: 'lives_in',
-        value: 'Boston',
-      }),
-    );
+    await waitFor(() => expect(unforgetMock).toHaveBeenCalledWith('a1', ['m1']));
+    // TASK-630: a re-save would make an agent-saved memory person-saved.
+    expect(rememberMock).not.toHaveBeenCalled();
     expect(await screen.findByText(MEMORY_RESTORED)).toBeInTheDocument();
     await waitFor(() => expect(recallMock.mock.calls.length).toBeGreaterThan(recallsBefore));
   });
 
   it('a failed Undo says the memory is still forgotten and offers to try again', async () => {
-    rememberMock.mockRejectedValueOnce(new Error('down'));
+    unforgetMock.mockRejectedValueOnce(new Error('down'));
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read()} />);
     await forgetBoston();
     fireEvent.click(await screen.findByRole('button', { name: memoryUndoLabel('Boston') }));
@@ -222,7 +221,8 @@ describe('memory-copy — the Forgotten receipt', () => {
 
     fireEvent.click(screen.getByRole('button', { name: MEMORY_UNDO_RETRY }));
     expect(await screen.findByText(MEMORY_RESTORED)).toBeInTheDocument();
-    expect(rememberMock).toHaveBeenCalledTimes(2);
+    expect(unforgetMock).toHaveBeenCalledTimes(2);
+    expect(rememberMock).not.toHaveBeenCalled();
   });
 });
 
