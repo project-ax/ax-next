@@ -344,6 +344,36 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
       expect(profile).not.toContain('Portland');
     });
 
+    // TASK-633: a value the person said was NEVER right (retracted, closed
+    // with no successor) is a replaced one — said again in chat, it must not
+    // take the injected profile back from a fresher value.
+    it('keeps the fresher value when the newer extracted row re-mentions a retracted value', async () => {
+      const h = await makeHarness();
+      const ctx = h.ctx();
+      const lives = (value: string, when: string, provenance: 'agent' | 'extracted') => ({
+        about: `user:${ALICE}`,
+        relation: 'lives_in',
+        value,
+        when,
+        slot: 'lives_in',
+        provenance,
+        ownerUserId: ALICE,
+      });
+      const { records } = await engineRecord(h.bus, ctx, [lives('Portland', JAN, 'extracted')]);
+      await h.bus.call('memory:facts:supersede', ctx, {
+        ids: [records[0]!.id],
+        neverTrue: true,
+        ownerUserId: ALICE,
+      });
+      await engineRecord(h.bus, ctx, [lives('Seattle', MAR, 'agent')]);
+      await engineRecord(h.bus, ctx, [lives('Portland', SEP, 'extracted')]);
+
+      const body = await augment(h, ctx);
+      const profile = body.slice(body.indexOf('### Profile'), body.indexOf('### Recent'));
+      expect(profile).toContain('- lives_in: Seattle');
+      expect(profile).not.toContain('Portland');
+    });
+
     // The regression the case above does NOT catch, because two rows fit under
     // any limit. The profile query's FETCH limit has to be wider than the
     // RENDER limit: a slot can hold three active rows (§3.4 rule 3 closes a

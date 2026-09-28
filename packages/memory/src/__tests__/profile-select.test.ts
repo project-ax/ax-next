@@ -146,3 +146,57 @@ describe('selectProfileRows — value comparison stays linear (CodeQL js/polynom
     expect(performance.now() - started).toBeLessThan(1000);
   });
 });
+
+// TASK-633 — a value the person said was NEVER right (`neverTrue`, closed with
+// no successor) is at least as replaced as one the chain replaced: saying it
+// again in chat is the stale value coming back, not news. A person's own
+// restatement (a `human` row) is still authoritative and wins its slot.
+describe('selectProfileRows — a retracted (never-right) value is a replaced one', () => {
+  const retracted = (value = 'Portland'): Row & { neverTrue: boolean } => ({
+    ...r('p1', value, '2026-01-01T00:00:00.000Z', 'extracted', { until: '2026-01-15T00:00:00.000Z' }),
+    neverTrue: true,
+  });
+
+  it('a retracted value re-mentioned later does not win selection', () => {
+    const tacoma = r('t', 'Tacoma', '2026-03-01T00:00:00.000Z', 'agent');
+    const again = r('p2', 'portland.', '2026-06-01T00:00:00.000Z', 'extracted');
+    expect(pick([tacoma, again], [retracted(), tacoma, again])).toEqual(['Tacoma']);
+    expect(pick([again, tacoma], [again, tacoma, retracted()])).toEqual(['Tacoma']);
+  });
+
+  it('a retracted row passed in `rows` (not `history`) counts too', () => {
+    const tacoma = r('t', 'Tacoma', '2026-03-01T00:00:00.000Z', 'agent');
+    const again = r('p2', 'Portland', '2026-06-01T00:00:00.000Z', 'agent');
+    expect(pick([retracted(), tacoma, again])).toEqual(['Tacoma']);
+  });
+
+  it("the person's own restatement of a retracted value wins its slot", () => {
+    const tacoma = r('t', 'Tacoma', '2026-03-01T00:00:00.000Z', 'agent');
+    const mine = r('h', 'Portland', '2026-06-01T00:00:00.000Z', 'human');
+    const later = r('e', 'Tacoma', '2026-07-01T00:00:00.000Z', 'extracted');
+    expect(pick([tacoma, mine, later], [retracted(), tacoma, mine, later])).toEqual(['Portland']);
+  });
+
+  it('a lone re-mention of a retracted value falls back to showing it, as for any re-mention', () => {
+    // Same fallback as a replaced value (TASK-602): with no fresh value to
+    // prefer, the slot shows the plain newest rather than nothing.
+    const again = r('p2', 'Portland', '2026-06-01T00:00:00.000Z', 'extracted');
+    expect(pick([again], [retracted(), again])).toEqual(['Portland']);
+  });
+
+  it('a reinstated row (neverTrue cleared, no successor) reads as forgotten, not replaced', () => {
+    const reinstatedThenForgotten = r('p1', 'Portland', '2026-01-01T00:00:00.000Z', 'extracted', {
+      until: '2026-01-15T00:00:00.000Z',
+    });
+    const tacoma = r('t', 'Tacoma', '2026-03-01T00:00:00.000Z', 'agent');
+    const again = r('p2', 'Portland', '2026-06-01T00:00:00.000Z', 'extracted');
+    expect(pick([tacoma, again], [reinstatedThenForgotten, tacoma, again])).toEqual(['Portland']);
+  });
+
+  it('an ACTIVE row carrying neverTrue is not treated as retracted (only a closed one is)', () => {
+    const odd = { ...r('p1', 'Portland', '2026-01-01T00:00:00.000Z', 'extracted'), neverTrue: true };
+    const tacoma = r('t', 'Tacoma', '2026-03-01T00:00:00.000Z', 'agent');
+    const again = r('p2', 'Portland', '2026-06-01T00:00:00.000Z', 'extracted');
+    expect(pick([tacoma, again], [odd, tacoma, again])).toEqual(['Portland']);
+  });
+});

@@ -345,3 +345,20 @@ describe('buildFactsExport — malformed rows', () => {
     ).toThrow(PluginError);
   });
 });
+
+describe('buildFactsExport — profile, TASK-633', () => {
+  const profileOf = (rows: ExportFact[]): string => {
+    const out = buildFactsExport(rows, PERSONAL);
+    return out.get([...out.keys()].find((k) => String(k) === `${ROOT}/profile.md`)!)!;
+  };
+
+  it('a retracted (never-right) value re-mentioned later does not win the profile', () => {
+    const profile = profileOf([
+      row({ id: 'p1', slot: 'lives_in', value: 'Portland', when: '2026-08-01T00:00:00.000Z', until: '2026-08-10T00:00:00.000Z', neverTrue: true }),
+      row({ id: 't', slot: 'lives_in', value: 'Tacoma', when: '2026-08-20T00:00:00.000Z', provenance: 'agent' }),
+      row({ id: 'p2', slot: 'lives_in', value: 'Portland', when: '2026-09-05T00:00:00.000Z' }),
+    ]);
+    expect(profile).toContain('- lives_in: Tacoma');
+    expect(profile).not.toContain('Portland');
+  });
+});

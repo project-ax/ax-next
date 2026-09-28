@@ -9,6 +9,8 @@ export interface ProfileRow {
   when: string;
   until?: string;
   closedBy?: string;
+  /** Closed by a person's "it was never right" — see {@link isRetracted}. */
+  neverTrue?: boolean;
 }
 
 /**
@@ -54,6 +56,19 @@ export interface SlotGroupRow {
   value: string;
   until?: string;
   closedBy?: string;
+  /** Closed by a person's "it was never right" — see {@link isRetracted}. */
+  neverTrue?: boolean;
+}
+
+/**
+ * A row a person said was NEVER right (TASK-624's `neverTrue`): closed, with
+ * no successor. For re-mention purposes it is REPLACED, not forgotten — the
+ * person rejected the value itself, so the same value said again in chat is
+ * the stale value coming back, not news (TASK-633). A Forget (closed, no
+ * successor, no bit) still is not, and a reinstate clears the bit.
+ */
+function isRetracted(row: SlotGroupRow): boolean {
+  return row.until !== undefined && row.neverTrue === true;
 }
 
 const TRAILING_PUNCTUATION = new Set(['.', '!', ',', ';', ':']);
@@ -86,7 +101,8 @@ function sameValue(value: string): string {
  * visible even under an old human row — the model reads the dated evidence
  * and newest wins, as before. A FORGOTTEN value (closed with no `closedBy`)
  * does not count as replaced: forgetting is not a correction to something
- * else. Slot-less rows are never touched.
+ * else. A RETRACTED one (closed as never right, TASK-633) does. Slot-less
+ * rows are never touched.
  *
  * `group` is every row, active and closed, of the subjects' slot chains,
  * looked up separately by the caller: the replaced row and the correction can
@@ -117,7 +133,7 @@ export function rementionedSlotRows<T extends SlotGroupRow>(
     if (row.until === undefined) {
       const rank = PROVENANCE_RANK.get(row.provenance ?? '') ?? 0;
       if (rank > (topActiveRank.get(key(row)) ?? 0)) topActiveRank.set(key(row), rank);
-    } else if (typeof row.closedBy === 'string') {
+    } else if (typeof row.closedBy === 'string' || isRetracted(row)) {
       const values = replaced.get(key(row)) ?? new Set<string>();
       values.add(sameValue(row.value));
       replaced.set(key(row), values);
@@ -151,7 +167,10 @@ export function rementionedSlotRows<T extends SlotGroupRow>(
  *    the same `(about, slot)` chain (a closed row with a `closedBy` successor)
  *    is the stale value coming back, not news, so it does not count as newer —
  *    the same test `rementionedSlotRows` applies on the recall path. A
- *    forgotten value (closed with no successor) is not a replaced one.
+ *    RETRACTED value (a person said it was never right) counts as replaced
+ *    too (TASK-633); a forgotten value (closed with no successor, no
+ *    never-right bit) is not a replaced one. A person restating a retracted
+ *    value is a `human` row and wins under rule 1.
  *
  * Ties on `when` go to the higher provenance, then the id, so the pick is
  * stable across input order.
@@ -175,12 +194,15 @@ export function selectProfileRows<T extends ProfileRow>(
   const replaced = new Map<string, Set<string>>();
   for (const row of known) {
     if (typeof row.slot !== 'string' || row.slot === '') continue;
-    if (row.until === undefined || typeof row.closedBy !== 'string') continue;
-    // Closed by a restatement of the SAME value is not a replacement of it:
-    // an agent note that says "Seattle" again must not turn itself into a
-    // re-mention of the extracted "Seattle" it closed.
-    const successor = byId.get(row.closedBy);
-    if (successor !== undefined && sameValue(successor.value) === sameValue(row.value)) continue;
+    if (typeof row.closedBy === 'string' && row.until !== undefined) {
+      // Closed by a restatement of the SAME value is not a replacement of it:
+      // an agent note that says "Seattle" again must not turn itself into a
+      // re-mention of the extracted "Seattle" it closed.
+      const successor = byId.get(row.closedBy);
+      if (successor !== undefined && sameValue(successor.value) === sameValue(row.value)) continue;
+    } else if (!isRetracted(row)) {
+      continue;
+    }
     const values = replaced.get(chainKey(row)) ?? new Set<string>();
     values.add(sameValue(row.value));
     replaced.set(chainKey(row), values);

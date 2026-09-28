@@ -248,7 +248,9 @@ interface EngineFactRecord {
   /**
    * Engine-side only, and only ever `true`: the row was closed by a person's
    * "it was never right". Consumed by the recall handler to derive
-   * `closure: 'retracted'`; never forwarded verbatim.
+   * `closure: 'retracted'`, and by `profile.ts`'s re-mention rule (a
+   * retracted value said again is not news, TASK-633); never forwarded
+   * verbatim.
    */
   neverTrue?: boolean;
   /**

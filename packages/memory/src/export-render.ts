@@ -98,18 +98,26 @@ function monthOf(row: ExportFact): string {
   return new Date(row.recordedAt).toISOString().slice(0, 7);
 }
 
-function buildProfile(rows: readonly ExportFact[], access: MemoryAccess): string {
+function buildProfile(
+  rows: readonly ExportFact[],
+  retracted: readonly ExportFact[],
+  access: MemoryAccess,
+): string {
   const active = rows.filter(
     (r) => r.until === undefined && r.slot !== undefined && SLOT_SET.has(r.slot),
   );
   let out = '# Profile\n\n';
   // Closed rows ride along as history so the pick can tell a re-mention of a
-  // replaced value from a genuinely newer one (TASK-602).
+  // replaced value from a genuinely newer one (TASK-602). Never-true rows are
+  // not exported, but they ride along here too: a value the person said was
+  // never right, said again in chat, is a re-mention (TASK-633). History only
+  // — a closed row is never a candidate, so none of them is rendered.
+  const closed = [...rows.filter((r) => r.until !== undefined), ...retracted];
   const renderGroup = (group: readonly ExportFact[]): string[] =>
     selectProfileRows(
       group,
       SLOTS.length,
-      rows.filter((r) => r.until !== undefined && group.some((g) => g.about === r.about)),
+      closed.filter((r) => group.some((g) => g.about === r.about)),
     ).map(
       (row) =>
         `- ${escapeStatementText(row.slot!, UNBOUNDED)}: ${escapeStatementText(row.value, UNBOUNDED)}${renderNotedAt(row.when)}`,
@@ -177,11 +185,14 @@ export function buildFactsExport(
   // file — profile, recent, journals, subject pages — may offer it for a
   // "what did I say in March" read (TASK-624). Dropped once, here, before
   // any file is built. A Forget (also `until` set, no `closedBy`) and a
-  // replaced row are unchanged: those were once true.
+  // replaced row are unchanged: those were once true. The profile still
+  // reads never-true rows as history (never renders them), so the same value said again
+  // in chat cannot win back its slot (TASK-633).
   const rows = scanned.filter((row) => row.neverTrue !== true);
+  const retracted = scanned.filter((row) => row.neverTrue === true);
 
   const out = new Map<FactsPath, string>();
-  out.set(factsPath({ kind: 'profile' }), buildProfile(rows, access));
+  out.set(factsPath({ kind: 'profile' }), buildProfile(rows, retracted, access));
   out.set(factsPath({ kind: 'recent' }), buildRecent(rows));
 
   const userJournals = new Map<string, ExportFact[]>();
