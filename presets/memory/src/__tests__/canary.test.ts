@@ -426,6 +426,8 @@ describe('@ax/preset-memory canary', () => {
     expect(bus.hasService('memory:facts:supersede')).toBe(true);
     expect(bus.hasService('memory:facts:reinstate')).toBe(true);
     expect(bus.hasService('memory:unforget')).toBe(true);
+    expect(bus.hasService('memory:facts:revert')).toBe(true);
+    expect(bus.hasService('memory:uncorrect')).toBe(true);
     expect(bus.hasService('memory:facts:clear')).toBe(true);
     expect(bus.hasService('memory:rules:read')).toBe(true);
     expect(bus.hasService('memory:rules:write')).toBe(true);
@@ -726,6 +728,65 @@ describe('@ax/preset-memory canary', () => {
     expect(after?.id).toBe(before!.id);
     expect(after?.provenance).toBe('agent');
     expect(after?.until).toBeUndefined();
+  });
+
+  it('Undo after Fix over the real routes puts the slot-less agent note back as it was (TASK-634)', async () => {
+    // Slot-less on purpose: forgetting the new row would NOT re-open the old
+    // one here (TASK-632), so only the revert path passes this.
+    const note = await bus.call<
+      { input: { about: string; relation: string; value: string } },
+      { ok?: boolean; error?: string }
+    >('tool:execute:memory_note', ctxFor(aliceAgentId, ALICE), {
+      input: { about: 'user', relation: 'collects', value: 'stamps' },
+    });
+    expect(note.ok).toBe(true);
+    const scan = async () =>
+      (
+        await bus.call<
+          Record<string, unknown>,
+          {
+            statements: Array<{
+              id: string;
+              value: string;
+              provenance?: string;
+              until?: string;
+              closedBy?: string;
+            }>;
+          }
+        >('memory:facts:scan', ctxFor(aliceAgentId, ALICE), {})
+      ).statements;
+    const before = (await scan()).find((s) => s.value === 'stamps');
+    expect(before?.provenance).toBe('agent');
+
+    const fixed = await apiJson('POST', `/api/workspace/agents/${aliceAgentId}/memory/correct`, ALICE, {
+      id: before!.id,
+      about: 'user',
+      relation: 'collects',
+      value: 'coins',
+      reason: 'changed',
+    });
+    expect(fixed.status).toBe(200);
+    const newId = (fixed.json as { id: string }).id;
+    expect((await scan()).find((s) => s.id === before!.id)?.closedBy).toBe(newId);
+
+    const undone = await apiJson('POST', `/api/workspace/agents/${aliceAgentId}/memory/uncorrect`, ALICE, {
+      id: newId,
+      restore: before!.id,
+    });
+    expect(undone.status).toBe(200);
+    expect(undone.json).toEqual({ undone: true });
+    const rows = await scan();
+    const after = rows.find((s) => s.id === before!.id);
+    expect(after?.provenance).toBe('agent');
+    expect(after?.until).toBeUndefined();
+    expect(after?.closedBy).toBeUndefined();
+    expect(rows.find((s) => s.id === newId)?.until).toBeDefined();
+
+    const again = await apiJson('POST', `/api/workspace/agents/${aliceAgentId}/memory/uncorrect`, ALICE, {
+      id: newId,
+      restore: before!.id,
+    });
+    expect(again.json).toEqual({ undone: false });
   });
 
   it('memory_note is in the tool catalog, stores agent provenance; memory_recall renders fresh rows', async () => {
