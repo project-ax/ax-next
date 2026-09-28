@@ -106,16 +106,17 @@ export function LearnedInChat({
   const [forgetTarget, setForgetTarget] = useState<FactMemoryStatement | null>(null);
   /** The row a receipt that sits beside it ("Updated.") belongs to. */
   const [receiptRowId, setReceiptRowId] = useState<string | null>(null);
-  const { markSeen, removeRow, pin, replaceRow, unseen } = memory;
+  const { markSeen, removeRow, pin, recordFix, undoFix, unseen } = memory;
   /*
     No re-read after an Undo: Forget's un-forgets the SAME statement
     (TASK-630), so the row on screen — still listed, still pinned — is already
-    right. Fix's re-opens the row the fix replaced (TASK-634), so the fixed
-    row is swapped back for it here, and the receipt follows it.
+    right. Fix's re-opens the row the fix replaced (TASK-634): `undoFix` swaps
+    the fixed row back for it (and tells the chip, TASK-643), and the receipt
+    follows it.
   */
   const receipt = useMemoryReceipt(agentId, () => {}, {
     onFixUndone: (fix) => {
-      replaceRow(fix.id, fix.row);
+      undoFix(fix);
       setReceiptRowId(fix.row.id);
     },
   });
@@ -277,9 +278,10 @@ export function LearnedInChat({
         agentId={agentId}
         visibility={visibility}
         onClose={() => setFixTarget(null)}
-        onSaved={(_reason, { id, value }) => {
+        onSaved={(reason, { id, value }) => {
           if (fixTarget !== null) {
-            replaceRow(fixTarget.id, { ...fixTarget, id, value });
+            // Through the shared ledger, so the chip under an answer sees it too.
+            recordFix({ row: fixTarget, id, value }, reason);
             setReceiptRowId(id);
             receipt.updated({ row: fixTarget, id, value });
           }

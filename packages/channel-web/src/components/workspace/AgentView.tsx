@@ -16,7 +16,7 @@
  * source of truth. While the reply streams we show a transient bubble; when the
  * turn ends we re-read the detail so the server's durable thread replaces it.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Archive, ArrowRight, ChevronLeft, Menu, PanelRight } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -24,7 +24,11 @@ import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useIsCompact } from '@/lib/use-compact';
-import { useConversationMemory } from '@/lib/use-conversation-memory';
+import {
+  MemoryFixesContext,
+  useConversationMemory,
+  type MemoryFixes,
+} from '@/lib/use-conversation-memory';
 import { jumpToSource, turnSources } from '@/lib/thread-jump';
 import { useUser } from '@/lib/user-context';
 import {
@@ -364,6 +368,13 @@ export function AgentView({
     announce: learnedAnnouncement,
   });
   const { markSeen: markLearnedSeen, unseen: learnedUnseen } = learned;
+  // The chip's view of the same ledger (TASK-643): only the fixes, as a value
+  // that changes when they do rather than with every stream frame.
+  const { fixes: learnedFixMap, recordFix, undoFix } = learned;
+  const learnedFixes = useMemo<MemoryFixes>(
+    () => ({ fixes: learnedFixMap, recordFix, undoFix }),
+    [learnedFixMap, recordFix, undoFix],
+  );
   // Below `md`, opening the rail is what counts as having seen the block.
   useEffect(() => {
     if (compact && railOpen && learnedUnseen > 0) markLearnedSeen();
@@ -1186,7 +1197,12 @@ export function AgentView({
       that closes at the bottom of the `<header>` can have no panels under it —
       which is precisely the bug this card fixes. `Tabs` renders a plain `div`,
       so it takes over the outer element's classes and adds no node.
+
+      The fixes provider (TASK-643) wraps it all so the "Used N memories" chip
+      under an answer and the rail's "What I learned" block read and write one
+      ledger — a fix saved on either shows on both at once.
     */
+    <MemoryFixesContext.Provider value={learnedFixes}>
     <Tabs
       value={tab}
       onValueChange={(v) => onTab(v as AgentTab)}
@@ -1736,5 +1752,6 @@ export function AgentView({
           ))}
       </div>
     </Tabs>
+    </MemoryFixesContext.Provider>
   );
 }

@@ -17,8 +17,17 @@
  * below `md` the rail is a `Sheet`, and its content is unmounted while the
  * sheet is shut. The "N new" count on the rail toggle and the announcement
  * both have to work exactly then, so the stream cannot live in that tree.
+ *
+ * FIXES ARE KEPT HERE TOO (TASK-643). A Fix can be saved from the rail or from
+ * the "Used N memories" chip under an answer, and each surface has to show it
+ * the moment it saves — the chip by saying the row changed since that answer,
+ * the rail by swapping the row for its fixed form. Before this, each surface
+ * kept its own overlay, so a fix from the chip left the rail showing the old
+ * row until a reload. Now there is one ledger (`fixes`), written through
+ * `recordFix` / `undoFix` by both surfaces, and the chip reads it through
+ * `MemoryFixesContext`, which `AgentView` provides.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useEffect, useRef, useState } from 'react';
 import {
   workspaceApi,
   type FactMemoryStatement,
@@ -42,7 +51,69 @@ export type LearnedStatus =
   | 'read-failed'
   | 'ready';
 
-export interface ConversationMemory {
+/**
+ * A saved Fix: the row it closed (`row`) and the row it wrote in its place
+ * (`id`, `value`). The same shape as `MemoryCorrection`'s `MemoryFix`.
+ */
+export interface SavedFix {
+  row: FactMemoryStatement;
+  id: string;
+  value: string;
+}
+
+/** What a Fix did to the row it closed, as the chip words it. */
+export interface FixEntry {
+  /** `retracted` = "It was never right"; `replaced` = "It changed". */
+  kind: 'replaced' | 'retracted';
+  /** The row written in its place. */
+  id: string;
+  value: string;
+}
+
+/** The fixes made on screen, and the only way to add or take one back. */
+export interface MemoryFixes {
+  /** Every row a Fix closed, by that row's id. */
+  fixes: ReadonlyMap<string, FixEntry>;
+  recordFix: (fix: SavedFix, reason: 'changed' | 'never-right') => void;
+  /** After a Fix's Undo worked: the closed row is back in effect. */
+  undoFix: (fix: SavedFix) => void;
+}
+
+/**
+ * The conversation's fixes, for a surface below `AgentView` (the chip). Null
+ * outside it — a chip drawn on its own keeps a ledger of its own.
+ */
+export const MemoryFixesContext = createContext<MemoryFixes | null>(null);
+
+/**
+ * The ledger itself, with nothing else attached. `useConversationMemory`
+ * builds on it; a chip with no `MemoryFixesContext` above it uses it alone.
+ * It starts over whenever `resetKey` changes.
+ */
+export function useFixLedger(resetKey: string): MemoryFixes {
+  const [fixes, setFixes] = useState<ReadonlyMap<string, FixEntry>>(() => new Map());
+  useEffect(() => setFixes(new Map()), [resetKey]);
+  const recordFix = useCallback((fix: SavedFix, reason: 'changed' | 'never-right') => {
+    setFixes((m) =>
+      new Map(m).set(fix.row.id, {
+        kind: reason === 'never-right' ? 'retracted' : 'replaced',
+        id: fix.id,
+        value: fix.value,
+      }),
+    );
+  }, []);
+  const undoFix = useCallback((fix: SavedFix) => {
+    setFixes((m) => {
+      if (!m.has(fix.row.id)) return m;
+      const next = new Map(m);
+      next.delete(fix.row.id);
+      return next;
+    });
+  }, []);
+  return { fixes, recordFix, undoFix };
+}
+
+export interface ConversationMemory extends MemoryFixes {
   status: LearnedStatus;
   /** Newest batch first. */
   rows: LearnedRow[];
@@ -61,7 +132,11 @@ export interface ConversationMemory {
    * a person's write with no conversation, so the feed no longer has it).
    */
   pin: (id: string) => void;
-  /** Swap a row for its fixed version, in place, and keep it listed. */
+  /**
+   * Swap a row for its fixed version, in place, and keep it listed. The
+   * primitive under `recordFix` / `undoFix`; a surface records a Fix through
+   * those, so the other surfaces see it too.
+   */
   replaceRow: (oldId: string, next: FactMemoryStatement) => void;
   /** Take a row off the list (a Forget whose receipt has run out). */
   removeRow: (id: string) => void;
@@ -105,6 +180,8 @@ export function useConversationMemory({
   const rowsRef = useRef<LearnedRow[]>([]);
   const pinned = useRef(new Set<string>());
   const removed = useRef(new Set<string>());
+  /** A listed row a Fix swapped out, by the fixed row's id — Undo puts it back. */
+  const displaced = useRef(new Map<string, FactMemoryStatement>());
   const batchSeq = useRef(0);
   const announceRef = useRef(announce);
   announceRef.current = announce;
@@ -122,6 +199,7 @@ export function useConversationMemory({
     setPass('idle');
     pinned.current = new Set();
     removed.current = new Set();
+    displaced.current = new Map();
     batchSeq.current = 0;
     if (!enabled) {
       setStatus('not-enabled');
@@ -288,7 +366,41 @@ export function useConversationMemory({
     [setRows],
   );
 
+  /*
+    The ledger, plus what the rail does about it: a fixed row that is listed
+    is swapped for its fixed form, and an Undo swaps it back. The rail's own
+    copy of a row is what goes back (a chip hands in the copy the answer was
+    given, which is not the feed's), so it is kept by the fixed row's id.
+    The ledger lasts as long as the conversation on screen, a retry included:
+    a retry re-reads the list, it does not take back a saved fix.
+  */
+  const ledger = useFixLedger(`${agentId}\u0000${conversationId ?? ''}`);
+  const { recordFix: record, undoFix: unrecord } = ledger;
+  const recordFix = useCallback(
+    (fix: SavedFix, reason: 'changed' | 'never-right') => {
+      record(fix, reason);
+      const listed = rowsRef.current.find((r) => r.row.id === fix.row.id);
+      if (listed === undefined) return;
+      displaced.current.set(fix.id, listed.row);
+      replaceRow(fix.row.id, { ...listed.row, id: fix.id, value: fix.value });
+    },
+    [record, replaceRow],
+  );
+  const undoFix = useCallback(
+    (fix: SavedFix) => {
+      unrecord(fix);
+      if (!rowsRef.current.some((r) => r.row.id === fix.id)) return;
+      const before = displaced.current.get(fix.id) ?? fix.row;
+      displaced.current.delete(fix.id);
+      replaceRow(fix.id, before);
+    },
+    [unrecord, replaceRow],
+  );
+
   return {
+    fixes: ledger.fixes,
+    recordFix,
+    undoFix,
     status,
     rows,
     extraction,
