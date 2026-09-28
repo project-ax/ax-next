@@ -103,6 +103,7 @@ export {
   renderEvidenceTable,
   renderRecallResult,
 } from './evidence.js';
+export { MEMORY_CONVERSATION_ACTIVITY_HOOK } from './activity.js';
 export { DEFAULT_RECALL_LIMIT } from './types.js';
 export type {
   MemoryStatement,
@@ -113,5 +114,8 @@ export type {
   MemoryRememberOutput,
   MemoryForgetInput,
   MemoryForgetOutput,
+  MemoryStatusInput,
   MemoryStatusOutput,
+  MemoryConversationActivity,
+  MemoryConversationExtractionState,
 } from './types.js';

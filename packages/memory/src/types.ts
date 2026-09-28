@@ -92,6 +92,15 @@ export interface MemoryStatement {
    * conversation id to key off of.
    */
   conversation?: number;
+  /**
+   * The source turn's id in the conversation's display log — the id the chat
+   * UI keys its messages on, so a feed can point at the message a statement
+   * came from (TASK-626). Opaque: memory never parses it. Present only on
+   * rows extracted incrementally from the canonical transcript (TASK-625);
+   * absent on `chat:end`-only extraction, `memory:remember` and
+   * `memory_note` rows.
+   */
+  sourceTurnId?: string;
 }
 
 /**
@@ -130,6 +139,18 @@ export interface MemoryRecallInput {
   profile?: boolean;
   /** Defaults to {@link DEFAULT_RECALL_LIMIT}. */
   limit?: number;
+  /**
+   * Only the statements extracted from THIS conversation — the feed behind
+   * "What I learned in this chat" (TASK-626). A non-empty string when set;
+   * cannot combine with `query` or `profile`.
+   *
+   * Always owner-scoped to the caller, on a team agent too: a conversation
+   * belongs to one person, so the answer is only the caller's own rows from
+   * it, and a teammate's conversation id answers nothing rather than their
+   * facts. The id is an opaque handle the caller already holds; it is a
+   * filter, never an authority field — ownership still comes from `ctx`.
+   */
+  conversationId?: string;
 }
 
 export interface MemoryRecallOutput {
@@ -187,10 +208,57 @@ export type MemoryForgetOutput = Record<string, never>;
  *
  * `'ok'` means "not known to be paused", not "verified working": right after
  * a host restart, before any `chat:end` has run, every user reads `'ok'`.
+ *
+ * `conversation` is present only when the input named a `conversationId`
+ * (TASK-626): the caller's own extraction state for that conversation, read
+ * from the same tracker `memory:conversation-activity` is fired from. It has
+ * no `'paused'` — pausing is per user and is `extraction` above, one source
+ * of truth.
  */
-export type MemoryStatusOutput =
+export type MemoryStatusOutput = (
   | { extraction: 'paused'; reason: 'missing-credential' }
-  | { extraction: 'ok' };
+  | { extraction: 'ok' }
+) & { conversation?: { state: MemoryConversationExtractionState } };
+
+/**
+ * `memory:status` input. Every field optional, and `{}` / no input at all
+ * mean what they always did. There is deliberately no user id: the answer is
+ * for `ctx.userId`, so nobody can probe another person's state.
+ */
+export interface MemoryStatusInput {
+  /** A non-empty string when set. Adds `conversation` to the output. */
+  conversationId?: string;
+}
+
+/**
+ * A conversation's extraction state as `memory:status` reports it. Absent
+ * any tracked pass, `'idle'` — including right after a host restart, since
+ * the tracker is in-process.
+ */
+export type MemoryConversationExtractionState = 'idle' | 'extracting' | 'failed';
+
+/**
+ * Payload of `memory:conversation-activity` (TASK-626), fired by
+ * `@ax/memory` around each incremental extraction pass that had new turns to
+ * extract — never for a routine run, never for a pass with nothing new.
+ *
+ * - `extracting` — a pass started;
+ * - then EXACTLY ONE of: `recorded` (with the ids written), `idle` (the pass
+ *   finished without recording — nothing durable, a timeout, an unreadable
+ *   answer; those turns are done), `failed` (something threw; the turns are
+ *   retried by the next pass), or `paused` (the caller has no usable
+ *   credential — see `memory:status.extraction`).
+ *
+ * `statementIds` only on `recorded`. Never statement text: the rows come from
+ * untrusted dialogue, and a subscriber is free to log its payload. Read them
+ * back with `memory:recall({ conversationId })`, which is owner-scoped.
+ */
+export interface MemoryConversationActivity {
+  conversationId: string;
+  userId: string;
+  state: 'extracting' | 'recorded' | 'idle' | 'failed' | 'paused';
+  statementIds?: string[];
+}
 
 /**
  * How many statements `memory:recall` returns when the caller names no limit.
