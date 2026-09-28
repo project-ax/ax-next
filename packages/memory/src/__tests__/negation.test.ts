@@ -205,9 +205,9 @@ describe('dropNegatedFacts', () => {
     // TASK-660: this used to assert an absolute wall-clock budget (< 2s),
     // which went red on main's full parallel suite (3.6s) while the filter was
     // measured linear (n / 2n / 4n = 285 / 559 / 1159 ms). So it asserts the
-    // SHAPE instead: the same hostile dialogue at 16x the size must cost
-    // roughly 16x, not 256x. A plain wall-clock ratio flaked too (2.5-11 for
-    // a linear 4x under load), so it compares CPU time.
+    // SHAPE instead: the same hostile dialogue at 32x the size must cost
+    // roughly 32x, not ~1000x. A plain wall-clock ratio flaked too (2.5-11
+    // for a linear 4x under load), so it compares CPU time.
     const hostileDialogue = (k: number): string => {
       const hostile = [
         'not '.repeat(5_000 * k),
@@ -241,12 +241,13 @@ describe('dropNegatedFacts', () => {
       return best;
     };
     const small = hostileDialogue(1);
-    const large = hostileDialogue(16);
+    const large = hostileDialogue(32);
     cheapestCpu(small); // warm the JIT so the first size is not charged for it
     const ratio = cheapestCpu(large) / cheapestCpu(small);
-    // 16x the input: linear costs ~16x, quadratic ~256x. 64 is the geometric
-    // middle. Measured 17-18 idle and 14-25 with the CPU 2x oversubscribed
-    // (CPU time still drifts up under load: shared caches), so ~2.5x headroom.
-    expect(ratio).toBeLessThan(64);
+    // 32x the input: linear costs ~32x, quadratic ~1024x. Measured 34-37 idle
+    // and 37-54 with the CPU 2x oversubscribed (CPU time still drifts up under
+    // load: shared caches), so 128 leaves ~2.4x headroom. A mutant with even a
+    // 1/64-strength quadratic scan in the index build measured ~200.
+    expect(ratio).toBeLessThan(128);
   });
 });
