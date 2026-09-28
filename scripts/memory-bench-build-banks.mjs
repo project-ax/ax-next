@@ -54,7 +54,8 @@ async function main(argv = process.argv.slice(2)) {
   const mine = corpus.filter((_, i) => i % shardCount === shardIndex).filter((s) => !only || only.has(s.question_id));
 
   mkdirSync(out, { recursive: true });
-  const ledger = new Ledger(join(out, `costs-build-${shardIndex}.jsonl`), Number(values.cap));
+  // Repair gets its own ledger: it can run beside live build shards, and two processes must never share one.
+  const ledger = new Ledger(join(out, `costs-${values.repair ? "repair" : "build"}-${shardIndex}.jsonl`), Number(values.cap));
   const storage = new AsyncLocalStorage();
   const tags = () => { const s = storage.getStore(); return { questionId: s?.questionId ?? 'setup', phase: s?.phase ?? 'ingest' }; };
   const clients = makeClients({ env, ledger, tags });
