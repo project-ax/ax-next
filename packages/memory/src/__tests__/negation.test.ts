@@ -43,6 +43,14 @@ describe('a negated statement never yields the positive fact', () => {
     ['user: I cannot say I live in Denver.', 'lives_in', 'Denver'],
     // The value's possessive is the same word.
     ["user: I've never been a Denver's-fan type.", 'lives_in', 'Denver'],
+    // Review round 1: a two-letter value is still a value.
+    ["user: I don't live in LA.", 'lives_in', 'LA'],
+    ["user: I don't live in the UK anymore.", 'lives_in', 'UK'],
+    // Review round 1: a common word of the value said elsewhere ("a new
+    // plan") does not vouch for the whole value, which was only negated.
+    ["user: I don't live in New York. I need a new plan.", 'lives_in', 'New York'],
+    ["user: I never lived in New York City. York is a nice name.", 'lives_in', 'New York City'],
+    ['user: I have never worked at Bank of America. My bank is local.', 'works_at', 'Bank of America'],
   ];
 
   it.each(MISREADINGS)('%s  ->  %s | %s is dropped', (dialogue, predicate, object) => {
@@ -96,6 +104,19 @@ describe('a real positive statement is kept (controls)', () => {
     ["user: I can't believe I live in Denver now.", 'lives_in', 'Denver'],
     ['user: No doubt Denver is home.', 'lives_in', 'Denver'],
     ['user: Not only Denver, I also love Boulder.', 'loves', 'Denver'],
+    // Review round 1: staying-put idioms state where the person lives.
+    ['user: I never want to leave Denver.', 'lives_in', 'Denver'],
+    ["user: I can't see myself leaving Denver.", 'lives_in', 'Denver'],
+    ['user: I never left Denver.', 'lives_in', 'Denver'],
+    ['user: There is no place like Denver.', 'lives_in', 'Denver'],
+    ["user: I wouldn't trade Denver for anywhere.", 'lives_in', 'Denver'],
+    ['user: I have never been more at home than in Denver.', 'lives_in', 'Denver'],
+    ['user: There is no better city than Denver.', 'lives_in', 'Denver'],
+    // A multi-word value mentioned whole and un-negated is kept, even if one
+    // of its words is also negated somewhere.
+    ["user: I don't live in York. I live in New York.", 'lives_in', 'New York'],
+    // Its words said apart, one negated: no evidence the whole was negated.
+    ["user: I don't live in Denver, I live in Boulder.", 'lives_in', 'Boulder, near Denver'],
     // A paraphrase: nothing in the dialogue to say it was negated.
     ['user: I never lived there.', 'lives_in', 'Denver'],
     // A negation somewhere else in the dialogue does not reach the value.
@@ -122,6 +143,26 @@ describe('known limitation, pinned so a change is deliberate', () => {
     expect(
       dropped("user: My sister doesn't live in Denver; I do.", fact('lives_in', 'Denver')),
     ).toBe(true);
+    expect(dropped("user: My wife doesn't work at Google, I do.", fact('works_at', 'Google'))).toBe(
+      true,
+    );
+  });
+
+  // The whole dialogue is read, not only the attributed turn: an assistant
+  // negating the value the person only paraphrased drops the fact too.
+  it("the assistant's negation drops a fact the person only paraphrased", () => {
+    expect(
+      dropped(
+        'user: I moved there last month.\nassistant: I would not recommend Denver traffic.',
+        fact('lives_in', 'Denver'),
+      ),
+    ).toBe(true);
+  });
+
+  // Misses, in the safe direction (nothing dropped, the pre-guard behaviour).
+  it('a value that is only a stop word, and "nothing", are not guarded', () => {
+    expect(dropped("user: I don't live in the US.", fact('lives_in', 'US'))).toBe(false);
+    expect(dropped('user: Nothing about Denver appeals to me.', fact('likes', 'Denver'))).toBe(false);
   });
 });
 
