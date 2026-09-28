@@ -251,6 +251,19 @@ async function linksPhase(banks: Bank[], args: Record<string, string>, subjects:
     );
   }
 
+  // The link set an answer-level arm reads (`scripts/memory-fact-links-e2e.mjs`): every
+  // candidate pair Jev linked at or above `--links-threshold`, with both facts spelled out.
+  if (args["write-links"]) {
+    const bar = Number(args["links-threshold"] ?? 0.8);
+    const links = realistic.flatMap((job) => {
+      const answer = answers.get(job);
+      const link = linkFromAnswer(answer, bar);
+      return link ? [{ qid: job.bank.qid, link, p: answer?.p, a: job.a, b: job.b }] : [];
+    });
+    writeFileSync(args["write-links"], JSON.stringify({ threshold: bar, k, minCosine, links }, null, 1));
+    console.log(`\nwrote ${links.length} links at p >= ${bar} to ${args["write-links"]}`);
+  }
+
   // A seeded sample of links at the lowest reported bar, for hand-labelling.
   const linked = realistic
     .filter((job) => linkFromAnswer(answers.get(job), THRESHOLDS[0] ?? 0.5) !== null)

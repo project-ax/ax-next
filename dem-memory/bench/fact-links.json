@@ -1,0 +1,1451 @@
+{
+ "threshold": 0.8,
+ "k": 6,
+ "minCosine": 0.8,
+ "links": [
+  {
+   "qid": "b6019101",
+   "link": "updates",
+   "p": 0.89,
+   "a": {
+    "id": "02826767-7934-4a3f-a7c4-bdf005bb7607",
+    "about": "user:memory-benchmark-owner",
+    "relation": "watched_films",
+    "value": "Watched 4 MCU films in the last 3 months and has been on a Marvel binge",
+    "when": "2023-05-20T12:00:00.000Z"
+   },
+   "b": {
+    "id": "0415efd8-db81-442b-8bfc-31d35d64c24f",
+    "about": "user:memory-benchmark-owner",
+    "relation": "watched_movies_recently",
+    "value": "Watched 12 films in the last 3 months, including 5 MCU films",
+    "when": "2023-05-29T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "b6019101",
+   "link": "same_event",
+   "p": 0.97,
+   "a": {
+    "id": "2f7ec666-7ba7-46d4-b9f9-7236cd732486",
+    "about": "user:memory-benchmark-owner",
+    "relation": "planning_event",
+    "value": "Family movie marathon over the long weekend, re-watching classic films from childhood",
+    "when": "2023-05-20T12:00:00.000Z"
+   },
+   "b": {
+    "id": "362aa61e-1d56-4f3b-a408-c60ff8fa422f",
+    "about": "user:memory-benchmark-owner",
+    "relation": "planning_movie_marathon",
+    "value": "Planning a family movie marathon over the upcoming long weekend featuring classic movies from their childhood",
+    "when": "2023-05-29T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "c8c3f81d",
+   "link": "updates",
+   "p": 0.85,
+   "a": {
+    "id": "05e9cd29-a5a2-428f-9b26-8b257da0b62c",
+    "about": "user:memory-benchmark-owner",
+    "relation": "practices_yoga",
+    "value": "Has been doing yoga classes at a new studio near work twice a week since February 2023",
+    "when": "2023-02-01T00:00:00.000Z"
+   },
+   "b": {
+    "id": "cf2dfbb3-44ff-4986-9454-44a927b91d8c",
+    "about": "user:memory-benchmark-owner",
+    "relation": "plans_yoga_frequency_increase",
+    "value": "Plans to increase yoga practice to three times a week soon",
+    "when": "2023-05-26T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "3249768e",
+   "link": "updates",
+   "p": 0.9,
+   "a": {
+    "id": "ba6cd22f-5086-4132-8c57-66b91250bd1f",
+    "about": "user:memory-benchmark-owner",
+    "relation": "planning_trip_to",
+    "value": "Tokyo",
+    "when": "2023-05-27T12:00:00.000Z"
+   },
+   "b": {
+    "id": "c603d596-ed5b-462a-900b-06ac249791c1",
+    "about": "user:memory-benchmark-owner",
+    "relation": "prefers_debt_over_travel_fund",
+    "value": "Chose to reallocate the $200 travel fund to debt repayment since no trips are planned",
+    "when": "2023-05-29T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "3249768e",
+   "link": "updates",
+   "p": 0.9400000000000001,
+   "a": {
+    "id": "29e0e7a4-611c-4a8e-bb2c-ac7c9c4a71f2",
+    "about": "user:memory-benchmark-owner",
+    "relation": "planning_trip",
+    "value": "7-day trip to Tokyo and Kyoto, Japan",
+    "when": "2023-05-28T12:00:00.000Z"
+   },
+   "b": {
+    "id": "c603d596-ed5b-462a-900b-06ac249791c1",
+    "about": "user:memory-benchmark-owner",
+    "relation": "prefers_debt_over_travel_fund",
+    "value": "Chose to reallocate the $200 travel fund to debt repayment since no trips are planned",
+    "when": "2023-05-29T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "3249768e",
+   "link": "updates",
+   "p": 0.88,
+   "a": {
+    "id": "ee36bef7-970a-4f37-86cd-990336848fff",
+    "about": "user:memory-benchmark-owner",
+    "relation": "planning_trip",
+    "value": "Trip to Las Vegas in February for an anniversary celebration with their partner",
+    "when": "2023-05-28T12:00:00.000Z"
+   },
+   "b": {
+    "id": "c603d596-ed5b-462a-900b-06ac249791c1",
+    "about": "user:memory-benchmark-owner",
+    "relation": "prefers_debt_over_travel_fund",
+    "value": "Chose to reallocate the $200 travel fund to debt repayment since no trips are planned",
+    "when": "2023-05-29T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "488d3006",
+   "link": "updates",
+   "p": 0.84,
+   "a": {
+    "id": "dd734c35-4383-40b2-9464-ace8ac3472c4",
+    "about": "user:memory-benchmark-owner",
+    "relation": "plans_trip",
+    "value": "User is considering a trip to Zion National Park in the near future",
+    "when": "2023-05-20T12:00:00.000Z"
+   },
+   "b": {
+    "id": "b449352e-872b-4aec-8d68-5855cb00e449",
+    "about": "user:memory-benchmark-owner",
+    "relation": "planned_day_trip",
+    "value": "a day trip to the park this weekend, followed by a stop at the gym, with a coffee shop stop on the way",
+    "when": "2023-05-25T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "ef66a6e5",
+   "link": "updates",
+   "p": 0.99,
+   "a": {
+    "id": "c48b6391-a667-4391-80a5-e92675a636d5",
+    "about": "user:memory-benchmark-owner",
+    "relation": "planning_trip",
+    "value": "Trip to Paris next summer",
+    "when": "2023-05-22T12:00:00.000Z"
+   },
+   "b": {
+    "id": "82d1e2ba-86e9-4a83-b838-98bfda36efad",
+    "about": "user:memory-benchmark-owner",
+    "relation": "decided_destination",
+    "value": "User chose Bali for the trip, going in September, after considering Bali or Maui",
+    "when": "2023-05-24T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "ef66a6e5",
+   "link": "updates",
+   "p": 0.89,
+   "a": {
+    "id": "62b6f7cd-c7d0-4e13-ae8a-a22f117f14d3",
+    "about": "user:memory-benchmark-owner",
+    "relation": "planning_trip",
+    "value": "Planning a family trip to Legoland Windsor soon",
+    "when": "2023-05-22T12:00:00.000Z"
+   },
+   "b": {
+    "id": "82d1e2ba-86e9-4a83-b838-98bfda36efad",
+    "about": "user:memory-benchmark-owner",
+    "relation": "decided_destination",
+    "value": "User chose Bali for the trip, going in September, after considering Bali or Maui",
+    "when": "2023-05-24T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_fa19884c",
+   "link": "updates",
+   "p": 0.85,
+   "a": {
+    "id": "fe6b2b94-35d1-4bc6-b257-35b2707a9310",
+    "about": "user:memory-benchmark-owner",
+    "relation": "does_strength_training",
+    "value": "Incorporates strength training targeting core and legs",
+    "when": "2023-03-13T12:00:00.000Z"
+   },
+   "b": {
+    "id": "9493918b-34cc-451d-a249-ab7dd727d1d1",
+    "about": "user:memory-benchmark-owner",
+    "relation": "modified_strength_focus",
+    "value": "Switched Wednesday strength training to focus on core and glutes, as it helps with running and biking",
+    "when": "2023-03-16T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_7f6b06db",
+   "link": "updates",
+   "p": 0.85,
+   "a": {
+    "id": "8095d401-748b-4f92-9055-08830449d2f3",
+    "about": "user:memory-benchmark-owner",
+    "relation": "planning_trip",
+    "value": "User is planning a trip soon and considering buying packing cubes to stay organized",
+    "when": "2023-03-09T12:00:00.000Z"
+   },
+   "b": {
+    "id": "d82c703f-1b26-4ae0-9be3-399cfe98bfaf",
+    "about": "user:memory-benchmark-owner",
+    "relation": "trip_planned",
+    "value": "Trip to Dubai and Abu Dhabi April 22-28, 2023, low-to-middle budget, staying in budget hotels, wants meals integrated into daily schedule by location",
+    "when": "2023-04-16T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_7f6b06db",
+   "link": "updates",
+   "p": 0.8,
+   "a": {
+    "id": "9296b706-309b-4742-a575-51a7a956d892",
+    "about": "user:memory-benchmark-owner",
+    "relation": "plans_meal_prep",
+    "value": "User is thinking about getting back into cooking and meal prep to help manage lactose intolerance and fatigue",
+    "when": "2023-03-04T12:00:00.000Z"
+   },
+   "b": {
+    "id": "cc0a4e1d-6bcb-441a-8078-d951d78c3968",
+    "about": "user:memory-benchmark-owner",
+    "relation": "plans_meal_prep",
+    "value": "planning a weekly healthy meal prep, wants recipes high in protein and low in carbs",
+    "when": "2023-04-20T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "60bf93ed_abs",
+   "link": "same_event",
+   "p": 0.86,
+   "a": {
+    "id": "70381453-53bb-4353-b2be-41838aa4934a",
+    "about": "user:memory-benchmark-owner",
+    "relation": "current_wireless_mouse_status",
+    "value": "User's current wireless mouse has been acting up lately; user is shopping for a new one",
+    "when": "2023-01-24T12:00:00.000Z"
+   },
+   "b": {
+    "id": "bef869b8-8bf7-44d6-82a3-6915920969ec",
+    "about": "user:memory-benchmark-owner",
+    "relation": "replacing_wireless_mouse",
+    "value": "User is replacing their old wireless mouse due to issues with it",
+    "when": "2023-01-24T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "60bf93ed_abs",
+   "link": "updates",
+   "p": 0.86,
+   "a": {
+    "id": "f4152a2f-40ea-4887-8c82-4113701d8e8e",
+    "about": "user:memory-benchmark-owner",
+    "relation": "plans_weekend_run",
+    "value": "User is planning to go for a run this weekend and wants a new water bottle to replace their old one",
+    "when": "2023-01-24T12:00:00.000Z"
+   },
+   "b": {
+    "id": "f8c44327-5825-461d-a238-e5f1bf3ac713",
+    "about": "user:memory-benchmark-owner",
+    "relation": "owns_water_bottle",
+    "value": "User has a new CamelBak water bottle and will check out cycling-specific water bottles instead.",
+    "when": "2023-01-24T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "60bf93ed_abs",
+   "link": "same_event",
+   "p": 0.98,
+   "a": {
+    "id": "17d8e85c-6229-4f0a-9e14-6a399129203e",
+    "about": "user:memory-benchmark-owner",
+    "relation": "last_cleaned_computer",
+    "value": "User last cleaned their desktop computer's fans and vents on February 1st",
+    "when": "2023-02-01T00:00:00.000Z"
+   },
+   "b": {
+    "id": "76075656-ca5d-45ec-9189-f7427dac0aea",
+    "about": "user:memory-benchmark-owner",
+    "relation": "cleaned_desktop_computer",
+    "value": "Cleaned desktop computer on February 1st, removing dust and dirt from fans and vents, which seemed to improve performance",
+    "when": "2023-02-01T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "e831120c",
+   "link": "same_event",
+   "p": 1,
+   "a": {
+    "id": "66f31efb-bdc2-44ec-b24b-872ef0bef231",
+    "about": "user:memory-benchmark-owner",
+    "relation": "watched_all_mcu_movies",
+    "value": "watched all 22 Marvel Cinematic Universe movies in two weeks during a movie binge",
+    "when": "2023-05-23T12:00:00.000Z"
+   },
+   "b": {
+    "id": "f578bab5-77f2-4ec4-badc-86a5bb280b8a",
+    "about": "user:memory-benchmark-owner",
+    "relation": "completed_mcu_marathon",
+    "value": "Watched all 22 MCU movies in about two weeks",
+    "when": "2023-05-25T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "e831120c",
+   "link": "updates",
+   "p": 0.95,
+   "a": {
+    "id": "f2377fe3-81ab-4095-b401-47bc8f9a1b9e",
+    "about": "user:memory-benchmark-owner",
+    "relation": "sleep_goal",
+    "value": "Wants to go to bed around 11:30 pm every night and get at least 7-8 hours of sleep",
+    "when": "2023-05-23T12:00:00.000Z"
+   },
+   "b": {
+    "id": "e7f1218e-4a4c-4918-9738-717fa278e711",
+    "about": "user:memory-benchmark-owner",
+    "relation": "sleep_schedule",
+    "value": "Wakes up at 7 am and goes to bed around 10:30 pm; aims for at least 7 hours of sleep each night",
+    "when": "2023-05-29T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_59149c77",
+   "link": "updates",
+   "p": 0.8,
+   "a": {
+    "id": "bd58d0d9-02c0-41f9-a6e1-4c3e1183d616",
+    "about": "user:memory-benchmark-owner",
+    "relation": "gym_schedule",
+    "value": "Goes to the gym at 6:30 pm three times a week, but finds it crowded at that time",
+    "when": "2023-01-05T12:00:00.000Z"
+   },
+   "b": {
+    "id": "f9ba8b0d-f70f-40c9-b923-8d46bc9ad15b",
+    "about": "user:memory-benchmark-owner",
+    "relation": "plans_gym_switch",
+    "value": "Decided to try switching to a morning gym routine around 8:30 am to avoid crowds, gradually adjusting wake-up time and preparing the night before",
+    "when": "2023-01-05T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "95bcc1c8",
+   "link": "updates",
+   "p": 0.87,
+   "a": {
+    "id": "8b8f29d7-8581-416d-a2bd-2fb6f353a1e8",
+    "about": "user:memory-benchmark-owner",
+    "relation": "wakes_up_at",
+    "value": "6:30 am on weekdays, with free time around 6:45 am after breakfast before daily responsibilities",
+    "when": "2023-05-24T12:00:00.000Z"
+   },
+   "b": {
+    "id": "99bfd2d9-9825-4dff-9fd4-a6a2e71dc67a",
+    "about": "user:memory-benchmark-owner",
+    "relation": "wakes_up_at",
+    "value": "7:30 am on weekdays to get ready for work",
+    "when": "2023-05-27T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "0a995998",
+   "link": "same_event",
+   "p": 0.97,
+   "a": {
+    "id": "2ff022e9-7203-47a7-a1eb-4bd073ca9774",
+    "about": "user:memory-benchmark-owner",
+    "relation": "has_pending_pickup",
+    "value": "Exchanged a pair of boots from Zara bought on 2/5; still needs to pick up the new pair",
+    "when": "2023-02-15T12:00:00.000Z"
+   },
+   "b": {
+    "id": "7b99b74e-405b-4320-9b99-3fa5f384eec8",
+    "about": "user:memory-benchmark-owner",
+    "relation": "exchanged_boots_at_zara",
+    "value": "User bought boots at Zara on February 5th that were too small, exchanged them for a larger size, and hasn't yet picked up the new pair",
+    "when": "2023-02-15T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "6ae235be",
+   "link": "updates",
+   "p": 0.83,
+   "a": {
+    "id": "5ad497ee-b659-4f72-9429-ee44a491c05d",
+    "about": "user:memory-benchmark-owner",
+    "relation": "moved_to",
+    "value": "Tokyo, Japan (moved on 2023-05-26, settling into a new apartment near Kichijoji)",
+    "when": "2023-05-26T12:00:00.000Z"
+   },
+   "b": {
+    "id": "bae56ad3-9dfc-47fe-97c8-9a89bc97538e",
+    "about": "user:memory-benchmark-owner",
+    "relation": "lives_in",
+    "value": "San Francisco Bay Area",
+    "when": "2023-05-27T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "94f70d80",
+   "link": "updates",
+   "p": 0.88,
+   "a": {
+    "id": "f3763985-0a9c-481f-8ad1-27b2a6de21a3",
+    "about": "user:memory-benchmark-owner",
+    "relation": "plans_to_start_business",
+    "value": "User is planning on starting their own business soon as a first-time business owner.",
+    "when": "2023-05-22T12:00:00.000Z"
+   },
+   "b": {
+    "id": "4e57dd99-f6d9-46f1-bbe1-913de70c3654",
+    "about": "user:memory-benchmark-owner",
+    "relation": "runs_business",
+    "value": "Handmade jewelry line, planning to expand with new summer-themed pieces",
+    "when": "2023-05-26T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "b759caee",
+   "link": "same_event",
+   "p": 0.84,
+   "a": {
+    "id": "9a3a6737-8cf4-4c5e-9f8c-35e27d49981a",
+    "about": "user:memory-benchmark-owner",
+    "relation": "latest_run_data",
+    "value": "Run tracked by Samsung Health via Samsung Galaxy Watch 5: avg pace 04:41/km, max pace 03:53/km, elevation 23–46 m, avg cadence 165 spm, max 184 spm, avg HR 171 bpm, max 180 bpm; splits: 1km 4:23.4, 2km 4:42.8, 3km 4:59.6, 4km 5:00.7, 5km 4:21.5",
+    "when": "2023-05-25T12:00:00.000Z"
+   },
+   "b": {
+    "id": "eabf8f00-407b-40c3-954c-b68fed575f56",
+    "about": "user:memory-benchmark-owner",
+    "relation": "ran_5k_tempo",
+    "value": "5k tempo run in 23:30",
+    "when": "2023-05-25T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "7161e7e2",
+   "link": "updates",
+   "p": 0.82,
+   "a": {
+    "id": "e922efa0-c305-45b4-9beb-759ea28d02ba",
+    "about": "user:memory-benchmark-owner",
+    "relation": "travel_preferences",
+    "value": "Flexible travel dates in July or August, considering Lufthansa and Norwegian Air, economy class, traveling alone, prefers non-stop but open to layovers",
+    "when": "2023-05-22T12:00:00.000Z"
+   },
+   "b": {
+    "id": "a27fb78e-4919-4e38-8ffd-119c523a1df2",
+    "about": "user:memory-benchmark-owner",
+    "relation": "travel_season_decision",
+    "value": "Will aim to travel in the shoulder season (April-May or September-October) to avoid crowds and high prices",
+    "when": "2023-05-24T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "7161e7e2",
+   "link": "updates",
+   "p": 1,
+   "a": {
+    "id": "8697fe68-bfd6-4e79-95ee-3632022b7e4f",
+    "about": "user:memory-benchmark-owner",
+    "relation": "chose_gmi_program",
+    "value": "User initially chose to go ahead with GMI's (Great Manager Institute) leadership development program for the ad agency",
+    "when": "2023-05-30T12:00:00.000Z"
+   },
+   "b": {
+    "id": "bb38cc12-e627-436b-a51a-f4901257691c",
+    "about": "user:memory-benchmark-owner",
+    "relation": "rejected_gmi_program",
+    "value": "User later decided the company is NOT going ahead with the GMI plan and asked for four alternative managerial leadership development modules",
+    "when": "2023-05-30T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_e061b84g",
+   "link": "same_event",
+   "p": 0.9,
+   "a": {
+    "id": "3a3a8754-f47f-4b79-964f-de6f10bcce59",
+    "about": "user:memory-benchmark-owner",
+    "relation": "attending_event",
+    "value": "Foodie Fest, an upcoming event where they will sell their products",
+    "when": "2023-06-03T12:00:00.000Z"
+   },
+   "b": {
+    "id": "e3d7397c-8e65-4861-bdf4-b46f39cdc757",
+    "about": "user:memory-benchmark-owner",
+    "relation": "attending_foodie_fest",
+    "value": "User will sell jam products at the upcoming Foodie Fest",
+    "when": "2023-06-03T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "ed4ddc30",
+   "link": "updates",
+   "p": 0.94,
+   "a": {
+    "id": "257ee8ea-e2c3-4580-9905-eb17c7c56694",
+    "about": "user:memory-benchmark-owner",
+    "relation": "egg_stock",
+    "value": "User has 30 dozen eggs stocked up in the fridge and needs to use them up",
+    "when": "2023-01-11T12:00:00.000Z"
+   },
+   "b": {
+    "id": "4548ed60-06d1-4868-b640-da6b40d0ddba",
+    "about": "user:memory-benchmark-owner",
+    "relation": "has_egg_stock",
+    "value": "20 dozen fresh eggs from the coop stocked in the fridge",
+    "when": "2023-03-15T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "60d45044",
+   "link": "updates",
+   "p": 0.87,
+   "a": {
+    "id": "517453bd-55d6-4f04-a1ed-60da6dea7f96",
+    "about": "user:memory-benchmark-owner",
+    "relation": "prefers_outdoor_activities",
+    "value": "User loves outdoor activities and plans to visit Kamiskotia Snow Resort and Gillies Lake Conservation Area",
+    "when": "2023-05-22T12:00:00.000Z"
+   },
+   "b": {
+    "id": "2ba317ff-4b0a-49d3-abbd-b4d654dfc70c",
+    "about": "user:memory-benchmark-owner",
+    "relation": "not_outdoorsy",
+    "value": "User says they are not much of an outdoorsy person",
+    "when": "2023-05-25T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "18bc8abd",
+   "link": "updates",
+   "p": 1,
+   "a": {
+    "id": "ecec252c-c431-47ac-8d94-9dee37accec4",
+    "about": "user:memory-benchmark-owner",
+    "relation": "favorite_bbq_sauce",
+    "value": "Sweet Baby Ray's BBQ sauce, to serve with the ribs",
+    "when": "2023-04-16T12:00:00.000Z"
+   },
+   "b": {
+    "id": "dd4953e7-bf97-4aa0-a3f9-f5a7867a70d1",
+    "about": "user:memory-benchmark-owner",
+    "relation": "prefers_bbq_sauce",
+    "value": "Kansas City Masterpiece BBQ sauce, currently their favourite for ribs",
+    "when": "2023-06-30T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_5dcc0aab",
+   "link": "same_event",
+   "p": 1,
+   "a": {
+    "id": "0bd5962e-6431-4713-95b0-e35a831c725d",
+    "about": "user:memory-benchmark-owner",
+    "relation": "cleaned_adidas_sneakers",
+    "value": "User cleaned their white Adidas sneakers last month with soap and water, then air dried them on the balcony; they had gotten dirty at an outdoor music festival",
+    "when": "2023-05-24T12:00:00.000Z"
+   },
+   "b": {
+    "id": "53d945f1-ec23-49c2-ba38-7bb8c0628abc",
+    "about": "user:memory-benchmark-owner",
+    "relation": "cleaned_sneakers",
+    "value": "white Adidas sneakers last month after they got dirty and stained",
+    "when": "2023-05-24T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_5dcc0aab",
+   "link": "same_event",
+   "p": 0.94,
+   "a": {
+    "id": "07701215-c8a8-4adf-bf87-06d6cb7084a1",
+    "about": "user:memory-benchmark-owner",
+    "relation": "deciding_between",
+    "value": "Choosing between Merrell Moab 2 Mid Waterproof and Keen Targhee II Mid WP hiking boots",
+    "when": "2023-05-24T12:00:00.000Z"
+   },
+   "b": {
+    "id": "6f533f07-4ed8-4fa8-8d75-738bd5bfad44",
+    "about": "user:memory-benchmark-owner",
+    "relation": "is_deciding_between",
+    "value": "Merrell Moab 2 Mid Waterproof and Keen Targhee II Mid WP hiking boots for an upcoming mountain trip",
+    "when": "2023-05-24T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_5dcc0aab",
+   "link": "updates",
+   "p": 0.93,
+   "a": {
+    "id": "6f533f07-4ed8-4fa8-8d75-738bd5bfad44",
+    "about": "user:memory-benchmark-owner",
+    "relation": "is_deciding_between",
+    "value": "Merrell Moab 2 Mid Waterproof and Keen Targhee II Mid WP hiking boots for an upcoming mountain trip",
+    "when": "2023-05-24T12:00:00.000Z"
+   },
+   "b": {
+    "id": "9cfc215c-2324-4faa-a720-787ee3ed9318",
+    "about": "user:memory-benchmark-owner",
+    "relation": "decided_to_buy",
+    "value": "User chose the Keen Targhee II Mid WP hiking boots over the Merrell Moab 2 Mid Waterproof",
+    "when": "2023-05-24T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_5dcc0aab",
+   "link": "updates",
+   "p": 0.83,
+   "a": {
+    "id": "07701215-c8a8-4adf-bf87-06d6cb7084a1",
+    "about": "user:memory-benchmark-owner",
+    "relation": "deciding_between",
+    "value": "Choosing between Merrell Moab 2 Mid Waterproof and Keen Targhee II Mid WP hiking boots",
+    "when": "2023-05-24T12:00:00.000Z"
+   },
+   "b": {
+    "id": "9cfc215c-2324-4faa-a720-787ee3ed9318",
+    "about": "user:memory-benchmark-owner",
+    "relation": "decided_to_buy",
+    "value": "User chose the Keen Targhee II Mid WP hiking boots over the Merrell Moab 2 Mid Waterproof",
+    "when": "2023-05-24T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_5dcc0aab",
+   "link": "updates",
+   "p": 0.93,
+   "a": {
+    "id": "8fb0d3bc-1d92-4a62-aa1f-a58b19aa064f",
+    "about": "user:memory-benchmark-owner",
+    "relation": "considering_hiking_boots",
+    "value": "Deciding between the Merrell Moab 2 Mid Waterproof and the Keen Targhee II Mid WP hiking boots, and plans to try both on in stores",
+    "when": "2023-05-24T12:00:00.000Z"
+   },
+   "b": {
+    "id": "9cfc215c-2324-4faa-a720-787ee3ed9318",
+    "about": "user:memory-benchmark-owner",
+    "relation": "decided_to_buy",
+    "value": "User chose the Keen Targhee II Mid WP hiking boots over the Merrell Moab 2 Mid Waterproof",
+    "when": "2023-05-24T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_5dcc0aab",
+   "link": "updates",
+   "p": 0.89,
+   "a": {
+    "id": "97d9e023-3610-4304-bd1f-f96cafdfabbe",
+    "about": "user:memory-benchmark-owner",
+    "relation": "considering_boots",
+    "value": "Narrowed hiking boot choice to Merrell Moab 2 Mid Waterproof or Keen Targhee II Mid WP",
+    "when": "2023-05-24T12:00:00.000Z"
+   },
+   "b": {
+    "id": "9cfc215c-2324-4faa-a720-787ee3ed9318",
+    "about": "user:memory-benchmark-owner",
+    "relation": "decided_to_buy",
+    "value": "User chose the Keen Targhee II Mid WP hiking boots over the Merrell Moab 2 Mid Waterproof",
+    "when": "2023-05-24T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_5dcc0aab",
+   "link": "same_event",
+   "p": 0.94,
+   "a": {
+    "id": "816cd07a-4f8a-40f9-9e89-5a1b0473296c",
+    "about": "user:memory-benchmark-owner",
+    "relation": "planning_hiking_trip",
+    "value": "User is planning a hiking trip next month (June 2023) in the mountains with rough trails",
+    "when": "2023-05-24T12:00:00.000Z"
+   },
+   "b": {
+    "id": "b16272c2-cd29-4a85-bec4-5c0e718f0aca",
+    "about": "user:memory-benchmark-owner",
+    "relation": "planning_trip",
+    "value": "Trip to the mountains next month (around June 2023)",
+    "when": "2023-05-24T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_5dcc0aab",
+   "link": "same_event",
+   "p": 0.94,
+   "a": {
+    "id": "816cd07a-4f8a-40f9-9e89-5a1b0473296c",
+    "about": "user:memory-benchmark-owner",
+    "relation": "planning_hiking_trip",
+    "value": "User is planning a hiking trip next month (June 2023) in the mountains with rough trails",
+    "when": "2023-05-24T12:00:00.000Z"
+   },
+   "b": {
+    "id": "b5bc8b1b-b934-4ae3-a122-efb0469c2584",
+    "about": "user:memory-benchmark-owner",
+    "relation": "planning_trip",
+    "value": "Trip to the mountains next month (from 2023-05-24)",
+    "when": "2023-05-24T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_5dcc0aab",
+   "link": "same_event",
+   "p": 0.81,
+   "a": {
+    "id": "aefb9eec-0d2a-4257-bbdb-dde3b3b4d341",
+    "about": "user:memory-benchmark-owner",
+    "relation": "planned_task",
+    "value": "Take brown leather dress shoes to the cobbler to get polished and conditioned this Saturday",
+    "when": "2023-05-24T12:00:00.000Z"
+   },
+   "b": {
+    "id": "dc1fe482-06f3-494d-b1c0-2debf96b1daf",
+    "about": "user:memory-benchmark-owner",
+    "relation": "needs_shoe_cobbler",
+    "value": "Needs brown leather dress shoes polished and conditioned",
+    "when": "2023-05-24T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_5dcc0aab",
+   "link": "same_event",
+   "p": 0.99,
+   "a": {
+    "id": "9a7c7ff9-451c-4baa-b45a-b22e2a1539c2",
+    "about": "user:memory-benchmark-owner",
+    "relation": "lent_running_shoes_to_sister",
+    "value": "Lent spare pair of running shoes to sister a few weeks ago; she said she'd need them for a week or two, but it's been almost a month and she hasn't returned them",
+    "when": "2023-05-24T12:00:00.000Z"
+   },
+   "b": {
+    "id": "e3877cb8-425e-4ce8-833c-8b72f969e381",
+    "about": "user:memory-benchmark-owner",
+    "relation": "lent_running_shoes",
+    "value": "spare pair of running shoes lent to sister a few weeks ago, needs to remind her to return them",
+    "when": "2023-05-24T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "b86304ba",
+   "link": "same_event",
+   "p": 0.96,
+   "a": {
+    "id": "2ee1b0e7-e610-46b8-a6d8-269eadae5765",
+    "about": "user:memory-benchmark-owner",
+    "relation": "prefers_music_genre",
+    "value": "Has been listening to a lot of indie-rock lately",
+    "when": "2023-05-22T12:00:00.000Z"
+   },
+   "b": {
+    "id": "017e335b-95b4-4741-92a0-8181c10fd976",
+    "about": "user:memory-benchmark-owner",
+    "relation": "prefers_music_genre",
+    "value": "indie-rock, which they have been listening to a lot lately",
+    "when": "2023-05-28T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "07741c44",
+   "link": "updates",
+   "p": 0.8,
+   "a": {
+    "id": "78482f11-bbbf-4ba3-a043-92469547e3ad",
+    "about": "user:memory-benchmark-owner",
+    "relation": "is_writing_story",
+    "value": "A story about a mirror that shows characters alternate futures with deceased loved ones; Jack sees his dead father, Sarah her dead son, George his dead wife",
+    "when": "2023-07-19T12:00:00.000Z"
+   },
+   "b": {
+    "id": "e9727313-bfe1-4103-bfed-5b4e1fa650c0",
+    "about": "user:memory-benchmark-owner",
+    "relation": "revised_story_constraints",
+    "value": "The therapist cannot believe Susan/Sarah; it must be the husband who forcibly removes the mirror; the mirror ends up in San Francisco with Katherine (daughter) and George (father)",
+    "when": "2023-07-19T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "07741c44",
+   "link": "same_event",
+   "p": 0.82,
+   "a": {
+    "id": "8c5428b1-f017-4aab-b030-f86607a050b4",
+    "about": "user:memory-benchmark-owner",
+    "relation": "plans_donation",
+    "value": "donating old dress shoes to the local charity thrift store this Saturday",
+    "when": "2023-08-11T12:00:00.000Z"
+   },
+   "b": {
+    "id": "8eb206d5-97a4-4b07-b05f-33f427defd3d",
+    "about": "user:memory-benchmark-owner",
+    "relation": "plans_to_donate",
+    "value": "Old dress shoes to the local charity thrift store this Saturday",
+    "when": "2023-11-30T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "07741c44",
+   "link": "updates",
+   "p": 0.84,
+   "a": {
+    "id": "9edaae6e-95fc-472e-abe4-5f3bb05eb178",
+    "about": "user:memory-benchmark-owner",
+    "relation": "stores_sneakers",
+    "value": "old sneakers stored under the bed, starting to smell",
+    "when": "2023-08-11T12:00:00.000Z"
+   },
+   "b": {
+    "id": "e3c4ea14-dcc6-469a-b1d6-70a0cfcb67c6",
+    "about": "user:memory-benchmark-owner",
+    "relation": "plans_to_organize",
+    "value": "Closet this weekend, storing old sneakers in a shoe rack to free up space",
+    "when": "2023-11-30T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_68e94287",
+   "link": "same_event",
+   "p": 0.99,
+   "a": {
+    "id": "b8fceaca-1e91-45cd-bc71-26243db46ac7",
+    "about": "user:memory-benchmark-owner",
+    "relation": "completed_game",
+    "value": "Finished The Last of Us Part II on PS4 last month, taking around 20 hours to complete story mode and earn the platinum trophy",
+    "when": "2023-02-15T12:00:00.000Z"
+   },
+   "b": {
+    "id": "f3460f45-9407-4a6b-864c-d5554b3570d2",
+    "about": "user:memory-benchmark-owner",
+    "relation": "finished_game",
+    "value": "The Last of Us Part II on PS4",
+    "when": "2023-03-02T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_4cd9eba1",
+   "link": "same_event",
+   "p": 0.83,
+   "a": {
+    "id": "0ccadd2c-c3ed-4e73-bab7-e2e553a79b4e",
+    "about": "user:memory-benchmark-owner",
+    "relation": "participated_in",
+    "value": "\"Walk for a Cure\" charity walk on October 15th",
+    "when": "2023-04-19T12:00:00.000Z"
+   },
+   "b": {
+    "id": "405cf90b-a8eb-4503-9bdc-0c9119fa5329",
+    "about": "user:memory-benchmark-owner",
+    "relation": "participated_in_event",
+    "value": "Walk for a Cure charity event last week, walking 5 kilometers with work colleagues to raise funds, with selfies and music at the finish line",
+    "when": "2023-04-19T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "eace081b",
+   "link": "updates",
+   "p": 0.82,
+   "a": {
+    "id": "c4951a64-83f8-4df2-b83e-b1dbe194f5cf",
+    "about": "user:memory-benchmark-owner",
+    "relation": "planning_trip",
+    "value": "Birthday trip to Hawaii (Kauai)",
+    "when": "2023-05-22T12:00:00.000Z"
+   },
+   "b": {
+    "id": "a07d2f54-a45a-49e2-b44f-eb8b7b001a56",
+    "about": "user:memory-benchmark-owner",
+    "relation": "planning_birthday_trip",
+    "value": "Birthday trip to Hawaii (Oahu) in October",
+    "when": "2023-05-25T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "eace081b",
+   "link": "same_event",
+   "p": 0.83,
+   "a": {
+    "id": "949f3bb1-c7f1-48b9-95bb-7bd2912b0e02",
+    "about": "user:memory-benchmark-owner",
+    "relation": "completed_road_trip",
+    "value": "Road trip to Yellowstone National Park last month (April 2023), which was their longest road trip yet by time",
+    "when": "2023-05-25T12:00:00.000Z"
+   },
+   "b": {
+    "id": "a9f7b0a0-a743-40cf-a1a1-a870a8a30486",
+    "about": "user:memory-benchmark-owner",
+    "relation": "road_trip_stats",
+    "value": "Drove 2,500 miles, stayed at 5 different hotels, took 7 days total; favorite part was scenic drives through the Rocky Mountains and seeing geysers and hot springs at Yellowstone",
+    "when": "2023-05-25T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "06f04340",
+   "link": "updates",
+   "p": 0.87,
+   "a": {
+    "id": "dbde2f96-3980-453a-8d9e-b76ffc6ea019",
+    "about": "user:memory-benchmark-owner",
+    "relation": "current_breakfast",
+    "value": "oatmeal or scrambled eggs, looking for a healthier quick option",
+    "when": "2023-05-20T12:00:00.000Z"
+   },
+   "b": {
+    "id": "9fa8b9a0-8614-49dd-83a3-c32a1403a723",
+    "about": "user:memory-benchmark-owner",
+    "relation": "chose_walnut_chia_combo",
+    "value": "Plans to try the Walnut and Chia Seed combination for oatmeal with banana",
+    "when": "2023-05-25T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "72e3ee87",
+   "link": "updates",
+   "p": 0.91,
+   "a": {
+    "id": "39af11c0-3dfc-4658-8cb5-8ade13d0d32f",
+    "about": "user:memory-benchmark-owner",
+    "relation": "watches_crash_course",
+    "value": "User is currently on episode 10 of the Crash Course Science series",
+    "when": "2023-05-24T12:00:00.000Z"
+   },
+   "b": {
+    "id": "2144176b-df00-45b1-8d90-70093d58f9c2",
+    "about": "user:memory-benchmark-owner",
+    "relation": "completed_episodes",
+    "value": "Completed 50 episodes of Crash Course's Science series, finding it helpful for understanding science basics",
+    "when": "2023-05-29T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "72e3ee87",
+   "link": "updates",
+   "p": 0.96,
+   "a": {
+    "id": "d759aa09-c249-43cd-93b0-2b5805812b9e",
+    "about": "user:memory-benchmark-owner",
+    "relation": "considering_course",
+    "value": "User is considering taking an online course on Data Science with Python",
+    "when": "2023-05-24T12:00:00.000Z"
+   },
+   "b": {
+    "id": "ff1b8ff9-7292-4c8b-80d8-ecd29c36c13b",
+    "about": "user:memory-benchmark-owner",
+    "relation": "is_taking_course",
+    "value": "A data science / machine learning course on Coursera",
+    "when": "2023-05-29T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "88432d0a",
+   "link": "updates",
+   "p": 0.93,
+   "a": {
+    "id": "e060f67b-9717-4008-9dd4-8c476510f1a9",
+    "about": "user:memory-benchmark-owner",
+    "relation": "has_power_nap_habit",
+    "value": "Usually takes a 15-minute power nap at 3 pm; missed it yesterday",
+    "when": "2023-05-20T12:00:00.000Z"
+   },
+   "b": {
+    "id": "e2059d6b-ad40-476f-bf93-5c4f21aff94e",
+    "about": "user:memory-benchmark-owner",
+    "relation": "decided_schedule_plan",
+    "value": "Will follow the revised schedule with a 20-minute power nap at 3 pm, set an alarm, use the Pomodoro Technique, and take a power break before starting the presentation",
+    "when": "2023-05-20T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "88432d0a",
+   "link": "updates",
+   "p": 0.81,
+   "a": {
+    "id": "ec4a8a1f-59f2-49e8-a6ce-541c4332c7af",
+    "about": "user:memory-benchmark-owner",
+    "relation": "planning_hike",
+    "value": "Planning a hike with friends this weekend and looking for trail recommendations near their city",
+    "when": "2023-05-29T12:00:00.000Z"
+   },
+   "b": {
+    "id": "0ab9fd78-cc2f-4ef2-a697-d2d765b77024",
+    "about": "user:memory-benchmark-owner",
+    "relation": "chose_riverfront_trail",
+    "value": "User decided the Riverfront Trail sounds great and plans to ride it",
+    "when": "2023-05-30T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "88432d0a",
+   "link": "same_event",
+   "p": 0.96,
+   "a": {
+    "id": "e6645276-e66f-4fe6-9ff6-7216c7261891",
+    "about": "user:memory-benchmark-owner",
+    "relation": "baked",
+    "value": "a delicious whole wheat baguette last Saturday",
+    "when": "2023-05-20T12:00:00.000Z"
+   },
+   "b": {
+    "id": "bc5a772b-423d-41ef-b27d-4829308eb52c",
+    "about": "user:memory-benchmark-owner",
+    "relation": "baked_whole_wheat_baguette",
+    "value": "Made a delicious whole wheat baguette last Saturday while experimenting with different types of flour",
+    "when": "2023-05-30T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "88432d0a",
+   "link": "same_event",
+   "p": 0.93,
+   "a": {
+    "id": "e618e979-229d-46d4-973f-e8f3e7bd38c6",
+    "about": "user:memory-benchmark-owner",
+    "relation": "baked_chocolate_cake",
+    "value": "Baked a chocolate cake for their sister's birthday party using a new recipe found online; it turned out amazing and everyone loved it",
+    "when": "2023-05-21T12:00:00.000Z"
+   },
+   "b": {
+    "id": "c8e5aa13-8e8a-4a41-8a81-cda2411dcaa0",
+    "about": "user:memory-benchmark-owner",
+    "relation": "baked_chocolate_cake",
+    "value": "Baked a chocolate cake for their sister's birthday party last weekend, and it turned out amazing — espresso powder enhanced the flavor",
+    "when": "2023-05-30T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_f420262d",
+   "link": "same_event",
+   "p": 0.93,
+   "a": {
+    "id": "823a2ba6-f9c3-495c-a9cd-5bbcb038a643",
+    "about": "user:memory-benchmark-owner",
+    "relation": "reported_flight_incident",
+    "value": "Had a terrible experience with American Airlines' in-flight entertainment on a Feb 10 NY-to-LA flight; flight attendant apologized and gave a voucher for a free drink on the next flight",
+    "when": "2022-02-10T12:00:00.000Z"
+   },
+   "b": {
+    "id": "37fd3161-7e29-4e1a-8f14-211881e0d141",
+    "about": "user:memory-benchmark-owner",
+    "relation": "had_flight_experience",
+    "value": "Had a bad in-flight entertainment system experience on an American Airlines flight from New York to Los Angeles on February 10th",
+    "when": "2023-02-10T00:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_f420262d",
+   "link": "same_event",
+   "p": 0.84,
+   "a": {
+    "id": "823a2ba6-f9c3-495c-a9cd-5bbcb038a643",
+    "about": "user:memory-benchmark-owner",
+    "relation": "reported_flight_incident",
+    "value": "Had a terrible experience with American Airlines' in-flight entertainment on a Feb 10 NY-to-LA flight; flight attendant apologized and gave a voucher for a free drink on the next flight",
+    "when": "2022-02-10T12:00:00.000Z"
+   },
+   "b": {
+    "id": "2fcee2da-b14d-40f8-a46b-75024b4ab3e1",
+    "about": "user:memory-benchmark-owner",
+    "relation": "received_voucher",
+    "value": "A flight attendant was apologetic and offered the user a voucher for a free drink on their next American Airlines flight",
+    "when": "2023-02-20T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_f420262d",
+   "link": "updates",
+   "p": 0.86,
+   "a": {
+    "id": "f2fd58bf-97db-4aca-b8fe-ef5d55514395",
+    "about": "user:memory-benchmark-owner",
+    "relation": "planning_trip",
+    "value": "Planning a week-long trip to Miami, considering flying with American Airlines",
+    "when": "2023-02-20T12:00:00.000Z"
+   },
+   "b": {
+    "id": "4ac0b7fe-d7a4-437d-82e3-8533e1f26731",
+    "about": "user:memory-benchmark-owner",
+    "relation": "planning_trip",
+    "value": "Planning a trip to Miami, considering flying American Airlines or Delta, and booking a hotel near Miami airport",
+    "when": "2023-02-28T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "60036106",
+   "link": "updates",
+   "p": 0.89,
+   "a": {
+    "id": "ad9f9c02-e554-4df8-8939-beadeff5a8f9",
+    "about": "user:memory-benchmark-owner",
+    "relation": "interested_in",
+    "value": "History, ancient civilizations, and Impressionist art",
+    "when": "2023-05-25T12:00:00.000Z"
+   },
+   "b": {
+    "id": "66f06718-6a1d-4a6d-95ce-201b74954533",
+    "about": "user:memory-benchmark-owner",
+    "relation": "not_interested_in",
+    "value": "ancient history, ancient art, and animal-shaped vessels",
+    "when": "2023-05-27T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "60036106",
+   "link": "same_event",
+   "p": 0.98,
+   "a": {
+    "id": "c459e318-e040-4293-9c1e-79901f48e50c",
+    "about": "user:memory-benchmark-owner",
+    "relation": "previous_campaign_results",
+    "value": "Previous Facebook ad campaign ran 5 days, ~$100 budget, reached ~2,000 people, goal was website traffic and brand awareness, got 50 clicks to website with a product image ad",
+    "when": "2023-05-29T12:00:00.000Z"
+   },
+   "b": {
+    "id": "db34058e-8269-4064-9a3b-92dfe69f113b",
+    "about": "user:memory-benchmark-owner",
+    "relation": "previous_facebook_campaign",
+    "value": "Previous Facebook ad campaign reached around 2,000 people and resulted in 50 clicks to their website",
+    "when": "2023-05-29T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "b320f3f8",
+   "link": "updates",
+   "p": 0.87,
+   "a": {
+    "id": "2f5f0a6f-f30c-42e6-a18b-179787d31dea",
+    "about": "user:memory-benchmark-owner",
+    "relation": "watches_youtube_morning",
+    "value": "Has been watching YouTube videos while getting ready in the morning, which slows them down",
+    "when": "2023-05-20T12:00:00.000Z"
+   },
+   "b": {
+    "id": "fb29dd4f-1508-482a-8d85-b577e9290af6",
+    "about": "user:memory-benchmark-owner",
+    "relation": "decided_podcasts",
+    "value": "Decided to try listening to podcasts while getting ready in the morning instead of YouTube",
+    "when": "2023-05-20T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "cc6d1ec1",
+   "link": "same_event",
+   "p": 0.96,
+   "a": {
+    "id": "38ec9b9e-3481-48a8-8852-f69850abd9dc",
+    "about": "user:memory-benchmark-owner",
+    "relation": "plans_bird_feeder",
+    "value": "Considering getting a bird feeder for their backyard and wants an all-purpose seed mix to attract a variety of birds",
+    "when": "2023-05-21T12:00:00.000Z"
+   },
+   "b": {
+    "id": "9259f829-8fbf-4d27-8372-1f764c6c6422",
+    "about": "user:memory-benchmark-owner",
+    "relation": "plans_bird_feeder",
+    "value": "User is setting up a bird feeder in their backyard and wants seeds that attract a variety of birds",
+    "when": "2023-05-21T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_2655b836",
+   "link": "same_event",
+   "p": 0.95,
+   "a": {
+    "id": "1142c167-b813-486a-a202-af148c82d4db",
+    "about": "user:memory-benchmark-owner",
+    "relation": "uses_rewards_program",
+    "value": "User uses the rewards program at the Shell gas station near their office to earn points",
+    "when": "2023-04-10T12:00:00.000Z"
+   },
+   "b": {
+    "id": "5bbd89ef-3b36-46f9-941c-8babf5cb3804",
+    "about": "user:memory-benchmark-owner",
+    "relation": "uses_rewards_program",
+    "value": "fills up at the Shell gas station near their office and earns points through Shell's rewards program",
+    "when": "2023-04-10T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_2655b836",
+   "link": "same_event",
+   "p": 0.89,
+   "a": {
+    "id": "22db5cd6-6a74-45d8-a726-e96de9d5a189",
+    "about": "user:memory-benchmark-owner",
+    "relation": "gas_mileage_average",
+    "value": "User tracks gas mileage and averages 32 miles per gallon, better than their old car",
+    "when": "2023-04-10T12:00:00.000Z"
+   },
+   "b": {
+    "id": "63cc8297-d9ad-470e-b02b-00838164e774",
+    "about": "user:memory-benchmark-owner",
+    "relation": "gas_mileage",
+    "value": "User gets around 32 miles per gallon, better than their old car",
+    "when": "2023-04-10T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_2655b836",
+   "link": "same_event",
+   "p": 0.93,
+   "a": {
+    "id": "6257da3b-3e5c-4432-be5d-33f25b69e6e3",
+    "about": "user:memory-benchmark-owner",
+    "relation": "reports_fuel_efficiency",
+    "value": "getting around 32 miles per gallon in the city with the Honda Civic",
+    "when": "2023-04-10T12:00:00.000Z"
+   },
+   "b": {
+    "id": "63cc8297-d9ad-470e-b02b-00838164e774",
+    "about": "user:memory-benchmark-owner",
+    "relation": "gas_mileage",
+    "value": "User gets around 32 miles per gallon, better than their old car",
+    "when": "2023-04-10T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "cc5ded98",
+   "link": "updates",
+   "p": 0.98,
+   "a": {
+    "id": "0dd28cbb-4b34-477a-a8f9-976aaa2260cf",
+    "about": "user:memory-benchmark-owner",
+    "relation": "coding_habits",
+    "value": "Dedicates about an hour each day to coding exercises, uses the Pomodoro Technique to stay focused, and uses Pluralsight for Python tutorials",
+    "when": "2023-05-20T12:00:00.000Z"
+   },
+   "b": {
+    "id": "9afcb9a8-302c-4e13-b255-ad512a2c5afe",
+    "about": "user:memory-benchmark-owner",
+    "relation": "daily_coding_practice",
+    "value": "Dedicates about two hours each day to coding exercises",
+    "when": "2023-05-29T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_1916e0ea",
+   "link": "updates",
+   "p": 0.95,
+   "a": {
+    "id": "c3399740-9bdc-405b-b9c9-d3347b5f467f",
+    "about": "user:memory-benchmark-owner",
+    "relation": "morning_routine",
+    "value": "Morning routine includes a 10-minute meditation (done only 3 times this week), a cup of coffee, and checking emails; takes about 45 minutes to get ready for work",
+    "when": "2023-01-18T12:00:00.000Z"
+   },
+   "b": {
+    "id": "1192e9d4-087a-4987-82bd-932576d862f0",
+    "about": "user:memory-benchmark-owner",
+    "relation": "practices",
+    "value": "Meditation for 10 minutes every morning to set intentions and focus on goals for the day",
+    "when": "2023-02-28T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "9aaed6a3",
+   "link": "updates",
+   "p": 0.82,
+   "a": {
+    "id": "41740e98-fc57-448b-b3e1-304c82c9f83e",
+    "about": "user:memory-benchmark-owner",
+    "relation": "planning_brunch_gathering",
+    "value": "User is planning a weekend brunch get-together with friends at a new café near their house, a spot they previously visited with their parents and liked for its vibe and food.",
+    "when": "2023-05-28T12:00:00.000Z"
+   },
+   "b": {
+    "id": "bacfa6d4-b633-4f70-9d9b-0b8b8235f2c6",
+    "about": "user:memory-benchmark-owner",
+    "relation": "prefers_familiar_spot",
+    "value": "User decided to return to the familiar café rather than try a new place, because of its great atmosphere and delicious food.",
+    "when": "2023-05-28T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "2788b940",
+   "link": "updates",
+   "p": 0.91,
+   "a": {
+    "id": "6e06999a-915f-4dd3-9314-0d19ad0ed683",
+    "about": "user:memory-benchmark-owner",
+    "relation": "plans_gratitude_habit",
+    "value": "Plans to start a daily habit of writing down three things they're grateful for, using a dedicated physical journal",
+    "when": "2023-05-21T12:00:00.000Z"
+   },
+   "b": {
+    "id": "87ac71cd-c97a-4fd4-b94b-8ddeb73b8729",
+    "about": "user:memory-benchmark-owner",
+    "relation": "keeps_gratitude_journal",
+    "value": "User keeps a gratitude journal, writing down three things they are grateful for each day, which helps them clear their mind and focus on the positive",
+    "when": "2023-05-23T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "7024f17c",
+   "link": "same_event",
+   "p": 0.88,
+   "a": {
+    "id": "2186462b-7ffe-4d01-a7b7-45a7164d6a9b",
+    "about": "user:memory-benchmark-owner",
+    "relation": "shopping_for",
+    "value": "New sandals for summer, considering a pair with a heel (2-3 inches) that can dress up or down",
+    "when": "2023-05-20T12:00:00.000Z"
+   },
+   "b": {
+    "id": "b01a3e28-2f09-4c13-97cb-5400c62e2076",
+    "about": "user:memory-benchmark-owner",
+    "relation": "wants_to_buy",
+    "value": "A new pair of comfortable sandals with a higher heel",
+    "when": "2023-05-22T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "7024f17c",
+   "link": "updates",
+   "p": 0.9299999999999999,
+   "a": {
+    "id": "8f51c19d-433c-4c0a-b53b-497e4985ac41",
+    "about": "user:memory-benchmark-owner",
+    "relation": "practices_yoga",
+    "value": "Used to practice yoga three times a week for 2 hours each session, but has been slacking off for the past month and is trying to get back into it",
+    "when": "2023-05-22T12:00:00.000Z"
+   },
+   "b": {
+    "id": "a57960cc-1bb1-466f-a731-292c88211e03",
+    "about": "user:memory-benchmark-owner",
+    "relation": "returning_to_yoga",
+    "value": "User is getting back into yoga this week, starting with one or two sessions a week",
+    "when": "2023-05-23T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "gpt4_4fc4f797",
+   "link": "updates",
+   "p": 0.83,
+   "a": {
+    "id": "47c2fede-68bf-4925-b69c-1336b6ff4f80",
+    "about": "user:memory-benchmark-owner",
+    "relation": "makes_overnight_oats",
+    "value": "Makes overnight oats every night before bed, adding honey and cinnamon",
+    "when": "2023-02-16T12:00:00.000Z"
+   },
+   "b": {
+    "id": "bbe0a28d-f82c-4470-9508-7a220ea69c39",
+    "about": "user:memory-benchmark-owner",
+    "relation": "has_new_habit",
+    "value": "making overnight oats with fruit and nuts",
+    "when": "2023-02-21T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "4b24c848",
+   "link": "updates",
+   "p": 0.85,
+   "a": {
+    "id": "5f145a91-e7cc-4699-85be-68c3c762ba90",
+    "about": "user:memory-benchmark-owner",
+    "relation": "planning_summer_trip",
+    "value": "User is planning a summer trip and considering destinations in Europe or Asia",
+    "when": "2023-07-28T12:00:00.000Z"
+   },
+   "b": {
+    "id": "56e100e0-2f13-47f0-b0ed-59cf72504600",
+    "about": "user:memory-benchmark-owner",
+    "relation": "decided_to_explore",
+    "value": "Rails of Europe, because they like the idea of building train routes across a map of Europe plus the engine-building and goods delivery complexity",
+    "when": "2023-08-28T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "4b24c848",
+   "link": "updates",
+   "p": 0.94,
+   "a": {
+    "id": "2e9646bd-22fc-46b9-b5f1-d9e167e7524b",
+    "about": "user:memory-benchmark-owner",
+    "relation": "bought_items",
+    "value": "three tops from H&M and is loving their summer collection",
+    "when": "2023-08-11T12:00:00.000Z"
+   },
+   "b": {
+    "id": "5eae0888-a7d4-4f81-9892-2ed46aa7e307",
+    "about": "user:memory-benchmark-owner",
+    "relation": "owns_tops_from_hm",
+    "value": "User already owns five tops from H&M and plans to buy a few more",
+    "when": "2023-09-30T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "352ab8bd",
+   "link": "same_event",
+   "p": 0.8,
+   "a": {
+    "id": "4f99d885-4a38-44a4-b473-b1c8ac6f9666",
+    "about": "user:memory-benchmark-owner",
+    "relation": "caught_trout_using",
+    "value": "a new silver spinner bait on their last fishing trip to Lake Tahoe",
+    "when": "2023-05-26T12:00:00.000Z"
+   },
+   "b": {
+    "id": "7561fc0b-2cee-431e-a324-bbf908f725bb",
+    "about": "user:memory-benchmark-owner",
+    "relation": "visited",
+    "value": "Lake Tahoe recently and caught some nice trout there",
+    "when": "2023-05-26T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "352ab8bd",
+   "link": "same_event",
+   "p": 0.86,
+   "a": {
+    "id": "5db9175b-1b58-4d73-8c58-ee0e337baff6",
+    "about": "user:memory-benchmark-owner",
+    "relation": "purchased_for_sister",
+    "value": "A silver necklace from a new jewelry store downtown for around $120",
+    "when": "2023-05-28T12:00:00.000Z"
+   },
+   "b": {
+    "id": "c68d1a3c-cd6f-4433-ae45-51303ad06fb1",
+    "about": "user:memory-benchmark-owner",
+    "relation": "bought_sister_gift",
+    "value": "Bought a birthday gift for their sister three weeks ago: a beautiful silver necklace from a popular jewelry brand, using a loyalty card for a 10% discount",
+    "when": "2023-05-29T12:00:00.000Z"
+   }
+  },
+  {
+   "qid": "91b15a6e",
+   "link": "updates",
+   "p": 0.8200000000000001,
+   "a": {
+    "id": "ded9132a-1c29-4fd3-96d0-5d7275726ae2",
+    "about": "user:memory-benchmark-owner",
+    "relation": "fascinated_by",
+    "value": "The intricate details and fluid lines of Art Nouveau pieces, which they have seen in museums",
+    "when": "2023-05-22T12:00:00.000Z"
+   },
+   "b": {
+    "id": "9d37eaf4-8026-496b-aa65-8cfe64007324",
+    "about": "user:memory-benchmark-owner",
+    "relation": "not_interested_in",
+    "value": "art and cultural artifacts in museums",
+    "when": "2023-05-23T12:00:00.000Z"
+   }
+  }
+ ]
+}
