@@ -228,7 +228,7 @@ describe('memory-copy — no correction string stays inline', () => {
    */
   const GENERIC = new Set(['Save', 'Cancel', 'Try again']);
 
-  const constants = Object.entries(copy)
+  const constants = Object.entries(copy as Record<string, unknown>)
     .filter((e): e is [string, string] => typeof e[1] === 'string')
     .map(([name, value]) => ({ name, value: value.trim() }));
   const badges = Object.values(MEMORY_CLOSURE_BADGE).map((value) => ({
