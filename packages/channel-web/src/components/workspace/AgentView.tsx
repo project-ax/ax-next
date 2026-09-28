@@ -19,10 +19,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Archive, ArrowRight, ChevronLeft, Menu, PanelRight } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useIsCompact } from '@/lib/use-compact';
+import { useConversationMemory } from '@/lib/use-conversation-memory';
+import { jumpToSource } from '@/lib/thread-jump';
+import { useUser } from '@/lib/user-context';
 import {
   NAV_TRIGGER_ATTR,
   focusFirstWhenReady,
@@ -69,6 +73,8 @@ import { AgentConversation, type ApprovalRead } from './AgentConversation';
 import { AgentFiles } from './AgentFiles';
 import { MemorySurface } from './FactsMemory';
 import { AgentRail, AgentRailContent } from './AgentRail';
+import { LearnedAnnouncer, LearnedInChat } from './LearnedInChat';
+import { learnedAnnouncement, learnedToggleLabel } from './memory-copy';
 import { AgentStateLabel, AgentTile } from './bits';
 import type {
   ActivityEvent,
@@ -138,6 +144,11 @@ interface Props {
   activityError?: string | null;
   agents: WorkspaceAgent[];
   onBack: () => void;
+  /**
+   * Opens Settings on AI model keys — the rail's paused-memory "Fix this"
+   * (TASK-627). Offered only to an admin; the server gates the tab anyway.
+   */
+  onOpenModelKeys?: (() => void) | undefined;
   /**
    * Opens the shell's off-canvas nav (TASK-404). Only ever passed — and only
    * ever rendered — below `md`, where the sidebar is a `Sheet` and this pane
@@ -275,6 +286,7 @@ export function AgentView({
   activityError,
   agents,
   onBack,
+  onOpenModelKeys,
   onOpenNav,
   onApprove,
   onDismiss,
@@ -330,6 +342,33 @@ export function AgentView({
    * on the page able to clear it. This is the retry's way in.
    */
   const [pastReload, setPastReload] = useState(0);
+
+  /*
+    "What I learned in this chat" (TASK-627). The state lives HERE, not in the
+    rail: below `md` the rail is a `Sheet` whose content is unmounted while it
+    is shut, and the "N new" count on its toggle and the batch announcement
+    both have to keep working exactly then. It follows the conversation ON
+    SCREEN — a past one when the rail opened one — because "from your message"
+    points into the thread beside it. `undefined` while that id is not known
+    yet, so the block says "checking" rather than "nothing new".
+  */
+  const learned = useConversationMemory({
+    agentId,
+    conversationId:
+      detail === null
+        ? undefined
+        : pastId !== null
+          ? (pastDetail?.conversationId ?? undefined)
+          : detail.conversationId,
+    enabled: detail?.memory.factsAvailable === true,
+    announce: learnedAnnouncement,
+  });
+  const { markSeen: markLearnedSeen, unseen: learnedUnseen } = learned;
+  // Below `md`, opening the rail is what counts as having seen the block.
+  useEffect(() => {
+    if (compact && railOpen && learnedUnseen > 0) markLearnedSeen();
+  }, [compact, railOpen, learnedUnseen, markLearnedSeen]);
+  const isAdmin = useUser()?.role === 'admin';
 
   /**
    * The turn in flight: what we sent, what has streamed back, how it ended.
@@ -946,6 +985,35 @@ export function AgentView({
   const past = detail.past.find((p) => p.id === pastId) ?? null;
 
   /*
+    One block element for both rail shapes. Below `md`, "from your message"
+    closes the sheet first — it covers the very thread it is pointing into.
+  */
+  const learnedBlock = (
+    <LearnedInChat
+      memory={learned}
+      agentId={agentId}
+      visibility={
+        detail.memory.factsVisibility === 'team' || detail.memory.factsVisibility === 'personal'
+          ? detail.memory.factsVisibility
+          : undefined
+      }
+      onOpenModelKeys={isAdmin ? onOpenModelKeys : undefined}
+      onJumpToSource={(turnId) => {
+        if (compact) {
+          setRailOpen(false);
+          setTimeout(() => jumpToSource(turnId), 0);
+          return;
+        }
+        jumpToSource(turnId);
+      }}
+      onSeeAll={() => {
+        if (compact) setRailOpen(false);
+        onTab('memory');
+      }}
+    />
+  );
+
+  /*
     The transient turn, appended to the durable thread while it is in flight.
     It disappears on `done`, when the re-read brings back the server's version
     of the same two messages.
@@ -1183,11 +1251,22 @@ export function AgentView({
             <Button
               variant="ghost"
               size="icon"
-              className="ml-auto"
               onClick={() => setRailOpen(true)}
-              aria-label="Agent details"
+              aria-label={
+                learnedUnseen > 0 ? learnedToggleLabel(learnedUnseen) : 'Agent details'
+              }
+              className="relative ml-auto"
             >
               <PanelRight size={16} />
+              {/* New memories show here while the rail is shut — never a toast. */}
+              {learnedUnseen > 0 && (
+                <Badge
+                  aria-hidden="true"
+                  className="absolute -right-1 -top-1 h-4 min-w-4 justify-center px-1 text-[10px] leading-none"
+                >
+                  {learnedUnseen}
+                </Badge>
+              )}
             </Button>
           )}
         </div>
@@ -1574,6 +1653,11 @@ export function AgentView({
           chrome that forced the split, and `use-compact.ts` for why the branch
           is in JS rather than a `md:` class.
         */}
+        {/*
+          Mounted on every tab and outside the rail sheet, so a batch is
+          announced wherever the person is (TASK-627).
+        */}
+        <LearnedAnnouncer announcement={learned.announcement} />
         {tab === 'chat' &&
           (compact ? (
             <Sheet open={railOpen} onOpenChange={setRailOpen}>
@@ -1592,6 +1676,7 @@ export function AgentView({
                 <SheetTitle className="sr-only">Agent details</SheetTitle>
                 <AgentRailContent
                   detail={detail}
+                  learned={learnedBlock}
                   openPastId={pastId}
                   /*
                     CLOSE ON PICK, same rule the nav sheet follows. Opening a
@@ -1628,6 +1713,7 @@ export function AgentView({
           ) : (
             <AgentRail
               detail={detail}
+              learned={learnedBlock}
               openPastId={pastId}
               onOpenPast={setPastId}
             />

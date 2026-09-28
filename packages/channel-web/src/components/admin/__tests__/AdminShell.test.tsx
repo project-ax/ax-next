@@ -148,3 +148,29 @@ describe('AdminShell', () => {
     expect(screen.queryByRole('button', { name: 'Connector catalog' })).toBeNull();
   });
 });
+
+describe('AdminShell — initialTab (TASK-627)', () => {
+  function active(name: string): boolean {
+    return Boolean(screen.getByRole('button', { name }).getAttribute('data-active'));
+  }
+
+  it('opens on the tab it was asked for — the rail sends admins to AI model keys', () => {
+    render(
+      <UserProvider value={fakeUser}>
+        <AdminShell isAdmin onClose={vi.fn()} initialTab="providers" />
+      </UserProvider>,
+    );
+    expect(active('AI model keys')).toBe(true);
+    expect(active('Skills')).toBe(false);
+  });
+
+  it('ignores an admin-only tab for someone who is not an admin', () => {
+    render(
+      <UserProvider value={{ ...fakeUser, role: 'user' }}>
+        <AdminShell isAdmin={false} onClose={vi.fn()} initialTab="providers" />
+      </UserProvider>,
+    );
+    expect(active('Skills')).toBe(true);
+    expect(screen.queryByRole('button', { name: 'AI model keys' })).toBeNull();
+  });
+});

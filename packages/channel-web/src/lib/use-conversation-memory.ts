@@ -82,7 +82,11 @@ export function useConversationMemory({
   announce,
 }: {
   agentId: string;
-  conversationId: string | null;
+  /**
+   * The conversation to follow. `null` = none yet (nothing said, so nothing
+   * learned). `undefined` = not known yet: the block says it is checking.
+   */
+  conversationId: string | null | undefined;
   /** False when this workspace has no facts memory at all. */
   enabled: boolean;
   /** Builds the batch sentence — the words live in `memory-copy.ts`. */
@@ -121,6 +125,10 @@ export function useConversationMemory({
     batchSeq.current = 0;
     if (!enabled) {
       setStatus('not-enabled');
+      return;
+    }
+    if (conversationId === undefined) {
+      setStatus('loading');
       return;
     }
     if (conversationId === null) {

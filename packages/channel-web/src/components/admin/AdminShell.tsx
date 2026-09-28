@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState } from 'react';
-import { AdminSidebar, type AdminTabId } from './AdminSidebar';
+import { ADMIN_NAV, AdminSidebar, type AdminTabId } from './AdminSidebar';
 import { AdminPane } from './AdminPane';
 import { AdminPaneHeader } from './AdminPaneHeader';
 import { ProvidersPanel } from './ProvidersPanel';
@@ -32,7 +32,16 @@ export interface AdminShellProps {
    * and worth keeping; it just has to be the CALLER's destination.
    */
   backLabel?: string;
+  /**
+   * The tab to open on (TASK-627: the rail's paused-memory "Fix this" opens
+   * AI model keys). An admin-only tab is honoured only for an admin; anyone
+   * else lands on the default, the same as the in-shell nav would allow.
+   */
+  initialTab?: AdminTabId | undefined;
 }
+
+/** The tabs only an admin's nav shows. */
+const ADMIN_ONLY_TABS: ReadonlySet<AdminTabId> = new Set(ADMIN_NAV.map((item) => item.id));
 
 interface TabMeta {
   eyebrow: string;
@@ -51,8 +60,17 @@ const TAB_META: Record<AdminTabId, TabMeta> = {
   branding: { eyebrow: 'Admin', title: 'Branding' },
 };
 
-export function AdminShell({ isAdmin, onClose, backLabel = 'chat' }: AdminShellProps) {
-  const [activeTab, setActiveTab] = useState<AdminTabId>('skills');
+export function AdminShell({
+  isAdmin,
+  onClose,
+  backLabel = 'chat',
+  initialTab,
+}: AdminShellProps) {
+  const [activeTab, setActiveTab] = useState<AdminTabId>(() =>
+    initialTab !== undefined && (isAdmin || !ADMIN_ONLY_TABS.has(initialTab))
+      ? initialTab
+      : 'skills',
+  );
   const meta = TAB_META[activeTab];
 
   // TASK-510 — opening Settings takes focus INTO it.

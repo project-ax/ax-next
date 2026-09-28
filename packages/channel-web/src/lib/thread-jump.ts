@@ -18,6 +18,15 @@
 export const TURN_ID_ATTR = 'data-turn-id';
 export const MEMORY_SOURCE_ATTR = 'data-memory-source';
 
+/**
+ * How a pointed-at message looks: thread-find's warning-soft fill and
+ * warning edge (`ThreadFind.tsx`), so "this is the bit you asked about" looks
+ * the same whichever control asked. Only a tint BEHIND the message — nothing
+ * is painted as warning text on it, so there is no new contrast pair.
+ */
+export const MEMORY_SOURCE_CLASS =
+  'transition-colors data-[memory-source]:bg-warning-soft data-[memory-source]:ring-1 data-[memory-source]:ring-warning';
+
 /** How long a jumped-to message stays highlighted. */
 export const SOURCE_FLASH_MS = 2_000;
 

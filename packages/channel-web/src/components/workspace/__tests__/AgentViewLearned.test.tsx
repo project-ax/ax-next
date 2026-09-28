@@ -1,0 +1,222 @@
+/**
+ * "What I learned in this chat" as `AgentView` wires it (TASK-627): where the
+ * block sits in the rail, and the parts that only exist because the rail is a
+ * `Sheet` below `md` — the count on the toggle, the announcement while the
+ * sheet is shut, and "from your message" closing the sheet before it jumps.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import {
+  workspaceApi,
+  type AgentDetail,
+  type FactMemoryStatement,
+  type MemoryEventFrame,
+  type WorkspaceAgent,
+} from '@/lib/workspace-api';
+import { UserProvider } from '@/lib/user-context';
+import type { AgentTab } from '@/lib/workspace-route';
+import { MEMORY_SOURCE_ATTR } from '@/lib/thread-jump';
+import { AgentView } from '../AgentView';
+import {
+  LEARNED_FROM_YOUR_MESSAGE,
+  LEARNED_PAUSED,
+  LEARNED_PAUSED_ACTION,
+  LEARNED_SEE_ALL,
+  LEARNED_TITLE,
+  learnedAnnouncement,
+  learnedToggleLabel,
+} from '../memory-copy';
+import { rail as railFixture } from './rail-fixture';
+import { clearViewport, setViewport } from './viewport';
+
+vi.mock('@/lib/workspace-api', async () => {
+  const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
+  return {
+    ...actual,
+    workspaceApi: {
+      agent: vi.fn(),
+      rail: vi.fn(async () => railFixture()),
+      revokeGrant: vi.fn(),
+      sendMessage: vi.fn(),
+      streamReply: vi.fn(),
+      recallMemory: vi.fn(),
+      memoryEvents: vi.fn(),
+    },
+  };
+});
+
+const agentMock = vi.mocked(workspaceApi.agent);
+const recall = vi.mocked(workspaceApi.recallMemory);
+const events = vi.mocked(workspaceApi.memoryEvents);
+
+const quill: WorkspaceAgent = {
+  id: 'a-quill',
+  name: 'Quill',
+  state: 'resting',
+  now: null,
+  counter: null,
+  startedAt: null,
+  stoppedReason: null,
+};
+
+function detail(over: Partial<AgentDetail> = {}): AgentDetail {
+  return {
+    agent: quill,
+    conversationId: 'c-now',
+    thread: [{ kind: 'user', id: 't1', text: 'I just moved to Denver' }],
+    decisions: { status: 'ok' },
+    past: [],
+    memory: { rules: { status: 'unavailable', doc: null }, factsAvailable: true },
+    ...over,
+  };
+}
+
+function st(id: string, over: Partial<FactMemoryStatement> = {}): FactMemoryStatement {
+  return {
+    id,
+    about: 'user',
+    relation: 'lives_in',
+    value: `v-${id}`,
+    when: '2026-09-01T00:00:00.000Z',
+    ...over,
+  };
+}
+
+let push: (f: MemoryEventFrame) => void = () => {};
+
+function renderView({
+  role = 'user' as 'user' | 'admin',
+  onTab = vi.fn<(t: AgentTab) => void>(),
+  onOpenModelKeys = vi.fn(),
+} = {}) {
+  render(
+    <UserProvider value={{ id: 'u1', email: 'u@example.com', name: 'Uma', role }}>
+      <AgentView
+        agentId="a-quill"
+        tab="chat"
+        onTab={onTab}
+        decisions={[]}
+        threadGrants={[]}
+        onGrantResolved={() => {}}
+        onGranted={async () => true}
+        onApprove={async () => {}}
+        onDismiss={async () => {}}
+        onUndo={async () => {}}
+        busyIds={new Set<string>()}
+        notices={new Map<string, string>()}
+        decisionsError={null}
+        onDecisionRaised={() => {}}
+        activity={[]}
+        agents={[quill]}
+        onBack={() => {}}
+        onOpenModelKeys={onOpenModelKeys}
+        version={0}
+        pendingReply={null}
+        onPendingReplyConsumed={() => {}}
+        onChanged={async () => {}}
+      />
+    </UserProvider>,
+  );
+  return { onTab, onOpenModelKeys };
+}
+
+async function streamOpen() {
+  await waitFor(() => expect(events).toHaveBeenCalled());
+}
+
+async function batch(all: FactMemoryStatement[]) {
+  recall.mockResolvedValueOnce({ statements: all, degraded: [] });
+  act(() => push({ kind: 'activity', state: 'recorded', statementIds: all.map((s) => s.id) }));
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  agentMock.mockResolvedValue(detail());
+  recall.mockResolvedValue({ statements: [], degraded: [] });
+  events.mockImplementation((_c, onFrame) => {
+    push = onFrame;
+    return new Promise(() => {});
+  });
+});
+
+afterEach(() => clearViewport());
+
+describe('AgentView — "What I learned in this chat"', () => {
+  it('sits directly under "Right now", above the permission sections, and follows this conversation', async () => {
+    renderView();
+    await screen.findByText(LEARNED_TITLE);
+    const headings = screen.getAllByRole('heading', { level: 3 }).map((h) => h.textContent);
+    const i = headings.findIndex((h) => h?.startsWith(LEARNED_TITLE));
+    expect(headings[i - 1]).toBe('Right now');
+    expect(headings[i + 1]).toBe('What it may do alone');
+    await streamOpen();
+    expect(recall).toHaveBeenCalledWith('a-quill', { conversationId: 'c-now' });
+    expect(events.mock.calls[0]?.[0]).toBe('c-now');
+  });
+
+  it('reads nothing when this workspace has no facts memory', async () => {
+    agentMock.mockResolvedValue(
+      detail({ memory: { rules: { status: 'unavailable', doc: null } } }),
+    );
+    renderView();
+    await screen.findByText(LEARNED_TITLE);
+    expect(recall).not.toHaveBeenCalled();
+    expect(events).not.toHaveBeenCalled();
+  });
+
+  it('See all memory opens the Memory tab', async () => {
+    const { onTab } = renderView();
+    fireEvent.click(await screen.findByRole('button', { name: LEARNED_SEE_ALL }));
+    expect(onTab).toHaveBeenCalledWith('memory');
+  });
+
+  it('offers "Fix this" on paused memory to an admin only', async () => {
+    const { onOpenModelKeys } = renderView({ role: 'admin' });
+    await streamOpen();
+    act(() => push({ kind: 'status', extraction: 'paused', conversation: 'idle' }));
+    fireEvent.click(screen.getByRole('button', { name: LEARNED_PAUSED_ACTION }));
+    expect(onOpenModelKeys).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not offer "Fix this" to someone who cannot', async () => {
+    renderView({ role: 'user' });
+    await streamOpen();
+    act(() => push({ kind: 'status', extraction: 'paused', conversation: 'idle' }));
+    expect(screen.getByText(LEARNED_PAUSED)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: LEARNED_PAUSED_ACTION })).toBeNull();
+  });
+});
+
+describe('AgentView — the block below md', () => {
+  it('counts new memories on the rail toggle and announces them while the sheet is shut', async () => {
+    setViewport(true);
+    renderView();
+    await streamOpen();
+    await batch([st('a'), st('b')]);
+
+    const toggle = await screen.findByRole('button', { name: learnedToggleLabel(2) });
+    expect(within(toggle).getByText('2')).toBeTruthy();
+    const region = document.querySelector('[data-learned-announcer]');
+    await waitFor(() => expect(region?.textContent).toBe(learnedAnnouncement(2)));
+
+    // Opening the sheet is what counts as seeing it.
+    fireEvent.click(toggle);
+    await screen.findByRole('dialog');
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: learnedToggleLabel(2) })).toBeNull(),
+    );
+  });
+
+  it('"from your message" closes the sheet, then highlights the message', async () => {
+    setViewport(true);
+    recall.mockResolvedValue({ statements: [st('a', { sourceTurnId: 't1' })], degraded: [] });
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: 'Agent details' }));
+    const sheet = await screen.findByRole('dialog');
+    fireEvent.click(await within(sheet).findByRole('button', { name: LEARNED_FROM_YOUR_MESSAGE }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    const message = screen.getByTestId('workspace-user-message');
+    await waitFor(() => expect(message.getAttribute(MEMORY_SOURCE_ATTR)).toBe('flash'));
+  });
+});
