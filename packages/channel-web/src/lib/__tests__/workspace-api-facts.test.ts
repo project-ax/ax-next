@@ -128,4 +128,20 @@ describe('workspaceApi facts memory boundary', () => {
       );
     }
   });
+
+  it('unforgetMemory resolves only a { restored: string[] } body', async () => {
+    respondWith({ restored: ['m1'] });
+    await expect(workspaceApi.unforgetMemory('a1', ['m1'])).resolves.toEqual({
+      restored: ['m1'],
+    });
+    respondWith({ restored: [] });
+    await expect(workspaceApi.unforgetMemory('a1', ['m1'])).resolves.toEqual({ restored: [] });
+
+    for (const body of [{}, null, { restored: 'm1' }, { restored: [7] }, { forgotten: true }, []]) {
+      respondWith(body);
+      await expect(workspaceApi.unforgetMemory('a1', ['m1'])).rejects.toBeInstanceOf(
+        WorkspaceShapeError,
+      );
+    }
+  });
 });

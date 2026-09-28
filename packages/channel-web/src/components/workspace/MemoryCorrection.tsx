@@ -7,14 +7,13 @@
  * same words and the same receipt, instead of growing their own. The words
  * themselves are in `memory-copy.ts`; nothing in this file spells one out.
  *
- * WHY UNDO RE-SAVES. The server has no "un-forget": `memory:forget` closes a
- * row and that is final. So Undo puts the memory back by saving the same
- * subject, relation and value again, as the person who pressed it — a plain
- * save, not a Fix (a Fix also names the row it corrects, and why). History
- * keeps the forgotten row, which is honest: it was
- * forgotten, for a few seconds, and then it was remembered again. The forget
- * itself is never deferred to make Undo cheaper; a person who asks us to
- * forget something and closes the tab has had it forgotten.
+ * WHY UNDO UN-FORGETS. Undo calls `memory:unforget` (TASK-630), which puts
+ * the SAME row back with the provenance it had. It used to re-save the
+ * subject, relation and value as the person who pressed Undo — and a
+ * person-saved row outranks newer values the agent learned, so one Undo
+ * silently changed which fact the profile shows. The forget itself is never
+ * deferred to make Undo cheaper; a person who asks us to forget something
+ * and closes the tab has had it forgotten.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -295,7 +294,7 @@ export type MemoryReceiptState =
  * The receipt and its clock, for a surface that offers Fix and Forget.
  *
  * `onChanged` runs after any write that changed what is in memory (the Undo
- * re-save), so the surface can re-read. `element` is the receipt drawn for the
+ * un-forget), so the surface can re-read. `element` is the receipt drawn for the
  * Memory tab (pinned to the bottom of the scroll area); a surface with other
  * room — the rail, an inline chip — renders `MemoryReceipt` itself from
  * `receipt`, `now` and `undo`, with its own `className`.
@@ -341,11 +340,10 @@ export function useMemoryReceipt(agentId: string, onChanged: () => void) {
           : r,
       );
       try {
-        await workspaceApi.rememberMemory(agentId, {
-          about: row.about,
-          relation: row.relation,
-          value: row.value,
-        });
+        // An empty `restored` means the row was no longer forgotten (a retry
+        // after a lost response, a second tab) — it IS in effect, so the
+        // receipt tells the truth, and the re-read below shows the rest.
+        await workspaceApi.unforgetMemory(agentId, [row.id]);
         start((since) => ({ kind: 'restored', since }));
         onChanged();
       } catch {

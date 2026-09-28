@@ -2487,6 +2487,70 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   const now = deps.now ?? ((): Date => new Date());
 
   /**
+   * The shared shape of the two `{ ids }` memory routes — Forget and its Undo
+   * (TASK-630): auth, reachable agent, the service present, a body that is
+   * exactly `{ ids: string[] }` of 1..100 non-empty ids. `run` does the call
+   * and returns the 200 body; an `invalid-payload` from the hook is a 400.
+   */
+  async function idsFactsRoute(
+    req: RouteRequest,
+    res: RouteResponse,
+    hook: string,
+    run: (ctx: AgentContext, ids: string[]) => Promise<unknown>,
+  ): Promise<void> {
+    const userId = await authOr401(bus, initCtx, req, res);
+    if (userId === null) return;
+    const agentId = req.params.agentId ?? '';
+    if (agentId.length === 0) {
+      res.status(400).json({ error: 'missing-agent-id' });
+      return;
+    }
+    const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+    if (agent === null) return;
+
+    if (!bus.hasService(hook)) {
+      res.status(503).json({ error: 'memory-unavailable' });
+      return;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(req.body.toString('utf-8'));
+    } catch {
+      res.status(400).json({ error: 'invalid-json' });
+      return;
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      res.status(400).json({ error: 'invalid-memory-request' });
+      return;
+    }
+    const body = parsed as Record<string, unknown>;
+    if (
+      Object.keys(body).some((k) => k !== 'ids') ||
+      !Array.isArray(body.ids) ||
+      body.ids.length === 0 ||
+      body.ids.length > 100 ||
+      body.ids.some((id) => typeof id !== 'string' || id === '')
+    ) {
+      res.status(400).json({ error: 'invalid-memory-request' });
+      return;
+    }
+
+    try {
+      // Awaited BEFORE `res.status` is touched: a failed call must not have
+      // already stamped a 200 on the response.
+      const out = await run(agentWorkspaceCtx(agentId, userId), body.ids as string[]);
+      res.status(200).json(out);
+    } catch (err) {
+      if (err instanceof PluginError && err.code === 'invalid-payload') {
+        res.status(400).json({ error: 'invalid-memory-request' });
+        return;
+      }
+      throw err;
+    }
+  }
+
+  /**
    * Every conversation the caller owns under one agent, newest first.
    *
    * `strict` decides what a failure means. On the agent detail panel this list
@@ -5428,58 +5492,33 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     },
 
     async forgetFacts(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const userId = await authOr401(bus, initCtx, req, res);
-      if (userId === null) return;
-      const agentId = req.params.agentId ?? '';
-      if (agentId.length === 0) {
-        res.status(400).json({ error: 'missing-agent-id' });
-        return;
-      }
-      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
-      if (agent === null) return;
+      await idsFactsRoute(req, res, 'memory:forget', async (ctx, ids) => {
+        await bus.call<unknown, unknown>('memory:forget', ctx, { ids });
+        return { forgotten: true };
+      });
+    },
 
-      if (!bus.hasService('memory:forget')) {
-        res.status(503).json({ error: 'memory-unavailable' });
-        return;
-      }
-
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(req.body.toString('utf-8'));
-      } catch {
-        res.status(400).json({ error: 'invalid-json' });
-        return;
-      }
-      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-        res.status(400).json({ error: 'invalid-memory-request' });
-        return;
-      }
-      const body = parsed as Record<string, unknown>;
-      if (
-        Object.keys(body).some((k) => k !== 'ids') ||
-        !Array.isArray(body.ids) ||
-        body.ids.length === 0 ||
-        body.ids.length > 100 ||
-        body.ids.some((id) => typeof id !== 'string' || id === '')
-      ) {
-        res.status(400).json({ error: 'invalid-memory-request' });
-        return;
-      }
-
-      try {
-        await bus.call<unknown, unknown>(
-          'memory:forget',
-          agentWorkspaceCtx(agentId, userId),
-          { ids: body.ids },
+    /**
+     * POST /api/workspace/agents/:agentId/memory/unforget — the Forget
+     * receipt's Undo (TASK-630). Puts the forgotten rows back as they were,
+     * with the provenance they had: `memory:unforget` re-opens the SAME row
+     * rather than re-saving it as the person who pressed Undo. The body shape
+     * and the scope are `forget`'s, so whoever could forget a memory here can
+     * bring it back and nobody else.
+     */
+    async unforgetFacts(req: RouteRequest, res: RouteResponse): Promise<void> {
+      await idsFactsRoute(req, res, 'memory:unforget', async (ctx, ids) => {
+        const out = await bus.call<unknown, { restored?: unknown } | null>(
+          'memory:unforget',
+          ctx,
+          { ids },
         );
-        res.status(200).json({ forgotten: true });
-      } catch (err) {
-        if (err instanceof PluginError && err.code === 'invalid-payload') {
-          res.status(400).json({ error: 'invalid-memory-request' });
-          return;
+        const restored = out?.restored;
+        if (!Array.isArray(restored) || restored.some((id) => typeof id !== 'string')) {
+          throw new Error('memory:unforget returned no restored list');
         }
-        throw err;
-      }
+        return { restored: restored as string[] };
+      });
     },
 
     /**
@@ -5753,6 +5792,11 @@ export async function registerWorkspaceRoutes(
       method: 'POST',
       path: '/api/workspace/agents/:agentId/memory/forget',
       handler: handlers.forgetFacts as unknown as RouteHandler,
+    },
+    {
+      method: 'POST',
+      path: '/api/workspace/agents/:agentId/memory/unforget',
+      handler: handlers.unforgetFacts as unknown as RouteHandler,
     },
     {
       method: 'POST',
