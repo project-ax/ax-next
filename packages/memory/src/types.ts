@@ -210,9 +210,11 @@ export interface MemoryRememberOutput {
  *   with the call, as for `memory:forget`), and the correction write still
  *   lands under the caller.
  * - `reason: 'changed'` — the old value WAS true and stopped being. This is
- *   exactly the `memory:remember` write: the slot rule closes the old row as
- *   `replaced`. ⚠ Known limitation: a SLOT-LESS old row closes nothing and is
- *   closed by nothing, so it stays active beside the new one.
+ *   the `memory:remember` write plus one close: the slot rule closes a
+ *   SLOTTED old row as `replaced`, and a SLOT-LESS old row (in no chain, so
+ *   nothing else would close it) is closed explicitly BY the new row, also as
+ *   `replaced` (TASK-632). A slotted old row in a different chain from the
+ *   new one is left active, as before.
  * - `reason: 'never-right'` — the old value was never true. The old row is
  *   retracted as never-true BEFORE the new write, so the `(about, slot)`
  *   chain re-settles around it: whatever it had closed re-opens, and the
@@ -222,10 +224,12 @@ export interface MemoryRememberOutput {
  * `reason` is required: the hook does not guess which of the two a person
  * meant.
  *
- * ⚠ **Failure window.** never-right is two engine calls. If the retract
- * lands and the write fails, the old row is retracted and the new value is
- * unsaved, and the caller sees the error. A retry converges: the second
- * retract is a no-op (the row is no longer active) and the write lands.
+ * ⚠ **Failure window.** Both reasons are two engine calls. never-right: if
+ * the retract lands and the write fails, the old row is retracted and the new
+ * value is unsaved, and the caller sees the error. A retry converges: the
+ * second retract is a no-op (the row is no longer active) and the write lands.
+ * changed: if the write lands and the close fails, the new row stands beside a
+ * still-active old one and the caller sees the error.
  */
 export interface MemoryCorrectInput {
   id: string;

@@ -156,6 +156,8 @@ export interface FactRecord {
    * The id of the row that closed this one. Absent on an active row AND on
    * an explicit `supersede` — that absence is what tells a retraction
    * ("forgotten") apart from a rule-closure ("superseded by that row").
+   * A `supersede` with {@link SupersedeInput.by} is a replacement, not a
+   * retraction, and sets it to `by`.
    */
   closedBy?: string;
   /**
@@ -237,6 +239,8 @@ export interface RecordedStatement extends FactRecord {
   /**
    * Ids of previously-active (or previously rule-closed) rows THIS
    * statement's arrival closed (rule 1) — empty when it closed nothing.
+   * A `batchKey` replay rebuilds it from the stored closures, so it then also
+   * names rows a later {@link SupersedeInput.by} replaced with this one.
    */
   closes: string[];
 }
@@ -452,8 +456,56 @@ export interface SupersedeInput {
    * directly and Seattle is never part of the chain. There is no point-in-time
    * (`at`) recall to exclude it from; the flag is a stored label, nothing more.
    * The re-settle never rewrites it.
+   *
+   * Refused together with {@link by}: see there.
    */
   neverTrue?: boolean;
+  /**
+   * Close these ids as REPLACED BY row `by` rather than retracting them — a
+   * person's "it changed" fix (TASK-632): the old value held, and this newer
+   * row is what holds now. Omitted is exactly the plain supersede above.
+   *
+   * It exists for the rows the slot rule cannot reach. A row with a slot is
+   * closed by its successor on arrival (rule 1), but a row with NO slot is in
+   * no chain and nothing ever closes it — so without this, "it changed" left
+   * the old row active beside the new one.
+   *
+   * When set:
+   *
+   * 1. `by` must name a row in the same tenant (and, when {@link ownerUserId}
+   *    is set, stamped with that owner) that still ASSERTS something — active,
+   *    or closed by a rule. A retracted `by`, a missing one, a foreign one, or
+   *    one that is itself among `ids` closes nothing: `closed: []`, the same
+   *    forgiving no-throw refusal a foreign id gets. No second error shape,
+   *    and no way to probe another tenant's ids through the difference.
+   * 2. An id is closed only if it is in the same tenant (and owner scope),
+   *    still ACTIVE, not `by` itself, and has NO slot. A slotted row — and a
+   *    {@link PENDING_SLOT} row, which will have one — is refused and left
+   *    untouched: its closure belongs to its `(about, slot)` chain, and the
+   *    next re-settle of that chain would silently overwrite an explicit
+   *    closure written here. An already-closed id (retracted or rule-closed)
+   *    is refused too, so this never re-labels a Forget as a replacement.
+   * 3. A closed row reads back like a rule-closure: `closedBy` is `by`, and
+   *    `until` is the LATER of the row's own `when` and `by`'s `when` — a row
+   *    never ends before it starts, even when the replacement is back-dated.
+   *    `by`'s {@link RecordedStatement.closes} lists it on a replay. It is not
+   *    {@link FactRecord.neverTrue}.
+   * 4. `resettled` is always empty: a slot-less row is in no chain, so
+   *    closing it strands no neighbour.
+   * 5. `by` must be a non-empty string, and `by` with `neverTrue: true` is
+   *    rejected: a replaced value was true, which is the opposite claim. Both
+   *    are `invalid-payload`, checked before the store is touched.
+   *    (`neverTrue: false` is simply absent.)
+   * 6. Retracting `by` later does NOT re-open the replaced row. The person
+   *    said the old value changed; forgetting the new value does not make the
+   *    old one current again. `memory:facts:reinstate` does not re-open it
+   *    either — it is not a retraction.
+   *
+   * The whole call is one atomic write: `by` is read and every id closed in
+   * the same transaction, so `by` cannot be retracted between the check and
+   * the closure.
+   */
+  by?: string;
 }
 
 /**
@@ -498,6 +550,9 @@ export interface ResettleOutcome {
  * chains of the rows it closed. A retracted row whose slot is absent or
  * {@link PENDING_SLOT} is inert and has no chain, so it strands nothing and
  * re-settles nothing.
+ *
+ * A {@link SupersedeInput.by} call is not a retraction and closes only
+ * slot-less rows, so its `resettled` is always empty.
  */
 export interface SupersedeOutput extends ResettleOutcome {
   /** Ids actually closed by this call — a foreign, missing, or already-closed id is silently absent. */
@@ -4852,6 +4907,357 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
         const theirsRow = await historyRow(theirs.id, team);
         expect(theirsRow!.until).toBeUndefined();
         expect('neverTrue' in theirsRow!).toBe(false);
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // memory:facts:supersede — by (TASK-632)
+    //
+    // "It changed": close X, REPLACED BY row Y. The closure is a replacement,
+    // not a retraction — X reads `closedBy: Y` with an `until`, exactly like a
+    // rule-closure — and it is only ever applied to a row that has no chain
+    // (slot absent). Every refusal asserts the row did not move, not merely
+    // that `closed` is empty.
+    // -----------------------------------------------------------------------
+    describe('memory:facts:supersede — by (TASK-632)', () => {
+      async function supersedeBy(
+        ids: string[],
+        by: string,
+        ctx = makeCtx(),
+        ownerUserId?: string,
+      ): Promise<SupersedeOutput> {
+        return bus.call<SupersedeInput, SupersedeOutput>('memory:facts:supersede', ctx, {
+          ids,
+          by,
+          ...(ownerUserId !== undefined ? { ownerUserId } : {}),
+        });
+      }
+
+      async function historyRow(id: string, ctx = makeCtx()): Promise<FactRecord | undefined> {
+        const out = await recall({ about: 'user', limit: 50, activeOnly: false }, ctx);
+        return out.statements.find((s) => s.id === id);
+      }
+
+      /** A slot-less row — the only kind `by` will close. */
+      function slotless(value: string, when: string, ownerUserId?: string): FactStatementInput {
+        return {
+          about: 'user',
+          relation: 'likes_artist',
+          value,
+          when,
+          ...(ownerUserId !== undefined ? { ownerUserId } : {}),
+        };
+      }
+
+      async function expectUntouched(id: string, ctx = makeCtx()): Promise<void> {
+        const row = await historyRow(id, ctx);
+        expect(row).toBeDefined();
+        expect(row!.until).toBeUndefined();
+        expect('closedBy' in row!).toBe(false);
+      }
+
+      it('closes a slot-less row as REPLACED: until set, closedBy = by, not a retraction, not never-true', async () => {
+        const x = await recordOne(slotless('Khalid', JAN));
+        const y = await recordOne(slotless('Sade', JUN));
+
+        const out = await supersedeBy([x.id], y.id);
+        expect(out.closed).toEqual([x.id]);
+        expect(out.resettled).toEqual([]);
+
+        const xRow = await historyRow(x.id);
+        expect(xRow!.until).toBeDefined();
+        expect(xRow!.closedBy).toBe(y.id);
+        expect('neverTrue' in xRow!).toBe(false);
+
+        const yRow = await historyRow(y.id);
+        expect(yRow!.until).toBeUndefined();
+        expect('closedBy' in yRow!).toBe(false);
+
+        const active = await recall({ about: 'user', limit: 10 });
+        expect(active.statements.map((s) => s.id)).toEqual([y.id]);
+      });
+
+      it('`by` may be a slotted row — the replaced row is still slot-less', async () => {
+        const x = await recordOne(slotless('Khalid', JAN));
+        const y = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JUN,
+          slot: 'lives_in',
+        });
+        expect((await supersedeBy([x.id], y.id)).closed).toEqual([x.id]);
+        expect((await historyRow(x.id))!.closedBy).toBe(y.id);
+      });
+
+      it('ends the row at the replacement\'s when, when that is later', async () => {
+        const x = await recordOne(slotless('Khalid', JAN));
+        const y = await recordOne(slotless('Sade', JUN));
+        await supersedeBy([x.id], y.id);
+        expect((await historyRow(x.id))!.until).toBe(JUN);
+      });
+
+      it('never ends a row before its own start: a replacement dated earlier ends it at its own when', async () => {
+        const x = await recordOne(slotless('Khalid', SEP));
+        const y = await recordOne(slotless('Sade', JAN));
+        await supersedeBy([x.id], y.id);
+        expect((await historyRow(x.id))!.until).toBe(SEP);
+      });
+
+      it('the replacement lists the row in its `closes` (read back through a batch replay)', async () => {
+        const x = await recordOne(slotless('Khalid', JAN));
+        const yStatement = slotless('Sade', JUN);
+        const [y] = await reread('by-closes', [yStatement]);
+        expect(y!.closes).toEqual([]);
+
+        await supersedeBy([x.id], y!.id);
+        const [yAgain] = await reread('by-closes', [yStatement]);
+        expect(yAgain!.id).toBe(y!.id);
+        expect(yAgain!.closes).toEqual([x.id]);
+      });
+
+      it.each([
+        ['a slotted row', 'lives_in'],
+        ['a PENDING row', PENDING_SLOT],
+      ])('refuses %s — its closure belongs to the slot chain', async (_label, slot) => {
+        const x = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Boston',
+          when: JAN,
+          slot,
+        });
+        const y = await recordOne(slotless('Sade', JUN));
+
+        const out = await supersedeBy([x.id], y.id);
+        expect(out.closed).toEqual([]);
+        expect(out.resettled).toEqual([]);
+        await expectUntouched(x.id);
+      });
+
+      it('leaves a retracted row exactly as it was — a Forget stays a Forget', async () => {
+        const x = await recordOne(slotless('Khalid', JAN));
+        const y = await recordOne(slotless('Sade', JUN));
+        await supersede([x.id]);
+        const before = await historyRow(x.id);
+
+        expect((await supersedeBy([x.id], y.id)).closed).toEqual([]);
+        const after = await historyRow(x.id);
+        expect(after!.until).toBe(before!.until);
+        expect('closedBy' in after!).toBe(false);
+      });
+
+      it('leaves a rule-closed row exactly as it was', async () => {
+        const boston = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Boston',
+          when: JAN,
+          slot: 'lives_in',
+        });
+        const seattle = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JUN,
+          slot: 'lives_in',
+        });
+        const y = await recordOne(slotless('Sade', SEP));
+
+        expect((await supersedeBy([boston.id], y.id)).closed).toEqual([]);
+        const row = await historyRow(boston.id);
+        expect(row!.closedBy).toBe(seattle.id);
+        expect(row!.until).toBe(JUN);
+      });
+
+      it('refuses a retracted `by` — a row that asserts nothing replaces nothing', async () => {
+        const x = await recordOne(slotless('Khalid', JAN));
+        const y = await recordOne(slotless('Sade', JUN));
+        await supersede([y.id]);
+
+        expect((await supersedeBy([x.id], y.id)).closed).toEqual([]);
+        await expectUntouched(x.id);
+      });
+
+      it('refuses a missing `by`', async () => {
+        const x = await recordOne(slotless('Khalid', JAN));
+        expect((await supersedeBy([x.id], 'no-such-row')).closed).toEqual([]);
+        await expectUntouched(x.id);
+      });
+
+      it('refuses a `by` from another tenant', async () => {
+        const x = await recordOne(slotless('Khalid', JAN));
+        const y = await recordOne(slotless('Sade', JUN), makeCtx('other-agent'));
+        expect((await supersedeBy([x.id], y.id)).closed).toEqual([]);
+        await expectUntouched(x.id);
+      });
+
+      it('refuses `by` naming the row itself', async () => {
+        const x = await recordOne(slotless('Khalid', JAN));
+        expect((await supersedeBy([x.id], x.id)).closed).toEqual([]);
+        await expectUntouched(x.id);
+      });
+
+      it('accepts a rule-closed `by` — it still asserts a past value', async () => {
+        const x = await recordOne(slotless('Khalid', JAN));
+        const seattle = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JUN,
+          slot: 'lives_in',
+        });
+        await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Denver',
+          when: SEP,
+          slot: 'lives_in',
+        });
+        expect((await historyRow(seattle.id))!.closedBy).toBeDefined();
+
+        expect((await supersedeBy([x.id], seattle.id)).closed).toEqual([x.id]);
+        expect((await historyRow(x.id))!.closedBy).toBe(seattle.id);
+      });
+
+      // A PENDING row is active and asserts a value; its slot is merely not
+      // resolved yet. The row being REPLACED is slot-less, so nothing about
+      // `by`'s later slot resolution can reach it.
+      it('accepts a PENDING `by` — it is active', async () => {
+        const x = await recordOne(slotless('Khalid', JAN));
+        const y = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JUN,
+          slot: PENDING_SLOT,
+        });
+        expect((await supersedeBy([x.id], y.id)).closed).toEqual([x.id]);
+        expect((await historyRow(x.id))!.closedBy).toBe(y.id);
+      });
+
+      it('refuses a foreign-TENANT id', async () => {
+        const other = makeCtx('other-agent');
+        const x = await recordOne(slotless('Khalid', JAN), other);
+        const y = await recordOne(slotless('Sade', JUN));
+        expect((await supersedeBy([x.id], y.id)).closed).toEqual([]);
+        await expectUntouched(x.id, other);
+      });
+
+      describe('owner scope', () => {
+        const team = makeCtx('team-agent', 'whoever');
+
+        it('refuses an id stamped with another owner', async () => {
+          const x = await recordOne(slotless('Khalid', JAN, 'owner-bob'), team);
+          const y = await recordOne(slotless('Sade', JUN, 'owner-alice'), team);
+          expect((await supersedeBy([x.id], y.id, team, 'owner-alice')).closed).toEqual([]);
+          await expectUntouched(x.id, team);
+        });
+
+        it('refuses a `by` stamped with another owner', async () => {
+          const x = await recordOne(slotless('Khalid', JAN, 'owner-alice'), team);
+          const y = await recordOne(slotless('Sade', JUN, 'owner-bob'), team);
+          expect((await supersedeBy([x.id], y.id, team, 'owner-alice')).closed).toEqual([]);
+          await expectUntouched(x.id, team);
+        });
+
+        it('closes when both rows are the caller\'s own', async () => {
+          const x = await recordOne(slotless('Khalid', JAN, 'owner-alice'), team);
+          const y = await recordOne(slotless('Sade', JUN, 'owner-alice'), team);
+          expect((await supersedeBy([x.id], y.id, team, 'owner-alice')).closed).toEqual([x.id]);
+          expect((await historyRow(x.id, team))!.closedBy).toBe(y.id);
+        });
+
+        it('without an owner scope, closes across owners in one tenant', async () => {
+          const x = await recordOne(slotless('Khalid', JAN, 'owner-bob'), team);
+          const y = await recordOne(slotless('Sade', JUN, 'owner-alice'), team);
+          expect((await supersedeBy([x.id], y.id, team)).closed).toEqual([x.id]);
+          expect((await historyRow(x.id, team))!.closedBy).toBe(y.id);
+        });
+      });
+
+      it.each([
+        ['an empty string', ''],
+        ['a number', 1],
+        ['null', null],
+        ['an object', {}],
+      ])('rejects `by` as %s with invalid-payload, closing nothing', async (_label, by) => {
+        const x = await recordOne(slotless('Khalid', JAN));
+        await expectCode('invalid-payload', () =>
+          bus.call('memory:facts:supersede', makeCtx(), { ids: [x.id], by }),
+        );
+        await expectUntouched(x.id);
+      });
+
+      it('rejects `by` together with `neverTrue: true` — a replaced row is not a retraction', async () => {
+        const x = await recordOne(slotless('Khalid', JAN));
+        const y = await recordOne(slotless('Sade', JUN));
+        await expectCode('invalid-payload', () =>
+          bus.call('memory:facts:supersede', makeCtx(), {
+            ids: [x.id],
+            by: y.id,
+            neverTrue: true,
+          }),
+        );
+        await expectUntouched(x.id);
+      });
+
+      it('`by` with `neverTrue: false` is an ordinary replacement', async () => {
+        const x = await recordOne(slotless('Khalid', JAN));
+        const y = await recordOne(slotless('Sade', JUN));
+        const out = await bus.call<SupersedeInput, SupersedeOutput>(
+          'memory:facts:supersede',
+          makeCtx(),
+          { ids: [x.id], by: y.id, neverTrue: false },
+        );
+        expect(out.closed).toEqual([x.id]);
+        const row = await historyRow(x.id);
+        expect(row!.closedBy).toBe(y.id);
+        expect('neverTrue' in row!).toBe(false);
+      });
+
+      it('is idempotent, and reports each id once', async () => {
+        const x = await recordOne(slotless('Khalid', JAN));
+        const y = await recordOne(slotless('Sade', JUN));
+        expect((await supersedeBy([x.id, x.id], y.id)).closed).toEqual([x.id]);
+        const second = await supersedeBy([x.id], y.id);
+        expect(second.closed).toEqual([]);
+        expect(second.resettled).toEqual([]);
+        expect((await historyRow(x.id))!.closedBy).toBe(y.id);
+      });
+
+      it('closes several ids in the caller\'s order, skipping the ones it refuses', async () => {
+        const a = await recordOne(slotless('Khalid', JAN));
+        const b = await recordOne(slotless('Adele', JAN));
+        const slotted = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Boston',
+          when: JAN,
+          slot: 'lives_in',
+        });
+        const y = await recordOne(slotless('Sade', JUN));
+        const out = await supersedeBy([b.id, slotted.id, 'missing', a.id], y.id);
+        expect(out.closed).toEqual([b.id, a.id]);
+        await expectUntouched(slotted.id);
+      });
+
+      // Decision, pinned: the person said the old value CHANGED. Forgetting the
+      // new value afterwards does not make the old one current again.
+      it('retracting `by` afterwards does NOT reopen the replaced row', async () => {
+        const x = await recordOne(slotless('Khalid', JAN));
+        const y = await recordOne(slotless('Sade', JUN));
+        await supersedeBy([x.id], y.id);
+
+        const out = await supersede([y.id]);
+        expect(out.closed).toEqual([y.id]);
+        expect(out.resettled).toEqual([]);
+
+        const xRow = await historyRow(x.id);
+        expect(xRow!.closedBy).toBe(y.id);
+        expect(xRow!.until).toBe(JUN);
+        const active = await recall({ about: 'user', limit: 10 });
+        expect(active.statements).toEqual([]);
       });
     });
 

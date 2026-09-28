@@ -20,7 +20,8 @@ afterEach(async () => {
 // ---------------------------------------------------------------------------
 // memory:correct (TASK-624) — a person's Fix, with WHY the old value was wrong.
 //
-// 'changed'     → the plain human write; the slot rule closes the old row.
+// 'changed'     → the plain human write; the slot rule closes a slotted old
+//                 row, and a slot-less one is closed BY the new row (TASK-632).
 // 'never-right' → retract the old row as never-true FIRST, then the same write,
 //                 so the (about, slot) chain re-settles around the mistake.
 //
@@ -108,7 +109,7 @@ describe('@ax/memory — memory:correct', () => {
     expect(engine.statements.find((s) => s.id === id)?.provenance).toBe('human');
   });
 
-  it('never-right calls supersede (neverTrue, owner-scoped) BEFORE record; changed never calls it', async () => {
+  it('never-right calls supersede (neverTrue, owner-scoped) BEFORE record; changed closes BY the new row AFTER it', async () => {
     harness = await makeMemoryHarness();
     const { seattle } = await bostonThenSeattle(harness);
     const spy = vi.spyOn(harness.bus, 'call');
@@ -124,8 +125,122 @@ describe('@ax/memory — memory:correct', () => {
     spy.mockClear();
     const again = await harness.remember({ about: 'user', relation: 'lives_in', value: 'Austin' });
     spy.mockClear();
-    await harness.correct(correction(again.id, 'changed'));
-    expect(engineWrites().map(([h]) => h)).toEqual([FACTS_RECORD_HOOK]);
+    const { id: fixed } = await harness.correct(correction(again.id, 'changed'));
+    expect(engineWrites().map(([h]) => h)).toEqual([FACTS_RECORD_HOOK, FACTS_SUPERSEDE_HOOK]);
+    // `by`, never `neverTrue`: a changed value is replaced, not retracted.
+    expect(engineWrites()[1]![1]).toEqual({ ids: [again.id], by: fixed, ownerUserId: ALICE });
+  });
+
+  // -------------------------------------------------------------------------
+  // TASK-632 — 'changed' on a SLOT-LESS row. Nothing in the slot rule can close
+  // a row that is in no chain, so before this the old value stayed active
+  // beside the new one. `drives` has no slot (see `slots.ts`).
+  // -------------------------------------------------------------------------
+
+  it("'changed' on a slot-less row closes it as replaced BY the new row", async () => {
+    harness = await makeMemoryHarness();
+    const { id: civic } = await harness.remember({
+      about: 'user',
+      relation: 'drives',
+      value: 'a Civic',
+      when: '2025-01-01T00:00:00Z',
+    });
+
+    const { id: tesla } = await harness.correct({
+      id: civic,
+      about: 'user',
+      relation: 'drives',
+      value: 'a Tesla',
+      reason: 'changed',
+    });
+
+    const rows = await history(harness);
+    expect(rows.get(civic)).toMatchObject({ closure: 'replaced', closedBy: tesla });
+    expect(rows.get(civic)!.until).toBeDefined();
+    expect(rows.get(tesla)!.until).toBeUndefined();
+    expect('closure' in rows.get(tesla)!).toBe(false);
+
+    const active = await harness.recall({ about: 'user' });
+    expect(active.statements.map((s) => s.id)).toEqual([tesla]);
+  });
+
+  it("'changed' leaves a slotted row in a DIFFERENT chain active, exactly as before", async () => {
+    harness = await makeMemoryHarness();
+    const { id: boston } = await harness.remember({
+      about: 'user',
+      relation: 'lives_in',
+      value: 'Boston',
+      when: '2025-01-01T00:00:00Z',
+    });
+
+    // The person rewrote the relation too: the new row is not in `lives_in`,
+    // so the slot rule does not close Boston, and the explicit close refuses a
+    // slotted row (its closure belongs to its chain).
+    const { id: fixed } = await harness.correct({
+      id: boston,
+      about: 'user',
+      relation: 'drives',
+      value: 'a Tesla',
+      reason: 'changed',
+    });
+
+    const rows = await history(harness);
+    expect(rows.get(boston)!.until).toBeUndefined();
+    expect('closure' in rows.get(boston)!).toBe(false);
+    expect(rows.get(fixed)!.until).toBeUndefined();
+  });
+
+  it("personal agent: 'changed' on another owner's slot-less id does not close it", async () => {
+    harness = await makeMemoryHarness();
+    const foreign = await engineRecord(harness.bus, harness.ctx(), [
+      {
+        about: `user:${BOB}`,
+        relation: 'drives',
+        value: 'a Civic',
+        when: '2025-01-01T00:00:00Z',
+        provenance: 'human',
+        ownerUserId: BOB,
+      },
+    ]);
+    const foreignId = foreign.records[0]!.id;
+
+    const { id } = await harness.correct(
+      { id: foreignId, about: 'user', relation: 'drives', value: 'a Tesla', reason: 'changed' },
+      harness.ctx({ userId: ALICE }),
+    );
+
+    const bobs = await engineRecall(harness.bus, harness.ctx(), {
+      limit: 10,
+      activeOnly: false,
+      ownerUserId: BOB,
+    });
+    expect(bobs.statements.map((s) => s.id)).toEqual([foreignId]);
+    expect(bobs.statements[0]!.until).toBeUndefined();
+    expect('closedBy' in bobs.statements[0]!).toBe(false);
+
+    const mine = await harness.recall({ about: 'user' }, harness.ctx({ userId: ALICE }));
+    expect(mine.statements.map((s) => [s.id, s.value])).toEqual([[id, 'a Tesla']]);
+  });
+
+  it("team agent: a member's 'changed' replaces a teammate-saved slot-less row", async () => {
+    harness = await makeMemoryHarness({}, { agent: { visibility: 'team' } });
+    const { id: seed } = await harness.remember(
+      { about: 'acme_corp', relation: 'stage', value: 'seed' },
+      harness.ctx({ userId: BOB }),
+    );
+    const { id: seriesB } = await harness.correct(
+      { id: seed, about: 'acme_corp', relation: 'stage', value: 'series B', reason: 'changed' },
+      harness.ctx({ userId: ALICE }),
+    );
+    const { statements } = await harness.recall(
+      { about: 'acme_corp', activeOnly: false },
+      harness.ctx({ userId: ALICE }),
+    );
+    expect(statements.find((s) => s.id === seed)).toMatchObject({
+      closure: 'replaced',
+      closedBy: seriesB,
+    });
+    expect(statements.find((s) => s.id === seriesB)!.until).toBeUndefined();
   });
 
   it.each([
