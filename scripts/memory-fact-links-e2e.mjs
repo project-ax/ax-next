@@ -148,7 +148,7 @@ async function prepareBank({ sample, source, prepared, env, clients, providerFet
     });
   } finally { await bank.close(); }
   // vec0's row-id shadow table is a plain table, so the sqlite3 CLI can count it.
-  const count = (sql) => Number(execFileSync('sqlite3', ['-readonly', join(prepared, 'facts.db'), sql], { encoding: 'utf8' }).trim());
+  const count = (sql) => Number(execFileSync('sqlite3', [join(prepared, 'facts.db'), sql], { encoding: 'utf8' }).trim());
   const facts = count('SELECT count(*) FROM memory_facts_v1');
   const vectors = count('SELECT count(*) FROM memory_facts_v1_vec_rowids');
   if (vectors < facts) throw new Error(`re-embed incomplete for ${sample.question_id}: ${vectors}/${facts}`);
