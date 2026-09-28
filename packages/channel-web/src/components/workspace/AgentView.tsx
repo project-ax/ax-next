@@ -998,6 +998,12 @@ export function AgentView({
           : undefined
       }
       onOpenModelKeys={isAdmin ? onOpenModelKeys : undefined}
+      /*
+        `jumpToSource` answers false when the message is not in the rendered
+        thread. Ignored on purpose: every turn of the conversation on screen is
+        rendered (the thread is not virtualised), so a miss means the row came
+        from a turn this view never had, and there is nothing better to show.
+      */
       onJumpToSource={(turnId) => {
         if (compact) {
           setRailOpen(false);

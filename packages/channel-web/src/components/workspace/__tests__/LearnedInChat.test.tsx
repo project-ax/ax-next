@@ -227,12 +227,16 @@ describe('LearnedInChat — rows', () => {
 
     await recordBatch([st('old'), st('new')], ['new']);
     await screen.findByText(memoryStatementText(st('new')));
-    const items = screen.getAllByRole('listitem').map((li) => li.textContent ?? '');
-    const newAt = items.findIndex((t) => t.includes('value new'));
-    const earlierAt = items.findIndex((t) => t === LEARNED_EARLIER);
-    const oldAt = items.findIndex((t) => t.includes('value old'));
-    expect(newAt).toBeLessThan(earlierAt);
-    expect(earlierAt).toBeLessThan(oldAt);
+    const newRow = screen.getByText(memoryStatementText(st('new')));
+    const label = screen.getByText(LEARNED_EARLIER);
+    const oldRow = screen.getByText(memoryStatementText(st('old')));
+    const FOLLOWING = Node.DOCUMENT_POSITION_FOLLOWING;
+    expect(newRow.compareDocumentPosition(label) & FOLLOWING).toBeTruthy();
+    expect(label.compareDocumentPosition(oldRow) & FOLLOWING).toBeTruthy();
+    // A group label, not a memory: it does not count as a list item.
+    expect(screen.getAllByRole('listitem').map((li) => li.textContent)).not.toContain(
+      LEARNED_EARLIER,
+    );
     expect(screen.getByText('just now')).toBeTruthy();
   });
 
@@ -346,6 +350,28 @@ describe('LearnedInChat — Fix, Forget, Undo', () => {
       value: st('a').value,
     });
     expect(screen.getByText(text)).toBeTruthy();
+  });
+
+  it('a forgotten row stays gone when a second Forget replaces its receipt', async () => {
+    recall.mockResolvedValueOnce({ statements: [st('a'), st('b'), st('c')], degraded: [] });
+    forget.mockResolvedValue({ forgotten: true });
+    render(<Harness />);
+    const forgetRow = async (id: string) => {
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: memoryForgetLabel(memoryStatementText(st(id))),
+        }),
+      );
+      fireEvent.click(
+        within(await screen.findByRole('dialog')).getByRole('button', { name: MEMORY_FORGET }),
+      );
+      await screen.findByRole('button', { name: memoryUndoLabel(st(id).value) });
+    };
+    await forgetRow('a');
+    await forgetRow('b');
+    // "a" was forgotten; losing its receipt must not bring it back as a live row.
+    expect(screen.queryByText(memoryStatementText(st('a')))).toBeNull();
+    expect(screen.getAllByRole('button', { name: /^Fix: / })).toHaveLength(1);
   });
 
   it('a forgotten row leaves the list when the Undo offer runs out', async () => {

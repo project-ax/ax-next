@@ -154,7 +154,12 @@ export function useConversationMemory({
         } catch (e) {
           if (!alive()) return false;
           console.warn('[workspace] conversation memory read failed', e);
-          setStatus('read-failed');
+          // Only the FIRST read can make the list unknown. A background
+          // re-read that blips leaves the rows already shown exactly as true
+          // as they were; hiding them behind "can't show" would throw away
+          // known-good memories over a transient error. The next batch or
+          // reconnect re-reads anyway.
+          if (!asBatch) setStatus('read-failed');
           return false;
         }
         if (!alive()) return false;
@@ -231,7 +236,10 @@ export function useConversationMemory({
       while (alive()) {
         if (!first) {
           // Anything recorded while we were disconnected arrives as a batch.
-          if (!(await reread(true))) return;
+          // A failed re-read here does NOT stop the loop: stream liveness is
+          // not gated on one feed read, and the next recorded frame re-reads.
+          await reread(true);
+          if (!alive()) return;
         }
         first = false;
         const opened = Date.now();

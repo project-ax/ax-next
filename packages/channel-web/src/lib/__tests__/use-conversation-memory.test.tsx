@@ -182,6 +182,36 @@ describe('useConversationMemory', () => {
     expect(result.current.unseen).toBe(0);
   });
 
+  it('keeps a shown list on screen when a background re-read fails', async () => {
+    const s = controllableStream();
+    recall.mockResolvedValueOnce(page(st('a'), st('b')));
+    const { result } = mount();
+    await waitFor(() => expect(result.current.rows).toHaveLength(2));
+    recall.mockRejectedValueOnce(new Error('blip'));
+    await s.push({ kind: 'activity', state: 'recorded', statementIds: ['c'] });
+    await waitFor(() => expect(recall).toHaveBeenCalledTimes(2));
+    await act(async () => {});
+    // Known-good rows are not thrown away over a blip.
+    expect(result.current.status).toBe('ready');
+    expect(result.current.rows).toHaveLength(2);
+  });
+
+  it('keeps reconnecting when the re-read after a reconnect fails', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const s = controllableStream();
+    recall.mockResolvedValueOnce(page(st('a')));
+    const { result } = mount();
+    await waitFor(() => expect(events).toHaveBeenCalledTimes(1));
+    recall.mockRejectedValueOnce(new Error('blip'));
+    await s.end('ended');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+    // The stream is not gated on one feed read succeeding.
+    await waitFor(() => expect(events).toHaveBeenCalledTimes(2));
+    expect(result.current.rows).toHaveLength(1);
+  });
+
   it('reconnects after the stream ends, and a row recorded meanwhile is a batch', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const s = controllableStream();

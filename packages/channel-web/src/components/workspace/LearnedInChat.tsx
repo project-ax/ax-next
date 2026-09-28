@@ -98,6 +98,12 @@ export function LearnedInChat({
   const [forgetTarget, setForgetTarget] = useState<FactMemoryStatement | null>(null);
   /** The row a receipt with no row of its own ("Updated.") belongs to. */
   const [receiptRowId, setReceiptRowId] = useState<string | null>(null);
+  /*
+    No re-read after an Undo. KNOWN LIMIT: Undo re-saves the memory under a
+    NEW id (there is no un-forget yet), while this row keeps the old, closed
+    one — so a Fix or Forget on a restored row acts on the closed statement.
+    TASK-630's un-forget re-opens the SAME id, which removes the gap.
+  */
   const receipt = useMemoryReceipt(agentId, () => {});
   const { markSeen, removeRow, pin, replaceRow, unseen } = memory;
 
@@ -126,19 +132,25 @@ export function LearnedInChat({
     return () => clearInterval(id);
   }, [anyTimed]);
 
-  // A forgotten row leaves the list when its Undo offer runs out.
+  /*
+    A forgotten row leaves the list once its receipt is gone — when the Undo
+    offer runs out, AND when another receipt replaces it (one receipt at a
+    time). Only a successful Undo ("restored") keeps it.
+  */
   const current = receipt.receipt;
   const lastForgotten = useRef<string | null>(null);
   useEffect(() => {
-    if (current?.kind === 'forgotten' || current?.kind === 'undo-failed') {
-      lastForgotten.current = current.row.id;
+    if (current?.kind === 'restored') {
+      lastForgotten.current = null;
       return;
     }
-    if (current === null && lastForgotten.current !== null) {
-      removeRow(lastForgotten.current);
-      lastForgotten.current = null;
-    }
-    if (current?.kind === 'restored') lastForgotten.current = null;
+    const holding =
+      current !== null && (current.kind === 'forgotten' || current.kind === 'undo-failed')
+        ? current.row.id
+        : null;
+    const prev = lastForgotten.current;
+    if (prev !== null && prev !== holding) removeRow(prev);
+    lastForgotten.current = holding;
   }, [current, removeRow]);
 
   /*
@@ -329,7 +341,8 @@ function Body({
                   </li>
                 )}
                 {r.batch === 0 && hasLive && (prev === undefined || prev.batch !== 0) && (
-                  <li className="text-[11.5px] font-medium text-muted-foreground">
+                  // A group label, not an item: kept out of the list's count.
+                  <li role="presentation" className="text-[11.5px] font-medium text-muted-foreground">
                     {LEARNED_EARLIER}
                   </li>
                 )}
