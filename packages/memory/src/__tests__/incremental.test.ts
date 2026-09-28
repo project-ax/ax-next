@@ -438,10 +438,16 @@ describe('overlapping and repeated passes never double-record', () => {
     await env.exchange('I moved to Boston.', 'Welcome to Boston!', 'req-1');
     env.failCursorWrites(1);
     await idle(env);
-    // The batch landed, the cursor did not, and the failure was reported.
+    // The batch landed, the cursor did not — and the log says BOTH: a
+    // recorded batch, and a cursor failure on its own reason, not a generic
+    // observer failure that would make a stored batch read as a lost one.
     expect(env.rows()).toHaveLength(2);
-    expect(eventsNamed(env.h.logs, OBSERVER_FAILED_EVENT).at(-1)?.bindings).toMatchObject({
-      reason: 'observer-threw',
+    expect(eventsNamed(env.h.logs, OBSERVER_FAILED_EVENT).map((e) => e.bindings)).toEqual([
+      expect.objectContaining({ reason: 'cursor-write-failed', trigger: 'idle' }),
+    ]);
+    expect(eventsNamed(env.h.logs, OBSERVER_RUN_EVENT).at(-1)?.bindings).toMatchObject({
+      outcome: 'recorded',
+      recorded: 2,
       trigger: 'idle',
     });
 

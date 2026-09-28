@@ -1111,7 +1111,13 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           conversationId !== '' &&
           canExtractIncrementally(bus)
         ) {
-          scheduler.onChatEnd(ctx as AgentContext & { conversationId: string }, payload);
+          try {
+            scheduler.onChatEnd(ctx as AgentContext & { conversationId: string }, payload);
+          } catch {
+            // Non-throwing today (maps and a timer); guarded like the
+            // turn-end handler so a future change cannot reach `fire`'s
+            // unguarded logger path described above.
+          }
           return undefined;
         }
         const work = observeChatEnd(bus, ctx, payload, observeCfg).catch(() => {
@@ -1362,7 +1368,8 @@ const CONTEXT_TURNS = 2;
  * skipped, and also a timeout or schema failure, which drop the batch exactly
  * as the `chat:end` path always has. It stays put when anything throws (the
  * transcript read, the provider, the engine), so those turns are retried by
- * the next pass under the same key.
+ * the next pass under the same key. A failed cursor WRITE is reported on its
+ * own reason (`cursor-write-failed`) after the pass's result is logged.
  */
 async function runConversationPass(
   bus: HookBus,
@@ -1435,7 +1442,20 @@ async function runConversationPass(
       now: new Date(),
       timeoutMs: cfg.observerTimeoutMs,
     });
-    await writeCursor(bus, ctx, conversationId, last.turnIndex + 1);
+    try {
+      await writeCursor(bus, ctx, conversationId, last.turnIndex + 1);
+    } catch (err) {
+      // Reported on its OWN reason, and the pass's result is still returned
+      // and logged: the batch may well be stored, and folding this into
+      // `observer-threw` would show a recorded batch as a pure failure. The
+      // next pass re-covers the same range under the same key — a no-op.
+      ctx.logger.warn(OBSERVER_FAILED_EVENT, {
+        err: err instanceof Error ? err : new Error(String(err)),
+        agentId: ctx.agentId,
+        reason: 'cursor-write-failed',
+        trigger,
+      });
+    }
     return result;
   });
 }

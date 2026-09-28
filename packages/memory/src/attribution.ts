@@ -42,8 +42,12 @@ import type { IdentifiedTurn } from './transcript.js';
  *
  * A new turn that only CONFIRMS a context turn ("yes, book that one") yields
  * a fact whose words all live in the context turn, so it is dropped. That is
- * the cost of not being allowed to change the prompt, and it is bounded: the
- * context turn's own facts were extracted by the pass before.
+ * the cost of not being allowed to change the prompt. It is usually bounded,
+ * because the pass before extracted the context turn's own facts — but not
+ * always: a pass whose batch was DROPPED (timeout, schema failure, every
+ * fact unusable) still moves the cursor, so its turns become context without
+ * ever having been stored. The primary loss there is the dropped batch, which
+ * the `chat:end` path has always had; this only adds the confirming turn.
  *
  * Linear in text length; one Unicode-class regex, no backtracking. The input
  * is untrusted, and nothing here is logged.
