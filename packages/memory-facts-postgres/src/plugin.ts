@@ -15,6 +15,8 @@ import type {
   SupersedeOutput,
   ReinstateInput,
   ReinstateOutput,
+  RevertInput,
+  RevertOutput,
   ClearInput,
   FactKind,
   Provenance,
@@ -34,6 +36,7 @@ import {
   resettleSlotGroups,
   supersedeIds,
   reinstateIds,
+  revertIds,
   replaceIds,
   type FactsDatabase,
   type FactsTransaction,
@@ -715,6 +718,7 @@ export function createMemoryFactsPostgresPlugin(): Plugin {
         'memory:facts:scan',
         'memory:facts:supersede',
         'memory:facts:reinstate',
+        'memory:facts:revert',
         'memory:facts:clear',
         'memory:facts:reindex',
       ],
@@ -1053,6 +1057,43 @@ export function createMemoryFactsPostgresPlugin(): Plugin {
           // be an error rather than an empty list — same as `supersede`.
           return inStore('memory:facts:reinstate', () =>
             reinstateIds(requireDb(), agentKey, input.ids, input.ownerUserId),
+          );
+        },
+      );
+
+      bus.registerService<RevertInput, RevertOutput>(
+        'memory:facts:revert',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          // Validation before the store region — same rules as the sqlite
+          // twin: both ids name rows, and `ownerUserId: ''` must not fail OPEN.
+          if (!isNonEmptyString(input?.id)) {
+            throw new PluginError({
+              code: 'invalid-payload',
+              plugin: PLUGIN_NAME,
+              message: 'id must be a non-empty string',
+            });
+          }
+          if (!isNonEmptyString(input.restore)) {
+            throw new PluginError({
+              code: 'invalid-payload',
+              plugin: PLUGIN_NAME,
+              message: 'restore must be a non-empty string',
+            });
+          }
+          if (input.ownerUserId !== undefined && !isNonEmptyString(input.ownerUserId)) {
+            throw new PluginError({
+              code: 'invalid-payload',
+              plugin: PLUGIN_NAME,
+              message: 'ownerUserId must be a non-empty string when set',
+            });
+          }
+          const agentKey = agentScopeKey(ctx);
+          const at = new Date().toISOString();
+          // `reverted: []` is a legitimate answer, so a store failure must be
+          // an error rather than an empty list — same as `supersede`.
+          return inStore('memory:facts:revert', () =>
+            revertIds(requireDb(), agentKey, input.id, input.restore, at, input.ownerUserId),
           );
         },
       );

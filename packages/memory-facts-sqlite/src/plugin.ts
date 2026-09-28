@@ -15,6 +15,8 @@ import type {
   SupersedeOutput,
   ReinstateInput,
   ReinstateOutput,
+  RevertInput,
+  RevertOutput,
   ClearInput,
   FactKind,
   Provenance,
@@ -39,6 +41,7 @@ import {
   resettleSlotGroups,
   supersedeIds,
   reinstateIds,
+  revertIds,
   replaceIds,
   type SlotGroup,
 } from './closure.js';
@@ -1174,6 +1177,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
         'memory:facts:scan',
         'memory:facts:supersede',
         'memory:facts:reinstate',
+        'memory:facts:revert',
         'memory:facts:clear',
         'memory:facts:reindex',
       ],
@@ -1615,6 +1619,44 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           // be an error rather than an empty list — same as `supersede`.
           return inStore('memory:facts:reinstate', () =>
             reinstateIds(requireDriver(), agentKey, input.ids, input.ownerUserId),
+          );
+        },
+      );
+
+      bus.registerService<RevertInput, RevertOutput>(
+        'memory:facts:revert',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          // Validation before the store region. Both ids name rows, so `''`
+          // names nothing; and an `ownerUserId` of `''` must not read as "no
+          // owner check", or an owner-scoped undo would fail OPEN.
+          if (!isNonEmptyString(input?.id)) {
+            throw new PluginError({
+              code: 'invalid-payload',
+              plugin: PLUGIN_NAME,
+              message: 'id must be a non-empty string',
+            });
+          }
+          if (!isNonEmptyString(input.restore)) {
+            throw new PluginError({
+              code: 'invalid-payload',
+              plugin: PLUGIN_NAME,
+              message: 'restore must be a non-empty string',
+            });
+          }
+          if (input.ownerUserId !== undefined && !isNonEmptyString(input.ownerUserId)) {
+            throw new PluginError({
+              code: 'invalid-payload',
+              plugin: PLUGIN_NAME,
+              message: 'ownerUserId must be a non-empty string when set',
+            });
+          }
+          const agentKey = agentScopeKey(ctx);
+          const at = new Date().toISOString();
+          // `reverted: []` is a legitimate answer, so a store failure must be
+          // an error rather than an empty list — same as `supersede`.
+          return inStore('memory:facts:revert', () =>
+            revertIds(requireDriver(), agentKey, input.id, input.restore, at, input.ownerUserId),
           );
         },
       );

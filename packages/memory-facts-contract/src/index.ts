@@ -499,7 +499,9 @@ export interface SupersedeInput {
    * 6. Retracting `by` later does NOT re-open the replaced row. The person
    *    said the old value changed; forgetting the new value does not make the
    *    old one current again. `memory:facts:reinstate` does not re-open it
-   *    either — it is not a retraction.
+   *    either — it is not a retraction. `memory:facts:revert` is the path that
+   *    does: undoing the Fix itself retracts `by` and re-opens the row it
+   *    replaced (TASK-634).
    *
    * The whole call is one atomic write: `by` is read and every id closed in
    * the same transaction, so `by` cannot be retracted between the check and
@@ -602,6 +604,69 @@ export interface ReinstateInput {
 export interface ReinstateOutput extends ResettleOutcome {
   /** Ids this call re-opened — a foreign, missing, active or rule-closed id is silently absent. */
   reinstated: string[];
+}
+
+/**
+ * `memory:facts:revert` — undo a person's Fix (TASK-634). A Fix corrected an
+ * old row `restore` (O) by recording a new person-saved row `id` (N), and it
+ * closed O in one of three ways depending on why:
+ *
+ * - **"It changed", O slotted:** N joined O's `(about, slot)` chain and the
+ *   slot rule closed O (`closedBy: N`).
+ * - **"It changed", O slot-less:** `memory:facts:supersede` with `by: N`
+ *   closed O as replaced by N (`closedBy: N`, TASK-632).
+ * - **"It was never right":** O was RETRACTED with `neverTrue` first (which
+ *   re-opened whatever O had closed in its chain), and N was recorded after
+ *   (closing, by the slot rule, the row the retraction had re-opened).
+ *
+ * None of the existing hooks undoes that. Retracting N re-opens a slotted O
+ * (the chain re-settles) but never a slot-less one — the person said the old
+ * value changed. `memory:facts:reinstate` re-opens only retractions, so it
+ * refuses an O that N closed; and while it would re-open a never-right O, it
+ * would leave N standing beside it. This hook does the whole undo as ONE
+ * write, so the store ends exactly as it was before the Fix, except that N is
+ * kept as a plain retraction (so History still shows the Fix happened and was
+ * taken back).
+ *
+ * In one transaction:
+ *
+ * 1. N is retracted exactly like a plain `supersede` (`until` set, `closedBy`
+ *    absent, NOT `neverTrue`) — only if it is in this tenant (and owner scope)
+ *    and still ACTIVE. If it is not (missing, foreign, already closed — which
+ *    includes "already reverted"), or `id` equals `restore`, nothing else is
+ *    touched and every list in the answer is empty. That is what makes a
+ *    second revert a no-op and a foreign `id` a refusal with no oracle.
+ * 2. O is re-opened, as the same row with its own provenance, iff N closed it
+ *    (`closedBy: N`) or it is a never-true retraction. A plain Forget of O
+ *    (retracted without `neverTrue`) is NOT re-opened: that is not something
+ *    the Fix did. Same tenant and owner scope as step 1. `neverTrue` is
+ *    cleared on the re-opened row, as `reinstate` clears it.
+ * 3. The `(about, slot)` chains of N and O are re-derived (tenant-scoped, as
+ *    every re-settle is), so a row the Fix's retraction had re-opened is
+ *    closed by O again and O itself is bounded by any newer row.
+ */
+export interface RevertInput {
+  /** The row the Fix recorded (N). It is retracted. */
+  id: string;
+  /** The row the Fix corrected (O). It is re-opened when the Fix closed it. */
+  restore: string;
+  /**
+   * Revert only rows stamped with this owner; omitted = no owner check. The
+   * same SCOPE, enforced the same way (in the UPDATEs' own predicates), as
+   * {@link SupersedeInput.ownerUserId}: both `id` and `restore` must carry it.
+   */
+  ownerUserId?: string;
+}
+
+/**
+ * What one revert did. `resettled` is the chain repair of step 3 — see
+ * {@link ResettleOutcome}; it can name a row re-closed by the restored one.
+ */
+export interface RevertOutput extends ResettleOutcome {
+  /** `[id]` when this call retracted it, else `[]` (and nothing else moved). */
+  reverted: string[];
+  /** `[restore]` when this call re-opened it, else `[]`. */
+  restored: string[];
 }
 
 export type ClearInput = Record<string, never>;
@@ -5550,6 +5615,355 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
           bus.call('memory:facts:reinstate', makeCtx(), payloadFor(rec.id)),
         );
         expect((await historyRow(rec.id))!.until).toBeDefined();
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // memory:facts:revert — undoing a person's Fix (TASK-634)
+    //
+    // Each case simulates the Fix through the engine hooks exactly as
+    // `memory:correct` drives them: "changed" records the person-saved row N
+    // and then supersedes O `by` N; "never right" retracts O with `neverTrue`
+    // FIRST and records N after. The assertion that matters is the whole-store
+    // one: after the revert every pre-existing row reads back byte-for-byte as
+    // it did BEFORE the Fix, and N is a plain retraction.
+    //
+    // Replay is path-dependent under ties (two `record` calls landing in the
+    // same millisecond fall back to comparing random ids), so whenever a case
+    // needs several pre-existing rows they are recorded in ONE batch.
+    // -----------------------------------------------------------------------
+    describe('memory:facts:revert', () => {
+      async function revert(input: unknown, ctx = makeCtx()): Promise<RevertOutput> {
+        return bus.call<RevertInput, RevertOutput>(
+          'memory:facts:revert',
+          ctx,
+          input as RevertInput,
+        );
+      }
+
+      async function supersedeBy(
+        ids: string[],
+        by: string,
+        ctx = makeCtx(),
+        ownerUserId?: string,
+      ): Promise<SupersedeOutput> {
+        return bus.call<SupersedeInput, SupersedeOutput>('memory:facts:supersede', ctx, {
+          ids,
+          by,
+          ...(ownerUserId !== undefined ? { ownerUserId } : {}),
+        });
+      }
+
+      /** Every row of the fixture, active or not, keyed by id. */
+      async function rows(ctx = makeCtx()): Promise<Map<string, FactRecord>> {
+        const out = await recall({ about: 'user', limit: 50, activeOnly: false }, ctx);
+        return new Map(out.statements.map((s) => [s.id, s]));
+      }
+
+      async function activeIds(ctx = makeCtx()): Promise<string[]> {
+        const out = await recall({ about: 'user', limit: 50 }, ctx);
+        return out.statements.map((s) => s.id).sort();
+      }
+
+      /** memory:correct, reason 'changed', as engine calls. */
+      async function fixChanged(
+        o: string,
+        statement: FactStatementInput,
+        ctx = makeCtx(),
+        ownerUserId?: string,
+      ): Promise<string> {
+        const n = await recordOne({ ...statement, provenance: 'human' }, ctx);
+        await supersedeBy([o], n.id, ctx, ownerUserId);
+        return n.id;
+      }
+
+      /** memory:correct, reason 'never-right', as engine calls. */
+      async function fixNeverRight(
+        o: string,
+        statement: FactStatementInput,
+        ctx = makeCtx(),
+        ownerUserId?: string,
+      ): Promise<string> {
+        await supersedeNeverTrue([o], ctx, ownerUserId);
+        const n = await recordOne({ ...statement, provenance: 'human' }, ctx);
+        return n.id;
+      }
+
+      /**
+       * The store is exactly what it was before the Fix — every pre-existing
+       * row identical, the same active set — plus N as a plain retraction.
+       */
+      async function expectUndone(
+        before: Map<string, FactRecord>,
+        activeBefore: string[],
+        n: string,
+        ctx = makeCtx(),
+      ): Promise<void> {
+        const after = await rows(ctx);
+        for (const [id, row] of before) expect(after.get(id)).toEqual(row);
+        expect([...after.keys()].sort()).toEqual([...before.keys(), n].sort());
+        const nRow = after.get(n)!;
+        expect(nRow.until).toBeDefined();
+        expect('closedBy' in nRow).toBe(false);
+        expect('neverTrue' in nRow).toBe(false);
+        expect(nRow.provenance).toBe('human');
+        expect(await activeIds(ctx)).toEqual(activeBefore);
+      }
+
+      /** P (JAN) then O (JUN) in one chain, in ONE batch: O closes P. */
+      async function slottedChain(
+        oProvenance: Provenance = 'agent',
+      ): Promise<[RecordedStatement, RecordedStatement]> {
+        const [p, o] = (
+          await record({
+            statements: [
+              {
+                about: 'user',
+                relation: 'lives_in',
+                value: 'Boston',
+                when: JAN,
+                slot: 'lives_in',
+                provenance: 'extracted',
+              },
+              {
+                about: 'user',
+                relation: 'lives_in',
+                value: 'Seattle',
+                when: JUN,
+                slot: 'lives_in',
+                provenance: oProvenance,
+              },
+            ],
+          })
+        ).records as [RecordedStatement, RecordedStatement];
+        expect(o.closes).toEqual([p.id]);
+        return [p, o];
+      }
+
+      const DENVER: FactStatementInput = {
+        about: 'user',
+        relation: 'lives_in',
+        value: 'Denver',
+        when: SEP,
+        slot: 'lives_in',
+      };
+
+      it("changed + slotted: O comes back, P stays closed by O, N is a plain retraction", async () => {
+        const [p, o] = await slottedChain();
+        const before = await rows();
+        const activeBefore = await activeIds();
+        expect(activeBefore).toEqual([o.id]);
+
+        const n = await fixChanged(o.id, DENVER);
+        expect((await rows()).get(o.id)!.closedBy).toBe(n);
+
+        const out = await revert({ id: n, restore: o.id });
+        expect(out).toEqual({ reverted: [n], restored: [o.id], resettled: [] });
+        await expectUndone(before, activeBefore, n);
+        expect((await rows()).get(p.id)!.closedBy).toBe(o.id);
+      });
+
+      it('changed + slot-less: the replaced row comes back', async () => {
+        const o = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Khalid',
+          when: JUN,
+          provenance: 'agent',
+        });
+        const before = await rows();
+        const activeBefore = await activeIds();
+
+        const n = await fixChanged(o.id, {
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Sade',
+          when: SEP,
+        });
+        expect((await rows()).get(o.id)!.closedBy).toBe(n);
+
+        const out = await revert({ id: n, restore: o.id });
+        expect(out).toEqual({ reverted: [n], restored: [o.id], resettled: [] });
+        await expectUndone(before, activeBefore, n);
+      });
+
+      it('never-right + slotted: O comes back and closes P again', async () => {
+        const [p, o] = await slottedChain();
+        const before = await rows();
+        const activeBefore = await activeIds();
+
+        const n = await fixNeverRight(o.id, DENVER);
+        const mid = await rows();
+        expect(mid.get(o.id)!.neverTrue).toBe(true);
+        expect(mid.get(p.id)!.closedBy).toBe(n);
+
+        const out = await revert({ id: n, restore: o.id });
+        expect(out).toEqual({ reverted: [n], restored: [o.id], resettled: [p.id] });
+        await expectUndone(before, activeBefore, n);
+        expect((await rows()).get(p.id)!.closedBy).toBe(o.id);
+      });
+
+      it('never-right + slot-less: the retracted row comes back without the label', async () => {
+        const o = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Khalid',
+          when: JUN,
+        });
+        const before = await rows();
+        const activeBefore = await activeIds();
+
+        const n = await fixNeverRight(o.id, {
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Sade',
+          when: SEP,
+        });
+        expect((await rows()).get(o.id)!.neverTrue).toBe(true);
+
+        const out = await revert({ id: n, restore: o.id });
+        expect(out).toEqual({ reverted: [n], restored: [o.id], resettled: [] });
+        await expectUndone(before, activeBefore, n);
+      });
+
+      it('a second revert is a no-op', async () => {
+        const [, o] = await slottedChain();
+        const n = await fixNeverRight(o.id, DENVER);
+        expect((await revert({ id: n, restore: o.id })).reverted).toEqual([n]);
+
+        const settled = await rows();
+        expect(await revert({ id: n, restore: o.id })).toEqual({
+          reverted: [],
+          restored: [],
+          resettled: [],
+        });
+        expect(await rows()).toEqual(settled);
+      });
+
+      it('refuses a foreign owner and a foreign tenant, touching nothing', async () => {
+        const team = makeCtx('agent-team', 'u');
+        const [, o] = (
+          await record(
+            {
+              statements: [
+                {
+                  about: 'user',
+                  relation: 'lives_in',
+                  value: 'Boston',
+                  when: JAN,
+                  slot: 'lives_in',
+                  ownerUserId: 'owner-alice',
+                },
+                {
+                  about: 'user',
+                  relation: 'lives_in',
+                  value: 'Seattle',
+                  when: JUN,
+                  slot: 'lives_in',
+                  ownerUserId: 'owner-alice',
+                },
+              ],
+            },
+            team,
+          )
+        ).records as [RecordedStatement, RecordedStatement];
+        const before = await rows(team);
+        const activeBefore = await activeIds(team);
+        const n = await fixChanged(
+          o.id,
+          { ...DENVER, ownerUserId: 'owner-alice' },
+          team,
+          'owner-alice',
+        );
+        const mid = await rows(team);
+
+        const empty = { reverted: [], restored: [], resettled: [] };
+        expect(await revert({ id: n, restore: o.id, ownerUserId: 'owner-bob' }, team)).toEqual(
+          empty,
+        );
+        expect(await revert({ id: n, restore: o.id }, makeCtx('agent-b', 'user-b'))).toEqual(
+          empty,
+        );
+        expect(await rows(team)).toEqual(mid);
+
+        // The owner herself can.
+        const out = await revert({ id: n, restore: o.id, ownerUserId: 'owner-alice' }, team);
+        expect(out).toEqual({ reverted: [n], restored: [o.id], resettled: [] });
+        await expectUndone(before, activeBefore, n, team);
+      });
+
+      it('does not re-open a plain Forget of the restore row, but still retracts N', async () => {
+        const o = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Khalid',
+          when: JUN,
+        });
+        await supersede([o.id]);
+        const oBefore = (await rows()).get(o.id);
+        const n = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Sade',
+          when: SEP,
+          provenance: 'human',
+        });
+
+        const out = await revert({ id: n.id, restore: o.id });
+        expect(out).toEqual({ reverted: [n.id], restored: [], resettled: [] });
+        const after = await rows();
+        expect(after.get(o.id)).toEqual(oBefore);
+        expect(after.get(n.id)!.until).toBeDefined();
+        expect(await activeIds()).toEqual([]);
+      });
+
+      it.each(['extracted', 'agent'] as const)(
+        'the restored row keeps its own provenance (%s)',
+        async (provenance) => {
+          const [, o] = await slottedChain(provenance);
+          const n = await fixChanged(o.id, DENVER);
+          expect((await revert({ id: n, restore: o.id })).restored).toEqual([o.id]);
+          const row = (await rows()).get(o.id)!;
+          expect(row.provenance).toBe(provenance);
+          expect('until' in row).toBe(false);
+        },
+      );
+
+      it('id equal to restore is a no-op', async () => {
+        const n = await recordOne({ ...DENVER, provenance: 'human' });
+        const before = await rows();
+        expect(await revert({ id: n.id, restore: n.id })).toEqual({
+          reverted: [],
+          restored: [],
+          resettled: [],
+        });
+        expect(await rows()).toEqual(before);
+      });
+
+      it.each([
+        ['id missing', (n: string, o: string) => ({ restore: o })],
+        ['id empty', (_n: string, o: string) => ({ id: '', restore: o })],
+        ['id not a string', (_n: string, o: string) => ({ id: 7, restore: o })],
+        ['restore missing', (n: string) => ({ id: n })],
+        ['restore empty', (n: string) => ({ id: n, restore: '' })],
+        ['ownerUserId empty', (n: string, o: string) => ({ id: n, restore: o, ownerUserId: '' })],
+        ['ownerUserId not a string', (n: string, o: string) => ({ id: n, restore: o, ownerUserId: 7 })],
+      ])('rejects %s with invalid-payload, changing nothing', async (_label, payloadFor) => {
+        const o = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Khalid',
+          when: JUN,
+        });
+        const n = await fixChanged(o.id, {
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Sade',
+          when: SEP,
+        });
+        const before = await rows();
+        await expectCode('invalid-payload', () => revert(payloadFor(n, o.id)));
+        expect(await rows()).toEqual(before);
       });
     });
   });
