@@ -214,8 +214,9 @@ describe('an extracted restatement of an agent note is not stored', () => {
 
   // A SCOPE guard, not a fix test: it passes on the unfixed code too. It
   // fails if the check ever starts matching a routine batch against its
-  // hidden per-fire conversation.
-  it('a routine run carries no conversation, so nothing is checked (TASK-616 scope)', async () => {
+  // hidden per-fire conversation. (TASK-654's retracted-twin check is
+  // owner-scoped and does run here; it finds nothing retracted to drop.)
+  it('a routine run carries no conversation, so the conversation twin check is skipped (TASK-616 scope)', async () => {
     vi.useFakeTimers();
     const env = await setup();
     const routine = env.ctx('routine');
@@ -864,6 +865,40 @@ describe('a slot-less value marked never right is not re-extracted from the agen
     ]);
     const run = eventsNamed(env.h.logs, OBSERVER_RUN_EVENT).at(-1);
     expect(run?.bindings).toMatchObject({ outcome: 'recorded', retracted: 0 });
+  });
+
+  // Review finding: the CONVERSATION read failing and the retracted check
+  // then dropping every kept statement ends on `only-twins`, not `recorded`.
+  // The failure must still be reported, with its cause.
+  it('a failed conversation read is still reported when the retracted check drops everything', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    await retracted(env);
+
+    const bus = env.h.bus;
+    const original = bus.call.bind(bus);
+    bus.call = (async (name: string, c: AgentContext, input: unknown) => {
+      const i = input as { about?: unknown; conversationId?: unknown } | undefined;
+      if (name === 'memory:facts:recall' && i?.about !== undefined && i.conversationId === CONV) {
+        throw new Error('conversation rows unavailable');
+      }
+      return original(name, c, input);
+    }) as typeof bus.call;
+    try {
+      env.extract([DENVER_EXTRACTED]);
+      await env.exchange('When is my move again?', 'You are relocating to Denver in November.', 'r1');
+      await env.idle();
+    } finally {
+      bus.call = original;
+    }
+
+    expect(extracted(env)).toEqual([]);
+    const run = eventsNamed(env.h.logs, OBSERVER_RUN_EVENT).at(-1);
+    expect(run?.bindings).toMatchObject({ outcome: 'skipped', reason: 'only-twins', retracted: 1 });
+    const failed = eventsNamed(env.h.logs, OBSERVER_FAILED_EVENT).find(
+      (e) => e.bindings.reason === 'twin-check-failed',
+    );
+    expect((failed?.bindings.err as Error | undefined)?.message).toBe('conversation rows unavailable');
   });
 
   it('the read fails open: the statement is kept, and the warning carries the cause', async () => {

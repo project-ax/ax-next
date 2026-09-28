@@ -2106,6 +2106,12 @@ function logObserverResult(
   };
   switch (result.kind) {
     case 'skipped':
+      // A failed twin read can end here too (TASK-654): the conversation
+      // read fails open, then the retracted check drops every kept statement.
+      // The failure is reported exactly as on the `recorded` path.
+      if ('twinCheck' in result && result.twinCheck === 'failed') {
+        logTwinCheckFailed(ctx, base, result.twinCheckError);
+      }
       // `debug`: an ordinary turn with nothing durable in it is the common
       // case, not a problem.
       ctx.logger.debug(OBSERVER_RUN_EVENT, {

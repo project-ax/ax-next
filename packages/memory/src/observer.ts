@@ -106,6 +106,12 @@ export type ObserverResult =
       /** Restatements of a value marked never right, dropped (TASK-654). */
       retracted: number;
       twinCheck: TwinCheck;
+      /**
+       * Why a twin read failed, when one did. Reachable here since TASK-654:
+       * a failed conversation read keeps the batch, and the retracted check
+       * can then drop all of it.
+       */
+      twinCheckError?: Error;
     }
   /**
    * The extractor produced facts and EVERY ONE of them was unusable, so the
@@ -171,11 +177,14 @@ export type ObserverResult =
     };
 
 /**
- * What happened to the twin check (TASK-641):
+ * What happened to the twin checks (TASK-641, and TASK-654's retracted-twin
+ * check):
  *
- * - `ran` — the conversation's rows were read and twins dropped;
- * - `skipped` — nothing to check against: the statements carry no
- *   conversation (a routine run, a conversation-less turn) or no reader was
+ * - `ran` — at least one of the two checks read its rows and dropped what
+ *   it matched. The retracted check is owner-scoped, so it can run on a
+ *   routine or conversation-less turn the conversation check skips;
+ * - `skipped` — neither had anything to check against: no conversation for
+ *   the first, no slot-less non-user statement for the second, or no reader
  *   wired;
  * - `failed` — the read threw, and the batch was recorded UNFILTERED (or,
  *   when only the TASK-649 chain read threw, with the statements it was
@@ -385,7 +394,14 @@ async function extractAndRecord(
     mapped.statements,
   );
   if (statements.length === 0) {
-    return { kind: 'skipped', reason: 'only-twins', twins, retracted, twinCheck };
+    return {
+      kind: 'skipped',
+      reason: 'only-twins',
+      twins,
+      retracted,
+      twinCheck,
+      ...(twinCheckError !== undefined ? { twinCheckError } : {}),
+    };
   }
 
   const batchKey = how.batchKey();
