@@ -300,7 +300,9 @@ describe('@ax/memory — a retracted value re-mentioned with NO rival in its slo
   // TASK-634 (#780): Undo for a Fix leaves the Fix's own row as a plain
   // Forget precisely so it does NOT suppress a later mention of that value,
   // and it clears the never-right bit on the row it restores. Hiding retracted
-  // values must not turn either of those back into a suppression.
+  // values must not turn either of those back into a suppression. A forward
+  // guard: it passes on the pre-TASK-639 code too, and reddens if a later
+  // change starts treating a forgotten or reinstated row as retracted.
   it('Undo of a never-right Fix: neither the Fix value nor the restored value is suppressed', async () => {
     harness = await makeMemoryHarness();
     const [seattle] = await record(harness, row('Seattle, Washington', JAN, 'agent'));

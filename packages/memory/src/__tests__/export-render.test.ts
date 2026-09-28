@@ -361,4 +361,14 @@ describe('buildFactsExport — profile, TASK-633', () => {
     expect(profile).toContain('- lives_in: Tacoma');
     expect(profile).not.toContain('Portland');
   });
+
+  // TASK-639 ruling: HIDE it — with no rival, the exported profile shows
+  // nothing for the slot rather than the retracted value.
+  it('a lone re-mention of a retracted value is absent from the exported profile', () => {
+    const profile = profileOf([
+      row({ id: 'p1', slot: 'lives_in', value: 'Portland', when: '2026-08-01T00:00:00.000Z', until: '2026-08-10T00:00:00.000Z', neverTrue: true }),
+      row({ id: 'p2', slot: 'lives_in', value: 'Portland', when: '2026-09-05T00:00:00.000Z' }),
+    ]);
+    expect(profile).not.toContain('lives_in');
+  });
 });
