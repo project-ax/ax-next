@@ -159,6 +159,30 @@ export interface FactRecord {
    */
   closedBy?: string;
   /**
+   * Present — and only ever `true` — on a row that was closed by a
+   * {@link SupersedeInput.neverTrue} supersede: a person said the value was
+   * NEVER right, not that it stopped being right. Absent on every other row:
+   * active, rule-closed, and closed by a plain supersede (a Forget) alike.
+   *
+   * Why a stored bit rather than something derived: a Forget and a "never
+   * right" leave byte-identical closure columns (`until` set, `closedBy`
+   * absent), and History has to tell them apart long after the call that made
+   * the difference. Encoding it as a zero-length validity interval instead
+   * would lose the retraction date a reader shows.
+   *
+   * It changes no closure rule. The row IS a retraction like any other — out
+   * of the `(about, slot)` chain replay, bounding nothing, re-opened by
+   * nothing. There is no point-in-time (`at`) recall on this contract (see
+   * {@link RecallInput.activeOnly}), so there is no "hidden from `at`"
+   * behaviour either; the flag is only ever read back. It is returned by
+   * `recall` with `activeOnly: false` (listing and `query` paths alike) and by
+   * `scan`; an active-only read never returns the row at all.
+   *
+   * Written as an optional `true` rather than a `boolean` so "absent" has one
+   * spelling: a reader tests presence, never `=== false`.
+   */
+  neverTrue?: true;
+  /**
    * The slot this row was stored under, echoed back exactly as
    * {@link FactStatementInput.slot} supplied it — including
    * {@link PENDING_SLOT}. Absent means the row has no slot: inert, closing
@@ -374,6 +398,32 @@ export interface SupersedeInput {
    * tenant still closes nothing, because both predicates are ANDed.
    */
   ownerUserId?: string;
+  /**
+   * `true` records that every row THIS call closes was never true — a
+   * person's "it was never right" fix, as opposed to a plain retraction
+   * ("forget this", which says nothing about whether it once held). The rows
+   * come back from `recall`/`scan` carrying {@link FactRecord.neverTrue}.
+   * Omitted or `false` is exactly today's supersede. Any other type is
+   * `invalid-payload`, checked before the store is touched.
+   *
+   * Marks ONLY what this call actually closes, and in the same write: an id
+   * that is foreign (tenant or owner), missing, or ALREADY closed is absent
+   * from `closed` and is left exactly as it was. So a never-true supersede
+   * never re-labels an already-closed row — a Forget from last week, or a
+   * row the slot rule closed, cannot be turned into "never right" after the
+   * fact through this hook.
+   *
+   * It changes no closure rule. The closed row is a retraction like any
+   * other (`until` set, `closedBy` absent), dropped from the chain replay, and
+   * the same call re-opens whatever it had closed exactly as a plain
+   * supersede would — which is precisely what makes "never right" come out
+   * right: Boston → Seattle (wrong) → a never-true supersede of Seattle
+   * re-opens Boston, so the corrected value that follows closes Boston
+   * directly and Seattle is never part of the chain. There is no point-in-time
+   * (`at`) recall to exclude it from; the flag is a stored label, nothing more.
+   * The re-settle never rewrites it.
+   */
+  neverTrue?: boolean;
 }
 
 /**
@@ -652,6 +702,21 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
     ): Promise<SupersedeOutput> {
       return bus.call<SupersedeInput, SupersedeOutput>('memory:facts:supersede', ctx, {
         ids,
+        ...(ownerUserId !== undefined ? { ownerUserId } : {}),
+      });
+    }
+
+    // The never-true variant, kept separate so `supersede(ids, ctx, owner)`
+    // call sites above stay exactly as they were and "absent" stays the
+    // default under test everywhere else.
+    async function supersedeNeverTrue(
+      ids: string[],
+      ctx = makeCtx(),
+      ownerUserId?: string,
+    ): Promise<SupersedeOutput> {
+      return bus.call<SupersedeInput, SupersedeOutput>('memory:facts:supersede', ctx, {
+        ids,
+        neverTrue: true,
         ...(ownerUserId !== undefined ? { ownerUserId } : {}),
       });
     }
@@ -4304,6 +4369,307 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
             scan(input as unknown as FactScanInput),
           );
         });
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // memory:facts:supersede — neverTrue (TASK-624)
+    //
+    // "It was never right" is an explicit retraction that also records WHY.
+    // Every case pairs the flag with the closure it rides on, and every
+    // absence is asserted as `'neverTrue' in row === false` — a backend that
+    // emitted `neverTrue: undefined` (or `false`) would pass `toBeUndefined`
+    // while giving readers two spellings of "not never-true".
+    // -----------------------------------------------------------------------
+    describe('memory:facts:supersede — neverTrue', () => {
+      const NT_LIVES_IN = 'lives_in';
+
+      async function historyRow(id: string, ctx = makeCtx()): Promise<FactRecord | undefined> {
+        const out = await recall({ about: 'user', limit: 50, activeOnly: false }, ctx);
+        return out.statements.find((s) => s.id === id);
+      }
+
+      it('marks the row it closes: until set, closedBy absent, neverTrue true', async () => {
+        const rec = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Khalid',
+          when: JAN,
+        });
+        const out = await supersedeNeverTrue([rec.id]);
+        expect(out.closed).toEqual([rec.id]);
+
+        const row = await historyRow(rec.id);
+        expect(row).toBeDefined();
+        expect(row!.until).toBeDefined();
+        expect('closedBy' in row!).toBe(false);
+        expect(row!.neverTrue).toBe(true);
+      });
+
+      it('a plain supersede leaves neverTrue ABSENT — a Forget is not a "never right"', async () => {
+        const rec = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Khalid',
+          when: JAN,
+        });
+        expect((await supersede([rec.id])).closed).toEqual([rec.id]);
+
+        const row = await historyRow(rec.id);
+        expect(row!.until).toBeDefined();
+        expect('neverTrue' in row!).toBe(false);
+      });
+
+      it('`neverTrue: false` is a plain supersede', async () => {
+        const rec = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Khalid',
+          when: JAN,
+        });
+        const out = await bus.call<SupersedeInput, SupersedeOutput>(
+          'memory:facts:supersede',
+          makeCtx(),
+          { ids: [rec.id], neverTrue: false },
+        );
+        expect(out.closed).toEqual([rec.id]);
+        expect('neverTrue' in (await historyRow(rec.id))!).toBe(false);
+      });
+
+      it('a rule-closed row and an active row never carry neverTrue', async () => {
+        const boston = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Boston',
+          when: JAN,
+          slot: NT_LIVES_IN,
+        });
+        const seattle = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JUN,
+          slot: NT_LIVES_IN,
+        });
+        expect(seattle.closes).toEqual([boston.id]);
+
+        const bostonRow = await historyRow(boston.id);
+        expect(bostonRow!.closedBy).toBe(seattle.id);
+        expect('neverTrue' in bostonRow!).toBe(false);
+        const seattleRow = await historyRow(seattle.id);
+        expect(seattleRow!.until).toBeUndefined();
+        expect('neverTrue' in seattleRow!).toBe(false);
+      });
+
+      it('an active-only recall never returns a never-true row', async () => {
+        const rec = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Khalid',
+          when: JAN,
+        });
+        const keep = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Sade',
+          when: JUN,
+        });
+        await supersedeNeverTrue([rec.id]);
+
+        const active = await recall({ about: 'user', limit: 10 });
+        expect(active.statements.map((s) => s.id)).toEqual([keep.id]);
+      });
+
+      // The whole reason the fix retracts FIRST: the never-true row drops out
+      // of the chain and re-opens its victim, so the corrected value closes
+      // the ORIGINAL row directly and the mistake is never in the chain.
+      it('Boston → Seattle → never-true Seattle → Denver: Denver closes Boston; Seattle stays never-true, closedBy absent', async () => {
+        const boston = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Boston',
+          when: JAN,
+          slot: NT_LIVES_IN,
+        });
+        const seattle = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JUN,
+          slot: NT_LIVES_IN,
+        });
+        expect(seattle.closes).toEqual([boston.id]);
+
+        const out = await supersedeNeverTrue([seattle.id]);
+        expect(out.closed).toEqual([seattle.id]);
+        expect(out.resettled).toContain(boston.id);
+        expect(out.resettled).not.toContain(seattle.id);
+
+        const denver = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Denver',
+          when: SEP,
+          slot: NT_LIVES_IN,
+        });
+        expect(denver.closes).toEqual([boston.id]);
+
+        const bostonRow = await historyRow(boston.id);
+        expect(bostonRow!.closedBy).toBe(denver.id);
+        expect('neverTrue' in bostonRow!).toBe(false);
+
+        // The re-settle and the later record left the label alone.
+        const seattleRow = await historyRow(seattle.id);
+        expect(seattleRow!.until).toBeDefined();
+        expect('closedBy' in seattleRow!).toBe(false);
+        expect(seattleRow!.neverTrue).toBe(true);
+
+        const active = await recall({ about: 'user', limit: 10 });
+        expect(active.statements.map((s) => s.value)).toEqual(['Denver']);
+      });
+
+      it('never re-labels an already-closed row — a Forget stays a Forget', async () => {
+        const rec = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Khalid',
+          when: JAN,
+        });
+        await supersede([rec.id]);
+        const before = await historyRow(rec.id);
+
+        const out = await supersedeNeverTrue([rec.id]);
+        expect(out.closed).toEqual([]);
+        expect(out.resettled).toEqual([]);
+
+        const after = await historyRow(rec.id);
+        expect('neverTrue' in after!).toBe(false);
+        expect(after!.until).toBe(before!.until);
+      });
+
+      it('never re-labels a rule-closed row either', async () => {
+        const boston = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Boston',
+          when: JAN,
+          slot: NT_LIVES_IN,
+        });
+        const seattle = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JUN,
+          slot: NT_LIVES_IN,
+        });
+
+        const out = await supersedeNeverTrue([boston.id]);
+        expect(out.closed).toEqual([]);
+
+        const bostonRow = await historyRow(boston.id);
+        expect(bostonRow!.closedBy).toBe(seattle.id);
+        expect('neverTrue' in bostonRow!).toBe(false);
+      });
+
+      it.each([
+        ['a string', 'yes'],
+        ['a number', 1],
+        ['null', null],
+        ['an object', {}],
+      ])('rejects neverTrue as %s with invalid-payload, closing nothing', async (_label, neverTrue) => {
+        const rec = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Khalid',
+          when: JAN,
+        });
+        await expectCode('invalid-payload', () =>
+          bus.call('memory:facts:supersede', makeCtx(), { ids: [rec.id], neverTrue }),
+        );
+        const active = await recall({ about: 'user', limit: 10 });
+        expect(active.statements.map((s) => s.id)).toEqual([rec.id]);
+      });
+
+      it('scan returns neverTrue on the never-true row, and only there', async () => {
+        const wrong = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Khalid',
+          when: JAN,
+        });
+        const forgotten = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Sade',
+          when: JUN,
+        });
+        const active = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Adele',
+          when: SEP,
+        });
+        await supersedeNeverTrue([wrong.id]);
+        await supersede([forgotten.id]);
+
+        const rows = (await scan({ limit: 50 })).statements;
+        const byId = new Map(rows.map((r) => [r.id, r]));
+        expect(byId.get(wrong.id)!.neverTrue).toBe(true);
+        expect(byId.get(wrong.id)!.until).toBeDefined();
+        expect('neverTrue' in byId.get(forgotten.id)!).toBe(false);
+        expect('neverTrue' in byId.get(active.id)!).toBe(false);
+      });
+
+      it('the query (fusion) history path returns neverTrue too', async (t) => {
+        needsFusion(t);
+        const rec = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Khalid',
+          when: JAN,
+        });
+        await supersedeNeverTrue([rec.id]);
+
+        const history = await recall({ query: 'Khalid', limit: 10, activeOnly: false });
+        const row = history.statements.find((s) => s.id === rec.id);
+        expect(row).toBeDefined();
+        expect(row!.neverTrue).toBe(true);
+
+        const active = await recall({ query: 'Khalid', limit: 10 });
+        expect(active.statements.map((s) => s.id)).not.toContain(rec.id);
+      });
+
+      it('owner-scoped: a foreign-owner id is neither closed nor marked', async () => {
+        const team = makeCtx('team-agent', 'whoever');
+        const mine = await recordOne(
+          {
+            about: 'user',
+            relation: 'likes_artist',
+            value: 'Khalid',
+            when: JAN,
+            ownerUserId: 'owner-alice',
+          },
+          team,
+        );
+        const theirs = await recordOne(
+          {
+            about: 'user',
+            relation: 'likes_artist',
+            value: 'Sade',
+            when: JUN,
+            ownerUserId: 'owner-bob',
+          },
+          team,
+        );
+
+        const out = await supersedeNeverTrue([mine.id, theirs.id], team, 'owner-alice');
+        expect(out.closed).toEqual([mine.id]);
+
+        const mineRow = await historyRow(mine.id, team);
+        expect(mineRow!.neverTrue).toBe(true);
+        const theirsRow = await historyRow(theirs.id, team);
+        expect(theirsRow!.until).toBeUndefined();
+        expect('neverTrue' in theirsRow!).toBe(false);
       });
     });
   });

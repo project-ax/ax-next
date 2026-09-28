@@ -27,6 +27,15 @@ export interface FactRow {
   transaction_time: string;
   closed_by: string | null;
   /**
+   * `true` when an explicit `memory:facts:supersede` with `neverTrue` closed
+   * this row — a person said it was never right, not that it stopped being
+   * right. NULL on every other row, including a plain retraction; nothing
+   * ever writes `false`, so "not never-true" has one spelling. Written only by
+   * the same UPDATE that closes the row (`supersedeIds`), never by the
+   * re-settle, and read back as `FactRecord.neverTrue`.
+   */
+  never_true: boolean | null;
+  /**
    * The `batchKey` of the `memory:facts:record` call that wrote this row, or
    * NULL when the caller passed none. Every row of one batch carries the same
    * value; dedup is `(agent_key, batch_key)`, never `batch_key` alone.
@@ -127,7 +136,8 @@ export async function runFactsMigration<DB>(db: Kysely<DB>): Promise<void> {
       transaction_time TEXT NOT NULL,
       closed_by        TEXT,
       batch_key        TEXT,
-      batch_seq        INTEGER
+      batch_seq        INTEGER,
+      never_true       BOOLEAN
     )
   `.execute(db);
 
@@ -144,6 +154,10 @@ export async function runFactsMigration<DB>(db: Kysely<DB>): Promise<void> {
   // Provenance column (sourceTurnId) — same additive story as `kind`: nullable,
   // no default, no backfill. An older row genuinely has no source turn.
   await sql`ALTER TABLE memory_facts_v1 ADD COLUMN IF NOT EXISTS source_turn_id TEXT`.execute(db);
+  // TASK-624. Same shape: nullable, no default, no backfill — every older row
+  // was closed (if at all) by a rule or a plain retraction, and NULL says
+  // exactly "not never-true".
+  await sql`ALTER TABLE memory_facts_v1 ADD COLUMN IF NOT EXISTS never_true BOOLEAN`.execute(db);
 
   // The slot chain — `insertWithSlotClosure`'s peer query and
   // `resettleSlotGroups`' group read.

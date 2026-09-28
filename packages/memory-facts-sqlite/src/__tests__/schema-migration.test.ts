@@ -256,6 +256,51 @@ describe('@ax/memory-facts-sqlite — additive batch-column migration', () => {
     }
   });
 
+  // TASK-624. Without the ALTER, the first never-true supersede on a pre-624
+  // db would die on "no such column: never_true" — in production only.
+  it('adds `never_true` to an older db, and a never-true supersede then marks the legacy row', async () => {
+    seedLegacyDatabase();
+    {
+      const driver = new BetterSqlite3(databasePath);
+      driver
+        .prepare(`UPDATE ${TABLE} SET agent_key = ? WHERE id = 'legacy-1'`)
+        .run(agentScopeKey({ agentId: 'a' }));
+      driver.close();
+    }
+
+    const bus = new HookBus();
+    const plugin = createMemoryFactsSqlitePlugin({ databasePath });
+    await plugin.init({ bus, config: {} });
+    try {
+      const ctx = makeAgentContext({
+        sessionId: 's',
+        agentId: 'a',
+        userId: 'u',
+        workspace: { rootPath: '/tmp' },
+      });
+      const before = await bus.call<
+        { about: string; limit: number; activeOnly: boolean },
+        { statements: Array<Record<string, unknown>> }
+      >('memory:facts:recall', ctx, { about: 'user', limit: 10, activeOnly: false });
+      expect(before.statements).toHaveLength(1);
+      expect(before.statements[0]).not.toHaveProperty('neverTrue');
+
+      const out = await bus.call<
+        { ids: string[]; neverTrue: boolean },
+        { closed: string[] }
+      >('memory:facts:supersede', ctx, { ids: ['legacy-1'], neverTrue: true });
+      expect(out.closed).toEqual(['legacy-1']);
+
+      const after = await bus.call<
+        { about: string; limit: number; activeOnly: boolean },
+        { statements: Array<Record<string, unknown>> }
+      >('memory:facts:recall', ctx, { about: 'user', limit: 10, activeOnly: false });
+      expect(after.statements[0]!.neverTrue).toBe(true);
+    } finally {
+      await plugin.shutdown?.();
+    }
+  });
+
   it('is idempotent — a second open does not throw "duplicate column name"', () => {
     seedLegacyDatabase();
 

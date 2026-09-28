@@ -183,6 +183,7 @@ export async function insertWithSlotClosure(
       valid_end: INFINITY_SENTINEL,
       transaction_time: statement.transactionTime,
       closed_by: null,
+      never_true: null,
       batch_key: statement.batchKey ?? null,
       batch_seq: statement.batchSeq,
     })
@@ -525,6 +526,13 @@ export interface SupersedeResult {
  * already is: silently absent from `closed`, no throw. Same shape, one thing
  * for a caller to handle. `=` is strict, so an unstamped row is not closable by
  * an owner-scoped call — unowned is not provably yours.
+ *
+ * ## `neverTrue` (TASK-624)
+ *
+ * When set, the rows this call closes are also stamped `never_true = true` —
+ * in the closing UPDATE itself, so the label and the closure cannot disagree.
+ * It changes nothing else: the row is a retraction like any other, and
+ * {@link resettleSlotGroups} never writes the column.
  */
 export async function supersedeIds(
   db: FactsDatabase,
@@ -532,6 +540,7 @@ export async function supersedeIds(
   ids: readonly string[],
   at: string,
   ownerUserId?: string,
+  neverTrue = false,
 ): Promise<SupersedeResult> {
   if (ids.length === 0) return { closed: [], resettled: [] };
 
@@ -540,9 +549,13 @@ export async function supersedeIds(
     // caller's owner scope when it named one, and to rows that are still
     // active. A foreign id, a foreign-OWNER id, a missing id and an
     // already-closed id are all simply absent from RETURNING.
+    //
+    // `never_true` rides on this SAME statement, so it lands on exactly the
+    // rows RETURNING reports and on nothing else: an already-closed row fails
+    // the `valid_end` predicate and keeps whatever label it had (TASK-624).
     let update = trx
       .updateTable(TABLE)
-      .set({ valid_end: at })
+      .set(neverTrue ? { valid_end: at, never_true: true } : { valid_end: at })
       .where('agent_key', '=', agentKey)
       .where('valid_end', '=', INFINITY_SENTINEL)
       .where('id', 'in', [...ids]);

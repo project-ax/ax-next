@@ -467,6 +467,13 @@ export interface SupersedeResult {
  * id already is: silently absent from `closed`, no throw. Same shape, one
  * thing for a caller to handle. And `=` is strict, so an unstamped row is not
  * closable by an owner-scoped call — unowned is not provably yours.
+ *
+ * ## `neverTrue` (TASK-624)
+ *
+ * When set, the rows this call closes are also stamped `never_true = 1` — in
+ * the closing UPDATE itself, so the label and the closure cannot disagree.
+ * It changes nothing else: the row is a retraction like any other, and
+ * {@link resettleSlotGroups} never writes the column.
  */
 export function supersedeIds(
   driver: BetterSqliteDb,
@@ -474,6 +481,7 @@ export function supersedeIds(
   ids: readonly string[],
   at: string,
   ownerUserId?: string,
+  neverTrue = false,
 ): SupersedeResult {
   if (ids.length === 0) return { closed: [], resettled: [] };
   const close = driver.transaction((): SupersedeResult => {
@@ -498,8 +506,14 @@ export function supersedeIds(
     const ownerClause = ownerUserId === undefined ? '' : ' AND owner_user_id = ?';
     const ownerParams: string[] = ownerUserId === undefined ? [] : [ownerUserId];
 
+    // `never_true` rides on the SAME UPDATE that closes the row, so it lands
+    // on exactly the rows `changes > 0` says this call closed and on nothing
+    // else: an already-closed row fails the `valid_end` predicate and keeps
+    // whatever label it had (TASK-624). Static SQL either way — the flag picks
+    // between two constant strings, it is never spliced as a value.
+    const neverTrueSet = neverTrue ? ', never_true = 1' : '';
     const statement = driver.prepare(
-      `UPDATE ${TABLE} SET valid_end = ?
+      `UPDATE ${TABLE} SET valid_end = ?${neverTrueSet}
         WHERE id = ? AND agent_key = ?${ownerClause} AND valid_end = ?`,
     );
     // Read back AFTER the UPDATE, keyed on the same tenant AND owner scope, so

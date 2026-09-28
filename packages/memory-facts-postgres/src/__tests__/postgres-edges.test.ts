@@ -29,6 +29,8 @@ import type {
   RecallOutput,
   ReindexInput,
   ReindexOutput,
+  SupersedeInput,
+  SupersedeOutput,
 } from '@ax/memory-facts-contract';
 import { createMemoryFactsPostgresPlugin } from '../plugin.js';
 import { agentScopeKey } from '../agent-scope-key.js';
@@ -317,5 +319,37 @@ describe('the kind-column migration', () => {
     const freshRow = recalled.statements.find((s) => s.value === 'the food was overpriced')!;
     expect(legacyRow).not.toHaveProperty('kind');
     expect(freshRow.kind).toBe('opinion');
+  });
+});
+
+describe('the never_true-column migration (TASK-624)', () => {
+  // Without the ALTER, the first never-true supersede on a pre-624 table
+  // would die on `column "never_true" does not exist` — in production only.
+  it('adds `never_true` to an older table, and a never-true supersede then marks the legacy row', async () => {
+    await sql`ALTER TABLE memory_facts_v1 DROP COLUMN never_true`.execute(db);
+    await sql`
+      INSERT INTO memory_facts_v1
+        (id, agent_key, about, relation, value, provenance,
+         valid_start, valid_end, transaction_time)
+      VALUES
+        ('legacy-1', ${agentScopeKey(ctx)}, 'user', 'likes_artist', 'Khalid', 'extracted',
+         '2023-01-01T00:00:00.000Z', '9999-12-31T23:59:59.999Z', '2023-01-01T00:00:00.000Z')
+    `.execute(db);
+
+    await runFactsMigration(db);
+
+    const legacy = await sql<{ never_true: boolean | null }>`
+      SELECT never_true FROM memory_facts_v1 WHERE id = 'legacy-1'
+    `.execute(db);
+    expect(legacy.rows[0]!.never_true).toBeNull();
+
+    const out = await bus.call<SupersedeInput, SupersedeOutput>('memory:facts:supersede', ctx, {
+      ids: ['legacy-1'],
+      neverTrue: true,
+    });
+    expect(out.closed).toEqual(['legacy-1']);
+
+    const history = await recall({ about: 'user', limit: 10, activeOnly: false });
+    expect(history.statements[0]!.neverTrue).toBe(true);
   });
 });
