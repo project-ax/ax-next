@@ -668,6 +668,58 @@ describe('system-prompt:augment — the always-injected block (design §4.1)', (
       expect(recent).not.toContain('oat milk');
     });
 
+    // TASK-646, applying TASK-639's "hide it" ruling: the profile already
+    // hides a re-mention of a value the person said was never right, but the
+    // Recent section read the store directly and injected it anyway.
+    it.each([
+      ['with no rival in the slot', false],
+      ['under a person’s correction', true],
+    ] as const)(
+      'does not inject a re-mention of a retracted value into Recent (%s)',
+      async (_label, corrected) => {
+        const h = await makeHarness();
+        const ctx = h.ctx();
+        const lives = (value: string, when: string, provenance: 'extracted' | 'human', conversationId?: string) => ({
+          about: `user:${ALICE}`,
+          relation: 'lives_in',
+          value,
+          when,
+          slot: 'lives_in',
+          provenance,
+          ownerUserId: ALICE,
+          ...(conversationId !== undefined ? { conversationId } : {}),
+        });
+        const { records } = await engineRecord(h.bus, ctx, [lives('Denver', JAN, 'extracted', 'conv-a')]);
+        await h.bus.call('memory:facts:supersede', ctx, {
+          ids: [records[0]!.id],
+          neverTrue: true,
+          ownerUserId: ALICE,
+        });
+        if (corrected) await engineRecord(h.bus, ctx, [lives('Austin', MAR, 'human')]);
+        await engineRecord(h.bus, ctx, [
+          lives('denver.', SEP, 'extracted', 'conv-b'),
+          {
+            about: `user:${ALICE}`,
+            relation: 'mentioned',
+            value: 'the offsite agenda',
+            when: SEP,
+            ownerUserId: ALICE,
+            conversationId: 'conv-b',
+          },
+        ]);
+
+        const body = await augment(h, ctx);
+        const recent = body.slice(body.indexOf('### Recent'), body.indexOf('### Digest'));
+        expect(recent).toContain('the offsite agenda');
+        expect(body).not.toMatch(/denver/i);
+
+        // The person saying it themselves brings it back, in Recent too.
+        await engineRecord(h.bus, ctx, [lives('Denver', '2026-10-01T00:00:00.000Z', 'human', 'conv-c')]);
+        const after = await augment(h, ctx);
+        expect(after.slice(after.indexOf('### Recent'), after.indexOf('### Digest'))).toContain('Denver');
+      },
+    );
+
     it('renders the caller as "you" rather than leaking the internal subject key', async () => {
       const h = await makeHarness();
       const ctx = h.ctx();

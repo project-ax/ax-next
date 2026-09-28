@@ -55,7 +55,7 @@ import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
 // a copy (design 3.3/4.1, Invariant 4).
 // `scripts/__tests__/slot-vocabulary-single-owner.test.js` fails if a second
 // copy of the eight ever appears in production source.
-import { needsSlotHistory, selectProfileRows } from './profile.js';
+import { dropRementionedSlotRows, needsSlotHistory, selectProfileRows } from './profile.js';
 import { SLOTS } from './slots.js';
 import {
   approxTokens,
@@ -670,7 +670,8 @@ async function buildMemoryBlockSplit(
     return { statements: raw.statements, degraded };
   };
 
-  // Three store queries (a fourth below unless every profile slot is settled by a human edit). No
+  // Three store queries (plus the slot-chain reads below: the profile's unless every profile slot
+  // is settled by a human edit, and Recent's for a subject whose chain the profile did not read). No
   // embedding, no rerank, no model call — none of them passes a `query`, so not one of them reaches a retrieval channel.
   const [profileOut, recentOut, digestOut] = await Promise.all([
     // `profileScanRows`, NOT `profileRows` — the per-slot pick below has to
@@ -702,16 +703,49 @@ async function buildMemoryBlockSplit(
       })
     : { statements: [], degraded: [] };
 
+  // Recent reads the store directly too, so it needs the same chains to hide
+  // what `memory:recall`'s active read hides — a re-mention of a value the
+  // person retracted (TASK-639 ruling, applied here by TASK-646) or of one a
+  // higher-provenance row replaced. One chain read per subject that has an
+  // active non-human slot row in the scan (a human row is never hidden); the
+  // speaker's chain is reused when the profile already read it.
+  const recentChainSubjects = [
+    ...new Set(
+      recentOut.statements
+        .filter(
+          (row) =>
+            typeof row.slot === 'string' &&
+            row.slot !== '' &&
+            row.until === undefined &&
+            row.provenance !== 'human',
+        )
+        .map((row) => row.about),
+    ),
+  ].filter((about) => !(about === speakerSubject && profileChainOut.statements.length > 0));
+  const recentChainOuts = await Promise.all(
+    recentChainSubjects.map((about) =>
+      recall({ about, limit: PROFILE_CHAIN_ROWS, slots: [...SLOTS], activeOnly: false }),
+    ),
+  );
+  const recentRows = dropRementionedSlotRows(recentOut.statements, [
+    ...profileChainOut.statements,
+    ...recentChainOuts.flatMap((out) => out.statements),
+  ]);
+
   const rules = await readRulesBody(bus, ctx);
 
   // Degradation from any of them is degradation of the block.
-  const degraded = [...profileOut.degraded, ...profileChainOut.degraded, ...recentOut.degraded, ...digestOut.degraded].filter(
-    (flag, i, all) => all.indexOf(flag) === i,
-  );
+  const degraded = [
+    ...profileOut.degraded,
+    ...profileChainOut.degraded,
+    ...recentOut.degraded,
+    ...recentChainOuts.flatMap((out) => out.degraded),
+    ...digestOut.degraded,
+  ].filter((flag, i, all) => all.indexOf(flag) === i);
 
   const profile = renderProfile(profileOut.statements, profileChainOut.statements, cfg.profileRows);
   const recent = renderRecent(
-    recentOut.statements,
+    recentRows,
     ownerUserId,
     cfg.recentConversations,
     cfg.recentPerConversation,

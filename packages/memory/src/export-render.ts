@@ -2,7 +2,7 @@ import { PluginError } from '@ax/core';
 
 import type { MemoryAccess } from './access.js';
 import { factsPath, subjectSlug, type FactsPath } from './export-paths.js';
-import { selectProfileRows } from './profile.js';
+import { rementionedSlotRows, selectProfileRows } from './profile.js';
 import { escapeStatementText, formatDay, renderNotedAt } from './render.js';
 import { SLOTS } from './slots.js';
 import { PLUGIN_NAME } from './plugin-name.js';
@@ -196,10 +196,20 @@ export function buildFactsExport(
   // in chat cannot win back its slot (TASK-633).
   const rows = scanned.filter((row) => row.neverTrue !== true);
   const retracted = scanned.filter((row) => row.neverTrue === true);
+  // Recent offers what is current, so it hides what `memory:recall`'s active
+  // read hides, decided by the same predicate: a re-mention of a value the
+  // person said was never right (TASK-639 ruling, applied here by TASK-646),
+  // or of one a higher-provenance row replaced. The scan is the whole store,
+  // so every chain is in it. Journals and subject pages are the record of
+  // what was said and keep the row.
+  const hiddenFromRecent = rementionedSlotRows(rows, retracted);
 
   const out = new Map<FactsPath, string>();
   out.set(factsPath({ kind: 'profile' }), buildProfile(rows, retracted, access));
-  out.set(factsPath({ kind: 'recent' }), buildRecent(rows));
+  out.set(
+    factsPath({ kind: 'recent' }),
+    buildRecent(rows.filter((row) => !hiddenFromRecent.has(row))),
+  );
 
   const userJournals = new Map<string, ExportFact[]>();
   const assistantJournals = new Map<string, ExportFact[]>();
