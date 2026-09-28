@@ -51,7 +51,7 @@ import {
 } from './incremental.js';
 import {
   dropRementionedSlotRows,
-  hasContestedSlot,
+  needsSlotHistory,
   rementionedSlotRows,
   selectProfileRows,
 } from './profile.js';
@@ -847,7 +847,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             page = selectProfileRows(
               result.statements,
               limit,
-              hasContestedSlot(result.statements) ? await readSlotGroup() : [],
+              needsSlotHistory(result.statements) ? await readSlotGroup() : [],
             );
           } else if (activeOnly) {
             // §3.4 on the read path: a correction survives the next chat
@@ -891,7 +891,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
               }
               // Same chains the active profile read passes, so the mark and
               // the pick cannot drift.
-              const chain = hasContestedSlot(activeRows.statements)
+              const chain = needsSlotHistory(activeRows.statements)
                 ? await readSlotGroup(activeRows.statements)
                 : [];
               const winners = new Set(
