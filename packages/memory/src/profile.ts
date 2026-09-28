@@ -143,12 +143,64 @@ function restatedByPerson(
   retracted: ReadonlyMap<string, ReadonlySet<string>>,
   key: (row: SlotGroupRow) => string,
 ): boolean {
-  return (
-    row.until === undefined &&
-    row.provenance === 'extracted' &&
-    row.sourceRole === 'user' &&
-    retracted.get(key(row))?.has(sameValue(row.value)) === true
-  );
+  return row.until === undefined && saidInPersonsTurn(row) && carriesRetractedValue(row, retracted, key);
+}
+
+/** An extracted row from the person's own chat turn (TASK-648). */
+function saidInPersonsTurn(row: SlotGroupRow): boolean {
+  return row.provenance === 'extracted' && row.sourceRole === 'user';
+}
+
+function carriesRetractedValue(
+  row: SlotGroupRow,
+  retracted: ReadonlyMap<string, ReadonlySet<string>>,
+  key: (row: SlotGroupRow) => string,
+): boolean {
+  return retracted.get(key(row))?.has(sameValue(row.value)) === true;
+}
+
+/**
+ * The retracted branch of the hide rule (TASK-639 ruling), for ONE row, active
+ * or closed: a slotted row carrying a value its chain marks never right, said
+ * by anyone but the person — not a `human` row, not an extracted row from the
+ * person's own turn (TASK-648). The retraction itself is not a re-mention.
+ *
+ * On an active row this is exactly what {@link rementionedSlotRows} hides for
+ * the retraction; on a closed one it is what keeps a hidden re-mention hidden
+ * once something newer supersedes it (TASK-657) — it would otherwise come back
+ * in the record as a closed "(until …)" line.
+ */
+function hiddenAsRetracted(
+  row: SlotGroupRow,
+  retracted: ReadonlyMap<string, ReadonlySet<string>>,
+  key: (row: SlotGroupRow) => string,
+): boolean {
+  if (typeof row.slot !== 'string' || row.slot === '' || isRetracted(row)) return false;
+  if (row.provenance === 'human' || saidInPersonsTurn(row)) return false;
+  return carriesRetractedValue(row, retracted, key);
+}
+
+/**
+ * The rows of `rows` — active AND closed — that are a re-mention of a value
+ * the person said was never right (TASK-655/657, "hide it everywhere" ruling,
+ * Vinay 2026-09-28), unless the person restated it. What the export's
+ * journals, subject pages and Recent hide.
+ *
+ * Narrower than {@link rementionedSlotRows} on purpose: a re-mention of a
+ * merely REPLACED value was once true and stays in the record. On active rows
+ * it agrees with that function's retracted branch — both call
+ * {@link hiddenAsRetracted} — so the two cannot drift.
+ *
+ * `group` is every row, active and closed, of the subjects' slot chains (the
+ * retraction rows included); `rows` counts too.
+ */
+export function retractedRementionRows<T extends SlotGroupRow>(
+  rows: readonly T[],
+  group: readonly SlotGroupRow[],
+): Set<T> {
+  const key = (row: SlotGroupRow): string => `${row.about}\u0000${row.slot}`;
+  const retracted = retractedValues([...group, ...rows], key);
+  return new Set(rows.filter((row) => hiddenAsRetracted(row, retracted, key)));
 }
 
 const TRAILING_PUNCTUATION = new Set(['.', '!', ',', ';', ':']);
@@ -230,11 +282,10 @@ export function rementionedSlotRows<T extends SlotGroupRow>(
   return new Set(
     rows.filter((row) => {
       if (typeof row.slot !== 'string' || row.slot === '' || row.until !== undefined) return false;
-      const rank = rankOf(row);
       // A retracted value said again by anyone but a person: hidden, rival or
       // not (TASK-639). The person's own chat message counts (TASK-648).
-      if (rank < HUMAN && retracted.get(key(row))?.has(sameValue(row.value)) === true) return true;
-      const outranked = rank < (topActiveRank.get(key(row)) ?? 0);
+      if (hiddenAsRetracted(row, retracted, key)) return true;
+      const outranked = rankOf(row) < (topActiveRank.get(key(row)) ?? 0);
       return outranked && replaced.get(key(row))?.has(sameValue(row.value)) === true;
     }),
   );

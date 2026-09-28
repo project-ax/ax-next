@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   dropRementionedSlotRows,
   isRetractedValue,
+  rementionedSlotRows,
+  retractedRementionRows,
   needsSlotHistory,
   selectProfileRows,
 } from '../profile.js';
@@ -374,5 +376,59 @@ describe('isRetractedValue', () => {
   it('only in its own (about, slot) chain', () => {
     expect(isRetractedValue(chain, 'user:bob', 'lives_in', 'Denver, Colorado')).toBe(false);
     expect(isRetractedValue(chain, ABOUT, 'works_at', 'Denver, Colorado')).toBe(false);
+  });
+});
+
+// TASK-657 — the retracted branch of the hide rule, on active AND closed rows:
+// what the export's journals, subject pages and Recent hide.
+describe('retractedRementionRows', () => {
+  const closed = '2026-09-01T00:00:00Z';
+  const later = '2026-09-20T00:00:00Z';
+  const retraction = { about: ABOUT, slot: 'lives_in', value: 'Denver', until: closed, neverTrue: true };
+  const said = (over: Record<string, unknown> = {}) => ({
+    about: ABOUT,
+    slot: 'lives_in',
+    value: 'denver.',
+    provenance: 'extracted',
+    ...over,
+  });
+
+  it('hides a re-mention whether it is active, superseded or forgotten', () => {
+    const active = said();
+    const superseded = said({ until: later, closedBy: 'x' });
+    const forgotten = said({ until: later });
+    const agent = said({ provenance: 'agent', until: later, closedBy: 'x' });
+    const reply = said({ sourceRole: 'assistant', until: later, closedBy: 'x' });
+    const rows = [active, superseded, forgotten, agent, reply];
+    expect(retractedRementionRows(rows, [retraction])).toEqual(new Set(rows));
+  });
+
+  it('keeps the person restating it — a human row or their own turn — active or closed', () => {
+    const rows = [
+      said({ provenance: 'human' }),
+      said({ provenance: 'human', until: later, closedBy: 'x' }),
+      said({ sourceRole: 'user' }),
+      said({ sourceRole: 'user', until: later, closedBy: 'x' }),
+    ];
+    expect(retractedRementionRows(rows, [retraction]).size).toBe(0);
+  });
+
+  it('keeps the retraction itself, a replaced value, other values, other chains and slot-less rows', () => {
+    const replaced = { about: ABOUT, slot: 'lives_in', value: 'Portland', until: closed, closedBy: 'y' };
+    const rows = [
+      retraction,
+      said({ value: 'Portland', until: later, closedBy: 'x' }),
+      said({ value: 'Austin' }),
+      said({ about: 'user:bob', until: later }),
+      said({ slot: 'works_at' }),
+      said({ slot: undefined, until: later }),
+    ];
+    expect(retractedRementionRows(rows, [retraction, replaced]).size).toBe(0);
+  });
+
+  it('is exactly the retracted branch of rementionedSlotRows on active rows', () => {
+    const rows = [said(), said({ sourceRole: 'user' }), said({ provenance: 'human' }), said({ value: 'Austin' })];
+    const hiddenActive = rementionedSlotRows(rows, [retraction]);
+    expect(retractedRementionRows(rows, [retraction])).toEqual(hiddenActive);
   });
 });
