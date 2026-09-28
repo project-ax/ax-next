@@ -15,7 +15,7 @@
  * Every statement is untrusted (it came out of a conversation). It is drawn as
  * text nodes only — no markdown, no HTML — and long values wrap.
  */
-import { useContext, useState } from 'react';
+import { useContext, useRef, useState } from 'react';
 import { BookOpen, ChevronRight } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -68,9 +68,12 @@ export function MemoryUsedChip({ used, agentId }: { used: MemoryUsed; agentId: s
   const { fixes, recordFix, undoFix } = shared ?? own;
   // An undone fix hands the row its Fix button back — everywhere it is drawn.
   const receipt = useMemoryReceipt(agentId, noop, { onFixUndone: undoFix });
+  // A saved Fix takes the row's Fix button away, so focus lands on the receipt (TASK-644).
+  const rootRef = useRef<HTMLDivElement>(null);
 
   return (
     <Collapsible
+      ref={rootRef}
       data-testid="workspace-memory-used"
       className="mt-3 max-w-[600px] overflow-hidden rounded-lg border border-border"
     >
@@ -136,6 +139,7 @@ export function MemoryUsedChip({ used, agentId }: { used: MemoryUsed; agentId: s
         target={fixTarget}
         agentId={agentId}
         visibility={used.visibility}
+        outcomeScope={rootRef}
         onClose={() => setFixTarget(null)}
         onSaved={(reason, saved) => {
           const target = fixTarget;

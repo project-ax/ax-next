@@ -15,7 +15,7 @@
  * deferred to make Undo cheaper; a person who asks us to forget something
  * and closes the tab has had it forgotten.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import {
@@ -37,6 +37,8 @@ import {
 } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { RESOLUTION_FOCUS_RING, takeResolutionFocus } from '@/lib/consent-focus';
+import { cn } from '@/lib/utils';
 import { workspaceApi, type FactMemoryStatement } from '@/lib/workspace-api';
 import { UNDO_WINDOW_MS } from '@/lib/workspace-types';
 import {
@@ -75,17 +77,77 @@ function isFixReason(v: string): v is MemoryFixReason {
   return v === 'changed' || v === 'never-right';
 }
 
+/**
+ * Marks a receipt's outcome line ("Updated.", "Forgotten") — the place focus
+ * lands once a Fix or a Forget has saved (TASK-644).
+ */
+const OUTCOME_ATTR = 'data-memory-outcome';
+
+/**
+ * Where keyboard focus goes when a Fix or Forget dialog closes (TASK-644).
+ *
+ * THE BUG. The dialogs are opened from state, so `useOpenerRestore` (in the
+ * shadcn `DialogContent`) hands focus back to the button that opened them —
+ * which is right for Cancel and Escape, where that button is still there. A
+ * SAVE takes it away: the chip swaps the row's Fix for a badge, the rail
+ * re-keys the row to the fixed memory's new id (or, on Forget, draws the
+ * receipt in its place), and the Memory tab re-reads its list. The opener is
+ * detached by the time the dialog closes, and focus fell to `<body>` — with a
+ * ten-second Undo that is then a blind crawl away.
+ *
+ * WHERE IT LANDS: on the receipt's outcome line, not on Undo — the same call
+ * the approval cards made (`consent-focus.ts`, TASK-427). Focus on Undo would
+ * leave the key that just said "save" or "forget" one repeat away from taking
+ * it back. The outcome line is inert (`tabIndex={-1}`), a screen reader reads
+ * what happened, and Undo is the very next Tab stop.
+ *
+ * Only a close that FOLLOWS a save lands there — `arm()` is called just
+ * before `onSaved` / `onForgotten`. Any other close (Cancel, Escape, a click
+ * outside) is left to the opener restore. And if the surface drew no outcome
+ * line (nothing matched in `scope`), this steps aside rather than guess.
+ *
+ * `scope` is the surface the receipt is drawn in. Each surface draws at most
+ * one receipt at a time, so the first outcome line inside it is the one.
+ */
+function useLandOnOutcome(scope: RefObject<HTMLElement | null> | undefined) {
+  const armed = useRef(false);
+  const arm = useCallback(() => {
+    armed.current = true;
+  }, []);
+  const disarm = useCallback(() => {
+    armed.current = false;
+  }, []);
+  const onCloseAutoFocus = useCallback(
+    (event: Event) => {
+      if (!armed.current) return;
+      armed.current = false;
+      const outcome = scope?.current?.querySelector<HTMLElement>(`[${OUTCOME_ATTR}]`);
+      if (outcome === null || outcome === undefined) return;
+      event.preventDefault();
+      takeResolutionFocus(outcome);
+    },
+    [scope],
+  );
+  return { arm, disarm, onCloseAutoFocus };
+}
+
 export function MemoryFixDialog({
   target,
   agentId,
   visibility,
   onClose,
   onSaved,
+  outcomeScope,
 }: {
   target: FactMemoryStatement | null;
   agentId: string;
   visibility: MemoryVisibility;
   onClose: () => void;
+  /**
+   * The surface the receipt is drawn in: once the fix saves, focus lands on
+   * the receipt's outcome line inside it (TASK-644, `useLandOnOutcome`).
+   */
+  outcomeScope?: RefObject<HTMLElement | null>;
   /**
    * Called once the fix is saved, with the answer to "What happened?" and
    * the fixed memory's new id and value. A fix writes a NEW row and closes
@@ -98,6 +160,8 @@ export function MemoryFixDialog({
   const [reason, setReason] = useState<MemoryFixReason>('changed');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState(false);
+  const land = useLandOnOutcome(outcomeScope);
+  const { disarm } = land;
 
   useEffect(() => {
     if (target !== null) {
@@ -106,8 +170,9 @@ export function MemoryFixDialog({
       setReason('changed');
       setError(false);
       setPending(false);
+      disarm();
     }
-  }, [target]);
+  }, [target, disarm]);
 
   async function save() {
     if (target === null || pending || value.trim() === '') return;
@@ -121,6 +186,7 @@ export function MemoryFixDialog({
         value,
         reason,
       });
+      land.arm();
       onSaved(reason, { id: saved.id, value });
     } catch {
       setPending(false);
@@ -136,6 +202,7 @@ export function MemoryFixDialog({
       }}
     >
       <DialogContent
+        onCloseAutoFocus={land.onCloseAutoFocus}
         onEscapeKeyDown={(e) => {
           if (pending) e.preventDefault();
         }}
@@ -215,6 +282,7 @@ export function MemoryForgetDialog({
   visibility,
   onClose,
   onForgotten,
+  outcomeScope,
 }: {
   target: FactMemoryStatement | null;
   agentId: string;
@@ -222,16 +290,21 @@ export function MemoryForgetDialog({
   onClose: () => void;
   /** Called with the row that is now forgotten, so the caller can offer Undo. */
   onForgotten: (row: FactMemoryStatement) => void;
+  /** As on `MemoryFixDialog`: where the receipt that follows is drawn. */
+  outcomeScope?: RefObject<HTMLElement | null>;
 }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState(false);
+  const land = useLandOnOutcome(outcomeScope);
+  const { disarm } = land;
 
   useEffect(() => {
     if (target !== null) {
       setPending(false);
       setError(false);
+      disarm();
     }
-  }, [target]);
+  }, [target, disarm]);
 
   async function forget() {
     if (target === null || pending) return;
@@ -239,6 +312,7 @@ export function MemoryForgetDialog({
     setError(false);
     try {
       await workspaceApi.forgetMemory(agentId, [target.id]);
+      land.arm();
       onForgotten(target);
     } catch {
       setPending(false);
@@ -254,6 +328,7 @@ export function MemoryForgetDialog({
       }}
     >
       <DialogContent
+        onCloseAutoFocus={land.onCloseAutoFocus}
         onEscapeKeyDown={(e) => {
           if (pending) e.preventDefault();
         }}
@@ -502,7 +577,13 @@ export function MemoryReceipt({
   return (
     <Alert role={undefined} className={className}>
       <AlertDescription className="flex flex-wrap items-center gap-2">
-        <span role="status">
+        {/* Where focus lands once the dialog that produced this closes (TASK-644). */}
+        <span
+          role="status"
+          tabIndex={-1}
+          {...{ [OUTCOME_ATTR]: '' }}
+          className={cn('rounded-sm', RESOLUTION_FOCUS_RING)}
+        >
           {receipt.kind === 'forgotten' ? MEMORY_FORGOTTEN : MEMORY_UPDATED}
         </span>
         {offer && (

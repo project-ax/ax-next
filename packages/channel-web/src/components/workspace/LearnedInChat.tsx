@@ -65,9 +65,6 @@ export const LEARNED_ROW_CAP = 5;
 /** How often "4 min ago" is recomputed. */
 const AGO_TICK_MS = 30_000;
 
-/** The data attribute a row's container carries — focus finds its receipt by it. */
-const ROW_ATTR = 'data-learned-row';
-
 interface Props {
   memory: ConversationMemory;
   agentId: string;
@@ -168,21 +165,12 @@ export function LearnedInChat({
   }, [current, removeRow]);
 
   /*
-    Focus goes to the receipt once a row is forgotten: the Forget button it was
-    on is gone. A timeout, because the dialog's own close restores focus on a
-    timer of its own, and that must not land after this one.
+    Where focus goes once a Fix or a Forget saves is the dialogs' job
+    (`outcomeScope`, TASK-644): the button it was on is gone — re-keyed to the
+    fixed row's new id, or replaced by the receipt — so it lands on the
+    receipt's outcome line, with Undo the next Tab stop. There is only ever one
+    receipt in this block, so the block itself is the scope.
   */
-  const forgottenSince = current?.kind === 'forgotten' ? current.since : null;
-  const forgottenId = current?.kind === 'forgotten' ? current.row.id : null;
-  useEffect(() => {
-    if (forgottenSince === null || forgottenId === null) return;
-    const id = setTimeout(() => {
-      for (const el of rootRef.current?.querySelectorAll(`[${ROW_ATTR}]`) ?? []) {
-        if (el.getAttribute(ROW_ATTR) === forgottenId) el.querySelector('button')?.focus();
-      }
-    }, 0);
-    return () => clearTimeout(id);
-  }, [forgottenSince, forgottenId]);
 
   return (
     <section ref={rootRef} aria-labelledby="learned-in-chat-title">
@@ -277,6 +265,7 @@ export function LearnedInChat({
         target={fixTarget}
         agentId={agentId}
         visibility={visibility}
+        outcomeScope={rootRef}
         onClose={() => setFixTarget(null)}
         onSaved={(reason, { id, value }) => {
           if (fixTarget !== null) {
@@ -292,6 +281,7 @@ export function LearnedInChat({
         target={forgetTarget}
         agentId={agentId}
         visibility={visibility}
+        outcomeScope={rootRef}
         onClose={() => setForgetTarget(null)}
         onForgotten={(row) => {
           // Kept listed so its receipt can stand in its place.
@@ -383,7 +373,7 @@ function Body({
                     {LEARNED_EARLIER}
                   </li>
                 )}
-                <li {...{ [ROW_ATTR]: r.row.id }}>{renderRow(r)}</li>
+                <li>{renderRow(r)}</li>
               </Fragment>
             );
           })}

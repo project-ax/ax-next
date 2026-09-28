@@ -373,22 +373,31 @@ describe('LearnedInChat — Fix, Forget, Undo', () => {
     expect(screen.getByText(memoryStatementText(original))).toBeTruthy();
   });
 
-  it('Forget collapses the row into its receipt, focuses Undo, and Undo brings it back', async () => {
+  it('Forget collapses the row into its receipt, focuses what happened, and Undo brings it back', async () => {
     recall.mockResolvedValueOnce({ statements: [st('a')], degraded: [] });
     forget.mockResolvedValue({ forgotten: true });
     unforget.mockResolvedValue({ restored: ['a'] });
     render(<Harness />);
     const text = memoryStatementText(st('a'));
-    fireEvent.click(await screen.findByRole('button', { name: memoryForgetLabel(text) }));
+    const forgetBtn = await screen.findByRole('button', { name: memoryForgetLabel(text) });
+    forgetBtn.focus();
+    fireEvent.click(forgetBtn);
     const dialog = await screen.findByRole('dialog');
-    fireEvent.click(within(dialog).getByRole('button', { name: MEMORY_FORGET }));
+    const confirm = within(dialog).getByRole('button', { name: MEMORY_FORGET });
+    confirm.focus();
+    fireEvent.click(confirm);
 
     const undo = await screen.findByRole('button', { name: memoryUndoLabel(st('a').value) });
     expect(forget).toHaveBeenCalledWith('a1', ['a']);
-    expect(screen.getByText(MEMORY_FORGOTTEN)).toBeTruthy();
+    const outcome = screen.getByText(MEMORY_FORGOTTEN);
     expect(undo.textContent).toMatch(/^Undo \d+s$/);
     expect(screen.queryByText(text)).toBeNull();
-    await waitFor(() => expect(document.activeElement).toBe(undo));
+    // Onto the outcome line, NOT onto Undo: the key that just confirmed the
+    // Forget must not be one repeat away from taking it back (TASK-427, TASK-644).
+    // Undo is the very next stop.
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(outcome));
+    expect(outcome.compareDocumentPosition(undo) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     fireEvent.click(undo);
     expect(await screen.findByText(MEMORY_RESTORED)).toBeTruthy();
@@ -518,5 +527,58 @@ describe('LearnedInChat — "from your message"', () => {
     expect(msg.hasAttribute(MEMORY_SOURCE_ATTR)).toBe(false);
     expect(jumpToSource('not-on-screen')).toBe(false);
     msg.remove();
+  });
+});
+
+/** Activate a button the way a keyboard does: it has focus first, then it fires. */
+function press(el: HTMLElement): void {
+  el.focus();
+  expect(document.activeElement).toBe(el);
+  fireEvent.click(el);
+}
+
+describe('LearnedInChat — where focus goes when a dialog closes (TASK-644)', () => {
+  it('Fix → Save lands on the "Updated." line under the fixed row, with Undo the next stop', async () => {
+    recall.mockResolvedValueOnce({ statements: [st('a', { value: 'Boston' })], degraded: [] });
+    correct.mockResolvedValue({ id: 'a2' });
+    render(<Harness />);
+    const text = memoryStatementText(st('a', { value: 'Boston' }));
+    press(await screen.findByRole('button', { name: memoryFixLabel(text) }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'Denver' } });
+    press(within(dialog).getByRole('button', { name: MEMORY_FIX_SAVE }));
+
+    const outcome = await screen.findByText(MEMORY_UPDATED);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(outcome));
+    const row = outcome.closest('li');
+    expect(row).not.toBeNull();
+    expect(within(row!).getByText(memoryStatementText(st('a2', { value: 'Denver' })))).toBeTruthy();
+    const undo = screen.getByRole('button', { name: memoryUndoFixLabel('Denver') });
+    expect(outcome.compareDocumentPosition(undo) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('Fix → Cancel returns focus to the Fix button', async () => {
+    recall.mockResolvedValueOnce({ statements: [st('a')], degraded: [] });
+    render(<Harness />);
+    const fix = await screen.findByRole('button', {
+      name: memoryFixLabel(memoryStatementText(st('a'))),
+    });
+    press(fix);
+    press(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(fix));
+  });
+
+  it('Forget → Cancel returns focus to the Forget button', async () => {
+    recall.mockResolvedValueOnce({ statements: [st('a')], degraded: [] });
+    render(<Harness />);
+    const btn = await screen.findByRole('button', {
+      name: memoryForgetLabel(memoryStatementText(st('a'))),
+    });
+    press(btn);
+    press(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(btn));
   });
 });

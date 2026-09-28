@@ -213,3 +213,39 @@ describe('MemoryUsedChip', () => {
     expect(container.querySelector('b')).toBeNull();
   });
 });
+
+/** Activate a button the way a keyboard does: it has focus first, then it fires. */
+function press(el: HTMLElement): void {
+  el.focus();
+  expect(document.activeElement).toBe(el);
+  fireEvent.click(el);
+}
+
+describe('MemoryUsedChip — where focus goes when the dialog closes (TASK-644)', () => {
+  it('Save lands on the receipt\'s "Updated." line — not <body> — with Undo the next stop', async () => {
+    render(<MemoryUsedChip used={used([boston])} agentId="a1" />);
+    open();
+    press(await screen.findByRole('button', { name: memoryFixLabel('Boston') }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText(MEMORY_FIX_FIELD_LABEL), {
+      target: { value: 'Cambridge' },
+    });
+    press(within(dialog).getByRole('button', { name: 'Save' }));
+
+    const outcome = await screen.findByText(MEMORY_UPDATED);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(outcome));
+    const undo = screen.getByRole('button', { name: memoryUndoFixLabel('Cambridge') });
+    expect(outcome.compareDocumentPosition(undo) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('Cancel returns focus to the Fix button it came from', async () => {
+    render(<MemoryUsedChip used={used([boston])} agentId="a1" />);
+    open();
+    const fix = await screen.findByRole('button', { name: memoryFixLabel('Boston') });
+    press(fix);
+    press(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(fix));
+  });
+});
