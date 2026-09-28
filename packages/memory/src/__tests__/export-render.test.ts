@@ -433,6 +433,16 @@ describe('buildFactsExport — retracted re-mentions in journals and subject pag
     );
   });
 
+  it('the assistant journal hides a re-mention of a retracted value too', () => {
+    const ASSISTANT_JOURNAL = `${ROOT}/assistant/2026-09.md`;
+    const out = buildFactsExport(
+      [retractionFor('assistant'), rementionFor('assistant'), row({ about: 'assistant', value: 'prefers bullets' })],
+      PERSONAL,
+    );
+    expect(fileOf(out, ASSISTANT_JOURNAL)).toContain('prefers bullets');
+    expect(fileOf(out, ASSISTANT_JOURNAL)).not.toMatch(/denver/i);
+  });
+
   it('a journal month whose only row is a hidden re-mention is not made at all', () => {
     const out = buildFactsExport([retractionFor('user:alice'), rementionFor('user:alice')], PERSONAL);
     expect(fileOf(out, USER_JOURNAL)).toBeUndefined();
