@@ -44,6 +44,7 @@ import {
 } from './lib/new-agent-return-focus';
 import { ToastStack } from './components/Toast';
 import { AdminShell } from './components/admin/AdminShell';
+import type { AdminTabId } from './components/admin/AdminSidebar';
 import { SetupWizard } from './components/setup/SetupWizard';
 import { UserProvider } from './lib/user-context';
 import { consumeOAuthFullPageReturn } from './lib/oauth-full-page-return';
@@ -194,6 +195,9 @@ const AppContent = ({ user }: { user: AuthUser }) => {
   // `adminSettingsOpen` is set by the user menu's "Settings" entry
   // (admin-gated). AdminSettings renders in the main pane when true.
   const [adminSettingsOpen, setAdminSettingsOpen] = useState(false);
+  // Which tab Settings opens on — set only by a caller that knows where the
+  // person needs to go (the rail's paused-memory "Fix this", TASK-627).
+  const [adminSettingsTab, setAdminSettingsTab] = useState<AdminTabId | undefined>(undefined);
   // TASK-443 — closing Settings must not drop the keyboard on `<body>`.
   //
   // Settings is a PANE SWAP, not an overlay: the branches below render either
@@ -391,11 +395,15 @@ const AppContent = ({ user }: { user: AuthUser }) => {
               isAdmin={user.role === 'admin'}
               onClose={closeAdminSettings}
               backLabel="workspace"
+              initialTab={adminSettingsTab}
             />
           </div>
         ) : (
           <WorkspaceShell
-            onOpenAdminSettings={() => setAdminSettingsOpen(true)}
+            onOpenAdminSettings={(tab?: AdminTabId) => {
+              setAdminSettingsTab(tab);
+              setAdminSettingsOpen(true);
+            }}
             onCreateAgent={() => { setBootstrapAgentName(null); setCreateAgentOpen(true); }}
             kickoffAgentId={kickoffAgentId}
             onKickoffConsumed={() => setKickoffAgentId(null)}

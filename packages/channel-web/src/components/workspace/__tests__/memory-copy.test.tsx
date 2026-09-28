@@ -296,7 +296,13 @@ describe('memory-copy — no correction string stays inline', () => {
     return new RegExp(`(['"\`])${v}\\1|>\\s*${v}\\s*<`).test(src);
   }
 
-  for (const file of ['FactsMemory.tsx', 'AgentMemory.tsx', 'MemoryCorrection.tsx']) {
+  for (const file of [
+    'FactsMemory.tsx',
+    'AgentMemory.tsx',
+    'MemoryCorrection.tsx',
+    'MemoryUsedChip.tsx',
+    'LearnedInChat.tsx',
+  ]) {
     it(`${file} imports its memory-correction words`, () => {
       const src = code(file);
       const offenders = [...constants, ...badges]
@@ -307,4 +313,30 @@ describe('memory-copy — no correction string stays inline', () => {
       expect(RETIRED.filter((r) => r.test(src)).map(String)).toEqual([]);
     });
   }
+});
+
+describe('memory-copy — the "Used N memories" chip (TASK-628)', () => {
+  it('counts one memory in the singular and more in the plural', () => {
+    expect(copy.memoryUsedLabel(1)).toBe('Used 1 memory');
+    expect(copy.memoryUsedLabel(3)).toBe('Used 3 memories');
+  });
+
+  it('names where a memory came from', () => {
+    expect(copy.memoryUsedSource({ ...boston, savedBy: 'person' })).toBe('Saved by a person');
+    expect(copy.memoryUsedSource({ ...boston, savedBy: 'agent' })).toBe('Noted by the agent');
+    expect(copy.memoryUsedSource(boston)).toBe('From a chat');
+  });
+
+  it('joins source and date, or says just the source without a date', () => {
+    expect(copy.memoryUsedDetail(boston, 'Sep 1, 2026')).toBe('From a chat · Sep 1, 2026');
+    expect(copy.memoryUsedDetail(boston, '')).toBe('From a chat');
+  });
+
+  it('says Updated, not Fixed, for a replaced memory', () => {
+    expect(copy.MEMORY_USED_SINCE).toEqual({
+      replaced: 'Updated since this answer',
+      retracted: 'Fixed since this answer',
+      forgotten: 'Forgotten since this answer',
+    });
+  });
 });

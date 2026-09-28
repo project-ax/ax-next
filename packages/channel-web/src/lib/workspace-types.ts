@@ -590,6 +590,13 @@ export type ThreadMessage =
        * reading midnight-UTC-epoch or an empty row.
        */
       at: string;
+      /**
+       * TASK-628 — the statements `memory_recall` handed the model during this
+       * answer's exchange. A snapshot of what the model saw, not a re-query;
+       * `closedSince` marks one that has been closed since. Absent when the
+       * model recalled nothing (or nothing could be attributed to this answer).
+       */
+      memoryUsed?: MemoryUsed;
     }
   | {
       kind: 'user';
@@ -609,6 +616,8 @@ export type ThreadMessage =
       at: string;
       stepsLabel: string;
       steps: WorkspaceStep[];
+      /** See `memoryUsed` on the `agent` variant above — same field, same rule. */
+      memoryUsed?: MemoryUsed;
     }
   | { kind: 'approval'; id: string; decisionId: string }
   | { kind: 'status'; id: string; text: string }
@@ -742,6 +751,29 @@ export interface FactMemoryStatement {
    * `memory_note`. Absent for extracted rows and unknown provenance.
    */
   savedBy?: 'person' | 'agent';
+  /**
+   * The id of the person's message this row was extracted from (TASK-626) —
+   * the same id the thread keys that message on, so the rail's "What I
+   * learned in this chat" block can point back at it. Opaque; only compared,
+   * never parsed. Absent on rows not extracted from a turn.
+   */
+  sourceTurnId?: string;
+}
+
+/**
+ * One statement under an answer's "Used N memories" chip (TASK-628): the row
+ * as `memory_recall` rendered it for the model at the time, plus its CURRENT
+ * closure when it has been closed since (absent = still in effect, or not
+ * determinable).
+ */
+export interface MemoryUsedStatement extends FactMemoryStatement {
+  closedSince?: 'replaced' | 'forgotten' | 'retracted';
+}
+
+/** What an answer's memory chip draws (TASK-628). */
+export interface MemoryUsed {
+  statements: MemoryUsedStatement[];
+  visibility?: 'personal' | 'team';
 }
 
 export interface FactMemoryPage {

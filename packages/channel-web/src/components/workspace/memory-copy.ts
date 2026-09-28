@@ -201,3 +201,99 @@ export function memoryStatementText(row: FactMemoryStatement): string {
 export function memorySlotText(row: FactMemoryStatement): string {
   return words(row.slot ?? row.relation);
 }
+
+// ── The "Used N memories" chip (TASK-628) ────────────────────────────────────
+
+/**
+ * The chip under an answer counts only what `memory_recall` handed the model
+ * for THAT answer — not everything the agent remembers, and not what it might
+ * have looked at. A row that has been closed since says how, in words that
+ * match what happened to it:
+ *
+ *   - `retracted` — someone fixed it with "It was never right": Fixed.
+ *   - `replaced` — a newer version replaced it. That is a person's "It
+ *     changed" fix OR a later chat learning something new, and the chip
+ *     cannot honestly tell the two apart, so it says "Updated", not "Fixed".
+ *   - `forgotten` — someone forgot it.
+ */
+export function memoryUsedLabel(n: number): string {
+  return n === 1 ? 'Used 1 memory' : `Used ${n} memories`;
+}
+
+/** Where a used memory came from. Extracted rows carry no `savedBy`. */
+export function memoryUsedSource(row: FactMemoryStatement): string {
+  if (row.savedBy === 'person') return 'Saved by a person';
+  if (row.savedBy === 'agent') return 'Noted by the agent';
+  return 'From a chat';
+}
+
+/** "Saved by a person · Sep 1, 2026"; just the source when there is no date. */
+export function memoryUsedDetail(row: FactMemoryStatement, date: string): string {
+  const source = memoryUsedSource(row);
+  return date === '' ? source : `${source} · ${date}`;
+}
+
+export type MemoryUsedSinceKind = 'replaced' | 'forgotten' | 'retracted';
+
+export const MEMORY_USED_SINCE: Readonly<Record<MemoryUsedSinceKind, string>> = {
+  replaced: 'Updated since this answer',
+  retracted: 'Fixed since this answer',
+  forgotten: 'Forgotten since this answer',
+};
+
+// ── "What I learned in this chat" — the rail block (TASK-627) ───────────────
+
+export const LEARNED_TITLE = 'What I learned in this chat';
+
+/** The header badge while rows the person has not seen are listed. */
+export function learnedNewBadge(count: number): string {
+  return `${count} new`;
+}
+
+/** The rail toggle's accessible name while there are unseen rows (mobile). */
+export function learnedToggleLabel(count: number): string {
+  return `Agent details, ${count} new ${count === 1 ? 'memory' : 'memories'}`;
+}
+
+/** Said once per batch to a screen reader, politely. */
+export function learnedAnnouncement(count: number): string {
+  return `Learned ${count} ${count === 1 ? 'thing' : 'things'} from this chat.`;
+}
+
+export const LEARNED_EARLIER = 'Earlier in this chat';
+export const LEARNED_FROM_YOUR_MESSAGE = 'from your message';
+
+/** When a live batch landed. Whole minutes and hours; never a date. */
+export function learnedAgo(ms: number): string {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  return `${Math.floor(minutes / 60)} hr ago`;
+}
+
+export function learnedMore(count: number): string {
+  return `+${count} more from this chat`;
+}
+export const LEARNED_SEE_ALL = 'See all memory →';
+
+/** Before the first read lands. Not one of the six: it is gone in a moment. */
+export const LEARNED_LOADING = 'Checking what I’ve picked up from this chat…';
+
+// The six states. Each one says which state it is: an empty list is a claim.
+export const LEARNED_NOTHING_NEW = 'Nothing new to remember from this chat yet.';
+export const LEARNED_EXTRACTING = 'Reading over your last few messages…';
+export const LEARNED_PAUSED =
+  "Memory's paused, so I'm not saving anything from this chat right now. An admin can switch it back on under Admin → AI model keys.";
+export const LEARNED_PAUSED_ACTION = 'Fix this';
+/**
+ * No "retry now" button: nothing can retry a pass on demand yet, and the next
+ * pass re-reads the same messages on its own (TASK-626's held cursor). A
+ * button here would promise something no route does.
+ */
+export const LEARNED_SAVE_FAILED =
+  "I couldn't save anything from your last few messages. Nothing's lost — I'll try again on my own in a little while.";
+export const LEARNED_READ_FAILED =
+  "I can't show what I've learned here just now. That means unknown, not empty — try reloading.";
+export const LEARNED_READ_FAILED_ACTION = 'Try again';
+export const LEARNED_NOT_ENABLED =
+  "This workspace doesn't keep memory yet. Ask your workspace admin about switching it on.";

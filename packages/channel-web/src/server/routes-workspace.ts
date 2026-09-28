@@ -176,6 +176,7 @@ import type { PermissionRequest } from './types.js';
 import { listTeamIdsForUser, type RouteRequest, type RouteResponse } from './routes-chat.js';
 import { sanitizeContentDispositionFilename } from './content-disposition.js';
 import { workspaceFilePath } from './safe-path.js';
+import { attachMemoryUsed, parseRecallReceiptsReply } from './memory-used.js';
 // Type-only: the `sandbox:read-user-files` hook-bus contract. The DURABLE
 // user-files tier is read through this hook rather than through `workspace:*`,
 // which is the git-backed governed tier. Types only, so no runtime coupling
@@ -2835,6 +2836,42 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   }
 
   /**
+   * TASK-628 — mark each answer with the memories `memory_recall` handed the
+   * model for it (see `memory-used.ts`). Strictly additive: with no receipts
+   * producer, a failed read, or a reply of the wrong shape, the thread comes
+   * back exactly as built. A chip is a nicety; the transcript is the page.
+   */
+  async function withMemoryUsed(
+    agentId: string,
+    userId: string,
+    conversationId: string,
+    thread: ThreadMessage[],
+    turns: readonly TurnRow[],
+  ): Promise<ThreadMessage[]> {
+    if (!bus.hasService('memory:recall-receipts')) return thread;
+    try {
+      const reply = parseRecallReceiptsReply(
+        await bus.call<{ conversationId: string }, unknown>(
+          'memory:recall-receipts',
+          agentWorkspaceCtx(agentId, userId),
+          { conversationId },
+        ),
+      );
+      if (reply === null) {
+        initCtx.logger.warn('workspace_memory_used_reply_malformed', { agentId });
+        return thread;
+      }
+      return attachMemoryUsed(thread, turns, reply.receipts, reply.visibility);
+    } catch (err) {
+      initCtx.logger.warn('workspace_memory_used_read_failed', {
+        agentId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return thread;
+    }
+  }
+
+  /**
    * The `owner` triple `sandbox:read-user-files` keys the per-agent mount off.
    *
    * The mount resolvers read ONLY `agentId`; the rest of the triple is
@@ -4706,6 +4743,13 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
             ...buildThread(got.turns ?? [], got.displayEvents ?? [], approvals.live),
             ...approvals.messages,
           ];
+          thread = await withMemoryUsed(
+            agentId,
+            userId,
+            threadConversationId,
+            thread,
+            got.turns ?? [],
+          );
         }
       }
 

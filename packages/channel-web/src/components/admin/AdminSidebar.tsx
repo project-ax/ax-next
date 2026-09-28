@@ -45,7 +45,7 @@ const USER_NAV: NavItem[] = [
   { id: 'routines', label: 'Routines', icon: ListChecks },
 ];
 
-const ADMIN_NAV: NavItem[] = [
+export const ADMIN_NAV: NavItem[] = [
   { id: 'providers', label: 'AI model keys', icon: KeyRound },
   { id: 'model-config', label: 'Helper model', icon: Cpu },
   { id: 'auth-providers', label: 'Sign-in methods', icon: ShieldCheck },

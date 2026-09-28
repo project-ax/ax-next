@@ -83,7 +83,13 @@ export function MemoryFixDialog({
   agentId: string;
   visibility: MemoryVisibility;
   onClose: () => void;
-  onSaved: () => void;
+  /**
+   * Called once the fix is saved, with the answer to "What happened?" and
+   * the fixed memory's new id and value. A fix writes a NEW row and closes
+   * the old one, so a surface that keeps the row on screen (the rail block,
+   * TASK-627) needs both to redraw it; the Memory tab just re-reads.
+   */
+  onSaved: (reason: MemoryFixReason, saved: { id: string; value: string }) => void;
 }) {
   const [value, setValue] = useState('');
   const [reason, setReason] = useState<MemoryFixReason>('changed');
@@ -105,14 +111,14 @@ export function MemoryFixDialog({
     setPending(true);
     setError(false);
     try {
-      await workspaceApi.correctMemory(agentId, {
+      const saved = await workspaceApi.correctMemory(agentId, {
         id: target.id,
         about: target.about,
         relation: target.relation,
         value,
         reason,
       });
-      onSaved();
+      onSaved(reason, { id: saved.id, value });
     } catch {
       setPending(false);
       setError(true);

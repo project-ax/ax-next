@@ -58,6 +58,11 @@ import {
 import { formatEvidenceWhen } from './evidence.js';
 import { MEMORY_RECALL_TOOL_HOOK, registerMemoryRecall } from './recall-tool.js';
 import { MEMORY_NOTE_TOOL_HOOK, registerMemoryNote } from './note-tool.js';
+import {
+  MAX_CONVERSATION_ID_CHARS,
+  MEMORY_RECALL_RECEIPTS_HOOK,
+  readRecallReceipts,
+} from './recall-receipts.js';
 import { registerRulesHooks, RULES_WRITE_HOOK } from './rules.js';
 import { filterTranscriptTurns, type UntrustedMessage } from './transcript.js';
 import {
@@ -90,6 +95,8 @@ import {
   type MemoryCorrectOutput,
   type MemoryRecallInput,
   type MemoryRecallOutput,
+  type MemoryRecallReceiptsInput,
+  type MemoryRecallReceiptsOutput,
   type MemoryRememberInput,
   type MemoryRememberOutput,
   type MemoryStatement,
@@ -314,6 +321,9 @@ export interface MemoryPluginConfig {
 
 const DEFAULT_MAX_RECALL_LIMIT = 100;
 
+const NO_RECEIPTS_DEGRADATION =
+  'no recall receipts are kept, so an answer shows no "used memories" and memory:recall-receipts reads empty; memory_recall itself is unaffected';
+
 function resolveIncrementalConfig(
   value: MemoryPluginConfig['incremental'],
 ): { idleMs: number; everyUserTurns: number } | undefined {
@@ -487,6 +497,8 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         MEMORY_FORGET_HOOK,
         MEMORY_UNFORGET_HOOK,
         MEMORY_STATUS_HOOK,
+        // TASK-628: what memory_recall handed the model, per conversation.
+        MEMORY_RECALL_RECEIPTS_HOOK,
         SYSTEM_PROMPT_AUGMENT_HOOK,
         MEMORY_RECALL_TOOL_HOOK,
         MEMORY_NOTE_TOOL_HOOK,
@@ -547,13 +559,20 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         },
         // TASK-625. All three are needed together; without any one of them
         // the plugin keeps the chat:end-only path it always had.
+        //
+        // TASK-628: `storage:*` also holds the recall receipts, so those two
+        // are declared whether or not incremental extraction is on.
         ...(incrementalCfg !== undefined
           ? [CONVERSATIONS_GET_HOOK, STORAGE_GET_HOOK, STORAGE_SET_HOOK].map((hook) => ({
               hook,
               degradation:
-                'memory is extracted only at chat:end, from that session\'s own messages, with no source turn on the stored statements; nothing is extracted during a conversation',
+                'memory is extracted only at chat:end, from that session\'s own messages, with no source turn on the stored statements; nothing is extracted during a conversation' +
+                (hook === CONVERSATIONS_GET_HOOK ? '' : `; ${NO_RECEIPTS_DEGRADATION}`),
             }))
-          : []),
+          : [STORAGE_GET_HOOK, STORAGE_SET_HOOK].map((hook) => ({
+              hook,
+              degradation: NO_RECEIPTS_DEGRADATION,
+            }))),
       ],
       subscribes: [CHAT_END_HOOK, ...(incrementalCfg !== undefined ? [CHAT_TURN_END_HOOK] : [])],
     },
@@ -1415,6 +1434,35 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
               state: hasUser ? activity.state({ userId, conversationId }) : 'idle',
             },
           };
+        },
+      );
+
+      // ---------------------------------------------------------------
+      // memory:recall-receipts (TASK-628) — what memory_recall handed the
+      // model in one conversation, each row with its since-state. Answers
+      // only the caller's own receipts (stored agent AND user must match
+      // ctx); the conversation id is a filter, never an authority.
+      // ---------------------------------------------------------------
+      bus.registerService<MemoryRecallReceiptsInput, MemoryRecallReceiptsOutput>(
+        MEMORY_RECALL_RECEIPTS_HOOK,
+        PLUGIN_NAME,
+        async (ctx, rawInput) => {
+          rejectPrivilegeFields(rawInput, MEMORY_RECALL_RECEIPTS_HOOK);
+          const conversationId =
+            rawInput !== null && typeof rawInput === 'object'
+              ? (rawInput as { conversationId?: unknown }).conversationId
+              : undefined;
+          if (!isUsableString(conversationId) || conversationId.length > MAX_CONVERSATION_ID_CHARS) {
+            throw invalid(
+              `conversationId must be a non-empty string of at most ${MAX_CONVERSATION_ID_CHARS} characters`,
+              MEMORY_RECALL_RECEIPTS_HOOK,
+            );
+          }
+          // Same gate as every other read: a caller who may not read this
+          // agent's memory reads no snapshot of it either.
+          const access = await resolveMemoryAccess(bus, ctx);
+          const receipts = await readRecallReceipts(bus, ctx, conversationId, maxRecallLimit);
+          return { receipts, visibility: access.visibility };
         },
       );
 

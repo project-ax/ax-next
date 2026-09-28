@@ -379,6 +379,12 @@ export interface FactRecallQuery {
   query?: string;
   profile?: boolean;
   history?: boolean;
+  /**
+   * Only the rows extracted from this conversation (TASK-626) — the feed
+   * behind the rail's "What I learned in this chat". Stands alone: the
+   * server refuses it combined with `query` or `profile`.
+   */
+  conversationId?: string;
 }
 
 const OPTIONAL_STATEMENT_STRINGS = [
@@ -388,6 +394,7 @@ const OPTIONAL_STATEMENT_STRINGS = [
   'closedBy',
   'whenText',
   'aboutText',
+  'sourceTurnId',
 ] as const;
 
 function isFactMemoryStatement(v: unknown): v is FactMemoryStatement {
@@ -1041,7 +1048,118 @@ export const workspaceApi = {
   },
 
   streamReply,
+  memoryEvents,
 };
+
+/**
+ * One frame off the conversation memory stream (TASK-626's
+ * `GET /api/chat/conversations/:id/memory-events`), after the client has
+ * checked its shape. Anything that does not match is dropped, not guessed at.
+ */
+export type MemoryEventFrame =
+  | {
+      kind: 'status';
+      extraction: 'ok' | 'paused';
+      conversation: 'idle' | 'extracting' | 'failed';
+    }
+  | { kind: 'status-unknown' }
+  | {
+      kind: 'activity';
+      state: 'extracting' | 'recorded' | 'idle' | 'failed' | 'paused';
+      statementIds: string[];
+    };
+
+/**
+ * How one memory stream ended.
+ *
+ *   - `unavailable` — 503: this deployment does not run memory at all.
+ *   - `failed` — it would not open (any other status, or a network throw).
+ *   - `ended` — it opened and later closed or dropped. The caller reconnects.
+ *   - `aborted` — the caller's signal fired.
+ */
+export type MemoryEventsEnd = 'unavailable' | 'failed' | 'ended' | 'aborted';
+
+const MEMORY_ACTIVITY_STATES = new Set(['extracting', 'recorded', 'idle', 'failed', 'paused']);
+
+/** Validate one raw frame field by field. Unknown shapes answer `null`. */
+export function parseMemoryEventFrame(raw: unknown): MemoryEventFrame | null {
+  if (!isRecord(raw) || Array.isArray(raw)) return null;
+  const status = raw.memoryStatus;
+  if (isRecord(status) && !Array.isArray(status)) {
+    if (status.readFailed === true) return { kind: 'status-unknown' };
+    const extraction = status.extraction;
+    const conversation = status.conversation;
+    if (
+      (extraction === 'ok' || extraction === 'paused') &&
+      (conversation === 'idle' || conversation === 'extracting' || conversation === 'failed')
+    ) {
+      return { kind: 'status', extraction, conversation };
+    }
+    return null;
+  }
+  const activity = raw.memoryActivity;
+  if (isRecord(activity) && !Array.isArray(activity)) {
+    const state = activity.state;
+    if (typeof state !== 'string' || !MEMORY_ACTIVITY_STATES.has(state)) return null;
+    const ids = Array.isArray(activity.statementIds)
+      ? activity.statementIds.filter((id): id is string => typeof id === 'string' && id !== '')
+      : [];
+    return {
+      kind: 'activity',
+      state: state as 'extracting' | 'recorded' | 'idle' | 'failed' | 'paused',
+      statementIds: ids,
+    };
+  }
+  return null;
+}
+
+/**
+ * Read one conversation's memory stream until it ends, handing every valid
+ * frame to `onFrame`. The stream is between-turns by design (the chat stream
+ * closes at turn-end, and memory passes run after it), so it stays open for
+ * as long as the caller keeps it — `signal` is how the caller hangs up.
+ *
+ * The frames carry statement IDS only; the text is read through
+ * `recallMemory({ conversationId })`, the route that decides what this person
+ * may see.
+ */
+async function memoryEvents(
+  conversationId: string,
+  onFrame: (frame: MemoryEventFrame) => void,
+  signal?: AbortSignal,
+): Promise<MemoryEventsEnd> {
+  let res: Response;
+  try {
+    const init: RequestInit = { method: 'GET', headers: { accept: 'text/event-stream' } };
+    if (signal) init.signal = signal;
+    res = await httpFetch(
+      `/api/chat/conversations/${encodeURIComponent(conversationId)}/memory-events`,
+      init,
+    );
+  } catch (e) {
+    if (signal?.aborted) return 'aborted';
+    console.warn('[workspace] memory stream could not be opened', e);
+    return 'failed';
+  }
+  if (res.status === 503) return 'unavailable';
+  if (!res.ok || !res.body) {
+    console.warn(`[workspace] memory stream would not open → ${res.status}`);
+    return 'failed';
+  }
+  // The memory frames carry no `kind`/`seq`, so the shared reader passes each
+  // one straight through; the cast is to its wider frame type, and the shape
+  // is checked here, field by field, before anything reads it.
+  const end = await readSseFrames(res.body, (frame) => {
+    const parsed = parseMemoryEventFrame(frame as unknown);
+    if (parsed !== null) onFrame(parsed);
+    return 'continue';
+  });
+  if (signal?.aborted) return 'aborted';
+  if (end.reason === 'body-error') {
+    console.warn('[workspace] memory stream dropped', end.error);
+  }
+  return 'ended';
+}
 
 /**
  * Read one turn's SSE stream and hand the caller plain text.
