@@ -17,6 +17,8 @@ import { createMemoryFactsSqlitePlugin } from '@ax/memory-facts-sqlite';
 import { AGENTS_RESOLVE_HOOK } from '../access.js';
 import { createMemoryPlugin, type MemoryPluginConfig } from '../plugin.js';
 import type {
+  MemoryCorrectInput,
+  MemoryCorrectOutput,
   MemoryForgetInput,
   MemoryForgetOutput,
   MemoryRecallInput,
@@ -59,6 +61,7 @@ export interface MemoryHarness {
   recall: (input: MemoryRecallInput, ctx?: AgentContext) => Promise<MemoryRecallOutput>;
   remember: (input: MemoryRememberInput, ctx?: AgentContext) => Promise<MemoryRememberOutput>;
   forget: (input: MemoryForgetInput, ctx?: AgentContext) => Promise<MemoryForgetOutput>;
+  correct: (input: MemoryCorrectInput, ctx?: AgentContext) => Promise<MemoryCorrectOutput>;
   memoryPlugin: Plugin;
   /**
    * The engine's sqlite file. Exposed so a test can open a SECOND connection
@@ -194,6 +197,8 @@ export async function makeMemoryHarness(
       bus.call<MemoryRememberInput, MemoryRememberOutput>('memory:remember', c ?? ctx(), input),
     forget: (input, c) =>
       bus.call<MemoryForgetInput, MemoryForgetOutput>('memory:forget', c ?? ctx(), input),
+    correct: (input, c) =>
+      bus.call<MemoryCorrectInput, MemoryCorrectOutput>('memory:correct', c ?? ctx(), input),
     teardown: async () => {
       await memoryPlugin.shutdown?.();
       await engine.shutdown?.();

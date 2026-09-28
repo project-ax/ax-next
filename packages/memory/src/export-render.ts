@@ -20,6 +20,11 @@ export interface ExportFact {
   conversationId?: string;
   kind?: string;
   recordedAt: string;
+  /**
+   * The engine's never-true bit: a person said this row was NEVER right.
+   * Such a row is dropped from every export file — see `buildFactsExport`.
+   */
+  neverTrue?: boolean;
 }
 
 const PROVENANCES = new Set(['extracted', 'agent', 'human']);
@@ -66,6 +71,7 @@ function validateRow(row: ExportFact, index: number): void {
   if (!isNonEmptyString(row.provenance) || !PROVENANCES.has(row.provenance)) {
     throw bad('provenance');
   }
+  if (row.neverTrue !== undefined && typeof row.neverTrue !== 'boolean') throw bad('neverTrue');
 }
 
 function statementLine(row: ExportFact, includeAbout: boolean): string {
@@ -163,10 +169,16 @@ function buildRecent(rows: readonly ExportFact[]): string {
 }
 
 export function buildFactsExport(
-  rows: readonly ExportFact[],
+  scanned: readonly ExportFact[],
   access: MemoryAccess,
 ): Map<FactsPath, string> {
-  rows.forEach(validateRow);
+  scanned.forEach(validateRow);
+  // A row a person said was NEVER right is not a past truth, so no export
+  // file — profile, recent, journals, subject pages — may offer it for a
+  // "what did I say in March" read (TASK-624). Dropped once, here, before
+  // any file is built. A Forget (also `until` set, no `closedBy`) and a
+  // replaced row are unchanged: those were once true.
+  const rows = scanned.filter((row) => row.neverTrue !== true);
 
   const out = new Map<FactsPath, string>();
   out.set(factsPath({ kind: 'profile' }), buildProfile(rows, access));

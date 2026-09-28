@@ -1,6 +1,6 @@
 /**
  * The caller-facing memory surface — `memory:recall`, `memory:remember`,
- * `memory:forget`.
+ * `memory:correct`, `memory:forget`.
  *
  * These shapes are the product layer's whole contract with the rest of the
  * system. They are DELIBERATELY not the engine's shapes:
@@ -58,12 +58,21 @@ export interface MemoryStatement {
   slot?: string;
   closedBy?: string;
   /**
-   * Why a row is not current. `replaced`/`forgotten` describe a closed row
-   * (`until` set). `overridden` appears only on history reads
-   * (`activeOnly: false`), on a row that is still ACTIVE but that the
-   * equivalent active read hides because a higher-provenance row outranks it.
+   * Why a row is not current. `replaced`/`forgotten`/`retracted` describe a
+   * closed row (`until` set):
+   *
+   * - `replaced` — a later row in the same slot closed it (`closedBy`).
+   * - `forgotten` — a person retracted it (`memory:forget`), which says
+   *   nothing about whether it once held.
+   * - `retracted` — a person said it was NEVER right (`memory:correct` with
+   *   `reason: 'never-right'`). Same closure columns as `forgotten`; told
+   *   apart by the engine's stored never-true bit, never by guessing.
+   *
+   * `overridden` appears only on history reads (`activeOnly: false`), on a
+   * row that is still ACTIVE but that the equivalent active read hides
+   * because a higher-provenance row outranks it.
    */
-  closure?: 'replaced' | 'forgotten' | 'overridden';
+  closure?: 'replaced' | 'forgotten' | 'retracted' | 'overridden';
   /**
    * Who saved a row that was not extracted from a conversation: `person` for
    * `memory:remember`, `agent` for `memory_note`. Absent for extracted rows
@@ -163,6 +172,50 @@ export interface MemoryRememberInput {
 }
 
 export interface MemoryRememberOutput {
+  id: string;
+}
+
+/**
+ * `memory:correct` — a person fixing ONE memory they were shown, and saying
+ * why it was wrong.
+ *
+ * Provenance is `human` because of the hook, exactly as for
+ * `memory:remember`; it is never a field, and a payload carrying one is
+ * refused. `when` is deliberately absent: a correction is true from now.
+ *
+ * - `id` names the row being corrected — the id `memory:recall` handed out.
+ *   It is a scope-checked reference, not a capability: on a personal agent a
+ *   row owned by somebody else is not retracted (the owner scope goes down
+ *   with the call, as for `memory:forget`), and the correction write still
+ *   lands under the caller.
+ * - `reason: 'changed'` — the old value WAS true and stopped being. This is
+ *   exactly the `memory:remember` write: the slot rule closes the old row as
+ *   `replaced`. ⚠ Known limitation: a SLOT-LESS old row closes nothing and is
+ *   closed by nothing, so it stays active beside the new one.
+ * - `reason: 'never-right'` — the old value was never true. The old row is
+ *   retracted as never-true BEFORE the new write, so the `(about, slot)`
+ *   chain re-settles around it: whatever it had closed re-opens, and the
+ *   correction then closes THAT row. Boston → Seattle (wrong) → Denver reads
+ *   Boston replaced by Denver, Seattle `retracted`.
+ *
+ * `reason` is required: the hook does not guess which of the two a person
+ * meant.
+ *
+ * ⚠ **Failure window.** never-right is two engine calls. If the retract
+ * lands and the write fails, the old row is retracted and the new value is
+ * unsaved, and the caller sees the error. A retry converges: the second
+ * retract is a no-op (the row is no longer active) and the write lands.
+ */
+export interface MemoryCorrectInput {
+  id: string;
+  about: string;
+  relation: string;
+  value: string;
+  reason: 'changed' | 'never-right';
+}
+
+/** The id of the NEW row the correction wrote. */
+export interface MemoryCorrectOutput {
   id: string;
 }
 
