@@ -41,8 +41,12 @@ contract.
   a failure event on every failure path, TASK-616 routine attribution, and the
   legacy `outcome.messages` path when `conversations:get` or `storage:*` is
   absent (CLI).
-- **Paused.** Incremental passes skip a paused user (no LLM call). The
-  `chat:end` pass always attempts, since only a resolved call clears the pause.
+- **Paused.** ~~Incremental passes skip a paused user (no LLM call).~~
+  Superseded by TASK-645: that skip left a restored key unnoticed until
+  session end. Every pass now attempts, since only a resolved call clears the
+  pause; a pass that starts paused fires no `extracting`, and a repeat
+  missing-credential logs at `debug` (the line into the pause and `chat:end`'s
+  stay at `error`).
 
 ## Tasks
 
