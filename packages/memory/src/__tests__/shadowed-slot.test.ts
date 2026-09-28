@@ -445,3 +445,56 @@ describe('@ax/memory — the person restating a retracted value in chat (TASK-64
     expect(values(await harness.recall({}))).not.toContain('Denver, Colorado');
   });
 });
+
+// ---------------------------------------------------------------------------
+// TASK-646 — the rail's "What I learned in this chat" reads the conversation
+// feed, `memory:recall({ conversationId })`. It goes through the same active
+// read as recall, so TASK-639's rule already applies there; this pins it, so
+// a later change to the feed branch cannot quietly let the value back in.
+// ---------------------------------------------------------------------------
+
+describe('@ax/memory — the conversation feed hides a retracted value re-mentioned in that chat', () => {
+  it('omits the re-mention, keeps the chat’s other rows, and shows a person restating it', async () => {
+    harness = await makeMemoryHarness();
+    const [portland] = await record(harness, row('Portland, Oregon', JAN, 'extracted'));
+    await retract(harness, portland!);
+    await record(
+      harness,
+      row('portland, oregon.', JUN, 'extracted', { conversationId: 'conv-rail' }),
+      row('likes tea', JUN, 'extracted', {
+        relation: 'likes',
+        slot: undefined,
+        conversationId: 'conv-rail',
+      }),
+    );
+
+    expect(values(await harness.recall({ conversationId: 'conv-rail' }))).toEqual(['likes tea']);
+
+    await record(harness, row('Portland, Oregon', JUL, 'human', { conversationId: 'conv-rail' }));
+    expect(values(await harness.recall({ conversationId: 'conv-rail' }))).toContain('Portland, Oregon');
+  });
+
+  // TASK-648's exception holds on the rail too: the person's own message
+  // restating it shows; the agent's reply repeating it does not.
+  it.each([
+    ['user', true],
+    ['assistant', false],
+  ] as const)('a re-mention from a %s turn shows on the rail: %s', async (sourceRole, shown) => {
+    harness = await makeMemoryHarness();
+    const [portland] = await record(harness, row('Portland, Oregon', JAN, 'extracted'));
+    await retract(harness, portland!);
+    await record(harness, row('Seattle, Washington', FEB, 'human'));
+    await record(
+      harness,
+      row('Portland, Oregon', JUN, 'extracted', {
+        conversationId: 'conv-rail',
+        sourceTurnId: `turn-${sourceRole}`,
+        sourceRole,
+      }),
+    );
+
+    expect(values(await harness.recall({ conversationId: 'conv-rail' })).includes('Portland, Oregon')).toBe(
+      shown,
+    );
+  });
+});

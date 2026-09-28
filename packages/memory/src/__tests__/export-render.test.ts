@@ -327,6 +327,52 @@ describe('buildFactsExport — recent', () => {
     )!;
     expect(journal).toContain('orphan fact');
   });
+
+  // TASK-646, applying TASK-639's "hide it" ruling: a value the person said
+  // was never right does not come back through Recent on a later extracted
+  // re-mention. The same predicate recall and the profile use decides it.
+  it('a re-mention of a retracted value is absent from recent; a person restating it is not', () => {
+    const recentOf = (rows: ExportFact[]): string => {
+      const out = buildFactsExport(rows, PERSONAL);
+      return out.get([...out.keys()].find((k) => String(k) === `${ROOT}/recent.md`)!)!;
+    };
+    const retraction = row({
+      slot: 'lives_in',
+      relation: 'lives_in',
+      value: 'Denver',
+      when: '2026-08-01T00:00:00.000Z',
+      until: '2026-08-10T00:00:00.000Z',
+      neverTrue: true,
+      conversationId: 'c1',
+    });
+    const rementioned = row({
+      slot: 'lives_in',
+      relation: 'lives_in',
+      value: 'denver.',
+      when: '2026-09-05T00:00:00.000Z',
+      recordedAt: '2026-09-05T00:00:00.000Z',
+      conversationId: 'c2',
+    });
+    const other = row({ value: 'likes tea', conversationId: 'c2', recordedAt: '2026-09-04T00:00:00.000Z' });
+
+    const hidden = recentOf([retraction, rementioned, other]);
+    expect(hidden).not.toMatch(/denver/i);
+    expect(hidden).toContain('likes tea');
+
+    const restated = recentOf([
+      retraction,
+      { ...rementioned, provenance: 'human', value: 'Denver' },
+      other,
+    ]);
+    expect(restated).toContain('Denver');
+
+    // TASK-648: the person saying it in their own chat message brings it
+    // back; the agent repeating it in its reply does not.
+    expect(recentOf([retraction, { ...rementioned, sourceRole: 'user' }, other])).toMatch(/denver/i);
+    expect(recentOf([retraction, { ...rementioned, sourceRole: 'assistant' }, other])).not.toMatch(
+      /denver/i,
+    );
+  });
 });
 
 describe('buildFactsExport — malformed rows', () => {
