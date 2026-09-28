@@ -281,10 +281,36 @@ function validateSlotsFilter(input: RecallInput): void {
   }
 }
 
+/**
+ * Validate `RecallInput.conversationId` (the filtered-listing conversation
+ * scope). A deliberate parity copy of the sqlite twin's validator — see that
+ * function's doc comment for why the two backends cannot share it, and why
+ * the unreachable `query` clause is kept anyway.
+ */
+function validateConversationIdFilter(input: RecallInput): void {
+  if (input.conversationId === undefined) return;
+  if (!isNonEmptyString(input.conversationId)) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'conversationId must be a non-empty string when set',
+    });
+  }
+  if (input.query !== undefined) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message:
+        'conversationId cannot be combined with query: the conversation filter is not plumbed through the ranked-retrieval channels, and returning an unfiltered ranked set would answer a filter the caller cannot see was ignored',
+    });
+  }
+}
+
 function validateRecallInput(input: RecallInput): {
   about?: string;
   ownerUserId?: string;
   slots?: string[];
+  conversationId?: string;
   limit: number;
   activeOnly: boolean;
 } {
@@ -345,10 +371,12 @@ function validateRecallInput(input: RecallInput): {
     });
   }
   validateSlotsFilter(input);
+  validateConversationIdFilter(input);
   return {
     ...(input.about !== undefined ? { about: input.about } : {}),
     ...(input.ownerUserId !== undefined ? { ownerUserId: input.ownerUserId } : {}),
     ...(input.slots !== undefined ? { slots: [...input.slots] } : {}),
+    ...(input.conversationId !== undefined ? { conversationId: input.conversationId } : {}),
     limit: Math.min(Math.floor(input.limit), MAX_LIMIT),
     // Omitted or `true` -> only currently-active rows (unchanged TASK-421
     // behavior). `false` -> history mode (design §4.2): no validity filter,
@@ -810,7 +838,8 @@ export function createMemoryFactsPostgresPlugin(): Plugin {
         PLUGIN_NAME,
         async (ctx, input) => {
           // Validation before the store region — see `record`.
-          const { about, ownerUserId, slots, limit, activeOnly } = validateRecallInput(input);
+          const { about, ownerUserId, slots, conversationId, limit, activeOnly } =
+            validateRecallInput(input);
           const agentKey = agentScopeKey(ctx);
 
           // `activeOnly` (§4.2 `history`) gates the validity predicate:
@@ -853,6 +882,14 @@ export function createMemoryFactsPostgresPlugin(): Plugin {
             // simply older. `validateSlotsFilter` has already proved this is a
             // non-empty array, so `IN ()` is unreachable.
             if (slots !== undefined) query = query.where('slot', 'in', slots);
+            // Conversation filter in the WHERE, for the identical reason the
+            // owner scope and slot filter are: `.limit()` has to count rows
+            // FROM this conversation, not a widened pool cut before the
+            // filter is applied. `=` is strict, so a row with
+            // `conversation_id IS NULL` does not match a scoped read.
+            if (conversationId !== undefined) {
+              query = query.where('conversation_id', '=', conversationId);
+            }
             if (activeOnly) query = query.where('valid_end', '=', INFINITY_SENTINEL);
 
             const rows = (await query

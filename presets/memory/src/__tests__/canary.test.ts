@@ -812,6 +812,112 @@ describe('@ax/preset-memory canary', () => {
     expect(extractions()).toBe(before + 1);
   });
 
+  it('TASK-626: an extraction pass reaches the conversation memory stream, and the conversation feed returns what it recorded', async () => {
+    const created = await bus.call<{ userId: string; agentId: string }, { conversationId: string }>(
+      'conversations:create',
+      ctxFor(aliceAgentId, ALICE),
+      { userId: ALICE, agentId: aliceAgentId },
+    );
+    const conversationId = created.conversationId;
+    const ctx = ctxFor(aliceAgentId, ALICE, { conversationId });
+    llmFacts = [
+      { subject: 'user', predicate: 'plays', object: 'the cello', validStart: '2024-02-01T00:00:00Z' },
+    ];
+
+    // Not enabled / not yours: a stranger's conversation is a 404, never a stream.
+    const foreign = await fetch(url(`/api/chat/conversations/${conversationId}/memory-events`), http(BOB));
+    expect(foreign.status).toBe(404);
+    await foreign.body?.cancel();
+
+    const events = await fetch(url(`/api/chat/conversations/${conversationId}/memory-events`), http(ALICE));
+    expect(events.status).toBe(200);
+    const reader = events.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffered = '';
+    const frames: Array<Record<string, unknown>> = [];
+    const readUntil = async (done: () => boolean): Promise<void> => {
+      const deadline = Date.now() + 10_000;
+      while (!done()) {
+        if (Date.now() > deadline) throw new Error(`timed out; frames so far: ${JSON.stringify(frames)}`);
+        const chunk = await reader.read();
+        if (chunk.done) throw new Error('memory stream closed early');
+        buffered += decoder.decode(chunk.value, { stream: true });
+        let cut = buffered.indexOf('\n\n');
+        while (cut !== -1) {
+          const event = buffered.slice(0, cut);
+          buffered = buffered.slice(cut + 2);
+          for (const line of event.split('\n')) {
+            if (line.startsWith('data: ')) frames.push(JSON.parse(line.slice(6)) as Record<string, unknown>);
+          }
+          cut = buffered.indexOf('\n\n');
+        }
+      }
+    };
+
+    // The snapshot comes first: nothing running, nothing paused.
+    await readUntil(() => frames.length >= 1);
+    expect(frames[0]).toEqual({ memoryStatus: { extraction: 'ok', conversation: 'idle' } });
+
+    for (let i = 1; i <= 4; i++) {
+      const userText = i === 1 ? 'I play the cello on weekends' : `Another question ${i}`;
+      for (const [role, text] of [
+        ['user', userText],
+        ['assistant', 'lovely'],
+      ] as const) {
+        await bus.call('conversations:append-event', ctx, {
+          conversationId,
+          kind: 'turn',
+          role,
+          payload: { blocks: [{ type: 'text', text }] },
+        });
+      }
+      await bus.fire('chat:turn-end', ctx, {
+        role: 'assistant',
+        reqId: `req-canary-626-${i}`,
+        reason: 'user-message-wait',
+      });
+    }
+    await settleObserver();
+    await readUntil(() => frames.length >= 3);
+
+    // Exactly one pass: extracting, then ONE recorded frame carrying ids and no text.
+    expect(frames.slice(1).map((f) => (f.memoryActivity as { state: string }).state)).toEqual([
+      'extracting',
+      'recorded',
+    ]);
+    const recorded = frames[2]!.memoryActivity as { statementIds: string[] };
+    expect(recorded.statementIds).toHaveLength(1);
+    expect(JSON.stringify(frames)).not.toContain('cello');
+
+    // The owner-scoped feed for that conversation answers with the recorded
+    // row, pointing at the turn it came from.
+    const feed = await apiJson(
+      'POST',
+      `/api/workspace/agents/${aliceAgentId}/memory/recall`,
+      ALICE,
+      { conversationId },
+    );
+    expect(feed.status).toBe(200);
+    const statements = feed.json.statements as Array<{ id: string; value: string; sourceTurnId?: string }>;
+    expect(statements.map((s) => s.id)).toEqual(recorded.statementIds);
+    expect(statements[0]!.value).toBe('the cello');
+    expect(statements[0]!.sourceTurnId).toBe('0');
+
+    // Bob asking his own agent about Alice's conversation gets nothing.
+    const bobFeed = await apiJson(
+      'POST',
+      `/api/workspace/agents/${bobAgentId}/memory/recall`,
+      BOB,
+      { conversationId },
+    );
+    expect(bobFeed.status).toBe(200);
+    expect(bobFeed.json.statements).toEqual([]);
+
+    await reader.cancel();
+    await bus.fire('chat:end', ctx, { outcome: { kind: 'complete', messages: [] } });
+    await settleObserver();
+  });
+
   it('chat:end drives the observer; extracted facts close by slot and never close human rows', async () => {
     const fireTurn = async (conversationId: string, content: string) => {
       const before = llmCalls.length;

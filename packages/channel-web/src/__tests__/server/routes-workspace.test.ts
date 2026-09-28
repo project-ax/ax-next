@@ -4141,6 +4141,74 @@ describe('channel-web agent-workspace BFF', () => {
       expect(state.calls[1]?.input).toEqual({ query: 'tea', activeOnly: true, limit: 40 });
     });
 
+    it('maps conversationId to a conversation-scoped recall on the agent ctx', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      const state = {
+        calls: [] as Array<{ hook: string; agentId: string; userId: string; input: unknown }>,
+        recall: { statements: [{ id: 's1', sourceTurnId: 't1' }], degraded: [] },
+      };
+      registerFacts(state);
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+
+      const { res, captured } = mkRes();
+      await h.recallFacts(mkReq({ agentId: 'a1' }, { conversationId: 'c1' }), res);
+      expect(captured.statusCode).toBe(200);
+      expect(captured.body).toEqual(state.recall);
+      expect(state.calls).toEqual([
+        {
+          hook: 'recall',
+          agentId: 'a1',
+          userId: 'u1',
+          input: { conversationId: 'c1', activeOnly: true, limit: 100 },
+        },
+      ]);
+
+      const second = mkRes();
+      await h.recallFacts(
+        mkReq({ agentId: 'a1' }, { conversationId: 'c1', history: true }),
+        second.res,
+      );
+      expect(second.captured.statusCode).toBe(200);
+      expect(state.calls[1]?.input).toEqual({
+        conversationId: 'c1',
+        activeOnly: false,
+        limit: 100,
+      });
+    });
+
+    it.each([
+      ['a non-string conversationId', { conversationId: 42 }],
+      ['an empty conversationId', { conversationId: '' }],
+      ['an over-long conversationId', { conversationId: 'c'.repeat(257) }],
+      ['conversationId combined with query', { conversationId: 'c1', query: 'tea' }],
+      ['conversationId combined with profile', { conversationId: 'c1', profile: true }],
+      ['conversationId combined with profile:false', { conversationId: 'c1', profile: false }],
+    ])('400s a recall body with %s', async (_name, body) => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      const state = { calls: [] as Array<unknown> };
+      registerFacts(state as never);
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.recallFacts(mkReq({ agentId: 'a1' }, body), res);
+      expect(captured.statusCode).toBe(400);
+      expect(captured.body).toEqual({ error: 'invalid-memory-request' });
+      expect(state.calls).toEqual([]);
+    });
+
+    it('accepts a conversationId of exactly 256 characters', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      const state = {
+        calls: [] as Array<{ hook: string; agentId: string; userId: string; input: unknown }>,
+      };
+      registerFacts(state);
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      const id = 'c'.repeat(256);
+      await h.recallFacts(mkReq({ agentId: 'a1' }, { conversationId: id }), res);
+      expect(captured.statusCode).toBe(200);
+      expect(state.calls[0]?.input).toEqual({ conversationId: id, activeOnly: true, limit: 100 });
+    });
+
     it('turns a product invalid-payload into a 400, never echoing the detail', async () => {
       registerAuth({ id: 'u1', isAdmin: false });
       const state = {

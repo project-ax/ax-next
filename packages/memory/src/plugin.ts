@@ -22,6 +22,13 @@ import {
 } from './failure.js';
 import { conversationField, conversationOf } from './conversation.js';
 import {
+  activityTarget,
+  createConversationActivityTracker,
+  fireConversationActivity,
+  type ConversationActivityTracker,
+  type ConversationPassTerminal,
+} from './activity.js';
+import {
   runObserver,
   runTurnObserver,
   type ObserverRecordInput,
@@ -85,6 +92,7 @@ import {
   type MemoryRememberOutput,
   type MemoryStatement,
   type MemoryStatementKind,
+  type MemoryStatusInput,
   type MemoryStatusOutput,
 } from './types.js';
 
@@ -235,6 +243,13 @@ interface EngineFactRecord {
    * not a contract field it validates.
    */
   conversationId?: string;
+  /**
+   * The display-log turn a row was extracted from (TASK-625). Forwarded as
+   * {@link MemoryStatement.sourceTurnId} when it is a non-empty string, and
+   * treated as absent otherwise — a display hint, like `conversationId`,
+   * not a contract field this layer validates.
+   */
+  sourceTurnId?: string;
 }
 
 interface EngineRecallOutput {
@@ -447,6 +462,10 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
   // observer LLM call that resolves — a skipped run proves nothing, and a
   // 504 says nothing about the credential either way.
   const pausedUsers = new Set<string>();
+  // Per-conversation extraction state (TASK-626) — the ONE source behind both
+  // `memory:conversation-activity` and `memory:status({ conversationId })`.
+  // Per instance and single-replica, like `pausedUsers`; see `activity.ts`.
+  const activity = createConversationActivityTracker();
 
   return {
     manifest: {
@@ -625,6 +644,19 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           ) {
             throw invalid('limit must be a positive number when set', MEMORY_RECALL_HOOK);
           }
+          if (input.conversationId !== undefined && !isUsableString(input.conversationId)) {
+            throw invalid('conversationId must be a non-empty string when set', MEMORY_RECALL_HOOK);
+          }
+          // The conversation feed (TASK-626) is a listing of one chat's rows.
+          // Ranked retrieval over it has no consumer, and the profile picks
+          // its own subject and slots across every conversation — combining
+          // either would be a question with two scopes and one answer.
+          if (
+            input.conversationId !== undefined &&
+            (input.query !== undefined || input.profile === true)
+          ) {
+            throw invalid('conversationId cannot combine with query or profile', MEMORY_RECALL_HOOK);
+          }
 
           const limit = Math.min(
             Math.floor(input.limit ?? DEFAULT_RECALL_LIMIT),
@@ -650,7 +682,16 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
               // team agent, and the rows are that agent's shared knowledge —
               // never another agent's, never another person's under a
               // personal agent.
-              ...memoryReadScope(access),
+              //
+              // The conversation feed (TASK-626) is the one read that does NOT
+              // widen on a team agent: a conversation belongs to one person,
+              // so the owner is ALWAYS pushed down with it. Without that, a
+              // teammate who learned (or guessed) another member's
+              // conversation id would read what that person said in it. With
+              // it, a foreign id answers nothing.
+              ...(input.conversationId !== undefined
+                ? { ownerUserId: access.userId, conversationId: input.conversationId }
+                : memoryReadScope(access)),
               // `about: 'user'` means "the person talking", and what a write
               // stored under that is `user:<userId>`. Same rewrite, both
               // directions — see `subject.ts`.
@@ -1160,6 +1201,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         onFactsChanged,
         pausedUsers,
         pendingCursors: new Map<string, number>(),
+        activity,
       };
       const scheduler =
         incrementalCfg === undefined
@@ -1250,18 +1292,37 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
       }
 
       // ---------------------------------------------------------------
-      // memory:status — the caller's own "extraction paused" state. The
-      // input is ignored: it answers for ctx.userId and nobody else.
+      // memory:status — the caller's own "extraction paused" state, and
+      // optionally one conversation's extraction state (TASK-626). Answers
+      // for ctx.userId and nobody else; the input names no user.
       // ---------------------------------------------------------------
-      bus.registerService<unknown, MemoryStatusOutput>(
+      bus.registerService<MemoryStatusInput | undefined, MemoryStatusOutput>(
         MEMORY_STATUS_HOOK,
         PLUGIN_NAME,
-        async (ctx) => {
-          const userId = ctx.userId;
-          if (typeof userId === 'string' && userId !== '' && pausedUsers.has(userId)) {
-            return { extraction: 'paused', reason: 'missing-credential' };
+        async (ctx, rawInput) => {
+          // `{}` and no input at all both mean "just the pause", as before.
+          const conversationId =
+            rawInput !== null && typeof rawInput === 'object'
+              ? (rawInput as { conversationId?: unknown }).conversationId
+              : undefined;
+          if (conversationId !== undefined && !isUsableString(conversationId)) {
+            throw invalid('conversationId must be a non-empty string when set', MEMORY_STATUS_HOOK);
           }
-          return { extraction: 'ok' };
+          const userId = ctx.userId;
+          const hasUser = typeof userId === 'string' && userId !== '';
+          const base: MemoryStatusOutput =
+            hasUser && pausedUsers.has(userId)
+              ? { extraction: 'paused', reason: 'missing-credential' }
+              : { extraction: 'ok' };
+          if (conversationId === undefined) return base;
+          // Keyed by ctx.userId: a caller asking about someone else's
+          // conversation reads their OWN (absent, so `idle`) state for it.
+          return {
+            ...base,
+            conversation: {
+              state: hasUser ? activity.state({ userId, conversationId }) : 'idle',
+            },
+          };
         },
       );
 
@@ -1292,6 +1353,8 @@ interface ObserveConfig {
    * write, so it stays small; single-replica host, as for `pausedUsers`.
    */
   pendingCursors: Map<string, number>;
+  /** Per-conversation extraction state (TASK-626); see `activity.ts`. */
+  activity: ConversationActivityTracker;
 }
 
 /** What a producer gets: the wired extraction call, the wired write, the owner. */
@@ -1485,7 +1548,32 @@ async function runConversationPass(
   chatEndPayload: { outcome?: unknown } | undefined,
 ): Promise<void> {
   const conversationId = ctx.conversationId;
-  await observe(bus, ctx, cfg, trigger, async ({ llmCall, record, ownerUserId, userId }) => {
+  // The activity signal (TASK-626). `undefined` for a routine run or a
+  // context with no user: then nothing below fires or tracks anything.
+  const target = activityTarget(ctx);
+  // Set only once the pass has fresh turns and is about to extract. A pass
+  // that never gets there (nothing new, paused, an early throw) fires
+  // nothing — "extracting… nothing" every idle tick would be noise.
+  let started = false;
+  // Ids the engine reported writing during this pass, from the record
+  // wrapper below — the ids actually stored, not the facts extracted.
+  const writtenIds = new Set<string>();
+  const beginExtracting = async (): Promise<void> => {
+    started = true;
+    if (target === undefined) return;
+    cfg.activity.begin(target);
+    await fireConversationActivity(bus, ctx, { ...target, state: 'extracting' });
+  };
+
+  const produced = await observe(bus, ctx, cfg, trigger, async (deps) => {
+    const { llmCall, ownerUserId, userId } = deps;
+    const record: ObserveDeps['record'] = async (input) => {
+      const out = await deps.record(input);
+      for (const row of out?.records ?? []) {
+        if (typeof row?.id === 'string' && row.id !== '') writtenIds.add(row.id);
+      }
+      return out;
+    };
     if (trigger !== 'chat-end' && userId !== undefined && cfg.pausedUsers.has(userId)) {
       return { kind: 'skipped', reason: 'paused' };
     }
@@ -1523,6 +1611,7 @@ async function runConversationPass(
     if (trigger === 'chat-end' && cursor === 0 && rawTurns.length === 0) {
       const messages = chatEndMessages(chatEndPayload);
       if (messages === undefined) return { kind: 'skipped', reason: 'no-new-turns' };
+      await beginExtracting();
       return observeMessages(ctx, cfg, messages, { llmCall, record, ownerUserId, userId });
     }
     const dialogue = filterTranscriptTurns(rawTurns);
@@ -1544,6 +1633,7 @@ async function runConversationPass(
       return { kind: 'skipped', reason: 'no-new-turns' };
     }
     const context = dialogue.filter((turn) => turn.turnIndex < cursor).slice(-CONTEXT_TURNS);
+    await beginExtracting();
 
     const result = await runTurnObserver({
       context,
@@ -1561,6 +1651,29 @@ async function runConversationPass(
     });
     await persistCursor(bus, ctx, cfg, trigger, last.turnIndex + 1);
     return result;
+  });
+
+  if (!started || target === undefined) return;
+  // EXACTLY ONE terminal per started pass.
+  //
+  // - The producer returned (`produced`): the cursor moved, so these turns
+  //   are done — `recorded` if the engine wrote anything, else `idle`
+  //   (nothing durable, a timeout, an unreadable answer, all unusable).
+  // - Something threw: the cursor held and the next pass retries the turns.
+  //   `paused` when the throw was a missing credential (observe() has just
+  //   put the user in `pausedUsers`), otherwise `failed`.
+  const terminal: ConversationPassTerminal = produced
+    ? writtenIds.size > 0
+      ? 'recorded'
+      : 'idle'
+    : cfg.pausedUsers.has(target.userId)
+      ? 'paused'
+      : 'failed';
+  cfg.activity.end(target, terminal);
+  await fireConversationActivity(bus, ctx, {
+    ...target,
+    state: terminal,
+    ...(terminal === 'recorded' ? { statementIds: [...writtenIds] } : {}),
   });
 }
 
@@ -1793,5 +1906,10 @@ function toMemoryStatement(row: EngineFactRecord): MemoryStatement {
     ...(row.until !== undefined ? { until: row.until } : {}),
     ...(row.kind !== undefined ? { kind: row.kind } : {}),
     ...(row.slot !== undefined ? { slot: row.slot } : {}),
+    // A display hint, not a validated column: anything but a non-empty
+    // string is absent, and absent is no key at all (never `undefined`).
+    ...(typeof row.sourceTurnId === 'string' && row.sourceTurnId !== ''
+      ? { sourceTurnId: row.sourceTurnId }
+      : {}),
   };
 }

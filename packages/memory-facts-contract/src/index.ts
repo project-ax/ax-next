@@ -202,13 +202,16 @@ export interface FactRecord {
    * The conversation this row was recorded from, when it had one — echoed
    * back exactly as {@link FactStatementInput.conversationId} supplied it.
    *
-   * ⚠ **Provenance, never a retrieval key** (design §3.1), and returning it
-   * does not change that: no input on this contract filters or ranks by it,
-   * and none should. It is returned because one `chat:end` emits ~12
-   * statements, so a flat last-N recency listing is the tail of ONE topic;
-   * design §4.1's Recent section is grouped by conversation precisely to
-   * avoid that, and grouping is not possible without this field. A row
+   * Provenance first (design §3.1): it is returned because one `chat:end`
+   * emits ~12 statements, so a flat last-N recency listing is the tail of ONE
+   * topic; design §4.1's Recent section is grouped by conversation precisely
+   * to avoid that, and grouping is not possible without this field. A row
    * recorded outside a conversation (a UI write, an admin probe) has none.
+   *
+   * It is ALSO now a filter — {@link RecallInput.conversationId} — but only on
+   * the filtered listing, the same carve-out {@link RecallInput.slots} has:
+   * ranked retrieval (`query`) is not plumbed for it and rejects the two
+   * together. Never RANKED by, so a hit does not change a row's relevance.
    *
    * It does NOT reach a caller-facing `@ax/memory` payload — `MemoryStatement`
    * deliberately omits it. This is the engine contract, whose consumer is the
@@ -348,6 +351,33 @@ export interface RecallInput {
    * "do not filter".
    */
   slots?: string[];
+  /**
+   * Restrict the FILTERED LISTING to rows whose {@link FactRecord.conversationId}
+   * strictly equals this. Omitted = no conversation restriction, which is
+   * every existing case in this contract.
+   *
+   * Pushed into the store's own predicate, never applied to rows after they
+   * come back — the same reason {@link ownerUserId} and {@link slots} are:
+   * `limit` has to count rows FROM this conversation, and a filter applied to
+   * a page that has already been cut would return an empty answer for a
+   * conversation whose rows happen to be older than someone else's. Design
+   * §6.1, "Never post-filter a widened pool."
+   *
+   * Strict equality: a row with NO conversationId never matches, the same
+   * fail-closed rule {@link ownerUserId} uses for an unstamped row.
+   *
+   * An empty string is rejected, not treated as absent — same reasoning as
+   * the empty `ownerUserId`: `''` is a perfectly storable value, and treating
+   * it as "no filter" would silently widen a read the caller believed it had
+   * narrowed. A non-string is rejected the same way.
+   *
+   * **Rejected, not ignored, alongside {@link query}.** Ranked retrieval
+   * fuses three channels and this filter is not plumbed through them, for
+   * the identical reason {@link slots} gives: answering a `{query,
+   * conversationId}` call with an unfiltered ranked set would hand a caller
+   * who asked for one conversation a result set dressed up as filtered.
+   */
+  conversationId?: string;
 }
 
 export interface RecallOutput {
@@ -2039,6 +2069,113 @@ export function runFactsContract(label: string, factory: FactsBackendFactory): v
       it('rejects slots combined with query', async () => {
         await expectCode('invalid-payload', () =>
           recall({ query: 'where do I live', limit: 10, slots: ['lives_in'] }),
+        );
+      });
+    });
+
+    describe('conversationId filter', () => {
+      it('returns only the rows of the named conversation', async () => {
+        const conv1 = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JAN,
+          conversationId: 'conv-1',
+        });
+        await recordOne({
+          about: 'user',
+          relation: 'works_at',
+          value: 'Acme',
+          when: JAN,
+          conversationId: 'conv-2',
+        });
+        await recordOne({ about: 'user', relation: 'stated', value: 'hello', when: JAN });
+
+        const out = await recall({ about: 'user', limit: 10, conversationId: 'conv-1' });
+        expect(out.statements.map((r) => r.id)).toEqual([conv1.id]);
+      });
+
+      // Composes with ownerUserId: two owners' rows in the SAME conversation,
+      // and only the scoped owner's row comes back. The two predicates are
+      // ANDed, the same as ownerUserId + tenant.
+      it('composes with ownerUserId', async () => {
+        const alice = await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Khalid',
+          when: JAN,
+          conversationId: 'conv-1',
+          ownerUserId: 'owner-alice',
+        });
+        await recordOne({
+          about: 'user',
+          relation: 'likes_artist',
+          value: 'Sade',
+          when: JAN,
+          conversationId: 'conv-1',
+          ownerUserId: 'owner-bob',
+        });
+
+        const out = await recall({
+          about: 'user',
+          limit: 10,
+          conversationId: 'conv-1',
+          ownerUserId: 'owner-alice',
+        });
+        expect(out.statements.map((r) => r.id)).toEqual([alice.id]);
+      });
+
+      // The push-down case, and the reason the predicate cannot live in
+      // application code — same argument as ownerUserId's and slots'. conv-2
+      // gets five NEWER rows than conv-1's one row, so a `limit: 1` read that
+      // took the top row first and filtered by conversation afterwards would
+      // return conv-2's row instead of conv-1's, or an empty answer once
+      // filtered — not the row this conversation actually has. Design §6.1,
+      // "Never post-filter a widened pool."
+      it('counts `limit` against the conversation-filtered rows, not a widened pool', async () => {
+        const older = await recordOne({
+          about: 'user',
+          relation: 'lives_in',
+          value: 'Seattle',
+          when: JAN,
+          conversationId: 'conv-1',
+        });
+        for (let i = 0; i < 5; i++) {
+          await recordOne({
+            about: 'user',
+            relation: `newer_fact_${i}`,
+            value: `fact-${i}`,
+            when: JUN,
+            conversationId: 'conv-2',
+          });
+        }
+
+        const out = await recall({ about: 'user', limit: 1, conversationId: 'conv-1' });
+        expect(out.statements.map((r) => r.id)).toEqual([older.id]);
+      });
+
+      it('rejects an empty-string conversationId rather than treating it as absent', async () => {
+        await expectCode('invalid-payload', () => recall({ about: 'user', limit: 10, conversationId: '' }));
+      });
+
+      it('rejects a non-string conversationId', async () => {
+        await expectCode('invalid-payload', () =>
+          bus.call('memory:facts:recall', makeCtx(), {
+            about: 'user',
+            limit: 10,
+            conversationId: 7,
+          }),
+        );
+      });
+
+      // Rejected, not ignored, alongside `query` — same argument as `slots`:
+      // ranked retrieval fuses three channels and this filter is not plumbed
+      // through them. (On a backend with no fusion recall `query` is rejected
+      // first — same code, so the case holds either way, which is what makes
+      // it a parity case, mirroring the `slots` + `query` case above.)
+      it('rejects conversationId combined with query', async () => {
+        await expectCode('invalid-payload', () =>
+          recall({ query: 'where do I live', limit: 10, conversationId: 'conv-1' }),
         );
       });
     });

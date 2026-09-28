@@ -5,6 +5,7 @@ import {
   type Plugin,
 } from '@ax/core';
 import { createChunkBuffer, type ChunkBuffer } from './chunk-buffer.js';
+import { createMemoryEventsHandler } from './memory-events.js';
 import { makeAgentBootstrapHandler } from './routes-agent-bootstrap.js';
 import { makeAgentIdentityHandlers } from './routes-agent-identity.js';
 import { makeAllowHostHandler } from './routes-allow-host.js';
@@ -81,6 +82,11 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     bundled approval card — surfaced per-connection only, matched by
 //     ctx.conversationId; declared here for visibility, the subscription
 //     itself lives in createSseHandler's cleanup() lifecycle).
+//     memory:conversation-activity (TASK-626 — per-connection only, in
+//     memory-events.ts; filtered by conversationId + userId, ids only).
+//     Its memory:status read is NOT declared as a call, same reasoning as the
+//     memory:rules:* hooks above: the route gates on bus.hasService and
+//     answers 503 without it.
 // ---------------------------------------------------------------------------
 
 export interface ChannelWebServerConfig {
@@ -373,7 +379,14 @@ export function createChannelWebServerPlugin(
             'approvals never stream the continuation live (the turn still runs; it renders on the next read)',
         },
       ],
-      subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request'],
+      subscribes: [
+        'chat:stream-chunk',
+        'chat:phase',
+        'chat:turn-end',
+        'chat:turn-error',
+        'chat:permission-request',
+        'memory:conversation-activity',
+      ],
     },
 
     async init({ bus }) {
@@ -478,6 +491,25 @@ export function createChannelWebServerPlugin(
         ) => Promise<void>,
       });
       unregisterRoutes.push(routeResult.unregister);
+
+      // TASK-626 — the conversation-scoped memory stream. The chat stream above
+      // is per TURN and closes at turn-end; memory passes run after turn-end,
+      // so "noting something from this conversation" needs its own stream.
+      // memory:status / memory:conversation-activity are @ax/memory's and
+      // optional: the handler answers 503 when memory:status is absent.
+      const memoryEvents = createMemoryEventsHandler({ bus, initCtx });
+      const memoryEventsRoute = await bus.call<
+        unknown,
+        { unregister: () => void }
+      >('http:register-route', initCtx, {
+        method: 'GET',
+        path: '/api/chat/conversations/:id/memory-events',
+        handler: memoryEvents as unknown as (
+          req: RouteRequest,
+          res: RouteResponse,
+        ) => Promise<void>,
+      });
+      unregisterRoutes.push(memoryEventsRoute.unregister);
 
       // Tasks 9-13 — chat-flow REST surface (POST messages, GET/DELETE
       // conversations, GET conversations/:id, GET agents). CSRF gated
