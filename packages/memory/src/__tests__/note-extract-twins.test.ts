@@ -2,8 +2,8 @@ import Database from 'better-sqlite3';
 import type { AgentContext, LlmCallInput } from '@ax/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { OBSERVER_FAILED_EVENT, OBSERVER_RUN_EVENT } from '../failure.js';
-import { MEMORY_NOTE_TOOL_HOOK, type MemoryNoteResult } from '../note-tool.js';
+import { NOTE_FAILED_EVENT, OBSERVER_FAILED_EVENT, OBSERVER_RUN_EVENT } from '../failure.js';
+import { MEMORY_NOTE_TOOL_HOOK, NOTE_TWIN_EVENT, type MemoryNoteResult } from '../note-tool.js';
 import type { MemoryStatement } from '../types.js';
 import { eventsNamed, makeMemoryHarness, type MemoryHarness } from './harness.js';
 
@@ -37,6 +37,8 @@ interface Fact {
   subject: string;
   predicate: string;
   object: string;
+  /** Defaults to 2026-09-01. */
+  validStart?: string;
 }
 
 /** The measured walk pair: what the agent saved, and what extraction wrote. */
@@ -66,7 +68,12 @@ interface Env {
   /** The conversation feed: this conversation's ACTIVE rows. */
   feed: () => Promise<MemoryStatement[]>;
   /** Every stored row, active or closed, straight from the table. */
-  rows: () => Array<{ relation: string; value: string; provenance: string }>;
+  rows: () => Array<{
+    relation: string;
+    value: string;
+    provenance: string;
+    source_role: string | null;
+  }>;
 }
 
 async function setup(): Promise<Env> {
@@ -75,8 +82,8 @@ async function setup(): Promise<Env> {
     text: JSON.stringify({
       facts: facts.map((f) => ({
         network: 'experience',
-        ...f,
         validStart: '2026-09-01T00:00:00Z',
+        ...f,
         invalidatesPrevious: false,
       })),
     }),
@@ -140,7 +147,7 @@ async function setup(): Promise<Env> {
       const db = new Database(h.databasePath, { readonly: true });
       try {
         return db
-          .prepare('SELECT relation, value, provenance FROM memory_facts_v1 ORDER BY rowid')
+          .prepare('SELECT relation, value, provenance, source_role FROM memory_facts_v1 ORDER BY rowid')
           .all() as ReturnType<Env['rows']>;
       } finally {
         db.close();
@@ -352,8 +359,255 @@ describe('the twin read fails open', () => {
     bus.call = original;
 
     expect(env.rows().map((r) => r.provenance)).toEqual(['agent', 'extracted']);
-    expect(
-      eventsNamed(env.h.logs, OBSERVER_FAILED_EVENT).some((e) => e.bindings.reason === 'twin-check-failed'),
-    ).toBe(true);
+    const failed = eventsNamed(env.h.logs, OBSERVER_FAILED_EVENT).find(
+      (e) => e.bindings.reason === 'twin-check-failed',
+    );
+    expect(failed).toBeDefined();
+    // TASK-649: the cause travels with the warning.
+    expect(failed?.bindings.err).toBeInstanceOf(Error);
+    expect((failed?.bindings.err as Error).message).toBe('facts store unavailable');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-649 — the REVERSE order: the agent notes, in a later turn, a fact an
+// earlier extraction pass already stored. The note is not written a second
+// time; the extracted row stays the one row (with its `sourceRole`).
+// ---------------------------------------------------------------------------
+
+/** The extraction pass runs first; the agent notes the same fact afterwards. */
+async function extractedThenNoted(env: Env): Promise<MemoryNoteResult> {
+  env.extract([DENVER_EXTRACTED]);
+  await env.exchange('I am relocating to Denver in November.', 'Sounds exciting.', 'r1');
+  await env.idle();
+  expect(env.rows().map((r) => r.provenance)).toEqual(['extracted']);
+  return env.h.bus.call<unknown, MemoryNoteResult>(MEMORY_NOTE_TOOL_HOOK, env.ctx(), {
+    input: DENVER_NOTE,
+  });
+}
+
+describe('an agent note restating an extracted row is not stored (TASK-649)', () => {
+  it('one row — the extracted one — and the note still reports it saved', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    const out = await extractedThenNoted(env);
+
+    expect(out).toEqual({ ok: true });
+    expect(env.rows().map((r) => [r.provenance, r.source_role])).toEqual([['extracted', 'user']]);
+    expect(values(await env.feed())).toEqual(['Relocating to Denver in November']);
+    expect(eventsNamed(env.h.logs, NOTE_TWIN_EVENT)).toHaveLength(1);
+  });
+
+  it('a second value of the same relation is still noted', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    env.extract([{ subject: 'user', predicate: 'likes_artist', object: 'Bjork' }]);
+    await env.exchange('I love Bjork.', 'Nice.', 'r1');
+    await env.idle();
+    await env.note({ about: 'user', relation: 'likes artist', value: 'Radiohead' });
+
+    expect(values(await env.feed())).toEqual(['Bjork', 'Radiohead']);
+  });
+
+  // Only an ACTIVE extracted row holds the fact; a forgotten one does not, so
+  // "saved" would be false. A guard for the active-only choice.
+  it('a forgotten extracted twin does not stop the note', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    env.extract([DENVER_EXTRACTED]);
+    await env.exchange('I am relocating to Denver in November.', 'Sounds exciting.', 'r1');
+    await env.idle();
+    const [extracted] = await env.feed();
+    await env.h.forget({ ids: [extracted!.id] }, env.ctx());
+
+    await env.note(DENVER_NOTE);
+    expect(values(await env.feed())).toEqual(['Denver, in November 2026']);
+  });
+
+  it('a Fix on the one row leaves nothing of the old value; Undo restores it once', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    await extractedThenNoted(env);
+    const [row] = await env.feed();
+    const fixed = await env.h.correct(
+      { id: row!.id, about: 'user', relation: row!.relation, value: 'Staying in Boston', reason: 'never-right' },
+      env.ctx(),
+    );
+    const all = async (): Promise<string[]> =>
+      values((await env.h.recall({ about: 'user', limit: 50 }, env.ctx())).statements);
+    expect(await all()).toEqual(['Staying in Boston']);
+
+    expect(await env.h.uncorrect({ id: fixed.id, restore: row!.id }, env.ctx())).toEqual({ undone: true });
+    expect(await all()).toEqual(['Relocating to Denver in November']);
+  });
+
+  it('Forget forgets the fact; Forget-Undo restores it once', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    await extractedThenNoted(env);
+    const [row] = await env.feed();
+    await env.h.forget({ ids: [row!.id] }, env.ctx());
+    expect(await env.feed()).toEqual([]);
+
+    await env.h.unforget({ ids: [row!.id] }, env.ctx());
+    expect(values(await env.feed())).toEqual(['Relocating to Denver in November']);
+  });
+
+  it('the twin read fails open: the note is written, and the warning carries the cause', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    env.extract([DENVER_EXTRACTED]);
+    await env.exchange('I am relocating to Denver in November.', 'Sounds exciting.', 'r1');
+    await env.idle();
+
+    const bus = env.h.bus;
+    const original = bus.call.bind(bus);
+    bus.call = (async (name: string, c: AgentContext, input: unknown) => {
+      const i = input as { about?: unknown; conversationId?: unknown } | undefined;
+      if (name === 'memory:facts:recall' && i?.about !== undefined && i.conversationId === CONV) {
+        throw new Error('facts store unavailable');
+      }
+      return original(name, c, input);
+    }) as typeof bus.call;
+    try {
+      await env.note(DENVER_NOTE);
+    } finally {
+      bus.call = original;
+    }
+
+    expect(env.rows().map((r) => r.provenance)).toEqual(['extracted', 'agent']);
+    const failed = eventsNamed(env.h.logs, NOTE_FAILED_EVENT).find(
+      (e) => e.bindings.reason === 'twin-check-failed',
+    );
+    expect((failed?.bindings.err as Error | undefined)?.message).toBe('facts store unavailable');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-649 x TASK-648 — the person restating a value they marked never right
+// must survive an agent-note twin, in either order: the dedup keeps the
+// user-sourced extracted row, which is what `restatedByPerson` reads.
+// ---------------------------------------------------------------------------
+
+describe('a user restatement of a retracted value survives an agent-note twin', () => {
+  const OLD = 'conv-old';
+  const LIVES = { about: 'user', relation: 'lives in', value: 'Denver, Colorado' };
+
+  /** In another conversation: the agent noted Denver, the person Fixed it as never right. */
+  async function retracted(env: Env): Promise<void> {
+    const old = env.h.ctx({ conversationId: OLD });
+    await env.note(LIVES, old);
+    const [noted] = (await env.h.recall({ conversationId: OLD }, old)).statements;
+    await env.h.correct(
+      { id: noted!.id, about: 'user', relation: noted!.relation, value: 'Boston, Massachusetts', reason: 'never-right' },
+      old,
+    );
+  }
+  // Dated after the Fix's correction (a correction is true from now).
+  const restatement = (): Fact => ({
+    subject: 'user',
+    predicate: 'lives_in',
+    object: 'Denver, Colorado',
+    validStart: new Date(Date.now() + 86_400_000).toISOString(),
+  });
+  const profile = async (env: Env): Promise<string[]> =>
+    values((await env.h.recall({ profile: true }, env.ctx())).statements);
+
+  it('agent note first, then the pass: the extracted row is kept and the value comes back', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    await retracted(env);
+    await env.note(LIVES);
+    env.extract([restatement()]);
+    await env.exchange('Actually I do live in Denver, Colorado.', 'Got it.', 'r1');
+    await env.idle();
+
+    expect(env.rows().filter((r) => r.provenance === 'extracted').map((r) => r.source_role)).toEqual([
+      'user',
+    ]);
+    expect(await profile(env)).toEqual(['Denver, Colorado']);
+    // The agent note it twins is a retracted value on a non-human row
+    // (TASK-639): hidden, so the fact does not show twice.
+    expect(values(await env.feed())).toEqual(['Denver, Colorado']);
+  });
+
+  it('the pass first, then the note: the note is dropped and the value still comes back', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    await retracted(env);
+    env.extract([restatement()]);
+    await env.exchange('Actually I do live in Denver, Colorado.', 'Got it.', 'r1');
+    await env.idle();
+    await env.note(LIVES);
+
+    // One row in this conversation; the only agent row is the old, retracted note.
+    expect(values(await env.feed())).toEqual(['Denver, Colorado']);
+    expect(env.rows().filter((r) => r.provenance === 'agent')).toHaveLength(1);
+    expect(await profile(env)).toEqual(['Denver, Colorado']);
+  });
+
+  it('the chain read fails open: the statement is kept, and the warning carries the cause', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    await retracted(env);
+    await env.note(LIVES);
+
+    const bus = env.h.bus;
+    const original = bus.call.bind(bus);
+    bus.call = (async (name: string, c: AgentContext, input: unknown) => {
+      // The chain read is the only one naming slots with no conversation.
+      const i = input as { slots?: unknown; conversationId?: unknown } | undefined;
+      if (name === 'memory:facts:recall' && Array.isArray(i?.slots) && i.conversationId === undefined) {
+        throw new Error('chain unavailable');
+      }
+      return original(name, c, input);
+    }) as typeof bus.call;
+    try {
+      env.extract([restatement()]);
+      await env.exchange('Actually I do live in Denver, Colorado.', 'Got it.', 'r1');
+      await env.idle();
+    } finally {
+      bus.call = original;
+    }
+
+    expect(env.rows().filter((r) => r.provenance === 'extracted')).toHaveLength(1);
+    const failed = eventsNamed(env.h.logs, OBSERVER_FAILED_EVENT).find(
+      (e) => e.bindings.reason === 'twin-check-failed',
+    );
+    expect((failed?.bindings.err as Error | undefined)?.message).toBe('chain unavailable');
+  });
+
+  // Guard: only the PERSON's message earns the exception.
+  it("the agent's reply repeating it is still dropped as the note's twin", async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    await retracted(env);
+    await env.note(LIVES);
+    env.extract([restatement()]);
+    await env.exchange('Where was it I live?', 'You live in Denver, Colorado.', 'r1');
+    await env.idle();
+
+    expect(env.rows().some((r) => r.provenance === 'extracted')).toBe(false);
+    expect(await profile(env)).toEqual(['Boston, Massachusetts']);
+  });
+
+  // TASK-641's in-window Fix: the note is Fixed as never right BEFORE the pass
+  // over the turn it came from. Every twin is closed, so the extractor's copy
+  // is still dropped — or the value just fixed away would come straight back.
+  it('a never-right Fix inside the idle window still drops the exact-value copy', async () => {
+    vi.useFakeTimers();
+    const env = await setup();
+    await env.note(LIVES);
+    const [noted] = await env.feed();
+    await env.h.correct(
+      { id: noted!.id, about: 'user', relation: noted!.relation, value: 'Boston, Massachusetts', reason: 'never-right' },
+      env.ctx(),
+    );
+    env.extract([restatement()]);
+    await env.exchange('I live in Denver, Colorado.', 'Saved.', 'r1');
+    await env.idle();
+
+    expect(env.rows().some((r) => r.provenance === 'extracted')).toBe(false);
+    expect(await profile(env)).toEqual(['Boston, Massachusetts']);
   });
 });

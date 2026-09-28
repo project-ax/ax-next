@@ -99,6 +99,22 @@ function retractedValues(
 }
 
 /**
+ * Whether `value` is retracted in the `(about, slot)` chain `chain` holds —
+ * the test {@link restatedByPerson} applies, for the observer's write-time
+ * twin check (TASK-649). One rule, so the write side cannot keep a row the
+ * read side would not resurface.
+ */
+export function isRetractedValue(
+  chain: readonly SlotGroupRow[],
+  about: string,
+  slot: string,
+  value: string,
+): boolean {
+  const key = (row: Pick<SlotGroupRow, 'about' | 'slot'>): string => `${row.about}\u0000${row.slot}`;
+  return retractedValues(chain, key).get(key({ about, slot }))?.has(sameValue(value)) === true;
+}
+
+/**
  * The person restated a value they had marked never right — in their OWN chat
  * message (TASK-648 ruling, Vinay, 2026-09-28).
  *

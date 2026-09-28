@@ -33,6 +33,16 @@
  * value, so the extractor's restatement of it is recognised and not stored —
  * otherwise the value just fixed away would come straight back.
  *
+ * ## The reverse order (TASK-649)
+ *
+ * When the agent notes, in a later turn, a fact an earlier extraction pass
+ * already stored, `memory_note` finds the ACTIVE extracted twin
+ * ({@link findActiveExtractedTwin}) and writes nothing: the extracted row is
+ * the one row. And one exception runs the other way — the observer keeps a
+ * twin the person said in their own turn when its value is one they had
+ * marked never right (see `observer.ts`'s `withoutTwins`), so TASK-648's
+ * restatement is not dropped behind an agent note.
+ *
  * ## Why the value check, and why so blunt
  *
  * The relation key alone would drop a second value of a multi-valued relation
@@ -74,6 +84,8 @@ export interface TwinCandidate {
 export interface PriorRow extends TwinCandidate {
   /** Absent means unknown, and unknown is never trusted as a higher tier. */
   provenance?: string;
+  /** Set when the row is closed (fixed, forgotten, replaced). Absent = active. */
+  until?: string;
 }
 
 /**
@@ -98,8 +110,34 @@ function valueWords(value: string, exclude: ReadonlySet<string>): Set<string> {
   return out;
 }
 
+/** An extracted statement restating an agent- or human-saved `prior` row. */
 export function isTwin(statement: TwinCandidate, prior: PriorRow): boolean {
   if (typeof prior.provenance !== 'string' || !HIGHER_TIERS.has(prior.provenance)) return false;
+  return sameFact(statement, prior);
+}
+
+/**
+ * The REVERSE order (TASK-649): an ACTIVE extracted row that an agent note
+ * about to be written would restate. Only an active row counts — the note
+ * answers "saved" when it is dropped, which is true only while the extracted
+ * row still holds the fact. A forgotten or fixed extracted row does not stop
+ * the note.
+ *
+ * The extracted row survives rather than the note because it is the one
+ * already stored, and it may carry `sourceRole: 'user'` — the person's own
+ * word, which `profile.ts`'s `restatedByPerson` reads (TASK-648). Replacing
+ * it with the note would need a closure ("Replaced" in its history) for what
+ * is a restatement.
+ */
+export function findActiveExtractedTwin<T extends PriorRow>(
+  note: TwinCandidate,
+  prior: readonly T[],
+): T | undefined {
+  return prior.find((p) => p.provenance === 'extracted' && p.until === undefined && sameFact(note, p));
+}
+
+/** Same subject, same relation key, shared value words — the tier-blind core. */
+function sameFact(statement: TwinCandidate, prior: TwinCandidate): boolean {
   if (statement.about !== prior.about) return false;
   const key = relationKey(statement.relation);
   if (key === '' || key !== relationKey(prior.relation)) return false;
@@ -114,15 +152,30 @@ export function isTwin(statement: TwinCandidate, prior: PriorRow): boolean {
   return shared > 0 && shared >= Math.min(2, mine.size, theirs.size);
 }
 
-/** Split `statements` into the ones to store and a count of dropped twins. */
+/**
+ * Whether an extracted statement has a twin that is still ACTIVE — an agent
+ * or human row saying the same thing right now, rather than only a closed one.
+ * The observer's TASK-649 exception reads it: see `observer.ts`'s
+ * `withoutTwins`.
+ */
+export function hasActiveTwin(statement: TwinCandidate, prior: readonly PriorRow[]): boolean {
+  return prior.some((p) => p.until === undefined && isTwin(statement, p));
+}
+
+/**
+ * Split `statements` into the ones to store and a count of dropped twins.
+ * `spare` keeps a statement that has a twin anyway (TASK-649: the person
+ * restating a value they had marked never right).
+ */
 export function dropTwins<T extends TwinCandidate>(
   statements: readonly T[],
   prior: readonly PriorRow[],
+  spare: (statement: T) => boolean = () => false,
 ): { kept: T[]; twins: number } {
   const kept: T[] = [];
   let twins = 0;
   for (const s of statements) {
-    if (prior.some((p) => isTwin(s, p))) twins += 1;
+    if (prior.some((p) => isTwin(s, p)) && !spare(s)) twins += 1;
     else kept.push(s);
   }
   return { kept, twins };

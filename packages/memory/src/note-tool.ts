@@ -12,6 +12,7 @@ import { isMissingCredential, memoryFailureEvent, NOTE_FAILED_EVENT } from './fa
 import { PLUGIN_NAME } from './plugin-name.js';
 import { deriveSlot } from './slots.js';
 import { rewriteSpeaker } from './subject.js';
+import { findActiveExtractedTwin, type PriorRow, type TwinCandidate } from './twins.js';
 
 export const MEMORY_NOTE_TOOL_HOOK = 'tool:execute:memory_note';
 
@@ -135,9 +136,59 @@ function normalizeWhen(when: unknown): string {
   return when;
 }
 
+/**
+ * A note that restates an extracted row, and so was not written (TASK-649).
+ * `debug`: ordinary, the fact is already in memory.
+ */
+export const NOTE_TWIN_EVENT = 'memory_note_twin';
+
+/** The conversation's rows, active and closed — `plugin.ts`'s `readPriorRows`. */
+export type NotePriorRowsFn = (
+  ctx: AgentContext,
+  query: { abouts: string[]; ownerUserId: string; conversationId: string },
+) => Promise<PriorRow[]>;
+
+/**
+ * The REVERSE twin check (TASK-649, `twins.ts`): does this conversation
+ * already hold an ACTIVE extracted row saying what the note says? Then the
+ * note is not written — the fact is in memory, once, and a Fix, Undo, Forget
+ * or Forget-Undo acts on the only row there is. The extracted row survives
+ * with its `sourceRole`, which is what lets the person's own restatement of
+ * a never-right value resurface (TASK-648).
+ *
+ * Only a conversation's note is checked (a routine run has none, TASK-616).
+ * Fails OPEN: a read that throws is reported, with its cause, and the note
+ * is written as before — a duplicate is the lesser loss.
+ */
+async function restatesExtractedRow(
+  ctx: AgentContext,
+  priorRows: NotePriorRowsFn,
+  ownerUserId: string,
+  note: TwinCandidate,
+): Promise<boolean> {
+  const { conversationId } = conversationField(ctx);
+  if (conversationId === undefined) return false;
+  let prior: PriorRow[];
+  try {
+    prior = await priorRows(ctx, { abouts: [note.about], ownerUserId, conversationId });
+  } catch (err) {
+    ctx.logger.warn(NOTE_FAILED_EVENT, {
+      agentId: ctx.agentId,
+      path: 'note',
+      reason: 'twin-check-failed',
+      err: err instanceof Error ? err : new Error(String(err)),
+    });
+    return false;
+  }
+  if (findActiveExtractedTwin(note, prior) === undefined) return false;
+  ctx.logger.debug(NOTE_TWIN_EVENT, { agentId: ctx.agentId, path: 'note' });
+  return true;
+}
+
 export async function registerMemoryNote(
   bus: HookBus,
   onFactsChanged: (ctx: AgentContext) => void,
+  priorRows: NotePriorRowsFn,
 ): Promise<void> {
   bus.registerService<{ input?: unknown }, MemoryNoteResult>(
     MEMORY_NOTE_TOOL_HOOK,
@@ -161,6 +212,14 @@ export async function registerMemoryNote(
         const when = input.when === undefined ? undefined : normalizeWhen(input.when);
 
         const access = await resolveMemoryAccess(bus, ctx);
+        const about = rewriteSpeaker(input.about as string, access.userId);
+        if (await restatesExtractedRow(ctx, priorRows, access.userId, {
+          about,
+          relation: input.relation as string,
+          value: input.value as string,
+        })) {
+          return { ok: true };
+        }
         const slot = deriveSlot(input.relation as string);
         const result = await bus.call<
           { statements: Array<Record<string, unknown>> },
@@ -168,7 +227,7 @@ export async function registerMemoryNote(
         >('memory:facts:record', ctx, {
           statements: [
             {
-              about: rewriteSpeaker(input.about as string, access.userId),
+              about,
               relation: input.relation,
               value: input.value,
               when: when ?? new Date().toISOString(),

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { dropRementionedSlotRows, needsSlotHistory, selectProfileRows } from '../profile.js';
+import {
+  dropRementionedSlotRows,
+  isRetractedValue,
+  needsSlotHistory,
+  selectProfileRows,
+} from '../profile.js';
 
 // TASK-602 — which row the profile SHOWS when a single-valued slot holds more
 // than one active row. Storage rule 3 (`human > agent > extracted`) decides
@@ -343,5 +348,31 @@ describe('the person restating a retracted value in chat (TASK-648)', () => {
     expect(needsSlotHistory([boston, said('user') as never])).toBe(true);
     expect(needsSlotHistory([boston, said('assistant') as never])).toBe(false);
     expect(needsSlotHistory([boston])).toBe(false);
+  });
+});
+
+// TASK-649 — the write-time twin check asks the same question the read side's
+// `restatedByPerson` does: is this value retracted in its chain?
+describe('isRetractedValue', () => {
+  const closed = '2026-09-01T00:00:00Z';
+  const chain = [
+    { about: ABOUT, slot: 'lives_in', value: 'Denver, Colorado', until: closed, neverTrue: true },
+    { about: ABOUT, slot: 'lives_in', value: 'Portland', until: closed, closedBy: 'x' },
+    { about: ABOUT, slot: 'lives_in', value: 'Boston, Massachusetts' },
+  ];
+
+  it('a never-right value is retracted — case and trailing punctuation aside', () => {
+    expect(isRetractedValue(chain, ABOUT, 'lives_in', 'denver, colorado.')).toBe(true);
+  });
+
+  it('a replaced, an active, or an unknown value is not', () => {
+    expect(isRetractedValue(chain, ABOUT, 'lives_in', 'Portland')).toBe(false);
+    expect(isRetractedValue(chain, ABOUT, 'lives_in', 'Boston, Massachusetts')).toBe(false);
+    expect(isRetractedValue(chain, ABOUT, 'lives_in', 'Austin')).toBe(false);
+  });
+
+  it('only in its own (about, slot) chain', () => {
+    expect(isRetractedValue(chain, 'user:bob', 'lives_in', 'Denver, Colorado')).toBe(false);
+    expect(isRetractedValue(chain, ABOUT, 'works_at', 'Denver, Colorado')).toBe(false);
   });
 });

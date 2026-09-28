@@ -34,6 +34,7 @@ import {
   type ObserverRecordInput,
   type ObserverResult,
   type PriorRowsFn,
+  type RetractedValueFn,
 } from './observer.js';
 import type { PriorRow } from './twins.js';
 import {
@@ -53,6 +54,7 @@ import {
 } from './incremental.js';
 import {
   dropRementionedSlotRows,
+  isRetractedValue,
   needsSlotHistory,
   rementionedSlotRows,
   selectProfileRows,
@@ -1536,7 +1538,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
 
       if (config.rules === true) registerRulesHooks(bus);
       await registerMemoryRecall(bus);
-      await registerMemoryNote(bus, onFactsChanged);
+      await registerMemoryNote(bus, onFactsChanged, (ctx, query) => readPriorRows(bus, ctx, query));
     },
 
     async shutdown() {
@@ -1571,6 +1573,8 @@ interface ObserveDeps {
   record: (input: ObserverRecordInput) => Promise<{ records?: Array<{ id?: unknown }> } | null>;
   /** The twin check's read (TASK-641) — see {@link readPriorRows}. */
   priorRows: PriorRowsFn;
+  /** The twin check's chain read (TASK-649) — see {@link readRetractedValue}. */
+  retractedValue: RetractedValueFn;
   ownerUserId: string;
   userId: string | undefined;
 }
@@ -1644,6 +1648,7 @@ async function observe(
         return out;
       },
       priorRows: (query) => readPriorRows(bus, ctx, query),
+      retractedValue: (query) => readRetractedValue(bus, ctx, query),
       ownerUserId,
       userId,
     });
@@ -1716,13 +1721,14 @@ function observeMessages(
   ctx: AgentContext,
   cfg: ObserveConfig,
   messages: UntrustedMessage[],
-  { llmCall, record, priorRows, ownerUserId }: ObserveDeps,
+  { llmCall, record, priorRows, retractedValue, ownerUserId }: ObserveDeps,
 ): Promise<ObserverResult> {
   return runObserver({
     messages,
     llmCall,
     record,
     priorRows,
+    retractedValue,
     ownerUserId,
     // The batch identity keeps the real conversation; the rows are
     // attributed per `conversationOf` (a routine run is not a
@@ -1793,7 +1799,7 @@ async function runConversationPass(
   };
 
   const produced = await observe(bus, ctx, cfg, trigger, async (deps) => {
-    const { llmCall, priorRows, ownerUserId, userId } = deps;
+    const { llmCall, priorRows, retractedValue, ownerUserId, userId } = deps;
     const record: ObserveDeps['record'] = async (input) => {
       const out = await deps.record(input);
       for (const row of out?.records ?? []) {
@@ -1842,7 +1848,14 @@ async function runConversationPass(
       const messages = chatEndMessages(chatEndPayload);
       if (messages === undefined) return { kind: 'skipped', reason: 'no-new-turns' };
       await beginExtracting();
-      return observeMessages(ctx, cfg, messages, { llmCall, record, priorRows, ownerUserId, userId });
+      return observeMessages(ctx, cfg, messages, {
+        llmCall,
+        record,
+        priorRows,
+        retractedValue,
+        ownerUserId,
+        userId,
+      });
     }
     const dialogue = filterTranscriptTurns(rawTurns);
 
@@ -1871,6 +1884,7 @@ async function runConversationPass(
       llmCall,
       record,
       priorRows,
+      retractedValue,
       ownerUserId,
       // Batch identity: the real conversation. Stored attribution: per
       // `conversationOf`, so a routine turn's rows carry none (TASK-616).
@@ -1944,17 +1958,43 @@ async function readPriorRows(
     }
     for (const row of raw.statements as unknown[]) {
       if (row === null || typeof row !== 'object') continue;
-      const { about: a, relation, value, provenance } = row as Record<string, unknown>;
+      const { about: a, relation, value, provenance, until } = row as Record<string, unknown>;
       if (typeof a !== 'string' || typeof relation !== 'string' || typeof value !== 'string') continue;
       rows.push({
         about: a,
         relation,
         value,
         ...(typeof provenance === 'string' ? { provenance } : {}),
+        ...(typeof until === 'string' ? { until } : {}),
       });
     }
   }
   return rows;
+}
+
+/**
+ * The twin check's chain read (TASK-649): is `value` retracted in the owner's
+ * `(about, slot)` chain? Every conversation, closed rows included — the Fix
+ * that retracted it may have been made anywhere. Owner-scoped for the same
+ * reason {@link readPriorRows} is. Throws on an unreadable answer; the caller
+ * fails open.
+ */
+async function readRetractedValue(
+  bus: HookBus,
+  ctx: AgentContext,
+  query: { about: string; slot: string; value: string; ownerUserId: string },
+): Promise<boolean> {
+  const raw = await bus.call<unknown, EngineRecallOutput | null>(FACTS_RECALL_HOOK, ctx, {
+    about: query.about,
+    ownerUserId: query.ownerUserId,
+    slots: [query.slot],
+    activeOnly: false,
+    limit: PRIOR_ROWS_PER_ABOUT,
+  });
+  if (raw == null || !Array.isArray(raw.statements)) {
+    throw new Error(`${FACTS_RECALL_HOOK} returned no statements array for the twin check's chain read`);
+  }
+  return isRetractedValue(raw.statements, query.about, query.slot, query.value);
 }
 
 /**
@@ -2055,7 +2095,7 @@ function logObserverResult(
       });
       return;
     case 'recorded':
-      if (result.twinCheck === 'failed') logTwinCheckFailed(ctx, base);
+      if (result.twinCheck === 'failed') logTwinCheckFailed(ctx, base, result.twinCheckError);
       ctx.logger.info(OBSERVER_RUN_EVENT, {
         ...base,
         outcome: 'recorded',
@@ -2083,10 +2123,19 @@ function logObserverResult(
 /**
  * The twin read threw and the batch was recorded unfiltered (TASK-641). Its
  * own `warn` line, because a fail-open that nobody hears about is a silent
- * return of the duplicates this check exists to stop.
+ * return of the duplicates this check exists to stop. Carries the cause
+ * (TASK-649): the facts read's own error, as the cursor-write warning does.
  */
-function logTwinCheckFailed(ctx: AgentContext, base: Record<string, unknown>): void {
-  ctx.logger.warn(OBSERVER_FAILED_EVENT, { ...base, reason: 'twin-check-failed' });
+function logTwinCheckFailed(
+  ctx: AgentContext,
+  base: Record<string, unknown>,
+  err: Error | undefined,
+): void {
+  ctx.logger.warn(OBSERVER_FAILED_EVENT, {
+    ...base,
+    reason: 'twin-check-failed',
+    ...(err !== undefined ? { err } : {}),
+  });
 }
 
 function isUsableString(v: unknown): v is string {
