@@ -1,4 +1,4 @@
-# DEM fact links with Jev — phase 1 (link quality)
+# DEM fact links with Jev
 
 **Date:** 2026-09-28
 **Question:** DEM's rung-4 knowledge-update and counting failures are pairs of stored facts
@@ -8,7 +8,8 @@ be worth an answer-level test?
 `tests/fact-links.test.ts`), `dem-memory/bench/fact-links-eval.ts` (the run),
 `dem-memory/bench/fact-link-labels.json` (120 hand labels). Measurement only; nothing under
 `packages/` changed, and the banks are opened read-only.
-**Cost:** $0.68 (29,573 calls), plus $0.0004 for the hand-picked probe that motivated it.
+**Cost:** phase 1 $0.68 (29,573 Jev calls); phase 2 $2.41, plus $0.35 of abandoned `max`-reasoning rows.
+**Artifacts:** phase-2 rows, ledgers and manifest in `~/.cache/ax-memory-bench/fact-links-run-2026-09-28/`.
 
 ## Verdict
 
@@ -22,8 +23,11 @@ This is the opposite of the slot-normalizer result
 is the question. Naming a profile slot from a relation alone asks Jev to guess. Comparing two
 concrete facts with both values in view is a judgement it makes well.
 
-**Phase 2 — whether the links change answers — is not run yet.** Nothing here says accuracy
-moves.
+**Phase 2 (answers): the links help where they reach the model and have not hurt a single
+answer. The effect is too small to show at n=100.** Across 36 question pairs where a link
+note reached the model, 4 wrong answers became right and 0 right answers became wrong. The
+totals move +3 for each model (GLM 74 → 77, DeepSeek 76 → 79), but that is inside this
+benchmark's noise, and the untouched pairs flip just as often by chance.
 
 ## Why this, and why now
 
@@ -112,11 +116,73 @@ The follower pair isn't a Jev problem. Both facts carry the session date with no
 so nothing says which came last. Keeping the within-day order (the store's `transaction_time`,
 or the time of day) is a separate, deterministic fix.
 
+## Phase 2 — do the links change answers?
+
+**Design.** The 100 rung-4 questions, each answered twice from the same store: once with
+`memory_recall`'s result exactly as the product renders it (`off`), once with link notes added
+(`on`), using the 76 links at p ≥ 0.8 (`dem-memory/bench/fact-links.json`). A note sits on
+every evidence row that is one end of a link, and names the other end, so a link can surface a
+value retrieval missed. A one-line legend goes above the table when any note is present. Two
+answer models, each paired against itself; grok-4.3 judges, as in rung 4. Code:
+`scripts/memory-fact-links-e2e.mjs` (pure parts in `memory-fact-links-lib.mjs`, tests in
+`scripts/__tests__/memory-fact-links.test.js`). Nothing under `packages/` changed.
+
+| model | configuration |
+|---|---|
+| GLM | `z-ai/glm-5.3-flash:nitro`, minimal reasoning, 512 tokens (rung-4's answer config) |
+| DeepSeek | `deepseek/deepseek-v4.1-flash`, **minimal** reasoning, 2,048 tokens, pinned to the first-party `DeepSeek` provider |
+
+DeepSeek started at `max` reasoning. It averaged ~2,800 reasoning tokens per answer (too slow
+for a chat turn), so it was stopped after 137 rows and re-run at minimal. The partial `max`
+rows are archived beside the results and not counted (104/137 correct).
+
+**Stores.** Each question's rung-4 store was copied, then **re-embedded** under the current
+embedder (TASK-523's OpenRouter `gemini-embedding-001`). The store deletes the old Vertex
+vectors on open, and without re-embedding the dense channel would silently be empty. Rerank
+is now `voyage` rather than Cohere. So the baselines here are *not* rung-4's numbers (GLM
+74 vs 81); only the within-model off/on comparison is the measurement. 9 of 1,730 answer-time
+query embeddings hit an upstream 429, spread across all four arms.
+
+**Results** (n=100 pairs per model):
+
+| | GLM off → on | DeepSeek off → on |
+|---|---|---|
+| total correct | 74 → **77** | 76 → **79** |
+| pairs where a note reached the model | 17: **+3 gained, 0 lost** | 19: **+1 gained, 0 lost** |
+| pairs with no note (identical tool text; pure noise) | 83: +4 / −4 | 81: +3 / −1 |
+| McNemar, all pairs | p = 0.55 | p = 0.38 |
+
+The untouched pairs are the noise control, and they are the honest reason not to quote the
++3 totals. Identical tool text still flips 4–8 answers per model between two runs. What
+separates signal from noise is the touched subset: **4 gains, 0 losses across 36 pairs**
+(both models combined). Taken alone, that is suggestive (p = 0.125) but not proof.
+
+**The rung-4 failure questions:**
+
+| question | links at 0.8 | GLM off → on | DeepSeek off → on |
+|---|---|---|---|
+| 07741c44 sneakers (initial place) | 3 | ✗ → **✓** | ✗ → **✓** |
+| 88432d0a bakes (count) | 4 | ✗ → **✓** | ✗ → ✗ (6 → 5; see below) |
+| eace081b Hawaii trip | 2 | ✗ → **✓** | ✗ → ✗ (reading error) |
+| 4b24c848 H&M tops | 2 | ✓ → ✓ | ✓ → ✓ |
+| ed4ddc30 eggs | 1 | ✗ → ✗ (never searched) | ✓ → ✓ |
+| 0a995998 clothing errands | 1 | ✗ → ✗ | ✗ → ✗ (an undercount) |
+| 6a1eabeb, a2f3aa27 | 0 | treatment never applied | |
+
+The touched pairs that did not flip are not link failures. GLM never called `memory_recall`
+for the eggs question, so no note could reach it. `0a995998` is an *under*count: the duplicate
+boots were counted once, as intended, but the third item was never retrieved. For the bakes,
+DeepSeek counted the duplicate sourdough and cake once each (6 → 5) and then counted an apple
+pie that was likely the assistant's suggestion. On the trip, DeepSeek cited Oahu and still
+answered that it didn't know where the user was staying.
+
+**Cost:** $2.41 (400 answers + judges + re-embedding), plus $0.35 for the abandoned `max` rows.
+
 ## What this does not show
 
-- **That answers improve.** That is phase 2: re-answer the affected questions plus a control
-  set, evidence with vs without link annotations, same banks and same answerer, paired.
-  Rung-4's n=100 noise floor (±4–6pp) means only a paired design can see it.
+- **A significant accuracy gain.** Only 17–19 of 100 questions ever see a note, and the effect
+  lives there. A confirming run should either repeat the touched questions several times per
+  arm, or use a benchmark slice built from knowledge-update and counting questions.
 - **A human's labels.** 120 labels by Claude, with the arguable calls marked.
 - **Links for assistant facts.** Only user-subject facts were paired; assistant duplicates
   (`recommended`, `listed`) weren't measured.
