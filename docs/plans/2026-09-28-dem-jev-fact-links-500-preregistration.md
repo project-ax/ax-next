@@ -103,3 +103,9 @@ Two earlier deviations, both before any answer, recorded here for completeness:
   caps; actual billing was $20.47 for all 500 stores.
 - **Repair pass.** New: it re-played every session that left no facts. 591 retried, 392
   recovered; afterwards no store is missing an evidence session.
+
+**Gate 2 result (2026-09-29): PASS, 57/60 (95%) strict, 60/60 counting arguable calls.** The
+three misses are arguable: a past residence against a current one, two contradictory age
+statements, two consecutive story directions labelled as one event. Labels are in
+`~/ax-bench-data/dem-lme500/gate2-labels-60.json`. The answer run uses the 305 links at
+p ≥ 0.9 (`fact-links-500-p90.json`, 204 questions).
