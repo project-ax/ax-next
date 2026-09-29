@@ -92,6 +92,14 @@ export const RUNNER_ID = 'aisdk';
 const MAX_STEPS_PER_TURN = 100;
 
 /**
+ * How long a STOPPED turn waits for `ai@7` to wind down before the loop stops
+ * waiting (TASK-688). Killing Bash and cancelling the model request take
+ * milliseconds; this only ever bites when a tool that cannot be aborted (a host
+ * or sandbox catalog tool) is still running.
+ */
+const STOP_GRACE_MS = 1_500;
+
+/**
  * Ceiling on the rung-3 summarizer call (design §7).
  *
  * The call happens at the top of a turn with the user already waiting and
@@ -368,6 +376,18 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
 
         transcript.append([toUserModelMessage(next.content)]);
 
+        // TASK-688 — Stop. One controller per turn, tripped by the shell when a
+        // person presses Stop (`interrupt` in the inbox). It is registered
+        // BEFORE the compaction call and the model call so a press at any point
+        // in the turn lands: an early press is latched by the shell and fires on
+        // registration, and `agent.stream` given an already-aborted signal ends
+        // at once. The signal is what actually stops the work — the model
+        // request, and the Bash child (killed by process group on the tool's
+        // own `abortSignal`, see tools/builtins.ts). It is NOT the runner
+        // ending: `cancel` does that. This loop carries on to the next message.
+        const stop = new AbortController();
+        const offInterrupt = ctx.onInterrupt(() => stop.abort());
+
         // Rung 3 of the compaction ladder (design §7), at the only point in the
         // turn where it is safe: the message list is quiescent — every tool call
         // has its result, no signed thinking block is mid-flight — and the
@@ -387,6 +407,19 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
           await ctx.replaceTranscript();
         }
 
+        // What the turn has FINISHED, tracked here rather than read back from
+        // `result.steps` at the end: after a Stop, `steps` can reject (no step
+        // ever finished) or wait on work that cannot be taken back, and this
+        // list is what the stopped path needs to be ready without either.
+        // `ai@7` calls `onStepEnd` once a step is complete INCLUDING its tool
+        // results, so an in-flight step — a model call cut off mid-sentence, a
+        // tool still running — is never in here.
+        const finishedSteps: Array<{ response: { messages: ModelMessage[] } }> = [];
+        // Text the CURRENT step has streamed so far. Reset at every step
+        // boundary, so after a Stop it is exactly the words the person watched
+        // appear that no finished step accounts for.
+        let stepText = '';
+
         // Send-site only. `messagesForProvider` prunes prior-turn reasoning for
         // providers that reject a replay of it (design §6) — the transcript
         // itself is untouched, because its persisted bytes are the host's
@@ -397,6 +430,10 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
             providerId,
             messages: transcript.messages(),
           }),
+          abortSignal: stop.signal,
+          onStepEnd: (step) => {
+            finishedSteps.push(step);
+          },
         });
 
         // Live streaming. Per-delta so the SSE fan-out feels like typing; the
@@ -409,11 +446,39 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
         // errors.` which loses the actual cause. Capture the part so the
         // `chat:turn-error` the user sees names the real failure.
         let streamError: unknown;
-        for await (const part of result.fullStream) {
+        // After a Stop the stream normally closes at once (the model request
+        // is aborted; Bash is killed). But `ai@7` does not close it until every
+        // tool it dispatched has returned, and a host tool or a sandbox catalog
+        // tool cannot be taken back — it can hold the stream for up to the 30 s
+        // IPC ceiling. So a stopped turn gets a short grace, then the loop
+        // stops waiting: the abandoned work finishes (or not) on its own, its
+        // result is dropped, and the person is not held hostage by it.
+        const STOP_GRACE_ELAPSED = Symbol('stop-grace-elapsed');
+        const stopGraceElapsed = new Promise<typeof STOP_GRACE_ELAPSED>((resolve) => {
+          const arm = (): void => {
+            setTimeout(() => resolve(STOP_GRACE_ELAPSED), STOP_GRACE_MS).unref();
+          };
+          if (stop.signal.aborted) arm();
+          else stop.signal.addEventListener('abort', arm, { once: true });
+        });
+        const parts = result.fullStream[Symbol.asyncIterator]();
+        for (;;) {
+          const pulled = await Promise.race([parts.next(), stopGraceElapsed]);
+          if (pulled === STOP_GRACE_ELAPSED) {
+            // Not awaited: closing the iterator waits on the very work we just
+            // stopped waiting for.
+            void Promise.resolve(parts.return?.()).catch(() => undefined);
+            break;
+          }
+          if (pulled.done === true) break;
+          const part = pulled.value;
           if (part.type === 'error') {
             streamError = part.error;
+          } else if (part.type === 'start-step' || part.type === 'finish-step') {
+            stepText = '';
           } else if (part.type === 'text-delta') {
             if (part.text.length > 0) {
+              stepText += part.text;
               await ctx.emitChunk({ kind: 'text', text: part.text });
             }
           } else if (part.type === 'reasoning-delta') {
@@ -461,37 +526,66 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
               isError: true,
             });
           }
-          // start / start-step / finish-step / text-start / raw / … are
-          // bookkeeping the host does not need.
+          // start / text-start / raw / … are bookkeeping the host does not need.
         }
+        // The turn's streaming is over, one way or another. (A throw below ends
+        // the run, so there is no path on which this handler outlives a turn.)
+        offInterrupt();
 
-        // A step that fails AFTER an earlier one succeeded closes the stream
-        // with an `error` part and leaves `result.steps` RESOLVED, carrying the
-        // steps that did work (verified against ai@7.0.70: the step loop's
-        // `catch` enqueues the error and closes; `NoOutputGeneratedError` only
-        // fires when NOTHING was produced). So the catch below never runs for
-        // that case, and without this line the turn would end as a SUCCESS with
-        // partial content and the failure silently dropped — no
-        // `chat:turn-error`, no retry card, nothing in the log.
-        //
-        // Any `error` part means the turn failed: tool failures arrive as
-        // `tool-error` (handled above, loop continues) and cancellation arrives
-        // as `abort`, so this branch is not stealing either of them.
-        if (streamError !== undefined) throw modelCallError(undefined, streamError);
+        let newMessages: ModelMessage[];
+        if (stop.signal.aborted) {
+          // TASK-688. The person pressed Stop. The turn ends HERE, on the same
+          // path as any other turn — `endTurn` below still ships the transcript
+          // and emits the turn-end that closes their stream — with whatever it
+          // had produced by then:
+          //
+          //   - every FINISHED step, exactly as a normal turn would have it;
+          //   - the words of the step that was cut off, as a plain assistant
+          //     message. They are what the person watched appear; dropping them
+          //     would make the reply vanish when the thread is re-read after
+          //     Stop. (Its unfinished reasoning is dropped — a thinking block
+          //     without its signature is not something to replay.)
+          //   - NOT the cut-off step's tool calls. A tool call with no result is
+          //     a hard 400 from the provider on the very next message, and a
+          //     call that was killed half way has no result worth keeping.
+          //
+          // A Stop that lands after the last step already finished simply finds
+          // the turn complete, and that is fine: the two lists agree.
+          newMessages = finishedSteps.flatMap((s) => s.response.messages);
+          if (stepText.length > 0) {
+            newMessages.push({
+              role: 'assistant',
+              content: [{ type: 'text', text: stepText }],
+            });
+          }
+        } else {
+          // A step that fails AFTER an earlier one succeeded closes the stream
+          // with an `error` part and leaves `result.steps` RESOLVED, carrying the
+          // steps that did work (verified against ai@7.0.70: the step loop's
+          // `catch` enqueues the error and closes; `NoOutputGeneratedError` only
+          // fires when NOTHING was produced). So the catch below never runs for
+          // that case, and without this line the turn would end as a SUCCESS with
+          // partial content and the failure silently dropped — no
+          // `chat:turn-error`, no retry card, nothing in the log.
+          //
+          // Any `error` part means the turn failed: tool failures arrive as
+          // `tool-error` (handled above, loop continues) and cancellation arrives
+          // as `abort` (handled by the branch above), so this is not stealing
+          // either of them.
+          if (streamError !== undefined) throw modelCallError(undefined, streamError);
 
-        // EVERY step's messages, not `result.response.messages` — that carries
-        // only the LAST step's, which on a tool-using turn silently drops every
-        // tool call and tool result from both the transcript and the persisted
-        // turn. (Verified against ai@7.0.70.)
-        let steps;
-        try {
-          steps = await result.steps;
-        } catch (err) {
-          throw modelCallError(err, streamError);
+          // EVERY step's messages, not `result.response.messages` — that carries
+          // only the LAST step's, which on a tool-using turn silently drops every
+          // tool call and tool result from both the transcript and the persisted
+          // turn. (Verified against ai@7.0.70.)
+          let steps;
+          try {
+            steps = await result.steps;
+          } catch (err) {
+            throw modelCallError(err, streamError);
+          }
+          newMessages = steps.flatMap((s) => s.response.messages);
         }
-        const newMessages: ModelMessage[] = steps.flatMap(
-          (s) => s.response.messages,
-        );
         transcript.append(newMessages);
 
         const { contentBlocks, toolResultBlocks, assistantText } =
