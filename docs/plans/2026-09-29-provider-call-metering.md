@@ -167,6 +167,9 @@ call shows up as the excess. The admin view and `chat:start` use the same figure
   gate fails closed and caches its answer for about 15 s, so a usage-database
   outage longer than that pauses model calls from the sandbox (the runner's
   included, not just new turns) until it recovers; both SDKs retry the 429.
+- The block also covers the key's read-only and free calls (`GET /v1/models`,
+  `count_tokens`): they are spliced-into requests, so a blocked user gets the same
+  429 for them. Fail closed, on purpose.
 - Server-side tool charges (web search per request) and Anthropic's
   `usage.iterations` compaction extras are not in the price table.
 - State is per host process. With more than one host replica the in-flight cap

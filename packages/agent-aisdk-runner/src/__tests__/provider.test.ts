@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { once } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { generateText, type ModelMessage } from 'ai';
+import { generateText, streamText, type ModelMessage } from 'ai';
 import {
   createProxyFetch,
   messagesForProvider,
@@ -609,6 +609,30 @@ describe('resolveModel — what actually reaches the OpenRouter wire', () => {
 
     expect(captured[0]!.url).toBe('https://openrouter.ai/api/v1/chat/completions');
     expect(captured[0]!.url).not.toContain('decoy.invalid');
+  });
+
+  it('asks OpenRouter for usage on a STREAMED call (stream_options.include_usage)', async () => {
+    // The agent loop streams. OpenAI-compatible servers only put token counts in a stream when
+    // asked, and OpenRouter's counts are what the credential proxy's meter reads to charge the
+    // call: without them every streamed turn is "unreadable" and is charged a size-based
+    // over-estimate at the top price (TASK-715), and the runner's own report is null too.
+    const captured: CapturedRequest[] = [];
+    const model = resolveModel({
+      modelRef: 'openrouter/x-ai/grok-4.6',
+      providerEnv: env({ OPENROUTER_API_KEY: OR_PLACEHOLDER }),
+      fetchImpl: capturingFetch(captured, CANNED_OPENAI_RESPONSE),
+    });
+
+    const result = streamText({ model, prompt: 'hi', onError: () => undefined });
+    try {
+      for await (const _ of result.fullStream) void _;
+    } catch {
+      // The canned reply is JSON, not an event stream; only the REQUEST is under test.
+    }
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.body.stream).toBe(true);
+    expect(captured[0]!.body.stream_options).toEqual({ include_usage: true });
   });
 
   it('sends the model id with the provider prefix stripped and the slug intact', async () => {

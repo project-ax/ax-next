@@ -331,6 +331,20 @@ describe('ProviderMeterHub — refreshing the cached bit', () => {
   });
 });
 
+describe('ProviderMeterHub — a ledger that goes away mid-session', () => {
+  it('still releases the slot an admitted call took (a settle never strands it)', async () => {
+    const l = fakeLedger();
+    let current: UsageLedgerPort | undefined = l.ledger;
+    const hub = new ProviderMeterHub({ ledger: () => current, maxInFlightPerUser: 1 });
+    const a = await hub.forSession(SESSION('s1'));
+    expect(a.meter.admit().ok).toBe(true); // takes the only slot
+    current = undefined; // the usage plugin's hooks vanish
+    await hub.forSession(SESSION('s2')); // the next session sees no ledger
+    a.meter.settle({ billable: false, usage: null, requestBytes: null });
+    expect(hub.peek('u1')?.inFlight).toBe(0);
+  });
+});
+
 describe('ProviderMeterHub — closing a session', () => {
   it("a closed session's meter refuses (a tunnel that outlived it cannot keep spending)", async () => {
     const l = fakeLedger();

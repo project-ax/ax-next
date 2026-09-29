@@ -151,7 +151,33 @@ async function startProvider(ca: { key: string; cert: string }): Promise<Provide
         const len = parseInt(headers['content-length'] ?? '0', 10);
         if (buf.length - (end + 4) < len) return;
         buf = buf.slice(end + 4 + len);
-        provider.requests.push({ line: lines[0] ?? '', apiKey: headers['x-api-key'] });
+        provider.requests.push({
+          line: lines[0] ?? '',
+          apiKey: headers['x-api-key'] ?? headers.authorization?.replace(/^Bearer /, ''),
+        });
+        if ((lines[0] ?? '').includes('/api/v1/chat/completions')) {
+          // OpenRouter, OpenAI-compatible: an event stream whose last chunk carries the counts
+          // (the runner asks for them with stream_options.include_usage).
+          const chunk = (o: unknown): string => `data: ${JSON.stringify(o)}\n\n`;
+          const events =
+            chunk({ id: 'gen_1', model: provider.next.model, choices: [{ delta: { content: 'hi' } }] }) +
+            chunk({
+              id: 'gen_1',
+              model: provider.next.model,
+              choices: [],
+              usage: {
+                prompt_tokens: provider.next.input,
+                completion_tokens: provider.next.output,
+                total_tokens: provider.next.input + provider.next.output,
+              },
+            }) +
+            'data: [DONE]\n\n';
+          sock.write(
+            'HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n' +
+              `${Buffer.byteLength(events).toString(16)}\r\n${events}\r\n0\r\n\r\n`,
+          );
+          continue;
+        }
         if (provider.cutStreamBytes !== undefined) {
           // Every token delivered, then the upstream hangs up: `message_delta`, which carries the
           // real output_tokens, never arrives. message_start says output_tokens: 1.
@@ -335,7 +361,7 @@ describe('@ax/preset-k8s provider metering canary (real credential-proxy + usage
   }
 
   /** What the orchestrator does at spawn: open a proxy session with the provider key marked metered. */
-  async function openSession(userId: string): Promise<Session> {
+  async function openSession(userId: string, requests: string[] = INFERENCE): Promise<Session> {
     sessionSeq += 1;
     const opened = await live().bus.call<
       unknown,
@@ -351,7 +377,7 @@ describe('@ax/preset-k8s provider metering canary (real credential-proxy + usage
           ref: 'provider:anthropic',
           kind: 'api-key',
           allowedHosts: [HOST],
-          metered: { requests: INFERENCE },
+          metered: { requests },
         },
       },
     });
@@ -363,7 +389,11 @@ describe('@ax/preset-k8s provider metering canary (real credential-proxy + usage
   }
 
   /** One request the way the sandbox's env lets ANY process make it: the placeholder, through the proxy. */
-  async function callFromSandbox(s: Session, usage = SONNET_SMALL): Promise<{ status: number; body: string }> {
+  async function callFromSandbox(
+    s: Session,
+    usage = SONNET_SMALL,
+    requestPath = '/v1/messages',
+  ): Promise<{ status: number; body: string }> {
     provider!.next = usage;
     const raw = net.connect(s.proxyPort, HOST);
     await new Promise<void>((r) => raw.once('connect', () => r()));
@@ -390,10 +420,12 @@ describe('@ax/preset-k8s provider metering canary (real credential-proxy + usage
     });
     const body = JSON.stringify({ model: usage.model, max_tokens: usage.output, messages: [] });
     inner.write(
-      `POST /v1/messages HTTP/1.1\r\nHost: ${HOST}\r\nx-api-key: ${s.envMap.ANTHROPIC_API_KEY}\r\n` +
+      `POST ${requestPath} HTTP/1.1\r\nHost: ${HOST}\r\nx-api-key: ${s.envMap.ANTHROPIC_API_KEY}\r\n` +
         `content-type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
     );
-    await vi.waitFor(() => expect(responseComplete(got)).toBe(true), { timeout: 10_000 });
+    await vi.waitFor(() => expect(responseComplete(got) || got.endsWith('0\r\n\r\n')).toBe(true), {
+      timeout: 10_000,
+    });
     inner.destroy();
     raw.destroy();
     return { status: parseInt(got.split(' ')[1] ?? '0', 10), body: got.slice(got.indexOf('\r\n\r\n') + 4) };
@@ -572,6 +604,22 @@ describe('@ax/preset-k8s provider metering canary (real credential-proxy + usage
     });
     // …and stays a plausible over-count rather than a runaway one (well under 2x the ceiling here).
     expect((await ledgerFor(USER_C)).provider).toBeLessThan(2 * OPUS_60K_MICROS);
+  });
+
+  it('(g) OpenRouter\'s wire: a streamed chat completion with usage in the last chunk is booked (unknown models at the top price)', async () => {
+    const s = await openSession(USER_D, ['POST /api/v1/chat/completions']);
+    const res = await callFromSandbox(
+      s,
+      { model: 'x-ai/grok-4.6', input: 1000, output: 500 },
+      '/api/v1/chat/completions',
+    );
+    expect(res.status).toBe(200);
+    // Not a Claude model, so priced at the top tier: 1000 x $15/M + 500 x $75/M.
+    await waitForProviderCost(USER_D, 1000 * 15 + 500 * 75);
+    // A request to the ANTHROPIC path on this session's key is not a model call here: inert.
+    provider!.requests.length = 0;
+    await callFromSandbox(s, SONNET_SMALL, '/v1/messages');
+    expect(provider!.requests[0]!.apiKey).toBe(s.envMap.ANTHROPIC_API_KEY);
   });
 
   it('(e) a request that is not a model call never gets the key, even from a session that has it', async () => {

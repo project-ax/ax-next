@@ -157,8 +157,10 @@ export class ProviderMeterHub {
         return { ok: true };
       },
       settle: (s: ProviderCallSettlement): void => {
-        if (st.ledger === undefined) return;
+        // Release the slot FIRST: `admit` took it while a ledger was present, and a ledger
+        // that has since gone must not strand it.
         st.inFlight = Math.max(0, st.inFlight - 1);
+        if (st.ledger === undefined) return;
         if (s.billable) void this.record(st, s);
         else this.maybeEvict(st);
       },
