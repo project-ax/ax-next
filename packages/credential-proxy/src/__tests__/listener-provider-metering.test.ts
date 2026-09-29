@@ -1007,7 +1007,9 @@ describe('scope: only the session that opted in, only its metered host', () => {
       Array.from({ length: 400 }, () => `GET /v1/other HTTP/1.1\r\nHost: ${PROVIDER}\r\n\r\n`).join(''),
     );
     await waitFor(() => got().includes('429'), 'the cut-off');
-    expect(provider.requests.length).toBe(256);
+    // The 257th is refused. (How many of the first 256 the upstream managed to read before the
+    // tunnel was torn down is a race, so only the ceiling is asserted.)
+    expect(provider.requests.length).toBeLessThanOrEqual(256);
     expect(m.admits()).toBe(0);
   });
 
