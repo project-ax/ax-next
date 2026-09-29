@@ -43,6 +43,24 @@ import { createHash } from 'node:crypto';
  * identity leaks into the storage layer.
  */
 export function agentScopeKey(ctx: { agentId: string }): string {
-  const keyMaterial = JSON.stringify([ctx.agentId]);
+  return agentScopeKeyForAgentId(ctx.agentId);
+}
+
+/**
+ * The same derivation from a bare agent id (TASK-718).
+ *
+ * `agents:deleted` carries the id of the agent that was just deleted and no
+ * ctx worth deriving from — the ctx on that event belongs to whoever ISSUED
+ * the delete, which is a different agent (or none). So the purge cannot call
+ * {@link agentScopeKey} with `ctx`; it calls this. {@link agentScopeKey}
+ * delegates here, so the digest is computed in exactly one place and the two
+ * forms cannot drift (the pinned vectors cover both).
+ *
+ * It does NOT reject an empty id: `agentScopeKey({ agentId: '' })` is pinned
+ * (`055539df4a0b804c`) and must keep answering. Refusing to act on an empty id
+ * is the caller's job — see `purgeFactsForAgentId`.
+ */
+export function agentScopeKeyForAgentId(agentId: string): string {
+  const keyMaterial = JSON.stringify([agentId]);
   return createHash('sha256').update(keyMaterial).digest('hex').slice(0, 16);
 }
