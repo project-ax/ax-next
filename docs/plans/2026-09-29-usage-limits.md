@@ -64,6 +64,11 @@ knows its usage. So the design splits the two jobs that the card bundled:
   interrupt in-flight turns. Overshoot is at most the turns already running.
 - **A turn that ends abnormally** (runner crash, chat timeout) records no
   tokens; its turn still counts against the rate limit.
+- **A database that stalls past 60 seconds lets a turn through.** The
+  orchestrator bounds every `chat:start` subscriber at 60 s and skips one that
+  has not settled (TASK-514). The gate fails closed on any error it can see,
+  but not on a check that never returns. A stall that long takes chat itself
+  down first (conversations live in the same database).
 - **Bring-your-own-key users count too.** The host cannot tell at turn end
   whose key served a call, so every user's usage is metered.
 
