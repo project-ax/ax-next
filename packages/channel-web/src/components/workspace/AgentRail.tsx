@@ -30,9 +30,15 @@
  * own consequence.
  */
 import { Fragment, useState } from 'react';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, ChevronRight } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible';
 import { Separator } from '@/components/ui/separator';
 import { useAgentRail } from '@/lib/workspace-rail';
 import type {
@@ -315,40 +321,85 @@ function Permissions({
         </Note>
       )}
       {/*
-        The index rides in the key on purpose. `source` is unique per producer,
-        but it is FENCED on the way out — two very long ids can truncate to the
-        same 60 characters — and a duplicate key here would silently drop a
-        permission row. This list is replaced wholesale on every read, so there
-        is no reorder for the index to spoil.
+        COLLAPSED BY DEFAULT (TASK-685). A new agent's first screen used to
+        open on a dozen rows, each ending in a mono `rule:…` id — policy
+        internals before anyone had said a word, and at 1280×800 it pushed
+        "Granted by you" below the fold. This is DISCLOSURE, NOT REMOVAL:
+        every row is one click away and the expanded list is exactly the
+        list this used to draw (design H4 — never drop a capability).
+
+        The trigger names a COUNT and nothing else. A per-verdict breakdown
+        ("8 on its own · 1 never") was considered and declined: a conditional
+        rule counted under "never" is a sometimes-claim promoted to an
+        always-claim, and a summary that can say something the rows do not is
+        a second, untested copy of the frames in `permission-frames.ts`.
+
+        Radix unmounts the closed content, so nothing inside it is tabbable
+        while it is shut, and the trigger is a real `<button>` carrying
+        `aria-expanded`.
+
+        What stays OUTSIDE the fold is deliberate: the unrestricted-scope
+        alert and the incomplete-read note are claims about the list's
+        LIMITS. Folding them away would let a tidy "12 rules" read as a leash
+        the agent does not have — the understatement H4 forbids.
       */}
-      {rows.map((row, i) => (
-        <Fragment key={`${row.source}#${String(i)}`}>
-          {/*
-            A rule from the group above ends here. Twenty rows separated only by
-            a small coloured glyph is a list nobody scans; a hairline between
-            "can", "asks first" and "never" makes the three blocks findable
-            without adding three headings that repeat what each row already says.
-          */}
-          {i > 0 && rows[i - 1]?.verdict !== row.verdict && (
-            <Separator className="my-2" />
-          )}
-          <PermissionLine row={row} />
-        </Fragment>
-      ))}
+      {rows.length > 0 && (
+        <Collapsible>
+          <CollapsibleTrigger asChild>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="group h-auto w-full justify-between px-2 py-1.5 text-[12.5px] font-normal text-muted-foreground"
+            >
+              {rows.length === 1 ? 'Show the 1 rule' : `Show all ${String(rows.length)} rules`}
+              <ChevronRight
+                data-icon="inline-end"
+                aria-hidden="true"
+                className="transition-transform duration-150 group-data-[state=open]:rotate-90"
+              />
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="flex flex-col pt-1">
+            {/*
+              The index rides in the key on purpose. `source` is unique per
+              producer, but it is FENCED on the way out — two very long ids can
+              truncate to the same 60 characters — and a duplicate key here
+              would silently drop a permission row. This list is replaced
+              wholesale on every read, so there is no reorder for the index to
+              spoil.
+            */}
+            {rows.map((row, i) => (
+              <Fragment key={`${row.source}#${String(i)}`}>
+                {/*
+                  A rule from the group above ends here. Twenty rows separated
+                  only by a small coloured glyph is a list nobody scans; a
+                  hairline between "can", "asks first" and "never" makes the
+                  three blocks findable without adding three headings that
+                  repeat what each row already says.
+                */}
+                {i > 0 && rows[i - 1]?.verdict !== row.verdict && (
+                  <Separator className="my-2" />
+                )}
+                <PermissionLine row={row} />
+              </Fragment>
+            ))}
+          </CollapsibleContent>
+        </Collapsible>
+      )}
       {unrestrictedTools && (
         <Alert className="mt-3">
           <AlertTriangle aria-hidden="true" />
           <AlertDescription>
             Nothing limits which tools {name} can use — it can reach anything
-            installed here, now or later. The list above is what&apos;s
+            installed here, now or later. The rules above are what&apos;s
             installed today, not a boundary.
           </AlertDescription>
         </Alert>
       )}
       {incomplete && (
         <p className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">
-          One of the places we look didn&apos;t answer, so this list may be
-          missing something. It is not a complete list of what {name} cannot do.
+          One of the places we look didn&apos;t answer, so the rules above may
+          be missing something. It is not a complete list of what {name} cannot do.
         </p>
       )}
     </div>

@@ -53,6 +53,20 @@ function renderRail(d: AgentDetail = detail()) {
   return render(<AgentRail detail={d} openPastId={null} onOpenPast={vi.fn()} />);
 }
 
+/** The permission list's disclosure trigger, once the rail has loaded. */
+function permissionsTrigger(): Promise<HTMLElement> {
+  return screen.findByRole('button', { name: /^Show (all \d+ rules|the 1 rule)$/ });
+}
+
+/**
+ * Open the permission list. It is collapsed by default (TASK-685), so every
+ * test about what a ROW says has to open it first — deliberately, rather than
+ * the list being forced open under test and the default going untested.
+ */
+async function openPermissions(): Promise<void> {
+  fireEvent.click(await permissionsTrigger());
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   railMock.mockResolvedValue(rail());
@@ -161,6 +175,7 @@ describe('AgentRail — "What it may do alone"', () => {
       }),
     );
     const { container } = renderRail();
+    await openPermissions();
 
     await screen.findByText(/search the web/);
     const text = container.textContent ?? '';
@@ -189,6 +204,7 @@ describe('AgentRail — "What it may do alone"', () => {
       }),
     );
     const { container } = renderRail();
+    await openPermissions();
 
     await screen.findByText(/never delete anything/);
     expect(container.textContent).toMatch(/Can never delete anything — on its own/);
@@ -221,6 +237,7 @@ describe('AgentRail — "What it may do alone"', () => {
       }),
     );
     const { container } = renderRail();
+    await openPermissions();
 
     await screen.findByText(/delete a folder and everything in it/);
     expect(container.textContent).toMatch(
@@ -240,6 +257,7 @@ describe('AgentRail — "What it may do alone"', () => {
       }),
     );
     const { container } = renderRail();
+    await openPermissions();
 
     await screen.findByText('mcp.linear.create_issue');
     // Our claim: the tool name and the verdict. Nothing else.
@@ -291,6 +309,7 @@ describe('AgentRail — "What it may do alone"', () => {
       }),
     );
     const { container } = renderRail();
+    await openPermissions();
 
     expect(await screen.findByText('some_unmapped_tool')).toBeTruthy();
     expect(container.textContent).toMatch(/We haven't described this one/);
@@ -327,6 +346,7 @@ describe('AgentRail — "What it may do alone"', () => {
       }),
     );
     const { container } = renderRail();
+    await openPermissions();
 
     await screen.findByText(/rule:mystery/);
     expect(container.textContent).toMatch(/Can do something we can't put a name to/);
@@ -347,6 +367,7 @@ describe('AgentRail — "What it may do alone"', () => {
         }),
       );
       renderRail();
+      await openPermissions();
 
       await screen.findByText(/search the web/);
       expect(await screen.findByText('Costs money')).toBeTruthy();
@@ -367,6 +388,7 @@ describe('AgentRail — "What it may do alone"', () => {
         }),
       );
       renderRail();
+      await openPermissions();
 
       await screen.findByText(/search the web/);
       expect(await screen.findByText('Affects the outside world')).toBeTruthy();
@@ -416,6 +438,7 @@ describe('AgentRail — "What it may do alone"', () => {
         }),
       );
       renderRail();
+      await openPermissions();
 
       expect(await screen.findByText(/We haven't described this one/)).toBeTruthy();
       expect(await screen.findByText('Costs money')).toBeTruthy();
@@ -444,6 +467,7 @@ describe('AgentRail — "What it may do alone"', () => {
         }),
       );
       renderRail();
+      await openPermissions();
 
       // The row itself must render — otherwise this test would pass whether
       // or not the suppression logic exists at all.
@@ -496,6 +520,7 @@ describe('AgentRail — "What it may do alone"', () => {
         }),
       );
       renderRail();
+      await openPermissions();
 
       await screen.findByText(/read files in its own workspace/);
       expect(screen.getAllByRole('button', { name: /Details\.$/ })).toHaveLength(1);
@@ -517,6 +542,7 @@ describe('AgentRail — "What it may do alone"', () => {
         }),
       );
       renderRail();
+      await openPermissions();
 
       const trigger = await screen.findByText('Costs money');
       fireEvent.click(trigger);
@@ -548,6 +574,7 @@ describe('AgentRail — "What it may do alone"', () => {
         }),
       );
       renderRail();
+      await openPermissions();
 
       expect(await screen.findByText('Costs money')).toBeTruthy();
       expect(await screen.findByText('Affects the outside world')).toBeTruthy();
@@ -587,6 +614,7 @@ describe('AgentRail — "What it may do alone"', () => {
         }),
       );
       const { container } = renderRail();
+      await openPermissions();
 
       await screen.findByText(/read a web page/);
       const marks = screen.getAllByRole('button', { name: /Details\.$/ });
@@ -617,11 +645,19 @@ describe('AgentRail — "What it may do alone"', () => {
     );
     const { container } = renderRail();
 
-    await screen.findByText(/search the web/);
+    // Checked with the list COLLAPSED (TASK-685): this is a claim about the
+    // list's limits, and folding it away with the rows would let a tidy
+    // "Show the 1 rule" read as a leash the agent does not have.
+    await permissionsTrigger();
+    expect(screen.queryByText(/search the web/)).toBeNull();
     // Plain language, and it leads with the consequence. It fires for every
     // default personal agent, so it must not read as an error either.
     expect(container.textContent).toMatch(/Nothing limits which tools Quill can use/);
     expect(container.textContent).toMatch(/not a boundary/);
+    // It points at what IS on screen while shut — the "Show … rules" control
+    // above it — not at a list the reader cannot see (TASK-685 review).
+    expect(container.textContent).toMatch(/The rules above are what's installed today/);
+    expect(container.textContent).not.toMatch(/list above/);
   });
 
   it('says so when a source did not answer, instead of shipping a short list', async () => {
@@ -637,8 +673,11 @@ describe('AgentRail — "What it may do alone"', () => {
     );
     const { container } = renderRail();
 
-    await screen.findByText(/search the web/);
-    expect(container.textContent).toMatch(/may be missing something/);
+    // Visible with the list collapsed, for the same reason as the alert above.
+    await permissionsTrigger();
+    expect(screen.queryByText(/search the web/)).toBeNull();
+    expect(container.textContent).toMatch(/the rules above may be missing something/);
+    expect(container.textContent).not.toMatch(/this list may be/);
   });
 
   it('distinguishes "no producer" from "read failed" from "nothing there"', async () => {
@@ -684,6 +723,126 @@ describe('AgentRail — "What it may do alone"', () => {
     expect(text).not.toMatch(/talk to you and nothing else/);
     expect(text).not.toMatch(/will ask before/);
     expect(text).not.toMatch(/nothing else/i);
+  });
+});
+
+describe('AgentRail — the permission list is collapsed by default (TASK-685)', () => {
+  /*
+    A first-run agent's rail used to open on a dozen rows, each ending in a
+    mono `rule:…` id. The list now sits behind one disclosure — but it is
+    DISCLOSURE, NOT REMOVAL, so the expanded state is pinned to be exactly
+    the rows the list always drew.
+  */
+  const rows = [
+    describedRow({ verdict: 'allow', capability: 'search the web', source: 'rule:web.search' }),
+    describedRow({
+      verdict: 'allow',
+      capability: 'write itself a note',
+      source: 'rule:memory.note',
+      effect: ['spends'],
+    }),
+    describedRow({
+      verdict: 'hold',
+      capability: 'post a message somewhere else',
+      source: 'rule:messaging.post',
+    }),
+    mcpRow(),
+    describedRow({
+      verdict: 'deny',
+      capability: 'start a hidden helper agent',
+      source: 'rule:builtins.task',
+    }),
+  ];
+
+  beforeEach(() => {
+    railMock.mockResolvedValue(
+      rail({
+        permissions: { status: 'ok', incomplete: false, unrestrictedTools: false, rows },
+      }),
+    );
+  });
+
+  it('shows one summary control naming the count, and no rows and no raw ids', async () => {
+    const { container } = renderRail();
+    const trigger = await permissionsTrigger();
+
+    expect(trigger.textContent).toBe('Show all 5 rules');
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    const text = container.textContent ?? '';
+    expect(text).not.toMatch(/rule:|mcp:/);
+    for (const r of rows) {
+      if (r.capability !== '') expect(text).not.toContain(r.capability);
+    }
+    // The section it summarises still says what it is.
+    expect(screen.getByText('What it may do alone')).toBeTruthy();
+  });
+
+  it('is a real, focusable button, and nothing inside the fold is tabbable while shut', async () => {
+    const { container } = renderRail();
+    const trigger = await permissionsTrigger();
+
+    // A native <button> is keyboard-reachable and activates on Enter/Space
+    // with no handler of ours in the way.
+    expect(trigger.tagName).toBe('BUTTON');
+    expect(trigger.getAttribute('tabindex')).not.toBe('-1');
+    trigger.focus();
+    expect(document.activeElement).toBe(trigger);
+
+    // The rows' own controls (the effect badge, the vendor-prose popover) are
+    // not in the document at all while the list is shut.
+    expect(screen.queryByRole('button', { name: /Costs money/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /says it does/ })).toBeNull();
+    const controls = trigger.getAttribute('aria-controls');
+    if (controls !== null) {
+      expect(container.querySelector(`[id="${controls}"] button`)).toBeNull();
+    }
+  });
+
+  it('expands to exactly the rows it always drew, provenance included', async () => {
+    const { container } = renderRail();
+    const trigger = await permissionsTrigger();
+    fireEvent.click(trigger);
+
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    const text = container.textContent ?? '';
+    for (const r of rows) {
+      if (r.capability !== '') expect(text).toContain(r.capability);
+      // The provenance id survives in the expanded detail — the thing that
+      // makes a sentence drifting from its rule show up.
+      expect(text).toContain(r.source);
+    }
+    expect(text).toContain('mcp.linear.create_issue');
+    expect(screen.getByRole('button', { name: /Costs money/ })).toBeTruthy();
+
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(container.textContent).not.toContain('search the web');
+  });
+
+  it('counts a single rule in the singular', async () => {
+    railMock.mockResolvedValue(
+      rail({
+        permissions: {
+          status: 'ok',
+          incomplete: false,
+          unrestrictedTools: false,
+          rows: [describedRow()],
+        },
+      }),
+    );
+    renderRail();
+    expect((await permissionsTrigger()).textContent).toBe('Show the 1 rule');
+  });
+
+  it('offers no disclosure over an empty list — the empty-list sentence stands alone', async () => {
+    railMock.mockResolvedValue(
+      rail({
+        permissions: { status: 'ok', incomplete: false, unrestrictedTools: false, rows: [] },
+      }),
+    );
+    renderRail();
+    expect(await screen.findByText(/Nothing here describes Quill/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^Show / })).toBeNull();
   });
 });
 
