@@ -383,15 +383,25 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
     // not policy-checked.
     const policyChanges = filterToPolicy(allChanges);
 
+    // How many bytes this write adds, for subscribers that meter storage
+    // (TASK-690, @ax/disk-quota). Derived HERE from the bundle the host just
+    // decoded, never taken from anything the runner claims, and it covers the
+    // WHOLE write: `policyChanges` is only the `.ax/**` / `.claude/**` slice, so
+    // it cannot say how big the rest of the turn is. The compressed bundle is
+    // what actually lands on the volume, so it is the honest figure (the wire
+    // caps it at about 3 MiB, see MAX_FRAME).
+    const sizeBytes = Buffer.byteLength(bundleBytes, 'base64');
+
     // ---- pre-apply: subscribers can transform or veto ----
     const pre = await bus.fire<{
       changes: FileChange[];
       parent: WorkspaceVersion | null;
       reason: string;
+      sizeBytes: number;
     }>(
       'workspace:pre-apply',
       ctx,
-      { changes: policyChanges, parent, reason },
+      { changes: policyChanges, parent, reason, sizeBytes },
     );
     if (pre.rejected) {
       // Three plugins reject on `workspace:pre-apply`: @ax/validator-skill's

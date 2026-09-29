@@ -133,7 +133,8 @@ export function createCatalogRequestsStore(
       const dup = await existingPending(input.skillId);
       if (dup !== undefined) return { request: await rowToRequest(dup), created: false };
       // Content-addressed snapshot of the extra files (null when single-file).
-      const bundleTreeSha = await bundleStore.writeTree(input.files);
+      // Charged to the person sharing it (TASK-690).
+      const bundleTreeSha = await bundleStore.writeTree(input.files, input.requestedByUserId);
       const request = await insert({
         kind: 'share',
         skillId: input.skillId,

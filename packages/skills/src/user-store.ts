@@ -91,7 +91,10 @@ export function createUserSkillsStore(
       // Write the extra-file tree FIRST (only when `files` is explicitly
       // provided) — see store.ts for the §6D metadata-only-edit rationale.
       const filesProvided = input.files !== undefined;
-      const treeSha = filesProvided ? await bundleStore.writeTree(input.files!) : null;
+      // Charged to the owner's storage limit (TASK-690).
+      const treeSha = filesProvided
+        ? await bundleStore.writeTree(input.files!, input.ownerUserId)
+        : null;
 
       // SELECT → INSERT or UPDATE so `created` is accurate.
       // Accepted SELECT→INSERT race: this mirrors the global store (store.ts)

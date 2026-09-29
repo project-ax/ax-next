@@ -82,6 +82,29 @@ describe('createCatalogRequestsStore', () => {
     expect(got?.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]);
   });
 
+  it('TASK-690: a shared bundle is written on behalf of the person sharing it', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const inner = freshBundleStore();
+    const owners: Array<string | undefined> = [];
+    const store = createCatalogRequestsStore(db, {
+      readTree: (sha) => inner.readTree(sha),
+      writeTree: (files, owner) => {
+        owners.push(owner);
+        return inner.writeTree(files, owner);
+      },
+    });
+    await store.submitShare({
+      skillId: 'linear',
+      requestedByUserId: 'alice',
+      description: 'share linear',
+      manifestYaml: 'name: linear\ndescription: d\nversion: 1\n',
+      bodyMd: '# linear\n',
+      files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
+    });
+    expect(owners).toEqual(['alice']);
+  });
+
   it('a single-file share snapshots files: [] (bundle_tree_sha NULL)', async () => {
     const db = makeKysely();
     await runSkillsMigration(db);
