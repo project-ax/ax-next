@@ -126,6 +126,11 @@ export function createStaticFilesPlugin(config: StaticFilesConfig): Plugin {
   const apiPrefixes = normalizeApiPrefixes(
     config.apiPathPrefixes ?? DEFAULT_API_PATH_PREFIXES,
   );
+  // An error-SHAPE choice (JSON 404 instead of the SPA shell), not a security
+  // boundary: nothing may gate access on it. A raw-path spelling it misses
+  // (`/%61pi/x`, `//api`) just gets the shell, and no API handler matches those
+  // spellings either. A GET on a POST-only /api route also lands here (404, not
+  // 405), because this GET catchall matches it.
   const isApiPath = (path: string): boolean =>
     apiPrefixes.some((p) => path === p || path.startsWith(`${p}/`));
   const mountPath = config.mountPath ?? '/*';

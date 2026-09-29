@@ -311,7 +311,9 @@ function isSplatPattern(entry: PatternRouteEntry): boolean {
  * longer fixed prefix (segments before the `*`) is the narrower claim. At equal
  * length, a literal segment is narrower than a `:param` one, so
  * `/things/special/*` beats `/things/:id/*`. Anything still tied is NOT more
- * specific, which leaves the earlier registration in place.
+ * specific, which leaves the earlier registration in place. That tie is
+ * position-blind on purpose (YAGNI): `/a/:x/b/*` and `/a/b/:y/*` are equally
+ * specific here, and no two registered routes collide that way.
  */
 function isMoreSpecificSplat(a: PatternRouteEntry, b: PatternRouteEntry): boolean {
   const aFixed = a.segments.length - 1;

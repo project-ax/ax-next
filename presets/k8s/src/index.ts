@@ -1462,7 +1462,7 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
     }),
   );
 
-  // ----- 11. static-files (optional, MUST be last) ----------------------
+  // ----- 11. static-files (optional; kept last for readability) ---------
   // Serves channel-web's bundle from the same listener so cookies and
   // CSRF stay same-origin in production. The plugin registers a `/*`
   // splat catchall — the http-server router does SPECIFICITY-based
