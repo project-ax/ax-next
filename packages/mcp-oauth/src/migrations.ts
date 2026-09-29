@@ -6,13 +6,19 @@ import { sql, type Kysely } from 'kysely';
  * source of truth per concept).
  *
  * Tables:
- *   mcp_oauth_v1_clients  — registered OAuth clients, keyed by `client_key`
- *     (`${connectorId}|${authServerUrl}`). Stores DCR results and admin-pinned
- *     clients. Upserted on each successful registration/re-registration.
+ *   mcp_oauth_v1_clients  — READ-ONLY legacy fallback. It once held ONE OAuth client
+ *     per `client_key` (`${connectorId}|${authServerUrl}`), overwritten on every
+ *     `begin` — which is the bug TASK-696 fixed: a token was redeemed/refreshed as
+ *     whichever client registered LAST, not the one it was issued to. Nothing
+ *     writes it any more; a token blob or pending row from before that fix (no
+ *     client of its own) is still resolved through it via `getClient`.
  *
  *   mcp_oauth_v1_pending  — single-use pending authorizations, keyed by
  *     `state`. TTL enforced at read time (consumePending). Deleted on first
- *     successful read.
+ *     successful read, or purged once older than the TTL (purgeExpiredPending).
+ *     Carries the OAuth client the authorization started with (`client_id`,
+ *     nullable `client_secret`) so the callback redeems the code as that client;
+ *     both are NULL on a row written before TASK-696.
  */
 export async function runMcpOAuthMigration<DB>(db: Kysely<DB>): Promise<void> {
   await sql`
@@ -38,6 +44,8 @@ export async function runMcpOAuthMigration<DB>(db: Kysely<DB>): Promise<void> {
       created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`.execute(db);
   await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS cred_scope TEXT NOT NULL DEFAULT 'agent'`.execute(db);
+  await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS client_id TEXT`.execute(db);
+  await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS client_secret TEXT`.execute(db);
 }
 
 export interface McpOAuthClientRow {
@@ -60,6 +68,9 @@ export interface McpOAuthPendingRow {
   resource: string;
   scope: string | null;
   cred_scope: string;
+  /** The client this authorization started with; NULL on a pre-TASK-696 row. */
+  client_id: string | null;
+  client_secret: string | null;
   created_at: Date;
 }
 

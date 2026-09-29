@@ -27,9 +27,10 @@ const PLUGIN_NAME = '@ax/mcp-oauth';
 // @ax/mcp-oauth plugin factory.
 //
 // Wires the package's three runtime surfaces together:
-//   1. The per-plugin migration (mcp_oauth_v1_clients + mcp_oauth_v1_pending),
-//      run on init against the shared postgres instance (Invariant I4 — this
-//      plugin owns those tables; nothing else reaches into them).
+//   1. The per-plugin migration (mcp_oauth_v1_pending, plus mcp_oauth_v1_clients
+//      as a read-only legacy fallback), run on init against the shared postgres
+//      instance (Invariant I4 — this plugin owns those tables; nothing else
+//      reaches into them).
 //   2. The `credentials:resolve:mcp-oauth` sub-service — a refresh-on-read
 //      resolver that @ax/credentials dispatches to when a stored credential's
 //      `kind` is `mcp-oauth`. Registered ALWAYS: registering the sub-service is

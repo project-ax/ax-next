@@ -38,8 +38,8 @@ function fakeBus(stubs: BusStubs) {
 }
 
 function fakeStore(over: Partial<McpOAuthRouteDeps['store']> = {}) {
-  const putClient = vi.fn(async () => {});
   const putPending = vi.fn(async () => {});
+  const purgeExpiredPending = vi.fn(async (_olderThanMs: number) => {});
   const getClient = vi.fn(async () => ({
     clientKey: 'conn-1|https://auth.example.com',
     clientId: 'cid',
@@ -49,15 +49,15 @@ function fakeStore(over: Partial<McpOAuthRouteDeps['store']> = {}) {
   const getPending = vi.fn(async (): Promise<PendingAuthorization | null> => null);
   const consumePending = vi.fn(async (): Promise<PendingAuthorization | null> => null);
   return {
-    putClient,
     putPending,
+    purgeExpiredPending,
     getClient,
     getPending,
     consumePending,
     ...over,
   } as McpOAuthRouteDeps['store'] & {
-    putClient: typeof putClient;
     putPending: typeof putPending;
+    purgeExpiredPending: typeof purgeExpiredPending;
     getClient: typeof getClient;
     getPending: typeof getPending;
     consumePending: typeof consumePending;
@@ -229,12 +229,19 @@ beforeEach(() => {
 });
 
 describe('mcp-oauth begin route', () => {
-  it('1. happy path → 200 { authorizationUrl }; putPending(state,userId) + putClient called', async () => {
-    const { deps, store, flow } = makeDeps({
-      'auth:require-user': () => OK_USER,
-      'agents:resolve': () => ({ agent: { id: 'agent-1' } }),
-      'connectors:get': () => connectorFixture(),
-    });
+  it('1. happy path → 200 { authorizationUrl }; putPending(state,userId) called; the shared client row is never written', async () => {
+    // The real store has no putClient any more. Plant one on the double so that a
+    // stray begin -> putClient call (the TASK-696 bug) is observable, not a TypeError
+    // swallowed by begin's 502 catch.
+    const legacyPutClient = vi.fn(async () => {});
+    const { deps, store, flow } = makeDeps(
+      {
+        'auth:require-user': () => OK_USER,
+        'agents:resolve': () => ({ agent: { id: 'agent-1' } }),
+        'connectors:get': () => connectorFixture(),
+      },
+      { store: fakeStore({ putClient: legacyPutClient } as never) },
+    );
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
     await handlers.begin(
@@ -246,7 +253,8 @@ describe('mcp-oauth begin route', () => {
     expect(state.json).toEqual({
       authorizationUrl: 'https://auth.example.com/authorize?client_id=cid&state=STATE0',
     });
-    expect(store.putClient).toHaveBeenCalledTimes(1);
+    // begin no longer upserts the shared `connectorId|authServerUrl` client row.
+    expect(legacyPutClient).not.toHaveBeenCalled();
     expect(store.putPending).toHaveBeenCalledTimes(1);
     const pending = store.putPending.mock.calls[0]![0] as PendingAuthorization;
     expect(pending.state).toBe('STATE0');
@@ -281,7 +289,7 @@ describe('mcp-oauth begin route', () => {
     expect(state.status).toBe(403);
     expect(state.json).toEqual({ error: 'forbidden' });
     expect(store.putPending).not.toHaveBeenCalled();
-    expect(store.putClient).not.toHaveBeenCalled();
+    expect(store.purgeExpiredPending).not.toHaveBeenCalled();
     expect(flow.discover).not.toHaveBeenCalled();
   });
 
@@ -634,9 +642,114 @@ describe('mcp-oauth begin route', () => {
     // agents:resolve must not appear in bus calls
     expect(busCalls.filter(c => c.hook === 'agents:resolve')).toHaveLength(0);
   });
+
+  // --- TASK-696: the pending row carries the client this authorization started with ---
+
+  const BEGIN_STUBS: BusStubs = {
+    'auth:require-user': () => OK_USER,
+    'agents:resolve': () => ({ agent: { id: 'agent-1' } }),
+    'connectors:get': () => connectorFixture(),
+  };
+  const BEGIN_BODY = Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' }));
+
+  it('TASK-696a. putPending carries the client ensureClient returned (clientId + clientSecret) and the legacy clientKey', async () => {
+    const flow = fakeFlow({
+      ensureClient: vi.fn(async () => ({
+        clientKey: 'conn-1|https://auth.example.com',
+        clientId: 'dcr-cid-7',
+        clientSecret: 'dcr-secret-7',
+        dynamic: true,
+      })),
+    } as never);
+    const { deps, store } = makeDeps(BEGIN_STUBS, { flow });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).begin(fakeReq({ body: BEGIN_BODY }), res);
+
+    expect(state.status).toBe(200);
+    const pending = store.putPending.mock.calls[0]![0] as PendingAuthorization;
+    expect(pending.clientId).toBe('dcr-cid-7');
+    expect(pending.clientSecret).toBe('dcr-secret-7');
+    expect(pending.clientKey).toBe('conn-1|https://auth.example.com');
+  });
+
+  it('TASK-696b. a public client (no secret) yields a pending row with clientId and NO clientSecret key', async () => {
+    // The default fakeFlow().ensureClient returns { clientId: 'cid', clientSecret: undefined }.
+    const { deps, store } = makeDeps(BEGIN_STUBS);
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).begin(fakeReq({ body: BEGIN_BODY }), res);
+
+    expect(state.status).toBe(200);
+    const pending = store.putPending.mock.calls[0]![0] as PendingAuthorization;
+    expect(pending.clientId).toBe('cid');
+    expect('clientSecret' in pending).toBe(false);
+  });
+
+  it('TASK-696c. the authorize URL is built for the SAME client the pending row records', async () => {
+    const flow = fakeFlow({
+      ensureClient: vi.fn(async () => ({
+        clientKey: 'conn-1|https://auth.example.com',
+        clientId: 'dcr-cid-8',
+        clientSecret: undefined,
+        dynamic: true,
+      })),
+    } as never);
+    const { deps, store } = makeDeps(BEGIN_STUBS, { flow });
+    const { res } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).begin(fakeReq({ body: BEGIN_BODY }), res);
+
+    const built = (flow.buildAuthorization as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      client: { clientId: string };
+    };
+    const pending = store.putPending.mock.calls[0]![0] as PendingAuthorization;
+    expect(built.client.clientId).toBe('dcr-cid-8');
+    expect(pending.clientId).toBe(built.client.clientId);
+  });
+
+  it('TASK-696d. expired pending rows are purged with now() - pendingTtlMs, BEFORE the new row is written', async () => {
+    const order: string[] = [];
+    const store = fakeStore({
+      purgeExpiredPending: vi.fn(async () => {
+        order.push('purge');
+      }),
+      putPending: vi.fn(async () => {
+        order.push('put');
+      }),
+    });
+    const { deps } = makeDeps(BEGIN_STUBS, { store });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).begin(fakeReq({ body: BEGIN_BODY }), res);
+
+    expect(state.status).toBe(200);
+    // now() = 1_000_000, pendingTtlMs = 10 * 60_000.
+    expect(store.purgeExpiredPending).toHaveBeenCalledTimes(1);
+    expect(store.purgeExpiredPending).toHaveBeenCalledWith(1_000_000 - 10 * 60_000);
+    expect(order).toEqual(['purge', 'put']);
+  });
+
+  it('TASK-696e. a failing purge does NOT fail the begin: 200, the row is still written, purge failure is warned (neutral fields only)', async () => {
+    const store = fakeStore({
+      purgeExpiredPending: vi.fn(async () => {
+        throw new Error('deadlock detected; secret-ish detail cid-leak-xyz');
+      }),
+    });
+    const { deps, logger } = makeDeps(BEGIN_STUBS, { store });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).begin(fakeReq({ body: BEGIN_BODY }), res);
+
+    expect(state.status).toBe(200);
+    expect(store.putPending).toHaveBeenCalledTimes(1);
+    const purgeWarns = logger.warn.mock.calls.filter((c) => c[0] === 'mcp_oauth_begin_purge_failed');
+    expect(purgeWarns).toHaveLength(1);
+    // The discovery-failed warn (the 502 path) must NOT have fired.
+    expect(logger.warn.mock.calls.filter((c) => c[0] === 'mcp_oauth_begin_discovery_failed')).toHaveLength(0);
+    // Neutral fields only: the error NAME, never its message.
+    expect(purgeWarns[0]![1]).toEqual({ name: 'Error' });
+  });
 });
 
 describe('mcp-oauth callback route', () => {
+  // A row written by the FIXED begin: it carries the client the authorization
+  // started with.
   const pending: PendingAuthorization = {
     state: 'STATE0',
     userId: 'user-1',
@@ -646,11 +759,16 @@ describe('mcp-oauth callback route', () => {
     codeVerifier: 'verifier-0',
     authServerUrl: 'https://auth.example.com',
     clientKey: 'conn-1|https://auth.example.com',
+    clientId: 'pending-cid',
+    clientSecret: 'pending-secret',
     resource: 'https://mcp.example.com/mcp',
     scope: 'read write',
     credScope: 'agent',
     createdAt: 1_000_000,
   };
+  // A row written by the PRE-fix begin (an authorization in flight across the
+  // deploy): it has only the legacy clientKey index.
+  const { clientId: _cid, clientSecret: _csec, ...legacyPending } = pending;
 
   it('4 + 4b. happy → credentials:set once (agent/ownerId/ref/kind + decoded blob); redirect oauth=success', async () => {
     const setArgs: unknown[] = [];
@@ -688,6 +806,8 @@ describe('mcp-oauth callback route', () => {
     expect(arg.expiresAt).toBe(1_000_000 + 3600 * 1000);
 
     const blob = decodeTokenBlob(arg.payload);
+    expect(blob.clientId).toBe('pending-cid');
+    expect(blob.clientSecret).toBe('pending-secret');
     expect(blob.accessToken).toBe('at-123');
     expect(blob.refreshToken).toBe('rt-456');
     expect(blob.tokenType).toBe('Bearer');
@@ -700,6 +820,147 @@ describe('mcp-oauth callback route', () => {
     expect(state.redirectUrl).toContain('oauth=success');
     expect(state.redirectUrl).toContain('connector=conn-1');
     expect(state.redirectUrl).toContain('https://app.example.com/settings/connectors');
+  });
+
+  // --- TASK-696: redeem AS, and record, the client the authorization started with ---
+
+  /** Drive a callback to completion; return what redeemCode saw and what was vaulted. */
+  async function runCallback(opts: {
+    pending: PendingAuthorization;
+    getClient?: ReturnType<typeof vi.fn>;
+    redeemResult?: Record<string, unknown>;
+  }) {
+    const setArgs: Array<{ payload: Uint8Array }> = [];
+    const store = storeWithPending(
+      opts.pending,
+      opts.getClient ? ({ getClient: opts.getClient } as never) : {},
+    );
+    const flow = fakeFlow(
+      opts.redeemResult
+        ? ({ redeemCode: vi.fn(async () => opts.redeemResult) } as never)
+        : {},
+    );
+    const { deps, logger } = makeDeps(
+      {
+        'auth:require-user': () => OK_USER,
+        'connectors:get': () => connectorFixture(),
+        'credentials:set': (input) => {
+          setArgs.push(input as { payload: Uint8Array });
+        },
+      },
+      { store, flow },
+    );
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).callback(
+      fakeReq({ query: { code: 'auth-code-xyz', state: 'STATE0' } }),
+      res,
+    );
+    const redeemArgs = (flow.redeemCode as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as
+      | { client: { clientId: string; clientSecret?: string } }
+      | undefined;
+    return { store, state, logger, redeemArgs, setArgs };
+  }
+
+  it('TASK-696f. redeems the code as the PENDING row\'s client — the shared client row (which a later begin may have overwritten) is not consulted', async () => {
+    // getClient would hand back whichever client registered LAST for this
+    // connector|authServer — a DIFFERENT client. Using it is the bug.
+    const getClient = vi.fn(async () => ({
+      clientKey: 'conn-1|https://auth.example.com',
+      clientId: 'registered-last-cid',
+      clientSecret: 'registered-last-secret' as string | undefined,
+      dynamic: true,
+    }));
+    const { redeemArgs, state } = await runCallback({ pending, getClient });
+
+    expect(state.redirectUrl).toContain('oauth=success');
+    expect(redeemArgs!.client.clientId).toBe('pending-cid');
+    expect(redeemArgs!.client.clientSecret).toBe('pending-secret');
+    expect(getClient).not.toHaveBeenCalled();
+  });
+
+  it('TASK-696g. the vaulted token blob carries the client it was issued to (clientId + clientSecret), plus the legacy clientKey', async () => {
+    const { setArgs } = await runCallback({ pending });
+
+    expect(setArgs).toHaveLength(1);
+    const blob = decodeTokenBlob(setArgs[0]!.payload);
+    expect(blob.clientId).toBe('pending-cid');
+    expect(blob.clientSecret).toBe('pending-secret');
+    expect(blob.clientKey).toBe('conn-1|https://auth.example.com');
+  });
+
+  it('TASK-696h. a public client\'s blob has clientId and NO clientSecret key', async () => {
+    const { clientSecret: _s, ...publicPending } = pending;
+    const { setArgs, redeemArgs } = await runCallback({ pending: publicPending });
+
+    expect(redeemArgs!.client.clientSecret).toBeUndefined();
+    const blob = decodeTokenBlob(setArgs[0]!.payload);
+    expect(blob.clientId).toBe('pending-cid');
+    expect('clientSecret' in blob).toBe(false);
+    // The encoded bytes agree (zod strips unknown keys, so the decode alone proves little).
+    expect(new TextDecoder().decode(setArgs[0]!.payload)).not.toContain('clientSecret');
+  });
+
+  it('TASK-696i. LEGACY pending row (no clientId) falls back to getClient(clientKey), redeems as that client, and records it on the blob', async () => {
+    const getClient = vi.fn(async (_k: string) => ({
+      clientKey: 'conn-1|https://auth.example.com',
+      clientId: 'legacy-row-cid',
+      clientSecret: 'legacy-row-secret' as string | undefined,
+      dynamic: true,
+    }));
+    const { redeemArgs, setArgs, state } = await runCallback({ pending: legacyPending, getClient });
+
+    expect(state.redirectUrl).toContain('oauth=success');
+    expect(getClient).toHaveBeenCalledTimes(1);
+    expect(getClient).toHaveBeenCalledWith('conn-1|https://auth.example.com');
+    expect(redeemArgs!.client.clientId).toBe('legacy-row-cid');
+    expect(redeemArgs!.client.clientSecret).toBe('legacy-row-secret');
+    // The token was redeemed as this client, so the blob records it: from here on
+    // it no longer depends on the shared row.
+    const blob = decodeTokenBlob(setArgs[0]!.payload);
+    expect(blob.clientId).toBe('legacy-row-cid');
+    expect(blob.clientSecret).toBe('legacy-row-secret');
+    expect(blob.clientKey).toBe('conn-1|https://auth.example.com');
+  });
+
+  it('TASK-696j. a pending row WITH a client succeeds even when the shared client row is gone (getClient would return null / throw)', async () => {
+    for (const getClient of [
+      vi.fn(async () => null),
+      vi.fn(async () => {
+        throw new Error('connection refused');
+      }),
+    ]) {
+      const { state, logger, setArgs } = await runCallback({ pending, getClient });
+      expect(state.redirectUrl).toContain('oauth=success');
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(setArgs).toHaveLength(1);
+      expect(getClient).not.toHaveBeenCalled();
+    }
+  });
+
+  it('TASK-696k. the client secret never reaches a log line (redeem-failure path)', async () => {
+    const store = storeWithPending(pending);
+    const flow = fakeFlow({
+      redeemCode: vi.fn(async () => {
+        throw new Error('boom');
+      }),
+    });
+    const { deps, logger } = makeDeps(
+      {
+        'auth:require-user': () => OK_USER,
+        'connectors:get': () => connectorFixture(),
+        'credentials:set': vi.fn(),
+      },
+      { store, flow },
+    );
+    const { res } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).callback(
+      fakeReq({ query: { code: 'auth-code-xyz', state: 'STATE0' } }),
+      res,
+    );
+    const logged = JSON.stringify([...logger.warn.mock.calls, ...logger.error.mock.calls]);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logged).not.toContain('pending-secret');
+    expect(logged).not.toContain('auth-code-xyz');
   });
 
   // Phase 2: the callback writes the credential at the pending row's STORED
@@ -881,8 +1142,8 @@ describe('mcp-oauth callback route', () => {
     expect(state.status).toBe(400);
   });
 
-  it('client registration missing (getClient → null) → logger.error(stage:getClient) + oauth=error redirect (no 500 leak)', async () => {
-    const store = storeWithPending(pending, { getClient: vi.fn(async () => null) });
+  it('LEGACY pending row (no clientId): client registration missing (getClient → null) → logger.error(stage:getClient) + oauth=error redirect (no 500 leak)', async () => {
+    const store = storeWithPending(legacyPending, { getClient: vi.fn(async () => null) });
     const { deps, logger } = makeDeps(
       {
         'auth:require-user': () => OK_USER,
@@ -930,9 +1191,9 @@ describe('mcp-oauth callback route', () => {
 
   // --- Fix 2: regression tests for the formerly-swallowed fault paths -------
 
-  it('Fix2a. getClient throws (DB fault) → logger.error(stage:getClient); credentials:set NOT called; oauth=error', async () => {
+  it('Fix2a. LEGACY pending row (no clientId): getClient throws (DB fault) → logger.error(stage:getClient); credentials:set NOT called; oauth=error', async () => {
     const setSpy = vi.fn();
-    const store = storeWithPending(pending, {
+    const store = storeWithPending(legacyPending, {
       getClient: vi.fn(async () => {
         throw new Error('connection refused');
       }),

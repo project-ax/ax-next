@@ -3,7 +3,12 @@ import type { McpOAuthDatabase } from './migrations.js';
 import type { ClientRegistration, PendingAuthorization } from './types.js';
 
 export interface McpOAuthStore {
-  putClient(c: ClientRegistration): Promise<void>;
+  /**
+   * LEGACY fallback, read-only: the shared client row that tokens/pending rows
+   * written before TASK-696 index by `clientKey`. Nothing writes it any more — a
+   * token now carries the client it was issued to (see `McpOAuthTokenBlob`), so a
+   * new connect can never overwrite the client an older token depends on.
+   */
   getClient(clientKey: string): Promise<ClientRegistration | null>;
   /**
    * `createdAtOverride` (epoch ms) is a TEST SEAM for deterministic TTL tests;
@@ -27,6 +32,13 @@ export interface McpOAuthStore {
     now: number,
     ttlMs: number,
   ): Promise<PendingAuthorization | null>;
+  /**
+   * Delete every pending row created before `olderThanMs` (epoch ms). A row past
+   * the TTL can never be redeemed, and it may hold a confidential client's secret
+   * in plaintext, so an abandoned authorization must not keep it around forever.
+   * Callers pass `now - pendingTtlMs`.
+   */
+  purgeExpiredPending(olderThanMs: number): Promise<void>;
 }
 
 /** Map a DB row to the domain {@link PendingAuthorization}. Shared by
@@ -43,6 +55,8 @@ function rowToPending(r: {
   resource: string;
   scope: string | null;
   cred_scope: string;
+  client_id: string | null;
+  client_secret: string | null;
   created_at: Date | string | number;
 }): PendingAuthorization {
   const createdAt =
@@ -56,6 +70,10 @@ function rowToPending(r: {
     codeVerifier: r.code_verifier,
     authServerUrl: r.auth_server_url,
     clientKey: r.client_key,
+    // NULL columns ⇒ ABSENT keys (never `clientId: undefined`): a pre-TASK-696 row
+    // has no client of its own, and the callback keys its fallback off that.
+    ...(r.client_id !== null ? { clientId: r.client_id } : {}),
+    ...(r.client_secret !== null ? { clientSecret: r.client_secret } : {}),
     resource: r.resource,
     scope: r.scope ?? undefined,
     credScope: r.cred_scope === 'user' ? 'user' : 'agent',
@@ -65,26 +83,6 @@ function rowToPending(r: {
 
 export function createMcpOAuthStore(db: Kysely<McpOAuthDatabase>): McpOAuthStore {
   return {
-    async putClient(c) {
-      await db
-        .insertInto('mcp_oauth_v1_clients')
-        .values({
-          client_key: c.clientKey,
-          client_id: c.clientId,
-          client_secret: c.clientSecret ?? null,
-          dynamic: c.dynamic,
-          created_at: new Date(),
-        })
-        .onConflict((oc) =>
-          oc.column('client_key').doUpdateSet({
-            client_id: c.clientId,
-            client_secret: c.clientSecret ?? null,
-            dynamic: c.dynamic,
-          }),
-        )
-        .execute();
-    },
-
     async getClient(clientKey) {
       const r = await db
         .selectFrom('mcp_oauth_v1_clients')
@@ -115,6 +113,8 @@ export function createMcpOAuthStore(db: Kysely<McpOAuthDatabase>): McpOAuthStore
           resource: p.resource,
           scope: p.scope ?? null,
           cred_scope: p.credScope,
+          client_id: p.clientId ?? null,
+          client_secret: p.clientSecret ?? null,
           created_at:
             createdAtOverride !== undefined ? new Date(createdAtOverride) : new Date(),
         })
@@ -141,6 +141,13 @@ export function createMcpOAuthStore(db: Kysely<McpOAuthDatabase>): McpOAuthStore
       const pending = rowToPending(r);
       if (now - pending.createdAt > ttlMs) return null;
       return pending;
+    },
+
+    async purgeExpiredPending(olderThanMs) {
+      await db
+        .deleteFrom('mcp_oauth_v1_pending')
+        .where('created_at', '<', new Date(olderThanMs))
+        .execute();
     },
   };
 }
