@@ -419,7 +419,8 @@ describe('@ax/credential-proxy plugin — the metered provider key (TASK-715)', 
         acc += d.toString('latin1');
         if (!acc.includes('\r\n\r\n')) return;
         raw.removeListener('data', onData);
-        acc.startsWith('HTTP/1.1 200') ? resolve() : reject(new Error(acc));
+        if (acc.startsWith('HTTP/1.1 200')) resolve();
+        else reject(new Error(acc));
       });
     });
     const inner: TLSSocket = tlsConnect({ socket: raw, servername: HOST, ca: ca.cert });
