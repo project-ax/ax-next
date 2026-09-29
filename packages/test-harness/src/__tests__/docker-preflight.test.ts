@@ -125,6 +125,10 @@ for (const shell of ['bash', 'zsh']) {
       vi.stubEnv('AX_DOCKER_TEST_TRACE', trace);
       vi.stubEnv('AX_DOCKER_TEST_MODE', 'healthy');
       vi.stubEnv('AX_DOCKER_TEST_INFO', '0 0');
+      // Keep these checked starts off the host-wide slot directory. (TASK-398)
+      vi.stubEnv('AX_TESTCONTAINER_START_SLOT_DIR', join(dir, 'slots'));
+      vi.stubEnv('AX_TESTCONTAINER_START_SLOTS', undefined);
+      vi.stubEnv('AX_TESTCONTAINER_START_SLOT_WAIT_MS', undefined);
       start.mockClear();
       warn.mockClear();
       await writeFile(join(dir, 'docker'), `#!/usr/bin/env ${shell}
@@ -261,6 +265,29 @@ esac
       await expect(startConsumer(start, warn)).resolves.toBe(started);
       expect(start).toHaveBeenCalledTimes(1);
       expect(warn).toHaveBeenCalledWith(expect.stringMatching(/34 running containers \(39 total\).*may be loaded/));
+    });
+
+    it('queues the real consumer start behind the host-wide start slots, and names the wait', async () => {
+      // TASK-398: a checked start must take a start slot. With the only slot held by
+      // another start, the consumer never reaches start() and fails with the named
+      // queueing error, not a bare hook timeout.
+      vi.stubEnv('AX_TESTCONTAINER_START_SLOTS', '1');
+      vi.stubEnv('AX_TESTCONTAINER_START_SLOT_WAIT_MS', '300');
+      let release!: () => void;
+      let holding = false;
+      const held = startConsumer(() => new Promise((resolve) => {
+        holding = true;
+        release = () => resolve(started);
+      }), warn);
+      while (!holding) await new Promise((r) => setTimeout(r, 10));
+      await expect(startConsumer(start, warn)).rejects.toThrow(/for a container start slot.*never started.*not a container failure/);
+      expect(start).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/Waiting for a container start slot: all 1 are in use/));
+      release();
+      await expect(held).resolves.toBe(started);
+      // The slot went back when the first start finished.
+      await expect(startConsumer(start, warn)).resolves.toBe(started);
+      expect(start).toHaveBeenCalledTimes(1);
     });
 
     it('preserves a later container startup failure rather than relabeling it as Docker readiness', async () => {

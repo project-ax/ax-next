@@ -1,4 +1,11 @@
+import { rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// Keep these checked starts off the host-wide start-slot directory, so a loaded
+// host cannot queue a unit test behind real container starts. (TASK-398)
+const slotDir = join(tmpdir(), `ax-start-slots-boundaries-${process.pid}`);
 
 const mocks = vi.hoisted(() => ({ exec: vi.fn(), exists: vi.fn() }));
 vi.mock('node:child_process', () => ({ execFile: mocks.exec }));
@@ -25,12 +32,16 @@ beforeEach(() => {
   vi.stubEnv('DOCKER_CERT_PATH', undefined);
   vi.stubEnv('AX_TESTCONTAINERS_STRICT_ENDPOINT', undefined);
   vi.stubEnv('NODE_TLS_REJECT_UNAUTHORIZED', undefined);
+  vi.stubEnv('AX_TESTCONTAINER_START_SLOT_DIR', slotDir);
+  vi.stubEnv('AX_TESTCONTAINER_START_SLOTS', undefined);
+  vi.stubEnv('AX_TESTCONTAINER_START_SLOT_WAIT_MS', undefined);
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.useRealTimers();
+  await rm(slotDir, { recursive: true, force: true });
 });
 
 describe('explicit Docker endpoint contract', () => {
