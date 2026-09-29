@@ -615,6 +615,44 @@ describe('ConnectorConnectDialog — access disclosure (TASK-700)', () => {
     ).toBeTruthy();
   });
 
+  it('a connector with BOTH a key and a sign-in shows one notice for each, each in its own words', async () => {
+    // Two distinct grants on one dialog (a key, and an account sign-in), so two
+    // notices is the honest count: the key one says "key", the sign-in one says
+    // "sign-in", and neither claims the other's advice (a sign-in has no key to
+    // narrow). Found by review: the mixed shape was reasoned about but untested.
+    const MIXED = fullConnector({
+      id: 'mixed-svc',
+      name: 'Mixed Service',
+      keyMode: 'personal',
+      visibility: 'private',
+      capabilities: {
+        ...connectorsLib.emptyCapabilities(),
+        credentials: [
+          { slot: 'API_KEY', kind: 'api-key' },
+          { slot: 'MCP_TOKEN', kind: 'oauth', server: 'github' },
+        ],
+        mcpServers: [
+          {
+            name: 'github-mcp',
+            transport: 'http',
+            url: 'https://mcp.github.com',
+            allowedHosts: ['mcp.github.com'],
+            credentials: [{ slot: 'MCP_TOKEN', kind: 'oauth', server: 'github' }],
+          },
+        ],
+      },
+    });
+    vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(MIXED);
+    renderDialog('mixed-svc', 'Mixed Service');
+    await screen.findByLabelText(/API key/i);
+    await screen.findByRole('button', { name: /Connect with Mixed Service/i });
+    const notices = screen.getAllByTestId(NOTICE);
+    expect(notices).toHaveLength(2);
+    expect(notices[0]).toHaveTextContent(connectorAccessCopy('key').headline);
+    expect(notices[1]).toHaveTextContent(connectorAccessCopy('sign-in').headline);
+    expect(notices[1]).not.toHaveTextContent(/fewest permissions/i);
+  });
+
   it('a failed load shows the error and no notice', async () => {
     vi.spyOn(connectorsLib, 'getConnector').mockRejectedValue(new Error('get boom'));
     renderDialog('my-notion', 'My Notion');
