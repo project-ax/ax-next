@@ -111,12 +111,12 @@ describe('BUILTIN_RULES', () => {
     //     `conditional` (the verdict depends on whether the person has allowed
     //     that host). Pinned by the TASK-329 propagation test below and by
     //     channel-web's rail tests.
-    //   - THE UNDO WINDOW. `irreversible` is still NOT set, and the test below
-    //     still pins that. An outward call is USUALLY irreversible, and a page
-    //     fetch genuinely cannot be unmade — but `irreversible` is specifically
-    //     the claim that AW-5 must defer the replay by the undo window, which
-    //     is a change to approval TIMING and not to classification. Left for a
-    //     follow-up rather than smuggled in here.
+    //   - THE UNDO WINDOW. `irreversible` is NOT set, and the tests below pin
+    //     that. A page fetch genuinely cannot be unmade — but `irreversible` is
+    //     specifically the instruction that AW-5 defer an UNATTENDED replay by
+    //     the undo window, which is approval TIMING and not classification.
+    //     TASK-409 settled it: leave it unset (decision in
+    //     `.claude/memory/decisions/2026-09-28-TASK-409.md`).
     //   - THE COPY. `permission-frames.ts`' `outward` detail spells out only
     //     the "a third party sees it" half of what `outward` means. That half
     //     IS the true half for `web_extract`, so nothing is misstated today —
@@ -155,10 +155,15 @@ describe('BUILTIN_RULES', () => {
   });
 
   it('marks nothing irreversible — every seeded approval can be taken back', () => {
-    // A guard, not a preference: AW-5 offers a 10-second undo window unless a
-    // rule opts out, and offering undo on something irreversible is a claim
-    // the system cannot honour (design H1). If a rule here starts setting
-    // `irreversible: true`, this test is the prompt to check AW-5 honours it.
+    // A guard, not a preference. `irreversible: true` is what CREATES the
+    // unattended undo window: `@ax/decisions` claims the approval now and
+    // replays the call one window later (`deferred = !attended && hasExecutor
+    // && current.irreversible`). Unset means an unattended approval replays at
+    // once. Attended approvals get the window either way (TASK-574). The
+    // comment here used to say the reverse: that AW-5 offers undo unless a
+    // rule opts out. That inverted reading is how TASK-409 got filed
+    // backwards. If a rule here starts setting the flag, this test is the
+    // prompt to check that the deferred-replay sweep really runs its call.
     for (const rule of BUILTIN_RULES) {
       expect(rule.irreversible, rule.id).toBeUndefined();
     }
@@ -235,17 +240,25 @@ describe('BUILTIN_RULES', () => {
       proves nothing is worse than no test, because it reads like coverage in a
       diff. Its replacement runs against real rules today.
 
-      WHAT THE NEW ASSERTION IS ARMED FOR: the SECOND outward rule. #574 decided
-      deliberately that `web.extract` would NOT set `irreversible` — that flag
-      is a claim about approval TIMING (AW-5 defers the replay by the undo
-      window), not about classification, and flipping it was left for a
-      follow-up rather than smuggled into a classification patch. That decision
-      is one rule wide, and it is spelled here as an allow-list of one so the
-      next `outward` rule cannot inherit it silently. An outward call is
-      normally irreversible — you cannot unsend a message — and a rule that
-      declares `outward` while offering a 10-second undo is promising something
-      the system cannot honour (design H1). When this reds, the question is
-      whether AW-5 can honour undo for THAT rule, not whether the allow-list
+      WHAT THE NEW ASSERTION IS ARMED FOR: the SECOND outward rule. `web.extract`
+      does NOT set `irreversible`, and that is now a DECISION, not a deferral.
+      #574 and #580 left it open on scope. TASK-409 settled it, and the
+      reasoning and the reopen conditions are in
+      `.claude/memory/decisions/2026-09-28-TASK-409.md`. In short: the flag
+      only changes UNATTENDED approvals (`deferred = !attended && hasExecutor
+      && current.irreversible` in `packages/decisions/src/plugin.ts`). Attended
+      approvals already get the grace period regardless (TASK-574). On the path
+      it does touch, the flag is misclick insurance for a read-only page fetch, and it
+      would add an "approved, nothing happened" failure if the host dies
+      inside the window.
+
+      That decision is one rule wide, and it is spelled here as an allow-list
+      of one so the next `outward` rule cannot inherit it silently. An outward
+      call is normally irreversible (you cannot unsend a message), and for
+      those, `irreversible: true` is what gives an unattended approval a real
+      grace period BEFORE the action. Without it, the host sends at once. When
+      this reds, the question is whether THAT rule's action is cheap enough to
+      fire straight away on an unattended approval, not whether the allow-list
       has room for one more.
     */
     const IRREVERSIBLE_DEFERRED = new Set(['web.extract']);
@@ -258,9 +271,10 @@ describe('BUILTIN_RULES', () => {
     expect(outward.length, 'nothing declares outward — this test went vacuous').toBeGreaterThan(0);
     for (const rule of outward) {
       if (IRREVERSIBLE_DEFERRED.has(rule.id)) {
-        // The deferral, pinned where somebody would trip over it. If this reds
-        // because `web.extract` now sets the flag, that is the follow-up
-        // landing: delete the id from the set rather than the assertion.
+        // The TASK-409 decision, pinned where somebody would trip over it. If
+        // this reds because `web.extract` now sets the flag, a reopen
+        // condition in that decision should have fired first. Check it, then
+        // delete the id from the set rather than the assertion.
         expect(rule.irreversible, `${rule.id} is the documented deferral`).toBeUndefined();
         continue;
       }

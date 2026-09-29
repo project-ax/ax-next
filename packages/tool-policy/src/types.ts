@@ -131,8 +131,9 @@ export interface PolicyRule {
    *
    * Omitted is the honest default only because every rule seeded today is
    * treated as reversible; a new irreversible rule must set this explicitly.
-   * Whether `web.extract` — which declares `outward` and leaves this unset —
-   * ought to set it is TASK-409, deliberately still open.
+   * `web.extract` declares `outward` and leaves this unset ON PURPOSE. TASK-409
+   * decided that, and the reasoning and reopen conditions are in
+   * `.claude/memory/decisions/2026-09-28-TASK-409.md`.
    *
    * Related to but NOT the same as `effect`: `irreversible` is about whether an
    * APPROVAL can be withdrawn during the undo window, `effect` is about what

@@ -127,8 +127,11 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   // None is marked `irreversible`: approving `request_capability` grants reach
   // that is revocable, `connector_propose` creates a pending zero-reach draft,
   // and an installed skill can be uninstalled. A future rule whose approval
-  // cannot be taken back must set `irreversible: true` so AW-5 does not offer
-  // an undo window it cannot honour (design H1).
+  // cannot be taken back must set `irreversible: true`. That is what makes AW-5
+  // defer an unattended replay by the undo window, so the Undo button still
+  // has something to stop (design H1). Without it, the host replays at once.
+  // (This line used to say the flag stops AW-5 offering undo, which is
+  // backwards. See TASK-384 and TASK-409.)
   {
     // The canary's rule: @ax/skill-broker is pushed UNCONDITIONALLY into the
     // k8s preset, so `request_capability` is always in the catalog, and it is
