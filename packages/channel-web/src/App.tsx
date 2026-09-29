@@ -388,6 +388,25 @@ const AppContent = ({ user }: { user: AuthUser }) => {
 
           `AdminShell` roots at `flex flex-1 min-w-0 h-full` and needs a flex
           parent with a height, hence the wrapper.
+
+          DELIBERATELY NOT ESCAPE-DISMISSABLE (TASK-475, decided by Vinay
+          2026-09-28). An earlier card assumed "Escape still closes" Settings;
+          it never did, and it should not start. Three reasons:
+            1. It is a page, not an overlay. Escape-to-dismiss is the
+               convention for dialogs, sheets and popovers, which return you to
+               the thing behind them. This pane REPLACES the workspace; nothing
+               is behind it.
+            2. Escape navigates nowhere else in the product. One route that
+               leaves on Escape is worse than none: the key stops being
+               predictable.
+            3. Data loss. If a Settings surface ever holds unsaved edits, a
+               stray Escape would throw away a half-typed setting.
+          The way out is the back button at the top of `AdminSidebar`. Escape
+          inside the pane still closes whatever overlay it opened (a Dialog,
+          a menu) — that is Radix, and correct. Pinned by
+          `__tests__/settings-return-focus.test.tsx` › "Escape leaves Settings
+          open". If you want to change this, it is a product decision; re-open
+          the question rather than adding a keydown listener.
         */}
         {adminSettingsOpen ? (
           <div className="flex h-screen bg-background font-sans text-foreground">
