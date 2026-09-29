@@ -214,8 +214,9 @@ what it reads, and what it reads is not the question T3 asks.
 
 `App.tsx` — `FirstRunAutoCreate`'s `onDone` sets `kickoffAgentId` when the
 workspace is the surface being rendered, and `WorkspaceShell`'s kickoff effect
-POSTs `KICKOFF_TEXT` — `'hi'`, from `lib/bootstrap-kickoff.ts` —
-through `startTurn`, which navigates to the agent's chat tab. That is #553.
+POSTs `KICKOFF_TEXT` — `'hi'`, from `lib/bootstrap-kickoff.ts`; since TASK-689 a
+reserved sentence the thread builder hides — through `startTurn`, which navigates
+to the agent's chat tab. That is #553.
 
 So the day-one user's first screen is no longer Today with nothing on it. It is
 their agent, mid-introduction. A *correctly* gated Today panel would therefore
@@ -224,6 +225,10 @@ today it shows when it should not, and gated properly it would never show at
 all.
 
 ### Fact 3 — the workspace first-run path DOES show `NewAgentDialog`
+
+*(TASK-689: that component is now `NewAgentCard`, a `SetupShell` card rather than
+a modal, with shorter copy. The finding below — the name step sits above the
+shell branch and every first run passes through it — still holds.)*
 
 The claim at the top of this doc — "No form, no dialog… **a workspace user has
 never seen** `NewAgentDialog`'s 'An agent is your personal assistant in ax.'" —
