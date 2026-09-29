@@ -174,6 +174,24 @@ describe.each(['sh', ...(HAS_DASH ? ['dash'] : [])])('restore-drill-verify.sh un
     expect(r.status).toBe(1);
   });
 
+  it('FAILS when facts.db opens and reads fine but integrity_check reports damage', () => {
+    // A torn write does not always make the file unreadable; sometimes it opens,
+    // every SELECT works, and only integrity_check notices (here: a row that
+    // breaks a CHECK constraint, like the real table's `provenance IN (...)`).
+    makeRepo('ws-aaa.git');
+    const db = new DatabaseSync(join(facts, 'facts.db'));
+    db.exec('CREATE TABLE memory_facts (id INTEGER PRIMARY KEY, n INTEGER CHECK (n > 0))');
+    db.exec('INSERT INTO memory_facts (n) VALUES (1)');
+    db.exec('PRAGMA ignore_check_constraints = ON');
+    db.exec('INSERT INTO memory_facts (n) VALUES (-5)');
+    db.close();
+    const r = verify();
+    expect(r.out).toContain('FAIL: facts.db integrity_check:');
+    expect(r.out).not.toContain('integrity_check = ok');
+    expect(r.out).toContain('DRILL-RESULT: FAIL');
+    expect(r.status).toBe(1);
+  });
+
   it('warns, but passes, when facts.db is valid and empty', () => {
     makeRepo('ws-aaa.git');
     makeFactsDb({ rows: 0 });
